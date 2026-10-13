@@ -195,12 +195,21 @@ def main() -> int:
     # stalls and resumes included).
     played = [r for r in merged if r.get("steps")]
     actions = sum(max(0, len(r["steps"]) - 1) for r in played)
+    # Verified transitions: steps where the emulator reproduced the game's next state, i.e.
+    # every step before a fight's first divergence. The honest headline (SPEED_PLAN.md).
+    emus_all = json.loads(emu.read_text(encoding="utf-8"))["results"] if emu.exists() else []
+    vt = 0
+    for g, e in zip(merged, emus_all):
+        if g.get("steps") and not g.get("error") and not e.get("error"):
+            idx = cv.first_divergence(g, e, nm)
+            vt += (len(g["steps"]) if idx is None else idx) - 1
     minutes = max(1e-9, (t_end - t_start) / 60)
     per_fight = [(r["timing_ms"]["play"] + r["timing_ms"]["reset"]) / 1000 for r in played if "timing_ms" in r]
     stalls = sum(1 for r in merged if str(r.get("error", "")).startswith("stalled"))
     metrics = {
         "batch": a.name, "copies": a.parallel, "fights": len(merged), "verified": len(played),
-        "minutes": round(minutes, 2), "verified_per_min": round(len(played) / minutes, 1),
+        "minutes": round(minutes, 2), "vt_per_min": round(vt / minutes), "fight_equiv_per_min": round(vt / minutes / 18.9, 1),
+        "verified_per_min": round(len(played) / minutes, 1),
         "actions_per_min": round(actions / minutes), "s_per_fight_per_copy": round(sum(per_fight) / max(1, len(per_fight)), 2),
         "identical": same, "identical_pct": round(100 * same / max(1, len(played)), 1),
         "stalls": stalls, "errors": len([r for r in merged if r.get("error")]),
@@ -210,7 +219,8 @@ def main() -> int:
         mfile.write_text(",".join(metrics) + chr(10), encoding="utf-8")
     with open(mfile, "a", encoding="utf-8") as f:
         f.write(",".join(str(v) for v in metrics.values()) + chr(10))
-    speed = (f"SPEED {metrics['verified_per_min']} verified fights/min ({metrics['actions_per_min']} actions/min), "
+    speed = (f"SPEED {metrics['vt_per_min']} verified transitions/min (= {metrics['fight_equiv_per_min']} fight-equivalents/min; "
+             f"{metrics['verified_per_min']} fights compared/min, {metrics['actions_per_min']} actions/min), "
              f"{metrics['s_per_fight_per_copy']} s/fight per copy x {a.parallel} copies, {metrics['minutes']} min; "
              f"identical {metrics['identical_pct']}%, stalls {stalls}")
     lines = [speed, f"batch {a.name}: {a.fights} fights, session exit {report.get('exit')}, {report.get('seconds')} s, "
