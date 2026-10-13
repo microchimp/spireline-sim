@@ -2059,12 +2059,11 @@ public static class RunRewardGenerator
     {
         // PotionRewardOdds.Roll draws its float whether or not the hook forces the reward,
         // so White Beast Statue must not skip the roll — only override the answer.
-        bool forced =
-            HasRelic(state, RunConstants.RelicWhiteBeastStatue)
-            && state.CurrentNodeType
-                is RunConstants.NodeNormal
-                    or RunConstants.NodeElite
-                    or RunConstants.NodeBoss;
+        // `WhiteBeastStatue.ShouldForcePotionReward` is `roomType.IsCombatRoom()`. Every fight that
+        // reaches a rewards screen is one -- the map's monsters, elites and bosses AND the fights an
+        // event starts (their encounters are all RoomType.Monster) -- so the map node's type is the
+        // wrong question: it is the event's for Punch Off's fight, and the statue skipped it.
+        bool forced = HasRelic(state, RunConstants.RelicWhiteBeastStatue);
         double eliteBonus = state.CurrentNodeType == RunConstants.NodeElite ? 0.25 * 0.5 : 0.0;
         if (forced || roll < state.PotionRewardOdds + eliteBonus)
         {

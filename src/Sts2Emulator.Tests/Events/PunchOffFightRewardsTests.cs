@@ -68,3 +68,29 @@ public class PunchOffFightRewardsTests
         Assert.Fail("no seed rolled a room potion");
     }
 }
+
+/// <summary>
+/// White Beast Statue forces a potion in every combat room (<c>roomType.IsCombatRoom()</c>); the fights
+/// an event starts are Monster rooms, though the map node they are reached from is an event's.
+/// </summary>
+public class WhiteBeastStatueEventFightTests
+{
+    [Fact]
+    public void PunchOffsFightRollsAForcedPotionBesideTheExtraOne()
+    {
+        for (int n = 0; n < 30; n++)
+        {
+            var engine = new RunEngine();
+            engine.Reset("SEED" + n.ToString("D6"));
+            RunNonCombatEffects.ApplyRelicPickup(engine.State, RunConstants.RelicWhiteBeastStatue);
+            RunNonCombatEffects.BeginEvent(engine.State, RunConstants.EventPunchOff);
+            engine.Step(1, -1, out _, out _, out _);
+            engine.Step(0, -1, out _, out _, out _);
+            engine.DebugResolveCombat();
+
+            // The room's own potion (forced) and the event's extra one.
+            Assert.NotEqual(0, engine.State.RewardPotion);
+            Assert.Single(engine.State.PendingPotionRewards);
+        }
+    }
+}
