@@ -82,6 +82,28 @@ def strip(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in TIMING_KEYS and k not in META_KEYS}
 
 
+def job_options(job_in, a: argparse.Namespace) -> dict:
+    """The job keys every server gets: the specs file's own idle_frames / stall_s, the defaults below,
+    then --stall-s / --idle-frames and every --job-opt KEY=JSON (last wins, so they can turn a default off).
+
+    Defaults: fast_reset, no_preload and the SPEED_PLAN step 2 patches (fast_patches, driver/Patches.cs);
+    --no-patches turns the patches off.
+    """
+    jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in ("idle_frames", "stall_s")}
+    jopts["fast_reset"] = not a.slow_reset
+    jopts["no_preload"] = not a.preload
+    for key in ("fast_patches",):
+        jopts[key] = not a.no_patches
+    if a.stall_s is not None:
+        jopts["stall_s"] = a.stall_s
+    if a.idle_frames is not None:
+        jopts["idle_frames"] = a.idle_frames
+    for kv in a.job_opt:
+        k, _, v = kv.partition("=")
+        jopts[k] = json.loads(v)
+    return jopts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--game", type=Path, required=True)
@@ -102,7 +124,9 @@ def main() -> int:
     ap.add_argument("--normal-priority", action="store_true", help="do not lower the games to BelowNormal")
     ap.add_argument("--no-install", action="store_true")
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
-    ap.add_argument("--no-patches", action="store_true", help="play without the step 2 speed patches (driver/Patches.cs)")
+    ap.add_argument("--no-patches", action="store_true",
+                    help="play without the speed patches (driver/Patches.cs)")
+    ap.add_argument("--no-dotnet-tuning", action="store_true", help="start the games without run_referee.DOTNET_ENV")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
     ap.add_argument("--job-opt", action="append", default=[], metavar="KEY=JSON",
                     help="extra job key for every server, e.g. profile=true (driver/Lean.cs); repeatable")
@@ -113,17 +137,7 @@ def main() -> int:
     job_in = json.loads(a.specs.read_text(encoding="utf-8"))
     runs = (job_in["runs"] if isinstance(job_in, dict) else job_in) * a.repeat
     total, n_act = len(runs), max(1, a.servers)
-    jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in ("idle_frames", "stall_s")}
-    jopts["fast_reset"] = not a.slow_reset
-    jopts["no_preload"] = not a.preload
-    jopts["fast_patches"] = not a.no_patches  # SPEED_PLAN step 2 (driver/Patches.cs)
-    if a.stall_s is not None:
-        jopts["stall_s"] = a.stall_s
-    if a.idle_frames is not None:
-        jopts["idle_frames"] = a.idle_frames
-    for kv in a.job_opt:
-        k, _, v = kv.partition("=")
-        jopts[k] = json.loads(v)
+    jopts = job_options(job_in, a)
     stall_s = int(jopts.get("stall_s", 20))
     max_restarts = a.max_restarts if a.max_restarts is not None else 3 * n_act + 3
 
@@ -173,7 +187,8 @@ def main() -> int:
         job.write_text(json.dumps({"out": str(outdir / f"{s.name}.jsonl").replace("\\", "/"),
                                    "inbox": str(inbox).replace("\\", "/"), **jopts}), encoding="utf-8")
         s.t_spawn = time.time()
-        s.proc, s.log = rr.launch(game, scratch, job, below_normal=not a.normal_priority)
+        s.proc, s.log = rr.launch(game, scratch, job, below_normal=not a.normal_priority,
+                                  dotnet_tuning=not a.no_dotnet_tuning)
         s.pid = s.proc.pid
         if spare:
             (inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
