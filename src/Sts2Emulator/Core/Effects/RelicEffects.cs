@@ -1260,6 +1260,11 @@ public static class RelicEffects
         //
         // The Strength is applied whether or not a card was found, because the game's
         // `PowerCmd.Apply` sits outside the null check.
+        //
+        // `ShuffleIfNecessary` comes first: with the draw pile spent the mittens exhaust the
+        // top of the RESHUFFLED discard, where the emulator found nothing to exhaust and let
+        // the hand draw do the shuffle afterwards.
+        CardEffects.ShuffleIfNecessary(state, rng ?? new Random(0));
         if (state.DrawPile.Count > 0)
         {
             int index = turnNumber == 1 ? state.DrawPile.FindIndex(card => !card.IsInnate()) : 0;

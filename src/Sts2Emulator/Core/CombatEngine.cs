@@ -1948,6 +1948,12 @@ public static class CombatEngine
         // ValidActions simply restricts to it until it is answered, as Tools of the Trade's
         // does.
         int foregone = BuffSystem.Get(state.PlayerBuffs, BuffId.ForegoneConclusion);
+        if (foregone > 0)
+        {
+            // `ForegoneConclusionPower.BeforeHandDraw` opens with `ShuffleIfNecessary`.
+            Effects.CardEffects.ShuffleIfNecessary(state, rng);
+        }
+
         if (foregone > 0 && state.DrawPile.Count > 0)
         {
             Effects.CardEffects.OpenDrawPileToHandSelection(state, foregone);
@@ -5353,10 +5359,7 @@ public static class CombatEngine
         var cards = new List<CardInstance>(count);
         for (int i = 0; i < count; i++)
         {
-            if (state.DrawPile.Count == 0 && state.DiscardPile.Count > 0)
-            {
-                Effects.CardEffects.ShuffleDiscardIntoDraw(state, rng);
-            }
+            Effects.CardEffects.ShuffleIfNecessary(state, rng);
 
             if (state.DrawPile.Count == 0)
             {

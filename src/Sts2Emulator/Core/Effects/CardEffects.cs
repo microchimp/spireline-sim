@@ -2608,10 +2608,7 @@ public static class CardEffects
                 break;
             }
 
-            if (state.DrawPile.Count == 0)
-            {
-                ShuffleDiscardIntoDraw(state, rng);
-            }
+            ShuffleIfNecessary(state, rng);
             if (state.DrawPile.Count == 0)
             {
                 break;
@@ -3631,6 +3628,20 @@ public static class CardEffects
 
     [ThreadStatic]
     private static long[]? _shuffleKeys;
+
+    /// <summary>
+    /// `CardPileCmd.ShuffleIfNecessary`: the discard pile comes back only when the DRAW pile is
+    /// empty and the discard has something in it -- a draw that finds both empty shuffles
+    /// nothing and fires no `AfterShuffle` (The Abacus, Biiig Hug). Draw, AutoPlayFromDrawPile
+    /// (Mayhem, Cascade, Distilled Chaos), Foregone Conclusion and Toasty Mittens all open with it.
+    /// </summary>
+    public static void ShuffleIfNecessary(CombatState state, Random rng)
+    {
+        if (state.DrawPile.Count == 0 && state.DiscardPile.Count > 0)
+        {
+            ShuffleDiscardIntoDraw(state, rng);
+        }
+    }
 
     public static void ShuffleDiscardIntoDraw(CombatState state, Random rng)
     {
