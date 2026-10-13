@@ -141,10 +141,18 @@ public static partial class Driver
                 }
                 catch (Exception ex)
                 {
-                    // The run may be left half-built: record the failure and let the dispatcher restart us.
-                    result = new JsonObject { ["error"] = ex.ToString() };
+                    // The run may be left half-built. This is the harness failing, not a fight result:
+                    // log it without an _id and leave the spec claimed, so the dispatcher restarts us and
+                    // re-queues the spec once like a crash (seen: a map-generation NullRef 1 in 240 starts).
+                    result = new JsonObject { ["_fatal"] = id, ["error"] = ex.ToString() };
                     fatal = true;
                 }
+            }
+
+            if (fatal)
+            {
+                AppendLine(outPath, result);
+                return 1;
             }
 
             result["_id"] = id;
@@ -153,10 +161,6 @@ public static partial class Driver
             AppendLine(outPath, result);
             File.Delete(taken);
             _done++;
-            if (fatal)
-            {
-                return 1;
-            }
 
             _status = "idle";
             Heartbeat();

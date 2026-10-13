@@ -3,7 +3,7 @@
 
     python referee/serve.py --game <game copy> --specs <job.json> [--servers 4] [--repeat 1] [--out results.json]
 
---specs is a job file (or a bare JSON list) whose "runs" are fight specs; its fast_reset / no_preload /
+--specs is a job file (or a bare JSON list) whose "runs" are fight specs; its fast_reset / no_preload / fast_patches /
 idle_frames / stall_s keys apply to every server. Each server is one headless game on its own scratch
 profile (same safety checks as run_referee.py: known sts2.dll sha256, override.cfg, APPDATA in scratch,
 no network connections, real profile untouched). The dispatcher writes one spec file per fight into
@@ -32,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import run_referee as rr  # noqa: E402
 
-TIMING_KEYS = {"timing_ms", "phase_ms"}  # per-run timing, never compared
+TIMING_KEYS = {"timing_ms", "phase_ms", "cost", "cost_setup"}  # per-run timing and CPU/frame cost, never compared
 META_KEYS = {"_id", "_pid", "_t"}  # added by the server to each result line
 
 
@@ -102,6 +102,7 @@ def main() -> int:
     ap.add_argument("--normal-priority", action="store_true", help="do not lower the games to BelowNormal")
     ap.add_argument("--no-install", action="store_true")
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
+    ap.add_argument("--no-patches", action="store_true", help="play without the step 2 speed patches (driver/Patches.cs)")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
     a = ap.parse_args()
 
@@ -113,6 +114,7 @@ def main() -> int:
     jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in ("idle_frames", "stall_s")}
     jopts["fast_reset"] = not a.slow_reset
     jopts["no_preload"] = not a.preload
+    jopts["fast_patches"] = not a.no_patches  # SPEED_PLAN step 2 (driver/Patches.cs)
     if a.stall_s is not None:
         jopts["stall_s"] = a.stall_s
     if a.idle_frames is not None:
@@ -191,7 +193,8 @@ def main() -> int:
             s.lines.append(r)
             rid = r.get("_id")
             if rid is None:
-                log(f"{s.name} server error: {str(r.get('error'))[:200]}")
+                where = f" on spec {r['_fatal']}" if r.get("_fatal") is not None else ""
+                log(f"{s.name} server error{where}: {str(r.get('error'))[:300]}")
             elif rid not in results:
                 results[rid] = r
                 arrival.append(r)
@@ -227,7 +230,7 @@ def main() -> int:
             else:
                 spec = runs[int(rid)]
                 results[rid] = {"seed": spec.get("seed"), "steps": [], "_id": rid,
-                                "error": "stalled: the game made no progress for this fight, twice"}
+                                "error": "stalled: the game failed this fight twice (no progress, crash or run-start exception)"}
                 arrival.append(results[rid])
                 taken.unlink()
                 lost.append(f"{rid} recorded as stalled")

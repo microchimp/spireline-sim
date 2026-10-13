@@ -72,52 +72,28 @@ def main() -> int:
     install(Path(GAME), ROOT / "referee" / "driver" / "bin" / "Release" / "net9.0")  # once, before any copy starts
 
     def play(name: str, subset: list) -> tuple[list, list]:
-        """Run `subset` on up to --parallel game copies; results in subset order."""
-        k = max(1, min(a.parallel, len(subset)))
-        procs = []
-        for i in range(k):
-            shard = JOBS / f"{name}.s{i}.json"
-            shard_out = JOBS / f"{name}.s{i}.out.json"
-            shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "fast_reset": True, "no_preload": True, "fast_patches": True,
-                                         "runs": subset[i::k]}), encoding="utf-8")
-            procs.append((i, shard_out, launch(shard, shard_out, f"{name}.s{i}")))
-        reports, shard_results = [], [[] for _ in range(k)]
-        for i, shard_out, p in procs:
-            text = p.communicate()[0]
-            reports.append(json.loads(text[text.index("{"):]) if "{" in text else {"exit": "no report", "tail": text[-500:]})
-            got = json.loads(shard_out.read_text(encoding="utf-8"))["results"] if shard_out.exists() else []
-            # Resume: a copy that stalled (watchdog) or died keeps its saved fights; the rest of
-            # its share runs again in a fresh session, up to two more times.
-            mine = subset[i::k]
-            for attempt in range(2):
-                if len(got) >= len(mine):
-                    break
-                # The fight that stalled is recorded, not retried (a hang there is deterministic).
-                got.append({"seed": mine[len(got)]["seed"], "steps": [],
-                            "error": "stalled: the game made no progress for 20 s during this fight"})
-                if len(got) >= len(mine):
-                    break
-                rest = mine[len(got):]
-                rjob, rout = JOBS / f"{name}.s{i}.r{attempt}.json", JOBS / f"{name}.s{i}.r{attempt}.out.json"
-                rjob.write_text(json.dumps({"out": str(rout).replace("\\", "/"), "fast_reset": True, "no_preload": True, "fast_patches": True, "runs": rest}),
-                                encoding="utf-8")
-                rtext = launch(rjob, rout, f"{name}.s{i}.r{attempt}").communicate()[0]
-                reports.append(json.loads(rtext[rtext.index("{"):]) if "{" in rtext else {"exit": "no report"})
-                got += json.loads(rout.read_text(encoding="utf-8"))["results"] if rout.exists() else []
-            shard_results[i] = got
-        merged = [None] * len(subset)
-        for i, res in enumerate(shard_results):
-            for j, r in enumerate(res):
-                merged[i + j * k] = r
-        merged = [r if r is not None else {"seed": subset[n]["seed"], "error": "shard produced no result", "steps": []}
-                  for n, r in enumerate(merged)]
-        return merged, reports
+        """Run `subset` on up to --parallel long-lived game servers (serve.py); results in subset order.
 
-    def launch(job: Path, out_path: Path, scratch: str):
-        return subprocess.Popen(
-            [sys.executable, str(ROOT / "referee" / "run_referee.py"), "--game", GAME, "--job", str(job), "--no-install",
-             "--timeout", str(a.timeout), "--scratch", str(Path(GAME).parent / "scratch" / scratch)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        serve.py boots each game once, feeds it fights from a shared inbox, restarts a server that
+        hangs or dies and re-queues its fight once; a fight that fails twice comes back as stalled.
+        """
+        spec, sout = JOBS / f"{name}.json", JOBS / f"{name}.out.json"
+        run_dir = Path(GAME).parent / "serve" / name
+        spec.write_text(json.dumps({"runs": subset}), encoding="utf-8")
+        p = subprocess.run([sys.executable, str(ROOT / "referee" / "serve.py"), "--game", GAME, "--specs", str(spec),
+                            "--servers", str(max(1, min(a.parallel, len(subset)))), "--out", str(sout),
+                            "--run-dir", str(run_dir), "--no-install"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=a.timeout, check=False)
+        text = p.stdout
+        try:  # serve.py's own summary.json (the stdout summary follows its log lines)
+            rep = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            rep = {"tail": text[-500:]}
+        rep.update(exit=p.returncode, seconds=rep.get("wall_s"))
+        got = json.loads(sout.read_text(encoding="utf-8"))["results"] if sout.exists() else []
+        merged = [got[n] if n < len(got) and got[n] else {"seed": r["seed"], "error": "server produced no result", "steps": []}
+                  for n, r in enumerate(subset)]
+        return merged, [rep]
 
     def replay_and_learn(results: list, tag: str) -> int:
         """Replay a wave in the emulator, fold it into coverage, return identical count."""
@@ -204,7 +180,7 @@ def main() -> int:
             idx = cv.first_divergence(g, e, nm)
             vt += (len(g["steps"]) if idx is None else idx) - 1
     minutes = max(1e-9, (t_end - t_start) / 60)
-    per_fight = [(r["timing_ms"]["play"] + r["timing_ms"]["reset"]) / 1000 for r in played if "timing_ms" in r]
+    per_fight = [r["s_per_fight_per_server"] for r in reports if r.get("s_per_fight_per_server")]
     stalls = sum(1 for r in merged if str(r.get("error", "")).startswith("stalled"))
     metrics = {
         "batch": a.name, "copies": a.parallel, "fights": len(merged), "verified": len(played),
