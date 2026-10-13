@@ -67,12 +67,17 @@ def main() -> int:
                                            "--timeout", str(a.timeout), "--below-normal"],
                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
             time.sleep(3)  # the first session installs the mod; the second then finds it in place
-        reports = [json.loads(_last_json(p)) for p in procs]
+        reports = [_report(p) for p in procs]
+        failed = []
         for r in reports:
-            print("session:", {k: r.get(k) for k in ("exit", "seconds", "network_connections", "real_profile_touched")})
-            if r.get("network_connections") or r.get("real_profile_touched"):
-                print("SAFETY CHECK FAILED: stopping")
+            print("session:", {k: r.get(k) for k in ("exit", "seconds", "network_connections", "real_profile_touched",
+                                                     "scratch")})
+            problem = session_problem(r)
+            if problem and problem.startswith("SAFETY"):
+                print(f"{problem}: stopping")
                 return 1
+            if problem:
+                failed.append(problem)
         merged = [None] * len(specs)
         for p in range(len(procs)):
             path = JOBS / f"{a.name}.p{p}.out.json"
@@ -82,6 +87,13 @@ def main() -> int:
         merged = [r if r is not None else {"seed": specs[i]["seed"], "error": "no result (session ended)"}
                   for i, r in enumerate(merged)]
         out.write_text(json.dumps({"results": merged}), encoding="utf-8")
+        if failed:
+            # A crashed or timed-out session is reported and the batch stops here (RUNBOOK: stop,
+            # report, do not retry blindly). Its results so far are in the merged file, the runs it
+            # never wrote marked "no result"; --no-game compares them deliberately.
+            for problem in failed:
+                print(problem)
+            return 1
     game_s = time.time() - t0
     emu = JOBS / f"{a.name}.emu.json"
     dll = ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"
@@ -95,11 +107,27 @@ def main() -> int:
     return cmp.returncode
 
 
-def _last_json(p: subprocess.Popen) -> str:
-    """run_referee.py prints its report as the last JSON object on stdout."""
+def _report(p: subprocess.Popen) -> dict:
+    """run_referee.py prints its report as the last JSON object on stdout; {} when there is none."""
     text = p.communicate()[0]
     start = text.rfind("{\n")
-    return text[start:] if start >= 0 else "{}"
+    try:
+        r = json.loads(text[start:]) if start >= 0 else {}
+    except ValueError:
+        r = {}
+    return r if isinstance(r, dict) else {}
+
+
+def session_problem(r: dict) -> str | None:
+    """Why a session's report is not clean, or None. A missing or unreadable report, or one whose
+    safety fields are absent, is a safety failure: nothing shows the session stayed offline and off
+    the real profile. A non-zero exit (a crash, a timeout) is a failed session."""
+    if r.get("network_connections") != [] or r.get("real_profile_touched") is not False:
+        return (f"SAFETY CHECK FAILED (network_connections {r.get('network_connections', 'missing')}, "
+                f"real_profile_touched {r.get('real_profile_touched', 'missing')})")
+    if r.get("exit") != 0:
+        return f"SESSION FAILED: exit {r.get('exit', 'missing')}, scratch {r.get('scratch')}"
+    return None
 
 
 if __name__ == "__main__":

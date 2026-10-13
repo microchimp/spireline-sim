@@ -64,10 +64,11 @@ Write-up: seed, step, the two states (diff lines), what the game code does, what
 
 ## Current coverage of the driver
 
-Handles: Neow choice, card-choice screens, rewards screens (card rewards answered first card),
-map travel to the first row-1 monster room, one fight with seeded random legal play, Instant fast mode.
-Also nested reward screens (Neow's Bones). Not yet: potions, events beyond Neow, shops, rest sites, fights after the first,
-characters other than the Ironclad (the emulator's run engine starts every run as the Ironclad).
+Fight mode (`"kind": "combat"`): Neow choice, card-choice screens, rewards screens (card rewards
+answered first card), nested reward screens (Neow's Bones), map travel to the first row-1 monster
+room, one fight with seeded random legal play, Instant fast mode. Whole runs (`"kind": "run"`): see
+"Whole runs" below. Characters other than the Ironclad: not yet (the emulator's run engine starts
+every run as the Ironclad).
 
 ## Table check (content tables vs the game)
 
@@ -109,25 +110,51 @@ python -m tools.fidelity.reanchor_compare '<out.json>' <name>.reanchor.json [--a
 
 One spec plays a whole A10 run in the game with seeded random legal choices on every screen,
 through the game's own synchronizers and commands (`driver/RunPlay.cs`, spec `{"kind": "run", "seed",
-"chooser_seed", "buff_max_hp", "avoid", "stop_after_act", "max_decisions"}`), and records the run state
-(the game's own save, minus timestamps, drawings, unlocks and the map) after every decision, with the offer
-on screen and the choice by id. Fights inside the run use the fight loop and are recorded as fight steps.
+"chooser_seed", "buff_max_hp", "avoid", "stop_after_act", "max_decisions", "potions"}`), and records the
+run state (the game's own save, minus timestamps, drawings, unlocks and the map) after every decision,
+with the offer on screen and the choice by id. Fights inside the run use the fight loop and are
+recorded as fight steps.
 
 ```
-python referee/runs.py --name <name> --runs 10 --start <n> [--procs 2] [--buff 2000] [--stop-after-act 3]
+python referee/runs.py --name <name> --runs 10 --start <n> [--procs 2] [--buff 2000] [--stop-after-act 3] [--potions]
 python referee/runs.py --name <name> --no-game        # replay and compare again after an engine change
 ```
 
-It runs `run_referee.py` sessions (all their safety checks), then `EmuDump run` (tools/emudump/RunReplay.cs:
-each decision applied as the emulator's own actions, looked up by id) and
-`python -m tools.fidelity.run_compare2 run` (offers, rooms and the run snapshot per decision, through
-`tools/fidelity/run_snapshot.py`). It prints, per run, the first decision that differs and the fields, and a
-summary by component. Fights are compared step by step as the fight corpus is, and their OUTCOME is
-anchored: where a fight diverged, the replay puts the emulator's holdings, RNG counters and reward screen
-where the game's are (`RunReplay.Anchor`), so the screens after it are still compared. The fight shows up
-under "fights whose outcome had to be anchored". `EmuDump runstart` + `run_compare2 start` compare run
-starts (all three acts' room sets, grab bags, odds, counters) without playing.
+It runs `run_referee.py` sessions and stops on a session report that is missing, unreadable or lacks
+`"network_connections": []` and `"real_profile_touched": false`, and on a non-zero exit (a crash or a
+timeout: reported with its scratch folder; the merged results are written, `--no-game` compares them).
+Then `EmuDump run` (tools/emudump/RunReplay.cs: each decision applied as the emulator's own actions,
+looked up by id) and `python -m tools.fidelity.run_compare2 run`.
 
-Driver notes: `?` points are entered in Fast mode (PunchOff's endless animation loop freezes the game in
-Instant mode), the chest opens through `NTreasureRoom.OpenChest`, the Crystal Sphere and the Fake Merchant
-end the run (`unsupported_event:`), potions are not used yet.
+What the comparison does, per run:
+
+- The first divergence, fights included: a fight step that differs (fight_compare's views), a replay
+  that ends at another step than the game's fight, or a fight identical at every step whose OUTCOME
+  differs. The outcome is the emulator's own run snapshot right after the fight, before any anchoring
+  (`outcome_snap`), against the game's post-fight save, and its reward screen (`outcome_offer`)
+  against the game's next rewards offer.
+- Then every fight is anchored: the replay puts the emulator's holdings, odds, RNG counters, grab
+  bags, relic counters, wax relics, card properties and reward screen where the game's are
+  (`RunReplay.Anchor`, `ForceRewardScreen`), so the screens after it are still compared. The first
+  divergence outside fights is printed too. A difference in the snapshot after anchoring is
+  `combat: not anchored -> <field>`: something the anchoring does not reset.
+- At every decision: replay errors, the offer, the room entered (its RoomType and its id), the event
+  options enabled at every index and the first page's option count, a new act's map, and the run
+  snapshot (`run_snapshot.ORDER`, including relic counters in the game's units: `RunSnap.RelicProps`).
+- Never taken as equal: what is not compared is printed with every comparison. `run_snapshot.NOT_COMPARED`
+  lists the save's fields left out and why (among them event option identity: the emulator has no
+  option ids, and melted wax relics, which the emulator drops), and every saved relic or card property
+  a snapshot carries that the emulator does not export is named per run (e.g. Spoils Map's
+  `SpoilsActIndex`, Touch of Orobas' and Dusty Tome's pickup records, Byrdpip's skin).
+
+To compare a new relic counter, add it to `RunSnap.RelicProps` (getter and setter in the game's units;
+`Absent` for a `SaveIfNotTypeDefault` property, mirrored in `run_snapshot.SAVED_IF_NOT_DEFAULT`; a
+counter the game reads modulo n goes in `run_snapshot.PROP_MOD`).
+
+`EmuDump runstart` + `run_compare2 start` compare run starts (all three acts' room sets, grab bags,
+odds, counters) without playing.
+
+Driver notes: `?` points are entered in Fast mode (PunchOff's endless animation loop freezes the game
+in Instant mode), the chest opens through `NTreasureRoom.OpenChest`, the Crystal Sphere is played with
+`SetTool` and `CellClicked`, the Fake Merchant's stall is bought from, potions are drunk in fights with
+spec `"potions": true` (never outside fights: the emulator has no action for that).
