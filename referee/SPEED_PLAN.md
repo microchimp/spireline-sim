@@ -79,6 +79,7 @@ How the fight times were estimated:
 - Pass: a card play takes 0 frames and an end turn at most 1, the gate holds over 300 fights, there are no new exceptions, and CPU per fight is at most 0.4 s.
 
 - Measured (same runs): a card play takes 0 frames plus the settle's 1, an end turn 2. Frames per fight 46 (21 of them setup), s/fight ~1.1, CPU ~1.1 s per fight (was ~1.7 s); with `sleep_usec: 0` ~1.0 s/fight. CPU is now real work: ~0.6 s setup (start run, Neow, room) and ~25 ms main thread per action (card nodes, VFX). Not the 0.4 s target; the next levers are step 5 and fewer VFX nodes.
+- Left on real time: Rolling Boulder's visual moves per frame and then waits 1 s of game time (NRollingBoulderVfx.cs ~:240-293), about 1.5 s per end turn in ~3% of fights. After 20 busy frames the settle falls back to stock pacing, so this costs ~200 frames instead of ~2000.
 - `sleep_usec: 0` is only safe with the flag settle: at ~0.5 ms frames the old six-frame rule snapshots mid-draw (16 of 20 fights differ).
 
 **5. Chain fights in one run (6 h).**

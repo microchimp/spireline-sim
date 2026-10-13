@@ -159,12 +159,27 @@ public static partial class Driver
         var clock = System.Diagnostics.Stopwatch.StartNew();
         string? lastSig = null;
         bool first = true;
-        int waited = 0;
+        int waited = 0, busyRun = 0;
+        double nextReport = 5;
+        int pacing = OS.LowProcessorUsageModeSleepUsec;
+        try
+        {
         while (clock.Elapsed.TotalSeconds < maxSeconds)
         {
-            if (++waited % 300 == 0)
+            waited++;
+            if (clock.Elapsed.TotalSeconds > nextReport)
             {
+                nextReport += 5;
                 GD.Print($"[referee] settle still waiting after {waited} frames: {TraceLine(me, FlagsSettled(me), "")}");
+            }
+
+            // With awaited tweens finished at once, a long busy run is game code waiting on time
+            // (e.g. the Rolling Boulder visual rolls, then waits 1 s: NRollingBoulderVfx.cs ~:240-293).
+            // Spinning unpadded frames through it burns CPU, so fall back to the stock frame
+            // pacing until the step settles. Pacing never decides the settle, only its cost.
+            if (busyRun == SlowPacingAfter && pacing < StockSleepUsec)
+            {
+                OS.LowProcessorUsageModeSleepUsec = StockSleepUsec;
             }
 
             if (!first)
@@ -183,9 +198,18 @@ public static partial class Driver
                 return;
             }
 
+            busyRun = ok ? 0 : busyRun + 1;
             lastSig = ok ? sig : null;
         }
+        }
+        finally
+        {
+            OS.LowProcessorUsageModeSleepUsec = pacing;
+        }
     }
+
+    /// <summary>Busy frames in a row after which a settle waits at stock frame pacing.</summary>
+    private const int SlowPacingAfter = 20;
 
     private static string PlayableSig(Player me)
     {
