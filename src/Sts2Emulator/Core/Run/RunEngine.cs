@@ -2263,12 +2263,31 @@ public sealed class RunEngine
             && !RunRewardGenerator.HasPendingRewards(State)
         )
         {
-            State.EventAwaitingProceed = false;
-            State.EventId = RunConstants.EventResultPending;
-            State.Phase = RunPhase.Event;
+            ReturnFromEventRewards();
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// The event's rewards screen is answered: back to its result page, or -- for the one event
+    /// that keeps going after <c>RewardsCmd.OfferCustom</c> (the Endless Conveyor's potion) -- to
+    /// its options with the belt turned, since the dish is rolled once the await returns.
+    /// </summary>
+    private void ReturnFromEventRewards()
+    {
+        State.EventAwaitingProceed = false;
+        if (State.EventResumesAfterRewards)
+        {
+            State.EventResumesAfterRewards = false;
+            RunNonCombatEffects.RollNextConveyorDish(State);
+        }
+        else
+        {
+            State.EventId = RunConstants.EventResultPending;
+        }
+
+        State.Phase = RunPhase.Event;
     }
 
     /// <summary>
@@ -2329,9 +2348,7 @@ public sealed class RunEngine
 
         if (State.EventAwaitingProceed)
         {
-            State.EventAwaitingProceed = false;
-            State.EventId = RunConstants.EventResultPending;
-            State.Phase = RunPhase.Event;
+            ReturnFromEventRewards();
             return 0;
         }
 
@@ -3460,11 +3477,20 @@ public sealed class RunEngine
                     }
 
                     int dish = RunNonCombatEffects.EndlessConveyorDish(State);
-                    State.Gold -= RunConstants.ConveyorGrabCost;
+                    // `GrabSomethingOffTheBelt` charges the 40 unless the dish is the Golden
+                    // Fysh, which is free and pays 75.
+                    if (dish != RunNonCombatEffects.DishGoldenFysh)
+                    {
+                        State.Gold -= RunConstants.ConveyorGrabCost;
+                    }
+
+                    State.EventPage++;
+                    // The dish's action runs to its end -- the transform or the potion screen
+                    // included, both awaited -- and only then does RollDish draw the next one,
+                    // off the same event stream. Rolling first put the transform's draw after
+                    // the roll's (real runs: the Jelly Liver turned a Strike into another card).
                     if (dish == RunNonCombatEffects.DishJellyLiver)
                     {
-                        RunNonCombatEffects.RollNextConveyorDish(State);
-                        State.EventPage++;
                         if (
                             RunNonCombatEffects.BeginDeckSelection(
                                 State,
@@ -3479,12 +3505,24 @@ public sealed class RunEngine
                             return 0;
                         }
 
+                        RunNonCombatEffects.RollNextConveyorDish(State);
+                        return 0;
+                    }
+
+                    if (dish == RunNonCombatEffects.DishSuspiciousCondiment)
+                    {
+                        // `RewardsCmd.OfferCustom(PotionReward)`: the potion is on a rewards
+                        // screen, and the belt turns when it is answered.
+                        RunNonCombatEffects.ApplyEndlessConveyorDish(State, dish);
+                        int potion = State.PendingPotionRewards[^1];
+                        State.PendingPotionRewards.RemoveAt(State.PendingPotionRewards.Count - 1);
+                        OfferPotionRewards(potion);
+                        State.EventResumesAfterRewards = true;
                         return 0;
                     }
 
                     RunNonCombatEffects.ApplyEndlessConveyorDish(State, dish);
                     RunNonCombatEffects.RollNextConveyorDish(State);
-                    State.EventPage++;
                     return 0;
                 }
 
@@ -5360,6 +5398,11 @@ public sealed class RunEngine
                     if (!returnsToEvent && returnTo != SelectionReturn.EventOptions)
                     {
                         State.EventId = RunConstants.EventResultPending;
+                    }
+                    else if (State.EventId == RunConstants.EventEndlessConveyor)
+                    {
+                        // The Jelly Liver's transform is done; now the belt turns.
+                        RunNonCombatEffects.RollNextConveyorDish(State);
                     }
 
                     State.Phase = RunPhase.Event;

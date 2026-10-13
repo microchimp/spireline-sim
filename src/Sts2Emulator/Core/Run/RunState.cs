@@ -346,6 +346,13 @@ public sealed class RunState
     /// this and events did not, which cost the run one Proceed every time.
     /// </remarks>
     public bool EventAwaitingProceed;
+
+    /// <summary>
+    /// The rewards screen the event offered hands back to the event's own options, not to its
+    /// result page: the Endless Conveyor's Suspicious Condiment awaits the potion screen and then
+    /// rolls the next dish. Always set together with <see cref="EventAwaitingProceed" />.
+    /// </summary>
+    public bool EventResumesAfterRewards;
     public bool ReturnToRewardScreenAfterCardReward;
     public int[] MapNodeTypes = new int[RunConstants.MapChoices];
     public int[] MapChoices = new int[RunConstants.MapChoices];

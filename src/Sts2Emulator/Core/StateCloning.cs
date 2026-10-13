@@ -473,6 +473,7 @@ public static class StateCloning
             PendingOfferHooked = state.PendingOfferHooked,
             PendingOfferOptional = state.PendingOfferOptional,
             EventPage = state.EventPage,
+            EventResumesAfterRewards = state.EventResumesAfterRewards,
             CrystalSphere = state.CrystalSphere?.Clone(),
             CrystalSphereRng = state.CrystalSphereRng?.Clone(),
             EventRngStream = state.EventRngStream?.Clone(),
