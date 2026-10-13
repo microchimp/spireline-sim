@@ -50,13 +50,14 @@ public static partial class Driver
         try
         {
             var opts = JsonNode.Parse(File.ReadAllText(job));
-            if ((bool?)opts?["no_preload"] == true)
+            bool normal = (bool?)opts?["normal_settings"] == true;  // NormalSettings: no speed change
+            if ((bool?)opts?["no_preload"] == true && !normal)
             {
                 MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
             }
 
             // Before the menu starts its music, so no sound is ever started (Patches.Silence).
-            if ((bool?)opts?["silent"] == true)
+            if ((bool?)opts?["silent"] == true && !normal)
             {
                 Patches.Silence();
             }
@@ -76,6 +77,15 @@ public static partial class Driver
 
     /// <summary>Job "health": true adds leak and memory counters to each fight's cost (always on nodeless).</summary>
     private static bool _health;
+
+    /// <summary>
+    /// Job key "normal_settings": the game exactly as a player gets it on a fresh profile. None of the
+    /// speed changes: no Instant fast mode (the profile's default, Normal, stays), no Engine.MaxFps
+    /// change, no fast_patches, silent, still_visuals, fast_tweens or sleep_usec, no no_preload, no
+    /// fast_reset (ReturnToMainMenu between fights); the settle rule is still the job's.
+    /// Waits are longer because animations play. For checking the speed settings change no outcome.
+    /// </summary>
+    internal static bool NormalSettings;
 
     /// <summary>Fights finished in this process, for the watchdog's message.</summary>
     private static int _done;
@@ -161,7 +171,8 @@ public static partial class Driver
         var results = new JsonArray();
         // Watchdog (Watchdog.cs): if the game stops making progress for stall_s seconds while it keeps
         // running frames, or stops running frames, it is stuck; keep what is saved and end the process.
-        StartWatchdog(((int?)job["stall_s"] ?? 20) * 1000);
+        NormalSettings = (bool?)job["normal_settings"] == true;
+        StartWatchdog(((int?)job["stall_s"] ?? (NormalSettings ? 180 : 20)) * 1000);
         int exitCode = 0;
         try
         {
@@ -173,9 +184,19 @@ public static partial class Driver
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             }
 
-            // Player-facing speed settings only: the game's own "Instant" fast mode skips animation
-            // waits, and the frame cap only paces rendering, which is off anyway.
-            SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
+            if (!NormalSettings)
+            {
+                // Player-facing speed settings only: the game's own "Instant" fast mode skips animation
+                // waits, and the frame cap only paces rendering, which is off anyway.
+                SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
+            }
+            else
+            {
+                // Animations play: give the game time to settle between steps.
+                IdleFrames = 60;
+                IdleTimeoutS = 60;
+            }
+
             IdleFrames = (double?)job["idle_frames"] ?? IdleFrames;
             IdleTimeoutS = (double?)job["idle_timeout_s"] ?? IdleTimeoutS;
             SettleMode = (string?)job["settle"] ?? SettleMode;
@@ -184,7 +205,7 @@ public static partial class Driver
             StepCosts = (bool?)job["step_costs"] ?? false;
             IdleProbe = (int?)job["idle_probe"] ?? 0;
             CheckSettleFields();  // a game without the flag settle's field ends the job here, not every fight
-            if (job["sleep_usec"] is { } sleep)
+            if (job["sleep_usec"] is { } sleep && !NormalSettings)
             {
                 // Headless, the main loop pads every frame to this many microseconds (Godot's
                 // OS::add_frame_delay applies the low-processor sleep when no window can draw).
@@ -197,19 +218,22 @@ public static partial class Driver
                 Patches.ApplyTrace();
             }
 
-            if ((bool?)job["fast_tweens"] == true)
+            if ((bool?)job["fast_tweens"] == true && !NormalSettings)
             {
                 Patches.ApplyFastTweens();
             }
             // Tutorials off, as a player can set it: first-time popups (FTUE) on a fresh profile
-            // open modals that nothing headless answers.
+            // open modals that nothing headless answers. Kept with normal_settings too: the flag is
+            // only read by ProgressSaveManager.SeenFtue, whose callers choose which UI node to show
+            // (e.g. CombatManager's start banner or NCombatRulesFtue, CardPileCmd.ShuffleFtueCheck's
+            // confirm modal); no RNG draw or game state depends on it.
             SaveManager.Instance.Progress.EnableFtues = false;
-            if ((bool?)job["fast_patches"] == true)
+            if ((bool?)job["fast_patches"] == true && !NormalSettings)
             {
                 Patches.Apply();
             }
 
-            if ((bool?)job["still_visuals"] == true)
+            if ((bool?)job["still_visuals"] == true && !NormalSettings)
             {
                 Patches.StillVisuals(tree);
             }
@@ -222,16 +246,19 @@ public static partial class Driver
             // The game's own preloader switch: background asset sessions only warm a cache,
             // and back-to-back runs (worse with many copies) hang waiting on one. Off, assets
             // load on demand.
-            if ((bool?)job["no_preload"] == true)
+            if ((bool?)job["no_preload"] == true && !NormalSettings)
             {
                 MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
             }
-            Engine.MaxFps = 0;
+            if (!NormalSettings)
+            {
+                Engine.MaxFps = 0;
+            }
             await WaitForStartupPreload(tree);
             await Nodeless.Prepare();
 
             ArmWatchdog();
-            bool fastReset = (bool?)job["fast_reset"] == true;
+            bool fastReset = (bool?)job["fast_reset"] == true && !NormalSettings;
             if (job["inbox"] != null)
             {
                 exitCode = await ServeInbox(job, outPath, fastReset);
