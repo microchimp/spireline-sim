@@ -746,6 +746,87 @@ public static partial class RunRewardGenerator
         return false;
     }
 
+    /// <summary>
+    /// <c>CardReward.OnRelicObtained</c>: a CardReward built from options subscribes to its
+    /// player's <c>RelicObtained</c> as it is constructed and stays subscribed until it is chosen
+    /// from or skipped. A relic obtained meanwhile -- <c>AddRelicInternal</c>, before its
+    /// <c>AfterObtained</c> -- runs its card-reward hooks over the options already waiting.
+    /// </summary>
+    /// <remarks>
+    /// So an egg claimed off a rewards screen upgrades the card reward still on that screen, the
+    /// elite's relic above its cards being the usual case. The final deck was already right
+    /// (<c>TryModifyCardBeingAddedToDeck</c> upgrades on arrival); the OFFER was not. The waiting
+    /// rewards are the screen's own (<see cref="RunState.RewardCardPending" />, with Lasting
+    /// Candy's fourth option, which is one of its options) and the queued ones, The Hunt's
+    /// included. A reward not yet rolled -- Prayer Wheel's, say -- is rolled with the relic
+    /// already held, which gives the same options.
+    ///
+    /// <para>
+    /// Only the eggs are modelled: they are the one late hook whose relic can arrive while a card
+    /// reward waits. Lava Lamp, Wing Charm and Fresnel Lens are shop or event relics, bought or
+    /// found where no card reward is waiting; Silver Crucible, Glitter and Silken Tress are
+    /// ancients, claimed off Neow's Bones' screen, which holds none. The egg rule itself is
+    /// <see cref="RunNonCombatEffects.UpgradedByEggs" />.
+    /// </para>
+    /// </remarks>
+    public static void ApplyObtainedRelicToWaitingCardRewards(RunState state, int relicId)
+    {
+        if (
+            relicId
+            is not (
+                RunConstants.RelicMoltenEgg
+                or RunConstants.RelicToxicEgg
+                or RunConstants.RelicFrozenEgg
+            )
+        )
+        {
+            return;
+        }
+
+        if (state.RewardCardPending)
+        {
+            for (int i = 0; i < state.RewardCards.Length; i++)
+            {
+                if (state.RewardCards[i] != 0)
+                {
+                    state.RewardUpgraded[i] = RunNonCombatEffects
+                        .UpgradedByEggs(
+                            state,
+                            new CardInstance(state.RewardCards[i], state.RewardUpgraded[i])
+                        )
+                        .Upgraded;
+                }
+            }
+
+            if (state.LastingCandyRewardCard != 0)
+            {
+                state.LastingCandyRewardUpgraded = RunNonCombatEffects
+                    .UpgradedByEggs(
+                        state,
+                        new CardInstance(
+                            state.LastingCandyRewardCard,
+                            state.LastingCandyRewardUpgraded
+                        )
+                    )
+                    .Upgraded;
+            }
+        }
+
+        for (int offer = 0; offer < state.PendingCardOffers.Count; offer++)
+        {
+            var waiting = state.PendingCardOffers[offer];
+            var upgraded = (bool[])waiting.Upgraded.Clone();
+            for (int i = 0; i < waiting.Cards.Length && i < upgraded.Length; i++)
+            {
+                upgraded[i] = RunNonCombatEffects
+                    .UpgradedByEggs(state, new CardInstance(waiting.Cards[i], upgraded[i]))
+                    .Upgraded;
+            }
+
+            state.PendingCardOffers[offer] = new CardOffer(waiting.Cards, upgraded);
+        }
+    }
+
     public static void ClearRewardScreen(RunState state)
     {
         state.RewardGold = 0;
@@ -1136,7 +1217,12 @@ public static partial class RunRewardGenerator
         // the populated screen and skips any Power already on it.
         if (!isReroll)
         {
-            AddLastingCandyPowerOption(state, pool, blacklist);
+            AddLastingCandyPowerOption(
+                state,
+                pool,
+                blacklist,
+                silverCrucibleUpgrade || lavaLampUpgrade
+            );
         }
 
         // `Driftwood.TryModifyRewardsLate` sets `CanReroll` on the screen it just built.
@@ -1162,9 +1248,17 @@ public static partial class RunRewardGenerator
     /// number here would move every reward in the rest of the run -- E451's lesson.
     ///
     /// `CardCreationSource.Other` with `NoModifyHooks | NoCardPoolModifications`, so the
-    /// relics that widen or enchant a reward do not get a second bite at this one.
+    /// relics that widen or enchant a reward do not get a second bite at the card as it is
+    /// BUILT. They do get one on the list afterwards: the candy adds it to the options in the
+    /// hook's first pass, and the late pass (Lava Lamp, Silver Crucible, the eggs) then runs over
+    /// all four.
     /// </remarks>
-    private static void AddLastingCandyPowerOption(RunState state, int[] pool, List<int> blacklist)
+    private static void AddLastingCandyPowerOption(
+        RunState state,
+        int[] pool,
+        List<int> blacklist,
+        bool upgradedByLateHooks
+    )
     {
         if (!Effects.RelicEffects.LastingCandyOffersAPower(state))
         {
@@ -1192,7 +1286,16 @@ public static partial class RunRewardGenerator
         int rarity = RollRewardCardRarity(state);
         int cardId = ChooseCardWithRarity(powers, rarity, blacklist, state.PlayerRng.Rewards);
         state.LastingCandyRewardCard = cardId;
-        state.LastingCandyRewardUpgraded = RollCardUpgrade(state, cardId, state.PlayerRng.Rewards);
+        bool rolledUpgrade = RollCardUpgrade(state, cardId, state.PlayerRng.Rewards);
+        // The candy's card joins the list in the hook's FIRST pass, and the late pass then runs
+        // over all four: Lava Lamp, Silver Crucible and the eggs upgrade it like the other three.
+        state.LastingCandyRewardUpgraded =
+            rolledUpgrade
+            || (
+                upgradedByLateHooks
+                && RunConstants.IsRunCardUpgradable(new CardInstance(cardId, false))
+            )
+            || RunNonCombatEffects.UpgradedByEggs(state, new CardInstance(cardId, false)).Upgraded;
     }
 
     /// <summary>

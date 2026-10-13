@@ -329,6 +329,11 @@ public static class RunNonCombatEffects
         {
             state.Relics.Add(new RelicInstance(relicId, StartingRelicCounter(relicId)));
 
+            // `Player.AddRelicInternal` raises `RelicObtained` before `AfterObtained` runs, and
+            // every CardReward still waiting listens: an egg taken off the same rewards screen
+            // upgrades the card reward that has not been opened yet.
+            RunRewardGenerator.ApplyObtainedRelicToWaitingCardRewards(state, relicId);
+
             // `PotionBelt.AfterObtained` -- GainMaxPotionCount(2). Inside the not-already-
             // held branch so a duplicate pickup cannot pay twice, which is the same reason
             // the strike-from-the-grab-bag below sits here.
