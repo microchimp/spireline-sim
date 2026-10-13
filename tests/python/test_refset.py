@@ -412,6 +412,13 @@ class GameLog(unittest.TestCase):
         self.assertIn("MadScience", errs[2][0][1])
         self.assertNotIn(1, errs)
 
+    def test_the_top_bar_namespace_is_visual_too(self) -> None:
+        log = ["[referee] neow options [] choosing 0", "[ERROR] System.ObjectDisposedException: Cannot access a disposed object.",
+               "   at MegaCrit.sts2.Core.Nodes.TopBar.NTopBarGold.UpdateGoldAnim()"]
+        with tempfile.TemporaryDirectory() as d:
+            errs = refset.log_errors(self.run_dir(d, [0], log))
+        self.assertIs(errs[0][0][2], True)
+
     def test_a_log_that_cannot_be_cut_is_not_a_game_error(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             errs = refset.log_errors(self.run_dir(d, [0, 1, 2], self.LOG))

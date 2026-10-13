@@ -1166,7 +1166,8 @@ def log_errors(run_dir: Path) -> dict[int, list]:
                     # The same fault as the previous fight's on this server is that fight's, leaking on (a faulted
                     # turn task is not cleared by the fast reset): this fight is retried, not excluded.
                     sig = (x[8:140], frame[:160])
-                    errs.append([*sig, frame.startswith("MegaCrit.Sts2.Core.Nodes.") or ("leaked" if sig in before else False)])
+                    # (The game spells one Nodes namespace "MegaCrit.sts2.Core.Nodes.TopBar": compare without case.)
+                    errs.append([*sig, frame.lower().startswith("megacrit.sts2.core.nodes.") or ("leaked" if sig in before else False)])
             before = {(x[0], x[1]) for x in errs} | (before if any(x[2] == "leaked" for x in errs) else set())
             if errs and i is not None:
                 out[i] = errs
@@ -1583,6 +1584,15 @@ def cmd_rejudge(a) -> int:
               "summary": summarize(index), "excluded": [r for r in index if "excluded" in r], "index": index,
               "changed": changed}
     (rdir / "record.rejudged.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+    if a.write:
+        # The record itself, judged again: references and record.json rewritten from the same passes (the first
+        # judgement kept as record.first.json), the stamp naming the rejudging commit.
+        first = rdir / "record.first.json"
+        if not first.exists():
+            first.write_text(json.dumps(old, indent=1), encoding="utf-8")
+        parts = list(dict.fromkeys(e["part"] for e in entries))
+        write_record(rdir, a, parts, entries, judged, retried, stamp, old.get("minutes", 0), old.get("passes", {}), None)
+        print(f"[refset] {rdir / 'record.json'} and its references rewritten")
     print(f"[refset] {rdir.name} judged again: {old['kept']} -> {report['kept']} kept of {len(entries)}; {len(changed)} verdicts changed")
     for c in changed:
         print(f"  {c['id']}: was {c['was'] or 'kept'} | now {c['now'] or 'kept'}"[:300])
@@ -1629,6 +1639,7 @@ def main() -> int:
     j = sub.add_parser("rejudge", help="judge a record directory again from its saved passes (no game)")
     j.add_argument("--version", default="v2")
     j.add_argument("--record", required=True, help="the record directory (record/<subset>-<label>)")
+    j.add_argument("--write", action="store_true", help="rewrite the record's references and record.json from the new judgement")
     a = ap.parse_args()
     if a.cmd == "record" and a.servers > 3:
         ap.error("at most 3 game processes")
