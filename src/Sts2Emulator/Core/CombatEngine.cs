@@ -2804,6 +2804,7 @@ public static class CombatEngine
                     // In place: `CardCmd.TransformTo` replaces the card where it sits, so
                     // the pile order the rest of the turn draws from is unchanged.
                     state.DrawPile[index] = new CardInstance(446, false); // Soul
+                    Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
                 break;
@@ -3061,6 +3062,7 @@ public static class CombatEngine
                     // `CardCmd.Transform(chosen, new MinionStrike)` -- in place, and the new
                     // card is upgraded when the transforming card was.
                     state.Hand[index] = new CardInstance(310, selection.GeneratedUpgraded);
+                    Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
                 break;
@@ -3069,6 +3071,7 @@ public static class CombatEngine
                 if (index < state.Hand.Count)
                 {
                     state.Hand[index] = new CardInstance(309, selection.GeneratedUpgraded);
+                    Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
                 // `CardSelectorPrefs(prompt, 0, 999999999)`: any number, so the screen comes
@@ -3105,6 +3108,7 @@ public static class CombatEngine
                 if (index < state.DrawPile.Count)
                 {
                     state.DrawPile[index] = new CardInstance(308, selection.GeneratedUpgraded);
+                    Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
                 if (selection.Amount > 1 && state.DrawPile.Count > 0)

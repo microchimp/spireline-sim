@@ -592,6 +592,7 @@ public static class CardEffects
                     if (GeneratedData.Cards.Get(handCard.DefId).Type == CardType.Attack)
                     {
                         state.Hand[i] = new CardInstance(IC.GiantRock, upgraded);
+                        NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                     }
                 }
                 break;
@@ -2767,6 +2768,10 @@ public static class CardEffects
     /// owner Strength for each one.
     /// </summary>
     /// <remarks>
+    /// `CardCmd.Transform` in combat records its replacement the same way (CardGenerated, then
+    /// AfterCardGeneratedForCombat), so every transform in combat calls this too: Entropy,
+    /// Seance, Begone, Charge, Guards, Primal Force and Compact.
+    ///
     /// Called from each of the emulator's generation helpers rather than from one place,
     /// because card generation is not a single chokepoint here: Statuses go through
     /// AddGeneratedStatusToDiscard, Souls through AddSoulsToDrawPile, and the rest through
@@ -9002,6 +9007,7 @@ public static class CardEffects
             if (GeneratedData.Cards.Get(state.Hand[i].DefId).Type == CardType.Status)
             {
                 state.Hand[i] = new CardInstance(209, upgraded);
+                NoteGeneratedCard(state); // `CardCmd.Transform` in combat
             }
         }
     }
