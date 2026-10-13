@@ -380,3 +380,22 @@ dotnet tools/emudump/bin/Release/net9.0/EmuDump.dll meta <out.json> --relations 
 - A relation that fails is read before it is trusted: some cards read the very thing a relation changes, by design (Mind Blast and
   Seeker Strike read the draw pile, Aggression takes an `UnstableShuffle` of the discard pile, Stampede rolls an index into the hand).
   `TRIAGE` in `tools/fidelity/invariants.py` records each such reason, checked against the game's class.
+## Mutation testing (how strong are the recorded-fight checks?)
+
+Seeds bugs into the combat core (CombatEngine, BuffSystem, EnemyAI, Effects/*) and counts how many the
+recorded fights catch. Local data only; the run folder holds game ids, never commit it.
+
+```
+python -m tools.fidelity.mutate prepare --out-json <out.json> --emu <emu.json> --dir <run>   # identical fights, probes, hashes
+python -m tools.fidelity.mutate schemata --dir <run> --reanchor <reanchor.json> --mutants 150   # ~3 min for 150 x 529 fights
+python -m tools.fidelity.mutate report --dir <run> --results <run>/schemata/results.jsonl
+```
+
+- Killed = some fight now has an emulator error or a first divergence (batch.py's test) or a re-anchored step that
+  matched no longer does; a hang or crash also kills. `silent` counts fights whose replay changed but passed both
+  checks: the change is in state the checks do not compare.
+- `schemata` builds every mutant into one engine behind `MutCov.Is(id)` and replays them in long-lived
+  `EmuDump muthost` processes; `run` builds one EmuDump per mutant instead (slow: ~3 min per surviving mutant,
+  but independent; `--ids` cross-checks schemata verdicts).
+- Mutants are drawn from blocks the fights ran, weighted by sqrt(fights); a block no fight runs is a blind spot
+  by construction (`prepare` prints how many mutants sit in such blocks per file).
