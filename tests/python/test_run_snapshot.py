@@ -135,9 +135,6 @@ class RunSnapshotTest(unittest.TestCase):
         self.assertEqual(rs.compare(rs.from_save(save), EMU), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class RunCompareTest(unittest.TestCase):
     """tools.fidelity.run_compare2: offers compare as what the screen lets the player take."""
@@ -211,3 +208,32 @@ class RunCompareTest(unittest.TestCase):
         save["visited_map_coords"] = []
         self.assertEqual(compare_decision({"screen": "act_change", "snap": save}, {"snap": e}, None), [])
         self.assertNotEqual(compare_decision({"screen": "map", "snap": save}, {"snap": e}, None), [])
+
+
+class RunsSafetyTest(unittest.TestCase):
+    """referee/runs.py: a session report proves the session stayed offline and off the real profile,
+    or the batch stops; a missing report is not a clean one."""
+
+    @staticmethod
+    def problem(report):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("runs", ROOT / "referee" / "runs.py")
+        runs = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runs)
+        return runs.session_problem(report)
+
+    def test_a_clean_report_passes(self):
+        self.assertIsNone(self.problem({"exit": 0, "network_connections": [], "real_profile_touched": False}))
+
+    def test_a_missing_report_is_a_safety_failure(self):
+        self.assertTrue(self.problem({}).startswith("SAFETY"))
+        self.assertTrue(self.problem({"exit": 0, "network_connections": ["1.2.3.4:443"],
+                                      "real_profile_touched": False}).startswith("SAFETY"))
+
+    def test_a_crash_is_a_failed_session(self):
+        p = self.problem({"exit": 3221226505, "network_connections": [], "real_profile_touched": False})
+        self.assertTrue(p.startswith("SESSION FAILED"))
+
+
+if __name__ == "__main__":
+    unittest.main()
