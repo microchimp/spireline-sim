@@ -57,6 +57,9 @@ public sealed class Walker
     readonly EventOptionIndex _events;
     RunState S => _e.State;
 
+    /// <summary>The run where the last walk stopped (tests read its belt).</summary>
+    public RunState State => _e.State;
+
     // --- per run ---
     readonly Dictionary<string, int[]> _checks = []; // component -> [floors checked, floors matched]
     readonly HashSet<string> _floorComponents = [];
@@ -638,10 +641,14 @@ public sealed class Walker
             _taint.TryAdd(st, $"floor {_floor}: the fight's turns were not played");
         }
 
-        // Potions drunk in the fight are gone before its rewards are claimed.
+        // Potions drunk in the fight are gone before its rewards are made and claimed. The resolve
+        // copies the fight's own belt back over the run's, so they leave the fight's belt: a slot
+        // one of them freed is open when the rewards read the belt (Delicate Frond fills it) and
+        // when the reward's potion is claimed, as in the game.
+        int[] fightBelt = S.ActiveCombat?.PotionSlots ?? S.PotionSlots;
         foreach (string p in StrList("potion_used"))
         {
-            if (RemovePotion(p))
+            if (RemovePotion(fightBelt, p))
             {
                 _discardsLeft.Remove(p);
             }
@@ -1469,6 +1476,23 @@ public sealed class Walker
             _shopShownRelics.Clear();
             _shopShownPotions.Clear();
             NoteShelf();
+            // The potions the history drank here, before its buys: a Foul Potion's gold pays for
+            // them. What an Entropic Brew made is in the floor's potion picks that were not bought.
+            Mark();
+            var (usedHere, brewed) = UseAtTheMerchant(S, StrList("potion_used"), Do);
+            foreach (string p in usedHere)
+            {
+                _discardsLeft.Remove(p);
+            }
+
+            _brewExpected = [];
+            if (usedHere.Contains(EntropicBrew))
+            {
+                var picks = Arr("potion_choices").Where(c => c.TryGetProperty("was_picked", out var pk) && pk.ValueKind == JsonValueKind.True)
+                    .Select(c => Names.Bare(c.GetProperty("choice").GetString())).ToList();
+                _brewExpected = Minus(picks, StrList("bought_potions"));
+                Check("brew", "potions", string.Join(",", _brewExpected), string.Join(",", brewed), Source.Drawn);
+            }
         }
 
         // The history's purchases, unordered: the floor's picked relics and potions, and as
@@ -1644,11 +1668,53 @@ public sealed class Walker
         var bought = Arr("cards_gained").Where(c => !IsCopy(c)).Select(c => CardKey(c).Id).ToList();
         var realCards = unbought.Concat(Minus(bought, picked)).OrderBy(x => x).ToList();
         var realRelics = Arr("relic_choices").Select(c => Names.Bare(c.GetProperty("choice").GetString())).OrderBy(x => x).ToList();
-        var realPotions = Arr("potion_choices").Select(c => Names.Bare(c.GetProperty("choice").GetString())).OrderBy(x => x).ToList();
+        // An Entropic Brew's potions are among the floor's potion choices, not the shelf's.
+        var realPotions = Minus(Arr("potion_choices").Select(c => Names.Bare(c.GetProperty("choice").GetString())).ToList(), _brewExpected)
+            .OrderBy(x => x).ToList();
         Check("shop", "cards", string.Join(",", realCards), string.Join(",", _shopShownCards.OrderBy(x => x)), Source.Static);
         Check("shop", "relics", string.Join(",", realRelics), string.Join(",", _shopShownRelics.OrderBy(x => x)), Source.Static);
         Check("shop", "potions", string.Join(",", realPotions), string.Join(",", _shopShownPotions.OrderBy(x => x)), Source.Static);
         Check("shop", "gold spent", Int("gold_spent").ToString(), _shopSpent.ToString(), Source.Static);
+    }
+
+    List<string> _brewExpected = [];
+
+    const string FoulPotion = "FOUL_POTION", EntropicBrew = "ENTROPIC_BREW";
+
+    /// <summary>
+    /// The potions a history drank at the merchant, used through the engine's own off-fight use
+    /// action: every Foul Potion is thrown at him first (its 100 gold may pay for the floor's
+    /// buys), then every Entropic Brew is drunk. Returns the potions used, and what the brews put
+    /// on the belt, brew by brew in slot order (a brew fills every open slot, its own included).
+    /// </summary>
+    public static (List<string> Used, List<string> Brewed) UseAtTheMerchant(RunState s, List<string> drunk, Action<int> use)
+    {
+        var used = new List<string>();
+        var brewed = new List<string>();
+        foreach (string p in drunk.Where(x => x == FoulPotion).Concat(drunk.Where(x => x == EntropicBrew)).ToList())
+        {
+            int at = Array.FindIndex(s.PotionSlots, x => x != 0 && Names.Potion(x) == p);
+            if (at < 0)
+            {
+                continue;
+            }
+
+            int[] before = (int[])s.PotionSlots.Clone();
+            use(RunConstants.UsePotionAction + at);
+            used.Add(p);
+            if (p == EntropicBrew)
+            {
+                for (int i = 0; i < s.PotionSlots.Length; i++)
+                {
+                    if (s.PotionSlots[i] != 0 && (before[i] == 0 || i == at))
+                    {
+                        brewed.Add(Names.Potion(s.PotionSlots[i]));
+                    }
+                }
+            }
+        }
+
+        return (used, brewed);
     }
 
     // --- the Fake Merchant -----------------------------------------------------------------
@@ -2067,7 +2133,8 @@ public sealed class Walker
     {
         if (Trace)
         {
-            Console.Error.WriteLine($"  f{_floor} {S.Phase} event={S.EventId} awaiting={S.NeowAwaitingProceed} -> {action}  [{LegalList()}]");
+            Console.Error.WriteLine($"  f{_floor} {S.Phase} event={S.EventId} awaiting={S.NeowAwaitingProceed} -> {action}  [{LegalList()}]"
+                + $" belt=[{string.Join("/", S.PotionSlots.Select(x => x == 0 ? "-" : Names.Potion(x)))}] max={S.MaxPotionSlots}");
         }
 
         int status = _e.Step(action, -1, out _, out _, out _);
@@ -2359,15 +2426,17 @@ public sealed class Walker
         }
     }
 
-    bool RemovePotion(string p)
+    bool RemovePotion(string p) => RemovePotion(S.PotionSlots, p);
+
+    static bool RemovePotion(int[] belt, string p)
     {
-        int at = Array.FindIndex(S.PotionSlots, x => x != 0 && Names.Potion(x) == p);
+        int at = Array.FindIndex(belt, x => x != 0 && Names.Potion(x) == p);
         if (at < 0)
         {
             return false;
         }
 
-        S.PotionSlots[at] = 0;
+        belt[at] = 0;
         return true;
     }
 

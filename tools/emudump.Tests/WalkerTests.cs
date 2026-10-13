@@ -129,6 +129,154 @@ public class WalkerTests
         return new Walker(new EventOptionIndex(null)).Walk(doc.RootElement);
     }
 
+    static string[] Belt(RunState s) => [.. s.PotionSlots.Take(s.MaxPotionSlots).Select(x => x == 0 ? "-" : Names.Potion(x))];
+
+    /// <summary>
+    /// Neow's Phial Holster (a third slot and two potions), then the first monster fight, in which
+    /// the history drank the SECOND potion and took the fight's potion. Also the belt the game
+    /// ends the floor with. Null when the seed's Neow has no Phial Holster or the fight drops no
+    /// potion.
+    /// </summary>
+    static (JsonObject Record, string[] Belt)? PotionRecord(string seed)
+    {
+        var e = new RunEngine();
+        e.Reset(seed, Asc);
+        var s = e.State;
+        var options = s.NeowOptions.Select(Names.Relic).ToList();
+        int choice = options.IndexOf("PHIAL_HOLSTER");
+        if (choice < 0)
+        {
+            return null;
+        }
+
+        e.Step(choice, -1, out _, out _, out _);
+        if (s.Phase != RunPhase.Ancient || !s.NeowAwaitingProceed)
+        {
+            return null;
+        }
+
+        var held = s.PotionSlots.Where(p => p != 0).Select(Names.Potion).ToList();
+        e.Step(0, -1, out _, out _, out _); // Neow's Proceed
+        var neow = Stats(s, 0);
+        neow["ancient_choice"] = new JsonArray(options.Select((o, i) => (JsonNode)new JsonObject
+        {
+            ["TextKey"] = o,
+            ["title"] = new JsonObject { ["key"] = o + ".title", ["table"] = "relics" },
+            ["was_chosen"] = i == choice,
+        }).ToArray());
+        neow["relic_choices"] = new JsonArray(new JsonObject { ["choice"] = "RELIC.PHIAL_HOLSTER", ["was_picked"] = true });
+        neow["potion_choices"] = new JsonArray(held.Select(p => (JsonNode)new JsonObject { ["choice"] = "POTION." + p, ["was_picked"] = true }).ToArray());
+        var floor1 = new JsonObject
+        {
+            ["map_point_type"] = "ancient",
+            ["rooms"] = new JsonArray(new JsonObject { ["model_id"] = "EVENT.NEOW", ["room_type"] = "event" }),
+            ["player_stats"] = new JsonArray(neow),
+        };
+
+        int node = Array.IndexOf(s.MapNodeTypes, RunConstants.NodeNormal);
+        e.Step(node, -1, out _, out _, out _);
+        var fight = s.ActiveCombat!;
+        string encounter = "ENCOUNTER." + Names.GameEntry(Names.EncounterName(fight.EncounterId));
+        var monsters = fight.Enemies.Select(x => (JsonNode)("MONSTER." + Names.Enemy(x.DefId))).ToArray();
+        // The game's fight: the second potion drunk, gone from the belt when the fight ends.
+        int second = Array.FindLastIndex(fight.PotionSlots, p => p != 0);
+        string drunk = Names.Potion(fight.PotionSlots[second]);
+        fight.PotionSlots[second] = 0;
+        e.DebugResolveCombat();
+        if (s.RewardPotion == 0)
+        {
+            return null;
+        }
+
+        string reward = Names.Potion(s.RewardPotion);
+        int goldBefore = s.Gold;
+        if (s.RewardGold != 0)
+        {
+            e.Step(0, -1, out _, out _, out _);
+        }
+
+        int gold = s.Gold - goldBefore;
+        e.Step(0, -1, out _, out _, out _); // the potion
+        var offer = s.RewardCards.Where(c => c != 0).Select(c => "CARD." + Names.Card(c)).ToList();
+        e.Step(s.RelicReward != 0 ? 1 : 0, -1, out _, out _, out _);
+        e.Step(0, -1, out _, out _, out _);
+        e.Step(RunConstants.RewardSkipAction, -1, out _, out _, out _);
+        var stats = Stats(s, gold);
+        stats["card_choices"] = new JsonArray(offer.Select((c, i) => (JsonNode)new JsonObject
+        {
+            ["card"] = new JsonObject { ["id"] = c },
+            ["was_picked"] = i == 0,
+        }).ToArray());
+        stats["cards_gained"] = new JsonArray(new JsonObject { ["id"] = offer[0] });
+        stats["potion_choices"] = new JsonArray(new JsonObject { ["choice"] = "POTION." + reward, ["was_picked"] = true });
+        stats["potion_used"] = new JsonArray("POTION." + drunk);
+        var floor2 = new JsonObject
+        {
+            ["map_point_type"] = "monster",
+            ["rooms"] = new JsonArray(new JsonObject { ["model_id"] = encounter, ["monster_ids"] = new JsonArray(monsters), ["room_type"] = "monster" }),
+            ["player_stats"] = new JsonArray(stats),
+        };
+
+        var rec = new JsonObject
+        {
+            ["seed"] = s.StringSeed,
+            ["ascension"] = Asc,
+            ["game_mode"] = "standard",
+            ["build_id"] = "v0.107.1",
+            ["win"] = true,
+            ["was_abandoned"] = false,
+            ["modifiers"] = new JsonArray(),
+            ["acts"] = new JsonArray(s.Acts.Select(a => (JsonNode)("ACT." + Names.Act(a.Act))).ToArray()),
+            ["players"] = new JsonArray(new JsonObject { ["character"] = "CHARACTER.IRONCLAD" }),
+            ["map_point_history"] = new JsonArray(new JsonArray(floor1, floor2)),
+        };
+        return (rec, Belt(s));
+    }
+
+    [Fact]
+    public void A_potion_drunk_in_a_fight_frees_its_slot_before_the_rewards()
+    {
+        // The resolve copies the fight's own belt back, so the drunk potion has to leave THAT belt:
+        // dropped from the run's before the resolve, it came back, the fight's potion took the
+        // third slot, and the second was empty after the floor where the game holds the new one.
+        var (record, belt) = PotionRecord("CODEXP0016") ?? throw new InvalidOperationException("no Phial Holster with a potion drop on this seed");
+        Assert.Equal("-", belt[2]);
+        using var doc = JsonDocument.Parse(record.ToJsonString());
+        var walker = new Walker(new EventOptionIndex(null));
+        var result = walker.Walk(doc.RootElement);
+        Assert.Equal("complete", (string?)result["status"]);
+        Assert.Equal(belt, Belt(walker.State));
+    }
+
+    [Fact]
+    public void At_the_merchant_a_foul_potion_is_thrown_before_a_brew_is_drunk()
+    {
+        var e = new RunEngine();
+        e.Reset(Seed, Asc);
+        var s = e.State;
+        RunRewardGenerator.EnterShop(s);
+        s.MaxPotionSlots = 3;
+        Array.Clear(s.PotionSlots);
+        s.PotionSlots[0] = RunNonCombatEffects.NamedPotion("EntropicBrew");
+        s.PotionSlots[1] = RunNonCombatEffects.NamedPotion("FoulPotion");
+        int gold = s.Gold;
+        var actions = new List<int>();
+        var (used, brewed) = Walker.UseAtTheMerchant(s, ["ENTROPIC_BREW", "FIRE_POTION", "FOUL_POTION"], a =>
+        {
+            actions.Add(a);
+            Assert.Equal(0, e.Step(a, -1, out _, out _, out _));
+        });
+
+        // The throw first, so its gold is there for the buys; a potion not held is not used.
+        Assert.Equal([RunConstants.UsePotionAction + 1, RunConstants.UsePotionAction + 0], actions);
+        Assert.Equal(["FOUL_POTION", "ENTROPIC_BREW"], used);
+        Assert.Equal(gold + 100, s.Gold);
+        Assert.Equal(RunPhase.Shop, s.Phase);
+        // The brew filled every open slot, its own and the thrown potion's included, in slot order.
+        Assert.Equal(3, brewed.Count);
+        Assert.Equal(Belt(s), brewed);
+    }
+
     [Fact]
     public void A_faithful_record_walks_every_floor_and_matches()
     {
