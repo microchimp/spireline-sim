@@ -609,6 +609,14 @@ public static class RunRewardGenerator
                 // player's gold the moment it was taken. Adding it to the list and
                 // stopping there is what this used to do.
                 RunNonCombatEffects.ApplyRelicPickup(state, claimed);
+                // Lost Coffer's AfterObtained offers a card reward and a potion; claimed off
+                // Neow's Bones' screen it handed over nothing (run referee, seed FHTYPREMZ9:
+                // the game's rewards counter eleven ahead after the claim).
+                if (claimed == RunConstants.RelicLostCoffer)
+                {
+                    OfferLostCofferRewards(state);
+                }
+
                 OfferNextBonusRelic(state);
                 return true;
             }
@@ -866,6 +874,74 @@ public static class RunRewardGenerator
     /// entirely on the Uniform branch, so a pinned rarity is one draw per card rather than
     /// two -- getting that wrong shifts the whole grid.
     /// </param>
+    /// <summary>
+    /// A three-card CardReward made with <c>CardCreationSource.Other</c> and RegularEncounter
+    /// odds and no flags -- Lost Coffer's. Per card: the rarity off the BASE odds (only an
+    /// Encounter source reads or grows the rare offset, CardFactory.RollForRarity), the card,
+    /// then the upgrade roll (no NoUpgradeRoll flag): three draws on PlayerRng.Rewards.
+    /// </summary>
+    public static CardOffer RollOtherSourceCardOffer(RunState state)
+    {
+        // No NoCardPoolModifications flag: ModifyCardRewardCreationOptions widens it the way it
+        // widens a combat reward's.
+        int[] pool = CardRewardPool(
+            state.Character,
+            Effects.RelicEffects.AddsColourlessToCardRewards(state),
+            Effects.RelicEffects.WidensCardRewardsToEveryPool(state)
+        );
+        var cards = new int[CardRewardSize];
+        var upgraded = new bool[CardRewardSize];
+        var blacklist = new List<int>();
+        for (int i = 0; i < cards.Length; i++)
+        {
+            int rarity = RollCardRarity(
+                state,
+                RegularEncounterCardOdds(state),
+                mutateOffset: false,
+                state.PlayerRng.Rewards,
+                useOffset: false
+            );
+            cards[i] = ChooseCardWithRarity(pool, rarity, blacklist, state.PlayerRng.Rewards);
+            blacklist.Add(cards[i]);
+            upgraded[i] = RollCardUpgrade(state, cards[i], state.PlayerRng.Rewards)
+                || RunNonCombatEffects.UpgradedByEggs(state, new CardInstance(cards[i], Upgraded: false)).Upgraded;
+        }
+
+        return new CardOffer(cards, upgraded);
+    }
+
+    private const int CardRewardSize = 3;
+
+    /// <summary>
+    /// `LostCoffer.AfterObtained`: RewardsCmd.OfferCustom of a CardReward
+    /// (<see cref="RollOtherSourceCardOffer"/>) and a PotionReward, both populated as the
+    /// screen opens, card first. However the coffer is obtained: from Neow, or claimed off
+    /// another screen (Neow's Bones), where its two rewards join the screen being answered.
+    /// </summary>
+    public static void OfferLostCofferRewards(RunState state)
+    {
+        var offer = RollOtherSourceCardOffer(state);
+        int potion = NextPotion(state, state.PlayerRng.Rewards);
+        if (!state.RewardCardPending)
+        {
+            offer.ShowOn(state);
+            state.RewardCardPending = true;
+        }
+        else
+        {
+            state.PendingCardOffers.Add(offer);
+        }
+
+        if (state.RewardPotion == 0)
+        {
+            state.RewardPotion = potion;
+        }
+        else
+        {
+            state.PendingPotionRewards.Add(potion);
+        }
+    }
+
     public static int[] GenerateEventOfferCards(
         RunState state,
         int count,

@@ -1735,9 +1735,10 @@ public sealed class RunEngine
             // for the player to claim, the same shape as Kaleidoscope. Handing the card
             // reward straight over skipped the screen, and with it the claim the run
             // really makes.
-            RunRewardGenerator.PopulateCardReward(State);
-            State.RewardCardPending = true;
-            State.RewardPotion = RunRewardGenerator.NextPotion(State, State.PlayerRng.Rewards);
+            // Its card reward is CardCreationSource.Other: base odds, the rare offset left
+            // alone (run referee, seed UK2BJLWEV1: the game's offset unchanged after it).
+            RunRewardGenerator.ClearRewardScreen(State);
+            RunRewardGenerator.OfferLostCofferRewards(State);
             State.NeowAwaitingProceed = true;
             State.Phase = RunPhase.RelicReward;
             return;
