@@ -97,7 +97,12 @@ public static partial class Driver
             {
                 var o = spec!.AsObject();
                 var clock = System.Diagnostics.Stopwatch.StartNew();
-                var result = (string?)o["kind"] == "combat" ? await PlayCombat(o) : await StartRun(o);
+                var result = (string?)o["kind"] switch
+                {
+                    "combat" => await PlayCombat(o),
+                    "export" => Export(),
+                    _ => await StartRun(o),
+                };
                 long playMs = clock.ElapsedMilliseconds;
                 if ((bool?)job["fast_reset"] == true)
                 {

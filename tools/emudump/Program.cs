@@ -13,6 +13,12 @@ if (args[0] == "pools")
     return;
 }
 
+if (args[0] == "tables")
+{
+    Console.WriteLine(Tables.Dump().ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    return;
+}
+
 if (args[0] == "fight")
 {
     var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
