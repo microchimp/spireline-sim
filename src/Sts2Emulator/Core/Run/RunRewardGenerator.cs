@@ -306,6 +306,12 @@ public static class RunRewardGenerator
         // emulator gave one for both, so beating the act 1 boss handed over a Whetstone
         // the run never earned, and its pickup upgraded two attacks in the deck.
         state.PendingRelicReward = state.CurrentNodeType is RunConstants.NodeElite;
+        // The relics the reward hooks ADD (Lava Rock, Black Star, Wongo's ticket) are pulled
+        // after the room's own rewards are populated: `GenerateWithoutOffering` populates the
+        // base list, then runs `Hook.ModifyRewards`, then populates what the hooks added. Pulled
+        // here, before the cards, their rarity rolls took the cards' Rewards draws (run
+        // referee, seed E2KJGJ1SMR: Lava Rock's act-1 boss offered different cards).
+        int bonusRelicsOwed = 0;
 
         // `LavaRock.TryModifyRewards` adds `DynamicVar("Relics", 2)` RelicRewards to the
         // ACT-1 BOSS room, once per run, and disables itself. The emulator's run ends at
@@ -319,7 +325,7 @@ public static class RunRewardGenerator
         {
             state.LavaRockTriggered = true;
             state.PendingRelicReward = true;
-            state.PendingBonusRelicRewards.Add(NextRelic(state));
+            bonusRelicsOwed++;
         }
 
         // `WongosMysteryTicket.TryModifyRewards`: after FIVE combats it pays THREE relics
@@ -334,7 +340,7 @@ public static class RunRewardGenerator
         )
         {
             state.PendingRelicReward = true;
-            state.PendingBonusRelicRewards.Add(NextRelic(state));
+            bonusRelicsOwed++;
         }
 
         if (Effects.RelicEffects.WongosTicketPaysOut(state))
@@ -351,10 +357,7 @@ public static class RunRewardGenerator
                 owed--;
             }
 
-            for (int i = 0; i < owed; i++)
-            {
-                state.PendingBonusRelicRewards.Add(NextRelic(state));
-            }
+            bonusRelicsOwed += owed;
         }
 
         // The CARDS are rolled before the relic. RewardsSet builds gold, potion, card,
@@ -367,6 +370,11 @@ public static class RunRewardGenerator
         if (state.PendingRelicReward)
         {
             state.RelicReward = NextRelic(state);
+        }
+
+        for (int i = 0; i < bonusRelicsOwed; i++)
+        {
+            state.PendingBonusRelicRewards.Add(NextRelic(state));
         }
 
         state.RewardCardPending = true;
