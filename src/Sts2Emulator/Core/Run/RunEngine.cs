@@ -5590,23 +5590,23 @@ public sealed class RunEngine
                 // Both offers are rolled HERE, in order, because that is when the game
                 // rolls them: `RewardsCmd.OfferCustom` populates every reward as the screen
                 // opens and the draws all come off the same stream.
-                Array.Clear(State.RewardCards);
-                Array.Clear(State.RewardUpgraded);
-                var first = RunRewardGenerator.GenerateEventOfferCards(
+                // `new CardReward(ForNonCombatWithDefaultOdds(pool), 3, owner)`: NoUpgradeRoll
+                // plus the reward's own IsCardReward, so Silver Crucible, the eggs and Wing
+                // Charm act on each screen and Prismatic Gem / Dingy Rug widen its pool.
+                const CardCreationFlags verdictFlags =
+                    CardCreationFlags.NoUpgradeRoll | CardCreationFlags.IsCardReward;
+                var first = RunRewardGenerator.CreateForReward(
                     State,
                     State.RewardCards.Length,
-                    RunRewardGenerator.OwnCardPool(State)
+                    RunRewardGenerator.OwnRewardPool(State, verdictFlags),
+                    verdictFlags
                 );
-                var second = RunRewardGenerator.GenerateEventOfferCards(
+                var second = RunRewardGenerator.CreateForReward(
                     State,
                     State.RewardCards.Length,
-                    RunRewardGenerator.OwnCardPool(State)
+                    RunRewardGenerator.OwnRewardPool(State, verdictFlags),
+                    verdictFlags
                 );
-                for (int i = 0; i < State.RewardCards.Length && i < first.Length; i++)
-                {
-                    State.RewardCards[i] = first[i];
-                }
-
                 // One rewards screen holding both, as Colorful Philosophers' three
                 // (OfferColorfulPhilosopherRewards): straight into the first card screen with no
                 // way back lost the second as soon as the first was answered.
@@ -5614,8 +5614,9 @@ public sealed class RunEngine
                 State.RewardGold = 0;
                 State.RewardPotion = 0;
                 State.RelicReward = 0;
+                first.ShowOn(State);
                 State.RewardCardPending = true;
-                State.PendingCardOffers.Add(CardOffer.Plain(second));
+                State.PendingCardOffers.Add(second);
                 State.Phase = RunPhase.RelicReward;
                 return 0;
             }

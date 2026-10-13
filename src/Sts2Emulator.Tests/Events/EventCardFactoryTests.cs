@@ -17,6 +17,7 @@ namespace Sts2Emulator.Tests;
 [CoversEvent("ColorfulPhilosophers")]
 [CoversEvent("InfestedAutomaton")]
 [CoversEvent("EndlessConveyor")]
+[CoversEvent("Trial")]
 public class EventCardFactoryTests
 {
     private static RunEngine At(int eventId, string seed, params RelicInstance[] relics)
@@ -267,6 +268,33 @@ public class EventCardFactoryTests
         Assert.True(canSwift, GeneratedData.Cards.Get(card.DefId).Name);
         Assert.Equal(canSwift ? 1 : 0, engine.State.Rng.Niche.CallCount - nicheBefore);
         Assert.Equal(canSwift ? Enchantment.Swift : Enchantment.None, card.Enchantment);
+    }
+
+    [Fact]
+    public void TheTrialsNondescriptVerdictOffersTwoCrucibleSets()
+    {
+        var engine = new RunEngine();
+        engine.Reset("NXV45HW43K");
+        engine.State.Relics.Add(Crucible);
+        engine.State.Phase = RunPhase.Event;
+        engine.State.EventId = RunConstants.EventTrial;
+        engine.State.EventPage = 3;
+        Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
+
+        // Two CardRewards, one Crucible use each: both screens arrive upgraded.
+        Assert.Equal(1, CrucibleUses(engine.State));
+        var offers = new[]
+        {
+            new CardOffer(engine.State.RewardCards, engine.State.RewardUpgraded),
+        }.Concat(engine.State.PendingCardOffers);
+        Assert.Equal(2, offers.Count());
+        foreach (var offer in offers)
+        {
+            for (int i = 0; i < offer.Cards.Length; i++)
+            {
+                Assert.Equal(GeneratedData.Cards.Get(offer.Cards[i]).Upgradable, offer.Upgraded[i]);
+            }
+        }
     }
 
     [Fact]
