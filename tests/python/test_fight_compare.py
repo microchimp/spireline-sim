@@ -32,6 +32,17 @@ class PowerListTest(unittest.TestCase):
     def test_setup_strike_is_temporary_strength(self):
         self.assertEqual(game_powers([["SETUP_STRIKE_POWER", 7]]), emu_powers([["TemporaryStrength", 7]]))
 
+    def test_temporary_dexterity_and_focus_subclasses_fold_too(self):
+        # SpeedPotionPower is a TemporaryDexterityPower, HotfixPower a TemporaryFocusPower.
+        self.assertEqual(game_powers([["SPEED_POTION_POWER", 5]]), emu_powers([["TemporaryDexterity", 5]]))
+        self.assertEqual(game_powers([["HOTFIX_POWER", 2], ["SYNCHRONIZE_POWER", 1]]), emu_powers([["TemporaryFocus", 3]]))
+
+    def test_alias_table_is_the_one_reanchor_reads(self):
+        # tools/emudump/EmuDump.csproj copies this file next to EmuDump.dll for Reanchor.cs's write-back.
+        csproj = (ROOT / "tools" / "emudump" / "EmuDump.csproj").read_text(encoding="utf-8")
+        self.assertIn(r"..\fidelity\power_aliases.json", csproj)
+        self.assertEqual(EMU_RENAME["NEXT_TURN_ENERGY"], "ENERGY_NEXT_TURN")
+
     def test_emulator_counters_hidden(self):
         emu = emu_powers([["Inferno", 2], ["InfernoSelfDamage", 3], ["PanacheArmed", 1], ["ClawDamage", 4],
                           ["TheBombDamage", 40], ["Stunned", 1]])
