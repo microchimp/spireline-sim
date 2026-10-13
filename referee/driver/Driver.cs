@@ -67,7 +67,7 @@ public static partial class Driver
             foreach (var spec in job["runs"]!.AsArray())
             {
                 var o = spec!.AsObject();
-                results.Add((string?)o["kind"] == "combat" ? await PlayCombat(o) : await StartRun(o));
+                results.Add((string?)o["kind"] switch { "combat" => await PlayCombat(o), "export" => Export(), _ => await StartRun(o) });
                 await NGame.Instance!.ReturnToMainMenu();  // the game's own way out of a run
             }
         }
