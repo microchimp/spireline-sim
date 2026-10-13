@@ -251,7 +251,9 @@ def main() -> int:
     def replay(tag: str, games: list) -> tuple[list, dict]:
         """EmuDump fight (the plain replay) and reanchor (each step from the game's own state) of one
         chunk, each split across processes (one emulator per process), all started at once; a fight's
-        replay does not depend on the split. A part that produced fewer results is padded."""
+        replay does not depend on the split. A part that produced fewer results is padded. A hung EmuDump
+        is killed at 120 s + 0.1 s per step of the chunk (as tools/fidelity/corpus.py times its calls), and
+        its fights fail, not the batch."""
         k = max(1, min(max(1, n_emu // 2), -(-len(games) // 12)))
         size = -(-len(games) // k)
         parts = [games[i:i + size] for i in range(0, len(games), size)]
@@ -263,15 +265,23 @@ def main() -> int:
                 fh = open(dst, "w", encoding="utf-8")
                 jobs.append((mode, len(part), src, dst, fh, subprocess.Popen(["dotnet", str(EMUDUMP), mode, str(src)], stdout=fh)))
         docs: dict = {"fight": {}, "reanchor": {}}
+        t_end = time.time() + 120 + 0.1 * sum(len(g.get("steps") or []) for g in games)
         for mode, n_in, src, dst, fh, p in jobs:
-            p.wait()
+            try:
+                p.wait(timeout=max(1.0, t_end - time.time()))
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+                timed_out = True
             fh.close()
-            part_doc = json.loads(dst.read_text(encoding="utf-8")) if dst.stat().st_size else {"results": []}
+            part_doc = json.loads(dst.read_text(encoding="utf-8")) if dst.stat().st_size and not timed_out else {"results": []}
             doc = docs[mode]
             if not doc:
                 doc.update({k_: v for k_, v in part_doc.items() if k_ != "results"}, results=[])
             got = part_doc.get("results", [])
-            doc["results"] += got + [{"error": "emulator produced no result"}] * (n_in - len(got))
+            why = "emulator timed out (killed)" if timed_out else "emulator produced no result"
+            doc["results"] += got + [{"error": why}] * (n_in - len(got))
             src.unlink()
             dst.unlink()
         return docs["fight"]["results"], docs["reanchor"]
