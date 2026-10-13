@@ -82,6 +82,15 @@ def strip(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in TIMING_KEYS and k not in META_KEYS}
 
 
+def drop_keys(x, keys: set):
+    """x without the named keys at any depth: fields a newer driver adds that an older reference lacks."""
+    if isinstance(x, dict):
+        return {k: drop_keys(v, keys) for k, v in x.items() if k not in keys}
+    if isinstance(x, list):
+        return [drop_keys(v, keys) for v in x]
+    return x
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--game", type=Path, required=True)
@@ -104,6 +113,8 @@ def main() -> int:
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
     ap.add_argument("--no-patches", action="store_true", help="play without the step 2 speed patches (driver/Patches.cs)")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
+    ap.add_argument("--verify-ignore", default="", help="comma-separated keys dropped at any depth before --verify-against "
+                    "compares (fields the reference predates, e.g. move,intents)")
     a = ap.parse_args()
 
     game = a.game.resolve()
@@ -363,8 +374,11 @@ def main() -> int:
         ref = json.loads(a.verify_against.read_text(encoding="utf-8"))["results"]
         same = same_steps = 0
         first_bad = []
+        ignore = {k for k in a.verify_ignore.split(",") if k}
         for i, r in enumerate(merged):
             g = ref[i % len(ref)]
+            if ignore:
+                r, g = drop_keys(r, ignore), drop_keys(g, ignore)
             same_steps += r.get("steps") == g.get("steps")
             if strip(r) == strip(g):
                 same += 1

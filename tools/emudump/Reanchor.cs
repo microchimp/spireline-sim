@@ -453,6 +453,7 @@ static class Reanchor
             ["enemies"] = new JsonArray(c.Enemies.Select(en => (JsonNode)new JsonObject
             {
                 ["def_id"] = en.DefId, ["hp"] = en.Hp, ["max_hp"] = en.MaxHp, ["block"] = en.Block, ["buffs"] = Buffs(en.Buffs),
+                ["intent"] = Fight.IntentJson(en),
             }).ToArray()),
         };
         o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());

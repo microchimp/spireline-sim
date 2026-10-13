@@ -250,8 +250,44 @@ public static partial class Driver
             {
                 ["name"] = e.Monster?.Id.Entry, ["hp"] = e.CurrentHp, ["max_hp"] = e.MaxHp, ["block"] = e.Block,
                 ["powers"] = Powers(e),
+                // The move the monster will perform next (MonsterModel.NextMove), so a wrong enemy
+                // move shows at the step it is chosen, not turns later when its effects land.
+                ["move"] = e.Monster?.NextMove?.Id,
+                ["intents"] = Intents(e),
             }).ToArray()),
             ["rng"] = Counters(run.Rng),
         };
+    }
+
+    /// <summary>
+    /// The next move's intents (MoveState.Intents): [type] or, for an attack, [type, base damage per
+    /// hit, hits]; a status intent adds its card count. Base damage is <c>AttackIntent.DamageCalc</c>,
+    /// before the damage hooks (Strength, Weak, ...) that the powers already show.
+    /// </summary>
+    private static JsonArray Intents(Creature e)
+    {
+        var o = new JsonArray();
+        var intents = e.Monster?.NextMove?.Intents;
+        if (intents == null) return o;
+        foreach (var it in intents)
+        {
+            var one = new JsonArray(it.IntentType.ToString());
+            if (it is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent atk)
+            {
+                int dmg;
+                try { dmg = atk.DamageCalc == null ? -1 : (int)atk.DamageCalc(); }
+                catch (Exception) { dmg = -1; }  // a calc reading state that is not there at this moment
+                one.Add(dmg);
+                one.Add(atk.Repeats);
+            }
+            else if (it is MegaCrit.Sts2.Core.MonsterMoves.Intents.StatusIntent st)
+            {
+                one.Add(st.CardCount);
+            }
+
+            o.Add(one);
+        }
+
+        return o;
     }
 }
