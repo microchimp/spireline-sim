@@ -211,7 +211,7 @@ static class Setup
                 return (true, null);
             }
             default:
-                return (false, "unsupported: " + cmd);
+                return RefsetSetup.Item(e, item, choices) ?? (false, "unsupported: " + cmd);
         }
     }
 
@@ -251,7 +251,7 @@ static class Setup
     /// no way to stop early), or a picked card is not selectable. The run is then walked on with the
     /// first selectable cards so the fight can still be replayed, and the item counts as a mirror gap.
     /// </summary>
-    static string? AnswerDeckSelection(RunEngine e, List<JsonObject> choices)
+    internal static string? AnswerDeckSelection(RunEngine e, List<JsonObject> choices)
     {
         var s = e.State;
         string? gap = null;
