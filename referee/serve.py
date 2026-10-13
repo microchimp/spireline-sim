@@ -321,7 +321,8 @@ def main() -> int:
                 s.proc.wait()
             collect(s)
             handle_exit(s, s.proc.returncode)
-        for pid, conns in rr.connections_by_pid([s.pid for s in servers if s.alive]).items():
+        # every server, exited ones too: a child the game started (crashpad_handler) can outlive it
+        for pid, conns in rr.connections_by_pid([s.pid for s in servers]).items():
             seen_net |= conns
 
     t_end = time.time()

@@ -6,7 +6,8 @@
 What it does, per Spireline security addendum 1, section 3:
   H1  refuses unless sts2.dll is the known v0.107.1 build (sha256 below);
   H2  launches with --force-steam off and an override.cfg that blanks the Sentry DSN, and records
-      every network connection the game process opens (there should be none);
+      every network connection the game process and its children (crashpad_handler.exe) open
+      (there should be none);
   H3  points APPDATA/LOCALAPPDATA at a scratch folder, so saves, logs and settings land there,
       and checks the real profile folder was not created or touched.
 The driver mod is copied into <game>/mods/SpirelineReferee and is inert without the job variable.
@@ -35,17 +36,79 @@ def sha256(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def connections_by_pid(pids) -> dict[int, set[str]]:
-    """One `netstat -ano` call for any number of game pids: pid -> its TCP/UDP endpoints."""
-    wanted = {str(p) for p in pids}
-    found: dict[int, set[str]] = {int(p): set() for p in wanted}
-    out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, check=False,
-                         creationflags=subprocess.CREATE_NO_WINDOW).stdout
+def process_table() -> dict[int, tuple[int, str]]:
+    """Every process on the machine: pid -> (parent pid, exe name), from one Toolhelp32 snapshot."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snap is None or snap == ctypes.c_void_p(-1).value:
+        raise OSError(ctypes.get_last_error(), "CreateToolhelp32Snapshot failed")
+    table: dict[int, tuple[int, str]] = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            table[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile)
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return table
+
+
+def process_trees(roots, table: dict[int, tuple[int, str]]) -> dict[int, tuple[int, str]]:
+    """Every root pid and all its descendants (the game's crashpad_handler, anything they start):
+    pid -> (root pid, exe name). A root that has exited keeps its entry with name "". Windows keeps a
+    child's parent pid after the parent exits, so a lingering child is still found."""
+    owner: dict[int, tuple[int, str]] = {int(r): (int(r), table.get(int(r), (0, ""))[1]) for r in roots}
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _name) in table.items():
+        if pid != ppid:
+            children.setdefault(ppid, []).append(pid)
+    for root in [int(r) for r in roots]:
+        stack = [root]
+        while stack:
+            for child in children.get(stack.pop(), []):
+                if child not in owner:  # also cuts a cycle made by a reused parent pid
+                    owner[child] = (root, table[child][1])
+                    stack.append(child)
+    return owner
+
+
+def parse_netstat(out: str, owner: dict[int, tuple[int, str]]) -> dict[int, set[str]]:
+    """`netstat -ano` lines of the given pids, grouped by root pid. A child's lines name the child."""
+    found: dict[int, set[str]] = {root: set() for root, _ in owner.values()}
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) >= 4 and parts[-1] in wanted and parts[0] in ("TCP", "UDP"):
-            found[int(parts[-1])].add(" ".join(parts[:4] if parts[0] == "TCP" else parts[:3]))
+        if len(parts) < 4 or parts[0] not in ("TCP", "UDP") or not parts[-1].isdigit():
+            continue
+        pid = int(parts[-1])
+        if pid in owner:
+            root, name = owner[pid]
+            endpoint = " ".join(parts[:4] if parts[0] == "TCP" else parts[:3])
+            found[root].add(endpoint if pid == root else f"{endpoint} ({name} pid {pid})")
     return found
+
+
+def connections_by_pid(pids) -> dict[int, set[str]]:
+    """One `netstat -ano` call for any number of game pids: pid -> the TCP/UDP endpoints of the game
+    process and of every process it started (crashpad_handler.exe, the crash reporter Sentry starts)."""
+    owner = process_trees(pids, process_table())
+    out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, check=False,
+                         creationflags=subprocess.CREATE_NO_WINDOW).stdout
+    return parse_netstat(out, owner)
 
 
 def connections(pid: int) -> set[str]:
@@ -153,6 +216,7 @@ def main() -> int:
         rc = "timeout"
     else:
         rc = proc.returncode
+    seen |= connections(proc.pid)  # a child the game started (crashpad_handler) can outlive it
     after = real_profile_state()
     report = {
         "exit": rc, "seconds": round(time.time() - t0, 1), "sts2_dll_sha256": digest,
