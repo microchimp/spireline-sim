@@ -888,6 +888,19 @@ public enum BuffId
     /// then decrements, so a 5 pays 5+4+3+2+1 and stops.
     /// </summary>
     Regen,
+
+    /// <summary>
+    /// `TankPower` (the Tank card, multiplayer-only but playable alone): `ModifyDamageMultiplicative`
+    /// returns 2 for a POWERED attack against its OWNER, so the owner takes double from
+    /// every card or enemy attack. Allies get Guarded on apply, which a lone player has none of.
+    /// </summary>
+    Tank,
+
+    /// <summary>
+    /// `BeaconOfHopePower`: halves the owner's block gain into every OTHER living player. A lone
+    /// player has none, so it is a marker that does nothing -- but the game lists it.
+    /// </summary>
+    BeaconOfHope,
 }
 
 public record struct BuffState(BuffId Id, int Magnitude);
