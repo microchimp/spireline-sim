@@ -164,43 +164,43 @@ public static partial class Driver
         int pacing = OS.LowProcessorUsageModeSleepUsec;
         try
         {
-        while (clock.Elapsed.TotalSeconds < maxSeconds)
-        {
-            waited++;
-            if (clock.Elapsed.TotalSeconds > nextReport)
+            while (clock.Elapsed.TotalSeconds < maxSeconds)
             {
-                nextReport += 5;
-                GD.Print($"[referee] settle still waiting after {waited} frames: {TraceLine(me, FlagsSettled(me), "")}");
-            }
+                waited++;
+                if (clock.Elapsed.TotalSeconds > nextReport)
+                {
+                    nextReport += 5;
+                    GD.Print($"[referee] settle still waiting after {waited} frames: {TraceLine(me, FlagsSettled(me), "")}");
+                }
 
-            // With awaited tweens finished at once, a long busy run is game code waiting on time
-            // (e.g. the Rolling Boulder visual rolls, then waits 1 s: NRollingBoulderVfx.cs ~:240-293).
-            // Spinning unpadded frames through it burns CPU, so fall back to the stock frame
-            // pacing until the step settles. Pacing never decides the settle, only its cost.
-            if (busyRun == SlowPacingAfter && pacing < StockSleepUsec)
-            {
-                OS.LowProcessorUsageModeSleepUsec = StockSleepUsec;
-            }
+                // With awaited tweens finished at once, a long busy run is game code waiting on time
+                // (e.g. the Rolling Boulder visual rolls, then waits 1 s: NRollingBoulderVfx.cs ~:240-293).
+                // Spinning unpadded frames through it burns CPU, so fall back to the stock frame
+                // pacing until the step settles. Pacing never decides the settle, only its cost.
+                if (busyRun == SlowPacingAfter && pacing < StockSleepUsec)
+                {
+                    OS.LowProcessorUsageModeSleepUsec = StockSleepUsec;
+                }
 
-            if (!first)
-            {
-                await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-                AnswerOpenScreens();
-            }
+                if (!first)
+                {
+                    await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+                    AnswerOpenScreens();
+                }
 
-            first = false;
-            System.Threading.Interlocked.Exchange(ref _lastDriverFrame, (long)Engine.GetProcessFrames());
-            bool ok = FlagsSettled(me);
-            string sig = ok ? Signature(CombatManager.Instance.DebugOnlyGetState()) : "busy";
-            TraceFrame(me, ok, sig);
-            if (ok && sig == lastSig)
-            {
-                return;
-            }
+                first = false;
+                System.Threading.Interlocked.Exchange(ref _lastDriverFrame, (long)Engine.GetProcessFrames());
+                bool ok = FlagsSettled(me);
+                string sig = ok ? Signature(CombatManager.Instance.DebugOnlyGetState()) : "busy";
+                TraceFrame(me, ok, sig);
+                if (ok && sig == lastSig)
+                {
+                    return;
+                }
 
-            busyRun = ok ? 0 : busyRun + 1;
-            lastSig = ok ? sig : null;
-        }
+                busyRun = ok ? 0 : busyRun + 1;
+                lastSig = ok ? sig : null;
+            }
         }
         finally
         {
