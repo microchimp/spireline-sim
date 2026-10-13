@@ -21,7 +21,17 @@ public class OfferUpgradeFlagTests
 {
     // Act 3 at A2: a non-Rare's odds are 2 * 0.25 = 0.5, so a dozen of them all missing
     // is a 1-in-4096 event -- and the seed is fixed, so it either happens or it does not.
-    private static RunEngine InActThree() => BossFights.InAct("QEY9JXP3KR", 2, 2);
+    private static RunEngine InActThree()
+    {
+        var engine = BossFights.InAct("QEY9JXP3KR", 2, 2);
+        // Glass Eye's and Sea Glass' options carry NoUpgradeRoll (ForNonCombatWithUniformOdds), so
+        // what an offer shows upgraded comes from the hooks: Silver Crucible on a CardReward
+        // (Glass Eye's three first screens) and the eggs on any set.
+        engine.State.Relics.Add(new RelicInstance(RunConstants.RelicSilverCrucible, Counter: 3));
+        engine.State.Relics.Add(new RelicInstance(RunConstants.RelicMoltenEgg));
+        engine.State.Relics.Add(new RelicInstance(RunConstants.RelicToxicEgg));
+        return engine;
+    }
 
     private static bool Rare(int cardId) =>
         GeneratedData.Cards.Get(cardId).Rarity == CardRarity.Rare;
@@ -35,16 +45,18 @@ public class OfferUpgradeFlagTests
 
         var offers = engine.State.PendingCardOffers;
         Assert.Contains(offers, offer => offer.Upgraded.Any(upgraded => upgraded));
-        foreach (var offer in offers)
+        for (int screen = 0; screen < offers.Count; screen++)
         {
+            var offer = offers[screen];
             Assert.Equal(offer.Cards.Length, offer.Upgraded.Length);
             for (int i = 0; i < offer.Cards.Length; i++)
             {
-                // `RollForUpgrade` adds the act scaling only when the card is not Rare.
-                if (Rare(offer.Cards[i]))
-                {
-                    Assert.False(offer.Upgraded[i]);
-                }
+                // The Crucible upgrades its three uses' worth of screens whole; after that only
+                // the eggs' types are upgraded, and there is no roll to land one on a Rare.
+                var def = GeneratedData.Cards.Get(offer.Cards[i]);
+                bool egg = def.Type is CardType.Attack or CardType.Skill;
+                bool expected = def.Upgradable && (screen < 3 || egg);
+                Assert.Equal(expected, offer.Upgraded[i]);
             }
         }
     }
@@ -73,6 +85,8 @@ public class OfferUpgradeFlagTests
         var state = engine.State;
         RunNonCombatEffects.ApplyRelicPickup(state, RunConstants.RelicSeaGlass);
         state.Phase = RunPhase.TransformSelect;
+        // No IsCardReward on Sea Glass' options: the eggs upgrade the grid, the Crucible does not.
+        Assert.Equal(3, state.Relics.Single(r => r.DefId == RunConstants.RelicSilverCrucible).Counter);
         int pick = Array.IndexOf(state.PendingOfferUpgraded, true);
         Assert.True(pick >= 0);
         int cardId = state.PendingOfferCards[pick];

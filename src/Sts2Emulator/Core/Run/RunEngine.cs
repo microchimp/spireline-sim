@@ -4975,18 +4975,16 @@ public sealed class RunEngine
                     State,
                     State.PendingOfferCards[action],
                     upgraded,
-                    action == State.PendingOfferSwiftIndex
+                    State.PendingOfferSwiftIndexes.Contains(action)
                 )
                 : new CardInstance(State.PendingOfferCards[action], upgraded)
         );
-        if (action == State.PendingOfferSwiftIndex)
-        {
-            State.PendingOfferSwiftIndex = -1;
-        }
-        else if (action < State.PendingOfferSwiftIndex)
-        {
-            State.PendingOfferSwiftIndex--;
-        }
+        State.PendingOfferSwiftIndexes =
+        [
+            .. State
+                .PendingOfferSwiftIndexes.Where(index => index != action)
+                .Select(index => index > action ? index - 1 : index),
+        ];
 
         State.PendingOfferCards = [.. State.PendingOfferCards.Where((_, index) => index != action)];
         State.PendingOfferUpgraded =
@@ -5019,7 +5017,7 @@ public sealed class RunEngine
     {
         State.PendingOfferCards = [];
         State.PendingOfferUpgraded = [];
-        State.PendingOfferSwiftIndex = -1;
+        State.PendingOfferSwiftIndexes = [];
         State.PendingOfferHooked = false;
         State.PendingOfferPicks = 0;
         State.PendingOfferOptional = false;

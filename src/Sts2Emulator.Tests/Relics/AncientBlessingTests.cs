@@ -209,18 +209,20 @@ public class AncientBlessingTests
     }
 
     /// <summary>
-    /// Uniform odds with NoRarityModification means no rarity roll, so each card costs a
-    /// pick and an upgrade roll — two draws, thirty across the five screens.
+    /// <c>ForNonCombatWithUniformOdds</c> is Uniform odds AND <c>NoUpgradeRoll</c>, so with
+    /// NoRarityModification added there is no rarity roll and no upgrade roll: each card costs
+    /// its pick alone — fifteen draws across the five screens. (Thirty was the guess, and every
+    /// real Glass Eye run, taken at Orobas, was a screen out from the first of the five.)
     /// </summary>
     [Fact]
-    public void GlassEyeSpendsTwoDrawsPerCard()
+    public void GlassEyeSpendsOneDrawPerCard()
     {
         var engine = Pristine.Clone();
         int before = engine.State.PlayerRng.Rewards.CallCount;
 
         RunNonCombatEffects.ApplyRelicPickup(engine.State, RunConstants.RelicGlassEye);
 
-        Assert.Equal(before + 30, engine.State.PlayerRng.Rewards.CallCount);
+        Assert.Equal(before + 15, engine.State.PlayerRng.Rewards.CallCount);
     }
 
     /// <summary>
@@ -326,9 +328,9 @@ public class AncientBlessingTests
         }
     }
 
-    /// <summary>Thirty draws, the same budget as Glass Eye: a pick and an upgrade roll each.</summary>
+    /// <summary>Fifteen draws, the same budget as Glass Eye: the pick alone (NoUpgradeRoll).</summary>
     [Fact]
-    public void SeaGlassSpendsTwoDrawsPerCard()
+    public void SeaGlassSpendsOneDrawPerCard()
     {
         var engine = Pristine.Clone();
         RunNonCombatEffects.GenerateAncientOptions(engine.State, RunConstants.AncientOrobas);
@@ -336,7 +338,7 @@ public class AncientBlessingTests
 
         RunNonCombatEffects.ApplyRelicPickup(engine.State, RunConstants.RelicSeaGlass);
 
-        Assert.Equal(before + 30, engine.State.PlayerRng.Rewards.CallCount);
+        Assert.Equal(before + 15, engine.State.PlayerRng.Rewards.CallCount);
     }
 
     /// <summary>

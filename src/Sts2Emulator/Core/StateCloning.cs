@@ -469,7 +469,7 @@ public static class StateCloning
             BundleOffer = (int[])state.BundleOffer.Clone(),
             SelectedBundle = state.SelectedBundle,
             PendingOfferPicks = state.PendingOfferPicks,
-            PendingOfferSwiftIndex = state.PendingOfferSwiftIndex,
+            PendingOfferSwiftIndexes = [.. state.PendingOfferSwiftIndexes],
             PendingOfferHooked = state.PendingOfferHooked,
             PendingOfferOptional = state.PendingOfferOptional,
             EventPage = state.EventPage,

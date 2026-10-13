@@ -871,9 +871,10 @@ public static class RunNonCombatEffects
                     : RunFollowUp.None;
             case RunConstants.RelicSeaGlass:
                 // CardsVar(15) / 3 = five cards of each rarity from the OTHER character's
-                // pool, all fifteen offered on one grid. Uniform odds with
-                // NoRarityModification, so each card is a pick and an upgrade roll: thirty
-                // draws, the same budget as Glass Eye.
+                // pool, all fifteen offered on one grid. `ForNonCombatWithUniformOdds`
+                // (NoUpgradeRoll) with NoRarityModification and NoCardPoolModifications:
+                // each card is the pick alone, fifteen draws, one factory call per rarity
+                // and so one pass of the hooks per call.
                 //
                 // The screen is a 0-to-15 multi-select with a confirm
                 // (`CardSelectorPrefs(prompt, 0, list.Count)`): MinSelect ZERO, so the
@@ -882,29 +883,40 @@ public static class RunNonCombatEffects
                 // closes itself when the picks run out. Closes O16.
                 var seaGlass = new[] { CardRarity.Common, CardRarity.Uncommon, CardRarity.Rare }
                     .Select(rarity =>
-                        RunRewardGenerator.GenerateFixedRarityCardOffer(
+                        RunRewardGenerator.CreateForReward(
                             state,
                             5,
-                            rarity,
-                            state.PlayerRng.Rewards,
                             RunConstants.OtherCharacterPoolFor(
                                 state.Character,
                                 Math.Max(0, state.SeaGlassCharacter)
-                            )
+                            ),
+                            CardCreationFlags.NoUpgradeRoll
+                                | CardCreationFlags.NoRarityModification
+                                | CardCreationFlags.NoCardPoolModifications,
+                            rarity
                         )
                     )
                     .ToList();
-                state.PendingOfferCards = [.. seaGlass.SelectMany(offer => offer.Cards)];
-                state.PendingOfferUpgraded = [.. seaGlass.SelectMany(offer => offer.Upgraded)];
-                state.PendingOfferPicks = state.PendingOfferCards.Length;
+                RunRewardGenerator.FillRewardGrid(
+                    state,
+                    seaGlass,
+                    seaGlass.Sum(set => set.Cards.Length),
+                    hooked: true
+                );
                 state.PendingOfferOptional = true;
                 return RunFollowUp.PreRolledCardReward;
             case RunConstants.RelicGlassEye:
                 // FIVE card rewards on one screen — Common, Common, Uncommon, Uncommon,
-                // Rare — each offering three of that rarity. Uniform odds with
-                // NoRarityModification, so there is no rarity roll: each card is a pick
-                // and an upgrade roll, two draws, thirty in all. No RngOverride, so they
-                // come off PlayerRng.Rewards like any other card reward.
+                // Rare — each offering three of that rarity. `ForNonCombatWithUniformOdds`
+                // carries NoUpgradeRoll and the relic adds NoRarityModification, and the
+                // CardReward its IsCardReward: no rarity roll and no upgrade roll, so each
+                // card is the pick alone -- fifteen draws, not thirty (real runs: every
+                // Glass Eye run was a screen out from the first of the five). The hooks
+                // act on each screen. No RngOverride: PlayerRng.Rewards.
+                const CardCreationFlags glassEyeFlags =
+                    CardCreationFlags.NoUpgradeRoll
+                    | CardCreationFlags.NoRarityModification
+                    | CardCreationFlags.IsCardReward;
                 state.PendingCardOffers.Clear();
                 foreach (
                     CardRarity rarity in new[]
@@ -918,11 +930,12 @@ public static class RunNonCombatEffects
                 )
                 {
                     state.PendingCardOffers.Add(
-                        RunRewardGenerator.GenerateFixedRarityCardOffer(
+                        RunRewardGenerator.CreateForReward(
                             state,
                             3,
-                            rarity,
-                            state.PlayerRng.Rewards
+                            RunRewardGenerator.OwnRewardPool(state, glassEyeFlags),
+                            glassEyeFlags,
+                            rarity
                         )
                     );
                 }

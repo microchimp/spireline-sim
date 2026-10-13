@@ -137,7 +137,7 @@ public class EventCardFactoryTests
         Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
 
         Assert.Equal(nicheBefore + 1, engine.State.Rng.Niche.CallCount);
-        int swift = engine.State.PendingOfferSwiftIndex;
+        int swift = Assert.Single(engine.State.PendingOfferSwiftIndexes);
         Assert.InRange(swift, 0, engine.State.PendingOfferCards.Length - 1);
         int taken = engine.State.PendingOfferCards[swift];
         Assert.Equal(0, engine.Step(swift, -1, out _, out _, out _));
@@ -295,6 +295,34 @@ public class EventCardFactoryTests
                 Assert.Equal(GeneratedData.Cards.Get(offer.Cards[i]).Upgradable, offer.Upgraded[i]);
             }
         }
+    }
+
+    [Fact]
+    public void SeaGlassMakesThreeSetsAndWingCharmEnchantsOneOptionInEach()
+    {
+        var engine = new RunEngine();
+        engine.Reset("ABCDEF");
+        engine.State.Relics.Add(new RelicInstance(RelicEffects.WingCharm));
+        RunNonCombatEffects.GenerateAncientOptions(engine.State, RunConstants.AncientOrobas);
+        int nicheBefore = engine.State.Rng.Niche.CallCount;
+        int rewardsBefore = engine.State.PlayerRng.Rewards.CallCount;
+
+        RunNonCombatEffects.ApplyRelicPickup(engine.State, RunConstants.RelicSeaGlass);
+
+        // Fifteen picks and no upgrade rolls; one Niche draw per five-card set.
+        Assert.Equal(rewardsBefore + 15, engine.State.PlayerRng.Rewards.CallCount);
+        Assert.Equal(15, engine.State.PendingOfferCards.Length);
+        Assert.Equal(nicheBefore + 3, engine.State.Rng.Niche.CallCount);
+        var swift = engine.State.PendingOfferSwiftIndexes;
+        Assert.Equal(3, swift.Count);
+        Assert.Equal(new[] { 0, 1, 2 }, swift.Select(index => index / 5));
+
+        // Taking an earlier card shifts the others down by one.
+        engine.State.Phase = RunPhase.TransformSelect;
+        int other = Enumerable.Range(0, 15).First(i => !swift.Contains(i));
+        var expected = swift.Select(index => index > other ? index - 1 : index).ToList();
+        Assert.Equal(0, engine.Step(other, -1, out _, out _, out _));
+        Assert.Equal(expected, engine.State.PendingOfferSwiftIndexes);
     }
 
     [Fact]

@@ -730,10 +730,10 @@ public sealed class RunState
     public bool[] PendingOfferUpgraded = [];
 
     /// <summary>
-    /// The option of <see cref="PendingOfferCards" /> Wing Charm enchanted when the grid was made
-    /// (-1 for none). Kept in step as picked cards leave the grid.
+    /// The options of <see cref="PendingOfferCards" /> Wing Charm enchanted when the grid was made
+    /// (one per set the grid was made from). Kept in step as picked cards leave the grid.
     /// </summary>
-    public int PendingOfferSwiftIndex = -1;
+    public List<int> PendingOfferSwiftIndexes = [];
 
     /// <summary>
     /// The grid was made by <c>CardFactory.CreateForReward</c> with its hooks on, so the chosen

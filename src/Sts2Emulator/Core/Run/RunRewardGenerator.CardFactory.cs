@@ -207,11 +207,36 @@ public static partial class RunRewardGenerator
     /// <summary>A "choose N of these" grid, made by <see cref="CreateForReward" />.</summary>
     internal static void OpenRewardGrid(RunState state, CardOffer offer, int picks, bool hooked)
     {
-        state.PendingOfferCards = offer.Cards;
-        state.PendingOfferUpgraded = offer.Upgraded;
-        state.PendingOfferSwiftIndex = offer.EnchantIndex;
+        FillRewardGrid(state, [offer], picks, hooked);
+        state.Phase = RunPhase.TransformSelect;
+    }
+
+    /// <summary>
+    /// One grid over several sets, each made by its own <see cref="CreateForReward" /> call (Sea
+    /// Glass: three of five), in the order they were made. The caller moves to the grid's screen.
+    /// </summary>
+    internal static void FillRewardGrid(
+        RunState state,
+        IReadOnlyList<CardOffer> sets,
+        int picks,
+        bool hooked
+    )
+    {
+        state.PendingOfferCards = [.. sets.SelectMany(set => set.Cards)];
+        state.PendingOfferUpgraded = [.. sets.SelectMany(set => set.Upgraded)];
+        state.PendingOfferSwiftIndexes = [];
+        int start = 0;
+        foreach (var set in sets)
+        {
+            if (set.EnchantIndex >= 0)
+            {
+                state.PendingOfferSwiftIndexes.Add(start + set.EnchantIndex);
+            }
+
+            start += set.Cards.Length;
+        }
+
         state.PendingOfferHooked = hooked;
         state.PendingOfferPicks = picks;
-        state.Phase = RunPhase.TransformSelect;
     }
 }
