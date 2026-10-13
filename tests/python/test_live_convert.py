@@ -1370,7 +1370,6 @@ class PowerTranslationTests(unittest.TestCase):
             set(powers._UNCARRIED_HALF)
             | set(powers.HISTORY_READS)
             | set(powers._PER_PLAY_SELF_DAMAGE)
-            | {powers._PANACHE_ARMED[0]}
         )
         for entry in tables:
             self.assertIsNotNone(powers.buff_id(entry), entry)
