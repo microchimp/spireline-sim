@@ -3,7 +3,7 @@
 
     python referee/batch.py --name <name> --fights 100 [--start 0] [--timeout 5400]
 
-Run from the fork's root. Writes D:/spireline/referee/jobs/<name>.{json,out.json,emu.json,summary.txt}
+Run from the fork's root. Writes D:/spireline/referee/jobs/<name>.{json,out.json,emu.json,summary.txt}, <name>.packs/ (context_pack)
 and prints the summary: fights identical, fights diverging grouped by the first differing field,
 and errors. Seeds are deterministic from --start, so a batch can be re-run exactly.
 """
@@ -105,6 +105,10 @@ def main() -> int:
     for field, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         lines.append(f"  {field}: {len(items)}  e.g. {items[0]}")
     lines += ["  " + e for e in errors[:10]]
+    packs = JOBS / f"{a.name}.packs"  # one context pack per likely bug, plus an index
+    pk = subprocess.run([sys.executable, "-m", "tools.fidelity.context_pack", str(out), str(emu), "--out", str(packs)],
+                        capture_output=True, text=True, cwd=ROOT, check=False)
+    lines.append(f"context packs: {packs / 'index.md'}" if pk.returncode == 0 else f"context packs failed: {pk.stderr[-300:]}")
     text = "\n".join(lines)
     (JOBS / f"{a.name}.summary.txt").write_text(text + "\n\n" + cmp, encoding="utf-8")
     print(text)
