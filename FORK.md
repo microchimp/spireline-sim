@@ -45,6 +45,8 @@ code must never see (review condition E12).
 - `checks.py`: oracle-free checks over every encounter, one child process each (condition E10):
   determinism (condition E11), faithful clones, resampling changes only hidden state, and the
   snapshot round trip.
+- `reanchor_compare.py`: per-step verdicts when every recorded step of a referee fight is tried from the
+  game's own state (`EmuDump reanchor`); see `referee/RUNBOOK.md`.
 
 ```
 python -m tools.fidelity.checks --emu <emulator checkout with out/ built> --encounters all --seeds 4

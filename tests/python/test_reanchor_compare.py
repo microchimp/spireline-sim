@@ -1,0 +1,135 @@
+"""tools.fidelity.reanchor_compare: per-step verdicts of a re-anchored fight.
+
+Synthetic fights in the shapes the referee and `EmuDump reanchor` write. A step that matches verifies
+its card whatever came before it; a divergence is blamed on its card only when the step before it
+matched; an end of turn whose enemies differ ends the fight's re-anchoring (or, in "plays" mode, only
+its later ends of turn); and powers the emulator models in pieces never cause a difference.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tools.fidelity import coverage  # noqa: E402
+from tools.fidelity import fight_compare as fc
+from tools.fidelity import reanchor_compare as rc
+
+ID_MAP = json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8"))
+NM = fc.names(ID_MAP)
+CID, EID = ID_MAP["cards"], ID_MAP["enemies"]
+STRIKE, SLUG = "STRIKE_IRONCLAD", "CORPSE_SLUG"
+KEYS = ({"STRENGTH", "WEAK", "RAVENOUS"}, {"CRIMSON_MANTLE_BLOCK"})
+
+
+def game_state(hp=27, php=70, powers=(), player_powers=()):
+    return {"in_combat": True, "round": 1,
+            "player": {"hp": php, "max_hp": 80, "block": 0, "energy": 3, "powers": [list(p) for p in player_powers]},
+            "hand": [[STRIKE, False]], "draw": [], "discard": [], "exhaust": [],
+            "enemies": [{"name": SLUG, "hp": hp, "max_hp": 27, "block": 0, "powers": [list(p) for p in powers]}],
+            "rng": {"Shuffle": {"seed": 1, "counter": 1}}}
+
+
+def emu_state(hp=27, php=70, buffs=(), player_buffs=()):
+    card = {"def_id": CID["StrikeIronclad"], "upgraded": False}
+    return {"in_combat": True, "draw_order": [], "rng": {"Shuffle": 1},
+            "snapshot": {"player": {"hp": php, "max_hp": 80, "block": 0, "energy": 3,
+                                    "buffs": [{"name": n, "amount": a} for n, a in player_buffs]},
+                         "piles": {"hand": [card], "discard": [], "exhaust": []},
+                         "enemies": [{"def_id": EID["CorpseSlug"], "hp": hp, "block": 0,
+                                      "buffs": [{"name": n, "amount": a} for n, a in buffs]}]}}
+
+
+PLAY = {"kind": "play", "hand_index": 0, "card": STRIKE, "target": 0, "target_slot": 0}
+END = {"kind": "end_turn"}
+
+
+def fight(rows):
+    """rows: (action, game state kwargs, emulator state kwargs); the first row is the start."""
+    g = {"seed": "T", "steps": [{"action": a, "state": game_state(**gk)} for a, gk, _ in rows]}
+    e = {"seed": "T", "steps": [{"action": a, "state": emu_state(**ek)} for a, _, ek in rows]}
+    return g, e
+
+
+def verdicts(rows, **kw):
+    g, e = fight(rows)
+    return rc.analyse(g, e, NM, **kw)
+
+
+class ReanchorCompareTest(unittest.TestCase):
+    def test_every_step_verifies_its_card_even_after_a_divergence(self):
+        a = verdicts([(None, {}, {}),
+                      (PLAY, dict(hp=21), dict(hp=21)),
+                      (PLAY, dict(hp=15), dict(hp=14)),   # diverges: primary
+                      (PLAY, dict(hp=9), dict(hp=9)),     # the next step was anchored again and matches
+                      (PLAY, dict(hp=3), dict(hp=2))])    # diverges: primary again (the step before matched)
+        self.assertEqual([s["verdict"] for s in a["steps"]], ["match", "match", "diverge", "match", "diverge"])
+        self.assertEqual([s["primary"] for s in a["steps"]], [False, False, True, False, True])
+        self.assertEqual(a["first_divergence"], 2)
+        sm = rc.summarise([a])["totals"]
+        self.assertEqual((sm["verified"], sm["verified_before"], sm["diverging"]), (2, 1, 2))
+
+    def test_second_divergence_in_a_row_is_knock_on(self):
+        a = verdicts([(None, {}, {}), (PLAY, dict(hp=21), dict(hp=20)), (PLAY, dict(hp=15), dict(hp=13))])
+        self.assertEqual([s["primary"] for s in a["steps"] if s["j"]], [True, False])
+
+    def test_enemy_difference_at_end_of_turn_stops_the_fight(self):
+        rows = [(None, {}, {}), (END, dict(hp=27, php=60), dict(hp=27, php=64)), (PLAY, dict(hp=21), dict(hp=21))]
+        a = verdicts(rows)
+        self.assertEqual(len(a["steps"]), 2)  # the end of turn is judged, the play after it is not tried
+        self.assertIn("enemy move/intent", a["stop"]["why"])
+        self.assertEqual(rc.summarise([a])["totals"]["not_reanchored"], 1)
+
+    def test_plays_mode_goes_on_and_leaves_later_ends_of_turn_unjudged(self):
+        rows = [(None, {}, {}), (END, dict(php=60), dict(php=64)), (PLAY, dict(hp=21), dict(hp=21)),
+                (END, dict(hp=21, php=50), dict(hp=21, php=44))]
+        a = verdicts(rows, after_desync="plays")
+        self.assertEqual([s["verdict"] for s in a["steps"]], ["match", "diverge", "match", "unjudged"])
+        self.assertIsNone(a["stop"])
+        sm = rc.summarise([a])["totals"]
+        self.assertEqual((sm["reanchored"], sm["verified"], sm["not_reanchored"]), (2, 1, 1))
+
+    def test_player_side_power_at_end_of_turn_is_not_an_enemy_move(self):
+        game = dict(php=60, player_powers=[("BEACON_OF_HOPE_POWER", 1)])
+        a = verdicts([(None, {}, {}), (END, game, dict(php=60)), (PLAY, dict(hp=21), dict(hp=21))])
+        self.assertIsNone(a["stop"])
+        self.assertEqual(a["steps"][1]["verdict"], "diverge")
+
+    def test_enemy_applied_debuff_at_end_of_turn_stops(self):
+        a = verdicts([(None, {}, {}), (END, dict(player_powers=[("WEAK_POWER", 1)]), {})])
+        self.assertIsNotNone(a["stop"])
+
+    def test_powers_the_emulator_models_in_pieces_never_differ(self):
+        game = dict(hp=21, player_powers=[("CRIMSON_MANTLE_POWER", 8)])
+        emu = dict(hp=21, player_buffs=[("CrimsonMantleBlock", 8)])
+        strict = verdicts([(None, {}, {}), (PLAY, game, emu)])
+        self.assertEqual(strict["steps"][1]["verdict"], "diverge")
+        g, e = fight([(None, {}, {}), (PLAY, game, emu)])
+        masked = rc.analyse(g, e, NM, keys=KEYS)
+        self.assertEqual(masked["steps"][1]["verdict"], "match")
+        self.assertEqual(masked["first_divergence"], 1)  # the strict test still sees it, as the plain replay does
+
+    def test_unrebuildable_state_ends_the_fight_before_the_step(self):
+        g, e = fight([(None, {}, {}), (PLAY, dict(hp=21), dict(hp=21))])
+        e["steps"][1] = {"action": PLAY, "anchor_error": "no emulator id for BOGUS"}
+        a = rc.analyse(g, e, NM)
+        self.assertIn("BOGUS", a["stop"]["why"])
+        self.assertEqual(a["steps"][-1]["j"], 0)
+
+    def test_coverage_credits_matches_and_primary_divergences_only(self):
+        a = verdicts([(None, {}, {}), (PLAY, dict(hp=21), dict(hp=21)), (PLAY, dict(hp=15), dict(hp=14)),
+                      (PLAY, dict(hp=9), dict(hp=7))])
+        cov = {"cards": {}}
+        out = coverage.update_reanchored(cov, [a], "abc")
+        self.assertEqual(cov["cards"][STRIKE]["verified"], 1)
+        self.assertEqual(cov["cards"][STRIKE]["suspect_count"], 1)  # the third step is a knock-on
+        self.assertEqual(out["new_suspects"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

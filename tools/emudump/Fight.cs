@@ -7,39 +7,53 @@ using Sts2Emulator.Core.Run;
 
 static class Fight
 {
-    public static JsonObject Replay(JsonObject game)
+    /// <summary>
+    /// The run up to the first combat, as the referee drove it: deck additions, the Neow pick,
+    /// card choices, the walk into the first room. Fills <c>seed</c> and <c>neow_options</c> of
+    /// <paramref name="outp"/> and returns the engine with the fight open.
+    /// </summary>
+    internal static RunEngine EnterRoom(JsonObject game, JsonObject outp)
     {
         var e = new RunEngine();
         int asc = (int)game["ascension"]!;
         e.Reset((string)game["seed"]!, asc);
         var s = e.State;
-        var outp = new JsonObject { ["seed"] = s.StringSeed, ["neow_options"] = new JsonArray(s.NeowOptions.Select(i => (JsonNode)i).ToArray()) };
+        outp["seed"] = s.StringSeed;
+        outp["neow_options"] = new JsonArray(s.NeowOptions.Select(i => (JsonNode)i).ToArray());
+        // The referee's deck additions, appended the same way (before Neow).
+        foreach (var name in game["deck_add"]?.AsArray() ?? new JsonArray())
+        {
+            RunNonCombatEffects.AddCardToDeck(s, new CardInstance(CardIdBySnake((string)name!), Upgraded: false));
+        }
+
+        e.Step((int)game["neow_pick"]!, -1, out _, out _, out _);
+        int guard = 0;
+        while (s.Phase != RunPhase.Map && s.Phase != RunPhase.Combat && guard++ < 10)
+        {
+            e.Step(0, -1, out _, out _, out _);  // first offered card, as the referee's selector
+            if (s.Phase == RunPhase.BundleSelect)
+            {
+                e.Step(RunConstants.BundleConfirmAction, -1, out _, out _, out _);  // bundle 0 picked; confirm
+            }
+        }
+
+        var room = game["room"]!.AsArray();
+        (int Col, int Row) want = ((int)room[0]!, (int)room[1]!);
+        int idx = Array.FindIndex(s.MapOptionCoords, c => c == want);
+        if (idx < 0) throw new InvalidOperationException($"room {want} not offered; phase {s.Phase}");
+        e.Step(idx, -1, out _, out _, out _);
+        return e;
+    }
+
+    public static JsonObject Replay(JsonObject game)
+    {
+        var outp = new JsonObject();
         var steps = new JsonArray();
         outp["steps"] = steps;
         try
         {
-            // The referee's deck additions, appended the same way (before Neow).
-            foreach (var name in game["deck_add"]?.AsArray() ?? new JsonArray())
-            {
-                RunNonCombatEffects.AddCardToDeck(s, new CardInstance(CardIdBySnake((string)name!), Upgraded: false));
-            }
-
-            e.Step((int)game["neow_pick"]!, -1, out _, out _, out _);
-            int guard = 0;
-            while (s.Phase != RunPhase.Map && s.Phase != RunPhase.Combat && guard++ < 10)
-            {
-                e.Step(0, -1, out _, out _, out _);  // first offered card, as the referee's selector
-                if (s.Phase == RunPhase.BundleSelect)
-                {
-                    e.Step(RunConstants.BundleConfirmAction, -1, out _, out _, out _);  // bundle 0 picked; confirm
-                }
-            }
-
-            var room = game["room"]!.AsArray();
-            (int Col, int Row) want = ((int)room[0]!, (int)room[1]!);
-            int idx = Array.FindIndex(s.MapOptionCoords, c => c == want);
-            if (idx < 0) throw new InvalidOperationException($"room {want} not offered; phase {s.Phase}");
-            e.Step(idx, -1, out _, out _, out _);
+            var e = EnterRoom(game, outp);
+            var s = e.State;
             steps.Add(new JsonObject { ["action"] = null, ["state"] = Dump(e) });
             var gameChoices = (game["choices"]?.AsArray() ?? new JsonArray()).ToList();
             int stepNo = 0;
@@ -64,7 +78,7 @@ static class Fight
                 var chosen = new JsonArray();
                 foreach (var choice in gameChoices.Where(c => (int?)c!["step"] == stepNo && (string?)c["kind"] == "cards"))
                 {
-                    chosen.Add(ApplyChoice(e, choice!.AsObject()));
+                    chosen.Add(ApplyChoice(() => s.ActiveCombat, i => e.Step(i, -1, out _, out _, out _), choice!.AsObject()));
                 }
 
                 if (s.ActiveCombat?.PendingSelection is { } extra)
@@ -88,24 +102,23 @@ static class Fight
     /// selection's candidates, in whichever pile they live), then decline the rest if the
     /// game took fewer than the screen allows.
     /// </summary>
-    static JsonObject ApplyChoice(RunEngine e, JsonObject choice)
+    internal static JsonObject ApplyChoice(Func<CombatState?> active, Action<int> step, JsonObject choice)
     {
-        var s = e.State;
         var options = choice["options"]!.AsArray().Select(x => (string)x!).ToList();
         var picked = choice["picked"]!.AsArray().Select(x => options[(int)x!]).ToList();
         var log = new JsonObject { ["game_options"] = choice["options"]!.DeepClone(), ["game_picked"] = choice["picked"]!.DeepClone() };
         foreach (var want in picked)
         {
-            if (s.ActiveCombat?.PendingSelection is not { } sel) { log["error"] = "no selection open for a pick"; return log; }
-            var ids = CandidateIds(s.ActiveCombat, sel);
+            if (active()?.PendingSelection is not { } sel) { log["error"] = "no selection open for a pick"; return log; }
+            var ids = CandidateIds(active()!, sel);
             int idx = ids.FindIndex(id => id == CardIdBySnake(want));
             if (idx < 0) { log["error"] = $"{want} not among emulator candidates"; log["emu_candidates"] = new JsonArray(ids.Select(i => (JsonNode)i).ToArray()); return log; }
-            e.Step(idx, -1, out _, out _, out _);
+            step(idx);
         }
 
-        if (s.ActiveCombat?.PendingSelection is { Skippable: true } rest)
+        if (active()?.PendingSelection is { Skippable: true } rest)
         {
-            e.Step(rest.Candidates.Count, -1, out _, out _, out _);  // decline: one past the last candidate
+            step(rest.Candidates.Count);  // decline: one past the last candidate
         }
 
         return log;
@@ -124,7 +137,7 @@ static class Fight
     static Dictionary<string, int>? _bySnake;
 
     /// <summary>Game card id (UPPER_SNAKE) to the emulator's def id, through data/id_map.json.</summary>
-    static int CardIdBySnake(string snake)
+    internal static int CardIdBySnake(string snake)
     {
         if (_bySnake == null)
         {

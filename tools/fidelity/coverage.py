@@ -93,3 +93,30 @@ def summary(cov: dict, candidates: list, commit: str) -> str:
     suspects = sorted(c for c in candidates if cards.get(c, {}).get("suspect_commit") == commit)
     return (f"coverage: {len(candidates)} cards, {verified} verified >= {VERIFIED_ENOUGH} plays, {untested} untested, "
             f"{len(suspects)} quarantined: {', '.join(suspects[:12])}{' ...' if len(suspects) > 12 else ''}")
+
+
+def update_reanchored(cov: dict, analyses: list, commit: str) -> dict:
+    """Fold re-anchored fights in (tools/fidelity/reanchor_compare.py ``analyse``); replaces ``update``.
+
+    Every re-anchored play that matches verifies its card, wherever in the fight it was. A card is
+    suspect only for a *primary* divergence (the step before it matched), because a later one may be
+    a knock-on of hidden state an earlier divergence left wrong. Returns counts of what changed.
+    """
+    cards = cov.setdefault("cards", {})
+    new_suspects = verified = 0
+    for an in analyses:
+        for st in an["steps"]:
+            card = st["card"]
+            if st["j"] == 0 or not card or card == "END_TURN":
+                continue
+            c = cards.setdefault(card, {})
+            if st["verdict"] == "match":
+                c["verified"] = c.get("verified", 0) + 1
+                verified += 1
+            elif st["primary"]:
+                if c.get("suspect_commit") != commit:
+                    new_suspects += 1
+                c["suspect_commit"] = commit
+                c["suspect_seed"] = an["seed"]
+                c["suspect_count"] = c.get("suspect_count", 0) + 1
+    return {"verified_plays": verified, "new_suspects": new_suspects}
