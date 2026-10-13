@@ -108,7 +108,7 @@ def main() -> int:
     ap.add_argument("--spares", type=int, default=1, choices=(0, 1), help="hot spares booted and held")
     ap.add_argument("--run-dir", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=None, help="merged results, runs-mode format (default <run-dir>/results.json)")
-    ap.add_argument("--stall-s", type=int, default=None, help="driver watchdog: seconds without progress (default 20)")
+    ap.add_argument("--stall-s", type=int, default=None, help="driver watchdog: seconds (and 600 frames) without progress (default 20)")
     ap.add_argument("--idle-frames", type=float, default=None)
     ap.add_argument("--preload", action="store_true", help="leave the game's asset preloader on (default off, as batch.py)")
     ap.add_argument("--slow-reset", action="store_true", help="return to the main menu between fights (default fast_reset)")

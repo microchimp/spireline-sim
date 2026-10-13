@@ -82,6 +82,8 @@ running between fights (no 10 s boot per session), so cost per fight is the figh
 
 - Safety checks are `run_referee.py`'s (known `sts2.dll` hash, `override.cfg`, scratch `APPDATA`, real profile untouched);
   one `netstat` call per second covers every server. It exits 1 if any server opened a connection.
+- The driver's watchdog arms once a server is ready and counts frames as well as seconds (`driver/Watchdog.cs`): it exits after
+  `stall_s` seconds and 600 frames without progress, or 2 x `stall_s` without a frame, so a slow, starved server is not killed.
 - A server that dies or hangs is replaced; the spec it held goes back to the inbox once and is recorded as `stalled` if it
   kills a second server. One hot spare is kept booted (`--spares 0` turns it off). Servers run at BelowNormal priority.
 - `--verify-against <runs-mode out.json>` compares each result (ignoring timing) with the reference, spec by spec.
@@ -89,7 +91,7 @@ running between fights (no 10 s boot per session), so cost per fight is the figh
   session can install its own driver without waiting for the shared copy's `mods/*.dll` to unlock.
 - Run files: `<game>/../serve/<ts>/{inbox,out/s*.jsonl,scratch/s*,results.json,results.jsonl,summary.json}`.
 - Driver side (`driver/Server.cs`): job `{"out": "x.jsonl", "inbox": "<dir>", ...}` instead of `"runs"`; claim by renaming
-  `<id>.json` to `<id>.json.taken.<pid>`, append one line per fight, `STOP` in the inbox ends it.
+  `<id>.json` to `<id>.json.taken.<pid>` under a `<id>.json.lock` (`driver/InboxClaim.cs`; a bare rename is not exclusive on Windows), append one line per fight, `STOP` in the inbox ends it.
 
 ## Re-anchoring (every recorded step tested on its own)
 
