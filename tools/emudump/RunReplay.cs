@@ -81,7 +81,7 @@ static class RunReplay
             decisions.Add(od);
             try
             {
-                Apply(e, d, od, fights);
+                Apply(ref e, d, od, fights);
             }
             catch (Exception ex)
             {
@@ -107,7 +107,7 @@ static class RunReplay
         (od["actions"] ??= new JsonArray()).AsArray().Add(action);
     }
 
-    static void Apply(RunEngine e, JsonObject d, JsonObject od, bool fights)
+    static void Apply(ref RunEngine e, JsonObject d, JsonObject od, bool fights)
     {
         var s = e.State;
         switch ((string)d["screen"]!)
@@ -159,7 +159,7 @@ static class RunReplay
             }
 
             case "combat":
-                Combat(e, d, od, fights);
+                Combat(ref e, d, od, fights);
                 return;
             case "rewards":
                 Rewards(e, d, od);
@@ -204,6 +204,19 @@ static class RunReplay
                 e.WriteActionMask(mask);
                 od["enabled"] = new JsonArray(Enumerable.Range(0, 8).Where(i => mask[i] != 0).Select(i => (JsonNode)i).ToArray());
                 Step(e, (int)d["choice_index"]!, od, $"event option {(string?)d["choice"]}");
+                Selections(e, d, od);
+                return;
+            }
+
+            case "fake_merchant":
+            {
+                // The stall's six relics are its actions 0..5; leaving is FakeMerchantLeaveAction.
+                Expect(e, RunPhase.FakeMerchant, "fake merchant");
+                od["offer"] = new JsonArray(RunNonCombatEffects.FakeMerchantStock(s)
+                    .Select((r, i) => r == 0 ? null : (JsonNode)new JsonArray(RunSnap.RelicEntry(r), RunNonCombatEffects.FakeMerchantPrice(s, i))).ToArray());
+                if (d["choice"] is JsonValue) { Step(e, RunConstants.FakeMerchantLeaveAction, od, "fake merchant leave"); return; }
+                if ((bool?)d["taken"] == false) return;
+                Step(e, (int)d["choice"]!["slot"]!, od, "fake merchant buy");
                 Selections(e, d, od);
                 return;
             }
@@ -438,8 +451,11 @@ static class RunReplay
     }
 
     /// <summary>The fight's recorded actions, replayed as Fight.Replay replays a fight spec.</summary>
-    static void Combat(RunEngine e, JsonObject d, JsonObject od, bool fights)
+    static void Combat(ref RunEngine e, JsonObject d, JsonObject od, bool fights)
     {
+        // A faithful copy from before the fight, in case the emulator's fight goes worse than the
+        // game's and has to be won without playing it (anchoring).
+        var beforeFight = Anchoring ? e.Clone() : null;
         var s = e.State;
         Expect(e, RunPhase.Combat, "combat");
         od["encounter"] = RunSnap.EncounterEntry(s.ActiveCombat?.EncounterId ?? 0);
@@ -473,8 +489,9 @@ static class RunReplay
             else if ((bool?)a["played"] != false)
                 e.Step((int)a["hand_index"]!, (int)a["target_slot"]!, out _, out _, out _);
             var chosen = new JsonArray();
+            var engine = e;
             foreach (var choice in gameChoices.Where(c => (int?)c!["step"] == stepNo && (string?)c["kind"] == "cards"))
-                chosen.Add(Fight.ApplyChoice(() => s.ActiveCombat, i => e.Step(i, -1, out _, out _, out _), choice!.AsObject()));
+                chosen.Add(Fight.ApplyChoice(() => s.ActiveCombat, i => engine.Step(i, -1, out _, out _, out _), choice!.AsObject()));
             if (fights) steps.Add(new JsonObject { ["action"] = a.DeepClone(), ["choices"] = chosen, ["state"] = FightDump(e) });
         }
 
@@ -497,7 +514,12 @@ static class RunReplay
         }
         else if (s.Phase == RunPhase.Complete)
         {
-            throw new Divergence("game won the fight; emulator died in it");
+            // The emulator's fight killed the player where the game's did not: go back to the
+            // fight's start and win it there without playing it.
+            e = beforeFight!;
+            s = e.State;
+            e.DebugResolveCombat();
+            anchored.Add("outcome (emulator died)");
         }
 
         Anchor(e, d["snap"]!.AsObject(), anchored);

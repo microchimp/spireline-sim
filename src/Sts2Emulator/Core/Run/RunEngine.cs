@@ -672,7 +672,7 @@ public sealed class RunEngine
                 var stall = RunNonCombatEffects.FakeMerchantStock(State);
                 for (int i = 0; i < stall.Count; i++)
                 {
-                    if (stall[i] != 0 && State.Gold >= RunConstants.FakeMerchantRelicCost)
+                    if (stall[i] != 0 && State.Gold >= RunNonCombatEffects.FakeMerchantPrice(State, i))
                     {
                         SetMask(mask, i);
                     }
@@ -4992,12 +4992,13 @@ public sealed class RunEngine
             return -1;
         }
 
-        if (stall[action] == 0 || State.Gold < RunConstants.FakeMerchantRelicCost)
+        int price = RunNonCombatEffects.FakeMerchantPrice(State, action);
+        if (stall[action] == 0 || State.Gold < price)
         {
             return -1;
         }
 
-        State.Gold -= RunConstants.FakeMerchantRelicCost;
+        State.Gold -= price;
         // Sold out rather than removed: the slot indices have to hold still for the rest
         // of the visit, and an emptied slot is also one fewer relic the fight would pay.
         int bought = stall[action];

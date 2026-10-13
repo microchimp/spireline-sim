@@ -2019,8 +2019,14 @@ public static class RunNonCombatEffects
                 break;
             case RunConstants.EventFakeMerchant:
                 // `BeforeEventStarted` shuffles the nine fakes and takes six, so the
-                // shelf exists before the player has done anything.
-                FakeMerchantStock(state);
+                // shelf exists before the player has done anything -- and prices each of the
+                // six as its entry is built, off the Shops stream. Pricing them drew nothing
+                // before, so Shops stood six behind the game's after every Fake Merchant (run
+                // referee, seed CNV3YDEJXD).
+                state.EventRandomOffer = FakeMerchantStock(state)
+                    .Select(_ => (int)Math.Round((float)RunConstants.FakeMerchantRelicCost
+                        * state.PlayerRng.Shops.NextFloat(0.85f, 1.15f)))
+                    .ToArray();
                 break;
         }
     }
@@ -2203,6 +2209,17 @@ public static class RunNonCombatEffects
         state.EventRelicStock ??= RollFakeMerchantStock(state);
         return state.EventRelicStock;
     }
+
+    /// <summary>
+    /// The stall's price for slot <paramref name="slot"/>: each `MerchantRelicEntry` prices its
+    /// relic as it is built (`SetModel` -> `CalcCost`), `round(MerchantCost * Shops.NextFloat(0.85,
+    /// 1.15))`, and every fake relic's MerchantCost is 50 (FakeMerchant.relicCost). Rolled with the
+    /// stall on entering, in stall order (<see cref="CalculateEventVars"/>).
+    /// </summary>
+    public static int FakeMerchantPrice(RunState state, int slot) =>
+        state.EventId == RunConstants.EventFakeMerchant && (uint)slot < (uint)state.EventRandomOffer.Length
+            ? state.EventRandomOffer[slot]
+            : RunConstants.FakeMerchantRelicCost;
 
     private static List<int> RollFakeMerchantStock(RunState state)
     {
