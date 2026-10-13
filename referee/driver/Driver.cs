@@ -101,6 +101,11 @@ public static partial class Driver
             // The game's own preloader switch: background asset sessions only warm a cache,
             // and back-to-back runs (worse with many copies) hang waiting on one. Off, assets
             // load on demand.
+            if ((bool?)job["fast_patches"] == true)
+            {
+                Patches.Apply();
+            }
+
             if ((bool?)job["no_preload"] == true)
             {
                 MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
@@ -177,6 +182,12 @@ public static partial class Driver
             ascension,
             seed);
         RunManager.Instance.SetUpNewSingleplayer(state, shouldSave: false);
+        if (Patches.Applied)
+        {
+            // SetUpNewSingleplayer turns the combat replay recorder on (RunManager.cs ~:416);
+            // nothing reads its output here.
+            RunManager.Instance.CombatReplayWriter.IsEnabled = false;
+        }
         MethodInfo startRun = typeof(NGame).GetMethod("StartRun", BindingFlags.NonPublic | BindingFlags.Instance)!;
         await (Task)startRun.Invoke(NGame.Instance, new object[] { state })!;
 

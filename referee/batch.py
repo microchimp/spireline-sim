@@ -78,7 +78,7 @@ def main() -> int:
         for i in range(k):
             shard = JOBS / f"{name}.s{i}.json"
             shard_out = JOBS / f"{name}.s{i}.out.json"
-            shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "fast_reset": True, "no_preload": True,
+            shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "fast_reset": True, "no_preload": True, "fast_patches": True,
                                          "runs": subset[i::k]}), encoding="utf-8")
             procs.append((i, shard_out, launch(shard, shard_out, f"{name}.s{i}")))
         reports, shard_results = [], [[] for _ in range(k)]
@@ -99,7 +99,7 @@ def main() -> int:
                     break
                 rest = mine[len(got):]
                 rjob, rout = JOBS / f"{name}.s{i}.r{attempt}.json", JOBS / f"{name}.s{i}.r{attempt}.out.json"
-                rjob.write_text(json.dumps({"out": str(rout).replace("\\", "/"), "fast_reset": True, "no_preload": True, "runs": rest}),
+                rjob.write_text(json.dumps({"out": str(rout).replace("\\", "/"), "fast_reset": True, "no_preload": True, "fast_patches": True, "runs": rest}),
                                 encoding="utf-8")
                 rtext = launch(rjob, rout, f"{name}.s{i}.r{attempt}").communicate()[0]
                 reports.append(json.loads(rtext[rtext.index("{"):]) if "{" in rtext else {"exit": "no report"})

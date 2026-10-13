@@ -27,6 +27,14 @@ public static partial class Driver
     {
         CurrentStep = 0;
         var phase = System.Diagnostics.Stopwatch.StartNew();
+        var proc = System.Diagnostics.Process.GetCurrentProcess();
+        ulong f0 = Engine.GetProcessFrames();
+        double cpu0 = proc.TotalProcessorTime.TotalMilliseconds;
+        int gc0 = GC.CollectionCount(2);
+        JsonObject Cost() { proc.Refresh(); return new JsonObject {
+            ["frames"] = (long)(Engine.GetProcessFrames() - f0),
+            ["cpu_ms"] = Math.Round(proc.TotalProcessorTime.TotalMilliseconds - cpu0),
+            ["gen2_gcs"] = GC.CollectionCount(2) - gc0 }; }
         var (state, dump) = await BeginRun(spec);
         var timing = new JsonObject { ["begin_run"] = phase.ElapsedMilliseconds };
         dump["phase_ms"] = timing;
@@ -78,6 +86,7 @@ public static partial class Driver
             GD.Print($"[referee] in room; combat={CombatManager.Instance.IsInProgress}");
 
             timing["enter_room"] = phase.ElapsedMilliseconds;
+            dump["cost_setup"] = Cost();
             var rng = new Random((int?)spec["chooser_seed"] ?? 1);
             int maxActions = (int?)spec["max_actions"] ?? 80;
             Player player = state.Players[0];
@@ -133,6 +142,7 @@ public static partial class Driver
         }
 
         timing["fight_end"] = phase.ElapsedMilliseconds;
+        dump["cost"] = Cost();
         return dump;
     }
 
