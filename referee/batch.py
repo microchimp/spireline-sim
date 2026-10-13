@@ -58,7 +58,8 @@ def main() -> int:
     for i in range(k):
         shard = JOBS / f"{a.name}.s{i}.json"
         shard_out = JOBS / f"{a.name}.s{i}.out.json"
-        shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "runs": runs[i::k]}), encoding="utf-8")
+        shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "fast_reset": True,
+                                     "runs": runs[i::k]}), encoding="utf-8")
         procs.append((shard_out, subprocess.Popen(
             [sys.executable, str(ROOT / "referee" / "run_referee.py"), "--game", GAME, "--job", str(shard),
              "--timeout", str(a.timeout), "--scratch", str(Path(GAME).parent / "scratch" / f"{a.name}.s{i}")],

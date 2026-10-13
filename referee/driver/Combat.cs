@@ -147,30 +147,51 @@ public static partial class Driver
     }
 
     /// <summary>Frames until no action runs and, in combat, the player may act or the fight is over.</summary>
+    /// <summary>
+    /// Quiet frames needed before the game counts as idle: no action running, the queue empty,
+    /// and (in a fight) the player's turn with actions enabled. In Instant fast mode the game
+    /// does no timed waits, so a few frames suffice; a job may raise it ("idle_frames").
+    /// </summary>
+    internal static double IdleFrames = 6;
+
     private static async Task Idle(double maxSeconds = 30)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        var quietSince = System.Diagnostics.Stopwatch.StartNew();
-        int quiet = 0;
-        while (clock.Elapsed.TotalSeconds < maxSeconds && (quiet < 20 || quietSince.ElapsedMilliseconds < 50))
+        string last = "";
+        int stable = 0;
+        // Idle = nothing running AND the visible state unchanged for IdleFrames frames in a row.
+        // Quiet frames alone are not enough: even in Instant mode cards are drawn over several
+        // frames outside the action queue.
+        while (clock.Elapsed.TotalSeconds < maxSeconds && stable < (int)IdleFrames)
         {
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             var cm = CombatManager.Instance;
+            var combat = cm.DebugOnlyGetState();
             bool busy = RunManager.Instance.ActionExecutor.IsRunning
                 || !RunManager.Instance.ActionQueueSet.IsEmpty
-                || (cm.IsInProgress && (cm.PlayerActionsDisabled
-                    || cm.DebugOnlyGetState()?.CurrentSide != CombatSide.Player));
-            if (busy)
-            {
-                quiet = 0;
-                quietSince.Restart();
-            }
-            else
-            {
-                quiet++;
-            }
+                || (cm.IsInProgress && (cm.PlayerActionsDisabled || combat?.CurrentSide != CombatSide.Player));
+            string sig = busy ? "busy" : Signature(combat);
+            stable = !busy && sig == last ? stable + 1 : 0;
+            last = sig;
         }
+    }
+
+    private static string Signature(CombatState? combat)
+    {
+        if (combat == null) return "none";
+        var sb = new System.Text.StringBuilder();
+        foreach (var p in combat.Players)
+        {
+            var pcs = p.PlayerCombatState;
+            sb.Append(pcs?.Hand.Cards.Count).Append('/').Append(pcs?.DrawPile.Cards.Count).Append('/')
+              .Append(pcs?.DiscardPile.Cards.Count).Append('/').Append(pcs?.ExhaustPile.Cards.Count).Append('/')
+              .Append(pcs?.Energy).Append('/').Append(p.Creature.CurrentHp).Append('/').Append(p.Creature.Block).Append(';');
+        }
+
+        foreach (var e in combat.Enemies) sb.Append(e.CurrentHp).Append(',').Append(e.Block).Append(',').Append(e.Powers.Count).Append(';');
+        sb.Append(combat.RoundNumber);
+        return sb.ToString();
     }
 
     private static JsonObject Snapshot(RunState run, Player player)

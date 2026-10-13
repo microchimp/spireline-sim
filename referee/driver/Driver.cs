@@ -91,6 +91,10 @@ public static partial class Driver
             // Player-facing speed settings only: the game's own "Instant" fast mode skips animation
             // waits, and the frame cap only paces rendering, which is off anyway.
             SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
+            IdleFrames = (double?)job["idle_frames"] ?? IdleFrames;
+            // Tutorials off, as a player can set it: first-time popups (FTUE) on a fresh profile
+            // open modals that nothing headless answers.
+            SaveManager.Instance.Progress.EnableFtues = false;
             Engine.MaxFps = 0;
 
             foreach (var spec in job["runs"]!.AsArray())
