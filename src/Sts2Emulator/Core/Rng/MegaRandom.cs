@@ -27,6 +27,23 @@ public sealed class MegaRandom
 
     public MegaRandom(ulong seed) => Reinitialise(seed);
 
+    private MegaRandom(MegaRandom other) => CopyStateFrom(other);
+
+    /// <summary>
+    /// A generator at exactly this one's position. The four lanes are its whole state, so
+    /// this is O(1) where rebuilding from the seed and replaying every draw is O(draws).
+    /// </summary>
+    public MegaRandom Copy() => new(this);
+
+    /// <summary>Moves this generator to exactly <paramref name="other" />'s position.</summary>
+    public void CopyStateFrom(MegaRandom other)
+    {
+        _s0 = other._s0;
+        _s1 = other._s1;
+        _s2 = other._s2;
+        _s3 = other._s3;
+    }
+
     /// <summary>Splitmix64 PRNG, used to expand the seed into the four lanes.</summary>
     public static ulong Splitmix64(ref ulong x)
     {

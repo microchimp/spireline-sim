@@ -41,6 +41,23 @@ public sealed class CountingRandom : Random
     /// a card that ROLLS matched the game's logic and disagreed about the result. The mod
     /// reports seed and counter for each named stream; this is the other half.
     /// </remarks>
+    private CountingRandom(int seed, MegaRandom state, int callCount)
+    {
+        Seed = seed;
+        _rng = state;
+        CallCount = callCount;
+    }
+
+    /// <summary>An exact copy at the same position, in O(1) (see <see cref="GameRng.Copy" />).</summary>
+    public CountingRandom Copy() => new(Seed, _rng.Copy(), CallCount);
+
+    /// <summary>
+    /// A combat stream picking up exactly where a run stream stands: the same as
+    /// <c>new CountingRandom(stream.RawSeed, stream.CallCount)</c>, in O(1).
+    /// </summary>
+    public static CountingRandom At(GameRng stream) =>
+        new(stream.RawSeed, stream.Generator.Copy(), stream.CallCount);
+
     public CountingRandom(int seed, int counter)
         : this(seed)
     {

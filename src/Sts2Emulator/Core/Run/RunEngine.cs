@@ -179,21 +179,13 @@ public sealed class RunEngine
         var combatDeck = runDeck.ToArray();
         State.Rng.Shuffle.Shuffle(combatDeck);
 
-        var shuffleRng = new CountingRandom(State.Rng.Shuffle.RawSeed);
-        for (int i = 0; i < State.Rng.Shuffle.CallCount; i++)
-        {
-            shuffleRng.Next();
-        }
+        var shuffleRng = CountingRandom.At(State.Rng.Shuffle);
 
         // The fight is the run's, and so is its level: every monster's HP band and move
         // table reads it. A bare CombatState is the combat layer's own default of A8.
         var combat = new CombatState { AscensionLevel = State.AscensionLevel };
         var combatRng = new CountingRandom(State.Rng.Niche.RawSeed);
-        var nicheHpRng = new CountingRandom(State.Rng.Niche.RawSeed);
-        for (int i = 0; i < State.Rng.Niche.CallCount; i++)
-        {
-            nicheHpRng.Next();
-        }
+        var nicheHpRng = CountingRandom.At(State.Rng.Niche);
 
         combat.NicheHpRng = nicheHpRng;
 
@@ -201,27 +193,15 @@ public sealed class RunEngine
         // reaches for Monster.RunRng.MonsterAi by name -- so it spans the whole run.
         // Restarting it each combat put every branching monster on the wrong draw:
         // Mawler's third choice came up Rip and Tear where the game rolled Claw.
-        var aiRng = new CountingRandom(State.Rng.MonsterAi.RawSeed);
-        for (int i = 0; i < State.Rng.MonsterAi.CallCount; i++)
-        {
-            aiRng.Next();
-        }
+        var aiRng = CountingRandom.At(State.Rng.MonsterAi);
 
         // Target choice draws from the run's "combat_targets" stream, so combat picks up
         // where the run left off and hands the call count back when it ends.
-        var targetRng = new CountingRandom(State.Rng.CombatTargets.RawSeed);
-        for (int i = 0; i < State.Rng.CombatTargets.CallCount; i++)
-        {
-            targetRng.Next();
-        }
+        var targetRng = CountingRandom.At(State.Rng.CombatTargets);
 
         combat.TargetRng = targetRng;
 
-        var cardSelectionRng = new CountingRandom(State.Rng.CombatCardSelection.RawSeed);
-        for (int i = 0; i < State.Rng.CombatCardSelection.CallCount; i++)
-        {
-            cardSelectionRng.Next();
-        }
+        var cardSelectionRng = CountingRandom.At(State.Rng.CombatCardSelection);
 
         combat.CardSelectionRng = cardSelectionRng;
 
@@ -232,38 +212,22 @@ public sealed class RunEngine
         // at zero for every fight: two Slither draws in two different combats read the
         // same value, where the game reads consecutive ones. A live capture whose Wood
         // Carvings enchanted a Bash paid 1 energy for it where the emulator paid 2.
-        var energyCostRng = new CountingRandom(State.Rng.CombatEnergyCosts.RawSeed);
-        for (int i = 0; i < State.Rng.CombatEnergyCosts.CallCount; i++)
-        {
-            energyCostRng.Next();
-        }
+        var energyCostRng = CountingRandom.At(State.Rng.CombatEnergyCosts);
 
         combat.EnergyCostRng = energyCostRng;
 
-        var cardGenerationRng = new CountingRandom(State.Rng.CombatCardGeneration.RawSeed);
-        for (int i = 0; i < State.Rng.CombatCardGeneration.CallCount; i++)
-        {
-            cardGenerationRng.Next();
-        }
+        var cardGenerationRng = CountingRandom.At(State.Rng.CombatCardGeneration);
 
         combat.CardGenerationRng = cardGenerationRng;
 
-        var potionGenerationRng = new CountingRandom(State.Rng.CombatPotionGeneration.RawSeed);
-        for (int i = 0; i < State.Rng.CombatPotionGeneration.CallCount; i++)
-        {
-            potionGenerationRng.Next();
-        }
+        var potionGenerationRng = CountingRandom.At(State.Rng.CombatPotionGeneration);
 
         combat.PotionGenerationRng = potionGenerationRng;
 
         // `Rng.CombatOrbGeneration` -- Chaos and Trash to Treasure roll their orb type on
         // it. `RunRngSet` has carried the stream since it was written; nothing had reached
         // for it, because the one card that needed it was rolling on the combat rng.
-        var orbGenerationRng = new CountingRandom(State.Rng.CombatOrbs.RawSeed);
-        for (int i = 0; i < State.Rng.CombatOrbs.CallCount; i++)
-        {
-            orbGenerationRng.Next();
-        }
+        var orbGenerationRng = CountingRandom.At(State.Rng.CombatOrbs);
 
         combat.OrbGenerationRng = orbGenerationRng;
 

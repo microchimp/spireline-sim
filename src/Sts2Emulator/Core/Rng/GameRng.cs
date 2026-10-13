@@ -32,6 +32,62 @@ public sealed class GameRng
     public GameRng(int seed)
         : this(unchecked((uint)seed)) { }
 
+    private GameRng(GameRng other)
+    {
+        RawSeed = other.RawSeed;
+        CallCount = other.CallCount;
+        _rng = other._rng.Copy();
+    }
+
+    /// <summary>
+    /// An exact copy at the same position, in O(1). Equivalent to rebuilding from
+    /// <see cref="RawSeed" /> and fast-forwarding to <see cref="CallCount" />, because every
+    /// counted call takes exactly one <see cref="MegaRandom" /> draw (NextGaussianInt counts
+    /// each of its NextDouble draws).
+    /// </summary>
+    public GameRng Copy() => new(this);
+
+    /// <summary>
+    /// Moves this stream to exactly <paramref name="other" />'s position. Both must be the
+    /// same stream (same raw seed); this replaces <see cref="AdvanceToCallCount" /> when the
+    /// position to reach is another live stream's.
+    /// </summary>
+    public void CopyStateFrom(GameRng other)
+    {
+        if (other.RawSeed != RawSeed)
+        {
+            throw new ArgumentException("Cannot copy the position of a different stream.", nameof(other));
+        }
+
+        if (other.CallCount < CallCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(other), "Cannot rewind an RNG stream.");
+        }
+
+        _rng.CopyStateFrom(other._rng);
+        CallCount = other.CallCount;
+    }
+
+    /// <summary>
+    /// Moves this stream to <paramref name="other" />'s call count: a state copy when both are
+    /// the same stream, otherwise this stream's own draws up to that count (a resampled run
+    /// rebuilds every stream from a different seed at the original's positions).
+    /// </summary>
+    public void MoveToPositionOf(GameRng other)
+    {
+        if (other.RawSeed == RawSeed && other.CallCount >= CallCount)
+        {
+            CopyStateFrom(other);
+        }
+        else
+        {
+            AdvanceToCallCount(other.CallCount);
+        }
+    }
+
+    /// <summary>The generator itself, for <see cref="CountingRandom.At(GameRng)" />.</summary>
+    internal MegaRandom Generator => _rng;
+
     public int NextInt(int maxExclusive = int.MaxValue)
     {
         CallCount++;

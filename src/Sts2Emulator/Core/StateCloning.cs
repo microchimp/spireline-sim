@@ -24,12 +24,7 @@ using Sts2Emulator.Core.Run;
 /// </remarks>
 public static class StateCloning
 {
-    public static GameRng Clone(this GameRng rng)
-    {
-        var copy = new GameRng(rng.RawSeed);
-        copy.AdvanceToCallCount(rng.CallCount);
-        return copy;
-    }
+    public static GameRng Clone(this GameRng rng) => rng.Copy();
 
     /// <summary>
     /// A copy of this stream, from a DIFFERENT seed but at the same call count.
@@ -83,16 +78,7 @@ public static class StateCloning
         return copy;
     }
 
-    public static CountingRandom Clone(this CountingRandom rng)
-    {
-        var copy = new CountingRandom(rng.Seed);
-        for (int i = 0; i < rng.CallCount; i++)
-        {
-            copy.Next();
-        }
-
-        return copy;
-    }
+    public static CountingRandom Clone(this CountingRandom rng) => rng.Copy();
 
     public static EnemyState Clone(this EnemyState enemy) =>
         new()
@@ -321,23 +307,24 @@ public static class StateCloning
 
     /// <summary>
     /// A RunRngSet is twelve streams off one seed, so it rebuilds from the seed and
-    /// then fast-forwards each stream to where the original had got to.
+    /// then moves each stream to where the original had got to (an O(1) state copy when the
+    /// seed is the same; a resample's new seed still draws its way there).
     /// </summary>
     public static RunRngSet CloneAt(string stringSeed, RunRngSet source)
     {
         var copy = new RunRngSet(stringSeed);
-        copy.UpFront.AdvanceToCallCount(source.UpFront.CallCount);
-        copy.Shuffle.AdvanceToCallCount(source.Shuffle.CallCount);
-        copy.UnknownMapPoint.AdvanceToCallCount(source.UnknownMapPoint.CallCount);
-        copy.CombatCardGeneration.AdvanceToCallCount(source.CombatCardGeneration.CallCount);
-        copy.CombatPotionGeneration.AdvanceToCallCount(source.CombatPotionGeneration.CallCount);
-        copy.CombatCardSelection.AdvanceToCallCount(source.CombatCardSelection.CallCount);
-        copy.CombatEnergyCosts.AdvanceToCallCount(source.CombatEnergyCosts.CallCount);
-        copy.CombatTargets.AdvanceToCallCount(source.CombatTargets.CallCount);
-        copy.MonsterAi.AdvanceToCallCount(source.MonsterAi.CallCount);
-        copy.Niche.AdvanceToCallCount(source.Niche.CallCount);
-        copy.CombatOrbs.AdvanceToCallCount(source.CombatOrbs.CallCount);
-        copy.TreasureRoomRelics.AdvanceToCallCount(source.TreasureRoomRelics.CallCount);
+        copy.UpFront.MoveToPositionOf(source.UpFront);
+        copy.Shuffle.MoveToPositionOf(source.Shuffle);
+        copy.UnknownMapPoint.MoveToPositionOf(source.UnknownMapPoint);
+        copy.CombatCardGeneration.MoveToPositionOf(source.CombatCardGeneration);
+        copy.CombatPotionGeneration.MoveToPositionOf(source.CombatPotionGeneration);
+        copy.CombatCardSelection.MoveToPositionOf(source.CombatCardSelection);
+        copy.CombatEnergyCosts.MoveToPositionOf(source.CombatEnergyCosts);
+        copy.CombatTargets.MoveToPositionOf(source.CombatTargets);
+        copy.MonsterAi.MoveToPositionOf(source.MonsterAi);
+        copy.Niche.MoveToPositionOf(source.Niche);
+        copy.CombatOrbs.MoveToPositionOf(source.CombatOrbs);
+        copy.TreasureRoomRelics.MoveToPositionOf(source.TreasureRoomRelics);
         return copy;
     }
 
