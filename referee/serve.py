@@ -113,9 +113,9 @@ def strip(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in TIMING_KEYS and k not in META_KEYS}
 
 
-DIAG_KEYS = {"settle_audit", "idle_probe"}  # driver diagnostics: kept in the merged output, never verified
-# per-step instrumentation: step_costs, trace_frames (Settle.cs) and trace mode (Trace.cs)
-DIAG_STEP_KEYS = {"cost", "frame_trace", "trace", "hidden"}
+DIAG_KEYS = {"settle_audit", "idle_probe", "checksum_cost"}  # driver diagnostics: kept in the merged output, never verified
+# per-step instrumentation: step_costs, trace_frames (Settle.cs), trace mode (Trace.cs), the game's checksums (ChecksumTap.cs)
+DIAG_STEP_KEYS = {"cost", "frame_trace", "trace", "hidden", "checksums", "net"}
 
 
 def comparable(r: dict) -> dict:

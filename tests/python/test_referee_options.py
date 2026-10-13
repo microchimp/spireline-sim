@@ -53,6 +53,25 @@ class JobOptionsTest(unittest.TestCase):
         self.assertNotIn("settle_audit", old)
 
 
+class ComparableTest(unittest.TestCase):
+    def test_verify_ignores_every_kind_of_instrumentation(self):
+        step = {"action": None, "state": {"hp": 80}}
+        bare = {"seed": "S", "steps": [step]}
+        full = {"seed": "S", "settle_audit": [0], "idle_probe": {}, "checksum_cost": {"ms": 1}, "timing_ms": {}, "_id": "0",
+                "steps": [{**step, "cost": {}, "frame_trace": [], "trace": [], "hidden": {}, "checksums": [], "net": []}]}
+        self.assertEqual(serve.comparable(full), serve.comparable(bare))
+        self.assertNotEqual(serve.comparable({**bare, "steps": [{**step, "state": {"hp": 79}}]}), serve.comparable(bare))
+
+    def test_a_traced_rerun_still_reproduces_its_batch(self):
+        # "trace": true turns on trace mode (Trace.cs) and the checksum tap's full states (ChecksumTap.cs).
+        import trace_divergent  # noqa: PLC0415
+
+        batch = [{"action": None, "state": {"enemies": [{"hp": 10}]}}]
+        traced = [{"action": None, "state": {"enemies": [{"hp": 10, "move": "BITE", "intents": []}]},
+                   "trace": [], "hidden": {}, "checksums": [["x", None, 1]], "net": [{"state": {"cost": 1}}]}]
+        self.assertEqual(trace_divergent.strip_new(traced), trace_divergent.strip_new(batch))
+
+
 class GameEnvTest(unittest.TestCase):
     def test_dotnet_settings_and_scratch_profile(self):
         with mock.patch.dict(os.environ, {}, clear=False):

@@ -30,7 +30,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 EMU = ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"
-NEW_KEYS = {"trace", "hidden", "move", "intents"}  # keys a traced re-run adds to each step
+# keys a traced re-run adds to each step: trace mode (Trace.cs), enemy moves, and the game's checksums,
+# which "trace": true also turns on (ChecksumTap.cs); cost and frame_trace are per-run instrumentation
+NEW_KEYS = {"trace", "hidden", "move", "intents", "checksums", "net", "cost", "frame_trace"}
 
 
 def emudump(mode: str, src: Path, dst: Path, *extra: str) -> dict:
