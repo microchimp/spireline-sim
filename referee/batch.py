@@ -16,6 +16,7 @@ import json
 import random
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,7 @@ def main() -> int:
     ap.add_argument("--parallel", type=int, default=6, help="game copies running at once")
     ap.add_argument("--deck-cards", type=int, default=5, help="random Ironclad/colourless cards added per fight")
     ap.add_argument("--canary", type=int, default=2, help="fights per copy run and checked before the rest (0 = off)")
+    ap.add_argument("--waves", type=int, default=3, help="waves per batch; coverage is updated between waves")
     a = ap.parse_args()
 
     # Coverage: each fight's deck gets random cards from the pools an Ironclad can hold, so a
@@ -45,11 +47,23 @@ def main() -> int:
     names = {v: snake(k) for k, v in id_map.items()}
     candidates = sorted({names[i] for i in pools["ironclad"] + pools["colorless"] if i in names})
 
+    t_start = time.time()
+    from tools.fidelity import coverage as cv  # noqa: PLC0415
+    from tools.fidelity.fight_compare import names as id_names  # noqa: PLC0415
+    nm = id_names(json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8")))
+    commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    cov_path = JOBS.parent / "coverage.json"
+    cov = cv.load(cov_path)
     rng = random.Random(a.start)
-    runs = [{"kind": "combat", "seed": "".join(rng.choice(ALPHABET) for _ in range(10)), "character": "IRONCLAD",
-             "ascension": 10, "neow": i % 3, "chooser_seed": a.start * 1000 + i, "max_actions": 150,
-             "deck_add": rng.sample(candidates, a.deck_cards)}
-            for i in range(a.fights)]
+
+    def make_runs(n: int, offset: int) -> list:
+        # Decks favour untested cards and leave out cards quarantined as suspect at this commit.
+        return [{"kind": "combat", "seed": "".join(rng.choice(ALPHABET) for _ in range(10)), "character": "IRONCLAD",
+                 "ascension": 10, "neow": (offset + i) % 3, "chooser_seed": a.start * 1000 + offset + i,
+                 "max_actions": 150, "deck_add": cv.pick(cov, candidates, a.deck_cards, rng, commit)}
+                for i in range(n)]
+
+    runs = make_runs(a.fights, 0)  # replaced wave by wave below; kept for the job record
     job, out, emu = (JOBS / f"{a.name}{ext}" for ext in (".json", ".out.json", ".emu.json"))
     job.write_text(json.dumps({"out": str(out).replace("\\", "/"), "runs": runs}), encoding="utf-8")
 
@@ -105,9 +119,24 @@ def main() -> int:
              "--timeout", str(a.timeout), "--scratch", str(Path(GAME).parent / "scratch" / scratch)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
+    def replay_and_learn(results: list, tag: str) -> int:
+        """Replay a wave in the emulator, fold it into coverage, return identical count."""
+        w_out, w_emu = JOBS / f"{tag}.out.json", JOBS / f"{tag}.emu.json"
+        w_out.write_text(json.dumps({"results": results}), encoding="utf-8")
+        with open(w_emu, "w", encoding="utf-8") as f:
+            subprocess.run(["dotnet", str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"), "fight", str(w_out)],
+                           stdout=f, check=False)
+        emus = json.loads(w_emu.read_text(encoding="utf-8"))["results"]
+        cv.update(cov, results, emus, nm, commit)
+        cv.save(cov_path, cov)
+        return sum(1 for g, e in zip(results, emus)
+                   if g.get("steps") and not g.get("error") and cv.first_divergence(g, e, nm) is None)
+
+    merged, reports = [], []
+    remaining = a.fights
     # Canary: a few fights per copy first, compared before the rest is spent on a broken setup.
-    if a.canary and len(runs) > a.canary * a.parallel:
-        head = runs[: a.canary * a.parallel]
+    if a.canary and remaining > a.canary * a.parallel:
+        head = make_runs(a.canary * a.parallel, 0)
         c_res, c_rep = play(f"{a.name}.canary", head)
         bad = [r for r in c_res if r.get("error")]
         # Systemic only: a stalled fight is recorded and skipped, so a few are tolerated; any
@@ -118,19 +147,23 @@ def main() -> int:
             for r in bad[:5]:
                 print("  ", r.get("seed"), str(r.get("error"))[:300])
             return 3
-        c_out, c_emu = JOBS / f"{a.name}.canary.out.json", JOBS / f"{a.name}.canary.emu.json"
-        c_out.write_text(json.dumps({"results": c_res}), encoding="utf-8")
-        with open(c_emu, "w", encoding="utf-8") as f:
-            subprocess.run(["dotnet", str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"), "fight", str(c_out)],
-                           stdout=f, check=False)
-        c_cmp = subprocess.run([sys.executable, "-m", "tools.fidelity.fight_compare", str(c_out), str(c_emu)],
-                               capture_output=True, text=True, cwd=ROOT, check=False).stdout
-        print(f"canary ok: {len(head)} fights, no errors, {c_cmp.count(' steps identical')} identical", flush=True)
-        rest, reports = play(a.name, runs[len(head):])
-        merged = c_res + rest
-        reports = c_rep + reports
-    else:
-        merged, reports = play(a.name, runs)
+        same_c = replay_and_learn(c_res, f"{a.name}.canary")
+        print(f"canary ok: {len(head)} fights, no errors, {same_c} identical; {cv.summary(cov, candidates, commit)}", flush=True)
+        merged, reports = c_res, c_rep
+        remaining -= len(head)
+    # Waves: coverage (and so each deck) is updated between waves.
+    waves = max(1, a.waves)
+    for w in range(waves):
+        n = remaining // (waves - w)
+        if n <= 0:
+            continue
+        wave_runs = make_runs(n, len(merged))
+        res, rep = play(f"{a.name}.w{w}", wave_runs)
+        same_w = replay_and_learn(res, f"{a.name}.w{w}")
+        merged += res
+        reports += rep
+        remaining -= n
+        print(f"wave {w}: {n} fights, {same_w} identical; {cv.summary(cov, candidates, commit)}", flush=True)
     out.write_text(json.dumps({"results": merged}), encoding="utf-8")
     report = {"exit": [r.get("exit") for r in reports], "seconds": max((r.get("seconds") or 0) for r in reports),
               "network_connections": sorted({c for r in reports for c in r.get("network_connections", [])}),
@@ -141,6 +174,7 @@ def main() -> int:
     cmp = subprocess.run([sys.executable, "-m", "tools.fidelity.fight_compare", str(out), str(emu)],
                          capture_output=True, text=True, cwd=ROOT, check=False).stdout
 
+    t_end = time.time()
     same, groups, errors = 0, collections.defaultdict(list), []
     current = None
     for line in cmp.splitlines():
@@ -156,7 +190,30 @@ def main() -> int:
                 "end_turn" if "end_turn" in current else "start")
             groups[f"{field} after {card}"].append(current[:200])
             current = None
-    lines = [f"batch {a.name}: {a.fights} fights, session exit {report.get('exit')}, {report.get('seconds')} s, "
+    # Speed metrics. Headline: verified fights per minute = fights played in the game AND
+    # replayed and compared in the emulator, over the batch's whole wall clock (start-up,
+    # stalls and resumes included).
+    played = [r for r in merged if r.get("steps")]
+    actions = sum(max(0, len(r["steps"]) - 1) for r in played)
+    minutes = max(1e-9, (t_end - t_start) / 60)
+    per_fight = [(r["timing_ms"]["play"] + r["timing_ms"]["reset"]) / 1000 for r in played if "timing_ms" in r]
+    stalls = sum(1 for r in merged if str(r.get("error", "")).startswith("stalled"))
+    metrics = {
+        "batch": a.name, "copies": a.parallel, "fights": len(merged), "verified": len(played),
+        "minutes": round(minutes, 2), "verified_per_min": round(len(played) / minutes, 1),
+        "actions_per_min": round(actions / minutes), "s_per_fight_per_copy": round(sum(per_fight) / max(1, len(per_fight)), 2),
+        "identical": same, "identical_pct": round(100 * same / max(1, len(played)), 1),
+        "stalls": stalls, "errors": len([r for r in merged if r.get("error")]),
+    }
+    mfile = JOBS / "metrics.csv"
+    if not mfile.exists():
+        mfile.write_text(",".join(metrics) + chr(10), encoding="utf-8")
+    with open(mfile, "a", encoding="utf-8") as f:
+        f.write(",".join(str(v) for v in metrics.values()) + chr(10))
+    speed = (f"SPEED {metrics['verified_per_min']} verified fights/min ({metrics['actions_per_min']} actions/min), "
+             f"{metrics['s_per_fight_per_copy']} s/fight per copy x {a.parallel} copies, {metrics['minutes']} min; "
+             f"identical {metrics['identical_pct']}%, stalls {stalls}")
+    lines = [speed, f"batch {a.name}: {a.fights} fights, session exit {report.get('exit')}, {report.get('seconds')} s, "
              f"network {report.get('network_connections')}, real profile touched {report.get('real_profile_touched')}",
              f"identical: {same}", f"diverging: {sum(len(v) for v in groups.values())}", f"errors: {len(errors)}"]
     for field, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
