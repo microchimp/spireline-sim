@@ -2072,10 +2072,19 @@ public static class RunRewardGenerator
     /// The odds are uniform over the filtered pool, not the usual rarity roll, so this
     /// picks cards rather than rolling a rarity first.
     /// </summary>
-    public static void EnterFutureOfPotionsReward(RunState state, int potionId, GameRng rng)
+    /// <remarks>
+    /// Two streams, at two moments. The TYPE is the event's: `PotionToCardType` is built the
+    /// first time the options are generated, one `base.Rng.NextItem` per potion in the belt in
+    /// slot order (<see cref="RunNonCombatEffects"/> rolls them on entering, into
+    /// <c>EventRandomOffer</c>). The CARDS are a plain `CardReward` with no rng override, so
+    /// `CardFactory.CreateForReward` picks them off `PlayerRng.Rewards`, one draw each at a
+    /// fixed rarity (run referee, seed 6HMCK2BXTJ: the game's rewards counter three ahead after
+    /// a trade the emulator rolled on the event's stream).
+    /// </remarks>
+    public static void EnterFutureOfPotionsReward(RunState state, int potionId, CardType type)
     {
         var rarity = CardRarityForPotion(potionId);
-        var type = rng.NextItem(FutureOfPotionsCardTypes(potionId));
+        var rng = state.PlayerRng.Rewards;
 
         var pool = OwnCardPool(state)
             .ToArray()

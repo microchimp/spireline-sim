@@ -4024,12 +4024,12 @@ public sealed class RunEngine
                     // potion buys and the type the event rolled for it -- not one card
                     // taken off the map-generation stream and pushed into the deck.
                     int traded = State.PotionSlots[slot];
+                    var type = (uint)action < (uint)State.EventRandomOffer.Length
+                        ? (CardType)State.EventRandomOffer[action]
+                        : RunNonCombatEffects.EventStream(State, "THE_FUTURE_OF_POTIONS")
+                            .NextItem(RunRewardGenerator.FutureOfPotionsCardTypes(traded));
                     State.PotionSlots[slot] = 0;
-                    RunRewardGenerator.EnterFutureOfPotionsReward(
-                        State,
-                        traded,
-                        RunNonCombatEffects.EventStream(State, "THE_FUTURE_OF_POTIONS")
-                    );
+                    RunRewardGenerator.EnterFutureOfPotionsReward(State, traded, type);
                     return 0;
                 }
                 else if (action != RunConstants.EventSkipAction)

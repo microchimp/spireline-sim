@@ -1960,6 +1960,15 @@ public static class RunNonCombatEffects
     {
         switch (state.EventId)
         {
+            case RunConstants.EventTheFutureOfPotions:
+                // `PotionToCardType`, built as the options are: one card type per potion in the
+                // belt, in slot order, off the event's own stream (Power only for a potion
+                // better than Common). Held per traded option in EventRandomOffer.
+                var futureRng = EventRng(state, "THE_FUTURE_OF_POTIONS");
+                state.EventRandomOffer = state.PotionSlots.Where(potion => potion != 0)
+                    .Select(potion => (int)futureRng.NextItem(RunRewardGenerator.FutureOfPotionsCardTypes(potion)))
+                    .ToArray();
+                break;
             case RunConstants.EventSunkenTreasury:
                 CalculateSunkenTreasuryVars(state);
                 break;
