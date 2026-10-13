@@ -1003,7 +1003,11 @@ public static class RunNonCombatEffects
                 //
                 // The emulator added a random card off the whole reward pool on the UpFront
                 // stream: wrong card, wrong pool, wrong stream.
-                AddCardToDeck(state, new CardInstance(DustyTomeCard(state), Upgraded: true));
+                AddCardToDeck(
+                    state,
+                    new CardInstance(state.EventValue0 ?? DustyTomeCard(state), Upgraded: true)
+                );
+                state.EventValue0 = null;
                 break;
             case RunConstants.RelicNewLeaf:
                 // CardsVar(1) through CardSelectCmd.FromDeckForTransformation, then
@@ -3084,6 +3088,12 @@ public static class RunNonCombatEffects
 
         if (rng.NextBool())
         {
+            // `DustyTome.SetupForPlayer` runs as the option is BUILT, so its card is drawn off
+            // `PlayerRng.Rewards` on entering Darv whether or not the tome is taken. Rolled at
+            // pickup instead, a tome left on the table never drew, and the Rewards stream stayed
+            // one behind (run referee, seed 6HMCK2BXTJ). The card waits in EventValue0, which
+            // the ancient's screen does not otherwise use.
+            state.EventValue0 = DustyTomeCard(state);
             return [.. offered.Take(2), RunConstants.DarvDustyTome];
         }
 
