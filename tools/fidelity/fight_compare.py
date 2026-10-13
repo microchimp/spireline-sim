@@ -31,7 +31,44 @@ def names(id_map: dict) -> dict:
 
 # Representation, not rules: the emulator keeps a stun as a STUNNED buff, the game as the
 # monster's next move (CreatureCmd.Stun). Neither side's power list is compared on it.
-NOT_POWERS = {"STUNNED"}
+NOT_POWERS = {
+    "STUNNED",
+    # Emulator-internal counters that the game keeps as DynamicVars on another power, not as
+    # powers of their own (triage of night03, each checked against the game class):
+    "INFERNO_SELF_DAMAGE",         # InfernoPower.SelfDamage (IncrementSelfDamage per play)
+    "CRIMSON_MANTLE_SELF_DAMAGE",  # CrimsonMantlePower.SelfDamage
+    "THE_BOMB_DAMAGE",             # TheBombPower's Damage var (turns are the power's Amount)
+    "PANACHE_ARMED",               # emulator flag for Panache's every-5th-card trigger
+    "CLAW_DAMAGE",                 # Claw.BuffFromClawPlay raises the Claws' own damage, no power
+}
+
+# Emulator buff -> the game power with the same rules and amount.
+EMU_RENAME = {
+    "CRIMSON_MANTLE_BLOCK": "CRIMSON_MANTLE",  # CrimsonMantlePower.Amount is the block per turn
+    "NEXT_TURN_ENERGY": "ENERGY_NEXT_TURN",
+    "NEXT_TURN_DRAW": "DRAW_CARDS_NEXT_TURN",
+}
+
+# Every subclass of the game's TemporaryStrengthPower is one emulator TEMPORARY_STRENGTH buff.
+# The emulator keeps its magnitude and lets the owner set the direction (the player's is a gain
+# taken back at end of turn, an enemy's is a loss given back), so the game amounts are summed
+# as they stand. IsPositive=false subclasses (Dark Shackles, Mangle...) only sit on enemies.
+TEMP_STRENGTH = {"SETUP_STRIKE", "FLEX_POTION", "COORDINATE", "DYING_STAR", "FEEDING_FRENZY", "REPTILE_TRINKET",
+                 "DARK_SHACKLES", "MANGLE", "PIERCING_WAIL", "SHACKLING_POTION", "CRUSH_UNDER",
+                 "MONARCHS_GAZE_STRENGTH_DOWN", "ENFEEBLING_TOUCH"}
+
+
+def game_powers(raw: list) -> list:
+    out, temp = [], 0
+    for n, a in raw:
+        name = power(n)
+        if name in TEMP_STRENGTH:
+            temp += a
+        else:
+            out.append([name, a])
+    if temp:
+        out.append(["TEMPORARY_STRENGTH", temp])
+    return sorted(out)
 
 
 def emu_view(st: dict, nm: dict) -> dict:
@@ -39,7 +76,8 @@ def emu_view(st: dict, nm: dict) -> dict:
         return {"in_combat": False}
     s = st["snapshot"]
     card = lambda c: [nm["cards"].get(c["def_id"], c["def_id"]), bool(c["upgraded"])]  # noqa: E731
-    powers = lambda bs: sorted([power(b["name"]), b["amount"]] for b in bs if power(b["name"]) not in NOT_POWERS)  # noqa: E731
+    powers = lambda bs: sorted([EMU_RENAME.get(power(b["name"]), power(b["name"])), b["amount"]]  # noqa: E731
+                               for b in bs if power(b["name"]) not in NOT_POWERS)
     p = s["player"]
     return {
         "in_combat": st["in_combat"],
@@ -62,9 +100,9 @@ def game_view(st: dict) -> dict:
     return {
         "in_combat": True,
         "player": {"hp": p["hp"], "max_hp": p["max_hp"], "block": p["block"], "energy": p["energy"],
-                   "powers": sorted([power(n), a] for n, a in p["powers"])},
+                   "powers": game_powers(p["powers"])},
         "hand": st["hand"], "draw": st["draw"], "discard": st["discard"], "exhaust": st["exhaust"],
-        "enemies": [{"name": e["name"], "hp": e["hp"], "block": e["block"], "powers": sorted([power(n), a] for n, a in e["powers"])}
+        "enemies": [{"name": e["name"], "hp": e["hp"], "block": e["block"], "powers": game_powers(e["powers"])}
                     for e in st["enemies"] if e["hp"] > 0],
         "rng": {k: v["counter"] for k, v in st["rng"].items() if k in (
             "Shuffle", "CombatTargets", "MonsterAi", "CombatCardSelection", "CombatCardGeneration",
