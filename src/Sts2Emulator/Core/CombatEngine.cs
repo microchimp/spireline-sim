@@ -89,6 +89,8 @@ public static class CombatEngine
         // after: Knife Trap aims its Shivs, and the next Hellraiser must roll its own.
         state.AutoPlayTargetIndex = -1;
 
+        ReleaseHeldPlayedCard(state);
+
         // A death that holds the fight open and that no check has answered -- a card's
         // after-play damage, an exhaust answer under Charon's Ashes -- is answered before the
         // agent sees the state, as the game answers it the moment it dies. Otherwise a Test
@@ -99,6 +101,26 @@ public static class CombatEngine
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Puts the card <see cref="CombatState.HeldPlayedCard" /> into its result pile once the
+    /// selection screen it opened is closed and the auto-plays it queued have played. A no-op
+    /// while either is still open, and when nothing is held.
+    /// </summary>
+    private static void ReleaseHeldPlayedCard(CombatState state)
+    {
+        if (
+            state.HeldPlayedCard is not { } held
+            || state.PendingSelection is not null
+            || state.AutoPlayQueue.Count > 0
+        )
+        {
+            return;
+        }
+
+        state.HeldPlayedCard = null;
+        (state.HeldPlayedCardExhausts ? state.ExhaustPile : state.DiscardPile).Add(held);
     }
 
     private static StepResult PlayCard(CombatState state, int handIndex, Random rng)
@@ -436,6 +458,9 @@ public static class CombatEngine
             card = card with { Upgraded = true };
         }
 
+        int exhaustCountBeforePlacement = state.ExhaustPile.Count;
+        int discardCountBeforePlacement = state.DiscardPile.Count;
+
         // Corruption: Skills exhaust instead of discard.
         bool corruptedSkill =
             def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Corruption) > 0;
@@ -557,6 +582,34 @@ public static class CombatEngine
                     SlyForCombat = card.SlyForCombat || MasterPlannerMarks(state, def),
                 }
             );
+        }
+
+        // `CardModel.OnPlay` is awaited BEFORE the card is moved to its result pile, so a
+        // card that opens a selection screen (Purity, Survivor) or queues auto-plays
+        // (Catastrophe) is still in the play pile while the picks and the auto-played cards
+        // land. It reaches the exhaust or discard pile after them, not before. The
+        // placement above ran first; take the card back out and hold it until the screen
+        // and the queue are done (`ReleaseHeldPlayedCard`, called where both have settled).
+        if (state.PendingSelection is not null || state.AutoPlayQueue.Count > 0)
+        {
+            if (
+                state.ExhaustPile.Count == exhaustCountBeforePlacement + 1
+                && state.DiscardPile.Count == discardCountBeforePlacement
+            )
+            {
+                state.HeldPlayedCard = state.ExhaustPile[^1];
+                state.HeldPlayedCardExhausts = true;
+                state.ExhaustPile.RemoveAt(state.ExhaustPile.Count - 1);
+            }
+            else if (
+                state.DiscardPile.Count == discardCountBeforePlacement + 1
+                && state.ExhaustPile.Count == exhaustCountBeforePlacement
+            )
+            {
+                state.HeldPlayedCard = state.DiscardPile[^1];
+                state.HeldPlayedCardExhausts = false;
+                state.DiscardPile.RemoveAt(state.DiscardPile.Count - 1);
+            }
         }
 
         state.PlayedCardBonusDamage = 0;
@@ -5072,6 +5125,8 @@ public static class CombatEngine
 
             AnswerSelection(state, 0, rng);
         }
+
+        ReleaseHeldPlayedCard(state);
     }
 
     private static void AutoPlay(CombatState state, CardInstance card, Random rng)

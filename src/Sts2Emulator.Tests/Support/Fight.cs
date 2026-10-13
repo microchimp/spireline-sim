@@ -270,6 +270,20 @@ internal sealed class Fight
     /// </summary>
     public StepResult Choose(int candidate) => CombatEngine.Step(State, candidate, _rng);
 
+    /// <summary>
+    /// Confirms a screen the emulator reopens per pick. The game's Purity screen is ONE
+    /// multi-select (`CardSelectorPrefs(0, Cards)`); a live capture records the picks it
+    /// made and the confirm, where the emulator asks again until the picks are spent or the
+    /// player declines. A no-op when no skippable screen is open.
+    /// </summary>
+    public void ConfirmOpenSelection()
+    {
+        while (State.PendingSelection is { Skippable: true } screen)
+        {
+            CombatEngine.Step(State, screen.Candidates.Count, _rng);
+        }
+    }
+
     public PendingCardSelection? Pending => State.PendingSelection;
 
     public StepResult EndTurn() => CombatEngine.Step(State, State.Hand.Count, _rng);

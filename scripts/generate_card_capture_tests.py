@@ -314,6 +314,9 @@ def selection_lines(fixture: dict[str, Any]) -> list[str]:
             "        Assert.NotNull(fight.Pending);",
             f"        Assert.Equal({len(cards)}, fight.Pending!.Candidates.Count);",
             f"        fight.Choose({chosen}); // {taken}",
+            # The game's screen is one multi-select that the capture confirmed after its
+            # pick; the emulator reopens such a screen per pick (Purity), so confirm the rest.
+            "        fight.ConfirmOpenSelection();",
         ]
     return lines
 
