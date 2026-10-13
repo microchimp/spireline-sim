@@ -785,10 +785,11 @@ public class RunEngineTests
         engine.WriteActionMask(mask);
         AssertMask(mask, 0, 1, RunConstants.EventSkipAction);
 
+        // A full belt does not close Slowly Find an Exit: its potion is offered, not given.
         Array.Clear(mask);
         engine.State.PotionSlots = [1, 2, 3];
         engine.WriteActionMask(mask);
-        AssertMask(mask, 0, RunConstants.EventSkipAction);
+        AssertMask(mask, 0, 1, RunConstants.EventSkipAction);
 
         Array.Clear(mask);
         engine.State.EventId = RunConstants.EventResultPending;

@@ -1281,11 +1281,12 @@ public class TranscendenceAndRefinementRelicTests
     }
 
     /// <summary>
-    /// `CardCmd.Transform(starter, transformed)` builds the new card fresh, so an upgraded
-    /// Bash does not become an upgraded Break -- unlike Claws, which clones deliberately.
+    /// `GetTranscendenceTransformedCard` creates the ancient card and then carries the
+    /// starter's upgrade (`CardCmd.Upgrade`) and enchantment across, so an upgraded, Sharp Bash
+    /// becomes an upgraded, Sharp Break (run referee, seed CNV3YDEJXD).
     /// </summary>
     [Fact]
-    public void TheTranscendedCardArrivesFresh()
+    public void TheTranscendedCardCarriesUpgradeAndEnchantment()
     {
         var engine = Run();
         int bash = engine.State.Deck.FindIndex(card => card.DefId == 30);
@@ -1299,8 +1300,9 @@ public class TranscendenceAndRefinementRelicTests
         RunNonCombatEffects.ApplyRelicPickup(engine.State, RunConstants.RelicArchaicTooth);
 
         var made = engine.State.Deck.First(card => card.DefId == 59);
-        Assert.False(made.Upgraded);
-        Assert.Equal(Enchantment.None, made.Enchantment);
+        Assert.True(made.Upgraded);
+        Assert.Equal(Enchantment.Sharp, made.Enchantment);
+        Assert.Equal(2, made.EnchantAmount);
     }
 
     /// <summary>A deck with nothing to transcend is left alone.</summary>
