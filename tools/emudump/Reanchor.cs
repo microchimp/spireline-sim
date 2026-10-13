@@ -37,6 +37,22 @@ static class Reanchor
     /// <summary>A buff only the emulator has (a game power it models in pieces, or a bookkeeping marker).</summary>
     static bool Internal(BuffId id) => !GamePowerKeys.Contains(PowerKey(id.ToString()));
 
+    // tools/fidelity/power_aliases.json, the table fight_compare.py compares with: a game power the
+    // emulator keeps under another name, and the TemporaryStrength/Dexterity/Focus subclasses it folds
+    // into one buff. Writing back by name alone dropped them (Mangle's restore never came).
+    static readonly JsonObject Aliases = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "power_aliases.json")))!.AsObject();
+    static readonly Dictionary<string, string> GameRename = Aliases["emu_rename"]!.AsObject().ToDictionary(kv => (string)kv.Value!, kv => kv.Key);
+    static readonly Dictionary<string, string> Folds = Aliases["folds"]!.AsObject()
+        .SelectMany(kv => kv.Value!.AsArray().Select(sub => ((string)sub!, kv.Key))).ToDictionary(t => t.Item1, t => t.Item2);
+    static readonly HashSet<BuffId> RenameTargets = GameRename.Values.Where(BuffByPower.ContainsKey).Select(k => BuffByPower[k]).ToHashSet();
+
+    /// <summary>The game power an emulator-only buff is a piece of (InfernoSelfDamage of INFERNO), by name; null for pure bookkeeping.</summary>
+    static string? OwnerPower(BuffId id)
+    {
+        string key = PowerKey(id.ToString());
+        return GamePowerKeys.Where(p => key.StartsWith(p + "_", StringComparison.Ordinal)).OrderByDescending(p => p.Length).FirstOrDefault();
+    }
+
     static string Snake(string name) => Regex.Replace(name, "(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_").ToUpperInvariant();
 
     static string PowerKey(string name)
@@ -498,19 +514,30 @@ static class Reanchor
     static bool PatchBuffs(List<BuffState> cur, JsonArray powers, out List<BuffState> result, JsonArray patched, string where)
     {
         var want = new List<BuffState>();
-        bool unmapped = false;
+        var folded = new Dictionary<BuffId, int>();
+        var present = new HashSet<string>();
         foreach (var pw in powers)
         {
             var name = (string)pw![0]!;
             int amount = (int)pw[1]!;
+            string key = PowerKey(name);
+            present.Add(key);
             if (amount == 0) continue;  // the emulator holds no buff at zero
-            if (!BuffByPower.TryGetValue(PowerKey(name), out var id)) { unmapped = true; continue; }
-            want.Add(new BuffState(id, amount));
+            bool fold = Folds.TryGetValue(key, out var into);
+            string emuKey = fold ? into! : GameRename.GetValueOrDefault(key, key);
+            if (!BuffByPower.TryGetValue(emuKey, out var id)) continue;  // modelled in pieces, which Keep leaves alone
+            if (fold) folded[id] = folded.GetValueOrDefault(id) + amount;
+            else want.Add(new BuffState(id, amount));
         }
 
-        // A game power the emulator has no buff for lives in its own pieces (Crimson Mantle's two
-        // buffs, Tank, Beacon of Hope, ...); those pieces are left alone, not overwritten.
-        bool Keep(BuffState b) => NotPowers.Contains(b.Id) || (unmapped && Internal(b.Id));
+        want.AddRange(folded.Where(kv => kv.Value != 0).Select(kv => new BuffState(kv.Key, kv.Value)));
+
+        // The emulator's own buffs are hidden state the snapshot cannot show, carried over: a piece of a
+        // game power (Inferno's InfernoSelfDamage, Crimson Mantle's, Tank's, Beacon of Hope's ...) while
+        // that power is there, and pure bookkeeping always. Dropping InfernoSelfDamage when every game
+        // power had a buff stopped the next turn's Inferno.
+        bool Keep(BuffState b) => NotPowers.Contains(b.Id)
+            || (Internal(b.Id) && !RenameTargets.Contains(b.Id) && (OwnerPower(b.Id) is not { } owner || present.Contains(owner)));
         var have = cur.Where(b => !Keep(b)).ToList();
         // Compared on what the snapshot shows (id, amount). Data is hidden per-instance state (an
         // instanced power's second number, e.g. The Bomb's damage) that the game snapshot lacks.

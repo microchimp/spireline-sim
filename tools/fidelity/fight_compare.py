@@ -10,9 +10,11 @@ powers; and each combat RNG stream's call count.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import re
 import sys
+from pathlib import Path
 
 
 def snake(name: str) -> str:
@@ -43,19 +45,19 @@ NOT_POWERS = {
 }
 
 # Emulator buff -> the game power with the same rules and amount.
-EMU_RENAME = {
-    "CRIMSON_MANTLE_BLOCK": "CRIMSON_MANTLE",  # CrimsonMantlePower.Amount is the block per turn
-    "NEXT_TURN_ENERGY": "ENERGY_NEXT_TURN",
-    "NEXT_TURN_DRAW": "DRAW_CARDS_NEXT_TURN",
-}
+# The tables live in power_aliases.json, which tools/emudump/Reanchor.cs reads too, so writing the
+# game's powers back into the emulator and comparing them use one mapping. CrimsonMantlePower.Amount
+# is the block per turn (CRIMSON_MANTLE_BLOCK).
+_ALIASES = json.loads((Path(__file__).with_name("power_aliases.json")).read_text(encoding="utf-8"))
+EMU_RENAME = dict(_ALIASES["emu_rename"])
 
-# Every subclass of the game's TemporaryStrengthPower is one emulator TEMPORARY_STRENGTH buff.
-# The emulator keeps its magnitude and lets the owner set the direction (the player's is a gain
-# taken back at end of turn, an enemy's is a loss given back), so the game amounts are summed
-# as they stand. IsPositive=false subclasses (Dark Shackles, Mangle...) only sit on enemies.
-TEMP_STRENGTH = {"SETUP_STRIKE", "FLEX_POTION", "COORDINATE", "DYING_STAR", "FEEDING_FRENZY", "REPTILE_TRINKET",
-                 "DARK_SHACKLES", "MANGLE", "PIERCING_WAIL", "SHACKLING_POTION", "CRUSH_UNDER",
-                 "MONARCHS_GAZE_STRENGTH_DOWN", "ENFEEBLING_TOUCH"}
+# Every subclass of the game's TemporaryStrengthPower is one emulator TEMPORARY_STRENGTH buff (and
+# TemporaryDexterityPower's, TemporaryFocusPower's likewise). The emulator keeps its magnitude and lets
+# the owner set the direction (the player's is a gain taken back at end of turn, an enemy's is a loss
+# given back), so the game amounts are summed as they stand. IsPositive=false subclasses (Dark
+# Shackles, Mangle...) only sit on enemies.
+FOLDS = {sub: buff for buff, subs in _ALIASES["folds"].items() for sub in subs}
+TEMP_STRENGTH = {sub for sub, buff in FOLDS.items() if buff == "TEMPORARY_STRENGTH"}
 
 
 # Enemy moves in one vocabulary. The game records MonsterModel.NextMove's intents (referee/driver/Combat.cs
@@ -97,15 +99,14 @@ def emu_intent(e: dict):
 
 
 def game_powers(raw: list) -> list:
-    out, temp = [], 0
+    out, folded = [], collections.Counter()
     for n, a in raw:
         name = power(n)
-        if name in TEMP_STRENGTH:
-            temp += a
+        if name in FOLDS:
+            folded[FOLDS[name]] += a
         else:
             out.append([name, a])
-    if temp:
-        out.append(["TEMPORARY_STRENGTH", temp])
+    out += [[k, v] for k, v in folded.items() if v]
     return sorted(out)
 
 

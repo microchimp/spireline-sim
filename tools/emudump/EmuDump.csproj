@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <None Include="..\..\data\id_map.json" Link="id_map.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fidelity\power_aliases.json" Link="power_aliases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Sts2Emulator\Sts2Emulator.csproj" />
