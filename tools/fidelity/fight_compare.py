@@ -42,6 +42,7 @@ NOT_POWERS = {
     "THE_BOMB_DAMAGE",             # TheBombPower's Damage var (turns are the power's Amount)
     "PANACHE_ARMED",               # emulator flag for Panache's every-5th-card trigger
     "CLAW_DAMAGE",                 # Claw.BuffFromClawPlay raises the Claws' own damage, no power
+    "SLOW_COUNT",                  # SlowPower's "SlowAmount" DynamicVar (cards played this turn), not a power
 }
 
 # Emulator buff -> the game power with the same rules and amount.
@@ -98,6 +99,12 @@ def emu_intent(e: dict):
     return {"kind": kind, "attack": attack}
 
 
+# Likewise every subclass of TemporaryDexterityPower is one emulator TEMPORARY_DEXTERITY buff
+# (AnticipatePower, HelicalDartPower, SpeedPotionPower; checked in the decompile, setup fights reach them):
+# power_aliases.json's folds, which game_powers applies.
+TEMP_DEXTERITY = {sub for sub, buff in FOLDS.items() if buff == "TEMPORARY_DEXTERITY"}
+
+
 def game_powers(raw: list) -> list:
     out, folded = [], collections.Counter()
     for n, a in raw:
@@ -129,6 +136,8 @@ def emu_view(st: dict, nm: dict) -> dict:
         "enemies": [{"name": nm["enemies"].get(e["def_id"], e["def_id"]), "hp": e["hp"], "block": e["block"],
                      "powers": powers(e["buffs"]), "intent": emu_intent(e)} for e in s["enemies"] if e["hp"] > 0],
         "rng": st["rng"],
+        # Setup fights only (the referee then records the belt): the potion in each slot, None if empty.
+        **({"potions": st["potions"]} if "potions" in st else {}),
     }
 
 
@@ -146,6 +155,7 @@ def game_view(st: dict) -> dict:
         "rng": {k: v["counter"] for k, v in st["rng"].items() if k in (
             "Shuffle", "CombatTargets", "MonsterAi", "CombatCardSelection", "CombatCardGeneration",
             "CombatEnergyCosts", "CombatPotionGeneration", "CombatOrbGeneration", "Niche")},
+        **({"potions": st["potions"]} if "potions" in st else {}),
     }
 
 

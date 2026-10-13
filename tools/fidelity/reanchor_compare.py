@@ -127,7 +127,7 @@ def analyse(game: dict, anchored: dict, nm: dict, after_desync: str = "stop", ke
         rs = rsteps[j]
         action = gs.get("action") or {}
         kind = "start" if j == 0 else action.get("kind", "?")
-        card = "END_TURN" if kind == "end_turn" else action.get("card")
+        card = "END_TURN" if kind == "end_turn" else ("POTION:" + action.get("potion", "?") if kind == "potion" else action.get("card"))
         if rs.get("anchor_error"):
             out["stop"] = {"at": j, "why": "cannot rebuild the game's state: " + rs["anchor_error"]}
             break

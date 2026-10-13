@@ -67,8 +67,36 @@ Write-up: seed, step, the two states (diff lines), what the game code does, what
 
 Handles: Neow choice, card-choice screens, rewards screens (card rewards answered first card),
 map travel to the first row-1 monster room, one fight with seeded random legal play, Instant fast mode.
-Also nested reward screens (Neow's Bones). Not yet: potions, events beyond Neow, shops, rest sites, fights after the first,
-characters other than the Ironclad (the emulator's run engine starts every run as the Ironclad).
+Also nested reward screens (Neow's Bones), and with a spec's setup keys (next section) any encounter of any act,
+relics, potions and their use, powers and upgraded cards. Not yet: events beyond Neow, shops, rest sites, fights
+after the first, characters other than the Ironclad (the emulator's run engine starts every run as the Ironclad).
+
+## Setup fights (states random Ironclad decks never reach)
+
+The developers' console commands set up a situation through the game's own commands; the driver
+(`driver/Setup.cs`) calls those same commands, never one that changes or skips a rule (godmode, kill, win,
+damage or heal shortcuts are refused). Spec keys, all optional; without them the output is byte-identical:
+
+- `"setup": [{"cmd": "relic", "id": "VAJRA"}, {"cmd": "potion", "id": "FIRE_POTION"}, {"cmd": "card", "id": "BASH", "upgraded": true},
+  {"cmd": "fight", "id": "BYRDONIS_ELITE"}, {"cmd": "power", "id": "VULNERABLE_POWER", "amount": 2, "target": "enemy:0"}, {"cmd": "energy", "amount": 1}]`.
+  Items before `fight` run on the map after Neow, items after it once the room has settled (turn 1, hand drawn), before the
+  first action. `fight` is FightConsoleCmd's room without the clock-seeded encounter Rng, at the row-1 coordinate. Each item is
+  logged (`setup_log`: ok, message, RNG counters); a choice it opens is tagged step -(i+1).
+- `"use_potions": true`: potion use joins the random actions (PotionModel.EnqueueManualUse, the popup's enable rules); snapshots
+  then also record the belt (compared) and the relics (not compared).
+- `"script": [<recorded actions>]`: replays actions by card id instead of random ones (the shrinker's reproduction).
+
+EmuDump mirrors every item at the same moment (`tools/emudump/Setup.cs`); an item it cannot build is logged `unsupported`
+(a mirror gap, not a divergence). `python -m tools.fidelity.setup_compare <out.json> <emu.json>` names the first item after which
+the run's RNG counters or the item's outcome differ.
+
+`python referee/scenarios.py --name <n> --mode coverage|dense --fights 60 --start <k> [--shrink 8 --shrink-budget 200]` (game copy
+`D:\spireline\referee\game-setup`, 2 servers, outputs in `D:\spireline\referee\jobs-setup`) makes the specs from the game's tables,
+plays, replays, judges and prints a summary. Coverage fights: one encounter of any act and kind plus 1-3 least-covered relics,
+potions, powers or upgraded cards. Dense fights: 20-30 card decks (~35% upgraded), 10-20 relics, a full belt, powers on both sides.
+Plausibility flags (`cross_act`, `debug_room`, `cross_character`, `duplicate_relic`) mark setups no real run has; packs rank them last.
+`--shrink K` reduces K diverging fights to a minimal setup (`referee/shrink.py`: script-mode re-runs of item subsets, ddmin, all
+cases in one game round at a time, 48 fights a case at most) and writes `<n>.packs/minimal/<seed>.json`, a spec that runs as is.
 
 ## Table check (content tables vs the game)
 

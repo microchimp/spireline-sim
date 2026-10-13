@@ -18,6 +18,34 @@ static class Tables
     static JsonArray Enc(ReadOnlySpan<int> ids) =>
         Arr(ids.ToArray().Select(i => ((CombatFactory.ActOneEncounter)i).ToString()));
 
+    /// <summary>The act's encounter list of one kind (weak, normal, elite, boss), in the game's order.</summary>
+    internal static ReadOnlySpan<int> EncounterList(int act, string kind) => (act, kind) switch
+    {
+        (RunConstants.ActOvergrowth, "weak") => RunConstants.OvergrowthWeakEncounters,
+        (RunConstants.ActUnderdocks, "weak") => RunConstants.UnderdocksWeakEncounters,
+        (RunConstants.ActHive, "weak") => RunConstants.HiveWeakEncounters,
+        (RunConstants.ActOvergrowth, "normal") => RunConstants.OvergrowthNormalEncounters,
+        (RunConstants.ActUnderdocks, "normal") => RunConstants.UnderdocksNormalEncounters,
+        (RunConstants.ActHive, "normal") => RunConstants.HiveNormalEncounters,
+        (RunConstants.ActOvergrowth, "elite") => RunConstants.OvergrowthEliteEncounters,
+        (RunConstants.ActUnderdocks, "elite") => RunConstants.UnderdocksEliteEncounters,
+        (RunConstants.ActHive, "elite") => RunConstants.HiveEliteEncounters,
+        (RunConstants.ActOvergrowth, "boss") => RunConstants.OvergrowthBossEncounters,
+        (RunConstants.ActUnderdocks, "boss") => RunConstants.UnderdocksBossEncounters,
+        (RunConstants.ActHive, "boss") => RunConstants.HiveBossEncounters,
+        (_, "weak") => EncounterTags.Pool(act, "Weak"),
+        (_, "normal") => EncounterTags.Pool(act, "Normal"),
+        (_, "elite") => EncounterTags.Pool(act, "Elite"),
+        _ => EncounterTags.Pool(act, "Boss"),
+    };
+
+    /// <summary>Act ids by the game's act entry.</summary>
+    internal static readonly (string Name, int Act)[] ActIds =
+    [
+        ("OVERGROWTH", RunConstants.ActOvergrowth), ("UNDERDOCKS", RunConstants.ActUnderdocks),
+        ("HIVE", RunConstants.ActHive), ("GLORY", RunConstants.ActGlory),
+    ];
+
     public static JsonObject Dump()
     {
         var o = new JsonObject();
@@ -84,43 +112,15 @@ static class Tables
         };
         // Encounter ids are the emulator's CombatFactory.ActOneEncounter names.
         var acts = new JsonObject();
-        var spec = new (string Name, int Act)[]
-        {
-            ("OVERGROWTH", RunConstants.ActOvergrowth), ("UNDERDOCKS", RunConstants.ActUnderdocks),
-            ("HIVE", RunConstants.ActHive), ("GLORY", RunConstants.ActGlory),
-        };
+        var spec = ActIds;
         foreach (var (name, act) in spec)
         {
             acts[name] = new JsonObject
             {
-                ["weak"] = Enc(act switch
-                {
-                    RunConstants.ActOvergrowth => RunConstants.OvergrowthWeakEncounters,
-                    RunConstants.ActUnderdocks => RunConstants.UnderdocksWeakEncounters,
-                    RunConstants.ActHive => RunConstants.HiveWeakEncounters,
-                    _ => EncounterTags.Pool(act, "Weak"),
-                }),
-                ["normal"] = Enc(act switch
-                {
-                    RunConstants.ActOvergrowth => RunConstants.OvergrowthNormalEncounters,
-                    RunConstants.ActUnderdocks => RunConstants.UnderdocksNormalEncounters,
-                    RunConstants.ActHive => RunConstants.HiveNormalEncounters,
-                    _ => EncounterTags.Pool(act, "Normal"),
-                }),
-                ["elite"] = Enc(act switch
-                {
-                    RunConstants.ActOvergrowth => RunConstants.OvergrowthEliteEncounters,
-                    RunConstants.ActUnderdocks => RunConstants.UnderdocksEliteEncounters,
-                    RunConstants.ActHive => RunConstants.HiveEliteEncounters,
-                    _ => EncounterTags.Pool(act, "Elite"),
-                }),
-                ["boss"] = Enc(act switch
-                {
-                    RunConstants.ActOvergrowth => RunConstants.OvergrowthBossEncounters,
-                    RunConstants.ActUnderdocks => RunConstants.UnderdocksBossEncounters,
-                    RunConstants.ActHive => RunConstants.HiveBossEncounters,
-                    _ => EncounterTags.Pool(act, "Boss"),
-                }),
+                ["weak"] = Enc(EncounterList(act, "weak")),
+                ["normal"] = Enc(EncounterList(act, "normal")),
+                ["elite"] = Enc(EncounterList(act, "elite")),
+                ["boss"] = Enc(EncounterList(act, "boss")),
             };
         }
 
