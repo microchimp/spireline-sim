@@ -451,14 +451,42 @@ public static class RunRewardGenerator
     public static void EnterOtherCharacterCardReward(RunState state)
     {
         state.Phase = RunPhase.CardReward;
-        Array.Clear(state.RewardCards);
-        Array.Clear(state.RewardUpgraded);
+        RollOtherCharacterCardOffer(state).ShowOn(state);
+    }
 
+    /// <summary>
+    /// `Kaleidoscope.AfterObtained` builds BOTH of its card rewards as it is obtained -- the
+    /// pools shuffled on Niche and three cards made for each reward, one reward after the other
+    /// -- and offers them together. Rolled one at a time as each was claimed, the draws came late
+    /// and a reward left on the screen never drew at all (run referee, seed K99RQF4V67: the
+    /// game's Niche six and Rewards eighteen ahead the moment Neow's option was taken).
+    /// </summary>
+    public static void OfferKaleidoscopeRewards(RunState state, int count = 2)
+    {
+        for (int k = 0; k < count; k++)
+        {
+            var offer = RollOtherCharacterCardOffer(state);
+            if (!state.RewardCardPending)
+            {
+                offer.ShowOn(state);
+                state.RewardCardPending = true;
+            }
+            else
+            {
+                state.PendingCardOffers.Add(offer);
+            }
+        }
+    }
+
+    private static CardOffer RollOtherCharacterCardOffer(RunState state)
+    {
+        var cards = new int[state.RewardCards.Length];
+        var upgraded = new bool[state.RewardCards.Length];
         var pools = OtherCharacterPools(state);
         state.Rng.Niche.Shuffle(pools);
 
         var blacklist = new List<int>();
-        for (int i = 0; i < state.RewardCards.Length && i < pools.Count; i++)
+        for (int i = 0; i < cards.Length && i < pools.Count; i++)
         {
             // Base odds, and the running offset neither read nor grown: Kaleidoscope
             // creates with CardCreationSource.Other, which CardFactory.RollForRarity
@@ -471,13 +499,15 @@ public static class RunRewardGenerator
                 useOffset: false
             );
             int cardId = ChooseCardWithRarity(pools[i], rarity, blacklist, state.PlayerRng.Rewards);
-            state.RewardCards[i] = cardId;
+            cards[i] = cardId;
             blacklist.Add(cardId);
             // Three Rewards draws per card, not two: rarity, the card itself, then the
             // upgrade roll. Skipping the third left the stream a call short per card and
             // every reward after this one read the wrong values.
-            state.RewardUpgraded[i] = RollCardUpgrade(state, cardId, state.PlayerRng.Rewards);
+            upgraded[i] = RollCardUpgrade(state, cardId, state.PlayerRng.Rewards);
         }
+
+        return new CardOffer(cards, upgraded);
     }
 
     /// <summary>
@@ -615,6 +645,10 @@ public static class RunRewardGenerator
                 if (claimed == RunConstants.RelicLostCoffer)
                 {
                     OfferLostCofferRewards(state);
+                }
+                else if (claimed == RunConstants.RelicKaleidoscope)
+                {
+                    OfferKaleidoscopeRewards(state);
                 }
 
                 OfferNextBonusRelic(state);

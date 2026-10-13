@@ -33,3 +33,24 @@ public class LostCofferTests
         Assert.Equal(rewards + 3 * 3 + 2, s.PlayerRng.Rewards.CallCount);
     }
 }
+
+/// <summary>
+/// Kaleidoscope builds both card rewards as it is obtained: Niche shuffled once per reward and
+/// three Rewards draws per card, before either is claimed (run referee, seed K99RQF4V67).
+/// </summary>
+public class KaleidoscopeDrawTimingTests
+{
+    [Fact]
+    public void BothRewardsAreRolledAtPickup()
+    {
+        var engine = new RunEngine();
+        engine.Reset("QS2GYXRKWN");
+        var s = engine.State;
+        int rewards = s.PlayerRng.Rewards.CallCount, niche = s.Rng.Niche.CallCount;
+
+        Assert.Equal(0, engine.Step(0, -1, out _, out _, out _)); // Kaleidoscope (this seed's first option)
+
+        Assert.Equal(rewards + 2 * 3 * 3, s.PlayerRng.Rewards.CallCount);
+        Assert.True(s.Rng.Niche.CallCount > niche);
+    }
+}

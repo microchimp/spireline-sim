@@ -1800,8 +1800,10 @@ public sealed class RunEngine
         {
             // "Obtain 2 card rewards from other characters". RewardsCmd.OfferCustom puts
             // both on the rewards screen at once; the player claims one, picks a card,
-            // lands back on the screen and claims the other.
-            State.PendingOtherCharacterCardRewards = 2;
+            // lands back on the screen and claims the other. Both are built as the relic is
+            // obtained (OfferKaleidoscopeRewards).
+            RunRewardGenerator.ClearRewardScreen(State);
+            RunRewardGenerator.OfferKaleidoscopeRewards(State);
             State.NeowAwaitingProceed = true;
             State.Phase = RunPhase.RelicReward;
             return;
