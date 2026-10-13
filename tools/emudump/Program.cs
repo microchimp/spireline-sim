@@ -26,7 +26,7 @@ if (args[0] == "fight")
     var fights = new JsonArray(refs.Select(r => (JsonNode)(r!["ascension"] == null
         ? new JsonObject { ["seed"] = r["seed"]?.DeepClone(), ["error"] = "no game result to replay", ["steps"] = new JsonArray() }
         : Fight.Replay(r.AsObject()))).ToArray());
-    Console.WriteLine(new JsonObject { ["results"] = fights }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine(new JsonObject { ["results"] = fights }.ToJsonString(new JsonSerializerOptions { WriteIndented = !args.Contains("--compact") }));
     return;
 }
 

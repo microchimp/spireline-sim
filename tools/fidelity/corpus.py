@@ -337,7 +337,10 @@ def replay_part(mode: str, ids: list, corpus_dir: str, emudump: str, work: str) 
     src.write_text(json.dumps({"results": games}), encoding="utf-8")
     t0 = time.time()
     with dst.open("wb") as so, err.open("wb") as se:
-        p = subprocess.run(["dotnet", emudump, mode, str(src)], stdout=so, stderr=se, check=False, creationflags=BELOW_NORMAL)
+        # --compact: a quarter less CPU than the indented default (older builds ignore it)
+        extra = ["--compact"] if mode == "fight" else []
+        p = subprocess.run(["dotnet", emudump, mode, str(src), *extra], stdout=so, stderr=se, check=False,
+                           creationflags=BELOW_NORMAL)
     secs = time.time() - t0
     try:
         doc = json.loads(dst.read_text(encoding="utf-8"))
@@ -419,12 +422,12 @@ def run(corpus: Corpus, procs: int, emudump: Path, label: str | None = None, onl
     tasks = [(mode, ids) for ids in parts for mode in ("fight", "reanchor")]
     t0 = time.time()
     got = collections.defaultdict(dict)
-    problems, busy = [], 0.0
+    problems, busy = [], collections.Counter()
     with ProcessPoolExecutor(max_workers=procs, mp_context=get_context("spawn"), initializer=_below_normal) as ex:
         futs = [ex.submit(replay_part, mode, ids, str(corpus.path), str(emudump), str(work)) for mode, ids in tasks]
         for f in futs:
             r = f.result()
-            busy += r["seconds"]
+            busy[r["mode"]] += r["seconds"]
             if r["problem"]:
                 problems.append(r["problem"])
             for fid, v in r["fights"].items():
@@ -437,7 +440,7 @@ def run(corpus: Corpus, procs: int, emudump: Path, label: str | None = None, onl
         r = {"n": m["steps"], **got[m["id"]]}
         fights[m["id"]] = r
     doc = {"format": FORMAT, "label": label, "emulator": emu, "procs": procs, "wall_s": round(wall, 1),
-           "emudump_s": round(busy, 1), "problems": problems[:20], "totals": totals(fights), "fights": fights}
+           "emudump_s": {k: round(v, 1) for k, v in busy.items()}, "problems": problems[:20], "totals": totals(fights), "fights": fights}
     out = rdir / "results.json"
     out.write_text(json.dumps(doc), encoding="utf-8")
     print(run_line(doc))
