@@ -3127,19 +3127,15 @@ public static class CombatEngine
             case CardSelectionKind.AutoPlaySkillThrice:
                 if (index < state.Hand.Count)
                 {
-                    // `CardCmd.AutoPlay(card)` three times over on the SAME CardModel.
-                    // Queueing the instance three times made three cards: the live capture
-                    // shows one Defend in the discard and 15 block, and the emulator left
-                    // three Defends there -- two cards manufactured out of nothing, which
-                    // stay in the deck for the rest of the combat.
+                    // `CardCmd.AutoPlay(card)` three times over on the SAME CardModel: three
+                    // gates, three target rolls, three counted plays, one card. Queueing the
+                    // instance three times made three cards (the live capture shows one
+                    // Defend in the discard and 15 block); queueing it once with
+                    // ReplayCount + 2 rolled and counted once and left the two replays on
+                    // the card for good.
                     var chosenSkill = state.Hand[index];
                     state.Hand.RemoveAt(index);
-                    state.AutoPlayQueue.Add(
-                        chosenSkill with
-                        {
-                            ReplayCount = chosenSkill.ReplayCount + 2,
-                        }
-                    );
+                    AutoPlayCardRepeatedly(state, chosenSkill, 3, rng);
                 }
 
                 break;
@@ -5212,7 +5208,7 @@ public static class CombatEngine
         ReleaseHeldPlayedCard(state);
     }
 
-    private static void AutoPlay(
+    private static List<CardInstance>? AutoPlay(
         CombatState state,
         CardInstance card,
         Random rng,
@@ -5223,7 +5219,7 @@ public static class CombatEngine
         state.AutoPlaying = true;
         try
         {
-            AutoPlayCore(state, card, rng, forceExhaust);
+            return AutoPlayCore(state, card, rng, forceExhaust);
         }
         finally
         {
@@ -5252,6 +5248,54 @@ public static class CombatEngine
         AnswerDeathsSince(state, beforePlay, rng, sweep: CorpseSweep.Answered);
         return PlayerIsDead(state) || NoPrimaryEnemyLeft(state);
     }
+
+    /// <summary>
+    /// `CardCmd.AutoPlay(card, null)` <paramref name="times" /> times on the SAME card, as
+    /// `DecisionsDecisions.OnPlay` does (RepeatVar 3). Each call is a whole auto-play -- the
+    /// gate, the target roll, the play and its counters -- and files the card, so the next
+    /// one takes it back from where it came to rest. Stops when the fight is over.
+    /// </summary>
+    internal static void AutoPlayCardRepeatedly(
+        CombatState state,
+        CardInstance card,
+        int times,
+        Random rng
+    )
+    {
+        for (int play = 0; ; play++)
+        {
+            var beforePlay = new Baseline(state);
+            var restsOn = AutoPlay(state, card, rng);
+            AnswerDeathsSince(state, beforePlay, rng, sweep: CorpseSweep.Answered);
+            if (play + 1 >= times || PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+            {
+                return;
+            }
+
+            // On top of the draw pile (Rebound) or last on the discard or exhaust pile.
+            int at =
+                restsOn is null ? -1
+                : restsOn == state.DrawPile ? (IsCopyOf(restsOn[0], card) ? 0 : -1)
+                : restsOn.FindLastIndex(pileCard => IsCopyOf(pileCard, card));
+            if (at < 0)
+            {
+                return;
+            }
+
+            card = restsOn![at];
+            if (restsOn == state.DrawPile)
+            {
+                state.RemoveFromDrawPileAt(at);
+            }
+            else
+            {
+                restsOn.RemoveAt(at);
+            }
+        }
+    }
+
+    private static bool IsCopyOf(CardInstance pileCard, CardInstance card) =>
+        pileCard.DefId == card.DefId && pileCard.Upgraded == card.Upgraded;
 
     /// <summary>
     /// `CardPileCmd.AutoPlayFromDrawPile(count, Top, forceExhaust)`, which Havoc (1, forced),
@@ -5301,7 +5345,8 @@ public static class CombatEngine
         }
     }
 
-    private static void AutoPlayCore(
+    /// <returns>The pile the card came to rest on, or null when it left combat.</returns>
+    private static List<CardInstance>? AutoPlayCore(
         CombatState state,
         CardInstance card,
         Random rng,
@@ -5318,7 +5363,9 @@ public static class CombatEngine
         // AfterCardPlayed ever running -- a Panache does not count it.
         if (!BeginAutoPlay(state, card, def, rng, forceExhaust, out int targetIndex))
         {
-            return;
+            return forceExhaust || ShouldExhaustAfterPlay(def, card)
+                ? state.ExhaustPile
+                : state.DiscardPile;
         }
 
         // Apply card effects.
@@ -5360,6 +5407,7 @@ public static class CombatEngine
 
         // `GetResultPileTypeForCardPlay`: a Power leaves combat even when Havoc forced the
         // exhaust (`ExhaustOnNextPlay` is read only after the Power check).
+        List<CardInstance>? restsOn = null;
         if (def.Type == CardType.Power)
         {
             // Played powers leave hand without firing exhaust hooks.
@@ -5367,10 +5415,12 @@ public static class CombatEngine
         else if (forceExhaust || ShouldExhaustAfterPlay(def, card))
         {
             Effects.CardEffects.ExhaustCard(state, card, rng: rng);
+            restsOn = state.ExhaustPile;
         }
         else if (ShouldPlaceOnDrawPileAfterPlay(state, def, reboundBefore))
         {
             state.TopDeck(card with { FreeThisTurn = false });
+            restsOn = state.DrawPile;
         }
         else
         {
@@ -5381,12 +5431,14 @@ public static class CombatEngine
                     SlyForCombat = card.SlyForCombat || MasterPlannerMarks(state, def),
                 }
             );
+            restsOn = state.DiscardPile;
         }
 
         IncrementPlayedCardTypeCounters(state, def);
         PayMonologue(state, monologueBefore);
         ApplyAfterCardPlayedPowers(state, def, rng);
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+        return restsOn;
     }
 
     private static void IncrementPlayedCardTypeCounters(
