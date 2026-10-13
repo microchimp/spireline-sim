@@ -32,6 +32,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=5400)
     ap.add_argument("--parallel", type=int, default=6, help="game copies running at once")
     ap.add_argument("--deck-cards", type=int, default=5, help="random Ironclad/colourless cards added per fight")
+    ap.add_argument("--canary", type=int, default=2, help="fights per copy run and checked before the rest (0 = off)")
     a = ap.parse_args()
 
     # Coverage: each fight's deck gets random cards from the pools an Ironclad can hold, so a
@@ -52,29 +53,48 @@ def main() -> int:
     job, out, emu = (JOBS / f"{a.name}{ext}" for ext in (".json", ".out.json", ".emu.json"))
     job.write_text(json.dumps({"out": str(out).replace("\\", "/"), "runs": runs}), encoding="utf-8")
 
-    # Shards: one headless game per shard, each with its own scratch profile, all at once.
-    k = max(1, min(a.parallel, len(runs)))
-    procs = []
-    for i in range(k):
-        shard = JOBS / f"{a.name}.s{i}.json"
-        shard_out = JOBS / f"{a.name}.s{i}.out.json"
-        shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "fast_reset": True,
-                                     "runs": runs[i::k]}), encoding="utf-8")
-        procs.append((shard_out, subprocess.Popen(
-            [sys.executable, str(ROOT / "referee" / "run_referee.py"), "--game", GAME, "--job", str(shard),
-             "--timeout", str(a.timeout), "--scratch", str(Path(GAME).parent / "scratch" / f"{a.name}.s{i}")],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
-    reports, shard_results = [], []
-    for shard_out, p in procs:
-        text = p.communicate()[0]
-        reports.append(json.loads(text[text.index("{"):]) if "{" in text else {"exit": "no report", "tail": text[-500:]})
-        shard_results.append(json.loads(shard_out.read_text(encoding="utf-8"))["results"] if shard_out.exists() else [])
-    merged = [None] * len(runs)
-    for i, res in enumerate(shard_results):
-        for j, r in enumerate(res):
-            merged[i + j * k] = r
-    merged = [r if r is not None else {"seed": runs[n]["seed"], "error": "shard produced no result", "steps": []}
-              for n, r in enumerate(merged)]
+    def play(name: str, subset: list) -> tuple[list, list]:
+        """Run `subset` on up to --parallel game copies; results in subset order."""
+        k = max(1, min(a.parallel, len(subset)))
+        procs = []
+        for i in range(k):
+            shard = JOBS / f"{name}.s{i}.json"
+            shard_out = JOBS / f"{name}.s{i}.out.json"
+            shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "fast_reset": True,
+                                         "runs": subset[i::k]}), encoding="utf-8")
+            procs.append((shard_out, subprocess.Popen(
+                [sys.executable, str(ROOT / "referee" / "run_referee.py"), "--game", GAME, "--job", str(shard),
+                 "--timeout", str(a.timeout), "--scratch", str(Path(GAME).parent / "scratch" / f"{name}.s{i}")],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
+        reports, shard_results = [], []
+        for shard_out, p in procs:
+            text = p.communicate()[0]
+            reports.append(json.loads(text[text.index("{"):]) if "{" in text else {"exit": "no report", "tail": text[-500:]})
+            shard_results.append(json.loads(shard_out.read_text(encoding="utf-8"))["results"] if shard_out.exists() else [])
+        merged = [None] * len(subset)
+        for i, res in enumerate(shard_results):
+            for j, r in enumerate(res):
+                merged[i + j * k] = r
+        merged = [r if r is not None else {"seed": subset[n]["seed"], "error": "shard produced no result", "steps": []}
+                  for n, r in enumerate(merged)]
+        return merged, reports
+
+    # Canary: a few fights per copy first, compared before the rest is spent on a broken setup.
+    if a.canary and len(runs) > a.canary * a.parallel:
+        head = runs[: a.canary * a.parallel]
+        c_res, c_rep = play(f"{a.name}.canary", head)
+        bad = [r for r in c_res if r.get("error")]
+        if bad or any(r.get("exit") != 0 for r in c_rep):
+            print(f"canary failed: {len(bad)} of {len(head)} fights with errors; session exits {[r.get('exit') for r in c_rep]}")
+            for r in bad[:5]:
+                print("  ", r.get("seed"), str(r.get("error"))[:300])
+            return 3
+        print(f"canary ok: {len(head)} fights, no errors")
+        rest, reports = play(a.name, runs[len(head):])
+        merged = c_res + rest
+        reports = c_rep + reports
+    else:
+        merged, reports = play(a.name, runs)
     out.write_text(json.dumps({"results": merged}), encoding="utf-8")
     report = {"exit": [r.get("exit") for r in reports], "seconds": max((r.get("seconds") or 0) for r in reports),
               "network_connections": sorted({c for r in reports for c in r.get("network_connections", [])}),

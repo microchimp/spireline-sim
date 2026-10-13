@@ -65,6 +65,7 @@ public static partial class Driver
             var target = state.Map.GetPointsInRow(1).Where(p => p.PointType == MapPointType.Monster)
                 .OrderBy(p => p.coord.col).First();
             timing["neow"] = phase.ElapsedMilliseconds;
+            Heartbeat();
             dump["room"] = new JsonArray(target.coord.col, target.coord.row);
             GD.Print($"[referee] entering {target.coord.col},{target.coord.row}");
             await WithTimeout(run.EnterMapCoord(target.coord), 60, "EnterMapCoord");
@@ -116,6 +117,7 @@ public static partial class Driver
 
                 await Idle();
                 steps.Add(new JsonObject { ["action"] = action, ["state"] = Snapshot(state, player) });
+                Heartbeat();
                 GD.Print($"[referee] step {i}: {action.ToJsonString()}");
             }
         }

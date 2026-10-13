@@ -45,6 +45,9 @@ public static partial class Driver
     }
 
     private static long _lastProgress = System.Environment.TickCount64;
+
+    /// <summary>Marks progress for the watchdog: called on every action, not just every fight.</summary>
+    internal static void Heartbeat() => Interlocked.Exchange(ref _lastProgress, System.Environment.TickCount64);
     private static readonly object _saveLock = new();
 
     private static void Save(string path, JsonArray results)
@@ -64,7 +67,7 @@ public static partial class Driver
         var results = new JsonArray();
         // Watchdog on a pool thread: if no fight finishes for stall_s seconds, the main loop is
         // stuck (a load or a screen nothing answers); keep what is saved and end the process.
-        int stallMs = ((int?)job["stall_s"] ?? 180) * 1000;
+        int stallMs = ((int?)job["stall_s"] ?? 20) * 1000;
         _ = Task.Run(async () =>
         {
             while (true)
@@ -97,6 +100,7 @@ public static partial class Driver
             SaveManager.Instance.Progress.EnableFtues = false;
             Engine.MaxFps = 0;
 
+            Heartbeat();
             foreach (var spec in job["runs"]!.AsArray())
             {
                 var o = spec!.AsObject();
