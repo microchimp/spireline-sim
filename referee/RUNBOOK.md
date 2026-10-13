@@ -104,3 +104,27 @@ python -m tools.fidelity.reanchor_compare '<out.json>' <name>.reanchor.json [--a
 - A matching step verifies its card; a divergence is blamed on its card only when the step before it matched ("primary"). Fights stop being re-anchored where the enemies' move state cannot be reproduced (the snapshot does not record intents); `--after-enemy-desync plays` goes on with card plays and leaves later ends of turn unjudged.
 - What the snapshot lacks (relic counters, enemy AI and intent, per-card modifiers, combat counters) comes from the emulator's own previous result. The `--scramble` and `--stale enemy,cards,relics,counters|all` options of `reanchor` test the write-back and show which hidden state a step needs.
 - `reanchor_compare.learn` / `coverage.update_reanchored` replace `coverage.update` for a re-anchored batch (do not use both).
+
+## Oracle-free checks (flag emulator bugs without the game)
+
+Checks that hold whatever the game does, run over every recorded fight (`jobs/*.out.json`, each distinct fight once) and over
+the emulator alone. A violation in the game's own recording is a recording or driver issue; in the emulator it is a bug or a
+tool artefact (triage below).
+
+```
+# invariants on the game's recording and on the emulator's replay of it (hp, energy, block, powers, piles, rng, card conservation,
+# pile order), plus the engine's own live state after every replayed step (EmuDump invariants)
+python -m tools.fidelity.invariants run --jobs D:/spireline/referee/jobs --emudump tools/emudump/bin/Release/net9.0/EmuDump.dll --work <scratch> [--json report.json]
+# metamorphic relations on the emulator alone, from every distinct recorded start (determinism, clone, pad, twins, symmetry,
+# streams, hand order, discard order, energy, monotone, upgrade, linear, invariants)
+python -m tools.fidelity.invariants meta --jobs D:/spireline/referee/jobs --emudump tools/emudump/bin/Release/net9.0/EmuDump.dll --work <scratch> --seeds 4 [--relations twins,pad] [--json meta.json]
+dotnet tools/emudump/bin/Release/net9.0/EmuDump.dll meta <out.json> --relations clone --chooser <seed> --diff 40     # one failure, wide diff
+```
+
+- `data/card_flow.json` (which game models create cards, which powers may repeat or go negative) is made from the local decompile:
+  `python -m tools.fidelity.card_flow build --decompiled D:/spireline/referee/decompiled --out data/card_flow.json`.
+- The relations live in `src/Sts2Emulator.Tests/Support/Invariants/` and each is tested twice in `MetamorphicTests`: it must hold on the
+  engine and must fail on a copy of the engine with one fault put in.
+- A relation that fails is read before it is trusted: some cards read the very thing a relation changes, by design (Mind Blast and
+  Seeker Strike read the draw pile, Aggression takes an `UnstableShuffle` of the discard pile, Stampede rolls an index into the hand).
+  `TRIAGE` in `tools/fidelity/invariants.py` records each such reason, checked against the game's class.

@@ -10,6 +10,10 @@
     <None Include="..\..\data\id_map.json" Link="id_map.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The invariant and metamorphic checks live with the xunit suite; EmuDump runs them on recorded fights. -->
+    <Compile Include="..\..\src\Sts2Emulator.Tests\Support\Invariants\*.cs" LinkBase="Invariants" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Sts2Emulator\Sts2Emulator.csproj" />
   </ItemGroup>
 </Project>
