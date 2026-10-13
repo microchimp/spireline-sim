@@ -119,12 +119,12 @@ public static partial class Driver
                     return 0;
                 }
 
-                Engine.MaxFps = IdleFps;
+                if (!NormalSettings) Engine.MaxFps = IdleFps;
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                 continue;
             }
 
-            Engine.MaxFps = 0;
+            if (!NormalSettings) Engine.MaxFps = 0;
             var (taken, id) = claim.Value;
             _status = "busy " + id;
             Heartbeat();

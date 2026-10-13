@@ -92,13 +92,15 @@ def real_profile_state():
     return real_profile.exists() and sorted((str(p), p.stat().st_mtime) for p in real_profile.rglob("*"))
 
 
-def launch(game: Path, scratch: Path, job: Path, below_normal: bool = False):
-    """Start the game headless on a scratch profile; returns (process, log file)."""
+def launch(game: Path, scratch: Path, job: Path, below_normal: bool = False, windowed: bool = False):
+    """Start the game headless (or, with windowed, in a normal window) on a scratch profile;
+    returns (process, log file). CREATE_NO_WINDOW only hides a console; the game's window still shows."""
     env = dict(os.environ, APPDATA=str(scratch / "appdata"), LOCALAPPDATA=str(scratch / "localappdata"),
                SPIRELINE_REFEREE_JOB=str(job.resolve()))
     log = open(scratch / "game-stdout.log", "wb")
     flags = subprocess.CREATE_NO_WINDOW | (subprocess.BELOW_NORMAL_PRIORITY_CLASS if below_normal else 0)
-    proc = subprocess.Popen([str(game / "SlayTheSpire2.exe"), "--headless", "--force-steam", "off"],
+    args = [str(game / "SlayTheSpire2.exe")] + ([] if windowed else ["--headless"]) + ["--force-steam", "off"]
+    proc = subprocess.Popen(args,
                             cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
     return proc, log
 
@@ -129,6 +131,9 @@ def main() -> int:
     ap.add_argument("--legacy-boot-settings", action="store_true",
                     help="do not write skip_intro_logo / fps_limit into settings.save (to time the old boot)")
     ap.add_argument("--below-normal", action="store_true", help="run the game at BelowNormal priority")
+    ap.add_argument("--windowed", action="store_true",
+                    help="launch in a window (no --headless), to check headless changes nothing; every other "
+                         "safety step is the same (sound off, fullscreen off, scratch profile, no network)")
     a = ap.parse_args()
 
     game = a.game.resolve()
@@ -139,11 +144,13 @@ def main() -> int:
     (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
     if not a.no_install:
         install(game, a.build)
-    write_settings(scratch, boot_opts=not a.legacy_boot_settings)
+    # A job with "normal_settings" keeps the profile's defaults: no skip_intro_logo, no fps_limit 0.
+    normal = json.loads(a.job.read_text(encoding="utf-8")).get("normal_settings") is True
+    write_settings(scratch, boot_opts=not (a.legacy_boot_settings or normal))
 
     before = real_profile_state()
     t0 = time.time()
-    proc, _log = launch(game, scratch, a.job, below_normal=a.below_normal)
+    proc, _log = launch(game, scratch, a.job, below_normal=a.below_normal, windowed=a.windowed)
     seen: set[str] = set()
     while proc.poll() is None and time.time() - t0 < a.timeout:
         seen |= connections(proc.pid)
@@ -157,7 +164,7 @@ def main() -> int:
     report = {
         "exit": rc, "seconds": round(time.time() - t0, 1), "sts2_dll_sha256": digest,
         "network_connections": sorted(seen), "real_profile_touched": before != after,
-        "scratch": scratch.name,
+        "scratch": scratch.name, **({"windowed": True} if a.windowed else {}),
     }
     (scratch / "session.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(json.dumps(report, indent=1))

@@ -49,7 +49,8 @@ public static partial class Driver
         // never queued, and every asset loads on demand on the main thread instead.
         try
         {
-            if ((bool?)JsonNode.Parse(File.ReadAllText(job))?["no_preload"] == true)
+            var j = JsonNode.Parse(File.ReadAllText(job));
+            if ((bool?)j?["no_preload"] == true && (bool?)j?["normal_settings"] != true)
             {
                 MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
             }
@@ -63,6 +64,14 @@ public static partial class Driver
     }
 
     private static long _lastProgress = System.Environment.TickCount64;
+
+    /// <summary>
+    /// Job key "normal_settings": the game exactly as a player gets it on a fresh profile. None of the
+    /// speed changes: no Instant fast mode (the profile's default, Normal, stays), no Engine.MaxFps
+    /// change, no fast_patches, no no_preload, no fast_reset (ReturnToMainMenu between fights).
+    /// Waits are longer because animations play. For checking the speed settings change no outcome.
+    /// </summary>
+    internal static bool NormalSettings;
 
     /// <summary>Marks progress for the watchdog: called on every action, not just every fight.</summary>
     internal static void Heartbeat()
@@ -147,7 +156,8 @@ public static partial class Driver
         var results = new JsonArray();
         // Watchdog on a pool thread: if no fight finishes for stall_s seconds, the main loop is
         // stuck (a load or a screen nothing answers); keep what is saved and end the process.
-        int stallMs = ((int?)job["stall_s"] ?? 20) * 1000;
+        NormalSettings = (bool?)job["normal_settings"] == true;
+        int stallMs = ((int?)job["stall_s"] ?? (NormalSettings ? 180 : 20)) * 1000;
         _ = Task.Run(async () =>
         {
             while (true)
@@ -171,14 +181,27 @@ public static partial class Driver
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             }
 
-            // Player-facing speed settings only: the game's own "Instant" fast mode skips animation
-            // waits, and the frame cap only paces rendering, which is off anyway.
-            SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
+            if (!NormalSettings)
+            {
+                // Player-facing speed settings only: the game's own "Instant" fast mode skips animation
+                // waits, and the frame cap only paces rendering, which is off anyway.
+                SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
+            }
+            else
+            {
+                // Animations play: give the game time to settle between steps.
+                IdleFrames = 60;
+                IdleSeconds = 60;
+            }
+
             IdleFrames = (double?)job["idle_frames"] ?? IdleFrames;
             // Tutorials off, as a player can set it: first-time popups (FTUE) on a fresh profile
-            // open modals that nothing headless answers.
+            // open modals that nothing headless answers. Kept with normal_settings too: the flag is
+            // only read by ProgressSaveManager.SeenFtue, whose callers choose which UI node to show
+            // (e.g. CombatManager's start banner or NCombatRulesFtue, CardPileCmd.ShuffleFtueCheck's
+            // confirm modal); no RNG draw or game state depends on it.
             SaveManager.Instance.Progress.EnableFtues = false;
-            if ((bool?)job["fast_patches"] == true)
+            if ((bool?)job["fast_patches"] == true && !NormalSettings)
             {
                 Patches.Apply();
             }
@@ -186,15 +209,18 @@ public static partial class Driver
             // The game's own preloader switch: background asset sessions only warm a cache,
             // and back-to-back runs (worse with many copies) hang waiting on one. Off, assets
             // load on demand.
-            if ((bool?)job["no_preload"] == true)
+            if ((bool?)job["no_preload"] == true && !NormalSettings)
             {
                 MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
             }
-            Engine.MaxFps = 0;
+            if (!NormalSettings)
+            {
+                Engine.MaxFps = 0;
+            }
             await WaitForStartupPreload(tree);
 
             Heartbeat();
-            bool fastReset = (bool?)job["fast_reset"] == true;
+            bool fastReset = (bool?)job["fast_reset"] == true && !NormalSettings;
             if (job["inbox"] != null)
             {
                 exitCode = await ServeInbox(job, outPath, fastReset);

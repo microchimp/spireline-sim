@@ -181,9 +181,13 @@ public static partial class Driver
     /// </summary>
     internal static double IdleFrames = 6;
 
+    /// <summary>Default for Idle's maxSeconds; raised with normal_settings, where animations play.</summary>
+    internal static double IdleSeconds = 10;
+
     /// <returns>false if the game did not settle within maxSeconds (below the heartbeat watchdog's stall_s).</returns>
-    private static async Task<bool> Idle(double maxSeconds = 10)
+    private static async Task<bool> Idle(double? maxSecondsOrDefault = null)
     {
+        double maxSeconds = maxSecondsOrDefault ?? IdleSeconds;
         var tree = (SceneTree)Engine.GetMainLoop();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         string last = "";
