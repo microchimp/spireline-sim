@@ -266,6 +266,74 @@ class PoolTest(unittest.TestCase):
             serve.Pool(self.dir / "game", p.run_dir, servers=1, spares=0, launch=fake_launch, check_build=lambda g: "x",
                        profile_state=lambda: [], connections=lambda pids: {}, kill=kill, echo=None)
 
+    # -- nodeless pools: full-host replays go to the pool's full lane (driver/Nodeless.cs "nodeless_full": "pool")
+    def nodeless_pool(self, **kw) -> serve.Pool:
+        return self.pool(jopts={**serve.job_options(None), "nodeless": True}, **kw)
+
+    def test_a_nodeless_pool_routes_full_host_replays_and_merges_them(self):
+        p = self.nodeless_pool(servers=3)
+        self.assertEqual((p.route_full, p.full_lane, p.jopts.get("nodeless_full")), (True, 1, "pool"))
+        ids = p.submit([spec(0), spec(1, full="fallback"), spec(2, full="audit"), spec(3, full="audit", differ=True),
+                        spec(4)])
+        got = self.run_until_done(p)
+        self.assertEqual(sorted(rid for rid, _ in got), ids)  # each spec answered once, under its own id
+        merged = p.merged(ids)
+        self.assertFalse(any(r.get("error") for r in merged), merged)
+        fb = p.results[ids[1]]
+        self.assertEqual((fb["cost"]["host"], fb["cost"]["fallback"], fb["cost"]["nodeless_attempt"]["host"]),
+                         ("full", "FakePower", "nodeless"))
+        self.assertEqual(fb["_id"], ids[1])
+        audit, diff = p.results[ids[2]]["cost"], p.results[ids[3]]["cost"]
+        self.assertEqual((audit["host"], audit["audit"]["same"], audit["audit"]["full_cpu_ms"]), ("nodeless", True, 7))
+        self.assertEqual((diff["audit"]["same"], diff["audit"]["first_diff"]), (False, "steps"))
+        self.assertEqual(merged[3]["steps"], [{"i": i} for i in range(spec(3)["n_steps"])])  # the nodeless result stands
+        for r in merged:
+            self.assertNotIn("_full", r)
+        s = p.summary()
+        self.assertEqual((s["full_lane"], s["full_replays"], s["audit_diffs"]), (1, {"fallback": 1, "audit": 2}, 1))
+        # the replays are specs with "host": "full", answered as "<id>f"
+        self.assertEqual(sum(srv.lane == "full" for srv in p.servers), 1)
+        replay_ids = sorted(r["_id"] for srv in p.servers for r in srv.lines if str(r.get("_id", "")).endswith("f"))
+        self.assertEqual(replay_ids, [ids[1] + "f", ids[2] + "f", ids[3] + "f"])
+
+    def test_full_host_lanes_are_off_without_nodeless_or_with_full_here(self):
+        p = self.pool(servers=4)
+        self.assertEqual((p.route_full, p.full_lane), (False, 0))
+        p = self.nodeless_pool(servers=4, route_full=False)
+        self.assertEqual((p.route_full, p.full_lane, "nodeless_full" in p.jopts), (False, 0, False))
+        self.assertEqual([serve.default_full_lane(n) for n in (1, 2, 4, 6, 10, 12, 20)], [0, 1, 1, 1, 2, 2, 3])
+
+    def test_a_single_nodeless_server_plays_its_own_replays(self):
+        p = self.nodeless_pool(servers=1)
+        self.assertEqual(p.full_lane, 0)
+        ids = p.submit([spec(0, full="fallback"), spec(1), spec(2, full="audit")])
+        self.run_until_done(p)
+        self.assertFalse(any(r.get("error") for r in p.merged(ids)))
+        self.assertEqual(p.results[ids[0]]["cost"]["fallback"], "FakePower")
+
+    def test_a_replay_that_kills_two_servers_is_stalled_and_an_audit_keeps_its_result(self):
+        p = self.nodeless_pool(servers=2)
+        ids = p.submit([spec(0, full="audit", crash_full=True), spec(1, full="fallback", crash_full=True), spec(2)])
+        self.run_until_done(p)
+        merged = p.merged(ids)
+        self.assertEqual(merged[0].get("error"), None)
+        self.assertEqual(p.results[ids[0]]["cost"]["audit"], {"same": None, "first_diff": None, "full_error": serve.STALLED})
+        self.assertEqual(merged[1]["error"], serve.STALLED)
+        self.assertEqual(merged[1]["seed"], spec(1)["seed"])
+        self.assertFalse(merged[2].get("error"))
+        self.assertEqual((p.restarts, p.requeued), (4, 2))
+
+    def test_a_retiring_server_is_replaced_and_loses_nothing(self):
+        p = self.nodeless_pool(servers=2, spares=1)
+        ids = p.submit([spec(i, sleep=0.05) for i in range(6)] + [spec(6, retire="once")] + [spec(7 + i) for i in range(6)])
+        self.run_until_done(p)
+        merged = p.merged(ids)
+        self.assertFalse(any(r.get("error") for r in merged), merged)
+        self.assertEqual((p.retired, p.requeued), (1, 0))
+        self.assertTrue(any("retires after spec" in e for e in p.events), p.events)
+        self.assertTrue(any("retired (exit 5)" in e for e in p.events), p.events)
+        self.assertEqual(p.summary()["retired"], 1)
+
     def test_run_files_and_summary(self):
         p = self.pool(servers=2)
         p.submit([spec(i) for i in range(5)])

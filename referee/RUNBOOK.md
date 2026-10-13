@@ -175,7 +175,13 @@ whole batch. Details and rules:
   `stall_s` seconds and 600 frames without progress, or when no frame ends while the main thread is blocked or burns CPU for 2 x
   `stall_s` seconds, so a slow, starved server is not killed. serve.py kills on a 10 x `stall_s` old status file only as a backstop.
 - A server that dies or hangs is replaced; the spec it held goes back to the front of the queue once and is recorded as
-  `stalled` if it kills a second server. One hot spare is kept booted (`--spares 0` turns it off). Servers run at BelowNormal priority.
+  `stalled` if it kills a second server. One hot spare is kept booted (`--spares 0` turns it off; batch.py has `--spares`
+  too). Servers run at BelowNormal priority.
+- A server whose fight left the game's turn flags set retires itself (exit 5, after its result line and a `_retire`
+  line; `driver/Server.cs`, `Driver.StaleState`) and is replaced like a dead one, losing nothing (`retired` in the
+  summary). The flags (`CombatManager.EndingPlayerTurnPhaseOne/Two`, `_inPlayerTurnSetup`) are cleared only by the turn
+  flow itself, not by `CombatManager.Reset`, so a turn flow cut short (an exception thrown out of it, or a fight broken
+  off mid-turn) made every later fight in that process end with `idle_timeout entering the room` (sp-nodeless: 4 fights).
 - One inbox per server, never a shared one: a claim is a rename, and on Windows two servers renaming the same file can both
   succeed (night04 lost 4 of 600 fights that way). The dispatcher writes a spec there only under its final name (tmp, then
   rename) and withdraws specs (an abandoned run) only once the server's status reads `hold`, or kills it after 60 s. A used
@@ -212,8 +218,18 @@ about 8x less CPU per fight. Put the keys in the specs file given to `serve.py` 
 `nodeless_on_error`, `nodeless_audit`, `error_log`, `frame_sleep_usec`, `health` to every server).
 
 - Fights that create a model on the fallback list (`NodelessPatches.FallbackNames`: rules code that needs a node) are
-  replayed from the start on the full host in the same process; `cost.host` / `cost.fallback` say which. Two checks find
-  them: the `MutableClone` postfix, and a scan of every recorded state (creatures, powers, piles, deck, relics).
+  replayed from the start on the full host; `cost.host` / `cost.fallback` say which. Two checks find them: the
+  `MutableClone` postfix, and a scan of every recorded state (creatures, powers, piles, deck, relics). Either one stops
+  the nodeless attempt at the driver's next frame check, in the flag settle too (before, the flag settle never checked,
+  so the attempt played on into the model's node code: RollingBoulderPower and EntropyPower threw at the next turn start).
+- Full-host lane (serve.py and batch.py, on by default for nodeless servers): the fallback and audit replays are not
+  played in the nodeless server's own process. Its line comes back with `_full`, and the dispatcher plays the spec again
+  with `"host": "full"` on a server of the full-host lane (`--full-lane N`, default about 15% of the servers, at least
+  1; every server runs the same job, the lane is the dispatcher's preference, and any server takes the other lane's work
+  when its own queue is empty), then merges both lines into the format below (`cost.fallback`, `cost.nodeless_attempt`,
+  `cost.audit`). Nodeless servers then never load the full host's scenes, a long full-host replay no longer holds up the
+  nodeless server's next fight, and a server that retires (above) loses no replay. `--full-here` keeps the old in-process
+  replays. Cancel checks stay in-process (they compare the cancellation sites that process recorded).
 - Any game error or exception in a nodeless fight fails it (`error` starts with `nodeless:`); `"nodeless_on_error":
   "full"` replays it on the full host instead. `"nodeless_audit": 0.05` also plays 5% of fights on the full host
   (`cost.audit`).
