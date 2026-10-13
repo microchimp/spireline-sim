@@ -35,15 +35,72 @@ def sha256(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def connections(pid: int) -> set[str]:
+def connections_by_pid(pids) -> dict[int, set[str]]:
+    """One `netstat -ano` call for any number of game pids: pid -> its TCP/UDP endpoints."""
+    wanted = {str(p) for p in pids}
+    found: dict[int, set[str]] = {int(p): set() for p in wanted}
     out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, check=False,
                          creationflags=subprocess.CREATE_NO_WINDOW).stdout
-    found = set()
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) >= 4 and parts[-1] == str(pid) and parts[0] in ("TCP", "UDP"):
-            found.add(" ".join(parts[:4] if parts[0] == "TCP" else parts[:3]))
+        if len(parts) >= 4 and parts[-1] in wanted and parts[0] in ("TCP", "UDP"):
+            found[int(parts[-1])].add(" ".join(parts[:4] if parts[0] == "TCP" else parts[:3]))
     return found
+
+
+def connections(pid: int) -> set[str]:
+    return connections_by_pid([pid])[pid]
+
+
+def check_build(game: Path) -> str:
+    """H1: the sha256 of sts2.dll, or SystemExit if it is not a known build."""
+    digest = sha256(game / "data_sts2_windows_x86_64" / "sts2.dll")
+    allowed = set(KNOWN_BUILDS) | set(filter(None, os.environ.get(
+        "SPIRELINE_REFEREE_KNOWN_SHA256", "").split(",")))
+    if digest not in allowed:
+        print(f"refusing: unknown sts2.dll {digest}", file=sys.stderr)
+        raise SystemExit(2)
+    return digest
+
+
+def write_settings(scratch: Path, boot_opts: bool = True) -> None:
+    """A fresh profile with every volume at 0 (FMOD plays even headless) and mod loading agreed to:
+    the game skips mods until the player has seen its mods warning. Missing fields take defaults.
+
+    boot_opts adds two boot-time savers (both read from settings.save, the profile's SettingsSave):
+      skip_intro_logo: true  -> NGame.cs:679 `skipLogo` is true, so LaunchMainMenu (NGame.cs:975-996)
+                                skips the logo animation, its 0.8 s fade in and the fade out.
+      fps_limit: 0           -> NGame.cs:745 InitializeGraphicsPreferences sets Engine.MaxFps to it
+                                (the default is 60, SettingsSave.cs:24-25); 0 is uncapped.
+    Property names are the JsonPropertyName values in SettingsSave.cs (lines 24 and 82).
+    """
+    settings = scratch / "appdata" / "SlayTheSpire2" / "default" / "1" / "settings.save"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    body = {
+        "schema_version": 5, "volume_master": 0.0, "volume_bgm": 0.0, "volume_sfx": 0.0,
+        "volume_ambience": 0.0, "fullscreen": False,
+        "mod_settings": {"mods_enabled": True, "mod_list": []},
+    }
+    if boot_opts:
+        body.update({"skip_intro_logo": True, "fps_limit": 0})
+    settings.write_text(json.dumps(body, indent=2), encoding="utf-8")
+
+
+def real_profile_state():
+    """Every file under the real profile folder with its mtime, to prove a session left it alone."""
+    real_profile = Path(os.environ["APPDATA"]) / "SlayTheSpire2"
+    return real_profile.exists() and sorted((str(p), p.stat().st_mtime) for p in real_profile.rglob("*"))
+
+
+def launch(game: Path, scratch: Path, job: Path, below_normal: bool = False):
+    """Start the game headless on a scratch profile; returns (process, log file)."""
+    env = dict(os.environ, APPDATA=str(scratch / "appdata"), LOCALAPPDATA=str(scratch / "localappdata"),
+               SPIRELINE_REFEREE_JOB=str(job.resolve()))
+    log = open(scratch / "game-stdout.log", "wb")
+    flags = subprocess.CREATE_NO_WINDOW | (subprocess.BELOW_NORMAL_PRIORITY_CLASS if below_normal else 0)
+    proc = subprocess.Popen([str(game / "SlayTheSpire2.exe"), "--headless", "--force-steam", "off"],
+                            cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+    return proc, log
 
 
 def install(game: Path, build: Path) -> None:
@@ -69,43 +126,24 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=600)
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
     ap.add_argument("--no-install", action="store_true", help="the caller already installed the mod and override.cfg")
+    ap.add_argument("--legacy-boot-settings", action="store_true",
+                    help="do not write skip_intro_logo / fps_limit into settings.save (to time the old boot)")
+    ap.add_argument("--below-normal", action="store_true", help="run the game at BelowNormal priority")
     a = ap.parse_args()
 
     game = a.game.resolve()
-    dll = game / "data_sts2_windows_x86_64" / "sts2.dll"
-    digest = sha256(dll)
-    allowed = set(KNOWN_BUILDS) | set(filter(None, os.environ.get(
-        "SPIRELINE_REFEREE_KNOWN_SHA256", "").split(",")))
-    if digest not in allowed:
-        print(f"refusing: unknown sts2.dll {digest}", file=sys.stderr)
-        return 2
+    digest = check_build(game)
 
     scratch = (a.scratch or game.parent / "scratch" / time.strftime("%Y%m%d-%H%M%S")).resolve()
     (scratch / "appdata").mkdir(parents=True, exist_ok=True)
     (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
     if not a.no_install:
         install(game, a.build)
+    write_settings(scratch, boot_opts=not a.legacy_boot_settings)
 
-    # A fresh profile with every volume at 0 (FMOD plays even headless) and mod loading agreed to:
-    # the game skips mods until the player has seen its mods warning. Missing fields take defaults.
-    settings = scratch / "appdata" / "SlayTheSpire2" / "default" / "1" / "settings.save"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(json.dumps({
-        "schema_version": 5, "volume_master": 0.0, "volume_bgm": 0.0, "volume_sfx": 0.0,
-        "volume_ambience": 0.0, "fullscreen": False,
-        "mod_settings": {"mods_enabled": True, "mod_list": []},
-    }, indent=2), encoding="utf-8")
-
-    real_profile = Path(os.environ["APPDATA"]) / "SlayTheSpire2"
-    before = real_profile.exists() and sorted((str(p), p.stat().st_mtime) for p in real_profile.rglob("*"))
-
-    env = dict(os.environ, APPDATA=str(scratch / "appdata"), LOCALAPPDATA=str(scratch / "localappdata"),
-               SPIRELINE_REFEREE_JOB=str(a.job.resolve()))
-    log = open(scratch / "game-stdout.log", "wb")
+    before = real_profile_state()
     t0 = time.time()
-    proc = subprocess.Popen([str(game / "SlayTheSpire2.exe"), "--headless", "--force-steam", "off"],
-                            cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT,
-                            creationflags=subprocess.CREATE_NO_WINDOW)
+    proc, _log = launch(game, scratch, a.job, below_normal=a.below_normal)
     seen: set[str] = set()
     while proc.poll() is None and time.time() - t0 < a.timeout:
         seen |= connections(proc.pid)
@@ -115,7 +153,7 @@ def main() -> int:
         rc = "timeout"
     else:
         rc = proc.returncode
-    after = real_profile.exists() and sorted((str(p), p.stat().st_mtime) for p in real_profile.rglob("*"))
+    after = real_profile_state()
     report = {
         "exit": rc, "seconds": round(time.time() - t0, 1), "sts2_dll_sha256": digest,
         "network_connections": sorted(seen), "real_profile_touched": before != after,
