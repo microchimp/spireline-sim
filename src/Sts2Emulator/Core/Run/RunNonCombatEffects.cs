@@ -1029,13 +1029,13 @@ public static class RunNonCombatEffects
                     new CardInstance(NamedCard("CurseOfTheBell"), Upgraded: false)
                 );
                 state.PendingBonusRelicRewards.Add(
-                    RunRewardGenerator.NextShopRelicOfRarity(state, RelicRarity.Common)
+                    RunRewardGenerator.NextRelicOfRarity(state, RelicRarity.Common)
                 );
                 state.PendingBonusRelicRewards.Add(
-                    RunRewardGenerator.NextShopRelicOfRarity(state, RelicRarity.Uncommon)
+                    RunRewardGenerator.NextRelicOfRarity(state, RelicRarity.Uncommon)
                 );
                 state.PendingBonusRelicRewards.Add(
-                    RunRewardGenerator.NextShopRelicOfRarity(state, RelicRarity.Rare)
+                    RunRewardGenerator.NextRelicOfRarity(state, RelicRarity.Rare)
                 );
                 return RunFollowUp.BonusRelicRewards;
             case RunConstants.RelicDustyTome:

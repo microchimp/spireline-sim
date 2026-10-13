@@ -1799,6 +1799,14 @@ public static partial class RunRewardGenerator
         PullRelic(state, fromFront: true, rngOverride: rngOverride);
 
     /// <summary>
+    /// <c>RelicReward(rarity, player).Populate</c>: <c>PullNextRelicFromFront(player, rarity)</c>,
+    /// the front of that rarity's queue with NO filter. Calling Bell's three rewards are these;
+    /// the shop filter below is Welcome to Wongos's own and is not part of a relic reward.
+    /// </summary>
+    public static int NextRelicOfRarity(RunState state, RelicRarity rarity) =>
+        PullRelic(state, fromFront: true, rarity);
+
+    /// <summary>
     /// A shop pull of a NAMED rarity, filtered to relics that may be sold. Welcome to
     /// Wongos asks for a Common for its bargain bin and a Rare for its featured item, so
     /// neither is the usual rolled rarity -- and both go through the shop filter, which
