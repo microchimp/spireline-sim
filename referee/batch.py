@@ -22,8 +22,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 NL = chr(10)
-JOBS = Path(r"D:\spireline\referee\jobs")
-GAME = r"D:\spireline\referee\game"
+DEFAULT_JOBS = Path(r"D:\spireline\referee\jobs")
+DEFAULT_GAME = Path(r"D:\spireline\referee\game")
 ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 
 
@@ -37,7 +37,12 @@ def main() -> int:
     ap.add_argument("--deck-cards", type=int, default=5, help="random Ironclad/colourless cards added per fight")
     ap.add_argument("--canary", type=int, default=2, help="fights per copy run and checked before the rest (0 = off)")
     ap.add_argument("--waves", type=int, default=3, help="waves per batch; coverage is updated between waves")
+    ap.add_argument("--game", type=Path, default=DEFAULT_GAME, help="game copy the servers run")
+    ap.add_argument("--jobs", type=Path, default=DEFAULT_JOBS, help="folder for the job, out, emu and summary files")
+    ap.add_argument("--coverage", type=Path, default=None, help="coverage file (default <jobs>/../coverage.json)")
     a = ap.parse_args()
+    JOBS, GAME = a.jobs, str(a.game)
+    JOBS.mkdir(parents=True, exist_ok=True)
 
     # Coverage: each fight's deck gets random cards from the pools an Ironclad can hold, so a
     # batch exercises hundreds of cards rather than the starter deck's three.
@@ -57,7 +62,7 @@ def main() -> int:
     cv_group = rc.group
     nm = id_names(json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8")))
     commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-    cov_path = JOBS.parent / "coverage.json"
+    cov_path = a.coverage or JOBS.parent / "coverage.json"
     cov = cv.load(cov_path)
     rng = random.Random(a.start)
 
