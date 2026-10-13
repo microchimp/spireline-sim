@@ -32,7 +32,7 @@ if (args[0] == "fight")
 
 if (args[0] == "reanchor")
 {
-    // EmuDump reanchor <referee out.json> [--seed SEED]...: each step tried from the game's own state.
+    // EmuDump reanchor <referee out.json> [--seed SEED]... [--scramble] [--stale ...] [--perturb-moves]: each step tried from the game's own state.
     var only = new HashSet<string>();
     HashSet<string>? stale = null;
     for (int i = 2; i < args.Length; i++)
@@ -41,7 +41,7 @@ if (args[0] == "reanchor")
         if (args[i] == "--stale" && i + 1 < args.Length) stale = [.. args[i + 1].Split(',')];
     }
 
-    var mode = new Reanchor.Mode(Scramble: args.Contains("--scramble"), Stale: stale);
+    var mode = new Reanchor.Mode(Scramble: args.Contains("--scramble"), Stale: stale, PerturbMoves: args.Contains("--perturb-moves"));
 
     var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray()
         .Where(r => only.Count == 0 || only.Contains((string?)r!["seed"] ?? ""));

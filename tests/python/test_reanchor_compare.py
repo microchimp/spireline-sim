@@ -133,5 +133,51 @@ class ReanchorCompareTest(unittest.TestCase):
         self.assertEqual(out["new_suspects"], 1)
 
 
+def with_moves(rows, moves, game_intents, emu_intents):
+    """A fight whose records carry the enemies' moves: the game's intents per step, EmuDump's "moves"
+    verdict per step and the emulator's announced intent (type, magnitude, hits)."""
+    g, e = fight(rows)
+    for st, its in zip(g["steps"], game_intents):
+        st["state"]["enemies"][0]["intents"] = its
+    for st, it in zip(e["steps"], emu_intents):
+        st["state"]["snapshot"]["enemies"][0]["intent"] = {"type": it[0], "magnitude": it[1], "hits": it[2],
+                                                           "carries_damage": False, "secondary": None}
+    for st, m in zip(e["steps"][1:], moves):
+        st["moves"] = m[0]
+        if m[0] == "unknown":
+            st["moves_unknown"] = [0]
+    return g, e
+
+
+GLOMP, GOOP = [["Attack", 9, 1]], [["Debuff"]]
+
+
+class RecordedMovesTest(unittest.TestCase):
+    def test_end_of_turn_with_the_game_moves_is_judged_and_the_fight_goes_on(self):
+        # The emulator hits harder at the end of turn but announced the game's move before it: a
+        # divergence of the end of turn, not a reason to stop re-anchoring.
+        rows = [(None, {}, {}), (END, dict(php=60), dict(php=55)), (PLAY, dict(hp=21), dict(hp=21)),
+                (END, dict(hp=21, php=50), dict(hp=21, php=50))]
+        g, e = with_moves(rows, [("same",), ("same",), ("same",)], [GLOMP, GOOP, GOOP, GLOMP],
+                          [(0, 9, 1), (3, 2, 1), (3, 2, 1), (0, 9, 1)])
+        a = rc.analyse(g, e, NM)
+        self.assertIsNone(a["stop"])
+        self.assertEqual([s["verdict"] for s in a["steps"]], ["match", "diverge", "match", "match"])
+
+    def test_wrong_move_shows_at_the_step_that_chose_it(self):
+        rows = [(None, {}, {}), (END, dict(php=61), dict(php=61))]
+        g, e = with_moves(rows, [("same",)], [GLOMP, GOOP], [(0, 9, 1), (0, 3, 2)])  # WHIP_SLAP instead of GOOP
+        a = rc.analyse(g, e, NM)
+        self.assertEqual(a["steps"][1]["verdict"], "diverge")
+        self.assertEqual(a["steps"][1]["paths"], [".enemies"])
+
+    def test_unknown_moves_leave_the_end_of_turn_unjudged_and_plays_judged_without_them(self):
+        rows = [(None, {}, {}), (PLAY, dict(hp=21), dict(hp=21)), (END, dict(hp=21, php=60), dict(hp=21, php=58))]
+        g, e = with_moves(rows, [("unknown",), ("unknown",)], [GLOMP, GLOMP, GOOP], [(0, 9, 1), (2, 0, 1), (2, 0, 1)])
+        a = rc.analyse(g, e, NM)
+        self.assertEqual([s["verdict"] for s in a["steps"]], ["match", "match", "unjudged"])
+        self.assertIsNone(a["stop"])
+
+
 if __name__ == "__main__":
     unittest.main()

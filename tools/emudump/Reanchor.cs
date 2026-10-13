@@ -1,14 +1,16 @@
 // Re-anchoring (referee/SPEED_PLAN.md step 6): every recorded step of a referee fight becomes an
 // independent test. For step j the emulator is put into the GAME's state S(j-1), the game's
 // action a(j) is applied, and the result is dumped to be compared with the game's S(j).
-// Usage: EmuDump reanchor <referee out.json> [--seed SEED]... [--scramble] [--stale enemy,cards,relics,counters|all] > reanchor.json
+// Usage: EmuDump reanchor <referee out.json> [--seed SEED]... [--scramble] [--stale enemy,cards,relics,counters|all]
+//        [--perturb-moves] > reanchor.json
 //
 // What the game's snapshot (referee/driver/Combat.cs Snapshot()) cannot say is taken from the
-// emulator's own state after its previous step: relic counters, enemy move/AI state and intent,
-// per-card modifiers, per-turn and per-combat counters, the potion belt. The snapshot's
-// fields (player HP/block/energy/powers, the four piles in order, living enemies, RNG
-// streams' seed and counter) are written over it. tools/fidelity/reanchor_compare.py judges
-// the result and decides where a fight stops being re-anchorable.
+// emulator's own state after its previous step: relic counters, enemy AI state, per-card
+// modifiers, per-turn and per-combat counters, the potion belt. The snapshot's fields (player
+// HP/block/energy/powers, the four piles in order, living enemies, RNG streams' seed and counter)
+// are written over it, and the enemies' next moves where the record has them (see "enemy moves"
+// below). tools/fidelity/reanchor_compare.py judges the result and decides where a fight stops
+// being re-anchorable.
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
@@ -68,9 +70,11 @@ static class Reanchor
     /// snapshot covers before it is written back, so a fight that matches anyway proves the write is
     /// complete. <c>Stale</c> starts every step from the fight's first state instead of the previous
     /// step's, with only the named groups of hidden state (enemy, cards, relics, counters) stale, to
-    /// show what the snapshot alone cannot rebuild.
+    /// show what the snapshot alone cannot rebuild. <c>PerturbMoves</c> tests the move anchoring: before
+    /// each step every cycling enemy is moved one position on (and re-announces), and the monster AI
+    /// draws from another stream, so the moves must be put back on the game's for the fight to match.
     /// </summary>
-    public sealed record Mode(bool Scramble = false, HashSet<string>? Stale = null);
+    public sealed record Mode(bool Scramble = false, HashSet<string>? Stale = null, bool PerturbMoves = false);
 
     public static JsonObject Run(JsonObject game, Mode? mode = null)
     {
@@ -105,23 +109,16 @@ static class Reanchor
                     break;
                 }
 
+                // The moves the enemies will make: the game's, where the emulator's AI can be put there.
+                if (mode.PerturbMoves) ShiftCycles(q);
+                rec["moves"] = AnchorMoves(q, prior, patched, rec, gsteps, j);
+                if (mode.PerturbMoves && q.AiRng is CountingRandom ai0) q.AiRng = new CountingRandom(ai0.Seed ^ 0x2545F491, ai0.CallCount);
                 var pre = q.Clone();
                 var preRng = qr.Clone();
+                var stepChoices = gameChoices.Where(c => (int?)c!["step"] == j && (string?)c["kind"] == "cards").ToList();
                 try
                 {
-                    bool terminal = StepOnce(q, qr, a);
-                    var chosen = new JsonArray();
-                    foreach (var choice in gameChoices.Where(c => (int?)c!["step"] == j && (string?)c["kind"] == "cards"))
-                    {
-                        chosen.Add(Fight.ApplyChoice(() => q, i => terminal |= CombatEngine.Step(q, i, qr).Terminal, choice!.AsObject()));
-                    }
-
-                    if (!terminal && q.PendingSelection is { } extra)  // a won fight leaves no screen to answer
-                    {
-                        chosen.Add(new JsonObject { ["unexpected_selection"] = extra.Kind.ToString() });
-                        q.PendingSelection = null;  // nobody is there to answer it; the next anchor starts clean
-                    }
-
+                    var (terminal, chosen) = Apply(q, qr, a, stepChoices);
                     rec["choices"] = chosen;
                     rec["fallback_rng_calls"] = qr.CallCount - preRng.CallCount;
                     rec["state"] = DumpLite(q, !terminal);
@@ -129,6 +126,7 @@ static class Reanchor
                     if (terminal && !gameGoesOn) break;
                     // The emulator ended a fight the game continues: carry on from the state before the action.
                     (combat, rng) = terminal ? (pre, preRng) : (q, qr);
+                    if (!terminal) CarryGameMoves(q, pre, preRng, a, stepChoices, gsteps[j]!["state"]!.AsObject(), rec);
                 }
                 catch (Exception ex)
                 {
@@ -146,6 +144,25 @@ static class Reanchor
         return outp;
     }
 
+    /// <summary>The game's action, then the card choices the game made for it, as the plain replay applies them.</summary>
+    static (bool Terminal, JsonArray Chosen) Apply(CombatState q, CountingRandom qr, JsonObject a, List<JsonNode?> choices)
+    {
+        bool terminal = StepOnce(q, qr, a);
+        var chosen = new JsonArray();
+        foreach (var choice in choices)
+        {
+            chosen.Add(Fight.ApplyChoice(() => q, i => terminal |= CombatEngine.Step(q, i, qr).Terminal, choice!.AsObject()));
+        }
+
+        if (!terminal && q.PendingSelection is { } extra)  // a won fight leaves no screen to answer
+        {
+            chosen.Add(new JsonObject { ["unexpected_selection"] = extra.Kind.ToString() });
+            q.PendingSelection = null;  // nobody is there to answer it; the next anchor starts clean
+        }
+
+        return (terminal, chosen);
+    }
+
     /// <summary>Applies the game's action (end turn or a card play); true when the fight ended.</summary>
     static bool StepOnce(CombatState q, CountingRandom qr, JsonObject a)
     {
@@ -154,7 +171,225 @@ static class Reanchor
         return CombatEngine.Step(q, (int)a["hand_index"]!, qr, (int)a["target_slot"]!).Terminal;
     }
 
+    // ── enemy moves ─────────────────────────────────────────────────────────────────
+    //
+    // The game records each enemy's next move (referee/driver/Combat.cs Intents). Before a step the
+    // emulator's announced move is compared with it in tools/fidelity/fight_compare.py's vocabulary
+    // (game_intent / emu_intent): the kind of the first intent, and the damage-carrying intent's base
+    // damage and hits. Where they differ, the emulator's AI is put on the game's move if that can be
+    // done from the AI's own state; an end of turn whose moves stay unknown is left unjudged.
+
+    static readonly Dictionary<string, string> GameKind = new()
+    {
+        ["Attack"] = "ATTACK", ["DeathBlow"] = "ATTACK", ["Defend"] = "DEFEND", ["Buff"] = "BUFF", ["Debuff"] = "DEBUFF",
+        ["DebuffStrong"] = "DEBUFF", ["StatusCard"] = "DEBUFF", ["CardDebuff"] = "DEBUFF", ["Stun"] = "STUN",
+    };
+
+    /// <summary>The game's next move for one enemy, or null for a record made before intents were recorded.</summary>
+    internal static string? GameMove(JsonNode enemy)
+    {
+        if (enemy["intents"] is not JsonArray its) return null;
+        string kind = its.Count == 0 ? "NONE" : GameKind.GetValueOrDefault((string)its[0]![0]!, "OTHER");
+        var atk = its.Select(x => x!.AsArray()).FirstOrDefault(x => x.Count >= 3);
+        return atk == null ? kind : $"{kind} {(int)atk[1]!}x{(int)atk[2]!}";
+    }
+
+    internal static string EmuMove(EnemyState en)
+    {
+        if (BuffSystem.Get(en.Buffs, BuffId.Stunned) > 0) return "STUN";  // the game's StunIntent move
+        var it = en.CurrentIntent;
+        string kind = it.CarriesDamage ? "ATTACK" : it.Type switch
+        {
+            IntentType.Attack => "ATTACK", IntentType.Defend => "DEFEND", IntentType.Buff => "BUFF", IntentType.Debuff => "DEBUFF", _ => "OTHER",
+        };
+        static bool Hits(Intent x) => x.Type == IntentType.Attack || x.CarriesDamage;
+        Intent? atk = Hits(it) ? it : en.SecondaryIntent is { } s && Hits(s) ? s : null;
+        return atk is { } x ? $"{kind} {x.Magnitude}x{x.Hits}" : kind;
+    }
+
+    /// <summary>
+    /// "same" when every living enemy announces the game's move, "set" when some had to be put there,
+    /// "unknown" when one could not be (listed in moves_unknown), "unrecorded" for a record without intents.
+    /// </summary>
+    static string AnchorMoves(CombatState q, JsonObject g, JsonArray patched, JsonObject rec, JsonArray gsteps, int j)
+    {
+        var gen = g["enemies"]!.AsArray();
+        if (gen.Any(x => x!["intents"] == null)) return "unrecorded";
+        var unknown = new JsonArray();
+        bool set = false;
+        for (int i = 0; i < gen.Count && i < q.Enemies.Count; i++)
+        {
+            if (q.Enemies[i].Hp <= 0) continue;
+            string want = GameMove(gen[i]!)!;
+            if (EmuMove(q.Enemies[i]) == want) continue;
+            if (SetMove(q, q.Enemies[i], want, LaterMoves(gsteps, j, i)))
+            {
+                patched.Add($"enemies[{i}].move");
+                set = true;
+            }
+            else
+            {
+                unknown.Add(i);
+            }
+        }
+
+        if (unknown.Count > 0)
+        {
+            rec["moves_unknown"] = unknown;
+            return "unknown";
+        }
+
+        return set ? "set" : "same";
+    }
+
+    /// <summary>
+    /// For an AI whose choice is a function of its MoveIndex alone (a cycle: re-selecting at its own
+    /// position gives back what it announced, without a draw and without touching the AI's memory), a
+    /// nearby position that announces the game's move. A cycle can announce the same move at two
+    /// positions (Fuzzy Wurm Crawler's FIRST_ACID_GOOP and ACID_GOOP), so the positions are ranked by
+    /// how many of the game's later moves the cycle then goes on to announce, then by distance.
+    /// </summary>
+    static bool SetMove(CombatState q, EnemyState en, string want, List<string> later)
+    {
+        if (!Reselect(q, en, en.MoveIndex, out var same) || EmuMove(same) != EmuMove(en)) return false;
+        EnemyState? best = null;
+        int bestScore = -1;
+        foreach (int d in (int[])[1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6])
+        {
+            int m = en.MoveIndex + d;
+            if (m < 0 || !Reselect(q, en, m, out var c) || EmuMove(c) != want) continue;
+            int score = 0;
+            while (score < later.Count && Reselect(q, en, m + score + 1, out var n) && EmuMove(n) == later[score]) score++;
+            if (score > bestScore) (best, bestScore) = (c, score);
+        }
+
+        if (best == null) return false;
+        en.MoveIndex = best.MoveIndex;
+        en.CurrentIntent = best.CurrentIntent;
+        en.SecondaryIntent = best.SecondaryIntent;
+        return true;
+    }
+
+    /// <summary>
+    /// The game's moves for enemy <paramref name="i"/> of step j-1's roster after each later end of turn,
+    /// for as long as the roster keeps its shape (a death or a summon ends the list).
+    /// </summary>
+    static List<string> LaterMoves(JsonArray gsteps, int j, int i)
+    {
+        var roster = gsteps[j - 1]!["state"]!["enemies"]!.AsArray();
+        string name = (string)roster[i]!["name"]!;
+        var later = new List<string>();
+        for (int k = j; k < gsteps.Count && later.Count < 6; k++)
+        {
+            if ((string?)gsteps[k]!["action"]?["kind"] != "end_turn") continue;
+            var en = gsteps[k]!["state"]!["enemies"]?.AsArray();
+            if (en == null || en.Count != roster.Count || (string?)en[i]!["name"] != name || (int)en[i]!["hp"]! <= 0) break;
+            if (GameMove(en[i]!) is not { } m) break;
+            later.Add(m);
+        }
+
+        return later;
+    }
+
+    /// <summary>A copy of the enemy re-selected at <paramref name="moveIndex"/>; false if that drew or changed the AI's memory.</summary>
+    static bool Reselect(CombatState q, EnemyState en, int moveIndex, out EnemyState c)
+    {
+        c = en.Clone();
+        c.MoveIndex = moveIndex;
+        string before = AiMemory(c);
+        var probe = new CountingRandom(0x5eed);
+        EnemyAI.ChooseIntents([c], q.Turn, probe, probe, q.AscensionLevel);
+        return probe.CallCount == 0 && AiMemory(c) == before;
+    }
+
+    static string AiMemory(EnemyState e) =>
+        $"{e.LastMove},{e.LastMoveRepeats},{e.OnceOnlyMoveUsed},{string.Join('.', e.MoveHistory)},{e.StartsOnBranch},{e.RollsNextMove},{e.LastBranch},{e.RepeatStreak},{e.BranchCooldown}";
+
+    /// <summary>
+    /// After a step whose result announces another move than the game's for an enemy whose choice is a
+    /// draw (a RandomBranchState), the step is tried again from the same state with the monster AI on
+    /// other streams; an attempt that changes nothing but the moves, and in which that enemy picks the
+    /// game's move, gives its AI memory to the state the next step starts from. The step's own verdict
+    /// is unchanged: it is judged on what the emulator did.
+    /// </summary>
+    static void CarryGameMoves(CombatState q, CombatState pre, CountingRandom preRng, JsonObject a, List<JsonNode?> choices,
+        JsonObject g, JsonObject rec)
+    {
+        var gen = g["enemies"]!.AsArray();
+        if (gen.Any(x => x!["intents"] == null) || q.AiRng is not CountingRandom) return;
+        var living = q.Enemies.Where(x => x.Hp > 0).ToList();
+        var glive = gen.Where(x => (int)x!["hp"]! > 0).ToList();
+        if (living.Count != glive.Count
+            || !living.Zip(glive).All(t => t.First.DefId == EnemyBySnake.GetValueOrDefault((string)t.Second!["name"]!, -1))) return;
+        var wrong = Enumerable.Range(0, living.Count).Where(i => EmuMove(living[i]) != GameMove(glive[i]!)).ToList();
+        if (wrong.Count == 0) return;
+        string shown = Shown(q);
+        var carried = new JsonArray();
+        for (int seed = 1; seed <= 64 && wrong.Count > 0; seed++)
+        {
+            var t = pre.Clone();
+            var tr = preRng.Clone();
+            t.AiRng = new CountingRandom(unchecked(seed * (int)0x9E3779B1));
+            try
+            {
+                if (Apply(t, tr, a, choices).Terminal || Shown(t) != shown) continue;
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            var tl = t.Enemies.Where(x => x.Hp > 0).ToList();
+            foreach (int i in wrong.ToList())
+            {
+                if (EmuMove(tl[i]) != GameMove(glive[i]!)) continue;
+                CopyAi(tl[i], living[i]);
+                wrong.Remove(i);
+                carried.Add(i);
+            }
+        }
+
+        if (carried.Count > 0) rec["moves_carried"] = carried;
+    }
+
+    /// <summary>The step's result without the enemies' moves and the monster AI stream: what a redo must leave alone.</summary>
+    static string Shown(CombatState c)
+    {
+        var d = DumpLite(c, true);
+        foreach (var en in d["snapshot"]!["enemies"]!.AsArray()) en!.AsObject().Remove("intent");
+        d["rng"]!.AsObject().Remove("MonsterAi");
+        return d.ToJsonString();
+    }
+
+    static void CopyAi(EnemyState from, EnemyState to)
+    {
+        to.CurrentIntent = from.CurrentIntent;
+        to.SecondaryIntent = from.SecondaryIntent;
+        to.MoveIndex = from.MoveIndex;
+        to.LastMove = from.LastMove;
+        to.LastMoveRepeats = from.LastMoveRepeats;
+        to.OnceOnlyMoveUsed = from.OnceOnlyMoveUsed;
+        to.MoveHistory = [.. from.MoveHistory];
+        to.StartsOnBranch = from.StartsOnBranch;
+        to.RollsNextMove = from.RollsNextMove;
+        to.LastBranch = from.LastBranch;
+        to.RepeatStreak = from.RepeatStreak;
+        to.BranchCooldown = from.BranchCooldown;
+    }
+
     // ── diagnostics ─────────────────────────────────────────────────────────────────
+
+    static void ShiftCycles(CombatState q)
+    {
+        foreach (var en in q.Enemies.Where(x => x.Hp > 0))
+        {
+            if (!Reselect(q, en, en.MoveIndex, out var same) || EmuMove(same) != EmuMove(en)
+                || !Reselect(q, en, en.MoveIndex + 1, out var next)) continue;
+            en.MoveIndex = next.MoveIndex;
+            en.CurrentIntent = next.CurrentIntent;
+            en.SecondaryIntent = next.SecondaryIntent;
+        }
+    }
 
     static void Scramble(CombatState q)
     {
