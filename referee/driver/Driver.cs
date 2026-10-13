@@ -175,6 +175,7 @@ public static partial class Driver
             // waits, and the frame cap only paces rendering, which is off anyway.
             SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
             IdleFrames = (double?)job["idle_frames"] ?? IdleFrames;
+            IdleTimeoutS = (double?)job["idle_timeout_s"] ?? IdleTimeoutS;
             // Tutorials off, as a player can set it: first-time popups (FTUE) on a fresh profile
             // open modals that nothing headless answers.
             SaveManager.Instance.Progress.EnableFtues = false;

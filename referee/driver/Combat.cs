@@ -181,9 +181,16 @@ public static partial class Driver
     /// </summary>
     internal static double IdleFrames = 6;
 
-    /// <returns>false if the game did not settle within maxSeconds (below the heartbeat watchdog's stall_s).</returns>
-    private static async Task<bool> Idle(double maxSeconds = 10)
+    /// <summary>
+    /// Wall seconds Idle waits before giving up (job key "idle_timeout_s"; keep it below stall_s). On a
+    /// machine whose cores are all busy a settle that takes a few frames can take longer than 10 s.
+    /// </summary>
+    internal static double IdleTimeoutS = 10;
+
+    /// <returns>false if the game did not settle within maxSeconds (default IdleTimeoutS).</returns>
+    private static async Task<bool> Idle(double? maxSeconds = null)
     {
+        double limit = maxSeconds ?? IdleTimeoutS;
         var tree = (SceneTree)Engine.GetMainLoop();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         string last = "";
@@ -191,7 +198,7 @@ public static partial class Driver
         // Idle = nothing running AND the visible state unchanged for IdleFrames frames in a row.
         // Quiet frames alone are not enough: even in Instant mode cards are drawn over several
         // frames outside the action queue.
-        while (clock.Elapsed.TotalSeconds < maxSeconds && stable < (int)IdleFrames)
+        while (clock.Elapsed.TotalSeconds < limit && stable < (int)IdleFrames)
         {
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             AnswerOpenScreens();
