@@ -104,3 +104,34 @@ python -m tools.fidelity.reanchor_compare '<out.json>' <name>.reanchor.json [--a
 - A matching step verifies its card; a divergence is blamed on its card only when the step before it matched ("primary"). Fights stop being re-anchored where the enemies' move state cannot be reproduced (the snapshot does not record intents); `--after-enemy-desync plays` goes on with card plays and leaves later ends of turn unjudged.
 - What the snapshot lacks (relic counters, enemy AI and intent, per-card modifiers, combat counters) comes from the emulator's own previous result. The `--scramble` and `--stale enemy,cards,relics,counters|all` options of `reanchor` test the write-back and show which hidden state a step needs.
 - `reanchor_compare.learn` / `coverage.update_reanchored` replace `coverage.update` for a re-anchored batch (do not use both).
+
+## The game's own checksums (per-action oracle)
+
+The game hashes its full combat state (`NetFullCombatState`) after every finished game action and at
+each end-of-turn phase, for multiplayer desync checks (`ChecksumTracker`); single player leaves it off.
+`driver/ChecksumTap.cs` switches it on per fight:
+
+- Spec (or runs-mode job) key `"checksums": true`: each step gets `checksums` = `[context, action type,
+  checksum]` per checksum. Cost measured on r20v2: 0.48 ms per checksum, ~2.2 per step, ~22 ms per
+  fight (under 1% of a fight's CPU); `checksum_cost` in each result. In serve mode put it on the specs.
+- `"trace": true`: also `net` = the full state behind each checksum (creatures, piles with card
+  keywords/cost/enchantment/saved props, relics with saved props, potions, orbs, every RNG counter,
+  relic grab bag). About 6x the output size; for a handful of fights.
+- An end of turn yields five checksums: `After player turn phase one end` (end-of-turn hooks,
+  ethereal, turn-end-in-hand), `after player turn phase two end` (hand flush), `After enemy turn
+  start`, `After enemy turn end` (every enemy's move), `After player turn start` (block clear, energy,
+  draw, intents). A play yields one (`PlayCardAction`); the auto-play phase after `After player turn
+  start` and commands inside a play have none.
+
+```
+dotnet tools/emudump/bin/Release/net9.0/EmuDump.dll fight '<trace out.json>' --netstate > <name>.net.json
+python -m tools.fidelity.netstate_diff '<trace out.json>' <name>.net.json [--seed S] [-v]
+python -m tools.fidelity.netstate_diff '<out.json>' '<other out.json>'   # game against game, by checksum
+python -m tools.fidelity.netstate_diff --check '<out.json>'              # driver integrity only
+```
+
+`netstate_diff` names the first step and the game sub-action where the emulator's value stops matching,
+and lists the fields the emulator does not model (`tools/emudump/NetState.cs`). `--check` (also run
+first by the other modes) flags a step whose action left no checksum: the driver recorded it before
+the game finished (seen with Mayhem, Hellraiser and Rolling Boulder, whose turn-start auto-play
+outlasts `Idle()`), so that fight is a driver artifact from the step before it, not an emulator bug.
