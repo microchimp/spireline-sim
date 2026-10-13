@@ -155,8 +155,9 @@ public static class StateCloning
     /// <summary>
     /// Every field of <paramref name="combat" /> onto <paramref name="into" />, as <see cref="Clone" />
     /// copies it: the one field list both use, so an in-place restore cannot drift from the
-    /// copy, for a caller that must put a combat it holds back to an earlier state.
-    /// <paramref name="combat" /> is left as it was.
+    /// copy. <c>CombatEngine.Step</c> restores a step this way when it replays it to answer a
+    /// screen a hook raised (<see cref="HookChoiceReplay" />); <paramref name="combat" /> is left
+    /// as it was.
     /// </summary>
     public static void CopyTo(this CombatState combat, CombatState into, int? rngSeed = null)
     {
@@ -234,6 +235,7 @@ public static class StateCloning
             : combat.AiRng;
         into.NicheHpRng = combat.NicheHpRng.Reseeded(rngSeed, nameof(combat.NicheHpRng));
         into.PendingSelection = combat.PendingSelection?.Clone();
+        into.HookChoice = combat.HookChoice?.Clone();
         into.AutoPlaying = combat.AutoPlaying;
         into.PlayedCardBonusDamage = combat.PlayedCardBonusDamage;
         into.PlayedCardBonusBlock = combat.PlayedCardBonusBlock;

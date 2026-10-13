@@ -2567,6 +2567,32 @@ public static class CardEffects
         PotionEffects.TryToProcure(state, potionId);
     }
 
+    /// <summary>
+    /// `CardCmd.TransformToRandom(card, Rng.CombatCardSelection)` on a hand card: ONE roll over
+    /// the original's own options (`CardFactory.CreateRandomCardForTransform`: its pool, Common
+    /// to Rare, never itself, and in combat only cards that can be generated in combat). The
+    /// replacement takes the original's place and is not upgraded. In combat `CardCmd.Transform`
+    /// also records it as generated (`CombatHistory.CardGenerated`, then
+    /// `Hook.AfterCardGeneratedForCombat`), which Supermassive counts.
+    /// </summary>
+    internal static void TransformHandCardToRandom(CombatState state, int handIndex, Random rng)
+    {
+        var options = Run
+            .RunRewardGenerator.TransformOptionsFor(Math.Abs(state.Hand[handIndex].DefId))
+            .Where(id => GeneratedData.Cards.Get(id).CanBeGeneratedInCombat)
+            .ToArray();
+        if (options.Length == 0)
+        {
+            return;
+        }
+
+        state.Hand[handIndex] = new CardInstance(
+            options[CardSelectionRng(state, rng).Next(options.Length)],
+            false
+        );
+        NoteGeneratedCard(state);
+    }
+
     /// <returns>Whether a card was transformed (false for an empty hand).</returns>
     internal static bool TransformRandomCardInHand(CombatState state, Random rng)
     {
@@ -3420,24 +3446,23 @@ public static class CardEffects
         return !def.HasEnergyCostX && CombatEngine.EffectiveCost(card, state) == 0;
     }
 
-    /// <summary>Tyranny's screen: that many cards CHOSEN from hand are exhausted.</summary>
-    internal static void OpenExhaustFromHandSelection(CombatState state, int amount)
-    {
-        var hand = new List<int>();
-        for (int i = 0; i < state.Hand.Count; i++)
+    /// <summary>
+    /// The screen `CardSelectCmd.FromHand(prefs(prompt, amount))` raises over the whole hand, for a
+    /// hook to answer where it asks (CombatEngine.AnswerHookScreen): Tyranny, Tools of the Trade.
+    /// </summary>
+    internal static PendingCardSelection HandScreen(
+        CombatState state,
+        CardSelectionKind kind,
+        int sourceCardDefId,
+        int amount
+    ) =>
+        new()
         {
-            hand.Add(i);
-        }
-
-        OpenCardSelection(
-            state,
-            CardSelectionKind.ExhaustFromHandRepeated,
-            hand,
-            sourceCardDefId: 520, // Tyranny
-            autoPick: 0,
-            amount: amount
-        );
-    }
+            Kind = kind,
+            Candidates = [.. Enumerable.Range(0, state.Hand.Count)],
+            SourceCardDefId = sourceCardDefId,
+            Amount = amount,
+        };
 
     /// <summary>
     /// A transform screen, carrying whether the transforming card was upgraded -- the new

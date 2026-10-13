@@ -215,6 +215,15 @@ public enum CardSelectionKind
     /// that does not move the card it picks, after Nightmare's and Heirloom Hammer's.
     /// </summary>
     FreeCardForCombat = 27,
+
+    /// <summary>
+    /// Entropy: a card CHOSEN from hand is transformed into a random card, in place
+    /// (`EntropyPower.AfterPlayerTurnStart`: `CardSelectCmd.FromHand` with
+    /// `CardSelectorPrefs(prompt, Amount)`, then `CardCmd.TransformToRandom` on
+    /// Rng.CombatCardSelection). `Amount` is the picks left; the screen reopens over the cards
+    /// not yet transformed.
+    /// </summary>
+    TransformInHand = 28,
 }
 
 /// <summary>

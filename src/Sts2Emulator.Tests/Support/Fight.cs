@@ -20,7 +20,7 @@ internal sealed class Fight
     /// <summary>Chomper: no moves, plenty of HP, already the de facto dummy in the suite.</summary>
     private const int DummyEnemyDefId = 16;
 
-    private Random _rng = new(0);
+    private Random _rng = new CountingRandom(0);
     private bool _replacedEncounter;
 
     private Fight(CombatState state) => State = state;
@@ -174,7 +174,7 @@ internal sealed class Fight
     /// </summary>
     public Fight Seed(int seed)
     {
-        _rng = new Random(seed);
+        _rng = new CountingRandom(seed);
         State.TargetRng = new CountingRandom(seed);
         State.CardSelectionRng = new CountingRandom(seed);
         State.CardGenerationRng = new CountingRandom(seed);

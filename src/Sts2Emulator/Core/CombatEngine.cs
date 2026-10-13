@@ -17,6 +17,120 @@ public static class CombatEngine
         int targetEnemyIndex = -1
     )
     {
+        HookChoiceReplay? replay;
+        if (state.HookChoice is { } stopped)
+        {
+            // The open screen was raised by a hook in the middle of a step: the answer runs
+            // that step again from where it started, with every answer so far.
+            var open = state.PendingSelection!;
+            bool decline = open.Skippable && action == open.Candidates.Count;
+            if (
+                rng is not CountingRandom live
+                || action < 0
+                || (action >= open.Candidates.Count && !decline)
+            )
+            {
+                return StepResult.Invalid;
+            }
+
+            stopped.Before.CopyTo(state);
+            live.RestoreFrom(stopped.RngBefore);
+            replay = new HookChoiceReplay
+            {
+                Before = stopped.Before,
+                RngBefore = stopped.RngBefore,
+                Action = stopped.Action,
+                TargetEnemyIndex = stopped.TargetEnemyIndex,
+                Answers = [.. stopped.Answers, action],
+            };
+            (action, targetEnemyIndex) = (stopped.Action, stopped.TargetEnemyIndex);
+        }
+        else
+        {
+            // A step can be replayed when every stream it rolls on can be put back. The real
+            // entry points (RunEngine, the native combat) pass CountingRandoms throughout.
+            replay =
+                rng is CountingRandom counting && state.AiRng is null or CountingRandom
+                    ? new HookChoiceReplay
+                    {
+                        Before = state.Clone(),
+                        RngBefore = counting.Copy(),
+                        Action = action,
+                        TargetEnemyIndex = targetEnemyIndex,
+                        Answers = [],
+                    }
+                    : null;
+        }
+
+        state.HookChoice = replay;
+        try
+        {
+            var result = StepCore(state, action, rng, targetEnemyIndex);
+            state.HookChoice = null;
+            return result;
+        }
+        catch (HookChoicePending)
+        {
+            // Stopped on a hook's screen, which is open in state.PendingSelection; its answer
+            // replays the step, and the reward is paid by the run that finishes it.
+            return new StepResult(Terminal: false, PlayerWon: false, Reward: 0f);
+        }
+    }
+
+    /// <summary>
+    /// A screen raised by a HOOK in the middle of the game's sequence -- Stratagem's from inside
+    /// a draw, Tyranny's in the turn start -- answered where the game awaits it, so that the
+    /// hook's caller goes on with the answer in place: the draw that shuffled keeps drawing, the
+    /// turn start goes on to the intent roll. Answers are resolved exactly as a card's screen
+    /// is (<see cref="ResolveCardSelection" />), reopening included, and a screen the game would
+    /// not show is answered without asking (<see cref="IsLoneSelection" />). The answer comes
+    /// from the step's <see cref="HookChoiceReplay" />; with none left, the step stops here with
+    /// the screen open. A card's screen already standing is kept and stands again afterwards.
+    /// </summary>
+    internal static void AnswerHookScreen(
+        CombatState state,
+        PendingCardSelection screen,
+        Random rng
+    )
+    {
+        if (screen.Candidates.Count == 0)
+        {
+            return;
+        }
+
+        var outer = state.PendingSelection;
+        state.PendingSelection = screen;
+        while (state.PendingSelection is { } open)
+        {
+            ResolveCardSelection(state, IsLoneSelection(open) ? 0 : NextHookAnswer(state), rng);
+        }
+
+        state.PendingSelection = outer;
+    }
+
+    private static int NextHookAnswer(CombatState state)
+    {
+        var replay =
+            state.HookChoice
+            ?? throw new InvalidOperationException(
+                "A hook raised a selection screen in a step that cannot be replayed; "
+                    + "step the combat with CountingRandom streams."
+            );
+        if (replay.Used < replay.Answers.Count)
+        {
+            return replay.Answers[replay.Used++];
+        }
+
+        throw HookChoicePending.Instance;
+    }
+
+    private static StepResult StepCore(
+        CombatState state,
+        int action,
+        Random rng,
+        int targetEnemyIndex
+    )
+    {
         state.TargetEnemyIndex = targetEnemyIndex;
 
         // Anything listed before the player has acted goes off FIRST. Imbued's turn-1
@@ -92,6 +206,26 @@ public static class CombatEngine
     /// A screen that can be declined (minimum zero) always asks, and so does the
     /// choose-a-card screen over generated cards (`FromChooseACardScreen`).
     /// </summary>
+    private static bool IsLoneSelection(PendingCardSelection screen) =>
+        screen is { Skippable: false, GeneratedCandidates.Count: 0 }
+        && screen.Kind != CardSelectionKind.GeneratedCardToHand
+        && screen.Kind != CardSelectionKind.CurseOfKnowledge
+        // `prefs(prompt, n)` is min = max = n: a pool of n or fewer is taken whole without
+        // asking -- Prepared's and Hidden Daggers' discard, and the hooks' picks (Tyranny,
+        // Tools of the Trade, Entropy, Stratagem, Foregone Conclusion). These screens reopen
+        // per pick here with `Amount` picks left, so the same test is made against what is left.
+        && screen.Candidates.Count
+            <= (
+                screen.Kind
+                    is CardSelectionKind.DiscardFromHandRepeated
+                        or CardSelectionKind.ExhaustFromHandRepeated
+                        or CardSelectionKind.DrawPileToHand
+                        or CardSelectionKind.TransformInHand
+                    ? Math.Max(1, screen.Amount)
+                    : 1
+            );
+
+    /// <summary>Answers, without asking, every screen <see cref="IsLoneSelection" /> says the game would not show.</summary>
     private static StepResult AutoAnswerLoneSelections(
         CombatState state,
         Random rng,
@@ -99,22 +233,7 @@ public static class CombatEngine
     )
     {
         int guard = 64;
-        while (
-            guard-- > 0
-            && state.PendingSelection is
-            {
-                Skippable: false,
-                GeneratedCandidates.Count: 0,
-            } lone
-            && lone.Kind != CardSelectionKind.GeneratedCardToHand
-            && lone.Kind != CardSelectionKind.CurseOfKnowledge
-            // `FromHandForDiscard(prefs(prompt, n))` is min = max = n: a hand of n or fewer
-            // is discarded whole without asking (Prepared, Hidden Daggers). The screen
-            // reopens per pick here with `Amount` picks left, so the same test is made
-            // against what is left.
-            && lone.Candidates.Count
-                <= (lone.Kind == CardSelectionKind.DiscardFromHandRepeated ? Math.Max(1, lone.Amount) : 1)
-        )
+        while (guard-- > 0 && state.PendingSelection is { } lone && IsLoneSelection(lone))
         {
             var answered = AnswerSelection(state, 0, rng);
             result = new StepResult(
@@ -1792,17 +1911,6 @@ public static class CombatEngine
             Effects.CardEffects.ChannelOrb(state, OrbType.Glass);
         }
 
-        int entropy = BuffSystem.Get(state.PlayerBuffs, BuffId.EntropyPower);
-        for (int i = 0; i < entropy; i++)
-        {
-            // `CardCmd.Transform` in combat: the replacement counts as generated, as for the
-            // other in-combat transforms (NoteGeneratedCard).
-            if (Effects.CardEffects.TransformRandomCardInHand(state, rng))
-            {
-                Effects.CardEffects.NoteGeneratedCard(state);
-            }
-        }
-
         // Barricade: block does not reset. Blur is the same rule with a counter --
         // `BlurPower.ShouldClearBlock` is false for its owner while any remains -- and it
         // decrements at every side turn start its owner takes part in, whether or not it
@@ -2165,14 +2273,42 @@ public static class CombatEngine
         // draw: the kills a turn start makes there come after the hand is dealt.
         ApplyAfterPlayerTurnStartPowers(state, rng);
 
+        // `EntropyPower.AfterPlayerTurnStart`: TRANSFORM that many cards CHOSEN from hand --
+        // `CardSelectorPrefs(prompt, Amount)`, compulsory. The emulator transformed a random
+        // card at the top of the turn, before the draw, over what was left of the old hand.
+        int entropy = BuffSystem.Get(state.PlayerBuffs, BuffId.EntropyPower);
+        if (entropy > 0)
+        {
+            AnswerHookScreen(
+                state,
+                Effects.CardEffects.HandScreen(
+                    state,
+                    CardSelectionKind.TransformInHand,
+                    Effects.CL.Entropy,
+                    entropy
+                ),
+                rng
+            );
+        }
+
         // `TyrannyPower.AfterPlayerTurnStart`: EXHAUST that many cards CHOSEN from hand --
         // `CardSelectorPrefs(prompt, Amount)`, whose single count sets min and max alike, so
         // the exhaust is compulsory and the CHOICE is the player's. The half of that card
-        // that costs, and it lands after the draw the other half paid for.
+        // that costs, and it lands after the draw the other half paid for. The game awaits the
+        // pick here, so it lands before the rest of the turn start.
         int tyranny = BuffSystem.Get(state.PlayerBuffs, BuffId.Tyranny);
-        if (tyranny > 0 && state.Hand.Count > 0)
+        if (tyranny > 0)
         {
-            Effects.CardEffects.OpenExhaustFromHandSelection(state, tyranny);
+            AnswerHookScreen(
+                state,
+                Effects.CardEffects.HandScreen(
+                    state,
+                    CardSelectionKind.ExhaustFromHandRepeated,
+                    520, // Tyranny
+                    tyranny
+                ),
+                rng
+            );
         }
 
         // `ToolsOfTheTradePower` is two hooks. `ModifyHandDraw` adds its amount to the
@@ -2185,17 +2321,18 @@ public static class CombatEngine
         // card -- drawing one more and pitching your worst is the whole engine -- and
         // pitching whatever happens to be first is closer to a downside than an upside.
         //
-        // The screen is left standing when the turn-start work finishes, and `ValidActions`
-        // restricts to it until it is answered. A later turn does not wait on it: the relics'
-        // `AfterPlayerTurnStart` below runs with it up (only Pendulum's draw can tell), where
-        // the game answers it first. Turn one's relic screens do hold (`StartFirstTurn`).
+        // The pick lands here, before the rest of the turn start, as the game awaits it.
         int toolsOfTheTrade = BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade);
         if (toolsOfTheTrade > 0)
         {
-            Effects.CardEffects.OpenDiscardSelection(
+            AnswerHookScreen(
                 state,
-                Effects.SI.ToolsOfTheTrade,
-                toolsOfTheTrade,
+                Effects.CardEffects.HandScreen(
+                    state,
+                    CardSelectionKind.DiscardFromHandRepeated,
+                    Effects.SI.ToolsOfTheTrade,
+                    toolsOfTheTrade
+                ),
                 rng
             );
         }
@@ -3316,6 +3453,28 @@ public static class CombatEngine
                     var recoveredFree = state.DiscardPile[index] with { FreeThisTurn = true };
                     state.DiscardPile.RemoveAt(index);
                     Effects.CardEffects.AddToHandOrDiscard(state, recoveredFree);
+                }
+
+                break;
+
+            case CardSelectionKind.TransformInHand:
+                // Entropy: the card is replaced where it sits, so the others keep their
+                // indices, and the screen reopens over the ones not yet transformed.
+                if (index < state.Hand.Count)
+                {
+                    Effects.CardEffects.TransformHandCardToRandom(state, index, rng);
+                }
+
+                var untransformed = selection.Candidates.Where(c => c != index).ToList();
+                if (selection.Amount > 1 && untransformed.Count > 0)
+                {
+                    state.PendingSelection = new PendingCardSelection
+                    {
+                        Kind = CardSelectionKind.TransformInHand,
+                        Candidates = untransformed,
+                        SourceCardDefId = selection.SourceCardDefId,
+                        Amount = selection.Amount - 1,
+                    };
                 }
 
                 break;
