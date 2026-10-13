@@ -24,4 +24,23 @@ public class TransformIsGeneratedTests
         Assert.Equal(2, fight.State.CardsGeneratedThisCombat);
         Assert.Equal(2, fight.PlayerBuffAmount(BuffId.Strength));
     }
+
+    [Fact]
+    public void EntropysTransformCountsAsGenerated()
+    {
+        // A kept hand gives Entropy a card to transform at the turn start.
+        var fight = Fight
+            .Hand(Card(IC.StrikeIronclad))
+            .Energy(3)
+            .Draw(Card(IC.DefendIronclad))
+            .Enemy(hp: 500)
+            .PlayerBuff(BuffId.RetainHand, 1)
+            .PlayerBuff(BuffId.EntropyPower, 1)
+            .PlayerBuff(BuffId.Arsenal, 1);
+
+        fight.EndTurn();
+
+        Assert.Equal(1, fight.State.CardsGeneratedThisCombat);
+        Assert.Equal(1, fight.PlayerBuffAmount(BuffId.Strength));
+    }
 }

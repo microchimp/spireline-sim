@@ -1592,7 +1592,12 @@ public static class CombatEngine
         int entropy = BuffSystem.Get(state.PlayerBuffs, BuffId.EntropyPower);
         for (int i = 0; i < entropy; i++)
         {
-            Effects.CardEffects.TransformRandomCardInHand(state, rng);
+            // `CardCmd.Transform` in combat: the replacement counts as generated, as for the
+            // other in-combat transforms (NoteGeneratedCard).
+            if (Effects.CardEffects.TransformRandomCardInHand(state, rng))
+            {
+                Effects.CardEffects.NoteGeneratedCard(state);
+            }
         }
 
         // Barricade: block does not reset. Blur is the same rule with a counter --

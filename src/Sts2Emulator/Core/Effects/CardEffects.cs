@@ -2550,11 +2550,12 @@ public static class CardEffects
         PotionEffects.TryToProcure(state, potionId);
     }
 
-    internal static void TransformRandomCardInHand(CombatState state, Random rng)
+    /// <returns>Whether a card was transformed (false for an empty hand).</returns>
+    internal static bool TransformRandomCardInHand(CombatState state, Random rng)
     {
         if (state.Hand.Count == 0)
         {
-            return;
+            return false;
         }
 
         var selectionRng = CardSelectionRng(state, rng);
@@ -2562,6 +2563,7 @@ public static class CardEffects
         var pool = OwnerCharacterGenerationPool(state);
         int defId = pool[selectionRng.Next(pool.Count)];
         state.Hand[idx] = new CardInstance(defId, false);
+        return true;
     }
 
     /// <param name="fromHandDraw">
