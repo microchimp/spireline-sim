@@ -375,9 +375,36 @@ public static class RunRewardGenerator
         // PlayerRng.Rewards like everything else, so taking it early handed the card
         // offer the relic's value and shifted all three cards by a draw.
         PopulateCardReward(state);
-        if (state.PendingRelicReward)
+
+        // `PunchOff.Fight` hangs [RelicReward, PotionReward] on the room (EnterCombatWithoutExitingEvent's
+        // extra rewards). `RewardsSet.WithRewardsFromRoom` appends them to the room's own list, so they
+        // populate after the cards and before anything a hook adds: the relic's pull, then the potion's
+        // rarity roll and pick -- a second potion beside the one the room's odds may have rolled.
+        if (state.ActiveCombat?.EncounterId == RunConstants.PunchOffEncounterId)
         {
             state.RelicReward = NextRelic(state);
+            int extraPotion = NextPotion(state, state.PlayerRng.Rewards);
+            if (state.RewardPotion == 0)
+            {
+                state.RewardPotion = extraPotion;
+            }
+            else
+            {
+                state.PendingPotionRewards.Add(extraPotion);
+            }
+        }
+
+        if (state.PendingRelicReward)
+        {
+            int hooked = NextRelic(state);
+            if (state.RelicReward == 0)
+            {
+                state.RelicReward = hooked;
+            }
+            else
+            {
+                state.PendingBonusRelicRewards.Insert(0, hooked);
+            }
         }
 
         for (int i = 0; i < bonusRelicsOwed; i++)
