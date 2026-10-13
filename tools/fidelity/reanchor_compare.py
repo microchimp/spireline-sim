@@ -29,7 +29,7 @@ import json
 import pathlib
 import sys
 
-from .fight_compare import diff, emu_view, game_view, names
+from .fight_compare import EMU_RENAME, diff, emu_view, game_view, names
 
 # What an enemy's move can change that the snapshot shows. The move itself (its id and intent) is not
 # recorded, so a difference here is the only evidence that the emulator's enemy chose another move.
@@ -77,6 +77,10 @@ def _mask(gv: dict, ev: dict, buff_keys, internal) -> None:
     """
     if buff_keys is None:
         return
+    # Keys in the names emu_view shows: a renamed buff (CRIMSON_MANTLE_BLOCK -> CRIMSON_MANTLE) is that
+    # game power, so the game's power is compared, not dropped.
+    buff_keys = {EMU_RENAME.get(k, k) for k in buff_keys} | {EMU_RENAME[k] for k in internal if k in EMU_RENAME}
+    internal = set(internal) - set(EMU_RENAME)
     pairs = [(gv["player"], ev["player"])] + list(zip(gv["enemies"], ev["enemies"]))
     for g, e in pairs:
         unmapped = {n for n, _ in g["powers"] if n not in buff_keys}

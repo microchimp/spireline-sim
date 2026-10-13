@@ -114,7 +114,7 @@ class ReanchorCompareTest(unittest.TestCase):
         g, e = fight([(None, {}, {}), (PLAY, game, emu)])
         masked = rc.analyse(g, e, NM, keys=KEYS)
         self.assertEqual(masked["steps"][1]["verdict"], "match")
-        self.assertEqual(masked["first_divergence"], 1)  # the strict test still sees it, as the plain replay does
+        self.assertIsNone(masked["first_divergence"])  # the plain replay maps it too (EMU_RENAME)
 
     def test_unrebuildable_state_ends_the_fight_before_the_step(self):
         g, e = fight([(None, {}, {}), (PLAY, dict(hp=21), dict(hp=21))])
