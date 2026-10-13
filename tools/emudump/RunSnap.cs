@@ -81,6 +81,125 @@ static class RunSnap
                 .Select(c => (JsonNode)new JsonArray(c.Col, c.Row)).ToArray()),
         }).ToArray());
 
+    /// <summary>
+    /// A relic's saved property (the game's <c>[SavedProperty]</c>, as its save writes it under
+    /// <c>props</c>) in the game's units: read off the emulator's state, and written back by the
+    /// replay's anchoring. Kind is the save's list ("ints" or "bools"; a bool is 0 or 1 here).
+    /// Absent: the value a save that leaves the property out stands for (SaveIfNotTypeDefault;
+    /// run_snapshot.SAVED_IF_NOT_DEFAULT on the Python side), null for an AlwaysSave property.
+    /// Only these are compared; any other saved property is reported by run_snapshot.not_compared.
+    /// </summary>
+    internal sealed record RelicProp(string Relic, string Kind, string Name, Func<RunState, RelicInstance, int> Get,
+        Action<RunState, int, int> Set, int? Absent = null);
+
+    static int C(RunState s, RelicInstance r) => r.Counter;
+    static void SetC(RunState s, int i, int v) => s.Relics[i] = s.Relics[i] with { Counter = v };
+    static bool InFight(RunState s) => s.Phase == RunPhase.Combat && s.ActiveCombat != null;
+
+    static readonly int LizardTailId = RunConstants.RelicLizardTail;
+
+    internal static readonly RelicProp[] RelicProps =
+    [
+        // RelicInstance.Counter in the game's units: the fight's own copy while one is open (the
+        // game has one relic object for the run), else the run's. A fight starts from the run's
+        // Counter (CombatFactory.Reset), and only RelicEffects.RunCounterRelics carry theirs back.
+        new("PEN_NIB", "ints", "AttacksPlayed", C, SetC),
+        new("JOSS_PAPER", "ints", "CardsExhausted", C, SetC, Absent: 0),
+        new("NUNCHAKU", "ints", "AttacksPlayed", C, SetC),
+        new("TUNING_FORK", "ints", "SkillsPlayed", C, SetC),
+        new("HAPPY_FLOWER", "ints", "TurnsSeen", C, SetC),
+        new("PENDULUM", "ints", "TurnsSeen", C, SetC),
+        new("FAKE_HAPPY_FLOWER", "ints", "TurnsSeen", C, SetC),
+        // The game zeroes TurnsSeen as the bonus draw lands (AfterModifyingHandDraw); the
+        // emulator holds the turn count until the next tick restarts it at 1.
+        new("POLLINOUS_CORE", "ints", "TurnsSeen", (s, r) => r.Counter == Sts2Emulator.Core.Effects.RelicEffects.PollinousCoreTurns ? 0 : r.Counter, SetC),
+        new("IRON_CLUB", "ints", "CardsPlayed", C, SetC),
+        new("BOOK_OF_FIVE_RINGS", "ints", "CardsAdded", C, SetC),
+        new("FISHING_ROD", "ints", "CombatsSeen", C, SetC),
+        new("LASTING_CANDY", "ints", "CombatsSeen", C, SetC),
+        new("TOY_BOX", "ints", "CombatsSeen", C, SetC),
+        new("PUMPKIN_CANDLE", "ints", "KindleCount", C, SetC),
+        new("SWORD_OF_STONE", "ints", "ElitesDefeated", C, SetC),
+        new("PAELS_WING", "ints", "RewardsSacrificed", C, SetC),
+        new("GIRYA", "ints", "TimesLifted", C, SetC),
+        new("WINGED_BOOTS", "ints", "TimesUsed", C, SetC),
+        new("BONE_TEA", "ints", "CombatsLeft", C, SetC),
+        new("TEA_OF_DISCOURTESY", "ints", "CombatsLeft", C, SetC),
+        new("EMBER_TEA", "ints", "CombatsLeft", C, SetC),
+        // The crucible's Counter counts DOWN from its three uses (StartingRelicCounter).
+        new("SILVER_CRUCIBLE", "ints", "TimesUsed", (s, r) => 3 - r.Counter, (s, i, v) => SetC(s, i, 3 - v)),
+        new("SILVER_CRUCIBLE", "ints", "TreasureRoomsEntered", (s, _) => s.SilverCrucibleTreasureRoomsEntered,
+            (s, _, v) => s.SilverCrucibleTreasureRoomsEntered = v),
+        // Armed to 1 on entering a rest site (RelicEffects.ArmTeaSetsAtRestSite), spent by the next fight.
+        new("VENERABLE_TEA_SET", "bools", "GainEnergyInNextCombat", (s, r) => r.Counter > 0 ? 1 : 0, SetC),
+        new("FAKE_VENERABLE_TEA_SET", "bools", "GainEnergyInNextCombat", (s, r) => r.Counter > 0 ? 1 : 0, SetC),
+        new("LAVA_LAMP", "bools", "TookDamageThisCombat", (s, _) => s.TookUnblockedDamageThisCombat ? 1 : 0,
+            (s, _, v) => s.TookUnblockedDamageThisCombat = v != 0),
+        new("LAVA_ROCK", "bools", "HasTriggered", (s, _) => s.LavaRockTriggered ? 1 : 0, (s, _, v) => s.LavaRockTriggered = v != 0),
+        // Spent for the run in RunState.UsedUpRelics once a fight ends; inside the fight it is the
+        // fight's copy that says so (RelicEffects.CollectUsedUpRelics).
+        new("LIZARD_TAIL", "bools", "WasUsed", (s, r) => s.UsedUpRelics.Contains(LizardTailId) || (InFight(s) && r.Counter > 0) ? 1 : 0,
+            (s, _, v) =>
+            {
+                s.UsedUpRelics.Remove(LizardTailId);
+                if (v != 0) s.UsedUpRelics.Add(LizardTailId);
+            }),
+        // 1: the first card screen after pickup was built (and Glam-enchanted); 2: answered.
+        // The game's IsUsed is set as that screen is built (AfterModifyingCardRewardOptions).
+        new("SILKEN_TRESS", "bools", "IsUsed", (s, r) => r.Counter >= 1 ? 1 : 0, (s, i, v) => SetC(s, i, v != 0 ? 2 : 0)),
+    ];
+
+    /// <summary>The held relics' modelled saved properties: {RELIC: {Name: value}}.</summary>
+    static JsonObject RelicPropsOf(RunState s)
+    {
+        var o = new JsonObject();
+        foreach (var p in RelicProps)
+        {
+            int i = s.Relics.FindIndex(r => RelicEntry(r.DefId) == p.Relic);
+            if (i < 0) continue;
+            var live = s.Relics[i];
+            if (InFight(s) && s.ActiveCombat!.Relics.FindIndex(r => r.DefId == live.DefId) is int k and >= 0)
+                live = s.ActiveCombat.Relics[k];
+            var props = (o[p.Relic] ??= new JsonObject()).AsObject();
+            int v = p.Get(s, live);
+            props[p.Name] = p.Kind == "bools" ? JsonValue.Create(v != 0) : JsonValue.Create(v);
+        }
+
+        return o;
+    }
+
+    /// <summary>
+    /// The per-card saved properties the emulator keeps: Mad Science's Tinker Time type and
+    /// rider (on the CardInstance), and Guilty's combats served (RunState.GuiltyCombatsServed,
+    /// one count per copy, new copies at 0). Both as sorted multisets: the emulator does not
+    /// tie a Guilty count to a deck position.
+    /// </summary>
+    static JsonObject CardPropsOf(RunState s)
+    {
+        var o = new JsonObject();
+        var mad = s.Deck.Where(c => CardEntry(c.DefId) == "MAD_SCIENCE")
+            .Select(c => $"{c.TinkerType}/{c.TinkerRider}").OrderBy(x => x, StringComparer.Ordinal).ToList();
+        if (mad.Count > 0) o["MAD_SCIENCE"] = Arr(mad, x => x);
+        int guilty = s.Deck.Count(c => CardEntry(c.DefId) == "GUILTY");
+        if (guilty > 0)
+        {
+            var served = s.GuiltyCombatsServed.Take(guilty).ToList();
+            while (served.Count < guilty) served.Add(0);
+            o["GUILTY"] = Arr(served.OrderBy(x => x), x => x);
+        }
+
+        return o;
+    }
+
+    static int? _startingEnergy;
+
+    /// <summary>
+    /// The emulator has no run-level max energy: every fight starts at CombatFactory's
+    /// StartingEnergy and relics add to it inside the fight. The game's save keeps a max_energy.
+    /// </summary>
+    static int StartingEnergy() => _startingEnergy ??= (int)typeof(CombatFactory)
+        .GetField("StartingEnergy", BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
+
     public static JsonObject Export(RunEngine e)
     {
         var s = e.State;
@@ -101,6 +220,12 @@ static class RunSnap
                 c.Enchantment == Enchantment.None ? null : Snake(c.Enchantment.ToString()),
                 c.Enchantment == Enchantment.None ? 0 : c.EnchantAmount)),
             ["relics"] = Arr(s.Relics, r => RelicEntry(r.DefId)),
+            ["relic_props"] = RelicPropsOf(s),
+            // Toy Box's wax relics still held, in relic order (a melted one is gone from Relics).
+            ["wax"] = Arr(s.Relics.Where(r => s.WaxRelics.Contains(r.DefId)), r => RelicEntry(r.DefId)),
+            ["card_props"] = CardPropsOf(s),
+            ["max_energy"] = StartingEnergy(),
+            ["ascension"] = s.AscensionLevel,
             ["odds"] = new JsonObject
             {
                 ["card_rarity"] = Math.Round(s.CardRarityOffset, 6),

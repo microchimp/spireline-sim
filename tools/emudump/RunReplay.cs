@@ -152,7 +152,8 @@ static class RunReplay
                     s.Phase == RunPhase.Combat ? RunSnap.EncounterEntry(s.ActiveCombat?.EncounterId ?? 0)
                     : s.Phase is RunPhase.Event or RunPhase.CrystalSphere or RunPhase.FakeMerchant ? RunSnap.EventEntry(s.EventId)
                     : s.Phase == RunPhase.Ancient ? s.Ancient
-                    : null);
+                    : null,
+                    RoomType(s));
                 if (s.Phase == RunPhase.Treasure)
                     od["treasure_relic"] = RunSnap.RelicEntry(s.RelicReward);
                 return;
@@ -203,6 +204,8 @@ static class RunReplay
                 var mask = new int[RunConstants.MaxActions];
                 e.WriteActionMask(mask);
                 od["enabled"] = new JsonArray(Enumerable.Range(0, 8).Where(i => mask[i] != 0).Select(i => (JsonNode)i).ToArray());
+                od["skip_action"] = RunConstants.EventSkipAction;
+                od["option_count"] = OptionCount(s.EventId);
                 Step(e, (int)d["choice_index"]!, od, $"event option {(string?)d["choice"]}");
                 Selections(e, d, od);
                 return;
@@ -268,6 +271,34 @@ static class RunReplay
             default:
                 throw new Divergence($"screen {(string?)d["screen"]} not replayed yet");
         }
+    }
+
+    /// <summary>
+    /// The room the emulator entered, as the game's RoomType names it (the driver records the
+    /// game's): a fight by the node it resolved to, an ancient as the Event room it is in the game.
+    /// </summary>
+    static string? RoomType(RunState s) => s.Phase switch
+    {
+        RunPhase.Combat => s.LastResolvedRoomType switch
+        {
+            RunConstants.NodeNormal => "Monster", RunConstants.NodeElite => "Elite", RunConstants.NodeBoss => "Boss",
+            _ => $"Combat({s.LastResolvedRoomType})",
+        },
+        RunPhase.Event or RunPhase.CrystalSphere or RunPhase.FakeMerchant or RunPhase.Ancient => "Event",
+        RunPhase.Rest => "RestSite",
+        RunPhase.Shop => "Shop",
+        RunPhase.Treasure => "Treasure",
+        _ => s.Phase.ToString(),
+    };
+
+    static MethodInfo? _optionCount;
+
+    /// <summary>EventOptions.CountFor: the event's first-page option count, 0 where it is run state.</summary>
+    static int OptionCount(int eventId)
+    {
+        _optionCount ??= typeof(RunEngine).Assembly.GetType("Sts2Emulator.GeneratedData.EventOptions")!
+            .GetMethod("CountFor", BindingFlags.Public | BindingFlags.Static)!;
+        return (int)_optionCount.Invoke(null, [eventId])!;
     }
 
     /// <summary>A game model id without its type prefix (EVENT.TRIAL -> TRIAL).</summary>
@@ -361,6 +392,17 @@ static class RunReplay
         Expect(e, RunPhase.RelicReward, "rewards");
         // The emulator's screen lists gold, potion, relic, card in that order (ClaimRewardAtIndex).
         int idx = 0;
+        if (s.RewardGold != 0 && type == "gold" && (int?)d["choice"]!["amount"] is int amount && amount != s.RewardGold)
+        {
+            // Two gold piles (the room's and a hook's): the game's screen takes either; the
+            // emulator's shows one at a time, the rest queued. Which pile is up front is the
+            // screen's layout, not a rule, so the game's pile is brought forward.
+            int at = s.PendingGoldRewards.IndexOf(amount);
+            if (at < 0) throw new Divergence($"gold reward {amount} not on the emulator's screen");
+            s.PendingGoldRewards[at] = s.RewardGold;
+            s.RewardGold = amount;
+        }
+
         if (s.RewardGold != 0) { if (type == "gold") goto claim; idx++; }
         if (s.RewardPotion != 0) { if (type == "potion") goto claim; idx++; }
         if (s.RelicReward != 0) { if (type == "relic") goto claim; idx++; }
@@ -504,6 +546,12 @@ static class RunReplay
         }
 
         string result = (string?)d["result"] ?? "";
+        // The emulator's own outcome, before anything is anchored: the comparer checks it
+        // against the game's post-fight save (and the reward screen against the game's next
+        // offer), so a fight identical at every step that still ends elsewhere is a divergence.
+        od["fight_end"] = s.Phase.ToString();
+        od["outcome_snap"] = RunSnap.Export(e);
+        if (s.Phase is RunPhase.RelicReward or RunPhase.CardReward) od["outcome_offer"] = RewardOffer(s);
         if (!Anchoring)
         {
             if (result == "win" && s.Phase == RunPhase.Combat) throw new Divergence("game won the fight; emulator fight still running");
@@ -621,7 +669,10 @@ static class RunReplay
         }
 
         int[]? relics = null;
-        var rel = p["relics"]!.AsArray().Select(r => RelicId(Bare((string?)r!["id"]))).ToArray();
+        // A melted wax relic stays in the game's list, inert (the hooks skip IsMelted); the
+        // emulator drops it as it melts, so only the unmelted ones are the emulator's relics.
+        var held = p["relics"]!.AsArray().Where(r => !GameFlag(r!, "IsMelted")).ToList();
+        var rel = held.Select(r => RelicId(Bare((string?)r!["id"]))).ToArray();
         if (!rel.SequenceEqual(s.Relics.Select(r => r.DefId))) { anchored.Add("relics"); relics = rel; }
         int[]? potions = null;
         int slots = (int)p["max_potion_slot_count"]!;
@@ -630,6 +681,49 @@ static class RunReplay
             if ((int)pot!["slot_index"]! < slots) pots[(int)pot["slot_index"]!] = PotionId(Bare((string?)pot["id"]));
         if (!pots.SequenceEqual(s.PotionSlots.Take(slots)) || slots != s.MaxPotionSlots) { anchored.Add("potions"); potions = pots; }
         e.DebugSetPlayer(hp, maxHp, gold, cards, relics, potions, slots);
+
+        // Toy Box's wax relics, in the game's relic order (the first held one melts next).
+        var wax = held.Where(r => GameFlag(r!, "IsWax")).Select(r => RelicId(Bare((string?)r!["id"]))).ToList();
+        if (!wax.SequenceEqual(s.Relics.Where(r => s.WaxRelics.Contains(r.DefId)).Select(r => r.DefId)))
+        {
+            anchored.Add("wax");
+            s.WaxRelics.RemoveAll(id => s.Relics.Any(r => r.DefId == id));
+            s.WaxRelics.InsertRange(0, wax);
+        }
+
+        // The relics' saved properties the snapshot compares (RunSnap.RelicProps).
+        foreach (var prop in RunSnap.RelicProps)
+        {
+            int i = s.Relics.FindIndex(r => RunSnap.RelicEntry(r.DefId) == prop.Relic);
+            var gr = held.FirstOrDefault(r => Bare((string?)r!["id"]) == prop.Relic);
+            if (i < 0 || gr == null || (GameProp(gr, prop.Kind, prop.Name) ?? prop.Absent) is not { } want
+                || prop.Get(s, s.Relics[i]) == want) continue;
+            anchored.Add($"relic_props.{prop.Relic}.{prop.Name}");
+            prop.Set(s, i, want);
+        }
+
+        // Card properties: Mad Science's type and rider by deck position (the deck is the
+        // game's by now), Guilty's combats served as the game's counts.
+        var gdeck = p["deck"]!.AsArray();
+        var guilty = new List<int>();
+        for (int k = 0; k < gdeck.Count && k < s.Deck.Count; k++)
+        {
+            string id = Bare((string?)gdeck[k]!["id"]);
+            if (id == "GUILTY") guilty.Add(GameProp(gdeck[k]!, "ints", "CombatsSeen") ?? 0);
+            if (id != "MAD_SCIENCE") continue;
+            var type = (Sts2Emulator.Core.CardType)Enum.Parse(typeof(Sts2Emulator.Core.CardType), GameCardTypes[GameProp(gdeck[k]!, "ints", "TinkerTimeType") ?? 0]);
+            var rider = (Sts2Emulator.Core.TinkerRider)(GameProp(gdeck[k]!, "ints", "TinkerTimeRider") ?? 0);
+            if (s.Deck[k].TinkerType == type && s.Deck[k].TinkerRider == rider) continue;
+            anchored.Add("card_props.MAD_SCIENCE");
+            s.Deck[k] = s.Deck[k] with { TinkerType = type, TinkerRider = rider };
+        }
+
+        if (!guilty.OrderBy(x => x).SequenceEqual(s.GuiltyCombatsServed.Take(guilty.Count).Concat(Enumerable.Repeat(0, Math.Max(0, guilty.Count - s.GuiltyCombatsServed.Count))).OrderBy(x => x)))
+        {
+            anchored.Add("card_props.GUILTY");
+            s.GuiltyCombatsServed.Clear();
+            s.GuiltyCombatsServed.AddRange(guilty);
+        }
 
         void Counters(object set, JsonObject counters, string prefix)
         {
@@ -649,6 +743,23 @@ static class RunReplay
             }
         }
 
+        // The odds a diverged fight's own rewards moved (card rarity, potion reward), and the map's.
+        void Odds(string name, double want, Func<double> get, Action<double> set)
+        {
+            if (Math.Round(get(), 6) == Math.Round(want, 6)) return;
+            anchored.Add($"odds.{name}");
+            set(want);
+        }
+
+        var po = p["odds"]!;
+        var ro = save["odds"]!;
+        Odds("card_rarity", (double)po["card_rarity_odds_value"]!, () => s.CardRarityOffset, v => s.CardRarityOffset = v);
+        Odds("potion_reward", (double)po["potion_reward_odds_value"]!, () => s.PotionRewardOdds, v => s.PotionRewardOdds = v);
+        Odds("unknown_monster", (double)ro["unknown_map_point_monster_odds_value"]!, () => s.UnknownMapPointMonsterOdds, v => s.UnknownMapPointMonsterOdds = v);
+        Odds("unknown_elite", (double)ro["unknown_map_point_elite_odds_value"]!, () => s.UnknownMapPointEliteOdds, v => s.UnknownMapPointEliteOdds = v);
+        Odds("unknown_treasure", (double)ro["unknown_map_point_treasure_odds_value"]!, () => s.UnknownMapPointTreasureOdds, v => s.UnknownMapPointTreasureOdds = v);
+        Odds("unknown_shop", (double)ro["unknown_map_point_shop_odds_value"]!, () => s.UnknownMapPointShopOdds, v => s.UnknownMapPointShopOdds = v);
+
         Counters(s.Rng, save["rng"]!["counters"]!.AsObject(), "rng");
         Counters(s.PlayerRng, p["rng"]!["counters"]!.AsObject(), "player_rng");
 
@@ -667,6 +778,23 @@ static class RunReplay
         Bag(s.RelicBag, p["relic_grab_bag"]?["relic_id_lists"]?.AsObject(), "grab_bag");
         Bag(s.SharedRelicBag, save["shared_relic_grab_bag"]?["relic_id_lists"]?.AsObject(), "shared_grab_bag");
     }
+
+    /// <summary>The game's CardType names in enum order (its save writes the number).</summary>
+    internal static readonly string[] GameCardTypes = ["None", "Attack", "Skill", "Power", "Status", "Curse", "Quest"];
+
+    /// <summary>A saved property off a relic or card in the game's save (props.ints / props.bools), bools as 0/1.</summary>
+    static int? GameProp(JsonNode model, string kind, string name)
+    {
+        foreach (var it in model["props"]?[kind]?.AsArray() ?? new JsonArray())
+        {
+            if ((string?)it!["name"] != name) continue;
+            return it["value"] is JsonValue v && v.TryGetValue<bool>(out bool b) ? (b ? 1 : 0) : (int?)it["value"];
+        }
+
+        return null;
+    }
+
+    static bool GameFlag(JsonNode model, string name) => GameProp(model, "bools", name) == 1;
 
     static uint RunSeedOf(object set) => (uint)set.GetType().GetProperty("Seed")!.GetValue(set)!;
 

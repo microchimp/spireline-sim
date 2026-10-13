@@ -6,8 +6,13 @@
 `start`: the run-start save of each run (any referee result that carries "save") against
 `EmuDump runstart`: all three acts' room sets, both relic grab bags, the odds, every RNG counter.
 `run`: each recorded run decision (referee/driver/RunPlay.cs) against the emulator's replay of the same
-choices (tools/emudump/RunReplay.cs); prints, per run, the first decision whose snapshot or offer differs
-and the fields that differ there, then a summary by component. Exit 0 when everything matches.
+choices (tools/emudump/RunReplay.cs). Per run it prints the first decision that differs, fights
+included: a fight step that differs, a fight that ends at another step, or a fight identical at
+every step whose outcome (the run snapshot right after it, before any anchoring, and the reward
+screen it leaves) differs from the game's. The replay then anchors each fight to the game's outcome,
+so it also prints the first divergence outside fights. A run counts as identical only when nothing
+compared differs, and what is not compared is printed with every comparison
+(run_snapshot.NOT_COMPARED, run_snapshot.not_compared). Exit 0 when everything compared matches.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ def start(ref_path: str, emu_path: str) -> int:
     refs = [r for r in json.load(open(ref_path, encoding="utf-8"))["results"] if "save" in r]
     emus = {e["seed"]: e for e in json.load(open(emu_path, encoding="utf-8"))["results"]}
     bad = 0
+    unchecked: collections.Counter = collections.Counter()
     for r in refs:
         g = rs.from_save(r["save"])
         e = emus.get(r["seed"])
@@ -31,6 +37,7 @@ def start(ref_path: str, emu_path: str) -> int:
             print(f"{r['seed']}: no emulator result")
             bad += 1
             continue
+        unchecked.update(set(rs.not_compared(g, e["snap"])))
         diffs = rs.compare(g, e["snap"])
         if diffs:
             bad += 1
@@ -38,7 +45,18 @@ def start(ref_path: str, emu_path: str) -> int:
             for path, gv, ev in diffs[:8]:
                 print(f"  {path}: game {rs.short(gv)} emulator {rs.short(ev)}")
     print(f"{len(refs)} run starts compared, {bad} with differences")
+    coverage(unchecked, len(refs), "run starts")
     return 0 if not bad and refs else 1
+
+
+def coverage(unchecked: collections.Counter, n: int, what: str) -> None:
+    """What the comparison checks and what it does not: an unchecked field is never taken as equal."""
+    print("compared: run snapshot " + ", ".join(rs.ORDER) + "; each screen's offer, the room entered (type and id), "
+          "event options enabled, new acts' maps, every fight step and each fight's outcome")
+    print("not compared: " + "; ".join(f"{k} ({v})" for k, v in rs.NOT_COMPARED.items()))
+    if unchecked:
+        print(f"not compared, present in the game's saves (in how many of {n} {what}): "
+              + ", ".join(f"{k} {v}" for k, v in sorted(unchecked.items())))
 
 
 def norm_offer(screen: str, offer, emulator: bool):
@@ -75,11 +93,17 @@ def norm_reward(r: dict) -> dict:
 
 
 def room_of(screen: str, game: dict, emu: dict) -> list:
-    """The room a map move entered: encounter or event id, compared without variant suffixes."""
+    """The room a map move entered: its type (the game's RoomType) and its encounter or event id,
+    compared without variant suffixes. Rest sites, shops and chests have no id, so the type is what
+    tells them apart."""
     out = []
     groom, eroom = game.get("room"), emu.get("room")
-    if screen != "map" or not groom or not eroom:
+    if screen != "map" or not groom:
         return out
+    if not eroom:
+        return [] if emu.get("error") else [("room", groom, None)]
+    if len(eroom) < 3 or groom[0] != eroom[2]:
+        out.append(("room type", groom[0], eroom[2] if len(eroom) >= 3 else eroom[0]))
     gid, eid = groom[1], eroom[1]
     if groom[0] in ("Monster", "Elite", "Boss"):
         gid, eid = rs.enc(gid), rs.enc(eid, emulator=True)
@@ -94,15 +118,54 @@ def room_of(screen: str, game: dict, emu: dict) -> list:
 
 
 def fight_diff(game: dict, emu: dict, nm: dict | None):
-    """The first fight step whose state differs (fight_compare's views), or None."""
+    """The first fight step whose state differs (fight_compare's views), or None. A replay that ends
+    before the game's fight (or goes on after it) differs at the first step one side lacks."""
     if nm is None or "fight" not in game or "fight" not in emu:
         return None
     from tools.fidelity.fight_compare import diff, emu_view, game_view
-    for i, (gs, es) in enumerate(zip(game["fight"]["steps"], emu["fight"]["steps"])):
+    gsteps, esteps = game["fight"]["steps"], emu["fight"]["steps"]
+    for i, (gs, es) in enumerate(zip(gsteps, esteps)):
         d = diff(game_view(gs["state"]), emu_view(es["state"], nm))
         if d:
             return i, gs["action"], d
+    if len(gsteps) != len(esteps):
+        i = min(len(gsteps), len(esteps))
+        act = gsteps[i]["action"] if i < len(gsteps) else None
+        why = emu.get("emulator_fight_ended")
+        return i, act, [("steps", len(gsteps), f"{len(esteps)}" + (f" (replay: {why})" if why else ""))]
     return None
+
+
+def fight_outcome(d: dict, ed: dict, nd: dict | None) -> list:
+    """A fight identical at every step can still end elsewhere: the emulator's own state right after
+    it (RunReplay's outcome_snap, before anchoring) against the game's post-fight save, and the
+    reward screen it leaves against the game's next rewards offer."""
+    result = d.get("result")
+    end = ed.get("fight_end")
+    if result not in ("win", "death"):
+        # The game's run stopped inside the fight (the driver's max_actions): it has no outcome
+        # to compare, and run() reports the fight as not compared.
+        return []
+    if result == "death":
+        return [] if "Complete" in (end, ed.get("phase")) else [("fight end", "death", end or ed.get("phase"))]
+    if end is None:
+        return [("fight end", result, "not recorded by the replay")]
+    if end == "Combat":
+        return [("fight end", result, "emulator still fighting")]
+    if end == "Complete":
+        return [("fight end", result, "emulator died")]
+    out = []
+    if d.get("snap") is not None:
+        out += rs.compare(rs.from_save(d["snap"]), ed.get("outcome_snap") or {})
+    if nd is not None and nd.get("screen") == "rewards" and nd.get("offer") is not None:
+        go = norm_offer("rewards", nd["offer"], False)
+        eo = norm_offer("rewards", ed.get("outcome_offer"), True)
+        if nd.get("depth"):
+            if eo is None or any(x not in eo for x in go):
+                out.append(("rewards offer", go, eo))
+        elif go != eo:
+            out.append(("rewards offer", go, eo))
+    return out
 
 
 def compare_map(game_map: list, emu_map: list) -> list:
@@ -113,11 +176,37 @@ def compare_map(game_map: list, emu_map: list) -> list:
             if gm.get(c) != em.get(c)]
 
 
+def event_options(d: dict, ed: dict) -> tuple[list, list]:
+    """(differences, not compared): the game's enabled options against the emulator's action mask
+    at every index (an index past the game's options is the emulator offering one the game lacks),
+    and the first page's option count. The emulator's skip action is not an event option; where the
+    game has an option at that index the two cannot be told apart, and that index is not compared."""
+    offer = d["offer"]
+    n = len(offer)
+    skip = ed.get("skip_action", 3)
+    g_en = [i for i, o in enumerate(offer) if not o[1]]
+    unchecked = []
+    if n > skip:
+        unchecked.append(f"event option index {skip} (the emulator's skip action)")
+        g_en = [i for i in g_en if i != skip]
+    e_en = [i for i in ed["enabled"] if i != skip]
+    diffs = []
+    if g_en != e_en:
+        diffs.append(("event options enabled", g_en, e_en))
+    count = ed.get("option_count")
+    first = offer[0][0] if offer else ""
+    if count and ".pages.INITIAL." in first and count != n:
+        diffs.append(("event option count", n, count))
+    return diffs, unchecked
+
+
 def compare_decision(d: dict, ed: dict, nm, game_maps: list | None = None) -> list:
+    """Everything a decision shows outside a fight's steps and outcome: replay errors, the offer, the
+    room entered, event options, a new act's map and the run snapshot after the decision (after a
+    fight that is after anchoring, so a difference there is something the anchoring did not reset)."""
     if d.get("screen") == "combat" and d.get("result") == "death":
-        # The run ends here; what is left to compare is the outcome (the fight's steps are
-        # compared as a fight).
-        return [] if ed.get("phase") == "Complete" else [("combat outcome", "death", ed.get("phase"))]
+        # The run ends here; the fight's end is its outcome (fight_outcome).
+        return []
     diffs = []
     if ed.get("error"):
         diffs.append(("replay", d.get("choice"), ed["error"]))
@@ -132,10 +221,7 @@ def compare_decision(d: dict, ed: dict, nm, game_maps: list | None = None) -> li
     elif go is not None and eo is not None and go != eo:
         diffs.append(("offer", go, eo))
     if screen == "event" and d.get("offer") is not None and ed.get("enabled") is not None:
-        g_en = [i for i, o in enumerate(d["offer"]) if not o[1]]
-        e_en = [i for i in ed["enabled"] if i < len(d["offer"])]
-        if g_en != e_en:
-            diffs.append(("event options enabled", g_en, e_en))
+        diffs += event_options(d, ed)[0]
     diffs += room_of(screen, d, ed)
     if screen == "act_change" and ed.get("map") is not None and game_maps:
         act = (d.get("snap") or {}).get("current_act_index")
@@ -151,15 +237,23 @@ def compare_decision(d: dict, ed: dict, nm, game_maps: list | None = None) -> li
     return diffs
 
 
-def component(decision: dict, diffs: list) -> str:
+def field_of(path: str) -> str:
+    return path.split(".")[0].split("[")[0].split(" (")[0]
+
+
+def component(decision: dict, diffs: list, fight: str | None = None) -> str:
     """Which part of the run a divergence belongs to: the screen, refined by the first field."""
     screen = decision.get("screen", "?")
     path = diffs[0][0]
+    if fight == "in fight":
+        return "combat: in fight"
+    if fight == "outcome":
+        return f"combat outcome -> {field_of(path)}"
     if screen == "combat":
-        return "combat (after fight)"
-    if path in ("offer", "room", "treasure_relic", "replay"):
+        return f"combat: not anchored -> {field_of(path)}"
+    if path in ("offer", "room", "room type", "treasure_relic", "replay") or path.startswith("event option"):
         return f"{screen} {path}"
-    return f"{screen} -> {path.split('.')[0].split('[')[0]}"
+    return f"{screen} -> {field_of(path)}"
 
 
 def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
@@ -169,77 +263,109 @@ def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
     if id_map:
         from tools.fidelity.fight_compare import names
         nm = names(json.load(open(id_map, encoding="utf-8")))
-    by_comp: collections.Counter = collections.Counter()
-    fight_firsts: collections.Counter = collections.Counter()
-    anchor_counts: collections.Counter = collections.Counter()
-    total_fights = [0, 0]
-    bad = 0
-    total_dec = 0
+    else:
+        print("fight steps NOT compared (no --id-map)")
+    by_first: collections.Counter = collections.Counter()
+    by_outside: collections.Counter = collections.Counter()
+    in_fight: collections.Counter = collections.Counter()
+    outcome_fields: collections.Counter = collections.Counter()
+    unchecked: collections.Counter = collections.Counter()
+    totals: collections.Counter = collections.Counter()
+    clean = 0
     for ref, emu in zip(refs, emus):
         seed = ref.get("seed")
         if "decisions" not in ref:
             print(f"{seed}: no run recorded ({(ref.get('error') or '')[:200]})")
+            totals["not recorded"] += 1
             continue
         decisions = ref["decisions"]
         edec = emu.get("decisions") or []
-        total_dec += len(decisions)
-        first = None
-        anchored_fights = []
-        fights = []  # (decision, encounter, first in-fight step that differs or None)
+        totals["decisions"] += len(decisions)
+        first = outside = None
+        run_unchecked: set = set()
+        nf = same_steps = same_outcome = 0
+        notes = []
         for i, d in enumerate(decisions):
             if i >= len(edec):
-                first = (i, d, [("replay", "decision recorded", emu.get("error", "emulator stopped"))])
+                div = (i, d, "replay stopped", [("replay", "decision recorded", emu.get("error", "emulator stopped"))])
+                first, outside = first or div, div
                 break
+            ed = edec[i]
+            if d.get("snap") is not None and ed.get("snap") is not None:
+                run_unchecked.update(rs.not_compared(rs.from_save(d["snap"]), ed["snap"]))
+            if d.get("screen") == "event" and d.get("offer") is not None and ed.get("enabled") is not None:
+                run_unchecked.update(event_options(d, ed)[1])
             if d.get("screen") == "combat":
-                fd = fight_diff(d, edec[i], nm)
-                fights.append((i, d.get("encounter"), fd))
+                nf += 1
+                enc = rs.enc(d.get("encounter")) or "?"
+                fd = fight_diff(d, ed, nm)
                 if fd:
-                    fight_firsts[rs.enc(d.get("encounter")) or "?"] += 1
-            diffs = compare_decision(d, edec[i], nm, ref.get("maps"))
-            if edec[i].get("anchored"):
-                # The replay put the emulator where the game came out of this fight (RunReplay's
-                # anchoring): a combat divergence, counted, and the run goes on being compared.
-                anchored_fights.append((i, d.get("encounter"), edec[i]["anchored"]))
-                anchor_counts[rs.enc(d.get("encounter")) or "?"] += 1
-                if not [x for x in diffs if x[0] != "replay"]:
-                    diffs = []
+                    in_fight[enc] += 1
+                    step, act, fdiffs = fd
+                    fdiv = [(f"step {step} after {rs.short(act, 60)}: {p}", g, e) for p, g, e in fdiffs[:3]]
+                    kind = "in fight"
+                else:
+                    same_steps += 1
+                    fdiv = fight_outcome(d, ed, decisions[i + 1] if i + 1 < len(decisions) else None)
+                    kind = "outcome"
+                    if d.get("result") not in ("win", "death"):
+                        run_unchecked.add(f"fight outcome (the game's run stopped inside the fight: {d.get('result')})")
+                    elif fdiv:
+                        outcome_fields[field_of(fdiv[0][0])] += 1
+                    else:
+                        same_outcome += 1
+                if fdiv:
+                    notes.append(f"  fight at decision {i} ({enc}), {kind}: "
+                                 + "; ".join(f"{p}: game {rs.short(g, 70)} emulator {rs.short(e, 70)}"
+                                             for p, g, e in fdiv[:2]))
+                    if first is None:
+                        first = (i, d, component(d, fdiv, kind), fdiv)
+            diffs = compare_decision(d, ed, nm, ref.get("maps"))
             if diffs:
-                if d.get("screen") == "combat" and fights and fights[-1][2]:
-                    _, act, fdiffs = fights[-1][2]
-                    diffs += [(f"in fight, step {fights[-1][2][0]} after {rs.short(act, 60)}: {p}", g, e)
-                              for p, g, e in fdiffs[:3]]
-                first = (i, d, diffs)
+                div = (i, d, component(d, diffs), diffs)
+                first, outside = first or div, div
                 break
-        nf = len(fights)
-        fights_ok = sum(1 for f in fights if not f[2])
-        total_fights[0] += nf
-        total_fights[1] += fights_ok
+        totals["fights"] += nf
+        totals["same_steps"] += same_steps
+        totals["same_outcome"] += same_outcome
+        unchecked.update(run_unchecked)
         n = len(decisions)
         end = f"{ref.get('end')} at floor {ref.get('floor')}, {(ref.get('timing_ms') or {}).get('play', 0) / 1000:.0f} s"
-        fight_note = f"; fights identical {fights_ok}/{nf}, outcome anchored {len(anchored_fights)}"
-        if verbose:
-            for i, enc, fd in fights:
-                if fd:
-                    print(f"  fight at decision {i} ({enc}): step {fd[0]} after {rs.short(fd[1], 70)}: "
-                          + "; ".join(f"{p}: game {rs.short(g, 70)} emulator {rs.short(e, 70)}" for p, g, e in fd[2][:2]))
+        fnote = f"fights {nf}: identical steps {same_steps}, and outcome {same_outcome}"
         if first is None:
-            print(f"{seed}: {n} decisions identical (game: {end}){fight_note}")
-            continue
-        bad += 1
-        i, d, diffs = first
-        comp = component(d, diffs)
-        by_comp[comp] += 1
-        print(f"{seed}: first divergence at decision {i}/{n} [{comp}] floor {d.get('floor')}, "
-              f"choice {rs.short(d.get('choice'), 70)} (game: {end}){fight_note}")
-        for path, gv, ev in diffs[: (20 if verbose else 4)]:
-            print(f"  {path}: game {rs.short(gv)} emulator {rs.short(ev)}")
-    print(f"{len(refs)} runs, {total_dec} decisions; {bad} runs diverge; first run-level divergence by component: "
-          + (", ".join(f"{k} {v}" for k, v in by_comp.most_common()) or "none"))
-    print(f"fights: {total_fights[0]} played, {total_fights[1]} identical at every step; encounters with an in-fight "
-          "divergence: " + (", ".join(f"{k} {v}" for k, v in fight_firsts.most_common()) or "none"))
-    print("fights whose outcome had to be anchored (HP, deck, RNG...): "
-          + (", ".join(f"{k} {v}" for k, v in anchor_counts.most_common()) or "none"))
-    return 0 if not bad else 1
+            clean += 1
+            print(f"{seed}: no divergence in {n} decisions (game: {end}); {fnote}")
+        else:
+            i, d, comp, diffs = first
+            by_first[comp] += 1
+            print(f"{seed}: first divergence at decision {i}/{n} [{comp}] floor {d.get('floor')}, "
+                  f"choice {rs.short(d.get('choice'), 70)} (game: {end}); {fnote}")
+            for path, gv, ev in diffs[: (20 if verbose else 4)]:
+                print(f"  {path}: game {rs.short(gv)} emulator {rs.short(ev)}")
+        if verbose:
+            for line in notes:
+                print(line)
+        if outside is not None:
+            by_outside[outside[2]] += 1
+            if outside is not first:
+                i, d, comp, diffs = outside
+                print(f"  first outside fights: decision {i} [{comp}] floor {d.get('floor')}: "
+                      + "; ".join(f"{p}: game {rs.short(g, 80)} emulator {rs.short(e, 80)}" for p, g, e in diffs[:2]))
+        if run_unchecked:
+            print("  not compared here: " + ", ".join(sorted(run_unchecked)))
+    nruns = len(refs)
+    print(f"{nruns} runs, {totals['decisions']} decisions; {clean} with no divergence in what is compared")
+    print("first divergence per run, fights included: "
+          + (", ".join(f"{k} {v}" for k, v in by_first.most_common()) or "none"))
+    print("first divergence outside fights (each fight anchored to the game's outcome): "
+          + (", ".join(f"{k} {v}" for k, v in by_outside.most_common()) or "none"))
+    print(f"fights: {totals['fights']} played, {totals['same_steps']} identical at every step, "
+          f"{totals['same_outcome']} of those also ending identically (state and reward screen)")
+    print("  in-fight divergences by encounter: " + (", ".join(f"{k} {v}" for k, v in in_fight.most_common()) or "none"))
+    print("  outcome divergences by first field: "
+          + (", ".join(f"{k} {v}" for k, v in outcome_fields.most_common()) or "none"))
+    coverage(unchecked, nruns, "runs")
+    return 0 if clean == nruns and not totals["not recorded"] else 1
 
 
 def main() -> int:

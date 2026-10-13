@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from tools.fidelity import run_snapshot as rs  # noqa: E402
 
 SAVE = {
+    "ascension": 10,
     "current_act_index": 0,
     "map_point_history": [[{"map_point_type": "ancient"}]],
     "visited_map_coords": [{"col": 3, "row": 0}],
@@ -33,7 +34,8 @@ SAVE = {
         "potions": [{"id": "POTION.FIRE_POTION", "slot_index": 1}],
         "deck": [{"id": "CARD.BASH", "current_upgrade_level": 1},
                  {"id": "CARD.STRIKE_IRONCLAD", "enchantment": {"id": "ENCHANTMENT.SHARP", "amount": 2}}],
-        "relics": [{"id": "RELIC.BURNING_BLOOD"}],
+        "relics": [{"id": "RELIC.BURNING_BLOOD"},
+                   {"id": "RELIC.PEN_NIB", "props": {"ints": [{"name": "AttacksPlayed", "value": 13}]}}],
         "odds": {"card_rarity_odds_value": -0.05, "potion_reward_odds_value": 0.4},
         "rng": {"counters": {"rewards": 0}},
         "relic_grab_bag": {"relic_id_lists": {"common": ["RELIC.VAJRA"]}},
@@ -48,7 +50,8 @@ EMU = {
     "act": 0, "floor": 1, "coord": [3, 0], "hp": 64, "max_hp": 80, "gold": 99, "potion_slots": 2,
     "potions": ["", "FIRE_POTION"],
     "deck": [["BASH", 1, None, 0], ["STRIKE_IRONCLAD", 0, "SHARP", 2]],
-    "relics": ["BURNING_BLOOD"],
+    "relics": ["BURNING_BLOOD", "PEN_NIB"], "wax": [], "card_props": {},
+    "relic_props": {"PEN_NIB": {"AttacksPlayed": 13}}, "max_energy": 3, "ascension": 10,
     "odds": {"card_rarity": -0.05, "potion_reward": 0.4, "unknown_monster": 0.1, "unknown_elite": -1,
              "unknown_treasure": 0.02, "unknown_shop": 0.03},
     "rng": {"up_front": 411, "combat_orbs": 0}, "player_rng": {"rewards": 0},
@@ -79,6 +82,53 @@ class RunSnapshotTest(unittest.TestCase):
         self.assertTrue(path.startswith("acts[0].normal[0]"))
         self.assertEqual((game, mine), ("CORPSESLUGS", "TOADPOLES"))
 
+    def test_relic_counters_are_compared(self):
+        emu = copy.deepcopy(EMU)
+        emu["relic_props"]["PEN_NIB"]["AttacksPlayed"] = 0
+        self.assertEqual(rs.compare(rs.from_save(SAVE), emu), [("relic_props.PEN_NIB.AttacksPlayed", 13, 0)])
+
+    def test_a_counter_the_game_reads_modulo_compares_modulo(self):
+        save = copy.deepcopy(SAVE)
+        save["players"][0]["relics"].append({"id": "RELIC.IRON_CLUB", "props": {"ints": [{"name": "CardsPlayed", "value": 113}]}})
+        emu = copy.deepcopy(EMU)
+        emu["relics"].append("IRON_CLUB")
+        emu["relic_props"]["IRON_CLUB"] = {"CardsPlayed": 1}
+        self.assertEqual(rs.compare(rs.from_save(save), emu), [])
+
+    def test_an_absent_property_is_its_default_only_where_the_save_leaves_defaults_out(self):
+        save = copy.deepcopy(SAVE)
+        save["players"][0]["relics"] += [{"id": "RELIC.JOSS_PAPER"}, {"id": "RELIC.TOY_BOX"}]
+        emu = copy.deepcopy(EMU)
+        emu["relics"] += ["JOSS_PAPER", "TOY_BOX"]
+        emu["relic_props"].update(JOSS_PAPER={"CardsExhausted": 0}, TOY_BOX={"CombatsSeen": 0})
+        # Joss Paper is SaveIfNotTypeDefault; Toy Box's CombatsSeen is AlwaysSave, so absent is a difference.
+        self.assertEqual(rs.compare(rs.from_save(save), emu), [("relic_props.TOY_BOX.CombatsSeen", None, 0)])
+
+    def test_unexported_properties_are_named_not_compared(self):
+        save = copy.deepcopy(SAVE)
+        save["players"][0]["relics"].append({"id": "RELIC.BYRDPIP", "props": {"strings": [{"name": "Skin", "value": "v2"}]}})
+        save["players"][0]["deck"].append({"id": "CARD.SPOILS_MAP", "props": {"ints": [{"name": "SpoilsActIndex", "value": 1}]}})
+        emu = copy.deepcopy(EMU)
+        emu["relics"].append("BYRDPIP")
+        emu["deck"].append(["SPOILS_MAP", 0, None, 0])
+        g = rs.from_save(save)
+        self.assertEqual(rs.compare(g, emu), [])
+        self.assertEqual(rs.not_compared(g, emu), ["relic_props.BYRDPIP.Skin", "card_props.SPOILS_MAP.SpoilsActIndex"])
+
+    def test_a_melted_wax_relic_is_not_held_and_is_named(self):
+        save = copy.deepcopy(SAVE)
+        save["players"][0]["relics"] += [
+            {"id": "RELIC.OLD_COIN", "props": {"bools": [{"name": "IsWax", "value": True}, {"name": "IsMelted", "value": True}]}},
+            {"id": "RELIC.ANCHOR", "props": {"bools": [{"name": "IsWax", "value": True}]}}]
+        emu = copy.deepcopy(EMU)
+        emu["relics"].append("ANCHOR")
+        emu["wax"] = ["ANCHOR"]
+        g = rs.from_save(save)
+        self.assertEqual(rs.compare(g, emu), [])
+        self.assertIn("melted relics", rs.not_compared(g, emu))
+        emu["wax"] = []
+        self.assertEqual(rs.compare(g, emu)[0][0], "wax[0] (len 1/0)")
+
     def test_upgrade_level_is_a_flag(self):
         save = copy.deepcopy(SAVE)
         save["players"][0]["deck"][0]["current_upgrade_level"] = 2
@@ -108,6 +158,48 @@ class RunCompareTest(unittest.TestCase):
         from tools.fidelity.run_compare2 import compare_decision
         diffs = compare_decision({"screen": "map", "choice": [0, 1]}, {"error": "map point (0, 1) not offered"}, None)
         self.assertEqual(diffs[0][0], "replay")
+
+    def test_an_identical_fight_that_ends_elsewhere_is_a_divergence(self):
+        from tools.fidelity.run_compare2 import fight_outcome
+        d = {"screen": "combat", "result": "win", "snap": SAVE}
+        nd = {"screen": "rewards", "offer": [{"type": "gold", "amount": 15}, {"type": "gold", "amount": 9}]}
+        same = {"fight_end": "RelicReward", "outcome_snap": EMU,
+                "outcome_offer": [{"type": "gold", "amount": 9}, {"type": "gold", "amount": 15}]}
+        self.assertEqual(fight_outcome(d, same, nd), [])
+        richer = copy.deepcopy(same)
+        richer["outcome_snap"] = dict(EMU, gold=114)
+        richer["outcome_offer"] = [{"type": "gold", "amount": 9}]
+        diffs = fight_outcome(d, richer, nd)
+        self.assertEqual(diffs[0], ("gold", 99, 114))
+        self.assertEqual(diffs[1][0], "rewards offer")
+        self.assertEqual(fight_outcome(d, dict(same, fight_end="Combat"), nd)[0][2], "emulator still fighting")
+
+    def test_a_replay_that_stops_early_is_a_fight_divergence(self):
+        from tools.fidelity.run_compare2 import fight_diff
+        st = {"player": {"hp": 1}}
+        game = {"fight": {"steps": [{"action": None, "state": st}, {"action": {"kind": "end_turn"}, "state": st}]}}
+        emu = {"fight": {"steps": [{"action": None, "state": st}]}, "emulator_fight_ended": 1}
+        import tools.fidelity.fight_compare as fc
+        orig = fc.diff, fc.game_view, fc.emu_view
+        fc.diff, fc.game_view, fc.emu_view = (lambda a, b, path="": []), (lambda s: s), (lambda s, nm: s)
+        try:
+            step, _act, diffs = fight_diff(game, emu, {})
+        finally:
+            fc.diff, fc.game_view, fc.emu_view = orig
+        self.assertEqual((step, diffs[0][0], diffs[0][1]), (1, "steps", 2))
+
+    def test_event_options_past_the_games_are_a_divergence(self):
+        from tools.fidelity.run_compare2 import event_options
+        d = {"offer": [["E.pages.INITIAL.options.A", False], ["E.pages.INITIAL.options.B", True]]}
+        self.assertEqual(event_options(d, {"enabled": [0, 3], "skip_action": 3, "option_count": 2}), ([], []))
+        diffs, _ = event_options(d, {"enabled": [0, 2, 3], "skip_action": 3, "option_count": 3})
+        self.assertEqual(diffs, [("event options enabled", [0], [0, 2]), ("event option count", 2, 3)])
+
+    def test_the_room_type_is_compared(self):
+        from tools.fidelity.run_compare2 import room_of
+        game = {"room": ["RestSite", None]}
+        self.assertEqual(room_of("map", game, {"room": ["Rest", None, "RestSite"]}), [])
+        self.assertEqual(room_of("map", game, {"room": ["Shop", None, "Shop"]}), [("room type", "RestSite", "Shop")])
 
     def test_act_change_ignores_where_the_emulator_already_stands(self):
         from tools.fidelity.run_compare2 import compare_decision
