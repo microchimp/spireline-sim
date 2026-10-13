@@ -36,13 +36,22 @@ public sealed class FirstChoiceSelector : ICardSelector
 
     public CardRewardSelection GetSelectedCardReward(IReadOnlyList<CardCreationResult> options, IReadOnlyList<CardRewardAlternative> alternatives)
     {
-        Log.Add(new JsonObject
-        {
-            ["kind"] = "card_reward",
-            ["step"] = Driver.CurrentStep,
-            ["options"] = new JsonArray(options.Select(o => (JsonNode)o.Card.Id.Entry).ToArray()),
-            ["picked"] = options.Count > 0 ? 0 : -1,
-        });
+        // Nodeless there is no card reward screen, so this answers what Driver.AnswerCardRewardScreen
+        // answers on the full host; log it the way that does (card 0, no step), so both hosts agree.
+        Log.Add(Nodeless.Active
+            ? new JsonObject
+            {
+                ["kind"] = "card_reward",
+                ["options"] = new JsonArray(options.Select(o => (JsonNode)o.Card.Id.Entry).ToArray()),
+                ["picked"] = 0,
+            }
+            : new JsonObject
+            {
+                ["kind"] = "card_reward",
+                ["step"] = Driver.CurrentStep,
+                ["options"] = new JsonArray(options.Select(o => (JsonNode)o.Card.Id.Entry).ToArray()),
+                ["picked"] = options.Count > 0 ? 0 : -1,
+            });
         return options.Count == 0 ? default : new CardRewardSelection { card = options[0].Card, alternative = null };
     }
 }

@@ -72,6 +72,9 @@ public static partial class Driver
         WriteStatus(now);
     }
 
+    /// <summary>Job "health": true adds leak and memory counters to each fight's cost (always on nodeless).</summary>
+    private static bool _health;
+
     /// <summary>Fights finished in this process, for the watchdog's message.</summary>
     private static int _done;
     private static readonly object _saveLock = new();
@@ -95,6 +98,7 @@ public static partial class Driver
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var result = (string?)o["kind"] switch
         {
+            "combat" when Nodeless.Enabled => await Nodeless.Play(o, PlayCombat, () => RunManager.Instance.CleanUp()),
             "combat" => await PlayCombat(o),
             "export" => Export(),
             _ => await StartRun(o),
@@ -112,6 +116,11 @@ public static partial class Driver
         }
 
         result["timing_ms"] = new JsonObject { ["play"] = playMs, ["reset"] = clock.ElapsedMilliseconds - playMs };
+        if ((Nodeless.Enabled || _health) && result["cost"] is JsonObject cost)
+        {
+            cost["health"] = Nodeless.Health();  // after the reset: leaks and growth (Nodeless.cs)
+        }
+
         return result;
     }
 
@@ -155,7 +164,7 @@ public static partial class Driver
                 await Task.Delay(5000);
                 if (System.Environment.TickCount64 - Interlocked.Read(ref _lastProgress) > stallMs)
                 {
-                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting after {_done} fights");
+                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting after {_done} fights{Nodeless.Where}");
                     System.Environment.Exit(3);
                 }
             }
@@ -183,6 +192,9 @@ public static partial class Driver
                 Patches.Apply();
             }
 
+            Nodeless.Configure(job);  // "nodeless": true (Nodeless.cs); off, nothing is installed
+            _health = (bool?)job["health"] == true;
+
             // The game's own preloader switch: background asset sessions only warm a cache,
             // and back-to-back runs (worse with many copies) hang waiting on one. Off, assets
             // load on demand.
@@ -192,6 +204,7 @@ public static partial class Driver
             }
             Engine.MaxFps = 0;
             await WaitForStartupPreload(tree);
+            await Nodeless.Prepare();
 
             Heartbeat();
             bool fastReset = (bool?)job["fast_reset"] == true;
@@ -265,8 +278,15 @@ public static partial class Driver
             // nothing reads its output here.
             RunManager.Instance.CombatReplayWriter.IsEnabled = false;
         }
-        MethodInfo startRun = typeof(NGame).GetMethod("StartRun", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (Task)startRun.Invoke(NGame.Instance, new object[] { state })!;
+        if (Nodeless.Active)
+        {
+            await Nodeless.StartRun(state);
+        }
+        else
+        {
+            MethodInfo startRun = typeof(NGame).GetMethod("StartRun", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            await (Task)startRun.Invoke(NGame.Instance, new object[] { state })!;
+        }
 
         return (state, new JsonObject
         {
