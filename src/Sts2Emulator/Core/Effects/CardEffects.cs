@@ -528,9 +528,23 @@ public static class CardEffects
             }
 
             case IC.Mangle: // 3-cost, 15/20 dmg + enemy loses Strength 10/15 this turn
-                DealDamage(state, Dmg(state, def, upgraded, card));
-                ApplyTemporaryStrengthDownToEnemy(state, upgraded ? 15 : 10);
+            {
+                // `Mangle.OnPlay` hits `cardPlay.Target` and then applies `ManglePower` to that same
+                // creature: the aimed enemy, read once before the hit. A target the hit killed has
+                // left the combat and cannot receive the power, which is lost -- it does not pass to
+                // whoever is first now, which is what looking the enemy up again after the hit did.
+                var mangled = FirstEnemy(state);
+                if (mangled != null)
+                {
+                    DealDamageToEnemy(state, mangled, Dmg(state, def, upgraded, card));
+                    if (mangled.Hp > 0)
+                    {
+                        ApplyTemporaryStrengthDownTo(mangled, upgraded ? 15 : 10);
+                    }
+                }
+
                 break;
+            }
 
             case IC.HowlFromBeyond: // 3-cost, 16/21 dmg to ALL enemies
                 DealDamageToAll(state, Dmg(state, def, upgraded, card));
@@ -10046,8 +10060,11 @@ public static class CardEffects
     /// One debuff on a SPECIFIC enemy: the one an attack card was aimed at, which the card
     /// resolves with <c>FirstEnemy</c> BEFORE its hit and carries to the power it applies after
     /// it. Cards read <c>cardPlay.Target</c> once; <c>PowerCmd.Apply</c> then refuses a target
-    /// that died of the hit (<c>CanReceivePowers</c> is false once it has left the combat), so
-    /// the debuff is lost rather than passed to whoever stands first now.
+    /// that died of the hit, so the debuff is lost rather than passed to whoever stands first
+    /// now. The refusal is <c>Creature.CanReceivePowers</c>, which is false once the corpse has
+    /// left the combat; an enemy that stays in it after dying (<c>PainfulStabsPower</c>,
+    /// <c>SteamEruptionPower</c>: <c>ShouldCreatureBeRemovedFromCombatAfterDeath</c> is false)
+    /// still receives, and the <c>Hp &lt;= 0</c> test below does not model that.
     /// </summary>
     private static void ApplyEnemyDebuffToTarget(
         CombatState state,
