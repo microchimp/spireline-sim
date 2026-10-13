@@ -1025,11 +1025,14 @@ public static class RunNonCombatEffects
                 return RunFollowUp.PreRolledCardReward;
 
             // `Cauldron.AfterObtained` offers five POTION rewards, through the same pending
-            // queue Tiny Mailbox's two go through.
+            // queue Tiny Mailbox's two go through. One RewardsSet, so all five are rolled as
+            // it is offered (PotionReward.Populate), not one by one as the screen frees up.
             case Effects.RelicEffects.Cauldron:
                 for (int i = 0; i < 5; i++)
                 {
-                    state.PendingPotionRewards.Add(0);
+                    state.PendingPotionRewards.Add(
+                        RunRewardGenerator.NextPotion(state, state.PlayerRng.Rewards)
+                    );
                 }
 
                 return RunFollowUp.BonusRelicRewards;

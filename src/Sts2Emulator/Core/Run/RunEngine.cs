@@ -2319,15 +2319,33 @@ public sealed class RunEngine
         State.RelicReward = 0;
         State.RewardPotion = 0;
         State.PendingPotionRewards.Clear();
-        State.PendingPotionRewards.AddRange(potionIds);
+        QueuePotionRewards(potionIds);
         OfferNextRestPotion();
         State.Phase = RunPhase.RelicReward;
     }
 
     /// <summary>
-    /// Moves the next queued potion onto the reward screen, if the screen is free. A
-    /// queued 0 is rolled here rather than when it was queued, which is where
-    /// PotionReward.Populate rolls it.
+    /// Queue potion rewards the way one RewardsSet holds them: every reward is populated
+    /// when the set is offered (<c>RewardsSet.GenerateWithoutOffering</c> calls each
+    /// <c>Populate</c>, and <c>PotionReward.Populate</c> rolls its potion there), so a
+    /// queued 0 is rolled now, in list order -- not when it reaches the one-potion screen,
+    /// which drew the second potion of a pair only once the first was answered, and never
+    /// when the screen was left.
+    /// </summary>
+    private void QueuePotionRewards(IEnumerable<int> potionIds)
+    {
+        foreach (int potionId in potionIds)
+        {
+            State.PendingPotionRewards.Add(
+                potionId != 0 ? potionId : RunRewardGenerator.NextPotion(State, State.PlayerRng.Rewards)
+            );
+        }
+    }
+
+    /// <summary>
+    /// Moves the next queued potion onto the reward screen, if the screen is free. Queued
+    /// potions are rolled when their set is offered (<see cref="QueuePotionRewards"/>); a 0
+    /// still in the queue is rolled here as a fallback.
     /// </summary>
     private void OfferNextRestPotion()
     {
@@ -2614,7 +2632,7 @@ public sealed class RunEngine
             // to take it, and may drop a held potion to make room.
             if (Effects.RelicEffects.Has(State.Relics, Effects.RelicEffects.TinyMailbox))
             {
-                State.PendingPotionRewards.AddRange([0, 0]);
+                QueuePotionRewards([0, 0]);
                 OfferNextRestPotion();
                 State.Phase = RunPhase.RelicReward;
                 return 0;
