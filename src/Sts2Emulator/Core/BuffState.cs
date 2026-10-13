@@ -46,7 +46,7 @@ public enum BuffId
     RollingBoulderPower, // player: deal N damage to all enemies at turn start, then grow
     StratagemPower, // player: pull N cards from draw pile to hand after shuffling
     TheBombPower, // player: one entry per Bomb played: Magnitude = turns left, Data = its damage
-    TheBombDamage, // retired: the damage rides TheBombPower's Data now; kept so the ids after it do not shift
+    TheBombDamage, // retired: the damage rides TheBombPower's Data; kept so later ids do not shift
     Vigor, // player: add N damage to the next Attack, then expire
     NoBlock, // player: card-based block gains are prevented for N enemy turns
     NoDraw, // player: no further cards can be drawn this turn (Battle Trance)
