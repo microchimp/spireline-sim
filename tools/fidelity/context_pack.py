@@ -213,7 +213,25 @@ def pascal_tables(id_map: dict) -> dict:
 
 # ---------------------------------------------------------------- packs
 
-def build_pack(sig, items, loc: Locator, nm) -> str:
+def minimal_section(items, minimal: dict, flags: dict) -> list:
+    """Setup fights (referee/scenarios.py): the plausibility flags and the shrunk setups of the group's fights."""
+    L = []
+    flagged = {it["seed"]: flags.get(it["seed"]) for it in items if flags.get(it["seed"])}
+    if flagged:
+        L += ["", "## Plausibility", f"- {len(flagged)} of {len(items)} fights need a setup no real run has: "
+              + "; ".join(f"{s} {','.join(f)}" for s, f in list(flagged.items())[:6])]
+    shrunk = [minimal[it["seed"]] for it in items if it["seed"] in minimal]
+    if shrunk:
+        L += ["", "## Minimal setup (referee/shrink.py; spec in minimal/<seed>.json)"]
+        for m in shrunk[:4]:
+            L.append(f"- {m['seed']}: {len(m['items'])} of {m['of']} items still diverge at step {m['step']} ({m['field']}), "
+                     f"{m['status']} after {m['fights']} game fights: "
+                     + (", ".join(f"{it.get('cmd')} {it.get('id')}" + (f" {it.get('amount')}@{it.get('target')}" if it.get("cmd") == "power" else "")
+                                  + ("+" if it.get("upgraded") else "") for it in m["items"]) or "none: the fight item alone"))
+    return L
+
+
+def build_pack(sig, items, loc: Locator, nm, minimal: dict | None = None, flags: dict | None = None) -> str:
     fields, card, enemies = sig
     rep = min(items, key=lambda it: it["step"])
     gv, ev, d = rep["gv"], rep["ev"], rep["diffs"]
@@ -266,8 +284,10 @@ def build_pack(sig, items, loc: Locator, nm) -> str:
         L.append(f"  - emulator: {', '.join(loc.emulator(k, n)) or 'no match'}")
     if len(uniq) > 12:
         L.append(f"- ...(+{len(uniq) - 12} more entities)")
-    if len(L) > MAX_LINES:
-        L = L[: MAX_LINES - 1] + ["...(truncated)"]
+    extra = minimal_section(items, minimal or {}, flags or {})  # kept whole: it is the triage answer
+    if len(L) + len(extra) > MAX_LINES:
+        L = L[: max(10, MAX_LINES - 1 - len(extra))] + ["...(truncated)"]
+    L += extra
     return "\n".join(L) + "\n"
 
 
@@ -275,7 +295,9 @@ def slug(sig) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", f"{'+'.join(sig[0])}-{sig[1]}").strip("-").lower()[:60]
 
 
-def run(game_path, emu_path, out: Path, max_groups=20, id_map_path=None, decompiled=DECOMPILED) -> str:
+def run(game_path, emu_path, out: Path, max_groups=20, id_map_path=None, decompiled=DECOMPILED,
+        minimal: dict | None = None, flags: dict | None = None) -> str:
+    """minimal and flags (by seed) come from setup fights; groups with a plausible fight are listed first."""
     id_map = json.loads(Path(id_map_path or ROOT / "data" / "id_map.json").read_text(encoding="utf-8"))
     nm = names(id_map)
     games = json.loads(Path(game_path).read_text(encoding="utf-8"))["results"]
@@ -297,13 +319,14 @@ def run(game_path, emu_path, out: Path, max_groups=20, id_map_path=None, decompi
     for old in out.glob("g[0-9][0-9]_*.md"):
         old.unlink()
     loc = Locator(Path(decompiled), pascal_tables(id_map))
-    ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    flags = flags or {}
+    ordered = sorted(groups.items(), key=lambda kv: (all(flags.get(it["seed"]) for it in kv[1]), -len(kv[1]), kv[0]))
     total = sum(len(v) for _, v in ordered)
     idx = [f"# Fidelity context packs", "",
            f"{len(games)} fights: {same} identical, {total} diverging in {len(ordered)} groups, {errors} with errors.", ""]
     for n, (sig, items) in enumerate(ordered[:max_groups], 1):
         fname = f"g{n:02d}_{slug(sig)}.md"
-        (out / fname).write_text(build_pack(sig, items, loc, nm), encoding="utf-8")
+        (out / fname).write_text(build_pack(sig, items, loc, nm, minimal, flags), encoding="utf-8")
         idx.append(f"{n}. [{len(items)}] {', '.join(sig[0])} after {sig[1]} vs {', '.join(sig[2])} "
                    f"- {fname} (e.g. {items[0]['seed']})")
     if len(ordered) > max_groups:
