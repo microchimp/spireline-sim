@@ -294,7 +294,7 @@ public static partial class Driver
             // Custom screens the driver does not answer yet: the Crystal Sphere's grid
             // (CrystalSphereMinigame) and the Fake Merchant's stall (an event with a merchant
             // inventory and no options). The run ends there, recorded, rather than hanging.
-            if (ev.Id.Entry is "FAKE_MERCHANT") return $"unsupported_event:{ev.Id.Entry}";
+            if (ev is MegaCrit.Sts2.Core.Models.Events.FakeMerchant fake) return await PlayFakeMerchant(log, fake);
             if (ev.CurrentOptions.Count == 0)
             {
                 // Some events lay out their page a few frames after the room opens.
@@ -314,6 +314,19 @@ public static partial class Driver
             d["choice"] = opts[pick].Relic?.Id.Entry ?? opts[pick].TextKey;
             d["choice_index"] = pick;
             run.EventSynchronizer.ChooseLocalOption(pick);
+            // The option's own task (EventSynchronizer's pending option tasks) runs past the action
+            // queue: a card added after a preview, a rewards screen it awaits. Wait for it, answering
+            // reward screens, unless it opened a fight or the Crystal Sphere's grid, which wait on us.
+            var option = run.EventSynchronizer.AwaitPendingOptionTasks();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (!option.IsCompleted && clock.Elapsed.TotalSeconds < 60 && !CombatManager.Instance.IsInProgress
+                   && !CrystalSphereOpen())
+            {
+                if (TopRewardsSet() != null) { log.End(); await TakeRewards(log, takeAll: screen is "neow" or "ancient"); continue; }
+                Heartbeat();
+                await ((SceneTree)Engine.GetMainLoop()).ToSignal(Engine.GetMainLoop(), SceneTree.SignalName.ProcessFrame);
+            }
+
             await IdleBeat();
             log.End();
             if (await PlayCrystalSphere(log) is { } sphereStop) return sphereStop;
@@ -330,6 +343,37 @@ public static partial class Driver
         state.CurrentRoom is EventRoom && RunManager.Instance.EventSynchronizer.GetLocalEvent()?.Id.Entry == "PUNCH_OFF";
 
     /// <summary>
+    /// The Fake Merchant's stall (an event whose layout is a MerchantInventory of relics and no
+    /// options): random purchases through each entry's OnTryPurchaseWrapper, then leave, which
+    /// is the stall's Proceed opening the map. Throwing a Foul Potion is not tried yet.
+    /// </summary>
+    private static async Task<string?> PlayFakeMerchant(RunLog log, MegaCrit.Sts2.Core.Models.Events.FakeMerchant fake)
+    {
+        var inv = fake.Inventory;
+        JsonArray Stock() => new(inv.RelicEntries.Select(e => e.Model is { } m ? (JsonNode)new JsonArray(m.Id.Entry, e.Cost) : null).ToArray());
+        for (int guard = 0; guard < 8; guard++)
+        {
+            var entries = inv.RelicEntries.ToList();
+            var cands = Enumerable.Range(0, entries.Count).Where(i => entries[i].IsStocked && entries[i].EnoughGold).ToList();
+            if (cands.Count == 0 || log.Rng.NextDouble() < 0.4) break;
+            int slot = cands[log.Rng.Next(cands.Count)];
+            var d = log.Begin("fake_merchant");
+            d["offer"] = Stock();
+            d["choice"] = new JsonObject { ["buy"] = "relic", ["slot"] = slot };
+            d["taken"] = await WaitAnswering(log, entries[slot].OnTryPurchaseWrapper(inv), "fake merchant purchase");
+            await IdleBeat();
+            log.End();
+            await TakeRewards(log, takeAll: true);
+        }
+
+        var leave = log.Begin("fake_merchant");
+        leave["offer"] = Stock();
+        leave["choice"] = "leave";
+        log.End();
+        return null;
+    }
+
+    /// <summary>
     /// The Crystal Sphere's grid (NCrystalSphereScreen over a CrystalSphereMinigame): random
     /// clicks, each with a random tool, among the cells whose area still holds fog (a click on
     /// clear ground only wastes a divination), through the minigame's own SetTool and
@@ -337,11 +381,14 @@ public static partial class Driver
     /// come; the screen's Proceed (ProceedFromTerminalRewardsScreen) is pressed at the end.
     /// Returns null when no sphere is open or once it is done.
     /// </summary>
+    private static object? CrystalSphereScreen() => MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.GetChildren()
+        .FirstOrDefault(n => n.GetType().Name == "NCrystalSphereScreen");
+
+    private static bool CrystalSphereOpen() => CrystalSphereScreen() != null;
+
     private static async Task<string?> PlayCrystalSphere(RunLog log)
     {
-        object? Screen() => MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.GetChildren()
-            .FirstOrDefault(n => n.GetType().Name == "NCrystalSphereScreen");
-        if (Screen() is not { } screen) return null;
+        if (CrystalSphereScreen() is not { } screen) return null;
         var game = screen.GetType().GetField("_entity", Private)!.GetValue(screen)!;
         var gt = game.GetType();
         var adjacent = gt.GetMethod("GetAdjacentCells", Private)!;

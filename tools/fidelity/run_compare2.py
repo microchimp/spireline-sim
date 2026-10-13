@@ -57,6 +57,8 @@ def norm_offer(screen: str, offer, emulator: bool):
                       if r.get("type") not in ("special_card", "SpecialCardReward"))
     if screen == "rest":
         return sorted(x[0] for x in offer if x[1])
+    if screen == "fake_merchant":
+        return [[rs.bare(x[0]), x[1]] if x else None for x in offer]
     if screen == "shop" and isinstance(offer, dict):
         return {k: ([[rs.bare(x[0])] + list(x[1:]) if x else None for x in v] if isinstance(v, list) else v)
                 for k, v in offer.items()}
@@ -104,6 +106,10 @@ def fight_diff(game: dict, emu: dict, nm: dict | None):
 
 
 def compare_decision(d: dict, ed: dict, nm) -> list:
+    if d.get("screen") == "combat" and d.get("result") == "death":
+        # The run ends here; what is left to compare is the outcome (the fight's steps are
+        # compared as a fight).
+        return [] if ed.get("phase") == "Complete" else [("combat outcome", "death", ed.get("phase"))]
     diffs = []
     if ed.get("error"):
         diffs.append(("replay", d.get("choice"), ed["error"]))
