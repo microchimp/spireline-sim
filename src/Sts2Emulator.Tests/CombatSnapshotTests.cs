@@ -640,6 +640,47 @@ public class CombatSnapshotTests
     }
 
     /// <summary>
+    /// The counters that used to be CombatState fields now ride the instance's `data`, so a copy
+    /// through the snapshot has to keep each one: Toric Toughness's block, Automation's and
+    /// Panache's counts, Orbit's energy, Monologue's total, and Panache's -1 while its own play
+    /// is still resolving.
+    /// </summary>
+    [Fact]
+    public void TheCountersOfTheInstancedPowersSurviveARoundTrip()
+    {
+        var document = WithBuffList(
+            "player.buffs",
+            new JsonArray(
+                new JsonObject { ["id"] = (int)BuffId.ToricToughness, ["amount"] = 2, ["data"] = 5 },
+                new JsonObject { ["id"] = (int)BuffId.ToricToughness, ["amount"] = 1, ["data"] = 7 },
+                new JsonObject { ["id"] = (int)BuffId.AutomationPower, ["amount"] = 1, ["data"] = 6 },
+                new JsonObject { ["id"] = (int)BuffId.Orbit, ["amount"] = 1, ["data"] = 3 },
+                new JsonObject { ["id"] = (int)BuffId.PanachePower, ["amount"] = 10, ["data"] = 4 },
+                new JsonObject { ["id"] = (int)BuffId.PanachePower, ["amount"] = 14, ["data"] = -1 },
+                new JsonObject { ["id"] = (int)BuffId.Monologue, ["amount"] = 1, ["data"] = 3 },
+                new JsonObject { ["id"] = (int)BuffId.Monologue, ["amount"] = 1 }
+            )
+        );
+
+        var state = Read(document.ToJsonString(), out _);
+
+        Assert.Equal(
+            [
+                new BuffState(BuffId.ToricToughness, 2, 5),
+                new BuffState(BuffId.ToricToughness, 1, 7),
+                new BuffState(BuffId.AutomationPower, 1, 6),
+                new BuffState(BuffId.Orbit, 1, 3),
+                new BuffState(BuffId.PanachePower, 10, 4),
+                new BuffState(BuffId.PanachePower, 14, -1),
+                new BuffState(BuffId.Monologue, 1, 3),
+                new BuffState(BuffId.Monologue, 1),
+            ],
+            state.PlayerBuffs
+        );
+        Assert.Equal(state.PlayerBuffs, Read(Write(state), out _).PlayerBuffs);
+    }
+
+    /// <summary>
     /// Nor does the engine ever hold a buff at zero: `BuffSystem.Apply` removes an entry
     /// the moment its amount reaches zero, and so does the end-of-turn tick.
     /// </summary>
