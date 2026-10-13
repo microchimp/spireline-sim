@@ -2162,21 +2162,19 @@ public static class CombatEngine
             BuffSystem.Remove(state.PlayerBuffs, BuffId.SummonNextTurn);
         }
 
-        // `ForegoneConclusionPower.BeforeHandDraw`: that many cards CHOSEN from the draw
-        // pile go to hand, then the power removes itself. Raised BEFORE the draw, so the
-        // screen stands over the old hand -- and the end-turn work is already finished, so
-        // ValidActions simply restricts to it until it is answered, as Tools of the Trade's
-        // does.
+        // `ForegoneConclusionPower.BeforeHandDraw`: `ShuffleIfNecessary`, then that many cards
+        // CHOSEN from the whole draw pile go to hand, then the power removes itself. The game
+        // awaits the pick BEFORE the hand draw, so the pick is over the pile those cards are
+        // drawn from, not over what they leave of it.
         int foregone = BuffSystem.Get(state.PlayerBuffs, BuffId.ForegoneConclusion);
         if (foregone > 0)
         {
-            // `ForegoneConclusionPower.BeforeHandDraw` opens with `ShuffleIfNecessary`.
             Effects.CardEffects.ShuffleIfNecessary(state, rng);
-        }
-
-        if (foregone > 0 && state.DrawPile.Count > 0)
-        {
-            Effects.CardEffects.OpenDrawPileToHandSelection(state, foregone);
+            AnswerHookScreen(
+                state,
+                Effects.CardEffects.DrawPileScreen(state, 204, foregone), // ForegoneConclusion
+                rng
+            );
             BuffSystem.Remove(state.PlayerBuffs, BuffId.ForegoneConclusion);
         }
 

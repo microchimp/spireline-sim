@@ -2668,7 +2668,9 @@ public static class CardEffects
             }
 
             ShuffleIfNecessary(state, rng);
-            if (state.DrawPile.Count == 0)
+            // The shuffle's hooks run before the card is taken: Stratagem's pick (answered
+            // in the shuffle) can fill the hand, and the game checks again before taking it.
+            if (state.DrawPile.Count == 0 || state.Hand.Count >= MaxCardsInHand)
             {
                 break;
             }
@@ -2957,25 +2959,22 @@ public static class CardEffects
         BuffSystem.Get(target.Buffs, BuffId.Conqueror) > 0 ? amount * 2 : amount;
 
     /// <summary>
-    /// Foregone Conclusion's screen: that many cards CHOSEN from the draw pile go to hand.
+    /// `CardSelectCmd.FromCombatPile(Draw, prefs(prompt, amount))` with the picks going to hand,
+    /// for a hook to answer where it asks (CombatEngine.AnswerHookScreen):
+    /// `StratagemPower.AfterShuffle` and `ForegoneConclusionPower.BeforeHandDraw`.
     /// </summary>
-    internal static void OpenDrawPileToHandSelection(CombatState state, int amount)
-    {
-        var pile = new List<int>();
-        for (int i = 0; i < state.DrawPile.Count; i++)
+    internal static PendingCardSelection DrawPileScreen(
+        CombatState state,
+        int sourceCardDefId,
+        int amount
+    ) =>
+        new()
         {
-            pile.Add(i);
-        }
-
-        OpenCardSelection(
-            state,
-            CardSelectionKind.DrawPileToHand,
-            pile,
-            sourceCardDefId: 204, // ForegoneConclusion
-            autoPick: 0,
-            amount: amount
-        );
-    }
+            Kind = CardSelectionKind.DrawPileToHand,
+            Candidates = [.. Enumerable.Range(0, state.DrawPile.Count)],
+            SourceCardDefId = sourceCardDefId,
+            Amount = amount,
+        };
 
     /// <summary>
     /// `SwordSagePower.AfterPowerAmountChanged`: every Sovereign Blade the player holds
@@ -3814,9 +3813,20 @@ public static class CardEffects
     /// `Hook.AfterShuffle`, in the order the hook visits its listeners: the player's powers
     /// (Stratagem) before the player's relics, and the relics in the order they are held.
     /// </summary>
+    /// <remarks>
+    /// `StratagemPower.AfterShuffle`: that many cards CHOSEN from the new pile go to hand.
+    /// The emulator took the top card. The game awaits the pick here, inside whatever
+    /// shuffled -- a draw goes on drawing after it, and Pillage keeps drawing until a
+    /// non-Attack (CombatEngine.AnswerHookScreen).
+    /// </remarks>
     private static void AfterShuffle(CombatState state, Random rng)
     {
-        MoveStratagemCardsToHandAfterShuffle(state);
+        int stratagem = BuffSystem.Get(state.PlayerBuffs, BuffId.StratagemPower);
+        if (stratagem > 0)
+        {
+            CombatEngine.AnswerHookScreen(state, DrawPileScreen(state, CL.Stratagem, stratagem), rng);
+        }
+
         RelicEffects.ApplyAfterShuffle(state, rng);
     }
 
@@ -11398,22 +11408,6 @@ public static class CardEffects
         var handCard = state.Hand[0];
         state.Hand.RemoveAt(0);
         state.TopDeck(handCard with { FreeThisTurn = false });
-    }
-
-    private static void MoveStratagemCardsToHandAfterShuffle(CombatState state)
-    {
-        int stratagem = BuffSystem.Get(state.PlayerBuffs, BuffId.StratagemPower);
-        for (int i = 0; i < stratagem && state.DrawPile.Count > 0; i++)
-        {
-            if (state.Hand.Count >= MaxCardsInHand)
-            {
-                return;
-            }
-
-            var drawCard = state.DrawPile[0];
-            state.RemoveFromDrawPileAt(0);
-            state.Hand.Add(drawCard with { FreeThisTurn = false });
-        }
     }
 
     private static readonly int[] _generatedClassPool =
