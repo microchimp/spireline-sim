@@ -361,6 +361,7 @@ public static class CombatEngine
         // the power records what it was worth when the play STARTED.
         CaptureBeforePlayPowers(state);
         Effects.RelicEffects.BeforeCardPlayedRelics(state, def);
+        CombatTrace.At("play", card.DefId, state);
 
         ApplyEnchantmentOnPlay(state, card, rng);
         Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
@@ -457,6 +458,7 @@ public static class CombatEngine
         // Charon's Ashes, Serpent Form and Haunt, `AfterCardPlayed`'s Strangle and Panache
         // (StranglePower.cs:37-42), a draw under Speedster. So the play's second death check
         // reads against this.
+        CombatTrace.At("played", card.DefId, state);
         var afterEffects = new Baseline(state);
 
         // Rage: gain block when playing an Attack.
@@ -822,6 +824,7 @@ public static class CombatEngine
         }
 
         state.EndTurnAwaitingSelection = false;
+        CombatTrace.At("turn_end", -1, state);
 
         // The step's baseline, by reference: what the turn end and the enemy phase kill is
         // answered against it after the enemy phase, and the step's reward is read off it.
@@ -1234,6 +1237,7 @@ public static class CombatEngine
         {
             // ── Enemy turns ───────────────────────────────────────────────────────
             state.PlayerTurn = false;
+            CombatTrace.At("enemy_turn", -1, state);
 
             // SkittishPower.AfterSideTurnEnd fires for the side that is NOT its owner's, so
             // a gardener may flinch again once the player's turn is over.
@@ -1371,7 +1375,9 @@ public static class CombatEngine
                 state.ExecutedThisEnemyTurn.Add(enemy.CurrentIntent.Magnitude);
                 state.ExecutedThisEnemyTurn.Add(deckBefore);
 
+                CombatTrace.At("move", enemy.DefId, state);
                 EnemyAI.ExecuteIntent(enemy, state, rng);
+                CombatTrace.At("moved", enemy.DefId, state);
 
                 state.ExecutedThisEnemyTurn.Add(PlayerCardCount(state));
             }
@@ -1528,6 +1534,7 @@ public static class CombatEngine
         // Inferno's burn -- and plays cards (Bombardment, Mayhem). The game answers each of
         // those deaths as it happens; here they are answered against this snapshot, once,
         // after the moves are rolled and before the auto-pre-play phase.
+        CombatTrace.At("turn_start", -1, state);
         var turnStart = new Baseline(state);
         state.Turn++;
         Effects.RelicEffects.TickPaelsLegionCooldown(state);
@@ -4613,6 +4620,7 @@ public static class CombatEngine
         // BeforeCardPlayed fires for an auto-play too -- it is an ordinary CardModel.Play.
         CaptureBeforePlayPowers(state);
         Effects.RelicEffects.BeforeCardPlayedRelics(state, def);
+        CombatTrace.At("play", card.DefId, state);
         // Snapshotted before the effects for the same reason as the hand-played path:
         // a Rebound applied by THIS card must not redirect this card.
         int reboundBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.Rebound);
@@ -5270,6 +5278,7 @@ public static class CombatEngine
         // Apply card effects.
         CaptureBeforePlayPowers(state);
         Effects.RelicEffects.BeforeCardPlayedRelics(state, def);
+        CombatTrace.At("play", card.DefId, state);
         int callerTarget = state.TargetEnemyIndex;
         state.TargetEnemyIndex = targetIndex;
         // Snapshotted before the effects for the same reason as the hand-played path:

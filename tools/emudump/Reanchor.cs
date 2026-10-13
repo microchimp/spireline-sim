@@ -49,9 +49,14 @@ static class Reanchor
     /// <summary>The game power an emulator-only buff is a piece of (InfernoSelfDamage of INFERNO), by name; null for pure bookkeeping.</summary>
     static string? OwnerPower(BuffId id)
     {
+        if (OwnerCache.TryGetValue(id, out var owner)) return owner;
         string key = PowerKey(id.ToString());
-        return GamePowerKeys.Where(p => key.StartsWith(p + "_", StringComparison.Ordinal)).OrderByDescending(p => p.Length).FirstOrDefault();
+        owner = GamePowerKeys.Where(p => key.StartsWith(p + "_", StringComparison.Ordinal)).OrderByDescending(p => p.Length).FirstOrDefault();
+        OwnerCache[id] = owner;
+        return owner;
     }
+
+    static readonly Dictionary<BuffId, string?> OwnerCache = new();
 
     static string Snake(string name) => Regex.Replace(name, "(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_").ToUpperInvariant();
 
@@ -90,7 +95,10 @@ static class Reanchor
     /// each step every cycling enemy is moved one position on (and re-announces), and the monster AI
     /// draws from another stream, so the moves must be put back on the game's for the fight to match.
     /// </summary>
-    public sealed record Mode(bool Scramble = false, HashSet<string>? Stale = null, bool PerturbMoves = false);
+    /// <c>Trace</c> records what happened inside each step (tools/emudump/Trace.cs) for steps up to
+    /// <c>TraceTo</c> (all when null), and the run ends there.
+    public sealed record Mode(bool Scramble = false, HashSet<string>? Stale = null, bool PerturbMoves = false,
+        bool Trace = false, int? TraceTo = null);
 
     public static JsonObject Run(JsonObject game, Mode? mode = null)
     {
@@ -107,7 +115,8 @@ static class Reanchor
             var gameChoices = (game["choices"]?.AsArray() ?? new JsonArray()).ToList();
             steps.Add(new JsonObject { ["action"] = null, ["state"] = DumpLite(combat, true) });
             var start = combat.Clone();
-            for (int j = 1; j < gsteps.Count; j++)
+            int last = mode.TraceTo is int upTo ? Math.Min(upTo + 1, gsteps.Count) : gsteps.Count;
+            for (int j = 1; j < last; j++)
             {
                 var prior = gsteps[j - 1]!["state"]!.AsObject();
                 var a = gsteps[j]!["action"]!.AsObject();
@@ -134,7 +143,24 @@ static class Reanchor
                 var stepChoices = gameChoices.Where(c => (int?)c!["step"] == j && (string?)c["kind"] == "cards").ToList();
                 try
                 {
-                    var (terminal, chosen) = Apply(q, qr, a, stepChoices);
+                    if (mode.Trace)
+                    {
+                        rec["hidden_pre"] = EmuTrace.Hidden(q);
+                        EmuTrace.Begin(q);
+                    }
+
+                    bool terminal;
+                    JsonArray chosen;
+                    try
+                    {
+                        (terminal, chosen) = Apply(q, qr, a, stepChoices);
+                    }
+                    finally
+                    {
+                        if (mode.Trace) rec["trace"] = EmuTrace.End();
+                    }
+
+                    if (mode.Trace) rec["hidden"] = EmuTrace.Hidden(q);
                     rec["choices"] = chosen;
                     rec["fallback_rng_calls"] = qr.CallCount - preRng.CallCount;
                     rec["state"] = DumpLite(q, !terminal);
