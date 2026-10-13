@@ -5480,9 +5480,16 @@ public sealed class RunEngine
                     State.RewardCards[i] = first[i];
                 }
 
+                // One rewards screen holding both, as Colorful Philosophers' three
+                // (OfferColorfulPhilosopherRewards): straight into the first card screen with no
+                // way back lost the second as soon as the first was answered.
+                State.EventAwaitingProceed = State.Phase == RunPhase.Event;
+                State.RewardGold = 0;
+                State.RewardPotion = 0;
+                State.RelicReward = 0;
                 State.RewardCardPending = true;
                 State.PendingCardOffers.Add(CardOffer.Plain(second));
-                State.Phase = RunPhase.CardReward;
+                State.Phase = RunPhase.RelicReward;
                 return 0;
             }
 
@@ -5617,10 +5624,18 @@ public sealed class RunEngine
                 )
             )
             .ToList();
+        // `RewardsCmd.OfferCustom` with the three CardRewards: ONE rewards screen holding all
+        // three, each claimed (or left) from it, and the event's finished page after it. Going
+        // straight into the first card screen with no way back dropped the other two the moment
+        // the first was answered (run referee, seed 6HMCK2BXTJ: the game took two of three).
+        State.EventAwaitingProceed = State.Phase == RunPhase.Event;
+        State.RewardGold = 0;
+        State.RewardPotion = 0;
+        State.RelicReward = 0;
         offers[0].ShowOn(State);
         State.RewardCardPending = true;
         State.PendingCardOffers.AddRange(offers.Skip(1));
-        State.Phase = RunPhase.CardReward;
+        State.Phase = RunPhase.RelicReward;
     }
 
     /// <summary>

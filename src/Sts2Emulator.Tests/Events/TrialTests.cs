@@ -148,9 +148,20 @@ public class TrialTests
         engine.Step(0, -1, out _, out _, out _);
 
         Assert.Contains(engine.State.Deck, c => c.DefId == Card("Doubt"));
-        Assert.Equal(RunPhase.CardReward, engine.State.Phase);
+        // One rewards screen holding both offers (RewardsCmd.OfferCustom), each claimed from it.
+        Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
+        Assert.True(engine.State.RewardCardPending);
         Assert.Single(engine.State.PendingCardOffers);
         Assert.All(engine.State.RewardCards, id => Assert.NotEqual(0, id));
+        int deck = engine.State.Deck.Count;
+        for (int k = 0; k < 2; k++)
+        {
+            Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
+            Assert.Equal(RunPhase.CardReward, engine.State.Phase);
+            Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
+        }
+
+        Assert.Equal(deck + 2, engine.State.Deck.Count);
     }
 
     [Fact]
