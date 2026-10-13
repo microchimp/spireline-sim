@@ -99,12 +99,15 @@ public static partial class Driver
         CurrentStep = 0;
     }
 
-    /// <summary>Waits for a setup command, answering screens it opens (rewards on the map, bundles).</summary>
+    /// <summary>
+    /// Waits for a setup command, answering screens it opens (rewards on the map, bundles). The limit is a
+    /// <see cref="Budget" /> (30 s and 600 frames, Watchdog.cs), like every other wait on the main thread.
+    /// </summary>
     private static async Task AwaitSetup(Task task, string what)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
-        var clock = System.Diagnostics.Stopwatch.StartNew();
-        while (!task.IsCompleted && clock.Elapsed.TotalSeconds < 30)
+        var budget = new Budget(30);
+        while (!task.IsCompleted && !budget.Spent)
         {
             AnswerOpenScreens();
             if (!CombatManager.Instance.IsInProgress && TopRewardsSet() != null)
