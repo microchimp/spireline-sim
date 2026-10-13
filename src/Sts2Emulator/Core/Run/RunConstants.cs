@@ -112,6 +112,13 @@ public static class RunConstants
     /// action is a cycle an agent can ride forever.
     /// </summary>
     public const int CrystalSphereSmallToolAction = CrystalSphereCells;
+
+    /// <summary>
+    /// Actions 242..247 use the potion in belt slot 0..5 away from a fight (<see cref="RunPotionUse" />):
+    /// the four `PotionUsage.AnyTime` potions. Placed past the Crystal Sphere's 242 board actions so
+    /// no screen's own action collides with them.
+    /// </summary>
+    public const int UsePotionAction = 2 * CrystalSphereCells;
     public const int MapWidth = 7;
 
     /// <summary>

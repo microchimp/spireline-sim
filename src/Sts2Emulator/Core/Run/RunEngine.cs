@@ -504,6 +504,18 @@ public sealed class RunEngine
     public void WriteActionMask(Span<int> mask)
     {
         mask.Clear();
+        WritePhaseActionMask(mask);
+        for (int slot = 0; slot < RunConstants.PotionSlotCapacity; slot++)
+        {
+            if (RunPotionUse.CanUse(State, slot))
+            {
+                SetMask(mask, RunConstants.UsePotionAction + slot);
+            }
+        }
+    }
+
+    private void WritePhaseActionMask(Span<int> mask)
+    {
         switch (State.Phase)
         {
             case RunPhase.Combat:
@@ -1203,6 +1215,13 @@ public sealed class RunEngine
         reward = 0.0f;
         terminal = false;
         truncated = false;
+
+        // A potion used from the belt, away from a fight: whatever screen the run is on. A
+        // fight's own action ids are the combat engine's.
+        if (State.Phase != RunPhase.Combat && RunPotionUse.SlotOf(action) is var usedSlot and >= 0)
+        {
+            return RunPotionUse.Use(State, usedSlot) ? 0 : -1;
+        }
 
         if (State.Phase == RunPhase.Ancient)
         {
