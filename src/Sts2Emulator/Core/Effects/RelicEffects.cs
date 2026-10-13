@@ -563,9 +563,11 @@ public static class RelicEffects
         // and drew nothing from the stream.
         if (HasRelic(state, StoneCracker))
         {
-            var shuffled = CardEffects.StableShuffledIndices(
+            var shuffled = CardEffects.StableShuffle(
                 state.DrawPile,
-                RunConstants.IsRunCardUpgradable,
+                Enumerable
+                    .Range(0, state.DrawPile.Count)
+                    .Where(i => RunConstants.IsRunCardUpgradable(state.DrawPile[i])),
                 CardEffects.CardSelectionRngFor(state, rng)
             );
             foreach (int index in shuffled.Take(2))
