@@ -277,7 +277,10 @@ static class Reanchor
         // buffs, Tank, Beacon of Hope, ...); those pieces are left alone, not overwritten.
         bool Keep(BuffState b) => NotPowers.Contains(b.Id) || (unmapped && Internal(b.Id));
         var have = cur.Where(b => !Keep(b)).ToList();
-        bool same = have.Count == want.Count && have.OrderBy(b => b.Id).ThenBy(b => b.Magnitude).SequenceEqual(want.OrderBy(b => b.Id).ThenBy(b => b.Magnitude));
+        // Compared on what the snapshot shows (id, amount). Data is hidden per-instance state (an
+        // instanced power's second number, e.g. The Bomb's damage) that the game snapshot lacks.
+        static (BuffId, int) Shown(BuffState b) => (b.Id, b.Magnitude);
+        bool same = have.Count == want.Count && have.Select(Shown).OrderBy(x => x).SequenceEqual(want.Select(Shown).OrderBy(x => x));
         result = cur;
         if (same) return false;
         // Keep the emulator's order for powers it already has; the rest follow in the game's order.
@@ -288,7 +291,7 @@ static class Reanchor
             if (Keep(b)) { next.Add(b); continue; }
             int at = left.FindIndex(w => w.Id == b.Id);
             if (at < 0) continue;
-            next.Add(left[at]);
+            next.Add(left[at] with { Data = b.Data });  // the k-th instance keeps its own hidden Data
             left.RemoveAt(at);
         }
 
