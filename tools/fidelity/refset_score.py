@@ -319,6 +319,7 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | N
                 walker_skipped.update(json.loads(line).get("skipped", {}))
     runs, comp = [], collections.defaultdict(lambda: [0, 0])
     stops = collections.Counter()
+    comp_stops: dict = collections.defaultdict(collections.Counter)  # component -> stop class -> runs
     for out in outs:
         for line in out.read_text(encoding="utf-8").splitlines():
             r = json.loads(line)
@@ -329,6 +330,7 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | N
             if r.get("status") == "mismatch":
                 s = r.get("stop") or {}
                 stops[f"{s.get('class')}: {s.get('component')}"] += 1
+                comp_stops[s.get("component")][str(s.get("class"))] += 1
             elif r.get("status") == "error":
                 stops["error"] += 1
         out.unlink()
@@ -342,7 +344,13 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | N
     return {"runs": n, "complete": runs.count("complete"), "runs_matching_pct": round(100 * runs.count("complete") / n, 1) if n else None,
             "judged": judged, "judged_matching_pct": round(100 * runs.count("complete") / judged, 1) if judged else None,
             "components_note": "floors reached before each run's first difference (a run's count ends at its first stop)",
-            "components": {c: {"floors": v[0], "matching": v[1], "pct": round(100 * v[1] / v[0], 1) if v[0] else None}
+            # A component's mismatches are its runs' stops (a run's count ends at its first difference); a stop the
+            # walker labels profile-dependent (the player's unlocks, not the emulator) is shown apart, and the rate
+            # without those floors next to it.
+            "components": {c: {"floors": v[0], "matching": v[1], "pct": round(100 * v[1] / v[0], 1) if v[0] else None,
+                               "stops": dict(comp_stops.get(c, {})),
+                               "pct_without_profile_dependent": (lambda pd: round(100 * v[1] / (v[0] - pd), 1) if v[0] - pd else None)(
+                                   sum(k for cl, k in comp_stops.get(c, {}).items() if "PROFILE" in cl.upper()))}
                            for c, v in sorted(comp.items())},
             "components_at_zero": sorted(c for c, v in comp.items() if v[0] and not v[1]),
             "stops_by_class": dict(by_class), "stops": dict(stops.most_common(20)),
@@ -595,7 +603,9 @@ def render_table(s: dict) -> str:
     cx = s["codex"]
     if cx.get("components"):
         rows.append("  codex, " + cx["components_note"] + ": " + "; ".join(
-            f"{k} {v['pct']}% of {v['floors']}" for k, v in cx["components"].items()))
+            f"{k} {v['pct']}% of {v['floors']}" + (f" ({v['pct_without_profile_dependent']}% without profile-dependent stops)"
+                                                    if v.get("pct_without_profile_dependent") not in (None, v["pct"]) else "")
+            for k, v in cx["components"].items()))
         rows.append(f"  codex stops by class: {cx['stops_by_class']}; components at 0%: {', '.join(cx['components_at_zero']) or '-'}; "
                     f"runs in the set {cx['runs_in_set']}, walked {cx['runs']}, walker skipped {cx['walker_skipped']}")
     rows.append("  compared: " + "; ".join(s["compared"]) + " | not compared: " + ", ".join(s["not_compared"]))
