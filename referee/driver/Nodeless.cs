@@ -149,11 +149,12 @@ public static class Nodeless
     /// sets Instant mode) run out. Its last step writes a shader parameter on the transition material,
     /// which the first run's RoomFadeOut has replaced and freed by then, so it throws
     /// ObjectDisposedException a moment into the first fight, on both hosts. Waiting keeps that
-    /// menu-only error out of the nodeless error check.
+    /// menu-only error out of the error check (nodeless, and error_log jobs on the full host, where
+    /// it would mark the second fight "full host: ..."). The main menu stays on the full host.
     /// </summary>
     internal static async Task Prepare()
     {
-        if (!Enabled)
+        if (!Enabled && !ErrorLog)
         {
             return;
         }
@@ -166,6 +167,12 @@ public static class Nodeless
         {
             Driver.Heartbeat();
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+        }
+
+        if (!Enabled)
+        {
+            Engine.MaxFps = fps;
+            return;
         }
 
         // The main menu goes now, and what an empty nodeless frame costs is logged once (process CPU
