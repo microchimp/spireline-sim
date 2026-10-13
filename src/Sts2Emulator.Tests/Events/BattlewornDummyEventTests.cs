@@ -95,8 +95,12 @@ public class BattlewornDummyEventTests
         Assert.Equal(upgraded + 2, engine.State.Deck.Count(c => c.Upgraded));
     }
 
+    /// <summary>
+    /// `Resume` hands the potion to <c>RewardsCmd.OfferCustom</c>: a reward SCREEN the player claims
+    /// from, not a potion slipped into the belt (which lost it silently on a full belt).
+    /// </summary>
     [Fact]
-    public void KillingTheFirstDummyProcuresAPotion()
+    public void KillingTheFirstDummyOffersAPotionOnARewardScreen()
     {
         var engine = At();
         engine.Step(0, -1, out _, out _, out _);
@@ -105,7 +109,35 @@ public class BattlewornDummyEventTests
         engine.State.ActiveCombat!.Enemies[0].Hp = 0;
         engine.Step(engine.State.ActiveCombat.Hand.Count, -1, out _, out _, out _);
 
+        Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
+        Assert.NotEqual(0, engine.State.RewardPotion);
+        Assert.Equal(potions, engine.State.PotionSlots.Count(p => p != 0));
+
+        Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
+
         Assert.Equal(potions + 1, engine.State.PotionSlots.Count(p => p != 0));
+    }
+
+    [Fact]
+    public void AFullBeltDoesNotLoseTheOfferedPotionSilently()
+    {
+        var engine = At();
+        engine.Step(0, -1, out _, out _, out _);
+        for (int i = 0; i < engine.State.MaxPotionSlots; i++)
+        {
+            // The fight carries its own copy of the belt and hands it back when it ends.
+            engine.State.ActiveCombat!.PotionSlots[i] = RunNonCombatEffects.NamedPotion("FirePotion");
+        }
+
+        engine.State.ActiveCombat!.Enemies[0].Hp = 0;
+        engine.Step(engine.State.ActiveCombat.Hand.Count, -1, out _, out _, out _);
+
+        Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
+        Assert.NotEqual(0, engine.State.RewardPotion);
+        Assert.All(
+            engine.State.PotionSlots.Take(engine.State.MaxPotionSlots),
+            slot => Assert.Equal(RunNonCombatEffects.NamedPotion("FirePotion"), slot)
+        );
     }
 
     /// <summary>

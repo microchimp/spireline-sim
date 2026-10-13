@@ -5590,12 +5590,12 @@ public sealed class RunEngine
         {
             case 0:
                 // Setting 1: a POTION, rolled off the Rewards stream from the character's
-                // own pool concatenated with the shared one.
-                RunRewardGenerator.AddPotion(
-                    State,
-                    RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards)
-                );
-                break;
+                // own pool concatenated with the shared one -- and OFFERED, not procured:
+                // `RewardsCmd.OfferCustom` of a PotionReward, so a full belt makes the player
+                // drop something or decline it.
+                OfferPotionRewards(RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards));
+                terminal = false;
+                return 0;
 
             case 1:
                 // Setting 2: two upgradable deck cards upgraded, off the EVENT's stream.
