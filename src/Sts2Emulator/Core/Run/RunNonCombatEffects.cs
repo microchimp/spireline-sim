@@ -1291,7 +1291,12 @@ public static class RunNonCombatEffects
                 int eventId = state.EventSequence[
                     state.EventSequenceIndex % state.EventSequence.Length
                 ];
-                if (IsEventAllowed(state, eventId) && !state.VisitedEventIds.Contains(eventId))
+                // The pull is `RunManager.CreateRoom`, which EnterMapPointInternal calls BEFORE
+                // `AppendToMapPointHistory`: an event's IsAllowed reads `TotalFloor` (the history's
+                // length) without the room being entered, one less than the emulator's Floor,
+                // which the map move has already counted.
+                if (IsEventAllowed(state, eventId, totalFloor: state.Floor - 1)
+                    && !state.VisitedEventIds.Contains(eventId))
                 {
                     chosen = eventId;
                 }
@@ -1349,8 +1354,8 @@ public static class RunNonCombatEffects
     /// events the game offers. All thirteen have handlers in the run engine, so none is
     /// kept refused as unimplemented.
     /// </remarks>
-    internal static bool IsEventAllowed(RunState state, int eventId) =>
-        IsEventAllowedForRun(state, eventId);
+    internal static bool IsEventAllowed(RunState state, int eventId, int? totalFloor = null) =>
+        IsEventAllowedForRun(state, eventId, totalFloor);
 
     /// <summary>
     /// Each event's own <c>IsAllowed(IRunState)</c>, transcribed -- whether THIS RUN may
@@ -1362,8 +1367,12 @@ public static class RunNonCombatEffects
     /// <remarks>
     /// A solo run, so each <c>Players.All(...)</c> is a test of the one player.
     /// </remarks>
-    public static bool IsEventAllowedForRun(RunState state, int eventId)
+    /// <param name="totalFloor">
+    /// The game's <c>TotalFloor</c> as the gate reads it; the run's Floor when not given.
+    /// </param>
+    public static bool IsEventAllowedForRun(RunState state, int eventId, int? totalFloor = null)
     {
+        int floor = totalFloor ?? state.Floor;
         bool HoldsPotion() => state.PotionSlots.Any(potion => potion != 0);
         return eventId switch
         {
@@ -1393,8 +1402,8 @@ public static class RunNonCombatEffects
             ),
             // TotalFloor, which is floors across the whole run. `Floor` does not reset
             // between acts (see AdvanceToNextAct), so it is the same number.
-            RunConstants.EventPunchOff => state.Floor >= 6,
-            RunConstants.EventSlipperyBridge => state.Floor > 6 && state.Deck.Any(IsRemovable),
+            RunConstants.EventPunchOff => floor >= 6,
+            RunConstants.EventSlipperyBridge => floor > 6 && state.Deck.Any(IsRemovable),
             // WarHistorianRepy.IsAllowed is `return false` outright: it is never drawn
             // from the sequence, only reached by its own means. Falling through to the
             // default handed it out as an ordinary event.
