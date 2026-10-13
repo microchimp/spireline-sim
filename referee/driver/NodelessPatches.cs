@@ -131,6 +131,24 @@ public static class NodelessPatches
             Prefix(h, typeof(MegaCrit.Sts2.Core.Nodes.NGame), name, nameof(SkipVoid));
         }
 
+        // VfxCmd.PlayVfx: instances a VFX scene and adds it to the given container if there is one
+        // (returns at once in test mode). Nodeless the container is null and the instance stayed an
+        // orphan node: 12 per Stomp, Thunderclap or Pact's End (VfxCmd.PlayOnSide for AOE hits).
+        Prefix(h, typeof(VfxCmd), nameof(VfxCmd.PlayVfx), nameof(SkipVoid));
+        // NAudioManager play/stop/param calls (each returns at once in test mode): sound only, at
+        // volume 0 here. The volume setters are left alone.
+        var audio = Ui("Audio.NAudioManager");
+        foreach (var m in audio.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        {
+            if (m.ReturnType == typeof(void) && !m.Name.EndsWith("Vol", StringComparison.Ordinal)
+                && (m.Name.StartsWith("Play", StringComparison.Ordinal) || m.Name.StartsWith("Stop", StringComparison.Ordinal)
+                    || m.Name is "SetParam" or "UpdateMusicParameter"))
+            {
+                h.Patch(m, prefix: new HarmonyMethod(typeof(NodelessPatches), nameof(SkipVoid)));
+                Count++;
+            }
+        }
+
         // CreatureCmd.TriggerAnim: creature node lookup, character sfx, animation trigger and a wait
         // (none in Instant mode). With no node it only logs an error and returns; skipped instead.
         Prefix(h, typeof(CreatureCmd), nameof(CreatureCmd.TriggerAnim), nameof(SkipTask));
@@ -185,6 +203,20 @@ public static class NodelessPatches
         h.Patch(AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.MutableClone)),
             postfix: new HarmonyMethod(typeof(NodelessPatches), nameof(MutableClonePostfix)));
         Count++;
+
+        // Diagnostics (driver code, read-only): the orphan-node count after each recorded step.
+        h.Patch(AccessTools.Method(typeof(Driver), "Snapshot"), postfix: new HarmonyMethod(typeof(NodelessPatches), nameof(SnapshotPostfix)));
+    }
+
+    /// <summary>Orphan nodes after each step of the current fight (cost.orphans_by_step).</summary>
+    internal static readonly List<long> OrphansByStep = new();
+
+    private static void SnapshotPostfix()
+    {
+        if (Nodeless.Active)
+        {
+            OrphansByStep.Add((long)Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount));
+        }
     }
 
     private static Type Ui(string name) =>

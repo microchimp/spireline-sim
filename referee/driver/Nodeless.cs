@@ -296,12 +296,15 @@ public static class Nodeless
             FallbackHit = null;
             Active = true;
             int gameOvers = NodelessPatches.GameOvers;
+            NodelessPatches.OrphansByStep.Clear();
+            long orphans0 = (long)Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount);
             _phase = "fight";
             attempt = await play(spec);
             _phase = "reset";
             var clock = System.Diagnostics.Stopwatch.StartNew();
             reset();  // RunManager.CleanUp with the patches on; PlaySpec's own reset then finds no run
             long resetMs = clock.ElapsedMilliseconds;
+            long orphans1 = (long)Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount);
             _phase = "after reset";
             gameOvers = NodelessPatches.GameOvers - gameOvers;
             string[] errors;
@@ -324,6 +327,12 @@ public static class Nodeless
                     cost["reset_ms"] = resetMs;
                     cost["cancellations"] = cancellations;
                     cost["game_overs"] = gameOvers;
+                    if (orphans1 != orphans0)
+                    {
+                        // where in the fight orphan nodes appeared: count before, after each step, after the reset
+                        cost["orphans_by_step"] = new JsonArray(new[] { orphans0 }.Concat(NodelessPatches.OrphansByStep).Append(orphans1)
+                            .Select(n => (JsonNode)n).ToArray());
+                    }
                     if (errors.Length > 0)
                     {
                         _failed++;
