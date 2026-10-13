@@ -29,6 +29,10 @@ static class Fight
             while (s.Phase != RunPhase.Map && s.Phase != RunPhase.Combat && guard++ < 10)
             {
                 e.Step(0, -1, out _, out _, out _);  // first offered card, as the referee's selector
+                if (s.Phase == RunPhase.BundleSelect)
+                {
+                    e.Step(RunConstants.BundleConfirmAction, -1, out _, out _, out _);  // bundle 0 picked; confirm
+                }
             }
 
             var room = game["room"]!.AsArray();
@@ -38,8 +42,10 @@ static class Fight
             e.Step(idx, -1, out _, out _, out _);
             steps.Add(new JsonObject { ["action"] = null, ["state"] = Dump(e) });
             var gameChoices = (game["choices"]?.AsArray() ?? new JsonArray()).ToList();
+            int stepNo = 0;
             foreach (var step in game["steps"]!.AsArray().Skip(1))
             {
+                stepNo++;  // the referee tags a choice with the index of the step its action produced
                 var a = step!["action"]!.AsObject();
                 if (s.ActiveCombat == null) break;
                 if ((string)a["kind"]! == "end_turn")
@@ -56,7 +62,6 @@ static class Fight
                 // The choices the game made for this action (FirstChoiceSelector logs them with
                 // their step), applied as the same cards, then the screen closed the same way.
                 var chosen = new JsonArray();
-                int stepNo = (int?)step!["i"] ?? -1;
                 foreach (var choice in gameChoices.Where(c => (int?)c!["step"] == stepNo && (string?)c["kind"] == "cards"))
                 {
                     chosen.Add(ApplyChoice(e, choice!.AsObject()));

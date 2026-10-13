@@ -35,6 +35,7 @@ public static partial class Driver
         var selector = new FirstChoiceSelector();
         using var selection = MegaCrit.Sts2.Core.Commands.CardSelectCmd.UseSelector(selector);
         dump["choices"] = selector.Log;
+        ScreenLog = selector.Log;
         dump.Remove("save");
         dump["steps"] = steps;
         try
@@ -173,6 +174,7 @@ public static partial class Driver
         while (clock.Elapsed.TotalSeconds < maxSeconds && stable < (int)IdleFrames)
         {
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+            AnswerOpenScreens();
             var cm = CombatManager.Instance;
             var combat = cm.DebugOnlyGetState();
             bool busy = RunManager.Instance.ActionExecutor.IsRunning

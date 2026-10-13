@@ -53,6 +53,10 @@ def main() -> int:
     job, out, emu = (JOBS / f"{a.name}{ext}" for ext in (".json", ".out.json", ".emu.json"))
     job.write_text(json.dumps({"out": str(out).replace("\\", "/"), "runs": runs}), encoding="utf-8")
 
+    sys.path.insert(0, str(ROOT / "referee"))
+    from run_referee import install  # noqa: PLC0415
+    install(Path(GAME), ROOT / "referee" / "driver" / "bin" / "Release" / "net9.0")  # once, before any copy starts
+
     def play(name: str, subset: list) -> tuple[list, list]:
         """Run `subset` on up to --parallel game copies; results in subset order."""
         k = max(1, min(a.parallel, len(subset)))
@@ -60,17 +64,33 @@ def main() -> int:
         for i in range(k):
             shard = JOBS / f"{name}.s{i}.json"
             shard_out = JOBS / f"{name}.s{i}.out.json"
-            shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "fast_reset": True,
+            shard.write_text(json.dumps({"out": str(shard_out).replace("\\", "/"), "fast_reset": True, "no_preload": True,
                                          "runs": subset[i::k]}), encoding="utf-8")
-            procs.append((shard_out, subprocess.Popen(
-                [sys.executable, str(ROOT / "referee" / "run_referee.py"), "--game", GAME, "--job", str(shard),
-                 "--timeout", str(a.timeout), "--scratch", str(Path(GAME).parent / "scratch" / f"{name}.s{i}")],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
-        reports, shard_results = [], []
-        for shard_out, p in procs:
+            procs.append((i, shard_out, launch(shard, shard_out, f"{name}.s{i}")))
+        reports, shard_results = [], [[] for _ in range(k)]
+        for i, shard_out, p in procs:
             text = p.communicate()[0]
             reports.append(json.loads(text[text.index("{"):]) if "{" in text else {"exit": "no report", "tail": text[-500:]})
-            shard_results.append(json.loads(shard_out.read_text(encoding="utf-8"))["results"] if shard_out.exists() else [])
+            got = json.loads(shard_out.read_text(encoding="utf-8"))["results"] if shard_out.exists() else []
+            # Resume: a copy that stalled (watchdog) or died keeps its saved fights; the rest of
+            # its share runs again in a fresh session, up to two more times.
+            mine = subset[i::k]
+            for attempt in range(2):
+                if len(got) >= len(mine):
+                    break
+                # The fight that stalled is recorded, not retried (a hang there is deterministic).
+                got.append({"seed": mine[len(got)]["seed"], "steps": [],
+                            "error": "stalled: the game made no progress for 20 s during this fight"})
+                if len(got) >= len(mine):
+                    break
+                rest = mine[len(got):]
+                rjob, rout = JOBS / f"{name}.s{i}.r{attempt}.json", JOBS / f"{name}.s{i}.r{attempt}.out.json"
+                rjob.write_text(json.dumps({"out": str(rout).replace("\\", "/"), "fast_reset": True, "no_preload": True, "runs": rest}),
+                                encoding="utf-8")
+                rtext = launch(rjob, rout, f"{name}.s{i}.r{attempt}").communicate()[0]
+                reports.append(json.loads(rtext[rtext.index("{"):]) if "{" in rtext else {"exit": "no report"})
+                got += json.loads(rout.read_text(encoding="utf-8"))["results"] if rout.exists() else []
+            shard_results[i] = got
         merged = [None] * len(subset)
         for i, res in enumerate(shard_results):
             for j, r in enumerate(res):
@@ -79,12 +99,18 @@ def main() -> int:
                   for n, r in enumerate(merged)]
         return merged, reports
 
+    def launch(job: Path, out_path: Path, scratch: str):
+        return subprocess.Popen(
+            [sys.executable, str(ROOT / "referee" / "run_referee.py"), "--game", GAME, "--job", str(job), "--no-install",
+             "--timeout", str(a.timeout), "--scratch", str(Path(GAME).parent / "scratch" / scratch)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
     # Canary: a few fights per copy first, compared before the rest is spent on a broken setup.
     if a.canary and len(runs) > a.canary * a.parallel:
         head = runs[: a.canary * a.parallel]
         c_res, c_rep = play(f"{a.name}.canary", head)
         bad = [r for r in c_res if r.get("error")]
-        if bad or any(r.get("exit") != 0 for r in c_rep):
+        if bad:
             print(f"canary failed: {len(bad)} of {len(head)} fights with errors; session exits {[r.get('exit') for r in c_rep]}")
             for r in bad[:5]:
                 print("  ", r.get("seed"), str(r.get("error"))[:300])

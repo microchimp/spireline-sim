@@ -46,6 +46,21 @@ def connections(pid: int) -> set[str]:
     return found
 
 
+def install(game: Path, build: Path) -> None:
+    """override.cfg (blank Sentry DSN) and the driver mod, copied only when they changed."""
+    cfg = game / "override.cfg"
+    if not cfg.exists() or cfg.read_text(encoding="utf-8") != OVERRIDE:
+        cfg.write_text(OVERRIDE, encoding="utf-8")
+    mod = game / "mods" / "SpirelineReferee"
+    mod.mkdir(parents=True, exist_ok=True)
+    # Parallel sessions share the game copy: copy the mod only when it changed, since a
+    # running game holds the loaded DLL open.
+    for src, dst in ((build / "SpirelineReferee.dll", mod / "SpirelineReferee.dll"),
+                     (HERE / "driver" / "SpirelineReferee.json", mod / "SpirelineReferee.json")):
+        if not dst.exists() or sha256(src) != sha256(dst):
+            shutil.copy2(src, dst)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--game", type=Path, required=True)
@@ -53,6 +68,7 @@ def main() -> int:
     ap.add_argument("--scratch", type=Path, default=None)
     ap.add_argument("--timeout", type=float, default=600)
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
+    ap.add_argument("--no-install", action="store_true", help="the caller already installed the mod and override.cfg")
     a = ap.parse_args()
 
     game = a.game.resolve()
@@ -67,17 +83,8 @@ def main() -> int:
     scratch = (a.scratch or game.parent / "scratch" / time.strftime("%Y%m%d-%H%M%S")).resolve()
     (scratch / "appdata").mkdir(parents=True, exist_ok=True)
     (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
-    cfg = game / "override.cfg"
-    if not cfg.exists() or cfg.read_text(encoding="utf-8") != OVERRIDE:
-        cfg.write_text(OVERRIDE, encoding="utf-8")
-    mod = game / "mods" / "SpirelineReferee"
-    mod.mkdir(parents=True, exist_ok=True)
-    # Parallel sessions share the game copy: copy the mod only when it changed, since a
-    # running game holds the loaded DLL open.
-    for src, dst in ((a.build / "SpirelineReferee.dll", mod / "SpirelineReferee.dll"),
-                     (HERE / "driver" / "SpirelineReferee.json", mod / "SpirelineReferee.json")):
-        if not dst.exists() or sha256(src) != sha256(dst):
-            shutil.copy2(src, dst)
+    if not a.no_install:
+        install(game, a.build)
 
     # A fresh profile with every volume at 0 (FMOD plays even headless) and mod loading agreed to:
     # the game skips mods until the player has seen its mods warning. Missing fields take defaults.

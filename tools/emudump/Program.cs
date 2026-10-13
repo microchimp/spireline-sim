@@ -22,7 +22,10 @@ if (args[0] == "tables")
 if (args[0] == "fight")
 {
     var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
-    var fights = new JsonArray(refs.Select(r => (JsonNode)Fight.Replay(r!.AsObject())).ToArray());
+    // A fight the game never ran (an error placeholder) has nothing to replay.
+    var fights = new JsonArray(refs.Select(r => (JsonNode)(r!["ascension"] == null
+        ? new JsonObject { ["seed"] = r["seed"]?.DeepClone(), ["error"] = "no game result to replay", ["steps"] = new JsonArray() }
+        : Fight.Replay(r.AsObject()))).ToArray());
     Console.WriteLine(new JsonObject { ["results"] = fights }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     return;
 }

@@ -98,6 +98,13 @@ public static partial class Driver
             // Tutorials off, as a player can set it: first-time popups (FTUE) on a fresh profile
             // open modals that nothing headless answers.
             SaveManager.Instance.Progress.EnableFtues = false;
+            // The game's own preloader switch: background asset sessions only warm a cache,
+            // and back-to-back runs (worse with many copies) hang waiting on one. Off, assets
+            // load on demand.
+            if ((bool?)job["no_preload"] == true)
+            {
+                MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
+            }
             Engine.MaxFps = 0;
 
             Heartbeat();

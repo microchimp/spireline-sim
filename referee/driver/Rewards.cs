@@ -39,6 +39,35 @@ public static partial class Driver
         source.SetResult(0);
     }
 
+    /// <summary>
+    /// Screens that await a click outside the selector hook, answered as the first option:
+    /// NChooseABundleSelectionScreen (Scroll Boxes) completes with its first bundle, as clicking
+    /// it and Confirm would. Called every frame while the driver waits.
+    /// </summary>
+    internal static void AnswerOpenScreens()
+    {
+        var stack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
+        if (stack == null) return;
+        foreach (var node in stack.GetChildren())
+        {
+            if (node.GetType().Name != "NChooseABundleSelectionScreen") continue;
+            var src = node.GetType().GetField("_completionSource", Private)?.GetValue(node)
+                as TaskCompletionSource<IEnumerable<IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel>>>;
+            var bundles = node.GetType().GetField("_bundles", Private)?.GetValue(node)
+                as IReadOnlyList<IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel>>;
+            if (src == null || bundles == null || bundles.Count == 0 || src.Task.IsCompleted) continue;
+            ScreenLog?.Add(new JsonObject
+            {
+                ["kind"] = "bundle", ["step"] = CurrentStep, ["picked"] = 0,
+                ["options"] = new JsonArray(bundles.Select(b => (JsonNode)new JsonArray(b.Select(c => (JsonNode)c.Id.Entry).ToArray())).ToArray()),
+            });
+            src.SetResult(new[] { bundles[0] });
+        }
+    }
+
+    /// <summary>Where AnswerOpenScreens logs, set per fight.</summary>
+    internal static JsonArray? ScreenLog;
+
     private static async Task ClaimRewards(JsonArray log)
     {
         for (int guard = 0; guard < 20 && TopRewardsSet() is { } top; guard++)
