@@ -650,6 +650,8 @@ public static class RunRewardGenerator
             {
                 int claimed = state.RelicReward;
                 state.RelicReward = 0;
+                // The elite's relic is answered: nothing is owed behind the card reward.
+                state.PendingRelicReward = false;
                 // A relic claimed off a reward screen is obtained through RelicCmd.Obtain,
                 // which runs its AfterObtained -- a live capture's Silken Tress zeroed the
                 // player's gold the moment it was taken. Adding it to the list and
@@ -724,6 +726,7 @@ public static class RunRewardGenerator
         state.RewardCardPending = false;
         state.ReturnToRewardScreenAfterCardReward = false;
         state.RelicReward = 0;
+        state.PendingRelicReward = false;
         state.PendingGoldRewards.Clear();
         state.PendingCardOffers.Clear();
     }
