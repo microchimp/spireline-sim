@@ -30,6 +30,12 @@ if (args[0] == "fight")
     return;
 }
 
+if (args[0] == "digest")
+{
+    Digest.Main(args);  // hashes per step, for mutation testing (Digest.cs)
+    return;
+}
+
 if (args[0] == "reanchor")
 {
     // EmuDump reanchor <referee out.json> [--seed SEED]...: each step tried from the game's own state.
