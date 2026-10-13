@@ -1296,130 +1296,115 @@ public static class RunNonCombatEffects
         state.EventRngStream = null;
         state.EventRngName = null;
         state.EventRelicStock = null;
-        if (
-            state.EventSequenceIndex == 0
-            && state.Relics.Any(relic => relic.DefId == RunConstants.RelicNewLeaf)
-            && IsEventAllowed(state, RunConstants.EventTheLegendsWereTrue)
-        )
-        {
-            BeginEvent(state, RunConstants.EventTheLegendsWereTrue);
-            return;
-        }
+        // The game has no "New Leaf forces The Legends Were True" rule: NewLeaf is a plain
+        // transform-on-pickup relic with no event hook, and the only ModifyNextEvent
+        // override in the game is LanternKey's (below). That invented shortcut bypassed
+        // the ring -- and its act gate -- so it is gone.
 
-        // RoomSet.EnsureNextEventIsValid: NextEvent is events[visited % count], and the
-        // cursor is walked forward while the candidate is disallowed OR already seen.
-        // The sequence WRAPS -- it is a ring, not a list that runs out -- and the game
-        // only gives up after a full lap, logging "all unique events exhausted".
+        // ActModel.PullNextEvent: RoomSet.EnsureNextEventIsValid, then ModifyNextEvent,
+        // then RunState.AddVisitedEvent of whatever comes out the far end.
+        // EnsureNextEventIsValid: NextEvent is events[visited % count], and the cursor is
+        // walked forward while the candidate is disallowed OR already seen. The sequence
+        // WRAPS -- it is a ring, not a list that runs out -- and the game only gives up
+        // after a full lap, logging "all unique events exhausted". No RNG is drawn.
         if (state.EventSequence.Length > 0)
         {
-            for (int i = 0; i < state.EventSequence.Length; i++)
+            int chosen = -1;
+            for (int i = 0; i < state.EventSequence.Length && chosen < 0; i++)
             {
                 int eventId = state.EventSequence[
                     state.EventSequenceIndex % state.EventSequence.Length
                 ];
                 if (IsEventAllowed(state, eventId) && !state.VisitedEventIds.Contains(eventId))
                 {
-                    // PullNextEvent records it; MarkRoomVisited moves the cursor past it.
-                    state.VisitedEventIds.Add(eventId);
-                    state.EventSequenceIndex++;
-                    BeginEvent(state, eventId);
-                    return;
+                    chosen = eventId;
                 }
-
-                state.EventSequenceIndex++;
+                else
+                {
+                    state.EventSequenceIndex++;
+                }
             }
-        }
 
-        // A whole lap found nothing allowed and unseen: "All unique events exhausted,
-        // allowing repetition". The game then hands out `NextEvent` as it stands -- the
-        // event under the cursor, allowed or not -- with no roll of any kind. The lap
-        // above walked the cursor all the way round, so it is back where it started.
-        if (state.EventSequence.Length > 0)
-        {
-            int repeated = state.EventSequence[
-                state.EventSequenceIndex % state.EventSequence.Length
-            ];
+            // A whole lap found nothing allowed and unseen: "All unique events exhausted,
+            // allowing repetition". The game then hands out `NextEvent` as it stands --
+            // the event under the cursor, allowed or not. The lap above walked the cursor
+            // all the way round, so it is back where it started.
+            if (chosen < 0)
+            {
+                chosen = state.EventSequence[
+                    state.EventSequenceIndex % state.EventSequence.Length
+                ];
+            }
+
+            // LanternKey.ModifyNextEvent: a Lantern Key card in the deck turns the third
+            // act's next event into War Historian Repy. The ring still advances past the
+            // event it displaced, and it is Repy that goes on the visited list.
+            if (state.CurrentActIndex == 2 && state.Deck.Any(card => card.DefId == LanternKeyCard))
+            {
+                chosen = RunConstants.EventWarHistorianRepy;
+            }
+
+            // PullNextEvent records it; MarkRoomVisited moves the cursor past it.
+            if (!state.VisitedEventIds.Contains(chosen))
+            {
+                state.VisitedEventIds.Add(chosen);
+            }
+
             state.EventSequenceIndex++;
-            BeginEvent(state, repeated);
+            BeginEvent(state, chosen);
         }
     }
-
-    /// <summary>
-    /// Events whose <c>IsAllowed</c> reads <c>CurrentActIndex</c> and refuses index 0.
-    /// The emulator models Act 1 and only Act 1 -- a run ends at its boss -- so every one
-    /// of these is unreachable, and rolling one puts a room in front of an agent that the
-    /// game would never have shown it.
-    ///
-    /// Eight of the nine were not gated at all. The ninth, the Crystal Sphere, was gated
-    /// on <c>state.Act > ActOvergrowth</c> -- but Act is which of the two Act-1 acts the
-    /// run drew (Overgrowth 1, Underdocks 2), not an act INDEX, so the test was true for
-    /// every Underdocks run and let the sphere into half of Act 1.
-    /// </summary>
-    private static readonly int[] ActTwoAndLaterEvents =
-    [
-        RunConstants.EventCrystalSphere,
-        RunConstants.EventDollRoom,
-        RunConstants.EventFakeMerchant,
-        RunConstants.EventPotionCourier,
-        RunConstants.EventRanwidTheElder,
-        RunConstants.EventRelicTrader,
-        RunConstants.EventStoneOfAllTime,
-        RunConstants.EventSymbiote,
-        RunConstants.EventWelcomeToWongos,
-    ];
-
-    /// <summary>
-    /// The four events whose pool is a LATER ACT's -- Hive for the first two, Glory for
-    /// the other two -- rather than one of Act 1's. The emulator models a run's first
-    /// act, so no pool it draws from contains them.
-    /// </summary>
-    /// <remarks>
-    /// Kept apart from <see cref="ActTwoAndLaterEvents"/>, which is a list of
-    /// <c>IsAllowed</c> transcriptions, because this is a different rule: these four
-    /// declare no act gate of their own at all. Conflating the two put "not in this act's
-    /// pool" inside the run predicate, where it read as though the game refuses these
-    /// events to a healthy Act 1 player -- it does not; it simply never offers them.
-    /// Their real gates are transcribed in <see cref="IsEventAllowedForRun"/> below, so
-    /// adding a later act's pool gets a working event rather than a refused one.
-    /// </remarks>
-    private static readonly int[] LaterActPoolEvents =
-    [
-        RunConstants.EventColorfulPhilosophers,
-        RunConstants.EventColossalFlower,
-        RunConstants.EventGraveOfTheForgotten,
-        RunConstants.EventRoundTeaParty,
-    ];
 
     /// <summary>Test seam for <see cref="IsEventAllowed"/>.</summary>
     public static bool IsEventAllowedForTests(RunState state, int eventId) =>
         IsEventAllowed(state, eventId);
 
-    internal static bool IsEventAllowed(RunState state, int eventId)
-    {
-        if (ActTwoAndLaterEvents.Contains(eventId) || LaterActPoolEvents.Contains(eventId))
-        {
-            return false;
-        }
-
-        return IsEventAllowedForRun(state, eventId);
-    }
+    /// <summary>
+    /// <c>EventModel.IsAllowed</c> for the run, as <c>RoomSet.EnsureNextEventIsValid</c>
+    /// calls it. Every act's ring is dealt from its own pool plus the shared one
+    /// (<c>ActModel.GenerateRooms</c>), so which events CAN be reached is the pool's
+    /// business; this is only each event's own gate, act index included.
+    /// </summary>
+    /// <remarks>
+    /// This used to refuse outright the nine shared events whose gate reads
+    /// <c>CurrentActIndex</c> and the four later-act events, on the grounds that the
+    /// emulator models Act 1 only. It plays Acts 2 and 3 now
+    /// (<see cref="RunMapGenerator.AdvanceToNextAct"/>), where those are exactly the
+    /// events the game offers. All thirteen have handlers in the run engine, so none is
+    /// kept refused as unimplemented.
+    /// </remarks>
+    internal static bool IsEventAllowed(RunState state, int eventId) =>
+        IsEventAllowedForRun(state, eventId);
 
     /// <summary>
     /// Each event's own <c>IsAllowed(IRunState)</c>, transcribed -- whether THIS RUN may
     /// be shown the event, which is a separate question from whether the act's pool
-    /// contains it. Public because the events an Act 1 pool never offers still have gates
-    /// worth pinning.
+    /// contains it. The base <c>EventModel.IsAllowed</c> is <c>true</c>, so an event
+    /// missing below really has no rule (DrowningBeacon, SelfHelpBook, SpiritGrafter and
+    /// InfestedAutomaton once carried invented ones).
     /// </summary>
+    /// <remarks>
+    /// A solo run, so each <c>Players.All(...)</c> is a test of the one player.
+    /// </remarks>
     public static bool IsEventAllowedForRun(RunState state, int eventId)
     {
+        bool HoldsPotion() => state.PotionSlots.Any(potion => potion != 0);
         return eventId switch
         {
-            RunConstants.EventMorphicGrove => state.Gold >= 100 && state.Deck.Count >= 2,
-            RunConstants.EventLuminousChoir => state.Gold >= 100 || state.Deck.Count >= 3,
+            // `Gold >= 100 && count(IsTransformable) >= 2`. A deck card is transformable
+            // exactly when it is removable (CardModel.IsTransformable).
+            RunConstants.EventMorphicGrove => state.Gold >= 100
+                && state.Deck.Count(IsRemovable) >= 2,
+            // `Gold >= GoldVar(149)` -- the CANONICAL value, before CalculateVars shaves
+            // NextInt(0, 50) off the instance's price -- and
+            // RelicGrabBag.HasAvailableRelics, which only fails once the whole bag is
+            // drained and is not modelled. It was `Gold >= 100 || Deck.Count >= 3`.
+            RunConstants.EventLuminousChoir => state.Gold >= 149,
+            // Basic rarity and IsRemovable.
             RunConstants.EventWoodCarvings => state.Deck.Any(card =>
                 GeneratedData.Cards.Get(card.DefId).Rarity == CardRarity.Basic
+                && IsRemovable(card)
             ),
-            RunConstants.EventDrowningBeacon => state.PlayerHp > 13,
             // Gold >= 120, not 40 -- the belt is a rich man's event.
             RunConstants.EventEndlessConveyor => state.Gold >= 120,
             // Gold >= 55 and nothing else. The `|| Deck.Count > 0` made this always true,
@@ -1430,32 +1415,33 @@ public static class RunNonCombatEffects
             RunConstants.EventSpiralingWhirlpool => state.Deck.Any(card =>
                 Enchantments.CanEnchant(card, Enchantment.Spiral)
             ),
-            // TotalFloor is floors across the whole run; the emulator models one act, so
-            // within it that is Floor.
+            // TotalFloor, which is floors across the whole run. `Floor` does not reset
+            // between acts (see AdvanceToNextAct), so it is the same number.
             RunConstants.EventPunchOff => state.Floor >= 6,
             RunConstants.EventSlipperyBridge => state.Floor > 6 && state.Deck.Any(IsRemovable),
             // WarHistorianRepy.IsAllowed is `return false` outright: it is never drawn
             // from the sequence, only reached by its own means. Falling through to the
             // default handed it out as an ordinary event.
             RunConstants.EventWarHistorianRepy => false,
-            RunConstants.EventSelfHelpBook => state.Deck.Any(CardCanReceiveSelfHelpBookEnchantment),
-            RunConstants.EventTheLegendsWereTrue => state.PlayerHp >= 10
-                && state.Deck.Any(card => card.DefId != RunConstants.SpoilsMapCard),
-            RunConstants.EventCrystalSphere => state.Gold >= 100,
-            RunConstants.EventRanwidTheElder => state.Gold >= 100
-                || state.PotionSlots.Any(potion => potion != 0)
-                || state.Relics.Count > 1,
-            RunConstants.EventRelicTrader => state.Relics.Count >= 5,
-            RunConstants.EventStoneOfAllTime => state.PotionSlots.Any(potion => potion != 0)
-                || state.Deck.Any(CardCanReceiveSelfHelpBookEnchantment),
-            RunConstants.EventTeaMaster => state.Gold >= 150,
+            // CurrentActIndex == 0, a non-empty deck and CurrentHp >= 10. It had no act
+            // test, so once Acts 2 and 3 were dealt it could turn up in them.
+            RunConstants.EventTheLegendsWereTrue => state.CurrentActIndex == 0
+                && state.PlayerHp >= 10
+                && state.Deck.Count > 0,
+            // CurrentActIndex < 2 AND gold: the stall only stands in the first two acts.
+            RunConstants.EventTeaMaster => state.CurrentActIndex < 2 && state.Gold >= 150,
             RunConstants.EventTheFutureOfPotions => state.PotionSlots.Count(potion => potion != 0)
                 >= 2,
-            RunConstants.EventWelcomeToWongos => state.Gold >= 100,
-            RunConstants.EventAmalgamator => state.Deck.Count >= 2,
-            RunConstants.EventFieldOfManSizedHoles => state.Deck.Count > 0,
-            RunConstants.EventInfestedAutomaton => state.Deck.Count > 0,
-            RunConstants.EventSpiritGrafter => state.Deck.Count > 0,
+            // At least two removable Basic Strikes AND two removable Basic Defends
+            // (Amalgamator.IsValid, counted per tag).
+            RunConstants.EventAmalgamator => state.Deck.Count(card =>
+                    IsRemovableTaggedBasic(card, 0)
+                ) >= 2
+                && state.Deck.Count(card => IsRemovableTaggedBasic(card, 1)) >= 2,
+            // Any card PerfectFit will take.
+            RunConstants.EventFieldOfManSizedHoles => state.Deck.Any(card =>
+                Enchantments.CanEnchant(card, Enchantment.PerfectFit)
+            ),
             // Reflections and TinkerTime declare no IsAllowed at all: both were gated on
             // a non-empty deck, which is a rule neither model has. The deck-size gates
             // came in with placeholder options that no longer stand.
@@ -1479,6 +1465,41 @@ public static class RunNonCombatEffects
             RunConstants.EventDenseVegetation
             or RunConstants.EventByrdonisNest
             or RunConstants.EventAromaOfChaos => true,
+
+            // ---- Gated on the act INDEX. Acts 2 and 3 are dealt, so these are live.
+            // CurrentActIndex > 0 and Gold >= 100.
+            RunConstants.EventCrystalSphere => state.CurrentActIndex > 0 && state.Gold >= 100,
+            // CurrentActIndex == 1 alone.
+            RunConstants.EventDollRoom => state.CurrentActIndex == 1,
+            // CurrentActIndex > 0 alone.
+            RunConstants.EventPotionCourier or RunConstants.EventSymbiote =>
+                state.CurrentActIndex > 0,
+            // Act index aside, the stall wants a customer: `Gold >= 100 || holds a Foul
+            // Potion`. The potion half is the interesting one -- it is the price of the
+            // ROBBERY, not of a purchase, and a broke player carrying one still qualifies.
+            // Solo-only too, which this run is.
+            RunConstants.EventFakeMerchant => state.CurrentActIndex >= 1
+                && (state.Gold >= 100 || state.PotionSlots.Contains(NamedPotion("FoulPotion"))),
+            // ALL of: act index > 0, a tradable relic to give, Gold >= 100, and a potion
+            // to give. It was `||` across gold, potions and relic count.
+            RunConstants.EventRanwidTheElder => state.CurrentActIndex > 0
+                && state.Relics.Any(relic => IsTradableRelic(state, relic))
+                && state.Gold >= 100
+                && HoldsPotion(),
+            // Act index > 0 and five TRADABLE relics (RelicModel.IsTradable), not five
+            // relics: starter, event and ancient relics do not count.
+            RunConstants.EventRelicTrader => state.CurrentActIndex > 0
+                && state.Relics.Count(relic => IsTradableRelic(state, relic)) >= 5,
+            // CurrentActIndex == 1 and a potion in hand. The enchantable-card half was
+            // the placeholder option's.
+            RunConstants.EventStoneOfAllTime => state.CurrentActIndex == 1 && HoldsPotion(),
+            // CurrentActIndex == 1 and Gold >= 100.
+            RunConstants.EventWelcomeToWongos => state.CurrentActIndex == 1
+                && state.Gold >= 100,
+
+            // ---- Later-act pool events: no act test of their own. The pool decides where
+            // they appear (Hive: Colorful Philosophers, Colossal Flower; Glory: Grave of
+            // the Forgotten, Round Tea Party); these are the run-state gates.
             // Colossal Flower's ladder costs 5 + 6 + 7 = 18 unblockable to walk to the
             // bottom of, and its gate is `CurrentHp >= 19` -- one more than the whole
             // climb, so the event can never be the thing that kills you.
@@ -1497,11 +1518,6 @@ public static class RunNonCombatEffects
             // has unlocked a second character. The emulator runs a fixed profile with all
             // five pools, so this is true. See the fixed-profile note in HANDOFF.md.
             RunConstants.EventColorfulPhilosophers => true,
-            // Act index aside, the stall wants a customer: `Gold >= 100 || holds a Foul
-            // Potion`. The potion half is the interesting one -- it is the price of the
-            // ROBBERY, not of a purchase, and a broke player carrying one still qualifies.
-            RunConstants.EventFakeMerchant => state.Gold >= 100
-                || state.PotionSlots.Contains(NamedPotion("FoulPotion")),
             _ => true,
         };
     }
@@ -2464,14 +2480,12 @@ public static class RunNonCombatEffects
     }
 
     /// <summary>
-    /// <c>CardModel.IsRemovable</c>: Ascender's Bane and the quest cards stay in the deck
-    /// whatever removes from it.
+    /// <c>CardModel.IsRemovable</c> is <c>!Keywords.Contains(Eternal)</c> and nothing else:
+    /// every Eternal card stays in the deck whatever removes from it (Ascender's Bane and
+    /// the other Eternal curses), while quest cards are ordinary removable cards.
     /// </summary>
-    private static bool IsRemovable(CardInstance card)
-    {
-        var def = GeneratedData.Cards.Get(card.DefId);
-        return def.Type != CardType.Quest && def.Entry != "ASCENDERS_BANE";
-    }
+    private static bool IsRemovable(CardInstance card) =>
+        !GeneratedData.Cards.Get(card.DefId).Eternal;
 
     /// <summary>
     /// <c>FishingRod.AfterCombatEnd</c>: every third MONSTER room upgrades a card.
@@ -3102,15 +3116,10 @@ public static class RunNonCombatEffects
         Enchantments.CanEnchant(card, Enchantment.Goopy);
 
     /// <summary>
-    /// Stands in for <c>CardModel.IsRemovable</c>, which is not extracted.
+    /// <c>CardModel.IsRemovable</c> (`!Eternal`) for a card whose id may carry a sign.
     /// </summary>
-    /// <remarks>
-    /// Ascender's Bane is the one card every run carries that the game refuses to remove;
-    /// Eternal cards are the other case and are not modelled. Same caveat as above: the
-    /// threshold is five and a starting deck has ten removable cards.
-    /// </remarks>
     private static bool IsRemovableCard(CardInstance card) =>
-        Math.Abs(card.DefId) != RunConstants.CardAscendersBane;
+        !GeneratedData.Cards.Get(Math.Abs(card.DefId)).Eternal;
 
     /// <summary>
     /// Enchant every card in the deck that will take it — the shape Pael's Claw and

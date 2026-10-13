@@ -443,7 +443,11 @@ public static class RunMapGenerator
         }
 
         state.CurrentActIndex++;
-        state.EventSequenceIndex = 0;
+        // The new act's own RoomSet starts at eventsVisited 0, and the ancient it opens on
+        // is a RoomType.Event room that RunManager marks visited like any other (the same
+        // reason a run's first act starts at 1 after Neow). So the first real event of
+        // every act is events[1], never events[0].
+        state.EventSequenceIndex = 1;
         // `RoomSet.normalEncountersVisited` and its elite twin belong to the act's own
         // room set, so each act starts on its own weak fights.
         state.NormalEncountersVisited = 0;

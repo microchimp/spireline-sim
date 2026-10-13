@@ -226,6 +226,9 @@ public class FakeMerchantTests
     {
         var engine = new RunEngine();
         engine.Reset("NXV45HW43K");
+        // FakeMerchant.IsAllowed also refuses CurrentActIndex < 1, so the gold and potion
+        // halves are only observable from Act 2 on.
+        engine.State.CurrentActIndex = 1;
         engine.State.Gold = gold;
         if (foulPotion)
         {
