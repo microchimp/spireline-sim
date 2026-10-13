@@ -90,7 +90,9 @@ public static partial class Driver
             var rng = new Random((int?)spec["chooser_seed"] ?? 1);
             int maxActions = (int?)spec["max_actions"] ?? 80;
             Player player = state.Players[0];
-            steps.Add(new JsonObject { ["action"] = null, ["state"] = Snapshot(state, player) });
+            // Trace mode, only for re-runs of fights that diverged (Trace.cs): off unless the spec asks.
+            if ((bool?)spec["trace"] == true) Trace.Begin(state, player);
+            steps.Add(Step(null, state, player));
             for (int i = 0; i < maxActions && CombatManager.Instance.IsInProgress; i++)
             {
                 CurrentStep = i + 1;  // choices this action opens are logged against its step
@@ -140,7 +142,7 @@ public static partial class Driver
                     dump["error"] = $"idle_timeout after step {i}: {action.ToJsonString()}";
                     break;
                 }
-                steps.Add(new JsonObject { ["action"] = action, ["state"] = Snapshot(state, player) });
+                steps.Add(Step(action, state, player));
                 Heartbeat();
                 GD.Print($"[referee] step {i}: {action.ToJsonString()}");
             }
@@ -148,6 +150,10 @@ public static partial class Driver
         catch (Exception ex)
         {
             dump["error"] = ex.ToString();
+        }
+        finally
+        {
+            if (Trace.On) Trace.End();
         }
 
         timing["fight_end"] = phase.ElapsedMilliseconds;
@@ -223,6 +229,19 @@ public static partial class Driver
         foreach (var e in combat.Enemies) sb.Append(e.CurrentHp).Append(',').Append(e.Block).Append(',').Append(e.Powers.Count).Append(';');
         sb.Append(combat.RoundNumber);
         return sb.ToString();
+    }
+
+    /// <summary>One recorded step: the action and the state after it, and in trace mode what happened inside.</summary>
+    private static JsonObject Step(JsonObject? action, RunState state, Player player)
+    {
+        var step = new JsonObject { ["action"] = action, ["state"] = Snapshot(state, player) };
+        if (Trace.On)
+        {
+            step["trace"] = Trace.TakeStep();
+            step["hidden"] = Trace.Hidden();
+        }
+
+        return step;
     }
 
     private static JsonObject Snapshot(RunState run, Player player)
