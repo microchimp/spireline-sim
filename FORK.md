@@ -67,10 +67,15 @@ acts, map, ancients' options, unknown rooms, encounters and opening rosters, car
 and relic rewards, chests, shop shelves and prices, events, event options, and the deck,
 relics, HP and gold each floor leaves. The walk stops at the first difference and classes it
 EMULATOR, FIGHT-DEPENDENT (drawn on a stream a resolved fight leaves behind: the fight's turns'
-streams, Niche once a creature joined a fight, Rewards once The Hunt added a reward),
-PROFILE-DEPENDENT (act discovery, Kaleidoscope's unlock gate at Neow) or WALKER (a screen the
-history cannot drive, such as the Crystal Sphere's grid). Event option slots are read from the
-user's decompiled event classes.
+streams, Niche once a creature joined a fight or one that can spawn them fought, Rewards once The
+Hunt added a reward; Lava Lamp's upgrades after a fight that took damage), PROFILE-DEPENDENT (act
+discovery, Kaleidoscope's unlock gate at Neow, the first run's room order, and content of an epoch
+nothing of which appears in the run) or WALKER (a screen the history cannot drive, such as the
+Crystal Sphere's grid). The history does not record claim or purchase order, so the walker infers
+it: card rewards are matched to the history's groups by their cards, a card is claimed before War
+Paint or Whetstone when the floor upgraded it, discount relics are bought first in a shop and
+Dolly's Mirror after the cards. Pael's Wing sacrifices follow the relic's saved count. Event
+option slots and epochs are read from the user's decompiled event and epoch classes.
 
 ```
 EmuDump codex <runs.jsonl[.gz]> <out.jsonl> --decompiled <decompiled root> [--character any] [--ascension 10] [--shard I/N]

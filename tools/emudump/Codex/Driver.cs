@@ -50,7 +50,8 @@ public static class Driver
         }
 
         string? eventsDir = decompiled is null ? null : Path.Combine(decompiled, "MegaCrit.Sts2.Core.Models.Events");
-        var walker = new Walker(new EventOptionIndex(eventsDir));
+        string? epochsDir = decompiled is null ? null : Path.Combine(decompiled, "MegaCrit.Sts2.Core.Timeline.Epochs");
+        var walker = new Walker(new EventOptionIndex(eventsDir), new ProfileIndex(epochsDir));
         using var inStream = OpenInput(input);
         using var reader = new StreamReader(inStream);
         using var writer = new StreamWriter(output);
@@ -74,7 +75,9 @@ public static class Driver
             string? why = line.Contains("BaseLib", StringComparison.Ordinal) || line.Contains("save_dict_", StringComparison.Ordinal)
                     || line.Contains("\"CardModel_", StringComparison.Ordinal)
                 ? "mod data in the record (modded)"
-                : Skip(rec, character, ascension);
+                : ModdedId.IsMatch(line)
+                    ? "modded content id (modded)"
+                    : Skip(rec, character, ascension);
             if (why is not null)
             {
                 skipped[why] = skipped.GetValueOrDefault(why) + 1;
@@ -111,9 +114,26 @@ public static class Driver
         return path.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) ? new GZipStream(s, CompressionMode.Decompress) : s;
     }
 
+    /// <summary>
+    /// A mod's own content id: the game's ids are `KIND.UPPER_SNAKE`, and mods prefix theirs
+    /// with the mod's name and a hyphen (`ACT.ACTSFROMTHEPAST-...`, `EVENT.ACTSFROMTHEPAST-...`).
+    /// </summary>
+    public static readonly System.Text.RegularExpressions.Regex ModdedId = new(
+        "\"(ACT|EVENT|ENCOUNTER|MONSTER|CARD|RELIC|POTION|ENCHANTMENT|MODIFIER|CHARACTER)\\.[A-Z0-9_]*-",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>The acts the game has; any other act id is a mod's.</summary>
+    static readonly HashSet<string> VanillaActs = ["OVERGROWTH", "UNDERDOCKS", "HIVE", "GLORY"];
+
     /// <summary>Why a run is not walked, or null.</summary>
     public static string? Skip(JsonElement rec, string character, int? ascension)
     {
+        if (rec.TryGetProperty("acts", out var acts) && acts.ValueKind == JsonValueKind.Array
+            && acts.EnumerateArray().Any(a => !VanillaActs.Contains(Names.Bare(a.GetString()))))
+        {
+            return "modded act (modded)";
+        }
+
         if (!rec.TryGetProperty("players", out var players) || players.GetArrayLength() != 1)
         {
             return "not single-player";

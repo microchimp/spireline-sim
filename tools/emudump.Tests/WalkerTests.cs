@@ -157,6 +157,71 @@ public class WalkerTests
     }
 
     [Fact]
+    public void Card_rewards_are_matched_to_the_history_group_with_their_cards_in_any_claim_order()
+    {
+        // The history lists rewards in the order they were claimed: the second offer first.
+        var history = new List<string> { "SLICE", "POKE", "BULWARK", "ANGER", "BASH", "CLASH" };
+        Assert.Equal([3, 4, 5], Walker.CardGroup(history, [], ["BASH", "CLASH", "ANGER"]));
+        Assert.Equal([0, 1, 2], Walker.CardGroup(history, [3, 4, 5], ["POKE", "SLICE", "BULWARK"]));
+        // Nothing matches: the next entries are compared, and the mismatch reported there.
+        Assert.Equal([0, 1, 2], Walker.CardGroup(history, [], ["ZAP", "BASH", "CLASH"]));
+    }
+
+    [Fact]
+    public void A_larger_group_is_not_matched_by_its_tail()
+    {
+        // A fourth card the emulator did not add: compared as the group's first three, not
+        // passed off as three entries from the middle of it.
+        var history = new List<string> { "WHIRLWIND", "SECOND_WIND", "INFERNAL_BLADE", "FIGHT_ME" };
+        Assert.Equal([0, 1, 2], Walker.CardGroup(history, [], ["SECOND_WIND", "INFERNAL_BLADE", "FIGHT_ME"]));
+    }
+
+    [Fact]
+    public void An_ancient_option_is_named_by_its_title_key_with_the_sea_glass_character()
+    {
+        static JsonElement Option(string textKey, string titleKey) =>
+            JsonDocument.Parse(new JsonObject
+            {
+                ["TextKey"] = textKey,
+                ["title"] = new JsonObject { ["key"] = titleKey, ["table"] = "relics" },
+            }.ToJsonString()).RootElement;
+
+        Assert.Equal("SEA_GLASS.DEFECT", Walker.AncientOption(Option("DEFECT", "SEA_GLASS.DEFECT.title")));
+        Assert.Equal("KALEIDOSCOPE", Walker.AncientOption(Option("KALEIDOSCOPE", "KALEIDOSCOPE.title")));
+    }
+
+    [Fact]
+    public void Runs_with_a_mods_acts_or_ids_are_skipped_as_modded()
+    {
+        var rec = Record();
+        rec["acts"] = new JsonArray("ACT.ACTSFROMTHEPAST-UNDERCITY", "ACT.HIVE", "ACT.GLORY");
+        using var doc = JsonDocument.Parse(rec.ToJsonString());
+        Assert.Equal("modded act (modded)", Driver.Skip(doc.RootElement, "IRONCLAD", null));
+        Assert.Matches(Driver.ModdedId, "{\"model_id\": \"EVENT.ACTSFROMTHEPAST-DUPLICATOR\"}");
+        Assert.DoesNotMatch(Driver.ModdedId, "{\"model_id\": \"EVENT.COLORFUL_PHILOSOPHERS\"}");
+    }
+
+    [Fact]
+    public void Content_of_an_epoch_the_run_never_shows_is_taken_as_locked()
+    {
+        // An epoch class names what it unlocks; a synthetic one stands in for the decompile.
+        string dir = Directory.CreateTempSubdirectory("codex-epochs").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "Ironclad2Epoch.cs"), "Card<Cruelty>(), Card<Dominate>(), Card<MoltenFist>()");
+            var index = new ProfileIndex(dir);
+            Assert.True(index.Available);
+            Assert.Equal(("DOMINATE", "Ironclad2"), index.Unseen(["BASH", "DOMINATE"], ProfileIndex.Seen("{\"id\": \"CARD.BASH\"}")));
+            // One card of the epoch anywhere in the run says it is unlocked.
+            Assert.Null(index.Unseen(["DOMINATE"], ProfileIndex.Seen("{\"id\": \"CARD.CRUELTY\"}")));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void A_fight_that_draws_a_stream_marks_it_for_later_offers()
     {
         // After a resolved fight its turns' streams are tainted, so an event that rolls on one

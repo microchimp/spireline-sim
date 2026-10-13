@@ -242,6 +242,15 @@ public static class Names
         return pascal;
     }
 
+    /// <summary>
+    /// Monsters that add enemies mid-fight (decompiled: each reaches `CombatState.CreateCreature`,
+    /// which rolls the newcomer's HP on Niche): their own moves (Fabricator, Fogmog, Living Fog,
+    /// Ovicopter's eggs, The Obscura, Two-Tailed Rat) or a power they carry (Phrog Parasite's
+    /// Infested, Axebot's Stock, Gremlin Merc's Surprise).
+    /// </summary>
+    public static readonly HashSet<string> Spawners =
+        ["FABRICATOR", "FOGMOG", "LIVING_FOG", "OVICOPTER", "THE_OBSCURA", "TWO_TAILED_RAT", "PHROG_PARASITE", "AXEBOT", "GREMLIN_MERC"];
+
     /// <summary>Player-side creatures the history lists among the monsters.</summary>
     public static readonly HashSet<string> Allies = ["BYRDPIP", "PAELS_LEGION", "OSTY"];
 

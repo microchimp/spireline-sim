@@ -12,6 +12,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Sts2Emulator.Core;
+using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core.Run;
 
 namespace EmuDump.Codex;
@@ -25,8 +26,9 @@ public sealed class Walker
     /// <summary>
     /// The player's profile decided it, and the history does not carry the profile: which acts
     /// were discovered (`ActModel.GetRandomList` forces an undiscovered alternate act, and only
-    /// an unlocked one can be rolled), and which characters are unlocked (Kaleidoscope is only
-    /// offered at Neow with every character's pool unlocked).
+    /// an unlocked one can be rolled), which characters are unlocked (Kaleidoscope is only
+    /// offered at Neow with every character's pool unlocked), and which epochs: the emulator
+    /// offered content an epoch unlocks of which nothing appears anywhere in the run.
     /// </summary>
     public const string Profile = "PROFILE-DEPENDENT";
 
@@ -51,7 +53,7 @@ public sealed class Walker
         public JsonObject Mismatch { get; } = mismatch;
     }
 
-    RunEngine _e = new();
+    readonly RunEngine _e = new();
     readonly EventOptionIndex _events;
     RunState S => _e.State;
 
@@ -72,13 +74,20 @@ public sealed class Walker
     JsonElement _stats;
     bool _hasStats;
     int _upgradeCursor, _removeCursor, _transformCursor, _enchantCursor, _eventCursor,
-        _restCursor, _gainCursor, _shopBuyCursor;
+        _restCursor, _gainCursor;
     readonly HashSet<int> _relicChoiceUsed = [];
     readonly HashSet<int> _potionChoiceUsed = [];
     readonly List<string> _discardsLeft = [];
     bool _rewardsCompared, _shopRemovalDone;
 
-    public Walker(EventOptionIndex events) => _events = events;
+    readonly ProfileIndex? _profile;
+    HashSet<string> _seen = [];
+
+    public Walker(EventOptionIndex events, ProfileIndex? profile = null)
+    {
+        _events = events;
+        _profile = profile;
+    }
 
     // =====================================================================================
     // entry
@@ -106,13 +115,13 @@ public sealed class Walker
         _floor = 0;
         try
         {
-            // A fresh engine a run: Reset reuses its state object, and a field it forgets to
-            // clear would carry one run's leftovers into the next.
+            // Reset starts every run on a fresh state, so one engine walks them all.
             long r0 = System.Diagnostics.Stopwatch.GetTimestamp();
-            _e = new RunEngine();
             _e.Reset(seed, asc, character);
             _belt.Clear();
             _eventsSeen = 0;
+            _paelsSacrifices = SavedInt(rec, "PAELS_WING", "RewardsSacrificed") ?? int.MaxValue;
+            _seen = _profile is { Available: true } ? ProfileIndex.Seen(rec.GetRawText()) : [];
             ResetSeconds += System.Diagnostics.Stopwatch.GetElapsedTime(r0).TotalSeconds;
             Mark();
             BeginFloorBookkeeping();
@@ -235,7 +244,7 @@ public sealed class Walker
     void ResetFloorCursors()
     {
         _upgradeCursor = _removeCursor = _transformCursor = _enchantCursor = 0;
-        _eventCursor = _restCursor = _gainCursor = _shopBuyCursor = 0;
+        _eventCursor = _restCursor = _gainCursor = 0;
         _relicChoiceUsed.Clear();
         _potionChoiceUsed.Clear();
         _discardsLeft.Clear();
@@ -244,11 +253,16 @@ public sealed class Walker
         _rewardsCompared = false;
         _shopRemovalDone = false;
         _floorUsedTaint = false;
-        _cardCursor = 0;
+        _cardUsed.Clear();
+        _deferredRelic = 0;
+        _lavaLampUnsure = false;
+        _floorMonsters.Clear();
         _goldUnknown = false;
         _skippedPotions.Clear();
         _skippedRelics.Clear();
         _shopSeen = false;
+        _shopWants = null;
+        _copyCursor = 0;
         _shopGoldLent = 0;
         _shopSpent = 0;
         _fakeBuyCursor = 0;
@@ -283,8 +297,8 @@ public sealed class Walker
 
         string model = room.ValueKind == JsonValueKind.Object && room.TryGetProperty("model_id", out var m) ? Names.Bare(m.GetString()) : "";
         Check("ancient", "ancient", model, S.Ancient, Source.Static);
-        var real = Arr("ancient_choice").Select(o => o.GetProperty("TextKey").GetString() ?? "").ToList();
-        var emu = S.NeowOptions.Where(x => x != 0).Select(Names.Relic).ToList();
+        var real = Arr("ancient_choice").Select(AncientOption).ToList();
+        var emu = S.NeowOptions.Where(x => x != 0).Select(EmulatorAncientOption).ToList();
         if (real.Count == 0)
         {
             // An abandoned run can end on the ancient before anything was chosen or recorded.
@@ -299,7 +313,7 @@ public sealed class Walker
 
         Check("ancient", "options", string.Join(",", real), string.Join(",", emu), _act == 0 ? Source.Static : Source.Drawn);
         string? chosen = Arr("ancient_choice").Where(o => o.TryGetProperty("was_chosen", out var c) && c.ValueKind == JsonValueKind.True)
-            .Select(o => o.GetProperty("TextKey").GetString()).FirstOrDefault();
+            .Select(AncientOption).FirstOrDefault();
         int index = chosen is null ? -1 : emu.IndexOf(chosen);
         if (index < 0)
         {
@@ -311,6 +325,36 @@ public sealed class Walker
         Mark();
         Do(index);
     }
+
+    /// <summary>
+    /// An ancient's option as the history names it: the relic its title key names
+    /// (`KALEIDOSCOPE.title`), with the character a Sea Glass is branded with
+    /// (`SEA_GLASS.DEFECT.title` is `SEA_GLASS.DEFECT`). The record's TextKey is the key's
+    /// second-to-last part, which for a Sea Glass is only the character's name.
+    /// </summary>
+    public static string AncientOption(JsonElement option)
+    {
+        string text = option.TryGetProperty("TextKey", out var t) ? t.GetString() ?? "" : "";
+        if (!option.TryGetProperty("title", out var title) || !title.TryGetProperty("key", out var k) || k.GetString() is not string key
+            || (title.TryGetProperty("table", out var table) && table.GetString() != "relics"))
+        {
+            return text;
+        }
+
+        var parts = key.Split('.');
+        return parts.Length switch
+        {
+            2 when parts[1] == "title" => parts[0],
+            3 when parts[2] == "title" => $"{parts[0]}.{parts[1]}",
+            _ => text,
+        };
+    }
+
+    /// <summary>The emulator's option in the history's terms: a Sea Glass with its character.</summary>
+    string EmulatorAncientOption(int relic) =>
+        relic == RunConstants.RelicSeaGlass && S.SeaGlassCharacter >= 0
+            ? "SEA_GLASS." + Enum.GetValues<PlayerCharacter>().Where(c => c != S.Character).ElementAt(S.SeaGlassCharacter).ToString().ToUpperInvariant()
+            : Names.Relic(relic);
 
     /// <summary>
     /// Neow's options as `Neow.GenerateInitialOptions` rolls them when `IsAllowedAtNeow` bars
@@ -399,15 +443,30 @@ public sealed class Walker
         }
 
         var ahead = _actTypes[_act].Skip(_actPos + 1).ToArray();
-        var candidates = new List<int>();
+        // Winged Boots' charges: a step off the map's edges spends one (`WingedBoots
+        // .AfterRoomEntered`), and the map offers the whole next row while one is left. The
+        // node taken is the one from which the rest of the act needs the fewest such steps, so
+        // no charge is spent that a later act needs.
+        int charges = BootsCharges();
+        bool hasCurrent = S.MapNodes.TryGetValue(S.CurrentMapCoord, out var current);
+        var memo = new Dictionary<((int, int), int), int>();
+        var costed = new List<(int Action, int Jumps)>();
         for (int i = 0; i < S.MapNodeTypes.Length; i++)
         {
-            if (S.MapNodeTypes[i] == wanted && S.MapOptionCoords[i] is { } c && Walkable(c, ahead))
+            if (S.MapNodeTypes[i] != wanted || S.MapOptionCoords[i] is not { } c)
             {
-                candidates.Add(i);
+                continue;
+            }
+
+            bool edge = !hasCurrent || current!.Children.Contains(c);
+            int rest = MinJumps(c, ahead, 0, memo);
+            if (rest < int.MaxValue && (edge ? 0 : 1) + rest <= charges)
+            {
+                costed.Add((i, (edge ? 0 : 1) + rest));
             }
         }
 
+        var candidates = costed.OrderBy(x => x.Jumps).Select(x => x.Action).ToList();
         if (candidates.Count == 0)
         {
             if (Trace)
@@ -426,7 +485,7 @@ public sealed class Walker
         }
 
         Count("map", true);
-        if (candidates.Count > 1)
+        if (costed.Count(x => x.Jumps == costed.Min(y => y.Jumps)) > 1)
         {
             _ambiguousFloors++;
         }
@@ -434,40 +493,55 @@ public sealed class Walker
         Do(candidates[0]);
     }
 
-    /// <summary>Whether the history's remaining point types can be walked from a node.</summary>
-    bool Walkable((int Col, int Row) from, string[] ahead)
+    /// <summary>
+    /// The fewest steps off the map's edges (Winged Boots: to any node of the next row, short of
+    /// the boss, as `RunMapGenerator.TravelableCoords` allows) that walk the history's remaining
+    /// point types from a node, or int.MaxValue when none does.
+    /// </summary>
+    int MinJumps((int Col, int Row) node, string[] ahead, int step, Dictionary<((int, int), int), int> memo)
     {
-        var memo = new Dictionary<((int, int), int), bool>();
-        bool Go((int Col, int Row) node, int step)
+        if (step >= ahead.Length)
         {
-            if (step >= ahead.Length)
-            {
-                return true;
-            }
+            return 0;
+        }
 
-            if (memo.TryGetValue((node, step), out bool known))
-            {
-                return known;
-            }
+        if (memo.TryGetValue((node, step), out int known))
+        {
+            return known;
+        }
 
-            bool ok = false;
-            if (S.MapNodes.TryGetValue(node, out var n))
+        int best = int.MaxValue;
+        if (S.MapNodes.TryGetValue(node, out var n))
+        {
+            foreach (var child in n.Children)
             {
-                foreach (var child in n.Children)
+                if (S.MapNodes.TryGetValue(child, out var cn) && Names.MapType(cn.NodeType) == ahead[step])
                 {
-                    if (S.MapNodes.TryGetValue(child, out var cn) && Names.MapType(cn.NodeType) == ahead[step] && Go(child, step + 1))
-                    {
-                        ok = true;
-                        break;
-                    }
+                    best = Math.Min(best, MinJumps(child, ahead, step + 1, memo));
                 }
             }
 
-            memo[(node, step)] = ok;
-            return ok;
+            if (best > 0 && BootsCharges() > 0 && n.Row < RunConstants.MapBossRowFor(S.Act) - 1)
+            {
+                foreach (var other in S.MapNodes.Values)
+                {
+                    if (other.Row == n.Row + 1 && !n.Children.Contains((other.Col, other.Row)) && Names.MapType(other.NodeType) == ahead[step]
+                        && MinJumps((other.Col, other.Row), ahead, step + 1, memo) is int rest and < int.MaxValue)
+                    {
+                        best = Math.Min(best, rest + 1);
+                    }
+                }
+            }
         }
 
-        return Go(from, 0);
+        memo[(node, step)] = best;
+        return best;
+    }
+
+    int BootsCharges()
+    {
+        int at = S.Relics.FindIndex(x => x.DefId == RunConstants.RelicWingedBoots);
+        return at < 0 ? 0 : Math.Max(0, RunConstants.WingedBootsTravels - S.Relics[at].Counter);
     }
 
     // --- entering the room -----------------------------------------------------------------
@@ -536,6 +610,8 @@ public sealed class Walker
             ? ids.EnumerateArray().Select(x => Names.MonsterBase(Names.Bare(x.GetString()))).Where(x => !Names.Allies.Contains(x)).ToList()
             : [];
         var emu = fight.Enemies.Select(x => Names.MonsterBase(Names.Enemy(x.DefId))).Where(x => !Names.Allies.Contains(x)).ToList();
+        _floorMonsters.AddRange(real);
+        _floorMonsters.AddRange(emu);
         // The history lists every creature the fight had, the ones that joined it as well; the
         // opening roster is the first of them, in order.
         bool prefix = real.Count >= emu.Count && real.Take(emu.Count).SequenceEqual(emu);
@@ -545,6 +621,12 @@ public sealed class Walker
         {
             // A creature joined mid-fight and its HP was rolled on Niche.
             _taint.TryAdd("Niche", $"floor {_floor}: {string.Join(",", real.Skip(emu.Count))} joined the fight");
+        }
+        else if (emu.FirstOrDefault(Names.Spawners.Contains) is string spawner)
+        {
+            // The history adds a joining creature's id only if it is not listed yet, so a
+            // second rat, a respawned Axebot or another Fabricator bot leaves no trace.
+            _taint.TryAdd("Niche", $"floor {_floor}: {spawner} can add creatures the history does not list");
         }
     }
 
@@ -578,6 +660,13 @@ public sealed class Walker
         // A purse both a full roll and a half one can give: either way it is one Rewards draw,
         // so only its amount is unknown.
         _goldUnknown = merc && gained >= fullMin && gained <= halfMax;
+        // Lava Lamp's flag is the fight's: no damage taken at all is no unblocked hit, for
+        // certain. Damage taken may all have been unblockable, which the flag ignores.
+        if (S.Relics.Any(x => x.DefId == RelicEffects.LavaLamp))
+        {
+            S.TookUnblockedDamageThisCombat = Int("damage_taken") > 0;
+            _lavaLampUnsure = Int("damage_taken") > 0;
+        }
 
         long f0 = System.Diagnostics.Stopwatch.GetTimestamp();
         _e.DebugResolveCombat(fatGremlinEscaped: fatEscaped, mercGoldWasStolen: mercStole);
@@ -747,7 +836,16 @@ public sealed class Walker
 
         if (S.RelicReward != 0)
         {
-            if (!_skippedRelics.Contains(S.RelicReward))
+            if (S.RelicReward == _deferredRelic && !CardOfferWaiting())
+            {
+                // The card reward the history claimed first is done: now the relic.
+                _deferredRelic = 0;
+                Mark();
+                Do(index);
+                return;
+            }
+
+            if (S.RelicReward != _deferredRelic && !_skippedRelics.Contains(S.RelicReward))
             {
                 string relic = Names.Relic(S.RelicReward);
                 int at = FindChoice("relic_choices", relic, _relicChoiceUsed);
@@ -755,12 +853,21 @@ public sealed class Walker
                 _relicChoiceUsed.Add(at);
                 if (Picked("relic_choices", at))
                 {
-                    Mark();
-                    Do(index);
-                    return;
+                    if (CardOfferWaiting() && CardBeforeRelic())
+                    {
+                        _deferredRelic = S.RelicReward;
+                    }
+                    else
+                    {
+                        Mark();
+                        Do(index);
+                        return;
+                    }
                 }
-
-                _skippedRelics.Add(S.RelicReward);
+                else
+                {
+                    _skippedRelics.Add(S.RelicReward);
+                }
             }
 
             index++;
@@ -769,7 +876,7 @@ public sealed class Walker
         if (S.RewardCardPending || S.PendingCardOffers.Count > 0 || S.PendingOtherCharacterCardRewards > 0)
         {
             // Opened only if the history shows the offer.
-            if (Arr("card_choices").Count() > _cardCursor)
+            if (CardChoicesLeft > 0)
             {
                 Do(index);
                 return;
@@ -778,19 +885,19 @@ public sealed class Walker
 
         // More card offers in the history than the emulator made: the fight added a reward
         // (The Hunt's kill, say), rolled on the Rewards stream after the fight's own.
-        if (_combatFloor && Arr("card_choices").Count() > _cardCursor)
+        if (_combatFloor && CardChoicesLeft > 0)
         {
             // Only The Hunt adds a card reward from inside a fight (`CombatRoom.AddExtraReward`);
             // anything else is an offer the emulator did not make.
             if (!S.Deck.Any(c => Names.Card(c.DefId) == "THE_HUNT"))
             {
-                Fail("card_reward", "offers", Arr("card_choices").Count().ToString(), _cardCursor.ToString(), Source.Rewards,
+                Fail("card_reward", "offers", Arr("card_choices").Count().ToString(), _cardUsed.Count.ToString(), Source.Rewards,
                     "card offers the history shows on the floor, against the emulator's");
             }
 
             _fightAddedRewards++;
             _taint.TryAdd("Rewards", $"floor {_floor}: The Hunt added a card reward");
-            _cardCursor = Arr("card_choices").Count();
+            _cardUsed.UnionWith(Enumerable.Range(0, Arr("card_choices").Count()));
         }
 
         Do(RunConstants.RewardSkipAction);
@@ -799,7 +906,7 @@ public sealed class Walker
     bool _fightJustResolved, _combatFloor, _goldUnknown;
     readonly HashSet<int> _skippedPotions = [];
     readonly HashSet<int> _skippedRelics = [];
-    int _cardCursor;
+    readonly HashSet<int> _cardUsed = [];
 
     List<string> OpenChoices(string list, HashSet<int> used) =>
         Arr(list).Select((c, i) => (c, i)).Where(t => !used.Contains(t.i)).Select(t => Names.Bare(t.c.GetProperty("choice").GetString())).ToList();
@@ -826,11 +933,17 @@ public sealed class Walker
         }
 
         var all = Arr("card_choices").ToList();
-        var offered = all.Skip(_cardCursor).Take(emu.Count).ToList();
-        var real = offered.Select(c => CardName(c.GetProperty("card"))).ToList();
-        _cardCursor += emu.Count;
+        // The history lists a floor's card rewards in the order the player CLAIMED them
+        // (`CardReward.OnSelect`), the emulator's screen in the order it made them: the offer
+        // is the history's group with the same cards, wherever it sits among those not yet
+        // walked; none such, and the next one in the list is compared.
+        var names = all.Select(c => CardName(c.GetProperty("card"))).ToList();
+        var window = CardGroup(names, _cardUsed, emu);
+        var offered = window.Select(i => all[i]).ToList();
+        var real = window.Select(i => names[i]).ToList();
+        _cardUsed.UnionWith(window);
         int pick = offered.FindIndex(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True);
-        if (pick < 0 && S.CardRewardRerollAvailable && all.Count >= _cardCursor + emu.Count)
+        if (pick < 0 && S.CardRewardRerollAvailable && CardChoicesLeft >= emu.Count)
         {
             // Driftwood: nothing taken from these three, and three more follow -- a reroll.
             Check("card_reward", "cards", string.Join(",", real), string.Join(",", emu), Source.Rewards);
@@ -846,11 +959,37 @@ public sealed class Walker
             shown.Insert(0, real[pick]);
         }
 
+        if (_lavaLampUnsure && !real.SequenceEqual(shown)
+            && real.Select(x => x.TrimEnd('+')).SequenceEqual(shown.Select(x => x.TrimEnd('+'))))
+        {
+            // Lava Lamp upgrades the offer when the fight dealt no unblocked, blockable damage.
+            // The history counts every unblocked point, unblockable ones too, so a fight that
+            // only hurt through them is not told apart.
+            Fail("card_reward", "cards", string.Join(",", real), string.Join(",", shown), FightDependent,
+                "Lava Lamp's upgrades: whether the fight's damage was all unblockable is not recorded");
+        }
+
         Check("card_reward", "cards", string.Join(",", real), string.Join(",", shown), Source.Rewards);
         // The pick, as the emulator's screen has it.
         pick = pick < 0 ? -1 : emu.IndexOf(real[pick]);
         if (pick < 0)
         {
+            if (Sacrifices())
+            {
+                var before = S.Relics.Select(x => Names.Relic(x.DefId)).ToList();
+                Mark();
+                Do(RunConstants.RewardSacrificeAction);
+                foreach (string relic in Minus(S.Relics.Select(x => Names.Relic(x.DefId)).ToList(), before))
+                {
+                    int at = FindChoice("relic_choices", relic, _relicChoiceUsed);
+                    int open = UnexplainedRelic();
+                    Check("relic_reward", "Pael's Wing relic", at >= 0 ? relic : open >= 0 ? RelicChoice(open) : "(none)", relic, Source.Rewards);
+                    _relicChoiceUsed.Add(at);
+                }
+
+                return;
+            }
+
             Do(RunConstants.RewardSkipAction);
             return;
         }
@@ -881,6 +1020,102 @@ public sealed class Walker
         Do(slot);
     }
 
+    /// <summary>
+    /// The history's card group the emulator's offer is: among the entries not yet walked,
+    /// taken a whole offer at a time from the first, the first run of side-by-side entries
+    /// with the offer's cards (any order); failing that, the first entries not yet walked, as
+    /// many as the offer has. Whole offers at a time, so a larger group (a fourth card the
+    /// emulator did not add) is not matched by its tail.
+    /// </summary>
+    public static List<int> CardGroup(List<string> history, HashSet<int> used, List<string> offer)
+    {
+        var open = Enumerable.Range(0, history.Count).Where(i => !used.Contains(i)).ToList();
+        var want = offer.OrderBy(x => x, StringComparer.Ordinal).ToList();
+        for (int s = 0; offer.Count > 0 && s + offer.Count <= open.Count; s += offer.Count)
+        {
+            var run = open.Skip(s).Take(offer.Count).ToList();
+            // A group's entries sit side by side in the list.
+            if (run[^1] - run[0] != offer.Count - 1)
+            {
+                continue;
+            }
+
+            if (run.Select(i => history[i]).OrderBy(x => x, StringComparer.Ordinal).SequenceEqual(want))
+            {
+                return run;
+            }
+        }
+
+        return open.Take(offer.Count).ToList();
+    }
+
+    int CardChoicesLeft => Arr("card_choices").Count() - _cardUsed.Count;
+
+    bool CardOfferWaiting() =>
+        (S.RewardCardPending || S.PendingCardOffers.Count > 0 || S.PendingOtherCharacterCardRewards > 0) && CardChoicesLeft > 0;
+
+    /// <summary>
+    /// The screen's claim order is the player's, and the history keeps only its results: a
+    /// card the floor's card reward gave that the floor also upgraded was in the deck when the
+    /// relic's pickup (War Paint, Whetstone) upgraded it, so the card was claimed first.
+    /// </summary>
+    bool CardBeforeRelic()
+    {
+        var upgraded = StrList("upgraded_cards");
+        return Arr("card_choices").Any(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True
+            && upgraded.Contains(CardKey(c.GetProperty("card")).Id));
+    }
+
+    int _deferredRelic;
+
+    /// <summary>
+    /// Pael's Wing: an offer the history took nothing from was given up for the relic's count
+    /// rather than skipped, as long as the run's final count (the relic's saved
+    /// RewardsSacrificed) has sacrifices to spare. A sacrifice that completes a pair pays a
+    /// relic at once, so it is made only where the floor shows a relic nothing else gave.
+    /// </summary>
+    bool Sacrifices()
+    {
+        int at = S.Relics.FindIndex(x => x.DefId == RunConstants.RelicPaelsWing);
+        if (at < 0 || !Legal(RunConstants.RewardSacrificeAction))
+        {
+            return false;
+        }
+
+        int done = S.Relics[at].Counter;
+        if (done >= _paelsSacrifices)
+        {
+            return false;
+        }
+
+        return (done + 1) % RunConstants.PaelsWingSacrifices != 0 || UnexplainedRelic() >= 0;
+    }
+
+    /// <summary>A relic the floor took that no screen walked so far gave, or -1.</summary>
+    int UnexplainedRelic()
+    {
+        var bought = StrList("bought_relics");
+        int i = 0;
+        foreach (var c in Arr("relic_choices"))
+        {
+            string relic = Names.Bare(c.GetProperty("choice").GetString());
+            if (!_relicChoiceUsed.Contains(i) && c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True
+                && !bought.Remove(relic))
+            {
+                return i;
+            }
+
+            i++;
+        }
+
+        return -1;
+    }
+
+    string RelicChoice(int index) => Names.Bare(Arr("relic_choices").ElementAt(index).GetProperty("choice").GetString());
+
+    int _paelsSacrifices = int.MaxValue;
+    bool _lavaLampUnsure;
+
     // --- deck selections -------------------------------------------------------------------
 
     void DeckSelect()
@@ -903,6 +1138,15 @@ public sealed class Walker
 
             if (S.PendingOfferOptional)
             {
+                // The grid takes any number, so it is done once nothing the floor gained is in
+                // it; a gained card it does not hold is a grid the emulator rolled otherwise.
+                var missing = gained.Skip(_gainCursor).Where(g => !offer.Contains(g)).ToList();
+                if (missing.Count > 0)
+                {
+                    Fail("card_offer", "grid", string.Join(",", missing), string.Join(",", offer), Source.Drawn,
+                        "cards the floor gained that the emulator's grid does not hold");
+                }
+
                 Do(S.PendingOfferCards.Length);
                 return;
             }
@@ -945,8 +1189,9 @@ public sealed class Walker
                     what = "enchant";
                     break;
                 case DeckSelection.Duplicate:
-                    wanted = Arr("cards_gained").Select(CardKey).ToList();
-                    cursor = ref _gainCursor;
+                    // The copy is the gained card that carries its original's floor.
+                    wanted = Arr("cards_gained").Where(IsCopy).Select(CardKey).ToList();
+                    cursor = ref _copyCursor;
                     what = "duplicate";
                     break;
                 default:
@@ -1082,7 +1327,8 @@ public sealed class Walker
 
             if (!Legal(index!.Value))
             {
-                Fail("event_option", "option", key, $"slot {index} not takeable ({LegalList()})", Source.Drawn);
+                Fail("event_option", "option", key, index < 0 ? "(not among the options the emulator drew)" : $"slot {index} not takeable ({LegalList()})",
+                    Source.Drawn);
             }
 
             Mark();
@@ -1156,6 +1402,12 @@ public sealed class Walker
                 return option is "OBSERVE_CHEF" or "LEAVE" ? 1 : 0;
             case "RANWID_THE_ELDER":
                 return option switch { "POTION" => 0, "GOLD" => 1, "RELIC" => 2, _ => null };
+            case "TINKER_TIME" when key.Contains(".pages.CHOOSE_CARD_TYPE."):
+                // Two of the three types, drawn (`TakeRandom(2)`): the slot is where the
+                // history's type sits in the emulator's draw.
+                return Array.FindIndex(S.EventRandomOffer, t => ((CardType)t).ToString().ToUpperInvariant() == option) is int type and >= 0 ? type : -1;
+            case "TINKER_TIME" when key.Contains(".pages.CHOOSE_RIDER."):
+                return Array.FindIndex(S.EventRandomOffer, r => ((TinkerRider)r).ToString().ToUpperInvariant() == option) is int rider and >= 0 ? rider : -1;
             case "HUNGRY_FOR_MUSHROOMS":
                 return option switch { "BIG_MUSHROOM" => 0, "FRAGRANT_MUSHROOM" => 1, _ => null };
             case "COLORFUL_PHILOSOPHERS":
@@ -1219,72 +1471,74 @@ public sealed class Walker
             NoteShelf();
         }
 
-        // The history's purchases, in the order it lists them: cards, relics, potions.
-        // Bought cards: the floor's gains, less card-reward picks and relic-made copies.
-        var rewardPicks = Arr("card_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
-            .Select(c => CardName(c.GetProperty("card"))).ToList();
-        var wantCards = Minus(Arr("cards_gained")
-            .Where(c => !(c.TryGetProperty("floor_added_to_deck", out var f) && f.ValueKind == JsonValueKind.Number && f.GetInt32() != _floor))
-            .Select(c => CardName(c)).ToList(), rewardPicks);
-        var wantRelics = Arr("relic_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
-            .Select(c => Names.Bare(c.GetProperty("choice").GetString())).ToList();
-        var wantPotions = Arr("potion_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
-            .Select(c => Names.Bare(c.GetProperty("choice").GetString())).ToList();
-        var wants = wantCards.Select(x => (Kind: 0, Item: x)).Concat(wantRelics.Select(x => (Kind: 1, Item: x)))
-            .Concat(wantPotions.Select(x => (Kind: 2, Item: x))).ToList();
-        while (_shopBuyCursor < wants.Count)
+        // The history's purchases, unordered: the floor's picked relics and potions, and as
+        // cards the floor's gains less card-reward picks and copies (see IsCopy).
+        if (_shopWants is null)
         {
-            var (k, item) = wants[_shopBuyCursor++];
-            int slot = -1;
-            if (k == 0)
-            {
-                for (int i = 0; i < 7; i++)
-                {
-                    if (S.ShopCards[i] != 0 && CardName(S.ShopCards[i], S.ShopCardUpgraded[i]) == item)
-                    {
-                        slot = i;
-                        break;
-                    }
-                }
+            var rewardPicks = Arr("card_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
+                .Select(c => CardName(c.GetProperty("card"))).ToList();
+            var wantCards = Minus(Arr("cards_gained").Where(c => !IsCopy(c)).Select(c => CardName(c)).ToList(), rewardPicks);
+            var wantRelics = Arr("relic_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
+                .Select(c => Names.Bare(c.GetProperty("choice").GetString())).ToList();
+            var wantPotions = Arr("potion_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
+                .Select(c => Names.Bare(c.GetProperty("choice").GetString())).ToList();
+            _shopWants = wantCards.Select(x => (Kind: 0, Item: x)).Concat(wantRelics.Select(x => (Kind: 1, Item: x)))
+                .Concat(wantPotions.Select(x => (Kind: 2, Item: x))).ToList();
+        }
 
+        // The history does not say in which order they were bought, and the order matters:
+        // Membership Card and The Courier discount what is bought after them, an egg upgrades
+        // the cards still on the shelf, and Dolly's Mirror copies a card already bought. So:
+        // the discounts first, then the cards the shelf shows as the history has them, then the
+        // other relics (eggs included), then cards only an egg's upgrade sets apart, then
+        // Dolly's Mirror, then potions.
+        int CardSlot(string item, bool exact)
+        {
+            for (int i = 0; i < 7; i++)
+            {
+                if (S.ShopCards[i] != 0 && (exact ? CardName(S.ShopCards[i], S.ShopCardUpgraded[i]) == item : Names.Card(S.ShopCards[i]) == item.TrimEnd('+')))
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        int RelicSlot(string item) => Array.FindIndex(S.ShopRelics, r => r != 0 && Names.Relic(r) == item) is int i and >= 0 ? i + 7 : -1;
+        int PotionSlot(string item) => Array.FindIndex(S.ShopPotions, p => p != 0 && Names.Potion(p) == item) is int i and >= 0 ? i + 10 : -1;
+        Func<(int Kind, string Item), int>[] passes =
+        [
+            w => w.Kind == 1 && ShopDiscountRelics.Contains(w.Item) ? RelicSlot(w.Item) : -1,
+            w => w.Kind == 0 ? CardSlot(w.Item, exact: true) : -1,
+            w => w.Kind == 1 && w.Item != "DOLLYS_MIRROR" ? RelicSlot(w.Item) : -1,
+            w => w.Kind == 0 ? CardSlot(w.Item, exact: false) : -1,
+            w => w.Kind == 1 ? RelicSlot(w.Item) : -1,
+            w => w.Kind == 2 ? PotionSlot(w.Item) : -1,
+        ];
+        foreach (var pass in passes)
+        {
+            for (int w = 0; w < _shopWants.Count; w++)
+            {
+                int slot = pass(_shopWants[w]);
                 if (slot < 0)
                 {
-                    for (int i = 0; i < 7; i++)
-                    {
-                        if (S.ShopCards[i] != 0 && Names.Card(S.ShopCards[i]) == item.TrimEnd('+'))
-                        {
-                            slot = i;
-                            break;
-                        }
-                    }
+                    continue;
                 }
-            }
-            else if (k == 1)
-            {
-                slot = Array.FindIndex(S.ShopRelics, r => r != 0 && Names.Relic(r) == item);
-                slot = slot < 0 ? -1 : slot + 7;
-            }
-            else
-            {
-                slot = Array.FindIndex(S.ShopPotions, p => p != 0 && Names.Potion(p) == item);
-                slot = slot < 0 ? -1 : slot + 10;
-            }
 
-            if (slot < 0)
-            {
-                // A card bought in the shop the emulator does not stock -- or gained some other
-                // way on the floor; the shelf comparison at the end of the floor decides.
-                continue;
-            }
+                if (_shopWants[w].Kind == 2)
+                {
+                    FreeSlot();
+                }
 
-            if (k == 2)
-            {
-                FreeSlot();
+                _shopWants.RemoveAt(w);
+                BuySlot(slot);
+                return;
             }
-
-            BuySlot(slot);
-            return;
         }
+
+        // What is left is not on the shelf: bought in the shop where the emulator does not
+        // stock it, or gained some other way on the floor; the shelf comparison decides.
 
         if (Arr("cards_removed").Any() && !_shopRemovalDone)
         {
@@ -1313,7 +1567,22 @@ public sealed class Walker
 
     int _shopGoldLent;
 
+    /// <summary>The purchases still to make on this floor, or null before the shop is seen.</summary>
+    List<(int Kind, string Item)>? _shopWants;
+
+    /// <summary>Relics that change the price of what is bought after them in the same visit.</summary>
+    static readonly HashSet<string> ShopDiscountRelics = ["MEMBERSHIP_CARD", "THE_COURIER"];
+
+    /// <summary>
+    /// A gained card that carries `floor_added_to_deck` is a copy of one already in the deck
+    /// (Dolly's Mirror, Bing Bong, a rest site's Clone, Reflections): a new card's entry has no
+    /// floor, a copy keeps its original's.
+    /// </summary>
+    static bool IsCopy(JsonElement gained) => gained.TryGetProperty("floor_added_to_deck", out var f) && f.ValueKind == JsonValueKind.Number;
+
     int _shopCardsBought;
+
+    int _copyCursor;
 
     void BuySlot(int slot)
     {
@@ -1368,13 +1637,11 @@ public sealed class Walker
         // own screens; a copy a relic made (Dolly's Mirror) keeps its first floor.
         // The shelf's own entries are the last ones: as many as the emulator showed, less its buys.
         int left = Math.Max(0, _shopShownCards.Count - _shopCardsBought);
-        var rest = Arr("card_choices").Skip(_cardCursor).ToList();
+        var rest = Arr("card_choices").Where((_, i) => !_cardUsed.Contains(i)).ToList();
         var unbought = rest.Skip(Math.Max(0, rest.Count - left)).Select(c => CardKey(c.GetProperty("card")).Id).ToList();
         var picked = Arr("card_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
             .Select(c => CardKey(c.GetProperty("card")).Id).ToList();
-        var bought = Arr("cards_gained")
-            .Where(c => !(c.TryGetProperty("floor_added_to_deck", out var f) && f.ValueKind == JsonValueKind.Number && f.GetInt32() != _floor))
-            .Select(c => CardKey(c).Id).ToList();
+        var bought = Arr("cards_gained").Where(c => !IsCopy(c)).Select(c => CardKey(c).Id).ToList();
         var realCards = unbought.Concat(Minus(bought, picked)).OrderBy(x => x).ToList();
         var realRelics = Arr("relic_choices").Select(c => Names.Bare(c.GetProperty("choice").GetString())).OrderBy(x => x).ToList();
         var realPotions = Arr("potion_choices").Select(c => Names.Bare(c.GetProperty("choice").GetString())).OrderBy(x => x).ToList();
@@ -1426,13 +1693,20 @@ public sealed class Walker
 
     void Rest()
     {
+        var choices = StrList("rest_site_choices");
         if (S.RestResultPending)
         {
+            if (_restCursor < choices.Count)
+            {
+                // Miniature Tent leaves the other options open after the first.
+                Fail("rest", "option", choices[_restCursor], "(the rest site closed after one option)", Source.Static,
+                    "the history took another option at this rest site");
+            }
+
             Do(0);
             return;
         }
 
-        var choices = StrList("rest_site_choices");
         if (_restCursor < choices.Count)
         {
             string choice = choices[_restCursor++];
@@ -1580,12 +1854,32 @@ public sealed class Walker
 
         if (combat)
         {
-            // A fight's own doings (a card stolen and kept, a curse added, a relic spent) are the
-            // fight's, like its HP: the deck and relics are set to what the history says, unscored.
-            // What the rewards added was scored on the reward screens.
+            // A fight's own doings (a card stolen and kept, a curse added, a card upgraded for
+            // good) are the fight's, like its HP, and the history shows them mixed with what the
+            // floor's screens did. What the emulator did on them (a card taken, a relic's pickup:
+            // War Paint's or Whetstone's upgrades, a curse) must be among the history's changes;
+            // the rest of the history's are taken as the fight's, and the deck is set to it.
+            var extraAdded = Minus(Minus(emuDeck, deckBefore), Minus(expectedList, deckBefore));
+            var extraRemoved = Minus(Minus(deckBefore, emuDeck), Minus(deckBefore, expectedList));
+            if (extraAdded.Count > 0 || extraRemoved.Count > 0)
+            {
+                Check("deck", "cards (fight floor)", "+" + Fmt(Minus(expectedList, emuDeck)), "+" + Fmt(Minus(emuDeck, expectedList)), Source.FloorDrawn,
+                    "a change the emulator made on the floor's screens that the history does not show");
+            }
+            else
+            {
+                Count("deck", true);
+            }
+
             if (expDiff.Length > 0 || emuDiff.Length > 0)
             {
                 SetDeck(expectedList);
+            }
+
+            // Max HP, where nothing in the fight itself can have moved it.
+            if (_hasStats && !FightMovesMaxHp())
+            {
+                Check("outcome", "max hp (fight floor)", Int("max_hp").ToString(), S.PlayerMaxHp.ToString(), Source.FloorDrawn);
             }
 
             int g = Int("gold_gained");
@@ -1633,8 +1927,35 @@ public sealed class Walker
         }
 
         // The belt as the history has it: what the floor picked or bought, less what it drank
-        // or dropped. Potions are not scored; they are kept right because events ask for them.
+        // or dropped, against the emulator's less what the history drank or dropped here. A
+        // fight's own potions (Alchemize, a potion a relic procures) are the history's alone.
+        var emuBelt = Minus(S.PotionSlots.Where(x => x != 0).Select(Names.Potion).ToList(),
+            StrList("potion_used").Concat(StrList("potion_discarded")).ToList());
         SyncPotions();
+        var histBelt = _belt.ToList();
+        var potionsExtra = Minus(emuBelt, histBelt);
+        var potionsMissing = combat ? [] : Minus(histBelt, emuBelt);
+        // A potion drunk away from a fight did what it does (Entropic Brew's potions, say),
+        // which the walk does not replay: that floor's belt is not scored.
+        bool drankAwayFromFight = !combat && Arr("potion_used").Any();
+        if (drankAwayFromFight)
+        {
+            Count("potions", true);
+        }
+        else if (potionsExtra.Count > 0 || potionsMissing.Count > 0)
+        {
+            Check("potions", "belt", "+" + Fmt(potionsMissing), "+" + Fmt(potionsExtra), Source.FloorDrawn,
+                "potions after the floor: what each side holds that the other does not");
+        }
+        else if (histBelt.Count > S.MaxPotionSlots)
+        {
+            Check("potions", "slots", histBelt.Count.ToString(), S.MaxPotionSlots.ToString(), Source.FloorDrawn,
+                "the history holds more potions than the emulator's belt has slots");
+        }
+        else
+        {
+            Count("potions", true);
+        }
         if (_hasStats)
         {
             // Fights are not replayed: their HP and gold are the history's.
@@ -1643,6 +1964,20 @@ public sealed class Walker
     }
 
     readonly List<string> _belt = [];
+
+    /// <summary>
+    /// Whether the floor's fight may have changed max HP itself (decompiled: Feed and Brightest
+    /// Flame, Fruit Juice drunk, Darkstone Periapt on a curse the fight added, Dragon Fruit on
+    /// gold the fight paid, Scroll of Biting's Paper Cuts).
+    /// </summary>
+    bool FightMovesMaxHp() =>
+        S.Deck.Any(c => Names.Card(c.DefId) is "FEED" or "BRIGHTEST_FLAME")
+        || StrList("potion_used").Contains("FRUIT_JUICE")
+        || S.Relics.Any(r => Names.Relic(r.DefId) is "DARKSTONE_PERIAPT")
+        || (S.Relics.Any(r => Names.Relic(r.DefId) is "DRAGON_FRUIT") && S.Deck.Any(c => Names.Card(c.DefId) == "HAND_OF_GREED"))
+        || _floorMonsters.Contains("SCROLL_OF_BITING");
+
+    readonly List<string> _floorMonsters = [];
 
     void SyncPotions()
     {
@@ -1843,7 +2178,24 @@ public sealed class Walker
     void Fail(string component, string field, string expected, string emulator, Source source, string? note = null)
     {
         var (klass, drawn, why) = Classify(source);
+        if (klass == Emulator && _profile is { Available: true } && LockedLooking(expected, emulator) is var (entry, epoch))
+        {
+            // The pools leave a locked epoch's content out, so a profile without it never sees
+            // what the emulator offered here.
+            klass = Profile;
+            note = (note is null ? "" : note + "; ") + $"the emulator offered {entry}, which the profile unlocks with {epoch}, and nothing {epoch} unlocks appears in the run";
+        }
+
         Fail(component, field, expected, emulator, klass, note, drawn, why);
+    }
+
+    /// <summary>An entry only the emulator's side names whose epoch the run never shows, or null.</summary>
+    (string, string)? LockedLooking(string expected, string emulator)
+    {
+        static IEnumerable<string> Tokens(string s) =>
+            s.Split([',', '|', ' ', '>'], StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim('+'));
+        var theirs = Tokens(expected).ToHashSet();
+        return _profile!.Unseen(Tokens(emulator).Where(t => !theirs.Contains(t)), _seen);
     }
 
     void Fail(string component, string field, string expected, string emulator, string klass, string? note = null,
@@ -1882,6 +2234,34 @@ public sealed class Walker
     }
 
     // --- history access --------------------------------------------------------------------
+
+    /// <summary>A relic's saved int at the run's end (`props.ints`), or null.</summary>
+    static int? SavedInt(JsonElement rec, string relic, string name)
+    {
+        if (!rec.GetProperty("players")[0].TryGetProperty("relics", out var relics))
+        {
+            return null;
+        }
+
+        foreach (var r in relics.EnumerateArray())
+        {
+            if (Names.Bare(r.GetProperty("id").GetString()) != relic || !r.TryGetProperty("props", out var props)
+                || !props.TryGetProperty("ints", out var ints))
+            {
+                continue;
+            }
+
+            foreach (var v in ints.EnumerateArray())
+            {
+                if (v.GetProperty("name").GetString() == name)
+                {
+                    return v.GetProperty("value").GetInt32();
+                }
+            }
+        }
+
+        return null;
+    }
 
     IEnumerable<JsonElement> Arr(string name) =>
         _hasStats && _stats.TryGetProperty(name, out var a) && a.ValueKind == JsonValueKind.Array ? a.EnumerateArray() : [];
