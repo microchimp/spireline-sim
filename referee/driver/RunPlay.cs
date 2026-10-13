@@ -507,7 +507,9 @@ public static partial class Driver
     /// answered with a random card, then the screen left. Neow's rewards cannot be skipped.
     /// </summary>
     /// <param name="leave">false for a boss's screen, which is left by the act change instead.</param>
-    private static async Task TakeRewards(RunLog log, bool takeAll, bool leave = true)
+    /// <param name="depth">How deep this screen sits: a reward that opens a screen of its own
+    /// (Lost Coffer off Neow's Bones) is answered at depth 1.</param>
+    private static async Task TakeRewards(RunLog log, bool takeAll, bool leave = true, int depth = 0)
     {
         var sync = RunManager.Instance.RewardsSetSynchronizer;
         var tree = (SceneTree)Engine.GetMainLoop();
@@ -524,6 +526,7 @@ public static partial class Driver
                 if (reward is PotionReward && player.PotionSlots.All(p => p != null) && !set.DisallowSkipping) take = false;
                 if (!take) continue;
                 var d = log.Begin("rewards");
+                if (depth > 0) d["depth"] = depth;
                 d["offer"] = new JsonArray(set.Rewards.Where(r => !r.SuccessfullySelected).Select(r => (JsonNode)RewardJson(r)).ToArray());
                 d["choice"] = RewardJson(reward);
                 Task<bool> task = sync.SelectLocalReward(reward);
@@ -535,7 +538,7 @@ public static partial class Driver
                     if (TopRewardsSet() is { } nested && !ReferenceEquals(nested, top))
                     {
                         log.End();
-                        await TakeRewards(log, takeAll: true);
+                        await TakeRewards(log, takeAll: true, depth: depth + 1);
                         d = log.Open ?? log.Begin("rewards_continued");
                         continue;
                     }

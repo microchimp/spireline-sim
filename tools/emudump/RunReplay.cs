@@ -243,6 +243,7 @@ static class RunReplay
                 if ((string)d["screen"]! == "act_change" && s.CurrentActIndex == act && s.Phase != RunPhase.Event)
                     throw new Divergence($"act change: emulator stayed in act {act + 1} ({s.Phase})");
                 od["room"] = new JsonArray(s.Phase.ToString(), s.Phase == RunPhase.Event ? RunSnap.EventEntry(s.EventId) : null);
+                if (s.CurrentActIndex != act) od["map"] = RunSnap.Map(s);
                 return;
             }
 

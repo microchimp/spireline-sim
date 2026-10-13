@@ -105,7 +105,15 @@ def fight_diff(game: dict, emu: dict, nm: dict | None):
     return None
 
 
-def compare_decision(d: dict, ed: dict, nm) -> list:
+def compare_map(game_map: list, emu_map: list) -> list:
+    """A new act's map: every point's type and children (run_compare's act-1 comparison)."""
+    from tools.fidelity.run_compare import map_set
+    gm, em = map_set(game_map), map_set(emu_map)
+    return [(f"map {c}", gm.get(c), em.get(c)) for c in sorted(set(gm) | set(em), key=lambda c: (c[1], c[0]))
+            if gm.get(c) != em.get(c)]
+
+
+def compare_decision(d: dict, ed: dict, nm, game_maps: list | None = None) -> list:
     if d.get("screen") == "combat" and d.get("result") == "death":
         # The run ends here; what is left to compare is the outcome (the fight's steps are
         # compared as a fight).
@@ -115,7 +123,13 @@ def compare_decision(d: dict, ed: dict, nm) -> list:
         diffs.append(("replay", d.get("choice"), ed["error"]))
     screen = d.get("screen", "")
     go, eo = norm_offer(screen, d.get("offer"), False), norm_offer(screen, ed.get("offer"), True)
-    if go is not None and eo is not None and go != eo:
+    if screen == "rewards" and d.get("depth") and go is not None and eo is not None:
+        # A screen a reward opened on top of another (Lost Coffer off Neow's Bones): the emulator
+        # keeps one screen and adds the inner rewards to it, so the inner screen's offer is a
+        # part of the emulator's.
+        if any(x not in eo for x in go):
+            diffs.append(("offer", go, eo))
+    elif go is not None and eo is not None and go != eo:
         diffs.append(("offer", go, eo))
     if screen == "event" and d.get("offer") is not None and ed.get("enabled") is not None:
         g_en = [i for i, o in enumerate(d["offer"]) if not o[1]]
@@ -123,6 +137,10 @@ def compare_decision(d: dict, ed: dict, nm) -> list:
         if g_en != e_en:
             diffs.append(("event options enabled", g_en, e_en))
     diffs += room_of(screen, d, ed)
+    if screen == "act_change" and ed.get("map") is not None and game_maps:
+        act = (d.get("snap") or {}).get("current_act_index")
+        if act is not None and act < len(game_maps):
+            diffs += compare_map(game_maps[act], ed["map"])[:6]
     if not diffs and d.get("snap") is not None and ed.get("snap") is not None:
         diffs = rs.compare(rs.from_save(d["snap"]), ed["snap"])
         if screen == "act_change":
@@ -177,7 +195,7 @@ def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
                 fights.append((i, d.get("encounter"), fd))
                 if fd:
                     fight_firsts[rs.enc(d.get("encounter")) or "?"] += 1
-            diffs = compare_decision(d, edec[i], nm)
+            diffs = compare_decision(d, edec[i], nm, ref.get("maps"))
             if edec[i].get("anchored"):
                 # The replay put the emulator where the game came out of this fight (RunReplay's
                 # anchoring): a combat divergence, counted, and the run goes on being compared.

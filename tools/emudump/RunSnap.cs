@@ -70,6 +70,17 @@ static class RunSnap
     static JsonObject Bag(RelicGrabBag bag) => new(bag.Lists
         .Select(l => KeyValuePair.Create(l.Rarity.ToString().ToLowerInvariant(), (JsonNode?)Arr(l.Relics, r => RelicEntry(r)))));
 
+    static readonly string[] NodeNames = ["Unassigned", "Monster", "Elite", "RestSite", "Shop", "Treasure", "Boss", "Unknown", "Ancient"];
+
+    /// <summary>The act's map in the driver's Map shape: every point with its type and children.</summary>
+    public static JsonArray Map(RunState s) => new(s.MapNodes.Values.OrderBy(n => n.Row).ThenBy(n => n.Col)
+        .Select(n => (JsonNode)new JsonObject
+        {
+            ["col"] = n.Col, ["row"] = n.Row, ["type"] = NodeNames[n.NodeType],
+            ["children"] = new JsonArray(n.Children.OrderBy(c => c.Row).ThenBy(c => c.Col)
+                .Select(c => (JsonNode)new JsonArray(c.Col, c.Row)).ToArray()),
+        }).ToArray());
+
     public static JsonObject Export(RunEngine e)
     {
         var s = e.State;
