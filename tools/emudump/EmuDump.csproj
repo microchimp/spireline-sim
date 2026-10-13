@@ -11,6 +11,10 @@
     <None Include="..\fidelity\power_aliases.json" Link="power_aliases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The invariant and metamorphic checks live with the xunit suite; EmuDump runs them on recorded fights. -->
+    <Compile Include="..\..\src\Sts2Emulator.Tests\Support\Invariants\*.cs" LinkBase="Invariants" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Sts2Emulator\Sts2Emulator.csproj" />
   </ItemGroup>
 </Project>

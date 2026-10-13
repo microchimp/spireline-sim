@@ -55,6 +55,18 @@ if (args[0] == "fight")
     return;
 }
 
+if (args[0] == "invariants")
+{
+    Console.WriteLine(Live.Run(args).ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    return;
+}
+
+if (args[0] == "meta")
+{
+    Console.WriteLine(Meta.Run(args).ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    return;
+}
+
 if (args[0] == "reanchor")
 {
     // EmuDump reanchor <referee out.json> [--seed SEED]... [--scramble] [--stale ...] [--perturb-moves] [--trace] [--trace-to STEP]:
