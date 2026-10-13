@@ -4240,7 +4240,13 @@ public sealed class RunEngine
                     // than in the run. A run cannot know that total, so the badge is not
                     // modelled -- see the fixed-profile note in HANDOFF.md.
                 }
-                else if (action != RunConstants.EventSkipAction)
+                else if (action == RunConstants.EventSkipAction)
+                {
+                    // `Leave` is a real option here, and it is not free: it downgrades one
+                    // upgraded card, picked off the event's own stream.
+                    RunNonCombatEffects.DowngradeRandomUpgradedCard(State, "WELCOME_TO_WONGOS");
+                }
+                else
                 {
                     return -1;
                 }

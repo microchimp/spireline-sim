@@ -2737,6 +2737,26 @@ public static class RunNonCombatEffects
         state.Deck[pick] = state.Deck[pick] with { Upgraded = true };
     }
 
+    /// <summary>
+    /// <c>WelcomeToWongos.Leave</c>: <c>base.Rng.NextItem(Deck.Where(IsUpgraded))</c> and
+    /// <c>CardCmd.Downgrade</c>. No upgraded card, no pick (an empty list is no draw).
+    /// </summary>
+    public static bool DowngradeRandomUpgradedCard(RunState state, string eventEntry)
+    {
+        var candidates = Enumerable
+            .Range(0, state.Deck.Count)
+            .Where(i => state.Deck[i].Upgraded)
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            return false;
+        }
+
+        int index = EventRng(state, eventEntry).NextItem(candidates);
+        state.Deck[index] = state.Deck[index] with { Upgraded = false };
+        return true;
+    }
+
     /// <summary>Upgrade one upgradable card, chosen off the event's own stream.</summary>
     public static bool UpgradeRandomCard(RunState state, string eventEntry)
     {
