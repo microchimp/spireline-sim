@@ -45,6 +45,7 @@ def main() -> int:
     ap.add_argument("--stop-after-act", type=int, default=3)
     ap.add_argument("--avoid", default="")
     ap.add_argument("--max-decisions", type=int, default=1500)
+    ap.add_argument("--potions", action="store_true", help="drink potions in fights")
     ap.add_argument("--timeout", type=float, default=7200)
     ap.add_argument("--no-game", action="store_true", help="reuse jobs/<name>.out.json; replay and compare only")
     a = ap.parse_args()
@@ -54,7 +55,7 @@ def main() -> int:
     if not a.no_game:
         specs = [{"kind": "run", "seed": s, "character": "IRONCLAD", "ascension": 10, "chooser_seed": a.start + i,
                   "buff_max_hp": a.buff, "avoid": [x for x in a.avoid.split(",") if x],
-                  "stop_after_act": a.stop_after_act, "max_decisions": a.max_decisions}
+                  "stop_after_act": a.stop_after_act, "max_decisions": a.max_decisions, "potions": a.potions}
                  for i, s in enumerate(seeds(a.runs, a.start))]
         procs = []
         for p in range(min(a.procs, len(specs))):

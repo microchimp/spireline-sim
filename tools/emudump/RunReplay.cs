@@ -208,6 +208,17 @@ static class RunReplay
                 return;
             }
 
+            case "crystal_sphere":
+            {
+                // A cell with a tool: the Big tool's action is the cell, the Small tool's is past
+                // the grid (RunConstants.CrystalSphereSmallToolAction).
+                Expect(e, RunPhase.CrystalSphere, "crystal sphere");
+                var c = d["choice"]!.AsObject();
+                int cell = (int)c["x"]! * RunConstants.CrystalSphereSize + (int)c["y"]!;
+                Step(e, (string)c["tool"]! == "Small" ? RunConstants.CrystalSphereSmallToolAction + cell : cell, od, "crystal sphere");
+                return;
+            }
+
             case "boss_proceed":
             case "act_change":
             {
@@ -450,6 +461,15 @@ static class RunReplay
             }
             if ((string)a["kind"]! == "end_turn")
                 e.Step(s.ActiveCombat.Hand.Count, -1, out _, out _, out _);
+            else if ((string)a["kind"]! == "potion")
+            {
+                // CombatEngine's potion actions follow end turn: hand.Count + 1 + slot.
+                int slot = (int)a["slot"]!;
+                string want = Bare((string?)a["potion"]);
+                if (RunSnap.PotionEntry(s.PotionSlots[slot]) != want)
+                    throw new Divergence($"potion slot {slot}: game {want}, emulator {RunSnap.PotionEntry(s.PotionSlots[slot])}");
+                e.Step(s.ActiveCombat.Hand.Count + 1 + slot, (int)a["target_slot"]!, out _, out _, out _);
+            }
             else if ((bool?)a["played"] != false)
                 e.Step((int)a["hand_index"]!, (int)a["target_slot"]!, out _, out _, out _);
             var chosen = new JsonArray();

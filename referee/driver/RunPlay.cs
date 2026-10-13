@@ -294,7 +294,7 @@ public static partial class Driver
             // Custom screens the driver does not answer yet: the Crystal Sphere's grid
             // (CrystalSphereMinigame) and the Fake Merchant's stall (an event with a merchant
             // inventory and no options). The run ends there, recorded, rather than hanging.
-            if (ev.Id.Entry is "CRYSTAL_SPHERE" or "FAKE_MERCHANT") return $"unsupported_event:{ev.Id.Entry}";
+            if (ev.Id.Entry is "FAKE_MERCHANT") return $"unsupported_event:{ev.Id.Entry}";
             if (ev.CurrentOptions.Count == 0)
             {
                 // Some events lay out their page a few frames after the room opens.
@@ -316,6 +316,7 @@ public static partial class Driver
             run.EventSynchronizer.ChooseLocalOption(pick);
             await IdleBeat();
             log.End();
+            if (await PlayCrystalSphere(log) is { } sphereStop) return sphereStop;
             await TakeRewards(log, takeAll: screen is "neow" or "ancient");
             if (screen == "neow") break;  // Neow's finished page leads to the map
         }
@@ -327,6 +328,61 @@ public static partial class Driver
 
     private static bool IsPunchOff(RunState state) =>
         state.CurrentRoom is EventRoom && RunManager.Instance.EventSynchronizer.GetLocalEvent()?.Id.Entry == "PUNCH_OFF";
+
+    /// <summary>
+    /// The Crystal Sphere's grid (NCrystalSphereScreen over a CrystalSphereMinigame): random
+    /// clicks, each with a random tool, among the cells whose area still holds fog (a click on
+    /// clear ground only wastes a divination), through the minigame's own SetTool and
+    /// CellClicked, as the screen's buttons and cells call them. Its rewards are claimed as they
+    /// come; the screen's Proceed (ProceedFromTerminalRewardsScreen) is pressed at the end.
+    /// Returns null when no sphere is open or once it is done.
+    /// </summary>
+    private static async Task<string?> PlayCrystalSphere(RunLog log)
+    {
+        object? Screen() => MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.GetChildren()
+            .FirstOrDefault(n => n.GetType().Name == "NCrystalSphereScreen");
+        if (Screen() is not { } screen) return null;
+        var game = screen.GetType().GetField("_entity", Private)!.GetValue(screen)!;
+        var gt = game.GetType();
+        var adjacent = gt.GetMethod("GetAdjacentCells", Private)!;
+        var toolType = gt.GetNestedType("CrystalSphereToolType")!;
+        for (int guard = 0; guard < 20 && !(bool)gt.GetProperty("IsFinished")!.GetValue(game)!; guard++)
+        {
+            var cells = (Array)gt.GetField("cells")!.GetValue(game)!;
+            bool Hidden(int x, int y) => (bool)cells.GetValue(x, y)!.GetType().GetProperty("IsHidden")!.GetValue(cells.GetValue(x, y))!;
+            var cands = new List<(string tool, int x, int y)>();
+            for (int x = 0; x < cells.GetLength(0); x++)
+                for (int y = 0; y < cells.GetLength(1); y++)
+                {
+                    var area = ((System.Collections.IEnumerable)adjacent.Invoke(game, new object[] { x, y })!).Cast<object>()
+                        .Select(v => ((Godot.Vector2I)v)).ToList();
+                    if (area.Any(c => Hidden(c.X, c.Y))) cands.Add(("Big", x, y));
+                    if (Hidden(x, y)) cands.Add(("Small", x, y));
+                }
+
+            if (cands.Count == 0) break;
+            var (tool, cx, cy) = cands[log.Rng.Next(cands.Count)];
+            var d = log.Begin("crystal_sphere");
+            d["choice"] = new JsonObject { ["tool"] = tool, ["x"] = cx, ["y"] = cy };
+            gt.GetMethod("SetTool")!.Invoke(game, new[] { Enum.Parse(toolType, tool) });
+            await WaitAnswering(log, (Task)gt.GetMethod("CellClicked")!.Invoke(game, new[] { cells.GetValue(cx, cy) })!, "crystal sphere click");
+            await IdleBeat();
+            log.End();
+        }
+
+        // CompleteMinigame: its rewards screen, then the screen's Proceed.
+        var wait = System.Diagnostics.Stopwatch.StartNew();
+        while (wait.Elapsed.TotalSeconds < 20 && !RunManager.Instance.EventSynchronizer.GetLocalEvent().IsFinished)
+        {
+            if (TopRewardsSet() != null) await TakeRewards(log, takeAll: false);
+            await IdleBeat();
+        }
+
+        if (!RunManager.Instance.EventSynchronizer.GetLocalEvent().IsFinished) return "crystal_sphere_unfinished";
+        await WaitFor(RunManager.Instance.ProceedFromTerminalRewardsScreen(), "crystal sphere proceed");
+        await IdleBeat();
+        return null;
+    }
 
     /// <summary>Idle, and a heartbeat for the watchdog: out of a fight the driver waits on screens, not actions.</summary>
     private static async Task<bool> IdleBeat()
@@ -345,7 +401,8 @@ public static partial class Driver
         var fight = new JsonObject { ["steps"] = steps };
         d["fight"] = fight;
         int choicesBefore = ScreenLog?.Count ?? 0;
-        string? error = await FightLoop(state, new Random(log.Rng.Next()), (int?)spec["max_actions"] ?? 400, steps);
+        string? error = await FightLoop(state, new Random(log.Rng.Next()), (int?)spec["max_actions"] ?? 400, steps,
+            potions: (bool?)spec["potions"] == true);
         fight["choices"] = new JsonArray((ScreenLog ?? new JsonArray()).Skip(choicesBefore).Select(c => c!.DeepClone()).ToArray());
         if (error != null) fight["error"] = error;
         var player = state.Players[0];
@@ -643,7 +700,12 @@ public static partial class Driver
     /// Combat.cs's fight loop (seeded random legal plays, a snapshot after each), for a fight the
     /// run has already entered. Kept identical to that loop so run fights join the fight corpus.
     /// </summary>
-    private static async Task<string?> FightLoop(RunState state, Random rng, int maxActions, JsonArray steps)
+    /// <param name="potions">
+    /// Also drink potions (spec "potions"): with a one-in-eight chance per action, a random usable
+    /// potion (CombatOnly or AnyTime, as NPotionPopup's Use button allows) through
+    /// PotionModel.EnqueueManualUse, at a random living enemy when it needs one.
+    /// </param>
+    private static async Task<string?> FightLoop(RunState state, Random rng, int maxActions, JsonArray steps, bool potions = false)
     {
         var run = RunManager.Instance;
         Player player = state.Players[0];
@@ -667,6 +729,32 @@ public static partial class Driver
                 {
                     options.Add((h, -1));
                 }
+            }
+
+            var usable = potions ? player.PotionSlots.Select((p, slot) => (p, slot))
+                .Where(x => x.p is { IsQueued: false, PassesCustomUsabilityCheck: true }
+                            && x.p.Usage is MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly or MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime
+                            && player.CanRemovePotions)
+                .ToList() : new();
+            if (usable.Count > 0 && rng.Next(8) == 0)
+            {
+                var (potion, slot) = usable[rng.Next(usable.Count)];
+                Creature? at = potion!.TargetType == TargetType.AnyEnemy && enemies.Count > 0 ? enemies[rng.Next(enemies.Count)] : null;
+                var pa = new JsonObject
+                {
+                    ["kind"] = "potion", ["slot"] = slot, ["potion"] = potion.Id.Entry,
+                    ["target_slot"] = at != null ? combat.Enemies.ToList().IndexOf(at) : -1,
+                };
+                potion.EnqueueManualUse(at);
+                if (!await Idle())
+                {
+                    CurrentStep = 0;
+                    return $"idle_timeout after step {i}: {pa.ToJsonString()}";
+                }
+
+                steps.Add(new JsonObject { ["action"] = pa, ["state"] = Snapshot(state, player) });
+                Heartbeat();
+                continue;
             }
 
             var (hi, ti) = options[rng.Next(options.Count)];
