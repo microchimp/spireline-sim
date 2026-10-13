@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Xunit;
@@ -9,10 +11,8 @@ namespace Sts2Emulator.Tests;
 // three distinct cards with CardFactory.GetDistinctForCombat off Rng.CombatCardGeneration
 // and lets you choose one, free for the turn; OnUpgrade removes the Exhaust.
 //
-// The choice is real. Two differences remain: the options come from the emulator's
-// colourless pool rather than the character's unlocked pool, and the game's canSkip is
-// not modelled — every action in a selection is a candidate, so skipping would need one
-// of its own.
+// The three come from Owner.Character.CardPool (the Ironclad's, through FilterForCombat),
+// not the colourless pool, shuffled whole on the generation stream; the screen has canSkip.
 public class DiscoveryTests
 {
     [Fact]
@@ -50,8 +50,48 @@ public class DiscoveryTests
 
         fight.Play();
 
-        // At least one draw per option offered, more when a roll repeats.
-        Assert.True(generationRng.CallCount >= 3);
+        // A shuffle of the whole filtered pool: one roll per position after the first.
+        Assert.Equal(CardEffects.OwnerCharacterGenerationPool().Count - 1, generationRng.CallCount);
+    }
+
+    [Fact]
+    public void OffersThreeFromTheCharactersOwnPoolInShuffleOrder()
+    {
+        var fight = Fight.Hand(Card(CL.Discovery)).Energy(1).Enemy(hp: 40);
+        fight.State.CardGenerationRng = new CountingRandom(6);
+
+        fight.Play();
+
+        var offered = fight.Pending!.GeneratedCandidates;
+        Assert.Equal(ShuffleTake(CardEffects.OwnerCharacterGenerationPool(), 3, 6), offered);
+        var ironclad = GeneratedData.CardPools.Ironclad.ToArray();
+        Assert.All(offered, id => Assert.Contains(id, ironclad));
+    }
+
+    [Fact]
+    public void TheScreenCanBeSkipped()
+    {
+        var fight = Fight.Hand(Card(CL.Discovery)).Energy(1).Enemy(hp: 40);
+        fight.Play();
+
+        Assert.True(fight.Pending!.Skippable);
+        CombatEngine.Step(fight.State, fight.Pending.Candidates.Count, new Random(0));
+
+        Assert.Null(fight.Pending);
+        Assert.Empty(fight.State.Hand);
+    }
+
+    /// <summary>`TakeRandom`: Fisher-Yates from the end over the filtered pool, take the first N.</summary>
+    private static List<int> ShuffleTake(List<int> pool, int count, int seed)
+    {
+        var stream = new CountingRandom(seed);
+        for (int i = pool.Count - 1; i > 0; i--)
+        {
+            int j = stream.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+
+        return pool.Take(count).ToList();
     }
 
     [Fact]

@@ -396,6 +396,32 @@ public class VexingPuzzleboxTests
         Assert.Contains(fight.State.Hand, c => c.FreeThisTurn);
     }
 
+    /// <summary>
+    /// VexingPuzzlebox.cs: GetDistinctForCombat(character pool, 1) -- FilterForCombat applies
+    /// (no Basic cards) and the roll is a shuffle of the whole pool.
+    /// </summary>
+    [Fact]
+    public void TheCardIsTheFirstOfAShuffleOfTheFilteredPool()
+    {
+        var fight = Fight.WithRelics(RelicEffects.VexingPuzzlebox);
+        fight.State.Hand.Clear();
+        fight.State.CardGenerationRng = new CountingRandom(8);
+        var pool = CardEffects.OwnerCharacterGenerationPool();
+        var oracle = new CountingRandom(8);
+        for (int i = pool.Count - 1; i > 0; i--)
+        {
+            int j = oracle.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+
+        CardEffects.AddRandomPoolCardToHand(fight.State, new Random(0));
+
+        var added = Assert.Single(fight.State.Hand);
+        Assert.Equal(pool[0], added.DefId);
+        Assert.True(added.FreeThisTurn);
+        Assert.Equal(pool.Count - 1, fight.State.CardGenerationRng!.CallCount);
+    }
+
     [Fact]
     public void AndOnlyOnTheFirstTurn()
     {

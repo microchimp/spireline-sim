@@ -240,6 +240,38 @@ public class ToolboxTests
         Assert.All(fight.Pending.GeneratedCandidates, id => Assert.Contains(id, colourless));
     }
 
+    /// <summary>
+    /// Toolbox.cs: GetDistinctForCombat over the Colorless pool -- a shuffle of the whole
+    /// FilterForCombat pool on the generation stream, first three. Not three rolls with
+    /// duplicates rejected.
+    /// </summary>
+    [Fact]
+    public void TheOfferIsTheFirstThreeOfAShuffleOfTheFilteredColorlessPool()
+    {
+        var fight = Fight.WithRelics(RelicEffects.Toolbox);
+        fight.State.PendingSelection = null;
+        fight.State.CardGenerationRng = new CountingRandom(3);
+        var pool = GeneratedData.CardPools.Colorless.ToArray()
+            .Where(id =>
+            {
+                var d = GeneratedData.Cards.Get(id);
+                return d.CanBeGeneratedInCombat
+                    && d.Rarity is not (CardRarity.Basic or CardRarity.Ancient or CardRarity.Event);
+            })
+            .ToList();
+        var oracle = new CountingRandom(3);
+        for (int i = pool.Count - 1; i > 0; i--)
+        {
+            int j = oracle.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+
+        CardEffects.OpenToolboxSelection(fight.State, new Random(0));
+
+        Assert.Equal(pool.Take(3).ToList(), fight.Pending!.GeneratedCandidates);
+        Assert.Equal(pool.Count - 1, fight.State.CardGenerationRng!.CallCount);
+    }
+
     [Fact]
     public void TheChosenCardJoinsTheHand()
     {

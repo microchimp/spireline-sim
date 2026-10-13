@@ -187,4 +187,29 @@ public class MadScienceTests
 
         Assert.Equal(1, BuffSystem.Get(fight.State.PlayerBuffs, BuffId.Improvement));
     }
+
+    /// <summary>
+    /// MadScience Chaos: GetDistinctForCombat(character pool, 1) -- the first of a shuffle of
+    /// the whole filtered pool on the generation stream, free this turn.
+    /// </summary>
+    [Fact]
+    public void ChaosAddsTheFirstOfAShuffleOfTheCharacterPool()
+    {
+        var fight = Fight.Hand(Tinkered(CardType.Skill, TinkerRider.Chaos)).Energy(3).Enemy(hp: 60);
+        fight.State.CardGenerationRng = new CountingRandom(13);
+        var pool = CardEffects.OwnerCharacterGenerationPool();
+        var oracle = new CountingRandom(13);
+        for (int i = pool.Count - 1; i > 0; i--)
+        {
+            int j = oracle.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+
+        fight.Play(0);
+
+        var added = Assert.Single(fight.State.Hand);
+        Assert.Equal(pool[0], added.DefId);
+        Assert.True(added.FreeThisTurn);
+        Assert.Equal(pool.Count - 1, fight.State.CardGenerationRng!.CallCount);
+    }
 }

@@ -92,16 +92,27 @@ public class MetamorphosisTests
         Assert.Equal(5, fight.State.DrawPile.Count);
     }
 
-    /// <summary>Distinct: a shuffle-then-take, so the three are three different cards.</summary>
+    /// <summary>
+    /// Metamorphosis.OnPlay is CardFactory.GetForCombat, NOT GetDistinctForCombat: one
+    /// `NextItem` roll per card on the generation stream, repeats allowed, no shuffle.
+    /// </summary>
     [Fact]
-    public void TheThreeAreDistinct()
+    public void ItRollsWithReplacementOneRollPerCard()
     {
-        var fight = Fight.Hand(new CardInstance(Id, false)).Energy(9).Enemy(hp: 300);
+        var fight = Fight.Hand(new CardInstance(Id, true)).Energy(9).Enemy(hp: 300);
         fight.State.DrawPile.Clear();
+        fight.State.CardGenerationRng = new CountingRandom(4);
+        var pool = CardEffects.OwnerCharacterGenerationPool(CardType.Attack);
+        var oracle = new CountingRandom(4);
+        var expected = Enumerable.Range(0, 5).Select(_ => pool[oracle.Next(pool.Count)]).ToList();
 
         fight.Play(0);
 
-        Assert.Equal(3, fight.State.DrawPile.Select(card => card.DefId).Distinct().Count());
+        Assert.Equal(5, fight.State.CardGenerationRng!.CallCount);
+        Assert.Equal(
+            expected.OrderBy(x => x),
+            fight.State.DrawPile.Select(card => card.DefId).OrderBy(x => x)
+        );
     }
 }
 

@@ -153,6 +153,34 @@ public class CreativeAiTests
             c => GeneratedData.Cards.Get(c.DefId).Type == CardType.Power
         );
     }
+
+    /// <summary>
+    /// CreativeAiPower.BeforeHandDraw: per stack, GetDistinctForCombat over the CHARACTER's
+    /// Power cards, one card, on the generation stream -- a shuffle of the whole pool each time.
+    /// </summary>
+    [Fact]
+    public void PowersComeFromTheCharacterPoolByShufflingIt()
+    {
+        var fight = DefectFight.Hand(Card(CreativeAi)).Energy(3);
+        fight.State.PlayerHp = 999;
+        fight.State.DrawPile.Clear();
+        fight.Play();
+        var stream = new CountingRandom(5);
+        fight.State.CardGenerationRng = new CountingRandom(5);
+        var pool = CardEffects.OwnerCharacterGenerationPool(CardType.Power);
+
+        fight.EndTurn();
+
+        for (int i = pool.Count - 1; i > 0; i--)
+        {
+            int j = stream.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+
+        Assert.Equal(pool[0], Assert.Single(fight.State.Hand).DefId);
+        Assert.Contains(pool[0], GeneratedData.CardPools.Ironclad.ToArray());
+        Assert.Equal(pool.Count - 1, fight.State.CardGenerationRng!.CallCount);
+    }
 }
 
 public class DefragmentTests
