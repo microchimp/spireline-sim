@@ -196,6 +196,8 @@ def main() -> int:
     ap.add_argument("--coverage", type=Path, default=None, help="coverage file (default <jobs>/../coverage.json)")
     ap.add_argument("--settle-audit", type=float, default=0.05,
                     help="share of fights whose flag settles are re-checked against the old six-frame rule")
+    ap.add_argument("--job-opt", action="append", default=[], metavar="KEY=JSON",
+                    help="extra job key for every server, as serve.py's (e.g. nodeless=true); repeatable")
     ap.add_argument("--old-settle", action="store_true",
                     help="six-stable-frame settle, awaited tweens and stock frame pacing (before SPEED_PLAN steps 3-4)")
     a = ap.parse_args()
@@ -240,7 +242,8 @@ def main() -> int:
     # Driver speed switches for every server (SPEED_PLAN.md steps 2-4), the same defaults as serve.py's
     # command line (serve.job_options): the flag settle reads the game's turn flags, awaited tweens finish
     # at once, frames are not padded to 6.9 ms, and a share of fights is settle-audited.
-    jopts = serve.job_options(None, old_settle=a.old_settle, settle_audit=None if a.old_settle else a.settle_audit)
+    jopts = serve.job_options(None, old_settle=a.old_settle, settle_audit=None if a.old_settle else a.settle_audit,
+                              job_opt=a.job_opt)
     pool = serve.Pool(GAME, run_dir, servers=n_servers, spares=1, jopts=jopts, echo=None,
                       max_restarts=a.max_restarts if a.max_restarts is not None else 3 * n_servers + 3 + a.fights // 50)
     serve.rr.install(GAME, ROOT / "referee" / "driver" / "bin" / "Release" / "net9.0")  # once, before any server starts
