@@ -81,6 +81,7 @@ public static partial class Driver
             Heartbeat();
             dump["room"] = new JsonArray(target.coord.col, target.coord.row);
             GD.Print($"[referee] entering {target.coord.col},{target.coord.row}");
+            ChecksumTap.Begin(spec);  // the game's per-action checksums, when the spec asks
             await WithTimeout(run.EnterMapCoord(target.coord), 60, "EnterMapCoord");
             await Idle();
             GD.Print($"[referee] in room; combat={CombatManager.Instance.IsInProgress}");
@@ -91,6 +92,7 @@ public static partial class Driver
             int maxActions = (int?)spec["max_actions"] ?? 80;
             Player player = state.Players[0];
             steps.Add(new JsonObject { ["action"] = null, ["state"] = Snapshot(state, player) });
+            ChecksumTap.Attach(steps);
             for (int i = 0; i < maxActions && CombatManager.Instance.IsInProgress; i++)
             {
                 CurrentStep = i + 1;  // choices this action opens are logged against its step
@@ -141,6 +143,7 @@ public static partial class Driver
                     break;
                 }
                 steps.Add(new JsonObject { ["action"] = action, ["state"] = Snapshot(state, player) });
+                ChecksumTap.Attach(steps);
                 Heartbeat();
                 GD.Print($"[referee] step {i}: {action.ToJsonString()}");
             }
@@ -151,6 +154,7 @@ public static partial class Driver
         }
 
         timing["fight_end"] = phase.ElapsedMilliseconds;
+        ChecksumTap.End(dump);
         dump["cost"] = Cost();
         return dump;
     }
