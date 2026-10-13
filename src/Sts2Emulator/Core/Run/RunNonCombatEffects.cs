@@ -262,13 +262,40 @@ public static class RunNonCombatEffects
             .Where(index => RunConstants.IsRunCardUpgradable(state.Deck[index]))
             .ToList();
 
-        candidates.Sort((left, right) => state.Deck[left].DefId.CompareTo(state.Deck[right].DefId));
-        rng.Shuffle(candidates);
+        StableShuffleDeck(state, candidates, rng);
 
         foreach (int index in candidates.Take(count))
         {
             state.Deck[index] = state.Deck[index] with { Upgraded = true };
         }
+    }
+
+    /// <summary>
+    /// <c>ListExtensions.StableShuffle</c> over deck positions: <c>List.Sort()</c> on the cards --
+    /// <c>CardModel.CompareTo</c> is the model id (ordinal, the entry) and then the upgrade level --
+    /// and then the Fisher-Yates on <paramref name="rng" />.
+    /// </summary>
+    /// <remarks>
+    /// The sort is the framework's introsort, which is not stable for more than sixteen items, so
+    /// which of several equal cards (five Strikes) lands where is the sort's doing, and with it
+    /// which copy an upgrade picks. A LINQ <c>OrderBy</c> (stable) or a comparison on the table id
+    /// (the ids are not in entry order: DARK_EMBRACE is 119 and DARKNESS 120) puts them elsewhere.
+    /// </remarks>
+    internal static void StableShuffleDeck(RunState state, List<int> positions, GameRng rng)
+    {
+        positions.Sort(
+            (left, right) =>
+            {
+                var a = state.Deck[left];
+                var b = state.Deck[right];
+                int byEntry = string.CompareOrdinal(
+                    GeneratedData.Cards.Get(a.DefId).Entry,
+                    GeneratedData.Cards.Get(b.DefId).Entry
+                );
+                return byEntry != 0 ? byEntry : a.Upgraded.CompareTo(b.Upgraded);
+            }
+        );
+        rng.Shuffle(positions);
     }
 
     private static void UpgradeRandomDeckCards(RunState state, CardType? type, int count)
@@ -281,9 +308,7 @@ public static class RunNonCombatEffects
             )
             .ToList();
 
-        // StableShuffle sorts before shuffling so the order does not depend on deck order.
-        candidates.Sort((left, right) => state.Deck[left].DefId.CompareTo(state.Deck[right].DefId));
-        state.Rng.Niche.Shuffle(candidates);
+        StableShuffleDeck(state, candidates, state.Rng.Niche);
 
         foreach (int index in candidates.Take(count))
         {
@@ -3348,12 +3373,8 @@ public static class RunNonCombatEffects
             .Deck.Select((card, index) => (card, index))
             .Where(item => RunConstants.IsRunCardUpgradable(item.card))
             .Select(item => item.index)
-            .OrderBy(
-                index => GeneratedData.Cards.Get(state.Deck[index].DefId).Entry,
-                StringComparer.Ordinal
-            )
             .ToList();
-        rng.Shuffle(indexes);
+        StableShuffleDeck(state, indexes, rng);
         foreach (int index in indexes.Take(count))
         {
             state.Deck[index] = state.Deck[index] with { Upgraded = true };
@@ -3479,12 +3500,8 @@ public static class RunNonCombatEffects
             .Deck.Select((card, index) => (card, index))
             .Where(item => RunConstants.IsRunCardUpgradable(item.card))
             .Select(item => item.index)
-            .OrderBy(
-                index => GeneratedData.Cards.Get(state.Deck[index].DefId).Entry,
-                StringComparer.Ordinal
-            )
             .ToList();
-        EventRng(state, "DOORS_OF_LIGHT_AND_DARK").Shuffle(indexes);
+        StableShuffleDeck(state, indexes, EventRng(state, "DOORS_OF_LIGHT_AND_DARK"));
         foreach (int index in indexes.Take(2))
         {
             state.Deck[index] = state.Deck[index] with { Upgraded = true };
