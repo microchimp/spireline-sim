@@ -483,7 +483,14 @@ static class RunReplay
                 int slot = (int)a["slot"]!;
                 string want = Bare((string?)a["potion"]);
                 if (RunSnap.PotionEntry(s.PotionSlots[slot]) != want)
-                    throw new Divergence($"potion slot {slot}: game {want}, emulator {RunSnap.PotionEntry(s.PotionSlots[slot])}");
+                {
+                    // The fight has already gone its own way (a potion used or made differently):
+                    // a fight divergence; with anchoring the run goes on from the game's outcome.
+                    string msg = $"potion slot {slot}: game {want}, emulator {RunSnap.PotionEntry(s.PotionSlots[slot])}";
+                    if (!Anchoring) throw new Divergence(msg);
+                    od["emulator_fight_ended"] = $"{stepNo}: {msg}";
+                    break;
+                }
                 e.Step(s.ActiveCombat.Hand.Count + 1 + slot, (int)a["target_slot"]!, out _, out _, out _);
             }
             else if ((bool?)a["played"] != false)
@@ -643,6 +650,21 @@ static class RunReplay
 
         Counters(s.Rng, save["rng"]!["counters"]!.AsObject(), "rng");
         Counters(s.PlayerRng, p["rng"]!["counters"]!.AsObject(), "player_rng");
+
+        // The relic queues: a diverged fight's own rewards pulled the emulator's relic, not the game's.
+        void Bag(RelicGrabBag bag, JsonObject? lists, string name)
+        {
+            if (lists == null) return;
+            var want = lists.Select(kv => (Rarity: Enum.Parse<Sts2Emulator.Core.RelicRarity>(kv.Key, ignoreCase: true),
+                Relics: kv.Value!.AsArray().Select(x => RelicId(Bare((string?)x))).ToList())).ToList();
+            var have = bag.Lists.ToDictionary(l => l.Rarity, l => l.Relics.ToList());
+            if (want.All(w => have.TryGetValue(w.Rarity, out var h) ? h.SequenceEqual(w.Relics) : w.Relics.Count == 0)) return;
+            anchored.Add(name);
+            bag.ReplaceListsForReplay(want);
+        }
+
+        Bag(s.RelicBag, p["relic_grab_bag"]?["relic_id_lists"]?.AsObject(), "grab_bag");
+        Bag(s.SharedRelicBag, save["shared_relic_grab_bag"]?["relic_id_lists"]?.AsObject(), "shared_grab_bag");
     }
 
     static uint RunSeedOf(object set) => (uint)set.GetType().GetProperty("Seed")!.GetValue(set)!;

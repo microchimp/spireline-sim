@@ -79,8 +79,10 @@ static class RunSnap
             ["act"] = s.CurrentActIndex,
             ["floor"] = s.Floor,
             ["coord"] = new JsonArray(s.CurrentMapCoord.Col, s.CurrentMapCoord.Row),
-            ["hp"] = s.PlayerHp,
-            ["max_hp"] = s.PlayerMaxHp,
+            // A fight keeps the player's HP on its own state until it ends (Blood Vial's heal
+            // at combat start lands there), as it does the combat streams.
+            ["hp"] = s.Phase == RunPhase.Combat && s.ActiveCombat is { } fight ? fight.PlayerHp : s.PlayerHp,
+            ["max_hp"] = s.Phase == RunPhase.Combat && s.ActiveCombat is { } fight2 ? fight2.PlayerMaxHp : s.PlayerMaxHp,
             ["gold"] = s.Gold,
             ["potion_slots"] = s.MaxPotionSlots,
             ["potions"] = Arr(s.UsablePotionSlots(), p => PotionEntry(p)),
