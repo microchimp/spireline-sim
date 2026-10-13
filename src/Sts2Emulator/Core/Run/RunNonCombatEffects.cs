@@ -2852,7 +2852,7 @@ public static class RunNonCombatEffects
                 break;
             case DishSuspiciousCondiment:
                 state.PendingPotionRewards.Add(
-                    RunRewardGenerator.NextPotion(state, state.PlayerRng.Rewards)
+                    RunRewardGenerator.NextPoolPotion(state, state.PlayerRng.Rewards)
                 );
                 break;
             default:

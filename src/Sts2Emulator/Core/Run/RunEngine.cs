@@ -3047,13 +3047,11 @@ public sealed class RunEngine
                 }
                 else if (action == 1)
                 {
-                    if (State.PlayerHp <= 8)
-                    {
-                        return -1;
-                    }
-
-                    State.PlayerHp -= 8;
-                    OfferPotionRewards(0);
+                    // `SlowlyFindAnExit`: the damage (lethal is allowed; Step ends the run at 0),
+                    // then ONE `PlayerRng.Rewards.NextItem` over the character's potion pool
+                    // followed by the shared one -- a uniform pick, not a reward's rarity roll.
+                    State.PlayerHp = Math.Max(0, State.PlayerHp - 8);
+                    OfferPotionRewards(RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards));
                     return 0;
                 }
                 else if (action != RunConstants.EventSkipAction)
@@ -3235,7 +3233,7 @@ public sealed class RunEngine
             case RunConstants.EventWellspring:
                 if (action == 0)
                 {
-                    OfferPotionRewards(0);
+                    OfferPotionRewards(RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards));
                     return 0;
                 }
 
@@ -5547,7 +5545,7 @@ public sealed class RunEngine
                 // own pool concatenated with the shared one.
                 RunRewardGenerator.AddPotion(
                     State,
-                    RunRewardGenerator.NextPotion(State, State.PlayerRng.Rewards)
+                    RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards)
                 );
                 break;
 
@@ -5751,12 +5749,11 @@ public sealed class RunEngine
                 SetMask(mask, 1);
                 break;
             case RunConstants.EventTheLegendsWereTrue:
+                // Both options are always there: Slowly Find an Exit is only flagged as lethal
+                // (`ThatDoesDamage`), never locked, and its potion is OFFERED, so a full belt
+                // does not close it (run referee, seed 0NT10MDKY3).
                 SetMask(mask, 0);
-                if (State.PlayerHp > 8 && State.UsablePotionSlots().Any(potion => potion == 0))
-                {
-                    SetMask(mask, 1);
-                }
-
+                SetMask(mask, 1);
                 break;
             case RunConstants.EventDoorsOfLightAndDark:
                 // Both doors are always open. Light takes up to two upgradable cards and

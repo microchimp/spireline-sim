@@ -1900,6 +1900,14 @@ public static class RunRewardGenerator
     /// The Potion Courier's Ransack rolls only among Uncommon potions, so it does NOT
     /// roll a rarity first -- it filters the pool and takes one.
     /// </summary>
+    /// <summary>
+    /// An event's potion picked the way TheLegendsWereTrue, Wellspring, BattlewornDummy and
+    /// EndlessConveyor pick theirs: ONE `NextItem` over the character's unlocked potions followed
+    /// by the shared pool's -- uniform, and one draw, not a reward's rarity roll (<see cref="NextPotion"/>).
+    /// </summary>
+    public static int NextPoolPotion(RunState state, GameRng rng) =>
+        rng.NextItem(PotionRewardPool(state.Character));
+
     public static int NextUncommonPotion(RunState state, GameRng rng)
     {
         var available = PotionRewardPool(state.Character)
