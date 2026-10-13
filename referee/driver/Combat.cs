@@ -101,7 +101,9 @@ public static partial class Driver
                 for (int h = 0; h < hand.Count; h++)
                 {
                     if (!hand[h].CanPlay()) continue;
-                    if (hand[h].TargetType.ToString().Contains("Enemy") && !hand[h].TargetType.ToString().Contains("All"))
+                    // Only AnyEnemy asks the player for a target. RandomEnemy and AllEnemies pick
+                    // (or hit) their own; passing them a target would make the play fail.
+                    if (hand[h].TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
                     {
                         for (int t = 0; t < enemies.Count; t++) options.Add((h, t));
                     }
@@ -127,10 +129,17 @@ public static partial class Driver
                         ["kind"] = "play", ["hand_index"] = hi, ["card"] = card.Id.Entry,
                         ["target"] = ti, ["target_slot"] = tgt != null ? combat.Enemies.ToList().IndexOf(tgt) : -1,
                     };
-                    card.TryManualPlay(tgt);
+                    // A refused play is still a step: the emulator must refuse it the same way.
+                    action["played"] = card.TryManualPlay(tgt);
                 }
 
-                await Idle();
+                if (!await Idle())
+                {
+                    // The game never settled (a screen or loop the driver cannot answer). Keep what
+                    // was recorded and end the fight here instead of letting the watchdog kill the copy.
+                    dump["error"] = $"idle_timeout after step {i}: {action.ToJsonString()}";
+                    break;
+                }
                 steps.Add(new JsonObject { ["action"] = action, ["state"] = Snapshot(state, player) });
                 Heartbeat();
                 GD.Print($"[referee] step {i}: {action.ToJsonString()}");
@@ -172,7 +181,8 @@ public static partial class Driver
     /// </summary>
     internal static double IdleFrames = 6;
 
-    private static async Task Idle(double maxSeconds = 30)
+    /// <returns>false if the game did not settle within maxSeconds (below the heartbeat watchdog's stall_s).</returns>
+    private static async Task<bool> Idle(double maxSeconds = 10)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
         var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -194,6 +204,8 @@ public static partial class Driver
             stable = !busy && sig == last ? stable + 1 : 0;
             last = sig;
         }
+
+        return stable >= (int)IdleFrames;
     }
 
     private static string Signature(CombatState? combat)

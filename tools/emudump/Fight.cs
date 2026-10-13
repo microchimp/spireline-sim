@@ -52,8 +52,10 @@ static class Fight
                 {
                     e.Step(s.ActiveCombat.Hand.Count, -1, out _, out _, out _);
                 }
-                else
+                else if ((bool?)a["played"] != false)
                 {
+                    // played=false: the game refused the play (CanPlay held, the target did not), so
+                    // nothing happened there and nothing is replayed here.
                     e.Step((int)a["hand_index"]!, (int)a["target_slot"]!, out _, out _, out _);
                 }
 
