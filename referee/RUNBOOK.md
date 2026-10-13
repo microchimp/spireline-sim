@@ -230,6 +230,7 @@ about 8x less CPU per fight. Put the keys in the specs file given to `serve.py` 
   `cost.audit`). Nodeless servers then never load the full host's scenes, a long full-host replay no longer holds up the
   nodeless server's next fight, and a server that retires (above) loses no replay. `--full-here` keeps the old in-process
   replays. Cancel checks stay in-process (they compare the cancellation sites that process recorded).
+  batch.py prints a `hosts:` line: fights per host, replays, audits that differ, retirements and CPU per fight by host.
 - Any game error or exception in a nodeless fight fails it (`error` starts with `nodeless:`); `"nodeless_on_error":
   "full"` replays it on the full host instead. `"nodeless_audit": 0.05` also plays 5% of fights on the full host
   (`cost.audit`).
