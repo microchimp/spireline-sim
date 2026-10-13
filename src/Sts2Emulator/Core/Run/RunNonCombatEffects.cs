@@ -423,15 +423,21 @@ public static class RunNonCombatEffects
             // the rules can see. Its `Skin` roll is off `new Rng(Owner, Id)`, a stream of
             // its own, so it spends none of the run's.
             case Effects.RelicEffects.Byrdpip:
-                for (int i = 0; i < state.Deck.Count; i++)
+            {
+                // The eggs are listed first, then each one is transformed in deck order; a
+                // Swoop lands at the bottom of the deck (TransformInDeck), and is no egg.
+                int eggs = state.Deck.Count(card => card.DefId == ByrdonisEggCard);
+                for (int i = 0; i < eggs; i++)
                 {
-                    if (state.Deck[i].DefId == ByrdonisEggCard)
-                    {
-                        state.Deck[i] = new CardInstance(ByrdSwoopCard, Upgraded: false);
-                    }
+                    TransformInDeck(
+                        state,
+                        state.Deck.FindIndex(card => card.DefId == ByrdonisEggCard),
+                        new CardInstance(ByrdSwoopCard, Upgraded: false)
+                    );
                 }
 
                 break;
+            }
             // `FakeMango.AfterObtained`: MaxHpVar(3m) against the real Mango's 14.
             case Effects.RelicEffects.FakeMango:
                 GainMaxHp(state, 3);
@@ -580,15 +586,13 @@ public static class RunNonCombatEffects
                 // combat's gold reward and card offer at the wrong position, and every one
                 // after it. A live capture of a run that took this from Neow paid 15 gold
                 // where the emulator paid 9.
+                // One CreateRandomPotionsOutOfCombat call: the second cannot repeat the first.
                 state.MaxPotionSlots++;
-                RunRewardGenerator.AddPotion(
-                    state,
-                    RunRewardGenerator.NextPotion(state, state.Rng.CombatPotionGeneration)
-                );
-                RunRewardGenerator.AddPotion(
-                    state,
-                    RunRewardGenerator.NextPotion(state, state.Rng.CombatPotionGeneration)
-                );
+                foreach (int potion in RunRewardGenerator.NextPotions(state, state.Rng.CombatPotionGeneration, 2))
+                {
+                    RunRewardGenerator.AddPotion(state, potion);
+                }
+
                 break;
             // ---- the act ancients' blessings -------------------------------------
             case RunConstants.RelicPaelsHorn:
@@ -615,13 +619,16 @@ public static class RunNonCombatEffects
                 // somewhere to go, then four rolled off CombatPotionGeneration. Phial
                 // Holster is the same shape, and the stream is the point -- rolling these
                 // off PlayerRng.Rewards would move every card reward after it.
+                //
+                // One CreateRandomPotionsOutOfCombat call, so no repeats; and each goes to
+                // `originalSlotCount + i` -- the NEW slots -- leaving an old empty slot empty
+                // (run referee, seed RXVFG7FZ86: the game's slot 1 stayed empty).
+                int originalSlots = state.MaxPotionSlots;
                 state.MaxPotionSlots += 4;
-                for (int i = 0; i < 4; i++)
+                int[] coffer = RunRewardGenerator.NextPotions(state, state.Rng.CombatPotionGeneration, 4);
+                for (int i = 0; i < coffer.Length; i++)
                 {
-                    RunRewardGenerator.AddPotion(
-                        state,
-                        RunRewardGenerator.NextPotion(state, state.Rng.CombatPotionGeneration)
-                    );
+                    RunRewardGenerator.AddPotionAt(state, coffer[i], originalSlots + i);
                 }
 
                 break;
@@ -643,9 +650,11 @@ public static class RunNonCombatEffects
             case RunConstants.RelicArchaicTooth:
             {
                 // `GetTranscendenceStarterCard` is `Deck.Cards.FirstOrDefault(...)` -- the
-                // FIRST match in deck order, not a choice and not a roll. The transform
-                // carries nothing across: `CardCmd.Transform(starter, transformed)` builds
-                // the new card fresh.
+                // FIRST match in deck order, not a choice and not a roll.
+                // `GetTranscendenceTransformedCard` builds the ancient card fresh and then
+                // carries the starter's upgrade (`CardCmd.Upgrade`) and its enchantment, at its
+                // amount, across (run referee, seed CNV3YDEJXD: an upgraded Bash became an
+                // upgraded Break in the game).
                 int index = state.Deck.FindIndex(card =>
                     RunConstants.TranscendenceUpgrades.Any(pair => pair.Starter == card.DefId)
                 );
@@ -656,7 +665,23 @@ public static class RunNonCombatEffects
                             pair.Starter == state.Deck[index].DefId
                         )
                         .Ancient;
-                    state.Deck[index] = new CardInstance(ancient, Upgraded: false);
+                    var starterCard = state.Deck[index];
+                    var made = new CardInstance(ancient, Upgraded: false);
+                    if (starterCard.Upgraded && RunConstants.IsRunCardUpgradable(made))
+                    {
+                        made = made with { Upgraded = true };
+                    }
+
+                    if (starterCard.Enchantment != Enchantment.None)
+                    {
+                        made = made with
+                        {
+                            Enchantment = starterCard.Enchantment,
+                            EnchantAmount = starterCard.EnchantAmount,
+                        };
+                    }
+
+                    TransformInDeck(state, index, made);
                 }
 
                 break;
@@ -979,7 +1004,11 @@ public static class RunNonCombatEffects
                 //
                 // The emulator added a random card off the whole reward pool on the UpFront
                 // stream: wrong card, wrong pool, wrong stream.
-                AddCardToDeck(state, new CardInstance(DustyTomeCard(state), Upgraded: true));
+                AddCardToDeck(
+                    state,
+                    new CardInstance(state.EventValue0 ?? DustyTomeCard(state), Upgraded: true)
+                );
+                state.EventValue0 = null;
                 break;
             case RunConstants.RelicNewLeaf:
                 // CardsVar(1) through CardSelectCmd.FromDeckForTransformation, then
@@ -1025,11 +1054,14 @@ public static class RunNonCombatEffects
                 return RunFollowUp.PreRolledCardReward;
 
             // `Cauldron.AfterObtained` offers five POTION rewards, through the same pending
-            // queue Tiny Mailbox's two go through.
+            // queue Tiny Mailbox's two go through. One RewardsSet, so all five are rolled as
+            // it is offered (PotionReward.Populate), not one by one as the screen frees up.
             case Effects.RelicEffects.Cauldron:
                 for (int i = 0; i < 5; i++)
                 {
-                    state.PendingPotionRewards.Add(0);
+                    state.PendingPotionRewards.Add(
+                        RunRewardGenerator.NextPotion(state, state.PlayerRng.Rewards)
+                    );
                 }
 
                 return RunFollowUp.BonusRelicRewards;
@@ -1291,7 +1323,12 @@ public static class RunNonCombatEffects
                 int eventId = state.EventSequence[
                     state.EventSequenceIndex % state.EventSequence.Length
                 ];
-                if (IsEventAllowed(state, eventId) && !state.VisitedEventIds.Contains(eventId))
+                // The pull is `RunManager.CreateRoom`, which EnterMapPointInternal calls BEFORE
+                // `AppendToMapPointHistory`: an event's IsAllowed reads `TotalFloor` (the history's
+                // length) without the room being entered, one less than the emulator's Floor,
+                // which the map move has already counted.
+                if (IsEventAllowed(state, eventId, totalFloor: state.Floor - 1)
+                    && !state.VisitedEventIds.Contains(eventId))
                 {
                     chosen = eventId;
                 }
@@ -1349,8 +1386,8 @@ public static class RunNonCombatEffects
     /// events the game offers. All thirteen have handlers in the run engine, so none is
     /// kept refused as unimplemented.
     /// </remarks>
-    internal static bool IsEventAllowed(RunState state, int eventId) =>
-        IsEventAllowedForRun(state, eventId);
+    internal static bool IsEventAllowed(RunState state, int eventId, int? totalFloor = null) =>
+        IsEventAllowedForRun(state, eventId, totalFloor);
 
     /// <summary>
     /// Each event's own <c>IsAllowed(IRunState)</c>, transcribed -- whether THIS RUN may
@@ -1362,8 +1399,12 @@ public static class RunNonCombatEffects
     /// <remarks>
     /// A solo run, so each <c>Players.All(...)</c> is a test of the one player.
     /// </remarks>
-    public static bool IsEventAllowedForRun(RunState state, int eventId)
+    /// <param name="totalFloor">
+    /// The game's <c>TotalFloor</c> as the gate reads it; the run's Floor when not given.
+    /// </param>
+    public static bool IsEventAllowedForRun(RunState state, int eventId, int? totalFloor = null)
     {
+        int floor = totalFloor ?? state.Floor;
         bool HoldsPotion() => state.PotionSlots.Any(potion => potion != 0);
         return eventId switch
         {
@@ -1393,8 +1434,8 @@ public static class RunNonCombatEffects
             ),
             // TotalFloor, which is floors across the whole run. `Floor` does not reset
             // between acts (see AdvanceToNextAct), so it is the same number.
-            RunConstants.EventPunchOff => state.Floor >= 6,
-            RunConstants.EventSlipperyBridge => state.Floor > 6 && state.Deck.Any(IsRemovable),
+            RunConstants.EventPunchOff => floor >= 6,
+            RunConstants.EventSlipperyBridge => floor > 6 && state.Deck.Any(IsRemovable),
             // WarHistorianRepy.IsAllowed is `return false` outright: it is never drawn
             // from the sequence, only reached by its own means. Falling through to the
             // default handed it out as an ordinary event.
@@ -1736,9 +1777,10 @@ public static class RunNonCombatEffects
                 AddCardToDeck(state, card);
                 break;
             case DeckSelection.TransformTo:
-                state.Deck[deckIndex] = new CardInstance(
-                    state.PendingSelectionArg,
-                    Upgraded: false
+                TransformInDeck(
+                    state,
+                    deckIndex,
+                    new CardInstance(state.PendingSelectionArg, Upgraded: false)
                 );
                 break;
             case DeckSelection.TransformToCarrying:
@@ -1765,7 +1807,7 @@ public static class RunNonCombatEffects
                     };
                 }
 
-                state.Deck[deckIndex] = made;
+                TransformInDeck(state, deckIndex, made);
                 break;
             }
             case DeckSelection.Upgrade:
@@ -1919,6 +1961,15 @@ public static class RunNonCombatEffects
     {
         switch (state.EventId)
         {
+            case RunConstants.EventTheFutureOfPotions:
+                // `PotionToCardType`, built as the options are: one card type per potion in the
+                // belt, in slot order, off the event's own stream (Power only for a potion
+                // better than Common). Held per traded option in EventRandomOffer.
+                var futureRng = EventRng(state, "THE_FUTURE_OF_POTIONS");
+                state.EventRandomOffer = state.PotionSlots.Where(potion => potion != 0)
+                    .Select(potion => (int)futureRng.NextItem(RunRewardGenerator.FutureOfPotionsCardTypes(potion)))
+                    .ToArray();
+                break;
             case RunConstants.EventSunkenTreasury:
                 CalculateSunkenTreasuryVars(state);
                 break;
@@ -1969,8 +2020,14 @@ public static class RunNonCombatEffects
                 break;
             case RunConstants.EventFakeMerchant:
                 // `BeforeEventStarted` shuffles the nine fakes and takes six, so the
-                // shelf exists before the player has done anything.
-                FakeMerchantStock(state);
+                // shelf exists before the player has done anything -- and prices each of the
+                // six as its entry is built, off the Shops stream. Pricing them drew nothing
+                // before, so Shops stood six behind the game's after every Fake Merchant (run
+                // referee, seed CNV3YDEJXD).
+                state.EventRandomOffer = FakeMerchantStock(state)
+                    .Select(_ => (int)Math.Round((float)RunConstants.FakeMerchantRelicCost
+                        * state.PlayerRng.Shops.NextFloat(0.85f, 1.15f)))
+                    .ToArray();
                 break;
         }
     }
@@ -2153,6 +2210,17 @@ public static class RunNonCombatEffects
         state.EventRelicStock ??= RollFakeMerchantStock(state);
         return state.EventRelicStock;
     }
+
+    /// <summary>
+    /// The stall's price for slot <paramref name="slot"/>: each `MerchantRelicEntry` prices its
+    /// relic as it is built (`SetModel` -> `CalcCost`), `round(MerchantCost * Shops.NextFloat(0.85,
+    /// 1.15))`, and every fake relic's MerchantCost is 50 (FakeMerchant.relicCost). Rolled with the
+    /// stall on entering, in stall order (<see cref="CalculateEventVars"/>).
+    /// </summary>
+    public static int FakeMerchantPrice(RunState state, int slot) =>
+        state.EventId == RunConstants.EventFakeMerchant && (uint)slot < (uint)state.EventRandomOffer.Length
+            ? state.EventRandomOffer[slot]
+            : RunConstants.FakeMerchantRelicCost;
 
     private static List<int> RollFakeMerchantStock(RunState state)
     {
@@ -2811,7 +2879,7 @@ public static class RunNonCombatEffects
                 break;
             case DishSuspiciousCondiment:
                 state.PendingPotionRewards.Add(
-                    RunRewardGenerator.NextPotion(state, state.PlayerRng.Rewards)
+                    RunRewardGenerator.NextPoolPotion(state, state.PlayerRng.Rewards)
                 );
                 break;
             default:
@@ -3047,6 +3115,12 @@ public static class RunNonCombatEffects
 
         if (rng.NextBool())
         {
+            // `DustyTome.SetupForPlayer` runs as the option is BUILT, so its card is drawn off
+            // `PlayerRng.Rewards` on entering Darv whether or not the tome is taken. Rolled at
+            // pickup instead, a tome left on the table never drew, and the Rewards stream stayed
+            // one behind (run referee, seed 6HMCK2BXTJ). The card waits in EventValue0, which
+            // the ancient's screen does not otherwise use.
+            state.EventValue0 = DustyTomeCard(state);
             return [.. offered.Take(2), RunConstants.DarvDustyTome];
         }
 
@@ -3359,6 +3433,21 @@ public static class RunNonCombatEffects
         {
             state.Deck[index] = state.Deck[index] with { Upgraded = true };
         }
+    }
+
+    /// <summary>
+    /// <c>CardCmd.Transform</c> on a DECK card: the original leaves its pile and the
+    /// replacement is added to the deck with <c>AddInternal</c> and no index -- the bottom of
+    /// the deck, not the original's place (only combat piles keep the index) -- after
+    /// <c>ModifyCardBeingAddedToDeck</c> and before <c>AfterCardChangedPiles</c>, which is
+    /// what <see cref="AddCardToDeck"/> runs. Writing the new card over the old one kept the
+    /// deck's order wrong for the rest of the run (run referee, seed CNV3YDEJXD: Archaic
+    /// Tooth's Break sat where the Bash had been).
+    /// </summary>
+    public static void TransformInDeck(RunState state, int deckIndex, CardInstance replacement)
+    {
+        state.Deck.RemoveAt(deckIndex);
+        AddCardToDeck(state, replacement);
     }
 
     public static void TransformCardAt(RunState state, int deckIndex, GameRng rng)

@@ -4459,6 +4459,11 @@ public static class EnemyAI
         if (unblocked > 0)
         {
             state.UnblockedDamageHitCount++;
+            // `LavaLamp.AfterDamageReceived` latches on any unblocked, blockable damage the
+            // owner takes in the room -- a monster's attack above all. Only the card path set
+            // the tally, so after a fight where only the enemies drew blood the lamp still
+            // upgraded every card reward (run referee, seed RXVFG7FZ86, Vantom).
+            state.TookUnblockedDamage = true;
         }
 
         state.PlayerHp = Math.Max(0, state.PlayerHp - unblocked);

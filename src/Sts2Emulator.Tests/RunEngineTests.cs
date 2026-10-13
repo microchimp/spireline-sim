@@ -340,8 +340,11 @@ public class RunEngineTests
         // Both rewards land on the rewards screen at once and are answered one at a time,
         // which is the sequence the capture shows: rewards, card, rewards, card, back to
         // Neow, proceed, map.
+        // Both are BUILT as the relic is obtained (Kaleidoscope.AfterObtained), so they sit
+        // on the screen as two ready card offers.
         Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
-        Assert.Equal(2, engine.State.PendingOtherCharacterCardRewards);
+        Assert.True(engine.State.RewardCardPending);
+        Assert.Single(engine.State.PendingCardOffers);
         Assert.Equal(deckBefore, engine.State.Deck.Count);
 
         engine.Step(0, -1, out _, out _, out _); // claim the first
@@ -785,10 +788,11 @@ public class RunEngineTests
         engine.WriteActionMask(mask);
         AssertMask(mask, 0, 1, RunConstants.EventSkipAction);
 
+        // A full belt does not close Slowly Find an Exit: its potion is offered, not given.
         Array.Clear(mask);
         engine.State.PotionSlots = [1, 2, 3];
         engine.WriteActionMask(mask);
-        AssertMask(mask, 0, RunConstants.EventSkipAction);
+        AssertMask(mask, 0, 1, RunConstants.EventSkipAction);
 
         Array.Clear(mask);
         engine.State.EventId = RunConstants.EventResultPending;

@@ -146,6 +146,29 @@ public class HeistGoldRewardTests
         Assert.Equal(spent + 1, full.State.PlayerRng.Rewards.CallCount - fullBefore);
     }
 
+    /// <summary>
+    /// A room with no gold of its own still shows the piles queued behind it: with the loot
+    /// gone, Amethyst Aubergine's fifteen is the screen's gold, and claiming it pays. It
+    /// used to wait behind the empty slot, unclaimable (run referee, seed U8FQZ6381S).
+    /// </summary>
+    [Fact]
+    public void AQueuedPileTakesTheEmptyGoldSlot()
+    {
+        var escaped = FatGremlinHoldingHeistGold(RunConstants.GremlinMercEncounterId);
+        escaped.FatGremlinEscaped = true;
+        escaped.MercGoldWasStolen = true;
+        var engine = AtRewardsFor(escaped);
+        engine.State.Relics.Add(new RelicInstance(RelicEffects.AmethystAubergine));
+        int purse = engine.State.Gold;
+
+        RunRewardGenerator.GenerateCombatRewards(engine.State);
+
+        Assert.Equal(15, engine.State.RewardGold);
+        Assert.Empty(engine.State.PendingGoldRewards);
+        Assert.True(RunRewardGenerator.ClaimRewardAtIndex(engine.State, 0));
+        Assert.Equal(purse + 15, engine.State.Gold);
+    }
+
     /// <summary>Escaping empty-handed is the half-gold case: 7-15 scaled to 4-8.</summary>
     [Fact]
     public void AnEscapeWithNothingStolenPaysHalf()

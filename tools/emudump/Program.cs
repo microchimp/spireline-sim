@@ -7,6 +7,11 @@ using Sts2Emulator.Core.Run;
 
 string[] actNames = ["", "OVERGROWTH", "UNDERDOCKS", "HIVE", "GLORY"];
 string[] nodeNames = ["Unassigned", "Monster", "Elite", "RestSite", "Shop", "Treasure", "Boss", "Unknown", "Ancient"];
+if (RunReplay.Main(args))  // run-level modes (RunReplay.cs): runstart, run
+{
+    return;
+}
+
 if (args[0] == "pools")
 {
     Console.WriteLine(Fight.Pools().ToJsonString());

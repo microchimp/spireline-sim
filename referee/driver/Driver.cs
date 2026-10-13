@@ -103,6 +103,7 @@ public static partial class Driver
             "combat" when Nodeless.Enabled => await Nodeless.Play(o, PlayCombat, () => RunManager.Instance.CleanUp()),
             "combat" when Nodeless.ErrorLog => await Nodeless.PlayFull(o, PlayCombat, () => RunManager.Instance.CleanUp()),
             "combat" => await PlayCombat(o),
+            "run" => await PlayRun(o),  // RunPlay.cs
             "export" => Export(),
             _ => await StartRun(o),
         };

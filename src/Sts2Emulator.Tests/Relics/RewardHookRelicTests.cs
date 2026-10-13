@@ -56,6 +56,27 @@ public class LavaLampTests
         CardEffects.DealDamageToPlayer(fight.State, 10);
         Assert.True(fight.State.TookUnblockedDamage);
     }
+
+    /// <summary>
+    /// A monster's attack that gets through the block spoils it too -- the commonest way, and
+    /// the one the enemy-attack path forgot (run referee, seed RXVFG7FZ86: after Vantom the
+    /// emulator upgraded the whole screen, the game none of it). A fully blocked hit does not.
+    /// </summary>
+    [Fact]
+    public void AMonstersHitThroughBlockSpoilsIt()
+    {
+        var fight = Fight.Hand().Energy(3).Enemy(hp: 200);
+        fight.State.PlayerHp = 200;
+        var enemy = fight.State.Enemies[0];
+
+        fight.State.PlayerBlock = 20;
+        EnemyAI.DealAttackDamageForTests(enemy, fight.State, 10);
+        Assert.False(fight.State.TookUnblockedDamage);
+
+        fight.State.PlayerBlock = 0;
+        EnemyAI.DealAttackDamageForTests(enemy, fight.State, 10);
+        Assert.True(fight.State.TookUnblockedDamage);
+    }
 }
 
 public class DingyRugTests

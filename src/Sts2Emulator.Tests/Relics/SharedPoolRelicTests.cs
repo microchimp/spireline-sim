@@ -644,6 +644,32 @@ public class AmethystAubergineTests
         );
         Assert.Equal(18, hat.Gold);
     }
+
+    /// <summary>
+    /// `TryModifyRewards` adds a GoldReward to the SCREEN: the purse moves only when it is
+    /// claimed. It used to be paid as the fight ended, so a screen left unclaimed still
+    /// paid (run referee: fifteen gold too many after every aubergine fight).
+    /// </summary>
+    [Fact]
+    public void TheFifteenIsOnTheRewardScreenNotInThePurse()
+    {
+        var engine = new RunEngine();
+        engine.Reset("3PFLW9XC5D");
+        engine.State.CurrentNodeType = RunConstants.NodeNormal;
+        engine.State.LastResolvedRoomType = RunConstants.NodeNormal;
+        engine.State.Relics.Add(new RelicInstance(RelicEffects.AmethystAubergine));
+        int purse = engine.State.Gold;
+
+        RunRewardGenerator.GenerateCombatRewards(engine.State);
+
+        Assert.Equal(purse, engine.State.Gold);
+        Assert.Equal([15], engine.State.PendingGoldRewards);
+        int room = engine.State.RewardGold;
+        Assert.True(RunRewardGenerator.ClaimRewardAtIndex(engine.State, 0));
+        Assert.Equal(15, engine.State.RewardGold);
+        Assert.True(RunRewardGenerator.ClaimRewardAtIndex(engine.State, 0));
+        Assert.Equal(purse + room + 15, engine.State.Gold);
+    }
 }
 
 public class JuzuBraceletTests

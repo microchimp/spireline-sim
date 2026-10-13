@@ -379,11 +379,42 @@ public static class RelicEffects
     /// take gets it, at amount 1. Not one option chosen off a stream like Wing Charm's --
     /// ALL of them, which is why this is asked per-card and draws nothing.
     /// </summary>
+    /// <remarks>
+    /// `SilkenTress.TryModifyCardRewardOptionsLate` does the same to the FIRST card reward
+    /// built after it is obtained, then sets `IsUsed` (`AfterModifyingCardRewardOptions`).
+    /// Its Counter carries that: 0 unused, 1 the screen on offer is its one, 2 spent
+    /// (<see cref="Run.RunRewardGenerator.PopulateCardReward"/> and the card screen's answer).
+    /// </remarks>
     public static Enchantment GlitterEnchantmentFor(Run.RunState state, CardInstance card) =>
-        state.Relics.Any(relic => relic.DefId == Glitter)
+        state.Relics.Any(relic => relic.DefId == Glitter || (relic.DefId == SilkenTress && relic.Counter == 1))
         && Enchantments.CanEnchant(card, Enchantment.Glam)
             ? Enchantment.Glam
             : Enchantment.None;
+
+    /// <summary>`SilkenTress`: loses all gold on pickup; the next card reward arrives Glam-enchanted.</summary>
+    public const int SilkenTress = Run.RunConstants.RelicSilkenTress;
+
+    /// <summary>A card reward screen is being built: Silken Tress claims it if still unused.</summary>
+    internal static void MarkSilkenTressScreen(Run.RunState state)
+    {
+        // Only the first screen built after pickup: a second build (a reroll, the next reward)
+        // finds IsUsed already set.
+        int i = state.Relics.FindIndex(relic => relic.DefId == SilkenTress);
+        if (i >= 0 && state.Relics[i].Counter < 2)
+        {
+            state.Relics[i] = state.Relics[i] with { Counter = state.Relics[i].Counter + 1 };
+        }
+    }
+
+    /// <summary>The card screen Silken Tress enchanted has been answered: it is used up.</summary>
+    internal static void SpendSilkenTress(Run.RunState state)
+    {
+        int i = state.Relics.FindIndex(relic => relic.DefId == SilkenTress);
+        if (i >= 0 && state.Relics[i].Counter == 1)
+        {
+            state.Relics[i] = state.Relics[i] with { Counter = 2 };
+        }
+    }
 
     /// <summary>`Glitter`: every eligible card reward arrives Glam-enchanted.</summary>
     public const int Glitter = 102;
@@ -2100,10 +2131,9 @@ public static class RelicEffects
     /// spend a combat each fight, so the remainder has to travel home.
     /// </summary>
     /// <remarks>
-    /// Deliberately a short list rather than "copy every counter back". Most counters are
-    /// per-combat tallies -- Shuriken's three attacks, Joss Paper's five exhausts, Pen
-    /// Nib's ten -- and carrying those into the run would have the next fight start
-    /// part-way through them.
+    /// A short list rather than "copy every counter back": a counter that is not a
+    /// `[SavedProperty]` (Shuriken's three attacks this turn) is per-combat state, and
+    /// carrying it would start the next fight part-way through it.
     /// </remarks>
     private static readonly int[] RunCounterRelics =
     [
@@ -2116,6 +2146,20 @@ public static class RelicEffects
         // survive the fight the way the teas' remaining-combats do. Without this the club
         // restarts at zero every combat and pays out strictly less often than the game's.
         IronClub,
+        // The same for every other tally the game saves on the relic and never resets at a
+        // fight's start or end (their AfterCombatEnd only resets Status, or Joss Paper's
+        // EtherealCount): Pen Nib's attacks, Joss Paper's exhausts, Nunchaku's attacks,
+        // Tuning Fork's skills, the flowers', Pendulum's and Pollinous Core's turns. They
+        // were per-combat here, so the next fight started at zero (run referee: Joss Paper
+        // and Pendulum after identical fights).
+        PenNib,
+        JossPaper,
+        Nunchaku,
+        TuningFork,
+        HappyFlower,
+        FakeHappyFlower,
+        Pendulum,
+        PollinousCore,
     ];
 
     /// <summary>Writes the combat's remaining counts back onto the run's relics.</summary>

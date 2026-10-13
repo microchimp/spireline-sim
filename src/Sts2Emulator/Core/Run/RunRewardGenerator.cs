@@ -185,16 +185,14 @@ public static class RunRewardGenerator
 
         // `AmethystAubergine.TryModifyRewards` adds a GoldReward after any combat room,
         // except the final act's boss -- where the run ends and there is no reward screen
-        // to add it to. Its fifteen is claimed through GainGold like any other reward's,
-        // so Ectoplasm still zeroes it, Bowler Hat still raises it, and Dragon Fruit sees
-        // it as a gain -- which a `Gold +=` here would have silently skipped.
+        // to add it to. A REWARD, on the screen below: it was paid straight into the purse
+        // here, so a screen left without claiming it still paid (run referee, every
+        // aubergine fight). Claimed through GainGold like any other reward's, so Ectoplasm
+        // still zeroes it and Bowler Hat still raises it.
         bool finalActBoss =
             state.LastResolvedRoomType == RunConstants.NodeBoss
             && state.CurrentActIndex >= state.Acts.Count - 1;
-        RunNonCombatEffects.GainGold(
-            state,
-            Effects.RelicEffects.ExtraCombatRewardGold(state, finalActBoss)
-        );
+        int aubergineGold = Effects.RelicEffects.ExtraCombatRewardGold(state, finalActBoss);
 
         // `RoyaltiesPower.AfterCombatEnd` hangs a `GoldReward(Amount)` on the room. Through
         // `GainGold` like the fight's own gold, so Ectoplasm still zeroes it and Bowler Hat
@@ -262,6 +260,16 @@ public static class RunRewardGenerator
             state.ActiveCombat.RoyaltiesGold = 0;
         }
 
+        // The aubergine's pile is a hook's (`Hook.ModifyRewards`), after the room's own.
+        if (aubergineGold > 0)
+        {
+            state.PendingGoldRewards.Add(aubergineGold);
+        }
+
+        // A room with no gold of its own (a Gremlin Merc that kept it) still shows the queued
+        // piles: the first takes the screen's slot, or it could never be claimed.
+        OfferNextGold(state);
+
         // A `SpecialCardReward` the room owes outright -- the Lantern Key, off its knight.
         // It is not one of three rolled offers and there is nothing to choose, so it takes
         // the first slot and the ordinary offer is not rolled over it.
@@ -306,6 +314,12 @@ public static class RunRewardGenerator
         // emulator gave one for both, so beating the act 1 boss handed over a Whetstone
         // the run never earned, and its pickup upgraded two attacks in the deck.
         state.PendingRelicReward = state.CurrentNodeType is RunConstants.NodeElite;
+        // The relics the reward hooks ADD (Lava Rock, Black Star, Wongo's ticket) are pulled
+        // after the room's own rewards are populated: `GenerateWithoutOffering` populates the
+        // base list, then runs `Hook.ModifyRewards`, then populates what the hooks added. Pulled
+        // here, before the cards, their rarity rolls took the cards' Rewards draws (run
+        // referee, seed E2KJGJ1SMR: Lava Rock's act-1 boss offered different cards).
+        int bonusRelicsOwed = 0;
 
         // `LavaRock.TryModifyRewards` adds `DynamicVar("Relics", 2)` RelicRewards to the
         // ACT-1 BOSS room, once per run, and disables itself. The emulator's run ends at
@@ -319,7 +333,7 @@ public static class RunRewardGenerator
         {
             state.LavaRockTriggered = true;
             state.PendingRelicReward = true;
-            state.PendingBonusRelicRewards.Add(NextRelic(state));
+            bonusRelicsOwed++;
         }
 
         // `WongosMysteryTicket.TryModifyRewards`: after FIVE combats it pays THREE relics
@@ -334,7 +348,7 @@ public static class RunRewardGenerator
         )
         {
             state.PendingRelicReward = true;
-            state.PendingBonusRelicRewards.Add(NextRelic(state));
+            bonusRelicsOwed++;
         }
 
         if (Effects.RelicEffects.WongosTicketPaysOut(state))
@@ -351,10 +365,7 @@ public static class RunRewardGenerator
                 owed--;
             }
 
-            for (int i = 0; i < owed; i++)
-            {
-                state.PendingBonusRelicRewards.Add(NextRelic(state));
-            }
+            bonusRelicsOwed += owed;
         }
 
         // The CARDS are rolled before the relic. RewardsSet builds gold, potion, card,
@@ -367,6 +378,11 @@ public static class RunRewardGenerator
         if (state.PendingRelicReward)
         {
             state.RelicReward = NextRelic(state);
+        }
+
+        for (int i = 0; i < bonusRelicsOwed; i++)
+        {
+            state.PendingBonusRelicRewards.Add(NextRelic(state));
         }
 
         state.RewardCardPending = true;
@@ -451,14 +467,42 @@ public static class RunRewardGenerator
     public static void EnterOtherCharacterCardReward(RunState state)
     {
         state.Phase = RunPhase.CardReward;
-        Array.Clear(state.RewardCards);
-        Array.Clear(state.RewardUpgraded);
+        RollOtherCharacterCardOffer(state).ShowOn(state);
+    }
 
+    /// <summary>
+    /// `Kaleidoscope.AfterObtained` builds BOTH of its card rewards as it is obtained -- the
+    /// pools shuffled on Niche and three cards made for each reward, one reward after the other
+    /// -- and offers them together. Rolled one at a time as each was claimed, the draws came late
+    /// and a reward left on the screen never drew at all (run referee, seed K99RQF4V67: the
+    /// game's Niche six and Rewards eighteen ahead the moment Neow's option was taken).
+    /// </summary>
+    public static void OfferKaleidoscopeRewards(RunState state, int count = 2)
+    {
+        for (int k = 0; k < count; k++)
+        {
+            var offer = RollOtherCharacterCardOffer(state);
+            if (!state.RewardCardPending)
+            {
+                offer.ShowOn(state);
+                state.RewardCardPending = true;
+            }
+            else
+            {
+                state.PendingCardOffers.Add(offer);
+            }
+        }
+    }
+
+    private static CardOffer RollOtherCharacterCardOffer(RunState state)
+    {
+        var cards = new int[state.RewardCards.Length];
+        var upgraded = new bool[state.RewardCards.Length];
         var pools = OtherCharacterPools(state);
         state.Rng.Niche.Shuffle(pools);
 
         var blacklist = new List<int>();
-        for (int i = 0; i < state.RewardCards.Length && i < pools.Count; i++)
+        for (int i = 0; i < cards.Length && i < pools.Count; i++)
         {
             // Base odds, and the running offset neither read nor grown: Kaleidoscope
             // creates with CardCreationSource.Other, which CardFactory.RollForRarity
@@ -471,13 +515,15 @@ public static class RunRewardGenerator
                 useOffset: false
             );
             int cardId = ChooseCardWithRarity(pools[i], rarity, blacklist, state.PlayerRng.Rewards);
-            state.RewardCards[i] = cardId;
+            cards[i] = cardId;
             blacklist.Add(cardId);
             // Three Rewards draws per card, not two: rarity, the card itself, then the
             // upgrade roll. Skipping the third left the stream a call short per card and
             // every reward after this one read the wrong values.
-            state.RewardUpgraded[i] = RollCardUpgrade(state, cardId, state.PlayerRng.Rewards);
+            upgraded[i] = RollCardUpgrade(state, cardId, state.PlayerRng.Rewards);
         }
+
+        return new CardOffer(cards, upgraded);
     }
 
     /// <summary>
@@ -609,6 +655,18 @@ public static class RunRewardGenerator
                 // player's gold the moment it was taken. Adding it to the list and
                 // stopping there is what this used to do.
                 RunNonCombatEffects.ApplyRelicPickup(state, claimed);
+                // Lost Coffer's AfterObtained offers a card reward and a potion; claimed off
+                // Neow's Bones' screen it handed over nothing (run referee, seed FHTYPREMZ9:
+                // the game's rewards counter eleven ahead after the claim).
+                if (claimed == RunConstants.RelicLostCoffer)
+                {
+                    OfferLostCofferRewards(state);
+                }
+                else if (claimed == RunConstants.RelicKaleidoscope)
+                {
+                    OfferKaleidoscopeRewards(state);
+                }
+
                 OfferNextBonusRelic(state);
                 return true;
             }
@@ -866,6 +924,74 @@ public static class RunRewardGenerator
     /// entirely on the Uniform branch, so a pinned rarity is one draw per card rather than
     /// two -- getting that wrong shifts the whole grid.
     /// </param>
+    /// <summary>
+    /// A three-card CardReward made with <c>CardCreationSource.Other</c> and RegularEncounter
+    /// odds and no flags -- Lost Coffer's. Per card: the rarity off the BASE odds (only an
+    /// Encounter source reads or grows the rare offset, CardFactory.RollForRarity), the card,
+    /// then the upgrade roll (no NoUpgradeRoll flag): three draws on PlayerRng.Rewards.
+    /// </summary>
+    public static CardOffer RollOtherSourceCardOffer(RunState state)
+    {
+        // No NoCardPoolModifications flag: ModifyCardRewardCreationOptions widens it the way it
+        // widens a combat reward's.
+        int[] pool = CardRewardPool(
+            state.Character,
+            Effects.RelicEffects.AddsColourlessToCardRewards(state),
+            Effects.RelicEffects.WidensCardRewardsToEveryPool(state)
+        );
+        var cards = new int[CardRewardSize];
+        var upgraded = new bool[CardRewardSize];
+        var blacklist = new List<int>();
+        for (int i = 0; i < cards.Length; i++)
+        {
+            int rarity = RollCardRarity(
+                state,
+                RegularEncounterCardOdds(state),
+                mutateOffset: false,
+                state.PlayerRng.Rewards,
+                useOffset: false
+            );
+            cards[i] = ChooseCardWithRarity(pool, rarity, blacklist, state.PlayerRng.Rewards);
+            blacklist.Add(cards[i]);
+            upgraded[i] = RollCardUpgrade(state, cards[i], state.PlayerRng.Rewards)
+                || RunNonCombatEffects.UpgradedByEggs(state, new CardInstance(cards[i], Upgraded: false)).Upgraded;
+        }
+
+        return new CardOffer(cards, upgraded);
+    }
+
+    private const int CardRewardSize = 3;
+
+    /// <summary>
+    /// `LostCoffer.AfterObtained`: RewardsCmd.OfferCustom of a CardReward
+    /// (<see cref="RollOtherSourceCardOffer"/>) and a PotionReward, both populated as the
+    /// screen opens, card first. However the coffer is obtained: from Neow, or claimed off
+    /// another screen (Neow's Bones), where its two rewards join the screen being answered.
+    /// </summary>
+    public static void OfferLostCofferRewards(RunState state)
+    {
+        var offer = RollOtherSourceCardOffer(state);
+        int potion = NextPotion(state, state.PlayerRng.Rewards);
+        if (!state.RewardCardPending)
+        {
+            offer.ShowOn(state);
+            state.RewardCardPending = true;
+        }
+        else
+        {
+            state.PendingCardOffers.Add(offer);
+        }
+
+        if (state.RewardPotion == 0)
+        {
+            state.RewardPotion = potion;
+        }
+        else
+        {
+            state.PendingPotionRewards.Add(potion);
+        }
+    }
+
     public static int[] GenerateEventOfferCards(
         RunState state,
         int count,
@@ -990,6 +1116,7 @@ public static class RunRewardGenerator
             !isReroll && HasRelic(state, Effects.RelicEffects.Driftwood);
 
         ApplyWingCharmToCardReward(state);
+        Effects.RelicEffects.MarkSilkenTressScreen(state);
     }
 
     /// <summary>
@@ -1463,6 +1590,42 @@ public static class RunRewardGenerator
         return false;
     }
 
+    /// <summary>
+    /// `PotionFactory.CreateRandomPotionsOutOfCombat(count)`: each potion is struck from the
+    /// options once rolled (CreateRandomPotion's <c>list.Remove</c>), so one call never repeats
+    /// a potion -- Alchemical Coffer's four and Phial Holster's two.
+    /// </summary>
+    public static int[] NextPotions(RunState state, GameRng rng, int count)
+    {
+        var rolled = new List<int>();
+        for (int i = 0; i < count; i++)
+        {
+            rolled.Add(NextPotion(state, rng, rolled));
+        }
+
+        return [.. rolled];
+    }
+
+    /// <summary>
+    /// `PotionCmd.TryToProcure(potion, owner, slotIndex)`: into that slot when it is free (the
+    /// Sozu gate as for any potion), else the first free one.
+    /// </summary>
+    public static bool AddPotionAt(RunState state, int potionId, int slot)
+    {
+        if (HasRelic(state, Effects.RelicEffects.Sozu))
+        {
+            return false;
+        }
+
+        if (slot >= 0 && slot < Math.Min(state.MaxPotionSlots, state.PotionSlots.Length) && state.PotionSlots[slot] == 0)
+        {
+            state.PotionSlots[slot] = potionId;
+            return true;
+        }
+
+        return AddPotion(state, potionId);
+    }
+
     public static bool AddPotion(RunState state, int potionId)
     {
         // Sozu's ShouldProcurePotion is false for its owner, and PotionCmd is the game's
@@ -1899,6 +2062,14 @@ public static class RunRewardGenerator
     /// The Potion Courier's Ransack rolls only among Uncommon potions, so it does NOT
     /// roll a rarity first -- it filters the pool and takes one.
     /// </summary>
+    /// <summary>
+    /// An event's potion picked the way TheLegendsWereTrue, Wellspring, BattlewornDummy and
+    /// EndlessConveyor pick theirs: ONE `NextItem` over the character's unlocked potions followed
+    /// by the shared pool's -- uniform, and one draw, not a reward's rarity roll (<see cref="NextPotion"/>).
+    /// </summary>
+    public static int NextPoolPotion(RunState state, GameRng rng) =>
+        rng.NextItem(PotionRewardPool(state.Character));
+
     public static int NextUncommonPotion(RunState state, GameRng rng)
     {
         var available = PotionRewardPool(state.Character)
@@ -2063,10 +2234,19 @@ public static class RunRewardGenerator
     /// The odds are uniform over the filtered pool, not the usual rarity roll, so this
     /// picks cards rather than rolling a rarity first.
     /// </summary>
-    public static void EnterFutureOfPotionsReward(RunState state, int potionId, GameRng rng)
+    /// <remarks>
+    /// Two streams, at two moments. The TYPE is the event's: `PotionToCardType` is built the
+    /// first time the options are generated, one `base.Rng.NextItem` per potion in the belt in
+    /// slot order (<see cref="RunNonCombatEffects"/> rolls them on entering, into
+    /// <c>EventRandomOffer</c>). The CARDS are a plain `CardReward` with no rng override, so
+    /// `CardFactory.CreateForReward` picks them off `PlayerRng.Rewards`, one draw each at a
+    /// fixed rarity (run referee, seed 6HMCK2BXTJ: the game's rewards counter three ahead after
+    /// a trade the emulator rolled on the event's stream).
+    /// </remarks>
+    public static void EnterFutureOfPotionsReward(RunState state, int potionId, CardType type)
     {
         var rarity = CardRarityForPotion(potionId);
-        var type = rng.NextItem(FutureOfPotionsCardTypes(potionId));
+        var rng = state.PlayerRng.Rewards;
 
         var pool = OwnCardPool(state)
             .ToArray()

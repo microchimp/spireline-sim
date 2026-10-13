@@ -676,7 +676,7 @@ public sealed class RunEngine
                 var stall = RunNonCombatEffects.FakeMerchantStock(State);
                 for (int i = 0; i < stall.Count; i++)
                 {
-                    if (stall[i] != 0 && State.Gold >= RunConstants.FakeMerchantRelicCost)
+                    if (stall[i] != 0 && State.Gold >= RunNonCombatEffects.FakeMerchantPrice(State, i))
                     {
                         SetMask(mask, i);
                     }
@@ -1284,6 +1284,11 @@ public sealed class RunEngine
             // and the bank does not care which. The unknown-node path pays through
             // `EnterUnknownMapPoint`, which resolves to a room of its own.
             RunNonCombatEffects.PayMawBank(State);
+            // `LavaLamp.AfterRoomEntered` clears its flag on entering ANY room, not only a
+            // fight's: a card reward outside combat (an event's, a shop's) is upgraded unless
+            // damage was taken since the last room. Fights entered otherwise clear it again
+            // as they start.
+            State.TookUnblockedDamageThisCombat = false;
 
             switch (nodeType)
             {
@@ -1777,9 +1782,10 @@ public sealed class RunEngine
             // for the player to claim, the same shape as Kaleidoscope. Handing the card
             // reward straight over skipped the screen, and with it the claim the run
             // really makes.
-            RunRewardGenerator.PopulateCardReward(State);
-            State.RewardCardPending = true;
-            State.RewardPotion = RunRewardGenerator.NextPotion(State, State.PlayerRng.Rewards);
+            // Its card reward is CardCreationSource.Other: base odds, the rare offset left
+            // alone (run referee, seed UK2BJLWEV1: the game's offset unchanged after it).
+            RunRewardGenerator.ClearRewardScreen(State);
+            RunRewardGenerator.OfferLostCofferRewards(State);
             State.NeowAwaitingProceed = true;
             State.Phase = RunPhase.RelicReward;
             return;
@@ -1841,8 +1847,10 @@ public sealed class RunEngine
         {
             // "Obtain 2 card rewards from other characters". RewardsCmd.OfferCustom puts
             // both on the rewards screen at once; the player claims one, picks a card,
-            // lands back on the screen and claims the other.
-            State.PendingOtherCharacterCardRewards = 2;
+            // lands back on the screen and claims the other. Both are built as the relic is
+            // obtained (OfferKaleidoscopeRewards).
+            RunRewardGenerator.ClearRewardScreen(State);
+            RunRewardGenerator.OfferKaleidoscopeRewards(State);
             State.NeowAwaitingProceed = true;
             State.Phase = RunPhase.RelicReward;
             return;
@@ -2103,6 +2111,7 @@ public sealed class RunEngine
         State.LastingCandyRewardCard = 0;
         State.LastingCandyRewardUpgraded = false;
         State.CardRewardRerollAvailable = false;
+        Effects.RelicEffects.SpendSilkenTress(State);
 
         // Prayer Wheel and White Star each add a WHOLE extra CardReward, so the screen
         // comes back rather than the run moving on. Rolled here, when the previous offer
@@ -2215,7 +2224,17 @@ public sealed class RunEngine
             // which is invisible for Neow (its rewards are WithSkippingDisallowed) and
             // wrong for every event, whose second queued potion is declined far more often
             // than it is taken.
+            //
+            // Everything else on it goes too: a card reward left unclaimed (RewardCardPending,
+            // queued offers), gold, a relic. Only the potions were dropped, so a combat's
+            // skipped card reward stayed pending and reappeared on the NEXT rewards screen
+            // the run opened -- an event's potions, in the run referee's 6BJ7MYTYCK. Each of
+            // the game's RewardsSets is its own screen; leaving one drops what it held.
             State.PendingPotionRewards.Clear();
+            RunRewardGenerator.ClearRewardScreen(State);
+            State.PendingBonusRelicRewards.Clear();
+            State.PendingOtherCharacterCardRewards = 0;
+            State.ExtraCardRewardsOwed = 0;
             return LeaveRewardScreen(out terminal);
         }
 
@@ -2364,15 +2383,33 @@ public sealed class RunEngine
         State.RelicReward = 0;
         State.RewardPotion = 0;
         State.PendingPotionRewards.Clear();
-        State.PendingPotionRewards.AddRange(potionIds);
+        QueuePotionRewards(potionIds);
         OfferNextRestPotion();
         State.Phase = RunPhase.RelicReward;
     }
 
     /// <summary>
-    /// Moves the next queued potion onto the reward screen, if the screen is free. A
-    /// queued 0 is rolled here rather than when it was queued, which is where
-    /// PotionReward.Populate rolls it.
+    /// Queue potion rewards the way one RewardsSet holds them: every reward is populated
+    /// when the set is offered (<c>RewardsSet.GenerateWithoutOffering</c> calls each
+    /// <c>Populate</c>, and <c>PotionReward.Populate</c> rolls its potion there), so a
+    /// queued 0 is rolled now, in list order -- not when it reaches the one-potion screen,
+    /// which drew the second potion of a pair only once the first was answered, and never
+    /// when the screen was left.
+    /// </summary>
+    private void QueuePotionRewards(IEnumerable<int> potionIds)
+    {
+        foreach (int potionId in potionIds)
+        {
+            State.PendingPotionRewards.Add(
+                potionId != 0 ? potionId : RunRewardGenerator.NextPotion(State, State.PlayerRng.Rewards)
+            );
+        }
+    }
+
+    /// <summary>
+    /// Moves the next queued potion onto the reward screen, if the screen is free. Queued
+    /// potions are rolled when their set is offered (<see cref="QueuePotionRewards"/>); a 0
+    /// still in the queue is rolled here as a fallback.
     /// </summary>
     private void OfferNextRestPotion()
     {
@@ -2659,7 +2696,7 @@ public sealed class RunEngine
             // to take it, and may drop a held potion to make room.
             if (Effects.RelicEffects.Has(State.Relics, Effects.RelicEffects.TinyMailbox))
             {
-                State.PendingPotionRewards.AddRange([0, 0]);
+                QueuePotionRewards([0, 0]);
                 OfferNextRestPotion();
                 State.Phase = RunPhase.RelicReward;
                 return 0;
@@ -3063,13 +3100,11 @@ public sealed class RunEngine
                 }
                 else if (action == 1)
                 {
-                    if (State.PlayerHp <= 8)
-                    {
-                        return -1;
-                    }
-
-                    State.PlayerHp -= 8;
-                    OfferPotionRewards(0);
+                    // `SlowlyFindAnExit`: the damage (lethal is allowed; Step ends the run at 0),
+                    // then ONE `PlayerRng.Rewards.NextItem` over the character's potion pool
+                    // followed by the shared one -- a uniform pick, not a reward's rarity roll.
+                    State.PlayerHp = Math.Max(0, State.PlayerHp - 8);
+                    OfferPotionRewards(RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards));
                     return 0;
                 }
                 else if (action != RunConstants.EventSkipAction)
@@ -3251,7 +3286,7 @@ public sealed class RunEngine
             case RunConstants.EventWellspring:
                 if (action == 0)
                 {
-                    OfferPotionRewards(0);
+                    OfferPotionRewards(RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards));
                     return 0;
                 }
 
@@ -4042,12 +4077,12 @@ public sealed class RunEngine
                     // potion buys and the type the event rolled for it -- not one card
                     // taken off the map-generation stream and pushed into the deck.
                     int traded = State.PotionSlots[slot];
+                    var type = (uint)action < (uint)State.EventRandomOffer.Length
+                        ? (CardType)State.EventRandomOffer[action]
+                        : RunNonCombatEffects.EventStream(State, "THE_FUTURE_OF_POTIONS")
+                            .NextItem(RunRewardGenerator.FutureOfPotionsCardTypes(traded));
                     State.PotionSlots[slot] = 0;
-                    RunRewardGenerator.EnterFutureOfPotionsReward(
-                        State,
-                        traded,
-                        RunNonCombatEffects.EventStream(State, "THE_FUTURE_OF_POTIONS")
-                    );
+                    RunRewardGenerator.EnterFutureOfPotionsReward(State, traded, type);
                     return 0;
                 }
                 else if (action != RunConstants.EventSkipAction)
@@ -5010,12 +5045,13 @@ public sealed class RunEngine
             return -1;
         }
 
-        if (stall[action] == 0 || State.Gold < RunConstants.FakeMerchantRelicCost)
+        int price = RunNonCombatEffects.FakeMerchantPrice(State, action);
+        if (stall[action] == 0 || State.Gold < price)
         {
             return -1;
         }
 
-        State.Gold -= RunConstants.FakeMerchantRelicCost;
+        State.Gold -= price;
         // Sold out rather than removed: the slot indices have to hold still for the rest
         // of the visit, and an emptied slot is also one fewer relic the fight would pay.
         int bought = stall[action];
@@ -5498,9 +5534,16 @@ public sealed class RunEngine
                     State.RewardCards[i] = first[i];
                 }
 
+                // One rewards screen holding both, as Colorful Philosophers' three
+                // (OfferColorfulPhilosopherRewards): straight into the first card screen with no
+                // way back lost the second as soon as the first was answered.
+                State.EventAwaitingProceed = State.Phase == RunPhase.Event;
+                State.RewardGold = 0;
+                State.RewardPotion = 0;
+                State.RelicReward = 0;
                 State.RewardCardPending = true;
                 State.PendingCardOffers.Add(CardOffer.Plain(second));
-                State.Phase = RunPhase.CardReward;
+                State.Phase = RunPhase.RelicReward;
                 return 0;
             }
 
@@ -5563,7 +5606,7 @@ public sealed class RunEngine
                 // own pool concatenated with the shared one.
                 RunRewardGenerator.AddPotion(
                     State,
-                    RunRewardGenerator.NextPotion(State, State.PlayerRng.Rewards)
+                    RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards)
                 );
                 break;
 
@@ -5635,10 +5678,18 @@ public sealed class RunEngine
                 )
             )
             .ToList();
+        // `RewardsCmd.OfferCustom` with the three CardRewards: ONE rewards screen holding all
+        // three, each claimed (or left) from it, and the event's finished page after it. Going
+        // straight into the first card screen with no way back dropped the other two the moment
+        // the first was answered (run referee, seed 6HMCK2BXTJ: the game took two of three).
+        State.EventAwaitingProceed = State.Phase == RunPhase.Event;
+        State.RewardGold = 0;
+        State.RewardPotion = 0;
+        State.RelicReward = 0;
         offers[0].ShowOn(State);
         State.RewardCardPending = true;
         State.PendingCardOffers.AddRange(offers.Skip(1));
-        State.Phase = RunPhase.CardReward;
+        State.Phase = RunPhase.RelicReward;
     }
 
     /// <summary>
@@ -5767,12 +5818,11 @@ public sealed class RunEngine
                 SetMask(mask, 1);
                 break;
             case RunConstants.EventTheLegendsWereTrue:
+                // Both options are always there: Slowly Find an Exit is only flagged as lethal
+                // (`ThatDoesDamage`), never locked, and its potion is OFFERED, so a full belt
+                // does not close it (run referee, seed 0NT10MDKY3).
                 SetMask(mask, 0);
-                if (State.PlayerHp > 8 && State.UsablePotionSlots().Any(potion => potion == 0))
-                {
-                    SetMask(mask, 1);
-                }
-
+                SetMask(mask, 1);
                 break;
             case RunConstants.EventDoorsOfLightAndDark:
                 // Both doors are always open. Light takes up to two upgradable cards and
