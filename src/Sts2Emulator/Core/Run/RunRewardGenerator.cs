@@ -1299,6 +1299,7 @@ public static partial class RunRewardGenerator
             state,
             PovertyGold(state, state.PlayerRng.Rewards.NextInt(42, 53))
         );
+        RunNonCombatEffects.CompleteSpoilsMapQuest(state);
     }
 
     /// <summary>

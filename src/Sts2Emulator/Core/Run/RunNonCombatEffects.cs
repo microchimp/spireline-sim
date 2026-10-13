@@ -3354,6 +3354,38 @@ public static class RunNonCombatEffects
         Effects.RelicEffects.ApplyAfterGoldGained(state);
     }
 
+    /// <summary>
+    /// <c>OneOffSynchronizer.TryHandleSpoilsMap</c>, called right after the chest's own
+    /// gold: when the point the run stands on carries the Spoils Map quest, every Spoils
+    /// Map in the deck pays its 600 (<c>SpoilsMap.OnQuestComplete</c>, a
+    /// <c>PlayerCmd.GainGold</c> like any other) and is removed from the deck.
+    /// </summary>
+    /// <remarks>
+    /// The marker is on the map point, so it is the point that matters and not the room:
+    /// a "?" that turns out to be a chest is some other point and pays nothing, and so
+    /// does a chest the run reaches after the card has left the deck (the card's
+    /// <c>BeforeCardRemoved</c> takes the marker off). Ending the quest clears the
+    /// marker the same way.
+    /// </remarks>
+    public static void CompleteSpoilsMapQuest(RunState state)
+    {
+        if (state.SpoilsQuestCoord != state.CurrentMapCoord)
+        {
+            return;
+        }
+
+        for (int i = state.Deck.Count - 1; i >= 0; i--)
+        {
+            if (state.Deck[i].DefId == RunConstants.SpoilsMapCard)
+            {
+                GainGold(state, RunConstants.SpoilsMapGold);
+                state.Deck.RemoveAt(i);
+            }
+        }
+
+        state.SpoilsQuestCoord = null;
+    }
+
     public static void GainMaxHp(RunState state, int amount)
     {
         state.PlayerMaxHp += amount;

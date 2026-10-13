@@ -934,6 +934,13 @@ public static class RunConstants
     /// act 2's map and to no other.
     /// </summary>
     public const int SpoilsMapActIndex = 1;
+
+    /// <summary>
+    /// <c>SpoilsMap</c>'s <c>GoldVar(600)</c>, paid by <c>OnQuestComplete</c> on top of the
+    /// chest's own gold. Not scaled by Poverty: it is gained as a bare <c>BaseValue</c>.
+    /// </summary>
+    public const int SpoilsMapGold = 600;
+
     public const int NeowsFuryCard = 321;
 
     public static ReadOnlySpan<int> StarterDeckIds =>
