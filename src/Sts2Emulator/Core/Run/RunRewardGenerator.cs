@@ -185,16 +185,14 @@ public static class RunRewardGenerator
 
         // `AmethystAubergine.TryModifyRewards` adds a GoldReward after any combat room,
         // except the final act's boss -- where the run ends and there is no reward screen
-        // to add it to. Its fifteen is claimed through GainGold like any other reward's,
-        // so Ectoplasm still zeroes it, Bowler Hat still raises it, and Dragon Fruit sees
-        // it as a gain -- which a `Gold +=` here would have silently skipped.
+        // to add it to. A REWARD, on the screen below: it was paid straight into the purse
+        // here, so a screen left without claiming it still paid (run referee, every
+        // aubergine fight). Claimed through GainGold like any other reward's, so Ectoplasm
+        // still zeroes it and Bowler Hat still raises it.
         bool finalActBoss =
             state.LastResolvedRoomType == RunConstants.NodeBoss
             && state.CurrentActIndex >= state.Acts.Count - 1;
-        RunNonCombatEffects.GainGold(
-            state,
-            Effects.RelicEffects.ExtraCombatRewardGold(state, finalActBoss)
-        );
+        int aubergineGold = Effects.RelicEffects.ExtraCombatRewardGold(state, finalActBoss);
 
         // `RoyaltiesPower.AfterCombatEnd` hangs a `GoldReward(Amount)` on the room. Through
         // `GainGold` like the fight's own gold, so Ectoplasm still zeroes it and Bowler Hat
@@ -261,6 +259,16 @@ public static class RunRewardGenerator
             state.PendingGoldRewards.Add(state.ActiveCombat.RoyaltiesGold);
             state.ActiveCombat.RoyaltiesGold = 0;
         }
+
+        // The aubergine's pile is a hook's (`Hook.ModifyRewards`), after the room's own.
+        if (aubergineGold > 0)
+        {
+            state.PendingGoldRewards.Add(aubergineGold);
+        }
+
+        // A room with no gold of its own (a Gremlin Merc that kept it) still shows the queued
+        // piles: the first takes the screen's slot, or it could never be claimed.
+        OfferNextGold(state);
 
         // A `SpecialCardReward` the room owes outright -- the Lantern Key, off its knight.
         // It is not one of three rolled offers and there is nothing to choose, so it takes
