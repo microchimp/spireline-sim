@@ -59,10 +59,17 @@ public static partial class Driver
             // RunJob reports an unreadable job.
         }
 
-        _ = RunJob(job);
+        // A fault before the job's own try (e.g. a type initializer) would otherwise hang silently.
+        _ = RunJob(job).ContinueWith(t =>
+        {
+            GD.Print($"[referee] job failed outside its handler: {t.Exception}");
+            System.Environment.Exit(4);
+        }, TaskContinuationOptions.OnlyOnFaulted);
     }
 
     private static long _lastProgress = System.Environment.TickCount64;
+    private static long _frameTicks;
+    internal static long _lastDriverFrame;
 
     /// <summary>Marks progress for the watchdog: called on every action, not just every fight.</summary>
     internal static void Heartbeat()
@@ -140,8 +147,35 @@ public static partial class Driver
         GD.Print($"[referee] startup preload drained after {clock.ElapsedMilliseconds} ms");
     }
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    private static uint _mainThreadId;
+
+    /// <summary>For the watchdog: is the main thread blocked (waiting) or busy (CPU still rising)?</summary>
+    private static string MainThreadState()
+    {
+        try
+        {
+            System.Diagnostics.ProcessThread? Find() => System.Diagnostics.Process.GetCurrentProcess().Threads
+                .Cast<System.Diagnostics.ProcessThread>().FirstOrDefault(t => t.Id == _mainThreadId);
+            var t0 = Find();
+            if (t0 == null) return "main thread not found";
+            double c0 = t0.TotalProcessorTime.TotalMilliseconds;
+            string state = t0.ThreadState == System.Diagnostics.ThreadState.Wait ? $"Wait({t0.WaitReason})" : t0.ThreadState.ToString();
+            Thread.Sleep(1000);
+            double c1 = Find()?.TotalProcessorTime.TotalMilliseconds ?? c0;
+            return $"main thread {state}, {c1 - c0:0} ms CPU in the last second";
+        }
+        catch (Exception ex)
+        {
+            return "main thread state unavailable: " + ex.GetType().Name;
+        }
+    }
+
     private static async Task RunJob(string jobPath)
     {
+        _mainThreadId = GetCurrentThreadId();
         var job = JsonNode.Parse(File.ReadAllText(jobPath))!.AsObject();
         string outPath = (string)job["out"]!;
         var results = new JsonArray();
@@ -155,7 +189,10 @@ public static partial class Driver
                 await Task.Delay(5000);
                 if (System.Environment.TickCount64 - Interlocked.Read(ref _lastProgress) > stallMs)
                 {
-                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting after {_done} fights");
+                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting after {_done} fights; "
+                        + $"frames ticked {Interlocked.Read(ref _frameTicks)} (last driver frame {Interlocked.Read(ref _lastDriverFrame)}), "
+                        + $"step {CurrentStep}, fast tweens {Interlocked.Read(ref Patches.FastTweens)}, in fast tween {Patches.InFastTween}; "
+                        + MainThreadState());
                     System.Environment.Exit(3);
                 }
             }
@@ -166,6 +203,8 @@ public static partial class Driver
             // Wait until the game has finished its own startup and shows the main menu: content,
             // localisation and the profile are loaded by then, exactly as for a player.
             var tree = (SceneTree)Engine.GetMainLoop();
+            // For the watchdog: are frames still ticking (an await never resolves) or is the main thread stuck?
+            tree.ProcessFrame += () => Interlocked.Increment(ref _frameTicks);
             while (NGame.Instance?.MainMenu == null)
             {
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
@@ -175,6 +214,29 @@ public static partial class Driver
             // waits, and the frame cap only paces rendering, which is off anyway.
             SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
             IdleFrames = (double?)job["idle_frames"] ?? IdleFrames;
+            SettleMode = (string?)job["settle"] ?? SettleMode;
+            SettleAudit = (double?)job["settle_audit"] ?? SettleAudit;
+            TraceFrames = (bool?)job["trace_frames"] ?? false;
+            StepCosts = (bool?)job["step_costs"] ?? false;
+            IdleProbe = (int?)job["idle_probe"] ?? 0;
+            CheckSettleFields();  // a game without the flag settle's field ends the job here, not every fight
+            if (job["sleep_usec"] is { } sleep)
+            {
+                // Headless, the main loop pads every frame to this many microseconds (Godot's
+                // OS::add_frame_delay applies the low-processor sleep when no window can draw).
+                OS.LowProcessorUsageModeSleepUsec = (int)sleep;
+            }
+
+            GD.Print($"[referee] low_processor_mode={OS.LowProcessorUsageMode} sleep_usec={OS.LowProcessorUsageModeSleepUsec} max_fps={Engine.MaxFps}");
+            if (TraceFrames)
+            {
+                Patches.ApplyTrace();
+            }
+
+            if ((bool?)job["fast_tweens"] == true)
+            {
+                Patches.ApplyFastTweens();
+            }
             // Tutorials off, as a player can set it: first-time popups (FTUE) on a fresh profile
             // open modals that nothing headless answers.
             SaveManager.Instance.Progress.EnableFtues = false;

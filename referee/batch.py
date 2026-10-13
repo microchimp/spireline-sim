@@ -37,7 +37,16 @@ def main() -> int:
     ap.add_argument("--deck-cards", type=int, default=5, help="random Ironclad/colourless cards added per fight")
     ap.add_argument("--canary", type=int, default=2, help="fights per copy run and checked before the rest (0 = off)")
     ap.add_argument("--waves", type=int, default=3, help="waves per batch; coverage is updated between waves")
+    ap.add_argument("--settle-audit", type=float, default=0.05,
+                    help="share of fights whose flag settles are re-checked against the old six-frame rule")
+    ap.add_argument("--old-settle", action="store_true",
+                    help="six-stable-frame settle, awaited tweens and stock frame pacing (before SPEED_PLAN steps 3-4)")
     a = ap.parse_args()
+    # Driver speed switches for every server (SPEED_PLAN.md steps 2-4), passed through the specs file.
+    # The flag settle reads the game's turn flags; awaited tweens finish at once; frames are not padded to 6.9 ms.
+    driver_flags = {"fast_reset": True, "no_preload": True, "fast_patches": True}
+    if not a.old_settle:
+        driver_flags.update({"settle": "flags", "fast_tweens": True, "sleep_usec": 0, "settle_audit": a.settle_audit})
 
     # Coverage: each fight's deck gets random cards from the pools an Ironclad can hold, so a
     # batch exercises hundreds of cards rather than the starter deck's three.
@@ -84,10 +93,10 @@ def main() -> int:
         """
         spec, sout = JOBS / f"{name}.json", JOBS / f"{name}.out.json"
         run_dir = Path(GAME).parent / "serve" / name
-        spec.write_text(json.dumps({"runs": subset}), encoding="utf-8")
+        spec.write_text(json.dumps({"runs": subset, **driver_flags}), encoding="utf-8")  # serve.py passes them to every server
         p = subprocess.run([sys.executable, str(ROOT / "referee" / "serve.py"), "--game", GAME, "--specs", str(spec),
                             "--servers", str(max(1, min(a.parallel, len(subset)))), "--out", str(sout),
-                            "--run-dir", str(run_dir), "--no-install"],
+                            "--run-dir", str(run_dir), "--no-install"] + (["--old-settle"] if a.old_settle else []),
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=a.timeout, check=False)
         text = p.stdout
         try:  # serve.py's own summary.json (the stdout summary follows its log lines)
@@ -230,6 +239,9 @@ def main() -> int:
     minutes = max(1e-9, (t_end - t_start) / 60)
     per_fight = [r["s_per_fight_per_server"] for r in reports if r.get("s_per_fight_per_server")]
     stalls = sum(1 for r in merged if str(r.get("error", "")).startswith("stalled"))
+    # Settle audit: steps where the flag settle and the old six-frame rule saw different states.
+    audited = [r for r in merged if "settle_audit" in r]
+    audit_bad = [(r.get("seed"), x["step"]) for r in audited for x in r["settle_audit"] if isinstance(x, dict)]
     metrics = {
         "batch": a.name, "copies": a.parallel, "fights": len(merged), "verified": len(played),
         "minutes": round(minutes, 2), "vt_per_min": round(vt / minutes), "vt_first_div_per_min": round(vt_first / minutes),
@@ -251,6 +263,8 @@ def main() -> int:
              f"re-anchored {vt} of {metrics['reanchored']} steps match (first-divergence method: {metrics['vt_first_div_per_min']}/min)")
     lines = [speed, f"batch {a.name}: {a.fights} fights, session exit {report.get('exit')}, {report.get('seconds')} s, "
              f"network {report.get('network_connections')}, real profile touched {report.get('real_profile_touched')}",
+             f"settle audit: {len(audited)} fights, {sum(len(r['settle_audit']) for r in audited)} steps, "
+             f"{len(audit_bad)} disagreements{(' e.g. ' + str(audit_bad[:5])) if audit_bad else ''}",
              f"identical: {same}", f"diverging: {sum(len(v) for v in groups.values())}", f"errors: {len(errors)}"]
     for field, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         lines.append(f"  {field}: {len(items)}  e.g. {items[0]}")

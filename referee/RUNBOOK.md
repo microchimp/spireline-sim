@@ -84,7 +84,18 @@ running between fights (no 10 s boot per session), so cost per fight is the figh
   one `netstat` call per second covers every server. It exits 1 if any server opened a connection.
 - A server that dies or hangs is replaced; the spec it held goes back to the inbox once and is recorded as `stalled` if it
   kills a second server. One hot spare is kept booted (`--spares 0` turns it off). Servers run at BelowNormal priority.
-- `--verify-against <runs-mode out.json>` compares each result (ignoring timing) with the reference, spec by spec.
+- `--verify-against <runs-mode out.json>` compares each result (ignoring timing and the diagnostics below) with the
+  reference, spec by spec.
+- Driver job keys (SPEED_PLAN steps 3-4, `driver/Settle.cs`), set in the specs file or by serve.py's and batch.py's
+  defaults, which are the same: `settle` `"flags"` (default: the game's own turn flags, held on two checks one frame apart)
+  or `"frames"` (the old six-stable-frame rule); `settle_audit` 0..1 (default 0.05: the share of fights, by seed hash,
+  whose every flag settle is re-checked with the old rule at stock pacing; the result's `settle_audit` lists the steps,
+  an object for each disagreement, and batch.py's summary counts them); `fast_tweens` (default true: awaited tweens
+  finish at once); `sleep_usec` (default 0: no per-frame padding; only safe with the flag settle); diagnostics
+  `trace_frames` (per-frame trace in each step's `trace`), `step_costs` (frames and main-thread megacycles in each step's
+  `cost`) and `idle_probe` N (a quiet frame's cost after step 0). `--old-settle` (serve.py and batch.py) runs `"frames"`
+  with stock tweens and pacing and no audit; `--settle-audit X` sets the share. A settle that does not hold within 10 s
+  (below `stall_s`) ends the fight with `idle_timeout`.
 - `tools`: `python referee/linkcopy.py --src <game> --dst <game-name>` makes a private game copy out of hard links, so a
   session can install its own driver without waiting for the shared copy's `mods/*.dll` to unlock.
 - Run files: `<game>/../serve/<ts>/{inbox,out/s*.jsonl,scratch/s*,results.json,results.jsonl,summary.json}`.

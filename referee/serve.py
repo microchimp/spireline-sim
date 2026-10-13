@@ -3,8 +3,22 @@
 
     python referee/serve.py --game <game copy> --specs <job.json> [--servers 4] [--repeat 1] [--out results.json]
 
---specs is a job file (or a bare JSON list) whose "runs" are fight specs; its fast_reset / no_preload / fast_patches /
-idle_frames / stall_s keys apply to every server. Each server is one headless game on its own scratch
+--specs is a job file (or a bare JSON list) whose "runs" are fight specs; its idle_frames / stall_s / settle /
+settle_audit / fast_tweens / sleep_usec / trace_frames / step_costs / idle_probe keys apply to every server
+(fast_reset / no_preload / fast_patches come from --slow-reset / --preload / --no-patches). Driver job keys:
+  settle        "flags" (default here and in batch.py): the game's own turn flags, held two checks one frame
+                apart; "frames": the old rule, six stable frames (driver/Settle.cs).
+  settle_audit  0..1 (default 0.05): share of fights, picked by seed hash, whose every flag settle is re-checked
+                with the old rule at stock pacing; the result's "settle_audit" lists the steps (an object per
+                disagreement).
+  fast_tweens   true (default): awaited tweens finish at once (driver/Patches.cs).
+  sleep_usec    0 (default): no per-frame padding (Godot's low-processor sleep, stock 6900); only safe with
+                the flag settle.
+  trace_frames  per-frame trace of each step in the step's "trace" (diagnostics).
+  step_costs    frames and main-thread megacycles per step in the step's "cost".
+  idle_probe    N: idle N frames after step 0 and record a quiet frame's cost in "idle_probe".
+--old-settle runs the old settle: settle "frames", stock tweens and stock frame pacing, no audit.
+Each server is one headless game on its own scratch
 profile (same safety checks as run_referee.py: known sts2.dll sha256, override.cfg, APPDATA in scratch,
 no network connections, real profile untouched). The dispatcher writes one spec file per fight into
 <run-dir>/inbox; whichever server is free claims the oldest one (driver/Server.cs), plays it and appends
@@ -14,7 +28,8 @@ runs-mode out file, in spec order) and results.jsonl (arrival order).
 A server that dies or hangs is restarted; the spec it had claimed goes back to the inbox once, and is
 recorded as stalled if it kills a server a second time. One hot spare (--spares) is booted and held
 (hold.<pid> in the inbox) so a restart costs no boot time. At the end STOP goes into the inbox.
---verify-against <out.json> compares every result with a reference from "runs" mode, ignoring timing.
+--verify-against <out.json> compares every result with a reference from "runs" mode, ignoring timing and
+the diagnostics above (settle_audit, idle_probe, per-step cost and trace).
 """
 
 from __future__ import annotations
@@ -82,6 +97,20 @@ def strip(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in TIMING_KEYS and k not in META_KEYS}
 
 
+DIAG_KEYS = {"settle_audit", "idle_probe"}  # driver diagnostics: kept in the merged output, never verified
+DIAG_STEP_KEYS = {"cost", "trace"}
+
+
+def comparable(r: dict) -> dict:
+    """What --verify-against compares: strip() without the driver's diagnostics (strip() itself keeps them,
+    because the merged output is read for them, e.g. batch.py's settle-audit summary)."""
+    out = {k: v for k, v in strip(r).items() if k not in DIAG_KEYS}
+    if isinstance(out.get("steps"), list):
+        out["steps"] = [{k: v for k, v in st.items() if k not in DIAG_STEP_KEYS} if isinstance(st, dict) else st
+                        for st in out["steps"]]
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--game", type=Path, required=True)
@@ -104,6 +133,10 @@ def main() -> int:
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
     ap.add_argument("--no-patches", action="store_true", help="play without the step 2 speed patches (driver/Patches.cs)")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
+    ap.add_argument("--settle-audit", type=float, default=None,
+                    help="share of fights whose flag settles are re-checked against the old six-frame rule (default 0.05)")
+    ap.add_argument("--old-settle", action="store_true",
+                    help="six-stable-frame settle, awaited tweens and stock frame pacing (before SPEED_PLAN steps 3-4)")
     a = ap.parse_args()
 
     game = a.game.resolve()
@@ -111,7 +144,19 @@ def main() -> int:
     job_in = json.loads(a.specs.read_text(encoding="utf-8"))
     runs = (job_in["runs"] if isinstance(job_in, dict) else job_in) * a.repeat
     total, n_act = len(runs), max(1, a.servers)
-    jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in ("idle_frames", "stall_s")}
+    jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else [])
+             if k in ("idle_frames", "stall_s", "settle", "settle_audit", "fast_tweens", "sleep_usec",
+                      "trace_frames", "step_costs", "idle_probe")}
+    # Same defaults as batch.py (SPEED_PLAN steps 3-4); keys in the specs file win over them.
+    if a.old_settle:
+        for k in ("settle_audit", "sleep_usec"):
+            jopts.pop(k, None)
+        jopts.update(settle="frames", fast_tweens=False)
+    else:
+        for k, v in (("settle", "flags"), ("fast_tweens", True), ("sleep_usec", 0), ("settle_audit", 0.05)):
+            jopts.setdefault(k, v)
+    if a.settle_audit is not None:
+        jopts["settle_audit"] = a.settle_audit
     jopts["fast_reset"] = not a.slow_reset
     jopts["no_preload"] = not a.preload
     jopts["fast_patches"] = not a.no_patches  # SPEED_PLAN step 2 (driver/Patches.cs)
@@ -365,11 +410,12 @@ def main() -> int:
         first_bad = []
         for i, r in enumerate(merged):
             g = ref[i % len(ref)]
-            same_steps += r.get("steps") == g.get("steps")
-            if strip(r) == strip(g):
+            cr, cg = comparable(r), comparable(g)
+            same_steps += cr.get("steps") == cg.get("steps")
+            if cr == cg:
                 same += 1
             elif len(first_bad) < 5:
-                keys = [k for k in set(r) | set(g) if strip(r).get(k) != strip(g).get(k)]
+                keys = [k for k in set(cr) | set(cg) if cr.get(k) != cg.get(k)]
                 first_bad.append({"spec": i, "differing_keys": sorted(keys)})
         summary["verify"] = {"results_equal": same, "steps_equal": same_steps, "of": total, "first_mismatches": first_bad}
     print(json.dumps(summary, indent=1))
