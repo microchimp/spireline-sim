@@ -99,6 +99,7 @@ public static partial class Driver
         var result = (string?)o["kind"] switch
         {
             "combat" when Nodeless.Enabled => await Nodeless.Play(o, PlayCombat, () => RunManager.Instance.CleanUp()),
+            "combat" when Nodeless.ErrorLog => await Nodeless.PlayFull(o, PlayCombat),
             "combat" => await PlayCombat(o),
             "export" => Export(),
             _ => await StartRun(o),
@@ -116,7 +117,7 @@ public static partial class Driver
         }
 
         result["timing_ms"] = new JsonObject { ["play"] = playMs, ["reset"] = clock.ElapsedMilliseconds - playMs };
-        if ((Nodeless.Enabled || _health) && result["cost"] is JsonObject cost)
+        if ((Nodeless.ErrorLog || _health) && result["cost"] is JsonObject cost)
         {
             cost["health"] = Nodeless.Health();  // after the reset: leaks and growth (Nodeless.cs)
         }

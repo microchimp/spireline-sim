@@ -122,6 +122,15 @@ public static class NodelessPatches
         // ForgeCmd.PreviewSovereignBlade: smith VFX over the hand and top bar (NCombatRoom.Instance.Ui,
         // NRun.Instance.GlobalUi, unguarded); returns at once in test mode.
         Prefix(h, typeof(ForgeCmd), "PreviewSovereignBlade", nameof(SkipVoid));
+        // NGame.ScreenShake / ScreenRumble / ScreenShakeTrauma: move the shake target (the combat room's
+        // scene container on the full host) for a moment; the angle comes from Rng.Chaotic. Nodeless
+        // the target is gone once a full-host fight's NCombatRoom has left the tree (it clears it), and
+        // every shake then logs "Missing screenShake target!".
+        foreach (var name in new[] { "ScreenShake", "ScreenRumble", "ScreenShakeTrauma" })
+        {
+            Prefix(h, typeof(MegaCrit.Sts2.Core.Nodes.NGame), name, nameof(SkipVoid));
+        }
+
         // CreatureCmd.TriggerAnim: creature node lookup, character sfx, animation trigger and a wait
         // (none in Instant mode). With no node it only logs an error and returns; skipped instead.
         Prefix(h, typeof(CreatureCmd), nameof(CreatureCmd.TriggerAnim), nameof(SkipTask));

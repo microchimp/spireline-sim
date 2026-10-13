@@ -13,8 +13,10 @@
 //     the fight is played again from the start on the full host (NGame.StartRun, NRun);
 //   - any game error (Log.Error) or exception thrown (first chance, cancellations aside) while a
 //     nodeless fight runs fails that fight ("error"), unless "nodeless_on_error": "full" asks for
-//     the full host instead.
-// Diagnostics go under "cost" (never compared): host, fallback reason, errors, health counters.
+//     the full host instead;
+//   - "nodeless_audit": f also plays a stable fraction f of nodeless fights on the full host and
+//     records in cost.audit whether both results agree.
+// Diagnostics go under "cost" (never compared): host, fallback reason, errors, audit, health.
 
 using System;
 using System.Collections.Generic;
@@ -60,19 +62,40 @@ public static class Nodeless
     /// <summary>Per-process tallies, reported with every fight.</summary>
     private static int _nodelessFights, _fullFights, _fallbacks, _failed;
 
+    /// <summary>
+    /// Job "error_log": true (implied by "nodeless"): game errors and first-chance exceptions of each
+    /// full-host fight go to its cost.errors, so a comparison can tell a full-host UI failure (such as
+    /// "Hand size 11") from a nodeless divergence. Off, the full host runs exactly as before.
+    /// </summary>
+    public static bool ErrorLog { get; private set; }
+
+    private static bool _recordFull;
+    private static readonly List<string> _fullErrors = new();
+
     public static void Configure(JsonObject job)
     {
+        if ((bool?)job["error_log"] == true && !ErrorLog && (bool?)job["nodeless"] != true)
+        {
+            ErrorLog = true;
+            Log.LogCallback += OnLog;
+            AppDomain.CurrentDomain.FirstChanceException += OnFirstChance;
+            GD.Print("[referee] full-host error log on");
+            return;
+        }
+
         if ((bool?)job["nodeless"] != true || Enabled)
         {
             return;
         }
 
         Enabled = true;
+        ErrorLog = true;
         _errorsToFull = (string?)job["nodeless_on_error"] == "full";
+        _audit = (double?)job["nodeless_audit"] ?? 0;
         NodelessPatches.Apply();
         Log.LogCallback += OnLog;
         AppDomain.CurrentDomain.FirstChanceException += OnFirstChance;
-        GD.Print($"[referee] nodeless host on ({NodelessPatches.Count} patches, {NodelessPatches.FallbackCount} fallback models)");
+        GD.Print($"[referee] nodeless host on ({NodelessPatches.Count} patches, {NodelessPatches.FactoryCount} test-mode-null factories, {NodelessPatches.FallbackCount} fallback models, audit {_audit})");
     }
 
     /// <summary>
@@ -99,12 +122,28 @@ public static class Nodeless
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
         }
 
+        // The main menu goes now, and what an empty nodeless frame costs is logged once (process CPU
+        // over 200 uncapped frames), to tell engine overhead from rules cost in the fight numbers.
+        UseEmptyScene();
+        Engine.MaxFps = 0;
+        await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+        var proc = System.Diagnostics.Process.GetCurrentProcess();
+        proc.Refresh();
+        double cpu0 = proc.TotalProcessorTime.TotalMilliseconds;
+        var wall = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < 200; i++)
+        {
+            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+        }
+
+        proc.Refresh();
+        GD.Print($"[referee] nodeless: empty frame {(proc.TotalProcessorTime.TotalMilliseconds - cpu0) / 200:F2} ms CPU, {wall.Elapsed.TotalMilliseconds / 200:F2} ms wall; nodes {Performance.GetMonitor(Performance.Monitor.ObjectNodeCount)}");
         Engine.MaxFps = fps;
     }
 
     private static void OnLog(LogLevel level, string text, int _)
     {
-        if (Active && level >= LogLevel.Error)
+        if ((Active || _recordFull) && level >= LogLevel.Error)
         {
             Record("log: " + text);
         }
@@ -112,7 +151,7 @@ public static class Nodeless
 
     private static void OnFirstChance(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs e)
     {
-        if (!Active || e.Exception is NodelessFallbackException)
+        if (!(Active || _recordFull) || e.Exception is NodelessFallbackException)
         {
             return;
         }
@@ -123,7 +162,7 @@ public static class Nodeless
             return;
         }
 
-        if (NodelessPatches.IsExpectedGameOverException(e.Exception))
+        if (Active && NodelessPatches.IsExpectedGameOverException(e.Exception))
         {
             return;  // the one null dereference the game-over guard turns back into the full host's flow
         }
@@ -134,24 +173,54 @@ public static class Nodeless
 
     private static void Record(string what)
     {
+        bool full = _recordFull;
         lock (_lock)
         {
-            if (FallbackHit != null)
+            if (!full && FallbackHit != null)
             {
                 return;  // the attempt is being thrown away; what a fallback model does nodeless is expected
             }
 
-            if (_errors.Count < 20)
+            var list = full ? _fullErrors : _errors;
+            if (list.Count < 20)
             {
-                _errors.Add(what.Length > 4000 ? what[..4000] : what);
+                list.Add(what.Length > 4000 ? what[..4000] : what);
             }
-            else if (_errors.Count == 20)
+            else if (list.Count == 20)
             {
-                _errors.Add("...");
+                list.Add("...");
             }
         }
 
-        GD.Print("[referee] nodeless error: " + (what.Length > 600 ? what[..600] : what));
+        GD.Print((full ? "[referee] full-host error: " : "[referee] nodeless error: ") + (what.Length > 600 ? what[..600] : what));
+    }
+
+    /// <summary>A full-host fight with its game errors in cost.errors (error_log, fallback replays, audits).</summary>
+    internal static async Task<JsonObject> PlayFull(JsonObject spec, Func<JsonObject, Task<JsonObject>> play)
+    {
+        lock (_lock) _fullErrors.Clear();
+        _recordFull = true;
+        JsonObject result;
+        try
+        {
+            result = await play(spec);
+        }
+        finally
+        {
+            _recordFull = false;
+        }
+
+        string[] errors;
+        lock (_lock)
+        {
+            errors = _fullErrors.ToArray();
+            _fullErrors.Clear();
+        }
+
+        var cost = Cost(result);
+        cost["host"] = "full";
+        cost["errors"] = new JsonArray(errors.Select(e => (JsonNode)e).ToArray());
+        return result;
     }
 
     /// <summary>Called by the MutableClone postfix: a model whose own code needs nodes entered this fight.</summary>
@@ -253,6 +322,11 @@ public static class Nodeless
                         attempt["error"] = attempt["error"] is { } prior ? first + " || " + prior : first;
                     }
 
+                    if (IsAudited(spec))
+                    {
+                        await Audit(spec, attempt, play, reset);
+                    }
+
                     _phase = "returned";
                     return attempt;
                 }
@@ -275,7 +349,7 @@ public static class Nodeless
         FallbackHit = null;
         _fullFights++;
         _phase = "full-host fight";
-        var result = await play(spec);
+        var result = await PlayFull(spec, play);
         _phase = "full-host done";
         var c = Cost(result);
         c["host"] = "full";
@@ -286,6 +360,70 @@ public static class Nodeless
         }
 
         return result;
+    }
+
+    /// <summary>Job "nodeless_audit": fraction (0..1) of nodeless fights also played on the full host.</summary>
+    private static double _audit;
+
+    private static int _audits, _auditDiffs;
+
+    /// <summary>A stable pick per spec (seed, chooser seed, deck), so a rerun audits the same fights.</summary>
+    private static bool IsAudited(JsonObject spec)
+    {
+        if (_audit <= 0)
+        {
+            return false;
+        }
+
+        string key = (string?)spec["seed"] + "/" + (int?)spec["chooser_seed"] + "/" + spec["deck_add"]?.ToJsonString();
+        uint h = 2166136261;
+        foreach (char ch in key)
+        {
+            h = (h ^ ch) * 16777619;
+        }
+
+        return h % 10000 < _audit * 10000;
+    }
+
+    /// <summary>
+    /// The audit: the same spec again on the full host; both results compared without timing and cost
+    /// keys. The nodeless result is kept; cost.audit says whether they agree (and the first key that
+    /// does not). Catches what nodeless cannot show, such as full-game UI errors.
+    /// </summary>
+    private static async Task Audit(JsonObject spec, JsonObject nodeless, Func<JsonObject, Task<JsonObject>> play, Action reset)
+    {
+        Active = false;
+        _phase = "audit";
+        var full = await PlayFull(spec, play);
+        reset();
+        _audits++;
+        string? diff = null;
+        foreach (var key in nodeless.Select(kv => kv.Key).Union(full.Select(kv => kv.Key)))
+        {
+            if (key is "cost" or "cost_setup" or "phase_ms" or "timing_ms")
+            {
+                continue;
+            }
+
+            if (nodeless[key]?.ToJsonString() != full[key]?.ToJsonString())
+            {
+                diff = key;
+                break;
+            }
+        }
+
+        if (diff != null)
+        {
+            _auditDiffs++;
+            GD.Print($"[referee] nodeless audit: {(string?)spec["seed"]} differs from the full host at '{diff}'");
+        }
+
+        Cost(nodeless)["audit"] = new JsonObject
+        {
+            ["same"] = diff == null, ["first_diff"] = diff, ["full_error"] = full["error"]?.DeepClone(),
+            ["full_cpu_ms"] = (full["cost"] as JsonObject)?["cpu_ms"]?.DeepClone(),
+            ["full_errors"] = (full["cost"] as JsonObject)?["errors"]?.DeepClone(),
+        };
     }
 
     private static JsonObject Cost(JsonObject result)
@@ -313,7 +451,7 @@ public static class Nodeless
             ["private_mb"] = Math.Round(proc.PrivateMemorySize64 / 1048576.0, 1),
             ["working_set_mb"] = Math.Round(proc.WorkingSet64 / 1048576.0, 1),
             ["fights_nodeless"] = _nodelessFights, ["fights_full"] = _fullFights,
-            ["fallbacks"] = _fallbacks, ["failed"] = _failed,
+            ["fallbacks"] = _fallbacks, ["failed"] = _failed, ["audits"] = _audits, ["audit_diffs"] = _auditDiffs,
         };
     }
 }

@@ -111,7 +111,7 @@ def main() -> int:
     job_in = json.loads(a.specs.read_text(encoding="utf-8"))
     runs = (job_in["runs"] if isinstance(job_in, dict) else job_in) * a.repeat
     total, n_act = len(runs), max(1, a.servers)
-    jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in ("idle_frames", "stall_s", "nodeless", "nodeless_on_error", "health")}
+    jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in ("idle_frames", "stall_s", "nodeless", "nodeless_on_error", "nodeless_audit", "health", "error_log")}
     jopts["fast_reset"] = not a.slow_reset
     jopts["no_preload"] = not a.preload
     jopts["fast_patches"] = not a.no_patches  # SPEED_PLAN step 2 (driver/Patches.cs)
