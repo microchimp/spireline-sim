@@ -274,6 +274,13 @@ public sealed class RelicGrabBag
     /// <summary>Every relic still in the bag, for tests and for reporting.</summary>
     public IEnumerable<int> Remaining => _deques.Values.SelectMany(deque => deque);
 
+    /// <summary>
+    /// Each rarity's queue in shuffle order, front first: what the game saves as
+    /// <c>relic_id_lists</c>, for the run referee's snapshot.
+    /// </summary>
+    internal IEnumerable<(RelicRarity Rarity, IReadOnlyList<int> Relics)> Lists =>
+        _shuffleOrder.Select(rarity => (rarity, (IReadOnlyList<int>)_deques[rarity]));
+
     public RelicGrabBag Clone()
     {
         var copy = new RelicGrabBag(_refreshAllowed) { _originalRelics = [.. _originalRelics] };
