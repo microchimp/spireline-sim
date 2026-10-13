@@ -318,7 +318,8 @@ public class WaterfallGiantTests
         fight.EndTurn();
         Giant(fight).Hp = 1;
         fight.PlayerBuff(BuffId.MayhemPower, 1);
-        // The hand draw takes the five Defends; Mayhem then plays the Strike under them.
+        // The hand draw takes the five Defends; Mayhem then plays the Strike under them. The
+        // next turn's Mayhem takes the last Strike, so no shuffle decides whether it blocks.
         fight.Draw(
             Card(IC.DefendIronclad),
             Card(IC.DefendIronclad),
@@ -330,7 +331,8 @@ public class WaterfallGiantTests
             Card(IC.DefendIronclad),
             Card(IC.DefendIronclad),
             Card(IC.DefendIronclad),
-            Card(IC.DefendIronclad)
+            Card(IC.DefendIronclad),
+            Card(IC.StrikeIronclad)
         );
 
         var result = fight.EndTurn();
