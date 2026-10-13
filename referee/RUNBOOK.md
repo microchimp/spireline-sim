@@ -35,6 +35,7 @@ Shortcut for steps 1-4: `python referee/batch.py --name <name> --fights 100 --st
    - Ask why the emulator differs: which mechanism is wrong (pool or list order, RNG stream, number or order of draws, hook timing, a shared helper)? A fix that only makes this one fight match is not done.
    - Find every other place that uses the same mechanism (grep), check each against the game, and fix them together.
    - In FINDINGS.md record the root cause and the sibling sites checked, not just the symptom.
+   - Then think one level up: name the bug CLASS (hand-written orderings, a draw on the wrong RNG stream, an effect before rather than after a hook, a helper that ignores a modifier) and sweep the engine for other instances no fight has hit yet. Verify each against the decompiled game; aim the next referee batch at that class.
    - Read the game's class for that card, relic, power or monster in the decompiled tree, and the emulator's code for it.
    - Make the smallest change that matches the game; cite the game's class/method in a comment (never paste game code).
    - Add or adjust an xunit test in `src/Sts2Emulator.Tests` that fails before and passes after.
