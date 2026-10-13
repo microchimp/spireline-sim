@@ -342,9 +342,7 @@ public class FullHandPickTests
     {
         var fight = Fight.Hand([.. TenDefends().Skip(1)]).Discard(Card(IC.IronWave)).Enemy(hp: 40);
         fight.State.PotionSlots[0] = LiquidMemories;
-        fight.Potion(0);
-
-        fight.Choose(0);
+        fight.Potion(0); // one card in the discard pile: taken without a screen
 
         Assert.Equal(10, fight.State.Hand.Count);
         Assert.Equal(IC.IronWave, fight.State.Hand[9].DefId);

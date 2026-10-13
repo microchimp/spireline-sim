@@ -62,6 +62,8 @@ public static class CombatEngine
             result = UsePotion(state, potionSlot, rng);
         }
 
+        result = AutoAnswerLoneSelections(state, rng, result);
+
         // Auto-plays use first-living enemy, not the explicit target.
         state.TargetEnemyIndex = -1;
 
@@ -98,6 +100,55 @@ public static class CombatEngine
         if (!result.Terminal)
         {
             AnswerDeathsHoldingTheFightOpen(state, rng);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// `CardSelectCmd.FromHand`, `FromCombatPile`, `FromSimpleGrid` and `FromHandForUpgrade`
+    /// never show a screen when the pool is no bigger than the minimum and the prefs do not
+    /// `RequireManualConfirmation` (set by the `CardSelectorPrefs` constructor whenever
+    /// min != max): they hand back the pool. A pick of exactly one from a pool of one is
+    /// therefore made without asking -- Brand with a single card in hand, Armaments with a
+    /// single upgradable card, Secret Weapon with a single Attack in the draw pile.
+    /// A screen that can be declined (minimum zero) always asks, and so does the
+    /// choose-a-card screen over generated cards (`FromChooseACardScreen`).
+    /// </summary>
+    private static StepResult AutoAnswerLoneSelections(
+        CombatState state,
+        Random rng,
+        StepResult result
+    )
+    {
+        int guard = 64;
+        while (
+            guard-- > 0
+            && state.PendingSelection is
+            {
+                Skippable: false,
+                GeneratedCandidates.Count: 0,
+            } lone
+            && lone.Kind != CardSelectionKind.GeneratedCardToHand
+            && lone.Kind != CardSelectionKind.CurseOfKnowledge
+            // `FromHandForDiscard(prefs(prompt, n))` is min = max = n: a hand of n or fewer
+            // is discarded whole without asking (Prepared, Hidden Daggers). The screen
+            // reopens per pick here with `Amount` picks left, so the same test is made
+            // against what is left.
+            && lone.Candidates.Count
+                <= (lone.Kind == CardSelectionKind.DiscardFromHandRepeated ? Math.Max(1, lone.Amount) : 1)
+        )
+        {
+            var answered = AnswerSelection(state, 0, rng);
+            result = new StepResult(
+                result.Terminal || answered.Terminal,
+                result.PlayerWon || answered.PlayerWon,
+                result.Reward + answered.Reward
+            );
+            if (answered.Terminal)
+            {
+                break;
+            }
         }
 
         return result;

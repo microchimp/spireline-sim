@@ -151,6 +151,10 @@ public class CombatSnapshotTests
         nameof(CombatState.ResolvingDefendCard),
         // Drained before every Step (and every entry point) returns.
         nameof(CombatState.AutoPlayQueue),
+        // The card just played while its selection screen is open; a document has no play
+        // pile, so `Write` folds it into the pile it is bound for.
+        nameof(CombatState.HeldPlayedCard),
+        nameof(CombatState.HeldPlayedCardExhausts),
         // Captured afresh at the start of every play, before anything reads it.
         nameof(CombatState.StrangleBeforePlay),
         // Differential-testing introspection; nothing in play reads it.

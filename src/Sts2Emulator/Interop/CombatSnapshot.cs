@@ -1246,8 +1246,24 @@ public static class CombatSnapshot
 
         w.WriteStartObject("piles");
         WriteItems(w, "hand", state.Hand, WriteCard);
-        WriteItems(w, "discard", state.DiscardPile, WriteCard);
-        WriteItems(w, "exhaust", state.ExhaustPile, WriteCard);
+        // A card held out of its result pile while its selection screen is open belongs in
+        // that pile in a document, which has no play pile: written there, it is not lost.
+        WriteItems(
+            w,
+            "discard",
+            state.HeldPlayedCard is { } toDiscard && !state.HeldPlayedCardExhausts
+                ? state.DiscardPile.Append(toDiscard)
+                : state.DiscardPile,
+            WriteCard
+        );
+        WriteItems(
+            w,
+            "exhaust",
+            state.HeldPlayedCard is { } toExhaust && state.HeldPlayedCardExhausts
+                ? state.ExhaustPile.Append(toExhaust)
+                : state.ExhaustPile,
+            WriteCard
+        );
         WriteDrawPile(w, state);
         w.WriteEndObject();
 

@@ -124,9 +124,10 @@ public class SculptingStrikeTests
     {
         var fight = Fight.Hand().Energy(9).Enemy(hp: 500);
         fight.State.Hand.Add(new CardInstance(Strike, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(SculptingStrike, false));
 
-        fight.Play(1, target: 0);
+        fight.Play(2, target: 0);
 
         Assert.Equal(491, fight.Enemy0.Hp);
         Assert.Equal(CardSelectionKind.GrantEtherealInHand, fight.Pending!.Kind);
@@ -137,8 +138,9 @@ public class SculptingStrikeTests
     {
         var fight = Fight.Hand().Energy(9).Enemy(hp: 500);
         fight.State.Hand.Add(new CardInstance(Strike, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(SculptingStrike, false));
-        fight.Play(1, target: 0);
+        fight.Play(2, target: 0);
 
         fight.Choose(0);
 
@@ -177,9 +179,10 @@ public class TransfigureTests
     {
         var fight = Fight.Hand().Energy(9).Enemy(hp: 500);
         fight.State.Hand.Add(new CardInstance(Strike, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(Transfigure, false));
 
-        fight.Play(1);
+        fight.Play(2);
 
         Assert.Equal(CardSelectionKind.TransfigureInHand, fight.Pending!.Kind);
     }
@@ -189,8 +192,9 @@ public class TransfigureTests
     {
         var fight = Fight.Hand().Energy(9).Enemy(hp: 500);
         fight.State.Hand.Add(new CardInstance(Strike, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(Transfigure, false));
-        fight.Play(1);
+        fight.Play(2);
 
         fight.Choose(0);
 
@@ -209,8 +213,9 @@ public class TransfigureTests
 
         var fight = Fight.Hand().Energy(9).Enemy(hp: 500);
         fight.State.Hand.Add(new CardInstance(Strike, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(Transfigure, false));
-        fight.Play(1);
+        fight.Play(2);
         fight.Choose(0);
         fight.Play(0, target: 0);
 
@@ -223,8 +228,9 @@ public class TransfigureTests
     {
         var fight = Fight.Hand().Energy(9).Enemy(hp: 500);
         fight.State.Hand.Add(new CardInstance(AscendersBane, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(Transfigure, false));
-        fight.Play(1);
+        fight.Play(2);
 
         fight.Choose(0);
 

@@ -31,7 +31,7 @@ public class SecretTechniqueTests
         var fight = Fight
             .Hand(Card(CL.SecretTechnique))
             .Energy(1)
-            .Draw(Card(IC.StrikeIronclad), Card(IC.DefendIronclad), Card(IC.Bash))
+            .Draw(Card(IC.StrikeIronclad), Card(IC.DefendIronclad), Card(IC.Bash), Card(IC.DefendIronclad))
             .Enemy(hp: 40);
         fight.Play();
 

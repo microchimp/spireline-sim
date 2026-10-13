@@ -54,7 +54,7 @@ public class ShapedRewardTests
     public void AnExhaustAnswerThatKillsOneOfTwoPaysItsShare()
     {
         var fight = Fight
-            .Hand(Card(IC.BurningPact), Card(IC.Bash))
+            .Hand(Card(IC.BurningPact), Card(IC.Bash), Card(IC.DefendIronclad))
             .Energy(1)
             .Draw(Card(IC.Anger), Card(IC.DefendIronclad))
             .Enemy(hp: 3)
@@ -73,7 +73,7 @@ public class ShapedRewardTests
     public void AnExhaustAnswerThatWinsPaysTheWholeFractionAndTheWin()
     {
         var fight = Fight
-            .Hand(Card(IC.BurningPact), Card(IC.Bash))
+            .Hand(Card(IC.BurningPact), Card(IC.Bash), Card(IC.DefendIronclad))
             .Energy(1)
             .Draw(Card(IC.Anger), Card(IC.DefendIronclad))
             .Enemy(hp: 3);

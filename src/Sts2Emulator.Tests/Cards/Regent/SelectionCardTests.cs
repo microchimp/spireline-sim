@@ -43,9 +43,10 @@ public class BegoneTests
     {
         var fight = RegentSelection.WithDrawPile(3);
         fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
         fight.State.Hand.Add(new CardInstance(Begone, false));
 
-        fight.Play(1);
+        fight.Play(2);
 
         Assert.Equal(CardSelectionKind.TransformHandToMinionStrike, fight.Pending!.Kind);
     }
@@ -55,8 +56,9 @@ public class BegoneTests
     {
         var fight = RegentSelection.WithDrawPile(3);
         fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
         fight.State.Hand.Add(new CardInstance(Begone, false));
-        fight.Play(1);
+        fight.Play(2);
 
         fight.Choose(0);
 
@@ -69,8 +71,9 @@ public class BegoneTests
     {
         var fight = RegentSelection.WithDrawPile(3);
         fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
         fight.State.Hand.Add(new CardInstance(Begone, true));
-        fight.Play(1);
+        fight.Play(2);
 
         fight.Choose(0);
 
@@ -219,12 +222,13 @@ public class PhotonCutTests
     public void ItHitsDrawsAndAsks()
     {
         var fight = RegentSelection.WithDrawPile(6);
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
         fight.State.Hand.Add(new CardInstance(PhotonCut, false));
 
-        fight.Play(0, target: 0);
+        fight.Play(1, target: 0);
 
         Assert.Equal(490, fight.Enemy0.Hp);
-        Assert.Single(fight.State.Hand);
+        Assert.Equal(2, fight.State.Hand.Count);
         Assert.Equal(CardSelectionKind.HandToDrawPileTop, fight.Pending!.Kind);
     }
 
@@ -253,14 +257,15 @@ public class DecisionsDecisionsTests
     {
         var fight = RegentSelection.WithDrawPile(8);
         fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
         fight.State.Hand.Add(new CardInstance(DecisionsDecisions, false));
 
-        fight.Play(1);
+        fight.Play(2);
 
         // Nine staged, six spent.
         Assert.Equal(3, fight.State.Stars);
-        // Three drawn on top of the Defend that was already there.
-        Assert.Equal(4, fight.State.Hand.Count);
+        // Three drawn on top of the two Defends that were already there.
+        Assert.Equal(5, fight.State.Hand.Count);
         Assert.Equal(CardSelectionKind.AutoPlaySkillThrice, fight.Pending!.Kind);
     }
 
@@ -282,12 +287,13 @@ public class DecisionsDecisionsTests
     {
         var fight = RegentSelection.WithDrawPile(8);
         fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
         fight.State.Hand.Add(new CardInstance(DecisionsDecisions, false));
 
-        fight.Play(1);
+        fight.Play(2);
 
-        // Eight Strikes in the pile, three drawn, plus the one Defend: one candidate.
-        Assert.Single(fight.Pending!.Candidates);
+        // Eight Strikes in the pile, three drawn, plus the two Defends: two candidates.
+        Assert.Equal(2, fight.Pending!.Candidates.Count);
     }
 
     [Fact]
@@ -295,8 +301,9 @@ public class DecisionsDecisionsTests
     {
         var fight = RegentSelection.WithDrawPile(8);
         fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
         fight.State.Hand.Add(new CardInstance(DecisionsDecisions, false));
-        fight.Play(1);
+        fight.Play(2);
 
         fight.Choose(fight.Pending!.Candidates[0]);
 
