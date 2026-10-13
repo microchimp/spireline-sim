@@ -1242,6 +1242,11 @@ public sealed class RunEngine
             // and the bank does not care which. The unknown-node path pays through
             // `EnterUnknownMapPoint`, which resolves to a room of its own.
             RunNonCombatEffects.PayMawBank(State);
+            // `LavaLamp.AfterRoomEntered` clears its flag on entering ANY room, not only a
+            // fight's: a card reward outside combat (an event's, a shop's) is upgraded unless
+            // damage was taken since the last room. Fights entered otherwise clear it again
+            // as they start.
+            State.TookUnblockedDamageThisCombat = false;
 
             switch (nodeType)
             {
