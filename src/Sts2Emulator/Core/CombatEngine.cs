@@ -1766,11 +1766,18 @@ public static class CombatEngine
             BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnEnergy);
         }
 
-        int rollingBoulder = BuffSystem.Get(state.PlayerBuffs, BuffId.RollingBoulderPower);
-        if (rollingBoulder > 0)
+        // `RollingBoulderPower.AfterPlayerTurnStart`, once per INSTANCE, oldest first: its own
+        // Amount to every enemy, then its Amount grows by its DamageVar (5). A second Boulder
+        // starts again from its own 5 instead of joining the first one's climb.
+        var boulders = state.PlayerBuffs;
+        for (int k = 0, at; (at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k)) >= 0; k++)
         {
-            Effects.CardEffects.DealUnpoweredDamageToAll(state, rollingBoulder);
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.RollingBoulderPower, 5);
+            Effects.CardEffects.DealUnpoweredDamageToAll(state, boulders[at].Magnitude);
+            at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k);
+            if (at >= 0)
+            {
+                boulders[at] = boulders[at] with { Magnitude = boulders[at].Magnitude + 5 };
+            }
         }
 
         int crimsonDmg = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleSelfDamage);

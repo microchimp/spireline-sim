@@ -128,6 +128,40 @@ public class NightmareTests
     }
 
     /// <summary>
+    /// <c>NightmarePower</c> is PowerInstanceType.Instanced and keeps its own card, so two
+    /// Nightmares are two powers of 3 -- `NIGHTMARE_POWER 3` twice in the game's list -- and
+    /// each hands over its own card's copies, the older one first.
+    /// </summary>
+    [Fact]
+    public void TwoNightmaresAreTwoPowersAndEachDeliversItsOwnCard()
+    {
+        var fight = Fight.Hand(Card(SI.Nightmare), Card(SI.Nightmare), Card(SI.Backstab), Card(SI.DeadlyPoison))
+            .Energy(9);
+        fight.State.PlayerHp = 999;
+        fight.State.DrawPile.Clear();
+        for (int i = 0; i < 30; i++)
+        {
+            fight.State.DrawPile.Add(new CardInstance(SI.StrikeSilent, false));
+        }
+
+        fight.Play();
+        fight.Choose(1); // the Backstab (the other Nightmare is candidate 0)
+        fight.Play();
+        fight.Choose(1); // the Deadly Poison, with the Backstab at 0
+
+        Assert.Equal(
+            [new BuffState(BuffId.Nightmare, 3), new BuffState(BuffId.Nightmare, 3)],
+            fight.State.PlayerBuffs.Where(b => b.Id == BuffId.Nightmare)
+        );
+
+        fight.EndTurn();
+
+        Assert.Equal(3, fight.State.Hand.Count(c => c.DefId == SI.Backstab));
+        Assert.Equal(3, fight.State.Hand.Count(c => c.DefId == SI.DeadlyPoison));
+        Assert.DoesNotContain(fight.State.PlayerBuffs, b => b.Id == BuffId.Nightmare);
+    }
+
+    /// <summary>
     /// The observation NAMES the cards that are coming, not just how many. The game shows
     /// the held card on the power (`StringVar("Card")`), so a player can see three
     /// Backstabs arriving and plan the energy; E425 made the count visible and this is the

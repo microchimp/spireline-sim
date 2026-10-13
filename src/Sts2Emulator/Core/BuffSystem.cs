@@ -22,7 +22,12 @@ public static class BuffSystem
     /// Guarded, Heist, MagicBomb, Thievery -- are not modelled as buffs.
     /// </remarks>
     public static bool IsInstanced(BuffId id) =>
-        id is BuffId.TheBombPower or BuffId.Knockdown or BuffId.TagTeam;
+        id
+            is BuffId.TheBombPower
+                or BuffId.Knockdown
+                or BuffId.TagTeam
+                or BuffId.RollingBoulderPower
+                or BuffId.Nightmare;
 
     /// <summary>
     /// Index of the <paramref name="k" />-th (from 0, oldest first) instance of an
