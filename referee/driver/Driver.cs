@@ -28,7 +28,7 @@ using MegaCrit.Sts2.Core.Unlocks;
 namespace Spireline.Referee;
 
 [ModInitializer(nameof(Init))]
-public static class Driver
+public static partial class Driver
 {
     private const string JobEnv = "SPIRELINE_REFEREE_JOB";
 
@@ -59,9 +59,15 @@ public static class Driver
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             }
 
+            // Player-facing speed settings only: the game's own "Instant" fast mode skips animation
+            // waits, and the frame cap only paces rendering, which is off anyway.
+            SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
+            Engine.MaxFps = 0;
+
             foreach (var spec in job["runs"]!.AsArray())
             {
-                results.Add(await StartRun(spec!.AsObject()));
+                var o = spec!.AsObject();
+                results.Add((string?)o["kind"] == "combat" ? await PlayCombat(o) : await StartRun(o));
                 await NGame.Instance!.ReturnToMainMenu();  // the game's own way out of a run
             }
         }
@@ -80,7 +86,9 @@ public static class Driver
     /// <c>NGame.StartNewSingleplayerRun</c>, with one difference: the profile is the fully
     /// unlocked, all-discovered one the emulator models, not the empty scratch profile.
     /// </summary>
-    private static async Task<JsonObject> StartRun(JsonObject spec)
+    private static async Task<JsonObject> StartRun(JsonObject spec) => (await BeginRun(spec)).dump;
+
+    private static async Task<(RunState state, JsonObject dump)> BeginRun(JsonObject spec)
     {
         string seed = SeedHelper.CanonicalizeSeed((string)spec["seed"]!);
         string characterId = (string?)spec["character"] ?? "IRONCLAD";
@@ -108,7 +116,7 @@ public static class Driver
         MethodInfo startRun = typeof(NGame).GetMethod("StartRun", BindingFlags.NonPublic | BindingFlags.Instance)!;
         await (Task)startRun.Invoke(NGame.Instance, new object[] { state })!;
 
-        return new JsonObject
+        return (state, new JsonObject
         {
             ["seed"] = seed,
             ["character"] = characterId,
@@ -118,7 +126,7 @@ public static class Driver
             ["player_rng"] = Counters(state.Players[0].PlayerRng),
             ["map"] = Map(state),
             ["save"] = JsonNode.Parse(SaveManager.ToJson(RunManager.Instance.ToSave(null))),
-        };
+        });
     }
 
     /// <summary>Every public <see cref="Rng" /> property of a stream set: name, seed, counter.</summary>

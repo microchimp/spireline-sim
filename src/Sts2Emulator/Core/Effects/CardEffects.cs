@@ -4321,12 +4321,14 @@ public static class CardEffects
         Random rng
     )
     {
-        // Spans cannot live in an array, so the four pools are added one at a time.
+        // `UnlockState.CharacterCardPools` minus the player's own, in ModelDb.AllCharacters order:
+        // Silent, Regent, Necrobinder, Defect. The order decides which cards the shuffle hands
+        // out; the referee (the game run headless) caught Silent-Defect-Necrobinder-Regent here.
         var pool = new List<int>();
-        pool.AddRange(CombatGenerationPool(GeneratedData.CardPools.Silent, CardType.Attack));
-        pool.AddRange(CombatGenerationPool(GeneratedData.CardPools.Defect, CardType.Attack));
-        pool.AddRange(CombatGenerationPool(GeneratedData.CardPools.Necrobinder, CardType.Attack));
-        pool.AddRange(CombatGenerationPool(GeneratedData.CardPools.Regent, CardType.Attack));
+        for (int i = 0; i < 4; i++)
+        {
+            pool.AddRange(CombatGenerationPool(Run.RunConstants.OtherCharacterPoolFor(i), CardType.Attack));
+        }
 
         if (pool.Count == 0)
         {

@@ -1,11 +1,20 @@
 // Usage: EmuDump <ascension> <seed> [<seed> ...] > out.json   ({"results": [...]} in seed order)
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Sts2Emulator.Core.Rng;
 using Sts2Emulator.Core.Run;
 
 string[] actNames = ["", "OVERGROWTH", "UNDERDOCKS", "HIVE", "GLORY"];
 string[] nodeNames = ["Unassigned", "Monster", "Elite", "RestSite", "Shop", "Treasure", "Boss", "Unknown", "Ancient"];
+if (args[0] == "fight")
+{
+    var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
+    var fights = new JsonArray(refs.Select(r => (JsonNode)Fight.Replay(r!.AsObject())).ToArray());
+    Console.WriteLine(new JsonObject { ["results"] = fights }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    return;
+}
+
 int ascension = int.Parse(args[0]);
 var results = new List<object>();
 foreach (string seed in args.Skip(1))
