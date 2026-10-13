@@ -147,6 +147,13 @@ public sealed class CombatState
     public int PlayedCardCostForCombat = int.MinValue;
     public List<CardInstance> AutoPlayQueue = [];
 
+    /// <summary>
+    /// The card just played, held out of its result pile while the selection screen it
+    /// opened or the auto-plays it queued resolve (the game moves it after `OnPlay`).
+    /// </summary>
+    public CardInstance? HeldPlayedCard;
+    public bool HeldPlayedCardExhausts;
+
     // Defect-style orb queue.
     public List<OrbState> Orbs = [];
 

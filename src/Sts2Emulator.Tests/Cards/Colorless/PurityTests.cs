@@ -45,9 +45,9 @@ public class PurityTests
 
         Assert.Null(fight.Pending);
         Assert.Empty(fight.State.Hand);
-        // Purity exhausts itself as it finishes being played, before any pick resolves.
+        // `Purity.OnPlay` awaits its picks, then the card moves to the exhaust pile.
         Assert.Equal(
-            [CL.Purity, IC.StrikeIronclad, IC.Anger, IC.Bash],
+            [IC.StrikeIronclad, IC.Anger, IC.Bash, CL.Purity],
             Fight.Ids(fight.State.ExhaustPile)
         );
     }
@@ -61,7 +61,7 @@ public class PurityTests
         fight.Choose(0);
 
         Assert.Null(fight.Pending);
-        Assert.Equal([CL.Purity, IC.Bash], Fight.Ids(fight.State.ExhaustPile));
+        Assert.Equal([IC.Bash, CL.Purity], Fight.Ids(fight.State.ExhaustPile));
     }
 
     [Fact]

@@ -85,12 +85,31 @@ public class SeekerStrikeTests
         var fight = Fight
             .Hand(Card(CL.SeekerStrike))
             .Energy(1)
+            .Draw(Card(IC.DefendIronclad), Card(IC.Bash))
+            .Enemy(hp: 60);
+
+        fight.Play();
+
+        Assert.Equal(2, fight.Pending?.Candidates.Count);
+    }
+
+    /// <summary>
+    /// A pool of one is taken without a screen (`CardSelectCmd.FromCombatPile` hands back a
+    /// pool no bigger than the minimum): night03 seed YCEFGNM668 drew its last card.
+    /// </summary>
+    [Fact]
+    public void ALonePileCardIsTakenWithoutAsking()
+    {
+        var fight = Fight
+            .Hand(Card(CL.SeekerStrike))
+            .Energy(1)
             .Draw(Card(IC.DefendIronclad))
             .Enemy(hp: 60);
 
         fight.Play();
 
-        Assert.Equal(1, fight.Pending?.Candidates.Count);
+        Assert.Null(fight.Pending);
+        Assert.Equal([IC.DefendIronclad], Fight.Ids(fight.State.Hand));
     }
 
     [Fact]

@@ -49,7 +49,7 @@ public class SlyTests
     [Fact]
     public void DiscardingASlyCardPlaysIt()
     {
-        var fight = Fight.Hand(Card(SI.Survivor), Card(SI.Tactician)).Energy(1);
+        var fight = Fight.Hand(Card(SI.Survivor), Card(SI.Tactician), Card(SI.StrikeSilent)).Energy(1);
 
         fight.Play(); // Survivor: block, then ask what to discard
         int energyBefore = fight.State.Energy;
@@ -64,7 +64,7 @@ public class SlyTests
     [Fact]
     public void DiscardingAnOrdinaryCardDoesNotPlayIt()
     {
-        var fight = Fight.Hand(Card(SI.Survivor), Card(SI.StrikeSilent)).Energy(1);
+        var fight = Fight.Hand(Card(SI.Survivor), Card(SI.StrikeSilent), Card(SI.StrikeSilent)).Energy(1);
 
         fight.Play();
         fight.Choose(0);
@@ -126,15 +126,15 @@ public class HandTrickTests
     public void BlocksThenOffersOnlyTheSkills(bool upgraded, int block)
     {
         var fight = Fight
-            .Hand(Card(SI.HandTrick, upgraded), Card(SI.StrikeSilent), Card(SI.DefendSilent))
+            .Hand(Card(SI.HandTrick, upgraded), Card(SI.StrikeSilent), Card(SI.DefendSilent), Card(SI.DefendSilent))
             .Energy(1);
 
         fight.Play();
 
         Assert.Equal(block, fight.State.PlayerBlock);
         Assert.Equal(CardSelectionKind.MarkHandCardSly, fight.Pending!.Kind);
-        // The Strike is an Attack, so only the Defend is offered.
-        Assert.Equal([1], fight.Pending.Candidates);
+        // The Strike is an Attack, so only the two Defends are offered.
+        Assert.Equal([1, 2], fight.Pending.Candidates);
     }
 
     /// <summary>
@@ -167,7 +167,7 @@ public class HandTrickTests
     public void TheMarkExpiresWithTheTurn()
     {
         int purity = GeneratedData.Cards.All.ToArray().Single(d => d.Name == "Purity").Id;
-        var fight = Fight.Hand(Card(SI.HandTrick), Card(purity)).Energy(3);
+        var fight = Fight.Hand(Card(SI.HandTrick), Card(purity), Card(SI.DefendSilent)).Energy(3);
         fight.State.PlayerHp = 999;
 
         fight.Play();
@@ -188,13 +188,18 @@ public class HandTrickTests
     public void AnAlreadySlySkillIsNotOffered()
     {
         var fight = Fight
-            .Hand(Card(SI.HandTrick), Card(SI.Tactician), Card(SI.DefendSilent))
+            .Hand(
+                Card(SI.HandTrick),
+                Card(SI.Tactician),
+                Card(SI.DefendSilent),
+                Card(SI.DefendSilent)
+            )
             .Energy(1);
 
         fight.Play();
 
-        // The Tactician carries the keyword, so only the Defend is on offer.
-        Assert.Equal([1], fight.Pending!.Candidates);
+        // The Tactician carries the keyword, so only the two Defends are on offer.
+        Assert.Equal([1, 2], fight.Pending!.Candidates);
     }
 }
 

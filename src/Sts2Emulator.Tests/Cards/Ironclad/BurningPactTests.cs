@@ -50,7 +50,7 @@ public class BurningPactTests
     public void UpgradedDrawsThree()
     {
         var fight = Fight
-            .Hand(Card(IC.BurningPact, upgraded: true), Card(IC.Bash))
+            .Hand(Card(IC.BurningPact, upgraded: true), Card(IC.Bash), Card(IC.DefendIronclad))
             .Energy(1)
             .Draw(Card(IC.Anger), Card(IC.DefendIronclad), Card(IC.StrikeIronclad))
             .Enemy(hp: 40);
@@ -58,7 +58,7 @@ public class BurningPactTests
 
         fight.Choose(0);
 
-        Assert.Equal(3, fight.State.Hand.Count);
+        Assert.Equal(4, fight.State.Hand.Count);
         Assert.Equal([IC.Bash], Fight.Ids(fight.State.ExhaustPile));
     }
 

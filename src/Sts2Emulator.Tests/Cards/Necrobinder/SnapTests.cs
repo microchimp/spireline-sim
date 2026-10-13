@@ -29,9 +29,10 @@ public class SnapTests
     {
         var fight = WithOsty();
         fight.State.Hand.Add(new CardInstance(Strike, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(Snap, false));
 
-        fight.Play(1, target: 0);
+        fight.Play(2, target: 0);
 
         Assert.NotNull(fight.Pending);
         Assert.Equal(CardSelectionKind.RetainForNextTurn, fight.Pending!.Kind);
@@ -43,9 +44,10 @@ public class SnapTests
     {
         var fight = WithOsty();
         fight.State.Hand.Add(new CardInstance(Strike, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(Snap, false));
 
-        fight.Play(1, target: 0);
+        fight.Play(2, target: 0);
         fight.Choose(0);
 
         Assert.True(fight.State.Hand[0].RetainThisTurn);
@@ -101,9 +103,10 @@ public class SnapTests
     {
         var fight = Fight.Hand().Energy(9).Enemy(hp: 200);
         fight.State.Hand.Add(new CardInstance(Strike, false));
+        fight.State.Hand.Add(new CardInstance(Strike, false));
         fight.State.Hand.Add(new CardInstance(Snap, false));
 
-        fight.Play(1, target: 0);
+        fight.Play(2, target: 0);
 
         Assert.Equal(200, fight.Enemy0.Hp);
         Assert.NotNull(fight.Pending);

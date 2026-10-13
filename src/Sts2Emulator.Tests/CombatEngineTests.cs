@@ -61,7 +61,11 @@ public class CombatEngineTests
     {
         var state = CombatFactory.NewCombat(seed: 0);
         state.Hand = [new CardInstance(IC.Headbutt, false)];
-        state.DiscardPile = [new CardInstance(IC.Bash, false)];
+        state.DiscardPile =
+        [
+            new CardInstance(IC.Bash, false),
+            new CardInstance(IC.StrikeIronclad, false),
+        ];
         state.Energy = 3;
         CombatEngine.Step(state, 0, new Random(0));
 
@@ -76,7 +80,11 @@ public class CombatEngineTests
     {
         var state = CombatFactory.NewCombat(seed: 0);
         state.Hand = [new CardInstance(IC.Headbutt, false)];
-        state.DiscardPile = [new CardInstance(IC.Bash, false)];
+        state.DiscardPile =
+        [
+            new CardInstance(IC.Bash, false),
+            new CardInstance(IC.StrikeIronclad, false),
+        ];
         state.Energy = 3;
         CombatEngine.Step(state, 0, new Random(0));
         int turnBefore = state.Turn;

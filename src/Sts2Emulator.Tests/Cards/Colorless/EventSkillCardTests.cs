@@ -147,7 +147,8 @@ public class DualWieldTests
     {
         var fight = WithHand(
             new CardInstance(IC.DefendIronclad, false),
-            new CardInstance(IC.Bash, false)
+            new CardInstance(IC.Bash, false),
+            new CardInstance(IC.StrikeIronclad, false)
         );
 
         fight.Play(0);
@@ -162,7 +163,8 @@ public class DualWieldTests
     {
         var fight = WithHand(
             new CardInstance(IC.DefendIronclad, false),
-            new CardInstance(IC.Bash, false)
+            new CardInstance(IC.Bash, false),
+            new CardInstance(IC.StrikeIronclad, false)
         );
 
         fight.Play(0);
@@ -180,7 +182,10 @@ public class DualWieldTests
     [Fact]
     public void ItMakesOneCloneOfTheChosenCard()
     {
-        var fight = WithHand(new CardInstance(IC.Bash, false));
+        var fight = WithHand(
+            new CardInstance(IC.Bash, false),
+            new CardInstance(IC.StrikeIronclad, false)
+        );
         fight.Play(0);
 
         int index = fight.State.PendingSelection!.Candidates.IndexOf(
@@ -197,7 +202,11 @@ public class DualWieldTests
     public void UpgradedItMakesTwo()
     {
         var fight = Fight
-            .Hand(new CardInstance(Id, true), new CardInstance(IC.Bash, false))
+            .Hand(
+                new CardInstance(Id, true),
+                new CardInstance(IC.Bash, false),
+                new CardInstance(IC.StrikeIronclad, false)
+            )
             .Energy(9)
             .Enemy(hp: 300);
         fight.Play(0);

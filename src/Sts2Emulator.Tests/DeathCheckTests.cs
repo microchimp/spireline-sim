@@ -470,7 +470,7 @@ public class SelectionAnswerDeathTests
     public void AnExhaustAnswersKillFiresTheDeathHooks()
     {
         var fight = Fight
-            .Hand(Card(IC.TrueGrit, upgraded: true), Card(IC.Bash))
+            .Hand(Card(IC.TrueGrit, upgraded: true), Card(IC.Bash), Card(IC.DefendIronclad))
             .Energy(1)
             .Draw(Card(IC.Anger))
             .Enemy(hp: 3)
@@ -484,7 +484,7 @@ public class SelectionAnswerDeathTests
         Assert.False(answer.Terminal);
         // True Grit cost the one energy; the Horn paid one back and drew its card.
         Assert.Equal(1, fight.State.Energy);
-        Assert.Equal([IC.Anger], Fight.Ids(fight.State.Hand));
+        Assert.Equal([IC.DefendIronclad, IC.Anger], Fight.Ids(fight.State.Hand));
         Assert.Equal([47], fight.State.Enemies.Select(enemy => enemy.Hp));
     }
 }

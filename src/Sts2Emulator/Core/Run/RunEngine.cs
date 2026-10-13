@@ -4860,6 +4860,17 @@ public sealed class RunEngine
         return CloseOfferGrid();
     }
 
+    /// <summary>
+    /// Where a screen opened from Neow (or from a reward claimed on Neow's behalf) goes back
+    /// to. Neow's Bones offers two relics on ONE rewards screen, and a relic claimed there
+    /// can open a grid of its own (Lead Paperweight): the grid closes onto the rewards screen
+    /// while the other relic is still owed, and only the claim that empties it returns to
+    /// Neow -- as the game's `RewardsSet` does. Landing on Neow early let the next action
+    /// choose a SECOND blessing and left the curse unadded.
+    /// </summary>
+    private RunPhase NeowReturnPhase() =>
+        RunRewardGenerator.HasPendingRewards(State) ? RunPhase.RelicReward : RunPhase.Ancient;
+
     /// <summary>Shuts the offer grid and runs whatever was waiting behind it.</summary>
     private int CloseOfferGrid()
     {
@@ -4884,7 +4895,7 @@ public sealed class RunEngine
         // EVENT opened returns to the event's finished page.
         if (State.NeowAwaitingProceed)
         {
-            State.Phase = RunPhase.Ancient;
+            State.Phase = NeowReturnPhase();
             return 0;
         }
 
@@ -5199,7 +5210,7 @@ public sealed class RunEngine
             // sends a combat's reward screen back to the ancient floors later.
             if (State.NeowAwaitingProceed)
             {
-                State.Phase = RunPhase.Ancient;
+                State.Phase = NeowReturnPhase();
                 return 0;
             }
 

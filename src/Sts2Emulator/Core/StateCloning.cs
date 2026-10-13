@@ -176,6 +176,8 @@ public static class StateCloning
             ResolvingDefendCard = combat.ResolvingDefendCard,
             PlayedCardCostForCombat = combat.PlayedCardCostForCombat,
             AutoPlayQueue = [.. combat.AutoPlayQueue],
+            HeldPlayedCard = combat.HeldPlayedCard,
+            HeldPlayedCardExhausts = combat.HeldPlayedCardExhausts,
             Orbs = [.. combat.Orbs],
             OrbCapacity = combat.OrbCapacity,
             BaseOrbSlots = combat.BaseOrbSlots,

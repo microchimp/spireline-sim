@@ -138,3 +138,53 @@ public class NeowsBonesTests
         }
     }
 }
+
+/// <summary>
+/// A relic claimed on Neow's Bones' rewards screen can open a grid of its own (Lead
+/// Paperweight's colourless pair). The grid closes onto the rewards screen, which still owes
+/// the second relic, and only the claim that empties it returns to Neow -- night03 seed
+/// 672CRJ8TJ9 in the game takes Lead Paperweight, then Nutritious Oyster, then the curse.
+/// </summary>
+public class NeowsBonesNestedGridTests
+{
+    private static RunEngine AtBonesWithPaperweightFirst()
+    {
+        var engine = new RunEngine();
+        engine.Reset("672CRJ8TJ9", 10);
+        engine.State.Phase = RunPhase.Ancient;
+        engine.State.NeowOptions[0] = RunConstants.RelicNeowsBones;
+        engine.Step(0, -1, out _, out _, out _);
+        return engine;
+    }
+
+    [Fact]
+    public void TheGridClosesOntoTheRewardsScreenThatStillOwesARelic()
+    {
+        var engine = AtBonesWithPaperweightFirst();
+        Assert.Equal(RunConstants.RelicLeadPaperweight, engine.State.RelicReward);
+        Assert.Equal(RunConstants.RelicNutritiousOyster, engine.State.PendingBonusRelicRewards[0]);
+
+        engine.Step(0, -1, out _, out _, out _); // claim the Paperweight: its grid opens
+        Assert.Equal(RunPhase.TransformSelect, engine.State.Phase);
+        engine.Step(0, -1, out _, out _, out _); // take the first colourless card
+
+        Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
+        Assert.Equal(RunConstants.RelicNutritiousOyster, engine.State.RelicReward);
+        Assert.True(engine.State.PendingNeowsBonesCurse);
+    }
+
+    [Fact]
+    public void OnlyTheClaimThatEmptiesTheScreenReturnsToNeowAndAddsTheCurse()
+    {
+        var engine = AtBonesWithPaperweightFirst();
+        engine.Step(0, -1, out _, out _, out _);
+        engine.Step(0, -1, out _, out _, out _);
+        int deckBefore = engine.State.Deck.Count;
+
+        engine.Step(0, -1, out _, out _, out _); // the Oyster
+
+        Assert.Equal(RunPhase.Ancient, engine.State.Phase);
+        Assert.False(engine.State.PendingNeowsBonesCurse);
+        Assert.Equal(deckBefore + 1, engine.State.Deck.Count);
+    }
+}

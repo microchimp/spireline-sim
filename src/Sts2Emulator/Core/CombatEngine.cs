@@ -62,6 +62,8 @@ public static class CombatEngine
             result = UsePotion(state, potionSlot, rng);
         }
 
+        result = AutoAnswerLoneSelections(state, rng, result);
+
         // Auto-plays use first-living enemy, not the explicit target.
         state.TargetEnemyIndex = -1;
 
@@ -89,6 +91,8 @@ public static class CombatEngine
         // after: Knife Trap aims its Shivs, and the next Hellraiser must roll its own.
         state.AutoPlayTargetIndex = -1;
 
+        ReleaseHeldPlayedCard(state);
+
         // A death that holds the fight open and that no check has answered -- a card's
         // after-play damage, an exhaust answer under Charon's Ashes -- is answered before the
         // agent sees the state, as the game answers it the moment it dies. Otherwise a Test
@@ -99,6 +103,75 @@ public static class CombatEngine
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// `CardSelectCmd.FromHand`, `FromCombatPile`, `FromSimpleGrid` and `FromHandForUpgrade`
+    /// never show a screen when the pool is no bigger than the minimum and the prefs do not
+    /// `RequireManualConfirmation` (set by the `CardSelectorPrefs` constructor whenever
+    /// min != max): they hand back the pool. A pick of exactly one from a pool of one is
+    /// therefore made without asking -- Brand with a single card in hand, Armaments with a
+    /// single upgradable card, Secret Weapon with a single Attack in the draw pile.
+    /// A screen that can be declined (minimum zero) always asks, and so does the
+    /// choose-a-card screen over generated cards (`FromChooseACardScreen`).
+    /// </summary>
+    private static StepResult AutoAnswerLoneSelections(
+        CombatState state,
+        Random rng,
+        StepResult result
+    )
+    {
+        int guard = 64;
+        while (
+            guard-- > 0
+            && state.PendingSelection is
+            {
+                Skippable: false,
+                GeneratedCandidates.Count: 0,
+            } lone
+            && lone.Kind != CardSelectionKind.GeneratedCardToHand
+            && lone.Kind != CardSelectionKind.CurseOfKnowledge
+            // `FromHandForDiscard(prefs(prompt, n))` is min = max = n: a hand of n or fewer
+            // is discarded whole without asking (Prepared, Hidden Daggers). The screen
+            // reopens per pick here with `Amount` picks left, so the same test is made
+            // against what is left.
+            && lone.Candidates.Count
+                <= (lone.Kind == CardSelectionKind.DiscardFromHandRepeated ? Math.Max(1, lone.Amount) : 1)
+        )
+        {
+            var answered = AnswerSelection(state, 0, rng);
+            result = new StepResult(
+                result.Terminal || answered.Terminal,
+                result.PlayerWon || answered.PlayerWon,
+                result.Reward + answered.Reward
+            );
+            if (answered.Terminal)
+            {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Puts the card <see cref="CombatState.HeldPlayedCard" /> into its result pile once the
+    /// selection screen it opened is closed and the auto-plays it queued have played. A no-op
+    /// while either is still open, and when nothing is held.
+    /// </summary>
+    private static void ReleaseHeldPlayedCard(CombatState state)
+    {
+        if (
+            state.HeldPlayedCard is not { } held
+            || state.PendingSelection is not null
+            || state.AutoPlayQueue.Count > 0
+        )
+        {
+            return;
+        }
+
+        state.HeldPlayedCard = null;
+        (state.HeldPlayedCardExhausts ? state.ExhaustPile : state.DiscardPile).Add(held);
     }
 
     private static StepResult PlayCard(CombatState state, int handIndex, Random rng)
@@ -436,6 +509,9 @@ public static class CombatEngine
             card = card with { Upgraded = true };
         }
 
+        int exhaustCountBeforePlacement = state.ExhaustPile.Count;
+        int discardCountBeforePlacement = state.DiscardPile.Count;
+
         // Corruption: Skills exhaust instead of discard.
         bool corruptedSkill =
             def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Corruption) > 0;
@@ -557,6 +633,34 @@ public static class CombatEngine
                     SlyForCombat = card.SlyForCombat || MasterPlannerMarks(state, def),
                 }
             );
+        }
+
+        // `CardModel.OnPlay` is awaited BEFORE the card is moved to its result pile, so a
+        // card that opens a selection screen (Purity, Survivor) or queues auto-plays
+        // (Catastrophe) is still in the play pile while the picks and the auto-played cards
+        // land. It reaches the exhaust or discard pile after them, not before. The
+        // placement above ran first; take the card back out and hold it until the screen
+        // and the queue are done (`ReleaseHeldPlayedCard`, called where both have settled).
+        if (state.PendingSelection is not null || state.AutoPlayQueue.Count > 0)
+        {
+            if (
+                state.ExhaustPile.Count == exhaustCountBeforePlacement + 1
+                && state.DiscardPile.Count == discardCountBeforePlacement
+            )
+            {
+                state.HeldPlayedCard = state.ExhaustPile[^1];
+                state.HeldPlayedCardExhausts = true;
+                state.ExhaustPile.RemoveAt(state.ExhaustPile.Count - 1);
+            }
+            else if (
+                state.DiscardPile.Count == discardCountBeforePlacement + 1
+                && state.ExhaustPile.Count == exhaustCountBeforePlacement
+            )
+            {
+                state.HeldPlayedCard = state.DiscardPile[^1];
+                state.HeldPlayedCardExhausts = false;
+                state.DiscardPile.RemoveAt(state.DiscardPile.Count - 1);
+            }
         }
 
         state.PlayedCardBonusDamage = 0;
@@ -5072,6 +5176,8 @@ public static class CombatEngine
 
             AnswerSelection(state, 0, rng);
         }
+
+        ReleaseHeldPlayedCard(state);
     }
 
     private static void AutoPlay(CombatState state, CardInstance card, Random rng)

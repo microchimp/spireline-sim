@@ -139,6 +139,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(8, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -537,6 +538,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(5, fight.State.PlayerBlock);
@@ -1176,6 +1178,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -1806,6 +1809,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(63, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -2196,6 +2200,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -2630,12 +2635,14 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(6, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         // The game stopped and asked: 'Choose 2 cards to Transform.' (NCombatPileCardSelectScreen),
         // offering 6 cards.
         Assert.NotNull(fight.Pending);
         Assert.Equal(6, fight.Pending!.Candidates.Count);
         fight.Choose(1); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -2821,6 +2828,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(6, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -3767,6 +3775,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(6, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -4266,6 +4275,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(4, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_REGENT
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(60, fight.State.PlayerHp);
         Assert.Equal(15, fight.State.PlayerBlock);
@@ -4775,6 +4785,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(3, fight.Pending!.Candidates.Count);
         fight.Choose(0); // WHIRLWIND
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -5105,6 +5116,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(3, fight.Pending!.Candidates.Count);
         fight.Choose(1); // BASH
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -7095,6 +7107,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(8, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -7370,6 +7383,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -7590,6 +7604,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(2, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(7, fight.State.PlayerBlock);
@@ -8030,12 +8045,14 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         // The game stopped and asked: 'Choose 2 cards to Discard.' (simple_select),
         // offering 4 cards.
         Assert.NotNull(fight.Pending);
         Assert.Equal(4, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -10233,6 +10250,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -11060,6 +11078,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(6, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -11490,6 +11509,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(6, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -11803,6 +11823,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -11944,6 +11965,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(3, fight.Pending!.Candidates.Count);
         fight.Choose(0); // THE_BOMB
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(60, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -12885,6 +12907,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -13046,6 +13069,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -13078,6 +13102,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(6, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -13140,6 +13165,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(2, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -13172,6 +13198,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(3, fight.Pending!.Candidates.Count);
         fight.Choose(0); // STRIKE_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -13204,6 +13231,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(3, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -14069,6 +14097,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -14450,6 +14479,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(3, fight.Pending!.Candidates.Count);
         fight.Choose(0); // CRASH_LANDING
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -15308,6 +15338,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(8, fight.State.PlayerBlock);
@@ -15928,6 +15959,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(7, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -16254,6 +16286,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(5, fight.Pending!.Candidates.Count);
         fight.Choose(0); // DEFEND_IRONCLAD
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);
@@ -17202,6 +17235,7 @@ public class CardCaptureTests
         Assert.NotNull(fight.Pending);
         Assert.Equal(6, fight.Pending!.Candidates.Count);
         fight.Choose(5); // ASCENDERS_BANE
+        fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);
         Assert.Equal(0, fight.State.PlayerBlock);

@@ -104,13 +104,19 @@ public class DaggerThrowTests
         var fight = Fight.Hand(Card(SI.DaggerThrow, upgraded)).Energy(1).Enemy(hp: 40);
         fight.State.DrawPile.Clear();
         fight.State.DrawPile.Add(new CardInstance(SI.DefendSilent, false));
+        // A second card in hand: a lone card is discarded without a screen
+        // (`FromHandForDiscard(prefs(prompt, 1))` hands back a pool of one).
+        fight.State.Hand.Add(new CardInstance(SI.StrikeSilent, false));
 
         fight.Play();
 
         Assert.Equal(40 - damage, fight.Enemy0.Hp);
         // The drawn card is in hand and is the thing being asked about.
-        Assert.Equal([SI.DefendSilent], fight.State.Hand.Select(c => c.DefId));
-        Assert.Equal(1, fight.Pending!.Candidates.Count);
+        Assert.Equal(
+            [SI.StrikeSilent, SI.DefendSilent],
+            fight.State.Hand.Select(c => c.DefId)
+        );
+        Assert.Equal(2, fight.Pending!.Candidates.Count);
     }
 }
 
@@ -123,7 +129,14 @@ public class PreparedTests
     [InlineData(true, 2)]
     public void DrawsThenAsksOncePerCard(bool upgraded, int count)
     {
-        var fight = Fight.Hand(Card(SI.Prepared, upgraded)).Energy(1);
+        var fight = Fight
+            .Hand(
+                Card(SI.Prepared, upgraded),
+                Card(SI.StrikeSilent),
+                Card(SI.StrikeSilent),
+                Card(SI.StrikeSilent)
+            )
+            .Energy(1);
         fight.State.DrawPile.Clear();
         for (int i = 0; i < 4; i++)
         {
@@ -191,7 +204,7 @@ public class HiddenDaggersTests
     public void TwoShivsArriveAfterwardsAndTheUpgradeUpgradesThem(bool upgraded)
     {
         var fight = Fight
-            .Hand(Card(SI.HiddenDaggers, upgraded), Card(SI.StrikeSilent), Card(SI.DefendSilent))
+            .Hand(Card(SI.HiddenDaggers, upgraded), Card(SI.StrikeSilent), Card(SI.DefendSilent), Card(SI.Neutralize))
             .Energy(1);
 
         fight.Play();
