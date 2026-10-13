@@ -71,9 +71,15 @@ How the fight times were estimated:
 - Keep the old 6-frame check plus the hash as an audit on 5% of fights.
 - Pass: the gate holds, with zero audit violations over 3,000 fights.
 
+- Measured (2026-10-13, branch speed/frames, regress20, same machine state): frames per fight 293 -> ~204, fight frames per action 13.5 -> 9.0, s/fight 2.55 -> ~2.0. CPU barely moves: a quiet frame costs ~2 Mcycles; the 6.9 ms frame padding, partly spin-wait, costs ~6.7 Mcycles more.
+- `TimeScale` was not needed: step 4 removes every timed wait that game code awaits.
+
 **4. Frame-free tweens (6 h).**
 - Harmony prefix on `TweenHelper.AwaitFinishedInternal` that calls `FastForwardToCompletion`, then run the pending Godot continuations.
 - Pass: a card play takes 0 frames and an end turn at most 1, the gate holds over 300 fights, there are no new exceptions, and CPU per fight is at most 0.4 s.
+
+- Measured (same runs): a card play takes 0 frames plus the settle's 1, an end turn 2. Frames per fight 46 (21 of them setup), s/fight ~1.1, CPU ~1.1 s per fight (was ~1.7 s); with `sleep_usec: 0` ~1.0 s/fight. CPU is now real work: ~0.6 s setup (start run, Neow, room) and ~25 ms main thread per action (card nodes, VFX). Not the 0.4 s target; the next levers are step 5 and fewer VFX nodes.
+- `sleep_usec: 0` is only safe with the flag settle: at ~0.5 ms frames the old six-frame rule snapshots mid-draw (16 of 20 fights differ).
 
 **5. Chain fights in one run (6 h).**
 - Between fights, rewind with `SyncWithSerializedPlayer`, `RunRngSet.LoadFromSerializable` and a truncated map history, then re-enter with `EnterMapCoordDebug`.

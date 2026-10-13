@@ -67,8 +67,35 @@ public static partial class Driver
         }
     }
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    private static uint _mainThreadId;
+
+    /// <summary>For the watchdog: is the main thread blocked (waiting) or busy (CPU still rising)?</summary>
+    private static string MainThreadState()
+    {
+        try
+        {
+            System.Diagnostics.ProcessThread? Find() => System.Diagnostics.Process.GetCurrentProcess().Threads
+                .Cast<System.Diagnostics.ProcessThread>().FirstOrDefault(t => t.Id == _mainThreadId);
+            var t0 = Find();
+            if (t0 == null) return "main thread not found";
+            double c0 = t0.TotalProcessorTime.TotalMilliseconds;
+            string state = t0.ThreadState == System.Diagnostics.ThreadState.Wait ? $"Wait({t0.WaitReason})" : t0.ThreadState.ToString();
+            Thread.Sleep(1000);
+            double c1 = Find()?.TotalProcessorTime.TotalMilliseconds ?? c0;
+            return $"main thread {state}, {c1 - c0:0} ms CPU in the last second";
+        }
+        catch (Exception ex)
+        {
+            return "main thread state unavailable: " + ex.GetType().Name;
+        }
+    }
+
     private static async Task RunJob(string jobPath)
     {
+        _mainThreadId = GetCurrentThreadId();
         var job = JsonNode.Parse(File.ReadAllText(jobPath))!.AsObject();
         string outPath = (string)job["out"]!;
         var results = new JsonArray();
@@ -84,7 +111,8 @@ public static partial class Driver
                 {
                     GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting with {results.Count} results saved; "
                         + $"frames ticked {Interlocked.Read(ref _frameTicks)} (last driver frame {Interlocked.Read(ref _lastDriverFrame)}), "
-                        + $"step {CurrentStep}, fast tweens {Interlocked.Read(ref Patches.FastTweens)}, in fast tween {Patches.InFastTween}");
+                        + $"step {CurrentStep}, fast tweens {Interlocked.Read(ref Patches.FastTweens)}, in fast tween {Patches.InFastTween}; "
+                        + MainThreadState());
                     System.Environment.Exit(3);
                 }
             }
