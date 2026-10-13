@@ -1781,7 +1781,7 @@ public static class CombatEngine
         int creativeAi = BuffSystem.Get(state.PlayerBuffs, BuffId.CreativeAi);
         if (creativeAi > 0)
         {
-            Effects.CardEffects.AddRandomDefectPowerCardsToHand(state, creativeAi, rng);
+            Effects.CardEffects.AddRandomPowerCardsToHand(state, creativeAi, rng);
         }
 
         // `NeurosurgePower.AfterSideTurnStart`: Dooms its owner -- the PLAYER -- for its

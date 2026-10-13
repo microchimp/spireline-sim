@@ -1018,4 +1018,27 @@ public class WhiteNoiseTests
         Assert.Equal(CardType.Power, GeneratedData.Cards.Get(added.DefId).Type);
         Assert.True(added.FreeThisTurn);
     }
+
+    /// <summary>
+    /// WhiteNoise.OnPlay: GetDistinctForCombat over the character's Power cards, one, on
+    /// the generation stream -- a shuffle of the whole pool, not a hand-written list.
+    /// </summary>
+    [Fact]
+    public void ThePowerIsTheFirstOfAShuffleOfTheCharacterPowerPool()
+    {
+        var fight = DefectFight.Hand(Card(WhiteNoise)).Energy(1);
+        fight.State.CardGenerationRng = new CountingRandom(9);
+        var pool = CardEffects.OwnerCharacterGenerationPool(CardType.Power);
+        var stream = new CountingRandom(9);
+        for (int i = pool.Count - 1; i > 0; i--)
+        {
+            int j = stream.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+
+        fight.Play();
+
+        Assert.Equal(pool[0], Assert.Single(fight.State.Hand).DefId);
+        Assert.Equal(pool.Count - 1, fight.State.CardGenerationRng!.CallCount);
+    }
 }

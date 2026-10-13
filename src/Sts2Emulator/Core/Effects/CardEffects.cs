@@ -1104,8 +1104,7 @@ public static class CardEffects
             case CL.Discovery: // 1-cost, choose one of three generated cards; free this turn
             {
                 // CardFactory.GetDistinctForCombat(..., 3, Rng.CombatCardGeneration) then
-                // a choose-a-card screen. The game's canSkip is not modelled: every action
-                // in a selection is a candidate, and skipping would need one of its own.
+                // a choose-a-card screen with canSkip. OnUpgrade only removes Exhaust.
                 OpenGeneratedCardSelection(state, def.Id, optionCount: 3, rng);
 
                 break;
@@ -1158,7 +1157,21 @@ public static class CardEffects
                 break;
 
             case CL.JackOfAllTrades: // 0-cost, add 1/2 random colorless cards, exhaust
-                AddRandomColorlessCardsToHand(state, upgraded ? 2 : 1, rng);
+                // GetDistinctForCombat over the unlocked Colorless pool minus Jack of All
+                // Trades itself; CardsVar 1, +1 upgraded. A full hand overflows to discard.
+                foreach (
+                    int id in DistinctColorlessForCombat(
+                        state,
+                        upgraded ? 2 : 1,
+                        rng,
+                        excludeDefId: CL.JackOfAllTrades
+                    )
+                )
+                {
+                    AddToHandOrDiscard(state, new CardInstance(id, false));
+                    NoteGeneratedCard(state);
+                }
+
                 break;
 
             case CL.MasterOfStrategy: // 0-cost, draw 3/4, exhaust
@@ -2911,9 +2924,26 @@ public static class CardEffects
     /// </remarks>
     /// <summary>Also Colorless Potion's pool-of-3 choice: the potion offers it rather than
     /// adding it outright, unlike <see cref="AddColorlessCardsToHand"/>'s callers.</summary>
-    internal static List<int> DistinctColorlessForCombat(CombatState state, int count, Random rng)
+    internal static List<int> DistinctColorlessForCombat(
+        CombatState state,
+        int count,
+        Random rng,
+        int excludeDefId = -1
+    )
     {
         var pool = CombatGenerationPool(GeneratedData.CardPools.Colorless);
+        pool.Remove(excludeDefId);
+        return ShuffleTake(state, pool, count, rng);
+    }
+
+    /// <summary>
+    /// `CardFactory.GetDistinctForCombat` after the filters: `TakeRandom` is a shuffle of the
+    /// whole pool (Fisher-Yates from the end) on the combat-card-generation stream, then the
+    /// first `count`. Every distinct-generation effect goes through here so none of them
+    /// draws a different number of rolls from the stream. Shuffles the list it is given.
+    /// </summary>
+    private static List<int> ShuffleTake(CombatState state, List<int> pool, int count, Random rng)
+    {
         if (pool.Count == 0 || count <= 0)
         {
             return [];
@@ -2928,6 +2958,41 @@ public static class CardEffects
 
         return pool.Take(count).ToList();
     }
+
+    /// <summary>
+    /// `CardFactory.GetForCombat`: `count` independent `NextItem` rolls on the generation
+    /// stream, so repeats are possible and each card costs exactly one roll. The pool must
+    /// already be filtered.
+    /// </summary>
+    private static List<int> RollWithReplacement(
+        CombatState state,
+        List<int> pool,
+        int count,
+        Random rng
+    )
+    {
+        var picked = new List<int>();
+        if (pool.Count == 0)
+        {
+            return picked;
+        }
+
+        var stream = CardGenerationRng(state, rng);
+        for (int i = 0; i < count; i++)
+        {
+            picked.Add(pool[stream.Next(pool.Count)]);
+        }
+
+        return picked;
+    }
+
+    /// <summary>
+    /// `Owner.Character.CardPool` through `FilterForCombat`: the one place that names the
+    /// player's character for the generators that draw from "the character's cards". The
+    /// emulator's runs are all Ironclad.
+    /// </summary>
+    internal static List<int> OwnerCharacterGenerationPool(CardType? type = null) =>
+        CombatGenerationPool(GeneratedData.CardPools.Ironclad, type);
 
     /// <summary>
     /// `CardModel.VisualCardPool.IsColorless` -- membership of the Colourless pool, which
@@ -3899,9 +3964,12 @@ public static class CardEffects
             case TinkerRider.Chaos:
                 if (state.Hand.Count < MaxCardsInHand)
                 {
-                    var pool = CombatGenerationPool(GeneratedData.CardPools.Ironclad);
-                    int defId = pool[CardGenerationRng(state, rng).Next(pool.Count)];
-                    state.Hand.Add(new CardInstance(defId, false, FreeThisTurn: true));
+                    // `MadScience` Chaos: GetDistinctForCombat(character pool, 1), i.e. a
+                    // shuffle of the whole pool, not a single roll.
+                    foreach (int defId in ShuffleTake(state, OwnerCharacterGenerationPool(), 1, rng))
+                    {
+                        state.Hand.Add(new CardInstance(defId, false, FreeThisTurn: true));
+                    }
                 }
 
                 break;
@@ -4345,14 +4413,7 @@ public static class CardEffects
             return;
         }
 
-        var generation = CardGenerationRng(state, rng);
-        for (int i = pool.Count - 1; i > 0; i--)
-        {
-            int j = generation.Next(i + 1);
-            (pool[i], pool[j]) = (pool[j], pool[i]);
-        }
-
-        var options = pool.Take(3).ToList();
+        var options = ShuffleTake(state, pool, 3, rng);
         if (state.AutoPlaying)
         {
             AddToHandOrDiscard(state, new CardInstance(options[0], upgraded, FreeThisTurn: true));
@@ -4378,17 +4439,8 @@ public static class CardEffects
         Random rng
     )
     {
-        var generationRng = CardGenerationRng(state, rng);
-        var options = new List<int>();
-        for (int attempt = 0; attempt < optionCount * 8 && options.Count < optionCount; attempt++)
-        {
-            int defId = _colorlessPool[generationRng.Next(_colorlessPool.Length)];
-            if (!options.Contains(defId))
-            {
-                options.Add(defId);
-            }
-        }
-
+        // `GetDistinctForCombat(Owner, Owner.Character.CardPool..., 3, CombatCardGeneration)`.
+        var options = ShuffleTake(state, OwnerCharacterGenerationPool(), optionCount, rng);
         if (options.Count == 0)
         {
             return;
@@ -4406,6 +4458,8 @@ public static class CardEffects
             Candidates = [.. Enumerable.Range(0, options.Count)],
             SourceCardDefId = sourceCardDefId,
             GeneratedCandidates = options,
+            // `FromChooseACardScreen(..., canSkip: true)`.
+            Skippable = true,
         };
     }
 
@@ -5475,23 +5529,12 @@ public static class CardEffects
     /// </summary>
     internal static void OpenToolboxSelection(CombatState state, Random rng)
     {
-        var pool = GeneratedData.CardPools.Colorless;
-        if (pool.Length == 0)
+        // `Toolbox`: GetDistinctForCombat(Colorless pool, CardsVar(3)) on the generation
+        // stream. Not skippable (no canSkip on its screen).
+        var offer = DistinctColorlessForCombat(state, 3, rng);
+        if (offer.Count == 0)
         {
             return;
-        }
-
-        var stream = state.CardGenerationRng ?? rng;
-        var offer = new List<int>();
-        // "Distinct" is the game's word and it means no duplicates on the screen, not
-        // three tries that might collide.
-        for (int guard = 0; offer.Count < 3 && guard < 64; guard++)
-        {
-            int id = pool[stream.Next(pool.Length)];
-            if (!offer.Contains(id))
-            {
-                offer.Add(id);
-            }
         }
 
         state.PendingSelection = new PendingCardSelection
@@ -5531,40 +5574,40 @@ public static class CardEffects
         };
     }
 
+    /// <summary>
+    /// Vexing Puzzlebox: `GetDistinctForCombat(character pool, 1)` -- FilterForCombat applies
+    /// (no Basic, Ancient or Event cards) and the roll is a shuffle of the whole pool.
+    /// Free this turn; a full hand sends it to the discard pile.
+    /// </summary>
     internal static void AddRandomPoolCardToHand(CombatState state, Random rng)
     {
-        var pool = GeneratedData.CardPools.Ironclad;
-        if (pool.Length == 0 || state.Hand.Count >= MaxCardsInHand)
+        foreach (int id in ShuffleTake(state, OwnerCharacterGenerationPool(), 1, rng))
         {
-            return;
+            AddToHandOrDiscard(state, new CardInstance(id, false, FreeThisTurn: true));
+            NoteGeneratedCard(state);
         }
-
-        int id = pool[(state.CardGenerationRng ?? rng).Next(pool.Length)];
-        state.Hand.Add(new CardInstance(id, false, FreeThisTurn: true));
     }
 
-    public static void AddRandomDefectPowerCardsToHand(CombatState state, int count, Random rng)
+    /// <summary>
+    /// Creative AI (`BeforeHandDraw`, once per stack) and White Noise: each generation is a
+    /// separate `GetDistinctForCombat(..., 1, CombatCardGeneration)` over the character's
+    /// Power cards, so a stack of two rolls twice and may repeat a card across the rolls.
+    /// A full hand sends the card to the discard pile.
+    /// </summary>
+    public static void AddRandomPowerCardsToHand(
+        CombatState state,
+        int count,
+        Random rng,
+        bool freeThisTurn = false
+    )
     {
-        int[] powers =
-        [
-            39, // BiasedCognition
-            63, // Buffer
-            64, // BulkUp
-            78, // Capacitor
-            111, // CreativeAi
-            137, // Defragment
-            159, // EchoForm
-            288, // Loop
-            291, // MachineLearning
-            419, // SentryMode
-            467, // Storm
-            507, // Thunder
-            515, // TrashToTreasure
-        ];
-
-        for (int i = 0; i < count && state.Hand.Count < MaxCardsInHand; i++)
+        for (int i = 0; i < count; i++)
         {
-            state.Hand.Add(new CardInstance(powers[rng.Next(powers.Length)], false));
+            foreach (int id in DistinctPoolCards(state, CardType.Power, 1, rng))
+            {
+                AddToHandOrDiscard(state, new CardInstance(id, false, FreeThisTurn: freeThisTurn));
+                NoteGeneratedCard(state);
+            }
         }
     }
 
@@ -6134,12 +6177,8 @@ public static class CardEffects
                 return true;
             }
             case "WhiteNoise":
-                AddRandomDefectPowerCardsToHand(state, 1, rng);
-                if (state.Hand.Count > 0)
-                {
-                    state.Hand[^1] = state.Hand[^1] with { FreeThisTurn = true };
-                }
-
+                // One Power from the character's pool, free this turn (`SetToFreeThisTurn`).
+                AddRandomPowerCardsToHand(state, 1, rng, freeThisTurn: true);
                 return true;
             case "EnergySurge":
                 GainEnergy(state, upgraded ? 3 : 2);
@@ -10535,20 +10574,6 @@ public static class CardEffects
         return count;
     }
 
-    private static void AddRandomColorlessCardsToHand(CombatState state, int count, Random rng)
-    {
-        for (int i = 0; i < count; i++)
-        {
-            if (state.Hand.Count >= MaxCardsInHand)
-            {
-                break;
-            }
-
-            int defId = _colorlessPool[CardGenerationRng(state, rng).Next(_colorlessPool.Length)];
-            state.Hand.Add(new CardInstance(defId, false));
-        }
-    }
-
     /// <summary>
     /// `CardFactory.GetDistinctForCombat` over the character's own pool filtered to one
     /// TYPE, into hand.
@@ -10586,7 +10611,11 @@ public static class CardEffects
     )
     {
         var placementRng = state.ShuffleRng ?? rng;
-        foreach (int id in DistinctPoolCards(state, type, count, rng))
+        // `Metamorphosis.OnPlay` is `GetForCombat` (WITH replacement), not the distinct
+        // variant: `count` rolls, a repeat is possible, and nothing is shuffled.
+        foreach (
+            int id in RollWithReplacement(state, OwnerCharacterGenerationPool(type), count, rng)
+        )
         {
             state.InsertIntoDrawPile(
                 placementRng.Next(state.DrawPile.Count + 1),
@@ -10602,23 +10631,7 @@ public static class CardEffects
         CardType type,
         int count,
         Random rng
-    )
-    {
-        var pool = CombatGenerationPool(GeneratedData.CardPools.Ironclad, type);
-        if (pool.Count == 0 || count <= 0)
-        {
-            return [];
-        }
-
-        var stream = CardGenerationRng(state, rng);
-        for (int i = pool.Count - 1; i > 0; i--)
-        {
-            int j = stream.Next(i + 1);
-            (pool[i], pool[j]) = (pool[j], pool[i]);
-        }
-
-        return pool.Take(count).ToList();
-    }
+    ) => ShuffleTake(state, OwnerCharacterGenerationPool(type), count, rng);
 
     private static void AddRandomClassCardToHand(CombatState state, Random rng, bool freeThisTurn)
     {
@@ -10832,33 +10845,6 @@ public static class CardEffects
         439, // Slice
         475, // StrikeSilent
         545, // Zap
-    ];
-
-    private static readonly int[] _colorlessPool =
-    [
-        CL.Alchemize,
-        CL.Anointed,
-        CL.Bolas,
-        CL.DarkShackles,
-        CL.Discovery,
-        CL.DramaticEntrance,
-        CL.Finesse,
-        CL.FlashOfSteel,
-        CL.GangUp,
-        CL.GoldAxe,
-        CL.HandOfGreed,
-        CL.Impatience,
-        CL.JackOfAllTrades,
-        CL.MasterOfStrategy,
-        CL.MindBlast,
-        CL.Panache,
-        CL.PanicButton,
-        CL.Purity,
-        CL.Scrawl,
-        CL.SecretTechnique,
-        CL.SecretWeapon,
-        CL.Shockwave,
-        CL.ThinkingAhead,
     ];
 
     private static int CountStrikeCards(CombatState state)
