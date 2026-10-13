@@ -61,7 +61,7 @@ class Stream:
     has room, so each deck sees the coverage of every chunk finished by then. process(tag, ids,
     games) replays one chunk on a worker thread and returns {"fights": {id: data}, ...}; the next
     chunk starts when it is done and takes every fight finished meanwhile (at least `chunk`; near
-    the end, whatever is ready). The canary fights are the first chunk and are checked before it starts.
+    the end, at least as many as are still to play). The canary fights are the first chunk and are checked before it starts.
     on_chunk(tag, ids, result) runs on this thread after each chunk. run() returns "" when every fight
     was played and replayed, else why the batch stopped early ("canary failed: ...", the pool's
     reason, "network connection ...", "timeout"); after an early stop the pool is closed, unplayed
@@ -119,10 +119,11 @@ class Stream:
                 self.canary_ok = True
                 fut = self._start(ex, "canary", self.canary_ids)  # nothing else can have started
             fut = self._finish(fut, wait=False)
-            # Near the end (fewer than a chunk left to play) whatever is ready goes whenever the worker
-            # is free, so the replay left after the last fight is small.
+            # Near the end a chunk also goes once it is at least as big as what is still to play, so the
+            # chunks halve towards the end and the replay left after the last fight is small (not one
+            # dotnet start per fight: each chunk costs two process starts).
             if fut is None and self.canary_ok and self.ready and (
-                    len(self.ready) >= self.chunk or self.fights - len(self.finished) < self.chunk):
+                    len(self.ready) >= min(self.chunk, max(1, self.fights - len(self.finished)))):
                 fut = self._start(ex, f"c{len(self.chunks)}", list(self.ready))
             if len(self.finished) >= self.fights:
                 break

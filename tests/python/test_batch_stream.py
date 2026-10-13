@@ -212,6 +212,16 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(st.run(), "")
         self.assertLessEqual(len(st.chunks[-1][1]), 10, [len(ids) for _, ids in st.chunks])
 
+    def test_the_end_of_a_batch_is_not_replayed_one_fight_at_a_time(self):
+        # each chunk costs two dotnet starts; near the end chunks halve instead of shrinking to one fight
+        pool = FakePool(per_poll=1)
+        rec = Recorder(pool, lag=0.003)
+        st = stream(pool, rec, 100, canary=8, chunk=48, tick=0.002)
+        self.assertEqual(st.run(), "")
+        sizes = [len(ids) for _, ids in st.chunks]
+        self.assertLessEqual(len(sizes), 12, sizes)
+        self.assertEqual(sum(sizes), 100)
+
     def test_on_the_real_pool_with_fake_servers(self):
         import test_serve_pool as tsp  # noqa: PLC0415
 
