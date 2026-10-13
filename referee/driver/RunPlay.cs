@@ -213,8 +213,8 @@ public static partial class Driver
                     // chest's click runs (gold, any extra rewards, then the relic collection that
                     // awards a picked relic). Extra rewards are claimed while it waits on them.
                     chest = OpenChest();
-                    var wait = System.Diagnostics.Stopwatch.StartNew();
-                    while (!chest.IsCompleted && wait.Elapsed.TotalSeconds < 20
+                    var wait = new Budget(20);
+                    while (!chest.IsCompleted && !wait.Spent
                            && !(TreasureChestOpened() && RunManager.Instance.TreasureRoomRelicSynchronizer.CurrentRelics != null))
                     {
                         if (TopRewardsSet() != null) await TakeRewards(log, takeAll: false);
@@ -298,8 +298,8 @@ public static partial class Driver
             if (ev.CurrentOptions.Count == 0)
             {
                 // Some events lay out their page a few frames after the room opens.
-                var wait = System.Diagnostics.Stopwatch.StartNew();
-                while (ev.CurrentOptions.Count == 0 && !ev.IsFinished && wait.Elapsed.TotalSeconds < 5) await IdleBeat();
+                var wait = new Budget(5);
+                while (ev.CurrentOptions.Count == 0 && !ev.IsFinished && !wait.Spent) await IdleBeat();
                 if (ev.CurrentOptions.Count == 0 && !ev.IsFinished) return $"event_no_options:{ev.Id.Entry}";
                 continue;
             }
@@ -318,8 +318,8 @@ public static partial class Driver
             // queue: a card added after a preview, a rewards screen it awaits. Wait for it, answering
             // reward screens, unless it opened a fight or the Crystal Sphere's grid, which wait on us.
             var option = run.EventSynchronizer.AwaitPendingOptionTasks();
-            var clock = System.Diagnostics.Stopwatch.StartNew();
-            while (!option.IsCompleted && clock.Elapsed.TotalSeconds < 60 && !CombatManager.Instance.IsInProgress
+            var budget = new Budget(60);
+            while (!option.IsCompleted && !budget.Spent && !CombatManager.Instance.IsInProgress
                    && !CrystalSphereOpen())
             {
                 if (TopRewardsSet() != null) { log.End(); await TakeRewards(log, takeAll: screen is "neow" or "ancient"); continue; }
@@ -418,8 +418,8 @@ public static partial class Driver
         }
 
         // CompleteMinigame: its rewards screen, then the screen's Proceed.
-        var wait = System.Diagnostics.Stopwatch.StartNew();
-        while (wait.Elapsed.TotalSeconds < 20 && !RunManager.Instance.EventSynchronizer.GetLocalEvent().IsFinished)
+        var wait = new Budget(20);
+        while (!wait.Spent && !RunManager.Instance.EventSynchronizer.GetLocalEvent().IsFinished)
         {
             if (TopRewardsSet() != null) await TakeRewards(log, takeAll: false);
             await IdleBeat();
@@ -482,8 +482,8 @@ public static partial class Driver
         var ac = log.Begin("act_change");
         ac["choice"] = "proceed";
         RunManager.Instance.ActChangeSynchronizer.SetLocalPlayerReady();
-        var wait = System.Diagnostics.Stopwatch.StartNew();
-        while (state.CurrentActIndex == act && !(state.CurrentRoom is EventRoom) && wait.Elapsed.TotalSeconds < 60)
+        var wait = new Budget(60);
+        while (state.CurrentActIndex == act && !(state.CurrentRoom is EventRoom) && !wait.Spent)
         {
             await IdleBeat();
         }
@@ -509,17 +509,20 @@ public static partial class Driver
     /// <param name="leave">false for a boss's screen, which is left by the act change instead.</param>
     /// <param name="depth">How deep this screen sits: a reward that opens a screen of its own
     /// (Lost Coffer off Neow's Bones) is answered at depth 1.</param>
-    private static async Task TakeRewards(RunLog log, bool takeAll, bool leave = true, int depth = 0)
+    /// <param name="only">At depth 1 and below: the nested screen to answer, and nothing under it (Rewards.cs
+    /// NestedAbove: once a nested screen completes, what is on top is its parent, mid-reward).</param>
+    private static async Task TakeRewards(RunLog log, bool takeAll, bool leave = true, int depth = 0, object? only = null)
     {
         var sync = RunManager.Instance.RewardsSetSynchronizer;
         var tree = (SceneTree)Engine.GetMainLoop();
-        for (int guard = 0; guard < 20 && TopRewardsSet() is { } top; guard++)
+        for (int guard = 0; guard < 20 && (only == null ? TopRewardsSet() : RewardsStack().Contains(only) ? only : null) is { } top; guard++)
         {
             var set = (RewardsSet)top.GetType().GetField("set")!.GetValue(top)!;
             var player = log.State.Players[0];
             foreach (var reward in set.Rewards.ToList())
             {
                 if (reward.SuccessfullySelected) continue;
+                if (!RewardsStack().Contains(top)) break;  // the set is complete: nothing left to select into it
                 bool take = takeAll || set.DisallowSkipping || reward is GoldReward or RelicReward or SpecialCardReward
                     || (reward is PotionReward && player.PotionSlots.Any(p => p == null))
                     || (reward is CardReward && log.Rng.NextDouble() >= 0.2);
@@ -530,15 +533,15 @@ public static partial class Driver
                 d["offer"] = new JsonArray(set.Rewards.Where(r => !r.SuccessfullySelected).Select(r => (JsonNode)RewardJson(r)).ToArray());
                 d["choice"] = RewardJson(reward);
                 Task<bool> task = sync.SelectLocalReward(reward);
-                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var budget = new Budget(60);
                 while (!task.IsCompleted)
                 {
-                    if (clock.Elapsed.TotalSeconds > 60) throw new TimeoutException("SelectLocalReward " + reward.GetType().Name);
+                    if (budget.Spent) throw new TimeoutException("SelectLocalReward " + reward.GetType().Name);
                     AnswerCardRewardRandom(reward, log, d);
-                    if (TopRewardsSet() is { } nested && !ReferenceEquals(nested, top))
+                    if (NestedAbove(top) is { } nested && depth < 5)
                     {
                         log.End();
-                        await TakeRewards(log, takeAll: true, depth: depth + 1);
+                        await TakeRewards(log, takeAll: true, depth: depth + 1, only: nested);
                         d = log.Open ?? log.Begin("rewards_continued");
                         continue;
                     }
@@ -727,10 +730,10 @@ public static partial class Driver
     private static async Task<bool> WaitAnswering(RunLog log, Task task, string what)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
-        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var budget = new Budget(60);
         while (!task.IsCompleted)
         {
-            if (clock.Elapsed.TotalSeconds > 60) throw new TimeoutException($"{what} did not finish within 60 s");
+            if (budget.Spent) throw new TimeoutException($"{what} did not finish within 60 s");
             if (TopRewardsSet() != null)
             {
                 log.End();
