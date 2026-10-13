@@ -57,6 +57,13 @@ public static partial class Driver
     /// <summary>Runs items [from, to) in order and logs each one.</summary>
     private static async Task RunSetup(JsonArray items, int from, int to, RunState state, Player player, JsonArray log, bool trace)
     {
+        if (from == 0 && items.Count > 0)
+        {
+            // The baseline: where the run stands after Neow, before any item.
+            log.Add(new JsonObject { ["i"] = -1, ["cmd"] = "before", ["ok"] = true, ["msg"] = "",
+                ["rng"] = Counters(state.Rng), ["player_rng"] = Counters(player.PlayerRng) });
+        }
+
         for (int i = from; i < to; i++)
         {
             var item = items[i]!.AsObject();

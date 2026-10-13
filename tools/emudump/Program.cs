@@ -13,6 +13,13 @@ if (args[0] == "pools")
     return;
 }
 
+if (args[0] == "setupinfo")
+{
+    // What the setup mirror can build, for referee/scenarios.py: each relic's pickup follow-up.
+    Console.WriteLine(Setup.Info().ToJsonString());
+    return;
+}
+
 if (args[0] == "tables")
 {
     Console.WriteLine(Tables.Dump().ToJsonString(new JsonSerializerOptions { WriteIndented = true }));

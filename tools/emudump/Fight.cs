@@ -55,6 +55,19 @@ static class Fight
             e.Step(idx, -1, out _, out _, out _);
         }
 
+        if (game["room_choices_from"] is JsonNode from)
+        {
+            // Choices the fight's start opened (Gambling Chip, Toolbox), answered as the game did.
+            var start = new JsonArray();
+            foreach (var choice in (game["choices"]?.AsArray() ?? new JsonArray()).Skip((int)from)
+                         .Where(c => (int?)c!["step"] == 0 && (string?)c["kind"] == "cards"))
+            {
+                start.Add(ApplyChoice(() => s.ActiveCombat, i => e.Step(i, -1, out _, out _, out _), choice!.AsObject()));
+            }
+
+            if (start.Count > 0) outp["start_choices"] = start;
+        }
+
         Setup.CombatItems(e, game, setupLog);  // the setup items after the fight item, before step 0
         return e;
     }

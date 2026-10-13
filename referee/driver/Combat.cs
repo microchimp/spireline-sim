@@ -94,6 +94,13 @@ public static partial class Driver
             Heartbeat();
             dump["room"] = new JsonArray(target.coord.col, target.coord.row);
             GD.Print($"[referee] entering {target.coord.col},{target.coord.row}");
+            if (_extended)
+            {
+                // Choices from here on are the fight's start (Gambling Chip, Toolbox), not Neow's,
+                // though both are tagged step 0.
+                dump["room_choices_from"] = selector.Log.Count;
+            }
+
             if (fightAt >= 0)
             {
                 dump["fight"] = await EnterFight(setup[fightAt]!.AsObject(), state, target);

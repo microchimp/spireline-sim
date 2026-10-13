@@ -98,6 +98,13 @@ static class Setup
     {
         var items = Items(game);
         int fight = FightItem(items);
+        if (items.Count > 0)
+        {
+            var before = new JsonObject { ["i"] = -1, ["cmd"] = "before", ["ok"] = true, ["msg"] = "" };
+            foreach (var kv in Counters(e.State)) before[kv.Key] = kv.Value!.DeepClone();
+            log.Add(before);
+        }
+
         Run(e, game, items, 0, fight < 0 ? items.Count : fight, log);
     }
 
@@ -128,7 +135,7 @@ static class Setup
                 bool ok;
                 try
                 {
-                    (ok, problem) = Item(e, item);
+                    (ok, problem) = Item(e, item, Choices(game, i));
                 }
                 catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or ArgumentException)
                 {
@@ -145,7 +152,12 @@ static class Setup
         }
     }
 
-    static (bool ok, string? msg) Item(RunEngine e, JsonObject item)
+    /// <summary>The card choices the game logged against item i (tagged step -(i+1)).</summary>
+    static List<JsonObject> Choices(JsonObject game, int i) =>
+        (game["choices"] as JsonArray ?? new JsonArray()).Select(c => c as JsonObject)
+            .Where(c => c != null && (int?)c["step"] == -(i + 1) && (string?)c["kind"] == "cards").Select(c => c!).ToList();
+
+    static (bool ok, string? msg) Item(RunEngine e, JsonObject item, List<JsonObject> choices)
     {
         var s = e.State;
         string cmd = (string?)item["cmd"] ?? "";
@@ -167,8 +179,8 @@ static class Setup
                     return (false, "unsupported: relic follow-up " + followUp);
                 }
 
-                AnswerScreens(e);
-                return (true, null);
+                string? gap = AnswerDeckSelection(e, choices);
+                return gap == null ? (true, null) : (false, "unsupported: " + gap);
             }
             case "potion":
             {
@@ -230,6 +242,94 @@ static class Setup
                 e.Step(RunConstants.BundleConfirmAction, -1, out _, out _, out _);
             }
         }
+    }
+
+    /// <summary>
+    /// A deck selection a relic's pickup opened, answered with the cards the game's selector took
+    /// (matched by card id among the cards the emulator lets the player pick). Returns a reason when
+    /// the two screens disagree: the emulator wants more picks than the game's screen required (it has
+    /// no way to stop early), or a picked card is not selectable. The run is then walked on with the
+    /// first selectable cards so the fight can still be replayed, and the item counts as a mirror gap.
+    /// </summary>
+    static string? AnswerDeckSelection(RunEngine e, List<JsonObject> choices)
+    {
+        var s = e.State;
+        string? gap = null;
+        var mask = new int[4096];
+        // A grid of offered cards is indexed by the offer, any other selection by the deck.
+        bool Grid() => s.PendingOfferCards.Length > 0;
+        int IdAt(int i) => Grid() ? Math.Abs(s.PendingOfferCards[i]) : s.Deck[i].DefId;
+        int[] Selectable()
+        {
+            e.WriteActionMask(mask);
+            int n = Grid() ? s.PendingOfferCards.Length : s.Deck.Count;
+            return Enumerable.Range(0, n).Where(i => mask[i] != 0).ToArray();
+        }
+
+        var want = new Queue<int>();
+        foreach (var c in choices)
+        {
+            var opts = c["options"]!.AsArray().Select(x => (string)x!).ToList();
+            foreach (var p in c["picked"]!.AsArray()) want.Enqueue(Fight.CardIdBySnake(opts[(int)p!]));
+        }
+
+        int guard = 0;
+        while (s.Phase == RunPhase.TransformSelect && guard++ < 64)
+        {
+            var ok = Selectable();
+            if (ok.Length == 0) { gap ??= "selection with nothing selectable"; break; }
+            int pick;
+            if (want.Count > 0)
+            {
+                int id = want.Dequeue();
+                pick = ok.Where(i => IdAt(i) == id).DefaultIfEmpty(-1).First();
+                if (pick < 0) { gap ??= $"card {id} the game picked is not selectable here"; pick = ok[0]; }
+            }
+            else if (Grid() && s.PendingOfferOptional)
+            {
+                pick = s.PendingOfferCards.Length;  // done: the game took no more
+            }
+            else
+            {
+                if (choices.Count > 0) gap ??= "the emulator's selection wants more cards than the game's screen required";
+                pick = ok[0];
+            }
+
+            e.Step(pick, -1, out _, out _, out _);
+        }
+
+        if (want.Count > 0) gap ??= $"the game picked {want.Count} more cards than the emulator's selection took";
+        AnswerScreens(e);
+        return gap;
+    }
+
+    /// <summary>
+    /// For the scenario generator: the follow-up each relic's pickup opens on the map (None and
+    /// TransformSelect are mirrored; any other is a mirror gap), probed on a fresh run past Neow.
+    /// </summary>
+    internal static JsonObject Info()
+    {
+        var relics = new JsonObject();
+        foreach (var r in Sts2Emulator.GeneratedData.Relics.All)
+        {
+            var e = new RunEngine();
+            e.Reset("SETUPINFO1", 10);
+            AnswerScreens(e);
+            string followUp;
+            try
+            {
+                followUp = RunNonCombatEffects.ApplyRelicPickup(e.State, r.Id, SelectionReturn.Map).ToString();
+            }
+            catch (Exception ex)
+            {
+                followUp = "error: " + ex.GetType().Name;
+            }
+
+            relics[r.Entry] = followUp;
+        }
+
+        var keys = Reanchor.PowerKeys();
+        return new JsonObject { ["relics"] = relics, ["buff_keys"] = keys["buff_keys"]!.DeepClone(), ["internal_keys"] = keys["internal_keys"]!.DeepClone() };
     }
 
     /// <summary>
