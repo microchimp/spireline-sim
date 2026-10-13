@@ -107,8 +107,10 @@ class ReanchorCompareTest(unittest.TestCase):
     def test_powers_the_emulator_models_in_pieces_never_differ(self):
         game = dict(hp=21, player_powers=[("CRIMSON_MANTLE_POWER", 8)])
         emu = dict(hp=21, player_buffs=[("CrimsonMantleBlock", 8)])
+        # fight_compare now maps CrimsonMantleBlock to CRIMSON_MANTLE (EMU_RENAME), so even the
+        # unmasked comparison agrees; the masked one must too.
         strict = verdicts([(None, {}, {}), (PLAY, game, emu)])
-        self.assertEqual(strict["steps"][1]["verdict"], "diverge")
+        self.assertEqual(strict["steps"][1]["verdict"], "match")
         g, e = fight([(None, {}, {}), (PLAY, game, emu)])
         masked = rc.analyse(g, e, NM, keys=KEYS)
         self.assertEqual(masked["steps"][1]["verdict"], "match")

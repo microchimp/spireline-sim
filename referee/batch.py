@@ -50,6 +50,7 @@ def main() -> int:
     t_start = time.time()
     from tools.fidelity import coverage as cv  # noqa: PLC0415
     from tools.fidelity.fight_compare import names as id_names  # noqa: PLC0415
+    from tools.fidelity import reanchor_compare as rc  # noqa: PLC0415
     nm = id_names(json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8")))
     commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     cov_path = JOBS.parent / "coverage.json"
@@ -95,6 +96,13 @@ def main() -> int:
                   for n, r in enumerate(subset)]
         return merged, [rep]
 
+    def reanchor(out_path: Path, rea_path: Path) -> dict:
+        """EmuDump reanchor: each recorded step replayed from the game's own state before it."""
+        with open(rea_path, "w", encoding="utf-8") as f:
+            subprocess.run(["dotnet", str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"), "reanchor", str(out_path)],
+                           stdout=f, check=False)
+        return json.loads(rea_path.read_text(encoding="utf-8"))
+
     def replay_and_learn(results: list, tag: str) -> int:
         """Replay a wave in the emulator, fold it into coverage, return identical count."""
         w_out, w_emu = JOBS / f"{tag}.out.json", JOBS / f"{tag}.emu.json"
@@ -103,7 +111,9 @@ def main() -> int:
             subprocess.run(["dotnet", str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"), "fight", str(w_out)],
                            stdout=f, check=False)
         emus = json.loads(w_emu.read_text(encoding="utf-8"))["results"]
-        cv.update(cov, results, emus, nm, commit)
+        # Coverage learns from every re-anchored step (SPEED_PLAN step 6), not only those before
+        # the first divergence; reanchor_compare.learn replaces coverage.update.
+        rc.learn(cov, results, reanchor(w_out, JOBS / f"{tag}.reanchor.json"), nm, commit)
         cv.save(cov_path, cov)
         return sum(1 for g, e in zip(results, emus)
                    if g.get("steps") and not g.get("error") and cv.first_divergence(g, e, nm) is None)
@@ -179,18 +189,24 @@ def main() -> int:
         if g.get("steps") and not g.get("error") and not e.get("error"):
             idx = cv.first_divergence(g, e, nm)
             vt += (len(g["steps"]) if idx is None else idx) - 1
+    # Re-anchored: every step whose card play or end of turn the emulator reproduced from the
+    # game's state before it, divergences earlier in the fight notwithstanding.
+    rea = reanchor(out, JOBS / f"{a.name}.reanchor.json")
+    rtot = rc.summarise([rc.analyse(g, r, nm, "stop", rc.keys_of(rea)) for g, r in rc.pair(merged, rea["results"])])["totals"]
+    vt_first, vt = vt, rtot.get("verified", 0)
     minutes = max(1e-9, (t_end - t_start) / 60)
     per_fight = [r["s_per_fight_per_server"] for r in reports if r.get("s_per_fight_per_server")]
     stalls = sum(1 for r in merged if str(r.get("error", "")).startswith("stalled"))
     metrics = {
         "batch": a.name, "copies": a.parallel, "fights": len(merged), "verified": len(played),
-        "minutes": round(minutes, 2), "vt_per_min": round(vt / minutes), "fight_equiv_per_min": round(vt / minutes / 18.9, 1),
+        "minutes": round(minutes, 2), "vt_per_min": round(vt / minutes), "vt_first_div_per_min": round(vt_first / minutes),
+        "reanchored": rtot.get("reanchored", 0), "fight_equiv_per_min": round(vt / minutes / 18.9, 1),
         "verified_per_min": round(len(played) / minutes, 1),
         "actions_per_min": round(actions / minutes), "s_per_fight_per_copy": round(sum(per_fight) / max(1, len(per_fight)), 2),
         "identical": same, "identical_pct": round(100 * same / max(1, len(played)), 1),
         "stalls": stalls, "errors": len([r for r in merged if r.get("error")]),
     }
-    mfile = JOBS / "metrics.csv"
+    mfile = JOBS / "metrics.v2.csv"  # v2: re-anchored headline (vt_per_min) plus the first-divergence one
     if not mfile.exists():
         mfile.write_text(",".join(metrics) + chr(10), encoding="utf-8")
     with open(mfile, "a", encoding="utf-8") as f:
@@ -198,7 +214,8 @@ def main() -> int:
     speed = (f"SPEED {metrics['vt_per_min']} verified transitions/min (= {metrics['fight_equiv_per_min']} fight-equivalents/min; "
              f"{metrics['verified_per_min']} fights compared/min, {metrics['actions_per_min']} actions/min), "
              f"{metrics['s_per_fight_per_copy']} s/fight per copy x {a.parallel} copies, {metrics['minutes']} min; "
-             f"identical {metrics['identical_pct']}%, stalls {stalls}")
+             f"identical {metrics['identical_pct']}%, stalls {stalls}; "
+             f"re-anchored {vt} of {metrics['reanchored']} steps match (first-divergence method: {metrics['vt_first_div_per_min']}/min)")
     lines = [speed, f"batch {a.name}: {a.fights} fights, session exit {report.get('exit')}, {report.get('seconds')} s, "
              f"network {report.get('network_connections')}, real profile touched {report.get('real_profile_touched')}",
              f"identical: {same}", f"diverging: {sum(len(v) for v in groups.values())}", f"errors: {len(errors)}"]
