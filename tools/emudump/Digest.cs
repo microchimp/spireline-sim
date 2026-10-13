@@ -76,7 +76,10 @@ static class Digest
 
     static string Key(JsonObject line) => (string)line["f"]! + "|" + string.Join(",", line["h"]!.AsArray().Select(x => (string)x!));
 
-    static Dictionary<int, string> LoadBaseline(string path)
+    /// <summary>The key a baseline line holds for this fight (MutHost compares with it).</summary>
+    internal static string KeyOf(JsonObject fight) => Key(Hashes(fight));
+
+    internal static Dictionary<int, string> LoadBaseline(string path)
     {
         var d = new Dictionary<int, string>();
         foreach (var raw in File.ReadLines(path))

@@ -169,3 +169,47 @@ class SampleAndCurveTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SchemataTest(unittest.TestCase):
+    """Every mutant behind MutCov.Is(id): same line count, and the original still there for every other id."""
+
+    def test_guarded_forms(self):
+        from tools.fidelity import schemata as sc  # noqa: PLC0415
+
+        lines = SRC.split("\n")
+        muts, seen = [], set()
+        for m in mu.sites("Core/Engine.cs", SRC):
+            if m.line not in seen and m.line + 1 not in seen:
+                seen.add(m.line)
+                muts.append((len(muts), m))
+        text, skipped = sc.guard(SRC, muts)
+        self.assertEqual(skipped, {})
+        out = text.split("\n")
+        self.assertEqual(len(out), len(lines))
+        is_ = sc.IS.format
+        got = {}
+        for _, m in muts:
+            got.setdefault(m.op, out[m.line - 1].strip())
+        self.assertEqual(got["cmp-boundary"], f"if (({is_(0)} ? (damage >= 0) : (damage > 0)) && s.Block >= 2)")
+        self.assertIn(f"({is_(1)} ? 2 : 1)", got["literal+1"])
+        self.assertEqual(got["delete-call"], f"{{ if (!{is_(2)}) Apply(s, 5); }}")
+        self.assertEqual(got["rng-stream"], f"({is_(6)} ? s.CardSelectionRng : s.ShuffleRng).NextInt(4);")
+
+    def test_operands(self):
+        from tools.fidelity import schemata as sc  # noqa: PLC0415
+
+        def spans(line):
+            m = mu.mask(line)
+            c = mu.CMP.search(m)
+            eq = c.group(1) in ("==", "!=")
+            left, right = sc.operand_left(m, c.start(), eq, ";"), sc.operand_right(m, c.end(), eq, "")
+            return None if left is None or right is None else line[left:right]
+
+        self.assertEqual(spans("    if (a.B?.C < 3 && x)"), "a.B?.C < 3")
+        self.assertEqual(spans("    return k-- == 0;"), "k-- == 0")
+        self.assertEqual(spans("    var t = (int)x + 1 >= y ? 1 : 2;"), "(int)x + 1 >= y")
+        self.assertEqual(spans("    .Where(c => c.Cost < state.Energy)"), "c.Cost < state.Energy")
+        self.assertEqual(spans("    bool b = x < y == z;"), "x < y")
+        self.assertIsNone(spans("    if (x is > 3)"))  # a relational pattern has no left operand
+        self.assertIsNone(spans("    var q = Foo<int>(x) < 3;"))  # a generic: give up rather than guess

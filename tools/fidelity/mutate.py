@@ -304,6 +304,8 @@ def _is_literal(s: str) -> bool:
 def call_statement(m: str) -> str | None:
     """The called name if this masked line is one whole call statement, else None."""
     c = CALL.match(m)
+    if c and re.search(r"\bout\s+[\w<>,\[\]?]+\s+\w+", m):
+        return None  # it declares a variable (`out int x`): the call cannot go without it
     if not c or c.group(2).split(".")[0] in ("return", "throw", "yield", "await", "new", "nameof", "if", "while"):
         return None
     start = m.index("(", c.start(2))
@@ -332,15 +334,15 @@ def sites(rel: str, text: str) -> list:
         for c in CMP.finditer(m):
             op = c.group(1)
             if op in BOUNDARY:
-                add(i, "cmp-boundary", line[:c.start()] + BOUNDARY[op] + line[c.end():], {"from": op, "to": BOUNDARY[op]})
-            add(i, "cmp-negate", line[:c.start()] + NEGATE[op] + line[c.end():], {"from": op, "to": NEGATE[op]})
+                add(i, "cmp-boundary", line[:c.start()] + BOUNDARY[op] + line[c.end():], {"from": op, "to": BOUNDARY[op], "col": c.start(), "end": c.end(), "rep": BOUNDARY[op]})
+            add(i, "cmp-negate", line[:c.start()] + NEGATE[op] + line[c.end():], {"from": op, "to": NEGATE[op], "col": c.start(), "end": c.end(), "rep": NEGATE[op]})
         if NUM_CONTEXT.search(m) and not LABEL.match(m):
             for c in INT.finditer(m):
                 v = int(c.group())
                 for d in (1, -1):
-                    add(i, "literal+1" if d > 0 else "literal-1", line[:c.start()] + str(v + d) + line[c.end():], {"from": v})
+                    add(i, "literal+1" if d > 0 else "literal-1", line[:c.start()] + str(v + d) + line[c.end():], {"from": v, "col": c.start(), "end": c.end(), "rep": str(v + d)})
         for c in RNG.finditer(m):
-            add(i, "rng-stream", line[:c.start(1)] + RNG_SWAP[c.group(1)] + line[c.end(1):], {"from": c.group(1)})
+            add(i, "rng-stream", line[:c.start(1)] + RNG_SWAP[c.group(1)] + line[c.end(1):], {"from": c.group(1), "col": c.start(1), "end": c.end(1), "rep": RNG_SWAP[c.group(1)]})
         for c in MATHF.finditer(m):
             open_ = c.end() - 1
             close = _balanced(m, open_)
@@ -352,13 +354,16 @@ def sites(rel: str, text: str) -> list:
                 keep = [k for k, (a, b) in enumerate(args) if not _is_literal(m[a:b])] or [0]
                 for k in keep:
                     a, b = args[k]
-                    add(i, "drop-clamp", line[:c.start()] + "(" + line[a:b].strip() + ")" + line[close:], {"fn": fn})
+                    add(i, "drop-clamp", line[:c.start()] + "(" + line[a:b].strip() + ")" + line[close:],
+                        {"fn": fn, "col": c.start(), "end": close, "rep": "(" + line[a:b].strip() + ")"})
             elif fn == "Clamp" and len(args) == 3:
                 a, b = args[0]
-                add(i, "drop-clamp", line[:c.start()] + "(" + line[a:b].strip() + ")" + line[close:], {"fn": fn})
+                add(i, "drop-clamp", line[:c.start()] + "(" + line[a:b].strip() + ")" + line[close:],
+                        {"fn": fn, "col": c.start(), "end": close, "rep": "(" + line[a:b].strip() + ")"})
             elif fn in ("Floor", "Ceiling", "Round") and len(args) == 1:
                 a, b = args[0]
-                add(i, "drop-rounding", line[:c.start()] + "(" + line[a:b].strip() + ")" + line[close:], {"fn": fn})
+                add(i, "drop-rounding", line[:c.start()] + "(" + line[a:b].strip() + ")" + line[close:],
+                        {"fn": fn, "col": c.start(), "end": close, "rep": "(" + line[a:b].strip() + ")"})
         name = call_statement(m)
         if name:
             indent = line[: len(line) - len(line.lstrip())]
@@ -782,7 +787,7 @@ def summarize(prep: dict, recs: list) -> dict:
 def cmd_report(a) -> int:
     d = Path(a.dir)
     prep = json.loads((d / "prepared.json").read_text(encoding="utf-8"))
-    recs = [json.loads(ln) for ln in (d / "results.jsonl").open(encoding="utf-8")]
+    recs = [json.loads(ln) for ln in Path(a.results or d / "results.jsonl").open(encoding="utf-8")]
     s = summarize(prep, recs)
     if a.json:
         Path(a.json).write_text(json.dumps(s, indent=1), encoding="utf-8")
@@ -809,10 +814,25 @@ def main() -> int:
     r.add_argument("--shards", type=int, default=2)
     r.add_argument("--minutes", type=float, default=90)
     r.add_argument("--seed", type=int, default=1)
+    c = sub.add_parser("schemata", help="all mutants in one build, long-lived hosts (tools/fidelity/schemata.py)")
+    c.add_argument("--dir", required=True)
+    c.add_argument("--reanchor", required=True, help="EmuDump reanchor output for the same fights (baseline verdicts)")
+    c.add_argument("--mutants", type=int, default=150)
+    c.add_argument("--shards", type=int, default=6)
+    c.add_argument("--minutes", type=float, default=90)
+    c.add_argument("--stall", type=float, default=120, help="seconds without output before a host counts as hung")
+    c.add_argument("--seed", type=int, default=1)
+    c.add_argument("--tag", default="", help="suffix of the schemata<tag> folder in --dir")
+    c.add_argument("--max-fights", type=int, default=0, help="only the first n fights of the order (a trial)")
     s = sub.add_parser("report")
     s.add_argument("--dir", required=True)
+    s.add_argument("--results", help="results.jsonl to report (default <dir>/results.jsonl)")
     s.add_argument("--json")
     a = ap.parse_args()
+    if a.cmd == "schemata":
+        from .schemata import cmd_schemata  # noqa: PLC0415
+
+        return cmd_schemata(a)
     return {"prepare": cmd_prepare, "run": cmd_run, "report": cmd_report}[a.cmd](a)
 
 

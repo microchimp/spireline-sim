@@ -30,6 +30,11 @@ if (args[0] == "fight")
     return;
 }
 
+if (args[0] == "muthost")
+{
+    Environment.Exit(MutHost.Main(args));  // many mutants in one process (MutHost.cs)
+}
+
 if (args[0] == "digest")
 {
     Digest.Main(args);  // hashes per step, for mutation testing (Digest.cs)
