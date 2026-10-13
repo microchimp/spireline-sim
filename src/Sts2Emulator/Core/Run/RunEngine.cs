@@ -2170,7 +2170,17 @@ public sealed class RunEngine
             // which is invisible for Neow (its rewards are WithSkippingDisallowed) and
             // wrong for every event, whose second queued potion is declined far more often
             // than it is taken.
+            //
+            // Everything else on it goes too: a card reward left unclaimed (RewardCardPending,
+            // queued offers), gold, a relic. Only the potions were dropped, so a combat's
+            // skipped card reward stayed pending and reappeared on the NEXT rewards screen
+            // the run opened -- an event's potions, in the run referee's 6BJ7MYTYCK. Each of
+            // the game's RewardsSets is its own screen; leaving one drops what it held.
             State.PendingPotionRewards.Clear();
+            RunRewardGenerator.ClearRewardScreen(State);
+            State.PendingBonusRelicRewards.Clear();
+            State.PendingOtherCharacterCardRewards = 0;
+            State.ExtraCardRewardsOwed = 0;
             return LeaveRewardScreen(out terminal);
         }
 
