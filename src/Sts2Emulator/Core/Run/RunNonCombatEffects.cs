@@ -586,15 +586,13 @@ public static class RunNonCombatEffects
                 // combat's gold reward and card offer at the wrong position, and every one
                 // after it. A live capture of a run that took this from Neow paid 15 gold
                 // where the emulator paid 9.
+                // One CreateRandomPotionsOutOfCombat call: the second cannot repeat the first.
                 state.MaxPotionSlots++;
-                RunRewardGenerator.AddPotion(
-                    state,
-                    RunRewardGenerator.NextPotion(state, state.Rng.CombatPotionGeneration)
-                );
-                RunRewardGenerator.AddPotion(
-                    state,
-                    RunRewardGenerator.NextPotion(state, state.Rng.CombatPotionGeneration)
-                );
+                foreach (int potion in RunRewardGenerator.NextPotions(state, state.Rng.CombatPotionGeneration, 2))
+                {
+                    RunRewardGenerator.AddPotion(state, potion);
+                }
+
                 break;
             // ---- the act ancients' blessings -------------------------------------
             case RunConstants.RelicPaelsHorn:
@@ -621,13 +619,16 @@ public static class RunNonCombatEffects
                 // somewhere to go, then four rolled off CombatPotionGeneration. Phial
                 // Holster is the same shape, and the stream is the point -- rolling these
                 // off PlayerRng.Rewards would move every card reward after it.
+                //
+                // One CreateRandomPotionsOutOfCombat call, so no repeats; and each goes to
+                // `originalSlotCount + i` -- the NEW slots -- leaving an old empty slot empty
+                // (run referee, seed RXVFG7FZ86: the game's slot 1 stayed empty).
+                int originalSlots = state.MaxPotionSlots;
                 state.MaxPotionSlots += 4;
-                for (int i = 0; i < 4; i++)
+                int[] coffer = RunRewardGenerator.NextPotions(state, state.Rng.CombatPotionGeneration, 4);
+                for (int i = 0; i < coffer.Length; i++)
                 {
-                    RunRewardGenerator.AddPotion(
-                        state,
-                        RunRewardGenerator.NextPotion(state, state.Rng.CombatPotionGeneration)
-                    );
+                    RunRewardGenerator.AddPotionAt(state, coffer[i], originalSlots + i);
                 }
 
                 break;

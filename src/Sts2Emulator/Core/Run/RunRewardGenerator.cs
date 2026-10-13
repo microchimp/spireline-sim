@@ -1582,6 +1582,42 @@ public static class RunRewardGenerator
         return false;
     }
 
+    /// <summary>
+    /// `PotionFactory.CreateRandomPotionsOutOfCombat(count)`: each potion is struck from the
+    /// options once rolled (CreateRandomPotion's <c>list.Remove</c>), so one call never repeats
+    /// a potion -- Alchemical Coffer's four and Phial Holster's two.
+    /// </summary>
+    public static int[] NextPotions(RunState state, GameRng rng, int count)
+    {
+        var rolled = new List<int>();
+        for (int i = 0; i < count; i++)
+        {
+            rolled.Add(NextPotion(state, rng, rolled));
+        }
+
+        return [.. rolled];
+    }
+
+    /// <summary>
+    /// `PotionCmd.TryToProcure(potion, owner, slotIndex)`: into that slot when it is free (the
+    /// Sozu gate as for any potion), else the first free one.
+    /// </summary>
+    public static bool AddPotionAt(RunState state, int potionId, int slot)
+    {
+        if (HasRelic(state, Effects.RelicEffects.Sozu))
+        {
+            return false;
+        }
+
+        if (slot >= 0 && slot < Math.Min(state.MaxPotionSlots, state.PotionSlots.Length) && state.PotionSlots[slot] == 0)
+        {
+            state.PotionSlots[slot] = potionId;
+            return true;
+        }
+
+        return AddPotion(state, potionId);
+    }
+
     public static bool AddPotion(RunState state, int potionId)
     {
         // Sozu's ShouldProcurePotion is false for its owner, and PotionCmd is the game's
