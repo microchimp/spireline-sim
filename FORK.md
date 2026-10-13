@@ -54,3 +54,33 @@ python -m tools.fidelity.checks --emu <emulator checkout with out/ built> --enco
 
 Run from the fork's root. `--emu` points at a built checkout; until this fork builds its own
 library, that is the reviewed build of b745217.
+
+### Codex replay (`EmuDump codex`)
+
+Real runs' histories (the game's run-history records, schema 9, one JSON object a line, as
+Spire Codex serves them) walked through the run engine with no game process: from each run's
+seed, character and ascension it follows the recorded floors, recovers the path from the
+generated map by the recorded point types, applies every recorded decision, resolves fights
+instead of playing them (HP, gold, potions and a fight's own deck changes are set to the
+history's), and compares at every floor what the emulator offers with what the game offered:
+acts, map, ancients' options, unknown rooms, encounters and opening rosters, card, potion, gold
+and relic rewards, chests, shop shelves and prices, events, event options, and the deck,
+relics, HP and gold each floor leaves. The walk stops at the first difference and classes it
+EMULATOR, FIGHT-DEPENDENT (drawn on a stream a resolved fight leaves behind: the fight's turns'
+streams, Niche once a creature joined a fight or one that can spawn them fought, Rewards once The
+Hunt added a reward; Lava Lamp's upgrades after a fight that took damage), PROFILE-DEPENDENT (act
+discovery, Kaleidoscope's unlock gate at Neow, the first run's room order, and content of an epoch
+nothing of which appears in the run) or WALKER (a screen the history cannot drive, such as the
+Crystal Sphere's grid). The history does not record claim or purchase order, so the walker infers
+it: card rewards are matched to the history's groups by their cards, a card is claimed before War
+Paint or Whetstone when the floor upgraded it, discount relics are bought first in a shop and
+Dolly's Mirror after the cards. Pael's Wing sacrifices follow the relic's saved count. Event
+option slots and epochs are read from the user's decompiled event and epoch classes.
+
+```
+EmuDump codex <runs.jsonl[.gz]> <out.jsonl> --decompiled <decompiled root> [--character any] [--ascension 10] [--shard I/N]
+dotnet test tools/emudump.Tests     # the walker on synthetic records
+```
+
+It reads RNG call counts, so it is verification code under the same rule as `tools/fidelity/`.
+The history data is third-party: never commit it or per-run results.

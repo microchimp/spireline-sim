@@ -963,6 +963,75 @@ public static class RunConstants
         ];
 
     /// <summary>
+    /// `CharacterModel.StartingHp`: the max HP a run starts on, per character, at every level.
+    /// </summary>
+    public static int StartingMaxHpFor(PlayerCharacter character) =>
+        character switch
+        {
+            PlayerCharacter.Silent => 70,
+            PlayerCharacter.Defect => 75,
+            PlayerCharacter.Regent => 75,
+            PlayerCharacter.Necrobinder => 66,
+            _ => StartingMaxHp,
+        };
+
+    /// <summary>`CharacterModel.StartingRelics`: each character's one starting relic.</summary>
+    public static int StartingRelicFor(PlayerCharacter character) =>
+        character switch
+        {
+            PlayerCharacter.Silent => RunNonCombatEffects.NamedRelic("RingOfTheSnake"),
+            PlayerCharacter.Defect => RunNonCombatEffects.NamedRelic("CrackedCore"),
+            PlayerCharacter.Regent => RunNonCombatEffects.NamedRelic("DivineRight"),
+            PlayerCharacter.Necrobinder => RunNonCombatEffects.NamedRelic("BoundPhylactery"),
+            _ => RelicBurningBlood,
+        };
+
+    /// <summary>
+    /// `CharacterModel.StartingDeck`, in the game's order, with Ascender's Bane on the end from
+    /// AscendersBane up as <see cref="StartingDeckIds(int)" /> puts it on the Ironclad's.
+    /// </summary>
+    public static int[] StartingDeckIds(int ascension, PlayerCharacter character)
+    {
+        if (character == PlayerCharacter.Ironclad)
+        {
+            return StartingDeckIds(ascension);
+        }
+
+        string[] names = character switch
+        {
+            PlayerCharacter.Silent =>
+            [
+                "StrikeSilent", "StrikeSilent", "StrikeSilent", "StrikeSilent", "StrikeSilent",
+                "DefendSilent", "DefendSilent", "DefendSilent", "DefendSilent", "DefendSilent",
+                "Neutralize", "Survivor",
+            ],
+            PlayerCharacter.Defect =>
+            [
+                "StrikeDefect", "StrikeDefect", "StrikeDefect", "StrikeDefect",
+                "DefendDefect", "DefendDefect", "DefendDefect", "DefendDefect", "Zap", "Dualcast",
+            ],
+            PlayerCharacter.Regent =>
+            [
+                "StrikeRegent", "StrikeRegent", "StrikeRegent", "StrikeRegent",
+                "DefendRegent", "DefendRegent", "DefendRegent", "DefendRegent", "FallingStar", "Venerate",
+            ],
+            _ =>
+            [
+                "StrikeNecrobinder", "StrikeNecrobinder", "StrikeNecrobinder", "StrikeNecrobinder",
+                "DefendNecrobinder", "DefendNecrobinder", "DefendNecrobinder", "DefendNecrobinder",
+                "Bodyguard", "Unleash",
+            ],
+        };
+        var deck = names.Select(RunNonCombatEffects.NamedCard).ToList();
+        if (Ascension.Has(ascension, Ascension.AscendersBane))
+        {
+            deck.Add(CardAscendersBane);
+        }
+
+        return [.. deck];
+    }
+
+    /// <summary>
     /// The potion slots a run starts with at <paramref name="ascension" />:
     /// <see cref="InitialPotionSlots" />, less the one `AscensionManager.ApplyEffectsTo`
     /// takes away from TightBelt up (`SubtractFromMaxPotionCount(1)`).

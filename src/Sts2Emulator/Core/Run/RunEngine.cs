@@ -5,7 +5,7 @@ namespace Sts2Emulator.Core.Run;
 
 public sealed class RunEngine
 {
-    public RunState State { get; private init; } = new();
+    public RunState State { get; private set; } = new();
 
     /// <summary>Start a new run on this seed, standing at Neow.</summary>
     /// <param name="seed">The seed as typed; it is canonicalized before it is hashed.</param>
@@ -15,8 +15,17 @@ public sealed class RunEngine
     /// <see cref="Ascension.DefaultLevel" />, the level the differential captures were taken
     /// at; the native export and the Python wrappers take it explicitly and default to 0.
     /// </param>
+    /// <param name="character">
+    /// Who plays the run: its starting deck, relic and max HP, and every pool the run reads
+    /// "from the character's own" -- the relic bag above all, which is shuffled off UpFront
+    /// before the rooms are, so the character moves every draw after it. Ironclad by default.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">A level the run engine does not model.</exception>
-    public void Reset(string seed, int ascension = Ascension.DefaultLevel)
+    public void Reset(
+        string seed,
+        int ascension = Ascension.DefaultLevel,
+        PlayerCharacter character = PlayerCharacter.Ironclad
+    )
     {
         if (ascension is < 0 or > Ascension.MaxRunLevel)
         {
@@ -27,86 +36,45 @@ public sealed class RunEngine
             );
         }
 
+        // A fresh state a run: everything a run keeps (encounter and event counters, pending
+        // screens, relic bookkeeping) starts from RunState's own defaults, so nothing one run
+        // leaves behind reaches the next. Clearing the old object field by field missed any
+        // field added after the list was written.
+        State = new RunState();
         State.AscensionLevel = ascension;
-        // The deck, relic and HP below are the Ironclad's, so the character is too; a run
-        // of anyone else starts here, with its own `Character` and starting kit.
-        State.Character = PlayerCharacter.Ironclad;
+        // Set before anything is generated: the relic bag reads the character's pool.
+        State.Character = character;
         // Store the canonical seed, not the typed one: the game canonicalizes before it
         // hashes, so "abcdefo" and "ABCDEF0" are the same run.
         State.Rng = new RunRngSet(seed);
         State.StringSeed = State.Rng.StringSeed;
         State.PlayerRng = new PlayerRngSet(State.Rng);
-        // The Ironclad's StartingHp, and then Neow: `AncientEventModel.BeforeEventStarted`
+        // The character's StartingHp, and then Neow: `AncientEventModel.BeforeEventStarted`
         // sets a Neow run's current HP to 0 and heals it like any ancient, so it starts full
-        // below WearyTraveler and on 64 from it.
-        State.PlayerMaxHp = RunConstants.StartingMaxHp;
+        // below WearyTraveler and on 80% of it from it (64 for the Ironclad).
+        State.PlayerMaxHp = RunConstants.StartingMaxHpFor(character);
         State.PlayerHp = 0;
         ApplyAncientHeal();
         State.Gold = 99;
         State.Floor = 1;
         State.Phase = RunPhase.Ancient;
-        State.Deck = [];
         // `AscensionManager.ApplyEffectsTo` puts Ascender's Bane on the end of the deck
-        // from AscendersBane up; below it the starting deck is the character's own ten.
-        foreach (int cardId in RunConstants.StartingDeckIds(ascension))
+        // from AscendersBane up; below it the starting deck is the character's own.
+        foreach (int cardId in RunConstants.StartingDeckIds(ascension, character))
         {
             RunNonCombatEffects.AddCardToDeck(State, new CardInstance(cardId, Upgraded: false));
         }
 
-        State.Relics = [new RelicInstance(RunConstants.RelicBurningBlood)];
+        State.Relics = [new RelicInstance(RunConstants.StartingRelicFor(character))];
         // `Player.CreateForNewRun` starts the belt at three slots, and
         // `AscensionManager.ApplyEffectsTo` takes one away under TightBelt.
         State.MaxPotionSlots = RunConstants.StartingPotionSlots(ascension);
-        Array.Clear(State.PotionSlots);
         State.CurrentNodeType = RunConstants.NodeNormal;
-        Array.Clear(State.NeowOptions);
-        Array.Clear(State.RewardCards);
-        Array.Clear(State.RewardUpgraded);
-        State.RewardGold = 0;
-        State.RewardPotion = 0;
-        State.RewardCardPending = false;
-        State.ReturnToRewardScreenAfterCardReward = false;
-        Array.Clear(State.MapNodeTypes);
-        Array.Clear(State.MapChoices);
-        Array.Clear(State.ShopCards);
-        Array.Clear(State.ShopRelics);
-        Array.Clear(State.ShopPotions);
-        Array.Clear(State.ShopCosts);
-        State.RelicReward = 0;
-        State.EventId = 0;
         // CardRarityOdds starts at -0.05, not zero: `CardRarityOdds(Rng rng) : base(-0.05f, rng)`,
         // the same value a Rare roll resets it to. Starting at zero made every early
         // reward roll read 0.05 too generous, so cards the game rolled Common came
         // back Uncommon until the offset had grown past the gap.
         State.CardRarityOffset = RunRewardGenerator.CardRarityBaseOffset;
-        State.PotionRewardOdds = 0.4;
-        State.PendingRelicReward = false;
-        State.ShopRemovalsUsed = 0;
-        State.ShopRemovalUsedThisVisit = false;
-        State.TransformSelectedDeckIndex = null;
-        RunNonCombatEffects.ClearDeckSelection(State);
-        State.PendingRestUpgrade = false;
-        State.RestResultPending = false;
-        // The relics that keep RUN-length state of their own. Reset reuses the state
-        // object, so anything a previous run left here would be inherited by the next one.
-        State.CardRemovalsOwed = 0;
-        State.RoyaltiesGoldOwed = 0;
-        State.WaxRelics.Clear();
-        State.FurCoatRooms.Clear();
-        State.FurCoatAct = -1;
-        State.GoldenPathAct = -1;
-        State.SilverCrucibleTreasureRoomsEntered = 0;
-        State.ParasolSweepPending = false;
-        State.UnknownMapPointsVisited = 0;
-        State.UnknownMapPointMonsterOdds = 0.1;
-        State.UnknownMapPointEliteOdds = -1.0;
-        State.UnknownMapPointTreasureOdds = 0.02;
-        State.UnknownMapPointShopOdds = 0.03;
-        State.LastResolvedRoomType = RunConstants.NodeNone;
-        State.ActiveCombat = null;
-        State.ActiveCombatRng = null;
-        State.LastPlayerWon = false;
-        State.CompletedCombatRoomsBeforeCurrent = 0;
         GenerateNeowOptions();
         RunMapGenerator.SelectActAndGenerateRooms(State);
         RunMapGenerator.GenerateActMap(State);
