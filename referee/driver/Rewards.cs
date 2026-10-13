@@ -76,18 +76,37 @@ public static partial class Driver
         }
     }
 
-    /// <summary>The rewards screen on top of the local player's stack, or null.</summary>
-    private static object? TopRewardsSet()
+    /// <summary>
+    /// The local player's stack of open rewards screens, bottom first
+    /// (RewardsSetSynchronizer._rewardStates[slot].rewardsStack; single player, so the only slot).
+    /// RewardsSetSynchronizer.BeginRewardsSet pushes a set, CompleteRewardsSet removes it.
+    /// </summary>
+    private static IList RewardsStack()
     {
         var sync = RunManager.Instance.RewardsSetSynchronizer;
         var states = (IList)sync.GetType().GetField("_rewardStates", Private)!.GetValue(sync)!;
-        foreach (var st in states)
-        {
-            var stack = (IList)st.GetType().GetField("rewardsStack")!.GetValue(st)!;
-            if (stack.Count > 0) return stack[stack.Count - 1];
-        }
+        return states.Count == 0 ? Array.Empty<object>() : (IList)states[0]!.GetType().GetField("rewardsStack")!.GetValue(states[0])!;
+    }
 
-        return null;
+    /// <summary>The rewards screen on top of the local player's stack, or null.</summary>
+    private static object? TopRewardsSet()
+    {
+        IList stack = RewardsStack();
+        return stack.Count > 0 ? stack[stack.Count - 1] : null;
+    }
+
+    /// <summary>
+    /// The screen opened from inside <paramref name="top" />: the top of the stack when it sits above
+    /// <paramref name="top" />. Null when nothing is above it, and also when <paramref name="top" /> is
+    /// no longer on the stack: its last reward completed it (CompleteRewardsSet pops it before that
+    /// reward's SelectLocalReward task finishes), so what is on top now is its parent, not a child.
+    /// SelectLocalReward always selects into the top of the stack, so only the real top may be claimed.
+    /// </summary>
+    private static object? NestedAbove(object top)
+    {
+        IList stack = RewardsStack();
+        int at = stack.IndexOf(top);
+        return at >= 0 && at < stack.Count - 1 ? stack[stack.Count - 1] : null;
     }
 
     /// <summary>
@@ -107,6 +126,8 @@ public static partial class Driver
         var tree = (Godot.SceneTree)Godot.Engine.GetMainLoop();
         foreach (var reward in set.Rewards.Where(r => !r.SuccessfullySelected).ToList())
         {
+            if (reward.SuccessfullySelected) continue;
+            if (!RewardsStack().Contains(top)) break;  // the set is complete: nothing left to select into it
             Task task = sync.SelectLocalReward(reward);
             var clock = System.Diagnostics.Stopwatch.StartNew();
             while (!task.IsCompleted)
@@ -114,7 +135,7 @@ public static partial class Driver
                 if (clock.Elapsed.TotalSeconds > 60)
                     throw new TimeoutException("SelectLocalReward " + reward.GetType().Name + " did not finish within 60 s");
                 AnswerCardRewardScreen(reward, log);
-                if (TopRewardsSet() is { } nested && !ReferenceEquals(nested, top) && depth < 5)
+                if (NestedAbove(top) is { } nested && depth < 5)
                 {
                     await ClaimSet(nested, log, depth + 1);
                     continue;
