@@ -1,0 +1,10 @@
+{
+  "id": "SpirelineReferee",
+  "name": "Spireline referee driver",
+  "author": "Spireline",
+  "description": "Headless fidelity referee driver. Inert unless SPIRELINE_REFEREE_JOB is set.",
+  "version": "0.1.0",
+  "has_pck": false,
+  "has_dll": true,
+  "affects_gameplay": false
+}

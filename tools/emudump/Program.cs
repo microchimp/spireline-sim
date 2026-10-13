@@ -1,0 +1,39 @@
+// Usage: EmuDump <ascension> <seed> [<seed> ...] > out.json   ({"results": [...]} in seed order)
+using System.Reflection;
+using System.Text.Json;
+using Sts2Emulator.Core.Rng;
+using Sts2Emulator.Core.Run;
+
+string[] actNames = ["", "OVERGROWTH", "UNDERDOCKS", "HIVE", "GLORY"];
+string[] nodeNames = ["Unassigned", "Monster", "Elite", "RestSite", "Shop", "Treasure", "Boss", "Unknown", "Ancient"];
+int ascension = int.Parse(args[0]);
+var results = new List<object>();
+foreach (string seed in args.Skip(1))
+{
+    var engine = new RunEngine();
+    engine.Reset(seed, ascension);
+    results.Add(Dump(engine.State, ascension));
+}
+
+Console.WriteLine(JsonSerializer.Serialize(new { results }, new JsonSerializerOptions { WriteIndented = true }));
+
+static Dictionary<string, object> Counters(object set) =>
+    set.GetType().GetProperties()
+        .Where(p => p.PropertyType == typeof(GameRng))
+        .ToDictionary(p => p.Name, p => (object)new { counter = ((GameRng)p.GetValue(set)!).CallCount });
+
+object Dump(RunState s, int ascension) => new
+{
+    seed = s.StringSeed,
+    ascension,
+    acts = s.Acts.Select(a => actNames[a.Act]).ToArray(),
+    rng = Counters(s.Rng),
+    player_rng = Counters(s.PlayerRng),
+    map = s.MapNodes.Values.OrderBy(n => n.Row).ThenBy(n => n.Col).Select(n => new
+    {
+        col = n.Col,
+        row = n.Row,
+        type = nodeNames[n.NodeType],
+        children = n.Children.OrderBy(c => c.Row).ThenBy(c => c.Col).Select(c => new[] { c.Col, c.Row }).ToArray(),
+    }).ToArray(),
+};

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The referee driver: a mod loaded by the user's own copy of Slay the Spire 2 (v0.107.1, build
+    23811903), run headless. It references the game's assemblies from that copy and never ships
+    them (Private=false). Build: dotnet build -c Release -p:GameData=<game>\data_sts2_windows_x86_64
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>SpirelineReferee</AssemblyName>
+    <RootNamespace>Spireline.Referee</RootNamespace>
+    <GameData Condition="'$(GameData)' == ''">D:\spireline\referee\game\data_sts2_windows_x86_64</GameData>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="sts2"><HintPath>$(GameData)\sts2.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="GodotSharp"><HintPath>$(GameData)\GodotSharp.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
