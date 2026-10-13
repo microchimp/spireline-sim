@@ -1,6 +1,6 @@
 """referee/serve.py and run_referee.py: the job keys and environment every game server starts with.
 
-The speed patch sets (fast_patches, silent, still_visuals) are on by default and each can be turned off
+The speed patch sets (fast_patches, silent) are on by default and each can be turned off
 alone for an A/B run; the .NET runtime settings go into the game's environment unless switched off.
 """
 
@@ -29,16 +29,17 @@ def args(**kw) -> argparse.Namespace:
 class JobOptionsTest(unittest.TestCase):
     def test_patch_sets_on_by_default(self):
         o = serve.job_options({"runs": []}, args())
-        for key in ("fast_patches", "fast_reset", "no_preload"):
+        for key in ("fast_patches", "silent", "fast_reset", "no_preload"):
             self.assertIs(o[key], True, key)
 
     def test_no_patches_turns_every_patch_set_off(self):
         o = serve.job_options([], args(no_patches=True))
-        self.assertIs(o["fast_patches"], False)
+        self.assertEqual([o["fast_patches"], o["silent"]], [False] * 2)
 
     def test_job_opt_overrides_one_default(self):
-        o = serve.job_options({}, args(job_opt=["fast_patches=false", "profile=true", 'exp=["spine"]']))
-        self.assertIs(o["fast_patches"], False)
+        o = serve.job_options({}, args(job_opt=["silent=false", "profile=true", 'exp=["spine"]']))
+        self.assertIs(o["silent"], False)
+        self.assertIs(o["fast_patches"], True)
         self.assertIs(o["profile"], True)
         self.assertEqual(o["exp"], ["spine"])
 

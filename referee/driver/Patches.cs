@@ -1,14 +1,21 @@
 // Speed patches (SPEED_PLAN.md step 2), applied only when a job sets "fast_patches": true so the
 // old and new paths can be compared on the same seeds. Each removes presentation or cache work
 // only; none touches a game rule.
+//
+// "silent" (job key) cuts what each process costs: no sound is ever started. It rests on reads of
+// the decompiled game, cited at the patch.
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Assets;
+using MegaCrit.Sts2.Core.Audio.Debug;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Audio;
 
 namespace Spireline.Referee;
 
@@ -55,5 +62,43 @@ public static class Patches
     {
         __result = Task.CompletedTask;
         return false;
+    }
+
+    /// <summary>Prefix for a method whose whole effect is skipped (a non-void one returns its default).</summary>
+    private static bool SkipPrefix() => false;
+
+    private static void SkipAll(Harmony h, Type type, params string[] names)
+    {
+        foreach (MethodInfo m in AccessTools.GetDeclaredMethods(type).Where(m => names.Contains(m.Name)))
+        {
+            h.Patch(m, prefix: new HarmonyMethod(typeof(Patches), nameof(SkipPrefix)));
+        }
+    }
+
+    private static bool _silent;
+
+    /// <summary>
+    /// Job key "silent": the referee never starts a sound. Every sound the game makes goes through three
+    /// nodes, all fire-and-forget calls whose results nothing reads: NAudioManager and
+    /// NRunMusicController forward to their GDScript "Proxy" node and so to FMOD (NAudioManager.cs
+    /// PlayLoop..StopMusic, NRunMusicController.cs UpdateMusic..StopMusic, which also loads the act's
+    /// music bank), and NDebugAudioManager plays placeholder mp3s on Godot AudioStreamPlayers
+    /// (NDebugAudioManager.Play: a card_deal.mp3 per card drawn, CardPileCmd). With volume 0 the
+    /// mixers still decode, mix and run their threads; with nothing started they idle. Left alone:
+    /// the volume setters (startup) and ResolveMusic (a fresh "bg_music" Rng, no run stream).
+    /// NRunMusicController's merchant/elite/campfire triggers also throw when called in the wrong
+    /// room, a programmer check the game never trips in a correct run.
+    /// </summary>
+    public static void Silence()
+    {
+        if (_silent) return;
+        _silent = true;
+        var h = new Harmony("spireline.referee.silent");
+        SkipAll(h, typeof(NAudioManager), "PlayLoop", "StopLoop", "SetParam", "StopAllLoops", "PlayOneShot",
+            "PlayMusic", "UpdateMusicParameter", "StopMusic");
+        SkipAll(h, typeof(NRunMusicController), "UpdateMusic", "PlayCustomMusic", "UpdateCustomTrack",
+            "StopCustomMusic", "UpdateAmbience", "UpdateTrack", "UpdateMusicParameter", "ToggleMerchantTrack",
+            "TriggerEliteSecondPhase", "TriggerCampfireGoingOut", "StopMusic");
+        SkipAll(h, typeof(NDebugAudioManager), "Play", "Stop", "StopAll");
     }
 }
