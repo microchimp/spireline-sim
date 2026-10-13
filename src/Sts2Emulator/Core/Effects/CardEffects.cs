@@ -698,10 +698,13 @@ public static class CardEffects
                 break;
 
             case IC.Uppercut: // 2-cost, 13/13 dmg + Weak 1/2 + Vulnerable 1/2
+            {
+                var aimed = FirstEnemy(state);
                 DealDamage(state, Dmg(state, def, upgraded, card));
-                ApplyEnemyDebuff(state, BuffId.Weak, upgraded ? 2 : 1, rng);
-                ApplyEnemyDebuff(state, BuffId.Vulnerable, upgraded ? 2 : 1, rng);
+                ApplyEnemyDebuffToTarget(state, aimed, BuffId.Weak, upgraded ? 2 : 1, rng);
+                ApplyEnemyDebuffToTarget(state, aimed, BuffId.Vulnerable, upgraded ? 2 : 1, rng);
                 break;
+            }
 
             case IC.Whirlwind: // X-cost, 5/8 dmg × (energy spent) to ALL enemies
             {
@@ -2043,8 +2046,12 @@ public static class CardEffects
                 // Strangle is nothing like Vulnerable -- the enemy takes its amount as
                 // UNBLOCKABLE damage every time the player plays a card, until the
                 // enemy's own turn ends.
-                DealDamage(state, Dmg(state, def, upgraded, card));
-                ApplyEnemyDebuff(state, BuffId.Strangle, upgraded ? 3 : 2, rng);
+                {
+                    var aimed = FirstEnemy(state);
+                    DealDamage(state, Dmg(state, def, upgraded, card));
+                    ApplyEnemyDebuffToTarget(state, aimed, BuffId.Strangle, upgraded ? 3 : 2, rng);
+                }
+
                 break;
 
             case SI.StrikeSilent: // 1-cost, 6/9 damage
@@ -6484,8 +6491,12 @@ public static class CardEffects
                 //
                 // The debuff is applied after the damage, so Sic Em's own hit does not
                 // trigger it.
-                DealOstyDamage(state, upgraded ? 6 : 5);
-                ApplyEnemyDebuff(state, BuffId.SicEm, upgraded ? 4 : 3, rng);
+                {
+                    var aimed = FirstEnemy(state);
+                    DealOstyDamage(state, upgraded ? 6 : 5);
+                    ApplyEnemyDebuffToTarget(state, aimed, BuffId.SicEm, upgraded ? 4 : 3, rng);
+                }
+
                 return true;
             case "Snap":
             {
@@ -6810,7 +6821,7 @@ public static class CardEffects
 
                 // `Math.Max(2, amount)`, clamped so the counter cannot pass 999999999.
                 int add = Math.Min(Math.Max(2, stacks), Math.Max(0, 999999999 - stacks));
-                ApplyEnemyDebuff(state, BuffId.Hang, add, rng);
+                ApplyEnemyDebuffToTarget(state, hung, BuffId.Hang, add, rng);
                 return true;
             }
             case "Invoke":
@@ -7002,8 +7013,12 @@ public static class CardEffects
                 // 10/12 damage, then DebilitatePower 2/3 on the TARGET -- a debuff that
                 // doubles Vulnerable and Weak against it. The emulator was taking temporary
                 // Strength off instead.
-                DealDamage(state, Dmg(state, def, upgraded, card));
-                ApplyEnemyDebuff(state, BuffId.Debilitate, upgraded ? 3 : 2, rng);
+                {
+                    var aimed = FirstEnemy(state);
+                    DealDamage(state, Dmg(state, def, upgraded, card));
+                    ApplyEnemyDebuffToTarget(state, aimed, BuffId.Debilitate, upgraded ? 3 : 2, rng);
+                }
+
                 return true;
             case "Demesne":
                 // `PowerCmd.Apply<DemesnePower>(..., Cards.BaseValue)` -- one stack, and
@@ -9991,15 +10006,22 @@ public static class CardEffects
         ApplyEnemyDebuffToTarget(state, target, id, magnitude, rng);
     }
 
+    /// <summary>
+    /// One debuff on a SPECIFIC enemy: the one an attack card was aimed at, which the card
+    /// resolves with <c>FirstEnemy</c> BEFORE its hit and carries to the power it applies after
+    /// it. Cards read <c>cardPlay.Target</c> once; <c>PowerCmd.Apply</c> then refuses a target
+    /// that died of the hit (<c>CanReceivePowers</c> is false once it has left the combat), so
+    /// the debuff is lost rather than passed to whoever stands first now.
+    /// </summary>
     private static void ApplyEnemyDebuffToTarget(
         CombatState state,
-        EnemyState target,
+        EnemyState? target,
         BuffId id,
         int magnitude,
         Random rng
     )
     {
-        if (target.Hp <= 0)
+        if (target == null || target.Hp <= 0)
         {
             return;
         }
