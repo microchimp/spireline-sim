@@ -521,7 +521,7 @@ public class PotionEffectTests
 
         for (int i = 0; i < 3; i++)
         {
-            Assert.Contains(state.PotionSlots[i], RunRewardGenerator.PotionRewardPool.ToArray());
+            Assert.Contains(state.PotionSlots[i], RunRewardGenerator.PotionRewardPool(state.Character));
         }
 
         Assert.Equal(0, state.PotionSlots[3]);
@@ -540,8 +540,8 @@ public class PotionEffectTests
         PotionEffects.Apply(19, state, new Random(0));
 
         Assert.Equal(5, state.PotionSlots[1]);
-        Assert.Contains(state.PotionSlots[0], RunRewardGenerator.PotionRewardPool.ToArray());
-        Assert.Contains(state.PotionSlots[2], RunRewardGenerator.PotionRewardPool.ToArray());
+        Assert.Contains(state.PotionSlots[0], RunRewardGenerator.PotionRewardPool(state.Character));
+        Assert.Contains(state.PotionSlots[2], RunRewardGenerator.PotionRewardPool(state.Character));
     }
 
     /// <summary>

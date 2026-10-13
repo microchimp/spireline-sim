@@ -15,10 +15,12 @@ namespace Sts2Emulator.Tests;
 // so the emulator's one shared pool, CardEffects.CombatGenerationPool, has to drop them too.
 public class CombatGenerationPoolTests
 {
+    private static CombatState IroncladCombat() => Fight.Hand().Energy(3).Enemy(hp: 40).State;
+
     [Fact]
     public void TheIroncladPoolHasNoMultiplayerOnlyCard()
     {
-        var pool = CardEffects.OwnerCharacterGenerationPool();
+        var pool = CardEffects.OwnerCharacterGenerationPool(IroncladCombat());
 
         Assert.NotEmpty(pool);
         Assert.DoesNotContain(pool, id => GeneratedData.Cards.Get(id).MultiplayerOnly);
@@ -30,20 +32,21 @@ public class CombatGenerationPoolTests
     [Fact]
     public void EveryTypedPoolHasNoMultiplayerOnlyCard()
     {
+        var state = IroncladCombat();
         foreach (var type in new[] { CardType.Attack, CardType.Skill, CardType.Power })
         {
             Assert.DoesNotContain(
-                CardEffects.OwnerCharacterGenerationPool(type),
+                CardEffects.OwnerCharacterGenerationPool(state, type),
                 id => GeneratedData.Cards.Get(id).MultiplayerOnly
             );
         }
 
         Assert.DoesNotContain(
-            CardEffects.InfernalBladePool(),
+            CardEffects.OwnerCharacterGenerationPool(state, CardType.Attack), // Infernal Blade's pool
             id => GeneratedData.Cards.Get(id).MultiplayerOnly
         );
         Assert.DoesNotContain(
-            CardEffects.SplashPool(),
+            CardEffects.SplashPool(state),
             id => GeneratedData.Cards.Get(id).MultiplayerOnly
         );
     }

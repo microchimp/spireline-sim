@@ -62,12 +62,11 @@ public static class PotionEffects
                 );
                 break;
             case 2: // Attack Potion: AttackPotion.cs -- 3 distinct Attacks from the
-                // owner's OWN class pool (`Owner.Character.CardPool`, which -- like
-                // InfernalBladePool's own remark -- this emulator takes to be Ironclad's),
+                // owner's OWN class pool (`Owner.Character.CardPool`),
                 // offered on a skippable Discovery-style screen; the pick is free this
                 // turn (`SetToFreeThisTurn`).
                 {
-                    var pool = CardEffects.InfernalBladePool();
+                    var pool = CardEffects.OwnerCharacterGenerationPool(state, CardType.Attack);
                     if (pool.Count > 0)
                     {
                         var stream = state.CardGenerationRng ?? rng!;
@@ -220,7 +219,7 @@ public static class PotionEffects
                     var stream = state.PotionGenerationRng ?? rng!;
                     while (HasOpenPotionSlot(state))
                     {
-                        if (!TryToProcure(state, RollPotionOutOfCombat(stream)))
+                        if (!TryToProcure(state, RollPotionOutOfCombat(state, stream)))
                         {
                             break;
                         }
@@ -361,7 +360,7 @@ public static class PotionEffects
             case 40: // Orobic Acid: OrobicAcid.cs -- one distinct Attack, one distinct Skill
                 // and one distinct Power from the player's own pool
                 // (`CardEffects.DistinctPoolCards`, the per-type combat-generation pool
-                // InfernalBladePool already uses for Attacks alone), each straight to hand
+                // Attack Potion uses for Attacks alone), each straight to hand
                 // and free this turn -- no choice, unlike Power/Skill Potion's screens.
                 foreach (var type in new[] { CardType.Attack, CardType.Skill, CardType.Power })
                 {
@@ -622,11 +621,11 @@ public static class PotionEffects
     /// </summary>
     /// <remarks>
     /// The options are the character's pool followed by the shared one, the order
-    /// `NextItem` indexes into, which is `RunRewardGenerator.PotionRewardPool`. There is
+    /// `NextItem` indexes into, which is `RunRewardGenerator.PotionRewardPool(character)`. There is
     /// no `CanBeGeneratedInCombat` filter: that belongs to `CreateRandomPotionInCombat`,
     /// so the out-of-combat roll can hand over a healing potion mid-fight.
     /// </remarks>
-    private static int RollPotionOutOfCombat(Random stream) => RollPotion(stream, inCombat: false);
+    private static int RollPotionOutOfCombat(CombatState state, Random stream) => RollPotion(state, stream, inCombat: false);
 
     /// <summary>
     /// `PotionFactory.CreateRandomPotionInCombat` as Alchemize calls it: the same two-draw
@@ -634,13 +633,13 @@ public static class PotionEffects
     /// false (Fairy in a Bottle, Fruit Juice, Regen Potion). The potion is rolled before
     /// `PotionCmd.TryToProcure` can refuse it, so the draws are spent on a full belt too.
     /// </summary>
-    internal static int RollPotionInCombat(Random stream) => RollPotion(stream, inCombat: true);
+    internal static int RollPotionInCombat(CombatState state, Random stream) => RollPotion(state, stream, inCombat: true);
 
     private static bool CanBeGeneratedInCombat(int potionId) =>
         GeneratedData.Potions.Get(potionId).Name
             is not ("FairyInABottle" or "FruitJuice" or "RegenPotion");
 
-    private static int RollPotion(Random stream, bool inCombat)
+    private static int RollPotion(CombatState state, Random stream, bool inCombat)
     {
         // `Rng.NextFloat()` is `(float)(NextDouble() * (1 - 0) + 0)`, compared against
         // float thresholds.
@@ -650,7 +649,7 @@ public static class PotionEffects
             : roll <= 0.35f ? PotionRarity.Uncommon
             : PotionRarity.Common;
         var options = Run
-            .RunRewardGenerator.PotionRewardPool.ToArray()
+            .RunRewardGenerator.PotionRewardPool(state.Character)
             .Where(potionId =>
                 GeneratedData.Potions.Get(potionId).Rarity == rarity
                 && (!inCombat || CanBeGeneratedInCombat(potionId))

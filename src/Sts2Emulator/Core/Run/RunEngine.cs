@@ -28,6 +28,9 @@ public sealed class RunEngine
         }
 
         State.AscensionLevel = ascension;
+        // The deck, relic and HP below are the Ironclad's, so the character is too; a run
+        // of anyone else starts here, with its own `Character` and starting kit.
+        State.Character = PlayerCharacter.Ironclad;
         // Store the canonical seed, not the typed one: the game canonicalizes before it
         // hashes, so "abcdefo" and "ABCDEF0" are the same run.
         State.Rng = new RunRngSet(seed);
@@ -183,7 +186,11 @@ public sealed class RunEngine
 
         // The fight is the run's, and so is its level: every monster's HP band and move
         // table reads it. A bare CombatState is the combat layer's own default of A8.
-        var combat = new CombatState { AscensionLevel = State.AscensionLevel };
+        var combat = new CombatState
+        {
+            AscensionLevel = State.AscensionLevel,
+            Character = State.Character,
+        };
         var combatRng = new CountingRandom(State.Rng.Niche.RawSeed);
         var nicheHpRng = CountingRandom.At(State.Rng.Niche);
 
@@ -2933,7 +2940,7 @@ public sealed class RunEngine
                     State.PendingOfferCards = RunRewardGenerator.GenerateEventOfferCards(
                         State,
                         RunConstants.BrainLeechCardChoices,
-                        RunRewardGenerator.IroncladRewardPool
+                        RunRewardGenerator.OwnCardPool(State)
                     );
                     // ForNonCombatWithDefaultOdds carries NoUpgradeRoll: nothing is upgraded.
                     State.PendingOfferUpgraded = new bool[State.PendingOfferCards.Length];
@@ -3781,7 +3788,7 @@ public sealed class RunEngine
                     State.PendingOfferCards = RunRewardGenerator.GenerateEventOfferCards(
                         State,
                         RunConstants.GorgeCardChoices,
-                        RunRewardGenerator.IroncladRewardPool,
+                        RunRewardGenerator.OwnCardPool(State),
                         CardRarity.Common
                     );
                     State.PendingOfferUpgraded = new bool[State.PendingOfferCards.Length];
@@ -5042,7 +5049,13 @@ public sealed class RunEngine
         {
             if (item.Kind == CrystalSphereItemKind.Potion)
             {
-                potions.Add(RunRewardGenerator.NextPotionOfRarity(rng, (PotionRarity)item.Rarity));
+                potions.Add(
+                    RunRewardGenerator.NextPotionOfRarity(
+                        State.Character,
+                        rng,
+                        (PotionRarity)item.Rarity
+                    )
+                );
             }
         }
 
@@ -5316,7 +5329,7 @@ public sealed class RunEngine
     private void AddFilteredPoolCardToDeck(Func<CardDef, bool> allowed)
     {
         var pool = new List<int>();
-        foreach (int cardId in RunRewardGenerator.IroncladRewardPool)
+        foreach (int cardId in RunRewardGenerator.OwnCardPool(State))
         {
             if (allowed(GeneratedData.Cards.Get(cardId)))
             {
@@ -5428,12 +5441,12 @@ public sealed class RunEngine
                 var first = RunRewardGenerator.GenerateEventOfferCards(
                     State,
                     State.RewardCards.Length,
-                    RunRewardGenerator.IroncladRewardPool
+                    RunRewardGenerator.OwnCardPool(State)
                 );
                 var second = RunRewardGenerator.GenerateEventOfferCards(
                     State,
                     State.RewardCards.Length,
-                    RunRewardGenerator.IroncladRewardPool
+                    RunRewardGenerator.OwnCardPool(State)
                 );
                 for (int i = 0; i < State.RewardCards.Length && i < first.Length; i++)
                 {
@@ -5545,7 +5558,7 @@ public sealed class RunEngine
     /// <summary>The surviving pools, in option order. Rolled on entry, never here.</summary>
     private List<int[]> ColorfulPhilosopherPools()
     {
-        var order = RunNonCombatEffects.ColorfulPhilosopherPoolOrder;
+        var order = RunNonCombatEffects.ColorfulPhilosopherPoolOrder(State.Character);
         return RunNonCombatEffects
             .ColorfulPhilosopherPools(State)
             .Select(index => order[index])

@@ -102,7 +102,7 @@ public class MetamorphosisTests
         var fight = Fight.Hand(new CardInstance(Id, true)).Energy(9).Enemy(hp: 300);
         fight.State.DrawPile.Clear();
         fight.State.CardGenerationRng = new CountingRandom(4);
-        var pool = CardEffects.OwnerCharacterGenerationPool(CardType.Attack);
+        var pool = CardEffects.OwnerCharacterGenerationPool(fight.State, CardType.Attack);
         var oracle = new CountingRandom(4);
         var expected = Enumerable.Range(0, 5).Select(_ => pool[oracle.Next(pool.Count)]).ToList();
 

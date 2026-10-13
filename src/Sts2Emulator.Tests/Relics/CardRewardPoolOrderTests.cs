@@ -16,19 +16,19 @@ public class CardRewardPoolOrderTests
 
     [Fact]
     public void WithoutEitherRelicItIsTheIroncladPool() =>
-        Assert.Equal(GeneratedData.CardPools.Ironclad.ToArray(), RunRewardGenerator.CardRewardPool(false, false));
+        Assert.Equal(GeneratedData.CardPools.Ironclad.ToArray(), RunRewardGenerator.CardRewardPool(PlayerCharacter.Ironclad, false, false));
 
     [Fact]
     public void PrismaticGemAddsTheOtherCharactersInTheGamesOrder() =>
         Assert.Equal(
             Concat(GeneratedData.CardPools.Ironclad.ToArray(), GeneratedData.CardPools.Silent.ToArray(), GeneratedData.CardPools.Regent.ToArray(),
                 GeneratedData.CardPools.Necrobinder.ToArray(), GeneratedData.CardPools.Defect.ToArray()),
-            RunRewardGenerator.CardRewardPool(false, true));
+            RunRewardGenerator.CardRewardPool(PlayerCharacter.Ironclad, false, true));
 
     [Fact]
     public void DingyRugsColourlessComesLastEvenWithPrismaticGem() =>
         Assert.Equal(
             Concat(GeneratedData.CardPools.Ironclad.ToArray(), GeneratedData.CardPools.Silent.ToArray(), GeneratedData.CardPools.Regent.ToArray(),
                 GeneratedData.CardPools.Necrobinder.ToArray(), GeneratedData.CardPools.Defect.ToArray(), GeneratedData.CardPools.Colorless.ToArray()),
-            RunRewardGenerator.CardRewardPool(true, true));
+            RunRewardGenerator.CardRewardPool(PlayerCharacter.Ironclad, true, true));
 }

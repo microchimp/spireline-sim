@@ -1296,6 +1296,7 @@ public class CombatSnapshotTests
                 {
                   "schema": "sts2-emu-snapshot/1",
                   "ascension": 10,
+                  "character": {{(int)PlayerCharacter.Defect}},
                   "encounter_id": {{(int)CombatFactory.ActOneEncounter.NibbitsWeak}},
                   "is_elite_combat": true,
                   "is_elite_room": true,

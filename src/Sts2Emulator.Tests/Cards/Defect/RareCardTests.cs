@@ -167,7 +167,7 @@ public class CreativeAiTests
         fight.Play();
         var stream = new CountingRandom(5);
         fight.State.CardGenerationRng = new CountingRandom(5);
-        var pool = CardEffects.OwnerCharacterGenerationPool(CardType.Power);
+        var pool = CardEffects.OwnerCharacterGenerationPool(fight.State, CardType.Power);
 
         fight.EndTurn();
 
@@ -178,7 +178,7 @@ public class CreativeAiTests
         }
 
         Assert.Equal(pool[0], Assert.Single(fight.State.Hand).DefId);
-        Assert.Contains(pool[0], GeneratedData.CardPools.Ironclad.ToArray());
+        Assert.Contains(pool[0], GeneratedData.CardPools.Defect.ToArray());
         Assert.Equal(pool.Count - 1, fight.State.CardGenerationRng!.CallCount);
     }
 }

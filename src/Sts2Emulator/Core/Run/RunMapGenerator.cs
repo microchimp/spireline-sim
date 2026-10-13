@@ -36,7 +36,7 @@ public static class RunMapGenerator
         state.RelicBag.Populate(
             [
                 .. GeneratedData.RelicPools.Shared.ToArray(),
-                .. GeneratedData.RelicPools.Ironclad.ToArray(),
+                .. CharacterPools.Relics(state.Character).ToArray(),
             ],
             upFront,
             filterRarities: true

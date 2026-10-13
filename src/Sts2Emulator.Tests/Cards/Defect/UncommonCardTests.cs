@@ -1028,7 +1028,7 @@ public class WhiteNoiseTests
     {
         var fight = DefectFight.Hand(Card(WhiteNoise)).Energy(1);
         fight.State.CardGenerationRng = new CountingRandom(9);
-        var pool = CardEffects.OwnerCharacterGenerationPool(CardType.Power);
+        var pool = CardEffects.OwnerCharacterGenerationPool(fight.State, CardType.Power);
         var stream = new CountingRandom(9);
         for (int i = pool.Count - 1; i > 0; i--)
         {

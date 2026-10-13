@@ -33,6 +33,7 @@ internal static class DefectFight
 
     private static Fight Board(Fight fight)
     {
+        fight.State.Character = PlayerCharacter.Defect;
         fight.State.BaseOrbSlots = 3;
         fight.State.OrbCapacity = 3;
         return fight;

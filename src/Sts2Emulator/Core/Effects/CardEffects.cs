@@ -614,10 +614,9 @@ public static class CardEffects
                 {
                     if (state.Hand.Count < MaxCardsInHand)
                     {
-                        var ironcladPool = IroncladGenerationPool();
-                        int defId = ironcladPool[
-                            CardGenerationRng(state, rng).Next(ironcladPool.Count)
-                        ];
+                        // `Stoke`: GetForCombat over `Owner.Character.CardPool`.
+                        var pool = OwnerCharacterGenerationPool(state);
+                        int defId = pool[CardGenerationRng(state, rng).Next(pool.Count)];
                         state.Hand.Add(new CardInstance(defId, upgraded));
                     }
                 }
@@ -2530,7 +2529,7 @@ public static class CardEffects
     /// Sozu will refuse it; only then does the procure succeed or fail.</summary>
     internal static void ProcureRandomPotion(CombatState state, Random rng)
     {
-        int potionId = PotionEffects.RollPotionInCombat(state.PotionGenerationRng ?? rng);
+        int potionId = PotionEffects.RollPotionInCombat(state, state.PotionGenerationRng ?? rng);
         PotionEffects.TryToProcure(state, potionId);
     }
 
@@ -2543,8 +2542,8 @@ public static class CardEffects
 
         var selectionRng = CardSelectionRng(state, rng);
         int idx = selectionRng.Next(state.Hand.Count);
-        var ironcladPool = IroncladGenerationPool();
-        int defId = ironcladPool[selectionRng.Next(ironcladPool.Count)];
+        var pool = OwnerCharacterGenerationPool(state);
+        int defId = pool[selectionRng.Next(pool.Count)];
         state.Hand[idx] = new CardInstance(defId, false);
     }
 
@@ -2983,12 +2982,14 @@ public static class CardEffects
     }
 
     /// <summary>
-    /// `Owner.Character.CardPool` through `FilterForCombat`: the one place that names the
-    /// player's character for the generators that draw from "the character's cards". The
-    /// emulator's runs are all Ironclad.
+    /// `Owner.Character.CardPool` through `FilterForCombat`: the one place that turns the
+    /// combat's character into the pool for every generator that draws from "the character's
+    /// cards" (the game reads it off `Owner.Character` in each of them).
     /// </summary>
-    internal static List<int> OwnerCharacterGenerationPool(CardType? type = null) =>
-        CombatGenerationPool(GeneratedData.CardPools.Ironclad, type);
+    internal static List<int> OwnerCharacterGenerationPool(
+        CombatState state,
+        CardType? type = null
+    ) => CombatGenerationPool(CharacterPools.Cards(state.Character), type);
 
     /// <summary>
     /// `CardModel.VisualCardPool.IsColorless` -- membership of the Colourless pool, which
@@ -3151,7 +3152,7 @@ public static class CardEffects
     /// </summary>
     internal static void AddDistinctCommonCardsToHand(CombatState state, int count, Random rng)
     {
-        var pool = CombatGenerationPool(GeneratedData.CardPools.Ironclad)
+        var pool = OwnerCharacterGenerationPool(state)
             .Where(id => GeneratedData.Cards.Get(id).Rarity == CardRarity.Common)
             .ToList();
         if (pool.Count == 0 || count <= 0)
@@ -3199,7 +3200,12 @@ public static class CardEffects
     /// hard-coded to two cards.
     /// </remarks>
     internal static void AddDistinctEtherealCardsToHand(CombatState state, int count, Random rng) =>
-        AddDistinctEtherealCardsToHandFromPool(state, GeneratedData.CardPools.Ironclad, count, rng);
+        AddDistinctEtherealCardsToHandFromPool(
+            state,
+            CharacterPools.Cards(state.Character),
+            count,
+            rng
+        );
 
     /// <summary>As above, over a named character pool.</summary>
     internal static void AddDistinctEtherealCardsToHandFromPool(
@@ -3241,16 +3247,14 @@ public static class CardEffects
     /// own pool into hand, free for the turn, off `Rng.CombatCardGeneration`.
     /// </summary>
     /// <remarks>
-    /// Written against the Ironclad pool for the same reason Big Hat is, and correct for
-    /// the same reason: `RunEngine.Reset` takes a seed and no character, and every reward
-    /// pool in the run is `IroncladRewardPool`. There is no reachable run where this is
-    /// the wrong pool. The `FromPool` overload is what the other characters' tests use.
+    /// The pool is the combat's character's (`Owner.Character.CardPool`). The `FromPool`
+    /// overload names a pool outright, for tests that want one.
     ///
     /// The cards are FREE for the turn rather than discounted -- `SetToFreeThisTurn`, not
     /// a cost bump -- so a cost floor of zero cannot make them cost anything.
     /// </remarks>
     internal static void AddFreeAttackCardToHand(CombatState state, int count, Random rng) =>
-        AddFreeAttackCardToHandFromPool(state, GeneratedData.CardPools.Ironclad, count, rng);
+        AddFreeAttackCardToHandFromPool(state, CharacterPools.Cards(state.Character), count, rng);
 
     /// <summary>As above, over a named character pool.</summary>
     internal static void AddFreeAttackCardToHandFromPool(
@@ -3962,7 +3966,9 @@ public static class CardEffects
                 {
                     // `MadScience` Chaos: GetDistinctForCombat(character pool, 1), i.e. a
                     // shuffle of the whole pool, not a single roll.
-                    foreach (int defId in ShuffleTake(state, OwnerCharacterGenerationPool(), 1, rng))
+                    foreach (
+                        int defId in ShuffleTake(state, OwnerCharacterGenerationPool(state), 1, rng)
+                    )
                     {
                         state.Hand.Add(new CardInstance(defId, false, FreeThisTurn: true));
                     }
@@ -4228,7 +4234,7 @@ public static class CardEffects
         // zero-cost filter composes with it rather than replacing it: Ancient, Event and
         // Basic cards and anything declaring `CanBeGeneratedInCombat => false` are out,
         // and this used to reach all of them.
-        var pool = CombatGenerationPool(GeneratedData.CardPools.Ironclad)
+        var pool = OwnerCharacterGenerationPool(state)
             .Where(id =>
             {
                 var d = GeneratedData.Cards.Get(id);
@@ -4368,28 +4374,23 @@ public static class CardEffects
     /// `Splash`: three Attacks from the OTHER characters' pools, choose one, free this turn.
     /// </summary>
     /// <remarks>
-    /// The emulator handed over a plain Ironclad Strike and called it an approximation.
     /// The card is a choice among three, they come from every character pool EXCEPT the
     /// player's own, they are Attacks, they are upgraded if the card is, and the screen
     /// `canSkip`. `GetDistinctForCombat` shuffles the filtered pool and takes three, on
     /// `Rng.CombatCardGeneration`.
-    ///
-    /// The player is Ironclad wherever the run engine is concerned, so the pool is the
-    /// other four characters'. When character selection lands this wants the run's actual
-    /// character rather than the constant.
     /// </remarks>
     /// <summary>
     /// Splash's candidates before the shuffle: `UnlockState.CharacterCardPools` minus the
-    /// player's own, in ModelDb.AllCharacters order (Silent, Regent, Necrobinder, Defect),
+    /// player's own (`list.Remove(Owner.Character.CardPool)`), in ModelDb.AllCharacters order,
     /// Attacks only. The order decides which cards a shuffle hands out; the referee (the game
     /// run headless) caught a hand-written Silent, Defect, Necrobinder, Regent here.
     /// </summary>
-    internal static List<int> SplashPool()
+    internal static List<int> SplashPool(CombatState state)
     {
         var pool = new List<int>();
-        for (int i = 0; i < 4; i++)
+        foreach (var other in CharacterPools.Others(state.Character))
         {
-            pool.AddRange(CombatGenerationPool(Run.RunConstants.OtherCharacterPoolFor(i), CardType.Attack));
+            pool.AddRange(CombatGenerationPool(CharacterPools.Cards(other), CardType.Attack));
         }
 
         return pool;
@@ -4402,7 +4403,7 @@ public static class CardEffects
         Random rng
     )
     {
-        var pool = SplashPool();
+        var pool = SplashPool(state);
 
         if (pool.Count == 0)
         {
@@ -4436,7 +4437,7 @@ public static class CardEffects
     )
     {
         // `GetDistinctForCombat(Owner, Owner.Character.CardPool..., 3, CombatCardGeneration)`.
-        var options = ShuffleTake(state, OwnerCharacterGenerationPool(), optionCount, rng);
+        var options = ShuffleTake(state, OwnerCharacterGenerationPool(state), optionCount, rng);
         if (options.Count == 0)
         {
             return;
@@ -5524,8 +5525,7 @@ public static class CardEffects
     /// </summary>
     /// <remarks>
     /// Rolled on the card-generation stream, which is the same one Creative Ai and White
-    /// Noise use. The pool here is the IRONCLAD one, because the run engine is Ironclad
-    /// only; a character-selectable run would need this to follow the character.
+    /// Noise use. The pool is the combat's character's (`Owner.Character.CardPool`).
     /// </remarks>
     /// <summary>
     /// Toolbox's screen: three DISTINCT colourless cards, one of which joins the hand.
@@ -5585,7 +5585,7 @@ public static class CardEffects
     /// </summary>
     internal static void AddRandomPoolCardToHand(CombatState state, Random rng)
     {
-        foreach (int id in ShuffleTake(state, OwnerCharacterGenerationPool(), 1, rng))
+        foreach (int id in ShuffleTake(state, OwnerCharacterGenerationPool(state), 1, rng))
         {
             AddToHandOrDiscard(state, new CardInstance(id, false, FreeThisTurn: true));
             NoteGeneratedCard(state);
@@ -9405,7 +9405,7 @@ public static class CardEffects
     /// </remarks>
     internal static void OpenChoicesParadoxOffer(CombatState state, int count, Random? rng)
     {
-        var pool = CombatGenerationPool(GeneratedData.CardPools.Ironclad);
+        var pool = OwnerCharacterGenerationPool(state);
         if (pool.Count == 0 || count <= 0)
         {
             return;
@@ -9451,7 +9451,7 @@ public static class CardEffects
     /// </remarks>
     internal static void AddEtherealPoolCardToHand(CombatState state, Random rng)
     {
-        var pool = CombatGenerationPool(GeneratedData.CardPools.Necrobinder);
+        var pool = OwnerCharacterGenerationPool(state);
         if (pool.Count == 0)
         {
             return;
@@ -9712,7 +9712,7 @@ public static class CardEffects
             return;
         }
 
-        var options = InfernalBladePool();
+        var options = OwnerCharacterGenerationPool(state, CardType.Attack);
         var generation = CardGenerationRng(state, rng);
         for (int i = options.Count - 1; i > 0; i--)
         {
@@ -9759,16 +9759,6 @@ public static class CardEffects
 
         return filtered;
     }
-
-    /// <summary>The Ironclad Attacks a combat generator may roll. Also Attack Potion's pool:
-    /// `Owner.Character.CardPool` is Ironclad's own, the same assumption
-    /// <see cref="IroncladGenerationPool"/> already makes.</summary>
-    internal static List<int> InfernalBladePool() =>
-        CombatGenerationPool(GeneratedData.CardPools.Ironclad, CardType.Attack);
-
-    /// <summary>Every Ironclad card a combat generator may roll.</summary>
-    private static List<int> IroncladGenerationPool() =>
-        CombatGenerationPool(GeneratedData.CardPools.Ironclad);
 
     private static void DealUnpoweredDamageToEnemy(EnemyState target, int amount) =>
         DealUnpoweredDamageToEnemy(null, target, amount, triggerThorns: false);
@@ -10383,7 +10373,7 @@ public static class CardEffects
                 break;
             }
 
-            var attackPool = InfernalBladePool();
+            var attackPool = OwnerCharacterGenerationPool(state, CardType.Attack);
             int defId = attackPool[CardGenerationRng(state, rng).Next(attackPool.Count)];
             state.Hand.Add(new CardInstance(defId, false));
         }
@@ -10633,7 +10623,12 @@ public static class CardEffects
         // `Metamorphosis.OnPlay` is `GetForCombat` (WITH replacement), not the distinct
         // variant: `count` rolls, a repeat is possible, and nothing is shuffled.
         foreach (
-            int id in RollWithReplacement(state, OwnerCharacterGenerationPool(type), count, rng)
+            int id in RollWithReplacement(
+                state,
+                OwnerCharacterGenerationPool(state, type),
+                count,
+                rng
+            )
         )
         {
             state.InsertIntoDrawPile(
@@ -10650,7 +10645,7 @@ public static class CardEffects
         CardType type,
         int count,
         Random rng
-    ) => ShuffleTake(state, OwnerCharacterGenerationPool(type), count, rng);
+    ) => ShuffleTake(state, OwnerCharacterGenerationPool(state, type), count, rng);
 
     private static void AddRandomClassCardToHand(CombatState state, Random rng, bool freeThisTurn)
     {

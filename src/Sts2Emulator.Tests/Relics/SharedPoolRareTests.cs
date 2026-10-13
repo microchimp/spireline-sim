@@ -406,7 +406,7 @@ public class VexingPuzzleboxTests
         var fight = Fight.WithRelics(RelicEffects.VexingPuzzlebox);
         fight.State.Hand.Clear();
         fight.State.CardGenerationRng = new CountingRandom(8);
-        var pool = CardEffects.OwnerCharacterGenerationPool();
+        var pool = CardEffects.OwnerCharacterGenerationPool(fight.State);
         var oracle = new CountingRandom(8);
         for (int i = pool.Count - 1; i > 0; i--)
         {

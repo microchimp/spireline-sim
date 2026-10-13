@@ -51,7 +51,7 @@ public class DiscoveryTests
         fight.Play();
 
         // A shuffle of the whole filtered pool: one roll per position after the first.
-        Assert.Equal(CardEffects.OwnerCharacterGenerationPool().Count - 1, generationRng.CallCount);
+        Assert.Equal(CardEffects.OwnerCharacterGenerationPool(fight.State).Count - 1, generationRng.CallCount);
     }
 
     [Fact]
@@ -63,7 +63,7 @@ public class DiscoveryTests
         fight.Play();
 
         var offered = fight.Pending!.GeneratedCandidates;
-        Assert.Equal(ShuffleTake(CardEffects.OwnerCharacterGenerationPool(), 3, 6), offered);
+        Assert.Equal(ShuffleTake(CardEffects.OwnerCharacterGenerationPool(fight.State), 3, 6), offered);
         var ironclad = GeneratedData.CardPools.Ironclad.ToArray();
         Assert.All(offered, id => Assert.Contains(id, ironclad));
     }

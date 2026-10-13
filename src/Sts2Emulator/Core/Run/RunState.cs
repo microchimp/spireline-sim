@@ -171,6 +171,14 @@ public sealed class RunState
     /// combat the run starts is handed it as <see cref="CombatState.AscensionLevel" />.
     /// </summary>
     public int AscensionLevel = Ascension.DefaultLevel;
+
+    /// <summary>
+    /// `Player.Character`. Every pool the run draws "from the character's own" (card rewards,
+    /// shops, potions, the relic bag, event offers) is read through <see cref="CharacterPools" />
+    /// with this, and every combat the run starts is handed it. The run still STARTS as the
+    /// Ironclad (deck, relic, HP: see FINDINGS.md), so nothing sets it to anyone else yet.
+    /// </summary>
+    public PlayerCharacter Character = PlayerCharacter.Ironclad;
     public RunRngSet Rng = new("0");
     public PlayerRngSet PlayerRng = new(new RunRngSet("0"));
     public int PlayerHp;

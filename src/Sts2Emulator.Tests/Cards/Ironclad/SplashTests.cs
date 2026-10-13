@@ -108,7 +108,7 @@ public class SplashTests
             GeneratedData.CardPools.Necrobinder.ToArray(),
             GeneratedData.CardPools.Defect.ToArray(),
         ];
-        var pool = CardEffects.SplashPool();
+        var pool = CardEffects.SplashPool(new CombatState());
         int at = 0;
         foreach (var characterPool in byCharacter)
         {

@@ -12,14 +12,26 @@ public static class RunRewardGenerator
     private const double PotionRewardStep = 0.1;
 
     /// <summary>
-    /// The Ironclad card pool, straight from the game's own IroncladCardPool
-    /// declaration. A hand-written copy of it used to live here, and it was wrong in
-    /// both directions: it carried three Colorless cards (Restlessness, Splash,
-    /// Ultimate Defend) and was missing six Ironclad ones. Every extra entry shifts
-    /// the index NextItem lands on, so a reward roll that agreed with the game on
-    /// rarity still handed back the neighbouring card.
+    /// The player's own card pool (`Player.Character.CardPool`), straight from the game's own
+    /// pool declaration. A hand-written copy of the Ironclad one used to live here, and it was
+    /// wrong in both directions: it carried three Colorless cards and was missing six Ironclad
+    /// ones. Every extra entry shifts the index NextItem lands on, so a reward roll that
+    /// agreed with the game on rarity still handed back the neighbouring card.
     /// </summary>
-    public static ReadOnlySpan<int> IroncladRewardPool => GeneratedData.CardPools.Ironclad;
+    internal static ReadOnlySpan<int> OwnCardPool(RunState state) =>
+        CharacterPools.Cards(state.Character);
+
+    /// <summary>
+    /// The player's Rare cards, in pool order, solo-legal: what Arcane Scroll's
+    /// `CardCreationOptions(Owner.Character.CardPool, Uniform, Rarity == Rare)` rolls over.
+    /// Derived from the pool: a hand-written list of the Ironclad's rares stood here.
+    /// </summary>
+    internal static int[] RareCardPool(RunState state) =>
+        [
+            .. OwnCardPool(state)
+                .ToArray()
+                .Where(id => IsAllowedSolo(id) && RarityOf(id) == RarityRare),
+        ];
 
     /// <summary>
     /// What a card may be transformed into, given what it is now.
@@ -46,7 +58,8 @@ public static class RunRewardGenerator
     {
         var original = GeneratedData.Cards.Get(originalCardId);
         bool ownPoolHasNoHome =
-            original.Rarity is CardRarity.Ancient or CardRarity.Event or CardRarity.Token;
+            original.Type == CardType.Quest
+            || original.Rarity is CardRarity.Ancient or CardRarity.Event or CardRarity.Token;
         int[] pool = ownPoolHasNoHome
             ? GeneratedData.CardPools.Colorless.ToArray()
             : PoolContaining(originalCardId);
@@ -71,13 +84,21 @@ public static class RunRewardGenerator
         ];
     }
 
-    /// <summary>The pool a card belongs to, which is the pool it transforms within.</summary>
+    /// <summary>
+    /// `original.Pool`: the pool a card belongs to, which is the pool it transforms within.
+    /// A card transforms within ITS pool, not the player's -- a Silent card an Ironclad was
+    /// handed (Kaleidoscope, Sea Glass, Colorful Philosophers) stays a Silent card.
+    /// </summary>
     private static int[] PoolContaining(int cardId)
     {
+        if (CharacterPools.OwnerOfCard(cardId) is { } owner)
+        {
+            return CharacterPools.Cards(owner).ToArray();
+        }
+
         foreach (
             var pool in (int[][])
                 [
-                    GeneratedData.CardPools.Ironclad.ToArray(),
                     GeneratedData.CardPools.Curse.ToArray(),
                     GeneratedData.CardPools.Status.ToArray(),
                     GeneratedData.CardPools.Colorless.ToArray(),
@@ -90,9 +111,9 @@ public static class RunRewardGenerator
             }
         }
 
-        // A card in no pool the emulator models: the Ironclad pool is the only sensible
-        // home, and it is what the old single list assumed for everything.
-        return GeneratedData.CardPools.Ironclad.ToArray();
+        // A card in no pool at all has no home to transform within; Colorless is the
+        // game's answer for the ones with none of their own.
+        return GeneratedData.CardPools.Colorless.ToArray();
     }
 
     /// <summary>
@@ -117,20 +138,11 @@ public static class RunRewardGenerator
     /// short pool does not just narrow the choice: NextItem indexes into it, so every
     /// slot after the first came back with a different card than the game stocked.
     /// </summary>
-    private static readonly int[] _shopAttackCards = ShopPoolOfType(CardType.Attack);
-    private static readonly int[] _shopSkillCards = ShopPoolOfType(CardType.Skill);
-    private static readonly int[] _shopPowerCards = ShopPoolOfType(CardType.Power);
-
-    public static ReadOnlySpan<int> ShopAttackCards => _shopAttackCards;
-
-    public static ReadOnlySpan<int> ShopSkillCards => _shopSkillCards;
-
-    public static ReadOnlySpan<int> ShopPowerCards => _shopPowerCards;
-
-    private static int[] ShopPoolOfType(CardType type) =>
+    private static int[] ShopPoolOfType(PlayerCharacter character, CardType type) =>
         [
-            .. GeneratedData
-                .CardPools.Ironclad.ToArray()
+            .. CharacterPools
+                .Cards(character)
+                .ToArray()
                 .Where(cardId =>
                 {
                     var def = GeneratedData.Cards.Get(cardId);
@@ -148,13 +160,11 @@ public static class RunRewardGenerator
     /// A hand-written list stood here and held 43 of the 48, so a roll that agreed with
     /// the game on rarity still landed on a different potion.
     /// </summary>
-    private static readonly int[] _potionRewardPool =
-    [
-        .. GeneratedData.PotionPools.Ironclad.ToArray(),
-        .. GeneratedData.PotionPools.Shared.ToArray(),
-    ];
-
-    public static ReadOnlySpan<int> PotionRewardPool => _potionRewardPool;
+    public static int[] PotionRewardPool(PlayerCharacter character) =>
+        [
+            .. CharacterPools.Potions(character).ToArray(),
+            .. GeneratedData.PotionPools.Shared.ToArray(),
+        ];
 
     public static void GenerateCombatRewards(RunState state)
     {
@@ -483,15 +493,25 @@ public static class RunRewardGenerator
     /// characters as Silent, Defect, Necrobinder, Regent and colourless before them -- the same
     /// hand-written-order mistake the referee caught in Splash.
     /// </remarks>
-    internal static int[] CardRewardPool(bool addColourless, bool everyCharacter)
+    internal static int[] CardRewardPool(
+        PlayerCharacter character,
+        bool addColourless,
+        bool everyCharacter
+    )
     {
-        var pool = new List<int>(IroncladRewardPool.ToArray());
+        // Prismatic Gem's Union starts from `CharacterCardPools`, so the player's own pool
+        // sits at its AllCharacters position rather than first.
+        var pool = new List<int>();
         if (everyCharacter)
         {
-            for (int i = 0; i < 4; i++)
+            foreach (var each in Enum.GetValues<PlayerCharacter>())
             {
-                pool.AddRange(RunConstants.OtherCharacterPoolFor(i).ToArray());
+                pool.AddRange(CharacterPools.Cards(each).ToArray());
             }
+        }
+        else
+        {
+            pool.AddRange(CharacterPools.Cards(character).ToArray());
         }
 
         if (addColourless)
@@ -507,18 +527,13 @@ public static class RunRewardGenerator
     /// by ModelId, which for these is the slugified class name, so alphabetical by
     /// character. The sort is what makes the shuffle reproducible.
     /// </summary>
-    private static List<int[]> OtherCharacterPools(RunState state)
-    {
-        // Ironclad is the only playable character the emulator runs, so "the others" is
-        // fixed; when a second character is playable this reads the player's own pool.
-        return
+    private static List<int[]> OtherCharacterPools(RunState state) =>
         [
-            GeneratedData.CardPools.Defect.ToArray(),
-            GeneratedData.CardPools.Necrobinder.ToArray(),
-            GeneratedData.CardPools.Regent.ToArray(),
-            GeneratedData.CardPools.Silent.ToArray(),
+            .. CharacterPools
+                .Others(state.Character)
+                .OrderBy(character => character.ToString(), StringComparer.Ordinal)
+                .Select(character => CharacterPools.Cards(character).ToArray()),
         ];
-    }
 
     /// <summary>
     /// Moves the next owed relic onto the screen, which carries one at a time. When the
@@ -748,7 +763,7 @@ public static class RunRewardGenerator
         for (int i = 0; i < count; i++)
         {
             offer[i] = ChooseCardWithRarity(
-                IroncladRewardPool,
+                OwnCardPool(state),
                 RarityRare,
                 blacklist,
                 state.PlayerRng.Rewards
@@ -782,7 +797,7 @@ public static class RunRewardGenerator
         int count,
         CardRarity rarity,
         GameRng rng
-    ) => GenerateFixedRarityCardOffer(state, count, rarity, rng, IroncladRewardPool);
+    ) => GenerateFixedRarityCardOffer(state, count, rarity, rng, OwnCardPool(state));
 
     /// <summary>
     /// As above, over a NAMED pool — Sea Glass draws from another character's.
@@ -819,15 +834,19 @@ public static class RunRewardGenerator
     /// potions pin their own rarity and take <c>rng.NextItem</c> over what is left, the way
     /// the Potion Courier's Ransack does.
     /// </summary>
-    public static int NextPotionOfRarity(GameRng rng, Core.PotionRarity rarity)
+    public static int NextPotionOfRarity(
+        PlayerCharacter character,
+        GameRng rng,
+        Core.PotionRarity rarity
+    )
     {
-        var available = PotionRewardPool
+        var available = PotionRewardPool(character)
             .ToArray()
             .Where(potionId => GeneratedData.Potions.Get(potionId).Rarity == rarity)
             .ToArray();
         return available.Length > 0
             ? rng.NextItem(available)
-            : rng.NextItem(PotionRewardPool.ToArray());
+            : rng.NextItem(PotionRewardPool(character));
     }
 
     /// <summary>
@@ -899,7 +918,7 @@ public static class RunRewardGenerator
         {
             int rarity = RollRewardCardRarity(state);
             int cardId = ChooseCardWithRarity(
-                IroncladRewardPool,
+                OwnCardPool(state),
                 rarity,
                 blacklist,
                 state.PlayerRng.Rewards
@@ -925,6 +944,7 @@ public static class RunRewardGenerator
         bool lavaLampUpgrade = Effects.RelicEffects.UpgradesCardRewards(state);
 
         int[] pool = CardRewardPool(
+            state.Character,
             Effects.RelicEffects.AddsColourlessToCardRewards(state),
             Effects.RelicEffects.WidensCardRewardsToEveryPool(state)
         );
@@ -1162,11 +1182,11 @@ public static class RunRewardGenerator
         var blacklist = new List<int>();
         int[][] typedPools =
         [
-            ShopAttackCards.ToArray(),
-            ShopAttackCards.ToArray(),
-            ShopSkillCards.ToArray(),
-            ShopSkillCards.ToArray(),
-            ShopPowerCards.ToArray(),
+            ShopPoolOfType(state.Character, CardType.Attack),
+            ShopPoolOfType(state.Character, CardType.Attack),
+            ShopPoolOfType(state.Character, CardType.Skill),
+            ShopPoolOfType(state.Character, CardType.Skill),
+            ShopPoolOfType(state.Character, CardType.Power),
         ];
         for (int i = 0; i < typedPools.Length; i++)
         {
@@ -1557,8 +1577,8 @@ public static class RunRewardGenerator
     /// upgrade roll: the only draws are the six <c>NextItem</c> picks, in bundle order,
     /// two Commons then the Uncommon. The <c>usedCardIds</c> set spans BOTH bundles, so
     /// the second bundle draws from a pool three cards smaller. The 1% all-Claw bundle is
-    /// Defect's alone and its <c>NextInt(100)</c> sits behind a <c>flag &amp;&amp;</c> that
-    /// never runs for anyone else, so it costs no draw here.
+    /// Defect's alone: its <c>NextInt(100)</c> is gated on the owner being a Defect, so it is
+    /// one draw per bundle for a Defect, ahead of the picks, and none for anyone else.
     /// </remarks>
     public static int[][] GenerateScrollBoxBundles(RunState state)
     {
@@ -1567,14 +1587,21 @@ public static class RunRewardGenerator
         var bundles = new int[2][];
         for (int bundle = 0; bundle < 2; bundle++)
         {
+            if (state.Character == PlayerCharacter.Defect && rng.NextInt(100) < 1)
+            {
+                int claw = RunNonCombatEffects.NamedCard("Claw");
+                bundles[bundle] = [claw, claw, claw];
+                continue;
+            }
+
             var cards = new int[3];
             for (int card = 0; card < 2; card++)
             {
-                cards[card] = rng.NextItem(BundleCandidates(used, RarityCommon));
+                cards[card] = rng.NextItem(BundleCandidates(state, used, RarityCommon));
                 used.Add(cards[card]);
             }
 
-            cards[2] = rng.NextItem(BundleCandidates(used, RarityUncommon));
+            cards[2] = rng.NextItem(BundleCandidates(state, used, RarityUncommon));
             used.Add(cards[2]);
             bundles[bundle] = cards;
         }
@@ -1582,8 +1609,8 @@ public static class RunRewardGenerator
         return bundles;
     }
 
-    private static int[] BundleCandidates(List<int> used, int rarity) =>
-        IroncladRewardPool
+    private static int[] BundleCandidates(RunState state, List<int> used, int rarity) =>
+        OwnCardPool(state)
             .ToArray()
             .Where(cardId =>
                 IsAllowedSolo(cardId) && RarityOf(cardId) == rarity && !used.Contains(cardId)
@@ -1859,13 +1886,13 @@ public static class RunRewardGenerator
     {
         int rarity = RollPotionRarity(rng);
         var blocked = blacklist ?? [];
-        var available = PotionRewardPool
+        var available = PotionRewardPool(state.Character)
             .ToArray()
             .Where(potionId => !blocked.Contains(potionId) && PotionRarity(potionId) == rarity)
             .ToArray();
         return available.Length > 0
             ? rng.NextItem(available)
-            : rng.NextItem(PotionRewardPool.ToArray());
+            : rng.NextItem(PotionRewardPool(state.Character));
     }
 
     /// <summary>
@@ -1874,7 +1901,7 @@ public static class RunRewardGenerator
     /// </summary>
     public static int NextUncommonPotion(RunState state, GameRng rng)
     {
-        var available = PotionRewardPool
+        var available = PotionRewardPool(state.Character)
             .ToArray()
             .Where(potionId => PotionRarity(potionId) == RarityUncommon)
             .ToArray();
@@ -2041,7 +2068,7 @@ public static class RunRewardGenerator
         var rarity = CardRarityForPotion(potionId);
         var type = rng.NextItem(FutureOfPotionsCardTypes(potionId));
 
-        var pool = IroncladRewardPool
+        var pool = OwnCardPool(state)
             .ToArray()
             .Where(IsAllowedSolo)
             .Where(cardId =>

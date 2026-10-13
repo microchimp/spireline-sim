@@ -16,7 +16,7 @@ public class RunRewardPoolTests
     {
         Assert.Equal(
             GeneratedData.CardPools.Ironclad.ToArray(),
-            RunRewardGenerator.IroncladRewardPool.ToArray()
+            RunRewardGenerator.OwnCardPool(new RunState()).ToArray()
         );
     }
 
@@ -27,7 +27,7 @@ public class RunRewardPoolTests
         // the pool carried all three, which shifted every uncommon pick past them.
         foreach (int colorless in GeneratedData.CardPools.Colorless.ToArray())
         {
-            Assert.DoesNotContain(colorless, RunRewardGenerator.IroncladRewardPool.ToArray());
+            Assert.DoesNotContain(colorless, RunRewardGenerator.OwnCardPool(new RunState()).ToArray());
         }
     }
 

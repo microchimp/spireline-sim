@@ -225,6 +225,7 @@ public static class CombatSnapshot
     [
         "schema",
         "ascension",
+        "character",
         "encounter_id",
         "is_elite_combat",
         "is_elite_room",
@@ -369,6 +370,7 @@ public static class CombatSnapshot
         var state = new CombatState
         {
             AscensionLevel = root.Int("ascension"),
+            Character = root.EnumValue("character", PlayerCharacter.Ironclad, "character"),
             Turn = root.Int("turn"),
             PlayerTurn = true,
             EncounterId = ReadEncounterId(root),
@@ -1206,6 +1208,11 @@ public static class CombatSnapshot
         w.WriteStartObject();
         w.WriteString("schema", SchemaId);
         w.WriteNumber("ascension", state.AscensionLevel);
+        if (state.Character != PlayerCharacter.Ironclad)
+        {
+            w.WriteNumber("character", (int)state.Character);
+        }
+
         if (state.EncounterId >= 0)
         {
             w.WriteNumber("encounter_id", state.EncounterId);

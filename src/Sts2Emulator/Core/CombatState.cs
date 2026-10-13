@@ -11,6 +11,13 @@ public sealed class CombatState
     /// </summary>
     public int AscensionLevel = Ascension.DefaultLevel;
 
+    /// <summary>
+    /// `Player.Character`: whose card, potion and relic pools the combat's "the character's
+    /// own" generators read (Discovery-likes, Attack/Skill/Power Potion, Big Hat, Crossbow...).
+    /// A run hands its own in; a bare combat is the Ironclad's. See <see cref="CharacterPools" />.
+    /// </summary>
+    public PlayerCharacter Character = PlayerCharacter.Ironclad;
+
     // Player
     public int PlayerHp;
     public int PlayerMaxHp;

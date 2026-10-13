@@ -38,7 +38,7 @@ public class MultiplayerCardFilterTests
     [Fact]
     public void ThePoolsThemselvesStillListThem()
     {
-        Assert.Contains(RunRewardGenerator.IroncladRewardPool.ToArray(), IsMultiplayerOnly);
+        Assert.Contains(GeneratedData.CardPools.Ironclad.ToArray(), IsMultiplayerOnly);
         Assert.Contains(RunRewardGenerator.ColorlessRewardPool.ToArray(), IsMultiplayerOnly);
     }
 

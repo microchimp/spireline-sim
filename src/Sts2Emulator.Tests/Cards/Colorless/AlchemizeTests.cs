@@ -56,7 +56,7 @@ public class AlchemizeTests
             : roll <= 0.35f ? PotionRarity.Uncommon
             : PotionRarity.Common;
         var options = Sts2Emulator
-            .Core.Run.RunRewardGenerator.PotionRewardPool.ToArray()
+            .Core.Run.RunRewardGenerator.PotionRewardPool(PlayerCharacter.Ironclad)
             .Where(id =>
                 GeneratedData.Potions.Get(id).Rarity == rarity
                 && GeneratedData.Potions.Get(id).Name

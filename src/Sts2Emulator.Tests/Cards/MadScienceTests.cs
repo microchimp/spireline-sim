@@ -197,7 +197,7 @@ public class MadScienceTests
     {
         var fight = Fight.Hand(Tinkered(CardType.Skill, TinkerRider.Chaos)).Energy(3).Enemy(hp: 60);
         fight.State.CardGenerationRng = new CountingRandom(13);
-        var pool = CardEffects.OwnerCharacterGenerationPool();
+        var pool = CardEffects.OwnerCharacterGenerationPool(fight.State);
         var oracle = new CountingRandom(13);
         for (int i = pool.Count - 1; i > 0; i--)
         {

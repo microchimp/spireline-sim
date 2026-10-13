@@ -28,35 +28,6 @@ public enum RunFollowUp
 
 public static class RunNonCombatEffects
 {
-    private static readonly int[] RareIroncladSingleplayerPool =
-    [
-        9,
-        29,
-        58,
-        546,
-        99,
-        113,
-        114,
-        119,
-        141,
-        183,
-        188,
-        246,
-        261,
-        272,
-        295,
-        328,
-        332,
-        334,
-        339,
-        364,
-        374,
-        464,
-        494,
-        505,
-        525,
-    ];
-
     /// <summary>
     /// The game's Hook.TryModifyCardBeingAddedToDeck, which the egg relics answer: a card
     /// of their type joins the deck already upgraded. Every deck addition goes through
@@ -578,7 +549,9 @@ public static class RunNonCombatEffects
                 AddCardToDeck(
                     state,
                     new CardInstance(
-                        state.PlayerRng.Rewards.NextItem(RareIroncladSingleplayerPool),
+                        state.PlayerRng.Rewards.NextItem(
+                            RunRewardGenerator.RareCardPool(state)
+                        ),
                         Upgraded: false
                     )
                 );
@@ -864,7 +837,10 @@ public static class RunNonCombatEffects
                             5,
                             rarity,
                             state.PlayerRng.Rewards,
-                            RunConstants.OtherCharacterPoolFor(Math.Max(0, state.SeaGlassCharacter))
+                            RunConstants.OtherCharacterPoolFor(
+                                state.Character,
+                                Math.Max(0, state.SeaGlassCharacter)
+                            )
                         )
                     )
                     .ToList();
@@ -2129,7 +2105,9 @@ public static class RunNonCombatEffects
             return state.EventRandomOffer;
         }
 
-        var candidates = Enumerable.Range(0, ColorfulPhilosopherPoolOrder.Length).ToList();
+        var candidates = Enumerable
+            .Range(0, ColorfulPhilosopherPoolOrder(state.Character).Length)
+            .ToList();
         var rng = EventRng(state, "COLORFUL_PHILOSOPHERS");
         while (candidates.Count > 3)
         {
@@ -2141,15 +2119,21 @@ public static class RunNonCombatEffects
     }
 
     /// <summary>
-    /// The four pools the event can offer an Ironclad, in `CardPoolColorOrder` minus
-    /// Ironclad's own.
+    /// The four pools the event can offer, in `CardPoolColorOrder` (Necrobinder, Ironclad,
+    /// Regent, Silent, Defect) minus the player's own.
     /// </summary>
-    public static int[][] ColorfulPhilosopherPoolOrder =>
+    public static int[][] ColorfulPhilosopherPoolOrder(PlayerCharacter own) =>
         [
-            GeneratedData.CardPools.Necrobinder.ToArray(),
-            GeneratedData.CardPools.Regent.ToArray(),
-            GeneratedData.CardPools.Silent.ToArray(),
-            GeneratedData.CardPools.Defect.ToArray(),
+            .. new[]
+            {
+                PlayerCharacter.Necrobinder,
+                PlayerCharacter.Ironclad,
+                PlayerCharacter.Regent,
+                PlayerCharacter.Silent,
+                PlayerCharacter.Defect,
+            }
+                .Where(character => character != own)
+                .Select(character => CharacterPools.Cards(character).ToArray()),
         ];
 
     /// <summary>
@@ -3465,8 +3449,9 @@ public static class RunNonCombatEffects
     /// </remarks>
     private static int DustyTomeCard(RunState state)
     {
-        var candidates = GeneratedData
-            .CardPools.Ironclad.ToArray()
+        var candidates = RunRewardGenerator
+            .OwnCardPool(state)
+            .ToArray()
             .Where(id =>
                 GeneratedData.Cards.Get(id).Rarity == CardRarity.Ancient
                 && !RunConstants.TranscendenceCardNames.Contains(GeneratedData.Cards.Get(id).Name)
@@ -3475,7 +3460,7 @@ public static class RunNonCombatEffects
         // `SetupForPlayer` is `PlayerRng.Rewards.NextItem(items)`; an empty list (no
         // character's pool is) would still be a Rewards draw.
         return state.PlayerRng.Rewards.NextItem(
-            candidates.Length > 0 ? candidates : RunRewardGenerator.IroncladRewardPool.ToArray()
+            candidates.Length > 0 ? candidates : RunRewardGenerator.OwnCardPool(state).ToArray()
         );
     }
 
@@ -3520,13 +3505,5 @@ public static class RunNonCombatEffects
             state.Deck[i] = state.Deck[i] with { Upgraded = true };
             return;
         }
-    }
-
-    private static int RandomRewardCard(GameRng rng) =>
-        rng.NextItem(RunRewardGenerator.IroncladRewardPool.ToArray());
-
-    private static void AddRandomRewardCard(RunState state, GameRng rng)
-    {
-        AddCardToDeck(state, new CardInstance(RandomRewardCard(rng), Upgraded: false));
     }
 }
