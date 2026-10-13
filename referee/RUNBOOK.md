@@ -31,7 +31,10 @@ Shortcut for steps 1-4: `python referee/batch.py --name <name> --fights 100 --st
    - *Driver gap*: the game side errored or skipped a screen (e.g. `SelectLocalReward RelicReward did not finish`). Fix `referee/driver/*.cs`, never the engine.
    - *Comparer gap*: same game state, different representation (e.g. STUNNED is a buff in the emulator, a move in the game). Fix `tools/fidelity/fight_compare.py` and write the reason next to the rule.
    - *Emulator bug*: the game's own code (decompiled) shows the emulator does something else. Fix `src/Sts2Emulator`.
-6. **Fixing an emulator bug**:
+6. **Fixing an emulator bug** — root cause first, never a symptom patch:
+   - Ask why the emulator differs: which mechanism is wrong (pool or list order, RNG stream, number or order of draws, hook timing, a shared helper)? A fix that only makes this one fight match is not done.
+   - Find every other place that uses the same mechanism (grep), check each against the game, and fix them together.
+   - In FINDINGS.md record the root cause and the sibling sites checked, not just the symptom.
    - Read the game's class for that card, relic, power or monster in the decompiled tree, and the emulator's code for it.
    - Make the smallest change that matches the game; cite the game's class/method in a comment (never paste game code).
    - Add or adjust an xunit test in `src/Sts2Emulator.Tests` that fails before and passes after.
