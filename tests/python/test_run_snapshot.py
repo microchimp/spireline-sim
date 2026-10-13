@@ -87,3 +87,35 @@ class RunSnapshotTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunCompareTest(unittest.TestCase):
+    """tools.fidelity.run_compare2: offers compare as what the screen lets the player take."""
+
+    def test_reward_offers_compare_as_sets_without_returned_stolen_cards(self):
+        from tools.fidelity.run_compare2 import norm_offer
+        game = [{"type": "card", "cards": [["CARD.ANGER", 0]]}, {"type": "gold", "amount": 12},
+                {"type": "special_card", "card": ["STRIKE_IRONCLAD", 0]}]
+        emu = [{"type": "gold", "amount": 12}, {"type": "card", "cards": [["ANGER", 0]]}]
+        self.assertEqual(norm_offer("rewards", game, False), norm_offer("rewards", emu, True))
+
+    def test_rest_offers_compare_enabled_options_only(self):
+        from tools.fidelity.run_compare2 import norm_offer
+        self.assertEqual(norm_offer("rest", [["HEAL", True], ["SMITH", False]], False),
+                         norm_offer("rest", [["HEAL", True]], True))
+
+    def test_a_replay_error_is_a_divergence(self):
+        from tools.fidelity.run_compare2 import compare_decision
+        diffs = compare_decision({"screen": "map", "choice": [0, 1]}, {"error": "map point (0, 1) not offered"}, None)
+        self.assertEqual(diffs[0][0], "replay")
+
+    def test_act_change_ignores_where_the_emulator_already_stands(self):
+        from tools.fidelity.run_compare2 import compare_decision
+        g = rs.from_save(SAVE)
+        g["coord"] = None
+        e = copy.deepcopy(EMU)
+        e["acts"][0]["events_visited"] = 2
+        save = copy.deepcopy(SAVE)
+        save["visited_map_coords"] = []
+        self.assertEqual(compare_decision({"screen": "act_change", "snap": save}, {"snap": e}, None), [])
+        self.assertNotEqual(compare_decision({"screen": "map", "snap": save}, {"snap": e}, None), [])

@@ -45,6 +45,26 @@ static class RunSnap
         .Where(p => p.PropertyType == typeof(GameRng))
         .Select(p => KeyValuePair.Create(Snake(p.Name).ToLowerInvariant(), (JsonNode?)((GameRng)p.GetValue(set)!).CallCount)));
 
+    /// <summary>
+    /// The run streams' counters. A fight draws on its own copies of the combat streams
+    /// (CombatState's CountingRandoms) and syncs them back when it ends, so while one is open
+    /// those copies are where the game's run streams stand.
+    /// </summary>
+    static JsonObject RunCounters(RunState s)
+    {
+        var o = Counters(s.Rng);
+        if (s.Phase == RunPhase.Combat && s.ActiveCombat is { } c)
+        {
+            void Set(string k, CountingRandom? r) { if (r != null) o[k] = r.CallCount; }
+            Set("shuffle", c.ShuffleRng); Set("combat_targets", c.TargetRng); Set("monster_ai", c.AiRng as CountingRandom);
+            Set("combat_card_selection", c.CardSelectionRng); Set("combat_card_generation", c.CardGenerationRng);
+            Set("combat_energy_costs", c.EnergyCostRng); Set("combat_potion_generation", c.PotionGenerationRng);
+            Set("combat_orbs", c.OrbGenerationRng); Set("niche", c.NicheHpRng);
+        }
+
+        return o;
+    }
+
     static JsonArray Arr<T>(IEnumerable<T> xs, Func<T, JsonNode?> f) => new(xs.Select(f).ToArray());
 
     static JsonObject Bag(RelicGrabBag bag) => new(bag.Lists
@@ -77,7 +97,7 @@ static class RunSnap
                 ["unknown_treasure"] = Math.Round(s.UnknownMapPointTreasureOdds, 6),
                 ["unknown_shop"] = Math.Round(s.UnknownMapPointShopOdds, 6),
             },
-            ["rng"] = Counters(s.Rng),
+            ["rng"] = RunCounters(s),
             ["player_rng"] = Counters(s.PlayerRng),
             ["grab_bag"] = Bag(s.RelicBag),
             ["shared_grab_bag"] = Bag(s.SharedRelicBag),

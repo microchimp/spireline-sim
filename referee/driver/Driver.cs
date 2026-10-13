@@ -96,6 +96,7 @@ public static partial class Driver
         var result = (string?)o["kind"] switch
         {
             "combat" => await PlayCombat(o),
+            "run" => await PlayRun(o),  // RunPlay.cs
             "export" => Export(),
             _ => await StartRun(o),
         };

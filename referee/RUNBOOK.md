@@ -104,3 +104,30 @@ python -m tools.fidelity.reanchor_compare '<out.json>' <name>.reanchor.json [--a
 - A matching step verifies its card; a divergence is blamed on its card only when the step before it matched ("primary"). Fights stop being re-anchored where the enemies' move state cannot be reproduced (the snapshot does not record intents); `--after-enemy-desync plays` goes on with card plays and leaves later ends of turn unjudged.
 - What the snapshot lacks (relic counters, enemy AI and intent, per-card modifiers, combat counters) comes from the emulator's own previous result. The `--scramble` and `--stale enemy,cards,relics,counters|all` options of `reanchor` test the write-back and show which hidden state a step needs.
 - `reanchor_compare.learn` / `coverage.update_reanchored` replace `coverage.update` for a re-anchored batch (do not use both).
+
+## Whole runs (`runs.py`)
+
+One spec plays a whole A10 run in the game with seeded random legal choices on every screen,
+through the game's own synchronizers and commands (`driver/RunPlay.cs`, spec `{"kind": "run", "seed",
+"chooser_seed", "buff_max_hp", "avoid", "stop_after_act", "max_decisions"}`), and records the run state
+(the game's own save, minus timestamps, drawings, unlocks and the map) after every decision, with the offer
+on screen and the choice by id. Fights inside the run use the fight loop and are recorded as fight steps.
+
+```
+python referee/runs.py --name <name> --runs 10 --start <n> [--procs 2] [--buff 2000] [--stop-after-act 3]
+python referee/runs.py --name <name> --no-game        # replay and compare again after an engine change
+```
+
+It runs `run_referee.py` sessions (all their safety checks), then `EmuDump run` (tools/emudump/RunReplay.cs:
+each decision applied as the emulator's own actions, looked up by id) and
+`python -m tools.fidelity.run_compare2 run` (offers, rooms and the run snapshot per decision, through
+`tools/fidelity/run_snapshot.py`). It prints, per run, the first decision that differs and the fields, and a
+summary by component. Fights are compared step by step as the fight corpus is, and their OUTCOME is
+anchored: where a fight diverged, the replay puts the emulator's holdings, RNG counters and reward screen
+where the game's are (`RunReplay.Anchor`), so the screens after it are still compared. The fight shows up
+under "fights whose outcome had to be anchored". `EmuDump runstart` + `run_compare2 start` compare run
+starts (all three acts' room sets, grab bags, odds, counters) without playing.
+
+Driver notes: `?` points are entered in Fast mode (PunchOff's endless animation loop freezes the game in
+Instant mode), the chest opens through `NTreasureRoom.OpenChest`, the Crystal Sphere and the Fake Merchant
+end the run (`unsupported_event:`), potions are not used yet.
