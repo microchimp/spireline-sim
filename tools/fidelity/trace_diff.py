@@ -123,14 +123,19 @@ def marks(trace: list, side: str) -> list[dict]:
 # ---------------------------------------------------------------- RNG alignment
 
 def draws(trace: list, side: str) -> list[tuple]:
-    """(stream, counter, caller) of every combat-stream draw, in order, each draw once."""
-    out, last = [], {}
+    """(stream, counter, caller) of every combat-stream draw, in order, each draw once. A game draw
+    made while a monster rolls its move names the monster in the caller (MonsterModel.RollMove)."""
+    out, last, rolling = [], {}, None
     for ev in trace:
+        if ev[0] == "A" and ev[1].startswith("RollMove "):
+            rolling = ev[1][len("RollMove "):]
+        elif ev[0] == "E" and ev[1] == "MoveRolled":
+            rolling = None
         if ev[0] == "R" and (ev[1] in COMBAT_STREAMS or (side == "emu" and ev[1] == "fallback")):
             if last.get(ev[1]) == ev[2]:
                 continue  # a nested Next* call logging the same draw
             last[ev[1]] = ev[2]
-            out.append((ev[1], ev[2], ev[3]))
+            out.append((ev[1], ev[2], ev[3] + (f" rolling {rolling}" if rolling else "")))
     return out
 
 
