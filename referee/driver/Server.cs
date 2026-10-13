@@ -2,8 +2,9 @@
 //
 // Job: {"out": "<path>.jsonl", "inbox": "<dir>", "fast_reset": true, ...}. After the usual startup the
 // driver loops:
-//   1. take the oldest "<id>.json" in the inbox, claiming it by renaming it to "<id>.json.taken.<pid>"
-//      under a per-spec "<id>.json.lock" (InboxClaim.cs: a bare rename is not exclusive on Windows);
+//   1. take the oldest "<id>.json" in its own inbox (serve.py gives each server one, and only this process
+//      claims from it), claiming it by renaming it to "<id>.json.taken.<pid>" under a per-spec
+//      "<id>.json.lock" (InboxClaim.cs: on Windows a bare rename is not exclusive);
 //   2. play it exactly as a "runs" entry (PlaySpec);
 //   3. append ONE JSON line to "out" (the result, plus "_id", "_pid", "_t" = unix ms);
 //   4. delete the claimed file, heartbeat, repeat.

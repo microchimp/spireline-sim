@@ -133,5 +133,53 @@ class ReanchorCompareTest(unittest.TestCase):
         self.assertEqual(out["new_suspects"], 1)
 
 
+class PerFightHelpersTest(unittest.TestCase):
+    """fight_compare.report and reanchor_compare.analyses: what batch.py computes chunk by chunk must be
+    what fight_compare's main prints and what learn() folds in for the whole batch."""
+
+    def fights(self):
+        same = fight([(None, {}, {}), (PLAY, dict(hp=21), dict(hp=21))])
+        differ = fight([(None, {}, {}), (PLAY, dict(hp=21), dict(hp=21)), (PLAY, dict(hp=15), dict(hp=14))])
+        broken = ({"seed": "E", "steps": [], "error": "idle_timeout"}, {"seed": "E", "steps": [], "error": "no game result to replay"})
+        return [same, differ, broken]
+
+    def test_report_is_main_output_and_first_divergence(self):
+        import contextlib
+        import io
+        import tempfile
+
+        pairs = self.fights()
+        with tempfile.TemporaryDirectory() as d:
+            gp, ep = Path(d) / "g.json", Path(d) / "e.json"
+            gp.write_text(json.dumps({"results": [g for g, _ in pairs]}), encoding="utf-8")
+            ep.write_text(json.dumps({"results": [e for _, e in pairs]}), encoding="utf-8")
+            buf = io.StringIO()
+            argv = sys.argv
+            sys.argv = ["fight_compare", str(gp), str(ep), "--id-map", str(ROOT / "data" / "id_map.json")]
+            try:
+                with contextlib.redirect_stdout(buf):
+                    fc.main()
+            finally:
+                sys.argv = argv
+        lines = [ln for g, e in pairs for ln in fc.report(g, e, NM)[0]]
+        self.assertEqual(buf.getvalue().splitlines(), lines)
+        self.assertEqual(lines[-1], "E: 0 steps identical (game 0, emulator 0)")
+        firsts = [fc.report(g, e, NM)[1] for g, e in pairs]
+        self.assertEqual(firsts, [coverage.first_divergence(g, e, NM) for g, e in pairs])
+        self.assertEqual(firsts, [None, 2, None])
+
+    def test_analyses_is_what_learn_folds_in(self):
+        pairs = self.fights()
+        games = [g for g, _ in pairs]
+        doc = {"results": [e for _, e in pairs], "buff_keys": sorted(KEYS[0]), "internal_keys": sorted(KEYS[1])}
+        got = rc.analyses(games, doc, NM)
+        self.assertEqual(got, [rc.analyse(g, r, NM, "stop", rc.keys_of(doc)) for g, r in rc.pair(games, doc["results"])])
+        a, b = {}, {}
+        rc.learn(a, games, doc, NM, "c1")
+        coverage.update_reanchored(b, got, "c1")
+        self.assertEqual(a, b)
+        self.assertTrue(a["cards"])
+
+
 if __name__ == "__main__":
     unittest.main()

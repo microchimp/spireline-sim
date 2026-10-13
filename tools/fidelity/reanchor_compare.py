@@ -198,8 +198,13 @@ def learn(cov: dict, games: list, doc: dict, nm: dict, commit: str, after_desync
     """Fold a re-anchored batch into coverage (replaces ``coverage.update`` on the plain replay)."""
     from . import coverage  # noqa: PLC0415
 
+    return coverage.update_reanchored(cov, analyses(games, doc, nm, after_desync), commit)
+
+
+def analyses(games: list, doc: dict, nm: dict, after_desync: str = "stop") -> list:
+    """``analyse`` for every game fight that has a re-anchored result in ``doc`` (EmuDump reanchor output)."""
     keys = keys_of(doc)
-    return coverage.update_reanchored(cov, [analyse(g, r, nm, after_desync, keys) for g, r in pair(games, doc["results"])], commit)
+    return [analyse(g, r, nm, after_desync, keys) for g, r in pair(games, doc["results"])]
 
 
 def main() -> int:

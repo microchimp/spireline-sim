@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fight-server dispatcher: N long-lived game processes fed from one shared inbox.
+"""Fight-server dispatcher: N long-lived game processes, each fed through its own inbox.
 
     python referee/serve.py --game <game copy> --specs <job.json> [--servers 4] [--repeat 1] [--out results.json]
 
@@ -17,19 +17,27 @@ settle_audit / fast_tweens / sleep_usec / trace_frames / step_costs / idle_probe
   trace_frames  per-frame trace of each step in the step's "trace" (diagnostics).
   step_costs    frames and main-thread megacycles per step in the step's "cost".
   idle_probe    N: idle N frames after step 0 and record a quiet frame's cost in "idle_probe".
---old-settle runs the old settle: settle "frames", stock tweens and stock frame pacing, no audit.
+--old-settle runs the old settle: settle "frames", stock tweens and stock frame pacing, no audit. job_options()
+holds these defaults, so batch.py's pool gets the same ones.
 Each server is one headless game on its own scratch
 profile (same safety checks as run_referee.py: known sts2.dll sha256, override.cfg, APPDATA in scratch,
-no network connections, real profile untouched). The dispatcher writes one spec file per fight into
-<run-dir>/inbox; whichever server is free claims the oldest one (driver/Server.cs), plays it and appends
-a JSON line to its own <run-dir>/out/s<NN>.jsonl. Results are merged into --out (same format as a
-runs-mode out file, in spec order) and results.jsonl (arrival order).
+no network connections, real profile untouched). The dispatcher keeps one spec file waiting in each
+server's <run-dir>/inbox/s<NN>; the server claims it (driver/Server.cs), plays it and appends a JSON
+line to its own <run-dir>/out/s<NN>.jsonl, and the dispatcher hands it the next. One consumer per
+inbox, because a claim is a rename and on Windows a rename is not exclusive: two servers renaming
+the same file can both succeed (MoveFileEx opens the source, then renames through that handle; a
+second open made before the first rename landed renames the file again), and the loser then answered
+"bad spec file" for a fight the other played (night04: 4 of 600). Results are merged into --out (same
+format as a runs-mode out file, in spec order) and results.jsonl (arrival order).
 
-A server that dies or hangs is restarted; the spec it had claimed goes back to the inbox once, and is
-recorded as stalled if it kills a server a second time. One hot spare (--spares) is booted and held
-(hold.<pid> in the inbox) so a restart costs no boot time. At the end STOP goes into the inbox.
+A server that dies or hangs is restarted; the spec it had claimed goes back to the front of the queue
+once, and is recorded as stalled if it kills a server a second time. One hot spare (--spares) is booted
+and held (hold.<pid> in its inbox) so a restart costs no boot time. At the end STOP goes into every inbox.
 --verify-against <out.json> compares every result with a reference from "runs" mode, ignoring timing and
 the diagnostics above (settle_audit, idle_probe, per-step cost and trace).
+
+The dispatcher is the importable Pool class (submit / poll / close); the command line is one user of
+it and batch.py, which keeps one pool for a whole batch, is the other.
 """
 
 from __future__ import annotations
@@ -49,12 +57,14 @@ import run_referee as rr  # noqa: E402
 
 TIMING_KEYS = {"timing_ms", "phase_ms", "cost", "cost_setup"}  # per-run timing and CPU/frame cost, never compared
 META_KEYS = {"_id", "_pid", "_t"}  # added by the server to each result line
+STALLED = "stalled: the game failed this fight twice (no progress, crash or run-start exception)"
 
 
 class Server:
-    def __init__(self, sid: int, spare: bool):
+    def __init__(self, sid: int, spare: bool, inbox: Path):
         self.sid, self.spare = sid, spare
         self.name = f"s{sid:02d}"
+        self.inbox = inbox / self.name  # only this server claims from it
         self.proc: subprocess.Popen | None = None
         self.pid = 0
         self.t_spawn = 0.0
@@ -97,7 +107,8 @@ def release_claim_locks(inbox: Path, pid: int) -> int:
     """Remove the claim locks a dead server held ("<id>.json.lock" holding its pid, driver/InboxClaim.cs).
 
     A server holds one only between creating it and renaming the spec, so this is for a kill in that
-    instant: left behind, the lock would keep every other server off that spec.
+    instant: left behind, the lock would keep the server's replacement off that spec. With one inbox per
+    server nobody else claims there, so this is belt and braces.
     """
     n = 0
     for lk in inbox.glob("*.json.lock"):
@@ -126,6 +137,410 @@ def comparable(r: dict) -> dict:
         out["steps"] = [{k: v for k, v in st.items() if k not in DIAG_STEP_KEYS} if isinstance(st, dict) else st
                         for st in out["steps"]]
     return out
+
+
+# Driver job keys a job file may set for every server (the module docstring has what they do).
+JOB_KEYS = ("idle_frames", "stall_s", "settle", "settle_audit", "fast_tweens", "sleep_usec",
+            "trace_frames", "step_costs", "idle_probe")
+
+
+def job_options(job_in, *, slow_reset: bool = False, preload: bool = False, no_patches: bool = False,
+                stall_s: int | None = None, idle_frames: float | None = None, old_settle: bool = False,
+                settle_audit: float | None = None) -> dict:
+    """The job keys every server gets: a job file's JOB_KEYS, the speed defaults (SPEED_PLAN steps 3-4; keys
+    in the job file win over them), then the command-line choices. serve.py's command line and batch.py's
+    pool both build their servers' options here, so the two cannot drift apart."""
+    jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in JOB_KEYS}
+    if old_settle:
+        for k in ("settle_audit", "sleep_usec"):
+            jopts.pop(k, None)
+        jopts.update(settle="frames", fast_tweens=False)
+    else:
+        for k, v in (("settle", "flags"), ("fast_tweens", True), ("sleep_usec", 0), ("settle_audit", 0.05)):
+            jopts.setdefault(k, v)
+    if settle_audit is not None:
+        jopts["settle_audit"] = settle_audit
+    jopts["fast_reset"] = not slow_reset
+    jopts["no_preload"] = not preload
+    jopts["fast_patches"] = not no_patches  # SPEED_PLAN step 2 (driver/Patches.cs)
+    if stall_s is not None:
+        jopts["stall_s"] = stall_s
+    if idle_frames is not None:
+        jopts["idle_frames"] = idle_frames
+    return jopts
+
+
+def _taskkill(s: Server) -> None:
+    subprocess.run(["taskkill", "/PID", str(s.pid), "/T", "/F"], capture_output=True, check=False)
+
+
+class Pool:
+    """The dispatcher: N long-lived game servers, each fed through its own inbox, as long as the caller wants.
+
+    submit(specs) queues fights and returns their ids (in submission order, so id order is spec order);
+    poll() runs one dispatcher tick and returns the fights finished since the last call as (id, result
+    line) pairs, in arrival order; close() writes STOP, lets the servers finish what they hold and
+    returns the last results. The caller sleeps between polls and decides when it is done.
+
+    The safety checks live here, so every user of the pool gets them: H1 the known sts2.dll (at
+    construction), H2 one netstat call per net_interval for every live server (seen_net), H3 the real
+    profile compared between start() and close() (profile_touched). The rules: a server that dies or
+    hangs is replaced (the hot spare first); the spec it had claimed goes back to the front of the queue
+    once and is recorded as stalled if it kills a second server (specs it had not claimed go back too,
+    not counted); more than max_restarts restarts sets `failed`. Each active server has `depth` specs
+    waiting in its inbox, so it starts the next fight as soon as one ends.
+    launch / connections / profile_state / check_build / kill are injectable for tests.
+    """
+
+    def __init__(self, game: Path, run_dir: Path, *, servers: int = 4, spares: int = 1, jopts: dict | None = None,
+                 boot_timeout: float = 180, max_restarts: int | None = None, net_interval: float = 1.0,
+                 below_normal: bool = True, depth: int = 1, echo=print, launch=rr.launch, connections=rr.connections_by_pid,
+                 profile_state=rr.real_profile_state, check_build=rr.check_build, kill=_taskkill):
+        self.game = game
+        self.digest = check_build(game)
+        self.n = max(1, servers)
+        self.spares = spares
+        self.jopts = dict(jopts if jopts is not None else job_options(None))
+        self.stall_s = int(self.jopts.get("stall_s", 20))
+        # The driver rewrites its status file every frame (driver/Watchdog.cs), so an old file means no frame
+        # has ended. That alone is not a hang: a starved server can take minutes over one frame, and the
+        # driver's own watchdog tells a blocked main thread from a starved one. This is the backstop for a
+        # driver whose watchdog cannot run.
+        self.hb_limit = 10 * self.stall_s
+        self.boot_timeout = boot_timeout
+        self.max_restarts = max_restarts if max_restarts is not None else 3 * self.n + 3
+        self.net_interval = net_interval
+        self.below_normal = below_normal
+        self.depth = max(1, depth)
+        self.window = 2 * self.n * self.depth  # unclaimed specs a caller feeding the pool keeps ready
+        self._echo, self._launch, self._connections = echo, launch, connections
+        self._profile_state, self._kill_fn = profile_state, kill
+        self.run_dir = Path(run_dir).resolve()
+        self.inbox, self.outdir = self.run_dir / "inbox", self.run_dir / "out"
+        for d in (self.inbox, self.outdir):
+            d.mkdir(parents=True, exist_ok=True)
+        if any(self.inbox.iterdir()) or any(self.outdir.iterdir()):
+            # A used run folder would mix in: its s<NN>.jsonl lines are read from offset 0 and their
+            # ids ("000000"...) are this run's ids too, and a leftover STOP ends every server.
+            raise ValueError(f"run folder {self.run_dir.name} was used before; give a new one")
+        self.servers: list[Server] = []
+        self.specs: dict[str, dict] = {}  # id -> spec, in submission order
+        self.queue: collections.deque[str] = collections.deque()  # submitted, not yet in a server's inbox
+        self.results: dict[str, dict] = {}  # id -> result line
+        self.arrival: list[dict] = []
+        self.attempts: collections.Counter = collections.Counter()
+        self.restarts = self.requeued = 0
+        self.seen_net: set[str] = set()
+        self.events: list[str] = []
+        self.more = 0  # specs the caller still means to submit (only decides whether a hot spare pays)
+        self.failed = ""  # why the pool gave up; empty while it is healthy
+        self.t_start = time.time()
+        self.t_end: float | None = None
+        self.before = self.after = None
+        self.started = self.closed = self.stopping = False
+        self._next_id = self._next_sid = 0
+        self._last_net = 0.0
+        self._new: list[tuple[str, dict]] = []
+
+    # -- caller API ---------------------------------------------------------------------------------
+    def submit(self, specs: list) -> list[str]:
+        ids = []
+        for spec in specs:
+            rid = f"{self._next_id:06d}"
+            self._next_id += 1
+            self.specs[rid] = spec
+            self.queue.append(rid)
+            ids.append(rid)
+        return ids
+
+    @property
+    def unclaimed(self) -> int:
+        """Specs no server has taken yet: queued here plus waiting in the servers' inboxes."""
+        return len(self.queue) + sum(len(self._pending(s)) for s in self.servers if s.alive)
+
+    @property
+    def outstanding(self) -> int:
+        """Submitted specs without a result yet."""
+        return len(self.specs) - len(self.results)
+
+    def start(self) -> None:
+        if self.started:
+            return
+        self.started = True
+        self.before = self._profile_state()
+        self.t_start = time.time()
+        for _ in range(self.n):
+            self._spawn(spare=False)
+        self._feed()
+
+    def poll(self) -> list[tuple[str, dict]]:
+        """One dispatcher tick: feed the inboxes, collect results, check the network, replace dead or
+        hung servers, keep N active plus the spare. Returns what finished since the last call."""
+        if not self.started:
+            self.start()
+        if self.closed or self.failed:
+            return self._drain()
+        now = time.time()
+        self._feed()
+        live = [s for s in self.servers if s.alive]
+        for s in live:
+            self._collect(s)
+            self._check_ready(s)
+        if now - self._last_net >= self.net_interval and live:  # one netstat call for every server
+            self._last_net = now
+            for pid, conns in self._connections([s.pid for s in live]).items():
+                self.seen_net |= conns
+                for s in live:
+                    if s.pid == pid:
+                        s.connections |= conns
+        for s in live:
+            code = s.proc.poll()
+            if code is not None:
+                self._handle_exit(s, code)
+                continue
+            if s.t_ready is None and now - s.t_spawn > self.boot_timeout:
+                self._kill(s, "boot timeout")
+            elif s.t_ready is not None:
+                try:
+                    age = now - (s.inbox / "hb" / str(s.pid)).stat().st_mtime
+                except FileNotFoundError:
+                    age = 0
+                if age > self.hb_limit:
+                    self._kill(s, f"no heartbeat for {age:.0f}s")
+        # keep N active servers: promote the spare first, else boot a replacement
+        live = [s for s in self.servers if s.alive]
+        if self.restarts > self.max_restarts:
+            self.failed = f"giving up: {self.restarts} restarts"
+            self.log(self.failed)
+            return self._drain()
+        actives = [s for s in live if not s.spare]
+        while len(actives) < self.n:
+            spare = next((s for s in live if s.spare), None)
+            if spare is not None:
+                spare.spare = False
+                (spare.inbox / f"hold.{spare.pid}").unlink(missing_ok=True)
+                self.log(f"{spare.name} promoted from spare")
+                live = [s for s in self.servers if s.alive]
+                actives = [s for s in live if not s.spare]
+            else:
+                actives.append(self._spawn(spare=False))
+        if (self.spares and not any(s.spare for s in live) and all(s.t_ready for s in actives)
+                and self.outstanding + self.more >= 2 * self.n + 2):
+            self._spawn(spare=True)
+        self._feed()
+        return self._drain()
+
+    def close(self, abandon: bool = False) -> list[tuple[str, dict]]:
+        """STOP: servers finish what they hold, see their empty inbox and exit 0; spares and stragglers
+        are killed. abandon=True first withdraws the specs no server has claimed (renamed to
+        *.withdrawn), so an aborted run does not play them. Returns what finished since the last poll."""
+        if self.closed:
+            return self._drain()
+        self.closed = self.stopping = True
+        if not self.started:
+            self.t_end = time.time()
+            return self._drain()
+        live = [s for s in self.servers if s.alive]
+        if abandon:
+            self.queue.clear()
+            for s in live:  # hold first, so no server is claiming while its specs are withdrawn
+                (s.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
+            time.sleep(0.3)
+            for s in live:
+                for f in self._pending(s):
+                    try:
+                        os.replace(f, f.with_name(f.name + ".withdrawn"))
+                    except OSError:
+                        pass  # claimed just before the hold
+        for s in live:
+            (s.inbox / "STOP").write_text("", encoding="utf-8")
+        for s in self.servers:
+            if s.alive and s.spare:
+                self._kill(s, "spare not needed")
+        deadline = time.time() + 45
+        for s in self.servers:
+            if not s.alive:
+                continue
+            try:
+                s.proc.wait(timeout=max(0.1, deadline - time.time()))
+            except subprocess.TimeoutExpired:
+                self._kill(s, "did not exit after STOP")
+                s.proc.wait()
+            self._collect(s)
+            self._handle_exit(s, s.proc.returncode)
+        self.t_end = time.time()
+        self.after = self._profile_state()
+        return self._drain()
+
+    @property
+    def profile_touched(self) -> bool:
+        return self.started and self.after is not None and self.before != self.after
+
+    def merged(self, ids: list[str] | None = None) -> list[dict]:
+        """Results in spec order (runs-mode out format: timing and server keys stripped)."""
+        out = []
+        for rid in (self.specs if ids is None else ids):
+            r = self.results.get(rid)
+            out.append(strip(r) if r else {"seed": self.specs[rid].get("seed"), "steps": [], "error": "no result"})
+        return out
+
+    def table(self) -> list[str]:
+        """Per-server timing, one line each."""
+        lines = [f"{'server':7} {'boot s':>7} {'fights':>6} {'first->last s':>13} {'wall s/fight':>12} {'game ms/fight':>13}  end"]
+        for s in self.servers:
+            done = [r for r in s.lines if r.get("_id") is not None]
+            boot = f"{s.t_ready - s.t_spawn:.1f}" if s.t_ready else "-"
+            span = (done[-1]["_t"] / 1000 - s.t_ready) if done and s.t_ready else 0
+            game_ms = [r["timing_ms"]["play"] + r["timing_ms"]["reset"] for r in done if "timing_ms" in r]
+            lines.append(f"{s.name:7} {boot:>7} {len(done):>6} {span:>13.1f} {span / len(done) if done else 0:>12.2f} "
+                         f"{sum(game_ms) / len(game_ms) if game_ms else 0:>13.0f}  "
+                         f"{'spare ' if s.spare else ''}exit {s.rc}{' (' + s.killed + ')' if s.killed else ''}")
+        return lines
+
+    def summary(self) -> dict:
+        t_end = self.t_end or time.time()
+        t_ready_min = min((s.t_ready for s in self.servers if s.t_ready), default=self.t_start)
+        stalls = sum(1 for r in self.results.values() if str(r.get("error", "")).startswith("stalled"))
+        errors = sum(1 for r in self.results.values() if r.get("error") and not str(r.get("error")).startswith("stalled"))
+        n_res = len(self.results)
+        wall, post_boot = t_end - self.t_start, t_end - t_ready_min
+        first_boot = min((s.t_ready - s.t_spawn for s in self.servers if s.t_ready), default=0)
+        return {
+            "fights": len(self.specs), "results": n_res, "servers": self.n, "wall_s": round(wall, 1),
+            "wall_after_first_ready_s": round(post_boot, 1), "fights_per_min": round(60 * n_res / max(1e-9, wall), 1),
+            "fights_per_min_after_boot": round(60 * n_res / max(1e-9, post_boot), 1),
+            "s_per_fight_per_server": round(post_boot * self.n / max(1, n_res), 2),
+            "first_boot_s": round(first_boot, 1), "restarts": self.restarts, "requeued": self.requeued,
+            "stalled_results": stalls, "errors": errors, "sts2_dll_sha256": self.digest,
+            "network_connections": sorted(self.seen_net), "real_profile_touched": self.profile_touched,
+            "run_dir": self.run_dir.name,
+        }
+
+    def write_run_files(self, summary: dict) -> None:
+        """results.jsonl (arrival order) and summary.json (with the event log) in the run folder."""
+        (self.run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in self.arrival), encoding="utf-8")
+        (self.run_dir / "summary.json").write_text(json.dumps({**summary, "events": self.events}, indent=1), encoding="utf-8")
+
+    def log(self, msg: str) -> None:
+        line = f"[{time.time() - self.t_start:7.1f}s] {msg}"
+        self.events.append(line)
+        if self._echo:
+            self._echo(line, flush=True)
+
+    # -- dispatcher internals -----------------------------------------------------------------------
+    def _drain(self) -> list[tuple[str, dict]]:
+        new, self._new = self._new, []
+        return new
+
+    def _finish(self, rid: str, r: dict) -> None:
+        self.results[rid] = r
+        self.arrival.append(r)
+        self._new.append((rid, r))
+
+    @staticmethod
+    def _pending(s: Server) -> list[Path]:
+        """Spec files waiting in a server's inbox, oldest id first."""
+        try:
+            return sorted(s.inbox / f for f in os.listdir(s.inbox) if f.endswith(".json"))
+        except FileNotFoundError:
+            return []
+
+    def _feed(self) -> None:
+        """Top every active server's inbox up to `depth` waiting specs, from the front of the queue."""
+        if self.stopping:
+            return
+        for s in self.servers:
+            if not self.queue:
+                return
+            if not s.alive or s.spare:
+                continue
+            for _ in range(self.depth - len(self._pending(s))):
+                if not self.queue:
+                    break
+                rid = self.queue.popleft()
+                tmp = s.inbox / f"{rid}.tmp"
+                tmp.write_text(json.dumps(self.specs[rid]), encoding="utf-8")
+                os.replace(tmp, s.inbox / f"{rid}.json")
+
+    def _spawn(self, spare: bool) -> Server:
+        s = Server(self._next_sid, spare, self.inbox)
+        self._next_sid += 1
+        s.inbox.mkdir(parents=True, exist_ok=True)
+        scratch = self.run_dir / "scratch" / s.name
+        (scratch / "appdata").mkdir(parents=True, exist_ok=True)
+        (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
+        rr.write_settings(scratch, boot_opts=True)
+        job = scratch / "job.json"
+        job.write_text(json.dumps({"out": str(self.outdir / f"{s.name}.jsonl").replace("\\", "/"),
+                                   "inbox": str(s.inbox).replace("\\", "/"), **self.jopts}), encoding="utf-8")
+        s.t_spawn = time.time()
+        s.proc, s.log = self._launch(self.game, scratch, job, below_normal=self.below_normal)
+        s.pid = s.proc.pid
+        if spare:  # never fed while it holds, so its inbox stays empty
+            (s.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
+        self.servers.append(s)
+        self.log(f"{s.name} started ({'spare' if spare else 'active'}) pid {s.pid}")
+        return s
+
+    def _collect(self, s: Server) -> None:
+        new, s.offset = read_lines(self.outdir / f"{s.name}.jsonl", s.offset)
+        for r in new:
+            s.lines.append(r)
+            rid = r.get("_id")
+            if rid is None:
+                where = f" on spec {r['_fatal']}" if r.get("_fatal") is not None else ""
+                self.log(f"{s.name} server error{where}: {str(r.get('error'))[:300]}")
+            elif rid not in self.results and rid in self.specs:
+                if "seed" not in r:  # the driver's "bad spec file" line cannot know it; the dispatcher does
+                    r["seed"] = self.specs[rid].get("seed")
+                self._finish(rid, r)
+
+    def _check_ready(self, s: Server) -> None:
+        if s.t_ready is None:
+            try:
+                s.t_ready = int((s.inbox / "hb" / f"{s.pid}.ready").read_text()) / 1000
+                self.log(f"{s.name} ready after {s.t_ready - s.t_spawn:.1f}s")
+            except (FileNotFoundError, ValueError):
+                pass
+
+    def _handle_exit(self, s: Server, rc: int) -> None:
+        s.t_exit, s.rc = time.time(), rc
+        self._collect(s)
+        if s.log:
+            s.log.close()
+        for hb in ((s.inbox / f"hold.{s.pid}"), (s.inbox / "hb" / str(s.pid))):
+            hb.unlink(missing_ok=True)
+        release_claim_locks(s.inbox, s.pid)
+        stopping = self.stopping
+        lost, back = [], []
+        for taken in sorted(s.inbox.glob(f"*.json.taken.{s.pid}")):
+            rid = taken.name.split(".json.taken.")[0]
+            if rid in self.results:  # appended before the process died; only the delete was lost
+                taken.unlink()
+                continue
+            self.attempts[rid] += 1
+            if self.attempts[rid] == 1:
+                taken.unlink()
+                back.append(rid)  # to the front of the queue, so it is played next
+                self.requeued += 1
+                lost.append(f"{rid} re-queued")
+            else:
+                self._finish(rid, {"seed": self.specs.get(rid, {}).get("seed"), "steps": [], "_id": rid, "error": STALLED})
+                taken.unlink()
+                lost.append(f"{rid} recorded as stalled")
+        for f in self._pending(s):  # handed to it but never claimed: back too, not an attempt
+            f.unlink()
+            back.append(f.name[: -len(".json")])
+        self.queue.extendleft(reversed(back))
+        if not stopping:
+            self.restarts += 1
+            self.log(f"{s.name} died (exit {rc}{', ' + s.killed if s.killed else ''}); {'; '.join(lost) or 'no spec in flight'}")
+        elif rc != 0:
+            self.log(f"{s.name} ended after STOP with exit {rc}{', ' + s.killed if s.killed else ''}")
+
+    def _kill(self, s: Server, why: str) -> None:
+        s.killed = why
+        self._kill_fn(s)
 
 
 def main() -> int:
@@ -157,37 +572,15 @@ def main() -> int:
     a = ap.parse_args()
 
     game = a.game.resolve()
-    digest = rr.check_build(game)
     job_in = json.loads(a.specs.read_text(encoding="utf-8"))
     runs = (job_in["runs"] if isinstance(job_in, dict) else job_in) * a.repeat
-    total, n_act = len(runs), max(1, a.servers)
-    jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else [])
-             if k in ("idle_frames", "stall_s", "settle", "settle_audit", "fast_tweens", "sleep_usec",
-                      "trace_frames", "step_costs", "idle_probe")}
-    # Same defaults as batch.py (SPEED_PLAN steps 3-4); keys in the specs file win over them.
-    if a.old_settle:
-        for k in ("settle_audit", "sleep_usec"):
-            jopts.pop(k, None)
-        jopts.update(settle="frames", fast_tweens=False)
-    else:
-        for k, v in (("settle", "flags"), ("fast_tweens", True), ("sleep_usec", 0), ("settle_audit", 0.05)):
-            jopts.setdefault(k, v)
-    if a.settle_audit is not None:
-        jopts["settle_audit"] = a.settle_audit
-    jopts["fast_reset"] = not a.slow_reset
-    jopts["no_preload"] = not a.preload
-    jopts["fast_patches"] = not a.no_patches  # SPEED_PLAN step 2 (driver/Patches.cs)
-    if a.stall_s is not None:
-        jopts["stall_s"] = a.stall_s
-    if a.idle_frames is not None:
-        jopts["idle_frames"] = a.idle_frames
-    stall_s = int(jopts.get("stall_s", 20))
-    max_restarts = a.max_restarts if a.max_restarts is not None else 3 * n_act + 3
-
-    run_dir = (a.run_dir or game.parent / "serve" / time.strftime("%Y%m%d-%H%M%S")).resolve()
-    inbox, outdir = run_dir / "inbox", run_dir / "out"
-    for d in (inbox, outdir):
-        d.mkdir(parents=True, exist_ok=True)
+    total = len(runs)
+    jopts = job_options(job_in, slow_reset=a.slow_reset, preload=a.preload, no_patches=a.no_patches,
+                        stall_s=a.stall_s, idle_frames=a.idle_frames, old_settle=a.old_settle,
+                        settle_audit=a.settle_audit)
+    run_dir = a.run_dir or game.parent / "serve" / time.strftime("%Y%m%d-%H%M%S")
+    pool = Pool(game, run_dir, servers=a.servers, spares=a.spares, jopts=jopts, boot_timeout=a.boot_timeout,
+                max_restarts=a.max_restarts, net_interval=a.net_interval, below_normal=not a.normal_priority)
     if not a.no_install:
         for attempt in range(30):  # a running game holds the mod DLL open; wait for it
             try:
@@ -199,233 +592,29 @@ def main() -> int:
             print("could not install the driver: mod DLL locked", file=sys.stderr)
             return 2
 
-    before = rr.real_profile_state()
-    t_start = time.time()
-    servers: list[Server] = []
-    results: dict[str, dict] = {}  # spec id -> result line
-    arrival: list[dict] = []
-    attempts: collections.Counter = collections.Counter()
-    ids = [f"{i:06d}" for i in range(total)]
-    fed = 0
-    restarts = 0
-    requeued = 0
-    next_sid = 0
-    seen_net: set[str] = set()
-    events: list[str] = []
-
-    def log(msg: str) -> None:
-        line = f"[{time.time() - t_start:7.1f}s] {msg}"
-        events.append(line)
-        print(line, flush=True)
-
-    def spawn(spare: bool) -> Server:
-        nonlocal next_sid
-        s = Server(next_sid, spare)
-        next_sid += 1
-        scratch = run_dir / "scratch" / s.name
-        (scratch / "appdata").mkdir(parents=True, exist_ok=True)
-        (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
-        rr.write_settings(scratch, boot_opts=True)
-        job = scratch / "job.json"
-        job.write_text(json.dumps({"out": str(outdir / f"{s.name}.jsonl").replace("\\", "/"),
-                                   "inbox": str(inbox).replace("\\", "/"), **jopts}), encoding="utf-8")
-        s.t_spawn = time.time()
-        s.proc, s.log = rr.launch(game, scratch, job, below_normal=not a.normal_priority)
-        s.pid = s.proc.pid
-        if spare:
-            (inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
-        servers.append(s)
-        log(f"{s.name} started ({'spare' if spare else 'active'}) pid {s.pid}")
-        return s
-
-    def feed() -> None:
-        nonlocal fed
-        window = max(8, 4 * n_act)
-        pending = sum(1 for f in os.listdir(inbox) if f.endswith(".json"))
-        while fed < total and pending < window:
-            tmp = inbox / f"{ids[fed]}.tmp"
-            tmp.write_text(json.dumps(runs[fed]), encoding="utf-8")
-            os.replace(tmp, inbox / f"{ids[fed]}.json")
-            fed += 1
-            pending += 1
-
-    def collect(s: Server) -> None:
-        new, s.offset = read_lines(outdir / f"{s.name}.jsonl", s.offset)
-        for r in new:
-            s.lines.append(r)
-            rid = r.get("_id")
-            if rid is None:
-                where = f" on spec {r['_fatal']}" if r.get("_fatal") is not None else ""
-                log(f"{s.name} server error{where}: {str(r.get('error'))[:300]}")
-            elif rid not in results:
-                results[rid] = r
-                arrival.append(r)
-
-    def check_ready(s: Server) -> None:
-        if s.t_ready is None:
-            try:
-                s.t_ready = int((inbox / "hb" / f"{s.pid}.ready").read_text()) / 1000
-                log(f"{s.name} ready after {s.t_ready - s.t_spawn:.1f}s")
-            except (FileNotFoundError, ValueError):
-                pass
-
-    def handle_exit(s: Server, rc: int) -> None:
-        nonlocal restarts, requeued
-        s.t_exit, s.rc = time.time(), rc
-        collect(s)
-        if s.log:
-            s.log.close()
-        for hb in ((inbox / f"hold.{s.pid}"), (inbox / "hb" / str(s.pid))):
-            hb.unlink(missing_ok=True)
-        release_claim_locks(inbox, s.pid)
-        stopping = (inbox / "STOP").exists()
-        lost = []
-        for taken in sorted(inbox.glob(f"*.json.taken.{s.pid}")):
-            rid = taken.name.split(".json.taken.")[0]
-            if rid in results:  # appended before the process died; only the delete was lost
-                taken.unlink()
-                continue
-            attempts[rid] += 1
-            if attempts[rid] == 1:
-                os.replace(taken, inbox / f"{rid}.json")  # keeps its age, so it is claimed first
-                requeued += 1
-                lost.append(f"{rid} re-queued")
-            else:
-                spec = runs[int(rid)]
-                results[rid] = {"seed": spec.get("seed"), "steps": [], "_id": rid,
-                                "error": "stalled: the game failed this fight twice (no progress, crash or run-start exception)"}
-                arrival.append(results[rid])
-                taken.unlink()
-                lost.append(f"{rid} recorded as stalled")
-        if not stopping:
-            restarts += 1
-            log(f"{s.name} died (exit {rc}{', ' + s.killed if s.killed else ''}); {'; '.join(lost) or 'no spec in flight'}")
-        elif rc != 0:
-            log(f"{s.name} ended after STOP with exit {rc}{', ' + s.killed if s.killed else ''}")
-
-    def kill(s: Server, why: str) -> None:
-        s.killed = why
-        subprocess.run(["taskkill", "/PID", str(s.pid), "/T", "/F"], capture_output=True, check=False)
-
+    ids = pool.submit(runs)
     rc_final = 0
-    last_net = 0.0
     try:
-        feed()
-        for _ in range(n_act):
-            spawn(spare=False)
-        while len(results) < total:
-            now = time.time()
-            if now - t_start > a.timeout:
-                log("run timeout")
+        pool.start()
+        while len(pool.results) < total:
+            if time.time() - pool.t_start > a.timeout:
+                pool.log("run timeout")
                 rc_final = 1
                 break
-            feed()
-            live = [s for s in servers if s.alive]
-            for s in live:
-                collect(s)
-                check_ready(s)
-            if now - last_net >= a.net_interval and live:  # one netstat call for every server
-                last_net = now
-                for pid, conns in rr.connections_by_pid([s.pid for s in live]).items():
-                    seen_net |= conns
-                    for s in live:
-                        if s.pid == pid:
-                            s.connections |= conns
-            for s in live:
-                code = s.proc.poll()
-                if code is not None:
-                    handle_exit(s, code)
-                    continue
-                if s.t_ready is None and now - s.t_spawn > a.boot_timeout:
-                    kill(s, "boot timeout")
-                elif s.t_ready is not None:
-                    try:
-                        age = now - (inbox / "hb" / str(s.pid)).stat().st_mtime
-                    except FileNotFoundError:
-                        age = 0
-                    # The driver rewrites its status file every frame (driver/Watchdog.cs), so an old file means
-                    # no frame has ended. That alone is not a hang: a starved server can take minutes over one
-                    # frame, and the driver's own watchdog tells a blocked main thread from a starved one. This
-                    # is the backstop for a driver whose watchdog cannot run.
-                    if age > 10 * stall_s:
-                        kill(s, f"no heartbeat for {age:.0f}s")
-            # keep N active servers: promote the spare first, else boot a replacement
-            live = [s for s in servers if s.alive]
-            if restarts > max_restarts:
-                log(f"giving up: {restarts} restarts")
+            pool.poll()
+            if pool.failed:
                 rc_final = 1
                 break
-            actives = [s for s in live if not s.spare]
-            while len(actives) < n_act:
-                spare = next((s for s in live if s.spare), None)
-                if spare is not None:
-                    spare.spare = False
-                    (inbox / f"hold.{spare.pid}").unlink(missing_ok=True)
-                    log(f"{spare.name} promoted from spare")
-                    live = [s for s in servers if s.alive]
-                    actives = [s for s in live if not s.spare]
-                else:
-                    actives.append(spawn(spare=False))
-            remaining = total - len(results)
-            if (a.spares and not any(s.spare for s in live) and all(s.t_ready for s in actives)
-                    and remaining >= 2 * n_act + 2):
-                spawn(spare=True)
             time.sleep(0.25)
     finally:
-        # STOP: servers finish what they hold, see the empty inbox and exit 0; spares and stragglers are killed.
-        (inbox / "STOP").write_text("", encoding="utf-8")
-        for s in servers:
-            if s.alive and s.spare:
-                kill(s, "spare not needed")
-        deadline = time.time() + 45
-        for s in servers:
-            if not s.alive:
-                continue
-            try:
-                s.proc.wait(timeout=max(0.1, deadline - time.time()))
-            except subprocess.TimeoutExpired:
-                kill(s, "did not exit after STOP")
-                s.proc.wait()
-            collect(s)
-            handle_exit(s, s.proc.returncode)
-        for pid, conns in rr.connections_by_pid([s.pid for s in servers if s.alive]).items():
-            seen_net |= conns
+        pool.close()
 
-    t_end = time.time()
-    after = rr.real_profile_state()
-    merged = []
-    for i, rid in enumerate(ids):
-        r = results.get(rid)
-        merged.append(strip(r) if r else {"seed": runs[i].get("seed"), "steps": [], "error": "no result"})
-    out = a.out or run_dir / "results.json"
+    merged = pool.merged(ids)
+    out = a.out or pool.run_dir / "results.json"
     out.write_text(json.dumps({"results": merged}), encoding="utf-8")
-    (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in arrival), encoding="utf-8")
-
-    # Per-server and total timing.
     print()
-    print(f"{'server':7} {'boot s':>7} {'fights':>6} {'first->last s':>13} {'wall s/fight':>12} {'game ms/fight':>13}  end")
-    t_ready_min = min((s.t_ready for s in servers if s.t_ready), default=t_start)
-    for s in servers:
-        done = [r for r in s.lines if r.get("_id") is not None]
-        boot = f"{s.t_ready - s.t_spawn:.1f}" if s.t_ready else "-"
-        span = (done[-1]["_t"] / 1000 - s.t_ready) if done and s.t_ready else 0
-        game_ms = [r["timing_ms"]["play"] + r["timing_ms"]["reset"] for r in done if "timing_ms" in r]
-        print(f"{s.name:7} {boot:>7} {len(done):>6} {span:>13.1f} {span / len(done) if done else 0:>12.2f} "
-              f"{sum(game_ms) / len(game_ms) if game_ms else 0:>13.0f}  "
-              f"{'spare ' if s.spare else ''}exit {s.rc}{' (' + s.killed + ')' if s.killed else ''}")
-    stalls = sum(1 for r in results.values() if str(r.get("error", "")).startswith("stalled"))
-    errors = sum(1 for r in results.values() if r.get("error") and not str(r.get("error")).startswith("stalled"))
-    wall, post_boot = t_end - t_start, t_end - t_ready_min
-    first_boot = min((s.t_ready - s.t_spawn for s in servers if s.t_ready), default=0)
-    summary = {
-        "fights": total, "results": len(results), "servers": n_act, "wall_s": round(wall, 1),
-        "wall_after_first_ready_s": round(post_boot, 1), "fights_per_min": round(60 * len(results) / max(1e-9, wall), 1),
-        "fights_per_min_after_boot": round(60 * len(results) / max(1e-9, post_boot), 1),
-        "s_per_fight_per_server": round(post_boot * n_act / max(1, len(results)), 2),
-        "first_boot_s": round(first_boot, 1), "restarts": restarts, "requeued": requeued, "stalled_results": stalls,
-        "errors": errors, "sts2_dll_sha256": digest, "network_connections": sorted(seen_net),
-        "real_profile_touched": before != after, "run_dir": run_dir.name,
-    }
+    print("\n".join(pool.table()))
+    summary = pool.summary()
     if a.verify_against:
         ref = json.loads(a.verify_against.read_text(encoding="utf-8"))["results"]
         same = same_steps = 0
@@ -441,8 +630,8 @@ def main() -> int:
                 first_bad.append({"spec": i, "differing_keys": sorted(keys)})
         summary["verify"] = {"results_equal": same, "steps_equal": same_steps, "of": total, "first_mismatches": first_bad}
     print(json.dumps(summary, indent=1))
-    (run_dir / "summary.json").write_text(json.dumps({**summary, "events": events}, indent=1), encoding="utf-8")
-    ok = rc_final == 0 and len(results) == total and not seen_net and before == after
+    pool.write_run_files(summary)
+    ok = rc_final == 0 and len(pool.results) == total and not pool.seen_net and not pool.profile_touched
     if a.verify_against and summary["verify"]["results_equal"] != total:
         ok = False
     return 0 if ok else 1
