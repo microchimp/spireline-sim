@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
@@ -199,13 +200,35 @@ public static partial class Driver
             var combat = cm.DebugOnlyGetState();
             bool busy = RunManager.Instance.ActionExecutor.IsRunning
                 || !RunManager.Instance.ActionQueueSet.IsEmpty
-                || (cm.IsInProgress && (cm.PlayerActionsDisabled || combat?.CurrentSide != CombatSide.Player));
+                || (cm.IsInProgress && (cm.PlayerActionsDisabled || combat?.CurrentSide != CombatSide.Player
+                    || !InPlayPhase(combat)));
             string sig = busy ? "busy" : Signature(combat);
             stable = !busy && sig == last ? stable + 1 : 0;
             last = sig;
         }
 
         return stable >= (int)IdleFrames;
+    }
+
+    /// <summary>
+    /// The player may act: their turn has reached PlayerTurnPhase.Play and the action synchronizer takes
+    /// manual plays into the queue. CombatManager.StartTurn enables player actions (PlayerActionsDisabled
+    /// false) before SetupPlayerTurn has drawn and run AfterPlayerTurnStart, and only sets the
+    /// synchronizer to PlayPhase once every player's RunAutoPrePlayPhase is done. A play or end turn
+    /// requested before that is parked by ActionQueueSynchronizer.RequestEnqueue (NotPlayPhase), so the
+    /// queue looks empty while turn-start hooks still run (RollingBoulderPower awaits its VFX), and the
+    /// parked requests all fire at once later. The game's own bot (AutoSlay CombatRoomHandler) waits for
+    /// PlayerTurnPhase.Play too.
+    /// </summary>
+    internal static bool InPlayPhase(CombatState? combat)
+    {
+        if (RunManager.Instance.ActionQueueSynchronizer.CombatState != ActionSynchronizerCombatState.PlayPhase)
+        {
+            return false;
+        }
+
+        var me = MegaCrit.Sts2.Core.Context.LocalContext.GetMe(combat);
+        return me?.PlayerCombatState?.Phase == PlayerTurnPhase.Play;
     }
 
     private static string Signature(CombatState? combat)
