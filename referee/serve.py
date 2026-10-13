@@ -87,12 +87,13 @@ def job_options(job_in, a: argparse.Namespace) -> dict:
     then --stall-s / --idle-frames and every --job-opt KEY=JSON (last wins, so they can turn a default off).
 
     Defaults: fast_reset, no_preload and the speed patches (driver/Patches.cs): fast_patches (SPEED_PLAN
-    step 2) and silent (no sound is started). --no-patches turns both off.
+    step 2), silent (no sound is started) and still_visuals (visual-only nodes do no per-frame work).
+    --no-patches turns all three patch sets off.
     """
     jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in ("idle_frames", "stall_s")}
     jopts["fast_reset"] = not a.slow_reset
     jopts["no_preload"] = not a.preload
-    for key in ("fast_patches", "silent"):
+    for key in ("fast_patches", "silent", "still_visuals"):
         jopts[key] = not a.no_patches
     if a.stall_s is not None:
         jopts["stall_s"] = a.stall_s
@@ -125,7 +126,7 @@ def main() -> int:
     ap.add_argument("--no-install", action="store_true")
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
     ap.add_argument("--no-patches", action="store_true",
-                    help="play without the speed patches (driver/Patches.cs: fast_patches, silent)")
+                    help="play without the speed patches (driver/Patches.cs: fast_patches, silent, still_visuals)")
     ap.add_argument("--no-dotnet-tuning", action="store_true", help="start the games without run_referee.DOTNET_ENV")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
     ap.add_argument("--job-opt", action="append", default=[], metavar="KEY=JSON",

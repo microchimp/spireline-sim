@@ -191,6 +191,11 @@ public static partial class Driver
                 Patches.Apply();
             }
 
+            if ((bool?)job["still_visuals"] == true)
+            {
+                Patches.StillVisuals(tree);
+            }
+
             Lean.Configure(job, tree);  // frame-cost profiling (Lean.cs)
 
             // The game's own preloader switch: background asset sessions only warm a cache,
