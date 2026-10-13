@@ -19,6 +19,7 @@ using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -172,10 +173,13 @@ public static class NodelessPatches
         // nodeless (NRun is null), which would cut the rest of the turn and the loss short. The
         // postfix wraps Kill's task: that one exception, and only it, is replaced by what the block
         // does besides music and the screen, the game's own RunManager.OnEnded(false); then Kill
-        // returns to its caller as on the full host.
+        // returns to its caller as on the full host. "Only it" is checked at the throw: Kill's
+        // MoveNext, IL offset inside that statement (IsExpectedGameOverException); any other null
+        // dereference in Kill is a nodeless error.
         h.Patch(AccessTools.Method(typeof(CreatureCmd), nameof(CreatureCmd.Kill), new[] { typeof(IReadOnlyCollection<Creature>), typeof(bool) }),
             postfix: new HarmonyMethod(typeof(NodelessPatches), nameof(KillPostfix)));
         Count++;
+        FindStopMusic();
 
         // --- Timing ------------------------------------------------------------------------
         // CombatStateTracker.CallCombatStateChangedDeferred waits one process frame on NRun before it
@@ -211,12 +215,37 @@ public static class NodelessPatches
     /// <summary>Orphan nodes after each step of the current fight (cost.orphans_by_step).</summary>
     internal static readonly List<long> OrphansByStep = new();
 
-    private static void SnapshotPostfix()
+    private static void SnapshotPostfix(Player player)
     {
         if (Nodeless.Active)
         {
             OrphansByStep.Add((long)Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount));
+            if (FallbackInState(player) is { } hit)
+            {
+                Nodeless.MarkFallback(hit + " (seen in the recorded state)");
+            }
         }
+    }
+
+    /// <summary>
+    /// The second fallback check, independent of the MutableClone postfix (a caller the JIT inlined
+    /// before patching would bypass it): any fallback model among the combat's creatures, their
+    /// powers, the player's cards in every pile and the deck, or the player's relics.
+    /// </summary>
+    internal static string? FallbackInState(Player player)
+    {
+        var combat = CombatManager.Instance.DebugOnlyGetState();
+        var models = new List<AbstractModel>();
+        foreach (var c in combat?.Creatures ?? Enumerable.Empty<Creature>())
+        {
+            if (c.Monster != null) models.Add(c.Monster);
+            models.AddRange(c.Powers);
+        }
+
+        models.AddRange(player.PlayerCombatState?.AllCards ?? Enumerable.Empty<CardModel>());
+        models.AddRange(player.Deck.Cards);
+        models.AddRange(player.Relics);
+        return models.FirstOrDefault(m => _fallback.Contains(m.GetType()))?.GetType().Name;
     }
 
     private static Type Ui(string name) =>
@@ -356,7 +385,7 @@ public static class NodelessPatches
         {
             await kill;
         }
-        catch (NullReferenceException e) when (Nodeless.Active && AllPlayersDead() && ThrownInKill(e.TargetSite))
+        catch (NullReferenceException e) when (Nodeless.Active && _gameOverNre.TryGetValue(e, out _))
         {
             GameOvers++;
             RunManager.Instance.OnEnded(isVictory: false);
@@ -366,20 +395,44 @@ public static class NodelessPatches
     private static bool AllPlayersDead() =>
         RunManager.Instance.DebugOnlyGetState() is { } run && run.Players.All(p => p.Creature.IsDead);
 
-    /// <summary>The method is the state machine of CreatureCmd.Kill (where the game-over block lives).</summary>
-    private static bool ThrownInKill(MethodBase? m) =>
-        m?.DeclaringType is { } t && t.DeclaringType == typeof(CreatureCmd) && t.Name.StartsWith("<Kill>", StringComparison.Ordinal);
+    /// <summary>The null dereferences matched at their throw (IsExpectedGameOverException); only these are caught.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Exception, object> _gameOverNre = new();
 
-    private static bool InGuard(MethodBase? m) =>
-        m?.DeclaringType is { } t && t.DeclaringType == typeof(NodelessPatches) && t.Name.StartsWith("<GuardGameOver>", StringComparison.Ordinal);
+    private static readonly object _marker = new();
+
+    /// <summary>Kill(IReadOnlyCollection&lt;Creature&gt;, bool)'s state machine MoveNext, where the game-over block lives.</summary>
+    private static MethodBase? _killMoveNext;
 
     /// <summary>
-    /// For the first-chance check: the null dereference GuardGameOver turns into OnEnded, thrown in
-    /// Kill or rethrown by GuardGameOver's await. The first game or guard frame on the stack decides.
+    /// IL offsets in _killMoveNext of the one statement NRun.Instance.RunMusicController.StopMusic():
+    /// from the call to NRun.get_Instance to the call to StopMusic. Found by reading the method's IL
+    /// (FindStopMusic), so a game update that moves or drops the statement turns the guard off and the
+    /// dereference shows as a nodeless error.
+    /// </summary>
+    private static (int From, int To)? _stopMusicIl;
+
+    private static bool _loggedGameOverIl;
+
+    /// <summary>
+    /// For the first-chance check, and the only thing the guard catches: a null dereference thrown in
+    /// Kill's MoveNext at the StopMusic statement, while NRun.Instance is null and every player is dead.
+    /// The first game frame on the stack is the throwing one; its IL offset must lie in the statement
+    /// (an inlined callee reports its call site's offset, which is outside it). The exception is
+    /// remembered, so its rethrow by GuardGameOver's await and the guard's catch know it.
     /// </summary>
     internal static bool IsExpectedGameOverException(Exception e)
     {
-        if (e is not NullReferenceException || !AllPlayersDead())
+        if (e is not NullReferenceException)
+        {
+            return false;
+        }
+
+        if (_gameOverNre.TryGetValue(e, out _))
+        {
+            return true;
+        }
+
+        if (_stopMusicIl is not { } il || _killMoveNext == null || MegaCrit.Sts2.Core.Nodes.NRun.Instance != null || !AllPlayersDead())
         {
             return false;
         }
@@ -394,10 +447,107 @@ public static class NodelessPatches
                 continue;  // runtime frames and the first-chance handler itself
             }
 
-            return ThrownInKill(m) || InGuard(m);
+            int at = f.GetILOffset();
+            bool match = m.MetadataToken == _killMoveNext.MetadataToken && m.Module == _killMoveNext.Module
+                && at >= il.From && at <= il.To;
+            if (!_loggedGameOverIl)
+            {
+                _loggedGameOverIl = true;
+                GD.Print($"[referee] nodeless: game-over dereference in {m.DeclaringType?.Name}.{m.Name} at IL {at}, StopMusic statement IL {il.From}..{il.To}: {(match ? "guarded" : "not the statement")}");
+            }
+
+            if (match)
+            {
+                _gameOverNre.Add(e, _marker);
+            }
+
+            return match;
         }
 
         return false;
+    }
+
+    /// <summary>Finds Kill's MoveNext and the IL range of its NRun.Instance.RunMusicController.StopMusic() statement.</summary>
+    private static void FindStopMusic()
+    {
+        var kill = AccessTools.Method(typeof(CreatureCmd), nameof(CreatureCmd.Kill), new[] { typeof(IReadOnlyCollection<Creature>), typeof(bool) });
+        var sm = kill.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>()?.StateMachineType;
+        var moveNext = sm?.GetMethod("MoveNext", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+        var nrun = Ui("NRun");
+        var getInstance = AccessTools.PropertyGetter(nrun, "Instance");
+        var getMusic = AccessTools.PropertyGetter(nrun, "RunMusicController");
+        var stop = AccessTools.Method(Ui("Audio.NRunMusicController"), "StopMusic");
+        if (moveNext == null || getInstance == null || getMusic == null || stop == null)
+        {
+            GD.Print("[referee] nodeless: game-over guard off (Kill's MoveNext or the StopMusic statement not found)");
+            return;
+        }
+
+        var calls = IlCalls(moveNext);
+        for (int i = 0; i + 2 < calls.Count; i++)
+        {
+            if (calls[i].Method == getInstance && calls[i + 1].Method == getMusic && calls[i + 2].Method == stop)
+            {
+                _killMoveNext = moveNext;
+                _stopMusicIl = (calls[i].Offset, calls[i + 2].Offset);
+                GD.Print($"[referee] nodeless: game-over guard on Kill IL {calls[i].Offset}..{calls[i + 2].Offset}");
+                return;
+            }
+        }
+
+        GD.Print("[referee] nodeless: game-over guard off (no NRun.Instance.RunMusicController.StopMusic() in Kill)");
+    }
+
+    /// <summary>Every call/callvirt in a method body with its IL offset and resolved target, in order.</summary>
+    internal static List<(int Offset, MethodBase? Method)> IlCalls(MethodBase method)
+    {
+        var il = method.GetMethodBody()?.GetILAsByteArray() ?? Array.Empty<byte>();
+        var one = new OpCode[0x100];
+        var two = new OpCode[0x100];
+        foreach (var f in typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static))
+        {
+            var op = (OpCode)f.GetValue(null)!;
+            ushort v = (ushort)op.Value;
+            if (op.Size == 1) one[v & 0xff] = op;
+            else two[v & 0xff] = op;
+        }
+
+        var calls = new List<(int, MethodBase?)>();
+        var typeArgs = method.DeclaringType?.IsGenericType == true ? method.DeclaringType.GetGenericArguments() : null;
+        int pos = 0;
+        while (pos < il.Length)
+        {
+            int start = pos;
+            OpCode op = il[pos] == 0xFE ? two[il[++pos]] : one[il[pos]];
+            pos++;
+            int size = op.OperandType switch
+            {
+                OperandType.InlineNone => 0,
+                OperandType.ShortInlineBrTarget or OperandType.ShortInlineI or OperandType.ShortInlineVar => 1,
+                OperandType.InlineVar => 2,
+                OperandType.InlineI8 or OperandType.InlineR => 8,
+                OperandType.InlineSwitch => 4 + 4 * BitConverter.ToInt32(il, pos),
+                _ => 4,
+            };
+            if (op == OpCodes.Call || op == OpCodes.Callvirt)
+            {
+                MethodBase? target = null;
+                try
+                {
+                    target = method.Module.ResolveMethod(BitConverter.ToInt32(il, pos), typeArgs, null);
+                }
+                catch (ArgumentException)
+                {
+                    // a token this module cannot resolve without generic context: not one we look for
+                }
+
+                calls.Add((start, target));
+            }
+
+            pos += size;
+        }
+
+        return calls;
     }
 
     // --- Deferred CombatStateChanged -------------------------------------------------------
