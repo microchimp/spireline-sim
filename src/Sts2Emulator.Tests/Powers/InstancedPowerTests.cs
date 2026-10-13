@@ -123,4 +123,39 @@ public class InstancedPowerTests
             clone.PlayerBuffs
         );
     }
+
+    private static int Slot(Span<int> obs, int first, int slot, int field) =>
+        obs[first + slot * CombatObservation.BuffSlotSize + field];
+
+    /// <summary>
+    /// The observation has five slots for an enemy's powers and always showed one per power. A
+    /// Tag Team never leaves the enemy it was played on, so a slot each would push the enemy's
+    /// other powers out of the five: the instances share one slot (their amounts added, as the
+    /// stacked entry held) and the other powers keep theirs.
+    /// </summary>
+    [Fact]
+    public void InstancesOfOnePowerShareASlotInTheObservation()
+    {
+        var fight = Fight.Hand().Enemy(hp: 50);
+        var enemy = fight.Enemy0;
+        enemy.Buffs.Add(new BuffState(BuffId.TagTeam, 1));
+        enemy.Buffs.Add(new BuffState(BuffId.Weak, 2));
+        enemy.Buffs.Add(new BuffState(BuffId.TagTeam, 1));
+        enemy.Buffs.Add(new BuffState(BuffId.Vulnerable, 3));
+        enemy.Buffs.Add(new BuffState(BuffId.TagTeam, 1));
+        enemy.Buffs.Add(new BuffState(BuffId.Poison, 4));
+        enemy.Buffs.Add(new BuffState(BuffId.TagTeam, 1));
+
+        Span<int> obs = stackalloc int[CombatObservation.ObsSize];
+        CombatObservation.Write(fight.State, obs);
+
+        int first = CombatObservation.EnemyOffset + 5;
+        Assert.Equal((int)BuffId.TagTeam, Slot(obs, first, 0, 0));
+        Assert.Equal(4, Slot(obs, first, 0, 1));
+        Assert.Equal((int)BuffId.Weak, Slot(obs, first, 1, 0));
+        Assert.Equal((int)BuffId.Vulnerable, Slot(obs, first, 2, 0));
+        Assert.Equal((int)BuffId.Poison, Slot(obs, first, 3, 0));
+        Assert.Equal(4, Slot(obs, first, 3, 1));
+        Assert.Equal(0, Slot(obs, first, 4, 0));
+    }
 }
