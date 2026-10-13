@@ -99,7 +99,7 @@ public static partial class Driver
         var result = (string?)o["kind"] switch
         {
             "combat" when Nodeless.Enabled => await Nodeless.Play(o, PlayCombat, () => RunManager.Instance.CleanUp()),
-            "combat" when Nodeless.ErrorLog => await Nodeless.PlayFull(o, PlayCombat),
+            "combat" when Nodeless.ErrorLog => await Nodeless.PlayFull(o, PlayCombat, () => RunManager.Instance.CleanUp()),
             "combat" => await PlayCombat(o),
             "export" => Export(),
             _ => await StartRun(o),

@@ -9,21 +9,30 @@
 // Job flag "nodeless": true selects it; without it nothing here is installed. Per fight:
 //   - a spec whose deck_add holds a fallback model goes straight to the full host;
 //   - otherwise it plays nodeless; the first fallback model created (AbstractModel.MutableClone,
-//     any card, monster, power, relic...) aborts the fight at the driver's next frame check, and
-//     the fight is played again from the start on the full host (NGame.StartRun, NRun);
-//   - any game error (Log.Error) or exception thrown (first chance, cancellations aside) while a
-//     nodeless fight runs fails that fight ("error"), unless "nodeless_on_error": "full" asks for
-//     the full host instead;
+//     any card, monster, power, relic...) or seen in a recorded state aborts the fight at the
+//     driver's next frame check, and the fight is played again from the start on the full host
+//     (NGame.StartRun, NRun);
+//   - any game error (Log.Error) or exception thrown (first chance) while a nodeless fight runs
+//     fails that fight ("error"), unless "nodeless_on_error": "full" asks for the full host instead;
+//   - a cancellation exception thrown during a nodeless fight fails it too, unless its type and
+//     site are on the proven-harmless list (HarmlessCancels) or the same cancellation (type, site,
+//     token owner) happens when the spec is replayed on the full host right away (cost.cancel_check);
 //   - "nodeless_audit": f also plays a stable fraction f of nodeless fights on the full host and
 //     records in cost.audit whether both results agree.
-// Diagnostics go under "cost" (never compared): host, fallback reason, errors, audit, health.
+// A full-host fight (fallback, audit, cancel check, or an "error_log" job) with a game error during
+// the fight gets "error" too ("full host: ..."), so a UI abort is never output as a clean result.
+// Diagnostics go under "cost" (never compared): host, fallback reason, errors, cancellations, audit.
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using Godot;
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes;
@@ -46,8 +55,9 @@ public static class Nodeless
     public static bool Active { get; private set; }
 
     /// <summary>Where a nodeless fight is, for the watchdog's message ("" when the job is not nodeless).</summary>
-    internal static string Where => Enabled ? $" (nodeless: {_phase}, step {Driver.CurrentStep}, active {Active})" : "";
+    internal static string Where => Enabled ? $" (nodeless: {_fight} {_phase}, step {Driver.CurrentStep}, active {Active})" : "";
 
+    /// <summary>"fight" (BeginFight to the end of play), "reset", "teardown", then "between" until the next fight.</summary>
     private static string _phase = "idle";
 
     /// <summary>First fallback-listed model seen in this attempt, or null.</summary>
@@ -55,36 +65,62 @@ public static class Nodeless
 
     private static bool _errorsToFull;
     private static readonly object _lock = new();
-    private static readonly List<string> _errors = new();
-    private static int _cancellations;
     private static Control? _emptyScene;
 
     /// <summary>Per-process tallies, reported with every fight.</summary>
-    private static int _nodelessFights, _fullFights, _fallbacks, _failed;
+    private static int _nodelessFights, _fullFights, _fallbacks, _failed, _cancelChecks, _cancelFails;
 
     /// <summary>
-    /// Job "error_log": true (implied by "nodeless"): game errors and first-chance exceptions of each
-    /// full-host fight go to its cost.errors, so a comparison can tell a full-host UI failure (such as
-    /// "Hand size 11") from a nodeless divergence. Off, the full host runs exactly as before.
+    /// Job "error_log": true (implied by "nodeless"): game errors, first-chance exceptions and
+    /// cancellations of each full-host fight go to its cost, so a comparison can tell a full-host UI
+    /// failure (such as "Hand size 11") from a nodeless divergence. Off, the full host runs as before.
     /// </summary>
     public static bool ErrorLog { get; private set; }
 
-    private static bool _recordFull;
-    private static readonly List<string> _fullErrors = new();
+    /// <summary>
+    /// Recording span: null before the first fight, else the host of the fight that began last. Errors
+    /// and cancellations are collected from BeginFight on; those after a fight's harvest (between two
+    /// fights) are reported with the next fight.
+    /// </summary>
+    private static string? _span;
+
+    private static readonly List<string> _errors = new();
+
+    /// <summary>Nodeless frame pacing (job "frame_sleep_usec"); full-host fights keep the default.</summary>
+    private static int? _sleepNodeless;
+
+    private static int _sleepDefault;
+
+    /// <summary>Frames waited after a fight's reset, so its own teardown is recorded with it.</summary>
+    private const int TeardownFrames = 2;
 
     public static void Configure(JsonObject job)
     {
+        bool nodeless = (bool?)job["nodeless"] == true;
+
         // Job "frame_sleep_usec": N sets OS.LowProcessorUsageModeSleepUsec. Headless, Godot cannot
         // draw, so OS::add_frame_delay paces every frame to at least that long (6900 us by default).
         // A full-host frame mostly costs more CPU than that; an empty nodeless frame costs ~1 ms and
         // then sleeps the rest. Frame pacing only: no rule reads wall time. Unset, nothing changes.
+        // In a nodeless job it paces nodeless fights only: the full host's settle check depends on
+        // the default pacing (0 there changes 67 of 300 full-host results), so fallback replays,
+        // audits and cancel checks in the same process run at the default.
         if (job["frame_sleep_usec"] is { } sleep)
         {
-            OS.LowProcessorUsageModeSleepUsec = (int)sleep;
-            GD.Print($"[referee] frame sleep {OS.LowProcessorUsageModeSleepUsec} us");
+            if (nodeless)
+            {
+                _sleepDefault = OS.LowProcessorUsageModeSleepUsec;
+                _sleepNodeless = (int)sleep;
+                GD.Print($"[referee] frame sleep {_sleepNodeless} us in nodeless fights, {_sleepDefault} us on the full host");
+            }
+            else
+            {
+                OS.LowProcessorUsageModeSleepUsec = (int)sleep;
+                GD.Print($"[referee] frame sleep {OS.LowProcessorUsageModeSleepUsec} us");
+            }
         }
 
-        if ((bool?)job["error_log"] == true && !ErrorLog && (bool?)job["nodeless"] != true)
+        if ((bool?)job["error_log"] == true && !ErrorLog && !nodeless)
         {
             ErrorLog = true;
             Log.LogCallback += OnLog;
@@ -93,7 +129,7 @@ public static class Nodeless
             return;
         }
 
-        if ((bool?)job["nodeless"] != true || Enabled)
+        if (!nodeless || Enabled)
         {
             return;
         }
@@ -153,7 +189,7 @@ public static class Nodeless
 
     private static void OnLog(LogLevel level, string text, int _)
     {
-        if ((Active || _recordFull) && level >= LogLevel.Error)
+        if (_span != null && level >= LogLevel.Error)
         {
             Record("log: " + text);
         }
@@ -161,14 +197,14 @@ public static class Nodeless
 
     private static void OnFirstChance(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs e)
     {
-        if (!(Active || _recordFull) || e.Exception is NodelessFallbackException)
+        if (_span == null || e.Exception is NodelessFallbackException)
         {
             return;
         }
 
-        if (e.Exception is OperationCanceledException)
+        if (e.Exception is OperationCanceledException oce)
         {
-            lock (_lock) _cancellations++;
+            RecordCancel(oce);
             return;
         }
 
@@ -183,57 +219,282 @@ public static class Nodeless
 
     private static void Record(string what)
     {
-        bool full = _recordFull;
         lock (_lock)
         {
-            if (!full && FallbackHit != null)
+            if (Active && FallbackHit != null)
             {
                 return;  // the attempt is being thrown away; what a fallback model does nodeless is expected
             }
 
-            var list = full ? _fullErrors : _errors;
-            if (list.Count < 20)
+            if (_errors.Count < 20)
             {
-                list.Add(what.Length > 4000 ? what[..4000] : what);
+                _errors.Add(what.Length > 4000 ? what[..4000] : what);
             }
-            else if (list.Count == 20)
+            else if (_errors.Count == 20)
             {
-                list.Add("...");
+                _errors.Add("...");
             }
         }
 
-        GD.Print((full ? "[referee] full-host error: " : "[referee] nodeless error: ") + (what.Length > 600 ? what[..600] : what));
+        GD.Print((_span == "full" ? "[referee] full-host error: " : "[referee] nodeless error: ") + (what.Length > 600 ? what[..600] : what));
     }
 
-    /// <summary>A full-host fight with its game errors in cost.errors (error_log, fallback replays, audits).</summary>
-    internal static async Task<JsonObject> PlayFull(JsonObject spec, Func<JsonObject, Task<JsonObject>> play)
+    // --- Cancellations ---------------------------------------------------------------------
+    // A cancellation exception is not a game error (the game throws them on purpose), but a rules
+    // chain cut short by one would go unnoticed: the game logs neither a cancelled action nor a
+    // cancelled fire-and-forget task. So each one is recorded once (an async exception is raised
+    // again by every frame that awaits it; those repeats are the same object) with where it was
+    // first thrown, what cancelled it and when, and Play decides whether the fight may stand.
+
+    /// <summary>One cancellation: exception type, throw site (game frames), token owner, phase, step, fight.</summary>
+    internal sealed record Cancel(string Type, string Site, string Token, string Phase, int Step, string Fight)
     {
-        lock (_lock) _fullErrors.Clear();
-        _recordFull = true;
-        JsonObject result;
-        try
+        /// <summary>What has to match between hosts: the type, the site and what cancelled it.</summary>
+        public string Key => Type + " at " + Site + " [" + Token + "]";
+
+        /// <summary>The game methods the exception went up through, one per await that rethrew it (diagnostic).</summary>
+        public List<string> Awaiters { get; } = new();
+
+        public override string ToString() => Key + (Awaiters.Count > 0 ? " awaited by " + string.Join(" < ", Awaiters) : "")
+            + " (" + Phase + ", step " + Step + (Fight.Length > 0 ? ", " + Fight : "") + ")";
+    }
+
+    /// <summary>
+    /// Cancellations proven harmless from the decompile, by type and throw site (Cancel.Key). Empty:
+    /// every cancellation in a nodeless fight is checked against the full host.
+    /// </summary>
+    internal static readonly HashSet<string> HarmlessCancels = new();
+
+    private static readonly ConditionalWeakTable<Exception, Cancel> _seenCancels = new();
+    private static readonly List<Cancel> _cancels = new();
+
+    /// <summary>
+    /// CombatManager._combatCts (cancelled by Reset and by the next AfterCombatRoomLoaded) and
+    /// ActionExecutor._actionCancelToken: the two rules-side token sources a fight can see.
+    /// </summary>
+    private static readonly FieldInfo? _combatCts = typeof(CombatManager).GetField("_combatCts", BindingFlags.NonPublic | BindingFlags.Instance);
+    private static readonly FieldInfo? _actionCts = typeof(MegaCrit.Sts2.Core.GameActions.ActionExecutor).GetField("_actionCancelToken", BindingFlags.NonPublic | BindingFlags.Instance);
+
+    /// <summary>Each finished fight's combat token source, with the fight's label, to tell an old combat's token.</summary>
+    private static readonly List<(WeakReference<CancellationTokenSource> Cts, string Fight)> _combats = new();
+
+    /// <summary>The fight being played (or last played): "nodeless 12", "full 13".</summary>
+    private static string _fight = "none";
+
+    private static int _fightNo;
+
+    private static void BeginFight(string host)
+    {
+        _fight = host + " " + ++_fightNo;
+        _span = host;
+        _phase = "fight";
+        Active = host == "nodeless";
+        if (_sleepNodeless is int s)
         {
-            result = await play(spec);
+            OS.LowProcessorUsageModeSleepUsec = Active ? s : _sleepDefault;
         }
-        finally
+    }
+
+    /// <summary>
+    /// After play: the run's own reset, then (full host) the NRun scene goes, then a few frames, all
+    /// still in this fight's span, so what its teardown throws is recorded with it and not with the
+    /// next fight. The scene would go anyway when the next run starts (NGame.StartRun replaces it).
+    /// </summary>
+    private static async Task EndFight(Action reset)
+    {
+        if (_combatCts?.GetValue(CombatManager.Instance) is CancellationTokenSource cts)
         {
-            _recordFull = false;
+            lock (_lock)
+            {
+                _combats.RemoveAll(c => !c.Cts.TryGetTarget(out var t) || t == cts);
+                _combats.Add((new WeakReference<CancellationTokenSource>(cts), _fight));
+            }
         }
 
-        string[] errors;
+        _phase = "reset";
+        reset();
+        _phase = "teardown";
+        UseEmptyScene();
+        var tree = (SceneTree)Engine.GetMainLoop();
+        for (int i = 0; i < TeardownFrames; i++)
+        {
+            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+        }
+    }
+
+    /// <summary>Takes what was recorded since the last harvest.</summary>
+    private static (string[] Errors, Cancel[] Cancels) Harvest()
+    {
         lock (_lock)
         {
-            errors = _fullErrors.ToArray();
-            _fullErrors.Clear();
+            var r = (_errors.ToArray(), _cancels.ToArray());
+            _errors.Clear();
+            _cancels.Clear();
+            return r;
         }
-
-        var cost = Cost(result);
-        cost["host"] = "full";
-        cost["errors"] = new JsonArray(errors.Select(e => (JsonNode)e).ToArray());
-        return result;
     }
 
-    /// <summary>Called by the MutableClone postfix: a model whose own code needs nodes entered this fight.</summary>
+    /// <summary>Who owns the token: a finished fight's combat, this fight's combat, the action executor, other, none.</summary>
+    private static string TokenOwner(CancellationToken token, out string fight)
+    {
+        fight = "";
+        if (!token.CanBeCanceled)
+        {
+            return "no token";
+        }
+
+        lock (_lock)
+        {
+            foreach (var (weak, label) in _combats)
+            {
+                if (weak.TryGetTarget(out var cts) && cts.Token == token)
+                {
+                    fight = "token of " + label;
+                    return "an earlier fight's combat";
+                }
+            }
+        }
+
+        if (_combatCts?.GetValue(CombatManager.Instance) is CancellationTokenSource now && now.Token == token)
+        {
+            return "this fight's combat";
+        }
+
+        if (_actionCts?.GetValue(RunManager.Instance.ActionExecutor) is CancellationTokenSource act && act.Token == token)
+        {
+            return "action executor";
+        }
+
+        return "other token";
+    }
+
+    /// <summary>
+    /// The throw site: the first game (or Godot) frames of the stack, runtime and handler frames left out,
+    /// async state machines named after their method ("CombatManager.StartTurn").
+    /// </summary>
+    internal static string Site(System.Diagnostics.StackTrace trace, int frames = 4)
+    {
+        var names = new List<string>();
+        foreach (var f in trace.GetFrames())
+        {
+            var m = f.GetMethod();
+            var t = m?.DeclaringType;
+            string ns = t?.Namespace ?? t?.DeclaringType?.Namespace ?? "";
+            if (m == null || t == null || ns.StartsWith("System", StringComparison.Ordinal) || t == typeof(Nodeless))
+            {
+                continue;
+            }
+
+            names.Add(MethodName(m));
+            if (names.Count == frames)
+            {
+                break;
+            }
+        }
+
+        return names.Count == 0 ? "runtime" : string.Join(" < ", names);
+    }
+
+    private static string MethodName(MethodBase m)
+    {
+        var t = m.DeclaringType!;
+        var outer = t;
+        while (outer.Name.StartsWith('<') && outer.DeclaringType != null)
+        {
+            outer = outer.DeclaringType;  // compiler-generated nested types: state machines, closures
+        }
+
+        string name = t.Name.StartsWith('<') && t.Name.IndexOf('>') > 1 && m.Name == "MoveNext"
+            ? t.Name[1..t.Name.IndexOf('>')]  // <StartTurn>d__78.MoveNext
+            : m.Name.StartsWith('<') && m.Name.IndexOf('>') > 1
+                ? m.Name[1..m.Name.IndexOf('>')] + " (lambda)"
+                : m.Name;
+        return outer.Name + "." + name;
+    }
+
+    private static void RecordCancel(OperationCanceledException oce)
+    {
+        if (_seenCancels.TryGetValue(oce, out var seen))
+        {
+            // raised again by an await: the method it now leaves is one the cancellation cuts short
+            string by = Site(new System.Diagnostics.StackTrace(2, false), 1);
+            lock (_lock)
+            {
+                if (seen.Awaiters.Count < 6 && (seen.Awaiters.Count == 0 || seen.Awaiters[^1] != by))
+                {
+                    seen.Awaiters.Add(by);
+                }
+            }
+
+            return;
+        }
+
+        string owner = TokenOwner(oce.CancellationToken, out string fight);
+        var c = new Cancel(oce.GetType().Name, Site(new System.Diagnostics.StackTrace(2, false)), owner, _phase, Driver.CurrentStep, fight);
+        lock (_lock)
+        {
+            _seenCancels.AddOrUpdate(oce, c);
+            if (_cancels.Count < 500)
+            {
+                _cancels.Add(c);
+            }
+        }
+    }
+
+    /// <summary>Distinct cancellations with their counts, for cost.cancel_sites.</summary>
+    private static JsonArray CancelSites(IEnumerable<Cancel> cancels) =>
+        new(cancels.GroupBy(c => c.ToString()).Select(g => (JsonNode)(g.Count() + " x " + g.Key)).ToArray());
+
+    /// <summary>Cancellations that count against a nodeless fight: thrown while it played, not proven harmless.</summary>
+    private static List<Cancel> Unexplained(IEnumerable<Cancel> cancels) =>
+        cancels.Where(c => c.Phase == "fight" && !HarmlessCancels.Contains(c.Key)).ToList();
+
+    // --- Full host ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// A full-host fight with its game errors in cost.errors and its cancellations in cost.cancel_sites
+    /// (error_log jobs, fallback replays, audits, cancel checks). A game error while the fight played
+    /// sets "error" ("full host: ..."); errors of its teardown go to cost.teardown_errors only.
+    /// </summary>
+    internal static async Task<JsonObject> PlayFull(JsonObject spec, Func<JsonObject, Task<JsonObject>> play, Action reset) =>
+        (await PlayFullCore(spec, play, reset)).Result;
+
+    private static async Task<(JsonObject Result, Cancel[] Cancels)> PlayFullCore(JsonObject spec, Func<JsonObject, Task<JsonObject>> play, Action reset)
+    {
+        var (between, betweenCancels) = Harvest();  // what the last fight's coroutines threw since its harvest
+        BeginFight("full");
+        FallbackHit = null;
+        _fullFights++;
+        var result = await play(spec);
+        var (errors, cancels) = Harvest();
+        await EndFight(reset);
+        var (teardown, teardownCancels) = Harvest();
+        _phase = "between";
+        var cost = Cost(result);
+        cost["host"] = "full";
+        cost["frame_sleep_usec"] = OS.LowProcessorUsageModeSleepUsec;
+        cost["errors"] = new JsonArray(errors.Select(e => (JsonNode)e).ToArray());
+        if (teardown.Length > 0 || between.Length > 0)
+        {
+            cost["teardown_errors"] = new JsonArray(between.Concat(teardown).Select(e => (JsonNode)e).ToArray());
+        }
+
+        var all = betweenCancels.Concat(cancels).Concat(teardownCancels).ToArray();
+        cost["cancellations"] = all.Length;
+        if (all.Length > 0)
+        {
+            cost["cancel_sites"] = CancelSites(all);
+        }
+
+        if (errors.Length > 0 && result["error"] == null)
+        {
+            result["error"] = "full host: " + errors.Length + " game error(s); first: " + errors[0];
+        }
+
+        return (result, cancels);
+    }
+
+    /// <summary>Called when a model whose own code needs nodes entered this fight.</summary>
     internal static void MarkFallback(string reason)
     {
         if (Active && FallbackHit == null)
@@ -283,8 +544,8 @@ public static class Nodeless
     /// <summary>
     /// One combat spec: nodeless if it can be, else (or after a fallback model showed up) the full host.
     /// <paramref name="play" /> is Driver.PlayCombat; <paramref name="reset" /> ends a run as PlaySpec does.
-    /// The patches stay on (Active) from the start of a nodeless fight through its reset and until a
-    /// full-host fight starts, so game coroutines still running between fights see the same host.
+    /// The patches stay on (Active) from the start of a nodeless fight through its reset and until the
+    /// next fight starts, so game coroutines still running between fights see the same host.
     /// Errors are collected over the same span: anything logged between fights counts for the next one.
     /// </summary>
     internal static async Task<JsonObject> Play(JsonObject spec, Func<JsonObject, Task<JsonObject>> play, Action reset)
@@ -293,29 +554,23 @@ public static class Nodeless
         JsonObject? attempt = null;
         if (reason == null)
         {
+            var (between, betweenCancels) = Harvest();  // what the last fight's coroutines threw since its harvest
+            BeginFight("nodeless");
             FallbackHit = null;
-            Active = true;
             int gameOvers = NodelessPatches.GameOvers;
             NodelessPatches.OrphansByStep.Clear();
             long orphans0 = (long)Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount);
-            _phase = "fight";
             attempt = await play(spec);
-            _phase = "reset";
+            var (errors, cancels) = Harvest();
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            reset();  // RunManager.CleanUp with the patches on; PlaySpec's own reset then finds no run
+            await EndFight(reset);  // RunManager.CleanUp with the patches on; PlaySpec's own reset then finds no run
             long resetMs = clock.ElapsedMilliseconds;
+            var (teardown, teardownCancels) = Harvest();
+            _phase = "between";
+            errors = between.Concat(errors).Concat(teardown).ToArray();  // nodeless, an error anywhere counts
             long orphans1 = (long)Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount);
-            _phase = "after reset";
             gameOvers = NodelessPatches.GameOvers - gameOvers;
-            string[] errors;
-            int cancellations;
-            lock (_lock)
-            {
-                errors = _errors.ToArray();
-                cancellations = _cancellations;
-                _errors.Clear();
-                _cancellations = 0;
-            }
+            var allCancels = betweenCancels.Concat(cancels).Concat(teardownCancels).ToArray();
 
             if (FallbackHit == null)
             {
@@ -324,8 +579,14 @@ public static class Nodeless
                     _nodelessFights++;
                     var cost = Cost(attempt);
                     cost["host"] = "nodeless";
-                    cost["reset_ms"] = resetMs;
-                    cost["cancellations"] = cancellations;
+                    cost["frame_sleep_usec"] = OS.LowProcessorUsageModeSleepUsec;
+                    cost["reset_ms"] = resetMs;  // the reset and the teardown frames
+                    cost["cancellations"] = allCancels.Length;
+                    if (allCancels.Length > 0)
+                    {
+                        cost["cancel_sites"] = CancelSites(allCancels);
+                    }
+
                     cost["game_overs"] = gameOvers;
                     if (orphans1 != orphans0)
                     {
@@ -333,6 +594,7 @@ public static class Nodeless
                         cost["orphans_by_step"] = new JsonArray(new[] { orphans0 }.Concat(NodelessPatches.OrphansByStep).Append(orphans1)
                             .Select(n => (JsonNode)n).ToArray());
                     }
+
                     if (errors.Length > 0)
                     {
                         _failed++;
@@ -340,13 +602,20 @@ public static class Nodeless
                         string first = "nodeless: " + errors.Length + " game error(s); first: " + errors[0];
                         attempt["error"] = attempt["error"] is { } prior ? first + " || " + prior : first;
                     }
+                    else if (Unexplained(cancels) is { Count: > 0 } unexplained)
+                    {
+                        var full = await CancelCheck(spec, attempt, unexplained, play, reset);
+                        if (full != null)
+                        {
+                            return full;  // nodeless_on_error "full": the full host's result stands instead
+                        }
+                    }
 
                     if (IsAudited(spec))
                     {
                         await Audit(spec, attempt, play, reset);
                     }
 
-                    _phase = "returned";
                     return attempt;
                 }
 
@@ -358,20 +627,22 @@ public static class Nodeless
                 _fallbacks++;
             }
 
-            if (errors.Length > 0 && attempt["cost"] is JsonObject ac)
+            if (attempt["cost"] is JsonObject ac)
             {
-                ac["nodeless_errors"] = new JsonArray(errors.Select(e => (JsonNode)e).ToArray());  // reported below
+                if (errors.Length > 0)
+                {
+                    ac["nodeless_errors"] = new JsonArray(errors.Select(e => (JsonNode)e).ToArray());  // reported below
+                }
+
+                if (allCancels.Length > 0)
+                {
+                    ac["cancel_sites"] = CancelSites(allCancels);
+                }
             }
         }
 
-        Active = false;
-        FallbackHit = null;
-        _fullFights++;
-        _phase = "full-host fight";
-        var result = await PlayFull(spec, play);
-        _phase = "full-host done";
+        var result = await PlayFull(spec, play, reset);
         var c = Cost(result);
-        c["host"] = "full";
         c["fallback"] = reason;
         if (attempt != null && attempt["cost"] is JsonObject wasted)
         {
@@ -379,6 +650,48 @@ public static class Nodeless
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// A nodeless fight threw cancellations that are not proven harmless: the spec is played again on
+    /// the full host at once. The nodeless result stands only if every one of them (type, site, token
+    /// owner) also happened there; else the fight fails ("nodeless: cancellation ..."), or with
+    /// "nodeless_on_error": "full" the full host's result is returned instead (the return value).
+    /// </summary>
+    private static async Task<JsonObject?> CancelCheck(JsonObject spec, JsonObject nodeless, List<Cancel> unexplained,
+        Func<JsonObject, Task<JsonObject>> play, Action reset)
+    {
+        _cancelChecks++;
+        var (full, fullCancels) = await PlayFullCore(spec, play, reset);
+        var seen = fullCancels.Select(c => c.Key).ToHashSet();
+        var missing = unexplained.Select(c => c.Key).Distinct().Where(k => !seen.Contains(k)).ToList();
+        string? diff = FirstDiff(nodeless, full);
+        Cost(nodeless)["cancel_check"] = new JsonObject
+        {
+            ["same_on_full"] = missing.Count == 0,
+            ["missing_on_full"] = new JsonArray(missing.Select(k => (JsonNode)k).ToArray()),
+            ["full_cancel_sites"] = (full["cost"] as JsonObject)?["cancel_sites"]?.DeepClone(),
+            ["result_same"] = diff == null, ["first_diff"] = diff, ["full_error"] = full["error"]?.DeepClone(),
+        };
+        if (missing.Count == 0)
+        {
+            return null;
+        }
+
+        _cancelFails++;
+        GD.Print($"[referee] nodeless: {(string?)spec["seed"]} cancellation not seen on the full host: {missing[0]}");
+        if (_errorsToFull)
+        {
+            var c = Cost(full);
+            c["fallback"] = "cancellation: " + missing[0];
+            c["nodeless_attempt"] = Cost(nodeless).DeepClone();
+            return full;
+        }
+
+        _failed++;
+        string first = "nodeless: cancellation not seen on the full host: " + missing[0];
+        nodeless["error"] = nodeless["error"] is { } prior ? first + " || " + prior : first;
+        return null;
     }
 
     /// <summary>Job "nodeless_audit": fraction (0..1) of nodeless fights also played on the full host.</summary>
@@ -404,6 +717,25 @@ public static class Nodeless
         return h % 10000 < _audit * 10000;
     }
 
+    /// <summary>The first result key (timing and cost keys aside) where two results differ, or null.</summary>
+    private static string? FirstDiff(JsonObject a, JsonObject b)
+    {
+        foreach (var key in a.Select(kv => kv.Key).Union(b.Select(kv => kv.Key)))
+        {
+            if (key is "cost" or "cost_setup" or "phase_ms" or "timing_ms")
+            {
+                continue;
+            }
+
+            if (a[key]?.ToJsonString() != b[key]?.ToJsonString())
+            {
+                return key;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// The audit: the same spec again on the full host; both results compared without timing and cost
     /// keys. The nodeless result is kept; cost.audit says whether they agree (and the first key that
@@ -411,26 +743,9 @@ public static class Nodeless
     /// </summary>
     private static async Task Audit(JsonObject spec, JsonObject nodeless, Func<JsonObject, Task<JsonObject>> play, Action reset)
     {
-        Active = false;
-        _phase = "audit";
-        var full = await PlayFull(spec, play);
-        reset();
+        var full = await PlayFull(spec, play, reset);
         _audits++;
-        string? diff = null;
-        foreach (var key in nodeless.Select(kv => kv.Key).Union(full.Select(kv => kv.Key)))
-        {
-            if (key is "cost" or "cost_setup" or "phase_ms" or "timing_ms")
-            {
-                continue;
-            }
-
-            if (nodeless[key]?.ToJsonString() != full[key]?.ToJsonString())
-            {
-                diff = key;
-                break;
-            }
-        }
-
+        string? diff = FirstDiff(nodeless, full);
         if (diff != null)
         {
             _auditDiffs++;
@@ -471,6 +786,7 @@ public static class Nodeless
             ["working_set_mb"] = Math.Round(proc.WorkingSet64 / 1048576.0, 1),
             ["fights_nodeless"] = _nodelessFights, ["fights_full"] = _fullFights,
             ["fallbacks"] = _fallbacks, ["failed"] = _failed, ["audits"] = _audits, ["audit_diffs"] = _auditDiffs,
+            ["cancel_checks"] = _cancelChecks, ["cancel_fails"] = _cancelFails,
         };
     }
 }
