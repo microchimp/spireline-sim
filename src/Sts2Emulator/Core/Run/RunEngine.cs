@@ -3757,7 +3757,8 @@ public sealed class RunEngine
             case RunConstants.EventRanwidTheElder:
                 if (action == 0)
                 {
-                    int slot = Array.FindIndex(State.PotionSlots, potion => potion != 0);
+                    // The potion the elder named when the options were built, not the first held.
+                    int slot = RunNonCombatEffects.EventPotionSlot(State);
                     if (slot < 0)
                     {
                         return -1;
@@ -3921,7 +3922,8 @@ public sealed class RunEngine
                 // first -- and the HP is taken BEFORE the selector opens.
                 if (action == 0)
                 {
-                    int slot = Array.FindIndex(State.PotionSlots, potion => potion != 0);
+                    // `DrinkAndLiftPotion`: the potion picked when the options were built.
+                    int slot = RunNonCombatEffects.EventPotionSlot(State);
                     if (slot < 0)
                     {
                         return -1;

@@ -2006,6 +2006,9 @@ public static class RunNonCombatEffects
             case RunConstants.EventRanwidTheElder:
                 CalculateRanwidVars(state);
                 break;
+            case RunConstants.EventStoneOfAllTime:
+                CalculateStoneOfAllTimeVars(state);
+                break;
             case RunConstants.EventWelcomeToWongos:
                 // The featured item is pulled when the options are generated, so it comes
                 // off the bag on entry whether or not the player buys it.
@@ -2277,6 +2280,47 @@ public static class RunNonCombatEffects
     }
 
     /// <summary>
+    /// The belt slot of the potion an event picked with <c>Rng.NextItem(Owner.Potions)</c> while it
+    /// built its options: Ranwid the Elder's to give, the Stone of All Time's to drink. Not the first
+    /// one held. -1 when the belt was empty.
+    /// </summary>
+    public static int EventPotionSlot(RunState state)
+    {
+        if (state.EventValue1 is null)
+        {
+            if (state.EventId == RunConstants.EventRanwidTheElder)
+            {
+                CalculateRanwidVars(state);
+            }
+            else
+            {
+                CalculateStoneOfAllTimeVars(state);
+            }
+        }
+
+        int pick = state.EventValue1!.Value;
+        for (int slot = 0; slot < state.PotionSlots.Length; slot++)
+        {
+            if (state.PotionSlots[slot] != 0 && pick-- == 0)
+            {
+                return slot;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// <c>StoneOfAllTime.GenerateInitialOptions</c>: <c>DrinkAndLiftPotion = Rng.NextItem(Owner.Potions)</c>,
+    /// one draw off the event's own stream, none on an empty belt.
+    /// </summary>
+    private static void CalculateStoneOfAllTimeVars(RunState state)
+    {
+        int potions = state.PotionSlots.Count(slot => slot != 0);
+        state.EventValue1 = potions > 0 ? EventRng(state, "STONE_OF_ALL_TIME").NextInt(0, potions) : -1;
+    }
+
+    /// <summary>
     /// <c>RanwidTheElder.GenerateInitialOptions</c> draws twice: a potion, then a relic.
     /// </summary>
     /// <remarks>
@@ -2289,10 +2333,7 @@ public static class RunNonCombatEffects
     {
         var rng = EventRng(state, "RANWID_THE_ELDER");
         int potions = state.PotionSlots.Count(slot => slot != 0);
-        if (potions > 0)
-        {
-            rng.NextInt(0, potions);
-        }
+        state.EventValue1 = potions > 0 ? rng.NextInt(0, potions) : -1;
 
         var tradable = Enumerable
             .Range(0, state.Relics.Count)
