@@ -45,7 +45,8 @@ public class WoodCarvingsTests
         int deckSize = engine.State.Deck.Count;
         Assert.Equal(0, engine.Step(index, -1, out _, out _, out _));
 
-        Assert.Equal(RunNonCombatEffects.NamedCard(card), engine.State.Deck[index].DefId);
+        // CardCmd.TransformTo adds the carving's card at the bottom of the deck.
+        Assert.Equal(RunNonCombatEffects.NamedCard(card), engine.State.Deck[^1].DefId);
         Assert.Equal(deckSize, engine.State.Deck.Count);
         Assert.Equal(RunPhase.Event, engine.State.Phase);
     }

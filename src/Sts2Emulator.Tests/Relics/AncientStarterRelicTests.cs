@@ -1115,8 +1115,9 @@ public class DeckSelectionPickupRelicTests
         RunNonCombatEffects.ApplyRelicPickup(engine.State, RunConstants.RelicClaws);
         Assert.True(RunNonCombatEffects.ApplyDeckSelection(engine.State, index));
 
-        Assert.Equal(299, engine.State.Deck[index].DefId);
-        Assert.True(engine.State.Deck[index].Upgraded);
+        // CardCmd.Transform adds the Maul at the bottom of the deck, not in the original's place.
+        Assert.Equal(299, engine.State.Deck[^1].DefId);
+        Assert.True(engine.State.Deck[^1].Upgraded);
     }
 }
 

@@ -423,15 +423,21 @@ public static class RunNonCombatEffects
             // the rules can see. Its `Skin` roll is off `new Rng(Owner, Id)`, a stream of
             // its own, so it spends none of the run's.
             case Effects.RelicEffects.Byrdpip:
-                for (int i = 0; i < state.Deck.Count; i++)
+            {
+                // The eggs are listed first, then each one is transformed in deck order; a
+                // Swoop lands at the bottom of the deck (TransformInDeck), and is no egg.
+                int eggs = state.Deck.Count(card => card.DefId == ByrdonisEggCard);
+                for (int i = 0; i < eggs; i++)
                 {
-                    if (state.Deck[i].DefId == ByrdonisEggCard)
-                    {
-                        state.Deck[i] = new CardInstance(ByrdSwoopCard, Upgraded: false);
-                    }
+                    TransformInDeck(
+                        state,
+                        state.Deck.FindIndex(card => card.DefId == ByrdonisEggCard),
+                        new CardInstance(ByrdSwoopCard, Upgraded: false)
+                    );
                 }
 
                 break;
+            }
             // `FakeMango.AfterObtained`: MaxHpVar(3m) against the real Mango's 14.
             case Effects.RelicEffects.FakeMango:
                 GainMaxHp(state, 3);
@@ -643,9 +649,11 @@ public static class RunNonCombatEffects
             case RunConstants.RelicArchaicTooth:
             {
                 // `GetTranscendenceStarterCard` is `Deck.Cards.FirstOrDefault(...)` -- the
-                // FIRST match in deck order, not a choice and not a roll. The transform
-                // carries nothing across: `CardCmd.Transform(starter, transformed)` builds
-                // the new card fresh.
+                // FIRST match in deck order, not a choice and not a roll.
+                // `GetTranscendenceTransformedCard` builds the ancient card fresh and then
+                // carries the starter's upgrade (`CardCmd.Upgrade`) and its enchantment, at its
+                // amount, across (run referee, seed CNV3YDEJXD: an upgraded Bash became an
+                // upgraded Break in the game).
                 int index = state.Deck.FindIndex(card =>
                     RunConstants.TranscendenceUpgrades.Any(pair => pair.Starter == card.DefId)
                 );
@@ -656,7 +664,23 @@ public static class RunNonCombatEffects
                             pair.Starter == state.Deck[index].DefId
                         )
                         .Ancient;
-                    state.Deck[index] = new CardInstance(ancient, Upgraded: false);
+                    var starterCard = state.Deck[index];
+                    var made = new CardInstance(ancient, Upgraded: false);
+                    if (starterCard.Upgraded && RunConstants.IsRunCardUpgradable(made))
+                    {
+                        made = made with { Upgraded = true };
+                    }
+
+                    if (starterCard.Enchantment != Enchantment.None)
+                    {
+                        made = made with
+                        {
+                            Enchantment = starterCard.Enchantment,
+                            EnchantAmount = starterCard.EnchantAmount,
+                        };
+                    }
+
+                    TransformInDeck(state, index, made);
                 }
 
                 break;
@@ -1748,9 +1772,10 @@ public static class RunNonCombatEffects
                 AddCardToDeck(state, card);
                 break;
             case DeckSelection.TransformTo:
-                state.Deck[deckIndex] = new CardInstance(
-                    state.PendingSelectionArg,
-                    Upgraded: false
+                TransformInDeck(
+                    state,
+                    deckIndex,
+                    new CardInstance(state.PendingSelectionArg, Upgraded: false)
                 );
                 break;
             case DeckSelection.TransformToCarrying:
@@ -1777,7 +1802,7 @@ public static class RunNonCombatEffects
                     };
                 }
 
-                state.Deck[deckIndex] = made;
+                TransformInDeck(state, deckIndex, made);
                 break;
             }
             case DeckSelection.Upgrade:
@@ -3371,6 +3396,21 @@ public static class RunNonCombatEffects
         {
             state.Deck[index] = state.Deck[index] with { Upgraded = true };
         }
+    }
+
+    /// <summary>
+    /// <c>CardCmd.Transform</c> on a DECK card: the original leaves its pile and the
+    /// replacement is added to the deck with <c>AddInternal</c> and no index -- the bottom of
+    /// the deck, not the original's place (only combat piles keep the index) -- after
+    /// <c>ModifyCardBeingAddedToDeck</c> and before <c>AfterCardChangedPiles</c>, which is
+    /// what <see cref="AddCardToDeck"/> runs. Writing the new card over the old one kept the
+    /// deck's order wrong for the rest of the run (run referee, seed CNV3YDEJXD: Archaic
+    /// Tooth's Break sat where the Bash had been).
+    /// </summary>
+    public static void TransformInDeck(RunState state, int deckIndex, CardInstance replacement)
+    {
+        state.Deck.RemoveAt(deckIndex);
+        AddCardToDeck(state, replacement);
     }
 
     public static void TransformCardAt(RunState state, int deckIndex, GameRng rng)
