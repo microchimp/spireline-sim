@@ -69,7 +69,7 @@ public class AutoPlayRolledTargetIsUsedTests
     {
         var fight = TwoEnemies().Draw(Card(CL.DarkShackles));
 
-        CombatEngine.AutoPlayFromDrawPileTop(fight.State, 1, new Random(0));
+        CombatEngine.AutoPlayFromDrawPile(fight.State, 1, new Random(0));
 
         Assert.Equal(1, fight.State.TargetRng!.CallCount);
         // Dark Shackles takes Strength off its target: the second enemy, as drawn.
