@@ -7,6 +7,9 @@ using Sts2Emulator.Core.Run;
 
 static class Fight
 {
+    /// <summary>Called with each step as it is recorded (EmuDump fight --netstate: NetState.cs).</summary>
+    internal static Action<RunEngine, JsonObject>? OnStep;
+
     /// <summary>
     /// The run up to the first combat, as the referee drove it: deck additions, the Neow pick,
     /// card choices, the walk into the first room. Fills <c>seed</c> and <c>neow_options</c> of
@@ -55,6 +58,7 @@ static class Fight
             var e = EnterRoom(game, outp);
             var s = e.State;
             steps.Add(new JsonObject { ["action"] = null, ["state"] = Dump(e) });
+            OnStep?.Invoke(e, steps[^1]!.AsObject());
             var gameChoices = (game["choices"]?.AsArray() ?? new JsonArray()).ToList();
             int stepNo = 0;
             foreach (var step in game["steps"]!.AsArray().Skip(1))
@@ -89,6 +93,7 @@ static class Fight
                 }
 
                 steps.Add(new JsonObject { ["action"] = a.DeepClone(), ["choices"] = chosen, ["state"] = Dump(e) });
+                OnStep?.Invoke(e, steps[^1]!.AsObject());
             }
         }
         catch (Exception ex)

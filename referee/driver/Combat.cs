@@ -87,6 +87,7 @@ public static partial class Driver
             Heartbeat();
             dump["room"] = new JsonArray(target.coord.col, target.coord.row);
             GD.Print($"[referee] entering {target.coord.col},{target.coord.row}");
+            ChecksumTap.Begin(spec);  // the game's per-action checksums, when the spec asks
             await WithTimeout(run.EnterMapCoord(target.coord), 60, "EnterMapCoord");
             bool inRoom = await SettleStep(state, player, 0);
             if (!inRoom)
@@ -104,6 +105,7 @@ public static partial class Driver
             // Trace mode, only for re-runs of fights that diverged (Trace.cs): off unless the spec asks.
             if ((bool?)spec["trace"] == true) Trace.Begin(state, player);
             steps.Add(Step(null, state, player));
+            ChecksumTap.Attach(steps);
             if (IdleProbe > 0)
             {
                 // Diagnostics: the cost of a frame in which nothing happens (the scene's own per-frame work).
@@ -167,6 +169,7 @@ public static partial class Driver
                 }
 
                 steps.Add(Step(action, state, player));
+                ChecksumTap.Attach(steps);
                 if (StepCosts)
                 {
                     steps[^1]!["cost"] = new JsonObject { ["frames"] = (long)(Engine.GetProcessFrames() - sf0), ["mcyc"] = Math.Round(MainThreadMcycles() - sc0) };
@@ -185,6 +188,7 @@ public static partial class Driver
         }
 
         timing["fight_end"] = phase.ElapsedMilliseconds;
+        ChecksumTap.End(dump);
         dump["cost"] = Cost();
         return dump;
     }

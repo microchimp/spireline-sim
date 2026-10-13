@@ -21,6 +21,12 @@ if (args[0] == "tables")
 
 if (args[0] == "fight")
 {
+    if (args.Contains("--netstate"))
+    {
+        // The game's NetFullCombatState fields after each step (NetState.cs), for netstate_diff.
+        Fight.OnStep = (e, step) => step["net"] = new JsonArray(new JsonObject { ["ctx"] = "step", ["state"] = NetState.From(e) });
+    }
+
     var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
     // A fight the game never ran (an error placeholder) has nothing to replay.
     var fights = new JsonArray(refs.Select(r => (JsonNode)(r!["ascension"] == null

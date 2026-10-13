@@ -146,3 +146,34 @@ python referee/trace_divergent.py <batch out.json> --game <your own game copy> [
 - Game side (`driver/Trace.cs`, off unless the spec asks): per step the game's CombatHistory entries, each GameAction run, each `Hook.Before*/After*` called, each RNG draw (stream, counter, two callers) and marks with the visible state (play/played, turn_end, enemy_turn, move/moved, turn_start), plus hidden state (card costs with modifiers, enchantments, afflictions, relic counters and fields, power amounts and fields).
 - Emulator side (`EmuDump reanchor --trace`, `tools/emudump/Trace.cs`): the same marks from `Core/CombatTrace` probes, every draw of a combat stream with its caller, and the hidden state. The probes cost one null check in normal runs.
 - `python -m tools.fidelity.trace_diff <traced out.json> <traced reanchor.json> [--seed S] [--step J]` aligns the marks, measures each side from its own start state, and prints the first segment whose changes differ (with the game's log, hooks and draws there), whether the re-anchored start already differed (a write-back gap), the first draw one side makes and the other does not (per stream), and hidden-state differences at the step start.
+
+## The game's own checksums (per-action oracle)
+
+The game hashes its full combat state (`NetFullCombatState`) after every finished game action and at
+each end-of-turn phase, for multiplayer desync checks (`ChecksumTracker`); single player leaves it off.
+`driver/ChecksumTap.cs` switches it on per fight:
+
+- Spec (or runs-mode job) key `"checksums": true`: each step gets `checksums` = `[context, action type,
+  checksum]` per checksum. Cost measured on r20v2: 0.48 ms per checksum, ~2.2 per step, ~22 ms per
+  fight (under 1% of a fight's CPU); `checksum_cost` in each result. In serve mode put it on the specs.
+- `"trace": true` (also trace mode's key, above: a traced re-run gets both): also `net` = the full state behind each checksum (creatures, piles with card
+  keywords/cost/enchantment/saved props, relics with saved props, potions, orbs, every RNG counter,
+  relic grab bag). About 6x the output size; for a handful of fights.
+- An end of turn yields five checksums: `After player turn phase one end` (end-of-turn hooks,
+  ethereal, turn-end-in-hand), `after player turn phase two end` (hand flush), `After enemy turn
+  start`, `After enemy turn end` (every enemy's move), `After player turn start` (block clear, energy,
+  draw, intents). A play yields one (`PlayCardAction`); the auto-play phase after `After player turn
+  start` and commands inside a play have none.
+
+```
+dotnet tools/emudump/bin/Release/net9.0/EmuDump.dll fight '<trace out.json>' --netstate > <name>.net.json
+python -m tools.fidelity.netstate_diff '<trace out.json>' <name>.net.json [--seed S] [-v]
+python -m tools.fidelity.netstate_diff '<out.json>' '<other out.json>'   # game against game, by checksum
+python -m tools.fidelity.netstate_diff --check '<out.json>'              # driver integrity only
+```
+
+`netstate_diff` names the first step and the game sub-action where the emulator's value stops matching,
+and lists the fields the emulator does not model (`tools/emudump/NetState.cs`). `--check` (also run
+first by the other modes) flags a step whose action left no checksum: the driver recorded it before
+the game finished (seen with Mayhem, Hellraiser and Rolling Boulder, whose turn-start auto-play
+outlasts `Idle()`), so that fight is a driver artifact from the step before it, not an emulator bug.
