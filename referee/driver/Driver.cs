@@ -4,6 +4,8 @@
 //
 // It does nothing unless SPIRELINE_REFEREE_JOB names a job file, so an installed copy is inert in
 // normal play. Job: {"out": "<path>", "runs": [{"seed": "ABC", "character": "IRONCLAD", "ascension": 10}]}
+// Server mode (Server.cs): {"out": "<path>.jsonl", "inbox": "<dir>"} plays fight-spec files from the
+// inbox one at a time, appending one JSON line per fight to "out", until a STOP file appears.
 
 using System;
 using System.Collections.Generic;
@@ -41,13 +43,37 @@ public static partial class Driver
             return;
         }
 
+        // The game's preloader switch, thrown before NGame starts: with it off the menu's background
+        // "Common" asset session (686 assets, ~2-4 s of CPU, and the source of a rare native hang
+        // after "texture_2d_initialize: Parameter t is null" when several copies boot together) is
+        // never queued, and every asset loads on demand on the main thread instead.
+        try
+        {
+            if ((bool?)JsonNode.Parse(File.ReadAllText(job))?["no_preload"] == true)
+            {
+                MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or JsonException)
+        {
+            // RunJob reports an unreadable job.
+        }
+
         _ = RunJob(job);
     }
 
     private static long _lastProgress = System.Environment.TickCount64;
 
     /// <summary>Marks progress for the watchdog: called on every action, not just every fight.</summary>
-    internal static void Heartbeat() => Interlocked.Exchange(ref _lastProgress, System.Environment.TickCount64);
+    internal static void Heartbeat()
+    {
+        long now = System.Environment.TickCount64;
+        Interlocked.Exchange(ref _lastProgress, now);
+        WriteStatus(now);
+    }
+
+    /// <summary>Fights finished in this process, for the watchdog's message.</summary>
+    private static int _done;
     private static readonly object _saveLock = new();
 
     private static void Save(string path, JsonArray results)
@@ -58,6 +84,60 @@ public static partial class Driver
             File.WriteAllText(tmp, new JsonObject { ["results"] = results.DeepClone() }.ToJsonString());
             File.Move(tmp, path, overwrite: true);
         }
+    }
+
+    /// <summary>
+    /// One fight spec, start to finish: play it (<c>kind</c>), then leave the run. Shared by the
+    /// "runs" list and the server inbox, so both take exactly the same code path.
+    /// </summary>
+    private static async Task<JsonObject> PlaySpec(JsonObject o, bool fastReset)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var result = (string?)o["kind"] switch
+        {
+            "combat" => await PlayCombat(o),
+            "export" => Export(),
+            _ => await StartRun(o),
+        };
+        long playMs = clock.ElapsedMilliseconds;
+        if (fastReset)
+        {
+            // Skip the menu: end the run the way ReturnToMainMenu does at its core
+            // (RunManager.CleanUp) without reloading menu assets and scenes.
+            RunManager.Instance.CleanUp();
+        }
+        else
+        {
+            await NGame.Instance!.ReturnToMainMenu();  // the game's own way out of a run
+        }
+
+        result["timing_ms"] = new JsonObject { ["play"] = playMs, ["reset"] = clock.ElapsedMilliseconds - playMs };
+        return result;
+    }
+
+    /// <summary>
+    /// <c>NGame.LaunchMainMenu</c> queues a background asset session for the common assets right after
+    /// the menu shows (NGame.cs:975-996, LoadDeferredStartupAssetsAsync); <c>NAssetLoader</c> polls it
+    /// every frame and stops processing when its queue is empty. With the intro logo the 9 s of logo
+    /// animation hid that load; without it (skip_intro_logo) the first run's own asset loads race the
+    /// session, and under load the game hangs on its first Neow screen. So wait for the loader to drain.
+    /// </summary>
+    private static async Task WaitForStartupPreload(SceneTree tree)
+    {
+        for (int i = 0; i < 10; i++)  // the deferred task queues its session a frame or two after the menu
+        {
+            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+        }
+
+        var loader = MegaCrit.Sts2.Core.Nodes.NAssetLoader.Instance;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (loader.IsProcessing() && clock.Elapsed.TotalSeconds < 90)
+        {
+            Heartbeat();
+            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+        }
+
+        GD.Print($"[referee] startup preload drained after {clock.ElapsedMilliseconds} ms");
     }
 
     private static async Task RunJob(string jobPath)
@@ -75,7 +155,7 @@ public static partial class Driver
                 await Task.Delay(5000);
                 if (System.Environment.TickCount64 - Interlocked.Read(ref _lastProgress) > stallMs)
                 {
-                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting with {results.Count} results saved");
+                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting after {_done} fights");
                     System.Environment.Exit(3);
                 }
             }
@@ -111,40 +191,37 @@ public static partial class Driver
                 MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
             }
             Engine.MaxFps = 0;
+            await WaitForStartupPreload(tree);
 
             Heartbeat();
+            bool fastReset = (bool?)job["fast_reset"] == true;
+            if (job["inbox"] != null)
+            {
+                exitCode = await ServeInbox(job, outPath, fastReset);
+                ((SceneTree)Engine.GetMainLoop()).Quit(exitCode);
+                return;
+            }
+
             foreach (var spec in job["runs"]!.AsArray())
             {
-                var o = spec!.AsObject();
-                var clock = System.Diagnostics.Stopwatch.StartNew();
-                var result = (string?)o["kind"] switch
-                {
-                    "combat" => await PlayCombat(o),
-                    "export" => Export(),
-                    _ => await StartRun(o),
-                };
-                long playMs = clock.ElapsedMilliseconds;
-                if ((bool?)job["fast_reset"] == true)
-                {
-                    // Skip the menu: end the run the way ReturnToMainMenu does at its core
-                    // (RunManager.CleanUp) without reloading menu assets and scenes.
-                    RunManager.Instance.CleanUp();
-                }
-                else
-                {
-                    await NGame.Instance!.ReturnToMainMenu();  // the game's own way out of a run
-                }
-
-                result["timing_ms"] = new JsonObject { ["play"] = playMs, ["reset"] = clock.ElapsedMilliseconds - playMs };
-                results.Add(result);
+                results.Add(await PlaySpec(spec!.AsObject(), fastReset));
+                _done++;
                 Save(outPath, results);  // after every fight: a hang or kill keeps what is done
                 Interlocked.Exchange(ref _lastProgress, System.Environment.TickCount64);
             }
         }
         catch (Exception ex)
         {
-            results.Add(new JsonObject { ["error"] = ex.ToString() });
+            var err = new JsonObject { ["error"] = ex.ToString() };
             exitCode = 1;
+            if (job["inbox"] != null)
+            {
+                AppendLine(outPath, err);  // server mode: the out file is a JSONL, never rewritten
+                ((SceneTree)Engine.GetMainLoop()).Quit(exitCode);
+                return;
+            }
+
+            results.Add(err);
         }
 
         Save(outPath, results);

@@ -57,6 +57,8 @@ How the fight times were estimated:
 - Replace the per-copy `netstat` polling with one shared iphlpapi poller.
 - Run every copy at BelowNormal priority.
 - Pass: one boot covers 2,000 fights, per-fight time stays flat, and the same spec run as fight #1 and fight #1000 is byte-identical.
+- **Status (branch `speed/servers`): built** as `driver/Server.cs` + `serve.py`; see RUNBOOK.md. Measured (3 boots each): boot to menu 10.0 s -> 1.6 s with `skip_intro_logo` + `fps_limit: 0` (NGame.cs:679, :745), whole empty session 11.0 s -> 2.6 s. One server, 40 fights (the proof40 specs): 40/40 results equal to runs mode, 4.06 s/fight. Four servers, 160 fights (proof40 x4, every spec on whichever server was free): 160/160 equal, 0 stalls, 56 fights/min (4.19 s/fight/server, so no loss from sharing the machine at 4 copies). Not yet shown: 2,000 fights in one boot.
+- **Finding:** without the logo the menu's background "Common" asset session (686 assets) overlaps the first run, and with 4 copies booting together it hung 3 of 8 servers (native, after `texture_2d_initialize: Parameter t is null`). Fix: with `no_preload` the driver now switches the preloader off in its mod initializer, so that session is never queued (also ~2 s less CPU per boot). 6 servers x 3 boots x 2 fights each: 0 stalls.
 
 **2. Setup cuts (3 h).**
 - Harmony prefix on `RoomFadeIn`: set the overlay alpha to 0, set `InTransition = false`, return at once.
