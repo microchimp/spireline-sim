@@ -69,6 +69,12 @@ map travel to the first row-1 monster room, one fight with seeded random legal p
 Also nested reward screens (Neow's Bones). Not yet: potions, events beyond Neow, shops, rest sites, fights after the first,
 characters other than the Ironclad (the emulator's run engine starts every run as the Ironclad).
 
+## Speed settings check (`normal_settings`, `--windowed`)
+
+A job with `"normal_settings": true` skips every speed change (Instant fast mode, Engine.MaxFps, `fast_patches`, `no_preload`,
+`fast_reset`, and run_referee's `skip_intro_logo` / `fps_limit`); tutorials stay off. It is about 17x slower (r20v2: 24 min, against 83 s).
+`run_referee.py --windowed` launches without `--headless`, every safety check unchanged; use it only with the owner's own go.
+
 ## Table check (content tables vs the game)
 
 `{"out": "D:/spireline/referee/exports/v0.107.1.json", "runs": [{"kind": "export"}]}` run through `run_referee.py` writes the game's pool orders, rarities, costs, act encounter and event lists and Neow's options (local only, never commit). Then `dotnet build` in `tools/emudump` and `python -m tools.fidelity.table_check` lists every difference with the emulator's tables.
