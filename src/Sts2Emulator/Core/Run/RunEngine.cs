@@ -5,7 +5,7 @@ namespace Sts2Emulator.Core.Run;
 
 public sealed class RunEngine
 {
-    public RunState State { get; private init; } = new();
+    public RunState State { get; private set; } = new();
 
     /// <summary>Start a new run on this seed, standing at Neow.</summary>
     /// <param name="seed">The seed as typed; it is canonicalized before it is hashed.</param>
@@ -36,6 +36,11 @@ public sealed class RunEngine
             );
         }
 
+        // A fresh state a run: everything a run keeps (encounter and event counters, pending
+        // screens, relic bookkeeping) starts from RunState's own defaults, so nothing one run
+        // leaves behind reaches the next. Clearing the old object field by field missed any
+        // field added after the list was written.
+        State = new RunState();
         State.AscensionLevel = ascension;
         // Set before anything is generated: the relic bag reads the character's pool.
         State.Character = character;
@@ -53,7 +58,6 @@ public sealed class RunEngine
         State.Gold = 99;
         State.Floor = 1;
         State.Phase = RunPhase.Ancient;
-        State.Deck = [];
         // `AscensionManager.ApplyEffectsTo` puts Ascender's Bane on the end of the deck
         // from AscendersBane up; below it the starting deck is the character's own.
         foreach (int cardId in RunConstants.StartingDeckIds(ascension, character))
@@ -65,56 +69,12 @@ public sealed class RunEngine
         // `Player.CreateForNewRun` starts the belt at three slots, and
         // `AscensionManager.ApplyEffectsTo` takes one away under TightBelt.
         State.MaxPotionSlots = RunConstants.StartingPotionSlots(ascension);
-        Array.Clear(State.PotionSlots);
         State.CurrentNodeType = RunConstants.NodeNormal;
-        Array.Clear(State.NeowOptions);
-        Array.Clear(State.RewardCards);
-        Array.Clear(State.RewardUpgraded);
-        State.RewardGold = 0;
-        State.RewardPotion = 0;
-        State.RewardCardPending = false;
-        State.ReturnToRewardScreenAfterCardReward = false;
-        Array.Clear(State.MapNodeTypes);
-        Array.Clear(State.MapChoices);
-        Array.Clear(State.ShopCards);
-        Array.Clear(State.ShopRelics);
-        Array.Clear(State.ShopPotions);
-        Array.Clear(State.ShopCosts);
-        State.RelicReward = 0;
-        State.EventId = 0;
         // CardRarityOdds starts at -0.05, not zero: `CardRarityOdds(Rng rng) : base(-0.05f, rng)`,
         // the same value a Rare roll resets it to. Starting at zero made every early
         // reward roll read 0.05 too generous, so cards the game rolled Common came
         // back Uncommon until the offset had grown past the gap.
         State.CardRarityOffset = RunRewardGenerator.CardRarityBaseOffset;
-        State.PotionRewardOdds = 0.4;
-        State.PendingRelicReward = false;
-        State.ShopRemovalsUsed = 0;
-        State.ShopRemovalUsedThisVisit = false;
-        State.TransformSelectedDeckIndex = null;
-        RunNonCombatEffects.ClearDeckSelection(State);
-        State.PendingRestUpgrade = false;
-        State.RestResultPending = false;
-        // The relics that keep RUN-length state of their own. Reset reuses the state
-        // object, so anything a previous run left here would be inherited by the next one.
-        State.CardRemovalsOwed = 0;
-        State.RoyaltiesGoldOwed = 0;
-        State.WaxRelics.Clear();
-        State.FurCoatRooms.Clear();
-        State.FurCoatAct = -1;
-        State.GoldenPathAct = -1;
-        State.SilverCrucibleTreasureRoomsEntered = 0;
-        State.ParasolSweepPending = false;
-        State.UnknownMapPointsVisited = 0;
-        State.UnknownMapPointMonsterOdds = 0.1;
-        State.UnknownMapPointEliteOdds = -1.0;
-        State.UnknownMapPointTreasureOdds = 0.02;
-        State.UnknownMapPointShopOdds = 0.03;
-        State.LastResolvedRoomType = RunConstants.NodeNone;
-        State.ActiveCombat = null;
-        State.ActiveCombatRng = null;
-        State.LastPlayerWon = false;
-        State.CompletedCombatRoomsBeforeCurrent = 0;
         GenerateNeowOptions();
         RunMapGenerator.SelectActAndGenerateRooms(State);
         RunMapGenerator.GenerateActMap(State);
