@@ -1288,6 +1288,7 @@ public static class RunNonCombatEffects
         state.EventRngStream = null;
         state.EventRngName = null;
         state.EventRelicStock = null;
+        state.EventSkippedCards = [];
         state.EventId = eventId;
         CalculateEventVars(state);
         state.Phase = RunPhase.Event;
@@ -1304,6 +1305,7 @@ public static class RunNonCombatEffects
         state.EventRngStream = null;
         state.EventRngName = null;
         state.EventRelicStock = null;
+        state.EventSkippedCards = [];
         // The game has no "New Leaf forces The Legends Were True" rule: NewLeaf is a plain
         // transform-on-pickup relic with no event hook, and the only ModifyNextEvent
         // override in the game is LanternKey's (below). That invented shortcut bypassed
@@ -2518,9 +2520,9 @@ public static class RunNonCombatEffects
     public static int SlipperyBridgeHpLoss(RunState state) => 3 + state.EventPage;
 
     /// <summary>
-    /// The card the Slippery Bridge is holding over the player. It prefers a non-Basic
-    /// card and falls back to any removable one, which on a starter deck is the whole
-    /// deck bar Ascender's Bane -- so it is a roll, not a fixed pick.
+    /// The card the Slippery Bridge is holding over the player. The first roll prefers a
+    /// non-Basic card; every re-roll after a Hold On works from the whole removable deck, so
+    /// it is a roll, not a fixed pick.
     /// </summary>
     public static int SlipperyBridgeCardIndex(RunState state)
     {
@@ -2542,10 +2544,31 @@ public static class RunNonCombatEffects
 
     private static int PickSlipperyBridgeCard(RunState state)
     {
+        // `SlipperyBridge.GetNewRandomCard`. The first roll takes the deck's non-Basic cards.
+        // Every later one (after a Hold On) first notes the card it is leaving as skipped, then
+        // takes every card of a DIFFERENT card (the game compares model types, i.e. ids) that has
+        // not been skipped -- Basic cards included. Either way it drops the cards that cannot be
+        // removed, falls back to every removable card when nothing is left, and draws ONCE.
+        bool first = state.EventValue0 is null or < 0;
+        var skipped = state.EventSkippedCards;
+        int heldId = -1;
+        if (!first)
+        {
+            skipped.Add(state.EventValue0!.Value);
+            heldId = state.Deck[state.EventValue0.Value].DefId;
+        }
+
         var candidates = Enumerable
             .Range(0, state.Deck.Count)
-            .Where(i => GeneratedData.Cards.Get(state.Deck[i].DefId).Rarity != CardRarity.Basic)
-            .Where(i => IsRemovable(state.Deck[i]))
+            .Where(i =>
+                IsRemovable(state.Deck[i])
+                && !skipped.Contains(i)
+                && (
+                    first
+                        ? GeneratedData.Cards.Get(state.Deck[i].DefId).Rarity != CardRarity.Basic
+                        : state.Deck[i].DefId != heldId
+                )
+            )
             .ToList();
         if (candidates.Count == 0)
         {
@@ -2560,16 +2583,7 @@ public static class RunNonCombatEffects
             return -1;
         }
 
-        // GetNewRandomCard runs again on every Hold On, so the threatened card moves with
-        // the counter rather than staying whatever the first roll picked.
-        var rng = EventRng(state, "SLIPPERY_BRIDGE");
-        int index = rng.NextItem(candidates);
-        for (int i = 0; i < state.EventPage; i++)
-        {
-            index = rng.NextItem(candidates);
-        }
-
-        return index;
+        return EventRng(state, "SLIPPERY_BRIDGE").NextItem(candidates);
     }
 
     /// <summary>

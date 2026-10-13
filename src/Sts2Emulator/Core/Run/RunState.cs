@@ -383,6 +383,14 @@ public sealed class RunState
     public List<int>? EventRelicStock;
 
     /// <summary>
+    /// Deck positions an event has already shown and passed over. Slippery Bridge keeps a
+    /// <c>SkippedRemovals</c> set of the card INSTANCES it threatened before a Hold On, and the
+    /// next roll will not name those again. The deck does not change while the event is open,
+    /// so a position names the same instance throughout.
+    /// </summary>
+    public List<int> EventSkippedCards = [];
+
+    /// <summary>
     /// Bing Bong is adding its own clone right now. The game's guard is a `CardsToSkip`
     /// set the relic checks and removes from; a re-entrancy flag says the same thing for a
     /// single-player deck and cannot leak an entry the way a set can.

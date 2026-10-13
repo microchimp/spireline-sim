@@ -3879,9 +3879,9 @@ public sealed class RunEngine
 
                 break;
             case RunConstants.EventSlipperyBridge:
-                // Overcome loses the ONE card the bridge is holding -- rolled off the
-                // event's stream, preferring a non-Basic card -- and Hold On costs
-                // 3 + NumberOfHoldOns HP, which is 3 the first time, not a flat 10.
+                // Overcome loses the ONE card the bridge is holding -- rolled off the event's
+                // stream, non-Basic on the first roll -- and Hold On costs 3 + NumberOfHoldOns
+                // HP, which is 3 the first time, not a flat 10.
                 if (action == 0)
                 {
                     int index = RunNonCombatEffects.SlipperyBridgeCardIndex(State);
