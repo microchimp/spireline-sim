@@ -2,8 +2,11 @@
 //
 // Job: {"out": "<path>.jsonl", "inbox": "<dir>", "fast_reset": true, ...}. After the usual startup the
 // driver loops:
-//   1. take the oldest "<id>.json" in the inbox, claiming it atomically by renaming it to
-//      "<id>.json.taken.<pid>" (a second server racing for the same file loses the rename);
+//   1. take the oldest "<id>.json" in the inbox, claiming it by renaming it to "<id>.json.taken.<pid>".
+//      The rename is not exclusive on Windows: two processes renaming the same file can both succeed
+//      (MoveFileEx opens the source and renames through that handle, so a second open made before the
+//      first rename landed renames it again), and the first then cannot read its claim. So serve.py
+//      gives each server an inbox of its own and only this process claims from it;
 //   2. play it exactly as a "runs" entry (PlaySpec);
 //   3. append ONE JSON line to "out" (the result, plus "_id", "_pid", "_t" = unix ms);
 //   4. delete the claimed file, heartbeat, repeat.

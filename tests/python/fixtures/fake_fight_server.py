@@ -42,6 +42,18 @@ def pending(inbox: Path) -> list:
     return [f for _, _, f in sorted(found)]
 
 
+def read(path: Path) -> str:
+    """The claimed spec. A virus scanner may hold a file just written under %TEMP% for a moment
+    (PermissionError, about 1 in 2000 reads here; never seen with the game's driver), so that is
+    retried; a missing file is not (that is the double-claim signature the tests look for)."""
+    for _ in range(50):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            time.sleep(0.01)
+    return path.read_text(encoding="utf-8")
+
+
 def main() -> int:
     job = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     inbox, out = Path(job["inbox"]), Path(job["out"])
@@ -69,7 +81,12 @@ def main() -> int:
             time.sleep(0.01)
             continue
         taken, rid = claim
-        spec = json.loads(taken.read_text(encoding="utf-8"))
+        try:
+            spec = json.loads(read(taken))
+        except OSError as e:  # as Server.cs: a claim it cannot read is answered as a bad spec file
+            with open(out, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"error": f"bad spec file: {e}", "_id": rid, "_pid": pid, "_t": int(time.time() * 1000)}) + "\n")
+            continue
         fake = spec.get("fake", {})
         if fake.get("crash") == "always" or (fake.get("crash") == "once" and first_time(inbox, rid, "crash")):
             return 3

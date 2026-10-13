@@ -5,11 +5,13 @@ heartbeat files, hold, claim by rename, one appended line per fight, STOP), so t
 real file protocol: results come back in spec order, a crash re-queues its spec once and a second
 crash records it as stalled, a hung server is killed by the heartbeat rule, the spare is promoted,
 specs can be submitted while the pool runs, an abandoned close does not play what nobody claimed,
-and the safety checks (build, network, real profile) are the pool's own.
+every spec is played once by one server even with many claiming at once, and the safety checks
+(build, network, real profile) are the pool's own.
 """
 
 from __future__ import annotations
 
+import collections
 import json
 import subprocess
 import sys
@@ -112,6 +114,14 @@ class PoolTest(unittest.TestCase):
         self.assertEqual((p.restarts, p.requeued), (1, 1))
         self.assertFalse(any(r.get("error") for r in p.merged(ids)))
 
+    def test_specs_a_dead_server_had_not_claimed_go_back_without_an_attempt(self):
+        p = self.pool(servers=1, depth=3)
+        ids = p.submit([spec(0, crash="once", sleep=0.3)] + [spec(i) for i in range(1, 6)])
+        self.run_until_done(p)
+        self.assertFalse(any(r.get("error") for r in p.merged(ids)))
+        self.assertEqual((p.restarts, p.requeued), (1, 1))
+        self.assertEqual(dict(p.attempts), {ids[0]: 1})
+
     def test_a_second_crash_records_the_spec_as_stalled(self):
         p = self.pool(servers=2)
         ids = p.submit([spec(0), spec(1, crash="always"), spec(2)])
@@ -161,7 +171,7 @@ class PoolTest(unittest.TestCase):
             time.sleep(0.02)
         p.close(abandon=True)
         self.assertLess(len(p.results), len(ids))
-        self.assertTrue(list(p.inbox.glob("*.json.withdrawn")))
+        self.assertTrue(list(p.inbox.rglob("*.json.withdrawn")))
         self.assertEqual(p.servers[0].rc, 0)
         self.assertEqual(p.merged(ids)[-1]["error"], "no result")
 
@@ -182,6 +192,18 @@ class PoolTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.pool(check_build=refuse)
         self.assertFalse((self.dir / "run0").exists())
+
+    def test_every_spec_is_played_once_by_one_server(self):
+        # Many servers claiming at once: a claim is a rename, and on Windows a rename is not exclusive
+        # (two servers can both "win" it; night04 lost 4 of 600 fights that way). No spec may be
+        # answered twice or as a bad spec file.
+        p = self.pool(servers=8)
+        ids = p.submit([spec(i, sleep=0) for i in range(400)])
+        self.run_until_done(p, timeout=120)
+        self.assertEqual([r.get("error") for r in p.merged(ids) if r.get("error")], [])
+        answered = collections.Counter(r.get("_id") for s in p.servers for r in s.lines)
+        self.assertEqual([k for k, v in answered.items() if v > 1], [])
+        self.assertEqual(sorted(answered), ids)
 
     def test_a_result_without_a_seed_gets_the_seed_of_its_spec(self):
         p = self.pool(servers=1)

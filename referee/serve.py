@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Fight-server dispatcher: N long-lived game processes fed from one shared inbox.
+"""Fight-server dispatcher: N long-lived game processes, each fed through its own inbox.
 
     python referee/serve.py --game <game copy> --specs <job.json> [--servers 4] [--repeat 1] [--out results.json]
 
 --specs is a job file (or a bare JSON list) whose "runs" are fight specs; its fast_reset / no_preload / fast_patches /
 idle_frames / stall_s keys apply to every server. Each server is one headless game on its own scratch
 profile (same safety checks as run_referee.py: known sts2.dll sha256, override.cfg, APPDATA in scratch,
-no network connections, real profile untouched). The dispatcher writes one spec file per fight into
-<run-dir>/inbox; whichever server is free claims the oldest one (driver/Server.cs), plays it and appends
-a JSON line to its own <run-dir>/out/s<NN>.jsonl. Results are merged into --out (same format as a
-runs-mode out file, in spec order) and results.jsonl (arrival order).
+no network connections, real profile untouched). The dispatcher keeps one spec file waiting in each
+server's <run-dir>/inbox/s<NN>; the server claims it (driver/Server.cs), plays it and appends a JSON
+line to its own <run-dir>/out/s<NN>.jsonl, and the dispatcher hands it the next. One consumer per
+inbox, because a claim is a rename and on Windows a rename is not exclusive: two servers renaming
+the same file can both succeed (MoveFileEx opens the source, then renames through that handle; a
+second open made before the first rename landed renames the file again), and the loser then answered
+"bad spec file" for a fight the other played (night04: 4 of 600). Results are merged into --out (same
+format as a runs-mode out file, in spec order) and results.jsonl (arrival order).
 
-A server that dies or hangs is restarted; the spec it had claimed goes back to the inbox once, and is
-recorded as stalled if it kills a server a second time. One hot spare (--spares) is booted and held
-(hold.<pid> in the inbox) so a restart costs no boot time. At the end STOP goes into the inbox.
+A server that dies or hangs is restarted; the spec it had claimed goes back to the front of the queue
+once, and is recorded as stalled if it kills a server a second time. One hot spare (--spares) is booted
+and held (hold.<pid> in its inbox) so a restart costs no boot time. At the end STOP goes into every inbox.
 --verify-against <out.json> compares every result with a reference from "runs" mode, ignoring timing.
 
 The dispatcher is the importable Pool class (submit / poll / close); the command line is one user of
@@ -41,9 +45,10 @@ STALLED = "stalled: the game failed this fight twice (no progress, crash or run-
 
 
 class Server:
-    def __init__(self, sid: int, spare: bool):
+    def __init__(self, sid: int, spare: bool, inbox: Path):
         self.sid, self.spare = sid, spare
         self.name = f"s{sid:02d}"
+        self.inbox = inbox / self.name  # only this server claims from it
         self.proc: subprocess.Popen | None = None
         self.pid = 0
         self.t_spawn = 0.0
@@ -105,7 +110,7 @@ def _taskkill(s: Server) -> None:
 
 
 class Pool:
-    """The dispatcher: N long-lived game servers fed from one inbox, for as long as the caller wants.
+    """The dispatcher: N long-lived game servers, each fed through its own inbox, as long as the caller wants.
 
     submit(specs) queues fights and returns their ids (in submission order, so id order is spec order);
     poll() runs one dispatcher tick and returns the fights finished since the last call as (id, result
@@ -115,14 +120,16 @@ class Pool:
     The safety checks live here, so every user of the pool gets them: H1 the known sts2.dll (at
     construction), H2 one netstat call per net_interval for every live server (seen_net), H3 the real
     profile compared between start() and close() (profile_touched). The rules: a server that dies or
-    hangs is replaced (the hot spare first); the spec it had claimed goes back to the inbox once and is
-    recorded as stalled if it kills a second server; more than max_restarts restarts sets `failed`.
+    hangs is replaced (the hot spare first); the spec it had claimed goes back to the front of the queue
+    once and is recorded as stalled if it kills a second server (specs it had not claimed go back too,
+    not counted); more than max_restarts restarts sets `failed`. Each active server has `depth` specs
+    waiting in its inbox, so it starts the next fight as soon as one ends.
     launch / connections / profile_state / check_build / kill are injectable for tests.
     """
 
     def __init__(self, game: Path, run_dir: Path, *, servers: int = 4, spares: int = 1, jopts: dict | None = None,
                  boot_timeout: float = 180, max_restarts: int | None = None, net_interval: float = 1.0,
-                 below_normal: bool = True, echo=print, launch=rr.launch, connections=rr.connections_by_pid,
+                 below_normal: bool = True, depth: int = 1, echo=print, launch=rr.launch, connections=rr.connections_by_pid,
                  profile_state=rr.real_profile_state, check_build=rr.check_build, kill=_taskkill):
         self.game = game
         self.digest = check_build(game)
@@ -135,7 +142,8 @@ class Pool:
         self.max_restarts = max_restarts if max_restarts is not None else 3 * self.n + 3
         self.net_interval = net_interval
         self.below_normal = below_normal
-        self.window = max(8, 4 * self.n)  # spec files waiting in the inbox
+        self.depth = max(1, depth)
+        self.window = 2 * self.n * self.depth  # unclaimed specs a caller feeding the pool keeps ready
         self._echo, self._launch, self._connections = echo, launch, connections
         self._profile_state, self._kill_fn = profile_state, kill
         self.run_dir = Path(run_dir).resolve()
@@ -148,7 +156,7 @@ class Pool:
             raise ValueError(f"run folder {self.run_dir.name} was used before; give a new one")
         self.servers: list[Server] = []
         self.specs: dict[str, dict] = {}  # id -> spec, in submission order
-        self.queue: collections.deque[str] = collections.deque()  # submitted, not yet written to the inbox
+        self.queue: collections.deque[str] = collections.deque()  # submitted, not yet in a server's inbox
         self.results: dict[str, dict] = {}  # id -> result line
         self.arrival: list[dict] = []
         self.attempts: collections.Counter = collections.Counter()
@@ -160,7 +168,7 @@ class Pool:
         self.t_start = time.time()
         self.t_end: float | None = None
         self.before = self.after = None
-        self.started = self.closed = False
+        self.started = self.closed = self.stopping = False
         self._next_id = self._next_sid = 0
         self._last_net = 0.0
         self._new: list[tuple[str, dict]] = []
@@ -178,8 +186,8 @@ class Pool:
 
     @property
     def unclaimed(self) -> int:
-        """Specs no server has taken yet: queued here plus waiting in the inbox."""
-        return len(self.queue) + self._pending()
+        """Specs no server has taken yet: queued here plus waiting in the servers' inboxes."""
+        return len(self.queue) + sum(len(self._pending(s)) for s in self.servers if s.alive)
 
     @property
     def outstanding(self) -> int:
@@ -192,12 +200,12 @@ class Pool:
         self.started = True
         self.before = self._profile_state()
         self.t_start = time.time()
-        self._feed()
         for _ in range(self.n):
             self._spawn(spare=False)
+        self._feed()
 
     def poll(self) -> list[tuple[str, dict]]:
-        """One dispatcher tick: feed the inbox, collect results, check the network, replace dead or
+        """One dispatcher tick: feed the inboxes, collect results, check the network, replace dead or
         hung servers, keep N active plus the spare. Returns what finished since the last call."""
         if not self.started:
             self.start()
@@ -225,7 +233,7 @@ class Pool:
                 self._kill(s, "boot timeout")
             elif s.t_ready is not None:
                 try:
-                    age = now - (self.inbox / "hb" / str(s.pid)).stat().st_mtime
+                    age = now - (s.inbox / "hb" / str(s.pid)).stat().st_mtime
                 except FileNotFoundError:
                     age = 0
                 if age > self.hb_limit:
@@ -241,7 +249,7 @@ class Pool:
             spare = next((s for s in live if s.spare), None)
             if spare is not None:
                 spare.spare = False
-                (self.inbox / f"hold.{spare.pid}").unlink(missing_ok=True)
+                (spare.inbox / f"hold.{spare.pid}").unlink(missing_ok=True)
                 self.log(f"{spare.name} promoted from spare")
                 live = [s for s in self.servers if s.alive]
                 actives = [s for s in live if not s.spare]
@@ -250,26 +258,33 @@ class Pool:
         if (self.spares and not any(s.spare for s in live) and all(s.t_ready for s in actives)
                 and self.outstanding + self.more >= 2 * self.n + 2):
             self._spawn(spare=True)
+        self._feed()
         return self._drain()
 
     def close(self, abandon: bool = False) -> list[tuple[str, dict]]:
-        """STOP: servers finish what they hold, see the empty inbox and exit 0; spares and stragglers
+        """STOP: servers finish what they hold, see their empty inbox and exit 0; spares and stragglers
         are killed. abandon=True first withdraws the specs no server has claimed (renamed to
         *.withdrawn), so an aborted run does not play them. Returns what finished since the last poll."""
         if self.closed:
             return self._drain()
-        self.closed = True
+        self.closed = self.stopping = True
         if not self.started:
             self.t_end = time.time()
             return self._drain()
+        live = [s for s in self.servers if s.alive]
         if abandon:
             self.queue.clear()
-            for f in sorted(self.inbox.glob("*.json")):
-                try:
-                    os.replace(f, f.with_name(f.name + ".withdrawn"))
-                except OSError:
-                    pass  # a server claimed it first
-        (self.inbox / "STOP").write_text("", encoding="utf-8")
+            for s in live:  # hold first, so no server is claiming while its specs are withdrawn
+                (s.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
+            time.sleep(0.3)
+            for s in live:
+                for f in self._pending(s):
+                    try:
+                        os.replace(f, f.with_name(f.name + ".withdrawn"))
+                    except OSError:
+                        pass  # claimed just before the hold
+        for s in live:
+            (s.inbox / "STOP").write_text("", encoding="utf-8")
         for s in self.servers:
             if s.alive and s.spare:
                 self._kill(s, "spare not needed")
@@ -353,33 +368,47 @@ class Pool:
         self.arrival.append(r)
         self._new.append((rid, r))
 
-    def _pending(self) -> int:
-        return sum(1 for f in os.listdir(self.inbox) if f.endswith(".json"))
+    @staticmethod
+    def _pending(s: Server) -> list[Path]:
+        """Spec files waiting in a server's inbox, oldest id first."""
+        try:
+            return sorted(s.inbox / f for f in os.listdir(s.inbox) if f.endswith(".json"))
+        except FileNotFoundError:
+            return []
 
     def _feed(self) -> None:
-        pending = self._pending()
-        while self.queue and pending < self.window:
-            rid = self.queue.popleft()
-            tmp = self.inbox / f"{rid}.tmp"
-            tmp.write_text(json.dumps(self.specs[rid]), encoding="utf-8")
-            os.replace(tmp, self.inbox / f"{rid}.json")
-            pending += 1
+        """Top every active server's inbox up to `depth` waiting specs, from the front of the queue."""
+        if self.stopping:
+            return
+        for s in self.servers:
+            if not self.queue:
+                return
+            if not s.alive or s.spare:
+                continue
+            for _ in range(self.depth - len(self._pending(s))):
+                if not self.queue:
+                    break
+                rid = self.queue.popleft()
+                tmp = s.inbox / f"{rid}.tmp"
+                tmp.write_text(json.dumps(self.specs[rid]), encoding="utf-8")
+                os.replace(tmp, s.inbox / f"{rid}.json")
 
     def _spawn(self, spare: bool) -> Server:
-        s = Server(self._next_sid, spare)
+        s = Server(self._next_sid, spare, self.inbox)
         self._next_sid += 1
+        s.inbox.mkdir(parents=True, exist_ok=True)
         scratch = self.run_dir / "scratch" / s.name
         (scratch / "appdata").mkdir(parents=True, exist_ok=True)
         (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
         rr.write_settings(scratch, boot_opts=True)
         job = scratch / "job.json"
         job.write_text(json.dumps({"out": str(self.outdir / f"{s.name}.jsonl").replace("\\", "/"),
-                                   "inbox": str(self.inbox).replace("\\", "/"), **self.jopts}), encoding="utf-8")
+                                   "inbox": str(s.inbox).replace("\\", "/"), **self.jopts}), encoding="utf-8")
         s.t_spawn = time.time()
         s.proc, s.log = self._launch(self.game, scratch, job, below_normal=self.below_normal)
         s.pid = s.proc.pid
-        if spare:
-            (self.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
+        if spare:  # never fed while it holds, so its inbox stays empty
+            (s.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
         self.servers.append(s)
         self.log(f"{s.name} started ({'spare' if spare else 'active'}) pid {s.pid}")
         return s
@@ -400,7 +429,7 @@ class Pool:
     def _check_ready(self, s: Server) -> None:
         if s.t_ready is None:
             try:
-                s.t_ready = int((self.inbox / "hb" / f"{s.pid}.ready").read_text()) / 1000
+                s.t_ready = int((s.inbox / "hb" / f"{s.pid}.ready").read_text()) / 1000
                 self.log(f"{s.name} ready after {s.t_ready - s.t_spawn:.1f}s")
             except (FileNotFoundError, ValueError):
                 pass
@@ -410,24 +439,29 @@ class Pool:
         self._collect(s)
         if s.log:
             s.log.close()
-        for hb in ((self.inbox / f"hold.{s.pid}"), (self.inbox / "hb" / str(s.pid))):
+        for hb in ((s.inbox / f"hold.{s.pid}"), (s.inbox / "hb" / str(s.pid))):
             hb.unlink(missing_ok=True)
-        stopping = (self.inbox / "STOP").exists()
-        lost = []
-        for taken in sorted(self.inbox.glob(f"*.json.taken.{s.pid}")):
+        stopping = self.stopping
+        lost, back = [], []
+        for taken in sorted(s.inbox.glob(f"*.json.taken.{s.pid}")):
             rid = taken.name.split(".json.taken.")[0]
             if rid in self.results:  # appended before the process died; only the delete was lost
                 taken.unlink()
                 continue
             self.attempts[rid] += 1
             if self.attempts[rid] == 1:
-                os.replace(taken, self.inbox / f"{rid}.json")  # keeps its age, so it is claimed first
+                taken.unlink()
+                back.append(rid)  # to the front of the queue, so it is played next
                 self.requeued += 1
                 lost.append(f"{rid} re-queued")
             else:
                 self._finish(rid, {"seed": self.specs.get(rid, {}).get("seed"), "steps": [], "_id": rid, "error": STALLED})
                 taken.unlink()
                 lost.append(f"{rid} recorded as stalled")
+        for f in self._pending(s):  # handed to it but never claimed: back too, not an attempt
+            f.unlink()
+            back.append(f.name[: -len(".json")])
+        self.queue.extendleft(reversed(back))
         if not stopping:
             self.restarts += 1
             self.log(f"{s.name} died (exit {rc}{', ' + s.killed if s.killed else ''}); {'; '.join(lost) or 'no spec in flight'}")
