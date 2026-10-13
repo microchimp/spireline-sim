@@ -691,7 +691,8 @@ def cmd_run(a) -> int:
     done_path = d / "results.jsonl"
     done = {json.loads(ln)["id"] for ln in done_path.open(encoding="utf-8")} if done_path.exists() else set()
     rng = random.Random(a.seed)
-    todo = [m for m in sample(cands, a.mutants, rng) if m.id not in done]
+    picked = [c for c in cands if c.id in set(a.ids.split(","))] if a.ids else sample(cands, a.mutants, rng)
+    todo = [m for m in picked if m.id not in done]
     cov_sets = {int(i): set(us) for i, us in prep["fight_cov"].items()}
 
     def order(m: Mutant) -> list:
@@ -778,7 +779,10 @@ def summarize(prep: dict, recs: list) -> dict:
             "+".join(sorted({k["mode"] for k in r["first_kill"]})) + ":" + "/".join(sorted({k["why"] for k in r["first_kill"]}))
             for r in recs if r["status"] == "killed")),
         "curve": {str(n): round(v, 3) for n, v in kill_curve(recs, total).items()},
-        "silent": sum(1 for r in recs if r.get("silent")),
+        # A survivor whose replay changed somewhere passed both checks on state they do not compare; one whose
+        # replay never changed was not exercised by these fights (or is equivalent).
+        "survivors_silent": sum(1 for r in recs if r["status"] == "survived" and r.get("silent")),
+        "survivors_unchanged": sum(1 for r in recs if r["status"] == "survived" and not r.get("silent")),
         "survivors": [{"id": r["id"], "op": r["op"], "fights": r["fights"], "old": r["old"].strip()[:160],
                        "new": r["new"].strip()[:160], "silent": r.get("silent", 0)} for r in recs if r["status"] == "survived"],
     }
@@ -814,6 +818,7 @@ def main() -> int:
     r.add_argument("--shards", type=int, default=2)
     r.add_argument("--minutes", type=float, default=90)
     r.add_argument("--seed", type=int, default=1)
+    r.add_argument("--ids", help="these mutant ids (comma-separated) instead of a sample, e.g. to cross-check schemata")
     c = sub.add_parser("schemata", help="all mutants in one build, long-lived hosts (tools/fidelity/schemata.py)")
     c.add_argument("--dir", required=True)
     c.add_argument("--reanchor", required=True, help="EmuDump reanchor output for the same fights (baseline verdicts)")

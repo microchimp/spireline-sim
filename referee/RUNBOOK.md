@@ -104,3 +104,23 @@ python -m tools.fidelity.reanchor_compare '<out.json>' <name>.reanchor.json [--a
 - A matching step verifies its card; a divergence is blamed on its card only when the step before it matched ("primary"). Fights stop being re-anchored where the enemies' move state cannot be reproduced (the snapshot does not record intents); `--after-enemy-desync plays` goes on with card plays and leaves later ends of turn unjudged.
 - What the snapshot lacks (relic counters, enemy AI and intent, per-card modifiers, combat counters) comes from the emulator's own previous result. The `--scramble` and `--stale enemy,cards,relics,counters|all` options of `reanchor` test the write-back and show which hidden state a step needs.
 - `reanchor_compare.learn` / `coverage.update_reanchored` replace `coverage.update` for a re-anchored batch (do not use both).
+
+## Mutation testing (how strong are the recorded-fight checks?)
+
+Seeds bugs into the combat core (CombatEngine, BuffSystem, EnemyAI, Effects/*) and counts how many the
+recorded fights catch. Local data only; the run folder holds game ids, never commit it.
+
+```
+python -m tools.fidelity.mutate prepare --out-json <out.json> --emu <emu.json> --dir <run>   # identical fights, probes, hashes
+python -m tools.fidelity.mutate schemata --dir <run> --reanchor <reanchor.json> --mutants 150   # ~3 min for 150 x 529 fights
+python -m tools.fidelity.mutate report --dir <run> --results <run>/schemata/results.jsonl
+```
+
+- Killed = some fight now has an emulator error or a first divergence (batch.py's test) or a re-anchored step that
+  matched no longer does; a hang or crash also kills. `silent` counts fights whose replay changed but passed both
+  checks: the change is in state the checks do not compare.
+- `schemata` builds every mutant into one engine behind `MutCov.Is(id)` and replays them in long-lived
+  `EmuDump muthost` processes; `run` builds one EmuDump per mutant instead (slow: ~3 min per surviving mutant,
+  but independent; `--ids` cross-checks schemata verdicts).
+- Mutants are drawn from blocks the fights ran, weighted by sqrt(fights); a block no fight runs is a blind spot
+  by construction (`prepare` prints how many mutants sit in such blocks per file).
