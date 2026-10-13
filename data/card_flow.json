@@ -1,0 +1,624 @@
+{
+ "creators": {
+  "card": {
+   "ADAPTIVE_STRIKE": {
+    "named": [],
+    "open": true
+   },
+   "ANGER": {
+    "named": [],
+    "open": true
+   },
+   "BEAT_INTO_SHAPE": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "BIG_BANG": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "BLADE_DANCE": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "BLADE_OF_INK": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "BOOST_AWAY": {
+    "named": [
+     "DAZED"
+    ],
+    "open": false
+   },
+   "BULWARK": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "BUNDLE_OF_JOY": {
+    "named": [],
+    "open": true
+   },
+   "CAPTURE_SPIRIT": {
+    "named": [
+     "SOUL"
+    ],
+    "open": false
+   },
+   "CLOAK_AND_DAGGER": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "COLLISION_COURSE": {
+    "named": [
+     "DEBRIS"
+    ],
+    "open": false
+   },
+   "CONQUEROR": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "CRASH_LANDING": {
+    "named": [
+     "DEBRIS"
+    ],
+    "open": false
+   },
+   "DIRGE": {
+    "named": [
+     "SOUL"
+    ],
+    "open": false
+   },
+   "DISCOVERY": {
+    "named": [],
+    "open": true
+   },
+   "DISTRACTION": {
+    "named": [],
+    "open": true
+   },
+   "DUAL_WIELD": {
+    "named": [],
+    "open": true
+   },
+   "FAN_OF_KNIVES": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "FIGHT_THROUGH": {
+    "named": [
+     "WOUND"
+    ],
+    "open": false
+   },
+   "FURNACE": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "GLIMPSE_BEYOND": {
+    "named": [
+     "SOUL"
+    ],
+    "open": false
+   },
+   "GRAVE_WARDEN": {
+    "named": [
+     "SOUL"
+    ],
+    "open": false
+   },
+   "GUNK_UP": {
+    "named": [
+     "SLIMED"
+    ],
+    "open": false
+   },
+   "HAMMER_TIME": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "HEIRLOOM_HAMMER": {
+    "named": [],
+    "open": true
+   },
+   "HIDDEN_DAGGERS": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "INFERNAL_BLADE": {
+    "named": [],
+    "open": true
+   },
+   "JACKPOT": {
+    "named": [],
+    "open": true
+   },
+   "JACK_OF_ALL_TRADES": {
+    "named": [],
+    "open": true
+   },
+   "LARGESSE": {
+    "named": [],
+    "open": true
+   },
+   "LEADING_STRIKE": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "MANIFEST_AUTHORITY": {
+    "named": [],
+    "open": true
+   },
+   "METAMORPHOSIS": {
+    "named": [],
+    "open": true
+   },
+   "OVERCLOCK": {
+    "named": [
+     "BURN"
+    ],
+    "open": false
+   },
+   "QUASAR": {
+    "named": [],
+    "open": true
+   },
+   "REAVE": {
+    "named": [
+     "SOUL"
+    ],
+    "open": false
+   },
+   "REFINE_BLADE": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "SEEKING_EDGE": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "SEVERANCE": {
+    "named": [
+     "SOUL"
+    ],
+    "open": false
+   },
+   "SHIV": {
+    "named": [],
+    "open": false
+   },
+   "SOUL": {
+    "named": [],
+    "open": false
+   },
+   "SPLASH": {
+    "named": [],
+    "open": true
+   },
+   "SPOILS_OF_BATTLE": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "STOKE": {
+    "named": [],
+    "open": true
+   },
+   "STORM_OF_STEEL": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "SUMMON_FORTH": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "THE_SMITH": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "TURBO": {
+    "named": [
+     "VOID"
+    ],
+    "open": false
+   },
+   "UNDEATH": {
+    "named": [],
+    "open": true
+   },
+   "UP_MY_SLEEVE": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "WHITE_NOISE": {
+    "named": [],
+    "open": true
+   },
+   "WROUGHT_IN_WAR": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   }
+  },
+  "monster": {
+   "AEONGLASS": {
+    "named": [
+     "WITHER"
+    ],
+    "open": false
+   },
+   "CHOMPER": {
+    "named": [
+     "DAZED"
+    ],
+    "open": false
+   },
+   "EYE_WITH_TEETH": {
+    "named": [
+     "DAZED"
+    ],
+    "open": false
+   },
+   "HAUNTED_SHIP": {
+    "named": [
+     "DAZED"
+    ],
+    "open": false
+   },
+   "LEAF_SLIME_M": {
+    "named": [
+     "SLIMED"
+    ],
+    "open": false
+   },
+   "LEAF_SLIME_S": {
+    "named": [
+     "SLIMED"
+    ],
+    "open": false
+   },
+   "MECHA_KNIGHT": {
+    "named": [
+     "BURN"
+    ],
+    "open": false
+   },
+   "MYTE": {
+    "named": [
+     "TOXIC"
+    ],
+    "open": false
+   },
+   "NOISEBOT": {
+    "named": [
+     "DAZED"
+    ],
+    "open": false
+   },
+   "PHROG_PARASITE": {
+    "named": [
+     "INFECTION"
+    ],
+    "open": false
+   },
+   "SLIMED_BERSERKER": {
+    "named": [
+     "SLIMED"
+    ],
+    "open": false
+   },
+   "SOUL_FYSH": {
+    "named": [
+     "BECKON"
+    ],
+    "open": false
+   },
+   "TEST_SUBJECT": {
+    "named": [
+     "BURN"
+    ],
+    "open": false
+   },
+   "THE_INSATIABLE": {
+    "named": [
+     "FRANTIC_ESCAPE",
+     "THRASH"
+    ],
+    "open": false
+   },
+   "TWIG_SLIME_M": {
+    "named": [
+     "SLIMED"
+    ],
+    "open": false
+   },
+   "VANTOM": {
+    "named": [
+     "WOUND"
+    ],
+    "open": false
+   },
+   "WRIGGLER": {
+    "named": [
+     "INFECTION"
+    ],
+    "open": false
+   }
+  },
+  "potion": {
+   "ATTACK_POTION": {
+    "named": [],
+    "open": true
+   },
+   "COLORLESS_POTION": {
+    "named": [],
+    "open": true
+   },
+   "COSMIC_CONCOCTION": {
+    "named": [],
+    "open": true
+   },
+   "CUNNING_POTION": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "KINGS_COURAGE": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "OROBIC_ACID": {
+    "named": [],
+    "open": true
+   },
+   "POT_OF_GHOULS": {
+    "named": [
+     "SOUL"
+    ],
+    "open": false
+   },
+   "POWER_POTION": {
+    "named": [],
+    "open": true
+   },
+   "SKILL_POTION": {
+    "named": [],
+    "open": true
+   }
+  },
+  "power": {
+   "CALAMITY": {
+    "named": [],
+    "open": true
+   },
+   "CALL_OF_THE_VOID": {
+    "named": [],
+    "open": true
+   },
+   "CREATIVE_AI": {
+    "named": [],
+    "open": true
+   },
+   "FURNACE": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "HAMMER_TIME": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "HELLO_WORLD": {
+    "named": [],
+    "open": true
+   },
+   "INFINITE_BLADES": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "JUGGLING": {
+    "named": [],
+    "open": true
+   },
+   "NIGHTMARE": {
+    "named": [],
+    "open": true
+   },
+   "PAINFUL_STABS": {
+    "named": [
+     "WOUND"
+    ],
+    "open": false
+   },
+   "PERSONAL_HIVE": {
+    "named": [
+     "DAZED"
+    ],
+    "open": false
+   },
+   "SEEKING_EDGE": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "SENTRY_MODE": {
+    "named": [
+     "SWEEPING_GAZE"
+    ],
+    "open": false
+   },
+   "SPECTRUM_SHIFT": {
+    "named": [],
+    "open": true
+   },
+   "WITHERING_PRESENCE": {
+    "named": [
+     "WITHER"
+    ],
+    "open": false
+   }
+  },
+  "relic": {
+   "BIG_HAT": {
+    "named": [],
+    "open": true
+   },
+   "BIIIG_HUG": {
+    "named": [
+     "SOOT"
+    ],
+    "open": false
+   },
+   "BLESSED_ANTLER": {
+    "named": [
+     "DAZED"
+    ],
+    "open": false
+   },
+   "BURNING_STICKS": {
+    "named": [],
+    "open": true
+   },
+   "CHOICES_PARADOX": {
+    "named": [],
+    "open": true
+   },
+   "CROSSBOW": {
+    "named": [],
+    "open": true
+   },
+   "FENCING_MANUAL": {
+    "named": [
+     "SOVEREIGN_BLADE"
+    ],
+    "open": false
+   },
+   "FUNERARY_MASK": {
+    "named": [
+     "SOUL"
+    ],
+    "open": false
+   },
+   "MUSIC_BOX": {
+    "named": [],
+    "open": true
+   },
+   "NINJA_SCROLL": {
+    "named": [
+     "SHIV"
+    ],
+    "open": false
+   },
+   "ORANGE_DOUGH": {
+    "named": [],
+    "open": true
+   },
+   "RADIANT_PEARL": {
+    "named": [
+     "LUMINESCE"
+    ],
+    "open": false
+   },
+   "TEA_OF_DISCOURTESY": {
+    "named": [
+     "DAZED"
+    ],
+    "open": false
+   },
+   "TOOLBOX": {
+    "named": [],
+    "open": true
+   },
+   "VEXING_PUZZLEBOX": {
+    "named": [],
+    "open": true
+   }
+  }
+ },
+ "powers": {
+  "allow_negative": [
+   "DEXTERITY",
+   "FOCUS",
+   "SHRIEK",
+   "SHRINK",
+   "STRENGTH"
+  ],
+  "instanced": [
+   "AUTOMATION",
+   "COVERED",
+   "FLANKING",
+   "GUARDED",
+   "HEIST",
+   "KNOCKDOWN",
+   "MAGIC_BOMB",
+   "MONOLOGUE",
+   "NIGHTMARE",
+   "OBLIVION",
+   "ORBIT",
+   "PANACHE",
+   "ROLLING_BOULDER",
+   "SANDPIT",
+   "STRANGLE",
+   "SWIPE",
+   "TAG_TEAM",
+   "THE_BOMB",
+   "THIEVERY",
+   "TORIC_TOUGHNESS",
+   "WITHERING_PRESENCE"
+  ]
+ },
+ "removers": {
+  "monster": [
+   "THIEVING_HOPPER"
+  ]
+ }
+}
