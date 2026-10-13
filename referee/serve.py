@@ -299,8 +299,10 @@ def main() -> int:
                     except FileNotFoundError:
                         age = 0
                     # The driver rewrites its status file every frame (driver/Watchdog.cs), so an old file means
-                    # its main loop stopped; its own watchdog exits after 2 * stall_s without a frame.
-                    if age > 2 * stall_s + 5:
+                    # no frame has ended. That alone is not a hang: a starved server can take minutes over one
+                    # frame, and the driver's own watchdog tells a blocked main thread from a starved one. This
+                    # is the backstop for a driver whose watchdog cannot run.
+                    if age > 10 * stall_s:
                         kill(s, f"no heartbeat for {age:.0f}s")
             # keep N active servers: promote the spare first, else boot a replacement
             live = [s for s in servers if s.alive]

@@ -83,7 +83,8 @@ running between fights (no 10 s boot per session), so cost per fight is the figh
 - Safety checks are `run_referee.py`'s (known `sts2.dll` hash, `override.cfg`, scratch `APPDATA`, real profile untouched);
   one `netstat` call per second covers every server. It exits 1 if any server opened a connection.
 - The driver's watchdog arms once a server is ready and counts frames as well as seconds (`driver/Watchdog.cs`): it exits after
-  `stall_s` seconds and 600 frames without progress, or 2 x `stall_s` without a frame, so a slow, starved server is not killed.
+  `stall_s` seconds and 600 frames without progress, or when no frame ends while the main thread is blocked or burns CPU for 2 x
+  `stall_s` seconds, so a slow, starved server is not killed. serve.py kills on a 10 x `stall_s` old status file only as a backstop.
 - A server that dies or hangs is replaced; the spec it held goes back to the inbox once and is recorded as `stalled` if it
   kills a second server. One hot spare is kept booted (`--spares 0` turns it off). Servers run at BelowNormal priority.
 - `--verify-against <runs-mode out.json>` compares each result (ignoring timing) with the reference, spec by spec.
