@@ -41,10 +41,17 @@ public static partial class Driver
             return;
         }
 
-        _ = RunJob(job);
+        // A fault before the job's own try (e.g. a type initializer) would otherwise hang silently.
+        _ = RunJob(job).ContinueWith(t =>
+        {
+            GD.Print($"[referee] job failed outside its handler: {t.Exception}");
+            System.Environment.Exit(4);
+        }, TaskContinuationOptions.OnlyOnFaulted);
     }
 
     private static long _lastProgress = System.Environment.TickCount64;
+    private static long _frameTicks;
+    internal static long _lastDriverFrame;
 
     /// <summary>Marks progress for the watchdog: called on every action, not just every fight.</summary>
     internal static void Heartbeat() => Interlocked.Exchange(ref _lastProgress, System.Environment.TickCount64);
@@ -75,7 +82,9 @@ public static partial class Driver
                 await Task.Delay(5000);
                 if (System.Environment.TickCount64 - Interlocked.Read(ref _lastProgress) > stallMs)
                 {
-                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting with {results.Count} results saved");
+                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting with {results.Count} results saved; "
+                        + $"frames ticked {Interlocked.Read(ref _frameTicks)} (last driver frame {Interlocked.Read(ref _lastDriverFrame)}), "
+                        + $"step {CurrentStep}, fast tweens {Interlocked.Read(ref Patches.FastTweens)}, in fast tween {Patches.InFastTween}");
                     System.Environment.Exit(3);
                 }
             }
@@ -86,6 +95,8 @@ public static partial class Driver
             // Wait until the game has finished its own startup and shows the main menu: content,
             // localisation and the profile are loaded by then, exactly as for a player.
             var tree = (SceneTree)Engine.GetMainLoop();
+            // For the watchdog: are frames still ticking (an await never resolves) or is the main thread stuck?
+            tree.ProcessFrame += () => Interlocked.Increment(ref _frameTicks);
             while (NGame.Instance?.MainMenu == null)
             {
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
@@ -95,6 +106,28 @@ public static partial class Driver
             // waits, and the frame cap only paces rendering, which is off anyway.
             SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
             IdleFrames = (double?)job["idle_frames"] ?? IdleFrames;
+            SettleMode = (string?)job["settle"] ?? SettleMode;
+            SettleAudit = (double?)job["settle_audit"] ?? SettleAudit;
+            TraceFrames = (bool?)job["trace_frames"] ?? false;
+            StepCosts = (bool?)job["step_costs"] ?? false;
+            IdleProbe = (int?)job["idle_probe"] ?? 0;
+            if (job["sleep_usec"] is { } sleep)
+            {
+                // Headless, the main loop pads every frame to this many microseconds (Godot's
+                // OS::add_frame_delay applies the low-processor sleep when no window can draw).
+                OS.LowProcessorUsageModeSleepUsec = (int)sleep;
+            }
+
+            GD.Print($"[referee] low_processor_mode={OS.LowProcessorUsageMode} sleep_usec={OS.LowProcessorUsageModeSleepUsec} max_fps={Engine.MaxFps}");
+            if (TraceFrames)
+            {
+                Patches.ApplyTrace();
+            }
+
+            if ((bool?)job["fast_tweens"] == true)
+            {
+                Patches.ApplyFastTweens();
+            }
             // Tutorials off, as a player can set it: first-time popups (FTUE) on a fresh profile
             // open modals that nothing headless answers.
             SaveManager.Instance.Progress.EnableFtues = false;

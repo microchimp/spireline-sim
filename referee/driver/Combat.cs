@@ -30,10 +30,12 @@ public static partial class Driver
         var proc = System.Diagnostics.Process.GetCurrentProcess();
         ulong f0 = Engine.GetProcessFrames();
         double cpu0 = proc.TotalProcessorTime.TotalMilliseconds;
+        double main0 = MainThreadCpuMs();
         int gc0 = GC.CollectionCount(2);
         JsonObject Cost() { proc.Refresh(); return new JsonObject {
             ["frames"] = (long)(Engine.GetProcessFrames() - f0),
             ["cpu_ms"] = Math.Round(proc.TotalProcessorTime.TotalMilliseconds - cpu0),
+            ["main_cpu_ms"] = Math.Round(MainThreadCpuMs() - main0),
             ["gen2_gcs"] = GC.CollectionCount(2) - gc0 }; }
         var (state, dump) = await BeginRun(spec);
         var timing = new JsonObject { ["begin_run"] = phase.ElapsedMilliseconds };
@@ -46,6 +48,9 @@ public static partial class Driver
         ScreenLog = selector.Log;
         dump.Remove("save");
         dump["steps"] = steps;
+        Player player = state.Players[0];
+        _tracePlayer = player;
+        BeginSettleFight((string)dump["seed"]!, dump);
         try
         {
             // Coverage: cards added to the deck before Neow, the way any card joins a deck
@@ -82,15 +87,23 @@ public static partial class Driver
             dump["room"] = new JsonArray(target.coord.col, target.coord.row);
             GD.Print($"[referee] entering {target.coord.col},{target.coord.row}");
             await WithTimeout(run.EnterMapCoord(target.coord), 60, "EnterMapCoord");
-            await Idle();
+            await SettleStep(state, player, 0);
             GD.Print($"[referee] in room; combat={CombatManager.Instance.IsInProgress}");
 
             timing["enter_room"] = phase.ElapsedMilliseconds;
             dump["cost_setup"] = Cost();
             var rng = new Random((int?)spec["chooser_seed"] ?? 1);
             int maxActions = (int?)spec["max_actions"] ?? 80;
-            Player player = state.Players[0];
-            steps.Add(new JsonObject { ["action"] = null, ["state"] = Snapshot(state, player) });
+            steps.Add(Step(null, Snapshot(state, player)));
+            if (IdleProbe > 0)
+            {
+                // Diagnostics: the cost of a frame in which nothing happens (the scene's own per-frame work).
+                var tree = (SceneTree)Engine.GetMainLoop();
+                double m0 = MainThreadMcycles();
+                var w = System.Diagnostics.Stopwatch.StartNew();
+                for (int f = 0; f < IdleProbe; f++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+                dump["idle_probe"] = new JsonObject { ["mcyc_per_frame"] = Math.Round((MainThreadMcycles() - m0) / IdleProbe, 2), ["ms_per_frame"] = Math.Round(w.Elapsed.TotalMilliseconds / IdleProbe, 2) };
+            }
             for (int i = 0; i < maxActions && CombatManager.Instance.IsInProgress; i++)
             {
                 CurrentStep = i + 1;  // choices this action opens are logged against its step
@@ -112,6 +125,9 @@ public static partial class Driver
                 }
 
                 var (hi, ti) = options[rng.Next(options.Count)];
+                if (TraceFrames) _stepTrace = new JsonArray();
+                ulong sf0 = Engine.GetProcessFrames();
+                double sc0 = MainThreadMcycles();
                 JsonObject action;
                 if (hi < 0)
                 {
@@ -130,8 +146,12 @@ public static partial class Driver
                     card.TryManualPlay(tgt);
                 }
 
-                await Idle();
-                steps.Add(new JsonObject { ["action"] = action, ["state"] = Snapshot(state, player) });
+                await SettleStep(state, player, i + 1);
+                steps.Add(Step(action, Snapshot(state, player)));
+                if (StepCosts)
+                {
+                    steps[^1]!["cost"] = new JsonObject { ["frames"] = (long)(Engine.GetProcessFrames() - sf0), ["mcyc"] = Math.Round(MainThreadMcycles() - sc0) };
+                }
                 Heartbeat();
                 GD.Print($"[referee] step {i}: {action.ToJsonString()}");
             }
@@ -144,6 +164,49 @@ public static partial class Driver
         timing["fight_end"] = phase.ElapsedMilliseconds;
         dump["cost"] = Cost();
         return dump;
+    }
+
+    private static Player? _tracePlayer;
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentThread();
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool GetThreadTimes(IntPtr thread, out long creation, out long exit, out long kernel, out long user);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool QueryThreadCycleTime(IntPtr thread, out ulong cycles);
+
+    /// <summary>CPU time of the calling (main) thread: the game's frame work, without worker threads.</summary>
+    private static double MainThreadCpuMs()
+    {
+        GetThreadTimes(GetCurrentThread(), out _, out _, out long kernel, out long user);
+        return (kernel + user) / 10000.0;
+    }
+
+    /// <summary>Main-thread cycles in millions: fine-grained, for per-step costs.</summary>
+    private static double MainThreadMcycles()
+    {
+        QueryThreadCycleTime(GetCurrentThread(), out ulong c);
+        return c / 1e6;
+    }
+
+    /// <summary>Per-step cost (job "step_costs"): frames and main-thread megacycles of the action and its settle.</summary>
+    internal static bool StepCosts;
+
+    /// <summary>Frames to idle after step 0 to measure a quiet frame's cost (job "idle_probe"; diagnostics).</summary>
+    internal static int IdleProbe;
+
+    private static JsonObject Step(JsonObject? action, JsonObject snapshot)
+    {
+        var o = new JsonObject { ["action"] = action, ["state"] = snapshot };
+        if (_stepTrace != null)
+        {
+            o["trace"] = _stepTrace;
+            _stepTrace = null;
+        }
+
+        return o;
     }
 
     private static async Task WithTimeout(Task task, double seconds, string what, Action? eachFrame = null)
@@ -191,6 +254,7 @@ public static partial class Driver
                 || !RunManager.Instance.ActionQueueSet.IsEmpty
                 || (cm.IsInProgress && (cm.PlayerActionsDisabled || combat?.CurrentSide != CombatSide.Player));
             string sig = busy ? "busy" : Signature(combat);
+            if (_stepTrace != null && _tracePlayer != null) TraceFrame(_tracePlayer, !busy, sig);
             stable = !busy && sig == last ? stable + 1 : 0;
             last = sig;
         }
