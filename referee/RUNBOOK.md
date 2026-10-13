@@ -17,6 +17,7 @@ high-fidelity simulator with complete coverage. Ironclad A10 first, then every c
 ## The loop
 
 Shortcut for steps 1-4: `python referee/batch.py --name <name> --fights 100 --start <n>` (from the fork's root) does them all and prints a summary grouped by the first differing field. Use a new `--start` for new seeds.
+It streams: one pool of game servers (`--parallel`) plays the whole batch, finished fights are replayed in the emulator in chunks (`--chunk`, default 48) while the servers keep playing, and each chunk updates the coverage the next decks are drawn from. The canary (`--canary` fights per server) is the first chunk; if it fails the batch stops (exit 3). `--game`, `--jobs` and `--coverage` point it at a private game copy, job folder and coverage file. `<name>.json` holds the specs as played (`serve.py --specs <name>.json` replays them).
 
 1. **Make a job** (JSON). One fight per entry, all in one session:
    `{"out": "D:/spireline/referee/jobs/<name>.out.json", "runs": [{"kind": "combat", "seed": "<10 chars>", "character": "IRONCLAD", "ascension": 10, "neow": 0|1|2, "chooser_seed": <int>, "max_actions": 120}, ...]}`.
@@ -76,18 +77,23 @@ characters other than the Ironclad (the emulator's run engine starts every run a
 ## Long-lived servers (`serve.py`)
 
 For many fights at once: `python referee/serve.py --game <game copy> --specs <job.json> --servers 4 [--repeat K] [--out <file>]`
-(from the fork's root). It boots N headless games, each on its own scratch profile, feeds the job's `runs` through one
-inbox folder and merges the results into `--out` (same format as a runs-mode out file, in spec order). Each game keeps
-running between fights (no 10 s boot per session), so cost per fight is the fight. Details and rules:
+(from the fork's root). It boots N headless games, each on its own scratch profile, feeds the job's `runs` to them one
+spec at a time through an inbox folder per server and merges the results into `--out` (same format as a runs-mode out
+file, in spec order). Each game keeps running between fights (no 10 s boot per session), so cost per fight is the fight.
+The dispatcher is `serve.Pool` (`submit(specs)`, `poll()` returns finished fights, `close()`); `batch.py` keeps one for a
+whole batch. Details and rules:
 
 - Safety checks are `run_referee.py`'s (known `sts2.dll` hash, `override.cfg`, scratch `APPDATA`, real profile untouched);
   one `netstat` call per second covers every server. It exits 1 if any server opened a connection.
-- A server that dies or hangs is replaced; the spec it held goes back to the inbox once and is recorded as `stalled` if it
-  kills a second server. One hot spare is kept booted (`--spares 0` turns it off). Servers run at BelowNormal priority.
+- A server that dies or hangs is replaced; the spec it held goes back to the front of the queue once and is recorded as
+  `stalled` if it kills a second server. One hot spare is kept booted (`--spares 0` turns it off). Servers run at BelowNormal priority.
+- One inbox per server, never a shared one: a claim is a rename, and on Windows two servers renaming the same file can both
+  succeed (night04 lost 4 of 600 fights that way). A used `--run-dir` is refused.
 - `--verify-against <runs-mode out.json>` compares each result (ignoring timing) with the reference, spec by spec.
 - `tools`: `python referee/linkcopy.py --src <game> --dst <game-name>` makes a private game copy out of hard links, so a
   session can install its own driver without waiting for the shared copy's `mods/*.dll` to unlock.
-- Run files: `<game>/../serve/<ts>/{inbox,out/s*.jsonl,scratch/s*,results.json,results.jsonl,summary.json}`.
+- Run files: `<game>/../serve/<ts>/{inbox/s*,out/s*.jsonl,scratch/s*,results.json,results.jsonl,summary.json}` (a batch:
+  `serve/<name>`, with `chunks/` for the emulator's working files).
 - Driver side (`driver/Server.cs`): job `{"out": "x.jsonl", "inbox": "<dir>", ...}` instead of `"runs"`; claim by renaming
   `<id>.json` to `<id>.json.taken.<pid>`, append one line per fight, `STOP` in the inbox ends it.
 
