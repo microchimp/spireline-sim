@@ -1,4 +1,5 @@
 // Usage: EmuDump <ascension> <seed> [<seed> ...] > out.json   ({"results": [...]} in seed order)
+//        EmuDump codex <runs.jsonl[.gz]> <out.jsonl> [...]   (see Codex/Driver.cs)
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -7,6 +8,12 @@ using Sts2Emulator.Core.Run;
 
 string[] actNames = ["", "OVERGROWTH", "UNDERDOCKS", "HIVE", "GLORY"];
 string[] nodeNames = ["Unassigned", "Monster", "Elite", "RestSite", "Shop", "Treasure", "Boss", "Unknown", "Ancient"];
+if (args[0] == "codex")
+{
+    // EmuDump codex <runs.jsonl[.gz]> <out.jsonl> [...]: real run histories against the run engine.
+    Environment.Exit(EmuDump.Codex.Driver.Run(args[1..]));
+}
+
 if (args[0] == "pools")
 {
     Console.WriteLine(Fight.Pools().ToJsonString());

@@ -15,8 +15,17 @@ public sealed class RunEngine
     /// <see cref="Ascension.DefaultLevel" />, the level the differential captures were taken
     /// at; the native export and the Python wrappers take it explicitly and default to 0.
     /// </param>
+    /// <param name="character">
+    /// Who plays the run: its starting deck, relic and max HP, and every pool the run reads
+    /// "from the character's own" -- the relic bag above all, which is shuffled off UpFront
+    /// before the rooms are, so the character moves every draw after it. Ironclad by default.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">A level the run engine does not model.</exception>
-    public void Reset(string seed, int ascension = Ascension.DefaultLevel)
+    public void Reset(
+        string seed,
+        int ascension = Ascension.DefaultLevel,
+        PlayerCharacter character = PlayerCharacter.Ironclad
+    )
     {
         if (ascension is < 0 or > Ascension.MaxRunLevel)
         {
@@ -28,18 +37,17 @@ public sealed class RunEngine
         }
 
         State.AscensionLevel = ascension;
-        // The deck, relic and HP below are the Ironclad's, so the character is too; a run
-        // of anyone else starts here, with its own `Character` and starting kit.
-        State.Character = PlayerCharacter.Ironclad;
+        // Set before anything is generated: the relic bag reads the character's pool.
+        State.Character = character;
         // Store the canonical seed, not the typed one: the game canonicalizes before it
         // hashes, so "abcdefo" and "ABCDEF0" are the same run.
         State.Rng = new RunRngSet(seed);
         State.StringSeed = State.Rng.StringSeed;
         State.PlayerRng = new PlayerRngSet(State.Rng);
-        // The Ironclad's StartingHp, and then Neow: `AncientEventModel.BeforeEventStarted`
+        // The character's StartingHp, and then Neow: `AncientEventModel.BeforeEventStarted`
         // sets a Neow run's current HP to 0 and heals it like any ancient, so it starts full
-        // below WearyTraveler and on 64 from it.
-        State.PlayerMaxHp = RunConstants.StartingMaxHp;
+        // below WearyTraveler and on 80% of it from it (64 for the Ironclad).
+        State.PlayerMaxHp = RunConstants.StartingMaxHpFor(character);
         State.PlayerHp = 0;
         ApplyAncientHeal();
         State.Gold = 99;
@@ -47,13 +55,13 @@ public sealed class RunEngine
         State.Phase = RunPhase.Ancient;
         State.Deck = [];
         // `AscensionManager.ApplyEffectsTo` puts Ascender's Bane on the end of the deck
-        // from AscendersBane up; below it the starting deck is the character's own ten.
-        foreach (int cardId in RunConstants.StartingDeckIds(ascension))
+        // from AscendersBane up; below it the starting deck is the character's own.
+        foreach (int cardId in RunConstants.StartingDeckIds(ascension, character))
         {
             RunNonCombatEffects.AddCardToDeck(State, new CardInstance(cardId, Upgraded: false));
         }
 
-        State.Relics = [new RelicInstance(RunConstants.RelicBurningBlood)];
+        State.Relics = [new RelicInstance(RunConstants.StartingRelicFor(character))];
         // `Player.CreateForNewRun` starts the belt at three slots, and
         // `AscensionManager.ApplyEffectsTo` takes one away under TightBelt.
         State.MaxPotionSlots = RunConstants.StartingPotionSlots(ascension);
