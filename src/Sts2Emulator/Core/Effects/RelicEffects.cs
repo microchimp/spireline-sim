@@ -555,6 +555,25 @@ public static class RelicEffects
 
     public static void ApplyBeforeOpeningHand(CombatState state, Random rng)
     {
+        // `StoneCracker.AfterRoomEntered(CombatRoom)`, which runs before anything that waits
+        // for the combat to start: the draw pile has been dealt, and CardsVar(2) of its
+        // upgradable cards are upgraded. WHICH two is `StableShuffle(Rng.CombatCardSelection)`
+        // over the upgradable ones -- sorted by ModelId, then shuffled -- so it is a roll
+        // that does not depend on the pile's order. This took the first two in pile order
+        // and drew nothing from the stream.
+        if (HasRelic(state, StoneCracker))
+        {
+            var shuffled = CardEffects.StableShuffledIndices(
+                state.DrawPile,
+                RunConstants.IsRunCardUpgradable,
+                CardEffects.CardSelectionRngFor(state, rng)
+            );
+            foreach (int index in shuffled.Take(2))
+            {
+                state.DrawPile[index] = state.DrawPile[index] with { Upgraded = true };
+            }
+        }
+
         // `SneckoEye.BeforeCombatStart` and `FakeSneckoEye.BeforeCombatStart` both apply
         // ConfusedPower at 1. `PowerStackType.Single`, so holding both is still one.
         //
@@ -626,24 +645,6 @@ public static class RelicEffects
             CardEffects.AddCardToDrawPileRandomly(state, 446, 3, state.ShuffleRng ?? rng);
         }
 
-        if (!HasRelic(state, StoneCracker))
-        {
-            return;
-        }
-
-        // The relic takes Cards.Where(IsUpgradable).Take(2) off the draw pile — the first
-        // two in pile order, not two at random, which is what this used to roll for.
-        var upgradableIndices = state
-            .DrawPile.Select((card, index) => (card, index))
-            .Where(item => RunConstants.IsRunCardUpgradable(item.card))
-            .Select(item => item.index)
-            .Take(2)
-            .ToList();
-
-        foreach (int drawPileIndex in upgradableIndices)
-        {
-            state.DrawPile[drawPileIndex] = state.DrawPile[drawPileIndex] with { Upgraded = true };
-        }
     }
 
     public static void ApplyCombatStart(CombatState state, Random rng)

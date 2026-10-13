@@ -3620,6 +3620,47 @@ public static class CardEffects
         return rank;
     }
 
+    /// <summary>
+    /// `pile.Where(include).ToList().StableShuffle(rng)` as pile INDICES: the matching cards
+    /// sorted by ModelId (the ordinal slugified class name) and then by upgrade level, which
+    /// is `CardModel.CompareTo`, and then Fisher-Yates'd off <paramref name="rng" /> -- one
+    /// `NextInt(i + 1)` per card but the first. The sort is why two piles holding the same
+    /// cards in a different order shuffle alike; equal cards keep their pile order.
+    /// </summary>
+    internal static List<int> StableShuffledIndices(
+        IReadOnlyList<CardInstance> pile,
+        Func<CardInstance, bool> include,
+        Random rng
+    )
+    {
+        var indices = StableSortedIndices(pile, include);
+        for (int i = indices.Count - 1; i > 0; i--)
+        {
+            int j = rng.Next(i + 1);
+            (indices[i], indices[j]) = (indices[j], indices[i]);
+        }
+
+        return indices;
+    }
+
+    /// <summary>
+    /// The sort half of `StableShuffle`: `CardModel.CompareTo`, ModelId (ordinal on the
+    /// slugified class name) and then upgrade level. The emulator's numeric ids are NOT
+    /// that order -- Cascade was added after the alphabetical extraction and sorts last
+    /// by id, first among the C's by name -- so a sort on them hands the same draw a
+    /// different card.
+    /// </summary>
+    internal static List<int> StableSortedIndices(
+        IReadOnlyList<CardInstance> pile,
+        Func<CardInstance, bool> include
+    ) =>
+        Enumerable
+            .Range(0, pile.Count)
+            .Where(i => include(pile[i]))
+            .OrderBy(i => EntryRank[pile[i].DefId])
+            .ThenBy(i => pile[i].Upgraded)
+            .ToList();
+
     // Reused across shuffles so a reshuffle allocates nothing once the piles have been
     // this big before. ThreadStatic because a tree search forks runs, and two handles on
     // two threads must not share a scratch buffer.
