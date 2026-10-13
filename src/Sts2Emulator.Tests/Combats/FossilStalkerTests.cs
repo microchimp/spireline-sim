@@ -81,7 +81,11 @@ public class FossilStalkerTests
     [Fact]
     public void NoMoveComesUpThreeTimesRunning()
     {
-        var fight = Encounter();
+        // Suck's Strength snowballs (+3 per hit), so 999 HP only lasts about fifteen turns of
+        // doing nothing -- and a dead player freezes the stalker's last move, which reads as
+        // "three in a row". How long the player lived used to depend on which moves the shared
+        // test rng happened to hand out; the budget has to outlast the twenty turns watched.
+        var fight = Encounter().PlayerHp(1_000_000, 1_000_000);
         var moves = new List<int>();
 
         for (int turn = 0; turn < 20; turn++)

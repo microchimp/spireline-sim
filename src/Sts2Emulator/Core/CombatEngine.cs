@@ -1523,6 +1523,25 @@ public static class CombatEngine
         CombatTrace.At("turn_start", -1, state);
         var turnStart = new Baseline(state);
         state.Turn++;
+        // Enemies choose their next intent. `CombatManager.StartTurn` rolls every enemy's move
+        // (`Creature.PrepareForNextTurn`, `!isExtraPlayerTurn`) straight after
+        // `Hook.BeforeSideTurnStart` and ahead of everything else the turn start does: block
+        // clear, the hand draw, `AfterPlayerTurnStart`, the orbs. An enemy that Inferno, Rolling
+        // Boulder or an orb kills below has already drawn its move off `Rng.MonsterAi`, so rolling
+        // after those deaths skipped a draw (night04 GVCYB1LRQJ and PPAD21YZ3F: a Leaf Slime S
+        // burned down at turn start, MonsterAi one short). An extra turn from Paels Eye rolls
+        // nothing, because the enemies did not act in between.
+        if (!extraTurn)
+        {
+            EnemyAI.ChooseIntents(
+                state.Enemies,
+                state.Turn,
+                rng,
+                state.AiRng,
+                state.AscensionLevel
+            );
+        }
+
         Effects.RelicEffects.TickPaelsLegionCooldown(state);
         // `PollinousCore.BeforeSideTurnStart` bumps its counter; the hand draw below reads
         // it, and pays two extra cards on every fourth turn.
@@ -2096,18 +2115,13 @@ public static class CombatEngine
             Effects.CardEffects.ApplyPoisonToAllEnemies(state, noxiousFumes, rng);
         }
 
-        // Enemies choose their next intent. The game rolls every move as the turn STARTS
-        // (CombatManager.cs:480-484), ahead of all of the turn start, so the roll comes
-        // before its kills are answered and before the auto-pre-play phase.
-        EnemyAI.ChooseIntents(state.Enemies, state.Turn, rng, state.AiRng, state.AscensionLevel);
-
-        // Every kill the turn start has made, answered once. After the roll, so a death that
-        // sets a move lands on top of the rolled one -- the Test Subject's RESPAWN_MOVE, and
-        // `RavenousPower.AfterDeath`'s `CreatureCmd.Stun`, which the roll used to overwrite
-        // with an attack. Before the auto-pre-play phase (CombatManager.cs:614-620), since
-        // the game's kills here -- Rolling Boulder and Inferno in `AfterPlayerTurnStart`, the
-        // orbs after it -- all come ahead of it: a Gremlin Horn's card is drawn before Mayhem
-        // takes the top of the pile.
+        // Every kill the turn start has made, answered once. After the roll (made at the top of
+        // the turn start), so a death that sets a move lands on top of the rolled one -- the
+        // Test Subject's RESPAWN_MOVE, and `RavenousPower.AfterDeath`'s `CreatureCmd.Stun`,
+        // which the roll used to overwrite with an attack. Before the auto-pre-play phase
+        // (CombatManager.cs:614-620), since the game's kills here -- Rolling Boulder and
+        // Inferno in `AfterPlayerTurnStart`, the orbs after it -- all come ahead of it: a
+        // Gremlin Horn's card is drawn before Mayhem takes the top of the pile.
         AnswerDeathsSince(state, turnStart, rng);
 
         // `Bombardment.AfterAutoPrePlayPhaseEnteredEarly` -- EARLY, so ahead of Mayhem's
