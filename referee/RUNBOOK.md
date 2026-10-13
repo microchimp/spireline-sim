@@ -105,3 +105,16 @@ python -m tools.fidelity.reanchor_compare '<out.json>' <name>.reanchor.json [--a
 - Enemy moves: the snapshot records each enemy's next move (`move`, `intents`), EmuDump dumps the emulator's (`intent`), and fight_compare compares them, so a wrong move shows at the step that chose it. Before each step `reanchor` puts the emulator's AI on the game's moves where its own state allows (a cycle's position, ranked by the game's later moves; a drawn choice redrawn after the step that chose it) and records `moves` = same / set / unknown; an end of turn whose moves are unknown is left unjudged. `--perturb-moves` tests this (every cycle moved one on, the AI on another stream). Records without intents fall back to the old guess: re-anchoring stops at the first end of turn an enemy move could explain, or with `--after-enemy-desync plays` leaves later ends of turn unjudged.
 - What the snapshot lacks (relic counters, enemy AI and intent, per-card modifiers, combat counters) comes from the emulator's own previous result. The `--scramble` and `--stale enemy,cards,relics,counters|all` options of `reanchor` test the write-back and show which hidden state a step needs.
 - `reanchor_compare.learn` / `coverage.update_reanchored` replace `coverage.update` for a re-anchored batch (do not use both).
+
+## Trace mode (re-runs of fights that diverged)
+
+A fight replays identically from its spec, so the costly recording is paid only on re-runs:
+
+```
+python referee/trace_divergent.py <batch out.json> --game <your own game copy> [--specs <job.json>] [--max 10] [--servers 1..3]
+```
+
+- It finds each diverging fight's step (first divergence of the plain replay, else the first primary re-anchored one), re-runs the spec through `serve.py` with `"trace": true` and `max_actions` = that step + 2, checks the re-run reproduces the batch up to the step, replays it with `EmuDump reanchor --trace-to`, and writes `<name>.packs/traces/<seed>.trace.txt` (+ `.json`, `index.md`, the traced records). `context_pack` folds each group's trace diff into its pack. `--reuse` redoes only the emulator side.
+- Game side (`driver/Trace.cs`, off unless the spec asks): per step the game's CombatHistory entries, each GameAction run, each `Hook.Before*/After*` called, each RNG draw (stream, counter, two callers) and marks with the visible state (play/played, turn_end, enemy_turn, move/moved, turn_start), plus hidden state (card costs with modifiers, enchantments, afflictions, relic counters and fields, power amounts and fields).
+- Emulator side (`EmuDump reanchor --trace`, `tools/emudump/Trace.cs`): the same marks from `Core/CombatTrace` probes, every draw of a combat stream with its caller, and the hidden state. The probes cost one null check in normal runs.
+- `python -m tools.fidelity.trace_diff <traced out.json> <traced reanchor.json> [--seed S] [--step J]` aligns the marks, measures each side from its own start state, and prints the first segment whose changes differ (with the game's log, hooks and draws there), whether the re-anchored start already differed (a write-back gap), the first draw one side makes and the other does not (per stream), and hidden-state differences at the step start.
