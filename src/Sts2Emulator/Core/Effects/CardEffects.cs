@@ -3326,24 +3326,16 @@ public static class CardEffects
         Random rng
     )
     {
-        var candidates = Enumerable
-            .Range(0, state.DrawPile.Count)
-            .Where(i => IsFreeCostCard(state, state.DrawPile[i]))
-            .OrderBy(
-                i => GeneratedData.Cards.Get(state.DrawPile[i].DefId).Entry,
-                StringComparer.Ordinal
-            )
-            .ToList();
+        var candidates = StableShuffle(
+            state.DrawPile,
+            Enumerable
+                .Range(0, state.DrawPile.Count)
+                .Where(i => IsFreeCostCard(state, state.DrawPile[i])),
+            CardSelectionRng(state, rng)
+        );
         if (candidates.Count == 0)
         {
             return;
-        }
-
-        var selection = CardSelectionRng(state, rng);
-        for (int i = candidates.Count - 1; i > 0; i--)
-        {
-            int j = selection.Next(i + 1);
-            (candidates[i], candidates[j]) = (candidates[j], candidates[i]);
         }
 
         // Descending pile index, so removing one does not shift the next.
@@ -4162,31 +4154,20 @@ public static class CardEffects
         var shuffle = state.ShuffleRng ?? rng ?? new Random(0);
         for (int i = 0; i < count && state.DrawPile.Count > 0; i++)
         {
-            var eligible = state
-                .DrawPile.Select((c, idx) => (Card: c, Index: idx))
-                .Where(x => !GeneratedData.Cards.Get(x.Card.DefId).Unplayable)
-                .ToList();
+            var all = Enumerable.Range(0, state.DrawPile.Count);
+            var eligible = StableShuffle(
+                state.DrawPile,
+                all.Where(j => !GeneratedData.Cards.Get(state.DrawPile[j].DefId).Unplayable),
+                shuffle
+            );
             if (eligible.Count == 0)
             {
-                eligible = [.. state.DrawPile.Select((c, idx) => (Card: c, Index: idx))];
+                eligible = StableShuffle(state.DrawPile, all, shuffle);
             }
 
-            eligible =
-            [
-                .. eligible.OrderBy(
-                    x => GeneratedData.Cards.Get(x.Card.DefId).Entry,
-                    StringComparer.Ordinal
-                ),
-            ];
-            for (int j = eligible.Count - 1; j > 0; j--)
-            {
-                int k = shuffle.Next(j + 1);
-                (eligible[j], eligible[k]) = (eligible[k], eligible[j]);
-            }
-
-            var picked = eligible[0];
-            state.RemoveFromDrawPileAt(picked.Index);
-            state.AutoPlayQueue.Add(picked.Card);
+            var picked = state.DrawPile[eligible[0]];
+            state.RemoveFromDrawPileAt(eligible[0]);
+            state.AutoPlayQueue.Add(picked);
         }
     }
 
@@ -4209,35 +4190,26 @@ public static class CardEffects
     /// </remarks>
     private static void AutoPlayAttacksFromDiscard(CombatState state, int count, Random? rng = null)
     {
-        var eligible = state
-            .DiscardPile.Select((c, i) => (Card: c, Index: i))
-            .Where(x =>
-            {
-                var d = GeneratedData.Cards.Get(x.Card.DefId);
-                return d.Type == CardType.Attack && !d.Unplayable;
-            })
-            .OrderBy(x => GeneratedData.Cards.Get(x.Card.DefId).Entry, StringComparer.Ordinal)
+        var taken = StableShuffle(
+                state.DiscardPile,
+                Enumerable
+                    .Range(0, state.DiscardPile.Count)
+                    .Where(i =>
+                    {
+                        var d = GeneratedData.Cards.Get(state.DiscardPile[i].DefId);
+                        return d.Type == CardType.Attack && !d.Unplayable;
+                    }),
+                state.ShuffleRng ?? rng ?? new Random(0)
+            )
+            .Take(count)
             .ToList();
-        if (eligible.Count == 0)
+        foreach (int index in taken)
         {
-            return;
-        }
-
-        var shuffle = state.ShuffleRng ?? rng ?? new Random(0);
-        for (int i = eligible.Count - 1; i > 0; i--)
-        {
-            int j = shuffle.Next(i + 1);
-            (eligible[i], eligible[j]) = (eligible[j], eligible[i]);
-        }
-
-        var taken = eligible.Take(count).ToList();
-        foreach (var pick in taken)
-        {
-            state.AutoPlayQueue.Add(pick.Card);
+            state.AutoPlayQueue.Add(state.DiscardPile[index]);
         }
 
         // Back to front, so an earlier removal does not shift a later index.
-        foreach (int index in taken.Select(x => x.Index).OrderByDescending(i => i))
+        foreach (int index in taken.OrderByDescending(i => i))
         {
             state.DiscardPile.RemoveAt(index);
         }
@@ -4300,19 +4272,11 @@ public static class CardEffects
             return;
         }
 
-        var shuffled = Enumerable
-            .Range(0, state.DrawPile.Count)
-            .OrderBy(
-                i => GeneratedData.Cards.Get(state.DrawPile[i].DefId).Entry,
-                StringComparer.Ordinal
-            )
-            .ToList();
-        var selection = CardSelectionRng(state, rng ?? new Random(0));
-        for (int i = shuffled.Count - 1; i > 0; i--)
-        {
-            int j = selection.Next(i + 1);
-            (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
-        }
+        var shuffled = StableShuffle(
+            state.DrawPile,
+            Enumerable.Range(0, state.DrawPile.Count),
+            CardSelectionRng(state, rng ?? new Random(0))
+        );
 
         var candidates = shuffled.Take(sample).OrderBy(i => i).ToList();
         OpenCardSelection(
