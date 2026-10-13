@@ -350,18 +350,18 @@ public static class RelicEffects
 
     /// <summary>
     /// Velvet Choker's ShouldPlay: once six cards have been played this turn, nothing else
-    /// can be. The game applies this to auto-played cards too (Havoc, Mayhem), which the
-    /// engine does not — see the approximation table in HANDOFF.md.
+    /// can be -- auto-played cards included (`CombatEngine.BeginAutoPlay`).
     /// </summary>
     public static bool BlocksFurtherCardPlays(CombatState state) =>
         (HasRelic(state, VelvetChoker) && state.CardPlaysThisTurn >= VelvetChokerCardLimit)
         // `Normality.ShouldPlay` is false once THREE cards have been played this turn, and
         // only while the curse is in HAND -- so drawing it late in a turn can stop the
         // turn dead, and shuffling it away costs nothing. Velvet Choker's rule with the
-        // clock on a card instead of a relic, which is why they share this door.
+        // clock on a card instead of a relic, which is why they share this door. Its clock
+        // is `CardPlaysStarted` (the play in progress counts), the Choker's AfterCardPlayed.
         || (
             state.Hand.Any(card => card.DefId == ST.Normality)
-            && state.CardPlaysThisTurn >= NormalityCardLimit
+            && state.CardPlaysStartedThisTurn >= NormalityCardLimit
         );
 
     /// <summary>Normality's `_numOfCardsPerTurn`.</summary>
@@ -555,6 +555,27 @@ public static class RelicEffects
 
     public static void ApplyBeforeOpeningHand(CombatState state, Random rng)
     {
+        // `StoneCracker.AfterRoomEntered(CombatRoom)`, which runs before anything that waits
+        // for the combat to start: the draw pile has been dealt, and CardsVar(2) of its
+        // upgradable cards are upgraded. WHICH two is `StableShuffle(Rng.CombatCardSelection)`
+        // over the upgradable ones -- sorted by ModelId, then shuffled -- so it is a roll
+        // that does not depend on the pile's order. This took the first two in pile order
+        // and drew nothing from the stream.
+        if (HasRelic(state, StoneCracker))
+        {
+            var shuffled = CardEffects.StableShuffle(
+                state.DrawPile,
+                Enumerable
+                    .Range(0, state.DrawPile.Count)
+                    .Where(i => RunConstants.IsRunCardUpgradable(state.DrawPile[i])),
+                CardEffects.CardSelectionRngFor(state, rng)
+            );
+            foreach (int index in shuffled.Take(2))
+            {
+                state.DrawPile[index] = state.DrawPile[index] with { Upgraded = true };
+            }
+        }
+
         // `SneckoEye.BeforeCombatStart` and `FakeSneckoEye.BeforeCombatStart` both apply
         // ConfusedPower at 1. `PowerStackType.Single`, so holding both is still one.
         //
@@ -626,24 +647,6 @@ public static class RelicEffects
             CardEffects.AddCardToDrawPileRandomly(state, 446, 3, state.ShuffleRng ?? rng);
         }
 
-        if (!HasRelic(state, StoneCracker))
-        {
-            return;
-        }
-
-        // The relic takes Cards.Where(IsUpgradable).Take(2) off the draw pile — the first
-        // two in pile order, not two at random, which is what this used to roll for.
-        var upgradableIndices = state
-            .DrawPile.Select((card, index) => (card, index))
-            .Where(item => RunConstants.IsRunCardUpgradable(item.card))
-            .Select(item => item.index)
-            .Take(2)
-            .ToList();
-
-        foreach (int drawPileIndex in upgradableIndices)
-        {
-            state.DrawPile[drawPileIndex] = state.DrawPile[drawPileIndex] with { Upgraded = true };
-        }
     }
 
     public static void ApplyCombatStart(CombatState state, Random rng)
@@ -1260,6 +1263,11 @@ public static class RelicEffects
         //
         // The Strength is applied whether or not a card was found, because the game's
         // `PowerCmd.Apply` sits outside the null check.
+        //
+        // `ShuffleIfNecessary` comes first: with the draw pile spent the mittens exhaust the
+        // top of the RESHUFFLED discard, where the emulator found nothing to exhaust and let
+        // the hand draw do the shuffle afterwards.
+        CardEffects.ShuffleIfNecessary(state, rng ?? new Random(0));
         if (state.DrawPile.Count > 0)
         {
             int index = turnNumber == 1 ? state.DrawPile.FindIndex(card => !card.IsInnate()) : 0;
@@ -1926,7 +1934,8 @@ public static class RelicEffects
         // the relic pays best when it is doing the least.
         if (
             HasRelic(state, DiamondDiadem)
-            && state.CardsPlayedThisTurn <= DiamondDiademCardThreshold
+            // Counted in its AfterCardPlayed, auto-plays included.
+            && state.CardPlaysThisTurn <= DiamondDiademCardThreshold
         )
         {
             // `PowerStackType.Single`: it is on or off, so a second grant is not a second

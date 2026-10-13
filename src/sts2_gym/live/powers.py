@@ -41,15 +41,12 @@ _POWERS = _REPO / "src" / "Sts2Emulator" / "Generated" / "Powers.g.cs"
 # `OutbreakCounter`, and it is the COUNTER the capture is looking at.
 DISPLAY_AMOUNT_BUFFS = {
     "OUTBREAK_POWER": "OutbreakCounter",
-    # `MonologuePower.DisplayAmount => StrengthApplied` -- the game shows the Strength the
-    # power has handed out so far, not the per-card amount the power actually holds.
-    "MONOLOGUE_POWER": "MonologueApplied",
 }
 
 # Powers whose displayed number is DERIVED rather than stored, so no BuffId holds it and
 # the amount cannot be compared -- only the power's presence. `OrbitPower.DisplayAmount` is
 # `4 - energySpent % 4`, the energy left until the next payout, where the emulator keeps the
-# energy spent (CombatState.OrbitEnergySpent) and the power's own amount is what it grants.
+# energy spent in the instance's `BuffState.Data` and the power's own amount is what it grants.
 #
 # Asserting presence and not the number is a real weakening, so it is spelled out here and
 # each entry needs a hand-written test to cover the number instead.
@@ -57,13 +54,16 @@ PRESENCE_ONLY_BUFFS = {
     "ORBIT_POWER": "Orbit",
     # `AutomationPower.DisplayAmount => cardsLeft`, counting DOWN from 10 to the next
     # payout, where the power's own amount is the ENERGY it grants. The emulator keeps the
-    # energy on `BuffId.AutomationPower` and counts UP in
-    # `CombatState.DrawnCardsSinceAutomationProc`, so the displayed number is the
-    # complement of a field that is not a buff at all.
+    # energy as the magnitude of `BuffId.AutomationPower` and counts UP in the instance's
+    # `BuffState.Data`, so the displayed number is the complement of that.
     "AUTOMATION_POWER": "AutomationPower",
     # `PanachePower.DisplayAmount => CardsLeft`, down from 5, where the amount is the
-    # DAMAGE. Same shape: `CombatState.CardsPlayedSincePanacheProc` counts up.
+    # DAMAGE. Same shape: the instance's `BuffState.Data` counts up.
     "PANACHE_POWER": "PanachePower",
+    # `MonologuePower.DisplayAmount => StrengthApplied` -- the game shows the Strength the
+    # power has handed out so far, not the per-instance amount (1) the power holds. The
+    # emulator keeps that running total in the instance's `BuffState.Data`.
+    "MONOLOGUE_POWER": "Monologue",
 }
 
 # Powers the emulator names the other way round. Only reorderings and rewordings of the
@@ -232,13 +232,21 @@ _CHAINS_OF_BINDING = "CHAINS_OF_BINDING_POWER"
 # sweep argues for (combat_sweep.py `_presence_only_powers`).
 _UNCARRIED_HALF = {
     "OUTBREAK_POWER": "its progress towards the next burst (BuffId.OutbreakCounter)",
-    "MONOLOGUE_POWER": "the Strength it has handed out so far (BuffId.MonologueApplied)",
-    "ORBIT_POWER": "the energy spent towards its next payout (CombatState.OrbitEnergySpent)",
+    "MONOLOGUE_POWER": (
+        "the Strength it has handed out so far (the instance's BuffState.Data, snapshot "
+        "`data`)"
+    ),
+    "ORBIT_POWER": (
+        "the energy spent towards its next payout (the instance's BuffState.Data, snapshot "
+        "`data`)"
+    ),
     "AUTOMATION_POWER": (
-        "the cards drawn towards its next payout (CombatState.DrawnCardsSinceAutomationProc)"
+        "the cards drawn towards its next payout (the instance's BuffState.Data, snapshot "
+        "`data`)"
     ),
     "PANACHE_POWER": (
-        "the cards played towards its next burst (CombatState.CardsPlayedSincePanacheProc)"
+        "the cards played towards its next burst (the instance's BuffState.Data, snapshot "
+        "`data`)"
     ),
     "TENDER_POWER": (
         "the cards played under it this turn, which it hands back "
@@ -265,8 +273,9 @@ _UNCARRIED_HALF = {
     "POSSESS_STRENGTH_POWER": "the Strength stolen so far, which the emulator keeps as the magnitude",
     # State the emulator keeps on CombatState, which no live field carries.
     "TORIC_TOUGHNESS_POWER": (
-        "the block it hands back each turn (CombatState.ToricToughnessBlock): its amount "
-        "is the TURNS left (CombatEngine.cs:1389-1396)"
+        "the block it hands back each turn (the instance's BuffState.Data, snapshot "
+        "`data`): its amount is the TURNS left (decompiled ToricToughnessPower.cs "
+        "`SetBlock`)"
     ),
     "VOID_FORM_POWER": (
         "the cards it has already made free this turn "
@@ -446,12 +455,6 @@ _PER_PLAY_SELF_DAMAGE = {
     "INFERNO_POWER": ("InfernoSelfDamage", 6, 9),
 }
 
-# `PanachePower`'s `alreadyApplied` (CombatEngine.cs:4168-4180): the play that applied the
-# power does not count towards its five. At any settled decision point that play has
-# resolved, so a held Panache is armed.
-_PANACHE_ARMED = ("PANACHE_POWER", "PanacheArmed")
-
-
 @cache
 def _known_powers() -> frozenset[str]:
     """Every power the game has: the generated table plus the alias-only subclasses.
@@ -584,8 +587,6 @@ def to_buffs(
                     f"(candidates {plays}), so its self-damage is a guess",
                 )
             _add(totals, _ORDINAL_OF[companion], min(plays, default=0))
-        if entry == _PANACHE_ARMED[0]:
-            totals[_ORDINAL_OF[_PANACHE_ARMED[1]]] = 1
         if (half := _UNCARRIED_HALF.get(entry)) is not None and not carried:
             sink.append(f"{where}: {entry}: {half} is not in the live snapshot")
     stolen_cards = [

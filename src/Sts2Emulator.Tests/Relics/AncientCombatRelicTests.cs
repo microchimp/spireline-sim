@@ -16,8 +16,9 @@ namespace Sts2Emulator.Tests;
 public class AncientCombatRelicTests
 {
     /// <summary>
-    /// `BeforeSideTurnEnd` with `CardsPlayedThisTurn <= CardThreshold(2)`. The comparison
-    /// is <=, so a turn that plays nothing at all still earns it.
+    /// `BeforeSideTurnEnd` with `CardsPlayedThisTurn <= CardThreshold(2)`, the relic's own
+    /// AfterCardPlayed count (auto-plays too). The comparison is <=, so a turn that plays
+    /// nothing at all still earns it.
     /// </summary>
     [Theory]
     [InlineData(0, true)]
@@ -26,7 +27,7 @@ public class AncientCombatRelicTests
     public void TheDiademPaysForAQuietTurn(int cardsPlayed, bool granted)
     {
         var fight = Fight.WithRelics(RelicEffects.DiamondDiadem);
-        fight.State.CardsPlayedThisTurn = cardsPlayed;
+        fight.State.CardPlaysThisTurn = cardsPlayed;
 
         RelicEffects.ApplyBeforeEndOfPlayerTurnShared(fight.State, new Random(0));
 
@@ -38,7 +39,7 @@ public class AncientCombatRelicTests
     public void TheDiademDoesNotStack()
     {
         var fight = Fight.WithRelics(RelicEffects.DiamondDiadem);
-        fight.State.CardsPlayedThisTurn = 0;
+        fight.State.CardPlaysThisTurn = 0;
 
         RelicEffects.ApplyBeforeEndOfPlayerTurnShared(fight.State, new Random(0));
         RelicEffects.ApplyBeforeEndOfPlayerTurnShared(fight.State, new Random(0));

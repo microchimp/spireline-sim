@@ -52,6 +52,16 @@ public sealed class CountingRandom : Random
     public CountingRandom Copy() => new(Seed, _rng.Copy(), CallCount);
 
     /// <summary>
+    /// Moves this stream back to exactly <paramref name="other" />'s position, in place -- for a
+    /// caller that holds this object, as a step's caller holds its stream (CombatEngine.Step).
+    /// </summary>
+    public void RestoreFrom(CountingRandom other)
+    {
+        _rng.CopyStateFrom(other._rng);
+        CallCount = other.CallCount;
+    }
+
+    /// <summary>
     /// A combat stream picking up exactly where a run stream stands: the same as
     /// <c>new CountingRandom(stream.RawSeed, stream.CallCount)</c>, in O(1).
     /// </summary>

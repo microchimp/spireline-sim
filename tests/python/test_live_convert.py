@@ -1294,17 +1294,18 @@ class PowerTranslationTests(unittest.TestCase):
             self.assertIn(entry, warnings[0])
 
     def test_a_held_panache_is_armed(self) -> None:
-        # `PanachePower.alreadyApplied` (CombatEngine.cs:4168-4180): the play that applied
-        # the power has resolved by any decision point, so the next play counts. Its
-        # progress towards the burst is still not carried.
+        # `PanachePower.alreadyApplied`: the play that applied the power has resolved by
+        # any decision point, so the next play counts. The emulator's Panache with no Data
+        # is exactly that (a play still resolving is Data -1), so nothing but the power is
+        # emitted. Its progress towards the burst is still not carried.
         out, warnings = self.to_buffs([{"id": "PANACHE_POWER", "amount": 10}], "player")
-        self.assertEqual(out, [buff("PanachePower", 10), buff("PanacheArmed", 1)])
+        self.assertEqual(out, [buff("PanachePower", 10)])
         self.assertEqual(len(warnings), 1)
-        self.assertIn("CardsPlayedSincePanacheProc", warnings[0])
+        self.assertIn("BuffState.Data", warnings[0])
 
     def test_toric_toughness_block_is_flagged(self) -> None:
-        # Its amount is the TURNS left; the block rides CombatState.ToricToughnessBlock
-        # (CombatEngine.cs:1389-1396), which no live field carries.
+        # Its amount is the TURNS left; the block rides the instance's BuffState.Data
+        # (decompiled ToricToughnessPower `SetBlock`), which no live field carries.
         out, warnings = self.to_buffs(
             [{"id": "TORIC_TOUGHNESS_POWER", "amount": 2}],
             "player",
@@ -1312,7 +1313,7 @@ class PowerTranslationTests(unittest.TestCase):
         self.assertEqual(out, [buff("ToricToughness", 2)])
         self.assertEqual(len(warnings), 1)
         self.assertIn("TORIC_TOUGHNESS_POWER", warnings[0])
-        self.assertIn("ToricToughnessBlock", warnings[0])
+        self.assertIn("BuffState.Data", warnings[0])
 
     def test_void_form_count_is_flagged(self) -> None:
         # CombatState.VoidFormCardsPlayedThisTurn (CombatEngine.cs:2241-2245).
@@ -1369,7 +1370,6 @@ class PowerTranslationTests(unittest.TestCase):
             set(powers._UNCARRIED_HALF)
             | set(powers.HISTORY_READS)
             | set(powers._PER_PLAY_SELF_DAMAGE)
-            | {powers._PANACHE_ARMED[0]}
         )
         for entry in tables:
             self.assertIsNotNone(powers.buff_id(entry), entry)

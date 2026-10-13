@@ -10009,8 +10009,8 @@ public class CardCaptureTests
         Assert.Single(fight.State.DiscardPile);
         Assert.Empty(fight.State.ExhaustPile);
         Assert.Equal(9, fight.State.Stars);
-        Assert.Equal(0, fight.PlayerBuffAmount(BuffId.MonologueApplied));
-        fight.PlayerPowersAre(BuffId.MonologueApplied, BuffId.Monologue);
+        Assert.True(fight.PlayerBuffAmount(BuffId.Monologue) > 0, "the game reported MONOLOGUE_POWER and the emulator has none");
+        fight.PlayerPowersAre(BuffId.Monologue);
         Assert.Equal(90, fight.State.Enemies[0].Hp);
         Assert.Equal(0, fight.State.Enemies[0].Block);
         Assert.Equal(1, fight.EnemyBuffAmount(BuffId.Territorial, 0));

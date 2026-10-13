@@ -37,11 +37,11 @@ public enum BuffId
     SetupStrikePower, // player: temporary Strength marker
     EntropyPower, // player: transform N cards in hand at turn start
     FastenPower, // player: gain extra block from Defend cards
-    AutomationPower, // player: gain N energy after every 10 drawn cards
+    AutomationPower, // player: one entry per play: Magnitude = energy, Data = cards drawn towards its ten
     CalamityPower, // player: generate N random Attacks after each played Attack
     MayhemPower, // player: auto-play N cards from the top of draw pile each turn
-    PanachePower, // player: deal N damage to all enemies after every five card plays
-    PanacheArmed, // player: Panache's own play does not count towards its five
+    PanachePower, // player: one entry per play: Magnitude = damage, Data = cards counted towards its five (-1: its own play)
+    PanacheArmed, // retired: the flag rides PanachePower's Data (-1); kept so later ids do not shift
     PrepTimePower, // player: gain N Vigor at the start of each player turn
     RollingBoulderPower, // player: deal N damage to all enemies at turn start, then grow
     StratagemPower, // player: pull N cards from draw pile to hand after shuffling
@@ -350,9 +350,11 @@ public enum BuffId
     NoEnergyGain,
 
     /// <summary>
-    /// <c>OrbitPower.AfterEnergySpent</c>: every FOUR energy spent over the combat pays
-    /// this much energy back. The count is cumulative and does not reset per turn, and it
-    /// starts when the power lands -- energy spent before Orbit was played does not count.
+    /// <c>OrbitPower.AfterEnergySpent</c>, <c>PowerInstanceType.Instanced</c>: every FOUR energy
+    /// spent over the combat pays this much energy back. Every play is an instance of its own
+    /// with its own count (<see cref="BuffState.Data" />, the energy spent so far), which is
+    /// cumulative, does not reset per turn, and starts when the instance lands -- energy spent
+    /// before it was played does not count.
     /// </summary>
     Orbit,
 
@@ -616,17 +618,18 @@ public enum BuffId
     MonarchsGaze,
 
     /// <summary>
-    /// <c>MonologuePower</c>: this much Strength for every card its owner plays, recorded in
-    /// <c>BeforeCardPlayed</c> and paid in <c>AfterCardPlayed</c> so the card that applied
-    /// it does not pay. At the owner's side-turn end the power removes itself and takes
-    /// back everything it gave.
+    /// <c>MonologuePower</c>, <c>PowerInstanceType.Instanced</c>: one Strength for every card its
+    /// owner plays, recorded in <c>BeforeCardPlayed</c> and paid in <c>AfterCardPlayed</c> so
+    /// the card that applied it does not pay. Every play is an instance of its own whose
+    /// <see cref="BuffState.Data" /> is what it has handed out so far -- the number the game
+    /// SHOWS for it (<c>DisplayAmount => StrengthApplied</c>). At the owner's side-turn end each
+    /// instance removes itself and takes back everything it gave.
     /// </summary>
     Monologue,
 
     /// <summary>
-    /// What <see cref="Monologue" /> has handed out so far, which is the number the game
-    /// SHOWS for that power (`DisplayAmount => StrengthApplied`) and the amount it takes
-    /// back at the end of the turn. The Outbreak/OutbreakCounter shape again.
+    /// Retired: what <see cref="Monologue" /> has handed out so far now rides each instance's
+    /// <see cref="BuffState.Data" />. The id stays so later ids do not shift.
     /// </summary>
     MonologueApplied,
 
@@ -714,9 +717,10 @@ public enum BuffId
     HelloWorld,
 
     /// <summary>
-    /// `ToricToughnessPower`: a COUNTER of turns, not an amount. When block clears it
-    /// grants `ToricToughnessBlock` again and decrements -- the amount lives beside it
-    /// because `Amount` is spent tracking the turns.
+    /// `ToricToughnessPower`, <c>PowerInstanceType.Instanced</c>: a COUNTER of turns, not an
+    /// amount. Every play is an instance of its own; when block clears each grants its own
+    /// block (<see cref="BuffState.Data" />, what <c>SetBlock</c> stored, because <c>Amount</c>
+    /// is spent tracking the turns) and decrements.
     /// </summary>
     ToricToughness,
 
@@ -904,11 +908,15 @@ public enum BuffId
 
     /// <summary>
     /// <c>KnockdownPower</c>, a DEBUFF on an enemy, <c>PowerInstanceType.Instanced</c>: every
-    /// Knockdown makes its own entry. It multiplies damage aimed at its owner by its amount,
-    /// but <c>ModifyDamageMultiplicative</c> returns 1 when the dealer is the applier, so a
-    /// lone player never sees a number change. It is still a visible Debuff (Artifact eats
-    /// it, the power list shows it) and removes itself in <c>AfterSideTurnEnd</c> when its
-    /// OWNER's side turn ends.
+    /// Knockdown makes its own entry. It multiplies a powered attack aimed at its owner by its
+    /// amount, but <c>ModifyDamageMultiplicative</c> returns 1 when the dealer is the applier, so
+    /// the player's own attacks never change a number. An attack by anyone ELSE does: the
+    /// Necrobinder's Osty is a creature of its own and its attacks (<c>DealOstyDamage</c>) are
+    /// multiplied in the game. The emulator does not model that yet -- it deals Osty's damage
+    /// through the player's attack path, which has no dealer to compare (see FINDINGS) -- so no
+    /// damage path reads this id. It is still a visible Debuff (Artifact eats it, Rend counts it,
+    /// the power list shows it) and removes itself in <c>AfterSideTurnEnd</c> when its OWNER's
+    /// side turn ends.
     /// </summary>
     Knockdown,
 
@@ -927,7 +935,10 @@ public enum BuffId
 /// </summary>
 /// <remarks>
 /// The game keeps that second number in the instance's DynamicVars or internal data -- The
-/// Bomb's damage, Toric Toughness's block -- because <c>Amount</c> is spent on the turn count.
-/// It is zero for every power that has none, and the snapshot omits a zero.
+/// Bomb's damage, Toric Toughness's block, the cards an Automation or a Panache has counted --
+/// because <c>Amount</c> is spent on something else (the turn count, the energy or damage paid).
+/// It is zero for every power that has none, and the snapshot omits a zero. A counter's
+/// <c>Data</c> counts UP from zero, so an instance built without one (the live game's snapshot
+/// has none) reads as a settled new one.
 /// </remarks>
 public record struct BuffState(BuffId Id, int Magnitude, int Data = 0);

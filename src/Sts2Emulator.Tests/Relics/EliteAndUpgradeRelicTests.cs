@@ -1,5 +1,6 @@
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
+using Sts2Emulator.Core.Rng;
 using Xunit;
 using static Sts2Emulator.Tests.TestDeck;
 
@@ -99,17 +100,22 @@ public class EliteAndUpgradeRelicTests
     }
 
     /// <summary>
-    /// The relic takes <c>Cards.Where(IsUpgradable).Take(2)</c> — the first two upgradable
-    /// cards in pile order, not two at random.
-    ///
-    /// Comparing two seeded fights would not prove this: a random pick off the same seed
-    /// lands on the same cards both times and the test passes either way. Driving the
-    /// effect over a pile whose order is known is what makes the rule observable.
+    /// The relic picks with <c>Where(IsUpgradable).StableShuffle(Rng.CombatCardSelection)
+    /// .Take(2)</c> (StoneCracker.cs, game 0.107.1), not the first two in pile order: this
+    /// pinned the latter, and the referee fight night04 3JFLX5V4BH (Coordinate upgraded in
+    /// the game, Defend here) showed it wrong. See StoneCrackerTests for the order-independence
+    /// and the draw count; this keeps the pile-order case honest, in that the pile's order is
+    /// not what decides.
     /// </summary>
     [Fact]
-    public void StoneCrackerTakesTheFirstTwoUpgradableCardsInPileOrder()
+    public void StoneCrackerRollsWhichTwoOffTheSelectionStream()
     {
-        var state = new CombatState { Relics = [new RelicInstance(RelicEffects.StoneCracker, 0)] };
+        var selection = new CountingRandom(0);
+        var state = new CombatState
+        {
+            Relics = [new RelicInstance(RelicEffects.StoneCracker, 0)],
+            CardSelectionRng = selection,
+        };
         state.DrawPile =
         [
             Card(IC.StrikeIronclad),
@@ -120,7 +126,8 @@ public class EliteAndUpgradeRelicTests
 
         RelicEffects.ApplyBeforeOpeningHand(state, new Random(0));
 
-        Assert.Equal([true, true, false, false], state.DrawPile.Select(card => card.Upgraded));
+        Assert.Equal(2, state.DrawPile.Count(card => card.Upgraded));
+        Assert.Equal(3, selection.CallCount);
     }
 
     // Venerable Tea Set's two tests used to live here and drove a synthetic

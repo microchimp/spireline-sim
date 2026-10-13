@@ -290,13 +290,13 @@ public static class CardEffects
             {
                 // Cascade used to grant Strength, which is a different card entirely.
                 // It is `CardPileCmd.AutoPlayFromDrawPile(..., CardPilePosition.Top)`,
-                // NOT Catastrophe's random pick -- see AutoPlayFromDrawPileTop.
+                // NOT Catastrophe's random pick -- see CombatEngine.AutoPlayFromDrawPile.
                 int count = state.Energy + (upgraded ? 1 : 0);
                 if (!state.AutoPlaying)
                 {
                     state.Energy = 0;
                 }
-                AutoPlayFromDrawPileTop(state, count, rng);
+                CombatEngine.AutoPlayFromDrawPile(state, count, rng);
                 break;
             }
 
@@ -528,9 +528,23 @@ public static class CardEffects
             }
 
             case IC.Mangle: // 3-cost, 15/20 dmg + enemy loses Strength 10/15 this turn
-                DealDamage(state, Dmg(state, def, upgraded, card));
-                ApplyTemporaryStrengthDownToEnemy(state, upgraded ? 15 : 10);
+            {
+                // `Mangle.OnPlay` hits `cardPlay.Target` and then applies `ManglePower` to that same
+                // creature: the aimed enemy, read once before the hit. A target the hit killed has
+                // left the combat and cannot receive the power, which is lost -- it does not pass to
+                // whoever is first now, which is what looking the enemy up again after the hit did.
+                var mangled = FirstEnemy(state);
+                if (mangled != null)
+                {
+                    DealDamageToEnemy(state, mangled, Dmg(state, def, upgraded, card));
+                    if (mangled.Hp > 0)
+                    {
+                        ApplyTemporaryStrengthDownTo(mangled, upgraded ? 15 : 10);
+                    }
+                }
+
                 break;
+            }
 
             case IC.HowlFromBeyond: // 3-cost, 16/21 dmg to ALL enemies
                 DealDamageToAll(state, Dmg(state, def, upgraded, card));
@@ -578,6 +592,7 @@ public static class CardEffects
                     if (GeneratedData.Cards.Get(handCard.DefId).Type == CardType.Attack)
                     {
                         state.Hand[i] = new CardInstance(IC.GiantRock, upgraded);
+                        NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                     }
                 }
                 break;
@@ -864,23 +879,11 @@ public static class CardEffects
                 break;
 
             case IC.Havoc: // 1/0-cost, play top card of draw pile and exhaust it
-            {
-                if (state.DrawPile.Count > 0)
-                {
-                    var top = state.DrawPile[0];
-                    state.RemoveFromDrawPileAt(0);
-                    var topDef = GeneratedData.Cards.Get(top.DefId);
-                    // `top` must travel with the def. Omitted, `card` defaults to
-                    // `default(CardInstance)` -- DefId 0 -- and any nested effect that
-                    // touches its own instance files that zero into a pile, where it sits
-                    // harmlessly until something reads every card's NAME (Melancholy's
-                    // death hook, Kingly's draw hook) and `Cards.Get(0)` aborts the
-                    // process. The other two PlayNestedCard call sites already pass it.
-                    PlayNestedCard(topDef, top.Upgraded, state, rng, top);
-                    ExhaustCard(state, top, rng: rng);
-                }
+                // `Havoc.OnPlay`: `CardPileCmd.AutoPlayFromDrawPile(1, Top, forceExhaust:
+                // true)` -- the shared command (shuffle in an empty draw pile, the gate, the
+                // play's lifecycle), with the played card's exhaust forced.
+                CombatEngine.AutoPlayFromDrawPile(state, 1, rng, forceExhaust: true);
                 break;
-            }
 
             case IC.InfernalBlade: // 1/0-cost, add a random Ironclad Attack to hand free this turn
                 AddRandomInfernalBladeAttack(state, rng);
@@ -1281,7 +1284,14 @@ public static class CardEffects
                 break;
 
             case CL.Panache: // 0-cost, every five played cards deal 10/14 to ALL
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.PanachePower, upgraded ? 14 : 10);
+                // Instanced: each play is its own counter. Data -1 is `alreadyApplied` false --
+                // the play that applied it is still resolving and must not count towards it.
+                BuffSystem.Apply(
+                    state.PlayerBuffs,
+                    BuffId.PanachePower,
+                    upgraded ? 14 : 10,
+                    PanacheJustApplied
+                );
                 break;
 
             case CL.PrepTime: // 1-cost, gain 4/6 Vigor each turn
@@ -2540,11 +2550,12 @@ public static class CardEffects
         PotionEffects.TryToProcure(state, potionId);
     }
 
-    internal static void TransformRandomCardInHand(CombatState state, Random rng)
+    /// <returns>Whether a card was transformed (false for an empty hand).</returns>
+    internal static bool TransformRandomCardInHand(CombatState state, Random rng)
     {
         if (state.Hand.Count == 0)
         {
-            return;
+            return false;
         }
 
         var selectionRng = CardSelectionRng(state, rng);
@@ -2552,6 +2563,7 @@ public static class CardEffects
         var pool = OwnerCharacterGenerationPool(state);
         int defId = pool[selectionRng.Next(pool.Count)];
         state.Hand[idx] = new CardInstance(defId, false);
+        return true;
     }
 
     /// <param name="fromHandDraw">
@@ -2596,10 +2608,7 @@ public static class CardEffects
                 break;
             }
 
-            if (state.DrawPile.Count == 0)
-            {
-                ShuffleDiscardIntoDraw(state, rng);
-            }
+            ShuffleIfNecessary(state, rng);
             if (state.DrawPile.Count == 0)
             {
                 break;
@@ -2758,6 +2767,10 @@ public static class CardEffects
     /// owner Strength for each one.
     /// </summary>
     /// <remarks>
+    /// `CardCmd.Transform` in combat records its replacement the same way (CardGenerated, then
+    /// AfterCardGeneratedForCombat), so every transform in combat calls this too: Entropy,
+    /// Seance, Begone, Charge, Guards, Primal Force and Compact.
+    ///
     /// Called from each of the emulator's generation helpers rather than from one place,
     /// because card generation is not a single chokepoint here: Statuses go through
     /// AddGeneratedStatusToDiscard, Souls through AddSoulsToDrawPile, and the rest through
@@ -2780,14 +2793,15 @@ public static class CardEffects
             RelicEffects.GainPlayerStrength(state, arsenal * count);
         }
 
-        // `PillarOfCreationPower.AfterCardGeneratedForCombat`, the same hook.
+        // `PillarOfCreationPower.AfterCardGeneratedForCombat`, the same hook: Unpowered block,
+        // like Regalite's below.
         int pillar = BuffSystem.Get(state.PlayerBuffs, BuffId.PillarOfCreation);
         if (pillar > 0)
         {
-            GainBlock(state, pillar * count, rng: null);
+            GainUnpoweredBlock(state, pillar * count, rng: null);
         }
 
-        // Regalite rides the same hook, and unlike the power its block is Unpowered.
+        // Regalite rides the same hook.
         RelicEffects.ApplyAfterCardGenerated(state, count, rng: null);
     }
 
@@ -3317,24 +3331,16 @@ public static class CardEffects
         Random rng
     )
     {
-        var candidates = Enumerable
-            .Range(0, state.DrawPile.Count)
-            .Where(i => IsFreeCostCard(state, state.DrawPile[i]))
-            .OrderBy(
-                i => GeneratedData.Cards.Get(state.DrawPile[i].DefId).Entry,
-                StringComparer.Ordinal
-            )
-            .ToList();
+        var candidates = StableShuffle(
+            state.DrawPile,
+            Enumerable
+                .Range(0, state.DrawPile.Count)
+                .Where(i => IsFreeCostCard(state, state.DrawPile[i])),
+            CardSelectionRng(state, rng)
+        );
         if (candidates.Count == 0)
         {
             return;
-        }
-
-        var selection = CardSelectionRng(state, rng);
-        for (int i = candidates.Count - 1; i > 0; i--)
-        {
-            int j = selection.Next(i + 1);
-            (candidates[i], candidates[j]) = (candidates[j], candidates[i]);
         }
 
         // Descending pile index, so removing one does not shift the next.
@@ -3464,6 +3470,24 @@ public static class CardEffects
     internal static EnemyState? RandomLivingEnemyFor(CombatState state, Random rng) =>
         RandomLivingEnemy(state, rng);
 
+    /// <summary>
+    /// `CardModel.TargetType` as the game reads it at play time, not the printed one: three
+    /// cards override it. `Shiv.TargetType` is AllEnemies under FanOfKnivesPower,
+    /// `SovereignBlade.TargetType` AllEnemies under SeekingEdgePower, and
+    /// `MadScience.TargetType` Self unless its Tinker Time type is Attack. Their effects
+    /// already read the same state; every caller that asks "does this card aim?" reads this.
+    /// </summary>
+    internal static CardTarget TargetTypeOf(CombatState state, CardInstance card, CardDef def) =>
+        def.Name switch
+        {
+            "Shiv" when BuffSystem.Get(state.PlayerBuffs, BuffId.FanOfKnives) > 0 =>
+                CardTarget.AllEnemies,
+            "SovereignBlade" when BuffSystem.Get(state.PlayerBuffs, BuffId.SeekingEdge) > 0 =>
+                CardTarget.AllEnemies,
+            "MadScience" when card.TinkerType != CardType.Attack => CardTarget.Self,
+            _ => def.Target,
+        };
+
     /// <summary>The POWERED-attack path against one enemy, for callers outside this file.</summary>
     internal static void DealPoweredDamage(CombatState state, EnemyState target, int amount) =>
         DealDamageToEnemy(state, target, amount);
@@ -3508,19 +3532,38 @@ public static class CardEffects
         }
     }
 
+    /// <summary>
+    /// <c>AutomationPower.AfterCardDrawn</c>, once per INSTANCE: each counts the card against
+    /// its own ten (<c>Data</c> counts up from zero; the game's <c>cardsLeft</c> is ten minus
+    /// it) and pays its own <c>Amount</c> in energy when the ten are drawn, then starts over.
+    /// A second Automation is a second counter that began when it was played.
+    /// </summary>
+    /// <summary>
+    /// <c>PanachePower</c>'s <c>Data</c> while its own first <c>AfterCardPlayed</c> is still to
+    /// come: the game's internal <c>alreadyApplied</c> flag being false. Every other value is the
+    /// cards counted towards the five so far (the game's <c>CardsLeft</c> is five minus it),
+    /// so a Panache built without a Data -- the live game's snapshot -- is armed with none counted.
+    /// </summary>
+    internal const int PanacheJustApplied = -1;
+
     private static void CountDrawnCardForAutomation(CombatState state)
     {
-        int automation = BuffSystem.Get(state.PlayerBuffs, BuffId.AutomationPower);
-        if (automation <= 0)
+        var buffs = state.PlayerBuffs;
+        for (int i = 0; i < buffs.Count; i++)
         {
-            return;
-        }
+            if (buffs[i].Id != BuffId.AutomationPower)
+            {
+                continue;
+            }
 
-        state.DrawnCardsSinceAutomationProc++;
-        if (state.DrawnCardsSinceAutomationProc >= 10)
-        {
-            state.DrawnCardsSinceAutomationProc = 0;
-            GainEnergy(state, automation);
+            int drawn = buffs[i].Data + 1;
+            if (drawn >= 10)
+            {
+                drawn = 0;
+                GainEnergy(state, buffs[i].Magnitude);
+            }
+
+            buffs[i] = buffs[i] with { Data = drawn };
         }
     }
 
@@ -3585,6 +3628,20 @@ public static class CardEffects
 
     [ThreadStatic]
     private static long[]? _shuffleKeys;
+
+    /// <summary>
+    /// `CardPileCmd.ShuffleIfNecessary`: the discard pile comes back only when the DRAW pile is
+    /// empty and the discard has something in it -- a draw that finds both empty shuffles
+    /// nothing and fires no `AfterShuffle` (The Abacus, Biiig Hug). Draw, AutoPlayFromDrawPile
+    /// (Mayhem, Cascade, Distilled Chaos), Foregone Conclusion and Toasty Mittens all open with it.
+    /// </summary>
+    public static void ShuffleIfNecessary(CombatState state, Random rng)
+    {
+        if (state.DrawPile.Count == 0 && state.DiscardPile.Count > 0)
+        {
+            ShuffleDiscardIntoDraw(state, rng);
+        }
+    }
 
     public static void ShuffleDiscardIntoDraw(CombatState state, Random rng)
     {
@@ -3659,6 +3716,32 @@ public static class CardEffects
             int rank = id < EntryRank.Length ? EntryRank[id] : EntryRank.Length;
             return ((long)rank << 32) | ((long)(card.Upgraded ? 1 : 0) << 31) | (uint)position;
         }
+    }
+
+    /// <summary>
+    /// `ListExtensions.StableShuffle` over the cards of <paramref name="pile" /> at
+    /// <paramref name="indices" />: sorted as `CardModel.CompareTo` sorts (ModelId, i.e.
+    /// Entry as an ordinal string, then upgrade level), then `UnstableShuffle`'s
+    /// Fisher-Yates, n-1 draws. Returns the pile indices in shuffled order.
+    /// </summary>
+    internal static List<int> StableShuffle(
+        List<CardInstance> pile,
+        IEnumerable<int> indices,
+        Random rng
+    )
+    {
+        var order = indices
+            .OrderBy(i => EntryRankOf(pile[i]))
+            .ThenBy(i => pile[i].Upgraded ? 1 : 0)
+            .ToList();
+        ShufflePile(order, rng);
+        return order;
+    }
+
+    private static int EntryRankOf(CardInstance card)
+    {
+        int id = Math.Abs(card.DefId);
+        return id < EntryRank.Length ? EntryRank[id] : EntryRank.Length;
     }
 
     public static void ShufflePile<T>(IList<T> pile, Random rng)
@@ -3985,31 +4068,6 @@ public static class CardEffects
         }
     }
 
-    private static void PlayNestedCard(
-        CardDef def,
-        bool upgraded,
-        CombatState state,
-        Random rng,
-        CardInstance card = default
-    )
-    {
-        bool wasAutoPlaying = state.AutoPlaying;
-        int callerTarget = state.TargetEnemyIndex;
-        state.AutoPlaying = true;
-        try
-        {
-            // Havoc and Uproar hand `CardCmd.AutoPlay` a null target, so an AnyEnemy card
-            // rolls the CombatTargets stream for it (CardCmd.cs:51-).
-            state.TargetEnemyIndex = CombatEngine.RollAutoPlayTarget(state, def, rng);
-            Apply(def, upgraded, state, rng, card);
-        }
-        finally
-        {
-            state.AutoPlaying = wasAutoPlaying;
-            state.TargetEnemyIndex = callerTarget;
-        }
-    }
-
     /// <summary>
     /// Raises a card-selection screen, or resolves it immediately when the caller cannot
     /// answer one.
@@ -4105,46 +4163,6 @@ public static class CardEffects
     /// sliding as a result.
     /// </remarks>
     /// <summary>
-    /// `CardPileCmd.AutoPlayFromDrawPile(count, CardPilePosition.Top)`: take `count` cards
-    /// off the FRONT of the draw pile -- `drawPile.Cards.FirstOrDefault()`, with no
-    /// shuffle and no Unplayable filter, so Ascender's Bane is taken like anything else.
-    /// </summary>
-    /// <remarks>
-    /// The command takes ALL of them first and only then plays them, which is why this
-    /// loop queues rather than resolving: a card drawn by one of these plays cannot be
-    /// picked up by the same Cascade. `ShuffleIfNecessary` runs before each take, so a
-    /// draw pile that runs dry pulls the discard back in mid-cascade.
-    /// </remarks>
-    private static void AutoPlayFromDrawPileTop(CombatState state, int count, Random rng)
-    {
-        var cards = new List<CardInstance>();
-        for (int i = 0; i < count; i++)
-        {
-            if (state.DrawPile.Count == 0 && state.DiscardPile.Count > 0)
-            {
-                ShuffleDiscardIntoDraw(state, rng);
-            }
-
-            if (state.DrawPile.Count == 0)
-            {
-                break;
-            }
-
-            var picked = state.DrawPile[0];
-            state.RemoveFromDrawPileAt(0);
-            cards.Add(picked);
-        }
-
-        foreach (var card in cards)
-        {
-            if (CombatEngine.AutoPlayFromDrawPile(state, card, rng))
-            {
-                break;
-            }
-        }
-    }
-
-    /// <summary>
     /// Catastrophe's shape, and ONLY Catastrophe's: one card at a time, each an
     /// independent `Where(!Unplayable).StableShuffle(Rng.Shuffle).FirstOrDefault()` with a
     /// fallback to the unfiltered pile. Cascade was pointed here because the helper's name
@@ -4155,31 +4173,20 @@ public static class CardEffects
         var shuffle = state.ShuffleRng ?? rng ?? new Random(0);
         for (int i = 0; i < count && state.DrawPile.Count > 0; i++)
         {
-            var eligible = state
-                .DrawPile.Select((c, idx) => (Card: c, Index: idx))
-                .Where(x => !GeneratedData.Cards.Get(x.Card.DefId).Unplayable)
-                .ToList();
+            var all = Enumerable.Range(0, state.DrawPile.Count);
+            var eligible = StableShuffle(
+                state.DrawPile,
+                all.Where(j => !GeneratedData.Cards.Get(state.DrawPile[j].DefId).Unplayable),
+                shuffle
+            );
             if (eligible.Count == 0)
             {
-                eligible = [.. state.DrawPile.Select((c, idx) => (Card: c, Index: idx))];
+                eligible = StableShuffle(state.DrawPile, all, shuffle);
             }
 
-            eligible =
-            [
-                .. eligible.OrderBy(
-                    x => GeneratedData.Cards.Get(x.Card.DefId).Entry,
-                    StringComparer.Ordinal
-                ),
-            ];
-            for (int j = eligible.Count - 1; j > 0; j--)
-            {
-                int k = shuffle.Next(j + 1);
-                (eligible[j], eligible[k]) = (eligible[k], eligible[j]);
-            }
-
-            var picked = eligible[0];
-            state.RemoveFromDrawPileAt(picked.Index);
-            state.AutoPlayQueue.Add(picked.Card);
+            var picked = state.DrawPile[eligible[0]];
+            state.RemoveFromDrawPileAt(eligible[0]);
+            state.AutoPlayQueue.Add(picked);
         }
     }
 
@@ -4202,35 +4209,26 @@ public static class CardEffects
     /// </remarks>
     private static void AutoPlayAttacksFromDiscard(CombatState state, int count, Random? rng = null)
     {
-        var eligible = state
-            .DiscardPile.Select((c, i) => (Card: c, Index: i))
-            .Where(x =>
-            {
-                var d = GeneratedData.Cards.Get(x.Card.DefId);
-                return d.Type == CardType.Attack && !d.Unplayable;
-            })
-            .OrderBy(x => GeneratedData.Cards.Get(x.Card.DefId).Entry, StringComparer.Ordinal)
+        var taken = StableShuffle(
+                state.DiscardPile,
+                Enumerable
+                    .Range(0, state.DiscardPile.Count)
+                    .Where(i =>
+                    {
+                        var d = GeneratedData.Cards.Get(state.DiscardPile[i].DefId);
+                        return d.Type == CardType.Attack && !d.Unplayable;
+                    }),
+                state.ShuffleRng ?? rng ?? new Random(0)
+            )
+            .Take(count)
             .ToList();
-        if (eligible.Count == 0)
+        foreach (int index in taken)
         {
-            return;
-        }
-
-        var shuffle = state.ShuffleRng ?? rng ?? new Random(0);
-        for (int i = eligible.Count - 1; i > 0; i--)
-        {
-            int j = shuffle.Next(i + 1);
-            (eligible[i], eligible[j]) = (eligible[j], eligible[i]);
-        }
-
-        var taken = eligible.Take(count).ToList();
-        foreach (var pick in taken)
-        {
-            state.AutoPlayQueue.Add(pick.Card);
+            state.AutoPlayQueue.Add(state.DiscardPile[index]);
         }
 
         // Back to front, so an earlier removal does not shift a later index.
-        foreach (int index in taken.Select(x => x.Index).OrderByDescending(i => i))
+        foreach (int index in taken.OrderByDescending(i => i))
         {
             state.DiscardPile.RemoveAt(index);
         }
@@ -4293,19 +4291,11 @@ public static class CardEffects
             return;
         }
 
-        var shuffled = Enumerable
-            .Range(0, state.DrawPile.Count)
-            .OrderBy(
-                i => GeneratedData.Cards.Get(state.DrawPile[i].DefId).Entry,
-                StringComparer.Ordinal
-            )
-            .ToList();
-        var selection = CardSelectionRng(state, rng ?? new Random(0));
-        for (int i = shuffled.Count - 1; i > 0; i--)
-        {
-            int j = selection.Next(i + 1);
-            (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
-        }
+        var shuffled = StableShuffle(
+            state.DrawPile,
+            Enumerable.Range(0, state.DrawPile.Count),
+            CardSelectionRng(state, rng ?? new Random(0))
+        );
 
         var candidates = shuffled.Take(sample).OrderBy(i => i).ToList();
         OpenCardSelection(
@@ -5026,14 +5016,32 @@ public static class CardEffects
     public static int GainUnpoweredBlock(CombatState state, int amount, Random? rng = null) =>
         GainBlock(state, amount, rng, powered: false);
 
+    /// <summary>
+    /// A card's block that Dexterity and Frail leave alone: `BlockProps.cardUnpowered`
+    /// (`Unpowered | Move`). Entrench's doubling is the one user. It is still a card's block,
+    /// so the `Move` modifiers (Unmovable, Vambrace, Paels Legion) see it.
+    /// </summary>
+    public static int GainCardUnpoweredBlock(CombatState state, int amount, Random? rng = null) =>
+        GainBlock(state, amount, rng, powered: false, move: true);
+
+    /// <param name="powered">`!props.HasFlag(Unpowered)`: Dexterity, Frail and Fasten apply.</param>
+    /// <param name="move">
+    /// `props.IsCardOrMonsterMove()`, the `Move` flag -- a card's (or a monster move's) block as
+    /// against a power's, relic's or orb's. Unmovable, Vambrace and Paels Legion all start with
+    /// `if (!props.IsCardOrMonsterMove()) return 1`. Defaults to `powered`, which is right for
+    /// every caller but Entrench: `BlockProps.card` is `Move`, `nonCardUnpowered` is
+    /// `Unpowered` alone, and only `cardUnpowered` carries both.
+    /// </param>
     private static int GainBlock(
         CombatState state,
         int amount,
         Random? rng = null,
         bool powered = true,
-        bool isDefend = false
+        bool isDefend = false,
+        bool? move = null
     )
     {
+        bool isMove = move ?? powered;
         decimal effective = powered
             ? BuffSystem.IncomingBlockExact(
                 amount,
@@ -5049,7 +5057,7 @@ public static class CardEffects
         // and `AfterModifyingBlockAmount` names the card only once the gain actually lands
         // -- so a card that would gain nothing does not spend it. The relic is spent when
         // that card finishes (`AfterCardPlayed`), so all of its gains are doubled.
-        if (powered && effective > 0m && RelicEffects.DoublesCardBlock(state))
+        if (isMove && effective > 0m && RelicEffects.DoublesCardBlock(state))
         {
             effective *= 2;
             state.VambraceCard = true;
@@ -5058,7 +5066,7 @@ public static class CardEffects
         // `PaelsLegion.ModifyBlockMultiplicative` returns 2 while its cooldown is clear,
         // and `AfterCardPlayed` starts the cooldown once the doubled gain has actually
         // landed -- Vambrace's latch, with a timer instead of a once-per-combat flag.
-        if (powered && effective > 0m && RelicEffects.PaelsLegionDoublesBlock(state))
+        if (isMove && effective > 0m && RelicEffects.PaelsLegionDoublesBlock(state))
         {
             effective *= 2;
             state.PaelsLegionCard = true;
@@ -5077,10 +5085,20 @@ public static class CardEffects
             return 0;
         }
 
+        // `UnmovablePower.ModifyBlockMultiplicative` doubles only a `Move` gain -- a card's --
+        // and counts only the `Move` gains already in the history this turn
+        // (`BlockGainedEntry.Props.IsCardOrMonsterMove()`). Plating, Metallicize, Afterimage,
+        // a relic or an orb neither get doubled nor use one of its charges up: a Plating that
+        // doubled paid 14 where the game pays 7, and the enemy phase then killed a player the
+        // emulator left alive.
         int unmovable = BuffSystem.Get(state.PlayerBuffs, BuffId.UnmovablePower);
-        if (unmovable > state.BlockGainsThisTurn)
+        if (isMove && unmovable > state.BlockGainsThisTurn)
         {
             effective *= 2;
+        }
+
+        if (isMove)
+        {
             state.BlockGainsThisTurn++;
         }
 
@@ -5155,24 +5173,34 @@ public static class CardEffects
     /// the cost is paid and therefore BEFORE the card's own effect resolves. So an Orbit
     /// payout can hand energy back in time for the card that triggered it to be paid for.
     ///
-    /// `OrbitPower` is the only listener. `triggers = spent / 4 - triggerCount` in the
-    /// game, which after every call leaves triggerCount equal to spent / 4 -- so the
-    /// crossings can be counted from the running total alone.
+    /// `OrbitPower` is the only listener, and it is Instanced: every instance keeps its own
+    /// running total of the energy spent since IT was played (<c>Data</c>) and pays its own
+    /// <c>Amount</c> per four. `triggers = spent / 4 - triggerCount` in the game, which after
+    /// every call leaves triggerCount equal to spent / 4 -- so the crossings can be counted
+    /// from the running total alone.
     /// </summary>
     public static void ApplyAfterEnergySpent(CombatState state, int amount)
     {
-        int orbit = BuffSystem.Get(state.PlayerBuffs, BuffId.Orbit);
-        if (orbit <= 0 || amount <= 0)
+        if (amount <= 0)
         {
             return;
         }
 
-        int before = state.OrbitEnergySpent / 4;
-        state.OrbitEnergySpent += amount;
-        int triggers = state.OrbitEnergySpent / 4 - before;
-        if (triggers > 0)
+        var buffs = state.PlayerBuffs;
+        for (int i = 0; i < buffs.Count; i++)
         {
-            GainEnergy(state, orbit * triggers);
+            if (buffs[i].Id != BuffId.Orbit)
+            {
+                continue;
+            }
+
+            int spent = buffs[i].Data;
+            int triggers = (spent + amount) / 4 - spent / 4;
+            buffs[i] = buffs[i] with { Data = spent + amount };
+            if (triggers > 0)
+            {
+                GainEnergy(state, buffs[i].Magnitude * triggers);
+            }
         }
     }
 
@@ -6792,9 +6820,8 @@ public static class CardEffects
             case "DeathMarch":
                 // CalculationBase 8 (upgrades by 1) plus ExtraDamage 4 (upgrades by 2) per
                 // `CardDrawnEntry` this turn with `!FromHandDraw` -- the cards drawn on top
-                // of the opening hand. The emulator counted `DrawnCardsSinceAutomationProc`,
-                // which is Automation's own counter and resets when Automation fires, and
-                // never upgraded the base.
+                // of the opening hand. The emulator counted Automation's own draw counter,
+                // which resets when Automation fires, and never upgraded the base.
                 DealDamage(
                     state,
                     DmgFrom(
@@ -7605,10 +7632,13 @@ public static class CardEffects
 
                 DealDamageToEnemy(state, aimed, Dmg(state, def, upgraded, card));
                 // `KnockdownPower` (2, or 3 upgraded) and `TagTeamPower` (1) are Instanced
-                // Debuffs: each play is a new entry, Artifact eats one per play, and neither does
-                // anything alone -- the dealer-is-applier gates in `ModifyDamageMultiplicative`
-                // and `ModifyCardPlayCount` are always met by a lone player. Knockdown used to
-                // apply Stunned here; Whistle genuinely calls `CreatureCmd.Stun`.
+                // Debuffs: each play is a new entry and Artifact eats one per play. The
+                // dealer-is-applier gates keep both from changing a number the PLAYER deals:
+                // `ModifyCardPlayCount` is always met by a lone player, but Knockdown's
+                // `ModifyDamageMultiplicative` is not -- Osty's attacks have Osty as the dealer
+                // and are multiplied (open: Osty's damage has no dealer in the emulator, see
+                // KnockdownTests). Knockdown used to apply Stunned here; Whistle genuinely
+                // calls `CreatureCmd.Stun`.
                 var (power, amount) = def.Name switch
                 {
                     "Squash" => (BuffId.Vulnerable, upgraded ? 3 : 2),
@@ -7646,15 +7676,16 @@ public static class CardEffects
                 // 5 block now, AND `ToricToughnessPower(2)` -- for the next two turns, the
                 // same amount again when block clears. The power half was missing, which is
                 // most of a 2-cost card. `SetBlock` records what was GAINED, so the repeats
-                // match the first grant rather than the printed five.
+                // match the first grant rather than the printed five. The power is
+                // Instanced: this play's block rides on this play's instance (its Data), so
+                // a second play neither adds turns to the first nor changes its block.
                 //
                 // Its own arm, ABOVE the stack: splitting a label out of a stack leaves the
                 // labels above it falling into whatever body replaced theirs, which is how
                 // Lift, Rally and The Gambit briefly started handing out Toric Toughness.
                 {
                     int toric = GainBlock(state, Blk(def, upgraded, card), rng);
-                    BuffSystem.Apply(state.PlayerBuffs, BuffId.ToricToughness, 2);
-                    state.ToricToughnessBlock = toric;
+                    BuffSystem.Apply(state.PlayerBuffs, BuffId.ToricToughness, 2, toric);
                 }
 
                 return true;
@@ -8224,7 +8255,7 @@ public static class CardEffects
                 // does not apply to the doubling. It was going through the powered path,
                 // which paid Dexterity twice on a card whose whole point is the block you
                 // already have.
-                GainUnpoweredBlock(state, state.PlayerBlock, rng);
+                GainCardUnpoweredBlock(state, state.PlayerBlock, rng);
                 break;
             case "Envenom":
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Envenom, 1);
@@ -9018,6 +9049,7 @@ public static class CardEffects
             if (GeneratedData.Cards.Get(state.Hand[i].DefId).Type == CardType.Status)
             {
                 state.Hand[i] = new CardInstance(209, upgraded);
+                NoteGeneratedCard(state); // `CardCmd.Transform` in combat
             }
         }
     }
@@ -9098,93 +9130,37 @@ public static class CardEffects
         || enemy.SecondaryIntent?.Type == IntentType.Attack;
 
     /// <summary>
-    /// Uproar's attack: the playable Attacks in the draw pile, shuffled on the SHUFFLE
-    /// stream, first one taken. Not the first in pile order — that is deterministic where
-    /// the game is not, and it leaves the stream undrawn, which desynchronises every roll
-    /// after it.
+    /// `Uproar.OnPlay` after its hits: `drawPile.Where(Attack && !Unplayable)
+    /// .StableShuffle(Rng.Shuffle).FirstOrDefault()`, falling back to every Attack, then
+    /// `CardCmd.AutoPlay(card, null)` -- the shared auto-play path, which rolls the target,
+    /// runs the play's lifecycle and files the card. One `Next` over the unsorted candidates
+    /// drew once where StableShuffle draws n-1 times, leaving the Shuffle stream off.
     /// </summary>
     private static void AutoPlayRandomDrawPileAttack(CombatState state, Random rng)
     {
-        var candidates = new List<int>();
-        for (int i = 0; i < state.DrawPile.Count; i++)
-        {
-            var candidate = GeneratedData.Cards.Get(state.DrawPile[i].DefId);
-            if (candidate.Type == CardType.Attack && !candidate.Unplayable)
-            {
-                candidates.Add(i);
-            }
-        }
-
-        // The game falls back to ANY attack when every one of them is Unplayable.
-        if (candidates.Count == 0)
-        {
-            for (int i = 0; i < state.DrawPile.Count; i++)
-            {
-                if (GeneratedData.Cards.Get(state.DrawPile[i].DefId).Type == CardType.Attack)
-                {
-                    candidates.Add(i);
-                }
-            }
-        }
-
-        if (candidates.Count == 0)
-        {
-            return;
-        }
-
-        // The game rolls this on Rng.Shuffle; fall back to the combat rng when a state
-        // was built without one, as the other shuffle sites do.
         Random shuffle = state.ShuffleRng ?? rng;
-        int index = candidates[shuffle.Next(candidates.Count)];
-        var chosen = state.DrawPile[index];
-        state.RemoveFromDrawPileAt(index);
-        PlayNestedCard(GeneratedData.Cards.Get(chosen.DefId), chosen.Upgraded, state, rng, chosen);
-
-        // `CardCmd.AutoPlay` moves the card to the Play pile and then to its result pile, so
-        // an auto-played card ends up somewhere. This one was taken out of the draw pile and
-        // never put down: the card VANISHED, and a live Uproar found it as a discard pile one
-        // short. Its sibling ten lines below has always done this.
-        if (chosen.IsExhaust())
+        var attacks = Enumerable
+            .Range(0, state.DrawPile.Count)
+            .Where(i => GeneratedData.Cards.Get(state.DrawPile[i].DefId).Type == CardType.Attack)
+            .ToList();
+        var picks = StableShuffle(
+            state.DrawPile,
+            attacks.Where(i => !GeneratedData.Cards.Get(state.DrawPile[i].DefId).Unplayable),
+            shuffle
+        );
+        if (picks.Count == 0)
         {
-            ExhaustCard(state, chosen, rng: rng);
-        }
-        else
-        {
-            state.DiscardPile.Add(chosen with { FreeThisTurn = false });
-        }
-    }
-
-    private static void AutoPlayFirstDrawPileAttack(CombatState state, Random rng)
-    {
-        int index = state.DrawPile.FindIndex(card =>
-        {
-            var def = GeneratedData.Cards.Get(card.DefId);
-            return def.Type == CardType.Attack && !def.Unplayable;
-        });
-        if (index < 0)
-        {
-            index = state.DrawPile.FindIndex(card =>
-                GeneratedData.Cards.Get(card.DefId).Type == CardType.Attack
-            );
+            picks = StableShuffle(state.DrawPile, attacks, shuffle);
         }
 
-        if (index < 0)
+        if (picks.Count == 0)
         {
             return;
         }
 
-        var card = state.DrawPile[index];
-        state.RemoveFromDrawPileAt(index);
-        var def = GeneratedData.Cards.Get(card.DefId);
-        PlayNestedCard(def, card.Upgraded, state, rng, card);
-        if (card.IsExhaust())
-        {
-            ExhaustCard(state, card, rng: rng);
-        }
-        else
-        {
-            state.DiscardPile.Add(card with { FreeThisTurn = false });
-        }
+        var chosen = state.DrawPile[picks[0]];
+        state.RemoveFromDrawPileAt(picks[0]);
+        CombatEngine.AutoPlayCard(state, chosen, rng);
     }
 
     /// <summary>Osty's max HP as a damage input, which is ZERO when it is not alive.</summary>
@@ -10010,8 +9986,11 @@ public static class CardEffects
     /// One debuff on a SPECIFIC enemy: the one an attack card was aimed at, which the card
     /// resolves with <c>FirstEnemy</c> BEFORE its hit and carries to the power it applies after
     /// it. Cards read <c>cardPlay.Target</c> once; <c>PowerCmd.Apply</c> then refuses a target
-    /// that died of the hit (<c>CanReceivePowers</c> is false once it has left the combat), so
-    /// the debuff is lost rather than passed to whoever stands first now.
+    /// that died of the hit, so the debuff is lost rather than passed to whoever stands first
+    /// now. The refusal is <c>Creature.CanReceivePowers</c>, which is false once the corpse has
+    /// left the combat; an enemy that stays in it after dying (<c>PainfulStabsPower</c>,
+    /// <c>SteamEruptionPower</c>: <c>ShouldCreatureBeRemovedFromCombatAfterDeath</c> is false)
+    /// still receives, and the <c>Hp &lt;= 0</c> test below does not model that.
     /// </summary>
     private static void ApplyEnemyDebuffToTarget(
         CombatState state,
@@ -10262,7 +10241,7 @@ public static class CardEffects
         int shroud = BuffSystem.Get(state.PlayerBuffs, BuffId.Shroud);
         if (shroud > 0 && id == BuffId.Doom && magnitude != 0)
         {
-            GainBlock(state, shroud, rng);
+            GainUnpoweredBlock(state, shroud, rng);
         }
     }
 
@@ -10547,11 +10526,12 @@ public static class CardEffects
     /// The game reads <c>cardPlay.Target</c> for the non-AllEnemies case, which on a
     /// Self-targeted card would be the PLAYER — so Inky on a skill would Weaken its owner.
     /// Nothing can reach that: Blade of Ink is the only source of Inky and it enchants
-    /// Shivs, so only the enemy-targeted branches are modelled.
+    /// Shivs, so only the enemy-targeted branches are modelled. `Card.TargetType` is the
+    /// Shiv's own, so under Fan of Knives every hittable enemy is Weakened.
     /// </remarks>
-    internal static void ApplyInkyOnPlay(CombatState state, CardDef def, Random rng)
+    internal static void ApplyInkyOnPlay(CombatState state, CardInstance card, Random rng)
     {
-        if (def.Target == CardTarget.AllEnemies)
+        if (TargetTypeOf(state, card, GeneratedData.Cards.Get(card.DefId)) == CardTarget.AllEnemies)
         {
             ApplyAllEnemyDebuff(state, BuffId.Weak, 1, rng);
             return;
@@ -10584,25 +10564,24 @@ public static class CardEffects
         BuffSystem.Apply(state.PlayerBuffs, BuffId.Nightmare, count);
     }
 
+    /// <summary>
+    /// <c>Rend</c>'s multiplier: <c>target.Powers.Count(ShouldCountPower)</c>, every power on
+    /// the target whose <c>TypeForCurrentAmount</c> is a Debuff and that is not an
+    /// <c>ITemporaryPower</c>. It counts POWERS, not kinds, so every instance of an Instanced
+    /// debuff (Knockdown, Tag Team) is one, and so is a Doom or a Slow and a Strength the enemy
+    /// has been pushed below zero -- <c>GetTypeForAmount</c> calls a negative amount of an
+    /// AllowNegative counter a Debuff. The temporary powers hand their effect back by being
+    /// removed and are not debuffs here (<see cref="BuffSystem.IsDebuff" /> leaves them out); the
+    /// Strength loss they cause is the negative Strength, which does count.
+    /// </summary>
     private static int CountRendDebuffs(EnemyState enemy)
     {
         int count = 0;
         foreach (var buff in enemy.Buffs)
         {
             if (
-                buff.Id
-                is BuffId.Vulnerable
-                    or BuffId.Weak
-                    or BuffId.Frail
-                    or BuffId.Poison
-                    or BuffId.Burn
-                    or BuffId.Shrink
-                    or BuffId.Tangled
-                    or BuffId.Constrict
-                    or BuffId.Smoggy
-                    or BuffId.Hex
-                    or BuffId.Dampen
-                    or BuffId.Disintegration
+                BuffSystem.IsDebuff(buff.Id)
+                || (BuffSystem.AllowsNegative(buff.Id) && buff.Magnitude < 0)
             )
             {
                 count++;

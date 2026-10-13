@@ -123,6 +123,46 @@ public static class CombatObservation
             Effects.RelicEffects.WeakMultiplierDeltaAgainstPlayer(s)
         );
 
+    /// <summary>
+    /// The buffs of one creature, a slot each: the power's id and its amount.
+    /// </summary>
+    /// <remarks>
+    /// An <see cref="BuffSystem.IsInstanced" /> power is a list entry for EVERY application, but
+    /// the layout has a fixed number of slots and always showed one per power: the instances of
+    /// one id share the slot at the first one's place, with their amounts added up -- what the
+    /// stacked entry used to hold. Otherwise a Tag Team, which stays on the enemy it was played
+    /// on for good, takes a slot per play and pushes the enemy's other powers out of its five.
+    /// The per-instance <c>Data</c> (a bomb's damage) has no slot to ride in.
+    /// </remarks>
+    private static void WriteBuffs(Span<int> obs, int offset, List<BuffState> buffs, int slots)
+    {
+        int slot = 0;
+        for (int i = 0; i < buffs.Count && slot < slots; i++)
+        {
+            var buff = buffs[i];
+            int amount = buff.Magnitude;
+            if (BuffSystem.IsInstanced(buff.Id))
+            {
+                if (BuffSystem.InstanceIndex(buffs, buff.Id, 0) != i)
+                {
+                    continue;
+                }
+
+                for (int later = i + 1; later < buffs.Count; later++)
+                {
+                    if (buffs[later].Id == buff.Id)
+                    {
+                        amount += buffs[later].Magnitude;
+                    }
+                }
+            }
+
+            obs[offset + slot * BuffSlotSize] = (int)buff.Id;
+            obs[offset + slot * BuffSlotSize + 1] = amount;
+            slot++;
+        }
+    }
+
     public static void Write(CombatState s, Span<int> obs)
     {
         if (obs.Length < ObsSize)
@@ -170,15 +210,7 @@ public static class CombatObservation
             incoming++;
         }
 
-        offset = PlayerBuffOffset;
-        for (int i = 0; i < MaxPlayerBuffs; i++)
-        {
-            if (i < s.PlayerBuffs.Count)
-            {
-                obs[offset + i * BuffSlotSize] = (int)s.PlayerBuffs[i].Id;
-                obs[offset + i * BuffSlotSize + 1] = s.PlayerBuffs[i].Magnitude;
-            }
-        }
+        WriteBuffs(obs, PlayerBuffOffset, s.PlayerBuffs, MaxPlayerBuffs);
 
         offset = EnemyOffset;
         int enemySlotSize = EnemySlotSize;
@@ -196,14 +228,7 @@ public static class CombatObservation
             obs[baseIndex + 2] = enemy.Block;
             obs[baseIndex + 3] = (int)enemy.CurrentIntent.Type;
             obs[baseIndex + 4] = AnnouncedMagnitude(s, enemy);
-            for (int buffIndex = 0; buffIndex < MaxEnemyBuffs; buffIndex++)
-            {
-                if (buffIndex < enemy.Buffs.Count)
-                {
-                    obs[baseIndex + 5 + buffIndex * 2] = (int)enemy.Buffs[buffIndex].Id;
-                    obs[baseIndex + 5 + buffIndex * 2 + 1] = enemy.Buffs[buffIndex].Magnitude;
-                }
-            }
+            WriteBuffs(obs, baseIndex + 5, enemy.Buffs, MaxEnemyBuffs);
         }
 
         offset = SecondaryIntentOffset;

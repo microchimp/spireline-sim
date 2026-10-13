@@ -145,155 +145,164 @@ public static class StateCloning
     /// It does NOT touch the draw pile. That order was materialised by a shuffle that has
     /// already happened, so reseeding cannot undo it -- see `ReshuffleUnknownDrawOrder`.
     /// </remarks>
-    public static CombatState Clone(this CombatState combat, int? rngSeed = null) =>
-        new()
-        {
-            AscensionLevel = combat.AscensionLevel,
-            Character = combat.Character,
-            PlayerHp = combat.PlayerHp,
-            PlayerMaxHp = combat.PlayerMaxHp,
-            PlayerBlock = combat.PlayerBlock,
-            Energy = combat.Energy,
-            MaxEnergy = combat.MaxEnergy,
-            PlayerGold = combat.PlayerGold,
-            StolenBackGold = combat.StolenBackGold,
-            RoyaltiesGold = combat.RoyaltiesGold,
-            FatGremlinEscaped = combat.FatGremlinEscaped,
-            BattlewornDummyRanOutOfTime = combat.BattlewornDummyRanOutOfTime,
-            PaelsLegionCooldown = combat.PaelsLegionCooldown,
-            PaelsLegionCard = combat.PaelsLegionCard,
-            MercGoldWasStolen = combat.MercGoldWasStolen,
-            Hand = [.. combat.Hand],
-            DrawPile = [.. combat.DrawPile],
-            DiscardPile = [.. combat.DiscardPile],
-            ExhaustPile = [.. combat.ExhaustPile],
-            ReturnToHandBeforeDraw = [.. combat.ReturnToHandBeforeDraw],
-            CopiesToHandBeforeDraw = [.. combat.CopiesToHandBeforeDraw],
-            EndTurnAwaitingSelection = combat.EndTurnAwaitingSelection,
-            AfterimageBeforePlay = combat.AfterimageBeforePlay,
-            StormBeforePlay = combat.StormBeforePlay,
-            SubroutineBeforePlay = combat.SubroutineBeforePlay,
-            StatusCardsDrawnThisTurn = combat.StatusCardsDrawnThisTurn,
-            ResolvingDefendCard = combat.ResolvingDefendCard,
-            PlayedCardCostForCombat = combat.PlayedCardCostForCombat,
-            AutoPlayQueue = [.. combat.AutoPlayQueue],
-            HeldPlayedCard = combat.HeldPlayedCard,
-            HeldPlayedCardExhausts = combat.HeldPlayedCardExhausts,
-            Orbs = [.. combat.Orbs],
-            OrbCapacity = combat.OrbCapacity,
-            BaseOrbSlots = combat.BaseOrbSlots,
-            OstyHp = combat.OstyHp,
-            OstyMaxHp = combat.OstyMaxHp,
-            Stars = combat.Stars,
-            OrbitEnergySpent = combat.OrbitEnergySpent,
-            StrangleBeforePlay = [.. combat.StrangleBeforePlay],
-            PotionSlots = (int[])combat.PotionSlots.Clone(),
-            MaxPotionSlots = combat.MaxPotionSlots,
-            Relics = [.. combat.Relics],
-            PlayerBuffs = [.. combat.PlayerBuffs],
-            PlayerDebuffsAtRoundStart = [.. combat.PlayerDebuffsAtRoundStart],
-            Enemies = [.. combat.Enemies.Select(enemy => enemy.Clone())],
-            EncounterId = combat.EncounterId,
-            IsEliteCombat = combat.IsEliteCombat,
-            ShuffleRng = combat.ShuffleRng.Reseeded(rngSeed, nameof(combat.ShuffleRng)),
-            TargetRng = combat.TargetRng.Reseeded(rngSeed, nameof(combat.TargetRng)),
-            CardSelectionRng = combat.CardSelectionRng.Reseeded(
-                rngSeed,
-                nameof(combat.CardSelectionRng)
-            ),
-            EnergyCostRng = combat.EnergyCostRng.Reseeded(rngSeed, nameof(combat.EnergyCostRng)),
-            CardGenerationRng = combat.CardGenerationRng.Reseeded(
-                rngSeed,
-                nameof(combat.CardGenerationRng)
-            ),
-            PotionGenerationRng = combat.PotionGenerationRng.Reseeded(
-                rngSeed,
-                nameof(combat.PotionGenerationRng)
-            ),
-            OrbGenerationRng = combat.OrbGenerationRng.Reseeded(
-                rngSeed,
-                nameof(combat.OrbGenerationRng)
-            ),
-            // A CountingRandom carries its seed and position, so it clones exactly. A
-            // plain Random does not, and only the combat-only environment supplies one
-            // -- that path has no clone export, so the shared reference is unreachable.
-            AiRng = combat.AiRng is CountingRandom counting
-                ? counting.Reseeded(rngSeed, nameof(combat.AiRng))
-                : combat.AiRng,
-            NicheHpRng = combat.NicheHpRng.Reseeded(rngSeed, nameof(combat.NicheHpRng)),
-            PendingSelection = combat.PendingSelection?.Clone(),
-            AutoPlaying = combat.AutoPlaying,
-            PlayedCardBonusDamage = combat.PlayedCardBonusDamage,
-            PlayedCardBonusBlock = combat.PlayedCardBonusBlock,
-            EnergySpentThisTurn = combat.EnergySpentThisTurn,
-            PenNibArmed = combat.PenNibArmed,
-            EtherealExhaustsThisTurn = combat.EtherealExhaustsThisTurn,
-            VambraceSpent = combat.VambraceSpent,
-            VambraceCard = combat.VambraceCard,
-            UnblockedDamageThisTurn = combat.UnblockedDamageThisTurn,
-            RainbowRingAttacks = combat.RainbowRingAttacks,
-            RainbowRingSkills = combat.RainbowRingSkills,
-            RainbowRingPowers = combat.RainbowRingPowers,
-            RainbowRingPaidThisTurn = combat.RainbowRingPaidThisTurn,
-            UnsettlingLampSpent = combat.UnsettlingLampSpent,
-            UnsettlingLampCard = combat.UnsettlingLampCard,
-            GamblingChipDiscarded = combat.GamblingChipDiscarded,
-            GamblingChipOwed = combat.GamblingChipOwed,
-            BurningSticksUsed = combat.BurningSticksUsed,
-            BeltBuckleApplied = combat.BeltBuckleApplied,
-            IsEliteRoom = combat.IsEliteRoom,
-            TookUnblockedDamage = combat.TookUnblockedDamage,
-            PlayedCardEnchantSpent = combat.PlayedCardEnchantSpent,
-            PlayedCardEnchantGrew = combat.PlayedCardEnchantGrew,
-            PlayedCardCostBump = combat.PlayedCardCostBump,
-            ToricToughnessBlock = combat.ToricToughnessBlock,
-            Turn = combat.Turn,
-            PlayerTurn = combat.PlayerTurn,
-            LastAttackOrSkillThisTurn = combat.LastAttackOrSkillThisTurn,
-            LastAttackOrSkillLastTurn = combat.LastAttackOrSkillLastTurn,
-            SkillPlayedWhileSmoggy = combat.SkillPlayedWhileSmoggy,
-            CardsPlayedThisTurn = combat.CardsPlayedThisTurn,
-            AttackCardsPlayedThisTurn = combat.AttackCardsPlayedThisTurn,
-            AttackOrSkillCardsPlayedThisTurn = combat.AttackOrSkillCardsPlayedThisTurn,
-            CardPlaysThisTurn = combat.CardPlaysThisTurn,
-            CardsPlayedThisCombat = combat.CardsPlayedThisCombat,
-            DrawnCardsSinceAutomationProc = combat.DrawnCardsSinceAutomationProc,
-            CardsDrawnThisCombat = combat.CardsDrawnThisCombat,
-            ShivsPlayedThisTurn = combat.ShivsPlayedThisTurn,
-            ExtraCardRewards = combat.ExtraCardRewards,
-            StolenBackCards = [.. combat.StolenBackCards],
-            ExecutedThisEnemyTurn = [.. combat.ExecutedThisEnemyTurn],
-            AutoPlayTargetIndex = combat.AutoPlayTargetIndex,
-            CardsPlayedSincePanacheProc = combat.CardsPlayedSincePanacheProc,
-            RuptureOwed = combat.RuptureOwed,
-            BlockGainsThisTurn = combat.BlockGainsThisTurn,
-            PlayerHpLostThisTurn = combat.PlayerHpLostThisTurn,
-            CardsExhaustedThisTurn = combat.CardsExhaustedThisTurn,
-            LightningOrbsChanneledThisCombat = combat.LightningOrbsChanneledThisCombat,
-            EtherealExhaustCount = combat.EtherealExhaustCount,
-            EtherealCardPlaysThisCombat = combat.EtherealCardPlaysThisCombat,
-            LethalAttackPlay = combat.LethalAttackPlay,
-            SkillCardsPlayedThisTurn = combat.SkillCardsPlayedThisTurn,
-            BoundCardsThisTurn = combat.BoundCardsThisTurn,
-            BoundCardPlayedThisTurn = combat.BoundCardPlayedThisTurn,
-            MusicBoxUsedThisTurn = combat.MusicBoxUsedThisTurn,
-            FurCoatBites = combat.FurCoatBites,
-            WhisperingEarringSpent = combat.WhisperingEarringSpent,
-            CardPlaysLastTurn = combat.CardPlaysLastTurn,
-            ExtraCardsDrawnThisTurn = combat.ExtraCardsDrawnThisTurn,
-            DoomAppliedThisTurn = combat.DoomAppliedThisTurn,
-            OstyAttacksThisTurn = combat.OstyAttacksThisTurn,
-            StarsGainedThisTurn = combat.StarsGainedThisTurn,
-            PlayedCardStarsSpent = combat.PlayedCardStarsSpent,
-            VoidFormCardsPlayedThisTurn = combat.VoidFormCardsPlayedThisTurn,
-            EndTurnAfterPlay = combat.EndTurnAfterPlay,
-            CardsGeneratedThisCombat = combat.CardsGeneratedThisCombat,
-            TenderCardsPlayedThisTurn = combat.TenderCardsPlayedThisTurn,
-            UnblockedDamageHitCount = combat.UnblockedDamageHitCount,
-            TargetEnemyIndex = combat.TargetEnemyIndex,
-            KnownTopCount = combat.KnownTopCount,
-            KnownBottomCount = combat.KnownBottomCount,
-        };
+    public static CombatState Clone(this CombatState combat, int? rngSeed = null)
+    {
+        var copy = new CombatState();
+        combat.CopyTo(copy, rngSeed);
+        return copy;
+    }
+
+    /// <summary>
+    /// Every field of <paramref name="combat" /> onto <paramref name="into" />, as <see cref="Clone" />
+    /// copies it: the one field list both use, so an in-place restore cannot drift from the
+    /// copy, for a caller that must put a combat it holds back to an earlier state.
+    /// <paramref name="combat" /> is left as it was.
+    /// </summary>
+    public static void CopyTo(this CombatState combat, CombatState into, int? rngSeed = null)
+    {
+        into.AscensionLevel = combat.AscensionLevel;
+        into.Character = combat.Character;
+        into.PlayerHp = combat.PlayerHp;
+        into.PlayerMaxHp = combat.PlayerMaxHp;
+        into.PlayerBlock = combat.PlayerBlock;
+        into.Energy = combat.Energy;
+        into.MaxEnergy = combat.MaxEnergy;
+        into.PlayerGold = combat.PlayerGold;
+        into.StolenBackGold = combat.StolenBackGold;
+        into.RoyaltiesGold = combat.RoyaltiesGold;
+        into.FatGremlinEscaped = combat.FatGremlinEscaped;
+        into.BattlewornDummyRanOutOfTime = combat.BattlewornDummyRanOutOfTime;
+        into.PaelsLegionCooldown = combat.PaelsLegionCooldown;
+        into.PaelsLegionCard = combat.PaelsLegionCard;
+        into.MercGoldWasStolen = combat.MercGoldWasStolen;
+        into.Hand = [.. combat.Hand];
+        into.DrawPile = [.. combat.DrawPile];
+        into.DiscardPile = [.. combat.DiscardPile];
+        into.ExhaustPile = [.. combat.ExhaustPile];
+        into.ReturnToHandBeforeDraw = [.. combat.ReturnToHandBeforeDraw];
+        into.CopiesToHandBeforeDraw = [.. combat.CopiesToHandBeforeDraw];
+        into.EndTurnAwaitingSelection = combat.EndTurnAwaitingSelection;
+        into.AfterimageBeforePlay = combat.AfterimageBeforePlay;
+        into.StormBeforePlay = combat.StormBeforePlay;
+        into.SubroutineBeforePlay = combat.SubroutineBeforePlay;
+        into.StatusCardsDrawnThisTurn = combat.StatusCardsDrawnThisTurn;
+        into.ResolvingDefendCard = combat.ResolvingDefendCard;
+        into.PlayedCardCostForCombat = combat.PlayedCardCostForCombat;
+        into.AutoPlayQueue = [.. combat.AutoPlayQueue];
+        into.HeldPlayedCard = combat.HeldPlayedCard;
+        into.HeldPlayedCardExhausts = combat.HeldPlayedCardExhausts;
+        into.Orbs = [.. combat.Orbs];
+        into.OrbCapacity = combat.OrbCapacity;
+        into.BaseOrbSlots = combat.BaseOrbSlots;
+        into.OstyHp = combat.OstyHp;
+        into.OstyMaxHp = combat.OstyMaxHp;
+        into.Stars = combat.Stars;
+        into.StrangleBeforePlay = [.. combat.StrangleBeforePlay];
+        into.PotionSlots = (int[])combat.PotionSlots.Clone();
+        into.MaxPotionSlots = combat.MaxPotionSlots;
+        into.Relics = [.. combat.Relics];
+        into.PlayerBuffs = [.. combat.PlayerBuffs];
+        into.PlayerDebuffsAtRoundStart = [.. combat.PlayerDebuffsAtRoundStart];
+        into.Enemies = [.. combat.Enemies.Select(enemy => enemy.Clone())];
+        into.EncounterId = combat.EncounterId;
+        into.IsEliteCombat = combat.IsEliteCombat;
+        into.ShuffleRng = combat.ShuffleRng.Reseeded(rngSeed, nameof(combat.ShuffleRng));
+        into.TargetRng = combat.TargetRng.Reseeded(rngSeed, nameof(combat.TargetRng));
+        into.CardSelectionRng = combat.CardSelectionRng.Reseeded(
+            rngSeed,
+            nameof(combat.CardSelectionRng)
+        );
+        into.EnergyCostRng = combat.EnergyCostRng.Reseeded(rngSeed, nameof(combat.EnergyCostRng));
+        into.CardGenerationRng = combat.CardGenerationRng.Reseeded(
+            rngSeed,
+            nameof(combat.CardGenerationRng)
+        );
+        into.PotionGenerationRng = combat.PotionGenerationRng.Reseeded(
+            rngSeed,
+            nameof(combat.PotionGenerationRng)
+        );
+        into.OrbGenerationRng = combat.OrbGenerationRng.Reseeded(
+            rngSeed,
+            nameof(combat.OrbGenerationRng)
+        );
+        // A CountingRandom carries its seed and position, so it clones exactly. A
+        // plain Random does not, and only the combat-only environment supplies one
+        // -- that path has no clone export, so the shared reference is unreachable.
+        into.AiRng = combat.AiRng is CountingRandom counting
+            ? counting.Reseeded(rngSeed, nameof(combat.AiRng))
+            : combat.AiRng;
+        into.NicheHpRng = combat.NicheHpRng.Reseeded(rngSeed, nameof(combat.NicheHpRng));
+        into.PendingSelection = combat.PendingSelection?.Clone();
+        into.AutoPlaying = combat.AutoPlaying;
+        into.PlayedCardBonusDamage = combat.PlayedCardBonusDamage;
+        into.PlayedCardBonusBlock = combat.PlayedCardBonusBlock;
+        into.EnergySpentThisTurn = combat.EnergySpentThisTurn;
+        into.PenNibArmed = combat.PenNibArmed;
+        into.EtherealExhaustsThisTurn = combat.EtherealExhaustsThisTurn;
+        into.VambraceSpent = combat.VambraceSpent;
+        into.VambraceCard = combat.VambraceCard;
+        into.UnblockedDamageThisTurn = combat.UnblockedDamageThisTurn;
+        into.RainbowRingAttacks = combat.RainbowRingAttacks;
+        into.RainbowRingSkills = combat.RainbowRingSkills;
+        into.RainbowRingPowers = combat.RainbowRingPowers;
+        into.RainbowRingPaidThisTurn = combat.RainbowRingPaidThisTurn;
+        into.UnsettlingLampSpent = combat.UnsettlingLampSpent;
+        into.UnsettlingLampCard = combat.UnsettlingLampCard;
+        into.GamblingChipDiscarded = combat.GamblingChipDiscarded;
+        into.GamblingChipOwed = combat.GamblingChipOwed;
+        into.BurningSticksUsed = combat.BurningSticksUsed;
+        into.BeltBuckleApplied = combat.BeltBuckleApplied;
+        into.IsEliteRoom = combat.IsEliteRoom;
+        into.TookUnblockedDamage = combat.TookUnblockedDamage;
+        into.PlayedCardEnchantSpent = combat.PlayedCardEnchantSpent;
+        into.PlayedCardEnchantGrew = combat.PlayedCardEnchantGrew;
+        into.PlayedCardCostBump = combat.PlayedCardCostBump;
+        into.Turn = combat.Turn;
+        into.PlayerTurn = combat.PlayerTurn;
+        into.LastAttackOrSkillThisTurn = combat.LastAttackOrSkillThisTurn;
+        into.LastAttackOrSkillLastTurn = combat.LastAttackOrSkillLastTurn;
+        into.SkillPlayedWhileSmoggy = combat.SkillPlayedWhileSmoggy;
+        into.CardsPlayedThisTurn = combat.CardsPlayedThisTurn;
+        into.CardPlaysStartedThisTurn = combat.CardPlaysStartedThisTurn;
+        into.AttackCardsPlayedThisTurn = combat.AttackCardsPlayedThisTurn;
+        into.AttackOrSkillCardsPlayedThisTurn = combat.AttackOrSkillCardsPlayedThisTurn;
+        into.CardPlaysThisTurn = combat.CardPlaysThisTurn;
+        into.CardsPlayedThisCombat = combat.CardsPlayedThisCombat;
+        into.CardsDrawnThisCombat = combat.CardsDrawnThisCombat;
+        into.ShivsPlayedThisTurn = combat.ShivsPlayedThisTurn;
+        into.ExtraCardRewards = combat.ExtraCardRewards;
+        into.StolenBackCards = [.. combat.StolenBackCards];
+        into.ExecutedThisEnemyTurn = [.. combat.ExecutedThisEnemyTurn];
+        into.AutoPlayTargetIndex = combat.AutoPlayTargetIndex;
+        into.RuptureOwed = combat.RuptureOwed;
+        into.BlockGainsThisTurn = combat.BlockGainsThisTurn;
+        into.PlayerHpLostThisTurn = combat.PlayerHpLostThisTurn;
+        into.CardsExhaustedThisTurn = combat.CardsExhaustedThisTurn;
+        into.LightningOrbsChanneledThisCombat = combat.LightningOrbsChanneledThisCombat;
+        into.EtherealExhaustCount = combat.EtherealExhaustCount;
+        into.EtherealCardPlaysThisCombat = combat.EtherealCardPlaysThisCombat;
+        into.LethalAttackPlay = combat.LethalAttackPlay;
+        into.SkillCardsPlayedThisTurn = combat.SkillCardsPlayedThisTurn;
+        into.BoundCardsThisTurn = combat.BoundCardsThisTurn;
+        into.BoundCardPlayedThisTurn = combat.BoundCardPlayedThisTurn;
+        into.MusicBoxUsedThisTurn = combat.MusicBoxUsedThisTurn;
+        into.FurCoatBites = combat.FurCoatBites;
+        into.WhisperingEarringSpent = combat.WhisperingEarringSpent;
+        into.CardPlaysLastTurn = combat.CardPlaysLastTurn;
+        into.ExtraCardsDrawnThisTurn = combat.ExtraCardsDrawnThisTurn;
+        into.DoomAppliedThisTurn = combat.DoomAppliedThisTurn;
+        into.OstyAttacksThisTurn = combat.OstyAttacksThisTurn;
+        into.StarsGainedThisTurn = combat.StarsGainedThisTurn;
+        into.PlayedCardStarsSpent = combat.PlayedCardStarsSpent;
+        into.VoidFormCardsPlayedThisTurn = combat.VoidFormCardsPlayedThisTurn;
+        into.EndTurnAfterPlay = combat.EndTurnAfterPlay;
+        into.CardsGeneratedThisCombat = combat.CardsGeneratedThisCombat;
+        into.TenderCardsPlayedThisTurn = combat.TenderCardsPlayedThisTurn;
+        into.UnblockedDamageHitCount = combat.UnblockedDamageHitCount;
+        into.TargetEnemyIndex = combat.TargetEnemyIndex;
+        into.KnownTopCount = combat.KnownTopCount;
+        into.KnownBottomCount = combat.KnownBottomCount;
+    }
 
     public static RunMapNode Clone(this RunMapNode node)
     {

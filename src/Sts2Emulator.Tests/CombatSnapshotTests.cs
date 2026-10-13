@@ -66,7 +66,6 @@ public class CombatSnapshotTests
           "subroutine_before_play": 0,
           "status_cards_drawn_this_turn": 0,
           "played_card_cost_for_combat": null,
-          "orbit_energy_spent": 0,
           "played_card_bonus_damage": 0,
           "played_card_bonus_block": 0,
           "energy_spent_this_turn": 0,
@@ -77,17 +76,15 @@ public class CombatSnapshotTests
           "rainbow_ring_powers": 0,
           "gambling_chip_discarded": 0,
           "played_card_cost_bump": 0,
-          "toric_toughness_block": 0,
           "cards_played_this_turn": 0,
+          "card_plays_started_this_turn": 0,
           "attack_cards_played_this_turn": 0,
           "attack_or_skill_cards_played_this_turn": 0,
           "card_plays_this_turn": 0,
           "cards_played_this_combat": 0,
-          "drawn_cards_since_automation_proc": 0,
           "cards_drawn_this_combat": 0,
           "shivs_played_this_turn": 0,
           "extra_card_rewards": 0,
-          "cards_played_since_panache_proc": 0,
           "block_gains_this_turn": 0,
           "player_hp_lost_this_turn": 0,
           "cards_exhausted_this_turn": 0,
@@ -637,6 +634,47 @@ public class CombatSnapshotTests
                 new BuffState(BuffId.TheBombPower, 2, 50),
                 new BuffState(BuffId.Strength, 1),
                 new BuffState(BuffId.TheBombPower, 3, 40),
+            ],
+            state.PlayerBuffs
+        );
+        Assert.Equal(state.PlayerBuffs, Read(Write(state), out _).PlayerBuffs);
+    }
+
+    /// <summary>
+    /// The counters that used to be CombatState fields now ride the instance's `data`, so a copy
+    /// through the snapshot has to keep each one: Toric Toughness's block, Automation's and
+    /// Panache's counts, Orbit's energy, Monologue's total, and Panache's -1 while its own play
+    /// is still resolving.
+    /// </summary>
+    [Fact]
+    public void TheCountersOfTheInstancedPowersSurviveARoundTrip()
+    {
+        var document = WithBuffList(
+            "player.buffs",
+            new JsonArray(
+                new JsonObject { ["id"] = (int)BuffId.ToricToughness, ["amount"] = 2, ["data"] = 5 },
+                new JsonObject { ["id"] = (int)BuffId.ToricToughness, ["amount"] = 1, ["data"] = 7 },
+                new JsonObject { ["id"] = (int)BuffId.AutomationPower, ["amount"] = 1, ["data"] = 6 },
+                new JsonObject { ["id"] = (int)BuffId.Orbit, ["amount"] = 1, ["data"] = 3 },
+                new JsonObject { ["id"] = (int)BuffId.PanachePower, ["amount"] = 10, ["data"] = 4 },
+                new JsonObject { ["id"] = (int)BuffId.PanachePower, ["amount"] = 14, ["data"] = -1 },
+                new JsonObject { ["id"] = (int)BuffId.Monologue, ["amount"] = 1, ["data"] = 3 },
+                new JsonObject { ["id"] = (int)BuffId.Monologue, ["amount"] = 1 }
+            )
+        );
+
+        var state = Read(document.ToJsonString(), out _);
+
+        Assert.Equal(
+            [
+                new BuffState(BuffId.ToricToughness, 2, 5),
+                new BuffState(BuffId.ToricToughness, 1, 7),
+                new BuffState(BuffId.AutomationPower, 1, 6),
+                new BuffState(BuffId.Orbit, 1, 3),
+                new BuffState(BuffId.PanachePower, 10, 4),
+                new BuffState(BuffId.PanachePower, 14, -1),
+                new BuffState(BuffId.Monologue, 1, 3),
+                new BuffState(BuffId.Monologue, 1),
             ],
             state.PlayerBuffs
         );
