@@ -34,10 +34,14 @@ public class MetamorphicTests
 
         public int TurnBefore { get; private set; }
 
+        /// <summary>Whether the card the last step played was an upgraded one.</summary>
+        public bool PlayedUpgraded { get; private set; }
+
         public override StepResult Step(Move m)
         {
             BlockBefore = State.PlayerBlock;
             TurnBefore = State.Turn;
+            PlayedUpgraded = State.PendingSelection is null && m.Action < State.Hand.Count && State.Hand[m.Action].Upgraded;
             var r = base.Step(m);
             _after(this, m);
             return r;
@@ -259,6 +263,40 @@ public class MetamorphicTests
         }));
 
         Assert.Contains(failures, f => f.Relation == "monotone");
+    }
+
+    [Fact]
+    public void UpgradeSeesAnUpgradedCardThatHealsTheEnemy()
+    {
+        var failures = Run("upgrade", Opening(Slimes, 1, (c, m) =>
+        {
+            if (c.PlayedUpgraded)
+            {
+                foreach (var e in c.State.Enemies)
+                {
+                    e.Hp = Math.Min(e.MaxHp, e.Hp + 40);
+                }
+            }
+        }));
+
+        Assert.Contains(failures, f => f.Relation == "upgrade");
+    }
+
+    [Fact]
+    public void LinearSeesStrengthThatStopsHelpingAtTwo()
+    {
+        var failures = Run("linear", Opening(Slimes, 1, (c, m) =>
+        {
+            if (BuffSystem.Get(c.State.PlayerBuffs, BuffId.Strength) >= 2)
+            {
+                foreach (var e in c.State.Enemies)
+                {
+                    e.Hp = Math.Min(e.MaxHp, e.Hp + 5);
+                }
+            }
+        }));
+
+        Assert.Contains(failures, f => f.Relation == "linear");
     }
 
     [Fact]

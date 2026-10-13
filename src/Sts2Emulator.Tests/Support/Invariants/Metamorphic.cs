@@ -43,7 +43,7 @@ public static class Metamorphic
     public static int DiffLimit { get; set; } = 4;
 
     public static readonly string[] Names =
-        ["invariants", "determinism", "clone", "pad", "twins", "symmetry", "streams", "handorder", "discardorder", "energy", "monotone"];
+        ["invariants", "determinism", "clone", "pad", "twins", "symmetry", "streams", "handorder", "discardorder", "energy", "monotone", "upgrade", "linear"];
 
     private static string Digest(Combat c, params string[] skip) => DeepState.Digest(c.Whole, skip);
 
@@ -72,6 +72,8 @@ public static class Metamorphic
                     case "discardorder": DiscardOrder(open, chooserSeed, report); break;
                     case "energy": EnergySlack(open, chooserSeed, report); break;
                     case "monotone": MoreIsBetter(open, chooserSeed, report); break;
+                    case "upgrade": UpgradeNeverWorse(open, chooserSeed, report); break;
+                    case "linear": StrengthIsLinear(open, chooserSeed, report); break;
                 }
             }
             catch (Exception e)
@@ -249,33 +251,31 @@ public static class Metamorphic
 
             string card = a.Describe(m.Value);
             int before = a.State.DrawPile.Count;
+            string was = $"before: a {Piles(a)} | b {Piles(b)}";
             a.Step(m.Value);
             b.Step(m.Value);
+
+            // Out of scope from here: the pile was reshuffled or ran down (the pad is drawn, even when the
+            // other fight has just ended), or a card was shuffled in at a random place (its range depends on
+            // the pile's size by design) and can land below the pad.
+            int last = b.State.DrawPile.Count - 1;
+            if ((a.State.ShuffleRng?.CallCount ?? 0) != (b.State.ShuffleRng?.CallCount ?? 0)
+                || a.State.DrawPile.Count == 0
+                || a.State.DrawPile.Count > before
+                || last < 0
+                || b.State.DrawPile[last] != pad)
+            {
+                return;
+            }
+
             if (a.Over || b.Over)
             {
                 // The fight ending is an outcome too: both must end together.
                 if (a.Over != b.Over)
                 {
-                    rep.Fail("pad", i, card, "only one of the fights ended");
+                    rep.Fail("pad", i, card, $"only one of the fights ended (a {a.Over}, b {b.Over}) {was} after: a {Piles(a)} | b {Piles(b)}");
                 }
 
-                return;
-            }
-
-            // Out of scope from here: the pile was reshuffled, ran out, or took a card at a random place
-            // (whose range depends on the pile's size by design).
-            if ((a.State.ShuffleRng?.CallCount ?? 0) != (b.State.ShuffleRng?.CallCount ?? 0)
-                || a.State.DrawPile.Count == 0
-                || a.State.DrawPile.Count > before)
-            {
-                return;
-            }
-
-            // A card shuffled in at a random place can land below the pad (its range depends on the pile's
-            // size by design), and the pad is drawn when the pile runs down: past either, nothing is owed.
-            var last = b.State.DrawPile.Count - 1;
-            if (last < 0 || b.State.DrawPile[last] != pad)
-            {
                 return;
             }
 
@@ -284,7 +284,7 @@ public static class Metamorphic
             b.State.DrawPile.Add(pad);
             if (diff.Count > 0)
             {
-                rep.Fail("pad", i, card, diff);
+                rep.Fail("pad", i, card, diff.Append($"{was} after: a {Piles(a)} | b {Piles(b)}"));
                 return;
             }
         }
@@ -463,17 +463,23 @@ public static class Metamorphic
         int i = playable[chooser.Next(playable.Length)];
         int target = RandomPlay.TargetFor(c.State, i, chooser);
         string card = c.Describe(new Move(i, target));
+        if (AutoPlayingCards.Contains(card))
+        {
+            return; // an auto-played card answers its own screens with the first option
+        }
+
         var order = Shuffled(Enumerable.Range(0, c.State.Hand.Count), chooser);
         var x = c.Clone();
         var y = c.Clone();
         y.State.Hand = order.Select(k => c.State.Hand[k]).ToList();
         int j = order.IndexOf(i);
         int before = Rolls(x);
+        int played = x.State.CardsPlayedThisCombat;
         x.Step(new Move(i, target));
         y.Step(new Move(j, target));
-        if (Rolls(x) != before || x.State.PendingSelection is not null || x.Over || y.Over)
+        if (Rolls(x) != before || x.State.PendingSelection is not null || x.Over || y.Over || PlayedOthers(x, played))
         {
-            return; // a roll or a screen over the hand's positions: not owed
+            return; // a roll, a screen, or a card played for the player (Havoc) that answers its own selections by position
         }
 
         rep.Count("handorder");
@@ -490,9 +496,10 @@ public static class Metamorphic
             return; // cards alike in name and upgrade but not in every field keep their relative order through a shuffle
         }
 
+        int playedBefore = x.State.CardsPlayedThisCombat;
         x.Step(new Move(x.State.Hand.Count, -1));
         y.Step(new Move(y.State.Hand.Count, -1));
-        if (x.Over || y.Over || Rolls(x) != Rolls(y))
+        if (x.Over || y.Over || Rolls(x) != Rolls(y) || PlayedOthers(x, playedBefore, 0))
         {
             return;
         }
@@ -505,6 +512,23 @@ public static class Metamorphic
                 (d.Count > 0 ? d : ["a pile holds different cards"]).Append($"x {Piles(x)} | y {Piles(y)}"));
         }
     }
+
+    /// <summary>
+    /// Whether the last step played a card of its own accord (Havoc, Mayhem, Stampede...). A card played that way
+    /// answers its own selection screens with the first option, so the order of the pile it chooses from is its input.
+    /// </summary>
+    private static bool PlayedOthers(Combat c, int playsBefore, int own = 1) => c.State.CardsPlayedThisCombat - playsBefore > own;
+
+    /// <summary>
+    /// The cards whose class hands another card to CardCmd.AutoPlay (a scan of the game's card classes). The
+    /// play counter does not always show the second play, so the relations that depend on a pile's order
+    /// leave these out by name.
+    /// </summary>
+    private static readonly HashSet<string> AutoPlayingCards =
+    [
+        "BEAT_DOWN", "BOMBARDMENT", "CASCADE", "CATASTROPHE", "DECISIONS_DECISIONS", "HAVOC", "HOWL_FROM_BEYOND",
+        "I_AM_INVINCIBLE", "KNIFE_TRAP", "UPROAR",
+    ];
 
     /// <summary>
     /// Powers that pick a card at random BY POSITION in a pile, so the order of that pile is their input by
@@ -525,6 +549,7 @@ public static class Metamorphic
     private static string Piles(Combat c) =>
         $"hand {string.Join(",", c.State.Hand.Select(k => k.DefId))} draw {string.Join(",", c.State.DrawPile.Take(8).Select(k => k.DefId))}"
         + $" discard {string.Join(",", c.State.DiscardPile.Select(k => k.DefId))} shuffled {c.State.ShuffleRng?.CallCount}"
+        + $" plays {c.State.CardsPlayedThisCombat} last {(c.State.LastAttackOrSkillThisTurn is { } last ? Cards.Get(last.DefId).Entry : "-")}"
         + $" buffs {string.Join(",", c.State.PlayerBuffs.Select(b => $"{b.Id}{b.Magnitude}"))}"
         + $" relics {string.Join(",", c.State.Relics.Select(r => r.DefId))}";
 
@@ -573,9 +598,16 @@ public static class Metamorphic
             }
 
             string card = x.Describe(move);
+            if (AutoPlayingCards.Contains(card))
+            {
+                return;
+            }
+
+            int played = x.State.CardsPlayedThisCombat;
+            int own = move.Action < x.State.Hand.Count ? 1 : 0; // a card the player plays; an end of turn plays none
             x.Step(move);
             y.Step(move);
-            if (HasHiddenTwins(x.State))
+            if (HasHiddenTwins(x.State) || PlayedOthers(x, played, own))
             {
                 return;
             }
@@ -723,6 +755,143 @@ public static class Metamorphic
             if (endTurn || x.State.Turn != turn)
             {
                 return;
+            }
+        }
+    }
+
+    /// <summary>What a play did to the other side, in numbers that only ever move one way when a card gets better.</summary>
+    private readonly record struct Effect(int Spent, int EnemyHpLost, int Block, int EnemyDebuffs, int Strength);
+
+    private static Effect Measure(Combat before, Combat after) =>
+        new(
+            before.State.Energy - after.State.Energy,
+            before.State.Enemies.Sum(e => e.Hp) - after.State.Enemies.Sum(e => e.Hp),
+            after.State.PlayerBlock - before.State.PlayerBlock,
+            after.State.Enemies.Sum(e => e.Buffs.Where(b => BuffSystem.IsDebuff(b.Id) && b.Magnitude > 0).Sum(b => b.Magnitude))
+            - before.State.Enemies.Sum(e => e.Buffs.Where(b => BuffSystem.IsDebuff(b.Id) && b.Magnitude > 0).Sum(b => b.Magnitude)),
+            BuffSystem.Get(after.State.PlayerBuffs, BuffId.Strength) - BuffSystem.Get(before.State.PlayerBuffs, BuffId.Strength));
+
+    /// <summary>
+    /// An upgraded card is never worse: played from the same hand, it costs no more, takes at least as much
+    /// from the enemies, gives at least as much block, puts at least as much of each debuff on them and
+    /// gains at least as much strength.
+    /// </summary>
+    public static void UpgradeNeverWorse(Func<Combat> open, int seed, RelationReport rep)
+    {
+        var c = open();
+        var chooser = new Random(seed);
+        RandomPlay.Play(c, chooser, chooser.Next(0, 8));
+        if (c.Over || c.State.PendingSelection is not null)
+        {
+            return;
+        }
+
+        var valid = CombatEngine.ValidActions(c.State).ToHashSet();
+        var candidates = Enumerable.Range(0, c.State.Hand.Count)
+            .Where(i => valid.Contains(i) && !c.State.Hand[i].Upgraded && Sts2Emulator.Core.Run.RunConstants.IsRunCardUpgradable(c.State.Hand[i]))
+            .OrderBy(_ => chooser.Next())
+            .Take(2);
+        foreach (int i in candidates)
+        {
+            int target = RandomPlay.TargetFor(c.State, i, chooser);
+            string card = c.Describe(new Move(i, target));
+            var x = c.Clone();
+            var y = c.Clone();
+            y.State.Hand[i] = y.State.Hand[i] with { Upgraded = true };
+            x.Step(new Move(i, target));
+            if (!CombatEngine.ValidActions(y.State).Contains(i))
+            {
+                continue;
+            }
+
+            y.Step(new Move(i, target));
+            if (x.Over || y.Over || x.State.PendingSelection is not null || y.State.PendingSelection is not null
+                || x.State.Enemies.Count != y.State.Enemies.Count || Rolls(x) != Rolls(y))
+            {
+                continue; // a screen, an end, or a different number of rolls: the two plays are no longer comparable
+            }
+
+            rep.Count("upgrade");
+            var plain = Measure(c, x);
+            var better = Measure(c, y);
+            var worse = new List<string>();
+            if (better.Spent > plain.Spent) { worse.Add($"costs {better.Spent} upgraded, {plain.Spent} plain"); }
+            if (better.EnemyHpLost < plain.EnemyHpLost) { worse.Add($"takes {better.EnemyHpLost} hp upgraded, {plain.EnemyHpLost} plain"); }
+            if (better.Block < plain.Block) { worse.Add($"blocks {better.Block} upgraded, {plain.Block} plain"); }
+            if (better.EnemyDebuffs < plain.EnemyDebuffs) { worse.Add($"debuffs {better.EnemyDebuffs} upgraded, {plain.EnemyDebuffs} plain"); }
+            if (better.Strength < plain.Strength) { worse.Add($"strength {better.Strength} upgraded, {plain.Strength} plain"); }
+            if (worse.Count > 0)
+            {
+                rep.Fail("upgrade", 1, card, worse.Append($"plain {Piles(x)} | upgraded {Piles(y)} | before {Piles(c)}"));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Damage is linear in strength where nothing rounds or caps it: with an enemy too big to die and no Vulnerable
+    /// on it, each extra point of strength adds the same hit points lost, one per hit.
+    /// </summary>
+    public static void StrengthIsLinear(Func<Combat> open, int seed, RelationReport rep)
+    {
+        var c = open();
+        var chooser = new Random(seed);
+        RandomPlay.Play(c, chooser, chooser.Next(0, 8));
+        if (c.Over || c.State.PendingSelection is not null)
+        {
+            return;
+        }
+
+        // Weak and Shrink scale the number after strength is added, and the result is rounded: not linear by design.
+        if (BuffSystem.Get(c.State.PlayerBuffs, BuffId.Weak) != 0 || BuffSystem.Get(c.State.PlayerBuffs, BuffId.Shrink) != 0)
+        {
+            return;
+        }
+
+        var valid = CombatEngine.ValidActions(c.State).ToHashSet();
+        var attacks = Enumerable.Range(0, c.State.Hand.Count)
+            .Where(i => valid.Contains(i) && Cards.Get(c.State.Hand[i].DefId).Type == CardType.Attack)
+            .OrderBy(_ => chooser.Next())
+            .Take(2);
+        foreach (int i in attacks)
+        {
+            int target = RandomPlay.TargetFor(c.State, i, chooser);
+            string card = c.Describe(new Move(i, target));
+            var lost = new int[3];
+            int rolls = -1;
+            bool comparable = true;
+            for (int s = 0; s < 3 && comparable; s++)
+            {
+                var x = c.Clone();
+                foreach (var e in x.State.Enemies)
+                {
+                    e.Hp = e.MaxHp = 5000;
+                    e.Block = 0;
+                    e.Buffs.RemoveAll(b => b.Id == BuffId.Vulnerable);
+                }
+
+                BuffSystem.Apply(x.State.PlayerBuffs, BuffId.Strength, s);
+                int before = x.State.Enemies.Sum(e => e.Hp);
+                x.Step(new Move(i, target));
+                comparable = !x.Over && x.State.PendingSelection is null && x.State.Enemies.Count == c.State.Enemies.Count;
+                lost[s] = before - x.State.Enemies.Sum(e => e.Hp);
+                int now = Rolls(x);
+                comparable &= rolls < 0 || now == rolls;
+                rolls = now;
+            }
+
+            if (!comparable || lost.All(l => l == 0))
+            {
+                continue;
+            }
+
+            rep.Count("linear");
+            if (lost[2] - lost[1] != lost[1] - lost[0] || lost[1] < lost[0])
+            {
+                rep.Fail(
+                    "linear", 1, card,
+                    $"hit points lost at +0, +1, +2 strength: {lost[0]}, {lost[1]}, {lost[2]}; "
+                    + $"player buffs {string.Join(",", c.State.PlayerBuffs.Select(b => $"{b.Id}{b.Magnitude}"))}; "
+                    + $"enemy buffs {string.Join(",", c.State.Enemies.Select(e => string.Join("/", e.Buffs.Select(b => $"{b.Id}{b.Magnitude}"))))}");
             }
         }
     }
