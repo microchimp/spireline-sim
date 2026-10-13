@@ -51,28 +51,47 @@ Every fight ever recorded is test data. `tools/fidelity/corpus.py` keeps each on
 never committed) and replays all of them against the current emulator:
 
 ```
-python tools/fidelity/corpus.py build                 # scan every jobs/*.out.json (also done by run/check/baseline)
+python tools/fidelity/corpus.py build                 # scan every *.out.json under jobs/ and jobs-*/ (also done by run/check/baseline)
 python tools/fidelity/corpus.py add <out.json> [...]  # a recording kept anywhere else
 python tools/fidelity/corpus.py check [--procs 16]    # replay all, compare with the baseline; exit 1 on a regression
 python tools/fidelity/corpus.py baseline              # on main, after a fix is merged: accept the current results
-python tools/fidelity/corpus.py status                # size, formats, flags, baselines
+python tools/fidelity/corpus.py status                # size, formats, flags, tags, excluded folders, baselines
 ```
 
-- Dedup: by spec (seed, character, ascension, Neow pick, deck additions, room) plus the game's steps and choices, so a
-  fight in a shard, a wave and the merged file is one entry with all its sources. Only the game side is stored.
+- Sources: every `*.out.json` at any depth under `jobs/` and the sibling `jobs-*/` folders. Each folder has an entry in
+  `corpus.POLICY` with its reason: included, included with a tag (`jobs/frames`: `settle-trial`, `jobs-nodeless`:
+  `nodeless-trial`), or excluded (two files recorded with the frame-count settle and no frame sleep, which snapshots
+  before the game settles). A new folder is read and tagged `unreviewed` until it gets an entry. A fight's tag is one
+  all its sources share. Sources are kept by path.
+- Dedup: by spec (seed, character, ascension, Neow pick, deck additions, room, and `enemy_hp_mult` or a console setup
+  when a recording has them) plus each step's action and state and the choices, so a fight in a shard, a wave and the
+  merged file is one entry with all its sources. Per-step instrumentation (cost, trace, checksums) is dropped before
+  hashing and storing. Only the game side is stored.
+- A fight the game broke off (idle_timeout and the like) is kept up to its last good step and flagged `truncated`:
+  before the first step that changed nothing (the driver acted during the game's turn setup and the game parked it)
+  and the end of turn before it, and without a trailing end of turn. A prefix of a complete fight is only its source.
 - Tags: game build (sts2.dll sha256), recording format (1: choices not tied to a step; 2: choices carry their step;
   3: refused plays recorded, fork 732aacc). A format 1-2 fight with a RandomEnemy card play is flagged
-  `driver-artifact-risk` (the driver aimed it and the game refused it unrecorded); it stays in the gate.
-- `run` (and `check`, `baseline`) first picks up new or changed `jobs/*.out.json`, then runs `EmuDump fight` and
-  `reanchor` split across processes and writes `corpus/runs/<time>-<commit>/results.json`: per fight, identical or the
-  first divergence (step, field, card), and one re-anchored verdict per step (`M` match, `D` diverge, `E` error,
-  `U` unjudged, `-` not re-anchored).
+  `driver-artifact-risk` (the driver aimed it and the game refused it unrecorded); it stays in the gate. `no-op-step`:
+  a complete fight with a step that changed nothing. `intents`: the recording has the enemies' intents.
+- A fight that needs `enemy_hp_mult` (speed/long-fights) or a console setup (feat/console-setup) is skipped by `run`
+  until EmuDump's source applies it, and counted as skipped.
+- `run` (and `check`, `baseline`) first picks up new or changed recordings, then runs `EmuDump fight` and `reanchor`
+  split across processes (each call times out: 120 s + 0.1 s per step, `--timeout` overrides) and writes
+  `corpus/runs/<time>-<commit>/results.json`: per fight, identical or the first divergence (step, field, card), any
+  emulator exception, and one re-anchored verdict per step (`M` match, `D` diverge, `E` error, `U` unjudged,
+  `-` not re-anchored) with every diverging field.
 - `check` compares with `corpus/baselines/<commit>.json` of this commit or its nearest ancestor. REGRESSIONS: a fight whose
-  plain replay diverges earlier than before (identical before included), or a re-anchored step that matched and no
-  longer does. IMPROVEMENTS: the reverse. New fights without a baseline are counted, never a failure.
+  plain replay diverges earlier than before (identical before included), a new emulator exception in either replay,
+  or a re-anchored step that matched and no longer does, now throws, or now also diverges in another field.
+  IMPROVEMENTS: the reverse. A full check (no `--only`/`--limit`) also FAILS when a baseline fight was not compared.
+  New fights without a baseline are counted, never a failure. A note says when the judge (`tools/fidelity`,
+  `data/id_map.json`) changed since the baseline.
 - A regression is a bug in the change unless the old match was luck (two wrongs cancelling): then say so in the commit
-  and store a new baseline after the merge. A baseline needs a committed emulator and a fresh EmuDump build.
-- `tools/build_and_test.sh` builds EmuDump and runs `check` as its last step (`corpus_check_exit`, `CORPUS_CHECK=0` skips).
+  and store a new baseline after the merge. A baseline needs a committed emulator and judge, a fresh EmuDump build, a
+  full run and no EmuDump failure.
+- `tools/build_and_test.sh` builds EmuDump and runs `check` as its last step (`corpus_check_exit`). `CORPUS_CHECK=0`
+  skips it (`corpus_check_exit` "skipped"), which is never a push gate: step 7 needs `0`.
 
 ## Rules
 

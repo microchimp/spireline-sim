@@ -116,14 +116,21 @@ def main() -> int:
             procs.append((src, dst, subprocess.Popen(["dotnet", emu_dll, mode, str(src)], stdout=open(dst, "w", encoding="utf-8"))))
         doc: dict = {}
         out_results: list = []
+        t_end = time.time() + 120 + 0.1 * sum(len(r.get("steps") or []) for r in results)  # a hung EmuDump fails, not the batch
         for src, dst, p in procs:
-            p.wait()
+            try:
+                p.wait(timeout=max(1.0, t_end - time.time()))
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+                timed_out = True
             p.stdout and p.stdout.close()
-            part_doc = json.loads(dst.read_text(encoding="utf-8")) if dst.stat().st_size else {"results": []}
+            part_doc = json.loads(dst.read_text(encoding="utf-8")) if dst.stat().st_size and not timed_out else {"results": []}
             doc = doc or {k_: v for k_, v in part_doc.items() if k_ != "results"}
             got = part_doc.get("results", [])
             n_in = len(json.loads(src.read_text(encoding="utf-8"))["results"])
-            out_results += got + [{"error": "emulator produced no result"}] * (n_in - len(got))
+            out_results += got + [{"error": "emulator timed out (killed)" if timed_out else "emulator produced no result"}] * (n_in - len(got))
             src.unlink()
             dst.unlink()
         doc["results"] = out_results

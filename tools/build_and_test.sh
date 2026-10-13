@@ -48,7 +48,8 @@ fi
 pyran=$(grep -E '^Ran [0-9]+ tests' "$LOG/4-python-test.log" 2>/dev/null | tail -1)
 # The recorded-fight corpus (tools/fidelity/corpus.py, referee/RUNBOOK.md): every fight ever recorded
 # in the game, replayed by this build and compared with the stored baseline; exit 1 lists the
-# regressions. Skipped when this PC has no corpus, or with CORPUS_CHECK=0.
+# regressions or baseline fights it could not compare. Skipped when this PC has no corpus, or with
+# CORPUS_CHECK=0 ("skipped", which RUNBOOK step 7 never accepts for a push).
 r5=skipped; corpus_line=""
 CORPUS_DIR="${SPIRELINE_CORPUS:-/d/spireline/referee/corpus}"
 if [ "${CORPUS_CHECK:-1}" != 0 ] && [ -f "$CORPUS_DIR/index.json" ]; then
