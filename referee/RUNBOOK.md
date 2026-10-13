@@ -90,3 +90,17 @@ running between fights (no 10 s boot per session), so cost per fight is the figh
 - Run files: `<game>/../serve/<ts>/{inbox,out/s*.jsonl,scratch/s*,results.json,results.jsonl,summary.json}`.
 - Driver side (`driver/Server.cs`): job `{"out": "x.jsonl", "inbox": "<dir>", ...}` instead of `"runs"`; claim by renaming
   `<id>.json` to `<id>.json.taken.<pid>`, append one line per fight, `STOP` in the inbox ends it.
+
+## Re-anchoring (every recorded step tested on its own)
+
+`fight_compare` stops learning at the first divergence. Re-anchoring puts the emulator into the game's state before each step, applies the game's action and compares the result with the game's next state:
+
+```
+dotnet tools/emudump/bin/Release/net9.0/EmuDump.dll reanchor '<out.json>' > <name>.reanchor.json
+python -m tools.fidelity.reanchor_compare '<out.json>' <name>.reanchor.json [--after-enemy-desync plays] [-v]
+    [--emu <name>.emu.json] [--coverage cov.json --commit <sha>]
+```
+
+- A matching step verifies its card; a divergence is blamed on its card only when the step before it matched ("primary"). Fights stop being re-anchored where the enemies' move state cannot be reproduced (the snapshot does not record intents); `--after-enemy-desync plays` goes on with card plays and leaves later ends of turn unjudged.
+- What the snapshot lacks (relic counters, enemy AI and intent, per-card modifiers, combat counters) comes from the emulator's own previous result. The `--scramble` and `--stale enemy,cards,relics,counters|all` options of `reanchor` test the write-back and show which hidden state a step needs.
+- `reanchor_compare.learn` / `coverage.update_reanchored` replace `coverage.update` for a re-anchored batch (do not use both).

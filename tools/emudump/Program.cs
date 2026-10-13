@@ -30,6 +30,30 @@ if (args[0] == "fight")
     return;
 }
 
+if (args[0] == "reanchor")
+{
+    // EmuDump reanchor <referee out.json> [--seed SEED]...: each step tried from the game's own state.
+    var only = new HashSet<string>();
+    HashSet<string>? stale = null;
+    for (int i = 2; i < args.Length; i++)
+    {
+        if (args[i] == "--seed" && i + 1 < args.Length) only.Add(args[i + 1]);
+        if (args[i] == "--stale" && i + 1 < args.Length) stale = [.. args[i + 1].Split(',')];
+    }
+
+    var mode = new Reanchor.Mode(Scramble: args.Contains("--scramble"), Stale: stale);
+
+    var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray()
+        .Where(r => only.Count == 0 || only.Contains((string?)r!["seed"] ?? ""));
+    var fights = new JsonArray(refs.Select(r => (JsonNode)(r!["ascension"] == null || r["steps"] == null
+        ? new JsonObject { ["seed"] = r["seed"]?.DeepClone(), ["error"] = "no game result to replay", ["steps"] = new JsonArray() }
+        : Reanchor.Run(r.AsObject(), mode))).ToArray());
+    var doc = Reanchor.PowerKeys();
+    doc["results"] = fights;
+    Console.WriteLine(doc.ToJsonString());
+    return;
+}
+
 int ascension = int.Parse(args[0]);
 var results = new List<object>();
 foreach (string seed in args.Skip(1))
