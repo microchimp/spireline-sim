@@ -6366,7 +6366,7 @@ public static class CardEffects
 
                 // `Soul.Create`, not `Soul.CreateInHand` -- a live capture put all nine in
                 // the DRAW pile.
-                AddSoulsToDrawPile(state, x, upgraded);
+                AddSoulsToDrawPile(state, x, upgraded, rng);
                 return true;
             }
             case "NecroMastery":
@@ -6653,7 +6653,7 @@ public static class CardEffects
                 // `PreviewCardPileAdd(` and this card's only other effect is written INSIDE
                 // that call. The live capture caught it as a draw pile one card short.
                 GainBlock(state, Blk(def, upgraded, card), rng);
-                AddSoulsToDrawPile(state, 1, upgraded: false);
+                AddSoulsToDrawPile(state, 1, upgraded: false, rng);
                 return true;
             case "Graveblast":
                 // 4 damage upgrading by 2, then ONE card CHOSEN from the discard pile comes
@@ -6671,16 +6671,16 @@ public static class CardEffects
                 return true;
             case "Reave":
                 DealDamage(state, Dmg(state, def, upgraded, card));
-                AddSoulsToDrawPile(state, 1, upgraded);
+                AddSoulsToDrawPile(state, 1, upgraded, rng);
                 return true;
             case "Severance":
                 DealDamage(state, Dmg(state, def, upgraded, card));
-                AddSoulsToDrawPile(state, 1, false);
+                AddSoulsToDrawPile(state, 1, false, rng);
                 AddSoulToDiscard(state);
                 AddSoulToHand(state);
                 return true;
             case "GlimpseBeyond":
-                AddSoulsToDrawPile(state, upgraded ? 4 : 3, upgraded: false);
+                AddSoulsToDrawPile(state, upgraded ? 4 : 3, upgraded: false, rng);
                 return true;
             case "CaptureSpirit":
                 // `CreatureCmd.Damage(cardPlay.Target, ...)` with the damage var marked
@@ -6694,7 +6694,7 @@ public static class CardEffects
                     }
                 }
 
-                AddSoulsToDrawPile(state, upgraded ? 4 : 3, upgraded: false);
+                AddSoulsToDrawPile(state, upgraded ? 4 : 3, upgraded: false, rng);
                 return true;
             case "Eidolon":
             {
@@ -9471,11 +9471,22 @@ public static class CardEffects
         state.DiscardPile.Add(new CardInstance(446, false, Retain: retain));
     }
 
-    private static void AddSoulsToDrawPile(CombatState state, int count, bool upgraded)
+    /// <summary>
+    /// `Soul.Create` then `CardPileCmd.AddGeneratedCardsToCombat(souls, PileType.Draw, owner,
+    /// CardPilePosition.Random)` -- Capture Spirit, Dirge, Glimpse Beyond, Grave Warden,
+    /// Reave and Severance all pass Random. `CardPileCmd.Add` inserts each Soul in turn at
+    /// `Rng.Shuffle.NextInt(drawPile.Count + 1)`, one draw per card and the count read after
+    /// the previous insert, so the Souls are scattered and the Shuffle stream moves with them.
+    /// </summary>
+    private static void AddSoulsToDrawPile(CombatState state, int count, bool upgraded, Random rng)
     {
+        var placementRng = state.ShuffleRng ?? rng;
         for (int i = 0; i < count; i++)
         {
-            state.BottomDeck(new CardInstance(446, upgraded));
+            state.InsertIntoDrawPile(
+                placementRng.Next(state.DrawPile.Count + 1),
+                new CardInstance(446, upgraded)
+            );
             NoteGeneratedCard(state);
         }
     }
