@@ -3006,15 +3006,20 @@ public sealed class RunEngine
                     // opens a grid to keep one. The emulator used to pick a card itself,
                     // off the map-generation stream at that, which is neither the right
                     // choice nor the right stream.
-                    State.PendingOfferCards = RunRewardGenerator.GenerateEventOfferCards(
+                    // `CardFactory.CreateForReward` with `ForNonCombatWithDefaultOdds`: the
+                    // NoUpgradeRoll flag and nothing else. No IsCardReward, so Silver
+                    // Crucible stays out of it; the eggs, Wing Charm and Glitter do not.
+                    RunRewardGenerator.OpenRewardGrid(
                         State,
-                        RunConstants.BrainLeechCardChoices,
-                        RunRewardGenerator.OwnCardPool(State)
+                        RunRewardGenerator.CreateForReward(
+                            State,
+                            RunConstants.BrainLeechCardChoices,
+                            RunRewardGenerator.OwnCardPool(State),
+                            CardCreationFlags.NoUpgradeRoll
+                        ),
+                        picks: 1,
+                        hooked: true
                     );
-                    // ForNonCombatWithDefaultOdds carries NoUpgradeRoll: nothing is upgraded.
-                    State.PendingOfferUpgraded = new bool[State.PendingOfferCards.Length];
-                    State.PendingOfferPicks = 1;
-                    State.Phase = RunPhase.TransformSelect;
                     return 0;
                 }
                 else if (action == 1)
@@ -3027,17 +3032,22 @@ public sealed class RunEngine
                     State.RewardPotion = 0;
                     State.RelicReward = 0;
                     State.PendingPotionRewards.Clear();
-                    var offered = RunRewardGenerator.GenerateEventOfferCards(
-                        State,
-                        State.RewardCards.Length,
-                        GeneratedData.CardPools.Colorless
-                    );
-                    for (int i = 0; i < State.RewardCards.Length; i++)
-                    {
-                        State.RewardCards[i] = offered[i];
-                        State.RewardUpgraded[i] = false;
-                    }
-
+                    // A `CardReward` over the colourless pool: NoUpgradeRoll,
+                    // NoRarityModification and NoCardPoolModifications from the event and
+                    // IsCardReward from the reward itself -- so Silver Crucible upgrades the
+                    // three and the eggs and Wing Charm take their turn (real runs, e.g.
+                    // ABB6PCF77A: the Crucible's three arrived plain).
+                    RunRewardGenerator
+                        .CreateForReward(
+                            State,
+                            State.RewardCards.Length,
+                            GeneratedData.CardPools.Colorless,
+                            CardCreationFlags.NoUpgradeRoll
+                                | CardCreationFlags.NoRarityModification
+                                | CardCreationFlags.NoCardPoolModifications
+                                | CardCreationFlags.IsCardReward
+                        )
+                        .ShowOn(State);
                     State.RewardCardPending = true;
                     State.Phase = RunPhase.RelicReward;
                     return 0;
@@ -3853,15 +3863,20 @@ public sealed class RunEngine
                     // Gorge rolls eight Commons and opens a grid to keep two. Uniform
                     // odds with the pool filtered to Commons means no rarity roll at all,
                     // so each card is a single draw.
-                    State.PendingOfferCards = RunRewardGenerator.GenerateEventOfferCards(
+                    // NoUpgradeRoll and NoRarityModification, no IsCardReward: the eggs,
+                    // Wing Charm and Glitter reach the grid, Silver Crucible does not.
+                    RunRewardGenerator.OpenRewardGrid(
                         State,
-                        RunConstants.GorgeCardChoices,
-                        RunRewardGenerator.OwnCardPool(State),
-                        CardRarity.Common
+                        RunRewardGenerator.CreateForReward(
+                            State,
+                            RunConstants.GorgeCardChoices,
+                            RunRewardGenerator.OwnCardPool(State),
+                            CardCreationFlags.NoUpgradeRoll | CardCreationFlags.NoRarityModification,
+                            CardRarity.Common
+                        ),
+                        picks: RunConstants.GorgeCardsKept,
+                        hooked: true
                     );
-                    State.PendingOfferUpgraded = new bool[State.PendingOfferCards.Length];
-                    State.PendingOfferPicks = RunConstants.GorgeCardsKept;
-                    State.Phase = RunPhase.TransformSelect;
                     return 0;
                 }
                 else if (action == 1)
@@ -4917,8 +4932,24 @@ public sealed class RunEngine
             action < State.PendingOfferUpgraded.Length && State.PendingOfferUpgraded[action];
         RunNonCombatEffects.AddCardToDeck(
             State,
-            new CardInstance(State.PendingOfferCards[action], upgraded)
+            State.PendingOfferHooked
+                ? RunRewardGenerator.TakeFromRewardSet(
+                    State,
+                    State.PendingOfferCards[action],
+                    upgraded,
+                    action == State.PendingOfferSwiftIndex
+                )
+                : new CardInstance(State.PendingOfferCards[action], upgraded)
         );
+        if (action == State.PendingOfferSwiftIndex)
+        {
+            State.PendingOfferSwiftIndex = -1;
+        }
+        else if (action < State.PendingOfferSwiftIndex)
+        {
+            State.PendingOfferSwiftIndex--;
+        }
+
         State.PendingOfferCards = [.. State.PendingOfferCards.Where((_, index) => index != action)];
         State.PendingOfferUpgraded =
         [
@@ -4950,6 +4981,8 @@ public sealed class RunEngine
     {
         State.PendingOfferCards = [];
         State.PendingOfferUpgraded = [];
+        State.PendingOfferSwiftIndex = -1;
+        State.PendingOfferHooked = false;
         State.PendingOfferPicks = 0;
         State.PendingOfferOptional = false;
 
@@ -5145,10 +5178,15 @@ public sealed class RunEngine
                     relic = RunRewardGenerator.NextRelic(State, rng);
                     break;
                 case CrystalSphereItemKind.CardReward:
+                    // `CrystalSphereCardReward.ToReward`: Uniform odds over the pool
+                    // filtered to the rarity, the event's Rng as the override, no other flag
+                    // but the CardReward's own IsCardReward (so the pool may be widened).
                     offers.Add(
-                        RunRewardGenerator.GenerateFixedRarityCardOffer(
+                        RunRewardGenerator.CreateForReward(
                             State,
                             State.RewardCards.Length,
+                            RunRewardGenerator.OwnRewardPool(State, CardCreationFlags.IsCardReward),
+                            CardCreationFlags.IsCardReward,
                             (CardRarity)item.Rarity,
                             rng
                         )
@@ -5410,11 +5448,16 @@ public sealed class RunEngine
             return;
         }
 
-        int[] rolled = RunRewardGenerator.GenerateEventOfferCards(State, 1, pool.ToArray());
-        if (rolled.Length > 0)
-        {
-            RunNonCombatEffects.AddCardToDeck(State, new CardInstance(rolled[0], false));
-        }
+        RunRewardGenerator.AddRewardCardToDeck(
+            State,
+            RunRewardGenerator.CreateForReward(
+                State,
+                1,
+                pool.ToArray(),
+                CardCreationFlags.NoUpgradeRoll
+            ),
+            0
+        );
     }
 
     /// <summary>
@@ -5656,12 +5699,14 @@ public sealed class RunEngine
         Array.Clear(State.RewardUpgraded);
         var offers = new[] { CardRarity.Common, CardRarity.Uncommon, CardRarity.Rare }
             .Select(rarity =>
-                RunRewardGenerator.GenerateFixedRarityCardOffer(
+                RunRewardGenerator.CreateForReward(
                     State,
                     RunConstants.ColorfulPhilosophersCards,
-                    rarity,
-                    State.PlayerRng.Rewards,
-                    pool
+                    pool,
+                    CardCreationFlags.NoRarityModification
+                        | CardCreationFlags.NoCardPoolModifications
+                        | CardCreationFlags.IsCardReward,
+                    rarity
                 )
             )
             .ToList();

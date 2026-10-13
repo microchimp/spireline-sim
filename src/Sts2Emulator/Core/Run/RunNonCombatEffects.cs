@@ -2917,16 +2917,17 @@ public static class RunNonCombatEffects
                 AddCardToDeck(state, new CardInstance(NamedCard("FeedingFrenzy"), Upgraded: false));
                 break;
             case DishFriedEel:
-                AddCardToDeck(
+                // `CardFactory.CreateForReward(owner, 1, ForNonCombatWithDefaultOdds(Colorless))`
+                // and the card straight into the deck.
+                RunRewardGenerator.AddRewardCardToDeck(
                     state,
-                    new CardInstance(
-                        RunRewardGenerator.GenerateEventOfferCards(
-                            state,
-                            1,
-                            RunRewardGenerator.ColorlessRewardPool
-                        )[0],
-                        Upgraded: false
-                    )
+                    RunRewardGenerator.CreateForReward(
+                        state,
+                        1,
+                        RunRewardGenerator.ColorlessRewardPool,
+                        CardCreationFlags.NoUpgradeRoll
+                    ),
+                    0
                 );
                 break;
             case DishSpicySnappy:

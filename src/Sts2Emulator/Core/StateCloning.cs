@@ -469,6 +469,8 @@ public static class StateCloning
             BundleOffer = (int[])state.BundleOffer.Clone(),
             SelectedBundle = state.SelectedBundle,
             PendingOfferPicks = state.PendingOfferPicks,
+            PendingOfferSwiftIndex = state.PendingOfferSwiftIndex,
+            PendingOfferHooked = state.PendingOfferHooked,
             PendingOfferOptional = state.PendingOfferOptional,
             EventPage = state.EventPage,
             CrystalSphere = state.CrystalSphere?.Clone(),
@@ -486,7 +488,8 @@ public static class StateCloning
             [
                 .. state.PendingCardOffers.Select(offer => new CardOffer(
                     (int[])offer.Cards.Clone(),
-                    (bool[])offer.Upgraded.Clone()
+                    (bool[])offer.Upgraded.Clone(),
+                    offer.EnchantIndex
                 )),
             ],
             PendingSelectionFollowUpCard = state.PendingSelectionFollowUpCard,

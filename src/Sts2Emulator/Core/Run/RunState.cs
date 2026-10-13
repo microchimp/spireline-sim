@@ -142,17 +142,28 @@ public sealed record ActRooms(
 /// and from act 2 the roll can land (act index times <c>UpgradedCardOddScaling</c>). An
 /// offer carried as bare ids dropped what it rolled -- the stream was right and the card
 /// on the screen was not.
+///
+/// <para>
+/// <c>EnchantIndex</c> is the option Wing Charm enchanted (it picks one off <c>Rng.Niche</c> when
+/// the offer is made), or -1.
+/// </para>
 /// </remarks>
-public readonly record struct CardOffer(int[] Cards, bool[] Upgraded)
+public readonly record struct CardOffer(int[] Cards, bool[] Upgraded, int EnchantIndex = -1)
 {
     /// <summary>An offer that rolled no upgrades (<c>NoUpgradeRoll</c>, or none landed).</summary>
     public static CardOffer Plain(int[] cards) => new(cards, new bool[cards.Length]);
 
-    /// <summary>Put this offer on the card-reward screen.</summary>
+    /// <summary>
+    /// Put this offer on the card-reward screen. The screen's Wing Charm enchantment is the
+    /// offer's own: <see cref="EnchantIndex" /> is the option the relic picked when the offer was
+    /// made (-1 for none), so an earlier screen's pick cannot ride along onto this one.
+    /// </summary>
     public void ShowOn(RunState state)
     {
         Array.Clear(state.RewardCards);
         Array.Clear(state.RewardUpgraded);
+        state.RewardEnchantIndex = EnchantIndex;
+        state.RewardEnchantment = EnchantIndex >= 0 ? Enchantment.Swift : Enchantment.None;
         for (int i = 0; i < state.RewardCards.Length && i < Cards.Length; i++)
         {
             state.RewardCards[i] = Cards[i];
@@ -710,6 +721,18 @@ public sealed class RunState
     /// Sea Glass), and from act 2 some of those land.
     /// </summary>
     public bool[] PendingOfferUpgraded = [];
+
+    /// <summary>
+    /// The option of <see cref="PendingOfferCards" /> Wing Charm enchanted when the grid was made
+    /// (-1 for none). Kept in step as picked cards leave the grid.
+    /// </summary>
+    public int PendingOfferSwiftIndex = -1;
+
+    /// <summary>
+    /// The grid was made by <c>CardFactory.CreateForReward</c> with its hooks on, so the chosen
+    /// card arrives as the hooks left it (Glitter's Glam). A grid some relic builds by hand is not.
+    /// </summary>
+    public bool PendingOfferHooked;
 
     /// <summary>
     /// Scroll Boxes' two bundles, three card ids each, flat: bundle 0 then bundle 1.

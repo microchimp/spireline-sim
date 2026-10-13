@@ -2,7 +2,7 @@ using Sts2Emulator.Core.Rng;
 
 namespace Sts2Emulator.Core.Run;
 
-public static class RunRewardGenerator
+public static partial class RunRewardGenerator
 {
     private const int RarityCommon = 1;
     private const int RarityUncommon = 2;
