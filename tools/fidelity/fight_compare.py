@@ -116,6 +116,24 @@ def diff(a, b, path="") -> list:
     return [] if a == b else [(path, a, b)]
 
 
+def report(g: dict, e: dict, nm: dict) -> tuple[list, int | None]:
+    """One fight's lines of the comparison main prints, and the index of its first differing step
+    (None when every compared step matches). batch.py calls it per fight as fights finish."""
+    lines = []
+    for side, doc in (("game", g), ("emulator", e)):
+        if doc.get("error"):
+            lines.append(f"{g.get('seed')}: {side} error: {doc['error'][:400]}")
+    steps = list(zip(g.get("steps", []), e.get("steps", [])))
+    for i, (gs, es) in enumerate(steps):
+        d = diff(game_view(gs["state"]), emu_view(es["state"], nm))
+        if d:
+            lines.append(f"{g.get('seed')}: first difference at step {i} after {gs['action']}")
+            lines += [f"    {path}: game {x}  emulator {y}" for path, x, y in d[:12]]
+            return lines, i
+    lines.append(f"{g.get('seed')}: {len(steps)} steps identical (game {len(g.get('steps', []))}, emulator {len(e.get('steps', []))})")
+    return lines, None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("referee")
@@ -127,24 +145,10 @@ def main() -> int:
     emus = json.load(open(a.emulator, encoding="utf-8"))["results"]
     bad = 0
     for g, e in zip(games, emus):
-        for side, doc in (("game", g), ("emulator", e)):
-            if doc.get("error"):
-                print(f"{g.get('seed')}: {side} error: {doc['error'][:400]}")
-        steps = list(zip(g.get("steps", []), e.get("steps", [])))
-        first = None
-        for i, (gs, es) in enumerate(steps):
-            d = diff(game_view(gs["state"]), emu_view(es["state"], nm))
-            if d:
-                first = (i, gs["action"], d)
-                break
-        if first is None:
-            print(f"{g['seed']}: {len(steps)} steps identical (game {len(g.get('steps', []))}, emulator {len(e.get('steps', []))})")
-        else:
-            bad += 1
-            i, act, d = first
-            print(f"{g['seed']}: first difference at step {i} after {act}")
-            for path, x, y in d[:12]:
-                print(f"    {path}: game {x}  emulator {y}")
+        lines, first = report(g, e, nm)
+        for line in lines:
+            print(line)
+        bad += first is not None
     return 0 if not bad else 1
 
 
