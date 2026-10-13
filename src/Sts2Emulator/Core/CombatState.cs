@@ -187,13 +187,6 @@ public sealed class CombatState
     public int Stars;
 
     /// <summary>
-    /// Energy spent since Orbit was played, for `OrbitPower`'s every-fourth payout. Its
-    /// own counter rather than `EnergySpentThisTurn` because the game's is per POWER
-    /// INSTANCE and cumulative over the combat, not per turn.
-    /// </summary>
-    public int OrbitEnergySpent;
-
-    /// <summary>
     /// Each enemy's Strangle amount as it stood BEFORE the current card resolved, so a
     /// card that applies or stacks Strangle does not make the enemy pay for itself.
     /// </summary>
@@ -400,13 +393,6 @@ public sealed class CombatState
     public int PlayedCardCostBump;
 
     /// <summary>
-    /// The block a Toric Toughness will hand back when block clears. The power's own
-    /// `Amount` is the TURN COUNT -- the game keeps the block in a `BlockVar` set by
-    /// `SetBlock`, because the counter slot is taken.
-    /// </summary>
-    public int ToricToughnessBlock;
-
-    /// <summary>
     /// The run's <c>combat_energy_costs</c> stream, which Slither re-rolls its cost from
     /// every time it is drawn. Null falls back to the combat rng, as the other streams do.
     /// </summary>
@@ -447,7 +433,6 @@ public sealed class CombatState
 
     public CardInstance? LastAttackOrSkillLastTurn;
     public int CardsPlayedThisCombat;
-    public int DrawnCardsSinceAutomationProc;
 
     /// <summary>
     /// Every card drawn this combat. Murder's damage is one per entry —
@@ -502,7 +487,6 @@ public sealed class CombatState
     /// stream for everything after it.
     /// </remarks>
     public int AutoPlayTargetIndex = -1;
-    public int CardsPlayedSincePanacheProc;
     public int BlockGainsThisTurn;
     public int PlayerHpLostThisTurn;
     public int CardsExhaustedThisTurn;

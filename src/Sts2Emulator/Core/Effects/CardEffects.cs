@@ -1281,7 +1281,14 @@ public static class CardEffects
                 break;
 
             case CL.Panache: // 0-cost, every five played cards deal 10/14 to ALL
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.PanachePower, upgraded ? 14 : 10);
+                // Instanced: each play is its own counter. Data -1 is `alreadyApplied` false --
+                // the play that applied it is still resolving and must not count towards it.
+                BuffSystem.Apply(
+                    state.PlayerBuffs,
+                    BuffId.PanachePower,
+                    upgraded ? 14 : 10,
+                    PanacheJustApplied
+                );
                 break;
 
             case CL.PrepTime: // 1-cost, gain 4/6 Vigor each turn
@@ -3508,19 +3515,38 @@ public static class CardEffects
         }
     }
 
+    /// <summary>
+    /// <c>AutomationPower.AfterCardDrawn</c>, once per INSTANCE: each counts the card against
+    /// its own ten (<c>Data</c> counts up from zero; the game's <c>cardsLeft</c> is ten minus
+    /// it) and pays its own <c>Amount</c> in energy when the ten are drawn, then starts over.
+    /// A second Automation is a second counter that began when it was played.
+    /// </summary>
+    /// <summary>
+    /// <c>PanachePower</c>'s <c>Data</c> while its own first <c>AfterCardPlayed</c> is still to
+    /// come: the game's internal <c>alreadyApplied</c> flag being false. Every other value is the
+    /// cards counted towards the five so far (the game's <c>CardsLeft</c> is five minus it),
+    /// so a Panache built without a Data -- the live game's snapshot -- is armed with none counted.
+    /// </summary>
+    internal const int PanacheJustApplied = -1;
+
     private static void CountDrawnCardForAutomation(CombatState state)
     {
-        int automation = BuffSystem.Get(state.PlayerBuffs, BuffId.AutomationPower);
-        if (automation <= 0)
+        var buffs = state.PlayerBuffs;
+        for (int i = 0; i < buffs.Count; i++)
         {
-            return;
-        }
+            if (buffs[i].Id != BuffId.AutomationPower)
+            {
+                continue;
+            }
 
-        state.DrawnCardsSinceAutomationProc++;
-        if (state.DrawnCardsSinceAutomationProc >= 10)
-        {
-            state.DrawnCardsSinceAutomationProc = 0;
-            GainEnergy(state, automation);
+            int drawn = buffs[i].Data + 1;
+            if (drawn >= 10)
+            {
+                drawn = 0;
+                GainEnergy(state, buffs[i].Magnitude);
+            }
+
+            buffs[i] = buffs[i] with { Data = drawn };
         }
     }
 
@@ -5155,24 +5181,34 @@ public static class CardEffects
     /// the cost is paid and therefore BEFORE the card's own effect resolves. So an Orbit
     /// payout can hand energy back in time for the card that triggered it to be paid for.
     ///
-    /// `OrbitPower` is the only listener. `triggers = spent / 4 - triggerCount` in the
-    /// game, which after every call leaves triggerCount equal to spent / 4 -- so the
-    /// crossings can be counted from the running total alone.
+    /// `OrbitPower` is the only listener, and it is Instanced: every instance keeps its own
+    /// running total of the energy spent since IT was played (<c>Data</c>) and pays its own
+    /// <c>Amount</c> per four. `triggers = spent / 4 - triggerCount` in the game, which after
+    /// every call leaves triggerCount equal to spent / 4 -- so the crossings can be counted
+    /// from the running total alone.
     /// </summary>
     public static void ApplyAfterEnergySpent(CombatState state, int amount)
     {
-        int orbit = BuffSystem.Get(state.PlayerBuffs, BuffId.Orbit);
-        if (orbit <= 0 || amount <= 0)
+        if (amount <= 0)
         {
             return;
         }
 
-        int before = state.OrbitEnergySpent / 4;
-        state.OrbitEnergySpent += amount;
-        int triggers = state.OrbitEnergySpent / 4 - before;
-        if (triggers > 0)
+        var buffs = state.PlayerBuffs;
+        for (int i = 0; i < buffs.Count; i++)
         {
-            GainEnergy(state, orbit * triggers);
+            if (buffs[i].Id != BuffId.Orbit)
+            {
+                continue;
+            }
+
+            int spent = buffs[i].Data;
+            int triggers = (spent + amount) / 4 - spent / 4;
+            buffs[i] = buffs[i] with { Data = spent + amount };
+            if (triggers > 0)
+            {
+                GainEnergy(state, buffs[i].Magnitude * triggers);
+            }
         }
     }
 
@@ -6792,9 +6828,8 @@ public static class CardEffects
             case "DeathMarch":
                 // CalculationBase 8 (upgrades by 1) plus ExtraDamage 4 (upgrades by 2) per
                 // `CardDrawnEntry` this turn with `!FromHandDraw` -- the cards drawn on top
-                // of the opening hand. The emulator counted `DrawnCardsSinceAutomationProc`,
-                // which is Automation's own counter and resets when Automation fires, and
-                // never upgraded the base.
+                // of the opening hand. The emulator counted Automation's own draw counter,
+                // which resets when Automation fires, and never upgraded the base.
                 DealDamage(
                     state,
                     DmgFrom(
@@ -7646,15 +7681,16 @@ public static class CardEffects
                 // 5 block now, AND `ToricToughnessPower(2)` -- for the next two turns, the
                 // same amount again when block clears. The power half was missing, which is
                 // most of a 2-cost card. `SetBlock` records what was GAINED, so the repeats
-                // match the first grant rather than the printed five.
+                // match the first grant rather than the printed five. The power is
+                // Instanced: this play's block rides on this play's instance (its Data), so
+                // a second play neither adds turns to the first nor changes its block.
                 //
                 // Its own arm, ABOVE the stack: splitting a label out of a stack leaves the
                 // labels above it falling into whatever body replaced theirs, which is how
                 // Lift, Rally and The Gambit briefly started handing out Toric Toughness.
                 {
                     int toric = GainBlock(state, Blk(def, upgraded, card), rng);
-                    BuffSystem.Apply(state.PlayerBuffs, BuffId.ToricToughness, 2);
-                    state.ToricToughnessBlock = toric;
+                    BuffSystem.Apply(state.PlayerBuffs, BuffId.ToricToughness, 2, toric);
                 }
 
                 return true;

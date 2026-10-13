@@ -1565,7 +1565,7 @@ VERIFIED: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
         "PanachePower": (
             "af3f5b2a33cb",
             {
-                "timing": "the per-turn count is CombatState.CardsPlayedSincePanacheProc, reset at the player's turn end (fixed on this branch)",
+                "timing": "the per-turn count is each instance's BuffState.Data, reset at the player's turn end (CombatEngine.CountPlayedCardForPanache)",
             },
         ),
         "RupturePower": (

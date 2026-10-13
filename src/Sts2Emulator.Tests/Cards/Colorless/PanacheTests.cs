@@ -42,9 +42,9 @@ public class PanacheTests
     /// <summary>
     /// FIVE cards played, then ten damage to everything. `PanachePower.DisplayAmount`
     /// counts DOWN from five while the power's amount is the DAMAGE, so a capture can
-    /// only assert the power is there -- the live number is the complement of
-    /// `CombatState.CardsPlayedSincePanacheProc`. Presence-only in the generator, counted
-    /// here.
+    /// only assert the power is there -- the live number is the complement of the
+    /// instance's `Data` (the cards counted so far). Presence-only in the generator,
+    /// counted here.
     /// </summary>
     [Fact]
     public void TheDamageLandsOnTheFifthCardPlayed()

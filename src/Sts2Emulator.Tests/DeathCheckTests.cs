@@ -534,9 +534,7 @@ public class AfterPlayDeathTests
         var phrog = fight.State.Enemies[0];
         phrog.Hp = 5;
         phrog.Block = 0;
-        fight.PlayerBuff(BuffId.PanachePower, 10);
-        fight.PlayerBuff(BuffId.PanacheArmed, 1);
-        fight.State.CardsPlayedSincePanacheProc = 4;
+        fight.PlayerBuff(BuffId.PanachePower, 10, data: 4); // four counted: the next card is the fifth
         fight.State.Hand = [Card(IC.DefendIronclad)];
         fight.State.Energy = 1;
 

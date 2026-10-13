@@ -335,11 +335,11 @@ public static class CombatEngine
 
         int serpentFormBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.SerpentForm);
 
-        // `MonologuePower.BeforeCardPlayed` records the power's amount for THIS card, and
-        // AfterCardPlayed pays what was recorded. Snapshotted for the same reason Oblivion's
-        // is: the power does not exist yet while the card that applies it is resolving, so
-        // Monologue never pays for its own play.
-        int monologueBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.Monologue);
+        // `MonologuePower.BeforeCardPlayed` records the power's Strength for THIS card, in each
+        // instance, and AfterCardPlayed pays what was recorded. Counted for the same reason
+        // Oblivion's is snapshotted: an instance does not exist yet while the card that applies
+        // it is resolving, so no Monologue pays for the play that made it.
+        int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);
 
         // `OblivionPower.BeforeCardPlayed` writes the current amount into a per-card
         // dictionary, and AfterCardPlayed spends THAT. Snapshotted here for the same
@@ -715,14 +715,7 @@ public static class CombatEngine
             }
         }
 
-        // `MonologuePower.AfterCardPlayed`: pay the amount recorded before the play, and
-        // remember the running total -- it is both what the game DISPLAYS for the power and
-        // what it takes back at the end of the turn.
-        if (monologueBefore > 0)
-        {
-            Effects.RelicEffects.GainPlayerStrength(state, monologueBefore);
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.MonologueApplied, monologueBefore);
-        }
+        PayMonologue(state, monologueBefore);
 
         // `DevourLifePower.AfterCardPlayed`: the card played being a SOUL summons Osty for
         // its amount.
@@ -930,9 +923,10 @@ public static class CombatEngine
         // could be taxed, which made the debuff do nothing at all.
         BuffSystem.Remove(state.PlayerBuffs, BuffId.Tangled);
 
-        // `PanachePower.AfterSideTurnEnd` puts `CardsLeft` back to five: the count towards
-        // its burst is per turn, and three cards one turn and two the next are not five.
-        state.CardsPlayedSincePanacheProc = 0;
+        // `PanachePower.AfterSideTurnEnd` puts `CardsLeft` back to five, in every instance: the
+        // count towards its burst is per turn, and three cards one turn and two the next are
+        // not five.
+        ResetPanacheCounts(state);
 
         // `TenderPower.AfterSideTurnEnd` returns the whole turn's tax at once. The power
         // itself stays -- it is a Counter that lasts the combat, and only what it took
@@ -1126,16 +1120,7 @@ public static class CombatEngine
         // ends, so the tax lands on the turn it was taken out and no later.
         BuffSystem.Remove(state.PlayerBuffs, BuffId.BorrowedTime);
 
-        // `MonologuePower.AfterSideTurnEnd`: the power goes AND the Strength it handed out
-        // goes with it, which is why the running total has to be kept rather than recomputed.
-        int monologueApplied = BuffSystem.Get(state.PlayerBuffs, BuffId.MonologueApplied);
-        if (monologueApplied != 0)
-        {
-            Effects.RelicEffects.GainPlayerStrength(state, -monologueApplied);
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.MonologueApplied);
-        }
-
-        BuffSystem.Remove(state.PlayerBuffs, BuffId.Monologue);
+        EndMonologue(state);
 
         // `IAmInvincible.AfterAutoPostPlayPhaseEntered`: if the card is sitting on TOP of
         // the draw pile as the play phase ends, it plays ITSELF --
@@ -1634,14 +1619,10 @@ public static class CombatEngine
         // Gating it on the block clear cost a Barricade run the Rouge's Strength and
         // Dexterity (seen live: Dexterity 1 -> 2 on turn three, predicted 1).
         //
-        // `ToricToughnessPower.AfterBlockCleared`: the block comes straight back, and the
-        // counter -- which is TURNS, not an amount -- ticks down.
-        int toric = BuffSystem.Get(state.PlayerBuffs, BuffId.ToricToughness);
-        if (toric > 0)
-        {
-            Effects.CardEffects.GainUnpoweredBlock(state, state.ToricToughnessBlock, rng);
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.ToricToughness, -1);
-        }
+        // `ToricToughnessPower.AfterBlockCleared`, once per INSTANCE, oldest first: the
+        // instance's own block comes straight back, and its counter -- which is TURNS, not an
+        // amount -- ticks down and removes it at zero.
+        TickToricToughness(state, rng);
 
         // Sparkling Rouge answers the same hook, on turn three only.
         Effects.RelicEffects.ApplyAfterBlockCleared(state, state.Turn + 1);
@@ -4872,29 +4853,7 @@ public static class CombatEngine
             }
         }
 
-        int panache = BuffSystem.Get(state.PlayerBuffs, BuffId.PanachePower);
-        if (panache > 0)
-        {
-            // `PanachePower`'s internal `alreadyApplied` flag, whose comment in the game
-            // says why it exists: "We track this so we don't count the Panache card
-            // towards itself." `AfterCardPlayed` fires for the play that APPLIED the
-            // power, and the counter only starts on the play after it -- so the damage
-            // lands on the fifth card played AFTER Panache, not on the fourth.
-            if (BuffSystem.Get(state.PlayerBuffs, BuffId.PanacheArmed) <= 0)
-            {
-                // Arm it and count nothing: this IS the play that applied the power.
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.PanacheArmed, 1);
-            }
-            else
-            {
-                state.CardsPlayedSincePanacheProc++;
-                if (state.CardsPlayedSincePanacheProc >= 5)
-                {
-                    state.CardsPlayedSincePanacheProc = 0;
-                    Effects.CardEffects.DealUnpoweredDamageToAll(state, panache);
-                }
-            }
-        }
+        CountPlayedCardForPanache(state);
 
         // `AfterimagePower` records its amount in `BeforeCardPlayed` and spends THAT in
         // `AfterCardPlayed` -- the comment on its internal Data says so outright: "avoid
@@ -5370,6 +5329,142 @@ public static class CombatEngine
 
         Effects.CardEffects.GainUnpoweredBlock(state, blockNextTurn, rng);
         BuffSystem.Remove(state.PlayerBuffs, BuffId.BlockNextTurn);
+    }
+
+    /// <summary>
+    /// <c>PanachePower.AfterCardPlayed</c>, once per INSTANCE, oldest first. An instance is
+    /// armed by the first play it sees -- the game's <c>alreadyApplied</c>, whose comment says
+    /// why: "We track this so we don't count the Panache card towards itself" -- so its burst
+    /// lands on the fifth card played AFTER it, not on the fourth. From then on it counts every
+    /// card the player plays towards its own five and, on the fifth, deals its own <c>Amount</c>
+    /// to every hittable enemy as Unpowered damage and starts over. A second Panache is a second
+    /// counter, so it does not borrow the first one's count.
+    /// </summary>
+    private static void CountPlayedCardForPanache(CombatState state)
+    {
+        var buffs = state.PlayerBuffs;
+        int k = 0;
+        for (int i; (i = BuffSystem.InstanceIndex(buffs, BuffId.PanachePower, k)) >= 0; k++)
+        {
+            var panache = buffs[i];
+            if (panache.Data == Effects.CardEffects.PanacheJustApplied)
+            {
+                // Arm it and count nothing: this IS the play that applied the power.
+                buffs[i] = panache with { Data = 0 };
+                continue;
+            }
+
+            if (panache.Data + 1 < 5)
+            {
+                buffs[i] = panache with { Data = panache.Data + 1 };
+                continue;
+            }
+
+            // The count is reset before the blow lands: a kill that pays Strength can change
+            // the list, and the instance is not looked up again.
+            buffs[i] = panache with { Data = 0 };
+            Effects.CardEffects.DealUnpoweredDamageToAll(state, panache.Magnitude);
+        }
+    }
+
+    /// <summary>
+    /// <c>PanachePower.AfterSideTurnEnd</c>: every instance's <c>CardsLeft</c> back to five. An
+    /// instance still waiting for the play that applied it keeps waiting.
+    /// </summary>
+    private static void ResetPanacheCounts(CombatState state)
+    {
+        var buffs = state.PlayerBuffs;
+        for (int i = 0; i < buffs.Count; i++)
+        {
+            if (
+                buffs[i].Id == BuffId.PanachePower
+                && buffs[i].Data != Effects.CardEffects.PanacheJustApplied
+            )
+            {
+                buffs[i] = buffs[i] with { Data = 0 };
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>MonologuePower.AfterCardPlayed</c> for the first <paramref name="existed" />
+    /// instances: each pays the Strength it recorded in <c>BeforeCardPlayed</c> -- its
+    /// <c>Strength</c> var, the card's <c>Power</c> of 1 -- as an application of its own, and
+    /// adds it to its running <c>StrengthApplied</c> (<c>Data</c>), which is both what the game
+    /// DISPLAYS for the power and what it takes back when the turn ends. Instances made by this
+    /// very play never recorded it and pay nothing, so a second Monologue pays only through the
+    /// first one on the turn it is played.
+    /// </summary>
+    private static void PayMonologue(CombatState state, int existed)
+    {
+        var buffs = state.PlayerBuffs;
+        for (int k = 0; k < existed; k++)
+        {
+            Effects.RelicEffects.GainPlayerStrength(state, MonologueStrengthPerCard);
+
+            // Looked up after the gain: it can add or drop the Strength entry before this one.
+            int i = BuffSystem.InstanceIndex(buffs, BuffId.Monologue, k);
+            if (i >= 0)
+            {
+                buffs[i] = buffs[i] with { Data = buffs[i].Data + MonologueStrengthPerCard };
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>Monologue.OnPlay</c> sets the power's <c>Strength</c> var to the card's <c>Power</c> var,
+    /// which is 1 and has no upgrade (the upgrade adds Retain).
+    /// </summary>
+    private const int MonologueStrengthPerCard = 1;
+
+    /// <summary>
+    /// <c>MonologuePower.AfterSideTurnEnd</c>, for each instance: the power goes AND the Strength
+    /// it handed out goes with it, as a separate application of its own.
+    /// </summary>
+    private static void EndMonologue(CombatState state)
+    {
+        var buffs = state.PlayerBuffs;
+        for (int i; (i = BuffSystem.InstanceIndex(buffs, BuffId.Monologue, 0)) >= 0; )
+        {
+            int handedOut = buffs[i].Data;
+            buffs.RemoveAt(i);
+            if (handedOut != 0)
+            {
+                Effects.RelicEffects.GainPlayerStrength(state, -handedOut);
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>ToricToughnessPower.AfterBlockCleared</c> for each instance, oldest first. Each grants
+    /// its own <c>Data</c> as Unpowered block and then <c>PowerCmd.Decrement</c>s itself, which
+    /// removes it when the turns run out.
+    /// </summary>
+    private static void TickToricToughness(CombatState state, Random rng)
+    {
+        var buffs = state.PlayerBuffs;
+        int k = 0;
+        for (int i; (i = BuffSystem.InstanceIndex(buffs, BuffId.ToricToughness, k)) >= 0; )
+        {
+            Effects.CardEffects.GainUnpoweredBlock(state, buffs[i].Data, rng);
+
+            // Found again by ordinal: the block gain can add or drop OTHER entries.
+            int gained = BuffSystem.InstanceIndex(buffs, BuffId.ToricToughness, k);
+            if (gained < 0)
+            {
+                continue;
+            }
+
+            if (buffs[gained].Magnitude > 1)
+            {
+                buffs[gained] = buffs[gained] with { Magnitude = buffs[gained].Magnitude - 1 };
+                k++;
+            }
+            else
+            {
+                buffs.RemoveAt(gained);
+            }
+        }
     }
 
     /// <summary>

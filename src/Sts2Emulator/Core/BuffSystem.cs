@@ -18,8 +18,16 @@ public static class BuffSystem
     /// what makes <c>Apply</c> append, so a reader that still calls <see cref="Get" /> (first
     /// instance only) must change in the same commit. <c>InstancedPerApplier</c> (Oblivion,
     /// Strangle) is not here: a lone player is the only applier, and one instance per applier
-    /// is then the stack. The rest of the game's Instanced powers -- Covered, Flanking,
-    /// Guarded, Heist, MagicBomb, Thievery -- are not modelled as buffs.
+    /// is then the stack.
+    ///
+    /// The game's other Instanced powers are not listed. Covered, Flanking and Guarded come from
+    /// multiplayer-only cards; Heist, MagicBomb and Thievery are not modelled as buffs; Swipe,
+    /// Sandpit and Withering Presence are put on once per fight by the monster that owns them.
+    ///
+    /// The counters an instance keeps for itself -- Toric Toughness's block, how many cards an
+    /// Automation or a Panache has counted, how much energy an Orbit has seen, how much Strength
+    /// a Monologue has handed out -- are its <c>Data</c>, which counts UP from zero so that an
+    /// instance built without it (a snapshot of the live game) starts where a new one does.
     /// </remarks>
     public static bool IsInstanced(BuffId id) =>
         id
@@ -27,7 +35,12 @@ public static class BuffSystem
                 or BuffId.Knockdown
                 or BuffId.TagTeam
                 or BuffId.RollingBoulderPower
-                or BuffId.Nightmare;
+                or BuffId.Nightmare
+                or BuffId.ToricToughness
+                or BuffId.AutomationPower
+                or BuffId.Orbit
+                or BuffId.PanachePower
+                or BuffId.Monologue;
 
     /// <summary>
     /// Index of the <paramref name="k" />-th (from 0, oldest first) instance of an
@@ -46,6 +59,21 @@ public static class BuffSystem
         }
 
         return -1;
+    }
+
+    /// <summary>How many instances of an <see cref="IsInstanced" /> power are on the list.</summary>
+    public static int InstanceCount(List<BuffState> buffs, BuffId id)
+    {
+        int count = 0;
+        for (int i = 0; i < buffs.Count; i++)
+        {
+            if (buffs[i].Id == id)
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     /// <param name="data">The instance's second number; only an Instanced power keeps one.</param>
