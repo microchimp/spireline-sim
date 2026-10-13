@@ -436,7 +436,7 @@ static class Reanchor
         var o = new JsonObject { ["in_combat"] = inCombat, ["run_phase"] = inCombat ? "Combat" : "Over" };
         if (!inCombat) return o;
         JsonNode Card(CardInstance x) => new JsonObject { ["def_id"] = x.DefId, ["upgraded"] = x.Upgraded };
-        JsonNode Buffs(List<BuffState> bs) => new JsonArray(bs.Select(b => (JsonNode)new JsonObject { ["id"] = (int)b.Id, ["name"] = b.Id.ToString(), ["amount"] = b.Magnitude }).ToArray());
+        JsonNode Buffs(List<BuffState> bs) => new JsonArray(bs.Select(b => (JsonNode)new JsonObject { ["id"] = (int)b.Id, ["name"] = b.Id.ToString(), ["amount"] = b.Magnitude, ["data"] = b.Data }).ToArray());
         o["snapshot"] = new JsonObject
         {
             ["player"] = new JsonObject
