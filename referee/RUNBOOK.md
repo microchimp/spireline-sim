@@ -41,8 +41,38 @@ Shortcut for steps 1-4: `python referee/batch.py --name <name> --fights 100 --st
    - Add or adjust an xunit test in `src/Sts2Emulator.Tests` that fails before and passes after.
    - Re-run the failing fights; the fix must make them identical.
 7. **Gate and push**: `BASELINE_FAILURES=/d/spireline/logs/baseline-python-failures.txt bash tools/build_and_test.sh /d/spireline/logs/fork-$(date +%Y%m%d-%H%M%S) /d/spireline/src/sts2/.venv/Scripts/python.exe`.
-   Push only if C# shows `Failed: 0` and Python has no failures beyond the baseline (the deckfights stall test is a known 1-in-3 timing flake). Commit message: what diverged, the game class it was checked against, the fights that now match, ending with the attribution line the session gives. Then `git push origin main`.
+   Push only if C# shows `Failed: 0`, Python has no failures beyond the baseline (the deckfights stall test is a known 1-in-3 timing flake)
+   and `corpus_check_exit` is `0`: no recorded fight regressed (section "Recorded-fight corpus" below; `5-corpus-check.log` lists any). Commit message: what diverged, the game class it was checked against, the fights that now match, ending with the attribution line the session gives. Then `git push origin main`.
 8. Log every finding in `referee/FINDINGS.md` (one line: date, seed, step, cause, fix commit or "open").
+
+## Recorded-fight corpus (regression gate)
+
+Every fight ever recorded is test data. `tools/fidelity/corpus.py` keeps each one once (local only, `D:\spireline\referee\corpus`,
+never committed) and replays all of them against the current emulator:
+
+```
+python tools/fidelity/corpus.py build                 # scan every jobs/*.out.json (also done by run/check/baseline)
+python tools/fidelity/corpus.py add <out.json> [...]  # a recording kept anywhere else
+python tools/fidelity/corpus.py check [--procs 16]    # replay all, compare with the baseline; exit 1 on a regression
+python tools/fidelity/corpus.py baseline              # on main, after a fix is merged: accept the current results
+python tools/fidelity/corpus.py status                # size, formats, flags, baselines
+```
+
+- Dedup: by spec (seed, character, ascension, Neow pick, deck additions, room) plus the game's steps and choices, so a
+  fight in a shard, a wave and the merged file is one entry with all its sources. Only the game side is stored.
+- Tags: game build (sts2.dll sha256), recording format (1: choices not tied to a step; 2: choices carry their step;
+  3: refused plays recorded, fork 732aacc). A format 1-2 fight with a RandomEnemy card play is flagged
+  `driver-artifact-risk` (the driver aimed it and the game refused it unrecorded); it stays in the gate.
+- `run` (and `check`, `baseline`) first picks up new or changed `jobs/*.out.json`, then runs `EmuDump fight` and
+  `reanchor` split across processes and writes `corpus/runs/<time>-<commit>/results.json`: per fight, identical or the
+  first divergence (step, field, card), and one re-anchored verdict per step (`M` match, `D` diverge, `E` error,
+  `U` unjudged, `-` not re-anchored).
+- `check` compares with `corpus/baselines/<commit>.json` of this commit or its nearest ancestor. REGRESSIONS: a fight whose
+  plain replay diverges earlier than before (identical before included), or a re-anchored step that matched and no
+  longer does. IMPROVEMENTS: the reverse. New fights without a baseline are counted, never a failure.
+- A regression is a bug in the change unless the old match was luck (two wrongs cancelling): then say so in the commit
+  and store a new baseline after the merge. A baseline needs a committed emulator and a fresh EmuDump build.
+- `tools/build_and_test.sh` builds EmuDump and runs `check` as its last step (`corpus_check_exit`, `CORPUS_CHECK=0` skips).
 
 ## Rules
 

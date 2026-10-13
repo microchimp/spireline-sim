@@ -4,7 +4,7 @@
 #
 #   bash tools/build_and_test.sh <log dir> <python with the upstream lock installed>
 #
-# Writes 1-restore.log .. 4-python-test.log and results.json to the log dir. The Python suite
+# Writes 1-restore.log .. 5-corpus-check.log and results.json to the log dir. The Python suite
 # is compared against the reviewed b745217 baseline: on Windows ~60 upstream tests fail on
 # POSIX-only process code (os.nice, os.killpg, ...), so "pass" means no NEW failures.
 set -u -o pipefail
@@ -46,10 +46,24 @@ if [ -f "$LOG/4-python-test.log" ] && [ -n "${BASELINE_FAILURES:-}" ]; then
   newfail=$(comm -23 "$LOG/python-failures.txt" "$BASELINE_FAILURES" | wc -l | tr -d ' ')
 fi
 pyran=$(grep -E '^Ran [0-9]+ tests' "$LOG/4-python-test.log" 2>/dev/null | tail -1)
+# The recorded-fight corpus (tools/fidelity/corpus.py, referee/RUNBOOK.md): every fight ever recorded
+# in the game, replayed by this build and compared with the stored baseline; exit 1 lists the
+# regressions. Skipped when this PC has no corpus, or with CORPUS_CHECK=0.
+r5=skipped; corpus_line=""
+CORPUS_DIR="${SPIRELINE_CORPUS:-/d/spireline/referee/corpus}"
+if [ "${CORPUS_CHECK:-1}" != 0 ] && [ -f "$CORPUS_DIR/index.json" ]; then
+  if dotnet build tools/emudump/EmuDump.csproj -c Release --source "$CACHE" > "$LOG/5-corpus-check.log" 2>&1; then
+    "$PY" tools/fidelity/corpus.py --corpus "$CORPUS_DIR" check --procs "${CORPUS_PROCS:-16}" >> "$LOG/5-corpus-check.log" 2>&1; r5=$?
+  else
+    r5=build-failed
+  fi
+  corpus_line=$(grep -E '^check: ' "$LOG/5-corpus-check.log" | tail -1 | tr -d '"\\')
+fi
 cat > "$LOG/results.json" <<EOF
 {"commit": "$(git rev-parse HEAD)", "tree": "$(git rev-parse 'HEAD^{tree}')", "dotnet_sdk": "$(dotnet --version)",
  "restore_exit": [$r1, $r1b], "publish_exit": $r2, "native_lib_sha256": "$sha",
  "dotnet_test_exit": $r3, "tests_csharp": "$cs",
- "python_test_exit": "$r4", "tests_python": "$pyran / $pyline", "python_new_failures_vs_baseline": "$newfail", "minutes": $(( ($(date +%s) - t0) / 60 ))}
+ "python_test_exit": "$r4", "tests_python": "$pyran / $pyline", "python_new_failures_vs_baseline": "$newfail",
+ "corpus_check_exit": "$r5", "corpus_check": "$corpus_line", "minutes": $(( ($(date +%s) - t0) / 60 ))}
 EOF
 cat "$LOG/results.json"
