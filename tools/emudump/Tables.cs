@@ -1,0 +1,140 @@
+// `EmuDump tables`: the emulator's content tables (pool orders, rarities, costs, act encounter
+// pools, Neow's option list) as JSON, for tools/fidelity/table_check.py. Read-only.
+using System.Text.Json.Nodes;
+using Sts2Emulator.Core;
+using Sts2Emulator.Core.Run;
+using Sts2Emulator.GeneratedData;
+
+static class Tables
+{
+    static JsonArray Arr(IEnumerable<string> xs) => new(xs.Select(x => (JsonNode)x).ToArray());
+
+    static string CardEntry(int id) => Cards.Get(Math.Abs(id)).Entry;
+    static string RelicEntry(int id) => Relics.Get(id).Entry;
+
+    static string Snake(string s) =>
+        string.Concat(s.Select((c, i) => i > 0 && char.IsUpper(c) ? "_" + c : c.ToString())).ToUpperInvariant();
+
+    static JsonArray Enc(ReadOnlySpan<int> ids) =>
+        Arr(ids.ToArray().Select(i => ((CombatFactory.ActOneEncounter)i).ToString()));
+
+    public static JsonObject Dump()
+    {
+        var o = new JsonObject();
+        var cards = new JsonObject();
+        foreach (var c in Cards.All)
+        {
+            cards[c.Entry] = new JsonObject
+            {
+                ["type"] = c.Type.ToString(), ["rarity"] = c.Rarity.ToString(), ["cost"] = c.Cost,
+                ["cost_x"] = c.HasEnergyCostX, ["star_cost"] = c.StarCost, ["target"] = c.Target.ToString(),
+                ["upgradable"] = c.Upgradable, ["multiplayer_only"] = c.MultiplayerOnly,
+            };
+        }
+
+        o["cards"] = cards;
+        o["card_pools"] = new JsonObject
+        {
+            ["IroncladCardPool"] = Arr(CardPools.Ironclad.ToArray().Select(CardEntry)),
+            ["SilentCardPool"] = Arr(CardPools.Silent.ToArray().Select(CardEntry)),
+            ["RegentCardPool"] = Arr(CardPools.Regent.ToArray().Select(CardEntry)),
+            ["NecrobinderCardPool"] = Arr(CardPools.Necrobinder.ToArray().Select(CardEntry)),
+            ["DefectCardPool"] = Arr(CardPools.Defect.ToArray().Select(CardEntry)),
+            ["ColorlessCardPool"] = Arr(CardPools.Colorless.ToArray().Select(CardEntry)),
+            ["CurseCardPool"] = Arr(CardPools.Curse.ToArray().Select(CardEntry)),
+            ["StatusCardPool"] = Arr(CardPools.Status.ToArray().Select(CardEntry)),
+        };
+        var relics = new JsonObject();
+        foreach (var r in Relics.All)
+        {
+            relics[r.Entry] = new JsonObject { ["rarity"] = r.Rarity.ToString() };
+        }
+
+        o["relics"] = relics;
+        o["relic_pools"] = new JsonObject
+        {
+            ["IroncladRelicPool"] = Arr(RelicPools.Ironclad.ToArray().Select(RelicEntry)),
+            ["SilentRelicPool"] = Arr(RelicPools.Silent.ToArray().Select(RelicEntry)),
+            ["RegentRelicPool"] = Arr(RelicPools.Regent.ToArray().Select(RelicEntry)),
+            ["NecrobinderRelicPool"] = Arr(RelicPools.Necrobinder.ToArray().Select(RelicEntry)),
+            ["DefectRelicPool"] = Arr(RelicPools.Defect.ToArray().Select(RelicEntry)),
+            ["SharedRelicPool"] = Arr(RelicPools.Shared.ToArray().Select(RelicEntry)),
+        };
+        var potions = new JsonObject();
+        var seen = new HashSet<int>();
+        string PotionEntry(int id) => Snake(Potions.Get(id).Name);
+        foreach (int id in PotionPools.Shared.ToArray().Concat(PotionPools.Ironclad.ToArray())
+                     .Concat(PotionPools.Silent.ToArray()).Concat(PotionPools.Regent.ToArray())
+                     .Concat(PotionPools.Necrobinder.ToArray()).Concat(PotionPools.Defect.ToArray()))
+        {
+            if (!seen.Add(id)) continue;
+            var p = Potions.Get(id);
+            potions[PotionEntry(id)] = new JsonObject { ["rarity"] = p.Rarity.ToString(), ["target"] = p.TargetType.ToString() };
+        }
+
+        o["potions"] = potions;
+        o["potion_pools"] = new JsonObject
+        {
+            ["IroncladPotionPool"] = Arr(PotionPools.Ironclad.ToArray().Select(PotionEntry)),
+            ["SilentPotionPool"] = Arr(PotionPools.Silent.ToArray().Select(PotionEntry)),
+            ["RegentPotionPool"] = Arr(PotionPools.Regent.ToArray().Select(PotionEntry)),
+            ["NecrobinderPotionPool"] = Arr(PotionPools.Necrobinder.ToArray().Select(PotionEntry)),
+            ["DefectPotionPool"] = Arr(PotionPools.Defect.ToArray().Select(PotionEntry)),
+            ["SharedPotionPool"] = Arr(PotionPools.Shared.ToArray().Select(PotionEntry)),
+        };
+        // Encounter ids are the emulator's CombatFactory.ActOneEncounter names.
+        var acts = new JsonObject();
+        var spec = new (string Name, int Act)[]
+        {
+            ("OVERGROWTH", RunConstants.ActOvergrowth), ("UNDERDOCKS", RunConstants.ActUnderdocks),
+            ("HIVE", RunConstants.ActHive), ("GLORY", RunConstants.ActGlory),
+        };
+        foreach (var (name, act) in spec)
+        {
+            acts[name] = new JsonObject
+            {
+                ["weak"] = Enc(act switch
+                {
+                    RunConstants.ActOvergrowth => RunConstants.OvergrowthWeakEncounters,
+                    RunConstants.ActUnderdocks => RunConstants.UnderdocksWeakEncounters,
+                    RunConstants.ActHive => RunConstants.HiveWeakEncounters,
+                    _ => EncounterTags.Pool(act, "Weak"),
+                }),
+                ["normal"] = Enc(act switch
+                {
+                    RunConstants.ActOvergrowth => RunConstants.OvergrowthNormalEncounters,
+                    RunConstants.ActUnderdocks => RunConstants.UnderdocksNormalEncounters,
+                    RunConstants.ActHive => RunConstants.HiveNormalEncounters,
+                    _ => EncounterTags.Pool(act, "Normal"),
+                }),
+                ["elite"] = Enc(act switch
+                {
+                    RunConstants.ActOvergrowth => RunConstants.OvergrowthEliteEncounters,
+                    RunConstants.ActUnderdocks => RunConstants.UnderdocksEliteEncounters,
+                    RunConstants.ActHive => RunConstants.HiveEliteEncounters,
+                    _ => EncounterTags.Pool(act, "Elite"),
+                }),
+                ["boss"] = Enc(act switch
+                {
+                    RunConstants.ActOvergrowth => RunConstants.OvergrowthBossEncounters,
+                    RunConstants.ActUnderdocks => RunConstants.UnderdocksBossEncounters,
+                    RunConstants.ActHive => RunConstants.HiveBossEncounters,
+                    _ => EncounterTags.Pool(act, "Boss"),
+                }),
+            };
+        }
+
+        o["acts"] = acts;
+        o["acts_by_index"] = new JsonArray(RunConstants.ActCandidatesByIndex.Select(g =>
+            (JsonNode)new JsonArray(g.Select(a => (JsonNode)spec.First(s => s.Act == a).Name).ToArray())).ToArray());
+        o["neow_options"] = Arr(RunConstants.NeowCurseOptions.ToArray().Concat(RunConstants.NeowPositiveOptions.ToArray())
+            .Concat(RunConstants.NeowPairedOptions.ToArray()).Select(RelicEntry));
+        o["neow_groups"] = new JsonObject
+        {
+            ["curse"] = Arr(RunConstants.NeowCurseOptions.ToArray().Select(RelicEntry)),
+            ["positive"] = Arr(RunConstants.NeowPositiveOptions.ToArray().Select(RelicEntry)),
+            ["paired"] = Arr(RunConstants.NeowPairedOptions.ToArray().Select(RelicEntry)),
+        };
+        return o;
+    }
+}
