@@ -110,7 +110,10 @@ def main() -> int:
         head = runs[: a.canary * a.parallel]
         c_res, c_rep = play(f"{a.name}.canary", head)
         bad = [r for r in c_res if r.get("error")]
-        if bad:
+        # Systemic only: a stalled fight is recorded and skipped, so a few are tolerated; any
+        # other error type, or more than a quarter of the canary failing, stops the batch.
+        other = [r for r in bad if not str(r.get("error", "")).startswith("stalled")]
+        if other or len(bad) > len(head) // 4:
             print(f"canary failed: {len(bad)} of {len(head)} fights with errors; session exits {[r.get('exit') for r in c_rep]}")
             for r in bad[:5]:
                 print("  ", r.get("seed"), str(r.get("error"))[:300])
