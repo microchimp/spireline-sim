@@ -1338,7 +1338,7 @@ class PowerTranslationTests(unittest.TestCase):
             ("PHANTOM_BLADES_POWER", "PhantomBlades", "player", "ShivsPlayedThisTurn"),
             ("ITERATION_POWER", "Iteration", "player", "StatusCardsDrawnThisTurn"),
             ("NIGHTMARE_POWER", "Nightmare", "player", "CopiesToHandBeforeDraw"),
-            ("THE_BOMB_POWER", "TheBombPower", "player", "TheBombDamage"),
+            ("THE_BOMB_POWER", "TheBombPower", "player", "BuffState.Data"),
             ("SKITTISH_POWER", "Skittish", "enemy", "SkittishSpent"),
         ):
             with self.subTest(entry):

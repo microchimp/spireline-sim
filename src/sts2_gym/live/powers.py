@@ -300,8 +300,9 @@ _UNCARRIED_HALF = {
     ),
     # The same, held in a companion BuffId the live power has no field for.
     "THE_BOMB_POWER": (
-        "the damage it will deal (BuffId.TheBombDamage): its amount is the TURNS left, "
-        "and each Instanced bomb keeps its own (decompiled TheBombPower.cs `SetDamage`)"
+        "the damage it will deal (the instance's BuffState.Data, snapshot `data`): its "
+        "amount is the TURNS left, and each Instanced bomb keeps its own (decompiled "
+        "TheBombPower.cs `SetDamage`)"
     ),
     "SKITTISH_POWER": (
         "whether it has already flinched this turn (BuffId.SkittishSpent, "
