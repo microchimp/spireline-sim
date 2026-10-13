@@ -263,7 +263,11 @@ public sealed class RunEngine
             EncounterRngSeed(encounterId),
             nicheSkipCount: 0,
             aiRng,
-            State.CompletedCombatRoomsBeforeCurrent,
+            // The roster builders read a shared id's variant (Corpse Slugs, Seapunk) off this
+            // count; a debug entry names the variant the game entered instead.
+            _weakVariantOverride is { } weak
+                ? (weak ? 0 : RunConstants.WeakEncountersPerAct)
+                : State.CompletedCombatRoomsBeforeCurrent,
             runRelics
         );
         // Sling of Courage reads the ROOM, not the encounter, so the room type travels
@@ -1182,6 +1186,44 @@ public sealed class RunEngine
         return status;
     }
 
+    /// <summary>
+    /// The developers' console <c>fight</c> as the referee's setup fights drive it
+    /// (<c>RunManager.EnterMapCoordDebug</c> with an encounter, the encounter's own Rng seeded as in
+    /// any run): walk onto map option <paramref name="option"/> exactly as the map would, but meet
+    /// <paramref name="encounterId"/> in a room of <paramref name="nodeType"/> (normal, elite or
+    /// boss) instead of the act's next encounter. <paramref name="weakVariant"/> names which of two
+    /// models sharing one emulator id the game entered (Corpse Slugs weak or normal), which the run
+    /// otherwise infers from how many normal rooms it has seen. Returns -1 off the map or for
+    /// another node type.
+    /// </summary>
+    public int EnterEncounterDebug(int option, int encounterId, int nodeType, bool weakVariant)
+    {
+        if (
+            State.Phase != RunPhase.Map
+            || (uint)option >= RunConstants.MapChoices
+            || State.MapNodeTypes[option] == RunConstants.NodeNone
+            || nodeType is not (RunConstants.NodeNormal or RunConstants.NodeElite or RunConstants.NodeBoss)
+        )
+        {
+            return -1;
+        }
+
+        State.MapNodeTypes[option] = nodeType;
+        State.MapChoices[option] = encounterId;
+        _weakVariantOverride = weakVariant;
+        try
+        {
+            return Step(option, -1, out _, out _, out _);
+        }
+        finally
+        {
+            _weakVariantOverride = null;
+        }
+    }
+
+    /// <summary>Set only while <see cref="EnterEncounterDebug" /> enters its room.</summary>
+    private bool? _weakVariantOverride;
+
     private int StepInner(
         int action,
         int targetEnemyIndex,
@@ -1853,8 +1895,11 @@ public sealed class RunEngine
         // encounter id is the weak variant exactly that long. Only Corpse Slugs cares,
         // and it never appears as an elite or boss.
         bool weakVariant =
-            State.CurrentNodeType == RunConstants.NodeNormal
-            && State.NormalEncountersVisited <= RunConstants.WeakEncountersPerAct;
+            _weakVariantOverride
+            ?? (
+                State.CurrentNodeType == RunConstants.NodeNormal
+                && State.NormalEncountersVisited <= RunConstants.WeakEncountersPerAct
+            );
 
         return EncounterRng.SeedFor((int)State.Rng.Seed, State.Floor, encounterId, weakVariant);
     }
