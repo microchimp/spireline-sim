@@ -1,0 +1,11 @@
+This repository is a fork of r33hab/sts2 (MIT; see LICENSE, kept verbatim).
+
+Lineage (as recorded in Spireline's security review, section 5):
+  Zamiell/slay-the-spire-2-emulator 04cfe6d
+    -> evangambit/sts2 aa4b0d8..37e4264 (= r33hab/sts2 cd93393)
+    -> r33hab/sts2 b7452170ce1df91de29d3c94acb11d87c7efc708 (tree 7d5c4dfe31fa5d5e6f27c3adc8100ece50090fe4)
+    -> this fork (Spireline), commits after b745217
+
+Slay the Spire 2 and everything in it belong to Mega Crit. This is an unofficial fan project,
+not affiliated with or endorsed by Mega Crit. It contains no game DLLs, assets or decompiled
+source; running anything against the real game requires your own copy.
