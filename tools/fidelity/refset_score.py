@@ -17,6 +17,8 @@ change against the previous score of the same subset:
               (uses, for potions) or one that diverges on them. Counted over the whole set, not only coverage.
   regression  classes whose fights all pass (identical), of all classes.
   codex runs  (--codex) floors matching per component, %; runs matching to the end, %.
+  whole runs  the seeded run-referee runs (when recorded and the checkout has the run replay): runs with no
+              divergence, decisions before the first one, their fights identical.
   open bug classes: distinct first-divergence causes (field group after a card, end of turn, start, potion).
 Fights whose setup the emulator cannot mirror (an "unsupported" item) count as not identical and are listed
 apart, as mirror gaps.
@@ -28,6 +30,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -251,6 +254,35 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path) -> dict:
             "stops": dict(stops.most_common(15)), "commit": git_commit(emu)}
 
 
+def runs_score(vdir: Path, emu: Path, work: Path) -> dict:
+    """The seeded whole runs (refset.py record --parts runs) through EmuDump run and run_compare2 (feat/run-referee)."""
+    latest = vdir / "refs-runs.json"
+    if not latest.exists():
+        return {"skipped": "no whole runs recorded (refset.py record --parts runs)"}
+    if not (emu / "tools" / "emudump" / "RunReplay.cs").exists() or not (ROOT / "tools" / "fidelity" / "run_compare2.py").exists():
+        return {"skipped": "the run replay (feat/run-referee) is not in this checkout"}
+    refs = Path(json.loads(latest.read_text(encoding="utf-8"))["record"]) / "runs.refs.json"
+    dll = emu / "tools" / "emudump" / "bin" / "Release" / "net9.0" / "EmuDump.dll"
+    emu_out = work / "runs.emu.json"
+    with open(emu_out, "w", encoding="utf-8") as f:
+        subprocess.run(["dotnet", str(dll), "run", str(refs)], stdout=f, check=False)
+    p = subprocess.run([sys.executable, "-m", "tools.fidelity.run_compare2", "run", str(refs), str(emu_out)], cwd=ROOT,
+                       capture_output=True, text=True, check=False, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+    text = p.stdout + p.stderr
+    emu_out.unlink()
+    out: dict = {"text": text[-3000:]}
+    m = re.search(r"(\d+) runs, (\d+) decisions; (\d+) with no divergence", text)
+    if m:
+        out.update(runs=int(m[1]), decisions=int(m[2]), runs_matching=int(m[3]))
+    firsts = [(int(a), int(b)) for a, b in re.findall(r"first divergence at decision (\d+)/(\d+)", text)]
+    if firsts:  # diverging runs: how far into the run the first divergence comes
+        out["diverging_runs_decisions_before_first_pct"] = round(100 * sum(a - 1 for a, _ in firsts) / sum(b for _, b in firsts), 1)
+    m = re.search(r"fights: (\d+) played, (\d+) identical at every step", text)
+    if m:
+        out.update(fights=int(m[1]), fights_identical=int(m[2]))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--version", default="v1")
@@ -329,6 +361,7 @@ def main() -> int:
     open_bugs = [{"cause": k, "fights": len(ids), "example": ids[0]} for k, ids in sorted(bugs.items(), key=lambda kv: -len(kv[1]))]
     cov = coverage_report(verdicts, manifest.get("coverage_targets", {}))
     codex = codex_score((a.codex_emu or emu).resolve(), a.procs, a.codex_limit, work) if a.codex else {"skipped": "not run (--codex)"}
+    runs = runs_score(vdir, emu, work)
     head = {p: block(by[p]) for p in PARTS if by[p]}
     commit = emu_info["commit"][:12] + ("-dirty" if emu_info["dirty"] else "")
     name = a.label or commit
@@ -336,7 +369,7 @@ def main() -> int:
              "comparer": git_commit(ROOT), "record": latest["stamp"], "scored": time.strftime("%Y-%m-%d %H:%M"),
              "minutes": round((time.time() - t0) / 60, 1), "headline": head, "realistic_table": table,
              "regression": {"classes": len(classes), "passing": len(reg_pass), "failing": sorted(set(classes) - set(reg_pass))},
-             "coverage": cov, "codex": codex, "open_bug_classes": open_bugs, "verdicts": verdicts}
+             "coverage": cov, "codex": codex, "runs": runs, "open_bug_classes": open_bugs, "verdicts": verdicts}
     sdir = vdir / "scores"
     hist = sdir / "history.jsonl"
     prev = None
@@ -375,8 +408,11 @@ def summary_line(s: dict) -> str:
     cx = s["codex"]
     codex = (f"codex runs {cx['complete']}/{cx['runs']} matching to the end ({cx['runs_matching_pct']}%; "
              f"{cx['judged_matching_pct']}% of {cx['judged']} not stopped by a walker/fight/profile limit)" if cx.get("runs") else "codex runs n/a")
+    rn = s.get("runs") or {}
+    runs = (f"whole runs {rn['runs_matching']}/{rn['runs']} matching, {rn.get('fights_identical')}/{rn.get('fights')} of their fights identical"
+            if rn.get("runs") else "whole runs n/a")
     return (f"{s['set']} [{s['subset']}] @ {s['label']}: {part('realistic', True)}; {part('coverage')}, {nc} items not yet clean; "
-            f"regression {s['regression']['passing']}/{s['regression']['classes']} classes pass; {codex}; "
+            f"regression {s['regression']['passing']}/{s['regression']['classes']} classes pass; {codex}; {runs}; "
             f"{len(s['open_bug_classes'])} open bug classes")
 
 
