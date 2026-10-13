@@ -91,7 +91,9 @@ whole batch. Details and rules:
 - A server that dies or hangs is replaced; the spec it held goes back to the front of the queue once and is recorded as
   `stalled` if it kills a second server. One hot spare is kept booted (`--spares 0` turns it off). Servers run at BelowNormal priority.
 - One inbox per server, never a shared one: a claim is a rename, and on Windows two servers renaming the same file can both
-  succeed (night04 lost 4 of 600 fights that way). A used `--run-dir` is refused.
+  succeed (night04 lost 4 of 600 fights that way). The dispatcher writes a spec there only under its final name (tmp, then
+  rename) and withdraws specs (an abandoned run) only once the server's status reads `hold`, or kills it after 60 s. A used
+  `--run-dir` is refused.
 - `--verify-against <runs-mode out.json>` compares each result (ignoring timing and the diagnostics below) with the
   reference, spec by spec.
 - Driver job keys (SPEED_PLAN steps 3-4, `driver/Settle.cs`), set in the specs file or by serve.py's and batch.py's
@@ -109,7 +111,8 @@ whole batch. Details and rules:
 - Run files: `<game>/../serve/<ts>/{inbox/s*,out/s*.jsonl,scratch/s*,results.json,results.jsonl,summary.json}` (a batch:
   `serve/<name>`, with `chunks/` for the emulator's working files).
 - Driver side (`driver/Server.cs`): job `{"out": "x.jsonl", "inbox": "<dir>", ...}` instead of `"runs"`; claim by renaming
-  `<id>.json` to `<id>.json.taken.<pid>` under a `<id>.json.lock` (`driver/InboxClaim.cs`), in its own inbox (`inbox/s<NN>`), append one line per fight, `STOP` in the inbox ends it.
+  `<id>.json` to `<id>.json.taken.<pid>` in its own inbox (`inbox/s<NN>`, `driver/InboxClaim.cs`), append one line per
+  fight, `STOP` in the inbox ends it; `hold.<pid>` makes it wait without claiming, and its status file then reads `hold`.
 
 ## Re-anchoring (every recorded step tested on its own)
 

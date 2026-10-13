@@ -2,7 +2,8 @@
 
     python fake_fight_server.py <job.json>
 
-Speaks the same inbox protocol: writes hb/<pid>.ready, keeps hb/<pid> fresh, waits while hold.<pid>
+Speaks the same inbox protocol: writes hb/<pid>.ready, keeps hb/<pid> fresh with the same status line
+("hold <unix ms>" once it has seen hold.<pid>, else "idle <unix ms>"), waits while hold.<pid>
 exists, claims the oldest *.json by renaming it to *.json.taken.<pid>, appends one result line per
 fight to the job's "out" file, deletes the claim, and exits 0 once STOP is in the inbox and no
 *.json is left. A spec's "fake" key says how the fight goes:
@@ -60,13 +61,14 @@ def main() -> int:
     pid = os.getpid()
     hb = inbox / "hb" / str(pid)
     hb.parent.mkdir(parents=True, exist_ok=True)
-    hb.write_text("idle", encoding="utf-8")
+    hb.write_text(f"idle {int(time.time() * 1000)}", encoding="utf-8")
     (inbox / "hb" / f"{pid}.ready").write_text(str(int(time.time() * 1000)), encoding="utf-8")
     hold, stop = inbox / f"hold.{pid}", inbox / "STOP"
     while True:
-        hb.write_text("idle", encoding="utf-8")
+        held = hold.exists()  # as Server.cs: the hold check, then the status, then (if not held) the claim
+        hb.write_text(f"{'hold' if held else 'idle'} {int(time.time() * 1000)}", encoding="utf-8")
         claim = None
-        if not hold.exists():
+        if not held:
             for f in pending(inbox):
                 taken = f.with_name(f.name + f".taken.{pid}")
                 try:

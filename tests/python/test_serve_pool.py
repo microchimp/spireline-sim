@@ -175,6 +175,51 @@ class PoolTest(unittest.TestCase):
         self.assertEqual(p.servers[0].rc, 0)
         self.assertEqual(p.merged(ids)[-1]["error"], "no result")
 
+    def wait_for_claim(self, p: serve.Pool, rid: str) -> None:
+        t0 = time.time()
+        while time.time() - t0 < 30 and not any(s.pid and (s.inbox / f"{rid}.json.taken.{s.pid}").exists() for s in p.servers):
+            p.poll()
+            time.sleep(0.02)
+
+    def test_an_abandon_withdraws_only_once_the_server_holds(self):
+        # A fight in flight with two specs waiting behind it. Withdrawing renames files in the server's
+        # inbox, and a rename is not exclusive on Windows, so the pool waits until the server's status
+        # reads "hold" (after its fight) before it touches them; the fight in flight is kept.
+        p = self.pool(servers=1, depth=3)
+        ids = p.submit([spec(0, sleep=1.0), spec(1), spec(2)])
+        p.start()
+        self.wait_for_claim(p, ids[0])
+        p.close(abandon=True)
+        merged = p.merged(ids)
+        self.assertFalse(merged[0].get("error"), merged[0])
+        self.assertEqual([r["error"] for r in merged[1:]], ["no result", "no result"])
+        self.assertEqual(sorted(f.name for f in p.inbox.rglob("*.json.withdrawn")),
+                         [f"{ids[1]}.json.withdrawn", f"{ids[2]}.json.withdrawn"])
+        self.assertTrue(any("s00 holds, 2 specs withdrawn" in e for e in p.events), p.events)
+        self.assertEqual(p.servers[0].rc, 0)
+
+    def test_a_server_that_never_holds_is_killed_before_its_specs_are_withdrawn(self):
+        p = self.pool(servers=1, depth=2, hold_timeout=1.0)
+        ids = p.submit([spec(0, hang="once"), spec(1)])
+        p.start()
+        self.wait_for_claim(p, ids[0])
+        p.close(abandon=True)
+        self.assertEqual(p.servers[0].killed, "did not hold for the abandon")
+        self.assertEqual([f.name for f in p.inbox.rglob("*.json.withdrawn")], [f"{ids[1]}.json.withdrawn"])
+        self.assertEqual([r["error"] for r in p.merged(ids)], ["no result", "no result"])
+
+    def test_holds_reads_a_hold_status_written_after_the_hold(self):
+        s = serve.Server(0, False, self.dir / "inbox")
+        s.pid = 42
+        (s.inbox / "hb").mkdir(parents=True)
+        hb = s.inbox / "hb" / "42"
+        for text, since, want in (("hold 2000", 1000, True), ("hold 999", 1000, False), ("idle 2000", 1000, False),
+                                  ("busy 000001 2000", 1000, False), ("hold", 1000, False), ("", 1000, False)):
+            hb.write_text(text, encoding="utf-8")
+            self.assertEqual(serve.Pool._holds(s, since), want, text)
+        hb.unlink()
+        self.assertFalse(serve.Pool._holds(s, 0))
+
     def test_network_connections_and_profile_changes_are_reported(self):
         state = iter([["before"], ["after"]])
         p = self.pool(servers=1, connections=lambda pids: {int(q): {"TCP 1.2.3.4:5"} for q in pids},

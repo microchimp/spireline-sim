@@ -2,16 +2,16 @@
 //
 // Job: {"out": "<path>.jsonl", "inbox": "<dir>", "fast_reset": true, ...}. After the usual startup the
 // driver loops:
-//   1. take the oldest "<id>.json" in its own inbox (serve.py gives each server one, and only this process
-//      claims from it), claiming it by renaming it to "<id>.json.taken.<pid>" under a per-spec
-//      "<id>.json.lock" (InboxClaim.cs: on Windows a bare rename is not exclusive);
+//   1. take the oldest "<id>.json" in its own inbox, claiming it by renaming it to "<id>.json.taken.<pid>"
+//      (InboxClaim.cs). On Windows a rename is not exclusive, so serve.py gives each server an inbox of
+//      its own and only this process claims from it;
 //   2. play it exactly as a "runs" entry (PlaySpec);
 //   3. append ONE JSON line to "out" (the result, plus "_id", "_pid", "_t" = unix ms);
 //   4. delete the claimed file, heartbeat, repeat.
 // It exits cleanly (code 0) when a file named STOP is in the inbox and no "*.json" is left.
 // A crash or watchdog exit leaves the claimed file behind, so the dispatcher can see which spec was
 // in flight and re-queue it. "hold.<pid>" in the inbox makes this process wait without claiming
-// (a hot spare). hb/<pid> holds a status line, rewritten at most once a second, every frame (Watchdog.cs OnFrame);
+// (a hot spare, or a run being abandoned: the dispatcher withdraws specs only once the status says "hold"). hb/<pid> holds a status line, rewritten at most once a second, every frame (Watchdog.cs OnFrame);
 // hb/<pid>.ready holds the unix ms at which the server first became ready.
 
 using System;

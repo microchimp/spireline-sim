@@ -103,24 +103,6 @@ def read_lines(path: Path, offset: int) -> tuple[list[dict], int]:
     return out, offset + end + 1
 
 
-def release_claim_locks(inbox: Path, pid: int) -> int:
-    """Remove the claim locks a dead server held ("<id>.json.lock" holding its pid, driver/InboxClaim.cs).
-
-    A server holds one only between creating it and renaming the spec, so this is for a kill in that
-    instant: left behind, the lock would keep the server's replacement off that spec. With one inbox per
-    server nobody else claims there, so this is belt and braces.
-    """
-    n = 0
-    for lk in inbox.glob("*.json.lock"):
-        try:
-            if lk.read_text(encoding="ascii").strip() == str(pid):
-                lk.unlink()
-                n += 1
-        except OSError:
-            pass  # released meanwhile by its owner
-    return n
-
-
 def strip(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in TIMING_KEYS and k not in META_KEYS}
 
@@ -194,6 +176,7 @@ class Pool:
 
     def __init__(self, game: Path, run_dir: Path, *, servers: int = 4, spares: int = 1, jopts: dict | None = None,
                  boot_timeout: float = 180, max_restarts: int | None = None, net_interval: float = 1.0,
+                 hold_timeout: float = 60,
                  below_normal: bool = True, depth: int = 1, echo=print, launch=rr.launch, connections=rr.connections_by_pid,
                  profile_state=rr.real_profile_state, check_build=rr.check_build, kill=_taskkill):
         self.game = game
@@ -208,6 +191,7 @@ class Pool:
         # driver whose watchdog cannot run.
         self.hb_limit = 10 * self.stall_s
         self.boot_timeout = boot_timeout
+        self.hold_timeout = hold_timeout
         self.max_restarts = max_restarts if max_restarts is not None else 3 * self.n + 3
         self.net_interval = net_interval
         self.below_normal = below_normal
@@ -333,7 +317,13 @@ class Pool:
     def close(self, abandon: bool = False) -> list[tuple[str, dict]]:
         """STOP: servers finish what they hold, see their empty inbox and exit 0; spares and stragglers
         are killed. abandon=True first withdraws the specs no server has claimed (renamed to
-        *.withdrawn), so an aborted run does not play them. Returns what finished since the last poll."""
+        *.withdrawn), so an aborted run does not play them. Returns what finished since the last poll.
+
+        Withdrawing renames files in a server's inbox, and a rename is not exclusive on Windows (two renames
+        of one file can both succeed), so it happens only once the server is not claiming: its status file
+        reads "hold", stamped after the hold file was written (driver/Server.cs checks the hold file before
+        it writes its status and before it claims), or it is dead. A server that does not hold within
+        hold_timeout (it is still playing a fight) is killed first; this is the abandon path."""
         if self.closed:
             return self._drain()
         self.closed = self.stopping = True
@@ -343,15 +333,31 @@ class Pool:
         live = [s for s in self.servers if s.alive]
         if abandon:
             self.queue.clear()
+            t_hold_ms = int(time.time() * 1000)
             for s in live:  # hold first, so no server is claiming while its specs are withdrawn
                 (s.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
-            time.sleep(0.3)
+            waiting = [s for s in live if self._pending(s)]  # an empty inbox has nothing to withdraw
+            deadline = time.time() + self.hold_timeout
+            while waiting:
+                waiting = [s for s in waiting if s.proc.poll() is None and not self._holds(s, t_hold_ms)]
+                if not waiting:
+                    break
+                if time.time() > deadline:
+                    for s in waiting:
+                        self._kill(s, "did not hold for the abandon")
+                        s.proc.wait()
+                    break
+                time.sleep(0.05)
             for s in live:
+                n = 0
                 for f in self._pending(s):
                     try:
                         os.replace(f, f.with_name(f.name + ".withdrawn"))
+                        n += 1
                     except OSError:
-                        pass  # claimed just before the hold
+                        pass  # claimed by a server that died meanwhile; its exit is handled below
+                if n:
+                    self.log(f"{s.name} {'killed' if s.killed else 'holds'}, {n} specs withdrawn")
         for s in live:
             (s.inbox / "STOP").write_text("", encoding="utf-8")
         for s in self.servers:
@@ -438,6 +444,18 @@ class Pool:
         self._new.append((rid, r))
 
     @staticmethod
+    def _holds(s: Server, since_ms: int) -> bool:
+        """The server's status file says it holds (does not claim), written at or after since_ms (unix ms)."""
+        try:
+            words = (s.inbox / "hb" / str(s.pid)).read_text(encoding="utf-8").split()
+        except OSError:
+            return False
+        try:
+            return len(words) >= 2 and words[0] == "hold" and int(words[1]) >= since_ms
+        except ValueError:
+            return False
+
+    @staticmethod
     def _pending(s: Server) -> list[Path]:
         """Spec files waiting in a server's inbox, oldest id first."""
         try:
@@ -510,7 +528,6 @@ class Pool:
             s.log.close()
         for hb in ((s.inbox / f"hold.{s.pid}"), (s.inbox / "hb" / str(s.pid))):
             hb.unlink(missing_ok=True)
-        release_claim_locks(s.inbox, s.pid)
         stopping = self.stopping
         lost, back = [], []
         for taken in sorted(s.inbox.glob(f"*.json.taken.{s.pid}")):
