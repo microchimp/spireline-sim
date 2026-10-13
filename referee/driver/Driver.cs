@@ -12,6 +12,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using Godot;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -43,11 +44,39 @@ public static partial class Driver
         _ = RunJob(job);
     }
 
+    private static long _lastProgress = System.Environment.TickCount64;
+    private static readonly object _saveLock = new();
+
+    private static void Save(string path, JsonArray results)
+    {
+        lock (_saveLock)
+        {
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, new JsonObject { ["results"] = results.DeepClone() }.ToJsonString());
+            File.Move(tmp, path, overwrite: true);
+        }
+    }
+
     private static async Task RunJob(string jobPath)
     {
         var job = JsonNode.Parse(File.ReadAllText(jobPath))!.AsObject();
         string outPath = (string)job["out"]!;
         var results = new JsonArray();
+        // Watchdog on a pool thread: if no fight finishes for stall_s seconds, the main loop is
+        // stuck (a load or a screen nothing answers); keep what is saved and end the process.
+        int stallMs = ((int?)job["stall_s"] ?? 180) * 1000;
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                await Task.Delay(5000);
+                if (System.Environment.TickCount64 - Interlocked.Read(ref _lastProgress) > stallMs)
+                {
+                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting with {results.Count} results saved");
+                    System.Environment.Exit(3);
+                }
+            }
+        });
         int exitCode = 0;
         try
         {
@@ -67,8 +96,24 @@ public static partial class Driver
             foreach (var spec in job["runs"]!.AsArray())
             {
                 var o = spec!.AsObject();
-                results.Add((string?)o["kind"] == "combat" ? await PlayCombat(o) : await StartRun(o));
-                await NGame.Instance!.ReturnToMainMenu();  // the game's own way out of a run
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var result = (string?)o["kind"] == "combat" ? await PlayCombat(o) : await StartRun(o);
+                long playMs = clock.ElapsedMilliseconds;
+                if ((bool?)job["fast_reset"] == true)
+                {
+                    // Skip the menu: end the run the way ReturnToMainMenu does at its core
+                    // (RunManager.CleanUp) without reloading menu assets and scenes.
+                    RunManager.Instance.CleanUp();
+                }
+                else
+                {
+                    await NGame.Instance!.ReturnToMainMenu();  // the game's own way out of a run
+                }
+
+                result["timing_ms"] = new JsonObject { ["play"] = playMs, ["reset"] = clock.ElapsedMilliseconds - playMs };
+                results.Add(result);
+                Save(outPath, results);  // after every fight: a hang or kill keeps what is done
+                Interlocked.Exchange(ref _lastProgress, System.Environment.TickCount64);
             }
         }
         catch (Exception ex)
@@ -77,8 +122,7 @@ public static partial class Driver
             exitCode = 1;
         }
 
-        File.WriteAllText(outPath, new JsonObject { ["results"] = results }.ToJsonString(
-            new JsonSerializerOptions { WriteIndented = true }));
+        Save(outPath, results);
         ((SceneTree)Engine.GetMainLoop()).Quit(exitCode);
     }
 

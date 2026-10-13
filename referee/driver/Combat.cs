@@ -22,7 +22,10 @@ public static partial class Driver
 {
     private static async Task<JsonObject> PlayCombat(JsonObject spec)
     {
+        var phase = System.Diagnostics.Stopwatch.StartNew();
         var (state, dump) = await BeginRun(spec);
+        var timing = new JsonObject { ["begin_run"] = phase.ElapsedMilliseconds };
+        dump["phase_ms"] = timing;
         var run = RunManager.Instance;
         var steps = new JsonArray();
         var selector = new FirstChoiceSelector();
@@ -61,12 +64,14 @@ public static partial class Driver
             // First monster room on row 1, lowest column.
             var target = state.Map.GetPointsInRow(1).Where(p => p.PointType == MapPointType.Monster)
                 .OrderBy(p => p.coord.col).First();
+            timing["neow"] = phase.ElapsedMilliseconds;
             dump["room"] = new JsonArray(target.coord.col, target.coord.row);
             GD.Print($"[referee] entering {target.coord.col},{target.coord.row}");
             await WithTimeout(run.EnterMapCoord(target.coord), 60, "EnterMapCoord");
             await Idle();
             GD.Print($"[referee] in room; combat={CombatManager.Instance.IsInProgress}");
 
+            timing["enter_room"] = phase.ElapsedMilliseconds;
             var rng = new Random((int?)spec["chooser_seed"] ?? 1);
             int maxActions = (int?)spec["max_actions"] ?? 80;
             Player player = state.Players[0];
@@ -119,6 +124,7 @@ public static partial class Driver
             dump["error"] = ex.ToString();
         }
 
+        timing["fight_end"] = phase.ElapsedMilliseconds;
         return dump;
     }
 
