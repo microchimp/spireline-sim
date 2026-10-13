@@ -1502,6 +1502,9 @@ def cmd_record(a) -> int:
     entries = select(man, a.subset, parts)
     if a.limit:
         entries = [e for part in parts for e in [x for x in entries if x["part"] == part][:a.limit]]
+    if a.ids:
+        wanted = set(a.ids.split(","))
+        entries = [e for e in entries if e["id"] in wanted]
     label = a.label or time.strftime("%Y%m%d-%H%M%S")
     rdir = vdir(a.version) / "record" / f"{a.subset}-{label}"
     rdir.mkdir(parents=True, exist_ok=True)
@@ -1620,6 +1623,7 @@ def main() -> int:
     r.add_argument("--timeout", type=float, default=6 * 3600)
     r.add_argument("--label", default=None)
     r.add_argument("--limit", type=int, default=0, help="only the first N specs of each part (a trial)")
+    r.add_argument("--ids", default="", help="only these spec ids, comma-separated (a trial)")
     s = sub.add_parser("status")
     s.add_argument("--version", default="v2")
     j = sub.add_parser("rejudge", help="judge a record directory again from its saved passes (no game)")
