@@ -5,9 +5,10 @@ using Xunit;
 namespace Sts2Emulator.Tests;
 
 /// <summary>
-/// Nine events refuse to appear in Act 1, and the emulator models Act 1 and nothing else
-/// -- a run ends at its boss. Rolling one of them puts a room in front of an agent that
-/// the game would never have shown it, on a floor where the real game has something else.
+/// Nine events refuse to appear in Act 1 (act index 0). These tests pin the Act 1 half of
+/// their rules; the Act 2 and 3 half, now that the run engine deals those acts, lives in
+/// <see cref="EventEligibilityTests"/>. Rolling one of them in Act 1 puts a room in front
+/// of an agent that the game would never have shown it.
 ///
 /// Eight were not gated at all. The ninth, the Crystal Sphere, was gated on
 /// <c>state.Act &gt; ActOvergrowth</c> -- but Act is WHICH of the two Act-1 acts the run
