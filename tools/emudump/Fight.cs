@@ -15,6 +15,9 @@ static class Fight
     internal static RunEngine EnterRoom(JsonObject game, JsonObject outp)
     {
         var e = new RunEngine();
+        Setup.Extended = Setup.IsExtended(game);
+        var setupLog = new JsonArray();
+        if (Setup.Extended) outp["setup_log"] = setupLog;
         int asc = (int)game["ascension"]!;
         e.Reset((string)game["seed"]!, asc);
         var s = e.State;
@@ -37,11 +40,22 @@ static class Fight
             }
         }
 
+        Setup.MapItems(e, game, setupLog);  // the setup items before the fight, on the map after Neow
         var room = game["room"]!.AsArray();
         (int Col, int Row) want = ((int)room[0]!, (int)room[1]!);
         int idx = Array.FindIndex(s.MapOptionCoords, c => c == want);
         if (idx < 0) throw new InvalidOperationException($"room {want} not offered; phase {s.Phase}");
-        e.Step(idx, -1, out _, out _, out _);
+        var fight = new JsonObject();
+        if (Setup.EnterFight(e, game, idx, fight))
+        {
+            outp["fight"] = fight;
+        }
+        else
+        {
+            e.Step(idx, -1, out _, out _, out _);
+        }
+
+        Setup.CombatItems(e, game, setupLog);  // the setup items after the fight item, before step 0
         return e;
     }
 
@@ -65,6 +79,14 @@ static class Fight
                 if ((string)a["kind"]! == "end_turn")
                 {
                     e.Step(s.ActiveCombat.Hand.Count, -1, out _, out _, out _);
+                }
+                else if ((string)a["kind"]! == "potion")
+                {
+                    // used=false: the game cancelled the use (the target was no longer valid).
+                    if ((bool?)a["used"] != false)
+                    {
+                        e.Step(s.ActiveCombat.Hand.Count + 1 + (int)a["slot"]!, (int)a["target_slot"]!, out _, out _, out _);
+                    }
                 }
                 else if ((bool?)a["played"] != false)
                 {
@@ -174,6 +196,7 @@ static class Fight
         }
 
         o["snapshot"] = snap;
+        if (Setup.Extended) o["potions"] = Setup.Belt(c.PotionSlots, c.MaxPotionSlots);
         o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());
         int N(CountingRandom? r) => r?.CallCount ?? -1;
         o["rng"] = new JsonObject

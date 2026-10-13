@@ -32,6 +32,9 @@ static class Reanchor
         ["internal_keys"] = new JsonArray(BuffByPower.Keys.Where(k => !GamePowerKeys.Contains(k)).Select(k => (JsonNode)k).ToArray()),
     };
 
+    /// <summary>The emulator buff for a game power id (VULNERABLE_POWER), or null.</summary>
+    internal static BuffId? BuffFor(string gamePower) => BuffByPower.TryGetValue(PowerKey(gamePower), out var b) ? b : null;
+
     /// <summary>A buff only the emulator has (a game power it models in pieces, or a bookkeeping marker).</summary>
     static bool Internal(BuffId id) => !GamePowerKeys.Contains(PowerKey(id.ToString()));
 
@@ -150,6 +153,11 @@ static class Reanchor
     static bool StepOnce(CombatState q, CountingRandom qr, JsonObject a)
     {
         if ((string)a["kind"]! == "end_turn") return CombatEngine.Step(q, q.Hand.Count, qr).Terminal;
+        if ((string)a["kind"]! == "potion")
+        {
+            if ((bool?)a["used"] == false) return false;  // the game cancelled the use
+            return CombatEngine.Step(q, q.Hand.Count + 1 + (int)a["slot"]!, qr, (int)a["target_slot"]!).Terminal;
+        }
         // target_slot indexes the game's living enemies, and Anchor made the emulator's roster the same list.
         return CombatEngine.Step(q, (int)a["hand_index"]!, qr, (int)a["target_slot"]!).Terminal;
     }
@@ -252,6 +260,7 @@ static class Reanchor
             if (roster != null) return roster;
 
             PatchRng(q, g["rng"]!.AsObject(), patched);
+            if (g["potions"] is JsonArray belt) PatchPotions(q, belt, patched);
             return null;
         }
         catch (KeyNotFoundException ex)
@@ -405,6 +414,19 @@ static class Reanchor
         return null;
     }
 
+    /// <summary>The potion belt, slot by slot, when the game's snapshot records it (setup fights).</summary>
+    static void PatchPotions(CombatState q, JsonArray belt, JsonArray patched)
+    {
+        var want = belt.Select(p => p == null ? 0 : Setup.PotionId((string)p!) ?? throw new KeyNotFoundException("potion " + (string)p!)).ToArray();
+        bool same = q.MaxPotionSlots == want.Length && want.Select((p, i) => q.PotionSlots[i] == p).All(x => x)
+            && q.PotionSlots.Skip(want.Length).All(p => p == 0);
+        if (same) return;
+        Array.Clear(q.PotionSlots);
+        for (int i = 0; i < Math.Min(want.Length, q.PotionSlots.Length); i++) q.PotionSlots[i] = want[i];
+        q.MaxPotionSlots = want.Length;
+        patched.Add("potions");
+    }
+
     /// <summary>The streams' seed and counter come from the game; a stream already there stays as it is.</summary>
     static void PatchRng(CombatState q, JsonObject rng, JsonArray patched)
     {
@@ -456,6 +478,7 @@ static class Reanchor
             }).ToArray()),
         };
         o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());
+        if (Setup.Extended) o["potions"] = Setup.Belt(c.PotionSlots, c.MaxPotionSlots);
         int N(CountingRandom? r) => r?.CallCount ?? -1;
         o["rng"] = new JsonObject
         {

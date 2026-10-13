@@ -90,6 +90,8 @@ def emu_view(st: dict, nm: dict) -> dict:
         "enemies": [{"name": nm["enemies"].get(e["def_id"], e["def_id"]), "hp": e["hp"], "block": e["block"],
                      "powers": powers(e["buffs"])} for e in s["enemies"] if e["hp"] > 0],
         "rng": st["rng"],
+        # Setup fights only (the referee then records the belt): the potion in each slot, None if empty.
+        **({"potions": st["potions"]} if "potions" in st else {}),
     }
 
 
@@ -107,6 +109,7 @@ def game_view(st: dict) -> dict:
         "rng": {k: v["counter"] for k, v in st["rng"].items() if k in (
             "Shuffle", "CombatTargets", "MonsterAi", "CombatCardSelection", "CombatCardGeneration",
             "CombatEnergyCosts", "CombatPotionGeneration", "CombatOrbGeneration", "Niche")},
+        **({"potions": st["potions"]} if "potions" in st else {}),
     }
 
 
