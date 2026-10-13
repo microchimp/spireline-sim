@@ -223,7 +223,9 @@ public static class CombatEngine
         int childOfTheStars = BuffSystem.Get(state.PlayerBuffs, BuffId.ChildOfTheStars);
         if (starsToSpend > 0 && childOfTheStars > 0)
         {
-            Effects.CardEffects.GainBlock(state, childOfTheStars * starsToSpend, rng);
+            // `ChildOfTheStarsPower.AfterStarsSpent`: `ValueProp.Unpowered`, so Dexterity and
+            // Frail stay out of it.
+            Effects.CardEffects.GainUnpoweredBlock(state, childOfTheStars * starsToSpend, rng);
         }
 
         if (starsToSpend > 0)
@@ -273,7 +275,7 @@ public static class CombatEngine
         int danseMacabre = BuffSystem.Get(state.PlayerBuffs, BuffId.DanseMacabre);
         if (danseMacabre > 0 && energyToSpend >= 2)
         {
-            Effects.CardEffects.GainBlock(state, danseMacabre, rng);
+            Effects.CardEffects.GainUnpoweredBlock(state, danseMacabre, rng);
         }
 
         // `SpiritOfAshPower.BeforeCardPlayed`: an ETHEREAL card played gains its amount in
@@ -282,7 +284,7 @@ public static class CombatEngine
         int spiritOfAsh = BuffSystem.Get(state.PlayerBuffs, BuffId.SpiritOfAsh);
         if (spiritOfAsh > 0 && IsEtherealForPowers(state, card))
         {
-            Effects.CardEffects.GainBlock(state, spiritOfAsh, rng);
+            Effects.CardEffects.GainUnpoweredBlock(state, spiritOfAsh, rng);
         }
 
         // `TheSealedThronePower.BeforeCardPlayed`: a star for every card its owner plays.

@@ -2796,14 +2796,15 @@ public static class CardEffects
             RelicEffects.GainPlayerStrength(state, arsenal * count);
         }
 
-        // `PillarOfCreationPower.AfterCardGeneratedForCombat`, the same hook.
+        // `PillarOfCreationPower.AfterCardGeneratedForCombat`, the same hook: Unpowered block,
+        // like Regalite's below.
         int pillar = BuffSystem.Get(state.PlayerBuffs, BuffId.PillarOfCreation);
         if (pillar > 0)
         {
-            GainBlock(state, pillar * count, rng: null);
+            GainUnpoweredBlock(state, pillar * count, rng: null);
         }
 
-        // Regalite rides the same hook, and unlike the power its block is Unpowered.
+        // Regalite rides the same hook.
         RelicEffects.ApplyAfterCardGenerated(state, count, rng: null);
     }
 
@@ -5004,14 +5005,32 @@ public static class CardEffects
     public static int GainUnpoweredBlock(CombatState state, int amount, Random? rng = null) =>
         GainBlock(state, amount, rng, powered: false);
 
+    /// <summary>
+    /// A card's block that Dexterity and Frail leave alone: `BlockProps.cardUnpowered`
+    /// (`Unpowered | Move`). Entrench's doubling is the one user. It is still a card's block,
+    /// so the `Move` modifiers (Unmovable, Vambrace, Paels Legion) see it.
+    /// </summary>
+    public static int GainCardUnpoweredBlock(CombatState state, int amount, Random? rng = null) =>
+        GainBlock(state, amount, rng, powered: false, move: true);
+
+    /// <param name="powered">`!props.HasFlag(Unpowered)`: Dexterity, Frail and Fasten apply.</param>
+    /// <param name="move">
+    /// `props.IsCardOrMonsterMove()`, the `Move` flag -- a card's (or a monster move's) block as
+    /// against a power's, relic's or orb's. Unmovable, Vambrace and Paels Legion all start with
+    /// `if (!props.IsCardOrMonsterMove()) return 1`. Defaults to `powered`, which is right for
+    /// every caller but Entrench: `BlockProps.card` is `Move`, `nonCardUnpowered` is
+    /// `Unpowered` alone, and only `cardUnpowered` carries both.
+    /// </param>
     private static int GainBlock(
         CombatState state,
         int amount,
         Random? rng = null,
         bool powered = true,
-        bool isDefend = false
+        bool isDefend = false,
+        bool? move = null
     )
     {
+        bool isMove = move ?? powered;
         decimal effective = powered
             ? BuffSystem.IncomingBlockExact(
                 amount,
@@ -5027,7 +5046,7 @@ public static class CardEffects
         // and `AfterModifyingBlockAmount` names the card only once the gain actually lands
         // -- so a card that would gain nothing does not spend it. The relic is spent when
         // that card finishes (`AfterCardPlayed`), so all of its gains are doubled.
-        if (powered && effective > 0m && RelicEffects.DoublesCardBlock(state))
+        if (isMove && effective > 0m && RelicEffects.DoublesCardBlock(state))
         {
             effective *= 2;
             state.VambraceCard = true;
@@ -5036,7 +5055,7 @@ public static class CardEffects
         // `PaelsLegion.ModifyBlockMultiplicative` returns 2 while its cooldown is clear,
         // and `AfterCardPlayed` starts the cooldown once the doubled gain has actually
         // landed -- Vambrace's latch, with a timer instead of a once-per-combat flag.
-        if (powered && effective > 0m && RelicEffects.PaelsLegionDoublesBlock(state))
+        if (isMove && effective > 0m && RelicEffects.PaelsLegionDoublesBlock(state))
         {
             effective *= 2;
             state.PaelsLegionCard = true;
@@ -5055,10 +5074,20 @@ public static class CardEffects
             return 0;
         }
 
+        // `UnmovablePower.ModifyBlockMultiplicative` doubles only a `Move` gain -- a card's --
+        // and counts only the `Move` gains already in the history this turn
+        // (`BlockGainedEntry.Props.IsCardOrMonsterMove()`). Plating, Metallicize, Afterimage,
+        // a relic or an orb neither get doubled nor use one of its charges up: a Plating that
+        // doubled paid 14 where the game pays 7, and the enemy phase then killed a player the
+        // emulator left alive.
         int unmovable = BuffSystem.Get(state.PlayerBuffs, BuffId.UnmovablePower);
-        if (unmovable > state.BlockGainsThisTurn)
+        if (isMove && unmovable > state.BlockGainsThisTurn)
         {
             effective *= 2;
+        }
+
+        if (isMove)
+        {
             state.BlockGainsThisTurn++;
         }
 
@@ -8215,7 +8244,7 @@ public static class CardEffects
                 // does not apply to the doubling. It was going through the powered path,
                 // which paid Dexterity twice on a card whose whole point is the block you
                 // already have.
-                GainUnpoweredBlock(state, state.PlayerBlock, rng);
+                GainCardUnpoweredBlock(state, state.PlayerBlock, rng);
                 break;
             case "Envenom":
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Envenom, 1);
@@ -10201,7 +10230,7 @@ public static class CardEffects
         int shroud = BuffSystem.Get(state.PlayerBuffs, BuffId.Shroud);
         if (shroud > 0 && id == BuffId.Doom && magnitude != 0)
         {
-            GainBlock(state, shroud, rng);
+            GainUnpoweredBlock(state, shroud, rng);
         }
     }
 
