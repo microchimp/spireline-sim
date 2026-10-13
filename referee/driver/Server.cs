@@ -29,6 +29,9 @@ public static partial class Driver
     /// <summary>Frame cap while waiting for work, so an idle server does not spin a core.</summary>
     private const int IdleFps = 20;
 
+    /// <summary>Exit code of a server that retires itself because a fight left the game's state stale.</summary>
+    private const int RetireExit = 5;
+
     private static string? _hbPath;
     private static string _status = "boot";
     private static long _lastHbWrite;
@@ -138,6 +141,16 @@ public static partial class Driver
             AppendLine(outPath, result);
             File.Delete(taken);
             _done++;
+
+            if (StaleState() is { } stale)
+            {
+                // A fresh process for the next fight (Settle.cs StaleState): this one would wait for the stale
+                // turn flags in every fight from now on. The result is written and the claim gone, so nothing is
+                // re-queued; the dispatcher replaces the server (exit RetireExit, a "_retire" line says why).
+                GD.Print($"[referee] retiring after {_done} fights: game state left stale ({stale})");
+                AppendLine(outPath, new JsonObject { ["_retire"] = stale, ["_after"] = id, ["_pid"] = pid, ["_t"] = UnixMs() });
+                return RetireExit;
+            }
 
             _status = "idle";
             Heartbeat();

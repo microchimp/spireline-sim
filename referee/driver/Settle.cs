@@ -229,6 +229,10 @@ public static partial class Driver
                 }
 
                 first = false;
+                // A fallback model seen (Nodeless.MarkFallback) ends a nodeless attempt here, as in Idle():
+                // played on, its node-needing code (e.g. RollingBoulderPower.AfterPlayerTurnStart) throws
+                // out of the combat's turn flow and leaves CombatManager.EndingPlayerTurnPhaseTwo set.
+                Nodeless.ThrowIfFallback();
                 System.Threading.Interlocked.Exchange(ref _lastDriverFrame, (long)Engine.GetProcessFrames());
                 bool ok = FlagsSettled(me);
                 string sig = ok ? Signature(CombatManager.Instance.DebugOnlyGetState()) : "busy";
@@ -250,6 +254,26 @@ public static partial class Driver
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// What a fight left behind after its reset that a freshly started game does not have, or null.
+    /// The flags the settle reads (FlagsSettled) are set and cleared by the combat's own turn flow:
+    /// EndingPlayerTurnPhaseOne/Two (CombatManager EndPlayerTurnPhaseOne, AfterAllPlayersReadyToBeginEnemyTurn).
+    /// A flow cut short (an exception thrown out of it, or its combat cancelled mid-transition when the
+    /// driver breaks a fight off) never clears them, and CombatManager.Reset does not either, so every
+    /// later fight in this process would wait for them until "idle_timeout entering the room". Only
+    /// NMultiplayerTest reads them in the game; the process is retired instead of patched (Server.cs).
+    /// </summary>
+    internal static string? StaleState()
+    {
+        var cm = CombatManager.Instance;
+        var stale = new List<string>();
+        if (cm.IsInProgress) stale.Add("combat still in progress");
+        if (cm.EndingPlayerTurnPhaseOne) stale.Add("EndingPlayerTurnPhaseOne");
+        if (cm.EndingPlayerTurnPhaseTwo) stale.Add("EndingPlayerTurnPhaseTwo");
+        if (_inPlayerTurnSetupField != null && InPlayerTurnSetup(cm)) stale.Add("_inPlayerTurnSetup");
+        return stale.Count == 0 ? null : string.Join(", ", stale);
     }
 
     /// <summary>Busy frames in a row after which a settle waits at stock frame pacing.</summary>

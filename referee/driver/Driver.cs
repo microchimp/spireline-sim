@@ -164,6 +164,29 @@ public static partial class Driver
         GD.Print($"[referee] startup preload drained after {clock.ElapsedMilliseconds} ms");
     }
 
+    /// <summary>
+    /// Where a server's boot time goes (wall and process CPU since the process started, per stage after the main
+    /// menu), printed once as "[referee] boot: ...": the pool's boot time is paid by every server of every batch.
+    /// </summary>
+    private sealed class BootClock
+    {
+        private readonly System.Diagnostics.Process _proc = System.Diagnostics.Process.GetCurrentProcess();
+        private readonly List<string> _marks = new();
+        private double _wall, _cpu;
+
+        public BootClock() => Mark("menu");
+
+        public void Mark(string stage)
+        {
+            _proc.Refresh();
+            double wall = (DateTime.Now - _proc.StartTime).TotalMilliseconds, cpu = _proc.TotalProcessorTime.TotalMilliseconds;
+            _marks.Add($"{stage} +{wall - _wall:F0} ms ({cpu - _cpu:F0} ms CPU)");
+            (_wall, _cpu) = (wall, cpu);
+        }
+
+        public override string ToString() => string.Join(", ", _marks) + $"; total {_wall:F0} ms, {_cpu:F0} ms CPU";
+    }
+
     private static async Task RunJob(string jobPath)
     {
         var job = JsonNode.Parse(File.ReadAllText(jobPath))!.AsObject();
@@ -183,6 +206,8 @@ public static partial class Driver
             {
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             }
+
+            var boot = new BootClock();
 
             if (!NormalSettings)
             {
@@ -241,8 +266,10 @@ public static partial class Driver
 
             Lean.Configure(job, tree);  // frame-cost profiling (Lean.cs)
 
+            boot.Mark("patches");
             Nodeless.Configure(job);  // "nodeless": true (Nodeless.cs); off, nothing is installed
             _health = (bool?)job["health"] == true;
+            boot.Mark("nodeless");
 
             // The game's own preloader switch: background asset sessions only warm a cache,
             // and back-to-back runs (worse with many copies) hang waiting on one. Off, assets
@@ -256,7 +283,10 @@ public static partial class Driver
                 Engine.MaxFps = 0;
             }
             await WaitForStartupPreload(tree);
+            boot.Mark("preload");
             await Nodeless.Prepare();
+            boot.Mark("prepare");
+            GD.Print("[referee] boot: " + boot);
 
             ArmWatchdog();
             bool fastReset = (bool?)job["fast_reset"] == true && !NormalSettings;
@@ -271,6 +301,12 @@ public static partial class Driver
             {
                 results.Add(await PlaySpec(spec!.AsObject(), fastReset));
                 _done++;
+                if (StaleState() is { } stale)
+                {
+                    // Server mode retires the process here (Server.cs); a runs job cannot, so it says so.
+                    GD.Print($"[referee] warning: game state left stale after fight {_done} ({stale}); later fights may time out");
+                }
+
                 Save(outPath, results);  // after every fight: a hang or kill keeps what is done
                 Heartbeat();
             }
