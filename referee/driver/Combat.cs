@@ -1,6 +1,7 @@
 // Fight comparison, game side: choose a Neow option, walk into the first row-1 monster room, then
 // play seeded random legal actions, recording each action and the state after it.
 // Spec: {"kind": "combat", "seed", "character", "ascension", "neow": 0, "chooser_seed": 1, "max_actions": 80}
+// plus the setup keys (setup, use_potions, trace_setup, script) described in Setup.cs.
 
 using System;
 using System.Collections.Generic;
@@ -46,6 +47,17 @@ public static partial class Driver
         ScreenLog = selector.Log;
         dump.Remove("save");
         dump["steps"] = steps;
+        _extended = Extended(spec);
+        var setup = SetupItems(spec);
+        int fightAt = FightItem(setup);
+        bool trace = (bool?)spec["trace_setup"] == true;
+        var setupLog = new JsonArray();
+        if (_extended)
+        {
+            dump["setup"] = setup.DeepClone();
+            dump["use_potions"] = (bool?)spec["use_potions"] == true;
+            dump["setup_log"] = setupLog;
+        }
         try
         {
             // Coverage: cards added to the deck before Neow, the way any card joins a deck
@@ -73,6 +85,7 @@ public static partial class Driver
             await Idle();
             await ClaimRewards(selector.Log);
             GD.Print($"[referee] neow chosen; finished={neow.IsFinished} options={neow.CurrentOptions.Count}");
+            await RunSetup(setup, 0, fightAt < 0 ? setup.Count : fightAt, state, state.Players[0], setupLog, trace);
 
             // First monster room on row 1, lowest column.
             var target = state.Map.GetPointsInRow(1).Where(p => p.PointType == MapPointType.Monster)
@@ -81,14 +94,29 @@ public static partial class Driver
             Heartbeat();
             dump["room"] = new JsonArray(target.coord.col, target.coord.row);
             GD.Print($"[referee] entering {target.coord.col},{target.coord.row}");
-            await WithTimeout(run.EnterMapCoord(target.coord), 60, "EnterMapCoord");
+            if (fightAt >= 0)
+            {
+                dump["fight"] = await EnterFight(setup[fightAt]!.AsObject(), state, target);
+            }
+            else
+            {
+                await WithTimeout(run.EnterMapCoord(target.coord), 60, "EnterMapCoord");
+            }
+
             await Idle();
+            if (fightAt >= 0)
+            {
+                await RunSetup(setup, fightAt + 1, setup.Count, state, state.Players[0], setupLog, trace);
+            }
             GD.Print($"[referee] in room; combat={CombatManager.Instance.IsInProgress}");
 
             timing["enter_room"] = phase.ElapsedMilliseconds;
             dump["cost_setup"] = Cost();
             var rng = new Random((int?)spec["chooser_seed"] ?? 1);
             int maxActions = (int?)spec["max_actions"] ?? 80;
+            var script = spec["script"] as JsonArray;
+            if (script != null) maxActions = script.Count;
+            bool usePotions = (bool?)spec["use_potions"] == true;
             Player player = state.Players[0];
             steps.Add(new JsonObject { ["action"] = null, ["state"] = Snapshot(state, player) });
             for (int i = 0; i < maxActions && CombatManager.Instance.IsInProgress; i++)
@@ -113,9 +141,32 @@ public static partial class Driver
                     }
                 }
 
-                var (hi, ti) = options[rng.Next(options.Count)];
+                if (usePotions) AddPotionOptions(options, player, enemies);
+                int hi, ti;
+                if (script != null)
+                {
+                    var scripted = Scripted(script[i]!.AsObject(), hand, enemies, combat, player, out string? why);
+                    if (scripted == null)
+                    {
+                        dump["script_illegal"] = new JsonObject { ["step"] = i + 1, ["why"] = why };
+                        break;
+                    }
+
+                    (hi, ti) = scripted.Value;
+                }
+                else
+                {
+                    (hi, ti) = options[rng.Next(options.Count)];
+                }
+
                 JsonObject action;
-                if (hi < 0)
+                int potionSlot = hi <= -2 ? -2 - hi : -1;
+                PotionModel? potion = potionSlot >= 0 ? player.PotionSlots[potionSlot] : null;
+                if (potionSlot >= 0)
+                {
+                    action = UsePotion(potionSlot, ti >= 0 ? enemies[ti] : null, ti, combat, player);
+                }
+                else if (hi < 0)
                 {
                     action = new JsonObject { ["kind"] = "end_turn" };
                     run.ActionQueueSynchronizer.RequestEnqueue(new EndPlayerTurnAction(player, combat.RoundNumber));
@@ -140,6 +191,11 @@ public static partial class Driver
                     dump["error"] = $"idle_timeout after step {i}: {action.ToJsonString()}";
                     break;
                 }
+                if (potion != null)
+                {
+                    action["used"] = !ReferenceEquals(player.PotionSlots[potionSlot], potion);
+                }
+
                 steps.Add(new JsonObject { ["action"] = action, ["state"] = Snapshot(state, player) });
                 Heartbeat();
                 GD.Print($"[referee] step {i}: {action.ToJsonString()}");
@@ -233,7 +289,7 @@ public static partial class Driver
             .Select(c => (JsonNode)new JsonArray(c.Id.Entry, c.IsUpgraded)).ToArray());
         static JsonArray Powers(Creature c) => new(c.Powers.Select(p => (JsonNode)new JsonArray(p.Id.Entry, p.Amount)).ToArray());
         var me = player.Creature;
-        return new JsonObject
+        var snap = new JsonObject
         {
             ["in_combat"] = CombatManager.Instance.IsInProgress,
             ["round"] = combat?.RoundNumber,
@@ -253,5 +309,7 @@ public static partial class Driver
             }).ToArray()),
             ["rng"] = Counters(run.Rng),
         };
+        if (_extended) Decorate(snap, player);
+        return snap;
     }
 }
