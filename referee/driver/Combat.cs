@@ -202,6 +202,7 @@ public static partial class Driver
                 || (cm.IsInProgress && (cm.PlayerActionsDisabled || combat?.CurrentSide != CombatSide.Player));
             string sig = busy ? "busy" : Signature(combat);
             stable = !busy && sig == last ? stable + 1 : 0;
+            Lean.QuietFrames = stable;
             last = sig;
         }
 

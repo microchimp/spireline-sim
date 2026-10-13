@@ -104,6 +104,8 @@ def main() -> int:
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
     ap.add_argument("--no-patches", action="store_true", help="play without the step 2 speed patches (driver/Patches.cs)")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
+    ap.add_argument("--job-opt", action="append", default=[], metavar="KEY=JSON",
+                    help="extra job key for every server, e.g. profile=true (driver/Lean.cs); repeatable")
     a = ap.parse_args()
 
     game = a.game.resolve()
@@ -119,6 +121,9 @@ def main() -> int:
         jopts["stall_s"] = a.stall_s
     if a.idle_frames is not None:
         jopts["idle_frames"] = a.idle_frames
+    for kv in a.job_opt:
+        k, _, v = kv.partition("=")
+        jopts[k] = json.loads(v)
     stall_s = int(jopts.get("stall_s", 20))
     max_restarts = a.max_restarts if a.max_restarts is not None else 3 * n_act + 3
 

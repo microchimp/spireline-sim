@@ -183,6 +183,8 @@ public static partial class Driver
                 Patches.Apply();
             }
 
+            Lean.Configure(job, tree);  // frame-cost profiling (Lean.cs)
+
             // The game's own preloader switch: background asset sessions only warm a cache,
             // and back-to-back runs (worse with many copies) hang waiting on one. Off, assets
             // load on demand.
