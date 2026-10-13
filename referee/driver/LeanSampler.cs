@@ -83,7 +83,7 @@ internal static partial class Lean
             if (ranMs < 0.8 * wallMs) continue;
             int i = Array.BinarySearch(starts, rip);
             if (i < 0) i = ~i - 1;
-            string key = i >= 0 && rip < mods[i].e ? mods[i].name : "(jit code)";
+            string key = i >= 0 && rip < mods[i].e ? mods[i].name + ExportName(mods[i].b, rip) : "(jit code)";
             lock (_sampleLock)
             {
                 _byModule[key] = _byModule.GetValueOrDefault(key) + 1;
@@ -92,13 +92,61 @@ internal static partial class Lean
         }
     }
 
+    private static readonly Dictionary<long, (int[] rvas, string[] names)> _exports = new();
+
+    /// <summary>
+    /// "!Export" for an address in a system DLL (the nearest export at or below it, read from the module's
+    /// own PE export table in memory), so ntdll / ucrtbase / KERNELBASE time names the call (heap, file,
+    /// wait). Empty for modules without exports, such as the game executable.
+    /// </summary>
+    private static string ExportName(long b, long rip)
+    {
+        if (!_exports.TryGetValue(b, out var ex))
+        {
+            var rvas = new List<int>();
+            var names = new List<string>();
+            try
+            {
+                int pe = Marshal.ReadInt32((IntPtr)(b + 0x3C));
+                int dirRva = Marshal.ReadInt32((IntPtr)(b + pe + 24 + 112));  // PE32+ DataDirectory[EXPORT]
+                if (dirRva != 0)
+                {
+                    long dir = b + dirRva;
+                    int n = Marshal.ReadInt32((IntPtr)(dir + 0x18));
+                    long funcs = b + Marshal.ReadInt32((IntPtr)(dir + 0x1C));
+                    long nameRvas = b + Marshal.ReadInt32((IntPtr)(dir + 0x20));
+                    long ords = b + Marshal.ReadInt32((IntPtr)(dir + 0x24));
+                    for (int k = 0; k < n; k++)
+                    {
+                        int ord = (ushort)Marshal.ReadInt16((IntPtr)(ords + 2 * k));
+                        rvas.Add(Marshal.ReadInt32((IntPtr)(funcs + 4 * ord)));
+                        names.Add(Marshal.PtrToStringAnsi((IntPtr)(b + Marshal.ReadInt32((IntPtr)(nameRvas + 4 * k)))) ?? "?");
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                rvas.Clear();
+            }
+
+            var order = Enumerable.Range(0, rvas.Count).OrderBy(k => rvas[k]).ToArray();
+            ex = (order.Select(k => rvas[k]).ToArray(), order.Select(k => names[k]).ToArray());
+            _exports[b] = ex;
+        }
+
+        if (ex.rvas.Length == 0) return "";
+        int j = Array.BinarySearch(ex.rvas, (int)(rip - b));
+        if (j < 0) j = ~j - 1;
+        return j >= 0 ? "!" + ex.names[j] : "";
+    }
+
     /// <summary>Share (%) of the main thread's busy samples by module since the last call, and the sample count.</summary>
     private static JsonObject TakeModuleSplit()
     {
         lock (_sampleLock)
         {
             var j = new JsonObject { ["samples"] = _samples };
-            foreach (var (k, ms) in _byModule.OrderByDescending(kv => kv.Value).Take(14))
+            foreach (var (k, ms) in _byModule.OrderByDescending(kv => kv.Value).Take(24))
             {
                 j[k] = Math.Round(100 * ms / Math.Max(1, _samples), 1);
             }
