@@ -15,7 +15,7 @@ still_visuals are on unless --no-patches; --job-opt KEY=JSON sets any job key, l
   fast_tweens   true (default): awaited tweens finish at once (driver/Patches.cs).
   sleep_usec    0 (default): no per-frame padding (Godot's low-processor sleep, stock 6900); only safe with
                 the flag settle.
-  trace_frames  per-frame trace of each step in the step's "trace" (diagnostics).
+  trace_frames  per-frame trace of each step's settle in the step's "frame_trace" (diagnostics).
   step_costs    frames and main-thread megacycles per step in the step's "cost".
   idle_probe    N: idle N frames after step 0 and record a quiet frame's cost in "idle_probe".
   idle_timeout_s  seconds (and 600 frames) a settle waits before the fight ends with idle_timeout (default 10).
@@ -114,7 +114,8 @@ def strip(r: dict) -> dict:
 
 
 DIAG_KEYS = {"settle_audit", "idle_probe"}  # driver diagnostics: kept in the merged output, never verified
-DIAG_STEP_KEYS = {"cost", "trace"}
+# per-step instrumentation: step_costs, trace_frames (Settle.cs) and trace mode (Trace.cs)
+DIAG_STEP_KEYS = {"cost", "frame_trace", "trace", "hidden"}
 
 
 def comparable(r: dict) -> dict:
@@ -576,6 +577,15 @@ class Pool:
         self._kill_fn(s)
 
 
+def drop_keys(x, keys: set):
+    """x without the named keys at any depth: fields a newer driver adds that an older reference lacks."""
+    if isinstance(x, dict):
+        return {k: drop_keys(v, keys) for k, v in x.items() if k not in keys}
+    if isinstance(x, list):
+        return [drop_keys(v, keys) for v in x]
+    return x
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--game", type=Path, required=True)
@@ -606,6 +616,8 @@ def main() -> int:
                     help="share of fights whose flag settles are re-checked against the old six-frame rule (default 0.05)")
     ap.add_argument("--old-settle", action="store_true",
                     help="six-stable-frame settle, awaited tweens and stock frame pacing (before SPEED_PLAN steps 3-4)")
+    ap.add_argument("--verify-ignore", default="", help="comma-separated keys dropped at any depth before --verify-against "
+                    "compares (fields the reference predates, e.g. move,intents)")
     a = ap.parse_args()
 
     game = a.game.resolve()
@@ -657,8 +669,11 @@ def main() -> int:
         ref = json.loads(a.verify_against.read_text(encoding="utf-8"))["results"]
         same = same_steps = 0
         first_bad = []
+        ignore = {k for k in a.verify_ignore.split(",") if k}
         for i, r in enumerate(merged):
             g = ref[i % len(ref)]
+            if ignore:
+                r, g = drop_keys(r, ignore), drop_keys(g, ignore)
             cr, cg = comparable(r), comparable(g)
             same_steps += cr.get("steps") == cg.get("steps")
             if cr == cg:

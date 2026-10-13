@@ -8,7 +8,9 @@ by cause signature: (differing fields, the card of the action that led to the di
 `player` and `rng` split one level (player.hp, rng.Shuffle) because those are different causes.
 Each group gets a pack: one representative divergence, the entities involved, and where each
 entity lives in the decompiled game and in the emulator (paths only, no code). Decompiled paths
-are shown relative to the decompiled root, emulator paths relative to the repo root.
+are shown relative to the decompiled root, emulator paths relative to the repo root. When
+referee/trace_divergent.py has traced a fight of the group (<out>/traces/<seed>.trace.txt), its trace
+diff (the first event that differs inside the diverging step) is appended to the pack.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ EMU_FILES = ["Core/Effects/CardEffects.cs", "Core/Effects/PotionEffects.cs", "Co
 EMU_SRC = ROOT / "src" / "Sts2Emulator"
 PILES = ("hand", "draw", "discard", "exhaust")
 MAX_LINES = 60
+MAX_TRACE_LINES = 25
 
 
 def norm(s: str) -> str:
@@ -213,7 +216,20 @@ def pascal_tables(id_map: dict) -> dict:
 
 # ---------------------------------------------------------------- packs
 
-def build_pack(sig, items, loc: Locator, nm) -> str:
+def trace_section(seeds: list, traces: Path | None) -> list[str]:
+    """The trace diff (referee/trace_divergent.py) of the first seed of the group that has one."""
+    if traces is None or not traces.is_dir():
+        return []
+    for seed in seeds:
+        f = traces / f"{seed}.trace.txt"
+        if f.is_file():
+            body = f.read_text(encoding="utf-8").splitlines()
+            cut = body[:MAX_TRACE_LINES] + (["...(truncated)"] if len(body) > MAX_TRACE_LINES else [])
+            return ["", f"## Trace diff (seed {seed}; referee/trace_divergent.py)", "```", *cut, "```"]
+    return []
+
+
+def build_pack(sig, items, loc: Locator, nm, traces: Path | None = None) -> str:
     fields, card, enemies = sig
     rep = min(items, key=lambda it: it["step"])
     gv, ev, d = rep["gv"], rep["ev"], rep["diffs"]
@@ -268,6 +284,7 @@ def build_pack(sig, items, loc: Locator, nm) -> str:
         L.append(f"- ...(+{len(uniq) - 12} more entities)")
     if len(L) > MAX_LINES:
         L = L[: MAX_LINES - 1] + ["...(truncated)"]
+    L += trace_section(seeds, traces)
     return "\n".join(L) + "\n"
 
 
@@ -303,7 +320,7 @@ def run(game_path, emu_path, out: Path, max_groups=20, id_map_path=None, decompi
            f"{len(games)} fights: {same} identical, {total} diverging in {len(ordered)} groups, {errors} with errors.", ""]
     for n, (sig, items) in enumerate(ordered[:max_groups], 1):
         fname = f"g{n:02d}_{slug(sig)}.md"
-        (out / fname).write_text(build_pack(sig, items, loc, nm), encoding="utf-8")
+        (out / fname).write_text(build_pack(sig, items, loc, nm, out / "traces"), encoding="utf-8")
         idx.append(f"{n}. [{len(items)}] {', '.join(sig[0])} after {sig[1]} vs {', '.join(sig[2])} "
                    f"- {fname} (e.g. {items[0]['seed']})")
     if len(ordered) > max_groups:

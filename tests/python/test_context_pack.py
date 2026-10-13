@@ -68,6 +68,19 @@ class ContextPackTest(unittest.TestCase):
             self.assertIn("card STRIKE_IRONCLAD", body)
             self.assertNotIn("{", body)  # no pasted source
 
+    def test_trace_diff_of_a_seed_in_the_group_is_folded_in(self):
+        fights = [fight("AAA", 21, 20), fight("BBB", 21, 19)]
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            (t / "g.json").write_text(json.dumps({"results": [f[0] for f in fights]}))
+            (t / "e.json").write_text(json.dumps({"results": [f[1] for f in fights]}))
+            (t / "packs" / "traces").mkdir(parents=True)
+            (t / "packs" / "traces" / "BBB.trace.txt").write_text("BBB step 1: play X\n  FIRST DIFFERENCE here\n", encoding="utf-8")
+            cp.run(t / "g.json", t / "e.json", t / "packs")
+            body = sorted((t / "packs").glob("g0*.md"))[0].read_text(encoding="utf-8")
+            self.assertIn("## Trace diff (seed BBB", body)
+            self.assertIn("FIRST DIFFERENCE here", body)
+
 
 if __name__ == "__main__":
     unittest.main()

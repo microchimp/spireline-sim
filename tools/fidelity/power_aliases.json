@@ -1,0 +1,16 @@
+{
+  "_about": "Game powers the emulator keeps under another buff. Read by tools/fidelity/fight_compare.py (comparing) and tools/emudump/Reanchor.cs (writing the game's powers back), so both directions use one table. Keys are power keys: the game's power id, or the emulator's BuffId name, in UPPER_SNAKE without _POWER.",
+  "emu_rename": {
+    "CRIMSON_MANTLE_BLOCK": "CRIMSON_MANTLE",
+    "NEXT_TURN_ENERGY": "ENERGY_NEXT_TURN",
+    "NEXT_TURN_DRAW": "DRAW_CARDS_NEXT_TURN"
+  },
+  "_folds": "Every subclass of the game's TemporaryStrengthPower (TemporaryDexterityPower, TemporaryFocusPower) is one emulator buff holding the summed amounts as they stand; the owner sets the direction.",
+  "folds": {
+    "TEMPORARY_STRENGTH": ["SETUP_STRIKE", "FLEX_POTION", "COORDINATE", "DYING_STAR", "FEEDING_FRENZY", "REPTILE_TRINKET",
+                           "DARK_SHACKLES", "MANGLE", "PIERCING_WAIL", "SHACKLING_POTION", "CRUSH_UNDER",
+                           "MONARCHS_GAZE_STRENGTH_DOWN", "ENFEEBLING_TOUCH"],
+    "TEMPORARY_DEXTERITY": ["ANTICIPATE", "HELICAL_DART", "SPEED_POTION"],
+    "TEMPORARY_FOCUS": ["FOCUSED_STRIKE", "HOTFIX", "SYNCHRONIZE"]
+  }
+}

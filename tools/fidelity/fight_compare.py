@@ -10,9 +10,11 @@ powers; and each combat RNG stream's call count.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import re
 import sys
+from pathlib import Path
 
 
 def snake(name: str) -> str:
@@ -43,31 +45,68 @@ NOT_POWERS = {
 }
 
 # Emulator buff -> the game power with the same rules and amount.
-EMU_RENAME = {
-    "CRIMSON_MANTLE_BLOCK": "CRIMSON_MANTLE",  # CrimsonMantlePower.Amount is the block per turn
-    "NEXT_TURN_ENERGY": "ENERGY_NEXT_TURN",
-    "NEXT_TURN_DRAW": "DRAW_CARDS_NEXT_TURN",
-}
+# The tables live in power_aliases.json, which tools/emudump/Reanchor.cs reads too, so writing the
+# game's powers back into the emulator and comparing them use one mapping. CrimsonMantlePower.Amount
+# is the block per turn (CRIMSON_MANTLE_BLOCK).
+_ALIASES = json.loads((Path(__file__).with_name("power_aliases.json")).read_text(encoding="utf-8"))
+EMU_RENAME = dict(_ALIASES["emu_rename"])
 
-# Every subclass of the game's TemporaryStrengthPower is one emulator TEMPORARY_STRENGTH buff.
-# The emulator keeps its magnitude and lets the owner set the direction (the player's is a gain
-# taken back at end of turn, an enemy's is a loss given back), so the game amounts are summed
-# as they stand. IsPositive=false subclasses (Dark Shackles, Mangle...) only sit on enemies.
-TEMP_STRENGTH = {"SETUP_STRIKE", "FLEX_POTION", "COORDINATE", "DYING_STAR", "FEEDING_FRENZY", "REPTILE_TRINKET",
-                 "DARK_SHACKLES", "MANGLE", "PIERCING_WAIL", "SHACKLING_POTION", "CRUSH_UNDER",
-                 "MONARCHS_GAZE_STRENGTH_DOWN", "ENFEEBLING_TOUCH"}
+# Every subclass of the game's TemporaryStrengthPower is one emulator TEMPORARY_STRENGTH buff (and
+# TemporaryDexterityPower's, TemporaryFocusPower's likewise). The emulator keeps its magnitude and lets
+# the owner set the direction (the player's is a gain taken back at end of turn, an enemy's is a loss
+# given back), so the game amounts are summed as they stand. IsPositive=false subclasses (Dark
+# Shackles, Mangle...) only sit on enemies.
+FOLDS = {sub: buff for buff, subs in _ALIASES["folds"].items() for sub in subs}
+TEMP_STRENGTH = {sub for sub, buff in FOLDS.items() if buff == "TEMPORARY_STRENGTH"}
+
+
+# Enemy moves in one vocabulary. The game records MonsterModel.NextMove's intents (referee/driver/Combat.cs
+# Intents: [type] or [type, base damage per hit, hits]); the emulator its Intent (Core/Enemy.cs IntentType
+# numbers) and the move's second intent. What both can say: the kind of the move's first intent, and the
+# damage-carrying intent's base damage and hits. The game's StatusIntent (a status card into the deck) and
+# DebuffStrong are Debuffs to the emulator, and a stun is its STUNNED buff, the game's StunIntent move.
+EMU_INTENT = {0: "ATTACK", 1: "DEFEND", 2: "BUFF", 3: "DEBUFF", 4: "OTHER"}
+GAME_INTENT = {"Attack": "ATTACK", "DeathBlow": "ATTACK", "Defend": "DEFEND", "Buff": "BUFF", "Debuff": "DEBUFF",
+               "DebuffStrong": "DEBUFF", "StatusCard": "DEBUFF", "CardDebuff": "DEBUFF", "Stun": "STUN"}
+
+
+def game_intent(e: dict):
+    """The game enemy's next move as {kind, attack}, or None for a record made before moves were recorded."""
+    if "intents" not in e:
+        return None
+    its = e["intents"]
+    kind = GAME_INTENT.get(its[0][0], "OTHER") if its else "NONE"
+    attack = next(([i[1], i[2]] for i in its if len(i) >= 3), None)
+    return {"kind": kind, "attack": attack}
+
+
+def emu_intent(e: dict):
+    it = e.get("intent")
+    if it is None:
+        return None
+    if any(power(b["name"]) == "STUNNED" for b in e.get("buffs", [])):
+        return {"kind": "STUN", "attack": None}
+    sec = it.get("secondary")
+    if it["type"] == 0 or it.get("carries_damage"):
+        attack = [it["magnitude"], it["hits"]]
+    elif sec and (sec["type"] == 0 or sec.get("carries_damage")):
+        attack = [sec["magnitude"], sec["hits"]]
+    else:
+        attack = None
+    # A move whose number is damage leads with its attack in the game (Core/Enemy.cs Intent.CarriesDamage).
+    kind = "ATTACK" if it.get("carries_damage") else EMU_INTENT.get(it["type"], "OTHER")
+    return {"kind": kind, "attack": attack}
 
 
 def game_powers(raw: list) -> list:
-    out, temp = [], 0
+    out, folded = [], collections.Counter()
     for n, a in raw:
         name = power(n)
-        if name in TEMP_STRENGTH:
-            temp += a
+        if name in FOLDS:
+            folded[FOLDS[name]] += a
         else:
             out.append([name, a])
-    if temp:
-        out.append(["TEMPORARY_STRENGTH", temp])
+    out += [[k, v] for k, v in folded.items() if v]
     return sorted(out)
 
 
@@ -88,7 +127,7 @@ def emu_view(st: dict, nm: dict) -> dict:
         "discard": [card(c) for c in s["piles"]["discard"]],
         "exhaust": [card(c) for c in s["piles"]["exhaust"]],
         "enemies": [{"name": nm["enemies"].get(e["def_id"], e["def_id"]), "hp": e["hp"], "block": e["block"],
-                     "powers": powers(e["buffs"])} for e in s["enemies"] if e["hp"] > 0],
+                     "powers": powers(e["buffs"]), "intent": emu_intent(e)} for e in s["enemies"] if e["hp"] > 0],
         "rng": st["rng"],
     }
 
@@ -102,17 +141,32 @@ def game_view(st: dict) -> dict:
         "player": {"hp": p["hp"], "max_hp": p["max_hp"], "block": p["block"], "energy": p["energy"],
                    "powers": game_powers(p["powers"])},
         "hand": st["hand"], "draw": st["draw"], "discard": st["discard"], "exhaust": st["exhaust"],
-        "enemies": [{"name": e["name"], "hp": e["hp"], "block": e["block"], "powers": game_powers(e["powers"])}
-                    for e in st["enemies"] if e["hp"] > 0],
+        "enemies": [{"name": e["name"], "hp": e["hp"], "block": e["block"], "powers": game_powers(e["powers"]),
+                     "intent": game_intent(e)} for e in st["enemies"] if e["hp"] > 0],
         "rng": {k: v["counter"] for k, v in st["rng"].items() if k in (
             "Shuffle", "CombatTargets", "MonsterAi", "CombatCardSelection", "CombatCardGeneration",
             "CombatEnergyCosts", "CombatPotionGeneration", "CombatOrbGeneration", "Niche")},
     }
 
 
+def _recorded(a, b):
+    """Enemy lists without the intents one side did not record (a referee record older than intents)."""
+    if not (isinstance(a, list) and isinstance(b, list)):
+        return a, b
+    if not any(isinstance(x, dict) and "intent" in x for x in a + b):
+        return a, b
+    def drop(xs, ys):
+        return [{k: v for k, v in x.items() if k != "intent"}
+                if isinstance(x, dict) and (x.get("intent") is None or i >= len(ys) or not isinstance(ys[i], dict)
+                                            or ys[i].get("intent") is None) else x
+                for i, x in enumerate(xs)]
+    return drop(a, b), drop(b, a)
+
+
 def diff(a, b, path="") -> list:
     if isinstance(a, dict) and isinstance(b, dict):
         return [d for k in sorted(set(a) | set(b)) for d in diff(a.get(k), b.get(k), f"{path}.{k}")]
+    a, b = _recorded(a, b)
     return [] if a == b else [(path, a, b)]
 
 

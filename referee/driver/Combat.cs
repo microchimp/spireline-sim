@@ -101,7 +101,9 @@ public static partial class Driver
             dump["cost_setup"] = Cost();
             var rng = new Random((int?)spec["chooser_seed"] ?? 1);
             int maxActions = (int?)spec["max_actions"] ?? 80;
-            steps.Add(Step(null, Snapshot(state, player)));
+            // Trace mode, only for re-runs of fights that diverged (Trace.cs): off unless the spec asks.
+            if ((bool?)spec["trace"] == true) Trace.Begin(state, player);
+            steps.Add(Step(null, state, player));
             if (IdleProbe > 0)
             {
                 // Diagnostics: the cost of a frame in which nothing happens (the scene's own per-frame work).
@@ -164,7 +166,7 @@ public static partial class Driver
                     break;
                 }
 
-                steps.Add(Step(action, Snapshot(state, player)));
+                steps.Add(Step(action, state, player));
                 if (StepCosts)
                 {
                     steps[^1]!["cost"] = new JsonObject { ["frames"] = (long)(Engine.GetProcessFrames() - sf0), ["mcyc"] = Math.Round(MainThreadMcycles() - sc0) };
@@ -176,6 +178,10 @@ public static partial class Driver
         catch (Exception ex)
         {
             dump["error"] = ex.ToString();
+        }
+        finally
+        {
+            if (Trace.On) Trace.End();
         }
 
         timing["fight_end"] = phase.ElapsedMilliseconds;
@@ -213,18 +219,6 @@ public static partial class Driver
 
     /// <summary>Frames to idle after step 0 to measure a quiet frame's cost (job "idle_probe"; diagnostics).</summary>
     internal static int IdleProbe;
-
-    private static JsonObject Step(JsonObject? action, JsonObject snapshot)
-    {
-        var o = new JsonObject { ["action"] = action, ["state"] = snapshot };
-        if (_stepTrace != null)
-        {
-            o["trace"] = _stepTrace;
-            _stepTrace = null;
-        }
-
-        return o;
-    }
 
     private static async Task WithTimeout(Task task, double seconds, string what, Action? eachFrame = null)
     {
@@ -328,6 +322,28 @@ public static partial class Driver
         return sb.ToString();
     }
 
+    /// <summary>
+    /// One recorded step: the action and the state after it; with trace_frames the settle's per-frame trace
+    /// ("frame_trace", Settle.cs), and in trace mode what happened inside the step ("trace" and "hidden", Trace.cs).
+    /// </summary>
+    private static JsonObject Step(JsonObject? action, RunState state, Player player)
+    {
+        var step = new JsonObject { ["action"] = action, ["state"] = Snapshot(state, player) };
+        if (_stepTrace != null)
+        {
+            step["frame_trace"] = _stepTrace;
+            _stepTrace = null;
+        }
+
+        if (Trace.On)
+        {
+            step["trace"] = Trace.TakeStep();
+            step["hidden"] = Trace.Hidden();
+        }
+
+        return step;
+    }
+
     private static JsonObject Snapshot(RunState run, Player player)
     {
         var combat = CombatManager.Instance.DebugOnlyGetState();
@@ -353,8 +369,44 @@ public static partial class Driver
             {
                 ["name"] = e.Monster?.Id.Entry, ["hp"] = e.CurrentHp, ["max_hp"] = e.MaxHp, ["block"] = e.Block,
                 ["powers"] = Powers(e),
+                // The move the monster will perform next (MonsterModel.NextMove), so a wrong enemy
+                // move shows at the step it is chosen, not turns later when its effects land.
+                ["move"] = e.Monster?.NextMove?.Id,
+                ["intents"] = Intents(e),
             }).ToArray()),
             ["rng"] = Counters(run.Rng),
         };
+    }
+
+    /// <summary>
+    /// The next move's intents (MoveState.Intents): [type] or, for an attack, [type, base damage per
+    /// hit, hits]; a status intent adds its card count. Base damage is <c>AttackIntent.DamageCalc</c>,
+    /// before the damage hooks (Strength, Weak, ...) that the powers already show.
+    /// </summary>
+    private static JsonArray Intents(Creature e)
+    {
+        var o = new JsonArray();
+        var intents = e.Monster?.NextMove?.Intents;
+        if (intents == null) return o;
+        foreach (var it in intents)
+        {
+            var one = new JsonArray(it.IntentType.ToString());
+            if (it is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent atk)
+            {
+                int dmg;
+                try { dmg = atk.DamageCalc == null ? -1 : (int)atk.DamageCalc(); }
+                catch (Exception) { dmg = -1; }  // a calc reading state that is not there at this moment
+                one.Add(dmg);
+                one.Add(atk.Repeats);
+            }
+            else if (it is MegaCrit.Sts2.Core.MonsterMoves.Intents.StatusIntent st)
+            {
+                one.Add(st.CardCount);
+            }
+
+            o.Add(one);
+        }
+
+        return o;
     }
 }

@@ -173,6 +173,9 @@ static class Fight
             }
         }
 
+        // The snapshot's intent lacks the move's second declared intent (it derives it on load).
+        var se = snap["enemies"]!.AsArray();
+        for (int i = 0; i < se.Count && i < c.Enemies.Count; i++) se[i]!["intent"] = IntentJson(c.Enemies[i]);
         o["snapshot"] = snap;
         o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());
         int N(CountingRandom? r) => r?.CallCount ?? -1;
@@ -183,6 +186,25 @@ static class Fight
             ["CombatEnergyCosts"] = N(c.EnergyCostRng), ["CombatPotionGeneration"] = N(c.PotionGenerationRng),
             ["CombatOrbGeneration"] = N(c.OrbGenerationRng), ["Niche"] = N(c.NicheHpRng),
         };
+        return o;
+    }
+
+    /// <summary>
+    /// The emulator's own move for one enemy: its announced intent (type is the IntentType enum, magnitude
+    /// the base damage per hit for an attack), the second intent its move declares, and the AI position
+    /// that chose it. tools/fidelity/fight_compare.py maps this and the game's MoveState intents to one
+    /// vocabulary; move_index/last_move only explain, they are not compared.
+    /// </summary>
+    internal static JsonObject IntentJson(EnemyState en)
+    {
+        static JsonObject One(Intent it) => new()
+        {
+            ["type"] = (int)it.Type, ["magnitude"] = it.Magnitude, ["hits"] = it.Hits, ["carries_damage"] = it.CarriesDamage,
+        };
+        var o = One(en.CurrentIntent);
+        o["secondary"] = en.SecondaryIntent is { } s ? One(s) : null;
+        o["move_index"] = en.MoveIndex;
+        o["last_move"] = en.LastMove;
         return o;
     }
 }

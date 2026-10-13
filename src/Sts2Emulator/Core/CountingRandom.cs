@@ -82,24 +82,28 @@ public sealed class CountingRandom : Random
     public override int Next(int maxValue)
     {
         CallCount++;
+        CombatTrace.RngCall?.Invoke(this);
         return _rng.Next(maxValue);
     }
 
     public override int Next()
     {
         CallCount++;
+        CombatTrace.RngCall?.Invoke(this);
         return _rng.Next(int.MaxValue);
     }
 
     public override int Next(int minValue, int maxValue)
     {
         CallCount++;
+        CombatTrace.RngCall?.Invoke(this);
         return _rng.Next(minValue, maxValue);
     }
 
     public override double NextDouble()
     {
         CallCount++;
+        CombatTrace.RngCall?.Invoke(this);
         return _rng.NextDouble();
     }
 }

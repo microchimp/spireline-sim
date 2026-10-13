@@ -9,12 +9,16 @@ action is applied, and the result is compared with the game's S(j) with the same
 fight_compare. A step that matches verifies its card; one that differs is a divergence of that
 card (or of the end of turn), whatever happened before it.
 
-A fight stops being re-anchorable when the emulator's enemy move state can no longer be trusted. The
-game's snapshot does not say what an enemy intends, so it is carried over from the emulator's own
-state, and the first end-of-turn step whose result differs in anything an enemy's move touches
-(the enemies, the player's HP, block or powers, the monster AI and target streams) ends the fight's
-re-anchoring there. So does an enemy or card the emulator has no id for, or an enemy the game has
-and the emulator lacks. Steps after the stop are reported as not re-anchored.
+Enemy moves. A referee record now holds each enemy's next move (its intents), and EmuDump compares
+the emulator's announced moves with them before every step, putting the emulator's AI on the game's
+move where its own state allows ("moves": same / set / unknown). An end of turn is judged when the
+moves before it are the game's and left unjudged when they could not be put there; a wrong move
+chosen by the emulator is a difference in .enemies at the step that chose it. Records made before
+intents were recorded fall back to a guess: the first end-of-turn step whose result differs in
+anything an enemy's move touches (the enemies, the player's HP, block or powers, the monster AI and
+target streams) ends the fight's re-anchoring there (or, with --after-enemy-desync plays, leaves
+later ends of turn unjudged). An enemy or card the emulator has no id for, or an enemy the game has
+and the emulator lacks, ends it too. Steps after a stop are reported as not re-anchored.
 
 A diverging step is "primary" when the step before it matched, and "knock-on" otherwise: the
 hidden state it started from (relic counters, card modifiers, AI state) may already be wrong.
@@ -31,7 +35,7 @@ import sys
 
 from .fight_compare import EMU_RENAME, diff, emu_view, game_view, names
 
-# What an enemy's move can change that the snapshot shows. The move itself (its id and intent) is not
+# What an enemy's move can change that the snapshot shows. In records without intents the move itself is not
 # recorded, so a difference here is the only evidence that the emulator's enemy chose another move.
 ENEMY_PATHS = (".enemies", ".rng.MonsterAi", ".rng.CombatTargets")
 # Powers the monsters put on the player. A difference in any other player power at the end of a turn is
@@ -89,12 +93,24 @@ def _mask(gv: dict, ev: dict, buff_keys, internal) -> None:
             e["powers"] = [p for p in e["powers"] if p[0] not in internal]
 
 
+def _mask_moves(gv: dict, ev: dict, names_: set) -> None:
+    """Leave out the moves of enemies whose move the emulator could not be put on: a card play is not judged on them."""
+    for view in (gv, ev):
+        for e in view.get("enemies", []):
+            if e["name"] in names_:
+                e.pop("intent", None)
+
+
 def analyse(game: dict, anchored: dict, nm: dict, after_desync: str = "stop", keys=None) -> dict:
     """Per-step verdicts for one fight. Steps are indexed as in the game's record (0 is the start).
 
     ``after_desync``: what happens once an end of turn has differed in a way the enemies could explain.
     "stop" ends the fight's re-anchoring there; "plays" goes on with card plays (which an enemy's move
     state cannot change) and leaves later ends of turn unjudged.
+
+    A record with the enemies' moves (the game's intents, EmuDump's "moves" per step) needs no guess: an
+    end of turn is judged when the emulator's enemies announce the game's moves before it, as they are
+    or once EmuDump has put the AI on them ("same", "set"), and unjudged when it could not ("unknown").
     """
     steps = []
     out = {"seed": game.get("seed"), "steps": steps, "stop": None, "first_divergence": None,
@@ -102,6 +118,8 @@ def analyse(game: dict, anchored: dict, nm: dict, after_desync: str = "stop", ke
     gsteps, rsteps = game.get("steps", []), anchored.get("steps", [])
     prev_matched = True
     desync = False
+    # Moves recorded on both sides: the per-step "moves" verdict replaces the end-of-turn guess.
+    known = any(r.get("moves") in ("same", "set", "unknown") for r in rsteps[1:])
     for j, gs in enumerate(gsteps):
         if j >= len(rsteps):
             out["stop"] = out["stop"] or {"at": j, "why": "the emulator's fight had ended or could not start"}
@@ -118,23 +136,28 @@ def analyse(game: dict, anchored: dict, nm: dict, after_desync: str = "stop", ke
             out["first_divergence"] = j
         if gv.get("in_combat") and ev.get("in_combat"):
             _mask(gv, ev, *(keys or (None, None)))
+            if rs.get("moves") == "unknown":
+                _mask_moves(gv, ev, {gsteps[j - 1]["state"]["enemies"][i]["name"] for i in rs.get("moves_unknown", [])})
         d = diff(gv, ev)
         problems = [c for c in rs.get("choices", []) if c.get("error") or c.get("unexpected_selection")]
         verdict = "error" if rs.get("error") else ("match" if not d and not problems else "diverge")
-        if desync and kind == "end_turn":
-            verdict = "unjudged"  # the enemies' move state is no longer the game's
+        if kind == "end_turn" and (desync or rs.get("moves") == "unknown"):
+            verdict = "unjudged"  # the enemies' move state is not the game's
         step = {"j": j, "kind": kind, "card": card, "verdict": verdict, "paths": [p for p, _, _ in d],
                 "primary": verdict != "match" and prev_matched, "patched": rs.get("patched", []),
-                "error": rs.get("error"), "choice_problems": problems}
+                "error": rs.get("error"), "choice_problems": problems, "moves": rs.get("moves"),
+                "moves_carried": bool(rs.get("moves_carried"))}
         steps.append(step)
         prev_matched = verdict in ("match", "unjudged")
         if kind == "start":
             # The start state is the emulator's own; only an enemy it cannot have is fatal. Hit points
             # that differ (a different HP roll) are patched and the fight carries on.
-            if _names(gv) != _names(ev) or any(p == ".rng.MonsterAi" for p, _, _ in d):
+            # With moves recorded, another AI stream position only matters through the moves, which
+            # each step checks.
+            if _names(gv) != _names(ev) or (not known and any(p == ".rng.MonsterAi" for p, _, _ in d)):
                 out["stop"] = {"at": 1, "why": "the fight starts with other enemies or another monster AI position"}
                 break
-        elif kind == "end_turn" and not desync and d and enemy_suspect(d, gv, ev):
+        elif kind == "end_turn" and not known and not desync and d and enemy_suspect(d, gv, ev):
             if after_desync == "stop":
                 out["stop"] = {"at": j + 1, "why": f"enemy move/intent not reproducible after the end of turn at step {j}"}
                 break
@@ -155,6 +178,8 @@ def summarise(analyses: list) -> dict:
         tot["transitions"] += a["transitions"]
         tried = [s for s in a["steps"] if s["j"] > 0 and s["verdict"] != "unjudged"]
         tot["unjudged_end_turns"] += len([s for s in a["steps"] if s["verdict"] == "unjudged"])
+        tot["moves_set"] += len([s for s in a["steps"] if s.get("moves") == "set"])
+        tot["moves_carried"] += len([s for s in a["steps"] if s.get("moves_carried")])
         tot["reanchored"] += len(tried)
         # First-divergence method: steps before the first difference (the start counts as step 0).
         before = a["first_divergence"] if a["first_divergence"] is not None else len(a["steps"])
@@ -247,6 +272,9 @@ def main() -> int:
     print(f"fights {t.get('fights', 0)} ({t.get('fights_identical', 0)} identical end to end, {t.get('fights_stopped', 0)} stopped re-anchoring, "
           f"{t.get('fights_desynced', 0)} with unjudged ends of turn, {t.get('fights_unusable', 0)} without a game result)")
     print(f"steps in those fights {t.get('transitions', 0)}: re-anchored {t.get('reanchored', 0)}, not re-anchored {t.get('not_reanchored', 0)}")
+    if t.get("moves_set") or t.get("moves_carried") or t.get("unjudged_end_turns"):
+        print(f"enemy moves put on the game's: {t.get('moves_set', 0)} steps by AI position, {t.get('moves_carried', 0)} by a "
+              f"redrawn choice; ends of turn left unjudged: {t.get('unjudged_end_turns', 0)}")
     print(f"verified {t.get('verified', 0)} (first-divergence method: {t.get('verified_before', 0)}), "
           f"diverging {t.get('diverging', 0)} ({t.get('diverging_primary', 0)} primary, {t.get('diverging_knock_on', 0)} knock-on)")
     for why, n in sm["stops"].items():
