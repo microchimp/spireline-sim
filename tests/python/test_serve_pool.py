@@ -183,6 +183,22 @@ class PoolTest(unittest.TestCase):
             self.pool(check_build=refuse)
         self.assertFalse((self.dir / "run0").exists())
 
+    def test_a_result_without_a_seed_gets_the_seed_of_its_spec(self):
+        p = self.pool(servers=1)
+        ids = p.submit([spec(0, bad=True), spec(1)])
+        self.run_until_done(p)
+        merged = p.merged(ids)
+        self.assertEqual(merged[0]["seed"], spec(0)["seed"])
+        self.assertTrue(merged[0]["error"].startswith("bad spec file"))
+
+    def test_a_used_run_folder_is_refused(self):
+        p = self.pool(servers=1)
+        p.submit([spec(0)])
+        self.run_until_done(p)
+        with self.assertRaises(ValueError):
+            serve.Pool(self.dir / "game", p.run_dir, servers=1, spares=0, launch=fake_launch, check_build=lambda g: "x",
+                       profile_state=lambda: [], connections=lambda pids: {}, kill=kill, echo=None)
+
     def test_run_files_and_summary(self):
         p = self.pool(servers=2)
         p.submit([spec(i) for i in range(5)])

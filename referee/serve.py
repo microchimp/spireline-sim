@@ -142,6 +142,10 @@ class Pool:
         self.inbox, self.outdir = self.run_dir / "inbox", self.run_dir / "out"
         for d in (self.inbox, self.outdir):
             d.mkdir(parents=True, exist_ok=True)
+        if any(self.inbox.iterdir()) or any(self.outdir.iterdir()):
+            # A used run folder would mix in: its s<NN>.jsonl lines are read from offset 0 and their
+            # ids ("000000"...) are this run's ids too, and a leftover STOP ends every server.
+            raise ValueError(f"run folder {self.run_dir.name} was used before; give a new one")
         self.servers: list[Server] = []
         self.specs: dict[str, dict] = {}  # id -> spec, in submission order
         self.queue: collections.deque[str] = collections.deque()  # submitted, not yet written to the inbox
@@ -389,6 +393,8 @@ class Pool:
                 where = f" on spec {r['_fatal']}" if r.get("_fatal") is not None else ""
                 self.log(f"{s.name} server error{where}: {str(r.get('error'))[:300]}")
             elif rid not in self.results and rid in self.specs:
+                if "seed" not in r:  # the driver's "bad spec file" line cannot know it; the dispatcher does
+                    r["seed"] = self.specs[rid].get("seed")
                 self._finish(rid, r)
 
     def _check_ready(self, s: Server) -> None:

@@ -10,6 +10,7 @@ fight to the job's "out" file, deletes the claim, and exits 0 once STOP is in th
   {"crash": "always"}  exit 3 holding the claim; {"crash": "once"}: only the first time
   {"hang": "once"}     stop heartbeating and wait to be killed, the first time
   {"fatal": "once"}    write a server-error line ({"_fatal": id}) and exit 1, the first time
+  {"bad": true}        answer like a spec file that could not be read (an error line with no seed)
 """
 
 from __future__ import annotations
@@ -78,6 +79,11 @@ def main() -> int:
             with open(out, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"_fatal": rid, "error": "run-start exception"}) + "\n")
             return 1
+        if fake.get("bad"):
+            with open(out, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"error": "bad spec file: gone", "_id": rid, "_pid": pid, "_t": int(time.time() * 1000)}) + "\n")
+            taken.unlink()
+            continue
         time.sleep(fake.get("sleep", 0.02))
         result = {"seed": spec.get("seed"), "steps": [{"i": i} for i in range(spec.get("n_steps", 3))],
                   "timing_ms": {"play": 5, "reset": 1}, "cost": {"cpu_ms": 1}, "_id": rid, "_pid": pid,
