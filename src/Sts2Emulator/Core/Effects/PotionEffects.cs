@@ -185,7 +185,7 @@ public static class PotionEffects
                 // `CardPileCmd.AutoPlayFromDrawPile(..., 3, Top, forceExhaust: false)`.
                 // The same top-of-draw-pile auto-play loop MayhemPower uses, for a fixed
                 // count instead of a buff-driven one.
-                CombatEngine.AutoPlayFromDrawPileTop(state, 3, rng!);
+                CombatEngine.AutoPlayFromDrawPile(state, 3, rng!);
                 break;
             case 16: // Droplet of Precognition: DropletOfPrecognition.cs -- one card,
                 // CHOSEN from the whole draw pile, goes to hand

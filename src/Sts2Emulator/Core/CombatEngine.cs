@@ -1132,9 +1132,7 @@ public static class CombatEngine
             && GeneratedData.Cards.Get(state.DrawPile[0].DefId).Name == "IAmInvincible"
         )
         {
-            var invincible = state.DrawPile[0];
-            state.RemoveFromDrawPileAt(0);
-            AutoPlay(state, invincible, rng);
+            AutoPlayFromDrawPile(state, 1, rng);
         }
 
         Effects.CardEffects.KillDoomedEnemiesForTurnEnd(state);
@@ -3695,12 +3693,15 @@ public static class CombatEngine
     /// keeps what its old walk by position did: an escape is answered as a death there.
     /// </param>
     /// <param name="sweepAlways">Sweep the corpses even when nothing new died.</param>
+    /// <param name="sweep">Which corpses the answer sweeps; a stretch nested inside another
+    /// that answers its own deaths sweeps only what it answered.</param>
     private static void AnswerDeathsSince(
         CombatState state,
         in Baseline baseline,
         Random rng,
         bool countEscapes = false,
-        bool sweepAlways = false
+        bool sweepAlways = false,
+        CorpseSweep sweep = CorpseSweep.All
     )
     {
         List<EnemyState>? dead = null;
@@ -3719,7 +3720,7 @@ public static class CombatEngine
 
         if (dead is not null || sweepAlways)
         {
-            AnswerDeaths(state, dead, rng, CorpseSweep.All);
+            AnswerDeaths(state, dead, rng, sweep);
         }
     }
 
@@ -4311,27 +4312,12 @@ public static class CombatEngine
         }
     }
 
-    private static void AutoPlayMayhemCards(CombatState state, Random rng) =>
-        AutoPlayFromDrawPileTop(state, BuffSystem.Get(state.PlayerBuffs, BuffId.MayhemPower), rng);
-
     /// <summary>
-    /// Auto-plays the top <paramref name="count"/> cards of the draw pile, stopping early
-    /// if it runs out. MayhemPower's own loop, and also Distilled Chaos's whole effect --
-    /// `CardPileCmd.AutoPlayFromDrawPile(..., Top, forceExhaust: false)` for a fixed count
-    /// rather than a buff-driven one.
+    /// `MayhemPower.AfterAutoPrePlayPhaseEntered`:
+    /// `CardPileCmd.AutoPlayFromDrawPile(Amount, Top, forceExhaust: false)`.
     /// </summary>
-    internal static void AutoPlayFromDrawPileTop(CombatState state, int count, Random rng)
-    {
-        for (int i = 0; i < count && state.DrawPile.Count > 0; i++)
-        {
-            var card = state.DrawPile[0];
-            state.RemoveFromDrawPileAt(0);
-            var beforePlay = new Baseline(state);
-            AutoPlay(state, card, rng);
-            // A card play: its kills are answered inside it, before the next one plays.
-            AnswerDeathsSince(state, beforePlay, rng);
-        }
-    }
+    private static void AutoPlayMayhemCards(CombatState state, Random rng) =>
+        AutoPlayFromDrawPile(state, BuffSystem.Get(state.PlayerBuffs, BuffId.MayhemPower), rng);
 
     private static void ReturnQueuedCardsToHandBeforeDraw(CombatState state)
     {
@@ -4586,6 +4572,7 @@ public static class CombatEngine
         CardInstance card,
         CardDef def,
         Random rng,
+        bool forceExhaust,
         out int targetIndex
     )
     {
@@ -4606,9 +4593,9 @@ public static class CombatEngine
             return true;
         }
 
-        // `CardModel.MoveToResultPileWithoutPlaying`: the exhaust pile for an Exhaust card,
-        // else the discard.
-        if (ShouldExhaustAfterPlay(def, card))
+        // `CardModel.MoveToResultPileWithoutPlaying`: the exhaust pile for an Exhaust card or
+        // one Havoc forced (`ExhaustOnNextPlay`), else the discard.
+        if (forceExhaust || ShouldExhaustAfterPlay(def, card))
         {
             Effects.CardEffects.ExhaustCard(state, card, rng: rng);
         }
@@ -4627,7 +4614,7 @@ public static class CombatEngine
 
         // The card leaves hand whether or not the gate lets it be played.
         state.Hand.RemoveAt(handIndex);
-        if (!BeginAutoPlay(state, card, def, rng, out int targetIndex))
+        if (!BeginAutoPlay(state, card, def, rng, forceExhaust: false, out int targetIndex))
         {
             return;
         }
@@ -5225,13 +5212,18 @@ public static class CombatEngine
         ReleaseHeldPlayedCard(state);
     }
 
-    private static void AutoPlay(CombatState state, CardInstance card, Random rng)
+    private static void AutoPlay(
+        CombatState state,
+        CardInstance card,
+        Random rng,
+        bool forceExhaust = false
+    )
     {
         bool wasAutoPlaying = state.AutoPlaying;
         state.AutoPlaying = true;
         try
         {
-            AutoPlayCore(state, card, rng);
+            AutoPlayCore(state, card, rng, forceExhaust);
         }
         finally
         {
@@ -5239,15 +5231,82 @@ public static class CombatEngine
         }
     }
 
-    internal static bool AutoPlayFromDrawPile(CombatState state, CardInstance card, Random rng)
+    /// <summary>
+    /// `CardCmd.AutoPlay(card, null)` for a card already taken out of its pile, inside a
+    /// stretch that answers its own deaths. True when the fight is over.
+    /// </summary>
+    /// <remarks>
+    /// The card's kills are answered before the caller's next card plays, and only they are
+    /// swept: a death the enclosing stretch caused before this play (Uproar's own hits) is
+    /// that stretch's to answer, and sweeping its corpse here lost its death hooks.
+    /// </remarks>
+    internal static bool AutoPlayCard(
+        CombatState state,
+        CardInstance card,
+        Random rng,
+        bool forceExhaust = false
+    )
     {
         var beforePlay = new Baseline(state);
-        AutoPlay(state, card, rng);
-        AnswerDeathsSince(state, beforePlay, rng);
+        AutoPlay(state, card, rng, forceExhaust);
+        AnswerDeathsSince(state, beforePlay, rng, sweep: CorpseSweep.Answered);
         return PlayerIsDead(state) || NoPrimaryEnemyLeft(state);
     }
 
-    private static void AutoPlayCore(CombatState state, CardInstance card, Random rng)
+    /// <summary>
+    /// `CardPileCmd.AutoPlayFromDrawPile(count, Top, forceExhaust)`, which Havoc (1, forced),
+    /// Cascade, Mayhem, Distilled Chaos and I Am Invincible call.
+    /// </summary>
+    /// <remarks>
+    /// It takes ALL the cards first, `ShuffleIfNecessary` before each -- so an empty draw
+    /// pile pulls the discard back in, and a card drawn by one of the plays is never picked
+    /// up by the same call -- then plays them in order, stopping when the fight is over.
+    /// `drawPile.Cards.FirstOrDefault()` has no Unplayable filter; the gate files those away.
+    /// </remarks>
+    internal static void AutoPlayFromDrawPile(
+        CombatState state,
+        int count,
+        Random rng,
+        bool forceExhaust = false
+    )
+    {
+        if (count <= 0 || PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+        {
+            return;
+        }
+
+        var cards = new List<CardInstance>(count);
+        for (int i = 0; i < count; i++)
+        {
+            if (state.DrawPile.Count == 0 && state.DiscardPile.Count > 0)
+            {
+                Effects.CardEffects.ShuffleDiscardIntoDraw(state, rng);
+            }
+
+            if (state.DrawPile.Count == 0)
+            {
+                break;
+            }
+
+            cards.Add(state.DrawPile[0]);
+            state.RemoveFromDrawPileAt(0);
+        }
+
+        foreach (var card in cards)
+        {
+            if (AutoPlayCard(state, card, rng, forceExhaust))
+            {
+                break;
+            }
+        }
+    }
+
+    private static void AutoPlayCore(
+        CombatState state,
+        CardInstance card,
+        Random rng,
+        bool forceExhaust = false
+    )
     {
         var def = GeneratedData.Cards.Get(card.DefId);
 
@@ -5257,7 +5316,7 @@ public static class CombatEngine
         // refused there too, before the hooks: Cascade or Mayhem taking an Injury or an
         // Ascender's Bane off the draw pile moves it on without BeforeCardPlayed or
         // AfterCardPlayed ever running -- a Panache does not count it.
-        if (!BeginAutoPlay(state, card, def, rng, out int targetIndex))
+        if (!BeginAutoPlay(state, card, def, rng, forceExhaust, out int targetIndex))
         {
             return;
         }
@@ -5299,11 +5358,13 @@ public static class CombatEngine
 
         // Resolve status effects (Juggling, Rupture, etc. already handled in Apply or below).
 
+        // `GetResultPileTypeForCardPlay`: a Power leaves combat even when Havoc forced the
+        // exhaust (`ExhaustOnNextPlay` is read only after the Power check).
         if (def.Type == CardType.Power)
         {
             // Played powers leave hand without firing exhaust hooks.
         }
-        else if (ShouldExhaustAfterPlay(def, card))
+        else if (forceExhaust || ShouldExhaustAfterPlay(def, card))
         {
             Effects.CardEffects.ExhaustCard(state, card, rng: rng);
         }

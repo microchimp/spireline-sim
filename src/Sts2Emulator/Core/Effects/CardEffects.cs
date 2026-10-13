@@ -290,13 +290,13 @@ public static class CardEffects
             {
                 // Cascade used to grant Strength, which is a different card entirely.
                 // It is `CardPileCmd.AutoPlayFromDrawPile(..., CardPilePosition.Top)`,
-                // NOT Catastrophe's random pick -- see AutoPlayFromDrawPileTop.
+                // NOT Catastrophe's random pick -- see CombatEngine.AutoPlayFromDrawPile.
                 int count = state.Energy + (upgraded ? 1 : 0);
                 if (!state.AutoPlaying)
                 {
                     state.Energy = 0;
                 }
-                AutoPlayFromDrawPileTop(state, count, rng);
+                CombatEngine.AutoPlayFromDrawPile(state, count, rng);
                 break;
             }
 
@@ -878,23 +878,11 @@ public static class CardEffects
                 break;
 
             case IC.Havoc: // 1/0-cost, play top card of draw pile and exhaust it
-            {
-                if (state.DrawPile.Count > 0)
-                {
-                    var top = state.DrawPile[0];
-                    state.RemoveFromDrawPileAt(0);
-                    var topDef = GeneratedData.Cards.Get(top.DefId);
-                    // `top` must travel with the def. Omitted, `card` defaults to
-                    // `default(CardInstance)` -- DefId 0 -- and any nested effect that
-                    // touches its own instance files that zero into a pile, where it sits
-                    // harmlessly until something reads every card's NAME (Melancholy's
-                    // death hook, Kingly's draw hook) and `Cards.Get(0)` aborts the
-                    // process. The other two PlayNestedCard call sites already pass it.
-                    PlayNestedCard(topDef, top.Upgraded, state, rng, top);
-                    ExhaustCard(state, top, rng: rng);
-                }
+                // `Havoc.OnPlay`: `CardPileCmd.AutoPlayFromDrawPile(1, Top, forceExhaust:
+                // true)` -- the shared command (shuffle in an empty draw pile, the gate, the
+                // play's lifecycle), with the played card's exhaust forced.
+                CombatEngine.AutoPlayFromDrawPile(state, 1, rng, forceExhaust: true);
                 break;
-            }
 
             case IC.InfernalBlade: // 1/0-cost, add a random Ironclad Attack to hand free this turn
                 AddRandomInfernalBladeAttack(state, rng);
@@ -4162,46 +4150,6 @@ public static class CardEffects
     /// deterministic pick where the game rolls, and every later shuffle in the combat
     /// sliding as a result.
     /// </remarks>
-    /// <summary>
-    /// `CardPileCmd.AutoPlayFromDrawPile(count, CardPilePosition.Top)`: take `count` cards
-    /// off the FRONT of the draw pile -- `drawPile.Cards.FirstOrDefault()`, with no
-    /// shuffle and no Unplayable filter, so Ascender's Bane is taken like anything else.
-    /// </summary>
-    /// <remarks>
-    /// The command takes ALL of them first and only then plays them, which is why this
-    /// loop queues rather than resolving: a card drawn by one of these plays cannot be
-    /// picked up by the same Cascade. `ShuffleIfNecessary` runs before each take, so a
-    /// draw pile that runs dry pulls the discard back in mid-cascade.
-    /// </remarks>
-    private static void AutoPlayFromDrawPileTop(CombatState state, int count, Random rng)
-    {
-        var cards = new List<CardInstance>();
-        for (int i = 0; i < count; i++)
-        {
-            if (state.DrawPile.Count == 0 && state.DiscardPile.Count > 0)
-            {
-                ShuffleDiscardIntoDraw(state, rng);
-            }
-
-            if (state.DrawPile.Count == 0)
-            {
-                break;
-            }
-
-            var picked = state.DrawPile[0];
-            state.RemoveFromDrawPileAt(0);
-            cards.Add(picked);
-        }
-
-        foreach (var card in cards)
-        {
-            if (CombatEngine.AutoPlayFromDrawPile(state, card, rng))
-            {
-                break;
-            }
-        }
-    }
-
     /// <summary>
     /// Catastrophe's shape, and ONLY Catastrophe's: one card at a time, each an
     /// independent `Where(!Unplayable).StableShuffle(Rng.Shuffle).FirstOrDefault()` with a
