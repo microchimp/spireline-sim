@@ -990,6 +990,7 @@ public static class RunRewardGenerator
             !isReroll && HasRelic(state, Effects.RelicEffects.Driftwood);
 
         ApplyWingCharmToCardReward(state);
+        Effects.RelicEffects.MarkSilkenTressScreen(state);
     }
 
     /// <summary>

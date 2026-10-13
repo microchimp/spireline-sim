@@ -379,11 +379,42 @@ public static class RelicEffects
     /// take gets it, at amount 1. Not one option chosen off a stream like Wing Charm's --
     /// ALL of them, which is why this is asked per-card and draws nothing.
     /// </summary>
+    /// <remarks>
+    /// `SilkenTress.TryModifyCardRewardOptionsLate` does the same to the FIRST card reward
+    /// built after it is obtained, then sets `IsUsed` (`AfterModifyingCardRewardOptions`).
+    /// Its Counter carries that: 0 unused, 1 the screen on offer is its one, 2 spent
+    /// (<see cref="Run.RunRewardGenerator.PopulateCardReward"/> and the card screen's answer).
+    /// </remarks>
     public static Enchantment GlitterEnchantmentFor(Run.RunState state, CardInstance card) =>
-        state.Relics.Any(relic => relic.DefId == Glitter)
+        state.Relics.Any(relic => relic.DefId == Glitter || (relic.DefId == SilkenTress && relic.Counter == 1))
         && Enchantments.CanEnchant(card, Enchantment.Glam)
             ? Enchantment.Glam
             : Enchantment.None;
+
+    /// <summary>`SilkenTress`: loses all gold on pickup; the next card reward arrives Glam-enchanted.</summary>
+    public const int SilkenTress = Run.RunConstants.RelicSilkenTress;
+
+    /// <summary>A card reward screen is being built: Silken Tress claims it if still unused.</summary>
+    internal static void MarkSilkenTressScreen(Run.RunState state)
+    {
+        // Only the first screen built after pickup: a second build (a reroll, the next reward)
+        // finds IsUsed already set.
+        int i = state.Relics.FindIndex(relic => relic.DefId == SilkenTress);
+        if (i >= 0 && state.Relics[i].Counter < 2)
+        {
+            state.Relics[i] = state.Relics[i] with { Counter = state.Relics[i].Counter + 1 };
+        }
+    }
+
+    /// <summary>The card screen Silken Tress enchanted has been answered: it is used up.</summary>
+    internal static void SpendSilkenTress(Run.RunState state)
+    {
+        int i = state.Relics.FindIndex(relic => relic.DefId == SilkenTress);
+        if (i >= 0 && state.Relics[i].Counter == 1)
+        {
+            state.Relics[i] = state.Relics[i] with { Counter = 2 };
+        }
+    }
 
     /// <summary>`Glitter`: every eligible card reward arrives Glam-enchanted.</summary>
     public const int Glitter = 102;

@@ -2058,6 +2058,7 @@ public sealed class RunEngine
         State.LastingCandyRewardCard = 0;
         State.LastingCandyRewardUpgraded = false;
         State.CardRewardRerollAvailable = false;
+        Effects.RelicEffects.SpendSilkenTress(State);
 
         // Prayer Wheel and White Star each add a WHOLE extra CardReward, so the screen
         // comes back rather than the run moving on. Rolled here, when the previous offer
