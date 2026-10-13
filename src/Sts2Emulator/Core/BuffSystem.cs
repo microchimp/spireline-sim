@@ -382,12 +382,21 @@ public static class BuffSystem
     public static int CapHpLoss(int hpLoss, List<BuffState> defenderBuffs) =>
         Get(defenderBuffs, BuffId.Intangible) > 0 ? Math.Min(hpLoss, 1) : hpLoss;
 
-    public static int IncomingBlock(int baseBlock, List<BuffState> buffs, bool isDefend = false)
+    public static int IncomingBlock(int baseBlock, List<BuffState> buffs, bool isDefend = false) =>
+        (int)IncomingBlockExact(baseBlock, buffs, isDefend);
+
+    /// <summary>
+    /// The same pipeline without the final truncation. `Hook.ModifyBlock` keeps a
+    /// <c>decimal</c> through EVERY additive and multiplicative contributor and only
+    /// `Creature.GainBlockInternal` casts to int, so a multiplier that comes after Frail
+    /// (Unmovable, Vambrace, Paels Legion, Shadowmeld) works on 3.75, not on 3.
+    /// </summary>
+    public static decimal IncomingBlockExact(int baseBlock, List<BuffState> buffs, bool isDefend = false)
     {
-        float blk = baseBlock;
+        decimal blk = baseBlock;
         if (Get(buffs, BuffId.NoBlock) > 0)
         {
-            return 0;
+            return 0m;
         }
 
         // `Hook.ModifyBlock` runs every ADDITIVE contribution first and only then the
@@ -406,10 +415,10 @@ public static class BuffSystem
         // `FrailPower.ModifyBlockMultiplicative`, the only multiplicative one here.
         if (Get(buffs, BuffId.Frail) > 0)
         {
-            blk *= 0.75f;
+            blk *= 0.75m;
         }
 
-        return Math.Max(0, (int)blk);
+        return Math.Max(0m, blk);
     }
 
     /// <summary>

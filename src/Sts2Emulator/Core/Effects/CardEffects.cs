@@ -5021,8 +5021,8 @@ public static class CardEffects
         bool isDefend = false
     )
     {
-        int effective = powered
-            ? BuffSystem.IncomingBlock(
+        decimal effective = powered
+            ? BuffSystem.IncomingBlockExact(
                 amount,
                 state.PlayerBuffs,
                 isDefend || state.ResolvingDefendCard
@@ -5036,7 +5036,7 @@ public static class CardEffects
         // and `AfterModifyingBlockAmount` names the card only once the gain actually lands
         // -- so a card that would gain nothing does not spend it. The relic is spent when
         // that card finishes (`AfterCardPlayed`), so all of its gains are doubled.
-        if (powered && effective > 0 && RelicEffects.DoublesCardBlock(state))
+        if (powered && effective > 0m && RelicEffects.DoublesCardBlock(state))
         {
             effective *= 2;
             state.VambraceCard = true;
@@ -5045,7 +5045,7 @@ public static class CardEffects
         // `PaelsLegion.ModifyBlockMultiplicative` returns 2 while its cooldown is clear,
         // and `AfterCardPlayed` starts the cooldown once the doubled gain has actually
         // landed -- Vambrace's latch, with a timer instead of a once-per-combat flag.
-        if (powered && effective > 0 && RelicEffects.PaelsLegionDoublesBlock(state))
+        if (powered && effective > 0m && RelicEffects.PaelsLegionDoublesBlock(state))
         {
             effective *= 2;
             state.PaelsLegionCard = true;
@@ -5057,7 +5057,7 @@ public static class CardEffects
             effective *= 2;
         }
 
-        if (effective <= 0)
+        if (effective <= 0m)
         {
             // The game clamps with `Math.Max(modifiedAmount, 0m)` and returns it even
             // when nothing is gained, so a Dodge and Roll under heavy Frail owes nothing.
@@ -5071,7 +5071,9 @@ public static class CardEffects
             state.BlockGainsThisTurn++;
         }
 
-        state.PlayerBlock += effective;
+        // `Creature.GainBlockInternal`: the one place the decimal becomes an int.
+        int gained = (int)effective;
+        state.PlayerBlock += gained;
 
         // Juggernaut: JuggernautPower.AfterBlockGained deals base.Amount to
         // Rng.CombatTargets.NextItem(HittableEnemies) as ValueProp.Unpowered.
@@ -5085,7 +5087,7 @@ public static class CardEffects
             }
         }
 
-        return effective;
+        return gained;
     }
 
     /// <summary>

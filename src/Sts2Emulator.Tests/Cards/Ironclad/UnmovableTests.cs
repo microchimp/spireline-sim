@@ -61,4 +61,24 @@ public class UnmovableTests
         Assert.Equal(1, fight.PlayerBuffAmount(BuffId.UnmovablePower));
         Assert.Equal(1, fight.State.Energy);
     }
+
+    /// <summary>
+    /// `Hook.ModifyBlock` keeps a decimal through every multiplicative contributor, so the
+    /// doubling works on Frail's 3.75 and pays 7 (night03 seed PMJAMTN7YX). Truncating after
+    /// Frail first paid 3 * 2 = 6.
+    /// </summary>
+    [Fact]
+    public void DoublesTheFrailBlockBeforeItIsTruncated()
+    {
+        var fight = Fight
+            .Hand(Card(IC.DefendIronclad))
+            .Energy(9)
+            .PlayerBuff(BuffId.UnmovablePower, 1)
+            .PlayerBuff(BuffId.Frail, 2)
+            .Enemy(hp: 40);
+
+        fight.Play();
+
+        Assert.Equal(7, fight.State.PlayerBlock);
+    }
 }
