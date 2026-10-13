@@ -40,6 +40,7 @@ NOT_POWERS = {
     "THE_BOMB_DAMAGE",             # TheBombPower's Damage var (turns are the power's Amount)
     "PANACHE_ARMED",               # emulator flag for Panache's every-5th-card trigger
     "CLAW_DAMAGE",                 # Claw.BuffFromClawPlay raises the Claws' own damage, no power
+    "SLOW_COUNT",                  # SlowPower's "SlowAmount" DynamicVar (cards played this turn), not a power
 }
 
 # Emulator buff -> the game power with the same rules and amount.
@@ -58,16 +59,25 @@ TEMP_STRENGTH = {"SETUP_STRIKE", "FLEX_POTION", "COORDINATE", "DYING_STAR", "FEE
                  "MONARCHS_GAZE_STRENGTH_DOWN", "ENFEEBLING_TOUCH"}
 
 
+# Likewise every subclass of TemporaryDexterityPower is one emulator TEMPORARY_DEXTERITY buff
+# (AnticipatePower, HelicalDartPower, SpeedPotionPower; checked in the decompile, setup fights reach them).
+TEMP_DEXTERITY = {"ANTICIPATE", "HELICAL_DART", "SPEED_POTION"}
+
+
 def game_powers(raw: list) -> list:
-    out, temp = [], 0
+    out, temp, temp_dex = [], 0, 0
     for n, a in raw:
         name = power(n)
         if name in TEMP_STRENGTH:
             temp += a
+        elif name in TEMP_DEXTERITY:
+            temp_dex += a
         else:
             out.append([name, a])
     if temp:
         out.append(["TEMPORARY_STRENGTH", temp])
+    if temp_dex:
+        out.append(["TEMPORARY_DEXTERITY", temp_dex])
     return sorted(out)
 
 
