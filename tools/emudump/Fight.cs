@@ -117,10 +117,11 @@ static class Fight
                     e.Step((int)a["hand_index"]!, (int)a["target_slot"]!, out _, out _, out _);
                 }
 
-                // A choice the card opened (Splash, Armaments, ...): the first option, as the
-                // referee's FirstChoiceSelector answers it in the game.
-                // The choices the game made for this action (FirstChoiceSelector logs them with
-                // their step), applied as the same cards, then the screen closed the same way.
+                // The choices the game made for this action, applied as the same cards, then the
+                // screen closed the same way. FirstChoiceSelector logs every screen with the step
+                // whose action led to it: a card's own, and a hook's in the middle of the action
+                // (Stratagem's shuffle inside a draw, Entropy and Tyranny at the turn start an
+                // end_turn runs into), which the emulator stops on until it is answered.
                 var chosen = new JsonArray();
                 foreach (var choice in gameChoices.Where(c => (int?)c!["step"] == stepNo && (string?)c["kind"] == "cards"))
                 {
@@ -149,13 +150,15 @@ static class Fight
     /// <summary>
     /// One game choice: pick each card the game picked (matched by card id among the open
     /// selection's candidates, in whichever pile they live), then decline the rest if the
-    /// game took fewer than the screen allows.
+    /// game took fewer than the screen allows. The decline goes to that screen only: once its
+    /// picks are spent the next screen of the same action may already be open.
     /// </summary>
     internal static JsonObject ApplyChoice(Func<CombatState?> active, Action<int> step, JsonObject choice)
     {
         var options = choice["options"]!.AsArray().Select(x => (string)x!).ToList();
         var picked = choice["picked"]!.AsArray().Select(x => options[(int)x!]).ToList();
         var log = new JsonObject { ["game_options"] = choice["options"]!.DeepClone(), ["game_picked"] = choice["picked"]!.DeepClone() };
+        int? screen = active()?.PendingSelection?.SourceCardDefId;
         foreach (var want in picked)
         {
             if (active()?.PendingSelection is not { } sel) { log["error"] = "no selection open for a pick"; return log; }
@@ -165,7 +168,8 @@ static class Fight
             step(idx);
         }
 
-        if (active()?.PendingSelection is { Skippable: true } rest)
+        if (picked.Count < ((int?)choice["max"] ?? int.MaxValue)
+            && active()?.PendingSelection is { Skippable: true } rest && rest.SourceCardDefId == screen)
         {
             step(rest.Candidates.Count);  // decline: one past the last candidate
         }
