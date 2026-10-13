@@ -67,11 +67,17 @@ def main() -> int:
     scratch = (a.scratch or game.parent / "scratch" / time.strftime("%Y%m%d-%H%M%S")).resolve()
     (scratch / "appdata").mkdir(parents=True, exist_ok=True)
     (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
-    (game / "override.cfg").write_text(OVERRIDE, encoding="utf-8")
+    cfg = game / "override.cfg"
+    if not cfg.exists() or cfg.read_text(encoding="utf-8") != OVERRIDE:
+        cfg.write_text(OVERRIDE, encoding="utf-8")
     mod = game / "mods" / "SpirelineReferee"
     mod.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(a.build / "SpirelineReferee.dll", mod / "SpirelineReferee.dll")
-    shutil.copy2(HERE / "driver" / "SpirelineReferee.json", mod / "SpirelineReferee.json")
+    # Parallel sessions share the game copy: copy the mod only when it changed, since a
+    # running game holds the loaded DLL open.
+    for src, dst in ((a.build / "SpirelineReferee.dll", mod / "SpirelineReferee.dll"),
+                     (HERE / "driver" / "SpirelineReferee.json", mod / "SpirelineReferee.json")):
+        if not dst.exists() or sha256(src) != sha256(dst):
+            shutil.copy2(src, dst)
 
     # A fresh profile with every volume at 0 (FMOD plays even headless) and mod loading agreed to:
     # the game skips mods until the player has seen its mods warning. Missing fields take defaults.

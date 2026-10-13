@@ -4314,6 +4314,23 @@ public static class CardEffects
     /// other four characters'. When character selection lands this wants the run's actual
     /// character rather than the constant.
     /// </remarks>
+    /// <summary>
+    /// Splash's candidates before the shuffle: `UnlockState.CharacterCardPools` minus the
+    /// player's own, in ModelDb.AllCharacters order (Silent, Regent, Necrobinder, Defect),
+    /// Attacks only. The order decides which cards a shuffle hands out; the referee (the game
+    /// run headless) caught a hand-written Silent, Defect, Necrobinder, Regent here.
+    /// </summary>
+    internal static List<int> SplashPool()
+    {
+        var pool = new List<int>();
+        for (int i = 0; i < 4; i++)
+        {
+            pool.AddRange(CombatGenerationPool(Run.RunConstants.OtherCharacterPoolFor(i), CardType.Attack));
+        }
+
+        return pool;
+    }
+
     private static void OpenSplashSelection(
         CombatState state,
         int sourceCardDefId,
@@ -4321,14 +4338,7 @@ public static class CardEffects
         Random rng
     )
     {
-        // `UnlockState.CharacterCardPools` minus the player's own, in ModelDb.AllCharacters order:
-        // Silent, Regent, Necrobinder, Defect. The order decides which cards the shuffle hands
-        // out; the referee (the game run headless) caught Silent-Defect-Necrobinder-Regent here.
-        var pool = new List<int>();
-        for (int i = 0; i < 4; i++)
-        {
-            pool.AddRange(CombatGenerationPool(Run.RunConstants.OtherCharacterPoolFor(i), CardType.Attack));
-        }
+        var pool = SplashPool();
 
         if (pool.Count == 0)
         {

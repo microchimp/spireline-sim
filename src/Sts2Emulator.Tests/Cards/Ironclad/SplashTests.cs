@@ -93,4 +93,30 @@ public class SplashTests
 
         Assert.True(seen.Count > 1, "the three offered never varied");
     }
+
+    [Fact]
+    public void ThePoolFollowsTheGamesCharacterOrder()
+    {
+        // ModelDb.AllCharacters is Ironclad, Silent, Regent, Necrobinder, Defect; Splash drops the
+        // player's own pool and keeps that order. The shuffle that picks three is applied to this
+        // list, so any other order offers different cards from the same draws (referee finding,
+        // seed YDT1E1R92A: the game offered Knockout Blow, Claw, Banshee's Cry).
+        int[][] byCharacter =
+        [
+            GeneratedData.CardPools.Silent.ToArray(),
+            GeneratedData.CardPools.Regent.ToArray(),
+            GeneratedData.CardPools.Necrobinder.ToArray(),
+            GeneratedData.CardPools.Defect.ToArray(),
+        ];
+        var pool = CardEffects.SplashPool();
+        int at = 0;
+        foreach (var characterPool in byCharacter)
+        {
+            var attacks = pool.Skip(at).TakeWhile(id => characterPool.Contains(id)).ToList();
+            Assert.NotEmpty(attacks);
+            at += attacks.Count;
+        }
+
+        Assert.Equal(pool.Count, at);
+    }
 }

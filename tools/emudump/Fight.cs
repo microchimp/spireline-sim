@@ -18,6 +18,12 @@ static class Fight
         outp["steps"] = steps;
         try
         {
+            // The referee's deck additions, appended the same way (before Neow).
+            foreach (var name in game["deck_add"]?.AsArray() ?? new JsonArray())
+            {
+                RunNonCombatEffects.AddCardToDeck(s, new CardInstance(CardIdBySnake((string)name!), Upgraded: false));
+            }
+
             e.Step((int)game["neow_pick"]!, -1, out _, out _, out _);
             int guard = 0;
             while (s.Phase != RunPhase.Map && s.Phase != RunPhase.Combat && guard++ < 10)
@@ -68,6 +74,28 @@ static class Fight
 
         return outp;
     }
+
+    static Dictionary<string, int>? _bySnake;
+
+    /// <summary>Game card id (UPPER_SNAKE) to the emulator's def id, through data/id_map.json.</summary>
+    static int CardIdBySnake(string snake)
+    {
+        if (_bySnake == null)
+        {
+            var map = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "id_map.json")))!["cards"]!.AsObject();
+            _bySnake = map.ToDictionary(kv => System.Text.RegularExpressions.Regex.Replace(kv.Key,
+                "(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_").ToUpperInvariant(), kv => (int)kv.Value!);
+        }
+
+        return _bySnake[snake];
+    }
+
+    /// <summary>Card pools for the batch maker: <c>EmuDump pools</c>.</summary>
+    public static JsonObject Pools() => new()
+    {
+        ["ironclad"] = new JsonArray(Sts2Emulator.GeneratedData.CardPools.Ironclad.ToArray().Select(i => (JsonNode)i).ToArray()),
+        ["colorless"] = new JsonArray(Sts2Emulator.GeneratedData.CardPools.Colorless.ToArray().Select(i => (JsonNode)i).ToArray()),
+    };
 
     static JsonObject Dump(RunEngine e)
     {

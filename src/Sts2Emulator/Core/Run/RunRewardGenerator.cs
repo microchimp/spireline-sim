@@ -471,6 +471,38 @@ public static class RunRewardGenerator
     }
 
     /// <summary>
+    /// The pool a card reward rolls from, in the order the game's pools end up in. A card is
+    /// picked by position (<c>NextItem</c>), so the order is part of the result.
+    /// </summary>
+    /// <remarks>
+    /// `PrismaticGem.ModifyCardRewardCreationOptions` takes
+    /// <c>UnlockState.CharacterCardPools.Union(options.CardPools)</c>: every character's pool in
+    /// ModelDb.AllCharacters order (Ironclad, Silent, Regent, Necrobinder, Defect), then whatever
+    /// else the options held. `DingyRug.ModifyCardRewardCreationOptions` appends the colourless
+    /// pool. Whichever hook runs first, colourless ends up last. The emulator had the other
+    /// characters as Silent, Defect, Necrobinder, Regent and colourless before them -- the same
+    /// hand-written-order mistake the referee caught in Splash.
+    /// </remarks>
+    internal static int[] CardRewardPool(bool addColourless, bool everyCharacter)
+    {
+        var pool = new List<int>(IroncladRewardPool.ToArray());
+        if (everyCharacter)
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                pool.AddRange(RunConstants.OtherCharacterPoolFor(i).ToArray());
+            }
+        }
+
+        if (addColourless)
+        {
+            pool.AddRange(GeneratedData.CardPools.Colorless.ToArray());
+        }
+
+        return [.. pool];
+    }
+
+    /// <summary>
     /// The character pools the player is not, sorted the way StableShuffle sorts them —
     /// by ModelId, which for these is the slugified class name, so alphabetical by
     /// character. The sort is what makes the shuffle reproducible.
@@ -892,28 +924,10 @@ public static class RunRewardGenerator
         // one condition decides the whole screen.
         bool lavaLampUpgrade = Effects.RelicEffects.UpgradesCardRewards(state);
 
-        // `DingyRug.ModifyCardRewardCreationOptions` ADDS the colourless pool to the ones
-        // a reward rolls from rather than replacing them, so the character's own cards are
-        // still on offer alongside.
-        int[] pool = Effects.RelicEffects.AddsColourlessToCardRewards(state)
-            ? [.. IroncladRewardPool.ToArray(), .. GeneratedData.CardPools.Colorless.ToArray()]
-            : IroncladRewardPool.ToArray();
-
-        // `PrismaticGem.ModifyCardRewardCreationOptions` unions EVERY character's pool
-        // into a card reward's. Card rewards only -- the hook refuses a shop, a custom
-        // pool and a colourless-only one -- so it goes here rather than beside the pool
-        // itself.
-        if (Effects.RelicEffects.WidensCardRewardsToEveryPool(state))
-        {
-            pool =
-            [
-                .. pool,
-                .. GeneratedData.CardPools.Silent.ToArray(),
-                .. GeneratedData.CardPools.Defect.ToArray(),
-                .. GeneratedData.CardPools.Necrobinder.ToArray(),
-                .. GeneratedData.CardPools.Regent.ToArray(),
-            ];
-        }
+        int[] pool = CardRewardPool(
+            Effects.RelicEffects.AddsColourlessToCardRewards(state),
+            Effects.RelicEffects.WidensCardRewardsToEveryPool(state)
+        );
 
         state.RewardEnchantIndex = -1;
         var blacklist = new List<int>();

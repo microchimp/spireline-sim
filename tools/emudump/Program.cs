@@ -7,6 +7,12 @@ using Sts2Emulator.Core.Run;
 
 string[] actNames = ["", "OVERGROWTH", "UNDERDOCKS", "HIVE", "GLORY"];
 string[] nodeNames = ["Unassigned", "Monster", "Elite", "RestSite", "Shop", "Treasure", "Boss", "Unknown", "Ancient"];
+if (args[0] == "pools")
+{
+    Console.WriteLine(Fight.Pools().ToJsonString());
+    return;
+}
+
 if (args[0] == "fight")
 {
     var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();

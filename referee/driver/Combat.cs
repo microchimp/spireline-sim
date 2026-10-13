@@ -32,6 +32,20 @@ public static partial class Driver
         dump["steps"] = steps;
         try
         {
+            // Coverage: cards added to the deck before Neow, the way any card joins a deck
+            // (CardPileCmd.Add to the Deck pile), so each fight exercises more than the starter.
+            var added = new JsonArray();
+            foreach (var id in spec["deck_add"]?.AsArray() ?? new JsonArray())
+            {
+                var canonical = ModelDb.AllCards.First(c => c.Id.Entry == (string)id!);
+                var card = state.CreateCard(canonical, state.Players[0]);
+                await MegaCrit.Sts2.Core.Commands.CardPileCmd.Add(card, MegaCrit.Sts2.Core.Entities.Cards.PileType.Deck, skipVisuals: true);
+                added.Add((string)id!);
+            }
+
+            dump["deck_add"] = added;
+            await Idle();
+
             // Neow: record the offer, take the requested option.
             var neow = run.EventSynchronizer.GetLocalEvent();
             dump["neow_options"] = new JsonArray(neow.CurrentOptions

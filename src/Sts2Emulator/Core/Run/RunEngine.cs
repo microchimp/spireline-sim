@@ -367,23 +367,9 @@ public sealed class RunEngine
         // from here inherits that. Left unset, the type stayed at whatever the last map
         // node resolved to, so Punch Off's fight could be counted as an ordinary combat.
         State.LastResolvedRoomType = RunConstants.NodeEvent;
-        if (State.Act == RunConstants.ActUnderdocks && State.Floor == 13)
-        {
-            State.CurrentNodeType = RunConstants.NodeNormal;
-            State.LastResolvedRoomType = RunConstants.NodeNormal;
-            State.NormalEncountersVisited++;
-            return StartCombatWithDeck(
-                State.Deck,
-                9,
-                State.Relics,
-                State.PlayerHp,
-                State.PlayerMaxHp,
-                State.PotionSlots,
-                State.Gold,
-                Math.Max(0, State.NormalEncountersVisited + State.EliteEncountersVisited - 1)
-            );
-        }
-
+        // An Underdocks event on floor 13 used to be replaced by a fixed Corpse Slugs fight: a
+        // survivor of the capture-fitted "answer key" upstream deleted in 8244eee. The game has
+        // no such rule (Underdocks, RunManager.EnterMapPointInternal), so every event room is an event.
         RunNonCombatEffects.EnterEvent(State);
 
         return 0;
