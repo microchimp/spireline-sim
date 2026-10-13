@@ -101,6 +101,7 @@ ENCOUNTER_NAMES = {
     86: "skulking-colony",
 }
 ENCOUNTER_IDS = {name: encounter_id for encounter_id, name in ENCOUNTER_NAMES.items()}
+CORPSE_SLUGS_NORMAL_ID = 88  # RunConstants.CorpseSlugsNormalEncounterId
 
 # Names corrected against the game's own act pool (decompiled
 # MegaCrit.Sts2.Core.Models.Acts/Overgrowth.cs) — the emulator had invented labels
@@ -115,11 +116,13 @@ ENCOUNTER_IDS.update(
         "nibbit": ENCOUNTER_IDS["nibbits-weak"],
         "nibbits": ENCOUNTER_IDS["nibbits-normal"],
         "slimes": ENCOUNTER_IDS["slimes-weak"],
-        # Corpse Slugs is ONE encounter with two rosters — 2 slugs weak, 3 normal — and
-        # which one it builds comes from completed_combat_rooms, not from the id. The
-        # alias exists so a sweep can name the normal variant; the harness's
-        # emulator_completed_combat_rooms is what actually selects it.
-        "corpse-slugs-normal": ENCOUNTER_IDS["corpse-slugs"],
+        # Seapunk's normal variant (a Calcified Cultist beside it) has been id 22 all
+        # along, under the name the sweeps gave it.
+        "seapunk-normal": ENCOUNTER_IDS["cultist-and-seapunk"],
+        # Corpse Slugs' normal variant (three slugs) is an encounter of its own, id 88,
+        # appended after the value nets were built over ids 0-87 -- so it is a name here
+        # and not an entry of ENCOUNTER_NAMES, which those nets size themselves from.
+        "corpse-slugs-normal": CORPSE_SLUGS_NORMAL_ID,
     },
 )
 
@@ -146,8 +149,10 @@ class Sts2CombatEnv(gym.Env):
         self._seed = seed
         self._max_episode_steps = max_episode_steps
         self._forced_encounter = self._normalize_encounter(encounter)
-        # completed_combat_rooms in [0,3) selects weak encounter variants (early-floor
-        # combats, e.g. CorpseSlugsWeak); -1 keeps the normal variant.
+        # For a caller that names "corpse-slugs" or "seapunk" and says which fight with the
+        # weak context: completed_combat_rooms in [0,3) keeps the weak encounter (those two
+        # ids ARE the weak ones), -1 asks for the normal one. Naming "corpse-slugs-normal"
+        # or "cultist-and-seapunk" needs no context.
         self._completed_combat_rooms = completed_combat_rooms
         # The run's TotalFloor. Seeds the per-encounter RNG that rolls Slimes rosters
         # and Corpse Slug starting moves; None leaves those on the combat rng, which

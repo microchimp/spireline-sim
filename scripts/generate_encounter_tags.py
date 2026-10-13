@@ -39,12 +39,14 @@ OUT = REPO / "src" / "Sts2Emulator" / "Generated" / "EncounterTags.g.cs"
 # Verified one at a time against the rosters both sides build, not by their names:
 # TunnelerAndChomper is TunnelerNormal because the game's GenerateMonsters returns
 # (Chomper, Tunneler) and the emulator builds exactly that pair, in that order.
-# CorpseSlugs and Seapunk collapse a Weak/Normal pair into one emulator entry; both
-# halves carry the same tag, so the collapse cannot lose one.
+# A Weak/Normal pair is two entries, never one. CorpseSlugs and Seapunk used to be folded
+# into a single name each, which made a weak fight built with the normal roster invisible
+# to every comparison that goes through this table. The Weak model keeps the short
+# emulator name (`CorpseSlugs`, `Seapunk`) and the Normal one has an entry spelled like
+# the model, so it needs no alias.
 ALIASES = {
     "BowlbugsNormal": "Bowlbugs",
     "ChompersNormal": "Chompers",
-    "CorpseSlugsNormal": "CorpseSlugs",
     "CorpseSlugsWeak": "CorpseSlugs",
     "ExoskeletonsNormal": "ExoskeletonsNormal",
     "ExoskeletonsWeak": "Exoskeletons",
@@ -55,7 +57,6 @@ ALIASES = {
     "KnightsElite": "Knights",
     "ScrollsOfBitingNormal": "Scrolls",
     "ScrollsOfBitingWeak": "ScrollsWeak",
-    "SeapunkNormal": "Seapunk",
     "SeapunkWeak": "Seapunk",
     "ShrinkerBeetleWeak": "ShrinkerBeetle",
     "SlumberingBeetleNormal": "SlumberingBeetle",
@@ -277,9 +278,8 @@ def render(rows: list[tuple[int, str, list[str]]], pools, rolling) -> str:
         "    /// combat rng, because the seed only exists if the encounter is listed here.",
         "    /// Nothing errors — the roster just comes out of the wrong stream. See E90.",
         "    ///",
-        "    /// Keyed by MODEL name rather than encounter id: two models can share one",
-        "    /// emulator id (CorpseSlugs weak and normal do) and they have different",
-        "    /// entries, so the id alone cannot answer.",
+        "    /// Keyed by MODEL name rather than encounter id, because an emulator name need",
+        "    /// not be a game one (`CorpseSlugs` is the game's CorpseSlugsWeak).",
         "    /// </remarks>",
         "    public static string? EntryForModel(string model) =>",
         "        model switch",

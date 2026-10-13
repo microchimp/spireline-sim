@@ -53,7 +53,7 @@ public static class CombatFactory
         CubexConstruct,
         VineShambler,
         OvergrowthCrawlers,
-        CultistAndSeapunk,
+        SeapunkNormal,
         FossilStalker,
         PunchConstruct,
         SewerClam,
@@ -124,6 +124,14 @@ public static class CombatFactory
         // variant had no id at all. Appended rather than inserted beside its sibling:
         // these ordinals are the encounter ids, and the act pools name them as literals.
         ExoskeletonsNormal,
+
+        // The three-Corpse-Slug encounter. `CorpseSlugs` above is the game's
+        // CorpseSlugsWeak (two slugs): the two used to share that one id and the roster was
+        // picked from a count of the rooms already fought, which counted elites and so
+        // handed a weak fight its normal roster. Appended for the same reason as the entry
+        // above: these ordinals are the encounter ids, and the act pools name them as
+        // literals.
+        CorpseSlugsNormal,
     }
 
     private static readonly ActOneEncounter[] OvergrowthWeakEncounters =
@@ -185,17 +193,14 @@ public static class CombatFactory
         Reset(state, rng, deckIds, encounterId, []);
     }
 
-    // Same as the deck+encounter reset but lets callers set the "weak" combat
-    // context. completedCombatRoomsBeforeCurrent in [0,3) selects the weak
-    // encounter variant (e.g. CorpseSlugsWeak = 2 slugs vs Normal = 3); -1 (the
-    // default elsewhere) yields the normal variant.
+    // The deck+encounter reset for a fight that rolls its own composition, handed the
+    // seed of the encounter's stream (see EncounterRng).
     public static void Reset(
         CombatState state,
         Random rng,
         ReadOnlySpan<int> deckIds,
         int? encounterId,
-        int completedCombatRoomsBeforeCurrent,
-        int? encounterRngSeed = null
+        int? encounterRngSeed
     )
     {
         Reset(
@@ -208,8 +213,7 @@ public static class CombatFactory
             StartingPlayerMaxHp,
             [],
             playerGold: 0,
-            encounterRngSeed: encounterRngSeed,
-            completedCombatRoomsBeforeCurrent: completedCombatRoomsBeforeCurrent
+            encounterRngSeed: encounterRngSeed
         );
     }
 
@@ -275,8 +279,7 @@ public static class CombatFactory
         CountingRandom? shuffleRng = null,
         int? encounterRngSeed = null,
         int nicheSkipCount = 0,
-        Random? aiRng = null,
-        int completedCombatRoomsBeforeCurrent = -1
+        Random? aiRng = null
     )
     {
         var deck = deckIds.ToArray().Select(id => new CardInstance(Math.Abs(id), id < 0)).ToArray();
@@ -294,8 +297,7 @@ public static class CombatFactory
             shuffleRng,
             encounterRngSeed,
             nicheSkipCount,
-            aiRng,
-            completedCombatRoomsBeforeCurrent
+            aiRng
         );
     }
 
@@ -314,7 +316,6 @@ public static class CombatFactory
         int? encounterRngSeed = null,
         int nicheSkipCount = 0,
         Random? aiRng = null,
-        int completedCombatRoomsBeforeCurrent = -1,
         IReadOnlyList<RelicInstance>? runRelics = null
     )
     {
@@ -385,13 +386,7 @@ public static class CombatFactory
         _currentAscension = state.AscensionLevel;
         _currentNicheHpRng = state.NicheHpRng;
         _usedNicheHps = _currentNicheHpRng != null ? new HashSet<int>() : null;
-        state.Enemies = CreateEncounter(
-            encounter,
-            rng,
-            encounterRngSeed,
-            completedCombatRoomsBeforeCurrent,
-            state.AscensionLevel
-        );
+        state.Enemies = CreateEncounter(encounter, rng, encounterRngSeed, state.AscensionLevel);
         _currentNicheHpRng = null;
         _usedNicheHps = null;
 
@@ -572,7 +567,6 @@ public static class CombatFactory
         ActOneEncounter encounter,
         Random rng,
         int? encounterRngSeed = null,
-        int completedCombatRoomsBeforeCurrent = -1,
         int ascension = Ascension.DefaultLevel
     ) =>
         encounter switch
@@ -649,9 +643,17 @@ public static class CombatFactory
                 ),
             ],
 
+            // CorpseSlugsWeak declares two slugs and CorpseSlugsNormal three. They are two
+            // encounters with two ids, so which one this is never depends on the floor.
             ActOneEncounter.CorpseSlugs => CreateCorpseSlugsEncounter(
                 rng,
-                completedCombatRoomsBeforeCurrent is >= 0 and < 3,
+                weak: true,
+                encounterRngSeed,
+                ascension
+            ),
+            ActOneEncounter.CorpseSlugsNormal => CreateCorpseSlugsEncounter(
+                rng,
+                weak: false,
                 encounterRngSeed,
                 ascension
             ),
@@ -675,36 +677,25 @@ public static class CombatFactory
             ],
 
             // SeapunkWeak is one Seapunk; SeapunkNormal is a Calcified Cultist AND a
-            // Seapunk. They are two encounters in the game and one entry here, the same
-            // way CorpseSlugs is -- so the variant has to come off the weak flag. Without
-            // it the fourth normal fight of an Underdocks run was a lone Seapunk where
-            // the live run had a cultist beside it, and the sequence check could not see
-            // it: verify_run_generation normalises the WEAK/NORMAL suffix away.
-            ActOneEncounter.Seapunk => completedCombatRoomsBeforeCurrent is >= 0 and < 3
-                ?
-                [
-                    CreateEnemy(
-                        KE.Seapunk,
-                        rng,
-                        // Seapunk.SeaKickDamage
-                        new Intent(
-                            IntentType.Attack,
-                            Ascension.Value(ascension, Ascension.DeadlyEnemies, 13, 11)
-                        )
-                    ),
-                ]
-                :
-                [
-                    CreateEnemy(KE.CalcifiedCultist, rng, new Intent(IntentType.Buff, 0)),
-                    CreateEnemy(
-                        KE.Seapunk,
-                        rng,
-                        new Intent(
-                            IntentType.Attack,
-                            Ascension.Value(ascension, Ascension.DeadlyEnemies, 13, 11)
-                        )
-                    ),
-                ],
+            // Seapunk. Two encounters in the game, so two ids here: `Seapunk` is the weak
+            // one and `SeapunkNormal` (below) the normal one. They used to share this id
+            // and the roster was picked from a count of the rooms already fought, which
+            // counted elites -- a weak Seapunk after an elite arrived with a cultist beside
+            // it. The sequence check could not see that: verify_run_generation normalised
+            // the WEAK/NORMAL suffix away, as the alias table folded the two models into
+            // one name.
+            ActOneEncounter.Seapunk =>
+            [
+                CreateEnemy(
+                    KE.Seapunk,
+                    rng,
+                    // Seapunk.SeaKickDamage
+                    new Intent(
+                        IntentType.Attack,
+                        Ascension.Value(ascension, Ascension.DeadlyEnemies, 13, 11)
+                    )
+                ),
+            ],
 
             ActOneEncounter.Toadpoles =>
             [
@@ -772,7 +763,7 @@ public static class CombatFactory
                 ),
             ],
 
-            ActOneEncounter.CultistAndSeapunk =>
+            ActOneEncounter.SeapunkNormal =>
             [
                 CreateEnemy(KE.CalcifiedCultist, rng, new Intent(IntentType.Buff, 0)),
                 CreateEnemy(

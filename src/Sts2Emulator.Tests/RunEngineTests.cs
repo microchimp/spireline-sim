@@ -124,8 +124,7 @@ public class RunEngineTests
         int? slimes = EncounterRng.SeedFor(
             (int)runSeed,
             totalFloor: 1,
-            RunConstants.SlimesWeakEncounterId,
-            weakVariant: true
+            RunConstants.SlimesWeakEncounterId
         );
         Assert.Equal(
             unchecked(
@@ -142,29 +141,18 @@ public class RunEngineTests
             EncounterRng.SeedFor(
                 (int)runSeed,
                 totalFloor: 2,
-                RunConstants.SlimesWeakEncounterId,
-                weakVariant: true
+                RunConstants.SlimesWeakEncounterId
             )
         );
 
-        // Slug variants share an emulator encounter id but not an entry id.
+        // The slugs' two variants are two encounters, with two ids and two entry ids.
         Assert.NotEqual(
-            EncounterRng.SeedFor(
-                (int)runSeed,
-                1,
-                RunConstants.CorpseSlugsEncounterId,
-                weakVariant: true
-            ),
-            EncounterRng.SeedFor(
-                (int)runSeed,
-                1,
-                RunConstants.CorpseSlugsEncounterId,
-                weakVariant: false
-            )
+            EncounterRng.SeedFor((int)runSeed, 1, RunConstants.CorpseSlugsEncounterId),
+            EncounterRng.SeedFor((int)runSeed, 1, RunConstants.CorpseSlugsNormalEncounterId)
         );
 
         // Encounters that do not roll their composition get no stream at all.
-        Assert.Null(EncounterRng.SeedFor((int)runSeed, 1, encounterId: 0, weakVariant: true));
+        Assert.Null(EncounterRng.SeedFor((int)runSeed, 1, encounterId: 0));
     }
 
     [Fact]

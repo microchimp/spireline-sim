@@ -34,17 +34,17 @@ public static class EncounterRng
     /// That is exactly what happened to the Bowlbugs — plumbed and inert (E90) — and it
     /// is why four more that never had an entry could sit here unnoticed.
     ///
-    /// The model names, not the emulator's, because two models can share one emulator id
-    /// and still have different entries: Corpse Slugs weak and normal are one
-    /// <c>ActOneEncounter</c> value and two <c>Id.Entry</c> strings.
+    /// The model names, not the emulator's, because an emulator name need not be a game
+    /// one (<c>CorpseSlugs</c> is the game's <c>CorpseSlugsWeak</c>). Every weak and normal
+    /// pair has two ids here, so the id alone says which model it is.
     /// </remarks>
-    public static string? EntryId(int encounterId, bool weakVariant) =>
-        GeneratedData.EncounterTags.EntryForModel(ModelName(encounterId, weakVariant) ?? "");
+    public static string? EntryId(int encounterId) =>
+        GeneratedData.EncounterTags.EntryForModel(ModelName(encounterId) ?? "");
 
     /// <summary>
     /// The encounter model whose <c>GenerateMonsters</c> an emulator encounter id runs.
     /// </summary>
-    private static string? ModelName(int encounterId, bool weakVariant) =>
+    private static string? ModelName(int encounterId) =>
         encounterId switch
         {
             RunConstants.SlimesWeakEncounterId => "SlimesWeak",
@@ -60,10 +60,9 @@ public static class EncounterRng
             // draws on the encounter's stream over a shrinking list.
             RunConstants.RubyRaidersEncounterId => "RubyRaidersNormal",
             RunConstants.SlitheringStranglerEncounterId => "SlitheringStranglerNormal",
-            // Both slug variants share one emulator enum id but not one entry id.
-            RunConstants.CorpseSlugsEncounterId => weakVariant
-                ? "CorpseSlugsWeak"
-                : "CorpseSlugsNormal",
+            // The slugs' two variants are two ids and two entry ids.
+            RunConstants.CorpseSlugsEncounterId => "CorpseSlugsWeak",
+            RunConstants.CorpseSlugsNormalEncounterId => "CorpseSlugsNormal",
             // A Rock and one worker; a Rock and two, drawn without replacement.
             RunConstants.BowlbugsWeakEncounterId => "BowlbugsWeak",
             RunConstants.BowlbugsNormalEncounterId => "BowlbugsNormal",
@@ -78,9 +77,9 @@ public static class EncounterRng
         };
 
     /// <summary>Seed for an encounter's own stream, or null when it does not use one.</summary>
-    public static int? SeedFor(int runSeed, int totalFloor, int encounterId, bool weakVariant)
+    public static int? SeedFor(int runSeed, int totalFloor, int encounterId)
     {
-        string? entry = EntryId(encounterId, weakVariant);
+        string? entry = EntryId(encounterId);
         if (entry is null)
         {
             return null;

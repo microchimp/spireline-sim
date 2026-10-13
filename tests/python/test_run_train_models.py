@@ -414,7 +414,14 @@ class InputTests(unittest.TestCase):
 
     def test_an_encounter_outside_the_one_hot_is_refused(self):
         with self.assertRaisesRegex(ValueError, "encounter"):
-            models.fight_inputs(bases()[:1], np.array([88]), np.array([0.0]))
+            models.fight_inputs(bases()[:1], np.array([89]), np.array([0.0]))
+
+    def test_the_normal_corpse_slugs_read_as_corpse_slugs(self):
+        # Id 88 was appended after FightNet was built over 0-87; until then the two slug
+        # fights were one id (9), which is the only way the net has ever seen them.
+        weak, _ = models.fight_inputs(bases()[:1], np.array([9]), np.array([0.0]))
+        normal, _ = models.fight_inputs(bases()[:1], np.array([88]), np.array([0.0]))
+        np.testing.assert_array_equal(weak, normal)
 
 
 if __name__ == "__main__":

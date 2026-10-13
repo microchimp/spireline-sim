@@ -24,6 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import game_version
+import generate_encounter_tags as encounter_tags
 
 from sts2_gym import game_seed, native
 
@@ -233,9 +234,9 @@ def normalize(name: str) -> str:
     """Compare on letters only, ignoring variant decoration.
 
     Strip the variant suffix *after* collapsing to lowercase letters, so it works
-    whether the source writes SLIMES_NORMAL or SlimesNormal. The weak/normal split
-    is a variant of one encounter (the emulator selects it via
-    completed_combat_rooms), so it is not a difference worth failing on here.
+    whether the source writes SLIMES_NORMAL or SlimesNormal. This is for the names that
+    are not encounters (the act); an encounter goes through `same_encounter`, which keeps
+    a weak encounter and its normal twin apart.
     """
     n = re.sub(
         r"[^A-Za-z0-9]",
@@ -248,6 +249,24 @@ def normalize(name: str) -> str:
             n = n[: -len(suffix)]
             break
     return n
+
+
+def same_encounter(emulator_encounter: str, live_encounter: str) -> bool:
+    """Whether the emulator's `ActOneEncounter` name is the game's encounter model.
+
+    Through the alias table, which gives a weak encounter and its normal twin two names:
+    comparing on `normalize` let a lone Seapunk stand for a Seapunk and a cultist, and
+    three Corpse Slugs for two, and the sequence check called them equal. A model the
+    table cannot name is compared on `normalize`, as everything was.
+    """
+    pascal = "".join(
+        part.capitalize()
+        for part in live_encounter.replace("ENCOUNTER.", "").split("_")
+    )
+    try:
+        return encounter_tags.emulator_name(pascal) == emulator_encounter
+    except SystemExit:
+        return normalize(emulator_encounter) == normalize(live_encounter)
 
 
 def emulator_generation(seed: str, ascension: int) -> dict[str, Any]:
@@ -365,9 +384,7 @@ def compare_sequence(
     for i in range(span):
         emu = names.get(emu_ids[i], f"<{emu_ids[i]}>") if i < len(emu_ids) else "—"
         live = live_ids[i] if i < len(live_ids) else "—"
-        ok = (
-            i < len(emu_ids) and i < len(live_ids) and normalize(emu) == normalize(live)
-        )
+        ok = i < len(emu_ids) and i < len(live_ids) and same_encounter(emu, live)
         hits += ok
         print(f"  {i:2}  {emu:26} {live:36} {'ok' if ok else 'MISMATCH'}")
     matched = hits == span

@@ -403,9 +403,22 @@ public static class RunConstants
     public const int TwoTailedRatsEncounterId = 6;
     public const int RubyRaidersEncounterId = 28;
     public const int SlitheringStranglerEncounterId = 27;
+    /// <summary>
+    /// <c>CorpseSlugsWeak</c>: two slugs. A weak and a normal encounter are two ids, never
+    /// one id and a count of the fights already won -- the game's act decides weak or
+    /// normal by the slot in the act's list, and so does the sequence of ids.
+    /// </summary>
     public const int CorpseSlugsEncounterId = 9;
+
+    /// <summary><c>CorpseSlugsNormal</c>: three slugs, appended at the end of the enum.</summary>
+    public const int CorpseSlugsNormalEncounterId = 88;
     public const int GremlinMercEncounterId = 7;
+
+    /// <summary><c>SeapunkWeak</c>: a lone Seapunk.</summary>
     public const int SeapunkEncounterId = 12;
+
+    /// <summary><c>SeapunkNormal</c>: a Calcified Cultist and a Seapunk.</summary>
+    public const int SeapunkNormalEncounterId = 22;
     public const int PunchConstructEncounterId = 24;
 
     public static ReadOnlySpan<int> OvergrowthWeakEncounters => [8, 2, 11, 3];
@@ -413,7 +426,7 @@ public static class RunConstants
     public static ReadOnlySpan<int> OvergrowthNormalEncounters =>
         [19, 17, 29, 5, 14, 15, 21, 28, 16, 27, 18, 20];
     public static ReadOnlySpan<int> UnderdocksNormalEncounters =>
-        [9, 0, 23, 7, 26, 30, 24, 12, 25, 6];
+        [CorpseSlugsNormalEncounterId, 0, 23, 7, 26, 30, 24, SeapunkNormalEncounterId, 25, 6];
 
     // Pool order must match the act's own encounter-declaration order (the game
     // builds AllEliteEncounters/AllBossEncounters by filtering AllEncounters, which
@@ -916,8 +929,6 @@ public static class RunConstants
     public const int WongosBargainBinCost = 100;
     public const int WongosFeaturedItemCost = 200;
     public const int WongosMysteryBoxCost = 300;
-
-    public const int WeakEncountersPerAct = 3;
 
     /// <summary>
     /// Ascender's Bane. It used to stand in for EVERY curse any event or relic inflicted,

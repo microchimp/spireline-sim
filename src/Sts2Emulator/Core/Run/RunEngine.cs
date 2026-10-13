@@ -94,8 +94,7 @@ public sealed class RunEngine
         int playerHp,
         int playerMaxHp,
         ReadOnlySpan<int> potionIds,
-        int playerGold,
-        int completedCombatRoomsBeforeCurrent = 0
+        int playerGold
     )
     {
         int[] startingPotions = potionIds.ToArray();
@@ -111,8 +110,7 @@ public sealed class RunEngine
             playerHp,
             playerMaxHp,
             potionIds,
-            playerGold,
-            completedCombatRoomsBeforeCurrent
+            playerGold
         );
     }
 
@@ -123,8 +121,7 @@ public sealed class RunEngine
         int playerHp,
         int playerMaxHp,
         ReadOnlySpan<int> potionIds,
-        int playerGold,
-        int completedCombatRoomsBeforeCurrent = 0
+        int playerGold
     )
     {
         // `DelicateFrond.BeforeCombatStart` fills every open potion slot. Here because this
@@ -144,8 +141,6 @@ public sealed class RunEngine
         {
             State.PotionSlots[i] = startingPotions[i];
         }
-
-        State.CompletedCombatRoomsBeforeCurrent = Math.Max(0, completedCombatRoomsBeforeCurrent);
 
         var combatDeck = runDeck.ToArray();
         State.Rng.Shuffle.Shuffle(combatDeck);
@@ -231,11 +226,6 @@ public sealed class RunEngine
             EncounterRngSeed(encounterId),
             nicheSkipCount: 0,
             aiRng,
-            // The roster builders read a shared id's variant (Corpse Slugs, Seapunk) off this
-            // count; a debug entry names the variant the game entered instead.
-            _weakVariantOverride is { } weak
-                ? (weak ? 0 : RunConstants.WeakEncountersPerAct)
-                : State.CompletedCombatRoomsBeforeCurrent,
             runRelics
         );
         // Sling of Courage reads the ROOM, not the encounter, so the room type travels
@@ -302,8 +292,7 @@ public sealed class RunEngine
                     State.PlayerHp,
                     State.PlayerMaxHp,
                     State.PotionSlots,
-                    State.Gold,
-                    Math.Max(0, State.NormalEncountersVisited + State.EliteEncountersVisited - 1)
+                    State.Gold
                 );
             case RunConstants.NodeElite:
                 State.EliteEncountersVisited++;
@@ -316,8 +305,7 @@ public sealed class RunEngine
                     State.PlayerHp,
                     State.PlayerMaxHp,
                     State.PotionSlots,
-                    State.Gold,
-                    Math.Max(0, State.NormalEncountersVisited + State.EliteEncountersVisited - 1)
+                    State.Gold
                 );
             case RunConstants.NodeShop:
                 RunRewardGenerator.EnterShop(State);
@@ -1291,8 +1279,6 @@ public sealed class RunEngine
                     }
 
                     State.Phase = RunPhase.Combat;
-                    int completedRooms =
-                        State.NormalEncountersVisited + State.EliteEncountersVisited - 1;
                     return StartCombatWithDeck(
                         State.Deck,
                         encounterId,
@@ -1300,8 +1286,7 @@ public sealed class RunEngine
                         State.PlayerHp,
                         State.PlayerMaxHp,
                         State.PotionSlots,
-                        State.Gold,
-                        Math.Max(0, completedRooms)
+                        State.Gold
                     );
                 case RunConstants.NodeRest:
                     State.LastResolvedRoomType = RunConstants.NodeRest;
@@ -1884,20 +1869,8 @@ public sealed class RunEngine
     /// rest -- Slithering Strangler's secondary enemy, Flyconid's slime, the raiders --
     /// rolling off a constant.
     /// </summary>
-    private int? EncounterRngSeed(int encounterId)
-    {
-        // The first three normal rooms of an act draw from the weak pool, so a shared
-        // encounter id is the weak variant exactly that long. Only Corpse Slugs cares,
-        // and it never appears as an elite or boss.
-        bool weakVariant =
-            _weakVariantOverride
-            ?? (
-                State.CurrentNodeType == RunConstants.NodeNormal
-                && State.NormalEncountersVisited <= RunConstants.WeakEncountersPerAct
-            );
-
-        return EncounterRng.SeedFor((int)State.Rng.Seed, State.Floor, encounterId, weakVariant);
-    }
+    private int? EncounterRngSeed(int encounterId) =>
+        EncounterRng.SeedFor((int)State.Rng.Seed, State.Floor, encounterId);
 
     /// <summary>
     /// Goopy grows on play and the game bumps the DECK version's amount as well as the
@@ -3141,8 +3114,7 @@ public sealed class RunEngine
                     State.PlayerHp,
                     State.PlayerMaxHp,
                     State.PotionSlots,
-                    State.Gold,
-                    Math.Max(0, State.NormalEncountersVisited + State.EliteEncountersVisited - 1)
+                    State.Gold
                 );
 
             case RunConstants.EventDenseVegetation:
@@ -3561,11 +3533,7 @@ public sealed class RunEngine
                         State.PlayerHp,
                         State.PlayerMaxHp,
                         State.PotionSlots,
-                        State.Gold,
-                        Math.Max(
-                            0,
-                            State.NormalEncountersVisited + State.EliteEncountersVisited - 1
-                        )
+                        State.Gold
                     );
                 }
 
@@ -4577,8 +4545,7 @@ public sealed class RunEngine
                     State.PlayerHp,
                     State.PlayerMaxHp,
                     State.PotionSlots,
-                    State.Gold,
-                    Math.Max(0, State.NormalEncountersVisited + State.EliteEncountersVisited - 1)
+                    State.Gold
                 );
 
             case RunConstants.EventTheLanternKey:
@@ -4676,11 +4643,7 @@ public sealed class RunEngine
                         State.PlayerHp,
                         State.PlayerMaxHp,
                         State.PotionSlots,
-                        State.Gold,
-                        Math.Max(
-                            0,
-                            State.NormalEncountersVisited + State.EliteEncountersVisited - 1
-                        )
+                        State.Gold
                     );
                 }
                 else if (action != RunConstants.EventSkipAction)
@@ -5097,8 +5060,7 @@ public sealed class RunEngine
                 State.PlayerHp,
                 State.PlayerMaxHp,
                 State.PotionSlots,
-                State.Gold,
-                Math.Max(0, State.NormalEncountersVisited + State.EliteEncountersVisited - 1)
+                State.Gold
             );
         }
 

@@ -21,35 +21,32 @@ namespace Sts2Emulator.Tests;
 /// </remarks>
 public class EncounterCompositionStreamTests
 {
-    /// <summary>
-    /// Encounter ids whose <c>GenerateMonsters</c> draws, and whether a shared id needs
-    /// the weak flag to name the right model.
-    /// </summary>
-    public static TheoryData<int, bool> RollsOwnComposition =>
+    /// <summary>Encounter ids whose <c>GenerateMonsters</c> draws.</summary>
+    public static TheoryData<int> RollsOwnComposition =>
         new()
         {
-            { RunConstants.SlimesWeakEncounterId, true },
-            { RunConstants.SlimesNormalEncounterId, false },
-            { RunConstants.FlyconidNormalEncounterId, false },
-            { RunConstants.TwoTailedRatsEncounterId, false },
-            { RunConstants.RubyRaidersEncounterId, false },
-            { RunConstants.SlitheringStranglerEncounterId, false },
-            { RunConstants.CorpseSlugsEncounterId, true },
-            { RunConstants.CorpseSlugsEncounterId, false },
-            { RunConstants.BowlbugsWeakEncounterId, true },
-            { RunConstants.BowlbugsNormalEncounterId, false },
-            { RunConstants.DecimillipedeEncounterId, false },
-            { RunConstants.ScrollsWeakEncounterId, true },
-            { RunConstants.ScrollsNormalEncounterId, false },
-            { RunConstants.PunchOffEncounterId, false },
+            RunConstants.SlimesWeakEncounterId,
+            RunConstants.SlimesNormalEncounterId,
+            RunConstants.FlyconidNormalEncounterId,
+            RunConstants.TwoTailedRatsEncounterId,
+            RunConstants.RubyRaidersEncounterId,
+            RunConstants.SlitheringStranglerEncounterId,
+            RunConstants.CorpseSlugsEncounterId,
+            RunConstants.CorpseSlugsNormalEncounterId,
+            RunConstants.BowlbugsWeakEncounterId,
+            RunConstants.BowlbugsNormalEncounterId,
+            RunConstants.DecimillipedeEncounterId,
+            RunConstants.ScrollsWeakEncounterId,
+            RunConstants.ScrollsNormalEncounterId,
+            RunConstants.PunchOffEncounterId,
         };
 
     [Theory]
     [MemberData(nameof(RollsOwnComposition))]
-    public void EveryRollingEncounterHasAnEntryId(int encounterId, bool weakVariant)
+    public void EveryRollingEncounterHasAnEntryId(int encounterId)
     {
-        Assert.NotNull(EncounterRng.EntryId(encounterId, weakVariant));
-        Assert.NotNull(EncounterRng.SeedFor(12345, totalFloor: 3, encounterId, weakVariant));
+        Assert.NotNull(EncounterRng.EntryId(encounterId));
+        Assert.NotNull(EncounterRng.SeedFor(12345, totalFloor: 3, encounterId));
     }
 
     /// <summary>
@@ -74,7 +71,7 @@ public class EncounterCompositionStreamTests
     public void AnEncounterThatDoesNotRollGetsNoStream()
     {
         Assert.Null(GeneratedData.EncounterTags.EntryForModel("FogmogNormal"));
-        Assert.Null(EncounterRng.SeedFor(12345, 3, RunConstants.PunchConstructEncounterId, false));
+        Assert.Null(EncounterRng.SeedFor(12345, 3, RunConstants.PunchConstructEncounterId));
     }
 
     /// <summary>

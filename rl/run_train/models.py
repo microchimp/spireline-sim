@@ -189,6 +189,11 @@ def expected_loss(probs: np.ndarray, hp: ArrayLike) -> np.ndarray:
 
 # `sts2_gym.env.ENCOUNTER_NAMES` holds ids 0-87 (a test holds the two equal).
 N_ENCOUNTERS = 88
+
+# An encounter appended after FightNet was built over ids 0-87 reads as the encounter it is
+# a variant of. Corpse Slugs' normal fight (88) was the same id as its weak one (9) until
+# the two were told apart, so FightNet has only ever known them as one.
+ENCOUNTER_ALIASES = {88: 9}
 DECK_EMBED, RELIC_EMBED, POTION_EMBED = 64, 32, 8
 EMBED = DECK_EMBED + RELIC_EMBED + POTION_EMBED
 COUNTS = E_SIZE + F_SIZE + G_SIZE  # blocks E, F and G, which close version 1's vector
@@ -229,6 +234,8 @@ def _encounter_one_hot(encounters: np.ndarray) -> np.ndarray:
 
     """
     encounters = np.asarray(encounters, dtype=np.int64).reshape(-1)
+    for appended, older in ENCOUNTER_ALIASES.items():
+        encounters = np.where(encounters == appended, older, encounters)
     outside = encounters[(encounters < 0) | (encounters >= N_ENCOUNTERS)]
     if outside.size:
         raise ValueError(

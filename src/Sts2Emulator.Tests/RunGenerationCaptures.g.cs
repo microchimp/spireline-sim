@@ -76,7 +76,7 @@ public class RunGenerationCaptureTests
         var s = engine.State;
 
         Assert.Equal(RunConstants.ActUnderdocks, s.Act);
-        Assert.Equal(new[] { 12, 10, 13, 0, 23, 6, 25, 7, 30, 9, 12, 26, 24, 6, 24 }, s.NormalEncounterSequence);
+        Assert.Equal(new[] { 12, 10, 13, 0, 23, 6, 25, 7, 30, 88, 22, 26, 24, 6, 24 }, s.NormalEncounterSequence);
         Assert.Equal(new[] { 67, 72, 86, 67, 72, 86, 67, 72, 86, 72, 86, 67, 72, 86, 67 }, s.EliteEncounterSequence);
         Assert.Equal(77, s.BossEncounterId);
         Assert.Equal(65, s.MapNodes.Count);
@@ -102,7 +102,7 @@ public class RunGenerationCaptureTests
         var s = engine.State;
 
         Assert.Equal(RunConstants.ActUnderdocks, s.Act);
-        Assert.Equal(new[] { 9, 12, 13, 7, 0, 30, 6, 12, 24, 9, 23, 26, 25, 0, 24 }, s.NormalEncounterSequence);
+        Assert.Equal(new[] { 9, 12, 13, 7, 0, 30, 6, 22, 24, 88, 23, 26, 25, 0, 24 }, s.NormalEncounterSequence);
         Assert.Equal(new[] { 67, 86, 72, 86, 72, 67, 86, 67, 72, 86, 72, 67, 86, 72, 67 }, s.EliteEncounterSequence);
         Assert.Equal(84, s.BossEncounterId);
         Assert.Equal(62, s.MapNodes.Count);
@@ -128,7 +128,7 @@ public class RunGenerationCaptureTests
         var s = engine.State;
 
         Assert.Equal(RunConstants.ActUnderdocks, s.Act);
-        Assert.Equal(new[] { 10, 12, 9, 12, 24, 30, 0, 9, 7, 23, 26, 25, 6, 23, 24 }, s.NormalEncounterSequence);
+        Assert.Equal(new[] { 10, 12, 9, 22, 24, 30, 0, 88, 7, 23, 26, 25, 6, 23, 24 }, s.NormalEncounterSequence);
         Assert.Equal(new[] { 86, 72, 67, 72, 86, 67, 86, 67, 72, 67, 86, 72, 86, 67, 72 }, s.EliteEncounterSequence);
         Assert.Equal(84, s.BossEncounterId);
         Assert.Equal(64, s.MapNodes.Count);

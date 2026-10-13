@@ -146,7 +146,6 @@ internal sealed class Fight
             new Random(0),
             TestDeck.StarterDeckIds,
             encounterId,
-            completedCombatRoomsBeforeCurrent: -1,
             encounterRngSeed: encounterRngSeed
         );
         state.TargetRng = new CountingRandom(0);

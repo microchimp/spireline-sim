@@ -463,7 +463,6 @@ public sealed class RunState
     public CombatState? ActiveCombat;
     public CountingRandom? ActiveCombatRng;
     public bool LastPlayerWon;
-    public int CompletedCombatRoomsBeforeCurrent;
     public Dictionary<(int Col, int Row), RunMapNode> MapNodes = [];
 
     /// <summary>

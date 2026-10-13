@@ -205,12 +205,13 @@ def validate_starter_player(summary: dict[str, Any]) -> None:
 
 
 def emulator_completed_combat_rooms(encounter: str) -> int:
-    """Combat-count context for the emulator's encounter setup.
+    """Weak context for the emulator's encounter setup.
 
-    First-floor "weak" encounter variants (e.g. CorpseSlugsWeak = 2 slugs vs Normal
-    = 3) are selected when completedCombatRoomsBeforeCurrent is in [0,3); -1 gives the
-    normal variant. Encounters mapped to a "*Weak" live encounter need the weak
-    context, or the emulator would set up the normal variant and mismatch enemy count.
+    "corpse-slugs" and "seapunk" are the weak encounters (two slugs, a lone Seapunk);
+    their normal twins have ids of their own ("corpse-slugs-normal", "cultist-and-
+    seapunk"). A caller that names the weak id with a context outside [0,3) is read as
+    asking for the normal twin, so an encounter mapped to a "*Weak" live encounter keeps
+    the weak context and every other one gets -1.
     """
     live = LIVE_ENCOUNTER_BY_EMULATOR.get(encounter, "")
     return 0 if live.endswith("Weak") else -1

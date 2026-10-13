@@ -31,6 +31,7 @@ internal static class EncounterTags
             17 => ["Mushroom", "Slimes"], // FlyconidNormal
             18 => ["Mushroom"], // SnappingJaxfruitNormal
             21 => ["Shrinker", "Crawler"], // OvergrowthCrawlers
+            22 => ["Seapunk"], // SeapunkNormal
             31 => ["Workers"], // BowlbugsWeak
             32 => ["Workers"], // Bowlbugs
             33 => ["Burrower"], // Tunneler
@@ -41,6 +42,7 @@ internal static class EncounterTags
             50 => ["Scrolls"], // Scrolls
             70 => ["Knights"], // Knights
             87 => ["Exoskeletons"], // ExoskeletonsNormal
+            88 => ["Slugs"], // CorpseSlugsNormal
             _ => None,
         };
 
@@ -53,9 +55,8 @@ internal static class EncounterTags
     /// combat rng, because the seed only exists if the encounter is listed here.
     /// Nothing errors — the roster just comes out of the wrong stream. See E90.
     ///
-    /// Keyed by MODEL name rather than encounter id: two models can share one
-    /// emulator id (CorpseSlugs weak and normal do) and they have different
-    /// entries, so the id alone cannot answer.
+    /// Keyed by MODEL name rather than encounter id, because an emulator name need
+    /// not be a game one (`CorpseSlugs` is the game's CorpseSlugsWeak).
     /// </remarks>
     public static string? EntryForModel(string model) =>
         model switch
@@ -100,7 +101,7 @@ internal static class EncounterTags
             // Overgrowth Boss: CeremonialBeastBoss, TheKinBoss, VantomBoss
             (2, "Weak") => [9, 12, 10, 13],
             // Underdocks Weak: CorpseSlugsWeak, SeapunkWeak, SludgeSpinnerWeak, ToadpolesWeak
-            (2, "Normal") => [9, 0, 23, 7, 26, 30, 24, 12, 25, 6],
+            (2, "Normal") => [88, 0, 23, 7, 26, 30, 24, 22, 25, 6],
             // Underdocks Normal: CorpseSlugsNormal, CultistsNormal, FossilStalkerNormal, GremlinMercNormal, HauntedShipNormal, LivingFogNormal, PunchConstructNormal, SeapunkNormal, SewerClamNormal, TwoTailedRatsNormal
             (2, "Elite") => [72, 86, 67],
             // Underdocks Elite: PhantasmalGardenersElite, SkulkingColonyElite, TerrorEelElite

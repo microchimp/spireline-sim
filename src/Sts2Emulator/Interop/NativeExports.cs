@@ -266,11 +266,11 @@ public static class NativeExports
             // fight its belt: `ApplyCombatStart` procures into the first free slot.
             State.MaxPotionSlots = RunConstants.StartingPotionSlots(ascension);
             SeedStreams();
+            encounterId = WeakContext.Resolve(encounterId, completedCombatRooms);
             int? encounterRngSeed = Sts2Emulator.Core.Run.EncounterRng.SeedFor(
                 Seed,
                 totalFloor,
-                encounterId,
-                completedCombatRooms is >= 0 and < 3
+                encounterId
             );
             CombatFactory.Reset(
                 State,
@@ -282,8 +282,7 @@ public static class NativeExports
                 playerMaxHp: RunConstants.StartingMaxHp,
                 potionIds: [],
                 playerGold: 0,
-                encounterRngSeed: encounterRngSeed,
-                completedCombatRoomsBeforeCurrent: completedCombatRooms
+                encounterRngSeed: encounterRngSeed
             );
             CombatEngine.ResolvePrePlayPhase(State, Rng);
         }
@@ -292,7 +291,12 @@ public static class NativeExports
         {
             UseDefaultLevel();
             SeedStreams();
-            CombatFactory.Reset(State, Rng, deckIds, encounterId, completedCombatRooms);
+            CombatFactory.Reset(
+                State,
+                Rng,
+                deckIds,
+                WeakContext.Resolve(encounterId, completedCombatRooms)
+            );
             CombatEngine.ResolvePrePlayPhase(State, Rng);
         }
 
@@ -359,14 +363,10 @@ public static class NativeExports
             // -1 means "no forced encounter": the factory rolls the seeded first combat.
             // It has to become null rather than travel as -1, which would be looked up as
             // an encounter id and found missing.
-            int? encounter = encounterId >= 0 ? encounterId : null;
+            int? encounter =
+                encounterId >= 0 ? WeakContext.Resolve(encounterId, completedCombatRooms) : null;
             int? encounterRngSeed = encounter is { } id
-                ? Sts2Emulator.Core.Run.EncounterRng.SeedFor(
-                    Seed,
-                    totalFloor,
-                    id,
-                    completedCombatRooms is >= 0 and < 3
-                )
+                ? Sts2Emulator.Core.Run.EncounterRng.SeedFor(Seed, totalFloor, id)
                 : null;
             CombatFactory.Reset(
                 State,
@@ -382,8 +382,7 @@ public static class NativeExports
                 shuffleRng: null,
                 encounterRngSeed: encounterRngSeed,
                 nicheSkipCount: 0,
-                aiRng: null,
-                completedCombatRoomsBeforeCurrent: completedCombatRooms
+                aiRng: null
             );
             CombatEngine.ResolvePrePlayPhase(State, Rng);
         }
@@ -708,9 +707,10 @@ public static class NativeExports
         WriteObs(combat.State, obsBuf);
     }
 
-    // Like Sts2_ResetEncounter but with the weak-combat context:
-    // completedCombatRooms in [0,3) selects weak encounter variants (fewer/weaker
-    // enemies on early floors); -1 keeps the normal variant.
+    // Like Sts2_ResetEncounter but with the weak-combat context, for a caller that names
+    // Corpse Slugs or Seapunk by the one id they once shared: completedCombatRooms in
+    // [0,3) keeps the weak encounter, -1 asks for the normal one (see WeakContext). The
+    // normal ids can be named outright.
     [UnmanagedCallersOnly(EntryPoint = "Sts2_ResetEncounterWeak")]
     public static unsafe void Sts2_ResetEncounterWeak(
         int handle,

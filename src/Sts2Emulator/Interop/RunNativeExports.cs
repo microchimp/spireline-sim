@@ -206,13 +206,12 @@ public static class RunNativeExports
 
         int status = run.StartCombat(
             new ReadOnlySpan<int>(deckIds, deckLen),
-            encounterId,
+            WeakContext.Resolve(encounterId, completedCombatRoomsBeforeCurrent),
             new ReadOnlySpan<int>(relicIds, relicLen),
             playerHp,
             playerMaxHp,
             new ReadOnlySpan<int>(potionIds, potionLen),
-            playerGold,
-            completedCombatRoomsBeforeCurrent
+            playerGold
         );
         run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
         return status;

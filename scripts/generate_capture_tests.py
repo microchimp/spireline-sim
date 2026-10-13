@@ -58,8 +58,10 @@ def resolve(live_name: str, names: dict[int, str]) -> int:
     """Live encounter id -> emulator id.
 
     Exact match first, so NIBBITS_WEAK and NIBBITS_NORMAL resolve to their own
-    entries. Only then fall back to the variant-stripped form, which is how names
-    like SHRINKER_BEETLE_WEAK reach the emulator's `ShrinkerBeetle`. Ambiguity is an
+    entries. Then the alias table, which names every game model with its own emulator
+    entry, a weak encounter and its normal twin apart (CORPSE_SLUGS_WEAK is
+    `CorpseSlugs`, CORPSE_SLUGS_NORMAL is `CorpseSlugsNormal`). Only then fall back to
+    the variant-stripped form, which cannot tell such a pair apart. Ambiguity is an
     error rather than a guess.
 
     Raises:
@@ -69,6 +71,17 @@ def resolve(live_name: str, names: dict[int, str]) -> int:
     exact = [i for i, n in names.items() if squash(n) == squash(live_name)]
     if len(exact) == 1:
         return exact[0]
+
+    pascal = "".join(
+        part.capitalize() for part in live_name.replace("ENCOUNTER.", "").split("_")
+    )
+    try:
+        aliased = verify.encounter_tags.emulator_name(pascal)
+    except SystemExit:
+        aliased = None
+    by_alias = [i for i, n in names.items() if n == aliased]
+    if len(by_alias) == 1:
+        return by_alias[0]
 
     target = verify.normalize(live_name)
     loose = [i for i, n in names.items() if verify.normalize(n) == target]

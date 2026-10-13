@@ -433,7 +433,6 @@ public static class StateCloning
             ActiveCombat = state.ActiveCombat?.Clone(),
             ActiveCombatRng = state.ActiveCombatRng?.Clone(),
             LastPlayerWon = state.LastPlayerWon,
-            CompletedCombatRoomsBeforeCurrent = state.CompletedCombatRoomsBeforeCurrent,
             MapNodes = mapNodes,
             CurrentMapCoord = state.CurrentMapCoord,
             MapOptionCoords = ((int Col, int Row)?[])state.MapOptionCoords.Clone(),
