@@ -626,7 +626,21 @@ public static class PotionEffects
     /// no `CanBeGeneratedInCombat` filter: that belongs to `CreateRandomPotionInCombat`,
     /// so the out-of-combat roll can hand over a healing potion mid-fight.
     /// </remarks>
-    private static int RollPotionOutOfCombat(Random stream)
+    private static int RollPotionOutOfCombat(Random stream) => RollPotion(stream, inCombat: false);
+
+    /// <summary>
+    /// `PotionFactory.CreateRandomPotionInCombat` as Alchemize calls it: the same two-draw
+    /// roll over the options minus the potions that override `CanBeGeneratedInCombat` to
+    /// false (Fairy in a Bottle, Fruit Juice, Regen Potion). The potion is rolled before
+    /// `PotionCmd.TryToProcure` can refuse it, so the draws are spent on a full belt too.
+    /// </summary>
+    internal static int RollPotionInCombat(Random stream) => RollPotion(stream, inCombat: true);
+
+    private static bool CanBeGeneratedInCombat(int potionId) =>
+        GeneratedData.Potions.Get(potionId).Name
+            is not ("FairyInABottle" or "FruitJuice" or "RegenPotion");
+
+    private static int RollPotion(Random stream, bool inCombat)
     {
         // `Rng.NextFloat()` is `(float)(NextDouble() * (1 - 0) + 0)`, compared against
         // float thresholds.
@@ -637,7 +651,10 @@ public static class PotionEffects
             : PotionRarity.Common;
         var options = Run
             .RunRewardGenerator.PotionRewardPool.ToArray()
-            .Where(potionId => GeneratedData.Potions.Get(potionId).Rarity == rarity)
+            .Where(potionId =>
+                GeneratedData.Potions.Get(potionId).Rarity == rarity
+                && (!inCombat || CanBeGeneratedInCombat(potionId))
+            )
             .ToArray();
         return options[stream.Next(options.Length)];
     }
@@ -673,7 +690,7 @@ public static class PotionEffects
     /// (`Sozu.ShouldProcurePotion` is false for its owner), otherwise into the first open
     /// slot.
     /// </summary>
-    private static bool TryToProcure(CombatState state, int potionId)
+    internal static bool TryToProcure(CombatState state, int potionId)
     {
         if (RelicEffects.Has(state.Relics, RelicEffects.Sozu))
         {

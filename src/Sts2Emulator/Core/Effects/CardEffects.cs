@@ -2524,20 +2524,14 @@ public static class CardEffects
         }
     }
 
-    /// <summary>Fills the first empty potion slot, if any, with a uniformly random potion
-    /// id -- Alchemize's approximation. The game's own
-    /// `PotionFactory.CreateRandomPotionInCombat` rolls rarity-weighted odds over the
-    /// character and shared pools this does not model (Entropic Brew's out-of-combat roll
-    /// is modelled, in `PotionEffects`).</summary>
+    /// <summary>Alchemize: `PotionCmd.TryToProcure(PotionFactory.CreateRandomPotionInCombat(
+    /// owner, Rng.CombatPotionGeneration).ToMutable(), owner)`. The potion is ROLLED first --
+    /// two draws on the potion stream, rarity then item -- whether or not a slot is open or
+    /// Sozu will refuse it; only then does the procure succeed or fail.</summary>
     internal static void ProcureRandomPotion(CombatState state, Random rng)
     {
-        int slot = PotionEffects.FirstOpenPotionSlot(state);
-        if (slot >= 0)
-        {
-            // PotionFactory.CreateRandomPotionInCombat reads
-            // Rng.CombatPotionGeneration, not the combat rng.
-            state.PotionSlots[slot] = (state.PotionGenerationRng ?? rng).Next(1, 64);
-        }
+        int potionId = PotionEffects.RollPotionInCombat(state.PotionGenerationRng ?? rng);
+        PotionEffects.TryToProcure(state, potionId);
     }
 
     internal static void TransformRandomCardInHand(CombatState state, Random rng)
