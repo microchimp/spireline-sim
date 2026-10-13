@@ -574,13 +574,66 @@ public static class RunMapGenerator
         return (rest, act is RunConstants.ActHive or RunConstants.ActGlory ? unknown - 1 : unknown);
     }
 
+    /// <summary>
+    /// <c>RunManager.GenerateMap</c>: the act's map, then every model's
+    /// <c>ModifyGeneratedMap</c> in listener order, then the <c>Late</c> pass that marks
+    /// quests on whatever map came out.
+    /// </summary>
+    /// <remarks>
+    /// Listeners run deck cards first and relics after, so when a Spoils Map and a Golden
+    /// Compass both want the map, the card's hourglass is built and the compass's golden
+    /// path replaces it. Either way the card's <c>Late</c> hook then marks the first
+    /// Treasure point of what is left.
+    /// </remarks>
     public static void GenerateActMap(RunState state)
     {
-        if (GenerateGoldenPath(state))
+        state.SpoilsQuestCoord = null;
+        if (!GenerateGoldenPath(state))
+        {
+            GenerateGridMap(state, spoils: HoldsSpoilsMapForThisAct(state));
+        }
+
+        MarkSpoilsQuest(state);
+    }
+
+    /// <summary>
+    /// <c>SpoilsMap.ModifyGeneratedMap</c> answers only for its own act and only from the
+    /// DECK (<c>Pile.Type == Deck</c>); anywhere else it hands the map back untouched.
+    /// </summary>
+    private static bool HoldsSpoilsMapForThisAct(RunState state) =>
+        state.CurrentActIndex == RunConstants.SpoilsMapActIndex
+        && state.Deck.Any(card => card.DefId == RunConstants.SpoilsMapCard);
+
+    /// <summary>
+    /// <c>SpoilsMap.ModifyGeneratedMapLate</c> and <c>AfterMapGenerated</c>: the quest
+    /// marker goes on the first Treasure point of the map (<c>GetAllMapPoints</c> walks
+    /// column by column), which is the hourglass's one chest.
+    /// </summary>
+    private static void MarkSpoilsQuest(RunState state)
+    {
+        if (!HoldsSpoilsMapForThisAct(state))
         {
             return;
         }
 
+        var chest = state
+            .MapNodes.Values.Where(node => node.NodeType == RunConstants.NodeRelic)
+            .OrderBy(node => node.Col)
+            .ThenBy(node => node.Row)
+            .FirstOrDefault();
+        state.SpoilsQuestCoord = chest is null ? null : (chest.Col, chest.Row);
+    }
+
+    /// <summary>
+    /// The map drawn on the grid: <c>StandardActMap</c>, or <c>SpoilsActMap</c> when the
+    /// Spoils Map replaces it. The two are the same recipe -- seven paths from row one,
+    /// point types dealt out, duplicate segments pruned -- with three differences: where
+    /// the paths may step (the hourglass), the stream they draw from, and what happens
+    /// afterwards (the hourglass is not centred, spread or straightened, and has no
+    /// second boss).
+    /// </summary>
+    private static void GenerateGridMap(RunState state, bool spoils)
+    {
         state.MapNodes = [];
         state.CurrentMapCoord = (RunConstants.MapStartCol, 0);
         Array.Clear(state.MapOptionCoords);
@@ -592,7 +645,12 @@ public static class RunMapGenerator
         // — not on which act was rolled. This used to pass `state.Act - 1`, conflating
         // the two: an Underdocks act 1 would have read "act_2_map" instead of
         // "act_1_map" and desynced the entire map.
-        var mapRng = state.Rng.ActMapRng(state.CurrentActIndex);
+        //
+        // `SpoilsActMap` takes its own stream instead (`new Rng(seed, "spoils_map")`) and
+        // draws the act's point counts from it first, as the standard map does from its.
+        var mapRng = spoils
+            ? state.Rng.SpoilsMapRng()
+            : state.Rng.ActMapRng(state.CurrentActIndex);
         var (restCount, unknownCount) = MapPointTypes(state.Act, mapRng);
 
         var starts = new List<(int Col, int Row)>();
@@ -613,7 +671,12 @@ public static class RunMapGenerator
                 starts.Add((startCol, 1));
             }
 
-            GeneratePath(state, mapRng, current);
+            GeneratePath(state, mapRng, current, spoils);
+        }
+
+        if (spoils)
+        {
+            CheckSpoilsChestIsAlone(state);
         }
 
         // Order matters. The game wires these with ForEachInRow, which walks the grid
@@ -639,11 +702,18 @@ public static class RunMapGenerator
 
         AssignPointTypes(state, mapRng, restCount, unknownCount);
         PruneAndRepair(state, mapRng, restCount, unknownCount);
-        CenterGrid(state);
-        SpreadAdjacentMapPoints(state);
-        StraightenPaths(state);
+        if (!spoils)
+        {
+            CenterGrid(state);
+            SpreadAdjacentMapPoints(state);
+            StraightenPaths(state);
+        }
+
         AssignEncounterIds(state);
-        AddSecondBoss(state);
+        if (!spoils)
+        {
+            AddSecondBoss(state);
+        }
 
         // StandardActMap stamps the starting point LAST — `BossMapPoint.PointType =
         // Boss; StartingMapPoint.PointType = Ancient;` come after every other assignment,
@@ -1528,12 +1598,14 @@ public static class RunMapGenerator
         };
     }
 
-    private static void GeneratePath(RunState state, GameRng rng, RunMapNode start)
+    private static void GeneratePath(RunState state, GameRng rng, RunMapNode start, bool spoils)
     {
         var current = start;
         while (current.Row < RunConstants.MapBossRowFor(state.Act) - 1)
         {
-            var child = GenerateNextCoord(state, rng, current);
+            var child = spoils
+                ? GenerateSpoilsNextCoord(state, rng, current)
+                : GenerateNextCoord(state, rng, current);
             AddEdge(state, (current.Col, current.Row), child);
             current = state.MapNodes[child];
         }
@@ -1556,6 +1628,150 @@ public static class RunMapGenerator
             }
         }
         return (current.Col, current.Row + 1);
+    }
+
+    /// <summary>
+    /// <c>SpoilsActMap.GenerateNextCoord</c>: the next step of a path on the hourglass.
+    /// </summary>
+    /// <remarks>
+    /// Three things set it apart from the standard step. The columns a row allows narrow
+    /// to the middle one at the chest's row and widen again either side
+    /// (<see cref="SpoilsAllowedColumns" />). In the three rows before the chest the order
+    /// of the three moves is not shuffled but leans towards the middle column, so the draw
+    /// is skipped there. And a move is refused when the node it lands on already has three
+    /// parents, or the node it leaves already has three children, unless that edge exists.
+    /// The fallback, when all three moves are refused, heads for the middle column.
+    /// </remarks>
+    private static (int Col, int Row) GenerateSpoilsNextCoord(
+        RunState state,
+        GameRng rng,
+        RunMapNode current
+    )
+    {
+        int row = current.Row + 1;
+        var (minCol, maxCol) = SpoilsAllowedColumns(state, row);
+        int middle = RunConstants.MapStartCol;
+        int untilChest = SpoilsChestRow(state) - current.Row;
+        List<int> moves = [-1, 0, 1];
+        if (untilChest is > 0 and <= 3)
+        {
+            moves = CenteredMoves(current.Col, middle);
+        }
+        else
+        {
+            rng.StableShuffle(moves, Comparer<int>.Default);
+        }
+
+        foreach (int move in moves)
+        {
+            int col = Math.Clamp(current.Col + move, 0, RunConstants.MapWidth - 1);
+            if (col < minCol || col > maxCol || HasInvalidCrossover(state, current, col))
+            {
+                continue;
+            }
+
+            state.MapNodes.TryGetValue((col, row), out var below);
+            bool parentsFit =
+                below is null
+                || below.Parents.Contains((current.Col, current.Row))
+                || below.Parents.Count < 3;
+            bool childrenFit =
+                current.Children.Count < 3
+                || (below is not null && current.Children.Contains((col, row)));
+            if (parentsFit && childrenFit)
+            {
+                return (col, row);
+            }
+        }
+
+        int target = Math.Clamp(middle, minCol, maxCol);
+        if (Math.Abs(target - current.Col) > 1)
+        {
+            target = Math.Clamp(current.Col + Math.Sign(target - current.Col), minCol, maxCol);
+        }
+
+        if (HasInvalidCrossover(state, current, target))
+        {
+            target = Math.Clamp(current.Col, minCol, maxCol);
+        }
+
+        return (target, row);
+    }
+
+    /// <summary>
+    /// <c>SpoilsActMap.BuildCenteredPriorityList</c>: the move towards the middle column
+    /// first, then straight on, then away from it, then whichever of left and right are
+    /// still missing.
+    /// </summary>
+    private static List<int> CenteredMoves(int col, int middle)
+    {
+        int towards = Math.Sign(middle - col);
+        List<int> moves = [];
+        if (towards != 0)
+        {
+            moves.Add(towards);
+        }
+
+        moves.Add(0);
+        if (towards != 0)
+        {
+            moves.Add(-towards);
+        }
+
+        if (!moves.Contains(-1))
+        {
+            moves.Add(-1);
+        }
+
+        if (!moves.Contains(1))
+        {
+            moves.Add(1);
+        }
+
+        return moves;
+    }
+
+    /// <summary>
+    /// <c>SpoilsActMap.GetAllowedColumnsForRow</c>: the hourglass. A row may reach as far
+    /// from the middle column as it is from the chest's row, and as it is from the top of
+    /// the grid (one more than the rows left above it), but never past the middle three.
+    /// </summary>
+    private static (int Min, int Max) SpoilsAllowedColumns(RunState state, int row)
+    {
+        int middle = RunConstants.MapStartCol;
+        int mapLength = RunConstants.MapBossRowFor(state.Act);
+        int fromChest = Math.Abs(row - SpoilsChestRow(state));
+        int fromTop = Math.Min(middle, Math.Max(0, mapLength - 1 - row) + 1);
+        int reach = Math.Min(middle, Math.Min(fromChest, fromTop));
+        return (Math.Max(0, middle - reach), Math.Min(RunConstants.MapWidth - 1, middle + reach));
+    }
+
+    /// <summary>
+    /// <c>SpoilsActMap._treasureRow</c>: <c>GetRowCount() - 7</c>, the standard treasure
+    /// row, so the chest sits where act 2's own chests would.
+    /// </summary>
+    private static int SpoilsChestRow(RunState state) => RunConstants.MapBossRowFor(state.Act) - 7;
+
+    /// <summary>
+    /// The game's <c>RedirectToTreasure</c> folds any other node on the chest's row into
+    /// the chest. It cannot fire: the row allows one column, so every path enters the
+    /// chest and nothing else is ever drawn there. Stated as a check so that a change to
+    /// the allowed columns cannot silently leave a second node on the row.
+    /// </summary>
+    private static void CheckSpoilsChestIsAlone(RunState state)
+    {
+        int row = SpoilsChestRow(state);
+        GetOrCreate(state, RunConstants.MapStartCol, row);
+        if (
+            state.MapNodes.Values.Any(node =>
+                node.Row == row && node.Col != RunConstants.MapStartCol
+            )
+        )
+        {
+            throw new InvalidOperationException(
+                "A second node stands on the Spoils map's chest row"
+            );
+        }
     }
 
     private static bool HasInvalidCrossover(RunState state, RunMapNode current, int targetCol)

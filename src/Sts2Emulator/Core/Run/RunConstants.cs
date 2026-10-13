@@ -928,6 +928,12 @@ public static class RunConstants
     /// </summary>
     public const int CursePlaceholderCard = 10001;
     public const int SpoilsMapCard = 10020;
+
+    /// <summary>
+    /// <c>SpoilsMap.AfterCreated</c> sets <c>SpoilsActIndex = 1</c>: the quest belongs to
+    /// act 2's map and to no other.
+    /// </summary>
+    public const int SpoilsMapActIndex = 1;
     public const int NeowsFuryCard = 321;
 
     public static ReadOnlySpan<int> StarterDeckIds =>

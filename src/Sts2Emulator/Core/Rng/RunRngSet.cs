@@ -41,6 +41,13 @@ public sealed class RunRngSet
     public GameRng ActMapRng(int actIndex = 0) => new(Seed, $"act_{actIndex + 1}_map");
 
     /// <summary>
+    /// <c>SpoilsActMap</c>'s own stream, <c>new Rng(runState.Rng.Seed, "spoils_map")</c>:
+    /// the hourglass is drawn from a stream of its own, so it does not depend on the act
+    /// index and never touches <see cref="ActMapRng" />.
+    /// </summary>
+    public GameRng SpoilsMapRng() => new(Seed, "spoils_map");
+
+    /// <summary>
     /// Neow's own stream. EventModel seeds every event with
     /// <c>Seed + (IsShared ? 0 : GetPlayerSlotIndex(Owner)) + hash(Id.Entry)</c>, and a
     /// solo run's only player is slot 0 — the 1 this used to default to seeded a

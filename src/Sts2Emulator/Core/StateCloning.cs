@@ -395,6 +395,7 @@ public static class StateCloning
             FurCoatRooms = [.. state.FurCoatRooms],
             FurCoatAct = state.FurCoatAct,
             GoldenPathAct = state.GoldenPathAct,
+            SpoilsQuestCoord = state.SpoilsQuestCoord,
             ParasolSweepPending = state.ParasolSweepPending,
             LavaRockTriggered = state.LavaRockTriggered,
             SilverCrucibleTreasureRoomsEntered = state.SilverCrucibleTreasureRoomsEntered,

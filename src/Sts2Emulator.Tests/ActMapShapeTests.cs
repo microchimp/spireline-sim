@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 using Xunit;
 
@@ -60,13 +61,6 @@ public class ActMapShapeTests
         {
             foreach (var act in run.Value.GetProperty("acts").EnumerateObject())
             {
-                // A Spoils Map carried into the act swaps in `SpoilsActMap`, an hourglass
-                // drawn off its own "spoils_map" stream, which is not modelled yet.
-                if (act.Value.TryGetProperty("spoils_map", out var spoils) && spoils.GetBoolean())
-                {
-                    continue;
-                }
-
                 yield return [run.Name, int.Parse(act.Name)];
             }
         }
@@ -96,7 +90,26 @@ public class ActMapShapeTests
             .ThenBy(n => n.Col)
             .ToList();
 
-        var engine = BossFights.InAct(seed, run.GetProperty("ascension").GetInt32(), act - 1);
+        // An act flagged `spoils_map` is one the run entered carrying a Spoils Map, which
+        // swaps in `SpoilsActMap`: the card has to be in the deck when the act's map is made.
+        bool spoils =
+            run.GetProperty("acts")
+                .GetProperty(act.ToString())
+                .TryGetProperty("spoils_map", out var flag) && flag.GetBoolean();
+        var engine = new RunEngine();
+        engine.Reset(seed, run.GetProperty("ascension").GetInt32());
+        for (int i = 0; i < act - 1; i++)
+        {
+            if (spoils && i == act - 2)
+            {
+                engine.State.Deck.Add(
+                    new CardInstance(RunConstants.SpoilsMapCard, Upgraded: false)
+                );
+            }
+
+            Assert.True(engine.EnterNextAct());
+        }
+
         var actual = engine
             .State.MapNodes.Values.Where(n => n.Row > 0)
             .Select(n =>

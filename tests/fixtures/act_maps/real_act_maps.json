@@ -3404,5 +3404,5 @@
    }
   }
  },
- "note": "An act whose map is a SpoilsActMap (the Spoils Map card carried into it, SpoilsMap.ModifyGeneratedMap) is marked spoils_map: that generator is not modelled yet."
+ "note": "An act whose map is a SpoilsActMap (the Spoils Map card carried into it, SpoilsMap.ModifyGeneratedMap) is marked spoils_map: the Spoils Map card has to be in the deck when it is generated."
 }

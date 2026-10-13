@@ -465,6 +465,14 @@ public sealed class RunState
     public bool LastPlayerWon;
     public int CompletedCombatRoomsBeforeCurrent;
     public Dictionary<(int Col, int Row), RunMapNode> MapNodes = [];
+
+    /// <summary>
+    /// The map point carrying the Spoils Map quest marker, or null. It lives on the MAP,
+    /// not on the card: <c>SpoilsMap.AfterMapGenerated</c> puts <c>AddQuest</c> on the
+    /// first Treasure point of the map act 2 was handed, and every map starts without one,
+    /// so a map generated without the card in the deck carries none.
+    /// </summary>
+    public (int Col, int Row)? SpoilsQuestCoord;
     public (int Col, int Row) CurrentMapCoord;
     public (int Col, int Row)?[] MapOptionCoords = new (int Col, int Row)?[RunConstants.MapChoices];
 
