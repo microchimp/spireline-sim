@@ -192,6 +192,29 @@ public class StratagemShuffleScreenTests
     }
 
     [Fact]
+    public void CascadeKeepsTakingAfterThePick()
+    {
+        // `CardPileCmd.AutoPlayFromDrawPile(2, Top)` takes both cards first, running
+        // `ShuffleIfNecessary` before each take: the second take shuffles, Stratagem asks, and
+        // the take goes on off the new pile.
+        const int cascade = 546;
+        var fight = WithStratagem(Card(cascade))
+            .Energy(2)
+            .Draw(Card(IC.DefendIronclad))
+            .Discard([.. Pile(IC.DefendIronclad, IC.DefendIronclad, IC.DefendIronclad, IC.Bash)]);
+
+        fight.Play();
+        Assert.Equal(CL.Stratagem, fight.Pending!.SourceCardDefId);
+        int bash = Ids(fight.State.DrawPile).IndexOf(IC.Bash);
+        fight.Choose(bash);
+
+        // Both Defends were played: 2 x 5 block, and the pick is in hand.
+        Assert.Equal([IC.Bash], Ids(fight.State.Hand));
+        Assert.Equal(10, fight.State.PlayerBlock);
+        Assert.Equal(2, fight.State.DrawPile.Count);
+    }
+
+    [Fact]
     public void ThePileIsTakenWholeWithoutAskingWhenItIsNoBiggerThanTheCount()
     {
         var fight = WithStratagem(Card(IC.PommelStrike)).Draw().Discard(Card(IC.Bash));
