@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import os
 import random
 import subprocess
 import sys
@@ -20,6 +21,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+NL = chr(10)
 JOBS = Path(r"D:\spireline\referee\jobs")
 GAME = r"D:\spireline\referee\game"
 ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
@@ -51,6 +53,8 @@ def main() -> int:
     from tools.fidelity import coverage as cv  # noqa: PLC0415
     from tools.fidelity.fight_compare import names as id_names  # noqa: PLC0415
     from tools.fidelity import reanchor_compare as rc  # noqa: PLC0415
+    from tools.fidelity import fight_compare as fc  # noqa: PLC0415
+    cv_group = rc.group
     nm = id_names(json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8")))
     commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     cov_path = JOBS.parent / "coverage.json"
@@ -96,27 +100,53 @@ def main() -> int:
                   for n, r in enumerate(subset)]
         return merged, [rep]
 
-    def reanchor(out_path: Path, rea_path: Path) -> dict:
-        """EmuDump reanchor: each recorded step replayed from the game's own state before it."""
-        with open(rea_path, "w", encoding="utf-8") as f:
-            subprocess.run(["dotnet", str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"), "reanchor", str(out_path)],
-                           stdout=f, check=False)
-        return json.loads(rea_path.read_text(encoding="utf-8"))
+    emu_dll = str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll")
+    n_emu = max(1, min(16, os.cpu_count() or 1))
+
+    def emudump(mode: str, results: list, path: Path) -> dict:
+        """EmuDump `fight` or `reanchor` over `results`, split across processes (one emulator per
+        process); the merged document, in input order, is also written to `path`."""
+        k = max(1, min(n_emu, len(results)))
+        size = -(-len(results) // k)
+        parts = [results[i:i + size] for i in range(0, len(results), size)]
+        procs = []
+        for i, part in enumerate(parts):
+            src, dst = path.with_suffix(f".p{i}.in.json"), path.with_suffix(f".p{i}.json")
+            src.write_text(json.dumps({"results": part}), encoding="utf-8")
+            procs.append((src, dst, subprocess.Popen(["dotnet", emu_dll, mode, str(src)], stdout=open(dst, "w", encoding="utf-8"))))
+        doc: dict = {}
+        out_results: list = []
+        for src, dst, p in procs:
+            p.wait()
+            p.stdout and p.stdout.close()
+            part_doc = json.loads(dst.read_text(encoding="utf-8")) if dst.stat().st_size else {"results": []}
+            doc = doc or {k_: v for k_, v in part_doc.items() if k_ != "results"}
+            got = part_doc.get("results", [])
+            n_in = len(json.loads(src.read_text(encoding="utf-8"))["results"])
+            out_results += got + [{"error": "emulator produced no result"}] * (n_in - len(got))
+            src.unlink()
+            dst.unlink()
+        doc["results"] = out_results
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        return doc
+
+    emus_all: list = []
+    rea_all: dict = {"results": []}
 
     def replay_and_learn(results: list, tag: str) -> int:
-        """Replay a wave in the emulator, fold it into coverage, return identical count."""
-        w_out, w_emu = JOBS / f"{tag}.out.json", JOBS / f"{tag}.emu.json"
-        w_out.write_text(json.dumps({"results": results}), encoding="utf-8")
-        with open(w_emu, "w", encoding="utf-8") as f:
-            subprocess.run(["dotnet", str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"), "fight", str(w_out)],
-                           stdout=f, check=False)
-        emus = json.loads(w_emu.read_text(encoding="utf-8"))["results"]
+        """Replay a wave in the emulator (plain and re-anchored), fold it into coverage, return identical count."""
+        (JOBS / f"{tag}.out.json").write_text(json.dumps({"results": results}), encoding="utf-8")
+        emus = emudump("fight", results, JOBS / f"{tag}.emu.json")["results"]
+        rea = emudump("reanchor", results, JOBS / f"{tag}.reanchor.json")
         # Coverage learns from every re-anchored step (SPEED_PLAN step 6), not only those before
         # the first divergence; reanchor_compare.learn replaces coverage.update.
-        rc.learn(cov, results, reanchor(w_out, JOBS / f"{tag}.reanchor.json"), nm, commit)
+        rc.learn(cov, results, rea, nm, commit)
         cv.save(cov_path, cov)
+        emus_all.extend(emus)
+        rea_all.update({k: v for k, v in rea.items() if k != "results"})
+        rea_all["results"].extend(rea["results"])
         return sum(1 for g, e in zip(results, emus)
-                   if g.get("steps") and not g.get("error") and cv.first_divergence(g, e, nm) is None)
+                   if g.get("steps") and not g.get("error") and not e.get("error") and cv.first_divergence(g, e, nm) is None)
 
     merged, reports = [], []
     remaining = a.fights
@@ -150,32 +180,37 @@ def main() -> int:
         reports += rep
         remaining -= n
         print(f"wave {w}: {n} fights, {same_w} identical; {cv.summary(cov, candidates, commit)}", flush=True)
+    t_end = time.time()  # every fight played and replayed; what follows is reporting
     out.write_text(json.dumps({"results": merged}), encoding="utf-8")
+    emu.write_text(json.dumps({"results": emus_all}), encoding="utf-8")
+    (JOBS / f"{a.name}.reanchor.json").write_text(json.dumps(rea_all), encoding="utf-8")
     report = {"exit": [r.get("exit") for r in reports], "seconds": max((r.get("seconds") or 0) for r in reports),
               "network_connections": sorted({c for r in reports for c in r.get("network_connections", [])}),
               "real_profile_touched": any(r.get("real_profile_touched") for r in reports)}
-    with open(emu, "w", encoding="utf-8") as f:
-        subprocess.run(["dotnet", str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"), "fight", str(out)],
-                       stdout=f, check=False)
-    cmp = subprocess.run([sys.executable, "-m", "tools.fidelity.fight_compare", str(out), str(emu)],
-                         capture_output=True, text=True, cwd=ROOT, check=False).stdout
 
-    t_end = time.time()
-    same, groups, errors = 0, collections.defaultdict(list), []
-    current = None
-    for line in cmp.splitlines():
-        if " steps identical" in line:
+    # Per fight: identical, or the first differing field and the action before it (in process; the
+    # fight_compare CLI's text output was parsed here before and broke on a failed print).
+    same, groups, errors, per_fight_lines = 0, collections.defaultdict(list), [], []
+    for g, e in zip(merged, emus_all):
+        seed = g.get("seed")
+        if g.get("error") or e.get("error") or not g.get("steps"):
+            for side, r in (("game", g), ("emulator", e)):
+                if r.get("error"):
+                    errors.append(f"{seed}: {side} error: {str(r['error'])[:200]}")
+            continue
+        idx = cv.first_divergence(g, e, nm)
+        if idx is None:
             same += 1
-        elif "error:" in line and not line.startswith(" "):
-            errors.append(line[:300])
-        elif "first difference at step" in line:
-            current = line
-        elif line.startswith("    .") and current:
-            field = line.split(":")[0].strip()
-            card = current.split("'card': '")[1].split("'")[0] if "'card': '" in current else (
-                "end_turn" if "end_turn" in current else "start")
-            groups[f"{field} after {card}"].append(current[:200])
-            current = None
+            per_fight_lines.append(f"{seed}: {len(g['steps'])} steps identical")
+            continue
+        act = g["steps"][idx].get("action")
+        d = fc.diff(fc.game_view(g["steps"][idx]["state"]), fc.emu_view(e["steps"][idx]["state"], nm))
+        field = cv_group(d[0][0]) if d else "(length)"
+        card = (act or {}).get("card") or ("end_turn" if act else "start")
+        line = f"{seed}: first difference at step {idx} after {act}"
+        groups[f"{field} after {card}"].append(line[:200])
+        per_fight_lines.append(line + "".join(f"{NL}    {p}: game {str(x)[:150]} | emulator {str(y)[:150]}" for p, x, y in d[:3]))
+    cmp = NL.join(per_fight_lines)
     # Speed metrics. Headline: verified fights per minute = fights played in the game AND
     # replayed and compared in the emulator, over the batch's whole wall clock (start-up,
     # stalls and resumes included).
@@ -183,7 +218,6 @@ def main() -> int:
     actions = sum(max(0, len(r["steps"]) - 1) for r in played)
     # Verified transitions: steps where the emulator reproduced the game's next state, i.e.
     # every step before a fight's first divergence. The honest headline (SPEED_PLAN.md).
-    emus_all = json.loads(emu.read_text(encoding="utf-8"))["results"] if emu.exists() else []
     vt = 0
     for g, e in zip(merged, emus_all):
         if g.get("steps") and not g.get("error") and not e.get("error"):
@@ -191,8 +225,7 @@ def main() -> int:
             vt += (len(g["steps"]) if idx is None else idx) - 1
     # Re-anchored: every step whose card play or end of turn the emulator reproduced from the
     # game's state before it, divergences earlier in the fight notwithstanding.
-    rea = reanchor(out, JOBS / f"{a.name}.reanchor.json")
-    rtot = rc.summarise([rc.analyse(g, r, nm, "stop", rc.keys_of(rea)) for g, r in rc.pair(merged, rea["results"])])["totals"]
+    rtot = rc.summarise([rc.analyse(g, r, nm, "stop", rc.keys_of(rea_all)) for g, r in rc.pair(merged, rea_all["results"])])["totals"]
     vt_first, vt = vt, rtot.get("verified", 0)
     minutes = max(1e-9, (t_end - t_start) / 60)
     per_fight = [r["s_per_fight_per_server"] for r in reports if r.get("s_per_fight_per_server")]

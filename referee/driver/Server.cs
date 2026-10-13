@@ -60,6 +60,8 @@ public static partial class Driver
         new DirectoryInfo(inbox).GetFiles("*.json").Where(f => f.Name.EndsWith(".json", StringComparison.Ordinal));
 
     /// <summary>The oldest pending spec, claimed by an atomic rename; null when there is none.</summary>
+    private static int _lostClaims;
+
     private static (string taken, string id)? Claim(string inbox, int pid)
     {
         foreach (FileInfo f in PendingSpecs(inbox).OrderBy(f => f.LastWriteTimeUtc).ThenBy(f => f.Name, StringComparer.Ordinal))
@@ -72,6 +74,16 @@ public static partial class Driver
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 continue;  // another server took it first
+            }
+
+            // Seen 4 times in 600 fights: two servers claimed the same spec at the same moment, the
+            // rename reported success here and the file was gone a moment later while the other
+            // server played it. A claim counts only once its file is really ours to read.
+            if (!File.Exists(taken))
+            {
+                _lostClaims++;
+                GD.Print($"[referee] lost the claim on {f.Name} to another server");
+                continue;
             }
 
             return (taken, f.Name[..^".json".Length]);
@@ -103,7 +115,7 @@ public static partial class Driver
             {
                 if (File.Exists(stop) && !PendingSpecs(inbox).Any())
                 {
-                    GD.Print($"[referee] STOP: inbox empty, exiting after {_done} fights");
+                    GD.Print($"[referee] STOP: inbox empty, exiting after {_done} fights ({_lostClaims} claims lost to other servers)");
                     return 0;
                 }
 
@@ -121,6 +133,12 @@ public static partial class Driver
             try
             {
                 spec = JsonNode.Parse(File.ReadAllText(taken))!.AsObject();
+            }
+            catch (FileNotFoundException)
+            {
+                _lostClaims++;  // as above, the other server noticed first: not ours, no result
+                GD.Print($"[referee] lost the claim on {id} to another server");
+                continue;
             }
             catch (Exception ex)
             {
