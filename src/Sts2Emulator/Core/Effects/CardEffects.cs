@@ -636,7 +636,8 @@ public static class CardEffects
                 );
                 break;
 
-            case IC.Tank: // 1/0-cost, apply TankPower (multiplayer only)
+            case IC.Tank: // 1/0-cost, TankPower(1): the owner takes double powered-attack damage
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.Tank, 1);
                 break;
 
             case IC.Thunderclap: // 1-cost, 4/7 dmg to ALL + Vulnerable 1 to ALL
@@ -1251,7 +1252,8 @@ public static class CardEffects
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.AutomationPower, 1);
                 break;
 
-            case CL.BeaconOfHope: // multiplayer-only shared block; no-op in single-player
+            case CL.BeaconOfHope: // BeaconOfHopePower(1): shares block with OTHER players, so inert alone
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.BeaconOfHope, 1);
                 break;
 
             case CL.Calamity: // 3/2-cost, after each Attack add a random Attack to hand

@@ -275,6 +275,13 @@ public static class BuffSystem
             dmg *= 0.5f;
         }
 
+        // TankPower.ModifyDamageMultiplicative: 2 for a powered attack whose TARGET is its
+        // owner. Like Flutter above, the target check is the defender's buff list.
+        if (Get(defenderBuffs, BuffId.Tank) > 0)
+        {
+            dmg *= 2f;
+        }
+
         if (Get(defenderBuffs, BuffId.Vulnerable) > 0)
         {
             float mult = 1.5f + Get(attackerBuffs, BuffId.CrueltyPower) / 100f + vulnerableDelta;
