@@ -188,13 +188,15 @@ public static partial class Driver
     /// Flag settle: the flags must hold on two consecutive checks one frame apart with the same state
     /// signature (the frame lets deferred work run, and any change restarts the wait).
     /// </summary>
-    /// <returns>true once the flags hold; false if they do not within maxSeconds and <see cref="BudgetFrames" />
-    /// frames (Watchdog.cs: a starved server is slow, not stuck; kept below the watchdog's stall_s).</returns>
-    private static async Task<bool> SettleFlags(Player me, double maxSeconds = 10)
+    /// <returns>true once the flags hold; false if they do not within maxSeconds (default <see cref="IdleTimeoutS" />,
+    /// job key idle_timeout_s) and <see cref="BudgetFrames" /> frames (Watchdog.cs: a starved server is slow,
+    /// not stuck; kept below the watchdog's stall_s).</returns>
+    private static async Task<bool> SettleFlags(Player me, double? maxSeconds = null)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
         var clock = System.Diagnostics.Stopwatch.StartNew();  // progress reports only; the limit is the budget
-        var budget = new Budget(maxSeconds);
+        var budget = new Budget(maxSeconds ?? IdleTimeoutS);
+        int quiet = 0;  // as Idle's stable count, for the frame-cost profile (Lean.QuietFrames)
         string? lastSig = null;
         bool first = true;
         int waited = 0, busyRun = 0;
@@ -231,6 +233,8 @@ public static partial class Driver
                 bool ok = FlagsSettled(me);
                 string sig = ok ? Signature(CombatManager.Instance.DebugOnlyGetState()) : "busy";
                 TraceFrame(me, ok, sig);
+                quiet = ok && sig == lastSig ? quiet + 1 : 0;
+                Lean.QuietFrames = quiet;
                 if (ok && sig == lastSig)
                 {
                     return true;

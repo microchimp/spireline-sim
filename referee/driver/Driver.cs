@@ -49,9 +49,16 @@ public static partial class Driver
         // never queued, and every asset loads on demand on the main thread instead.
         try
         {
-            if ((bool?)JsonNode.Parse(File.ReadAllText(job))?["no_preload"] == true)
+            var opts = JsonNode.Parse(File.ReadAllText(job));
+            if ((bool?)opts?["no_preload"] == true)
             {
                 MegaCrit.Sts2.Core.Assets.PreloadManager.Enabled = false;
+            }
+
+            // Before the menu starts its music, so no sound is ever started (Patches.Silence).
+            if ((bool?)opts?["silent"] == true)
+            {
+                Patches.Silence();
             }
         }
         catch (Exception ex) when (ex is IOException or JsonException)
@@ -159,6 +166,7 @@ public static partial class Driver
             // waits, and the frame cap only paces rendering, which is off anyway.
             SaveManager.Instance.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
             IdleFrames = (double?)job["idle_frames"] ?? IdleFrames;
+            IdleTimeoutS = (double?)job["idle_timeout_s"] ?? IdleTimeoutS;
             SettleMode = (string?)job["settle"] ?? SettleMode;
             SettleAudit = (double?)job["settle_audit"] ?? SettleAudit;
             TraceFrames = (bool?)job["trace_frames"] ?? false;
@@ -189,6 +197,13 @@ public static partial class Driver
             {
                 Patches.Apply();
             }
+
+            if ((bool?)job["still_visuals"] == true)
+            {
+                Patches.StillVisuals(tree);
+            }
+
+            Lean.Configure(job, tree);  // frame-cost profiling (Lean.cs)
 
             // The game's own preloader switch: background asset sessions only warm a cache,
             // and back-to-back runs (worse with many copies) hang waiting on one. Off, assets

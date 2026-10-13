@@ -92,10 +92,27 @@ def real_profile_state():
     return real_profile.exists() and sorted((str(p), p.stat().st_mtime) for p in real_profile.rglob("*"))
 
 
-def launch(game: Path, scratch: Path, job: Path, below_normal: bool = False):
-    """Start the game headless on a scratch profile; returns (process, log file)."""
+# .NET runtime settings for the game process (CoreCLR reads DOTNET_* at startup; they change how
+# code is compiled and memory collected, never what the game computes). Measured on r20v2, one
+# server, A/B in the same conditions:
+#   DOTNET_TieredPGO=0  the game's code is huge and each fight reaches new paths, so with PGO the
+#                       tiering thread was still instrumenting and recompiling 100-200 ms per fight
+#                       after 20 fights; without it ~40 ms, and fight CPU fell ~8%.
+DOTNET_ENV = {"DOTNET_TieredPGO": "0"}
+
+
+def game_env(scratch: Path, job: Path, dotnet_tuning: bool = True) -> dict[str, str]:
+    """The game's environment: scratch profile folders, the job file and (by default) DOTNET_ENV."""
     env = dict(os.environ, APPDATA=str(scratch / "appdata"), LOCALAPPDATA=str(scratch / "localappdata"),
                SPIRELINE_REFEREE_JOB=str(job.resolve()))
+    if dotnet_tuning:
+        env.update(DOTNET_ENV)
+    return env
+
+
+def launch(game: Path, scratch: Path, job: Path, below_normal: bool = False, dotnet_tuning: bool = True):
+    """Start the game headless on a scratch profile; returns (process, log file)."""
+    env = game_env(scratch, job, dotnet_tuning)
     log = open(scratch / "game-stdout.log", "wb")
     flags = subprocess.CREATE_NO_WINDOW | (subprocess.BELOW_NORMAL_PRIORITY_CLASS if below_normal else 0)
     proc = subprocess.Popen([str(game / "SlayTheSpire2.exe"), "--headless", "--force-steam", "off"],
@@ -129,6 +146,7 @@ def main() -> int:
     ap.add_argument("--legacy-boot-settings", action="store_true",
                     help="do not write skip_intro_logo / fps_limit into settings.save (to time the old boot)")
     ap.add_argument("--below-normal", action="store_true", help="run the game at BelowNormal priority")
+    ap.add_argument("--no-dotnet-tuning", action="store_true", help="start the game without DOTNET_ENV")
     a = ap.parse_args()
 
     game = a.game.resolve()
@@ -143,7 +161,7 @@ def main() -> int:
 
     before = real_profile_state()
     t0 = time.time()
-    proc, _log = launch(game, scratch, a.job, below_normal=a.below_normal)
+    proc, _log = launch(game, scratch, a.job, below_normal=a.below_normal, dotnet_tuning=not a.no_dotnet_tuning)
     seen: set[str] = set()
     while proc.poll() is None and time.time() - t0 < a.timeout:
         seen |= connections(proc.pid)

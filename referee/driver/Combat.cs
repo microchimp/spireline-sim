@@ -252,11 +252,19 @@ public static partial class Driver
     /// </summary>
     internal static double IdleFrames = 6;
 
-    /// <returns>false if the game did not settle within maxSeconds and <see cref="BudgetFrames" /> frames (below the watchdog's stall_s).</returns>
-    private static async Task<bool> Idle(double maxSeconds = 10)
+    /// <summary>
+    /// Seconds Idle waits before giving up (job key "idle_timeout_s"; keep it below stall_s). The limit is
+    /// a <see cref="Budget" />: it is spent only once these seconds AND <see cref="BudgetFrames" /> frames
+    /// have passed, so a starved server is slow, not stuck. The flag settle (Settle.cs) uses it too.
+    /// </summary>
+    internal static double IdleTimeoutS = 10;
+
+    /// <returns>false if the game did not settle within maxSeconds (default <see cref="IdleTimeoutS" />) and
+    /// <see cref="BudgetFrames" /> frames (below the watchdog's stall_s).</returns>
+    private static async Task<bool> Idle(double? maxSeconds = null)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
-        var budget = new Budget(maxSeconds);
+        var budget = new Budget(maxSeconds ?? IdleTimeoutS);
         string last = "";
         int stable = 0;
         // Idle = nothing running AND the visible state unchanged for IdleFrames frames in a row.
@@ -275,6 +283,7 @@ public static partial class Driver
             string sig = busy ? "busy" : Signature(combat);
             if (_stepTrace != null && _tracePlayer != null) TraceFrame(_tracePlayer, !busy, sig);
             stable = !busy && sig == last ? stable + 1 : 0;
+            Lean.QuietFrames = stable;
             last = sig;
         }
 

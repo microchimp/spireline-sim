@@ -104,8 +104,13 @@ whole batch. Details and rules:
   finish at once); `sleep_usec` (default 0: no per-frame padding; only safe with the flag settle); diagnostics
   `trace_frames` (per-frame trace in each step's `trace`), `step_costs` (frames and main-thread megacycles in each step's
   `cost`) and `idle_probe` N (a quiet frame's cost after step 0). `--old-settle` (serve.py and batch.py) runs `"frames"`
-  with stock tweens and pacing and no audit; `--settle-audit X` sets the share. A settle that does not hold within 10 s
-  (below `stall_s`) ends the fight with `idle_timeout`.
+  with stock tweens and pacing and no audit; `--settle-audit X` sets the share. A settle that does not hold within
+  `idle_timeout_s` (default 10 s, and 600 frames; below `stall_s`) ends the fight with `idle_timeout`.
+- Frame cost (speed/frame-cost up to `still_visuals`): `silent` (no sound is started) and `still_visuals` (visual-only nodes
+  do no per-frame work) are on with `fast_patches` unless `--no-patches`; `--job-opt KEY=JSON` sets any job key for every
+  server (e.g. `profile=true`, the per-fight frame-cost profile of `driver/Lean.cs`); the games start with
+  `DOTNET_TieredPGO=0` unless `--no-dotnet-tuning`. `no_vfx` is not merged (it breaks Slumbering Beetle and Lagavulin
+  Matriarch at combat start).
 - `tools`: `python referee/linkcopy.py --src <game> --dst <game-name>` makes a private game copy out of hard links, so a
   session can install its own driver without waiting for the shared copy's `mods/*.dll` to unlock.
 - Run files: `<game>/../serve/<ts>/{inbox/s*,out/s*.jsonl,scratch/s*,results.json,results.jsonl,summary.json}` (a batch:

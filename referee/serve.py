@@ -5,7 +5,8 @@
 
 --specs is a job file (or a bare JSON list) whose "runs" are fight specs; its idle_frames / stall_s / settle /
 settle_audit / fast_tweens / sleep_usec / trace_frames / step_costs / idle_probe keys apply to every server
-(fast_reset / no_preload / fast_patches come from --slow-reset / --preload / --no-patches). Driver job keys:
+(fast_reset / no_preload come from --slow-reset / --preload; the speed patch sets fast_patches, silent and
+still_visuals are on unless --no-patches; --job-opt KEY=JSON sets any job key, last wins). Driver job keys:
   settle        "flags" (default here and in batch.py): the game's own turn flags, held two checks one frame
                 apart; "frames": the old rule, six stable frames (driver/Settle.cs).
   settle_audit  0..1 (default 0.05): share of fights, picked by seed hash, whose every flag settle is re-checked
@@ -17,6 +18,11 @@ settle_audit / fast_tweens / sleep_usec / trace_frames / step_costs / idle_probe
   trace_frames  per-frame trace of each step in the step's "trace" (diagnostics).
   step_costs    frames and main-thread megacycles per step in the step's "cost".
   idle_probe    N: idle N frames after step 0 and record a quiet frame's cost in "idle_probe".
+  idle_timeout_s  seconds (and 600 frames) a settle waits before the fight ends with idle_timeout (default 10).
+  silent        true (default): the referee never starts a sound (driver/Patches.cs).
+  still_visuals true (default): visual-only nodes do no per-frame work (driver/Patches.cs).
+  profile       true: frame-cost profile per fight (driver/Lean.cs; diagnostics, set with --job-opt).
+The game processes start with run_referee.DOTNET_ENV (DOTNET_TieredPGO=0) unless --no-dotnet-tuning.
 --old-settle runs the old settle: settle "frames", stock tweens and stock frame pacing, no audit. job_options()
 holds these defaults, so batch.py's pool gets the same ones.
 Each server is one headless game on its own scratch
@@ -123,15 +129,19 @@ def comparable(r: dict) -> dict:
 
 # Driver job keys a job file may set for every server (the module docstring has what they do).
 JOB_KEYS = ("idle_frames", "stall_s", "settle", "settle_audit", "fast_tweens", "sleep_usec",
-            "trace_frames", "step_costs", "idle_probe")
+            "trace_frames", "step_costs", "idle_probe", "idle_timeout_s")
 
 
 def job_options(job_in, *, slow_reset: bool = False, preload: bool = False, no_patches: bool = False,
                 stall_s: int | None = None, idle_frames: float | None = None, old_settle: bool = False,
-                settle_audit: float | None = None) -> dict:
+                settle_audit: float | None = None, job_opt=()) -> dict:
     """The job keys every server gets: a job file's JOB_KEYS, the speed defaults (SPEED_PLAN steps 3-4; keys
-    in the job file win over them), then the command-line choices. serve.py's command line and batch.py's
-    pool both build their servers' options here, so the two cannot drift apart."""
+    in the job file win over them), then the command-line choices, and last every job_opt "KEY=JSON" (so
+    one can turn a default off). serve.py's command line and batch.py's pool both build their servers'
+    options here, so the two cannot drift apart.
+
+    The speed patch sets (driver/Patches.cs) are on unless no_patches: fast_patches (SPEED_PLAN step 2),
+    silent (no sound is started) and still_visuals (visual-only nodes do no per-frame work)."""
     jopts = {k: v for k, v in (job_in.items() if isinstance(job_in, dict) else []) if k in JOB_KEYS}
     if old_settle:
         for k in ("settle_audit", "sleep_usec"):
@@ -144,11 +154,15 @@ def job_options(job_in, *, slow_reset: bool = False, preload: bool = False, no_p
         jopts["settle_audit"] = settle_audit
     jopts["fast_reset"] = not slow_reset
     jopts["no_preload"] = not preload
-    jopts["fast_patches"] = not no_patches  # SPEED_PLAN step 2 (driver/Patches.cs)
+    for key in ("fast_patches", "silent", "still_visuals"):
+        jopts[key] = not no_patches
     if stall_s is not None:
         jopts["stall_s"] = stall_s
     if idle_frames is not None:
         jopts["idle_frames"] = idle_frames
+    for kv in job_opt:
+        k, _, v = kv.partition("=")
+        jopts[k] = json.loads(v)
     return jopts
 
 
@@ -176,7 +190,7 @@ class Pool:
 
     def __init__(self, game: Path, run_dir: Path, *, servers: int = 4, spares: int = 1, jopts: dict | None = None,
                  boot_timeout: float = 180, max_restarts: int | None = None, net_interval: float = 1.0,
-                 hold_timeout: float = 60,
+                 hold_timeout: float = 60, dotnet_tuning: bool = True,
                  below_normal: bool = True, depth: int = 1, echo=print, launch=rr.launch, connections=rr.connections_by_pid,
                  profile_state=rr.real_profile_state, check_build=rr.check_build, kill=_taskkill):
         self.game = game
@@ -195,6 +209,7 @@ class Pool:
         self.max_restarts = max_restarts if max_restarts is not None else 3 * self.n + 3
         self.net_interval = net_interval
         self.below_normal = below_normal
+        self.dotnet_tuning = dotnet_tuning  # run_referee.DOTNET_ENV in the games' environment
         self.depth = max(1, depth)
         self.window = 2 * self.n * self.depth  # unclaimed specs a caller feeding the pool keeps ready
         self._echo, self._launch, self._connections = echo, launch, connections
@@ -492,7 +507,8 @@ class Pool:
         job.write_text(json.dumps({"out": str(self.outdir / f"{s.name}.jsonl").replace("\\", "/"),
                                    "inbox": str(s.inbox).replace("\\", "/"), **self.jopts}), encoding="utf-8")
         s.t_spawn = time.time()
-        s.proc, s.log = self._launch(self.game, scratch, job, below_normal=self.below_normal)
+        s.proc, s.log = self._launch(self.game, scratch, job, below_normal=self.below_normal,
+                                     dotnet_tuning=self.dotnet_tuning)
         s.pid = s.proc.pid
         if spare:  # never fed while it holds, so its inbox stays empty
             (s.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
@@ -580,7 +596,11 @@ def main() -> int:
     ap.add_argument("--normal-priority", action="store_true", help="do not lower the games to BelowNormal")
     ap.add_argument("--no-install", action="store_true")
     ap.add_argument("--build", type=Path, default=HERE / "driver" / "bin" / "Release" / "net9.0")
-    ap.add_argument("--no-patches", action="store_true", help="play without the step 2 speed patches (driver/Patches.cs)")
+    ap.add_argument("--no-patches", action="store_true",
+                    help="play without the speed patches (driver/Patches.cs: fast_patches, silent, still_visuals)")
+    ap.add_argument("--no-dotnet-tuning", action="store_true", help="start the games without run_referee.DOTNET_ENV")
+    ap.add_argument("--job-opt", action="append", default=[], metavar="KEY=JSON",
+                    help="extra job key for every server, e.g. profile=true (driver/Lean.cs); repeatable")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
     ap.add_argument("--settle-audit", type=float, default=None,
                     help="share of fights whose flag settles are re-checked against the old six-frame rule (default 0.05)")
@@ -594,10 +614,11 @@ def main() -> int:
     total = len(runs)
     jopts = job_options(job_in, slow_reset=a.slow_reset, preload=a.preload, no_patches=a.no_patches,
                         stall_s=a.stall_s, idle_frames=a.idle_frames, old_settle=a.old_settle,
-                        settle_audit=a.settle_audit)
+                        settle_audit=a.settle_audit, job_opt=a.job_opt)
     run_dir = a.run_dir or game.parent / "serve" / time.strftime("%Y%m%d-%H%M%S")
     pool = Pool(game, run_dir, servers=a.servers, spares=a.spares, jopts=jopts, boot_timeout=a.boot_timeout,
-                max_restarts=a.max_restarts, net_interval=a.net_interval, below_normal=not a.normal_priority)
+                max_restarts=a.max_restarts, net_interval=a.net_interval, below_normal=not a.normal_priority,
+                dotnet_tuning=not a.no_dotnet_tuning)
     if not a.no_install:
         for attempt in range(30):  # a running game holds the mod DLL open; wait for it
             try:

@@ -31,7 +31,7 @@ FAKE = Path(__file__).resolve().parent / "fixtures" / "fake_fight_server.py"
 PYTHON = getattr(sys, "_base_executable", sys.executable)
 
 
-def fake_launch(game, scratch, job, below_normal=False):
+def fake_launch(game, scratch, job, below_normal=False, dotnet_tuning=True):
     log = open(scratch / "game-stdout.log", "wb")
     proc = subprocess.Popen([PYTHON, str(FAKE), str(job)], stdout=log, stderr=subprocess.STDOUT)
     return proc, log
