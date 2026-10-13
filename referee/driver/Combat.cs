@@ -20,8 +20,12 @@ namespace Spireline.Referee;
 
 public static partial class Driver
 {
+    /// <summary>The step whose action is running, for tagging choices; 0 before the fight.</summary>
+    internal static int CurrentStep;
+
     private static async Task<JsonObject> PlayCombat(JsonObject spec)
     {
+        CurrentStep = 0;
         var phase = System.Diagnostics.Stopwatch.StartNew();
         var (state, dump) = await BeginRun(spec);
         var timing = new JsonObject { ["begin_run"] = phase.ElapsedMilliseconds };
@@ -79,6 +83,7 @@ public static partial class Driver
             steps.Add(new JsonObject { ["action"] = null, ["state"] = Snapshot(state, player) });
             for (int i = 0; i < maxActions && CombatManager.Instance.IsInProgress; i++)
             {
+                CurrentStep = i + 1;  // choices this action opens are logged against its step
                 var combat = CombatManager.Instance.DebugOnlyGetState()!;
                 var enemies = combat.Enemies.Where(e => e.IsAlive).ToList();
                 var options = new List<(int hand, int target)> { (-1, -1) };  // -1: end turn

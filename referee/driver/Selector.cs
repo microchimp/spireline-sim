@@ -26,6 +26,7 @@ public sealed class FirstChoiceSelector : ICardSelector
         Log.Add(new JsonObject
         {
             ["kind"] = "cards",
+            ["step"] = Driver.CurrentStep,
             ["options"] = new JsonArray(list.Select(c => (JsonNode)c.Id.Entry).ToArray()),
             ["min"] = minSelect, ["max"] = maxSelect,
             ["picked"] = new JsonArray(Enumerable.Range(0, n).Select(i => (JsonNode)i).ToArray()),
@@ -38,6 +39,7 @@ public sealed class FirstChoiceSelector : ICardSelector
         Log.Add(new JsonObject
         {
             ["kind"] = "card_reward",
+            ["step"] = Driver.CurrentStep,
             ["options"] = new JsonArray(options.Select(o => (JsonNode)o.Card.Id.Entry).ToArray()),
             ["picked"] = options.Count > 0 ? 0 : -1,
         });

@@ -37,6 +37,7 @@ static class Fight
             if (idx < 0) throw new InvalidOperationException($"room {want} not offered; phase {s.Phase}");
             e.Step(idx, -1, out _, out _, out _);
             steps.Add(new JsonObject { ["action"] = null, ["state"] = Dump(e) });
+            var gameChoices = (game["choices"]?.AsArray() ?? new JsonArray()).ToList();
             foreach (var step in game["steps"]!.AsArray().Skip(1))
             {
                 var a = step!["action"]!.AsObject();
@@ -52,16 +53,18 @@ static class Fight
 
                 // A choice the card opened (Splash, Armaments, ...): the first option, as the
                 // referee's FirstChoiceSelector answers it in the game.
+                // The choices the game made for this action (FirstChoiceSelector logs them with
+                // their step), applied as the same cards, then the screen closed the same way.
                 var chosen = new JsonArray();
-                for (int g = 0; g < 5 && s.ActiveCombat?.PendingSelection is { } sel; g++)
+                int stepNo = (int?)step!["i"] ?? -1;
+                foreach (var choice in gameChoices.Where(c => (int?)c!["step"] == stepNo && (string?)c["kind"] == "cards"))
                 {
-                    chosen.Add(new JsonObject
-                    {
-                        ["kind"] = sel.Kind.ToString(),
-                        ["candidates"] = new JsonArray(sel.Candidates.Select(x => (JsonNode)x).ToArray()),
-                        ["generated"] = new JsonArray(sel.GeneratedCandidates.Select(x => (JsonNode)x).ToArray()),
-                    });
-                    e.Step(0, -1, out _, out _, out _);
+                    chosen.Add(ApplyChoice(e, choice!.AsObject()));
+                }
+
+                if (s.ActiveCombat?.PendingSelection is { } extra)
+                {
+                    chosen.Add(new JsonObject { ["unexpected_selection"] = extra.Kind.ToString() });
                 }
 
                 steps.Add(new JsonObject { ["action"] = a.DeepClone(), ["choices"] = chosen, ["state"] = Dump(e) });
@@ -73,6 +76,44 @@ static class Fight
         }
 
         return outp;
+    }
+
+    /// <summary>
+    /// One game choice: pick each card the game picked (matched by card id among the open
+    /// selection's candidates, in whichever pile they live), then decline the rest if the
+    /// game took fewer than the screen allows.
+    /// </summary>
+    static JsonObject ApplyChoice(RunEngine e, JsonObject choice)
+    {
+        var s = e.State;
+        var options = choice["options"]!.AsArray().Select(x => (string)x!).ToList();
+        var picked = choice["picked"]!.AsArray().Select(x => options[(int)x!]).ToList();
+        var log = new JsonObject { ["game_options"] = choice["options"]!.DeepClone(), ["game_picked"] = choice["picked"]!.DeepClone() };
+        foreach (var want in picked)
+        {
+            if (s.ActiveCombat?.PendingSelection is not { } sel) { log["error"] = "no selection open for a pick"; return log; }
+            var ids = CandidateIds(s.ActiveCombat, sel);
+            int idx = ids.FindIndex(id => id == CardIdBySnake(want));
+            if (idx < 0) { log["error"] = $"{want} not among emulator candidates"; log["emu_candidates"] = new JsonArray(ids.Select(i => (JsonNode)i).ToArray()); return log; }
+            e.Step(idx, -1, out _, out _, out _);
+        }
+
+        if (s.ActiveCombat?.PendingSelection is { Skippable: true } rest)
+        {
+            e.Step(rest.Candidates.Count, -1, out _, out _, out _);  // decline: one past the last candidate
+        }
+
+        return log;
+    }
+
+    /// <summary>Card def id of each candidate: generated options, else the pile whose cards match.</summary>
+    static List<int> CandidateIds(CombatState c, PendingCardSelection sel)
+    {
+        if (sel.GeneratedCandidates.Count > 0) return sel.Candidates.Select(i => sel.GeneratedCandidates[i]).ToList();
+        var pile = sel.Kind.ChoosesFromDrawPile() ? c.DrawPile
+            : sel.Kind.ToString().StartsWith("DiscardTo") ? c.DiscardPile
+            : c.Hand;
+        return sel.Candidates.Select(i => i < pile.Count ? pile[i].DefId : -1).ToList();
     }
 
     static Dictionary<string, int>? _bySnake;

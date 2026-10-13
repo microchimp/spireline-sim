@@ -89,7 +89,14 @@ def main() -> int:
             for r in bad[:5]:
                 print("  ", r.get("seed"), str(r.get("error"))[:300])
             return 3
-        print(f"canary ok: {len(head)} fights, no errors")
+        c_out, c_emu = JOBS / f"{a.name}.canary.out.json", JOBS / f"{a.name}.canary.emu.json"
+        c_out.write_text(json.dumps({"results": c_res}), encoding="utf-8")
+        with open(c_emu, "w", encoding="utf-8") as f:
+            subprocess.run(["dotnet", str(ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"), "fight", str(c_out)],
+                           stdout=f, check=False)
+        c_cmp = subprocess.run([sys.executable, "-m", "tools.fidelity.fight_compare", str(c_out), str(c_emu)],
+                               capture_output=True, text=True, cwd=ROOT, check=False).stdout
+        print(f"canary ok: {len(head)} fights, no errors, {c_cmp.count(' steps identical')} identical", flush=True)
         rest, reports = play(a.name, runs[len(head):])
         merged = c_res + rest
         reports = c_rep + reports
