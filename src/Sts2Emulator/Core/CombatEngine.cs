@@ -2280,11 +2280,7 @@ public static class CombatEngine
             case Enchantment.Inky:
                 // Inky.OnPlay applies Weak 1 to what the card hit. It is the only modelled
                 // enchantment whose payload lands on an ENEMY rather than on its owner.
-                Effects.CardEffects.ApplyInkyOnPlay(
-                    state,
-                    GeneratedData.Cards.Get(card.DefId),
-                    rng
-                );
+                Effects.CardEffects.ApplyInkyOnPlay(state, card, rng);
                 break;
             case Enchantment.Goopy:
                 // AfterCardPlayed bumps the amount, and bumps the DECK version's too --
@@ -2559,13 +2555,22 @@ public static class CombatEngine
             && IsPlayableNow(state, def)
             && energyToSpend <= state.Energy
             && starsToSpend <= state.Stars
-            && !IsBlockedBySmoggy(def, state)
             && !IsBlockedByEnthralled(card, state)
-            && !IsBlockedBySloth(state)
-            && !IsBlockedByBound(card, state)
-            && !IsBlockedByRinging(state)
-            && !Effects.RelicEffects.BlocksFurtherCardPlays(state);
+            && !RefusedByShouldPlay(state, card, def);
     }
+
+    /// <summary>
+    /// The `Hook.ShouldPlay` refusals, which gate an auto-play (`CardCmd.AutoPlay`) as they
+    /// gate a chosen play (`CardModel.CanPlay`): Smoggy, Sloth, Bound, Ringing, Velvet
+    /// Choker and Normality. Enthralled is not here: `Enthralled.ShouldPlay` passes any
+    /// `AutoPlayType` but None.
+    /// </summary>
+    private static bool RefusedByShouldPlay(CombatState state, CardInstance card, CardDef def) =>
+        IsBlockedBySmoggy(def, state)
+        || IsBlockedBySloth(state)
+        || IsBlockedByBound(card, state)
+        || IsBlockedByRinging(state)
+        || Effects.RelicEffects.BlocksFurtherCardPlays(state);
 
     public static int[] ValidActions(CombatState state)
     {
@@ -3952,7 +3957,7 @@ public static class CombatEngine
         if (card is not null)
         {
             var def = GeneratedData.Cards.Get(Math.Abs(card.Value.DefId));
-            if (def.Target != CardTarget.AnyEnemy)
+            if (Effects.CardEffects.TargetTypeOf(state, card.Value, def) != CardTarget.AnyEnemy)
             {
                 return;
             }
@@ -4542,15 +4547,19 @@ public static class CombatEngine
     }
 
     /// <summary>
-    /// `CardCmd.AutoPlay`: a card whose TargetType is AnyEnemy and that was given no target
-    /// rolls `Rng.CombatTargets.NextItem(HittableEnemies)` -- even over a single enemy, and
-    /// whatever its type. AllEnemies / RandomEnemy / self cards never touch the stream there
-    /// (their own effects roll or do not), so only AnyEnemy rolls here.
+    /// `CardCmd.AutoPlay`'s target half: a card whose TargetType -- the card's own, read at
+    /// play time (<see cref="Effects.CardEffects.TargetTypeOf" />) -- is AnyEnemy and that was
+    /// given no target rolls `Rng.CombatTargets.NextItem(HittableEnemies)`, even over a
+    /// single enemy and whatever its type. AllEnemies, RandomEnemy and Self cards never touch
+    /// the stream here. A target the caller GAVE (Knife Trap's) is never rolled over.
     /// </summary>
-    internal static int RollAutoPlayTarget(CombatState state, CardDef def, Random rng)
+    internal static int RollAutoPlayTarget(CombatState state, CardInstance card, CardDef def, Random rng)
     {
         int targetIndex = state.AutoPlayTargetIndex;
-        if (targetIndex < 0 && def.Target == CardTarget.AnyEnemy)
+        if (
+            targetIndex < 0
+            && Effects.CardEffects.TargetTypeOf(state, card, def) == CardTarget.AnyEnemy
+        )
         {
             var target = Effects.CardEffects.RandomLivingEnemy(state, rng);
             if (target != null)
@@ -4562,25 +4571,64 @@ public static class CombatEngine
         return targetIndex;
     }
 
+    /// <summary>
+    /// `CardCmd.AutoPlay`'s gate, which every auto-play passes before it is a play: false
+    /// when the card was filed away UNPLAYED (`MoveToResultPileWithoutPlaying`: no roll, no
+    /// effect, no hooks, no counters).
+    /// </summary>
+    /// <remarks>
+    /// In the game's order: an Unplayable card, then a `Hook.ShouldPlay` refusal, then the
+    /// target. An AnyEnemy card that rolls nobody is filed away, and so is an AnyAlly one:
+    /// `CardCmd.AutoPlay` rolls over the OTHER living players, of whom a solo run has none.
+    /// </remarks>
+    private static bool BeginAutoPlay(
+        CombatState state,
+        CardInstance card,
+        CardDef def,
+        Random rng,
+        out int targetIndex
+    )
+    {
+        targetIndex = -1;
+        var targetType = Effects.CardEffects.TargetTypeOf(state, card, def);
+        bool played =
+            !def.Unplayable
+            && !RefusedByShouldPlay(state, card, def)
+            && !(targetType == CardTarget.AnyAlly && state.AutoPlayTargetIndex < 0);
+        if (played)
+        {
+            targetIndex = RollAutoPlayTarget(state, card, def, rng);
+            played = targetIndex >= 0 || targetType != CardTarget.AnyEnemy;
+        }
+
+        if (played)
+        {
+            return true;
+        }
+
+        // `CardModel.MoveToResultPileWithoutPlaying`: the exhaust pile for an Exhaust card,
+        // else the discard.
+        if (ShouldExhaustAfterPlay(def, card))
+        {
+            Effects.CardEffects.ExhaustCard(state, card, rng: rng);
+        }
+        else
+        {
+            state.DiscardPile.Add(card with { FreeThisTurn = false });
+        }
+
+        return false;
+    }
+
     private static void AutoPlayCardFromHandCore(CombatState state, int handIndex, Random rng)
     {
         var card = state.Hand[handIndex];
         var def = GeneratedData.Cards.Get(card.DefId);
 
-        // Same refusal as AutoPlayCore: a blocked card leaves hand for its result pile
-        // without its effect running.
-        if (Effects.RelicEffects.BlocksFurtherCardPlays(state))
+        // The card leaves hand whether or not the gate lets it be played.
+        state.Hand.RemoveAt(handIndex);
+        if (!BeginAutoPlay(state, card, def, rng, out int targetIndex))
         {
-            state.Hand.RemoveAt(handIndex);
-            if (ShouldExhaustAfterPlay(def, card))
-            {
-                Effects.CardEffects.ExhaustCard(state, card, rng: rng);
-            }
-            else
-            {
-                state.DiscardPile.Add(card with { FreeThisTurn = false });
-            }
-
             return;
         }
 
@@ -4590,7 +4638,6 @@ public static class CombatEngine
             enemyHpsBefore[i] = state.Enemies[i].Hp;
         }
 
-        state.Hand.RemoveAt(handIndex);
         // BeforeCardPlayed fires for an auto-play too -- it is an ordinary CardModel.Play.
         int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);
         CaptureBeforePlayPowers(state);
@@ -4599,7 +4646,7 @@ public static class CombatEngine
         // a Rebound applied by THIS card must not redirect this card.
         int reboundBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.Rebound);
         int callerTarget = state.TargetEnemyIndex;
-        state.TargetEnemyIndex = RollAutoPlayTarget(state, def, rng);
+        state.TargetEnemyIndex = targetIndex;
         Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
         if (def.Type == CardType.Attack)
         {
@@ -5099,7 +5146,7 @@ public static class CombatEngine
             }
 
             int index = state.Hand.FindIndex(card =>
-                CanPlayFromHand(state, card) && !NeedsAnAllyToPlay(card)
+                CanPlayFromHand(state, card) && !NeedsAnAllyToPlay(state, card)
             );
             if (index < 0)
             {
@@ -5110,8 +5157,11 @@ public static class CombatEngine
             // `GetTarget`: AnyEnemy takes `HittableEnemies.FirstOrDefault()`, the LEFTMOST,
             // and it is GIVEN to AutoPlay rather than left null -- so the CombatTargets
             // stream is NOT drawn from here. Rolling one would desync every later target.
-            int target = def.Target == CardTarget.AnyEnemy ? FirstHittableEnemy(state) : -1;
-            if (def.Target == CardTarget.AnyEnemy && target < 0)
+            bool aims =
+                Effects.CardEffects.TargetTypeOf(state, state.Hand[index], def)
+                == CardTarget.AnyEnemy;
+            int target = aims ? FirstHittableEnemy(state) : -1;
+            if (aims && target < 0)
             {
                 // AutoPlay files an untargetable AnyEnemy card away without playing it.
                 // Nothing living is targetable, so no later card would fare better either.
@@ -5144,8 +5194,9 @@ public static class CombatEngine
     /// there would otherwise have it auto-played, which the game would never do. See the
     /// remarks on <see cref="CanPlayFromHand" /> for why it is not in the shared predicate.
     /// </remarks>
-    private static bool NeedsAnAllyToPlay(CardInstance card) =>
-        GeneratedData.Cards.Get(card.DefId).Target == CardTarget.AnyAlly;
+    private static bool NeedsAnAllyToPlay(CombatState state, CardInstance card) =>
+        Effects.CardEffects.TargetTypeOf(state, card, GeneratedData.Cards.Get(card.DefId))
+        == CardTarget.AnyAlly;
 
     /// <summary>`ICombatState.HittableEnemies.FirstOrDefault()` as an index, or -1.</summary>
     private static int FirstHittableEnemy(CombatState state) =>
@@ -5200,36 +5251,16 @@ public static class CombatEngine
     {
         var def = GeneratedData.Cards.Get(card.DefId);
 
-        // Hook.ShouldPlay gates auto-plays as well as chosen ones, and CardCmd.AutoPlay
-        // answers a refusal with MoveToResultPileWithoutPlaying — the card is spent, its
-        // effect never happens, and it does not count towards the limit that refused it.
-        // An Unplayable card gets the same answer, checked before the hook: Cascade or
-        // Mayhem taking an Injury or an Ascender's Bane off the draw pile moves it on without
-        // BeforeCardPlayed or AfterCardPlayed ever running -- a Panache does not count it.
-        if (def.Unplayable || Effects.RelicEffects.BlocksFurtherCardPlays(state))
+        // The one gate (`BeginAutoPlay`): refusals first, then the target -- rolled only for
+        // an AnyEnemy card given none, and USED: a roll whose result was thrown away once
+        // sent every auto-played attack at the first living enemy. An Unplayable card is
+        // refused there too, before the hooks: Cascade or Mayhem taking an Injury or an
+        // Ascender's Bane off the draw pile moves it on without BeforeCardPlayed or
+        // AfterCardPlayed ever running -- a Panache does not count it.
+        if (!BeginAutoPlay(state, card, def, rng, out int targetIndex))
         {
-            if (ShouldExhaustAfterPlay(def, card))
-            {
-                Effects.CardEffects.ExhaustCard(state, card, rng: rng);
-            }
-            else
-            {
-                state.DiscardPile.Add(card with { FreeThisTurn = false });
-            }
-
             return;
         }
-
-        // Auto-play picks its target the way CardCmd does when a played card has no
-        // explicit one: Rng.CombatTargets.NextItem(HittableEnemies) -- unless it was GIVEN
-        // one, which is what Knife Trap does to each Shiv it replays. A given target must
-        // not roll.
-        //
-        // The roll used to happen and its result was then thrown away: `targetIndex` was
-        // assigned and never read, so every auto-played attack drew from the combat-targets
-        // stream and hit the first living enemy regardless. Invisible against one creature
-        // and wrong against several, in both the target and the stream position.
-        int targetIndex = RollAutoPlayTarget(state, def, rng);
 
         // Apply card effects.
         int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);

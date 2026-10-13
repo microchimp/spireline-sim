@@ -3485,6 +3485,24 @@ public static class CardEffects
     internal static EnemyState? RandomLivingEnemyFor(CombatState state, Random rng) =>
         RandomLivingEnemy(state, rng);
 
+    /// <summary>
+    /// `CardModel.TargetType` as the game reads it at play time, not the printed one: three
+    /// cards override it. `Shiv.TargetType` is AllEnemies under FanOfKnivesPower,
+    /// `SovereignBlade.TargetType` AllEnemies under SeekingEdgePower, and
+    /// `MadScience.TargetType` Self unless its Tinker Time type is Attack. Their effects
+    /// already read the same state; every caller that asks "does this card aim?" reads this.
+    /// </summary>
+    internal static CardTarget TargetTypeOf(CombatState state, CardInstance card, CardDef def) =>
+        def.Name switch
+        {
+            "Shiv" when BuffSystem.Get(state.PlayerBuffs, BuffId.FanOfKnives) > 0 =>
+                CardTarget.AllEnemies,
+            "SovereignBlade" when BuffSystem.Get(state.PlayerBuffs, BuffId.SeekingEdge) > 0 =>
+                CardTarget.AllEnemies,
+            "MadScience" when card.TinkerType != CardType.Attack => CardTarget.Self,
+            _ => def.Target,
+        };
+
     /// <summary>The POWERED-attack path against one enemy, for callers outside this file.</summary>
     internal static void DealPoweredDamage(CombatState state, EnemyState target, int amount) =>
         DealDamageToEnemy(state, target, amount);
@@ -4040,7 +4058,7 @@ public static class CardEffects
         {
             // Havoc and Uproar hand `CardCmd.AutoPlay` a null target, so an AnyEnemy card
             // rolls the CombatTargets stream for it (CardCmd.cs:51-).
-            state.TargetEnemyIndex = CombatEngine.RollAutoPlayTarget(state, def, rng);
+            state.TargetEnemyIndex = CombatEngine.RollAutoPlayTarget(state, card, def, rng);
             Apply(def, upgraded, state, rng, card);
         }
         finally
@@ -10603,11 +10621,12 @@ public static class CardEffects
     /// The game reads <c>cardPlay.Target</c> for the non-AllEnemies case, which on a
     /// Self-targeted card would be the PLAYER — so Inky on a skill would Weaken its owner.
     /// Nothing can reach that: Blade of Ink is the only source of Inky and it enchants
-    /// Shivs, so only the enemy-targeted branches are modelled.
+    /// Shivs, so only the enemy-targeted branches are modelled. `Card.TargetType` is the
+    /// Shiv's own, so under Fan of Knives every hittable enemy is Weakened.
     /// </remarks>
-    internal static void ApplyInkyOnPlay(CombatState state, CardDef def, Random rng)
+    internal static void ApplyInkyOnPlay(CombatState state, CardInstance card, Random rng)
     {
-        if (def.Target == CardTarget.AllEnemies)
+        if (TargetTypeOf(state, card, GeneratedData.Cards.Get(card.DefId)) == CardTarget.AllEnemies)
         {
             ApplyAllEnemyDebuff(state, BuffId.Weak, 1, rng);
             return;
