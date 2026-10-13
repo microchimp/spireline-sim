@@ -4750,7 +4750,11 @@ public static class CardEffects
         out int totalDamage
     )
     {
-        TriggerEnemyThorns(state, target);
+        // `CreatureCmd.Damage` runs `Hook.ModifyDamage` for the hit FIRST and only then
+        // `Hook.BeforeDamageReceived`, which is where `ThornsPower` retaliates. So Thorns
+        // fires after the damage number is fixed: a Rupture that turns the retaliation into
+        // Strength does not raise the hit that provoked it. The thorns call sits below the
+        // calculation for that reason.
 
         // `LethalityPower.ModifyDamageMultiplicative` is `1 + Amount/100`, and only for the
         // turn's first Attack card -- the flag the play set.
@@ -4775,6 +4779,8 @@ public static class CardEffects
         {
             damage = Math.Min(damage, cap);
         }
+
+        TriggerEnemyThorns(state, target);
 
         totalDamage = damage;
         // One `DamageReceivedEntry` per hit, which is what Beat Into Shape counts.
