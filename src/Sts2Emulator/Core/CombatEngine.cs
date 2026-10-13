@@ -189,6 +189,7 @@ public static class CombatEngine
         }
 
         state.CardsPlayedThisTurn++;
+        state.CardPlaysStartedThisTurn++;
         // `EnergySpentEntry` amounts, summed over the turn. Helix Drill reads it and
         // subtracts its own cost, which is zero -- so the count excludes the drill itself
         // either way, and this runs before the card resolves.
@@ -1536,6 +1537,7 @@ public static class CombatEngine
         }
         state.PlayerHpLostThisTurn = 0;
         state.CardsPlayedThisTurn = 0;
+        state.CardPlaysStartedThisTurn = 0;
         // `HappenedThisTurn` on the damage history, which Beat Into Shape reads per target.
         foreach (var enemy in state.Enemies)
         {
@@ -2186,16 +2188,19 @@ public static class CombatEngine
     /// the gate is the power alone. The game skips a card that ALREADY carries an affliction
     /// -- one slot per card -- which in this fight has no other source to compete with it.
     /// </remarks>
+    /// <summary>`RingingPower.ShouldPlay`: any play STARTED this turn, so the card Havoc
+    /// plays as the turn's first card is refused (Havoc's own play has started).</summary>
     private static bool IsBlockedByRinging(CombatState state) =>
-        BuffSystem.Get(state.PlayerBuffs, BuffId.Ringing) > 0 && state.CardPlaysThisTurn > 0;
+        BuffSystem.Get(state.PlayerBuffs, BuffId.Ringing) > 0 && state.CardPlaysStartedThisTurn > 0;
 
     private static bool IsBlockedByBound(CardInstance card, CombatState state) =>
         card.Bound && state.BoundCardPlayedThisTurn;
 
     private static bool IsBlockedBySloth(CombatState state)
     {
+        // `SlothPower.BeforeCardPlayed` counts every play, auto-plays too.
         int sloth = BuffSystem.Get(state.PlayerBuffs, BuffId.Sloth);
-        return sloth > 0 && state.CardsPlayedThisTurn >= sloth;
+        return sloth > 0 && state.CardPlaysStartedThisTurn >= sloth;
     }
 
     /// <summary>
@@ -4603,6 +4608,20 @@ public static class CombatEngine
         return false;
     }
 
+    /// <summary>
+    /// An auto-play past the gate is a play that has started (`CardPlayStarted`), and its
+    /// BeforeCardPlayed hooks count it: Sloth's count and ChainsOfBindingPower's latch on a
+    /// Bound card, as for a chosen play.
+    /// </summary>
+    private static void StartAutoPlay(CombatState state, CardInstance card)
+    {
+        state.CardPlaysStartedThisTurn++;
+        if (card.Bound)
+        {
+            state.BoundCardPlayedThisTurn = true;
+        }
+    }
+
     private static void AutoPlayCardFromHandCore(CombatState state, int handIndex, Random rng)
     {
         var card = state.Hand[handIndex];
@@ -4622,6 +4641,7 @@ public static class CombatEngine
         }
 
         // BeforeCardPlayed fires for an auto-play too -- it is an ordinary CardModel.Play.
+        StartAutoPlay(state, card);
         int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);
         CaptureBeforePlayPowers(state);
         Effects.RelicEffects.BeforeCardPlayedRelics(state, def);
@@ -5369,6 +5389,7 @@ public static class CombatEngine
         }
 
         // Apply card effects.
+        StartAutoPlay(state, card);
         int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);
         CaptureBeforePlayPowers(state);
         Effects.RelicEffects.BeforeCardPlayedRelics(state, def);

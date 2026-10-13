@@ -350,18 +350,18 @@ public static class RelicEffects
 
     /// <summary>
     /// Velvet Choker's ShouldPlay: once six cards have been played this turn, nothing else
-    /// can be. The game applies this to auto-played cards too (Havoc, Mayhem), which the
-    /// engine does not — see the approximation table in HANDOFF.md.
+    /// can be -- auto-played cards included (`CombatEngine.BeginAutoPlay`).
     /// </summary>
     public static bool BlocksFurtherCardPlays(CombatState state) =>
         (HasRelic(state, VelvetChoker) && state.CardPlaysThisTurn >= VelvetChokerCardLimit)
         // `Normality.ShouldPlay` is false once THREE cards have been played this turn, and
         // only while the curse is in HAND -- so drawing it late in a turn can stop the
         // turn dead, and shuffling it away costs nothing. Velvet Choker's rule with the
-        // clock on a card instead of a relic, which is why they share this door.
+        // clock on a card instead of a relic, which is why they share this door. Its clock
+        // is `CardPlaysStarted` (the play in progress counts), the Choker's AfterCardPlayed.
         || (
             state.Hand.Any(card => card.DefId == ST.Normality)
-            && state.CardPlaysThisTurn >= NormalityCardLimit
+            && state.CardPlaysStartedThisTurn >= NormalityCardLimit
         );
 
     /// <summary>Normality's `_numOfCardsPerTurn`.</summary>
@@ -1926,7 +1926,8 @@ public static class RelicEffects
         // the relic pays best when it is doing the least.
         if (
             HasRelic(state, DiamondDiadem)
-            && state.CardsPlayedThisTurn <= DiamondDiademCardThreshold
+            // Counted in its AfterCardPlayed, auto-plays included.
+            && state.CardPlaysThisTurn <= DiamondDiademCardThreshold
         )
         {
             // `PowerStackType.Single`: it is on or off, so a second grant is not a second

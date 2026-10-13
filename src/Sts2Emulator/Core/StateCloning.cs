@@ -251,6 +251,7 @@ public static class StateCloning
             LastAttackOrSkillLastTurn = combat.LastAttackOrSkillLastTurn,
             SkillPlayedWhileSmoggy = combat.SkillPlayedWhileSmoggy,
             CardsPlayedThisTurn = combat.CardsPlayedThisTurn,
+            CardPlaysStartedThisTurn = combat.CardPlaysStartedThisTurn,
             AttackCardsPlayedThisTurn = combat.AttackCardsPlayedThisTurn,
             AttackOrSkillCardsPlayedThisTurn = combat.AttackOrSkillCardsPlayedThisTurn,
             CardPlaysThisTurn = combat.CardPlaysThisTurn,

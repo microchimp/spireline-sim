@@ -77,6 +77,7 @@ public class CombatSnapshotTests
           "gambling_chip_discarded": 0,
           "played_card_cost_bump": 0,
           "cards_played_this_turn": 0,
+          "card_plays_started_this_turn": 0,
           "attack_cards_played_this_turn": 0,
           "attack_or_skill_cards_played_this_turn": 0,
           "card_plays_this_turn": 0,

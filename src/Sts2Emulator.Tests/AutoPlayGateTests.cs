@@ -98,8 +98,7 @@ public class AutoPlayGateTests
             .PlayerBuff(refusal, 1);
         fight.State.PotionSlots[0] = DistilledChaos;
         var targets = TargetStream(fight);
-        fight.State.CardPlaysThisTurn = 1;
-        fight.State.CardsPlayedThisTurn = 1;
+        fight.State.CardPlaysStartedThisTurn = 1;
 
         fight.Potion(0);
 
@@ -118,7 +117,7 @@ public class AutoPlayGateTests
             .PlayerBuff(BuffId.Sloth, 1)
             .PlayerBuff(BuffId.Stampede, 1);
         var targets = TargetStream(fight);
-        fight.State.CardsPlayedThisTurn = 1;
+        fight.State.CardPlaysStartedThisTurn = 1;
 
         fight.EndTurn();
 

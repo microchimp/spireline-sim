@@ -69,7 +69,7 @@ public class PlayabilityGuardTests
     {
         var fight = Fight.Hand(TestDeck.Card(IC.StrikeIronclad)).Energy(3);
         BuffSystem.Apply(fight.State.PlayerBuffs, BuffId.Sloth, 1);
-        fight.State.CardsPlayedThisTurn = 1;
+        fight.State.CardPlaysStartedThisTurn = 1;
         int hp = fight.Enemy0.Hp;
 
         Assert.DoesNotContain(0, CombatEngine.ValidActions(fight.State));
@@ -86,7 +86,7 @@ public class PlayabilityGuardTests
     {
         var fight = Fight.Hand(TestDeck.Card(IC.StrikeIronclad)).Energy(3);
         BuffSystem.Apply(fight.State.PlayerBuffs, BuffId.Sloth, 2);
-        fight.State.CardsPlayedThisTurn = 1;
+        fight.State.CardPlaysStartedThisTurn = 1;
         int hp = fight.Enemy0.Hp;
 
         Assert.Contains(0, CombatEngine.ValidActions(fight.State));

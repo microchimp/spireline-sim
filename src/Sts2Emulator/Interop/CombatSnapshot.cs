@@ -155,6 +155,7 @@ public static class CombatSnapshot
         new("gambling_chip_discarded", s => ref s.GamblingChipDiscarded),
         new("played_card_cost_bump", s => ref s.PlayedCardCostBump),
         new("cards_played_this_turn", s => ref s.CardsPlayedThisTurn),
+        new("card_plays_started_this_turn", s => ref s.CardPlaysStartedThisTurn),
         new("attack_cards_played_this_turn", s => ref s.AttackCardsPlayedThisTurn),
         new("attack_or_skill_cards_played_this_turn", s => ref s.AttackOrSkillCardsPlayedThisTurn),
         new("card_plays_this_turn", s => ref s.CardPlaysThisTurn),

@@ -410,8 +410,18 @@ public sealed class CombatState
     public bool PlayerTurn = true;
     public bool SkillPlayedWhileSmoggy;
 
-    /// <summary>Cards of any kind played this turn, which SlothPower caps.</summary>
+    /// <summary>
+    /// Cards the player chose to play this turn, counted as each play starts. Auto-plays are
+    /// not in it: Pael's Eye and Brilliant Scarf leave them out.
+    /// </summary>
     public int CardsPlayedThisTurn;
+
+    /// <summary>
+    /// `CardPlaysStarted ... HappenedThisTurn`: every play that STARTED this turn, chosen or
+    /// auto-played, counted as it starts -- what Sloth (its BeforeCardPlayed count), Ringing
+    /// and Normality read. Auto-plays refused at the gate never start.
+    /// </summary>
+    public int CardPlaysStartedThisTurn;
 
     public int AttackCardsPlayedThisTurn;
     public int AttackOrSkillCardsPlayedThisTurn;
