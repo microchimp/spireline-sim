@@ -78,6 +78,23 @@ def read_lines(path: Path, offset: int) -> tuple[list[dict], int]:
     return out, offset + end + 1
 
 
+def release_claim_locks(inbox: Path, pid: int) -> int:
+    """Remove the claim locks a dead server held ("<id>.json.lock" holding its pid, driver/InboxClaim.cs).
+
+    A server holds one only between creating it and renaming the spec, so this is for a kill in that
+    instant: left behind, the lock would keep every other server off that spec.
+    """
+    n = 0
+    for lk in inbox.glob("*.json.lock"):
+        try:
+            if lk.read_text(encoding="ascii").strip() == str(pid):
+                lk.unlink()
+                n += 1
+        except OSError:
+            pass  # released meanwhile by its owner
+    return n
+
+
 def strip(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in TIMING_KEYS and k not in META_KEYS}
 
@@ -215,6 +232,7 @@ def main() -> int:
             s.log.close()
         for hb in ((inbox / f"hold.{s.pid}"), (inbox / "hb" / str(s.pid))):
             hb.unlink(missing_ok=True)
+        release_claim_locks(inbox, s.pid)
         stopping = (inbox / "STOP").exists()
         lost = []
         for taken in sorted(inbox.glob(f"*.json.taken.{s.pid}")):

@@ -18,4 +18,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Sts2Emulator\Sts2Emulator.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The referee servers' inbox claim has no game types, so it is raced here (RefereeInboxClaimTests). -->
+    <Compile Include="..\..\referee\driver\InboxClaim.cs" Link="Referee\InboxClaim.cs" />
+  </ItemGroup>
 </Project>
