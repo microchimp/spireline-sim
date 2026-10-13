@@ -4131,15 +4131,13 @@ public sealed class RunEngine
                 else if (action == 1)
                 {
                     RunNonCombatEffects.SpendLanternKey(State);
-                    // The chest carries TWO potions and TWO relics; the emulator's
-                    // reward screen carries one of each, so this offers half of it.
-                    State.RewardGold = 0;
-                    State.RewardPotion = RunRewardGenerator.NextPotion(
-                        State,
-                        State.PlayerRng.Rewards
-                    );
+                    // `UnlockChest`: RewardsCmd.OfferCustom of [PotionReward, PotionReward,
+                    // RelicReward, RelicReward], populated in that order -- two potion rolls,
+                    // then two relics off the front of the queue. The screen carries one potion
+                    // at a time, so the second waits behind the first.
+                    OfferPotionRewards(0, 0);
                     State.RelicReward = RunRewardGenerator.NextRelic(State);
-                    State.Phase = RunPhase.RelicReward;
+                    State.PendingBonusRelicRewards.Add(RunRewardGenerator.NextRelic(State));
                     return 0;
                 }
                 else if (action != RunConstants.EventSkipAction)

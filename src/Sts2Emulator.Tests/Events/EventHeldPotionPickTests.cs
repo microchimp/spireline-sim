@@ -105,3 +105,52 @@ public class EventHeldPotionPickTests
         Assert.Equal(0, engine.State.EventRngStream?.CallCount ?? 0);
     }
 }
+
+/// <summary>
+/// War Historian Repy's chest: <c>UnlockChest</c> offers [PotionReward, PotionReward, RelicReward,
+/// RelicReward] on one rewards screen. The emulator offered one potion and one relic ("half of it").
+/// </summary>
+public class RepyChestRewardTests
+{
+    [Fact]
+    public void TheChestOffersTwoPotionsAndTwoRelicsRolledInThatOrder()
+    {
+        var engine = new RunEngine();
+        engine.Reset("ABCDEF");
+        var s = engine.State;
+        s.Deck.Add(new CardInstance(RunNonCombatEffects.LanternKeyCard, Upgraded: false));
+        RunNonCombatEffects.BeginEvent(s, RunConstants.EventWarHistorianRepy);
+        var oracle = s.PlayerRng.Rewards.Copy();
+        int first = RunRewardGenerator.NextPotion(s, oracle);
+        int second = RunRewardGenerator.NextPotion(s, oracle);
+        int draws = s.PlayerRng.Rewards.CallCount;
+
+        Assert.Equal(0, engine.Step(1, -1, out _, out _, out _));
+
+        Assert.Equal(RunPhase.RelicReward, s.Phase);
+        Assert.Equal(first, s.RewardPotion);
+        Assert.Equal([second], s.PendingPotionRewards);
+        Assert.NotEqual(0, s.RelicReward);
+        Assert.Single(s.PendingBonusRelicRewards);
+        Assert.NotEqual(s.RelicReward, s.PendingBonusRelicRewards[0]);
+        // Both potions (rarity, pick) before either relic's rarity roll.
+        Assert.Equal(oracle.CallCount, draws + 4);
+        Assert.True(s.PlayerRng.Rewards.CallCount >= oracle.CallCount + 2);
+    }
+
+    [Fact]
+    public void LeavingTheScreenReturnsToTheEventsFinishedPage()
+    {
+        var engine = new RunEngine();
+        engine.Reset("ABCDEF");
+        var s = engine.State;
+        s.Deck.Add(new CardInstance(RunNonCombatEffects.LanternKeyCard, Upgraded: false));
+        RunNonCombatEffects.BeginEvent(s, RunConstants.EventWarHistorianRepy);
+        engine.Step(1, -1, out _, out _, out _);
+
+        Assert.Equal(0, engine.Step(RunConstants.RewardSkipAction, -1, out _, out _, out _));
+
+        Assert.Equal(RunPhase.Event, s.Phase);
+        Assert.Equal(RunConstants.EventResultPending, s.EventId);
+    }
+}
