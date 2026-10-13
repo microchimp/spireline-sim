@@ -88,6 +88,7 @@ How the fight times were estimated:
 - Pass: 100% of re-anchored steps match on fights that are already identical.
 
 **Fallback (20 h).** A host with no game scenes at all, audited against the normal host on 5% of fights. Only worth doing if CPU per fight is still above 0.6 s after step 4.
+- **Status (branch `speed/nodeless`): built** as `driver/Nodeless.cs` + `driver/NodelessPatches.cs`, job flag `"nodeless": true` (RUNBOOK.md). 300 night04 coverage fights, both hosts at once: 333 ms CPU and 148 frames per nodeless-hosted fight vs 2,913 ms and 339 frames on the full host (nodeless 142-191 ms with `"frame_sleep_usec": 0`); 518 ms per fight on average once the 14 fallback replays (4.7%) are counted. Results: 269 identical, 14 fallbacks replayed on the full host, 17 where the full host stalled on a turn-start autoplay and nodeless went on; no nodeless errors. 3 processes: 56 fights/min full host, 111 nodeless, 271 nodeless with frame sleep 0. 2,000 fights in one nodeless server: no errors, orphan count flat (1,081), private memory 345 -> 352 MB, every result identical to the same spec's first run.
 
 ## Top risks
 

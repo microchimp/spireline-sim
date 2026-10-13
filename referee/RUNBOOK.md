@@ -91,6 +91,23 @@ running between fights (no 10 s boot per session), so cost per fight is the figh
 - Driver side (`driver/Server.cs`): job `{"out": "x.jsonl", "inbox": "<dir>", ...}` instead of `"runs"`; claim by renaming
   `<id>.json` to `<id>.json.taken.<pid>`, append one line per fight, `STOP` in the inbox ends it.
 
+## Nodeless host (`"nodeless": true`)
+
+The same game process and rules code without the NRun scene (`driver/Nodeless.cs`, `driver/NodelessPatches.cs`):
+about 8x less CPU per fight. Put the keys in the specs file given to `serve.py` (it passes `nodeless`,
+`nodeless_on_error`, `nodeless_audit`, `error_log`, `frame_sleep_usec`, `health` to every server).
+
+- Fights that create a model on the fallback list (`NodelessPatches.FallbackNames`: rules code that needs a node) are
+  replayed from the start on the full host in the same process; `cost.host` / `cost.fallback` say which. Any game error
+  or exception in a nodeless fight fails it (`error` starts with `nodeless:`); `"nodeless_on_error": "full"` replays
+  it on the full host instead. `"nodeless_audit": 0.05` also plays 5% of fights on the full host (`cost.audit`).
+- `"frame_sleep_usec": 0` removes Godot's 6.9 ms headless frame pacing: safe nodeless (results unchanged), not on the
+  full host, whose settle check then catches card tweens mid-flight.
+- `"error_log": true` on a full-host job records each fight's game errors in `cost.errors`.
+- The full host stalls on some turn-start autoplays (Mayhem, Hellraiser: the Play-pile tween is awaited and sometimes
+  never ends; the state stops changing and differs run to run). Nodeless has no tween there and goes on, so those
+  fights differ between the hosts; the nodeless result is the deterministic one.
+
 ## Re-anchoring (every recorded step tested on its own)
 
 `fight_compare` stops learning at the first divergence. Re-anchoring puts the emulator into the game's state before each step, applies the game's action and compares the result with the game's next state:
