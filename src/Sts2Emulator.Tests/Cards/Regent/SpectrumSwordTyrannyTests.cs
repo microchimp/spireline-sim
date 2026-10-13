@@ -43,8 +43,10 @@ public class SpectrumShiftTests
     }
 
     /// <summary>
-    /// Every turn, not once. Counted as colourless cards rather than hand size, because two
-    /// turns of drawing runs into the ten-card cap and the cap would hide the second one.
+    /// Every turn, not once. Counted as colourless cards across every pile rather than in
+    /// hand: the card made last turn is discarded (or exhausted, if it says so) and an empty
+    /// draw pile reshuffles the discard back mid-turn, so which pile holds it is not this
+    /// card's business, and two turns of drawing run into the ten-card cap.
     /// </summary>
     [Fact]
     public void ItKeepsGiving()
@@ -52,21 +54,22 @@ public class SpectrumShiftTests
         var fight = Played();
 
         fight.EndTurn();
-        int afterOne = fight.State.Hand.Count(c =>
-            GeneratedData.CardPools.Colorless.Contains(c.DefId)
-        );
+        int afterOne = ColourlessCardsInCombat(fight);
 
         fight.EndTurn();
-        int afterTwo = fight.State.Hand.Count(c =>
-            GeneratedData.CardPools.Colorless.Contains(c.DefId)
-        );
+        int afterTwo = ColourlessCardsInCombat(fight);
 
-        // One EACH turn -- last turn's left hand with the rest of it at the flush, so what
-        // is in hand does not accumulate. Which pile it ended up in is not this card's
-        // business: an empty draw pile reshuffles the discard back mid-turn.
+        // One EACH turn: every card it made is still somewhere in the fight.
         Assert.Equal(1, afterOne);
-        Assert.Equal(1, afterTwo);
+        Assert.Equal(2, afterTwo);
     }
+
+    private static int ColourlessCardsInCombat(Fight fight) =>
+        fight
+            .State.Hand.Concat(fight.State.DrawPile)
+            .Concat(fight.State.DiscardPile)
+            .Concat(fight.State.ExhaustPile)
+            .Count(c => GeneratedData.CardPools.Colorless.Contains(c.DefId));
 }
 
 // MegaCrit.Sts2.Core.Models.Cards/SwordSage.cs: one stack, and every SOVEREIGN BLADE gains

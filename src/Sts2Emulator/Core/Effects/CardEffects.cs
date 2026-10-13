@@ -9715,7 +9715,10 @@ public static class CardEffects
     /// <summary>
     /// `CardFactory.FilterForCombat` over a character's pool: what an in-combat generator
     /// is allowed to roll. Cards that are `CanBeGeneratedInCombat` and are not Basic,
-    /// Ancient or Event, in pool order.
+    /// Ancient or Event, in pool order. `CardFactory.GetDistinctForCombat` and
+    /// `GetForCombat` also run `FilterForPlayerCount` first, which in a solo run drops every
+    /// `MultiplayerOnly` card before the shuffle or the roll, so those are out too: the
+    /// Colorless pool is 49 cards for Jack of All Trades, not 60.
     /// </summary>
     /// <remarks>
     /// DERIVED, because both hand-written copies of this answer had drifted. Infernal
@@ -9736,6 +9739,7 @@ public static class CardEffects
                 && candidate.Rarity != CardRarity.Ancient
                 && candidate.Rarity != CardRarity.Event
                 && candidate.CanBeGeneratedInCombat
+                && !candidate.MultiplayerOnly
             )
             {
                 filtered.Add(id);

@@ -80,11 +80,46 @@ public class JackOfAllTradesTests
         }
     }
 
+    // night03 referee: the game's shuffle of this pool consumed 48 draws, i.e. 49 cards (the
+    // Colorless pool minus Jack, minus the 11 MultiplayerOnly cards CardFactory.
+    // FilterForPlayerCount drops in a solo run, minus the 3 that refuse combat generation).
+    // The emulator shuffled 60 and drew 59. A literal count, so it cannot agree with a pool
+    // that is wrong in the same way as the code under test.
+    [Fact]
+    public void ShufflesTheGamesFortyNineCardPoolInASoloRun()
+    {
+        var fight = Fight.Hand(Card(CL.JackOfAllTrades)).Energy(1).Enemy(hp: 40);
+        var generationRng = new CountingRandom(2);
+        fight.State.CardGenerationRng = generationRng;
+
+        fight.Play();
+
+        Assert.Equal(48, generationRng.CallCount);
+    }
+
+    [Fact]
+    public void NeverOffersAMultiplayerOnlyCard()
+    {
+        for (int seed = 0; seed < 60; seed++)
+        {
+            var fight = Fight.Hand(Card(CL.JackOfAllTrades, upgraded: true)).Energy(1).Enemy(hp: 40);
+            fight.State.CardGenerationRng = new CountingRandom(seed);
+            fight.Play();
+
+            Assert.DoesNotContain(
+                Fight.Ids(fight.State.Hand),
+                id => GeneratedData.Cards.Get(id).MultiplayerOnly
+            );
+        }
+    }
+
     private static List<int> PoolWithoutItself() =>
         GeneratedData.CardPools.Colorless.ToArray()
             .Where(id =>
                 id != CL.JackOfAllTrades
                 && GeneratedData.Cards.Get(id).CanBeGeneratedInCombat
+                // CardFactory.FilterForPlayerCount: a solo run drops MultiplayerOnly cards.
+                && !GeneratedData.Cards.Get(id).MultiplayerOnly
                 && GeneratedData.Cards.Get(id).Rarity
                     is not (CardRarity.Basic or CardRarity.Ancient or CardRarity.Event)
             )

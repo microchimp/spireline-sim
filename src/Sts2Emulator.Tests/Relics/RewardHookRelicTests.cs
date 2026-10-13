@@ -256,6 +256,7 @@ public class ToolboxTests
             {
                 var d = GeneratedData.Cards.Get(id);
                 return d.CanBeGeneratedInCombat
+                    && !d.MultiplayerOnly
                     && d.Rarity is not (CardRarity.Basic or CardRarity.Ancient or CardRarity.Event);
             })
             .ToList();
