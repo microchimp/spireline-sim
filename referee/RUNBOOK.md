@@ -81,7 +81,8 @@ inbox folder and merges the results into `--out` (same format as a runs-mode out
 running between fights (no 10 s boot per session), so cost per fight is the fight. Details and rules:
 
 - Safety checks are `run_referee.py`'s (known `sts2.dll` hash, `override.cfg`, scratch `APPDATA`, real profile untouched);
-  one `netstat` call per second covers every server. It exits 1 if any server opened a connection.
+  one `netstat` call per second covers every server and every process a server started (its `crashpad_handler.exe`).
+  It exits 1 if any of them opened a connection.
 - A server that dies or hangs is replaced; the spec it held goes back to the inbox once and is recorded as `stalled` if it
   kills a second server. One hot spare is kept booted (`--spares 0` turns it off). Servers run at BelowNormal priority.
 - `--verify-against <runs-mode out.json>` compares each result (ignoring timing) with the reference, spec by spec.
@@ -98,15 +99,39 @@ about 8x less CPU per fight. Put the keys in the specs file given to `serve.py` 
 `nodeless_on_error`, `nodeless_audit`, `error_log`, `frame_sleep_usec`, `health` to every server).
 
 - Fights that create a model on the fallback list (`NodelessPatches.FallbackNames`: rules code that needs a node) are
-  replayed from the start on the full host in the same process; `cost.host` / `cost.fallback` say which. Any game error
-  or exception in a nodeless fight fails it (`error` starts with `nodeless:`); `"nodeless_on_error": "full"` replays
-  it on the full host instead. `"nodeless_audit": 0.05` also plays 5% of fights on the full host (`cost.audit`).
+  replayed from the start on the full host in the same process; `cost.host` / `cost.fallback` say which. Two checks find
+  them: the `MutableClone` postfix, and a scan of every recorded state (creatures, powers, piles, deck, relics).
+- Any game error or exception in a nodeless fight fails it (`error` starts with `nodeless:`); `"nodeless_on_error":
+  "full"` replays it on the full host instead. `"nodeless_audit": 0.05` also plays 5% of fights on the full host
+  (`cost.audit`).
+- Cancellations: every `OperationCanceledException` is recorded once in `cost.cancel_sites` with its throw site, token
+  owner (this fight's combat, an earlier fight's, the action executor, other, none), phase (`fight`, `reset`, `teardown`,
+  `between`), step and the methods it cut short. One thrown while a nodeless fight plays fails it unless its type and
+  site are on `Nodeless.HarmlessCancels` (empty: nothing has been proven harmless) or the spec, replayed on the full host
+  at once, throws the same one (`cost.cancel_check`); with `nodeless_on_error` "full" the full host's result is used.
+  On the coverage fights no nodeless fight throws one; every cancellation is the full host's (VFX and UI nodes awaiting
+  a frame, and `CombatStateTracker.CallCombatStateChangedDeferred` when NRun leaves the tree at teardown).
+- Each fight's span runs from its start through its reset, the empty scene (NRun goes then, not at the next run start)
+  and 2 frames, so its teardown is recorded with it. Errors after that count for the next fight. (Before, a full-host
+  replay's teardown showed up as 8-237 "cancellations" of the next nodeless fight.)
+- The game-over guard catches only the null dereference of `NRun.Instance.RunMusicController.StopMusic()` in
+  `CreatureCmd.Kill` (its IL range is read from the game at start; the log names it), nothing else in Kill.
 - `"frame_sleep_usec": 0` removes Godot's 6.9 ms headless frame pacing: safe nodeless (results unchanged), not on the
-  full host, whose settle check then catches card tweens mid-flight.
-- `"error_log": true` on a full-host job records each fight's game errors in `cost.errors`.
-- The full host stalls on some turn-start autoplays (Mayhem, Hellraiser: the Play-pile tween is awaited and sometimes
-  never ends; the state stops changing and differs run to run). Nodeless has no tween there and goes on, so those
-  fights differ between the hosts; the nodeless result is the deterministic one.
+  full host, whose settle check then catches card tweens mid-flight. In a nodeless job it paces only the nodeless
+  fights; fallback replays, audits and cancel checks run at the default (`cost.frame_sleep_usec`).
+- `"error_log": true` on a full-host job records each fight's game errors in `cost.errors` and cancellations in
+  `cost.cancel_sites`. On every full-host fight in these jobs and in nodeless servers, a game error while the fight
+  played sets `error` (`full host: N game error(s); first: ...`), so a UI abort ("Hand size 11 is greater than 11!") is
+  never a clean result; errors of its teardown go to `cost.teardown_errors`.
+- The full host's "freeze" after a turn-start autoplay (Mayhem, Hellraiser, also Rolling Boulder) is a driver bug, not a
+  game tween: `Idle()` took the turn as the player's as soon as player actions were enabled, before the turn-start hooks
+  and autoplays had run, so the next play or end turn was parked by the action synchronizer and the steps recorded no
+  change. Fixed on `fix/referee-stalls` (bd68419: wait for `PlayerTurnPhase.Play` and the synchronizer's `PlayPhase`).
+  With it (and `feat/checksum-tap`'s per-step game checksums) the 300 coverage fights are 300/300 identical on both
+  hosts, the 29 holding Mayhem or Hellraiser (17 play one) included, and none freezes. Without it, full-host results
+  for these fights are not a valid reference (night04 has 23 such frozen fights).
+- Latent: on the full host `AfterCardChangedPiles` is skipped when a card tween's owner leaves the tree at room exit;
+  nodeless always runs it. Only matters once a run spans several fights.
 
 ## Re-anchoring (every recorded step tested on its own)
 
