@@ -3987,14 +3987,19 @@ public static class CardEffects
     )
     {
         bool wasAutoPlaying = state.AutoPlaying;
+        int callerTarget = state.TargetEnemyIndex;
         state.AutoPlaying = true;
         try
         {
+            // Havoc and Uproar hand `CardCmd.AutoPlay` a null target, so an AnyEnemy card
+            // rolls the CombatTargets stream for it (CardCmd.cs:51-).
+            state.TargetEnemyIndex = CombatEngine.RollAutoPlayTarget(state, def, rng);
             Apply(def, upgraded, state, rng, card);
         }
         finally
         {
             state.AutoPlaying = wasAutoPlaying;
+            state.TargetEnemyIndex = callerTarget;
         }
     }
 

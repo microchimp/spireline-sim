@@ -4551,6 +4551,27 @@ public static class CombatEngine
         }
     }
 
+    /// <summary>
+    /// `CardCmd.AutoPlay`: a card whose TargetType is AnyEnemy and that was given no target
+    /// rolls `Rng.CombatTargets.NextItem(HittableEnemies)` -- even over a single enemy, and
+    /// whatever its type. AllEnemies / RandomEnemy / self cards never touch the stream there
+    /// (their own effects roll or do not), so only AnyEnemy rolls here.
+    /// </summary>
+    internal static int RollAutoPlayTarget(CombatState state, CardDef def, Random rng)
+    {
+        int targetIndex = state.AutoPlayTargetIndex;
+        if (targetIndex < 0 && def.Target == CardTarget.AnyEnemy)
+        {
+            var target = Effects.CardEffects.RandomLivingEnemy(state, rng);
+            if (target != null)
+            {
+                targetIndex = state.Enemies.IndexOf(target);
+            }
+        }
+
+        return targetIndex;
+    }
+
     private static void AutoPlayCardFromHandCore(CombatState state, int handIndex, Random rng)
     {
         var card = state.Hand[handIndex];
@@ -4586,6 +4607,8 @@ public static class CombatEngine
         // Snapshotted before the effects for the same reason as the hand-played path:
         // a Rebound applied by THIS card must not redirect this card.
         int reboundBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.Rebound);
+        int callerTarget = state.TargetEnemyIndex;
+        state.TargetEnemyIndex = RollAutoPlayTarget(state, def, rng);
         Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
         if (def.Type == CardType.Attack)
         {
@@ -4613,6 +4636,7 @@ public static class CombatEngine
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Gigantification, -1);
             }
         }
+        state.TargetEnemyIndex = callerTarget;
         HandleEnemyDeaths(state, enemyHpsBefore, rng);
 
         if (def.Type == CardType.Attack)
@@ -5232,15 +5256,7 @@ public static class CombatEngine
         // assigned and never read, so every auto-played attack drew from the combat-targets
         // stream and hit the first living enemy regardless. Invisible against one creature
         // and wrong against several, in both the target and the stream position.
-        int targetIndex = state.AutoPlayTargetIndex;
-        if (targetIndex < 0 && def.Type == CardType.Attack)
-        {
-            var target = Effects.CardEffects.RandomLivingEnemy(state, rng);
-            if (target != null)
-            {
-                targetIndex = state.Enemies.IndexOf(target);
-            }
-        }
+        int targetIndex = RollAutoPlayTarget(state, def, rng);
 
         // Apply card effects.
         CaptureBeforePlayPowers(state);
