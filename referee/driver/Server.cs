@@ -10,7 +10,7 @@
 // It exits cleanly (code 0) when a file named STOP is in the inbox and no "*.json" is left.
 // A crash or watchdog exit leaves the claimed file behind, so the dispatcher can see which spec was
 // in flight and re-queue it. "hold.<pid>" in the inbox makes this process wait without claiming
-// (a hot spare). hb/<pid> holds a status line, rewritten at most once a second by Heartbeat();
+// (a hot spare). hb/<pid> holds a status line, rewritten at most once a second, every frame (Watchdog.cs OnFrame);
 // hb/<pid>.ready holds the unix ms at which the server first became ready.
 
 using System;

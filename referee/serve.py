@@ -298,7 +298,9 @@ def main() -> int:
                         age = now - (inbox / "hb" / str(s.pid)).stat().st_mtime
                     except FileNotFoundError:
                         age = 0
-                    if age > 2 * stall_s + 5:  # the driver's own watchdog should have fired by now
+                    # The driver rewrites its status file every frame (driver/Watchdog.cs), so an old file means
+                    # its main loop stopped; its own watchdog exits after 2 * stall_s without a frame.
+                    if age > 2 * stall_s + 5:
                         kill(s, f"no heartbeat for {age:.0f}s")
             # keep N active servers: promote the spare first, else boot a replacement
             live = [s for s in servers if s.alive]

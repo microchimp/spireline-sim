@@ -129,10 +129,10 @@ public static partial class Driver
             if (reward.SuccessfullySelected) continue;
             if (!RewardsStack().Contains(top)) break;  // the set is complete: nothing left to select into it
             Task task = sync.SelectLocalReward(reward);
-            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var budget = new Budget(60);
             while (!task.IsCompleted)
             {
-                if (clock.Elapsed.TotalSeconds > 60)
+                if (budget.Spent)
                     throw new TimeoutException("SelectLocalReward " + reward.GetType().Name + " did not finish within 60 s");
                 AnswerCardRewardScreen(reward, log);
                 if (NestedAbove(top) is { } nested && depth < 5)

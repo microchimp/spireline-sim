@@ -159,8 +159,8 @@ public static partial class Driver
     private static async Task WithTimeout(Task task, double seconds, string what, Action? eachFrame = null)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
-        var clock = System.Diagnostics.Stopwatch.StartNew();
-        while (!task.IsCompleted && clock.Elapsed.TotalSeconds < seconds)
+        var budget = new Budget(seconds);
+        while (!task.IsCompleted && !budget.Spent)
         {
             eachFrame?.Invoke();
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
@@ -182,17 +182,17 @@ public static partial class Driver
     /// </summary>
     internal static double IdleFrames = 6;
 
-    /// <returns>false if the game did not settle within maxSeconds (below the heartbeat watchdog's stall_s).</returns>
+    /// <returns>false if the game did not settle within maxSeconds and <see cref="BudgetFrames" /> frames (below the watchdog's stall_s).</returns>
     private static async Task<bool> Idle(double maxSeconds = 10)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
-        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var budget = new Budget(maxSeconds);
         string last = "";
         int stable = 0;
         // Idle = nothing running AND the visible state unchanged for IdleFrames frames in a row.
         // Quiet frames alone are not enough: even in Instant mode cards are drawn over several
         // frames outside the action queue.
-        while (clock.Elapsed.TotalSeconds < maxSeconds && stable < (int)IdleFrames)
+        while (!budget.Spent && stable < (int)IdleFrames)
         {
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             AnswerOpenScreens();
