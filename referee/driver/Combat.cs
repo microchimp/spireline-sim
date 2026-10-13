@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
@@ -228,8 +229,8 @@ public static partial class Driver
     private static async Task WithTimeout(Task task, double seconds, string what, Action? eachFrame = null)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
-        var clock = System.Diagnostics.Stopwatch.StartNew();
-        while (!task.IsCompleted && clock.Elapsed.TotalSeconds < seconds)
+        var budget = new Budget(seconds);
+        while (!task.IsCompleted && !budget.Spent)
         {
             eachFrame?.Invoke();
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
@@ -251,17 +252,17 @@ public static partial class Driver
     /// </summary>
     internal static double IdleFrames = 6;
 
-    /// <returns>false if the game did not settle within maxSeconds (below the heartbeat watchdog's stall_s).</returns>
+    /// <returns>false if the game did not settle within maxSeconds and <see cref="BudgetFrames" /> frames (below the watchdog's stall_s).</returns>
     private static async Task<bool> Idle(double maxSeconds = 10)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
-        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var budget = new Budget(maxSeconds);
         string last = "";
         int stable = 0;
         // Idle = nothing running AND the visible state unchanged for IdleFrames frames in a row.
         // Quiet frames alone are not enough: even in Instant mode cards are drawn over several
         // frames outside the action queue.
-        while (clock.Elapsed.TotalSeconds < maxSeconds && stable < (int)IdleFrames)
+        while (!budget.Spent && stable < (int)IdleFrames)
         {
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             AnswerOpenScreens();
@@ -269,7 +270,8 @@ public static partial class Driver
             var combat = cm.DebugOnlyGetState();
             bool busy = RunManager.Instance.ActionExecutor.IsRunning
                 || !RunManager.Instance.ActionQueueSet.IsEmpty
-                || (cm.IsInProgress && (cm.PlayerActionsDisabled || combat?.CurrentSide != CombatSide.Player));
+                || (cm.IsInProgress && (cm.PlayerActionsDisabled || combat?.CurrentSide != CombatSide.Player
+                    || !InPlayPhase(combat)));
             string sig = busy ? "busy" : Signature(combat);
             if (_stepTrace != null && _tracePlayer != null) TraceFrame(_tracePlayer, !busy, sig);
             stable = !busy && sig == last ? stable + 1 : 0;
@@ -277,6 +279,27 @@ public static partial class Driver
         }
 
         return stable >= (int)IdleFrames;
+    }
+
+    /// <summary>
+    /// The player may act: their turn has reached PlayerTurnPhase.Play and the action synchronizer takes
+    /// manual plays into the queue. CombatManager.StartTurn enables player actions (PlayerActionsDisabled
+    /// false) before SetupPlayerTurn has drawn and run AfterPlayerTurnStart, and only sets the
+    /// synchronizer to PlayPhase once every player's RunAutoPrePlayPhase is done. A play or end turn
+    /// requested before that is parked by ActionQueueSynchronizer.RequestEnqueue (NotPlayPhase), so the
+    /// queue looks empty while turn-start hooks still run (RollingBoulderPower awaits its VFX), and the
+    /// parked requests all fire at once later. The game's own bot (AutoSlay CombatRoomHandler) waits for
+    /// PlayerTurnPhase.Play too.
+    /// </summary>
+    internal static bool InPlayPhase(CombatState? combat)
+    {
+        if (RunManager.Instance.ActionQueueSynchronizer.CombatState != ActionSynchronizerCombatState.PlayPhase)
+        {
+            return false;
+        }
+
+        var me = MegaCrit.Sts2.Core.Context.LocalContext.GetMe(combat);
+        return me?.PlayerCombatState?.Phase == PlayerTurnPhase.Play;
     }
 
     private static string Signature(CombatState? combat)

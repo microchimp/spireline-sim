@@ -113,10 +113,11 @@ public static partial class Driver
 
         var combat = cm.DebugOnlyGetState();
         var pcs = me.PlayerCombatState;
+        // InPlayPhase (Combat.cs) is the one definition of "the synchronizer takes plays and the turn
+        // is in its Play phase"; the flag settle adds the rest of the turn flags on top of it.
         return combat != null && pcs != null
-            && run.ActionQueueSynchronizer.CombatState == ActionSynchronizerCombatState.PlayPhase
+            && InPlayPhase(combat)
             && combat.CurrentSide == CombatSide.Player
-            && pcs.Phase == PlayerTurnPhase.Play
             && !InPlayerTurnSetup(cm)
             && !cm.IsPlayerReadyToEndTurn(me)
             && !cm.EndingPlayerTurnPhaseOne
@@ -187,11 +188,13 @@ public static partial class Driver
     /// Flag settle: the flags must hold on two consecutive checks one frame apart with the same state
     /// signature (the frame lets deferred work run, and any change restarts the wait).
     /// </summary>
-    /// <returns>true once the flags hold; false if they do not within maxSeconds (kept below the watchdog's stall_s).</returns>
+    /// <returns>true once the flags hold; false if they do not within maxSeconds and <see cref="BudgetFrames" />
+    /// frames (Watchdog.cs: a starved server is slow, not stuck; kept below the watchdog's stall_s).</returns>
     private static async Task<bool> SettleFlags(Player me, double maxSeconds = 10)
     {
         var tree = (SceneTree)Engine.GetMainLoop();
-        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var clock = System.Diagnostics.Stopwatch.StartNew();  // progress reports only; the limit is the budget
+        var budget = new Budget(maxSeconds);
         string? lastSig = null;
         bool first = true;
         int waited = 0, busyRun = 0;
@@ -199,7 +202,7 @@ public static partial class Driver
         int pacing = OS.LowProcessorUsageModeSleepUsec;
         try
         {
-            while (clock.Elapsed.TotalSeconds < maxSeconds)
+            while (!budget.Spent)
             {
                 waited++;
                 if (clock.Elapsed.TotalSeconds > nextReport)

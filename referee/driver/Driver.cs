@@ -67,18 +67,6 @@ public static partial class Driver
         }, TaskContinuationOptions.OnlyOnFaulted);
     }
 
-    private static long _lastProgress = System.Environment.TickCount64;
-    private static long _frameTicks;
-    internal static long _lastDriverFrame;
-
-    /// <summary>Marks progress for the watchdog: called on every action, not just every fight.</summary>
-    internal static void Heartbeat()
-    {
-        long now = System.Environment.TickCount64;
-        Interlocked.Exchange(ref _lastProgress, now);
-        WriteStatus(now);
-    }
-
     /// <summary>Fights finished in this process, for the watchdog's message.</summary>
     private static int _done;
     private static readonly object _saveLock = new();
@@ -138,7 +126,8 @@ public static partial class Driver
 
         var loader = MegaCrit.Sts2.Core.Nodes.NAssetLoader.Instance;
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        while (loader.IsProcessing() && clock.Elapsed.TotalSeconds < 90)
+        var budget = new Budget(90);
+        while (loader.IsProcessing() && !budget.Spent)
         {
             Heartbeat();
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
@@ -147,64 +136,20 @@ public static partial class Driver
         GD.Print($"[referee] startup preload drained after {clock.ElapsedMilliseconds} ms");
     }
 
-    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-    private static extern uint GetCurrentThreadId();
-
-    private static uint _mainThreadId;
-
-    /// <summary>For the watchdog: is the main thread blocked (waiting) or busy (CPU still rising)?</summary>
-    private static string MainThreadState()
-    {
-        try
-        {
-            System.Diagnostics.ProcessThread? Find() => System.Diagnostics.Process.GetCurrentProcess().Threads
-                .Cast<System.Diagnostics.ProcessThread>().FirstOrDefault(t => t.Id == _mainThreadId);
-            var t0 = Find();
-            if (t0 == null) return "main thread not found";
-            double c0 = t0.TotalProcessorTime.TotalMilliseconds;
-            string state = t0.ThreadState == System.Diagnostics.ThreadState.Wait ? $"Wait({t0.WaitReason})" : t0.ThreadState.ToString();
-            Thread.Sleep(1000);
-            double c1 = Find()?.TotalProcessorTime.TotalMilliseconds ?? c0;
-            return $"main thread {state}, {c1 - c0:0} ms CPU in the last second";
-        }
-        catch (Exception ex)
-        {
-            return "main thread state unavailable: " + ex.GetType().Name;
-        }
-    }
-
     private static async Task RunJob(string jobPath)
     {
-        _mainThreadId = GetCurrentThreadId();
         var job = JsonNode.Parse(File.ReadAllText(jobPath))!.AsObject();
         string outPath = (string)job["out"]!;
         var results = new JsonArray();
-        // Watchdog on a pool thread: if no fight finishes for stall_s seconds, the main loop is
-        // stuck (a load or a screen nothing answers); keep what is saved and end the process.
-        int stallMs = ((int?)job["stall_s"] ?? 20) * 1000;
-        _ = Task.Run(async () =>
-        {
-            while (true)
-            {
-                await Task.Delay(5000);
-                if (System.Environment.TickCount64 - Interlocked.Read(ref _lastProgress) > stallMs)
-                {
-                    GD.Print($"[referee] watchdog: no progress for {stallMs / 1000} s, exiting after {_done} fights; "
-                        + $"frames ticked {Interlocked.Read(ref _frameTicks)} (last driver frame {Interlocked.Read(ref _lastDriverFrame)}), "
-                        + $"step {CurrentStep}, fast tweens {Interlocked.Read(ref Patches.FastTweens)}, in fast tween {Patches.InFastTween}; "
-                        + MainThreadState());
-                    System.Environment.Exit(3);
-                }
-            }
-        });
+        // Watchdog (Watchdog.cs): if the game stops making progress for stall_s seconds while it keeps
+        // running frames, or stops running frames, it is stuck; keep what is saved and end the process.
+        StartWatchdog(((int?)job["stall_s"] ?? 20) * 1000);
         int exitCode = 0;
         try
         {
             // Wait until the game has finished its own startup and shows the main menu: content,
             // localisation and the profile are loaded by then, exactly as for a player.
             var tree = (SceneTree)Engine.GetMainLoop();
-            // For the watchdog: are frames still ticking (an await never resolves) or is the main thread stuck?
-            tree.ProcessFrame += () => Interlocked.Increment(ref _frameTicks);
             while (NGame.Instance?.MainMenu == null)
             {
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
@@ -255,7 +200,7 @@ public static partial class Driver
             Engine.MaxFps = 0;
             await WaitForStartupPreload(tree);
 
-            Heartbeat();
+            ArmWatchdog();
             bool fastReset = (bool?)job["fast_reset"] == true;
             if (job["inbox"] != null)
             {
@@ -269,7 +214,7 @@ public static partial class Driver
                 results.Add(await PlaySpec(spec!.AsObject(), fastReset));
                 _done++;
                 Save(outPath, results);  // after every fight: a hang or kill keeps what is done
-                Interlocked.Exchange(ref _lastProgress, System.Environment.TickCount64);
+                Heartbeat();
             }
         }
         catch (Exception ex)

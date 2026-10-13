@@ -93,6 +93,23 @@ def read_lines(path: Path, offset: int) -> tuple[list[dict], int]:
     return out, offset + end + 1
 
 
+def release_claim_locks(inbox: Path, pid: int) -> int:
+    """Remove the claim locks a dead server held ("<id>.json.lock" holding its pid, driver/InboxClaim.cs).
+
+    A server holds one only between creating it and renaming the spec, so this is for a kill in that
+    instant: left behind, the lock would keep every other server off that spec.
+    """
+    n = 0
+    for lk in inbox.glob("*.json.lock"):
+        try:
+            if lk.read_text(encoding="ascii").strip() == str(pid):
+                lk.unlink()
+                n += 1
+        except OSError:
+            pass  # released meanwhile by its owner
+    return n
+
+
 def strip(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in TIMING_KEYS and k not in META_KEYS}
 
@@ -120,7 +137,7 @@ def main() -> int:
     ap.add_argument("--spares", type=int, default=1, choices=(0, 1), help="hot spares booted and held")
     ap.add_argument("--run-dir", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=None, help="merged results, runs-mode format (default <run-dir>/results.json)")
-    ap.add_argument("--stall-s", type=int, default=None, help="driver watchdog: seconds without progress (default 20)")
+    ap.add_argument("--stall-s", type=int, default=None, help="driver watchdog: seconds (and 600 frames) without progress (default 20)")
     ap.add_argument("--idle-frames", type=float, default=None)
     ap.add_argument("--preload", action="store_true", help="leave the game's asset preloader on (default off, as batch.py)")
     ap.add_argument("--slow-reset", action="store_true", help="return to the main menu between fights (default fast_reset)")
@@ -260,6 +277,7 @@ def main() -> int:
             s.log.close()
         for hb in ((inbox / f"hold.{s.pid}"), (inbox / "hb" / str(s.pid))):
             hb.unlink(missing_ok=True)
+        release_claim_locks(inbox, s.pid)
         stopping = (inbox / "STOP").exists()
         lost = []
         for taken in sorted(inbox.glob(f"*.json.taken.{s.pid}")):
@@ -325,7 +343,11 @@ def main() -> int:
                         age = now - (inbox / "hb" / str(s.pid)).stat().st_mtime
                     except FileNotFoundError:
                         age = 0
-                    if age > 2 * stall_s + 5:  # the driver's own watchdog should have fired by now
+                    # The driver rewrites its status file every frame (driver/Watchdog.cs), so an old file means
+                    # no frame has ended. That alone is not a hang: a starved server can take minutes over one
+                    # frame, and the driver's own watchdog tells a blocked main thread from a starved one. This
+                    # is the backstop for a driver whose watchdog cannot run.
+                    if age > 10 * stall_s:
                         kill(s, f"no heartbeat for {age:.0f}s")
             # keep N active servers: promote the spare first, else boot a replacement
             live = [s for s in servers if s.alive]
