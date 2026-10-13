@@ -265,7 +265,7 @@ public class WaterfallGiantTests
         var fight = Encounter();
         fight.EndTurn();
         Giant(fight).Hp = 30;
-        fight.PlayerBuff(BuffId.TheBombPower, 1).PlayerBuff(BuffId.TheBombDamage, 40);
+        fight.PlayerBuff(BuffId.TheBombPower, 1, data: 40);
         int hp = fight.State.PlayerHp;
 
         var result = fight.EndTurn();

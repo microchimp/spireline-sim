@@ -45,8 +45,8 @@ public enum BuffId
     PrepTimePower, // player: gain N Vigor at the start of each player turn
     RollingBoulderPower, // player: deal N damage to all enemies at turn start, then grow
     StratagemPower, // player: pull N cards from draw pile to hand after shuffling
-    TheBombPower, // player: turns remaining until The Bomb explodes
-    TheBombDamage, // player: damage dealt by The Bomb when it expires
+    TheBombPower, // player: one entry per Bomb played: Magnitude = turns left, Data = its damage
+    TheBombDamage, // retired: the damage rides TheBombPower's Data now; kept so the ids after it do not shift
     Vigor, // player: add N damage to the next Attack, then expire
     NoBlock, // player: card-based block gains are prevented for N enemy turns
     NoDraw, // player: no further cards can be drawn this turn (Battle Trance)
@@ -901,6 +901,33 @@ public enum BuffId
     /// player has none, so it is a marker that does nothing -- but the game lists it.
     /// </summary>
     BeaconOfHope,
+
+    /// <summary>
+    /// <c>KnockdownPower</c>, a DEBUFF on an enemy, <c>PowerInstanceType.Instanced</c>: every
+    /// Knockdown makes its own entry. It multiplies damage aimed at its owner by its amount,
+    /// but <c>ModifyDamageMultiplicative</c> returns 1 when the dealer is the applier, so a
+    /// lone player never sees a number change. It is still a visible Debuff (Artifact eats
+    /// it, the power list shows it) and removes itself in <c>AfterSideTurnEnd</c> when its
+    /// OWNER's side turn ends.
+    /// </summary>
+    Knockdown,
+
+    /// <summary>
+    /// <c>TagTeamPower</c>, a DEBUFF on an enemy, <c>PowerInstanceType.Instanced</c>:
+    /// <c>ModifyCardPlayCount</c> adds a play to another player's Attack at its owner and
+    /// <c>AfterModifyingCardPlayCount</c> removes it. A lone player is always the applier, so
+    /// it never fires and stays on the enemy; Artifact still eats it on the way in.
+    /// </summary>
+    TagTeam,
 }
 
-public record struct BuffState(BuffId Id, int Magnitude);
+/// <summary>
+/// One power on a creature: its id, its <c>Amount</c>, and <paramref name="Data" />, the second
+/// number an INSTANCED power keeps beside it (see <see cref="BuffSystem.IsInstanced" />).
+/// </summary>
+/// <remarks>
+/// The game keeps that second number in the instance's DynamicVars or internal data -- The
+/// Bomb's damage, Toric Toughness's block -- because <c>Amount</c> is spent on the turn count.
+/// It is zero for every power that has none, and the snapshot omits a zero.
+/// </remarks>
+public record struct BuffState(BuffId Id, int Magnitude, int Data = 0);

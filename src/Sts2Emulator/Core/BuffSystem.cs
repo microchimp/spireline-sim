@@ -2,7 +2,49 @@ namespace Sts2Emulator.Core;
 
 public static class BuffSystem
 {
-    public static void Apply(List<BuffState> buffs, BuffId id, int magnitude)
+    /// <summary>
+    /// The powers whose game class is <c>PowerInstanceType.Instanced</c>: every application is
+    /// an instance of its own, in <c>Creature._powers</c> order, instead of stacking.
+    /// </summary>
+    /// <remarks>
+    /// <c>PowerCmd.FindExistingInstanceForStacking</c> returns null for the type, so
+    /// <c>Apply</c> builds a fresh power with its own <c>Amount</c> and its own DynamicVars
+    /// and appends it. The emulator's list is that list: one <see cref="BuffState" /> per
+    /// instance, oldest first, <c>Magnitude</c> the Amount and <c>Data</c> the second number.
+    /// Every hook the game runs over the instances runs oldest first, so a consumer visits
+    /// them in list order (<see cref="InstanceIndex" />).
+    ///
+    /// Only the ids whose every reader walks the instances are listed. Moving an id here is
+    /// what makes <c>Apply</c> append, so a reader that still calls <see cref="Get" /> (first
+    /// instance only) must change in the same commit. <c>InstancedPerApplier</c> (Oblivion,
+    /// Strangle) is not here: a lone player is the only applier, and one instance per applier
+    /// is then the stack. The rest of the game's Instanced powers -- Covered, Flanking,
+    /// Guarded, Heist, MagicBomb, Thievery -- are not modelled as buffs.
+    /// </remarks>
+    public static bool IsInstanced(BuffId id) =>
+        id is BuffId.TheBombPower or BuffId.Knockdown or BuffId.TagTeam;
+
+    /// <summary>
+    /// Index of the <paramref name="k" />-th (from 0, oldest first) instance of an
+    /// <see cref="IsInstanced" /> power, or -1. Addressing an instance by its ordinal rather
+    /// than its list index survives the list changing under a long effect: damage that kills
+    /// can add or drop OTHER entries, but never reorders the instances of one id.
+    /// </summary>
+    public static int InstanceIndex(List<BuffState> buffs, BuffId id, int k)
+    {
+        for (int i = 0; i < buffs.Count; i++)
+        {
+            if (buffs[i].Id == id && k-- == 0)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <param name="data">The instance's second number; only an Instanced power keeps one.</param>
+    public static void Apply(List<BuffState> buffs, BuffId id, int magnitude, int data = 0)
     {
         if (magnitude == 0)
         {
@@ -15,6 +57,21 @@ public static class BuffSystem
             {
                 return;
             }
+        }
+
+        // `FindExistingInstanceForStacking` finds nothing for an Instanced power. There is no
+        // instance to adjust either, so a negative Apply is a caller still reading it as a stack.
+        if (IsInstanced(id))
+        {
+            if (magnitude < 0)
+            {
+                throw new InvalidOperationException(
+                    $"{id} is Instanced: change one instance through InstanceIndex"
+                );
+            }
+
+            buffs.Add(new BuffState(id, magnitude, data));
+            return;
         }
 
         int idx = IndexOf(buffs, id);

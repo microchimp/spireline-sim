@@ -1234,8 +1234,8 @@ public static class CardEffects
                 break;
 
             case CL.TheBomb: // 2-cost, after 3 turns deal 40/50 to ALL enemies
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.TheBombPower, 3);
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.TheBombDamage, upgraded ? 50 : 40);
+                // Instanced: a second Bomb is a second fuse and a second damage, not a stack.
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.TheBombPower, 3, upgraded ? 50 : 40);
                 break;
 
             case CL.Scrawl: // 1-cost, draw until hand is full, exhaust
@@ -7568,29 +7568,43 @@ public static class CardEffects
             case "ByrdSwoop":
             case "Clash":
             case "GiantRock":
-            case "Squash":
             case "UltimateStrike":
-            case "TagTeam":
-            case "Knockdown":
-            case "Whistle":
             case "MinionDiveBomb":
                 DealDamage(state, Dmg(state, def, upgraded, card));
-                if (def.Name == "Squash")
-                {
-                    ApplyEnemyDebuff(state, BuffId.Vulnerable, upgraded ? 3 : 2, rng);
-                }
-                // Knockdown used to apply Stunned 2/3 here. `KnockdownPower` is a damage
-                // MULTIPLIER on the target, and `ModifyDamageMultiplicative` returns 1
-                // when `dealer == base.Applier` -- so it only ever amplifies another
-                // player's attacks and does nothing at all alone. The card is
-                // MultiplayerOnly and its whole singleplayer effect is the damage.
-                // Stunned is a real debuff that costs an enemy turns; Whistle below
-                // genuinely calls `CreatureCmd.Stun`, which is why that branch stays.
-                else if (def.Name == "Whistle")
-                {
-                    ApplyEnemyDebuff(state, BuffId.Stunned, 1, rng);
-                }
                 return true;
+
+            // Damage, then ONE power on `cardPlay.Target` (Squash.cs, Whistle.cs, Knockdown.cs,
+            // TagTeam.cs OnPlay). The target is the enemy the card was aimed at, fixed before the
+            // hit: if the hit kills it, `PowerCmd.Apply` refuses (`CanReceivePowers` is false once
+            // the corpse has left the combat) and the power does not move to the next enemy.
+            case "Squash":
+            case "Whistle":
+            case "Knockdown":
+            case "TagTeam":
+            {
+                var aimed = FirstEnemy(state);
+                if (aimed == null)
+                {
+                    return true;
+                }
+
+                DealDamageToEnemy(state, aimed, Dmg(state, def, upgraded, card));
+                // `KnockdownPower` (2, or 3 upgraded) and `TagTeamPower` (1) are Instanced
+                // Debuffs: each play is a new entry, Artifact eats one per play, and neither does
+                // anything alone -- the dealer-is-applier gates in `ModifyDamageMultiplicative`
+                // and `ModifyCardPlayCount` are always met by a lone player. Knockdown used to
+                // apply Stunned here; Whistle genuinely calls `CreatureCmd.Stun`.
+                var (power, amount) = def.Name switch
+                {
+                    "Squash" => (BuffId.Vulnerable, upgraded ? 3 : 2),
+                    "Whistle" => (BuffId.Stunned, 1),
+                    "Knockdown" => (BuffId.Knockdown, upgraded ? 3 : 2),
+                    _ => (BuffId.TagTeam, 1),
+                };
+                ApplyEnemyDebuffToTarget(state, aimed, power, amount, rng);
+                return true;
+            }
+
             case "Exterminate":
                 // TargetType.AllEnemies, `TargetingAllOpponents`: each of the four hits
                 // lands on every enemy (decompiled Exterminate.cs), not four on one.

@@ -260,7 +260,7 @@ public static class CombatSnapshot
     ];
 
     private static readonly string[] OrbFields = ["type", "evoke", "passive"];
-    private static readonly string[] BuffFields = ["id", "amount"];
+    private static readonly string[] BuffFields = ["id", "amount", "data"];
     private static readonly string[] RelicFields = ["id", "counter"];
     private static readonly string[] PotionFields = ["max_slots", "slots"];
     private static readonly string[] PileFields = ["hand", "discard", "exhaust", "draw"];
@@ -606,8 +606,8 @@ public static class CombatSnapshot
 
     /// <summary>
     /// A buff list, held to the two rules every list the engine builds obeys: at most one
-    /// entry per BuffId, and none at zero. See <see cref="DistinctBuffs" /> and
-    /// <see cref="ReadBuff" />.
+    /// entry per BuffId (an Instanced power may have one per instance), and none at zero. See
+    /// <see cref="DistinctBuffs" /> and <see cref="ReadBuff" />.
     /// </summary>
     private static List<BuffState> ReadBuffs(Fields fields, string name) =>
         DistinctBuffs(fields.Items(name, ReadBuff), fields.At(name));
@@ -617,7 +617,8 @@ public static class CombatSnapshot
     /// -- `BuffSystem.Apply` merges into the first match and `BuffSystem.Get` reads only
     /// the first -- so a second entry would be played as if absent while the export and
     /// the observation still showed it. Two aliased live powers mapped onto one id is how
-    /// a converter would produce one.
+    /// a converter would produce one. An Instanced power is the exception: each instance is
+    /// an entry (`BuffSystem.IsInstanced`), and the engine walks all of them.
     /// </summary>
     private static List<BuffState> DistinctBuffs(List<BuffState> buffs, string path)
     {
@@ -625,7 +626,7 @@ public static class CombatSnapshot
         {
             for (int first = 0; first < i; first++)
             {
-                if (buffs[first].Id == buffs[i].Id)
+                if (buffs[first].Id == buffs[i].Id && !BuffSystem.IsInstanced(buffs[i].Id))
                 {
                     throw new SnapshotException(
                         Field(Item(path, i), "id"),
@@ -648,7 +649,8 @@ public static class CombatSnapshot
         var fields = new Fields(element, path, BuffFields);
         var buff = new BuffState(
             fields.EnumValue<BuffId>("id", nameof(BuffId)),
-            fields.Int("amount")
+            fields.Int("amount"),
+            fields.Int("data", 0)
         );
         return buff.Magnitude != 0
             ? buff
@@ -1497,6 +1499,11 @@ public static class CombatSnapshot
         w.WriteStartObject();
         w.WriteNumber("id", (int)buff.Id);
         w.WriteNumber("amount", buff.Magnitude);
+        if (buff.Data != 0)
+        {
+            w.WriteNumber("data", buff.Data);
+        }
+
         w.WriteEndObject();
     }
 

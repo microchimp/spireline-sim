@@ -621,8 +621,7 @@ public class FightHeldOpenTests
         fight.State.DiscardPile = [];
         fight.State.DrawPile = [.. Enumerable.Range(0, 8).Select(_ => Card(IC.DefendIronclad))];
         fight.State.Relics.Add(new RelicInstance(RelicEffects.GremlinHorn));
-        fight.PlayerBuff(BuffId.TheBombPower, 1);
-        fight.PlayerBuff(BuffId.TheBombDamage, 10);
+        fight.PlayerBuff(BuffId.TheBombPower, 1, data: 10);
 
         var turn = fight.EndTurn();
 
@@ -644,8 +643,7 @@ public class FightHeldOpenTests
         var subject = fight.State.Enemies[0];
         subject.Hp = 10;
         fight.State.PlayerHp = 999;
-        fight.PlayerBuff(BuffId.TheBombPower, 1);
-        fight.PlayerBuff(BuffId.TheBombDamage, 10);
+        fight.PlayerBuff(BuffId.TheBombPower, 1, data: 10);
 
         fight.EndTurn();
 

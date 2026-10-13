@@ -214,9 +214,9 @@ internal sealed class Fight
         return this;
     }
 
-    public Fight PlayerBuff(BuffId id, int magnitude)
+    public Fight PlayerBuff(BuffId id, int magnitude, int data = 0)
     {
-        State.PlayerBuffs.Add(new BuffState(id, magnitude));
+        State.PlayerBuffs.Add(new BuffState(id, magnitude, data));
         return this;
     }
 

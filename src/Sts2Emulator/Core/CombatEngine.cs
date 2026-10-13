@@ -1434,8 +1434,10 @@ public static class CombatEngine
                 // turn it lands and no longer.
                 BuffSystem.Remove(enemy.Buffs, BuffId.Strangle);
 
-                // `SicEmPower.AfterSideTurnEnd` removes itself the same way.
+                // `SicEmPower.AfterSideTurnEnd` removes itself the same way, and so does
+                // `KnockdownPower.AfterSideTurnEnd` -- every instance of it.
                 BuffSystem.Remove(enemy.Buffs, BuffId.SicEm);
+                BuffSystem.Remove(enemy.Buffs, BuffId.Knockdown);
 
                 // `DebilitatePower.AfterSideTurnEnd` DECREMENTS rather than removing, so its
                 // amount really is a turn count.
@@ -5363,26 +5365,33 @@ public static class CombatEngine
         BuffSystem.Remove(state.PlayerBuffs, BuffId.BlockNextTurn);
     }
 
+    /// <summary>
+    /// <c>TheBombPower.BeforeSideTurnEnd</c>, once per INSTANCE, oldest first: a fuse above one
+    /// counts down; at one the instance's own damage hits every hittable enemy and it goes.
+    /// </summary>
     private static void TickTheBomb(CombatState state)
     {
-        int turns = BuffSystem.Get(state.PlayerBuffs, BuffId.TheBombPower);
-        if (turns <= 0)
+        var buffs = state.PlayerBuffs;
+        int k = 0;
+        for (int i; (i = BuffSystem.InstanceIndex(buffs, BuffId.TheBombPower, k)) >= 0; )
         {
-            return;
-        }
+            var bomb = buffs[i];
+            if (bomb.Magnitude > 1)
+            {
+                buffs[i] = bomb with { Magnitude = bomb.Magnitude - 1 };
+                k++;
+                continue;
+            }
 
-        if (turns > 1)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.TheBombPower, -1);
-            return;
+            // The blow lands before the instance is removed, and the damage can change the
+            // list (a kill that pays Strength), so the instance is found again by its ordinal.
+            Effects.CardEffects.DealUnpoweredDamageToAll(state, bomb.Data);
+            int spent = BuffSystem.InstanceIndex(buffs, BuffId.TheBombPower, k);
+            if (spent >= 0)
+            {
+                buffs.RemoveAt(spent);
+            }
         }
-
-        Effects.CardEffects.DealUnpoweredDamageToAll(
-            state,
-            BuffSystem.Get(state.PlayerBuffs, BuffId.TheBombDamage)
-        );
-        BuffSystem.Remove(state.PlayerBuffs, BuffId.TheBombPower);
-        BuffSystem.Remove(state.PlayerBuffs, BuffId.TheBombDamage);
     }
 
     private static EnemyState CreateEnemy(

@@ -615,6 +615,35 @@ public class CombatSnapshotTests
     }
 
     /// <summary>
+    /// The one exception to one-entry-per-id: an Instanced power (`BuffSystem.IsInstanced`) has
+    /// an entry per instance, each with its own amount and its own `data`, in list order.
+    /// </summary>
+    [Fact]
+    public void AnInstancedPowerMayHoldOneEntryPerInstanceAndTheyKeepTheirOrderAndData()
+    {
+        var document = WithBuffList(
+            "player.buffs",
+            new JsonArray(
+                new JsonObject { ["id"] = (int)BuffId.TheBombPower, ["amount"] = 2, ["data"] = 50 },
+                new JsonObject { ["id"] = (int)BuffId.Strength, ["amount"] = 1 },
+                new JsonObject { ["id"] = (int)BuffId.TheBombPower, ["amount"] = 3, ["data"] = 40 }
+            )
+        );
+
+        var state = Read(document.ToJsonString(), out _);
+
+        Assert.Equal(
+            [
+                new BuffState(BuffId.TheBombPower, 2, 50),
+                new BuffState(BuffId.Strength, 1),
+                new BuffState(BuffId.TheBombPower, 3, 40),
+            ],
+            state.PlayerBuffs
+        );
+        Assert.Equal(state.PlayerBuffs, Read(Write(state), out _).PlayerBuffs);
+    }
+
+    /// <summary>
     /// Nor does the engine ever hold a buff at zero: `BuffSystem.Apply` removes an entry
     /// the moment its amount reaches zero, and so does the end-of-turn tick.
     /// </summary>
@@ -1312,7 +1341,9 @@ public class CombatSnapshotTests
                     ],
                     "buffs": [
                       {"id": {{(int)BuffId.Strength}}, "amount": 2},
-                      {"id": {{(int)BuffId.Weak}}, "amount": 2}
+                      {"id": {{(int)BuffId.TheBombPower}}, "amount": 3, "data": 40},
+                      {"id": {{(int)BuffId.Weak}}, "amount": 2},
+                      {"id": {{(int)BuffId.TheBombPower}}, "amount": 1, "data": 50}
                     ],
                     "debuffs_at_round_start": [{"id": {{(int)BuffId.Weak}}, "amount": 1}]
                   },
@@ -1343,7 +1374,9 @@ public class CombatSnapshotTests
                     "def_id": {{KE.Nibbit}}, "slot": 2, "hp": 30, "max_hp": 50, "block": 4,
                     "buffs": [
                       {"id": {{(int)BuffId.Artifact}}, "amount": 1},
-                      {"id": {{(int)BuffId.Vulnerable}}, "amount": 2}
+                      {"id": {{(int)BuffId.Knockdown}}, "amount": 2},
+                      {"id": {{(int)BuffId.Vulnerable}}, "amount": 2},
+                      {"id": {{(int)BuffId.Knockdown}}, "amount": 3}
                     ],
                     "intent": {"type": {{(int)IntentType.Attack}}, "magnitude": 7, "hits": 2,
                       "carries_damage": true},

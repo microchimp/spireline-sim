@@ -109,8 +109,7 @@ public class ShapedRewardTests
             .Hand()
             .Enemy(hp: 8, intent: new Intent(IntentType.Defend, 0))
             .Enemy(hp: 50, intent: new Intent(IntentType.Defend, 0));
-        fight.PlayerBuff(BuffId.TheBombPower, 1);
-        fight.PlayerBuff(BuffId.TheBombDamage, 10);
+        fight.PlayerBuff(BuffId.TheBombPower, 1, data: 10);
 
         var result = fight.EndTurn();
 
