@@ -1738,8 +1738,9 @@ public static class RunNonCombatEffects
             // -- Wood Carvings carves a Basic card into a Peck or a Toric Toughness.
             DeckSelection.TransformTo => GeneratedData.Cards.Get(card.DefId).Rarity
                 == CardRarity.Basic,
-            // Claws passes no predicate, so every transformable card is on the table.
-            DeckSelection.TransformToCarrying => true,
+            // Claws passes no predicate of its own, but FromDeckForTransformation does: no Quest
+            // card, and nothing Eternal (IsTransformable) -- Ascender's Bane stays put.
+            DeckSelection.TransformToCarrying => IsOfferedForTransformation(card),
             DeckSelection.Upgrade => RunConstants.IsRunCardUpgradable(card),
             // Dolly's Mirror excludes only Quest cards; a curse is a legal copy.
             DeckSelection.Duplicate => GeneratedData.Cards.Get(card.DefId).Type != CardType.Quest,
@@ -1756,10 +1757,20 @@ public static class RunNonCombatEffects
                 card,
                 state.PendingSelectionArg
             ),
-            DeckSelection.TransformToRandom => true,
-            DeckSelection.TransformToRandomUpgraded => true,
+            DeckSelection.TransformToRandom => IsOfferedForTransformation(card),
+            DeckSelection.TransformToRandomUpgraded => IsOfferedForTransformation(card),
             _ => false,
         };
+    }
+
+    /// <summary>
+    /// `CardSelectCmd.FromDeckForTransformation`: <c>c.Type != Quest &amp;&amp; c.IsTransformable</c>, and a
+    /// deck card is transformable exactly when it is removable (not Eternal).
+    /// </summary>
+    private static bool IsOfferedForTransformation(CardInstance card)
+    {
+        var def = GeneratedData.Cards.Get(card.DefId);
+        return def.Type != CardType.Quest && !def.Eternal;
     }
 
     /// <summary>

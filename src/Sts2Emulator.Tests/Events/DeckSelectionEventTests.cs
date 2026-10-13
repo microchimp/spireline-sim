@@ -212,8 +212,8 @@ public class DeckSelectionEventTests
     }
 
     /// <summary>
-    /// Only upgradable cards are offered for the upgrade, and every card for the
-    /// transform -- two different sets from the same screen.
+    /// Only upgradable cards are offered for the upgrade, and every transformable card (not
+    /// Eternal, not Quest) for the transform -- two different sets from the same screen.
     /// </summary>
     [Fact]
     public void TheTwoDoorsOfferDifferentCards()
@@ -226,7 +226,10 @@ public class DeckSelectionEventTests
 
         for (int i = 0; i < transform.State.Deck.Count; i++)
         {
-            Assert.True(RunNonCombatEffects.CanSelectCard(transform.State, i));
+            Assert.Equal(
+                !GeneratedData.Cards.Get(transform.State.Deck[i].DefId).Eternal,
+                RunNonCombatEffects.CanSelectCard(transform.State, i)
+            );
             Assert.Equal(
                 RunConstants.IsRunCardUpgradable(upgrade.State.Deck[i]),
                 RunNonCombatEffects.CanSelectCard(upgrade.State, i)
