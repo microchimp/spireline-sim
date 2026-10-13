@@ -74,6 +74,16 @@ public static class Nodeless
 
     public static void Configure(JsonObject job)
     {
+        // Job "frame_sleep_usec": N sets OS.LowProcessorUsageModeSleepUsec. Headless, Godot cannot
+        // draw, so OS::add_frame_delay paces every frame to at least that long (6900 us by default).
+        // A full-host frame mostly costs more CPU than that; an empty nodeless frame costs ~1 ms and
+        // then sleeps the rest. Frame pacing only: no rule reads wall time. Unset, nothing changes.
+        if (job["frame_sleep_usec"] is { } sleep)
+        {
+            OS.LowProcessorUsageModeSleepUsec = (int)sleep;
+            GD.Print($"[referee] frame sleep {OS.LowProcessorUsageModeSleepUsec} us");
+        }
+
         if ((bool?)job["error_log"] == true && !ErrorLog && (bool?)job["nodeless"] != true)
         {
             ErrorLog = true;
