@@ -7654,10 +7654,13 @@ public static class CardEffects
 
                 DealDamageToEnemy(state, aimed, Dmg(state, def, upgraded, card));
                 // `KnockdownPower` (2, or 3 upgraded) and `TagTeamPower` (1) are Instanced
-                // Debuffs: each play is a new entry, Artifact eats one per play, and neither does
-                // anything alone -- the dealer-is-applier gates in `ModifyDamageMultiplicative`
-                // and `ModifyCardPlayCount` are always met by a lone player. Knockdown used to
-                // apply Stunned here; Whistle genuinely calls `CreatureCmd.Stun`.
+                // Debuffs: each play is a new entry and Artifact eats one per play. The
+                // dealer-is-applier gates keep both from changing a number the PLAYER deals:
+                // `ModifyCardPlayCount` is always met by a lone player, but Knockdown's
+                // `ModifyDamageMultiplicative` is not -- Osty's attacks have Osty as the dealer
+                // and are multiplied (open: Osty's damage has no dealer in the emulator, see
+                // KnockdownTests). Knockdown used to apply Stunned here; Whistle genuinely
+                // calls `CreatureCmd.Stun`.
                 var (power, amount) = def.Name switch
                 {
                     "Squash" => (BuffId.Vulnerable, upgraded ? 3 : 2),

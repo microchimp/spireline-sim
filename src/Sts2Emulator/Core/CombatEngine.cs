@@ -5201,7 +5201,10 @@ public static class CombatEngine
         // Hook.ShouldPlay gates auto-plays as well as chosen ones, and CardCmd.AutoPlay
         // answers a refusal with MoveToResultPileWithoutPlaying — the card is spent, its
         // effect never happens, and it does not count towards the limit that refused it.
-        if (Effects.RelicEffects.BlocksFurtherCardPlays(state))
+        // An Unplayable card gets the same answer, checked before the hook: Cascade or
+        // Mayhem taking an Injury or an Ascender's Bane off the draw pile moves it on without
+        // BeforeCardPlayed or AfterCardPlayed ever running -- a Panache does not count it.
+        if (def.Unplayable || Effects.RelicEffects.BlocksFurtherCardPlays(state))
         {
             if (ShouldExhaustAfterPlay(def, card))
             {

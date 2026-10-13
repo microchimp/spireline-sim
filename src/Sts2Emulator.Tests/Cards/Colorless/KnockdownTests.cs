@@ -11,10 +11,14 @@ namespace Sts2Emulator.Tests;
 // power by 1.
 //
 // KnockdownPower is Debuff, Counter, PowerInstanceType.Instanced, and a damage MULTIPLIER on
-// its owner: ModifyDamageMultiplicative returns 1 when `dealer == base.Applier`, so it only
-// ever amplifies another player's attacks and changes no number alone. It is still a visible
-// Debuff -- ArtifactPower.TryModifyPowerAmountReceived eats it, the power list shows it -- and
-// its AfterSideTurnEnd removes it when its OWNER's side turn ends.
+// its owner: ModifyDamageMultiplicative returns 1 when `dealer == base.Applier`, so the player's
+// own attacks are never changed. Another player's are -- and so are the attacks of the
+// Necrobinder's Osty, a creature that is not the applier (`AttackCommand.FromOsty` makes Osty the
+// attacker, `CreatureCmd.Damage` passes it as the dealer): OstyDamageVar is a powered Move, so
+// each Osty hit into a Knockdown is multiplied by its amount. The emulator does not model that
+// (see the skipped test below). It is still a visible Debuff --
+// ArtifactPower.TryModifyPowerAmountReceived eats it, the power list shows it -- and its
+// AfterSideTurnEnd removes it when its OWNER's side turn ends.
 //
 // Stunned used to stand in for it at 2 and 3. That is a real debuff costing an enemy turns,
 // handed out by a card that should do nothing beyond its damage.
@@ -22,6 +26,27 @@ public class KnockdownTests
 {
     private static List<BuffState> Knockdowns(EnemyState enemy) =>
         enemy.Buffs.Where(b => b.Id == BuffId.Knockdown).ToList();
+
+    /// <summary>
+    /// OPEN, and skipped so it cannot hide: a Necrobinder's Osty attack into an enemy carrying a
+    /// Knockdown hits for the card's damage times the Knockdown's amount (Poke is 6, so 12 under
+    /// a Knockdown of 2). The emulator deals Osty's damage through `DealDamageToEnemy`, the
+    /// player's own powered-attack path, which has neither a dealer to compare with the
+    /// applier nor the right to read the player's Strength (also a known gap, see
+    /// `DealOstyDamage`). Modelling it means giving Osty's attacks a dealer of their own, which
+    /// touches every Osty site and the damage pipeline: FINDINGS has the write-up.
+    /// </summary>
+    [Fact(Skip = "open: Osty's attacks have no dealer in the emulator, so Knockdown cannot multiply them")]
+    public void AnOstyAttackIntoAKnockdownIsMultipliedByIt()
+    {
+        int poke = GeneratedData.Cards.FindId("Poke")!.Value;
+        var fight = Fight.Hand(Card(poke)).Energy(3).Enemy(hp: 500, buffs: [new BuffState(BuffId.Knockdown, 2)]);
+        CardEffects.SummonOsty(fight.State, 20);
+
+        fight.Play(index: 0, target: 0);
+
+        Assert.Equal(488, fight.Enemy0.Hp);
+    }
 
     [Fact]
     public void DealsTen()

@@ -908,11 +908,15 @@ public enum BuffId
 
     /// <summary>
     /// <c>KnockdownPower</c>, a DEBUFF on an enemy, <c>PowerInstanceType.Instanced</c>: every
-    /// Knockdown makes its own entry. It multiplies damage aimed at its owner by its amount,
-    /// but <c>ModifyDamageMultiplicative</c> returns 1 when the dealer is the applier, so a
-    /// lone player never sees a number change. It is still a visible Debuff (Artifact eats
-    /// it, the power list shows it) and removes itself in <c>AfterSideTurnEnd</c> when its
-    /// OWNER's side turn ends.
+    /// Knockdown makes its own entry. It multiplies a powered attack aimed at its owner by its
+    /// amount, but <c>ModifyDamageMultiplicative</c> returns 1 when the dealer is the applier, so
+    /// the player's own attacks never change a number. An attack by anyone ELSE does: the
+    /// Necrobinder's Osty is a creature of its own and its attacks (<c>DealOstyDamage</c>) are
+    /// multiplied in the game. The emulator does not model that yet -- it deals Osty's damage
+    /// through the player's attack path, which has no dealer to compare (see FINDINGS) -- so no
+    /// damage path reads this id. It is still a visible Debuff (Artifact eats it, Rend counts it,
+    /// the power list shows it) and removes itself in <c>AfterSideTurnEnd</c> when its OWNER's
+    /// side turn ends.
     /// </summary>
     Knockdown,
 

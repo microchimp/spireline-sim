@@ -291,4 +291,46 @@ public class CascadeTests
         Assert.Equal(2, fight.State.DiscardPile.Count);
         Assert.Empty(fight.State.AutoPlayQueue);
     }
+
+    private static int Injury => GeneratedData.Cards.FindId("Injury")!.Value;
+
+    /// <summary>
+    /// `CardPileCmd.AutoPlayFromDrawPile` takes cards off the top with no Unplayable filter, and
+    /// `CardCmd.AutoPlay` answers an Unplayable one with MoveToResultPileWithoutPlaying before
+    /// anything else: no BeforeCardPlayed, no effect, no AfterCardPlayed. The Injury is not
+    /// played, so a Panache two cards from its burst counts the Defend and the Cascade itself
+    /// (four of five) and does not burst; counting the Injury reached five. (Found by
+    /// re-anchoring night04 X9XWNS3273 step 18, where the game's Panache did not fire.)
+    /// </summary>
+    [Fact]
+    public void AnUnplayableCardTakenOffTheDrawPileCountsForNothing()
+    {
+        var fight = Fight
+            .Hand(new CardInstance(Cascade, Upgraded: true))
+            .Energy(1)
+            .Enemy(hp: 100)
+            .PlayerBuff(BuffId.PanachePower, 10, data: 2);
+        fight.State.DrawPile = [new CardInstance(Injury, false), new CardInstance(IC.DefendIronclad, false)];
+
+        fight.Play();
+
+        Assert.Equal(100, fight.Enemy0.Hp);
+        Assert.Equal(4, fight.State.PlayerBuffs.Single(b => b.Id == BuffId.PanachePower).Data);
+        Assert.Contains(new CardInstance(Injury, false), fight.State.DiscardPile);
+        Assert.Equal(5, fight.State.PlayerBlock);
+    }
+
+    /// <summary>The Injury only moves on, to the discard pile; only the Cascade itself and the Defend were played.</summary>
+    [Fact]
+    public void TheUnplayableCardMovesToTheDiscardWithoutBeingPlayed()
+    {
+        var fight = Fight.Hand(new CardInstance(Cascade, Upgraded: true)).Energy(1).Enemy(hp: 100);
+        fight.State.DrawPile = [new CardInstance(Injury, false), new CardInstance(IC.DefendIronclad, false)];
+
+        fight.Play();
+
+        Assert.Empty(fight.State.DrawPile);
+        Assert.Contains(new CardInstance(Injury, false), fight.State.DiscardPile);
+        Assert.Equal(2, fight.State.CardsPlayedThisCombat);
+    }
 }
