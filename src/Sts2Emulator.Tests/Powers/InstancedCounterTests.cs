@@ -253,4 +253,23 @@ public class InstancedCounterTests
         Assert.Empty(Of(fight, BuffId.Monologue));
         Assert.Equal(0, fight.PlayerBuffAmount(BuffId.MonologueApplied));
     }
+
+    /// <summary>
+    /// `MonologuePower` listens to `BeforeCardPlayed`/`AfterCardPlayed`, which an auto-play fires
+    /// like any play (`CardCmd.AutoPlay` runs `OnPlayWrapper`): a Cascade that plays a Defend off
+    /// the draw pile pays for the Defend and for the Cascade.
+    /// </summary>
+    [Fact]
+    public void AnAutoPlayedCardPaysToo()
+    {
+        const int cascade = 546;
+        var fight = Fight.Hand(new CardInstance(cascade, false)).Energy(1).Enemy(hp: 500);
+        fight.PlayerBuff(BuffId.Monologue, 1);
+        fight.State.DrawPile = [Card(IC.DefendIronclad)];
+
+        fight.Play();
+
+        Assert.Equal(2, fight.PlayerBuffAmount(BuffId.Strength));
+        Assert.Equal([new BuffState(BuffId.Monologue, 1, 2)], Of(fight, BuffId.Monologue));
+    }
 }

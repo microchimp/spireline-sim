@@ -4592,6 +4592,7 @@ public static class CombatEngine
 
         state.Hand.RemoveAt(handIndex);
         // BeforeCardPlayed fires for an auto-play too -- it is an ordinary CardModel.Play.
+        int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);
         CaptureBeforePlayPowers(state);
         Effects.RelicEffects.BeforeCardPlayedRelics(state, def);
         // Snapshotted before the effects for the same reason as the hand-played path:
@@ -4680,6 +4681,7 @@ public static class CombatEngine
         }
 
         IncrementPlayedCardTypeCounters(state, def);
+        PayMonologue(state, monologueBefore);
         ApplyAfterCardPlayedPowers(state, def, rng);
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
     }
@@ -5230,6 +5232,7 @@ public static class CombatEngine
         int targetIndex = RollAutoPlayTarget(state, def, rng);
 
         // Apply card effects.
+        int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);
         CaptureBeforePlayPowers(state);
         Effects.RelicEffects.BeforeCardPlayedRelics(state, def);
         int callerTarget = state.TargetEnemyIndex;
@@ -5289,6 +5292,7 @@ public static class CombatEngine
         }
 
         IncrementPlayedCardTypeCounters(state, def);
+        PayMonologue(state, monologueBefore);
         ApplyAfterCardPlayedPowers(state, def, rng);
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
     }
