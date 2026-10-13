@@ -3707,6 +3707,32 @@ public static class CardEffects
         }
     }
 
+    /// <summary>
+    /// `ListExtensions.StableShuffle` over the cards of <paramref name="pile" /> at
+    /// <paramref name="indices" />: sorted as `CardModel.CompareTo` sorts (ModelId, i.e.
+    /// Entry as an ordinal string, then upgrade level), then `UnstableShuffle`'s
+    /// Fisher-Yates, n-1 draws. Returns the pile indices in shuffled order.
+    /// </summary>
+    internal static List<int> StableShuffle(
+        List<CardInstance> pile,
+        IEnumerable<int> indices,
+        Random rng
+    )
+    {
+        var order = indices
+            .OrderBy(i => EntryRankOf(pile[i]))
+            .ThenBy(i => pile[i].Upgraded ? 1 : 0)
+            .ToList();
+        ShufflePile(order, rng);
+        return order;
+    }
+
+    private static int EntryRankOf(CardInstance card)
+    {
+        int id = Math.Abs(card.DefId);
+        return id < EntryRank.Length ? EntryRank[id] : EntryRank.Length;
+    }
+
     public static void ShufflePile<T>(IList<T> pile, Random rng)
     {
         for (int i = pile.Count - 1; i > 0; i--)
@@ -4028,31 +4054,6 @@ public static class CardEffects
                 }
 
                 break;
-        }
-    }
-
-    private static void PlayNestedCard(
-        CardDef def,
-        bool upgraded,
-        CombatState state,
-        Random rng,
-        CardInstance card = default
-    )
-    {
-        bool wasAutoPlaying = state.AutoPlaying;
-        int callerTarget = state.TargetEnemyIndex;
-        state.AutoPlaying = true;
-        try
-        {
-            // Havoc and Uproar hand `CardCmd.AutoPlay` a null target, so an AnyEnemy card
-            // rolls the CombatTargets stream for it (CardCmd.cs:51-).
-            state.TargetEnemyIndex = CombatEngine.RollAutoPlayTarget(state, card, def, rng);
-            Apply(def, upgraded, state, rng, card);
-        }
-        finally
-        {
-            state.AutoPlaying = wasAutoPlaying;
-            state.TargetEnemyIndex = callerTarget;
         }
     }
 
@@ -9117,93 +9118,37 @@ public static class CardEffects
         || enemy.SecondaryIntent?.Type == IntentType.Attack;
 
     /// <summary>
-    /// Uproar's attack: the playable Attacks in the draw pile, shuffled on the SHUFFLE
-    /// stream, first one taken. Not the first in pile order — that is deterministic where
-    /// the game is not, and it leaves the stream undrawn, which desynchronises every roll
-    /// after it.
+    /// `Uproar.OnPlay` after its hits: `drawPile.Where(Attack && !Unplayable)
+    /// .StableShuffle(Rng.Shuffle).FirstOrDefault()`, falling back to every Attack, then
+    /// `CardCmd.AutoPlay(card, null)` -- the shared auto-play path, which rolls the target,
+    /// runs the play's lifecycle and files the card. One `Next` over the unsorted candidates
+    /// drew once where StableShuffle draws n-1 times, leaving the Shuffle stream off.
     /// </summary>
     private static void AutoPlayRandomDrawPileAttack(CombatState state, Random rng)
     {
-        var candidates = new List<int>();
-        for (int i = 0; i < state.DrawPile.Count; i++)
-        {
-            var candidate = GeneratedData.Cards.Get(state.DrawPile[i].DefId);
-            if (candidate.Type == CardType.Attack && !candidate.Unplayable)
-            {
-                candidates.Add(i);
-            }
-        }
-
-        // The game falls back to ANY attack when every one of them is Unplayable.
-        if (candidates.Count == 0)
-        {
-            for (int i = 0; i < state.DrawPile.Count; i++)
-            {
-                if (GeneratedData.Cards.Get(state.DrawPile[i].DefId).Type == CardType.Attack)
-                {
-                    candidates.Add(i);
-                }
-            }
-        }
-
-        if (candidates.Count == 0)
-        {
-            return;
-        }
-
-        // The game rolls this on Rng.Shuffle; fall back to the combat rng when a state
-        // was built without one, as the other shuffle sites do.
         Random shuffle = state.ShuffleRng ?? rng;
-        int index = candidates[shuffle.Next(candidates.Count)];
-        var chosen = state.DrawPile[index];
-        state.RemoveFromDrawPileAt(index);
-        PlayNestedCard(GeneratedData.Cards.Get(chosen.DefId), chosen.Upgraded, state, rng, chosen);
-
-        // `CardCmd.AutoPlay` moves the card to the Play pile and then to its result pile, so
-        // an auto-played card ends up somewhere. This one was taken out of the draw pile and
-        // never put down: the card VANISHED, and a live Uproar found it as a discard pile one
-        // short. Its sibling ten lines below has always done this.
-        if (chosen.IsExhaust())
+        var attacks = Enumerable
+            .Range(0, state.DrawPile.Count)
+            .Where(i => GeneratedData.Cards.Get(state.DrawPile[i].DefId).Type == CardType.Attack)
+            .ToList();
+        var picks = StableShuffle(
+            state.DrawPile,
+            attacks.Where(i => !GeneratedData.Cards.Get(state.DrawPile[i].DefId).Unplayable),
+            shuffle
+        );
+        if (picks.Count == 0)
         {
-            ExhaustCard(state, chosen, rng: rng);
-        }
-        else
-        {
-            state.DiscardPile.Add(chosen with { FreeThisTurn = false });
-        }
-    }
-
-    private static void AutoPlayFirstDrawPileAttack(CombatState state, Random rng)
-    {
-        int index = state.DrawPile.FindIndex(card =>
-        {
-            var def = GeneratedData.Cards.Get(card.DefId);
-            return def.Type == CardType.Attack && !def.Unplayable;
-        });
-        if (index < 0)
-        {
-            index = state.DrawPile.FindIndex(card =>
-                GeneratedData.Cards.Get(card.DefId).Type == CardType.Attack
-            );
+            picks = StableShuffle(state.DrawPile, attacks, shuffle);
         }
 
-        if (index < 0)
+        if (picks.Count == 0)
         {
             return;
         }
 
-        var card = state.DrawPile[index];
-        state.RemoveFromDrawPileAt(index);
-        var def = GeneratedData.Cards.Get(card.DefId);
-        PlayNestedCard(def, card.Upgraded, state, rng, card);
-        if (card.IsExhaust())
-        {
-            ExhaustCard(state, card, rng: rng);
-        }
-        else
-        {
-            state.DiscardPile.Add(card with { FreeThisTurn = false });
-        }
+        var chosen = state.DrawPile[picks[0]];
+        state.RemoveFromDrawPileAt(picks[0]);
+        CombatEngine.AutoPlayCard(state, chosen, rng);
     }
 
     /// <summary>Osty's max HP as a damage input, which is ZERO when it is not alive.</summary>

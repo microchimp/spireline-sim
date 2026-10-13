@@ -4539,7 +4539,7 @@ public static class CombatEngine
     /// single enemy and whatever its type. AllEnemies, RandomEnemy and Self cards never touch
     /// the stream here. A target the caller GAVE (Knife Trap's) is never rolled over.
     /// </summary>
-    internal static int RollAutoPlayTarget(CombatState state, CardInstance card, CardDef def, Random rng)
+    private static int RollAutoPlayTarget(CombatState state, CardInstance card, CardDef def, Random rng)
     {
         int targetIndex = state.AutoPlayTargetIndex;
         if (
