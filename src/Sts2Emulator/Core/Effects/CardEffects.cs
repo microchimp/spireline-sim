@@ -10637,25 +10637,24 @@ public static class CardEffects
         BuffSystem.Apply(state.PlayerBuffs, BuffId.Nightmare, count);
     }
 
+    /// <summary>
+    /// <c>Rend</c>'s multiplier: <c>target.Powers.Count(ShouldCountPower)</c>, every power on
+    /// the target whose <c>TypeForCurrentAmount</c> is a Debuff and that is not an
+    /// <c>ITemporaryPower</c>. It counts POWERS, not kinds, so every instance of an Instanced
+    /// debuff (Knockdown, Tag Team) is one, and so is a Doom or a Slow and a Strength the enemy
+    /// has been pushed below zero -- <c>GetTypeForAmount</c> calls a negative amount of an
+    /// AllowNegative counter a Debuff. The temporary powers hand their effect back by being
+    /// removed and are not debuffs here (<see cref="BuffSystem.IsDebuff" /> leaves them out); the
+    /// Strength loss they cause is the negative Strength, which does count.
+    /// </summary>
     private static int CountRendDebuffs(EnemyState enemy)
     {
         int count = 0;
         foreach (var buff in enemy.Buffs)
         {
             if (
-                buff.Id
-                is BuffId.Vulnerable
-                    or BuffId.Weak
-                    or BuffId.Frail
-                    or BuffId.Poison
-                    or BuffId.Burn
-                    or BuffId.Shrink
-                    or BuffId.Tangled
-                    or BuffId.Constrict
-                    or BuffId.Smoggy
-                    or BuffId.Hex
-                    or BuffId.Dampen
-                    or BuffId.Disintegration
+                BuffSystem.IsDebuff(buff.Id)
+                || (BuffSystem.AllowsNegative(buff.Id) && buff.Magnitude < 0)
             )
             {
                 count++;
