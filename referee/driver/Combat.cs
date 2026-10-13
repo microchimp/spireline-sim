@@ -293,6 +293,7 @@ public static partial class Driver
         while (!task.IsCompleted && !budget.Spent)
         {
             eachFrame?.Invoke();
+            Nodeless.ThrowIfFallback();
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
         }
 
@@ -333,6 +334,7 @@ public static partial class Driver
         while (!budget.Spent && stable < (int)IdleFrames)
         {
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+            Nodeless.ThrowIfFallback();
             AnswerOpenScreens();
             var cm = CombatManager.Instance;
             var combat = cm.DebugOnlyGetState();

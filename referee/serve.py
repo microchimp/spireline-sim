@@ -130,7 +130,9 @@ def comparable(r: dict) -> dict:
 
 # Driver job keys a job file may set for every server (the module docstring has what they do).
 JOB_KEYS = ("idle_frames", "stall_s", "settle", "settle_audit", "fast_tweens", "sleep_usec",
-            "trace_frames", "step_costs", "idle_probe", "idle_timeout_s")
+            "trace_frames", "step_costs", "idle_probe", "idle_timeout_s",
+            # the nodeless host (driver/Nodeless.cs), opt-in: off unless a job file sets them
+            "nodeless", "nodeless_on_error", "nodeless_audit", "health", "error_log", "frame_sleep_usec")
 
 
 def job_options(job_in, *, slow_reset: bool = False, preload: bool = False, no_patches: bool = False,
@@ -390,6 +392,12 @@ class Pool:
                 s.proc.wait()
             self._collect(s)
             self._handle_exit(s, s.proc.returncode)
+        # Every server, exited ones too: a child the game started (crashpad_handler) can outlive it.
+        for pid, conns in self._connections([s.pid for s in self.servers if s.pid]).items():
+            self.seen_net |= conns
+            for s in self.servers:
+                if s.pid == pid:
+                    s.connections |= conns
         self.t_end = time.time()
         self.after = self._profile_state()
         return self._drain()

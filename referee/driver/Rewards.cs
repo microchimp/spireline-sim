@@ -47,8 +47,9 @@ public static partial class Driver
     internal static void AnswerOpenScreens()
     {
         var stack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
-        if (stack == null) return;
-        foreach (var node in stack.GetChildren())
+        // Nodeless there is no overlay stack: the screens shown are recorded instead (NodelessPatches).
+        var open = stack?.GetChildren().ToList() ?? NodelessPatches.Screens.ToList();
+        foreach (var node in open)
         {
             if (node.GetType().Name != "NChooseABundleSelectionScreen") continue;
             var src = node.GetType().GetField("_completionSource", Private)?.GetValue(node)

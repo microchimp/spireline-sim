@@ -149,7 +149,7 @@ public static partial class Driver
                     : null;
                 if (why != null)
                 {
-                    GD.Print($"[referee] watchdog: {why}, exiting after {_done} fights; frame {frame} "
+                    GD.Print($"[referee] watchdog: {why}, exiting after {_done} fights{Nodeless.Where}; frame {frame} "
                         + $"(last driver frame {Interlocked.Read(ref _lastDriverFrame)}), step {CurrentStep}, "
                         + $"fast tweens {Interlocked.Read(ref Patches.FastTweens)}, in fast tween {Patches.InFastTween}; "
                         + MainThreadState());
