@@ -360,6 +360,18 @@ public class PetrifiedToadTests
 
         Assert.Contains(PotionShapedRock, fight.State.PotionSlots.ToArray());
     }
+
+    /// <summary>
+    /// <c>PetrifiedToad.BeforeCombatStartLate</c> is <c>PotionCmd.TryToProcure</c>, which Sozu's
+    /// <c>ShouldProcurePotion</c> refuses -- the slot was being written directly.
+    /// </summary>
+    [Fact]
+    public void SozuRefusesTheRock()
+    {
+        var fight = Fight.WithRelics(RelicEffects.PetrifiedToad, RelicEffects.Sozu);
+
+        Assert.DoesNotContain(PotionShapedRock, fight.State.PotionSlots.ToArray());
+    }
 }
 
 public class BowlerHatTests

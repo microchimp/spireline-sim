@@ -795,16 +795,12 @@ public static class RelicEffects
             }
         }
 
-        // `PetrifiedToad.BeforeCombatStartLate` procures a Shaped Rock into the first free
-        // potion slot. `TryToProcure` fails silently when the belt is full, which is why
-        // this looks for a slot rather than making room.
+        // `PetrifiedToad.BeforeCombatStartLate` is `PotionCmd.TryToProcure<PotionShapedRock>`: the
+        // first free slot, and nothing when the belt is full or Sozu's ShouldProcurePotion says no.
+        // Writing the slot directly skipped that gate, so a Sozu owner still got the rock.
         if (HasRelic(state, PetrifiedToad))
         {
-            int slot = PotionEffects.FirstOpenPotionSlot(state);
-            if (slot >= 0)
-            {
-                state.PotionSlots[slot] = PotionShapedRock;
-            }
+            PotionEffects.TryToProcure(state, PotionShapedRock);
         }
 
         // Every relic below guards on `TurnNumber <= 1` inside `AfterSideTurnStart` or
