@@ -92,6 +92,8 @@ public static partial class Driver
             await ClaimRewards(selector.Log);
             GD.Print($"[referee] neow chosen; finished={neow.IsFinished} options={neow.CurrentOptions.Count}");
             await RunSetup(setup, 0, fightAt < 0 ? setup.Count : fightAt, state, state.Players[0], setupLog, trace);
+            // Relic flashes from the fight's start on (Chooser.cs), when the spec asks: [step, relic].
+            if ((bool?)spec["relic_flashes"] == true) RecordRelicFlashes(player, (JsonArray)(dump["relic_flashes"] = new JsonArray())!);
 
             // First monster room on row 1, lowest column.
             var target = state.Map.GetPointsInRow(1).Where(p => p.PointType == MapPointType.Monster)
@@ -133,6 +135,9 @@ public static partial class Driver
             timing["enter_room"] = phase.ElapsedMilliseconds;
             dump["cost_setup"] = Cost();
             var rng = new Random((int?)spec["chooser_seed"] ?? 1);
+            // "random" (default) or "heuristic" (Chooser.cs); flashes recorded when the spec asks.
+            bool heuristic = (string?)spec["chooser"] == "heuristic";
+            ResetChooser();
             int maxActions = (int?)spec["max_actions"] ?? 80;
             var script = spec["script"] as JsonArray;
             if (script != null) maxActions = script.Count;
@@ -187,7 +192,7 @@ public static partial class Driver
                 }
                 else
                 {
-                    (hi, ti) = options[rng.Next(options.Count)];
+                    (hi, ti) = heuristic ? ChooseHeuristic(options, hand, enemies, combat, player, rng) : options[rng.Next(options.Count)];
                 }
 
                 if (TraceFrames) _stepTrace = new JsonArray();
@@ -247,6 +252,7 @@ public static partial class Driver
         finally
         {
             if (Trace.On) Trace.End();
+            StopRelicFlashes();
         }
 
         timing["fight_end"] = phase.ElapsedMilliseconds;

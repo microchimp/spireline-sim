@@ -1,39 +1,45 @@
 #!/usr/bin/env python3
 """Ironclad A10 reference set: one versioned set of game recordings that every accuracy number is quoted from.
 
-    python -I referee/refset.py build  [--version v1] [--realistic 600] [--codex <runs.jsonl.gz>]
-    python -I referee/refset.py record [--version v1] [--subset all|pilot] [--parts realistic,coverage,regression]
-                                       [--game D:/spireline/referee/game-refset] [--servers 3] [--label <name>]
-    python -I referee/refset.py status [--version v1]
-    python -m tools.fidelity.refset_score --version v1 [--subset pilot] --emu <emulator checkout>   (the numbers)
+    python -I referee/refset.py build   [--version v2] [--realistic 600] [--codex <runs.jsonl.gz>]
+    python -I referee/refset.py record  [--version v2] [--subset all|pilot] [--parts realistic,coverage,regression]
+                                        [--game D:/spireline/referee/game-refset] [--servers 3] [--label <name>]
+    python -I referee/refset.py rejudge [--version v2] --record <record dir>     (judge saved passes again)
+    python -I referee/refset.py status  [--version v2]
+    python -m tools.fidelity.refset_score --version v2 [--subset pilot] --emu <emulator checkout>   (the numbers)
 
 Run from the fork's root, with -I: the Spire Codex history is third-party data, and -I keeps the script's
 and the current directory off sys.path while it is read. Everything this writes is local, under
 D:/spireline/referee/refset/<version>/ (manifest, recordings, scores), never in the repo: realistic specs
-are derived from per-run data.
+are derived from per-run data. referee/REFSET.md has the whole method.
 
-The set (manifest.json, one entry per spec with the reason it is in the set):
+The set (manifest.json, one entry per spec with the reason it is in the set, its chooser and its realism flags):
   realistic   fights from real Ironclad A10 runs (Spire Codex, v0.107.1): the run's own seed and Neow pick,
-              then its deck (upgrades, enchantments), relics, potions and HP as they stood before that floor's
-              fight, then that floor's encounter. Stratified by act, room type (normal/elite/boss) and the
-              floor's place in the act; one fight per run. The headline numbers.
+              then its deck (upgrades, enchantments, saved properties), relics (with their saved state rebuilt
+              for that floor, STATE_RULES), potions, slots, HP and gold as they stood before that floor's fight,
+              then that floor's encounter in its own act. Stratified by act, room type (normal/elite/boss) and
+              the floor's place in the act; one fight per run; the heuristic chooser. The headline numbers.
   coverage    the fewest plausible setups that put every Ironclad and colourless card (base and upgraded) in
               a deck often enough to be played 5 times, meet every act 1-3 encounter 3 times, and hold every
               Ironclad-reachable relic and potion the emulator models 3 times (planned; refset_score counts
-              what the recordings really reached).
+              what the recordings really reached). Random play.
   regression  one minimal setup per known divergence class (FINDINGS.md, triage files, the setup fights'
-              shrunk cases), plus the original fight that found it, re-recorded with today's driver.
+              shrunk cases), plus the original fight that found it, re-recorded with today's driver; each class
+              names the trigger its fights must show.
   runs        whole runs: every Ironclad A10 codex run (the codex replay, run-level offers) and 30 seeded
-              runs for the run referee (driver/RunPlay.cs; recorded once that driver is integrated).
+              runs for the run referee (driver/RunPlay.cs).
 
-Setup goes through referee/driver/Setup.cs and RefsetSetup.cs: the game's own commands only (fight, relics,
-deck cards incl. upgrades and enchantments, potions, HP); never godmode, kill, win, damage or heal shortcuts.
+Setup goes through referee/driver/Setup.cs and RefsetSetup.cs: the game's own paths only (the act command, the
+save-load path for a run's holdings, the console's fight, relic, card, potion and power commands); never godmode,
+kill, win, damage or heal shortcuts.
 
-Recording (record): every fight is recorded twice (the second pass in reverse order, on fresh servers); a fight
-whose two recordings differ is excluded as an unstable reference, as is any fight whose game side logged an
-error (driver error or idle timeout, a setup item the game refused, no fight). Each kept recording is stamped
-with the set version, the game build (sts2.dll sha256) and the driver commit and DLL hash. The safety checks are
-serve.py's (known sts2.dll, no network, scratch profile, real profile untouched); a breach aborts the record.
+Recording (record): only a clean build of the checkout's committed driver with every REQUIRED_CAPS capability
+records (checked on the DLL first and on every server's job-start line after). Every fight is recorded twice
+(the second pass in reverse order, on fresh servers); a fight whose two recordings differ is excluded as an
+unstable reference, as is any fight whose game side logged an error or whose setup the game could not build.
+Each kept recording is stamped with the set version, the game build (sts2.dll sha256), the driver commit, DLL
+hash and capabilities, and the tools commit. The safety checks are serve.py's (known sts2.dll, no network,
+scratch profile, real profile untouched); a breach aborts the record.
 """
 
 from __future__ import annotations
@@ -193,11 +199,162 @@ def codex_runs(path: Path, stats: collections.Counter, max_runs: int = 0):
             yield d
 
 
-def _ck(c: dict) -> list:
-    """[id, upgrade level, enchantment, amount, floor added] of a history card."""
+def _ck(c: dict, final: bool = False) -> list:
+    """[id, upgrade level, enchantment, amount, floor added, saved properties, whether they are the run's end
+    values] of a history card (the final deck's cards carry their [SavedProperty] values at the run's end)."""
     e = c.get("enchantment") or {}
     return [bare(c.get("id")), int(c.get("current_upgrade_level", 0) or 0), bare(e.get("id")), int(e.get("amount", 0) or 0),
-            int(c.get("floor_added_to_deck") or 1)]
+            int(c.get("floor_added_to_deck") or 1), c.get("props") or {}, final]
+
+
+# ---------------------------------------------------------------- saved state: the [SavedProperty] values before a floor
+
+# A relic or card with saved properties ([SavedProperty]: a counter, a flag, or what its event picked) is put in
+# place with them (the player_load item, the game's save-load path). The codex keeps each held item's values at the
+# run's END ("props"); the value BEFORE floor F is had by one of these rules, from the floors between the item's own
+# floor O and F (the item's effects on floor O came before it was held, or are part of the record):
+#   fixed        set when the item was made (its event's pick, an act index, a skin) and never changed: the end value.
+#   reset        reset as every room is entered, so a fight starts from this value.
+#   monotone     only ever moves away from its fresh value: fresh at the end means fresh before F; else unknown.
+#   inc / dec    +1 / -1 (floored at 0) per combat; inc_monster: per monster (not elite, boss) combat; elite:
+#                +1 per elite won; turns: + the combat's turns, mod N;
+#   rest         + n per rest-site choice C; cards: + each card gained or transformed into; tea_set: true after
+#                a rest, false after a fight;
+#   kindle       Pumpkin Candle: 5 at pickup, -1 per combat, +5 per KINDLE.
+#   card_rewards + 1 per floor with a card reward, up to N (1: a flag); treasures: + 1 per treasure room;
+#   act1_boss    true once the act 1 boss is won (Lava Rock's extra relics).
+# A rebuilt counter is trusted ("verified") only when the same rule, run on to the run's end, gives the end value.
+# Anything else (no rule, a failed check, an item that left the run before its end) FLAGS the spec: it is kept, and
+# counted apart (state_unknown / state_unverified), never silently given a fresh value.
+FIXED, RESET, MONOTONE = "fixed", "reset", "monotone"
+STATE_RULES: dict[tuple[str, str], tuple] = {
+    ("ARCHAIC_TOOTH", "StarterCard"): (FIXED,), ("ARCHAIC_TOOTH", "AncientCard"): (FIXED,),
+    ("DUSTY_TOME", "AncientCard"): (FIXED,),
+    ("TOUCH_OF_OROBAS", "StarterRelic"): (FIXED,), ("TOUCH_OF_OROBAS", "UpgradedRelic"): (FIXED,),
+    ("SEA_GLASS", "CharacterId"): (FIXED,), ("BYRDPIP", "Skin"): (FIXED,), ("PAELS_LEGION", "Skin"): (FIXED,),
+    ("GOLDEN_COMPASS", "GoldenPathAct"): (FIXED,),
+    ("FUR_COAT", "FurCoatActIndex"): (FIXED,), ("FUR_COAT", "FurCoatCoordsSet"): (FIXED,),
+    ("FUR_COAT", "FurCoatCoordCols"): (FIXED,), ("FUR_COAT", "FurCoatCoordRows"): (FIXED,),
+    ("SPOILS_MAP", "SpoilsActIndex"): (FIXED,),
+    ("MAD_SCIENCE", "TinkerTimeType"): (FIXED,), ("MAD_SCIENCE", "TinkerTimeRider"): (FIXED,),
+    ("*", "IsWax"): (FIXED,), ("*", "IsMelted"): (MONOTONE,),
+    ("LAVA_LAMP", "TookDamageThisCombat"): (RESET, False),
+    ("BONE_TEA", "CombatsLeft"): ("dec", 1), ("TEA_OF_DISCOURTESY", "CombatsLeft"): ("dec", 1), ("EMBER_TEA", "CombatsLeft"): ("dec", 5),
+    ("FISHING_ROD", "CombatsSeen"): ("inc_monster",), ("LASTING_CANDY", "CombatsSeen"): ("inc", None),
+    ("TOY_BOX", "CombatsSeen"): ("inc", None), ("WONGOS_MYSTERY_TICKET", "CombatsFinished"): ("inc", None),
+    ("GUILTY", "CombatsSeen"): ("inc", None), ("SWORD_OF_STONE", "ElitesDefeated"): ("elite",),
+    ("HAPPY_FLOWER", "TurnsSeen"): ("turns", 3), ("FAKE_HAPPY_FLOWER", "TurnsSeen"): ("turns", 5),
+    ("PENDULUM", "TurnsSeen"): ("turns", 3), ("POLLINOUS_CORE", "TurnsSeen"): ("turns", 4),
+    ("GIRYA", "TimesLifted"): ("rest", "LIFT", 1), ("BOOK_OF_FIVE_RINGS", "CardsAdded"): ("cards",),
+    ("VENERABLE_TEA_SET", "GainEnergyInNextCombat"): ("tea_set",), ("FAKE_VENERABLE_TEA_SET", "GainEnergyInNextCombat"): ("tea_set",),
+    ("PUMPKIN_CANDLE", "KindleCount"): ("kindle",),
+    ("LIZARD_TAIL", "WasUsed"): (MONOTONE,), ("LAVA_ROCK", "HasTriggered"): ("act1_boss",), ("MAW_BANK", "HasItemBeenBought"): (MONOTONE,),
+    ("WONGOS_MYSTERY_TICKET", "GaveRelic"): (MONOTONE,),
+    ("PEN_NIB", "AttacksPlayed"): (MONOTONE,), ("NUNCHAKU", "AttacksPlayed"): (MONOTONE,), ("IRON_CLUB", "CardsPlayed"): (MONOTONE,),
+    ("JOSS_PAPER", "CardsExhausted"): (MONOTONE,), ("PAELS_WING", "RewardsSacrificed"): (MONOTONE,),
+    ("WINGED_BOOTS", "TimesUsed"): (MONOTONE,),
+    ("SILVER_CRUCIBLE", "TimesUsed"): ("card_rewards", 3), ("SILVER_CRUCIBLE", "TreasureRoomsEntered"): ("treasures",),
+    ("SILKEN_TRESS", "IsUsed"): ("card_rewards", 1),
+}
+# Items with saved state: one held before F that left the run before its end has no end value to rebuild from.
+STATEFUL = {item for item, _ in STATE_RULES if item != "*"} | {"TUNING_FORK", "PAELS_TOOTH", "GENETIC_ALGORITHM", "THE_SCYTHE"}
+# The fresh value of a property saved under each kind.
+PROP_FRESH = {"bools": False, "ints": 0}
+
+
+def floor_events(pts: list, act_of: list[int] | None = None) -> list[dict]:
+    """Per floor of a run (index k-1 for floor k): what the saved counters count; act_of the act index per floor."""
+    out = []
+    for k, pt in enumerate(pts):
+        st = (pt.get("player_stats") or [{}])[0]
+        combats = [r for r in pt.get("rooms") or [] if r.get("room_type") in ("monster", "elite", "boss")]
+        out.append({"combats": len(combats), "elites": sum(r["room_type"] == "elite" for r in combats),
+                    "monsters": sum(r["room_type"] == "monster" for r in combats),
+                    "turns": sum(int(r.get("turns_taken") or 0) for r in combats),
+                    "rests": [str(x) for x in st.get("rest_site_choices", [])], "rest_site": pt.get("map_point_type") == "rest_site",
+                    "cards": len(st.get("cards_gained", [])) + len(st.get("cards_transformed", [])),
+                    "card_reward": bool(st.get("card_choices")),
+                    "treasure": any(r.get("room_type") == "treasure" for r in pt.get("rooms") or []),
+                    "act1_boss": (act_of[k] if act_of else 9) == 0 and any(r["room_type"] == "boss" for r in combats)})
+    return out
+
+
+def rule_value(rule: tuple, ev: list[dict], own_floor: int, upto: int, lost_last: int = 0):
+    """A counter rule's value after floors own_floor+1..upto (1-based; the item's own floor came before it was
+    held). A combat on lost_last (the floor a lost run ended on) never ended: counters of ends and wins skip it."""
+    kind = rule[0]
+    v = {"dec": rule[1] if kind == "dec" else 0, "kindle": 5, "tea_set": False, "act1_boss": False}.get(kind, 0)
+    # Cards join a deck after the relic on its own floor too (an ancient's or a shop's floor): the codex agrees
+    # with this for 482 of 505 Books of Five Rings (6000 runs), against 248 when the own floor is left out.
+    for k in range(own_floor + (kind != "cards"), upto + 1):
+        e = ev[k - 1]
+        ended = 0 if k == lost_last else e["combats"]
+        if kind == "inc":
+            v = v + ended if rule[1] is None else min(rule[1], v + ended)
+        elif kind == "dec":
+            v = max(0, v - e["combats"])  # spent as the fight starts
+        elif kind == "elite":
+            v += 0 if k == lost_last else e["elites"]
+        elif kind == "inc_monster":
+            v += 0 if k == lost_last else e["monsters"]
+        elif kind == "turns":
+            v = (v + e["turns"]) % rule[1]
+        elif kind == "rest":
+            v += rule[2] * e["rests"].count(rule[1])
+        elif kind == "cards":
+            v += e["cards"]
+        elif kind == "kindle":
+            v = max(0, v - ended) + 5 * e["rests"].count("KINDLE")
+        elif kind == "tea_set":
+            v = False if e["combats"] else (True if e["rest_site"] else v)
+        elif kind == "card_rewards":  # a card reward screen modified, up to N (N 1: a flag, saved as a bool)
+            v = min(rule[1], v + e["card_reward"])
+        elif kind == "treasures":
+            v += e["treasure"]
+        elif kind == "act1_boss":  # Lava Rock: the act 1 boss's rewards, once won
+            v = v or (e["act1_boss"] and k != lost_last)
+    return (v > 0) if kind == "card_rewards" and rule[1] == 1 else v
+
+
+def state_before(item: str, props: dict, at_end: bool, own_floor: int, F: int, ev: list[dict], lost_last: int,
+                 flags: list[str]) -> dict:
+    """The item's saved properties as they stood before floor F, in the save's shape ({"ints": [{name, value}], ...}),
+    by STATE_RULES; adds to flags what cannot be had. props are the item's values at the run's end when at_end."""
+    out: dict[str, list] = {}
+    seen = set()
+    for kind, name, value in [(k, p.get("name"), p.get("value")) for k, lst in (props or {}).items() for p in lst or []]:
+        rule = STATE_RULES.get((item, name)) or STATE_RULES.get(("*", name))
+        seen.add(name)
+        if rule is None:
+            if value not in (0, False, None, [], ""):
+                flags.append(f"state_unknown:{item}.{name}")
+            continue
+        if rule[0] == FIXED:
+            out.setdefault(kind, []).append({"name": name, "value": value})
+        elif rule[0] == RESET:
+            out.setdefault(kind, []).append({"name": name, "value": rule[1]})
+        elif rule[0] == MONOTONE:
+            fresh = PROP_FRESH.get(kind)
+            if value != fresh or not at_end:
+                flags.append(f"state_unknown:{item}.{name}")  # moved by the end: when, the record does not say
+            out.setdefault(kind, []).append({"name": name, "value": fresh})
+        else:
+            if not at_end or rule_value(rule, ev, own_floor, len(ev), lost_last) != value:
+                flags.append(f"state_unverified:{item}.{name}")
+            out.setdefault(kind, []).append({"name": name, "value": rule_value(rule, ev, own_floor, F - 1, lost_last)})
+    # A counter the end record leaves out (a save omits a fresh value) is rebuilt too, and checked against fresh.
+    for (it, name), rule in STATE_RULES.items():
+        if it != item or name in seen or rule[0] in (FIXED, RESET, MONOTONE):
+            continue
+        kind = "bools" if rule[0] in ("tea_set", "act1_boss") or rule[:2] == ("card_rewards", 1) else "ints"
+        if not at_end or rule_value(rule, ev, own_floor, len(ev), lost_last) != PROP_FRESH[kind]:
+            flags.append(f"state_unverified:{item}.{name}")
+        v = rule_value(rule, ev, own_floor, F - 1, lost_last)
+        if v != PROP_FRESH[kind]:
+            out.setdefault(kind, []).append({"name": name, "value": v})
+    if not at_end and not props and item in STATEFUL:
+        flags.append(f"state_unknown:{item}")
+    return out
 
 
 def deck_before(d: dict, pts: list, F: int) -> tuple[list, bool]:
@@ -205,8 +362,8 @@ def deck_before(d: dict, pts: list, F: int) -> tuple[list, bool]:
     of the rebuild was unambiguous."""
     exact = True
     p = d["players"][0]
-    cards = [_ck(c) for c in p["deck"] if int(c.get("floor_added_to_deck") or 1) < F]
-    later_added = [_ck(c) for c in p["deck"] if int(c.get("floor_added_to_deck") or 1) >= F]
+    cards = [_ck(c, True) for c in p["deck"] if int(c.get("floor_added_to_deck") or 1) < F]
+    later_added = [_ck(c, True) for c in p["deck"] if int(c.get("floor_added_to_deck") or 1) >= F]
     for pt in pts[F - 1:]:
         st = (pt.get("player_stats") or [{}])[0]
         for r in st.get("cards_removed", []):
@@ -251,8 +408,16 @@ def deck_before(d: dict, pts: list, F: int) -> tuple[list, bool]:
 def relics_before(d: dict, pts: list, F: int) -> list | None:
     """Relic ids held before floor F's fight, in the order they were obtained; None if a removed relic's
     acquisition cannot be placed."""
+    full = relics_before_full(d, pts, F)
+    return None if full is None else [r[1] for r in full]
+
+
+def relics_before_full(d: dict, pts: list, F: int) -> list | None:
+    """(floor obtained, id, saved properties, whether they are the run's end values) of each relic held before
+    floor F's fight, in the order they were obtained; None if a removed relic's acquisition cannot be placed."""
     p = d["players"][0]
-    held = [(int(r.get("floor_added_to_deck") or 1), bare(r["id"])) for r in p["relics"] if int(r.get("floor_added_to_deck") or 1) < F]
+    held = [(int(r.get("floor_added_to_deck") or 1), bare(r["id"]), r.get("props") or {}, True)
+            for r in p["relics"] if int(r.get("floor_added_to_deck") or 1) < F]
     acq = collections.defaultdict(list)
     acq["BURNING_BLOOD"].append(1)
     for k, pt in enumerate(pts, 1):
@@ -273,8 +438,8 @@ def relics_before(d: dict, pts: list, F: int) -> list | None:
             if not got:
                 return None
             if max(got) < F:
-                held.append((max(got), rid))
-    return [r for _, r in sorted(held, key=lambda x: x[0])]
+                held.append((max(got), rid, {}, False))
+    return sorted(held, key=lambda x: x[0])
 
 
 def potions_before(pts: list, F: int, final: list) -> tuple[list, bool]:
@@ -357,7 +522,65 @@ def realistic_candidates(d: dict, t: Tables, stats: collections.Counter):
                 "hp": hp, "max_hp": max_hp, "deck": [c[:4] for c in deck], "relics": relics, "potions": potions,
                 "neow": neow_pick, "neow_relic": neow_relic,
                 "exact": {"deck": deck_exact, "potions": potions_exact}, "win": d.get("win")}
+        # Lazily: the saved state and the rest of the holdings, only for the candidates picked (realistic_state).
+        cand["_state"] = (d, pts, F, deck)
         yield (cand["act"], room), bucket, h("refset-v1", d.get("run_hash"), F), cand
+
+
+# Potion slots: the A10 belt (the codex: 4996 of the first 5000 Ironclad A10 runs end with 2 slots plus their
+# slot relics' own), and what each slot relic adds (PotionBelt, PhialHolster, AlchemicalCoffer: "PotionSlots").
+A10_POTION_SLOTS = 2
+POTION_SLOT_RELICS = {"POTION_BELT": 2, "PHIAL_HOLSTER": 1, "ALCHEMICAL_COFFER": 4}
+
+
+def save_card(c: list, props: dict) -> dict:
+    """A deck card in the game's save shape (SerializableCard), as player_load reads it."""
+    out: dict = {"id": "CARD." + c[0]}
+    if c[1]:
+        out["current_upgrade_level"] = c[1]
+    if c[2]:
+        out["enchantment"] = {"id": "ENCHANTMENT." + c[2], "amount": c[3]}
+    if props:
+        out["props"] = props
+    out["floor_added_to_deck"] = c[4]
+    return out
+
+
+def realistic_state(cand: dict) -> dict:
+    """The holdings player_load puts in place for one picked candidate: the deck and relics in the save's shape
+    with their saved state before the floor (state_before), gold, potion slots; and the spec's realism flags."""
+    d, pts, F, deck = cand.pop("_state")
+    flags: list[str] = []
+    ev = floor_events(pts, [ai for ai, act in enumerate(d["map_point_history"]) for _ in act])
+    lost_last = 0 if d.get("win") else len(pts)
+    cards = []
+    for c in deck:
+        props = state_before(c[0], c[5], c[6], c[4], F, ev, lost_last, flags) if (c[5] or c[0] in STATEFUL) else {}
+        cards.append(save_card(c, props))
+    relics = []
+    for floor, rid, props, at_end in relics_before_full(d, pts, F) or []:
+        r: dict = {"id": "RELIC." + rid}
+        state = state_before(rid, props, at_end, floor, F, ev, lost_last, flags) if (props or rid in STATEFUL) else {}
+        if state:
+            r["props"] = state
+        r["floor_added_to_deck"] = floor
+        relics.append(r)
+    prev = (pts[F - 2].get("player_stats") or [{}])[0]
+    p = d["players"][0]
+    final_slots = int(p.get("max_potion_slot_count") or 0)
+    if A10_POTION_SLOTS + sum(POTION_SLOT_RELICS.get(bare(r["id"]), 0) for r in p["relics"]) != final_slots:
+        flags.append("potion_slots_unverified")
+    slots = A10_POTION_SLOTS + sum(POTION_SLOT_RELICS.get(r, 0) for r in cand["relics"])
+    if not cand["exact"]["deck"]:
+        flags.append("deck_inexact")
+    if not cand["exact"]["potions"]:
+        flags.append("potions_inexact")
+    if len(cand["potions"]) > slots:
+        flags.append("potions_over_slots")
+    if "FUR_COAT" in cand["relics"]:
+        flags.append("map_coordinate:FUR_COAT")  # its marked rooms are map coordinates; the fight is met at row 1
+    return {"deck": cards, "relics": relics, "gold": int(prev.get("current_gold", 0) or 0), "slots": slots,
+            "flags": sorted(set(flags))}
 
 
 def realistic_specs(codex: Path, t: Tables, total: int, stats: collections.Counter, reach: dict, max_runs: int = 0) -> list[dict]:
@@ -370,6 +593,9 @@ def realistic_specs(codex: Path, t: Tables, total: int, stats: collections.Count
         p = d["players"][0]
         reach["cards"].update(bare(c["id"]) for c in p["deck"])
         reach["relics"].update(bare(r["id"]) for r in p["relics"])
+        for r in p["relics"]:  # the first real pick seen of each event-picked relic, for coverage (coverage_holdings)
+            if bare(r["id"]) not in reach.setdefault("fixed_props", {}) and fixed_props_of(r):
+                reach["fixed_props"][bare(r["id"])] = fixed_props_of(r)
         for pt in (x for a in d["map_point_history"] for x in a):
             st = (pt.get("player_stats") or [{}])[0]
             reach["potions"].update(bare(pc.get("choice")) for pc in st.get("potion_choices", []))
@@ -381,6 +607,7 @@ def realistic_specs(codex: Path, t: Tables, total: int, stats: collections.Count
             if k not in best or (rank, hh) < best[k][:2]:
                 best[k] = (rank, hh, cand)
         for (cell, bucket), item in best.items():
+            item[2]["_st"] = realistic_state(item[2])  # now, so the run's record is not kept
             lst = keep[cell][bucket]
             lst.append(item)
             if len(lst) > 8 * quota[cell]:
@@ -405,6 +632,16 @@ def realistic_specs(codex: Path, t: Tables, total: int, stats: collections.Count
     return [realistic_entry(c, t) for c in out]
 
 
+def player_load_items(act: int, deck: list, relics: list, potions: list, slots: int, hp: int, max_hp: int, gold: int | None,
+                      encounter: str) -> list:
+    """The fight's own act (from act 2 on), the holdings through the game's save-load path, then the fight."""
+    load = {"cmd": "player_load", "deck": deck, "relics": relics, "potions": list(potions), "max_potion_slots": int(slots),
+            "hp": int(min(hp, max_hp)), "max_hp": int(max_hp)}
+    if gold is not None:
+        load["gold"] = int(gold)
+    return ([{"cmd": "act", "index": act}] if act > 1 else []) + [load, {"cmd": "fight", "id": encounter}]
+
+
 def setup_items(relics: list, deck: list, hp: int, max_hp: int, potions: list, encounter: str) -> list:
     """The deck goes in first, while only the starter and Neow relics are held (so eggs, Fresnel Lens or Bing Bong
     obtained later do not act on cards the run had before them), then the relics in the run's order, then the
@@ -423,17 +660,23 @@ def setup_items(relics: list, deck: list, hp: int, max_hp: int, potions: list, e
 
 def realistic_entry(c: dict, t: Tables) -> dict:
     hh = h("refset-v1", c["run"], c["floor"])
+    st = c.get("_st") or (realistic_state(c) if "_state" in c else None) or {"deck": [save_card([*x, 1], {}) for x in c["deck"]],
+                                                     "relics": [{"id": "RELIC." + r} for r in c["relics"]],
+                                                     "gold": None, "slots": A10_POTION_SLOTS, "flags": []}
+    act_name, kind, _ = t.encounters[c["encounter"]]
     spec = {"kind": "combat", "seed": c["seed"], "character": "IRONCLAD", "ascension": 10, "neow": c["neow"],
             "chooser_seed": int(hh[:8], 16) % 1000003, "max_actions": MAX_ACTIONS, "use_potions": True,
-            "setup": setup_items(c["relics"], c["deck"], c["hp"], c["max_hp"], c["potions"], c["encounter"]),
+            "chooser": "heuristic", "relic_flashes": True,
+            "setup": player_load_items(c["act"], st["deck"], st["relics"], c["potions"], st["slots"], c["hp"], c["max_hp"],
+                                       st["gold"], c["encounter"]),
             "tag": f"realistic:act{c['act']}:{c['room']}"}
-    _, kind, _ = t.encounters[c["encounter"]]
     return {"id": f"R{c['act']}{c['room'][0].upper()}-{c['seed']}-F{c['floor']:02d}", "part": "realistic",
             "strata": {"act": c["act"], "room": c["room"], "kind": kind, "floor": c["floor"], "act_name": c["act_name"]},
             "reason": (f"real Ironclad A10 run (codex {str(c['run'])[:8]}), floor {c['floor']} (act {c['act']} {c['room']}, "
                        f"{c['encounter']}): {len(c['deck'])} cards, {len(c['relics'])} relics, {len(c['potions'])} potions, "
                        f"HP {c['hp']}/{c['max_hp']}"),
-            "exact": c["exact"], "neow_relic": c["neow_relic"], "codex_monsters": c["monsters"], "spec": spec}
+            "exact": c["exact"], "neow_relic": c["neow_relic"], "codex_monsters": c["monsters"],
+            "chooser": "heuristic", "flags": st["flags"], "expect_act": act_name if c["act"] > 1 else None, "spec": spec}
 
 
 # ---------------------------------------------------------------- coverage: the fewest plausible setups that reach every item
@@ -459,6 +702,48 @@ PLAN = {"card": 7, "relic": 3, "potion": 5, "encounter": 3}
 BASICS = {1: (4, 4), 2: (3, 3), 3: (2, 2)}  # Strikes, Defends by act (plus Bash and Ascender's Bane)
 TARGETS_PER_DECK = {1: 9, 2: 11, 3: 13}
 RELICS_PER_FIGHT = {1: 2, 2: 3, 3: 4}
+
+
+def coverage_holdings(relics: list, deck: list, fixed_props: dict) -> tuple[list, list]:
+    """A coverage fight's deck and relics in the save's shape, as a run that picked those relics up holds them: a
+    relic whose event picked something (Archaic Tooth, Dusty Tome, Touch of Orobas, ...) carries the pick a real
+    run's record shows (fixed_props), with what its pickup left: Archaic Tooth's starter card transformed, Dusty
+    Tome's card added upgraded, Touch of Orobas' starter relic upgraded. Counters start fresh, as just obtained."""
+    deck = [list(c) for c in deck]
+    relics = list(relics)
+    props = {r: fixed_props.get(r) for r in relics if fixed_props.get(r)}
+    val = {r: {x["name"]: x["value"] for lst in pr.values() for x in lst} for r, pr in props.items()}
+    if "ARCHAIC_TOOTH" in val:
+        start, anc = (bare((val["ARCHAIC_TOOTH"].get(k) or {}).get("id")) for k in ("StarterCard", "AncientCard"))
+        at = next((i for i, c in enumerate(deck) if c[0] == start), None)
+        if at is not None and anc:
+            deck[at] = [anc, deck[at][1], deck[at][2], deck[at][3]]
+    if "DUSTY_TOME" in val and val["DUSTY_TOME"].get("AncientCard"):
+        deck.append([bare(val["DUSTY_TOME"]["AncientCard"]), 1, "", 0])
+    if "TOUCH_OF_OROBAS" in val:
+        old, new = (bare(val["TOUCH_OF_OROBAS"].get(k)) for k in ("StarterRelic", "UpgradedRelic"))
+        if old in relics and new:
+            relics[relics.index(old)] = new
+    out_relics = []
+    for r in relics:
+        e: dict = {"id": "RELIC." + r}
+        if props.get(r):
+            e["props"] = props[r]
+        e["floor_added_to_deck"] = 1
+        out_relics.append(e)
+    return [save_card([*c[:4], 1], {}) for c in deck], out_relics
+
+
+def fixed_props_of(relic: dict) -> dict:
+    """The relic's saved properties that STATE_RULES marks fixed (its event's pick), in the save's shape."""
+    rid = bare(relic.get("id"))
+    out: dict = {}
+    for kind, lst in (relic.get("props") or {}).items():
+        for x in lst or []:
+            rule = STATE_RULES.get((rid, x.get("name")))
+            if rule and rule[0] == FIXED:
+                out.setdefault(kind, []).append({"name": x["name"], "value": x["value"]})
+    return out
 
 
 def coverage_specs(t: Tables, reach: dict) -> list[dict]:
@@ -494,10 +779,15 @@ def coverage_specs(t: Tables, reach: dict) -> list[dict]:
         starter = [] if "BLACK_BLOOD" in relics else ["BURNING_BLOOD"]
         max_hp = 80 + 4 * (act - 1) + rng.randint(0, 10)
         hp = max(1, int(max_hp * rng.uniform(0.55, 1.0)))
+        load_deck, load_relics = coverage_holdings(starter + relics, deck, reach.get("fixed_props", {}))
+        load_slots = A10_POTION_SLOTS + sum(POTION_SLOT_RELICS.get(r, 0) for r in relics)
         spec = {"kind": "combat", "seed": _seed(rng), "character": "IRONCLAD", "ascension": 10, "neow": n % 3,
-                "chooser_seed": 9000 + n, "max_actions": MAX_ACTIONS, "use_potions": True,
-                "setup": setup_items(starter + relics, deck, hp, max_hp, potions, enc), "tag": f"coverage:act{act}:{kind}"}
-        out.append({"id": f"C{n + 1:04d}-{spec['seed']}", "part": "coverage",
+                "chooser_seed": 9000 + n, "max_actions": MAX_ACTIONS, "use_potions": True, "chooser": "random",
+                "relic_flashes": True,
+                "setup": player_load_items(act, load_deck, load_relics, potions, load_slots, hp, max_hp, None, enc),
+                "tag": f"coverage:act{act}:{kind}"}
+        out.append({"id": f"C{n + 1:04d}-{spec['seed']}", "part": "coverage", "chooser": "random", "flags": [],
+                    "expect_act": act_name if act > 1 else None,
                     "strata": {"act": act, "room": ROOM_OF_KIND[kind], "kind": kind, "act_name": act_name},
                     "reason": (f"coverage: {enc} ({act_name} {kind}); deck targets {', '.join(c + ('+' if u else '') for c, u in variants)}; "
                                f"relics {', '.join(relics) or '-'}; potions {', '.join(potions) or '-'}"),
@@ -610,11 +900,16 @@ def regression_specs(t: Tables) -> list[dict]:
                     + [[c, int(up), "", 0] for c in cards for _ in range(3)])
             items = setup_items(["BURNING_BLOOD"] + relics, deck, 70, 80, potions, enc or plain)
             items += [{"cmd": "power", "id": p, "amount": a, "target": tg} for p, a, tg in powers]
+            act = ACT_NUMBER[t.encounters[enc or plain][0]] if (enc or plain) in t.encounters else 1
+            if act > 1:  # met in its own act, as a run meets it
+                items = [{"cmd": "act", "index": act}] + items
             spec = {"kind": "combat", "seed": _seed(rng), "character": "IRONCLAD", "ascension": 10, "neow": n % 3,
                     "chooser_seed": 7700 + n, "max_actions": MAX_ACTIONS, "use_potions": True, "setup": items,
-                    "tag": f"regression:{name}"}
+                    "chooser": "random", "relic_flashes": True, "tag": f"regression:{name}"}
             out.append({"id": f"G{n + 1:03d}-{spec['seed']}", "part": "regression", "class": name, "source": source,
-                        "reason": f"minimal setup for the divergence class '{name}' ({source})",
+                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers),
+                        "reason": f"minimal setup for the divergence class '{name}' ({source})", "chooser": "random",
+                        "expect_act": t.encounters[enc or plain][0] if act > 1 else None,
                         "flags": ["cross_character"] if cross else [], "spec": spec})
         for s in seeds:
             got = find_original(s, cache)
@@ -624,9 +919,37 @@ def regression_specs(t: Tables) -> list[dict]:
             spec = {k: v for k, v in spec.items() if k not in ("out",)}
             spec.setdefault("max_actions", MAX_ACTIONS)
             spec["tag"] = f"regression-original:{name}"
+            spec["relic_flashes"] = True
             out.append({"id": f"G{n + 1:03d}o-{s}", "part": "regression", "class": name, "source": f"{source}; original {src}",
-                        "reason": f"the fight that found '{name}', re-recorded with the fixed driver", "flags": [], "spec": spec})
+                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers),
+                        "reason": f"the fight that found '{name}', re-recorded with the fixed driver",
+                        "chooser": "script" if spec.get("script") else spec.get("chooser", "random"), "flags": [], "spec": spec})
     return out
+
+
+FILLER_CARDS = {"STRIKE_IRONCLAD", "DEFEND_IRONCLAD"}
+
+
+def class_kind(name: str) -> str:
+    """'driver' for a class about the referee driver itself (counted apart), else 'emulator'."""
+    return "driver" if name.startswith("driver:") else "emulator"
+
+
+def trigger_of(cards: list, relics: list, potions: list, powers: list) -> dict:
+    """What a fight of the class must show for its pass to count (refset_score): one of the class's own cards
+    played (the fillers count only when they are all the class has), its relic fired (a flash), its potion used,
+    its power up when an enemy's attack lands. A class with none of these is reached by replaying its fight."""
+    own = [c for c in cards if c not in FILLER_CARDS] or list(cards)
+    out = {}
+    if own:
+        out["plays"] = sorted(set(own))
+    if relics:
+        out["relic_flashes"] = sorted(set(relics))
+    if potions:
+        out["potions"] = sorted(set(potions))
+    if powers:
+        out["powers_hit"] = sorted({p for p, _, tg in powers if tg == "player"})
+    return out or {"replay": True}
 
 
 # ---------------------------------------------------------------- whole runs
@@ -768,12 +1091,18 @@ def exclusion(entry: dict, r: dict | None) -> str | None:
     if not r.get("steps"):
         return "no steps"
     for it in r.get("setup_log", []):
-        if it.get("i", -1) >= 0 and not it.get("ok"):
-            return f"setup item {it['i']} {it.get('cmd')} {it.get('id') or ''} refused: {it.get('msg', '')}"[:200]
+        # (A residual deck logged ok by a driver older than deck_residual_fails fails here too.)
+        if it.get("i", -1) >= 0 and (not it.get("ok") or str(it.get("msg", "")).startswith("residual:")):
+            # A setup the game could not build (a deck residual, a load that does not hold what was asked, a
+            # refused command) is not the fight the spec describes.
+            return f"setup: item {it['i']} {it.get('cmd')} {it.get('id') or ''} failed: {it.get('msg', '')}"[:200]
         if it.get("idle_timeout"):
-            return f"setup item {it['i']} {it.get('cmd')} timed out"
+            return f"setup: item {it['i']} {it.get('cmd')} timed out"
     if any(it.get("cmd") == "fight" for it in entry["spec"].get("setup", [])) and not r.get("fight"):
-        return "the setup's fight was not entered"
+        return "setup: the fight was not entered"
+    want_act = entry.get("expect_act")
+    if want_act and (r.get("fight") or {}).get("current_act") != want_act:
+        return f"setup: the fight was met in {(r.get('fight') or {}).get('current_act')}, not {want_act}"
     if r.get("script_illegal"):
         return "scripted action illegal"
     if not r["steps"][0].get("state", {}).get("in_combat"):
@@ -781,39 +1110,49 @@ def exclusion(entry: dict, r: dict | None) -> str | None:
     return None
 
 
+# Why a fight is not a reference, as counted in the record and the score: the first word of its exclusion.
+CAUSES = (("setup:", "setup"), ("game error", "game_error"), ("the game logged an error", "game_error"),
+          ("unstable", "unstable"), ("after a faulted fight", "neighbour_fault"), ("no result", "no_result"),
+          ("result seed", "no_result"), ("no steps", "no_result"), ("game log", "log_uncut"))
+
+
+def cause_of(excluded: str) -> str:
+    if "idle_timeout" in excluded:
+        return "driver_wait_limit"
+    return next((c for prefix, c in CAUSES if excluded.startswith(prefix)), "other")
+
+
 def realism(entry: dict, r: dict) -> dict:
-    """How closely the recorded fight start matches the state the spec asked for (deck, relics, potions, HP)."""
-    setup = {it["cmd"]: it for it in entry["spec"].get("setup", [])}
-    st = r["steps"][0]["state"]
-    piles = collections.Counter(tuple(c[:2]) for k in ("hand", "draw", "discard", "exhaust") for c in st.get(k, []))
-    want = collections.Counter((c["id"], bool(c.get("upgraded"))) for c in setup.get("deck_set", {}).get("cards", []))
-    relics_want = collections.Counter(setup.get("relics_set", {}).get("ids", []))
-    out = {"deck": piles == want, "deck_extra": sum((piles - want).values()), "deck_missing": sum((want - piles).values()),
-           "relics": collections.Counter(st.get("relics", [])) == relics_want if "relics" in st else None,
-           "potions": sorted(p for p in st.get("potions", []) if p) == sorted(setup.get("potions_set", {}).get("ids", []))
-           if "potions" in st else None,
-           "max_hp": st.get("player", {}).get("max_hp") == setup.get("hp", {}).get("max"),
-           "neow_match": (r.get("neow_options") or [None] * 9)[r.get("neow_pick", 0)] == entry.get("neow_relic")
-           if entry.get("neow_relic") else None,
-           "fight_act": (r.get("fight") or {}).get("act"), "current_act": (r.get("fight") or {}).get("current_act")}
-    return out
+    """How the recorded start compares with the spec: the setup's own check (player_load fails when the game does
+    not hold what was asked, so a kept fight's holdings are the record's), the act the fight was met in, and
+    whether the seed's Neow offered the codex run's pick (with player_load the pick only moves RNG and gold)."""
+    log = [it for it in r.get("setup_log", []) if it.get("i", -1) >= 0]
+    return {"setup_ok": all(it.get("ok") for it in log),
+            "items": [it.get("cmd") for it in log],
+            "fight_act": (r.get("fight") or {}).get("act"), "current_act": (r.get("fight") or {}).get("current_act"),
+            "neow_match": (r.get("neow_options") or [None] * 9)[r.get("neow_pick", 0)] == entry.get("neow_relic")
+            if entry.get("neow_relic") else None}
 
 
 def log_errors(run_dir: Path) -> dict[int, list]:
-    """The game's own [ERROR] lines per fight of one pass, by the fight's place in the pass (0-based): each server's
-    log is cut at the driver's Neow line, one per fight, in the order of the server's result lines."""
+    """The game's own [ERROR] lines per fight of one pass, by the fight's place in the pass (0-based, as serve.py
+    numbers the specs: a result line's "_id"): each server's log is cut at the driver's Neow line, one per fight, in
+    the order of the server's result lines."""
     out: dict[int, list] = {}
     for res in sorted((run_dir / "out").glob("s*.jsonl")):
-        ids = []
+        ids: list[int | None] = []
         for line in res.read_text(encoding="utf-8").splitlines():
             if line.strip():
-                ids.append(int(json.loads(line).get("_id", "0")) - 1)
+                # A line without an _id (a spec the server could not read) still had its fight's log, if any.
+                rid = json.loads(line).get("_id")
+                ids.append(None if rid is None else int(rid))
         log = run_dir / "scratch" / res.stem / "game-stdout.log"
         lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.exists() else []
         starts = [k for k, x in enumerate(lines) if x.startswith("[referee] neow options")]
         if len(starts) != len(ids):
             for i in ids:
-                out[i] = [["the game log cannot be cut into this server's fights", "", False]]
+                if i is not None:
+                    out[i] = [["the game log cannot be cut into this server's fights", "", "uncut"]]
             continue
         before: set = set()
         for n, i in enumerate(ids):
@@ -829,7 +1168,7 @@ def log_errors(run_dir: Path) -> dict[int, list]:
                     sig = (x[8:140], frame[:160])
                     errs.append([*sig, frame.startswith("MegaCrit.Sts2.Core.Nodes.") or ("leaked" if sig in before else False)])
             before = {(x[0], x[1]) for x in errs} | (before if any(x[2] == "leaked" for x in errs) else set())
-            if errs:
+            if errs and i is not None:
                 out[i] = errs
     return out
 
@@ -841,6 +1180,7 @@ def judge_pair(entries: list[dict], pa: dict, pb: dict) -> dict:
         (ra, ea), (rb, eb) = pa.get(e["id"], (None, None)), pb.get(e["id"], (None, None))
         logic = [x for x in (ea or []) + (eb or []) if x[2] is False]
         leaked = [x for x in (ea or []) + (eb or []) if x[2] == "leaked"]
+        uncut = [x for x in (ea or []) + (eb or []) if x[2] == "uncut"]
         visual = sorted({x[1] or x[0] for x in (ea or []) + (eb or []) if x[2] is True})
         why = exclusion(e, ra) or exclusion(e, rb)
         j = {"visual_errors": visual} if visual else {}
@@ -848,6 +1188,9 @@ def judge_pair(entries: list[dict], pa: dict, pb: dict) -> dict:
             j["excluded"] = f"the game logged an error: {logic[0][0]} at {logic[0][1]}"[:240]
         elif leaked:
             j["excluded"] = f"after a faulted fight on its server: {leaked[0][0]} at {leaked[0][1]}"[:240]
+            j["retry"] = True
+        elif uncut:
+            j["excluded"] = "game log: " + uncut[0][0]  # its errors cannot be told apart; a fresh server may
             j["retry"] = True
         elif why:
             j["excluded"] = why
@@ -936,16 +1279,221 @@ def record_runs(man: dict, a, rdir: Path, stamp: dict, build: Path) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- the driver a reference may be recorded with
+
+# What a recording needs from the driver (driver/Capabilities.cs names them; each is present only when its code is
+# compiled in): the fixed settle and its Play-phase gate, the frame-counting watchdog, the console and reference
+# setup items with the save-load path and the act entry, a deck residual failing its item, relic flashes (coverage
+# and regression evidence) and the heuristic chooser of the realistic part.
+REQUIRED_CAPS = ("settle_flags", "play_phase_gate", "watchdog_v2", "console_setup", "refset_setup", "player_load",
+                 "act_entry", "deck_residual_fails", "relic_flashes", "heuristic_chooser")
+# The members each capability is read off (Capabilities.cs), for the check before any game starts.
+CAP_MEMBERS = {"settle_flags": ("CheckSettleFields", "SettleMode"), "play_phase_gate": ("InPlayPhase",),
+               "watchdog_v2": ("BudgetFrames", "Budget", "ArmWatchdog"), "console_setup": ("SetupItem", "EnterFight"),
+               "refset_setup": ("RefsetItem",), "player_load": ("PlayerLoad",), "act_entry": ("EnterActItem",),
+               "deck_residual_fails": ("DeckResidualFails",), "relic_flashes": ("RecordRelicFlashes",),
+               "heuristic_chooser": ("ChooseHeuristic",)}
+
+
+def dll_stamp(dll: Path) -> dict:
+    """The commit and the changed-sources list SpirelineReferee.csproj (target SpirelineStamp) wrote into the DLL as
+    AssemblyMetadata attributes, read off the attribute blobs (a length-prefixed key, then the value)."""
+    b = dll.read_bytes()
+
+    def value(key: str) -> str | None:
+        k = key.encode()
+        i = b.find(bytes([len(k)]) + k)
+        if i < 0:
+            return None
+        j = i + 1 + len(k)
+        n = b[j]
+        if n == 0xFF:
+            return ""
+        if n & 0x80 == 0:
+            ln, j = n, j + 1
+        elif n & 0xC0 == 0x80:
+            ln, j = ((n & 0x3F) << 8) | b[j + 1], j + 2
+        else:
+            ln, j = ((n & 0x1F) << 24) | (b[j + 1] << 16) | (b[j + 2] << 8) | b[j + 3], j + 4
+        return b[j:j + ln].decode("utf-8", "replace")
+    return {"commit": value("spireline.commit"), "dirty": value("spireline.dirty")}
+
+
+def static_caps(dll: Path) -> list[str]:
+    """The capabilities whose members the DLL's metadata names (a preflight; the job-start line is the proof)."""
+    b = dll.read_bytes()
+    return [c for c, members in CAP_MEMBERS.items() if all(b"\x00" + m.encode() + b"\x00" in b for m in members)]
+
+
+def driver_checkout(build: Path) -> Path:
+    """The checkout whose referee/driver the build directory belongs to (<checkout>/referee/driver/bin/Release/net9.0)."""
+    return build.parents[3] if len(build.parents) > 3 else ROOT
+
+
+def driver_preflight(build: Path) -> tuple[list[str], dict]:
+    """Why this driver build may not record references (empty: it may), and what it is. A reference is recorded
+    only by a DLL built from the checkout's committed driver, with every REQUIRED_CAPS capability."""
+    dll = build / "SpirelineReferee.dll"
+    if not dll.exists():
+        return [f"no driver DLL in {build}"], {}
+    src = driver_checkout(build)
+
+    def g(*args):
+        return subprocess.run(["git", "-C", str(src), *args], capture_output=True, text=True, check=False).stdout.strip()
+    head = g("rev-parse", "HEAD")
+    changed = g("status", "--porcelain", "--untracked-files=all", "--", "driver/*.cs", "driver/*.csproj")
+    st = dll_stamp(dll)
+    caps = static_caps(dll)
+    problems = []
+    if not st["commit"]:
+        problems.append("the DLL carries no commit stamp (built before SpirelineStamp): rebuild it")
+    elif st["commit"] != head:
+        problems.append(f"the DLL was built from {st['commit'][:12]}, the checkout is at {head[:12]}: rebuild it")
+    if st["dirty"]:
+        problems.append("the DLL was built from changed driver sources: " + st["dirty"][:200])
+    if changed:
+        problems.append("the driver's sources differ from the commit: " + " ".join(changed.split())[:200])
+    missing = [c for c in REQUIRED_CAPS if c not in caps]
+    if missing:
+        problems.append("the driver lacks " + ", ".join(missing))
+    return problems, {"commit": head, "dll_commit": st["commit"], "dll_dirty": bool(st["dirty"]), "static_capabilities": caps}
+
+
+def driver_lines(run_dir: Path) -> list[dict]:
+    """Every server's job-start line ("[referee] driver {...}", Capabilities.cs) in one pass's game logs."""
+    out = []
+    for log in sorted((run_dir / "scratch").glob("*/game-stdout.log")):
+        for x in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            if x.startswith("[referee] driver {"):
+                try:
+                    out.append(json.loads(x[len("[referee] driver "):]))
+                except ValueError:
+                    out.append({"unreadable": x[:200]})
+    return out
+
+
+def driver_runtime_problems(lines: list[dict], head: str) -> list[str]:
+    """What the servers' own job-start lines say against recording: none seen, a different build, a missing
+    capability, the old settle."""
+    if not lines:
+        return ["no server reported its driver at job start (a driver older than Capabilities.cs)"]
+    problems = []
+    for d in {json.dumps(x, sort_keys=True) for x in lines}:
+        x = json.loads(d)
+        if x.get("commit") != head or x.get("dirty"):
+            problems.append(f"a server ran driver {str(x.get('commit'))[:12]} (dirty {x.get('dirty')}), not {head[:12]}")
+        missing = [c for c in REQUIRED_CAPS if c not in (x.get("capabilities") or [])]
+        if missing:
+            problems.append("a server's driver lacks " + ", ".join(missing))
+        if x.get("settle") != "flags":
+            problems.append(f"a server settled with {x.get('settle')!r}, not the flag settle")
+    return problems
+
+
+# ---------------------------------------------------------------- record and judge
+
+def pass_results(rdir: Path, name: str, order: list[dict]) -> dict:
+    """{spec id: (result, the game's errors)} of one recorded pass, results by their place in the pass."""
+    out = rdir / f"pass-{name}.out.json"
+    got = json.loads(out.read_text(encoding="utf-8"))["results"] if out.exists() else []
+    errs = log_errors(rdir / f"pass-{name}")
+    return {e["id"]: (got[i] if i < len(got) else None, errs.get(i)) for i, e in enumerate(order)}
+
+
+def judge_passes(entries: list[dict], passes: dict) -> tuple[dict, list[str]]:
+    """The two passes a and b judged; a fight that hit a wait limit or a neighbour's fault is judged again on the
+    retry passes c and d when they hold it (else it stays excluded, marked "retry not recorded")."""
+    first = judge_pair(entries, passes["a"], passes["b"])
+    retry = [e for e in entries if first[e["id"]].get("retry")]
+    if retry:
+        have = [e for e in retry if "c" in passes and e["id"] in passes["c"] and e["id"] in passes.get("d", {})]
+        second = judge_pair(have, passes["c"], passes["d"]) if have else {}
+        for e in retry:
+            if e["id"] in second:
+                second[e["id"]]["retried"] = first[e["id"]].get("excluded")
+                first[e["id"]] = second[e["id"]]
+            else:
+                first[e["id"]]["excluded"] += " (retry not recorded)"
+    return first, [e["id"] for e in retry]
+
+
+def summarize(index: list[dict]) -> dict:
+    """Per part and per act x room cell: specs, kept, excluded by cause, flagged (kept with a realism flag)."""
+    def block(rows):
+        kept = [r for r in rows if "excluded" not in r]
+        return {"specs": len(rows), "kept": len(kept),
+                "excluded": dict(collections.Counter(cause_of(r["excluded"]) for r in rows if "excluded" in r)),
+                "flagged": sum(1 for r in kept if r.get("flags")),
+                "flags": dict(collections.Counter(f.split(":")[0] for r in kept for f in r.get("flags", [])))}
+    out = {"parts": {p: block([r for r in index if r["part"] == p]) for p in dict.fromkeys(r["part"] for r in index)}}
+    cells = collections.defaultdict(list)
+    for r in index:
+        st = r.get("strata") or {}
+        if r["part"] == "realistic":
+            cells[f"act{st.get('act')} {st.get('room')}"].append(r)
+    out["realistic_cells"] = {k: block(v) for k, v in sorted(cells.items())}
+    out["flags_by_item"] = dict(collections.Counter(f for r in index if "excluded" not in r for f in r.get("flags", [])).most_common())
+    return out
+
+
+def build_index(entries: list[dict], judged: dict, stamp: dict) -> tuple[list[dict], dict]:
+    index, refs = [], collections.defaultdict(list)
+    for e in entries:
+        j = judged[e["id"]]
+        row = {"id": e["id"], "part": e["part"], "seed": e["spec"]["seed"], "chooser": e.get("chooser", e["spec"].get("chooser", "random")),
+               "strata": e.get("strata", {}), "flags": list(e.get("flags", []))}
+        for k in ("excluded", "retried", "visual_errors"):
+            if j.get(k):
+                row[k] = j[k]
+        if not j.get("excluded"):
+            ra = dict(j["result"])
+            row["realism"] = realism(e, ra)
+            ra["refset"] = {"id": e["id"], "part": e["part"], "stamp": stamp, "flags": row["flags"], "chooser": row["chooser"]}
+            refs[e["part"]].append(ra)
+        index.append(row)
+    return index, refs
+
+
+def write_record(rdir: Path, a, parts: list[str], entries: list[dict], judged: dict, retry: list, stamp: dict,
+                 minutes: float, passes_summary: dict, latest_name: str | None) -> dict:
+    index, refs = build_index(entries, judged, stamp)
+    for part in parts:
+        (rdir / f"{part}.refs.json").write_text(json.dumps({"refset": stamp, "results": refs.get(part, [])}), encoding="utf-8")
+    kept = sum(1 for r in index if "excluded" not in r)
+    report = {"stamp": stamp, "minutes": round(minutes, 1), "fights": len(entries), "kept": kept,
+              "summary": summarize(index), "excluded": [r for r in index if "excluded" in r], "index": index,
+              "retried": len(retry), "passes": passes_summary}
+    (rdir / "record.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+    if latest_name:
+        latest = vdir(a.version) / latest_name
+        latest.write_text(json.dumps({"record": str(rdir), "stamp": stamp, "parts": parts}, indent=1), encoding="utf-8")
+    return report
+
+
+def print_summary(report: dict) -> None:
+    for part, b in report["summary"]["parts"].items():
+        print(f"[refset] {part}: {b['specs']} specs, {b['kept']} kept, excluded {b['excluded'] or 0}, "
+              f"{b['flagged']} kept with realism flags {b['flags'] or ''}")
+    for cell, b in report["summary"]["realistic_cells"].items():
+        print(f"[refset]   {cell:<14} {b['specs']:>4} specs {b['kept']:>4} kept  excluded {b['excluded'] or 0}  flagged {b['flagged']}")
+
+
 def cmd_record(a) -> int:
     man = load_manifest(a.version)
     parts = a.parts.split(",")
+    build = Path(a.build)
+    problems, info = driver_preflight(build)
+    if problems:
+        print("[refset] REFUSED: this driver build may not record references:\n  " + "\n  ".join(problems), file=sys.stderr)
+        return 2
+    base_stamp = {"set": f"{SET_NAME} {a.version}", "driver": git_commit(driver_checkout(build)) | info,
+                  "driver_dll_sha256": sha256_file(build / "SpirelineReferee.dll"), "tools": git_commit(ROOT),
+                  "recorded": time.strftime("%Y-%m-%d %H:%M")}
     if "runs" in parts:
         label = a.label or time.strftime("%Y%m%d-%H%M%S")
         rdir = vdir(a.version) / "record" / f"runs-{label}"
         rdir.mkdir(parents=True, exist_ok=True)
-        build = Path(a.build)
-        stamp = {"set": f"{SET_NAME} {a.version}", "driver": git_commit(build.parents[3] if len(build.parents) > 3 else ROOT),
-                 "driver_dll_sha256": sha256_file(build / "SpirelineReferee.dll"), "recorded": time.strftime("%Y-%m-%d %H:%M")}
+        stamp = dict(base_stamp)
         rc = record_runs(man, a, rdir, stamp, build)
         if rc or parts == ["runs"]:
             (vdir(a.version) / "refs-runs.json").write_text(json.dumps({"record": str(rdir), "stamp": stamp}, indent=1), encoding="utf-8")
@@ -957,73 +1505,85 @@ def cmd_record(a) -> int:
     label = a.label or time.strftime("%Y%m%d-%H%M%S")
     rdir = vdir(a.version) / "record" / f"{a.subset}-{label}"
     rdir.mkdir(parents=True, exist_ok=True)
-    build = Path(a.build)
-    driver_src = build.parents[3] if len(build.parents) > 3 else ROOT
-    stamp = {"set": f"{SET_NAME} {a.version}", "driver": git_commit(driver_src),
-             "driver_dll_sha256": sha256_file(build / "SpirelineReferee.dll"), "recorded": time.strftime("%Y-%m-%d %H:%M"),
-             "subset": a.subset, "label": label}
+    stamp = base_stamp | {"subset": a.subset, "label": label}
     t0 = time.time()
-    passes = {}
+    orders = {"a": entries, "b": list(reversed(entries))}
+    summaries = {}
     # Two passes: in spec order, then reversed (other neighbours on other servers).
-    for name, order in (("a", entries), ("b", list(reversed(entries)))):
-        res, summ = play_pass(order, a.game, a.servers, rdir / f"pass-{name}", rdir / f"pass-{name}.out.json", a.timeout, build)
-        errs = log_errors(rdir / f"pass-{name}")
-        by_id = {e["id"]: (r, errs.get(i)) for i, (e, r) in enumerate(zip(order, res))}
-        passes[name] = (by_id, summ)
-    first = judge_pair(entries, passes["a"][0], passes["b"][0])
+    for name in ("a", "b"):
+        _, summaries[name] = play_pass(orders[name], a.game, a.servers, rdir / f"pass-{name}", rdir / f"pass-{name}.out.json",
+                                       a.timeout, build)
+    passes = {n: pass_results(rdir, n, orders[n]) for n in ("a", "b")}
+    first = judge_pair(entries, passes["a"], passes["b"])
     # A fight that only hit a driver wait limit (idle_timeout), with no error of its own in the game's log, is
     # recorded twice more on fresh servers: the timeout is often a neighbour's doing (a fight whose game code threw
     # leaves its server unable to settle the next rooms). A fight whose own game code threw is not retried.
     retry = [e for e in entries if first[e["id"]].get("retry")]
     if retry:
-        for name, order in (("c", retry), ("d", list(reversed(retry)))):
-            res, summ = play_pass(order, a.game, a.servers, rdir / f"pass-{name}", rdir / f"pass-{name}.out.json", a.timeout, build)
-            errs = log_errors(rdir / f"pass-{name}")
-            passes[name] = ({e["id"]: (r, errs.get(i)) for i, (e, r) in enumerate(zip(order, res))}, summ)
-        second = judge_pair(retry, passes["c"][0], passes["d"][0])
-        for e in retry:
-            second[e["id"]]["retried"] = first[e["id"]].get("excluded")
-            first[e["id"]] = second[e["id"]]
+        orders["c"], orders["d"] = retry, list(reversed(retry))
+        for name in ("c", "d"):
+            _, summaries[name] = play_pass(orders[name], a.game, a.servers, rdir / f"pass-{name}", rdir / f"pass-{name}.out.json",
+                                           a.timeout, build)
+            passes[name] = pass_results(rdir, name, orders[name])
+    (rdir / "orders.json").write_text(json.dumps({n: [e["id"] for e in o] for n, o in orders.items()}), encoding="utf-8")
+    judged, retried = judge_passes(entries, passes)
     minutes = (time.time() - t0) / 60
-    for name, (_, summ) in passes.items():
+    for name, summ in summaries.items():
         if summ.get("network_connections") or summ.get("real_profile_touched") is not False:
             print(f"[refset] SAFETY: pass {name}: network {summ.get('network_connections')} real profile touched "
                   f"{summ.get('real_profile_touched')}; no references written", file=sys.stderr)
             return 1
-    builds = {summ.get("sts2_dll_sha256") for _, summ in passes.values()}
+    builds = {summ.get("sts2_dll_sha256") for summ in summaries.values()}
     if len(builds) != 1:
         print(f"[refset] the passes ran different game builds {builds}", file=sys.stderr)
         return 1
     stamp["sts2_dll_sha256"] = builds.pop()
-    index, refs = [], collections.defaultdict(list)
-    for e in entries:
-        j = first[e["id"]]
-        row = {"id": e["id"], "part": e["part"], "seed": e["spec"]["seed"]}
-        for k in ("excluded", "retried", "visual_errors"):
-            if j.get(k):
-                row[k] = j[k]
-        if not j.get("excluded"):
-            ra = dict(j["result"])
-            if e["part"] == "realistic":
-                row["realism"] = realism(e, ra)
-            ra["refset"] = {"id": e["id"], "part": e["part"], "stamp": stamp}
-            refs[e["part"]].append(ra)
-        index.append(row)
-    for part in parts:
-        (rdir / f"{part}.refs.json").write_text(json.dumps({"refset": stamp, "results": refs.get(part, [])}), encoding="utf-8")
-    kept = sum(1 for r in index if "excluded" not in r)
-    report = {"stamp": stamp, "minutes": round(minutes, 1), "fights": len(entries), "kept": kept,
-              "excluded": [r for r in index if "excluded" in r], "index": index,
-              "retried": len(retry),
-              "passes": {n: {k: summ.get(k) for k in ("fights", "wall_s", "s_per_fight_per_server", "fights_per_min", "restarts", "errors", "exit")}
-                         for n, (_, summ) in passes.items()}}
-    (rdir / "record.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
-    latest = vdir(a.version) / f"refs-{a.subset}.json"
-    latest.write_text(json.dumps({"record": str(rdir), "stamp": stamp, "parts": parts}, indent=1), encoding="utf-8")
-    why = collections.Counter(r["excluded"].split(":")[0] for r in report["excluded"])
-    print(f"[refset] {len(entries)} fights recorded twice in {minutes:.1f} min ({len(retry)} retried after a wait limit): "
-          f"{kept} kept, {len(entries) - kept} excluded {dict(why)}")
-    print(f"[refset] references: {rdir}  (latest: {latest})")
+    lines = [x for n in summaries for x in driver_lines(rdir / f"pass-{n}")]
+    bad = driver_runtime_problems(lines, info["commit"])
+    if bad:
+        print("[refset] REFUSED after recording: the servers' drivers may not record references; none written:\n  "
+              + "\n  ".join(bad), file=sys.stderr)
+        return 2
+    stamp["driver_build"] = lines[0]
+    report = write_record(rdir, a, parts, entries, judged, retried, stamp, minutes,
+                          {n: {k: summ.get(k) for k in ("fights", "wall_s", "s_per_fight_per_server", "fights_per_min", "restarts",
+                                                        "errors", "exit")} for n, summ in summaries.items()},
+                          f"refs-{a.subset}.json")
+    print(f"[refset] {len(entries)} fights recorded twice in {minutes:.1f} min ({len(retried)} retried after a wait limit), "
+          f"driver {info['commit'][:12]} {','.join(lines[0].get('capabilities', []))}")
+    print_summary(report)
+    print(f"[refset] references: {rdir}")
+    return 0
+
+
+def cmd_rejudge(a) -> int:
+    """Judge a recorded record directory again from its saved passes (no game is started), e.g. after a fix to the
+    judging; writes record.rejudged.json and lists every fight whose verdict changed."""
+    man = load_manifest(a.version)
+    rdir = Path(a.record)
+    old = json.loads((rdir / "record.json").read_text(encoding="utf-8"))
+    by_seed = {e["spec"]["seed"]: e for e in man["specs"]}
+    orders = {}
+    for n in ("a", "b", "c", "d"):
+        job = rdir / f"pass-{n}.job.json"
+        if job.exists():
+            orders[n] = [by_seed[s["seed"]] for s in json.loads(job.read_text(encoding="utf-8"))["runs"]]
+    entries = [by_seed[r["seed"]] for r in old["index"]]
+    passes = {n: pass_results(rdir, n, o) for n, o in orders.items()}
+    judged, retried = judge_passes(entries, passes)
+    stamp = dict(old["stamp"]) | {"rejudged": time.strftime("%Y-%m-%d %H:%M"), "rejudged_by": git_commit(ROOT)}
+    index, _ = build_index(entries, judged, stamp)
+    before = {r["id"]: r.get("excluded") for r in old["index"]}
+    changed = [{"id": r["id"], "was": before.get(r["id"]), "now": r.get("excluded")} for r in index
+               if (before.get(r["id"]) or None) != (r.get("excluded") or None)]
+    report = {"stamp": stamp, "fights": len(entries), "kept": sum(1 for r in index if "excluded" not in r),
+              "summary": summarize(index), "excluded": [r for r in index if "excluded" in r], "index": index,
+              "changed": changed}
+    (rdir / "record.rejudged.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+    print(f"[refset] {rdir.name} judged again: {old['kept']} -> {report['kept']} kept of {len(entries)}; {len(changed)} verdicts changed")
+    for c in changed:
+        print(f"  {c['id']}: was {c['was'] or 'kept'} | now {c['now'] or 'kept'}"[:300])
+    print_summary(report)
     return 0
 
 
@@ -1035,6 +1595,8 @@ def cmd_status(a) -> int:
         if p.exists():
             rec = json.loads((Path(json.loads(p.read_text(encoding='utf-8'))["record"]) / "record.json").read_text(encoding="utf-8"))
             print(f"  {sub}: {rec['kept']} of {rec['fights']} kept ({rec['stamp']['recorded']}, driver {rec['stamp']['driver']['commit'][:9]})")
+            if rec.get("summary"):
+                print_summary(rec)
     return 0
 
 
@@ -1042,14 +1604,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
-    b.add_argument("--version", default="v1")
+    b.add_argument("--version", default="v2")
     b.add_argument("--codex", default=str(CODEX))
     b.add_argument("--realistic", type=int, default=600)
     b.add_argument("--max-runs", type=int, default=0, help="stop reading the codex after this many runs (a quick trial)")
     b.add_argument("--pilot-realistic", type=int, default=60)
     b.add_argument("--pilot-coverage", type=int, default=60)
     r = sub.add_parser("record")
-    r.add_argument("--version", default="v1")
+    r.add_argument("--version", default="v2")
     r.add_argument("--subset", choices=("all", "pilot"), default="all")
     r.add_argument("--parts", default=",".join(PARTS), help="realistic,coverage,regression and/or runs (whole runs: needs the run referee driver)")
     r.add_argument("--game", default=GAME)
@@ -1059,11 +1621,14 @@ def main() -> int:
     r.add_argument("--label", default=None)
     r.add_argument("--limit", type=int, default=0, help="only the first N specs of each part (a trial)")
     s = sub.add_parser("status")
-    s.add_argument("--version", default="v1")
+    s.add_argument("--version", default="v2")
+    j = sub.add_parser("rejudge", help="judge a record directory again from its saved passes (no game)")
+    j.add_argument("--version", default="v2")
+    j.add_argument("--record", required=True, help="the record directory (record/<subset>-<label>)")
     a = ap.parse_args()
     if a.cmd == "record" and a.servers > 3:
         ap.error("at most 3 game processes")
-    return {"build": cmd_build, "record": cmd_record, "status": cmd_status}[a.cmd](a)
+    return {"build": cmd_build, "record": cmd_record, "status": cmd_status, "rejudge": cmd_rejudge}[a.cmd](a)
 
 
 if __name__ == "__main__":

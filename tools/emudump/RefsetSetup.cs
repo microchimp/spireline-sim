@@ -1,6 +1,7 @@
 // The emulator's mirror of the reference-set setup items (referee/driver/RefsetSetup.cs): the same
-// algorithm on the run state, so a real run's deck, relics, HP and potions are in place before its fight.
-// An item it cannot build is "unsupported" (a mirror gap), as in Setup.cs.
+// algorithm on the run state, so a real run's deck, relics (with their saved state), HP, gold and potions are
+// in place before its fight, in its own act. An item it cannot build is "unsupported" (a mirror gap), as in
+// Setup.cs.
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
@@ -59,15 +60,116 @@ static class RefsetSetup
         return (extra, left);
     }
 
+    /// <summary>
+    /// Saved properties the emulator has no state for and that do nothing in a fight: what an ancient's
+    /// relic picked at its event (Archaic Tooth's cards, Dusty Tome's card, Touch of Orobas' relics, Sea
+    /// Glass' character), skins, and map-only state (Golden Compass' act, Spoils Map's act). Any other
+    /// saved property with a value other than the one a fresh model has, and that RunReplay.AnchorHoldings
+    /// does not set, is a mirror gap.
+    /// </summary>
+    static readonly HashSet<string> NoFightEffect =
+    [
+        "ARCHAIC_TOOTH.StarterCard", "ARCHAIC_TOOTH.AncientCard", "DUSTY_TOME.AncientCard",
+        "TOUCH_OF_OROBAS.StarterRelic", "TOUCH_OF_OROBAS.UpgradedRelic", "SEA_GLASS.CharacterId",
+        "BYRDPIP.Skin", "PAELS_LEGION.Skin", "GOLDEN_COMPASS.GoldenPathAct", "SPOILS_MAP.SpoilsActIndex",
+    ];
+
+    /// <summary>Saved properties RunReplay.AnchorHoldings puts on the emulator's state.</summary>
+    static HashSet<string> Anchored() => RunSnap.RelicProps.Select(p => p.Relic + "." + p.Name)
+        .Concat(["MAD_SCIENCE.TinkerTimeType", "MAD_SCIENCE.TinkerTimeRider", "GUILTY.CombatsSeen"])
+        .Concat(Sts2Emulator.GeneratedData.Relics.All.ToArray().SelectMany(r => new[] { r.Entry + ".IsWax", r.Entry + ".IsMelted" }))
+        .ToHashSet();
+
+    static string Bare(string? id) => id == null ? "" : id.Contains('.') ? id[(id.IndexOf('.') + 1)..] : id;
+
+    /// <summary>
+    /// The player_load item (referee/driver/RefsetSetup.cs): the run's holdings SET, not earned, through the
+    /// run replay's own anchoring of a save's player (RunReplay.AnchorHoldings, RunEngine.DebugSetPlayer); the
+    /// held relics leave the grab bags as the game's load takes them out (RelicCmd.Obtain's rule: all but
+    /// the stackable Circlet).
+    /// </summary>
+    static (bool ok, string? msg) PlayerLoad(RunEngine e, JsonObject item)
+    {
+        var s = e.State;
+        int max = (int?)item["max_hp"] ?? s.PlayerMaxHp;
+        var potions = new JsonArray();
+        int slot = 0;
+        foreach (var x in item["potions"] as JsonArray ?? new JsonArray())
+            potions.Add(new JsonObject { ["id"] = "POTION." + ((string?)x ?? "").ToUpperInvariant(), ["slot_index"] = slot++ });
+        var p = new JsonObject
+        {
+            ["current_hp"] = Math.Min((int?)item["hp"] ?? s.PlayerHp, max), ["max_hp"] = max, ["gold"] = (int?)item["gold"] ?? s.Gold,
+            ["deck"] = (item["deck"] ?? new JsonArray()).DeepClone(), ["relics"] = (item["relics"] ?? new JsonArray()).DeepClone(),
+            ["potions"] = potions, ["max_potion_slot_count"] = (int?)item["max_potion_slots"] ?? s.MaxPotionSlots,
+        };
+        RunReplay.AnchorHoldings(e, p, new JsonArray());
+        foreach (var r in s.Relics)
+        {
+            if (RelicEntry(r.DefId) == "CIRCLET") continue;
+            s.RelicBag.Remove(r.DefId);
+            s.SharedRelicBag.Remove(r.DefId);
+        }
+
+        // Saved properties the emulator cannot hold, with a value a fresh model would not have.
+        var anchored = Anchored();
+        var gaps = new List<string>();
+        foreach (var model in (item["relics"] as JsonArray ?? new JsonArray()).Concat(item["deck"] as JsonArray ?? new JsonArray()))
+        {
+            string id = Bare((string?)model!["id"]);
+            foreach (var (kind, list) in model["props"]?.AsObject() ?? new JsonObject())
+            {
+                foreach (var prop in list?.AsArray() ?? new JsonArray())
+                {
+                    string key = id + "." + (string?)prop!["name"];
+                    if (anchored.Contains(key) || NoFightEffect.Contains(key) || IsFresh(kind, prop["value"])) continue;
+                    gaps.Add(key);
+                }
+            }
+        }
+
+        string tail = DeckLine(s) + " | relics: " + string.Join(",", s.Relics.Select(r => RelicEntry(r.DefId)));
+        return gaps.Count == 0 ? (true, tail) : (false, "unsupported: saved state " + string.Join(",", gaps.Distinct()) + tail);
+    }
+
+    /// <summary>A saved value a freshly made model has too (0, false, an empty list or none).</summary>
+    static bool IsFresh(string kind, JsonNode? v) => v == null || kind switch
+    {
+        "ints" => (int)v == 0,
+        "bools" => !(bool)v,
+        "card_arrays" or "int_arrays" => v.AsArray().Count == 0,
+        _ => false,
+    };
+
     /// <summary>A reference-set item, or null when <paramref name="item" /> is not one.</summary>
     internal static (bool ok, string? msg)? Item(RunEngine e, JsonObject item, List<JsonObject> choices)
     {
         var s = e.State;
         string cmd = (string?)item["cmd"] ?? "";
-        if (cmd is not ("relics_set" or "deck_set" or "hp" or "potions_set")) return null;
+        if (cmd is not ("relics_set" or "deck_set" or "hp" or "potions_set" or "player_load" or "act")) return null;
         if (s.ActiveCombat != null) return (false, cmd + ": map only");
         switch (cmd)
         {
+            case "player_load":
+                return PlayerLoad(e, item);
+            case "act":
+            {
+                // RunManager.EnterAct(N - 1): the emulator's own act transition (RunEngine.EnterNextAct, which
+                // the boss path and the debug hook share), then onto the act's start point the way the game's
+                // EnterMapCoordDebug walks straight onto the fight's row-1 coordinate.
+                int n = (int?)item["index"] ?? 1;
+                if (n < 1 || n > s.Acts.Count) return (false, $"no act {n} (the run has {s.Acts.Count})");
+                if (s.CurrentActIndex == n - 1) return (true, null);
+                if (s.CurrentActIndex > n - 1) return (false, "unsupported: an act behind the current one");
+                while (s.CurrentActIndex < n - 1)
+                {
+                    if (!e.EnterNextAct()) return (false, "unsupported: no act after " + s.CurrentActIndex);
+                }
+
+                s.AwaitingActStartNode = false;
+                s.CurrentMapCoord = (RunConstants.MapStartCol, 0);
+                RunMapGenerator.RefreshMapOptions(s);
+                return (true, null);
+            }
             case "relics_set":
             {
                 var want = (item["ids"] as JsonArray ?? new JsonArray()).Select(x => ((string?)x ?? "").ToUpperInvariant()).ToList();
@@ -124,7 +226,8 @@ static class RefsetSetup
                         : $"residual: {after.extra.Count} extra, missing {string.Join(",", after.missing.Select(m => m.Id + (m.Upgraded ? "+" : "")))}";
                 }
 
-                return (true, residual + DeckLine(s));
+                // As the referee: a deck the item could not build fails it.
+                return (residual == "", residual + DeckLine(s));
             }
             case "hp":
             {

@@ -1,27 +1,38 @@
 """Score one emulator commit on the reference set (referee/refset.py): the accuracy numbers to quote.
 
-    python -m tools.fidelity.refset_score [--version v1] [--subset all|pilot] [--emu <emulator checkout>]
+    python -m tools.fidelity.refset_score [--version v2] [--subset all|pilot] [--emu <emulator checkout>]
         [--procs 4] [--label <name>] [--codex [--codex-emu <checkout>] [--codex-limit N]]
+        [--allow-dirty-emu] [--allow-unchecked-record]
 
 Run from the fork's root. --emu is a checkout with EmuDump built (tools/emudump/bin/Release/net9.0); its
-commit is what the numbers are for. Every recorded reference fight is replayed (EmuDump fight) and re-anchored
-(EmuDump reanchor) in --procs processes (one emulator per process) and judged with this checkout's comparers.
+commit is what the numbers are for, so a checkout with uncommitted changes is refused (--allow-dirty-emu scores
+it anyway, labelled <commit>-dirty and NOT QUOTABLE), and so is a record made before the driver reported its
+build (--allow-unchecked-record, also NOT QUOTABLE). Every recorded reference fight is replayed (EmuDump fight) and
+re-anchored (EmuDump reanchor) in --procs processes (one emulator per process) and judged with this checkout's
+comparers; each emulator result is paired with its reference by position AND seed (a seed mismatch is an error).
 
-Headline numbers (one line, then a table), stored per emulator commit in
-D:/spireline/referee/refset/<version>/scores/<commit>.json and appended to scores/history.jsonl, with the
-change against the previous score of the same subset:
-  realistic   fights identical to the end, %; steps verified, % (re-anchored: each recorded step tried from
-              the game's own state); both per act and room type.
-  coverage    fights identical, %; the items not yet clean: card variants with fewer than 5 verified plays or a
-              play the emulator gets wrong, encounters, relics and potions with fewer than 3 identical fights
-              (uses, for potions) or one that diverges on them. Counted over the whole set, not only coverage.
-  regression  classes whose fights all pass (identical), of all classes.
-  codex runs  (--codex) floors matching per component, %; runs matching to the end, %.
-  whole runs  the seeded run-referee runs (when recorded and the checkout has the run replay): runs with no
-              divergence, decisions before the first one, their fights identical.
+The headline line states, per part: specs, kept, excluded (by cause), kept with a realism flag; identical fights
+as a share of the kept ones AND counting every exclusion as not identical; steps verified; the emulator commit and
+the driver build and capabilities the references were recorded with. Then a table per act x room type (specs,
+kept, excluded, flagged, identical both ways), so losses in a cell are visible. Stored per emulator commit in
+D:/spireline/referee/refset/<version>/scores/<subset>-<label>.json and appended to scores/history.jsonl.
+  realistic   fights identical to the end; steps verified (re-anchored: each recorded step tried from the game's
+              own state before it); per act and room type.
+  coverage    fights identical; the items not yet clean: card variants with fewer than 5 verified plays or a play
+              the emulator gets wrong, encounters with fewer than 3 identical fights, relics whose effect FIRED
+              (a relic flash) at fewer than 3 verified steps or at a step the emulator got wrong (a relic merely
+              held is not covered), potions used fewer than 3 times verified. Counted over the whole set.
+  regression  classes that pass: every fight identical AND the class's trigger reached in one of them (its card
+              played, its relic fired, its potion used, its power up when an enemy hit landed); classes about the
+              driver itself are counted apart.
+  codex runs  (--codex) runs matching to the end; per component, the floors matching among the floors reached
+              before each run's first difference (a stop ends the count), stops by class with the profile-dependent
+              ones apart, components at 0%, and the runs the walker skipped against the set's own count.
   open bug classes: distinct first-divergence causes (field group after a card, end of turn, start, potion).
-Fights whose setup the emulator cannot mirror (an "unsupported" item) count as not identical and are listed
-apart, as mirror gaps.
+"Identical" compares, at every step: the player's HP, max HP, block, energy and powers; hand, draw, discard and
+exhaust piles (card id and upgrade); each living enemy's name, HP, block, powers and intent; nine RNG counters;
+the potion belt (COMPARED below). It does not compare relic counters, card costs or enchantments, gold or the
+hidden counters the comparer skips (NOT_COMPARED).
 """
 
 from __future__ import annotations
@@ -40,12 +51,26 @@ from tools.fidelity import fight_compare as fc
 from tools.fidelity import reanchor_compare as rc
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "referee"))
+import refset  # noqa: E402  (referee/refset.py: the record's causes and the classes' triggers)
+
 REFSET = Path("D:/spireline/referee/refset")
 CODEX = Path("D:/spireline/data/spire-codex/runs-v0.107.1.jsonl.gz")
 DECOMPILED = Path("D:/spireline/referee/decompiled")
 PARTS = ("realistic", "coverage", "regression")
 BELOW_NORMAL = 0x00004000
 QUOTA = {"card": 5, "encounter": 3, "relic": 3, "potion": 3}
+COMPARED = ("player hp, max hp, block, energy, powers", "hand, draw, discard, exhaust (card id, upgraded)",
+            "living enemies: name, hp, block, powers, intent",
+            "rng counters: Shuffle, CombatTargets, MonsterAi, CombatCardSelection, CombatCardGeneration, CombatEnergyCosts, "
+            "CombatPotionGeneration, CombatOrbGeneration, Niche", "potion belt")
+NOT_COMPARED = ("relic counters", "card costs and enchantments", "gold", "hidden power counters the comparer skips")
+# What a realistic fight still is not, for every spec (the per-spec flags are the record's): the run's RNG streams
+# stand where the seed's run is after Neow, not where the real run had them on that floor; the fight is met on the
+# act's row-1 room, not the real run's map coordinate (floor numbers differ); actions come from a chooser, not the
+# player who played the run.
+REALISM_LIMITS = ("rng streams at the seed's post-Neow state, not the real run's at that floor",
+                  "met at the act's row-1 room, not the real map coordinate", "actions from a chooser, not the real player")
 
 
 def git_commit(path: Path) -> dict:
@@ -56,9 +81,9 @@ def git_commit(path: Path) -> dict:
 
 
 def emudump(dll: Path, mode: str, results: list, work: Path, procs: int) -> list:
-    """EmuDump <mode> over results in up to procs processes; results in input order."""
+    """EmuDump <mode> over results in up to procs processes; [meta, results in input order]."""
     if not results:
-        return []
+        return [{}, []]
     k = max(1, min(procs, len(results)))
     size = -(-len(results) // k)
     running = []
@@ -104,9 +129,9 @@ def setup_deck(g: dict, e: dict) -> dict | None:
         msg = x.get("msg") or ""
         if " | deck: " not in msg or x.get("i") not in el:
             continue
-        gd = msg.split(" | deck: ", 1)[1].split(",")
+        gd = msg.split(" | deck: ", 1)[1].split(" | ", 1)[0].split(",")
         em = el[x["i"]].get("msg") or ""
-        ed = em.split(" | deck: ", 1)[1].split(",") if " | deck: " in em else []
+        ed = em.split(" | deck: ", 1)[1].split(" | ", 1)[0].split(",") if " | deck: " in em else []
         if gd != ed:
             pos = next((k for k, (a, b) in enumerate(zip(gd, ed)) if a != b), min(len(gd), len(ed)))
             same = sorted(gd) == sorted(ed)
@@ -122,10 +147,39 @@ def label(action: dict | None) -> str:
     return "END_TURN" if k == "end_turn" else ("POTION:" + action.get("potion", "?") if k == "potion" else action.get("card", "?"))
 
 
+def evidence(g: dict, ok_steps: set) -> dict:
+    """What the recorded game fight shows happening, each with whether the emulator reproduced that step: card plays
+    by variant, potion uses, relic flashes (the game's own "this relic did something"), and the player's powers up
+    when an enemy with an attack intent took its turn (Combat.cs end_turn steps)."""
+    steps = g.get("steps", [])
+    plays, uses, powers_hit = [], [], set()
+    for j in range(1, len(steps)):
+        act = steps[j].get("action") or {}
+        if act.get("kind") == "play" and act.get("played", True):
+            hand = steps[j - 1]["state"].get("hand", [])
+            hi = act.get("hand_index", -1)
+            up = 0 <= hi < len(hand) and bool(hand[hi][1])
+            plays.append([act.get("card") + ("+" if up else ""), j in ok_steps])
+        elif act.get("kind") == "potion" and act.get("used"):
+            uses.append([act.get("potion"), j in ok_steps])
+        elif act.get("kind") == "end_turn":
+            # The enemies' turn: an enemy that showed an attack intent attacked while the player had these powers.
+            st = steps[j - 1]["state"]
+            if any(str(i[0] if isinstance(i, list) else i).startswith("Attack")
+                   for e in st.get("enemies") or [] if e.get("hp", 0) > 0 for i in e.get("intents") or []):
+                powers_hit.update(p[0] if isinstance(p, list) else str(p) for p in (st.get("player") or {}).get("powers") or [])
+    fires = [[r, (j in ok_steps) if j > 0 else (0 in ok_steps)] for j, r in g.get("relic_flashes") or []]
+    return {"plays": plays, "uses": uses, "fires": fires, "powers_hit": sorted(powers_hit)}
+
+
 def judge(entry_part: str, g: dict, e: dict, r: dict, nm: dict, keys) -> dict:
     from tools.fidelity.setup_compare import compare  # noqa: PLC0415 (feat/console-setup)
     ref = g.get("refset", {})
-    v = {"id": ref.get("id"), "part": entry_part, "seed": g.get("seed"), "tag": g.get("tag")}
+    v = {"id": ref.get("id"), "part": entry_part, "seed": g.get("seed"), "tag": g.get("tag"),
+         "flags": ref.get("flags", []), "chooser": ref.get("chooser") or g.get("chooser") or "random"}
+    if e.get("seed") not in (None, g.get("seed")):
+        v.update(identical=False, error=f"paired with the emulator's result for seed {e.get('seed')}", transitions=0, verified=0)
+        return v
     if e.get("error") and not e.get("steps"):
         v.update(identical=False, error=str(e["error"])[:200], transitions=max(0, len(g.get("steps", [])) - 1), verified=0)
         return v
@@ -144,25 +198,14 @@ def judge(entry_part: str, g: dict, e: dict, r: dict, nm: dict, keys) -> dict:
     # first divergence), or, from the game's own state before it, the re-anchored step matched.
     plain = fd[0] if fd else len(g.get("steps", []))
     reanchored = {s["j"] for s in an["steps"] if s["j"] > 0 and s["verdict"] == "match"}
-    ok_steps = set(range(1, plain)) | reanchored
-    v["verified"] = len(ok_steps)
+    ok_steps = set(range(1, plain)) | reanchored | ({0} if plain > 0 else set())
+    v["verified"] = len(ok_steps - {0})
     v["verified_reanchored"] = len(reanchored)
     v["primary"] = [[s["j"], s["card"], sorted({rc.group(p) for p in s["paths"]})[:2]] for s in an["steps"] if s["primary"] and s["j"] > 0][:6]
+    v["primary_steps"] = [s["j"] for s in an["steps"] if s["primary"]]
     v["stop"] = (an.get("stop") or {}).get("why")
-    # Coverage evidence: plays by card variant (upgraded from the hand before the play), potion uses.
-    steps = g.get("steps", [])
-    plays, uses = [], []
-    for j in range(1, len(steps)):
-        act = steps[j].get("action") or {}
-        if act.get("kind") == "play" and act.get("played", True):
-            hand = steps[j - 1]["state"].get("hand", [])
-            hi = act.get("hand_index", -1)
-            up = 0 <= hi < len(hand) and bool(hand[hi][1])
-            plays.append([act.get("card") + ("+" if up else ""), j in ok_steps])
-        elif act.get("kind") == "potion" and act.get("used"):
-            uses.append([act.get("potion"), j in ok_steps])
-    v["plays"], v["uses"] = plays, uses
-    st0 = steps[0]["state"] if steps else {}
+    v.update(evidence(g, ok_steps))
+    st0 = g.get("steps", [{}])[0].get("state", {}) if g.get("steps") else {}
     v["relics"] = st0.get("relics", [])
     v["encounter"] = (g.get("fight") or {}).get("id")
     return v
@@ -175,7 +218,7 @@ def pct(a: int, b: int) -> str:
 def coverage_report(verdicts: list, targets: dict) -> dict:
     plays, plays_ok, bad_play = collections.Counter(), collections.Counter(), collections.Counter()
     enc, enc_ok = collections.Counter(), collections.Counter()
-    rel, rel_ok = collections.Counter(), collections.Counter()
+    fires, fires_ok, bad_fire, held = collections.Counter(), collections.Counter(), collections.Counter(), collections.Counter()
     pot, pot_ok, bad_pot = collections.Counter(), collections.Counter(), collections.Counter()
     for v in verdicts:
         for c, ok in v.get("plays", []):
@@ -193,8 +236,12 @@ def coverage_report(verdicts: list, targets: dict) -> dict:
             enc[v["encounter"]] += 1
             enc_ok[v["encounter"]] += bool(v.get("identical"))
         for r in set(v.get("relics", [])):
-            rel[r] += 1
-            rel_ok[r] += bool(v.get("identical"))
+            held[r] += 1
+        for r, ok in v.get("fires", []):
+            fires[r] += 1
+            fires_ok[r] += ok
+            if not ok:
+                bad_fire[r] += 1
     lists = targets.get("lists", {})
     out = {"not_reached": {}, "not_clean": {}, "counts": {}}
 
@@ -205,15 +252,54 @@ def coverage_report(verdicts: list, targets: dict) -> dict:
         out["counts"][kind] = {"items": len(items), "clean": len(items) - len(nr) - len(nc), "not_reached": len(nr), "not_clean": len(nc)}
     judge_items("card", lists.get("cards", []), plays, plays_ok, bad_play, lambda x: x.rstrip("+"))
     judge_items("encounter", lists.get("encounters", []), enc, enc_ok)
-    judge_items("relic", lists.get("relics", []), rel, rel_ok)
+    judge_items("relic", lists.get("relics", []), fires, fires_ok, bad_fire)
     judge_items("potion", lists.get("potions", []), pot, pot_ok, bad_pot)
+    out["counts"]["relic"]["held_never_fired"] = sum(1 for r in lists.get("relics", []) if held[r] and not fires[r])
     out["evidence"] = {"plays": dict(plays), "plays_verified": dict(plays_ok), "encounter_fights": dict(enc),
-                       "encounter_identical": dict(enc_ok), "relic_fights": dict(rel), "relic_identical": dict(rel_ok),
-                       "potion_uses": dict(pot), "potion_uses_verified": dict(pot_ok)}
+                       "encounter_identical": dict(enc_ok), "relic_fires": dict(fires), "relic_fires_verified": dict(fires_ok),
+                       "relic_fights_held": dict(held), "potion_uses": dict(pot), "potion_uses_verified": dict(pot_ok)}
     return out
 
 
-def codex_score(emu: Path, procs: int, limit: int, work: Path) -> dict:
+def trigger_reached(trigger: dict, vs: list) -> bool:
+    """Whether one of the class's fights shows its trigger (refset.trigger_of): every kind it names, in one fight."""
+    if not trigger or trigger.get("replay"):
+        return bool(vs)
+    for v in vs:
+        played = {c.rstrip("+") for c, _ in v.get("plays", [])}
+        fired = {r for r, _ in v.get("fires", [])}
+        used = {p for p, _ in v.get("uses", [])}
+        if (all(k == "replay" or {"plays": played, "relic_flashes": fired, "potions": used,
+                                  "powers_hit": set(v.get("powers_hit", []))}[k] & set(want)
+                for k, want in trigger.items())):
+            return True
+    return False
+
+
+def regression_report(verdicts: list, entries: dict) -> dict:
+    classes = collections.defaultdict(list)
+    for v in verdicts:
+        if v["part"] == "regression":
+            classes[v["class"]].append(v)
+    out = {}
+    for kind in ("emulator", "driver"):
+        names = sorted(c for c, vs in classes.items() if entries.get(vs[0]["id"], {}).get("class_kind", "emulator") == kind)
+        passing, untriggered, failing = [], [], []
+        for c in names:
+            vs = classes[c]
+            trig = entries.get(vs[0]["id"], {}).get("trigger") or {}
+            if not all(v.get("identical") for v in vs):
+                failing.append(c)
+            elif trigger_reached(trig, vs):
+                passing.append(c)
+            else:
+                untriggered.append(c)
+        out[kind] = {"classes": len(names), "passing": len(passing), "identical_but_trigger_not_reached": untriggered,
+                     "failing": failing}
+    return out
+
+
+def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | None) -> dict:
     dll = emu / "tools" / "emudump" / "bin" / "Release" / "net9.0" / "EmuDump.dll"
     if not (emu / "tools" / "emudump" / "Codex").exists():
         return {"skipped": f"{emu} has no codex replay (feat/codex-replay)"}
@@ -225,8 +311,12 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path) -> dict:
         running.append(subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                                         creationflags=BELOW_NORMAL if os.name == "nt" else 0))
         outs.append(out)
+    walker_skipped = collections.Counter()
     for p in running:
-        p.communicate()
+        err = p.communicate()[1] or ""
+        for line in err.splitlines():
+            if line.startswith("{") and '"walked"' in line:
+                walker_skipped.update(json.loads(line).get("skipped", {}))
     runs, comp = [], collections.defaultdict(lambda: [0, 0])
     stops = collections.Counter()
     for out in outs:
@@ -246,12 +336,19 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path) -> dict:
     # A walk that stops on a FIGHT-DEPENDENT, PROFILE-DEPENDENT or WALKER difference says nothing against the
     # emulator; runs "judged" are the complete ones and those stopped by an EMULATOR difference.
     emu_stops = sum(k for c, k in stops.items() if c.startswith("EMULATOR"))
+    by_class = collections.Counter(c.split(":")[0] for c in stops.elements())
     judged = runs.count("complete") + emu_stops
+    walker_ironclad_a10_skips = sum(k for why, k in walker_skipped.items() if "modded" in why)
     return {"runs": n, "complete": runs.count("complete"), "runs_matching_pct": round(100 * runs.count("complete") / n, 1) if n else None,
             "judged": judged, "judged_matching_pct": round(100 * runs.count("complete") / judged, 1) if judged else None,
+            "components_note": "floors reached before each run's first difference (a run's count ends at its first stop)",
             "components": {c: {"floors": v[0], "matching": v[1], "pct": round(100 * v[1] / v[0], 1) if v[0] else None}
                            for c, v in sorted(comp.items())},
-            "stops": dict(stops.most_common(15)), "commit": git_commit(emu)}
+            "components_at_zero": sorted(c for c, v in comp.items() if v[0] and not v[1]),
+            "stops_by_class": dict(by_class), "stops": dict(stops.most_common(20)),
+            "runs_in_set": set_runs, "walker_skipped": dict(walker_skipped),
+            "gap": (set_runs - n) if set_runs is not None else None, "walker_modded_skips": walker_ironclad_a10_skips,
+            "commit": git_commit(emu)}
 
 
 def runs_score(vdir: Path, emu: Path, work: Path) -> dict:
@@ -283,9 +380,28 @@ def runs_score(vdir: Path, emu: Path, work: Path) -> dict:
     return out
 
 
+def block(rows: list, vs: list) -> dict:
+    """One part or cell: the record's specs, kept, excluded (by cause) and flagged, and the verdicts of the kept."""
+    excl = [r for r in rows if "excluded" in r]
+    kept = list(vs)
+    ident = sum(1 for v in kept if v.get("identical"))
+    clean = [v for v in kept if not v.get("mirror_gap") and not v.get("setup_deck") and not v.get("setup_first")]
+    unflagged = [v for v in kept if not v.get("flags")]
+    return {"specs": len(rows), "kept": len(kept), "excluded": len(excl),
+            "excluded_by_cause": dict(collections.Counter(refset.cause_of(r["excluded"]) for r in excl)),
+            "flagged": sum(1 for v in kept if v.get("flags")),
+            "identical": ident, "identical_pct_of_kept": round(100 * ident / len(kept), 1) if kept else None,
+            "identical_pct_of_specs": round(100 * ident / len(rows), 1) if rows else None,
+            "unflagged": len(unflagged), "unflagged_identical": sum(1 for v in unflagged if v.get("identical")),
+            "setup_matched": len(clean), "setup_matched_identical": sum(1 for v in clean if v.get("identical")),
+            "transitions": sum(v.get("transitions", 0) for v in kept), "verified": sum(v.get("verified", 0) for v in kept),
+            "mirror_gaps": sum(1 for v in kept if v.get("mirror_gap")),
+            "choosers": dict(collections.Counter(v.get("chooser", "random") for v in kept))}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
-    ap.add_argument("--version", default="v1")
+    ap.add_argument("--version", default="v2")
     ap.add_argument("--subset", choices=("all", "pilot"), default="all")
     ap.add_argument("--emu", type=Path, default=ROOT, help="emulator checkout with EmuDump built")
     ap.add_argument("--procs", type=int, default=4)
@@ -293,10 +409,14 @@ def main() -> int:
     ap.add_argument("--codex", action="store_true", help="also walk the codex runs (whole runs, run-level offers)")
     ap.add_argument("--codex-emu", type=Path, default=None, help="checkout with the codex replay (default --emu)")
     ap.add_argument("--codex-limit", type=int, default=0)
+    ap.add_argument("--allow-dirty-emu", action="store_true", help="score a checkout with uncommitted changes (NOT QUOTABLE)")
+    ap.add_argument("--allow-unchecked-record", action="store_true",
+                    help="score a record made before the driver reported its build (NOT QUOTABLE)")
     a = ap.parse_args()
     vdir = REFSET / a.version
     latest = json.loads((vdir / f"refs-{a.subset}.json").read_text(encoding="utf-8"))
     rdir = Path(latest["record"])
+    record = json.loads((rdir / "record.json").read_text(encoding="utf-8"))
     manifest = json.loads((vdir / "manifest.json").read_text(encoding="utf-8"))
     entries = {e["id"]: e for e in manifest["specs"]}
     emu = a.emu.resolve()
@@ -305,6 +425,20 @@ def main() -> int:
         print(f"no EmuDump build in {emu}: dotnet build -c Release in tools/emudump first", file=sys.stderr)
         return 2
     emu_info = git_commit(emu) | {"emudump_mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(dll.stat().st_mtime))}
+    not_quotable = []
+    if emu_info["dirty"]:
+        if not a.allow_dirty_emu:
+            print(f"REFUSED: {emu} has uncommitted changes; its numbers would name no commit (--allow-dirty-emu scores "
+                  "it anyway, NOT QUOTABLE)", file=sys.stderr)
+            return 2
+        not_quotable.append("dirty emulator checkout")
+    driver_build = record["stamp"].get("driver_build")
+    if not driver_build:
+        if not a.allow_unchecked_record:
+            print("REFUSED: the record names no driver build (recorded before Capabilities.cs); re-record it, or "
+                  "--allow-unchecked-record (NOT QUOTABLE)", file=sys.stderr)
+            return 2
+        not_quotable.append("record made by an unchecked driver")
     nm = fc.names(json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8")))
     work = vdir / "scores" / "work"
     work.mkdir(parents=True, exist_ok=True)
@@ -313,42 +447,31 @@ def main() -> int:
     for part in latest["parts"]:
         p = rdir / f"{part}.refs.json"
         if not p.exists():
-            continue
+            print(f"REFUSED: the record has no {p.name} (parts {latest['parts']})", file=sys.stderr)
+            return 2
         games = json.loads(p.read_text(encoding="utf-8"))["results"]
-        _, emus = emudump(dll, "fight", games, work, a.procs) or [None, []]
-        rmeta, reas = emudump(dll, "reanchor", games, work, a.procs) or [{}, []]
+        _, emus = emudump(dll, "fight", games, work, a.procs)
+        rmeta, reas = emudump(dll, "reanchor", games, work, a.procs)
         keys = rc.keys_of(rmeta)
         for g, e, r in zip(games, emus, reas):
             verdicts.append(judge(part, g, e, r, nm, keys))
     for v in verdicts:
-        st = entries.get(v["id"], {}).get("strata", {})
+        en = entries.get(v["id"], {})
+        st = en.get("strata", {})
         v["act"], v["room"] = st.get("act"), st.get("room")
-        v["class"] = entries.get(v["id"], {}).get("class")
-    by = collections.defaultdict(list)
-    for v in verdicts:
-        by[v["part"]].append(v)
-
-    def block(vs):
-        clean = [v for v in vs if not v.get("mirror_gap") and not v.get("setup_deck") and not v.get("setup_first")]
-        return {"fights": len(vs), "identical": sum(1 for v in vs if v.get("identical")),
-                "setup_matched": len(clean), "setup_matched_identical": sum(1 for v in clean if v.get("identical")),
-                "transitions": sum(v.get("transitions", 0) for v in vs), "verified": sum(v.get("verified", 0) for v in vs),
-                "mirror_gaps": sum(1 for v in vs if v.get("mirror_gap"))}
-    real = by["realistic"]
+        v["class"] = en.get("class")
+    rows = record["index"]
+    by_part = {p: [r for r in rows if r["part"] == p] for p in PARTS}
+    vs_part = {p: [v for v in verdicts if v["part"] == p] for p in PARTS}
+    head = {p: block(by_part[p], vs_part[p]) for p in PARTS if by_part[p]}
     table = {}
     for act in (1, 2, 3):
         for room in ("monster", "elite", "boss"):
-            vs = [v for v in real if v["act"] == act and v["room"] == room]
-            if vs:
-                table[f"act{act} {room}"] = block(vs)
-    for room in ("monster", "elite", "boss"):
-        vs = [v for v in real if v["room"] == room]
-        if vs:
-            table[f"all {room}"] = block(vs)
-    classes = collections.defaultdict(list)
-    for v in by["regression"]:
-        classes[v["class"]].append(v)
-    reg_pass = sorted(c for c, vs in classes.items() if all(v.get("identical") for v in vs))
+            rs = [r for r in by_part["realistic"] if (r.get("strata") or entries.get(r["id"], {}).get("strata", {})).get("act") == act
+                  and (r.get("strata") or entries.get(r["id"], {}).get("strata", {})).get("room") == room]
+            if rs:
+                ids = {r["id"] for r in rs}
+                table[f"act{act} {room}"] = block(rs, [v for v in vs_part["realistic"] if v["id"] in ids])
     bugs = collections.defaultdict(list)
     for v in verdicts:
         if v.get("mirror_gap"):
@@ -360,16 +483,21 @@ def main() -> int:
             bugs[f"{v.get('field', '(error)')} after {v.get('card', '?')}"].append(v["id"])
     open_bugs = [{"cause": k, "fights": len(ids), "example": ids[0]} for k, ids in sorted(bugs.items(), key=lambda kv: -len(kv[1]))]
     cov = coverage_report(verdicts, manifest.get("coverage_targets", {}))
-    codex = codex_score((a.codex_emu or emu).resolve(), a.procs, a.codex_limit, work) if a.codex else {"skipped": "not run (--codex)"}
+    reg = regression_report(verdicts, entries)
+    codex = (codex_score((a.codex_emu or emu).resolve(), a.procs, a.codex_limit, work,
+                         (manifest.get("codex_stats") or {}).get("ironclad_a10_runs")) if a.codex else {"skipped": "not run (--codex)"})
     runs = runs_score(vdir, emu, work)
-    head = {p: block(by[p]) for p in PARTS if by[p]}
     commit = emu_info["commit"][:12] + ("-dirty" if emu_info["dirty"] else "")
     name = a.label or commit
     score = {"set": f"{manifest['set']} {manifest['version']}", "subset": a.subset, "emulator": emu_info, "label": name,
-             "comparer": git_commit(ROOT), "record": latest["stamp"], "scored": time.strftime("%Y-%m-%d %H:%M"),
-             "minutes": round((time.time() - t0) / 60, 1), "headline": head, "realistic_table": table,
-             "regression": {"classes": len(classes), "passing": len(reg_pass), "failing": sorted(set(classes) - set(reg_pass))},
-             "coverage": cov, "codex": codex, "runs": runs, "open_bug_classes": open_bugs, "verdicts": verdicts}
+             "commit_label": commit, "not_quotable": not_quotable, "comparer": git_commit(ROOT), "record": record["stamp"],
+             "record_dir": str(rdir), "scored": time.strftime("%Y-%m-%d %H:%M"), "minutes": round((time.time() - t0) / 60, 1),
+             "headline": head, "realistic_table": table, "record_summary": record.get("summary"),
+             "flags_by_item": (record.get("summary") or {}).get("flags_by_item"),
+             "exclusions": [{"id": r["id"], "part": r["part"], "cause": refset.cause_of(r["excluded"]), "why": r["excluded"]}
+                            for r in rows if "excluded" in r],
+             "compared": COMPARED, "not_compared": NOT_COMPARED, "realism_limits": REALISM_LIMITS,
+             "regression": reg, "coverage": cov, "codex": codex, "runs": runs, "open_bug_classes": open_bugs, "verdicts": verdicts}
     sdir = vdir / "scores"
     hist = sdir / "history.jsonl"
     prev = None
@@ -381,8 +509,9 @@ def main() -> int:
     line = summary_line(score)
     (sdir / f"{a.subset}-{name}.json").write_text(json.dumps(score, indent=1), encoding="utf-8")
     with open(hist, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"label": name, "subset": a.subset, "commit": emu_info["commit"], "scored": score["scored"],
-                            "headline": head, "regression": score["regression"]["passing"], "line": line,
+        f.write(json.dumps({"label": name, "subset": a.subset, "commit": emu_info["commit"], "dirty": emu_info["dirty"],
+                            "scored": score["scored"], "headline": head, "regression": {k: v["passing"] for k, v in reg.items()},
+                            "line": line, "not_quotable": not_quotable,
                             "codex": {k: codex.get(k) for k in ("runs", "runs_matching_pct")}}) + "\n")
     print(line)
     if prev:
@@ -399,20 +528,28 @@ def summary_line(s: dict) -> str:
         b = h.get(p)
         if not b:
             return f"{p} n/a"
-        x = f"{p} {b['identical']}/{b['fights']} identical ({pct(b['identical'], b['fights'])})"
-        if steps and b.get("setup_matched", b["fights"]) < b["fights"]:
-            x += f" [{pct(b['setup_matched_identical'], b['setup_matched'])} of the {b['setup_matched']} whose setup the emulator matched]"
-        return x + (f", steps verified {pct(b['verified'], b['transitions'])}" if steps else "")
+        causes = ", ".join(f"{k} {n}" for k, n in sorted(b["excluded_by_cause"].items(), key=lambda kv: -kv[1]))
+        x = (f"{p}: {b['specs']} specs, {b['kept']} kept, {b['excluded']} excluded ({causes or 'none'}), {b['flagged']} flagged; "
+             f"identical {b['identical']}/{b['kept']} = {pct(b['identical'], b['kept'])} of kept, "
+             f"{pct(b['identical'], b['specs'])} counting exclusions as failures")
+        if steps:
+            x += f", steps verified {pct(b['verified'], b['transitions'])}"
+        return x
     c = s["coverage"]["counts"]
     nc = sum(v["not_clean"] + v["not_reached"] for v in c.values())
+    reg = s["regression"]["emulator"]
     cx = s["codex"]
-    codex = (f"codex runs {cx['complete']}/{cx['runs']} matching to the end ({cx['runs_matching_pct']}%; "
-             f"{cx['judged_matching_pct']}% of {cx['judged']} not stopped by a walker/fight/profile limit)" if cx.get("runs") else "codex runs n/a")
+    codex = (f"codex runs {cx['complete']}/{cx['runs']} matching to the end ({cx['runs_matching_pct']}%) @ "
+             f"{cx['commit']['commit'][:12]}" if cx.get("runs") else "codex runs n/a")
     rn = s.get("runs") or {}
-    runs = (f"whole runs {rn['runs_matching']}/{rn['runs']} matching, {rn.get('fights_identical')}/{rn.get('fights')} of their fights identical"
-            if rn.get("runs") else "whole runs n/a")
-    return (f"{s['set']} [{s['subset']}] @ {s['label']}: {part('realistic', True)}; {part('coverage')}, {nc} items not yet clean; "
-            f"regression {s['regression']['passing']}/{s['regression']['classes']} classes pass; {codex}; {runs}; "
+    runs = (f"whole runs {rn['runs_matching']}/{rn['runs']} matching" if rn.get("runs") else "whole runs n/a")
+    db = s["record"].get("driver_build") or {}
+    nq = f"NOT QUOTABLE ({'; '.join(s['not_quotable'])}) " if s["not_quotable"] else ""
+    return (f"{nq}{s['set']} [{s['subset']}] emulator {s['commit_label']}, references by driver {str(db.get('commit', '?'))[:12]} "
+            f"[{','.join(db.get('capabilities', [])) or 'unchecked'}; settle {db.get('settle', '?')}] | "
+            f"{part('realistic', True)} | {part('coverage')}, {nc} items not yet clean | "
+            f"regression {reg['passing']}/{reg['classes']} emulator classes pass with their trigger reached "
+            f"({len(reg['identical_but_trigger_not_reached'])} identical without it) | {codex} | {runs} | "
             f"{len(s['open_bug_classes'])} open bug classes")
 
 
@@ -421,30 +558,48 @@ def delta(old: dict, new: dict) -> str:
     for p in PARTS:
         if p in old and p in new:
             a, b = old[p], new[p]
-            out.append(f"{p} identical {pct(a['identical'], a['fights'])} -> {pct(b['identical'], b['fights'])}, "
+            ak = a.get("kept", a.get("fights", 0))
+            out.append(f"{p} identical {pct(a['identical'], ak)} -> {pct(b['identical'], b['kept'])} of kept, "
                        f"verified {pct(a['verified'], a['transitions'])} -> {pct(b['verified'], b['transitions'])}")
     return "; ".join(out)
 
 
 def render_table(s: dict) -> str:
-    rows = [f"  {'realistic':<14} {'fights':>6} {'identical':>10} {'steps':>7} {'verified':>9}"]
+    rows = [f"  {'realistic':<14} {'specs':>5} {'kept':>5} {'excl':>5} {'flag':>5} {'identical':>9} {'% kept':>7} "
+            f"{'% specs':>7} {'unflagged id.':>13} {'steps':>6} {'verified':>8}"]
+
+    def row(k, b):
+        return (f"  {k:<14} {b['specs']:>5} {b['kept']:>5} {b['excluded']:>5} {b['flagged']:>5} {b['identical']:>9} "
+                f"{pct(b['identical'], b['kept']):>7} {pct(b['identical'], b['specs']):>7} "
+                f"{str(b['unflagged_identical']) + '/' + str(b['unflagged']):>13} {b['transitions']:>6} {pct(b['verified'], b['transitions']):>8}")
     for k, b in s["realistic_table"].items():
-        rows.append(f"  {k:<14} {b['fights']:>6} {pct(b['identical'], b['fights']):>10} {b['transitions']:>7} {pct(b['verified'], b['transitions']):>9}")
+        rows.append(row(k, b))
     for p, b in s["headline"].items():
-        rows.append(f"  {('= ' + p):<14} {b['fights']:>6} {pct(b['identical'], b['fights']):>10} {b['transitions']:>7} "
-                    f"{pct(b['verified'], b['transitions']):>9}" + (f"  ({b['mirror_gaps']} mirror gaps)" if b["mirror_gaps"] else "")
-                    + (f"  setup matched {b['setup_matched']}: {pct(b['setup_matched_identical'], b['setup_matched'])} identical"
-                       if b.get("setup_matched", b["fights"]) < b["fights"] else ""))
+        rows.append(row("= " + p, b) + (f"  ({b['mirror_gaps']} mirror gaps)" if b["mirror_gaps"] else "")
+                    + f"  choosers {b['choosers']}")
+    for p, b in s["headline"].items():
+        if b["excluded_by_cause"]:
+            rows.append(f"  {p} excluded by cause: {b['excluded_by_cause']}")
+    if s.get("flags_by_item"):
+        rows.append("  realism flags (kept fights): " + "; ".join(f"{k} {n}" for k, n in list(s["flags_by_item"].items())[:14]))
     c = s["coverage"]["counts"]
     rows.append("  coverage items (whole set): " + "; ".join(
-        f"{k} {v['clean']}/{v['items']} clean ({v['not_reached']} not reached, {v['not_clean']} diverging)" for k, v in c.items()))
+        f"{k} {v['clean']}/{v['items']} clean ({v['not_reached']} not reached, {v['not_clean']} diverging)" for k, v in c.items())
+        + f"; relics held but never fired: {c.get('relic', {}).get('held_never_fired', 0)}")
     rows.append("  open bug classes (first divergence, fights): " + "; ".join(
         f"{b['cause']} {b['fights']}" for b in s["open_bug_classes"][:12]))
-    if s["regression"]["failing"]:
-        rows.append(f"  regression failing: {', '.join(s['regression']['failing'][:12])}")
+    for kind, r in s["regression"].items():
+        if r["classes"]:
+            rows.append(f"  regression ({kind}): {r['passing']}/{r['classes']} pass with the trigger reached; identical without "
+                        f"it: {', '.join(r['identical_but_trigger_not_reached'][:6]) or '-'}; failing: {', '.join(r['failing'][:10]) or '-'}")
     cx = s["codex"]
     if cx.get("components"):
-        rows.append("  codex floors matching: " + "; ".join(f"{k} {v['pct']}%" for k, v in cx["components"].items()))
+        rows.append("  codex, " + cx["components_note"] + ": " + "; ".join(
+            f"{k} {v['pct']}% of {v['floors']}" for k, v in cx["components"].items()))
+        rows.append(f"  codex stops by class: {cx['stops_by_class']}; components at 0%: {', '.join(cx['components_at_zero']) or '-'}; "
+                    f"runs in the set {cx['runs_in_set']}, walked {cx['runs']}, walker skipped {cx['walker_skipped']}")
+    rows.append("  compared: " + "; ".join(s["compared"]) + " | not compared: " + ", ".join(s["not_compared"]))
+    rows.append("  realism limits of every realistic fight: " + "; ".join(s["realism_limits"]))
     return "\n".join(rows)
 
 
