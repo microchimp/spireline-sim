@@ -14,7 +14,7 @@ recorded (below).
 |---|---|---|
 | realistic | 600 | Real Ironclad A10 runs (Spire Codex, v0.107.1): the run's seed and Neow pick, then its deck (upgrades, enchantments, saved properties), relics (with their saved state), potions, potion slots, HP and gold as they stood before a floor, then that floor's encounter in its own act. 200 per act: 110 normal (3 floor buckets), 55 elite (2), 35 boss; one fight per run. Played by the heuristic chooser. The headline. |
 | coverage | 283 | The fewest plausible setups so that every Ironclad and colourless card, base and upgraded, is in enough decks to be played 5 times, every act 1-3 encounter is met 3 times (in its act), and every Ironclad-reachable relic (3) and potion (5 belts, about 3 uses) the emulator models is held. Random play. |
-| regression | 117 | One minimal setup per known divergence class (FINDINGS.md, triage files, shrunk setup fights) and the original fight that found it, re-recorded with today's driver; each class names its trigger. Random play (originals: as first recorded). |
+| regression | 119 | One minimal setup per known divergence class (three seeds for the open Thorns class) (FINDINGS.md, triage files, shrunk setup fights) and the original fight that found it, re-recorded with today's driver; each class names its trigger. Random play (originals: as first recorded). |
 | runs | 20 381 + 30 | Every Ironclad A10 codex run through the codex replay (run-level offers), and 30 seeded whole runs for the run referee. |
 
 `manifest.json` lists every spec with its reason, strata, chooser, realism flags and source hashes (codex
