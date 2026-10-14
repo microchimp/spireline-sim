@@ -217,20 +217,28 @@ public static class StateCloning
         into.Enemies = [.. combat.Enemies.Select(enemy => enemy.Clone())];
         into.EncounterId = combat.EncounterId;
         into.IsEliteCombat = combat.IsEliteCombat;
-        into.ShuffleRng = Carry(into.ShuffleRng, combat.ShuffleRng, rngSeed, nameof(combat.ShuffleRng));
-        into.TargetRng = Carry(into.TargetRng, combat.TargetRng, rngSeed, nameof(combat.TargetRng));
-        into.CardSelectionRng = Carry(into.CardSelectionRng, combat.CardSelectionRng, rngSeed, nameof(combat.CardSelectionRng));
-        into.EnergyCostRng = Carry(into.EnergyCostRng, combat.EnergyCostRng, rngSeed, nameof(combat.EnergyCostRng));
-        into.CardGenerationRng = Carry(into.CardGenerationRng, combat.CardGenerationRng, rngSeed, nameof(combat.CardGenerationRng));
-        into.PotionGenerationRng = Carry(into.PotionGenerationRng, combat.PotionGenerationRng, rngSeed, nameof(combat.PotionGenerationRng));
-        into.OrbGenerationRng = Carry(into.OrbGenerationRng, combat.OrbGenerationRng, rngSeed, nameof(combat.OrbGenerationRng));
+        into.ShuffleRng = Carry(into.ShuffleRng, combat.ShuffleRng);
+        into.TargetRng = Carry(into.TargetRng, combat.TargetRng);
+        into.CardSelectionRng = Carry(into.CardSelectionRng, combat.CardSelectionRng);
+        into.EnergyCostRng = Carry(into.EnergyCostRng, combat.EnergyCostRng);
+        into.CardGenerationRng = Carry(into.CardGenerationRng, combat.CardGenerationRng);
+        into.PotionGenerationRng = Carry(into.PotionGenerationRng, combat.PotionGenerationRng);
+        into.OrbGenerationRng = Carry(into.OrbGenerationRng, combat.OrbGenerationRng);
         // A CountingRandom carries its seed and position, so it clones exactly. A
         // plain Random does not, and only the combat-only environment supplies one
         // -- that path has no clone export, so the shared reference is unreachable.
         into.AiRng = combat.AiRng is CountingRandom counting
-            ? Carry(into.AiRng as CountingRandom, counting, rngSeed, nameof(combat.AiRng))
+            ? Carry(into.AiRng as CountingRandom, counting)
             : combat.AiRng;
-        into.NicheHpRng = Carry(into.NicheHpRng, combat.NicheHpRng, rngSeed, nameof(combat.NicheHpRng));
+        into.NicheHpRng = Carry(into.NicheHpRng, combat.NicheHpRng);
+        if (rngSeed is int seed)
+        {
+            into.ReseedStreams(seed);
+        }
+
+        // A screen that stopped a step keeps the step's own copy (HookChoiceReplay), shared: a
+        // resample cannot reach it, and need not. The answer replays the step on the streams it
+        // started with, and puts this copy's streams back at the screen (ScreenHiddenState).
         into.PendingSelection = combat.PendingSelection?.Clone();
         into.AutoPlaying = combat.AutoPlaying;
         into.PlayedCardBonusDamage = combat.PlayedCardBonusDamage;
@@ -309,18 +317,12 @@ public static class StateCloning
     /// A stream for <see cref="CopyTo" />: onto a combat that already holds the same stream (a
     /// step restored for a replay), it is moved back in place, so whoever holds the object -- a
     /// trace naming streams by object, a test counting draws -- keeps holding the combat's
-    /// stream; anywhere else it is a copy, reseeded as <see cref="Reseeded" /> says.
+    /// stream; anywhere else it is a copy.
     /// </summary>
-    private static CountingRandom? Carry(
-        CountingRandom? existing,
-        CountingRandom? source,
-        int? rngSeed,
-        string streamName
-    )
+    private static CountingRandom? Carry(CountingRandom? existing, CountingRandom? source)
     {
         if (
-            rngSeed is null
-            && existing is not null
+            existing is not null
             && source is not null
             && !ReferenceEquals(existing, source)
             && existing.Seed == source.Seed
@@ -330,7 +332,75 @@ public static class StateCloning
             return existing;
         }
 
-        return source.Reseeded(rngSeed, streamName);
+        return source?.Clone();
+    }
+
+    /// <summary>
+    /// Every stream the combat owns rebuilt from <paramref name="seed" /> at the same call count,
+    /// as <see cref="Clone(CombatState, int?)" /> resamples them.
+    /// </summary>
+    public static void ReseedStreams(this CombatState combat, int seed)
+    {
+        for (int i = 0; i < StreamCount; i++)
+        {
+            if (Stream(combat, i) is { } stream)
+            {
+                SetStream(combat, i, stream.Reseeded(seed, StreamNames[i]));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The streams a combat owns, by field name: the one list a resample
+    /// (<see cref="ReseedStreams" />) and a stopped step's answer (<c>ScreenHiddenState</c>) go
+    /// through. The name is mixed into a resampled stream's seed (<see cref="Reseeded" />).
+    /// </summary>
+    private static readonly string[] StreamNames =
+    [
+        nameof(CombatState.ShuffleRng),
+        nameof(CombatState.TargetRng),
+        nameof(CombatState.CardSelectionRng),
+        nameof(CombatState.EnergyCostRng),
+        nameof(CombatState.CardGenerationRng),
+        nameof(CombatState.PotionGenerationRng),
+        nameof(CombatState.OrbGenerationRng),
+        nameof(CombatState.AiRng),
+        nameof(CombatState.NicheHpRng),
+    ];
+
+    internal static int StreamCount => StreamNames.Length;
+
+    /// <summary>The combat's stream <paramref name="index" /> of <see cref="StreamNames" />, null when unset (or a plain Random).</summary>
+    internal static CountingRandom? Stream(CombatState combat, int index) =>
+        index switch
+        {
+            0 => combat.ShuffleRng,
+            1 => combat.TargetRng,
+            2 => combat.CardSelectionRng,
+            3 => combat.EnergyCostRng,
+            4 => combat.CardGenerationRng,
+            5 => combat.PotionGenerationRng,
+            6 => combat.OrbGenerationRng,
+            7 => combat.AiRng as CountingRandom,
+            8 => combat.NicheHpRng,
+            _ => throw new ArgumentOutOfRangeException(nameof(index)),
+        };
+
+    internal static void SetStream(CombatState combat, int index, CountingRandom? stream)
+    {
+        switch (index)
+        {
+            case 0: combat.ShuffleRng = stream; break;
+            case 1: combat.TargetRng = stream; break;
+            case 2: combat.CardSelectionRng = stream; break;
+            case 3: combat.EnergyCostRng = stream; break;
+            case 4: combat.CardGenerationRng = stream; break;
+            case 5: combat.PotionGenerationRng = stream; break;
+            case 6: combat.OrbGenerationRng = stream; break;
+            case 7: combat.AiRng = stream; break;
+            case 8: combat.NicheHpRng = stream; break;
+            default: throw new ArgumentOutOfRangeException(nameof(index));
+        }
     }
 
     public static RunMapNode Clone(this RunMapNode node)

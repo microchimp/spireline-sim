@@ -28,6 +28,9 @@ public static class CombatEngine
                 return StepResult.Invalid;
             }
 
+            // The combat answering is the copy that stood on the screen, perhaps determinized
+            // there: its hidden state goes back on when the replay reaches the screen.
+            var hidden = ScreenHiddenState.Of(state, rng);
             stopped.Before.CopyTo(state);
             if (rng is CountingRandom live)
             {
@@ -48,6 +51,7 @@ public static class CombatEngine
                 Action = stopped.Action,
                 TargetEnemyIndex = stopped.TargetEnemyIndex,
                 Answers = [.. stopped.Answers, action],
+                Hidden = [.. stopped.Hidden, hidden],
             };
             (action, targetEnemyIndex) = (stopped.Action, stopped.TargetEnemyIndex);
             // A trace drops what the stopped run marked: the replay marks the step again.
@@ -69,6 +73,7 @@ public static class CombatEngine
                         Action = action,
                         TargetEnemyIndex = targetEnemyIndex,
                         Answers = [],
+                        Hidden = [],
                     }
                     : null;
         }
@@ -157,10 +162,10 @@ public static class CombatEngine
             }
             else if (run is not null)
             {
-                answer =
-                    run.Used < run.Answers.Count
-                        ? run.Answers[run.Used++]
-                        : throw HookChoicePending.Instance;
+                if (!run.TryNextAnswer(out answer))
+                {
+                    throw HookChoicePending.Instance;
+                }
             }
             else if (outer is null)
             {

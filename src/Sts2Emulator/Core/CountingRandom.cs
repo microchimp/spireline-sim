@@ -16,7 +16,7 @@ public sealed class CountingRandom : Random
     private readonly MegaRandom _rng;
 
     /// <summary>The stream's raw seed, kept so the stream can be cloned.</summary>
-    public int Seed { get; }
+    public int Seed { get; private set; }
 
     public int CallCount { get; private set; }
 
@@ -59,6 +59,18 @@ public sealed class CountingRandom : Random
     {
         _rng.CopyStateFrom(other._rng);
         CallCount = other.CallCount;
+    }
+
+    /// <summary>
+    /// Makes this stream, in place, exactly <paramref name="other" />: its seed as well as its
+    /// position, for a stream that is to go on as a different one while whoever holds this object
+    /// keeps holding it -- a step's stream and the combat's at a screen a determinized copy answers
+    /// (<c>HiddenAtScreen</c>).
+    /// </summary>
+    public void Become(CountingRandom other)
+    {
+        RestoreFrom(other);
+        Seed = other.Seed;
     }
 
     /// <summary>
