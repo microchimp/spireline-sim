@@ -3778,7 +3778,19 @@ public static class CardEffects
         }
     }
 
-    // Adds card to exhaust pile and triggers exhaust hooks.
+    /// <summary>
+    /// `CardCmd.Exhaust`: the card goes to the exhaust pile and `Hook.AfterCardExhausted` fires.
+    /// Every exhaust comes through here: the played card's own Exhaust, Ethereal at turn end,
+    /// random and chosen picks.
+    /// </summary>
+    /// <remarks>
+    /// The command does nothing once the fight is over or ending (`CombatEngine.IsOverOrEnding`):
+    /// the card the last kill left to exhaust (True Grit's random pick after Juggernaut's hit, a
+    /// killing card with Exhaust, the second Ethereal card after the first one's Charon's Ashes
+    /// hit) fires no exhaust hook. So Joss Paper's saved count (run referee NQH1R9PA6V: 3 in the
+    /// game, 4 here) and the run streams Forgotten Soul and the hooks' draws would roll on stay
+    /// as they were. The card still lands in the pile here, which goes with the fight.
+    /// </remarks>
     public static void ExhaustCard(
         CombatState state,
         CardInstance card,
@@ -3787,6 +3799,11 @@ public static class CardEffects
     )
     {
         state.ExhaustPile.Add(card with { FreeThisTurn = false });
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         state.CardsExhaustedThisTurn++;
         RelicEffects.ApplyAfterCardExhausted(state, causedByEthereal, rng);
         RelicEffects.ApplyBurningSticks(state, card);

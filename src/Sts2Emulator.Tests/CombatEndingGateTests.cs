@@ -207,4 +207,375 @@ public class CombatEndingGateTests
         Assert.Equal(5, fight.State.Hand.Count);
         Assert.Equal(5, fight.State.ShuffleRng!.CallCount);
     }
+
+    // ── CardCmd.Exhaust and the gated hook dispatches (backlog C1-F04) ─────────────
+
+    private static Fight InfernoTurnStart(int relicId, int enemyHp)
+    {
+        var fight = Fight.Hand().Enemy(hp: enemyHp).PlayerHp(999);
+        fight.State.Relics = [new RelicInstance(relicId, 1)];
+        fight.PlayerBuff(BuffId.Inferno, 6);
+        fight.PlayerBuff(BuffId.InfernoSelfDamage, 1);
+        return fight;
+    }
+
+    /// <summary>
+    /// `Hook.AfterSideTurnStart` comes after `SetupPlayerTurn`'s `AfterPlayerTurnStart`, where
+    /// Inferno burns: the burn's kill ends the fight before either flower ticks (run referee
+    /// CGXZ45F6HL: Happy Flower 0 in the game, 1 here). The same burn that leaves the enemy
+    /// standing lets it tick.
+    /// </summary>
+    [Theory]
+    [InlineData(RelicEffects.HappyFlower, 3, true)]
+    [InlineData(RelicEffects.FakeHappyFlower, 3, true)]
+    [InlineData(RelicEffects.HappyFlower, 50, false)]
+    [InlineData(RelicEffects.FakeHappyFlower, 50, false)]
+    public void AFlowerTicksOnlyWhileTheFightGoesOn(int relicId, int enemyHp, bool ends)
+    {
+        var fight = InfernoTurnStart(relicId, enemyHp);
+
+        var result = fight.EndTurn();
+
+        Assert.Equal(ends, result.Terminal && result.PlayerWon);
+        Assert.Equal(ends ? 1 : 2, fight.State.Relics[0].Counter);
+    }
+
+    /// <summary>
+    /// Crossbow and Seal of Gold are `AfterSideTurnStart` relics too: after the turn start's
+    /// kill Crossbow rolls nothing on the run's CombatCardGeneration stream and Seal of Gold
+    /// takes no gold. While the fight goes on, both run, after the hand draw.
+    /// </summary>
+    [Theory]
+    [InlineData(3, true)]
+    [InlineData(50, false)]
+    public void CrossbowAndSealOfGoldRunOnlyWhileTheFightGoesOn(int enemyHp, bool ends)
+    {
+        var fight = InfernoTurnStart(RelicEffects.Crossbow, enemyHp);
+        fight.State.Relics.Add(new RelicInstance(RelicEffects.SealOfGold));
+        fight.State.PlayerGold = 20;
+        int generated = fight.State.CardGenerationRng!.CallCount;
+
+        var result = fight.EndTurn();
+
+        Assert.Equal(ends, result.Terminal && result.PlayerWon);
+        Assert.Equal(ends ? 20 : 15, fight.State.PlayerGold);
+        if (ends)
+        {
+            Assert.Equal(generated, fight.State.CardGenerationRng!.CallCount);
+        }
+        else
+        {
+            Assert.True(fight.State.CardGenerationRng!.CallCount > generated);
+            Assert.True(fight.State.Hand[^1].FreeThisTurn);
+        }
+    }
+
+    /// <summary>
+    /// The player's own `AfterSideTurnStart` powers are the same gated dispatch: after the
+    /// burn's kill the poison does not tick (player HP outlives the fight) and Countdown rolls
+    /// no target on the run's CombatTargets stream.
+    /// </summary>
+    [Theory]
+    [InlineData(3, true)]
+    [InlineData(50, false)]
+    public void PoisonAndCountdownRunOnlyWhileTheFightGoesOn(int enemyHp, bool ends)
+    {
+        var fight = InfernoTurnStart(RelicEffects.HappyFlower, enemyHp);
+        fight.PlayerBuff(BuffId.Poison, 4);
+        fight.PlayerBuff(BuffId.Countdown, 5);
+        int targets = fight.State.TargetRng!.CallCount;
+
+        var result = fight.EndTurn();
+
+        Assert.Equal(ends, result.Terminal && result.PlayerWon);
+        Assert.Equal(ends ? 998 : 994, fight.State.PlayerHp);
+        Assert.Equal(ends, fight.State.TargetRng!.CallCount == targets);
+    }
+
+    /// <summary>
+    /// True Grit's block sets off Juggernaut, whose hit kills; the random card it then exhausts
+    /// is still picked off CombatCardSelection, but `CardCmd.Exhaust` does nothing, so Joss
+    /// Paper does not count it (run referee NQH1R9PA6V: 3 in the game, 4 here). While the fight
+    /// goes on, it counts.
+    /// </summary>
+    [Theory]
+    [InlineData(2, true)]
+    [InlineData(50, false)]
+    public void TheExhaustAfterTheKillingHitIsNotCounted(int enemyHp, bool ends)
+    {
+        var fight = Fight.Hand(Card(IC.TrueGrit), Card(IC.StrikeIronclad)).Enemy(hp: enemyHp);
+        fight.State.Relics = [new RelicInstance(RelicEffects.JossPaper, 3)];
+        fight.PlayerBuff(BuffId.Juggernaut, 6);
+        int selections = fight.State.CardSelectionRng!.CallCount;
+
+        var result = fight.Play(0);
+
+        Assert.Equal(ends, result.Terminal && result.PlayerWon);
+        Assert.Equal(ends ? 3 : 4, fight.State.Relics[0].Counter);
+        Assert.Equal(selections + 1, fight.State.CardSelectionRng!.CallCount);
+    }
+
+    /// <summary>
+    /// A killing card with Exhaust goes to its result pile through `CardCmd.Exhaust` after the
+    /// play, so it is not counted either.
+    /// </summary>
+    [Fact]
+    public void AKillingCardThatExhaustsItselfIsNotCounted()
+    {
+        var fight = Fight.Hand(Card(IC.Feed)).Enemy(hp: 5);
+        fight.State.Relics = [new RelicInstance(RelicEffects.JossPaper, 3)];
+
+        var result = fight.Play(0);
+
+        Assert.True(result.Terminal && result.PlayerWon);
+        Assert.Equal(3, fight.State.Relics[0].Counter);
+    }
+
+    /// <summary>
+    /// Forgotten Soul's hit is an exhaust hook: after the leader's death it rolls no target on
+    /// the run's CombatTargets stream, though a minion is still standing.
+    /// </summary>
+    [Fact]
+    public void NoExhaustHookRollsAfterTheKill()
+    {
+        var fight = Fight
+            .Hand(Card(IC.Feed))
+            .Enemy(hp: 5)
+            .Enemy(hp: 20, buffs: new BuffState(BuffId.Minion, 1));
+        fight.State.Relics = [new RelicInstance(RelicEffects.ForgottenSoul)];
+        var minion = fight.Enemy1;
+        int targets = fight.State.TargetRng!.CallCount;
+
+        var result = fight.Play(0, target: 0);
+
+        Assert.True(result.Terminal && result.PlayerWon);
+        Assert.Equal(targets, fight.State.TargetRng!.CallCount);
+        Assert.Equal(20, minion.Hp);
+    }
+
+    /// <summary>
+    /// Ethereal exhausts at the turn's end: the first one's Charon's Ashes hit kills, the second
+    /// exhaust does nothing, and `Hook.AfterTurnEnd` -- where Joss Paper folds its banked
+    /// Ethereal count in -- never runs. `AfterCombatEnd` drops the bank.
+    /// </summary>
+    [Fact]
+    public void EtherealExhaustsBankedBeforeATurnEndKillAreDropped()
+    {
+        var fight = Fight.Hand(Card(ST.Dazed), Card(ST.Dazed)).Enemy(hp: 3);
+        fight.State.Relics =
+        [
+            new RelicInstance(RelicEffects.JossPaper, 0),
+            new RelicInstance(RelicEffects.CharonsAshes),
+        ];
+
+        var result = fight.EndTurn();
+
+        Assert.True(result.Terminal && result.PlayerWon);
+        Assert.Equal(0, fight.State.Relics[0].Counter);
+    }
+
+    /// <summary>
+    /// A kill in the end of turn's first phase (an Ethereal exhaust's Charon's Ashes hit) ends
+    /// the fight at `EndPlayerTurnPhaseOneInternal`'s `CheckWinCondition`: no flush, no
+    /// `AfterFlush`, no `AfterTurnEnd`, so Constrict takes no HP and Bookmark rolls no
+    /// CombatCardSelection.
+    /// </summary>
+    [Theory]
+    [InlineData(3, true)]
+    [InlineData(50, false)]
+    public void NothingAfterTheEndOfTurnsFirstPhaseRunsOnceItKills(int enemyHp, bool ends)
+    {
+        var fight = Fight
+            .Hand(Card(ST.Dazed), Card(IC.StrikeIronclad))
+            .Enemy(hp: enemyHp)
+            .PlayerHp(50);
+        fight.State.Relics =
+        [
+            new RelicInstance(RelicEffects.CharonsAshes),
+            new RelicInstance(RelicEffects.Bookmark),
+        ];
+        fight.PlayerBuff(BuffId.Constrict, 6);
+        fight.PlayerBuff(BuffId.RetainHand, 1);
+        int selections = fight.State.CardSelectionRng!.CallCount;
+
+        var result = fight.EndTurn();
+
+        Assert.Equal(ends, result.Terminal && result.PlayerWon);
+        if (ends)
+        {
+            Assert.Equal(50, fight.State.PlayerHp);
+            Assert.Equal(selections, fight.State.CardSelectionRng!.CallCount);
+        }
+        else
+        {
+            Assert.True(fight.State.PlayerHp <= 44);
+            Assert.True(fight.State.CardSelectionRng!.CallCount > selections);
+        }
+    }
+
+    /// <summary>
+    /// The first phase's kill is still answered before the fight ends: `Hook.BeforeDeath` is not
+    /// gated, so a Thieving Hopper killed by the Ethereal exhaust's Charon's Ashes hit gives its
+    /// stolen card back (`SwipePower.BeforeDeath`), and a Fat Gremlin its Heist gold
+    /// (`HeistPower.BeforeDeath`). Ending the turn there skipped the enemy phase's answer, and
+    /// both were lost to the run.
+    /// </summary>
+    [Theory]
+    [InlineData(KE.ThievingHopper)]
+    [InlineData(KE.FatGremlin)]
+    public void AFirstPhaseKillStillReturnsWhatTheEnemyStole(int thief)
+    {
+        var fight = Fight.Hand(Card(ST.Dazed)).Enemy(hp: 2, defId: thief).PlayerHp(60, 80);
+        fight.State.Relics = [new RelicInstance(RelicEffects.CharonsAshes)];
+        var stolen = Card(IC.StrikeIronclad, upgraded: true);
+        if (thief == KE.ThievingHopper)
+        {
+            fight.Enemy0.StolenCard = stolen;
+        }
+        else
+        {
+            fight.Enemy0.HeistGold = 40;
+        }
+
+        var result = fight.EndTurn();
+
+        Assert.True(result.Terminal && result.PlayerWon);
+        if (thief == KE.ThievingHopper)
+        {
+            Assert.Contains(fight.State.StolenBackCards, card => card.DefId == stolen.DefId);
+        }
+        else
+        {
+            Assert.Equal(40, fight.State.StolenBackGold);
+        }
+    }
+
+    /// <summary>
+    /// An enemy's Doom kills at the end of its OWNER's side turn (`DoomPower.BeforeSideTurnEnd`,
+    /// FINDINGS 4W1BFLMWVJ), so in the game a doomed last enemy is alive through the player's
+    /// `Hook.AfterTurnEnd`: Constrict hits, Joss Paper folds the Ethereal exhaust in and the
+    /// Late pass's Disintegration hits, lethal Doom or not. The emulator's Doom kill at the
+    /// player's turn end shut both gates and took all three away.
+    /// </summary>
+    [Theory]
+    [InlineData(10, true)]
+    [InlineData(4, false)]
+    public void ADoomedLastEnemyLeavesThePlayersAfterTurnEndOpen(int doom, bool ends)
+    {
+        var fight = Fight
+            .Hand(Card(ST.Dazed))
+            .Enemy(hp: 5, buffs: new BuffState(BuffId.Doom, doom))
+            .PlayerHp(50, 80);
+        fight.State.Relics = [new RelicInstance(RelicEffects.JossPaper, 0)];
+        fight.PlayerBuff(BuffId.Constrict, 3);
+        fight.PlayerBuff(BuffId.Disintegration, 2);
+
+        var result = fight.EndTurn();
+
+        Assert.Equal(ends, result.Terminal && result.PlayerWon);
+        Assert.Equal(1, fight.State.Relics[0].Counter);
+        Assert.Equal(45, fight.State.PlayerHp);
+    }
+
+    /// <summary>
+    /// The Doom kill asks the gate itself (`!IsOverOrEnding`), after the player's
+    /// `AfterTurnEnd`: a Constrict that kills the player ends the fight before it, so Book
+    /// Repair Knife's heal for the doomed enemy never comes and the fight is lost. With the
+    /// Doom killing first, the heal stood the player back up to take the hit and live.
+    /// </summary>
+    [Fact]
+    public void AConstrictDeathComesBeforeAnEnemysDoom()
+    {
+        var fight = Fight
+            .Hand()
+            .Enemy(hp: 5, buffs: new BuffState(BuffId.Doom, 10))
+            .Enemy(hp: 50)
+            .PlayerHp(5, 80);
+        fight.State.Relics = [new RelicInstance(RelicEffects.BookRepairKnife)];
+        fight.PlayerBuff(BuffId.Constrict, 5);
+
+        var result = fight.EndTurn();
+
+        Assert.True(result.Terminal);
+        Assert.False(result.PlayerWon);
+        Assert.Equal(0, fight.State.PlayerHp);
+        Assert.Equal(5, fight.Enemy0.Hp);
+    }
+
+    // ── A pending loss comes first (the C1-F04 rejection) ──────────────────────────
+
+    /// <summary>
+    /// Lethal Doom on the player kills in `BeforeTurnEnd`'s BeforeSideTurnEnd pass, before
+    /// `DoTurnEnd` exhausts the Ethereal cards, and the turn's `CheckWinCondition` takes the
+    /// pending loss first: the Charon's Ashes hit that would have killed the last enemy never
+    /// comes, and the fight is lost. With the Doom one short of lethal, the exhaust kills and the
+    /// fight is won.
+    /// </summary>
+    [Theory]
+    [InlineData(10, false)]
+    [InlineData(9, true)]
+    public void LethalDoomLosesBeforeAnEtherealExhaustCanWin(int doom, bool won)
+    {
+        var fight = Fight.Hand(Card(ST.Dazed)).Enemy(hp: 3).PlayerHp(10, 80);
+        fight.State.Relics = [new RelicInstance(RelicEffects.CharonsAshes)];
+        fight.PlayerBuff(BuffId.Doom, doom);
+        // Held by reference: the killed enemy's corpse is swept as its death is answered.
+        var enemy = fight.Enemy0;
+
+        var result = fight.EndTurn();
+
+        Assert.True(result.Terminal);
+        Assert.Equal(won, result.PlayerWon);
+        Assert.Equal(won ? 0 : 3, enemy.Hp);
+        Assert.Equal(won ? 10 : 0, fight.State.PlayerHp);
+    }
+
+    /// <summary>
+    /// Inside the one pass the player's powers go in the order they were applied, and Doom asks
+    /// the gate itself: a Bomb applied ahead of it that kills the last enemy spares the player
+    /// (won), while a Doom applied first kills before the Bomb goes off, and the Bomb's kill
+    /// comes after the pending loss (lost).
+    /// </summary>
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void TheBombAheadOfLethalDoomWinsAndBehindItLoses(bool bombFirst, bool won)
+    {
+        var fight = Fight.Hand().Enemy(hp: 20).PlayerHp(10, 80);
+        if (bombFirst)
+        {
+            fight.PlayerBuff(BuffId.TheBombPower, 1, data: 40);
+            fight.PlayerBuff(BuffId.Doom, 10);
+        }
+        else
+        {
+            fight.PlayerBuff(BuffId.Doom, 10);
+            fight.PlayerBuff(BuffId.TheBombPower, 1, data: 40);
+        }
+
+        var result = fight.EndTurn();
+
+        Assert.True(result.Terminal);
+        Assert.Equal(won, result.PlayerWon);
+        Assert.Equal(0, fight.Enemy0.Hp);
+    }
+
+    /// <summary>
+    /// `DoomKill` is a `CreatureCmd.Kill` without force, so a Fairy in a Bottle refuses it and
+    /// the fight goes on. It used to set the player to 0 and end the fight as lost.
+    /// </summary>
+    [Fact]
+    public void AFairyInABottleRefusesTheDoom()
+    {
+        var fight = Fight.Hand().Enemy(hp: 30).PlayerHp(10, 80);
+        int fairy = Sts2Emulator.GeneratedData.Potions.FindId("FairyInABottle")!.Value;
+        fight.State.PotionSlots[0] = fairy;
+        fight.PlayerBuff(BuffId.Doom, 10);
+
+        var result = fight.EndTurn();
+
+        Assert.False(result.Terminal);
+        Assert.Equal(0, fight.State.PotionSlots[0]);
+        Assert.True(fight.State.PlayerHp > 0);
+    }
 }
