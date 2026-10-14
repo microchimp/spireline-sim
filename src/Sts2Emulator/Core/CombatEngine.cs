@@ -2274,6 +2274,9 @@ public static class CombatEngine
                     )
                     // `TyrannyPower.ModifyHandDraw`, the half of that card that pays.
                     + BuffSystem.Get(state.PlayerBuffs, BuffId.Tyranny)
+                    // `ToolsOfTheTradePower.ModifyHandDraw`: part of the HAND DRAW, so it is
+                    // in hand before any AfterPlayerTurnStart screen and Fiddle spares it.
+                    + BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade)
                     // `DemesnePower.ModifyHandDraw`, the other half of a power that also
                     // raises max energy -- both every turn, not once.
                     + BuffSystem.Get(state.PlayerBuffs, BuffId.Demesne)
@@ -2290,12 +2293,6 @@ public static class CombatEngine
                     // Summing the amount here would pay three cards on the first turn and
                     // none on the other two.
                     + (BuffSystem.Get(state.PlayerBuffs, BuffId.Clarity) > 0 ? 1 : 0)
-                    // `ToolsOfTheTradePower.ModifyHandDraw`: its cards are part of the hand
-                    // draw, ahead of every `AfterPlayerTurnStart`. They were a separate draw
-                    // after Rolling Boulder and Inferno, which a turn-start kill then refused
-                    // (the game deals them and reshuffles for them), and which Fiddle and
-                    // No Draw vetoed, Speedster hit for and Death March counted as extra.
-                    + BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade)
                     - BuffSystem.Get(state.PlayerBuffs, BuffId.MindRot)
             ),
             rng,
@@ -2313,68 +2310,33 @@ public static class CombatEngine
         // draw: the kills a turn start makes there come after the hand is dealt.
         ApplyAfterPlayerTurnStartPowers(state, rng);
 
-        // `EntropyPower.AfterPlayerTurnStart`: TRANSFORM that many cards CHOSEN from hand --
-        // `CardSelectorPrefs(prompt, Amount)`, compulsory. The emulator transformed a random
-        // card at the top of the turn, before the draw, over what was left of the old hand.
-        int entropy = BuffSystem.Get(state.PlayerBuffs, BuffId.EntropyPower);
-        if (entropy > 0)
+        // The three `AfterPlayerTurnStart` screens, in the order their powers were applied:
+        // `CombatState.IterateHookListeners` walks a creature's powers in list order, and the
+        // emulator's buff list keeps application order. Each is `CardSelectorPrefs(prompt,
+        // Amount)`, min = max = Amount, so the pick is compulsory and the CHOICE the player's,
+        // and the game awaits it where it is raised, before the rest of the turn start.
+        foreach (var screen in TurnStartScreenOrder(state))
         {
-            AwaitSelection(
-                state,
-                Effects.CardEffects.HandScreen(
-                    state,
-                    CardSelectionKind.TransformInHand,
-                    Effects.CL.Entropy,
-                    entropy
-                ),
-                rng
-            );
-        }
+            int amount = BuffSystem.Get(state.PlayerBuffs, screen);
+            if (amount <= 0)
+            {
+                continue;
+            }
 
-        // `TyrannyPower.AfterPlayerTurnStart`: EXHAUST that many cards CHOSEN from hand --
-        // `CardSelectorPrefs(prompt, Amount)`, whose single count sets min and max alike, so
-        // the exhaust is compulsory and the CHOICE is the player's. The half of that card
-        // that costs, and it lands after the draw the other half paid for. The game awaits the
-        // pick here, so it lands before the rest of the turn start.
-        int tyranny = BuffSystem.Get(state.PlayerBuffs, BuffId.Tyranny);
-        if (tyranny > 0)
-        {
-            AwaitSelection(
-                state,
-                Effects.CardEffects.HandScreen(
-                    state,
-                    CardSelectionKind.ExhaustFromHandRepeated,
-                    520, // Tyranny
-                    tyranny
-                ),
-                rng
-            );
-        }
-
-        // `ToolsOfTheTradePower` is two hooks. `ModifyHandDraw` adds its amount to the
-        // hand draw (above), and `AfterPlayerTurnStart` raises a DISCARD SELECTION for that many
-        // cards -- `CardSelectCmd.FromHandForDiscard` with a `CardSelectorPrefs(prompt,
-        // Amount)`, whose single-count constructor sets min and max alike, so the discard
-        // is compulsory but the CHOICE is the player's.
-        //
-        // The emulator threw away the leftmost card. Tools of the Trade is a filtering
-        // card -- drawing one more and pitching your worst is the whole engine -- and
-        // pitching whatever happens to be first is closer to a downside than an upside.
-        //
-        // The pick lands here, before the rest of the turn start, as the game awaits it.
-        int toolsOfTheTrade = BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade);
-        if (toolsOfTheTrade > 0)
-        {
-            AwaitSelection(
-                state,
-                Effects.CardEffects.HandScreen(
-                    state,
-                    CardSelectionKind.DiscardFromHandRepeated,
-                    Effects.SI.ToolsOfTheTrade,
-                    toolsOfTheTrade
-                ),
-                rng
-            );
+            var (kind, source) = screen switch
+            {
+                // `EntropyPower`: TRANSFORM the chosen cards (`CardCmd.TransformToRandom`). The
+                // emulator transformed a random card at the top of the turn, before the draw.
+                BuffId.EntropyPower => (CardSelectionKind.TransformInHand, Effects.CL.Entropy),
+                // `TyrannyPower`: EXHAUST them -- the half of that card that costs, after the
+                // draw the other half paid for.
+                BuffId.Tyranny => (CardSelectionKind.ExhaustFromHandRepeated, 520), // Tyranny
+                // `ToolsOfTheTradePower`: DISCARD them (`FromHandForDiscard`). The emulator threw
+                // away the leftmost card, and drew the power's cards here, outside the hand
+                // draw, after the other screens and under Fiddle's veto.
+                _ => (CardSelectionKind.DiscardFromHandRepeated, Effects.SI.ToolsOfTheTrade),
+            };
+            AwaitSelection(state, Effects.CardEffects.HandScreen(state, kind, source, amount), rng);
         }
 
         // `Hook.AfterPlayerTurnStart` for the relics -- the end of `SetupPlayerTurn`, after the
@@ -2678,6 +2640,27 @@ public static class CombatEngine
     {
         state.TurnStartHeldPhase = (int)phase;
         state.TurnStartHeldRelic = nextRelic;
+    }
+
+    /// <summary>
+    /// Entropy, Tyranny and Tools of the Trade as they stand in the player's power list, which
+    /// is the order the game's listeners run them in.
+    /// </summary>
+    private static List<BuffId> TurnStartScreenOrder(CombatState state)
+    {
+        var order = new List<BuffId>(3);
+        foreach (var buff in state.PlayerBuffs)
+        {
+            if (
+                buff.Id is BuffId.EntropyPower or BuffId.Tyranny or BuffId.ToolsOfTheTrade
+                && !order.Contains(buff.Id)
+            )
+            {
+                order.Add(buff.Id);
+            }
+        }
+
+        return order;
     }
 
     private static StepResult UsePotion(CombatState state, int slot, Random rng)

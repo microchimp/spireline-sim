@@ -401,3 +401,64 @@ public class NoScreenOnceTheFightIsWonTests
         Assert.Empty(fight.State.Hand);
     }
 }
+
+// `ToolsOfTheTradePower` is two hooks: `ModifyHandDraw` adds its amount to the ONE hand draw in
+// `SetupPlayerTurn`, before any `AfterPlayerTurnStart` screen, and `AfterPlayerTurnStart` asks for
+// the discard. The emulator drew the extra cards separately after the Entropy and Tyranny screens
+// (fromHandDraw false, so Fiddle vetoed them), and ran the three screens in a fixed order where the
+// game runs them in the order the powers were applied.
+public class ToolsOfTheTradeTurnStartTests
+{
+    private static Fight WithPile() =>
+        Fight
+            .Hand()
+            .Energy(3)
+            .Draw([.. Pile(IC.Bash, IC.DefendIronclad, IC.StrikeIronclad, IC.DefendIronclad, IC.Anger, IC.Inflame, IC.TwinStrike, IC.Bash, IC.DefendIronclad, IC.StrikeIronclad, IC.Anger, IC.Inflame)])
+            .Enemy(hp: 500);
+
+    [Fact]
+    public void EntropysScreenSeesTheToolsCardAlreadyInHand()
+    {
+        var fight = WithPile()
+            .PlayerBuff(BuffId.EntropyPower, 1)
+            .PlayerBuff(BuffId.ToolsOfTheTrade, 1);
+
+        fight.EndTurn();
+
+        Assert.Equal(CardSelectionKind.TransformInHand, fight.Pending!.Kind);
+        Assert.Equal(6, fight.Pending.Candidates.Count);
+    }
+
+    [Fact]
+    public void FiddleSparesTheToolsCardBecauseItIsPartOfTheHandDraw()
+    {
+        var fight = WithPile().PlayerBuff(BuffId.ToolsOfTheTrade, 1);
+        fight.State.Relics.Add(new RelicInstance(RelicEffects.Fiddle, 0));
+
+        fight.EndTurn();
+
+        // Five, Fiddle's two and the power's one, then the discard is asked for.
+        Assert.Equal(CardSelectionKind.DiscardFromHandRepeated, fight.Pending!.Kind);
+        Assert.Equal(8, fight.State.Hand.Count);
+    }
+
+    [Fact]
+    public void TheScreensComeInTheOrderThePowersWereApplied()
+    {
+        var fight = WithPile()
+            .PlayerBuff(BuffId.ToolsOfTheTrade, 1)
+            .PlayerBuff(BuffId.Tyranny, 1)
+            .PlayerBuff(BuffId.EntropyPower, 1);
+
+        fight.EndTurn();
+        Assert.Equal(CardSelectionKind.DiscardFromHandRepeated, fight.Pending!.Kind);
+        fight.Choose(0);
+        Assert.Equal(CardSelectionKind.ExhaustFromHandRepeated, fight.Pending!.Kind);
+        fight.Choose(0);
+        Assert.Equal(CardSelectionKind.TransformInHand, fight.Pending!.Kind);
+        fight.Choose(0);
+
+        Assert.Null(fight.Pending);
+        Assert.Single(fight.State.ExhaustPile);
+    }
+}
