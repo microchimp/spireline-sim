@@ -133,11 +133,36 @@ public static class CombatEngine
     /// Random) there is nothing to stop: the screen is left standing for the next step to answer,
     /// as every screen used to be. A screen already standing is kept and stands again afterwards.
     /// </para>
+    /// <para>
+    /// A screen asked inside the turn start's setup pauses the setup, and the rest of the turn
+    /// start runs before it is shown (<see cref="TakeSideTurnStart" />): the player picks after it,
+    /// as in the game. The screen is then built again over the pile as it stands, when the caller
+    /// says how (<paramref name="rebuild" />): the game's hand and pile screens show the pile when
+    /// they open, not the list the command counted before it paused.
+    /// </para>
     /// </remarks>
     internal static void AwaitSelection(
         CombatState state,
         PendingCardSelection screen,
         Random? rng = null
+    ) => AwaitSelection(state, screen, rebuild: null, rng);
+
+    /// <summary>
+    /// <see cref="AwaitSelection(CombatState, PendingCardSelection, Random?)" /> for a screen over a
+    /// whole pile, built by <paramref name="build" />, again once a pause in the turn start's setup
+    /// has run the rest of the turn start.
+    /// </summary>
+    internal static void AwaitSelection(
+        CombatState state,
+        Func<PendingCardSelection> build,
+        Random? rng = null
+    ) => AwaitSelection(state, build(), build, rng);
+
+    private static void AwaitSelection(
+        CombatState state,
+        PendingCardSelection screen,
+        Func<PendingCardSelection>? rebuild,
+        Random? rng
     )
     {
         if (screen.Candidates.Count == 0 || (ClosesWhenEnding(screen) && IsOverOrEnding(state)))
@@ -161,21 +186,36 @@ public static class CombatEngine
             {
                 answer = 0;
             }
-            else if (run is not null)
-            {
-                if (!run.TryNextAnswer(out answer))
-                {
-                    throw HookChoicePending.Instance;
-                }
-            }
-            else if (outer is null)
-            {
-                return;
-            }
             else
             {
-                // Two screens and no step to stop: the emulator keeps one standing screen.
-                answer = 0;
+                if (TakeSideTurnStart(state) && rebuild is not null)
+                {
+                    var shown = rebuild();
+                    if (shown.Candidates.Count == 0)
+                    {
+                        state.PendingSelection = outer;
+                        return;
+                    }
+
+                    state.PendingSelection = shown;
+                }
+
+                if (run is not null)
+                {
+                    if (!run.TryNextAnswer(out answer))
+                    {
+                        throw HookChoicePending.Instance;
+                    }
+                }
+                else if (outer is null)
+                {
+                    return;
+                }
+                else
+                {
+                    // Two screens and no step to stop: the emulator keeps one standing screen.
+                    answer = 0;
+                }
             }
 
             ResolveCardSelection(state, answer, stream);
@@ -1940,421 +1980,429 @@ public static class CombatEngine
             );
         }
 
-        Effects.RelicEffects.TickPaelsLegionCooldown(state);
-        // `PollinousCore.BeforeSideTurnStart` bumps its counter; the hand draw below reads
-        // it, and pays two extra cards on every fourth turn.
-        Effects.RelicEffects.TickPollinousCore(state);
-        state.PlayerTurn = true;
-        // The turn rolls over: what was "this turn" becomes what History Course reads.
-        state.LastAttackOrSkillLastTurn = state.LastAttackOrSkillThisTurn;
-        state.LastAttackOrSkillThisTurn = null;
-        // `VoidFormPower.BeforeSideTurnStart` clears its own count.
-        state.VoidFormCardsPlayedThisTurn = 0;
-        // `IceCream.ShouldPlayerResetEnergy` is false from turn two on, and then
-        // `CombatManager` calls `AddMaxEnergyToCurrent` instead of `ResetEnergy`: the
-        // leftover energy carries AND the turn's energy is added on top.
-        if (Effects.RelicEffects.ShouldResetEnergy(state, state.Turn + 1))
+        // `CombatManager.StartTurn` awaits `SetupPlayerTurn` (energy, BeforeHandDraw, the hand
+        // draw, AfterPlayerTurnStart) only until it completes OR PAUSES on a player's choice
+        // (`HookPlayerChoiceContext.WaitForPauseOrCompletionWithoutAssigningTask`), and then runs on:
+        // `Hook.AfterSideTurnStart`, the orbs' turn start, the win check, and only then does the
+        // screen's hook action reach the front of the queue and show. So a player picks after all
+        // of it. `SideTurnStart` is that part: taken by the first screen the setup raises
+        // (`AwaitSelection`), before it is asked, or run once the setup is done.
+        var sideTurnStart = new PendingSideTurnStart { State = state, Rng = rng, ExtraTurn = extraTurn };
+        var outerSideTurnStart = _sideTurnStart;
+        _sideTurnStart = sideTurnStart;
+        try
         {
-            state.Energy = EffectiveMaxEnergyForTurn(state, state.Turn + 1);
-        }
-        else
-        {
-            state.Energy += EffectiveMaxEnergyForTurn(state, state.Turn + 1);
-        }
-        state.PlayerHpLostThisTurn = 0;
-        state.CardsPlayedThisTurn = 0;
-        state.CardPlaysStartedThisTurn = 0;
-        // `HappenedThisTurn` on the damage history, which Beat Into Shape reads per target.
-        foreach (var enemy in state.Enemies)
-        {
-            enemy.PoweredHitsThisTurn = 0;
-        }
-
-        state.ShivsPlayedThisTurn = 0;
-
-        // After the energy reset, which is where the game puts it and says why.
-        Effects.RelicEffects.ApplyBoundPhylacteryTurnStart(state, state.Turn + 1);
-
-        Effects.CardEffects.TriggerAllOrbAfterTurnStartPassives(state, rng);
-
-        int spinner = BuffSystem.Get(state.PlayerBuffs, BuffId.Spinner);
-        for (int i = 0; i < spinner; i++)
-        {
-            Effects.CardEffects.ChannelOrb(state, OrbType.Glass);
-        }
-
-        // Barricade: block does not reset. Blur is the same rule with a counter --
-        // `BlurPower.ShouldClearBlock` is false for its owner while any remains -- and it
-        // decrements at every side turn start its owner takes part in, whether or not it
-        // was the thing that saved the block. Barricade does NOT decrement, which is the
-        // whole difference between the two and why they cannot share an id.
-        int blur = BuffSystem.Get(state.PlayerBuffs, BuffId.Blur);
-        // Sturdy Clamp keeps the block and then trims it to ten -- not Barricade, which
-        // keeps all of it.
-        if (Effects.RelicEffects.KeepsBlockCappedAtTen(state))
-        {
-            state.PlayerBlock = Math.Min(state.PlayerBlock, 10);
-        }
-        else if (BuffSystem.Get(state.PlayerBuffs, BuffId.Barricade) == 0 && blur == 0)
-        {
-            state.PlayerBlock = 0;
-        }
-
-        // `Hook.AfterBlockCleared` fires whether or not the block was cleared.
-        // `CombatManager` calls it for every creature starting its turn, straight after
-        // `Creature.AfterTurnStart` has run `ClearBlock` -- and Barricade, Blur and Sturdy
-        // Clamp only stop `ClearBlock` from zeroing the block, not the hook after it.
-        // Gating it on the block clear cost a Barricade run the Rouge's Strength and
-        // Dexterity (seen live: Dexterity 1 -> 2 on turn three, predicted 1).
-        //
-        // `ToricToughnessPower.AfterBlockCleared`, once per INSTANCE, oldest first: the
-        // instance's own block comes straight back, and its counter -- which is TURNS, not an
-        // amount -- ticks down and removes it at zero.
-        TickToricToughness(state, rng);
-
-        // Sparkling Rouge answers the same hook, on turn three only.
-        Effects.RelicEffects.ApplyAfterBlockCleared(state, state.Turn + 1);
-
-        if (blur > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Blur, -1);
-        }
-
-        ApplyBlockNextTurn(state, rng);
-
-        // `BiasedCognitionPower.AfterSideTurnStart` hands a point of Focus BACK every
-        // turn. Without it the card is 4 Focus for one energy and no downside at all.
-        int biasedCognition = BuffSystem.Get(state.PlayerBuffs, BuffId.BiasedCognition);
-        if (biasedCognition > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Focus, -biasedCognition);
-        }
-
-        Effects.RelicEffects.ApplyStartOfPlayerTurnShared(state, state.Turn + 1, rng);
-        Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, state.Turn + 1, rng);
-        Effects.RelicEffects.RefreshBeltBuckle(state);
-
-        int coolant = BuffSystem.Get(state.PlayerBuffs, BuffId.Coolant);
-        if (coolant > 0)
-        {
-            Effects.CardEffects.GainUnpoweredBlock(
-                state,
-                coolant * state.Orbs.Select(o => o.Type).Distinct().Count()
-            );
-        }
-
-        foreach (var enemy in state.Enemies)
-        {
-            BuffSystem.Remove(enemy.Buffs, BuffId.SlowCount);
-        }
-
-        RefillHardenedShells(state);
-
-        Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
-
-        int prepTime = BuffSystem.Get(state.PlayerBuffs, BuffId.PrepTimePower);
-        if (prepTime > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Vigor, prepTime);
-        }
-
-        // `RadiancePower.AfterEnergyReset`: `PlayerCmd.GainEnergy(1)` and DECREMENT, so the
-        // counter is TURNS and the energy is always one. Added to the bar the reset just
-        // filled rather than to the maximum -- a relic that raises max energy and this are
-        // not the same quantity, and only one of them survives a Void Form.
-        int radiance = BuffSystem.Get(state.PlayerBuffs, BuffId.Radiance);
-        if (radiance > 0)
-        {
-            // `PlayerCmd.GainEnergy`, which is what the power actually calls -- so a
-            // NoEnergyGain standing on the player zeroes it. Incrementing the energy field
-            // directly here built it where nothing could stop it, and the chokepoint guard
-            // in `BlockChokepointTests` is what caught it; its own comment records Seal of
-            // Gold making the identical mistake. (That guard counts TEXTUAL matches, so do
-            // not spell the raw increment out even in a comment -- this one used to.)
-            Effects.CardEffects.GainEnergy(state, 1);
-            // The DECREMENT is unconditional: the game awaits the gain and then decrements
-            // whatever the gain did, so a turn spent under NoEnergyGain still burns one.
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Radiance, -1);
-        }
-
-        // `LightningRodPower.AfterEnergyReset` channels a Lightning orb and DECREMENTS,
-        // so an amount of 2 is two TURNS of orbs. Its own comment explains why it fires
-        // here rather than at side-turn start: an orb evoked to make room would otherwise
-        // have its Plasma energy wiped by the reset, or its Frost block cleared.
-        int lightningRod = BuffSystem.Get(state.PlayerBuffs, BuffId.LightningRod);
-        if (lightningRod > 0)
-        {
-            Effects.CardEffects.ChannelOrb(state, OrbType.Lightning, rng);
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.LightningRod, -1);
-        }
-
-        int nextTurnEnergy = BuffSystem.Get(state.PlayerBuffs, BuffId.NextTurnEnergy);
-        if (nextTurnEnergy > 0)
-        {
-            Effects.CardEffects.GainEnergy(state, nextTurnEnergy);
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnEnergy);
-        }
-
-        // DemonForm: gain Strength at start of player turn.
-        int demonForm = BuffSystem.Get(state.PlayerBuffs, BuffId.DemonForm);
-        if (demonForm > 0)
-        {
-            Effects.RelicEffects.GainPlayerStrength(state, demonForm);
-        }
-
-        // `AggressionPower.BeforeSideTurnStart`: ATTACKS out of the DISCARD PILE into hand,
-        // upgraded. The player's own cards, moved -- not new ones rolled up.
-        int aggression = BuffSystem.Get(state.PlayerBuffs, BuffId.Aggression);
-        if (aggression > 0)
-        {
-            Effects.CardEffects.MoveDiscardedAttacksToHandForAggression(state, aggression, rng);
-        }
-
-        // Plating decays by 1 at start of player turn.
-        int platingNow = BuffSystem.Get(state.PlayerBuffs, BuffId.Plating);
-        if (platingNow > 0)
-        {
-            if (platingNow == 1)
+            Effects.RelicEffects.TickPaelsLegionCooldown(state);
+            // `PollinousCore.BeforeSideTurnStart` bumps its counter; the hand draw below reads
+            // it, and pays two extra cards on every fourth turn.
+            Effects.RelicEffects.TickPollinousCore(state);
+            state.PlayerTurn = true;
+            // The turn rolls over: what was "this turn" becomes what History Course reads.
+            state.LastAttackOrSkillLastTurn = state.LastAttackOrSkillThisTurn;
+            state.LastAttackOrSkillThisTurn = null;
+            // `VoidFormPower.BeforeSideTurnStart` clears its own count.
+            state.VoidFormCardsPlayedThisTurn = 0;
+            // `IceCream.ShouldPlayerResetEnergy` is false from turn two on, and then
+            // `CombatManager` calls `AddMaxEnergyToCurrent` instead of `ResetEnergy`: the
+            // leftover energy carries AND the turn's energy is added on top.
+            if (Effects.RelicEffects.ShouldResetEnergy(state, state.Turn + 1))
             {
-                BuffSystem.Remove(state.PlayerBuffs, BuffId.Plating);
+                state.Energy = EffectiveMaxEnergyForTurn(state, state.Turn + 1);
             }
             else
             {
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.Plating, -1);
+                state.Energy += EffectiveMaxEnergyForTurn(state, state.Turn + 1);
             }
-        }
-
-        BuffSystem.Remove(state.PlayerBuffs, BuffId.FeralUsed);
-
-        // `SmoggyPower.AfterSideTurnEnd` clears the SMOG AFFLICTION off the cards; it does
-        // NOT remove the power, which has no self-removal at all and stands for the rest of
-        // the fight. `SkillPlayedWhileSmoggy` is the emulator's affliction -- one Skill a
-        // turn -- so clearing THAT is the faithful half.
-        //
-        // Removing the power here wiped it at the START of the player's turn, immediately
-        // after the enemy phase that applied it, so the player never paid it at all: the
-        // underdocks sweep has the Living Fog's gas landing SMOGGY_POWER on the live player
-        // at turn two against nothing on the emulator's.
-        state.SkillPlayedWhileSmoggy = false;
-        state.AttackCardsPlayedThisTurn = 0;
-        state.SkillCardsPlayedThisTurn = 0;
-        state.ExtraCardsDrawnThisTurn = 0;
-        state.DoomAppliedThisTurn = false;
-        state.OstyAttacksThisTurn = 0;
-        state.StarsGainedThisTurn = 0;
-        Effects.CardEffects.ClearPlayedThisTurn(state);
-        state.AttackOrSkillCardsPlayedThisTurn = 0;
-        // Carried over before the reset: Pale Blue Dot reads LAST turn's plays.
-        state.CardPlaysLastTurn = state.CardPlaysThisTurn;
-        state.CardPlaysThisTurn = 0;
-        state.BlockGainsThisTurn = 0;
-        state.CardsExhaustedThisTurn = 0;
-        state.StatusCardsDrawnThisTurn = 0;
-        state.EnergySpentThisTurn = 0;
-        state.UnblockedDamageThisTurn = 0;
-        state.RainbowRingAttacks = 0;
-        state.RainbowRingSkills = 0;
-        state.RainbowRingPowers = 0;
-        state.RainbowRingPaidThisTurn = false;
-
-        ReturnQueuedCardsToHandBeforeDraw(state);
-        DeliverQueuedCardCopiesBeforeDraw(state);
-
-        // `ShadowStepPower.AfterSideTurnStart` converts itself into DoubleDamage and then
-        // removes itself, which is what makes Shadow Step's payload land a turn late.
-        int shadowStep = BuffSystem.Get(state.PlayerBuffs, BuffId.ShadowStep);
-        if (shadowStep > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.DoubleDamage, shadowStep);
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.ShadowStep);
-        }
-
-        // `InfiniteBladesPower.BeforeHandDraw` -- so the Shivs are in hand BEFORE the five
-        // are drawn, not after. It matters at the hand limit: the Shivs take their slots
-        // first and the draw is what gets cut short, which is the opposite of what the
-        // emulator did by adding them at the end.
-        int infiniteBlades = BuffSystem.Get(state.PlayerBuffs, BuffId.InfiniteBlades);
-        if (infiniteBlades > 0)
-        {
-            Effects.CardEffects.AddGeneratedCardsToHand(state, 430, infiniteBlades);
-        }
-
-        // `HelloWorldPower.BeforeHandDraw`, the same boundary as the Shivs above and for
-        // the same reason: the cards take their slots before the five are drawn.
-        int helloWorld = BuffSystem.Get(state.PlayerBuffs, BuffId.HelloWorld);
-        if (helloWorld > 0)
-        {
-            Effects.CardEffects.AddDistinctCommonCardsToHand(state, helloWorld, rng);
-        }
-
-        int creativeAi = BuffSystem.Get(state.PlayerBuffs, BuffId.CreativeAi);
-        if (creativeAi > 0)
-        {
-            Effects.CardEffects.AddRandomPowerCardsToHand(state, creativeAi, rng);
-        }
-
-        // `NeurosurgePower.AfterSideTurnStart`: Dooms its owner -- the PLAYER -- for its
-        // amount, every turn.
-        int neurosurge = BuffSystem.Get(state.PlayerBuffs, BuffId.Neurosurge);
-        if (neurosurge > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Doom, neurosurge);
-        }
-
-        // `ReflectPower.AfterSideTurnStart` DECREMENTS at its owner's turn start, so a
-        // Reflect covers the enemies' turn and is gone by the player's next one.
-        if (BuffSystem.Get(state.PlayerBuffs, BuffId.Reflect) > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Reflect, -1);
-        }
-
-        // `GenesisPower.AfterEnergyReset`: stars every turn, and this one does NOT remove
-        // itself.
-        int genesis = BuffSystem.Get(state.PlayerBuffs, BuffId.Genesis);
-        if (genesis > 0)
-        {
-            Effects.CardEffects.GainStars(state, genesis);
-        }
-
-        // `StarNextTurnPower.AfterEnergyReset`: the stars arrive at the turn's reset and the
-        // power removes itself, so Convergence pays out exactly once.
-        int starNextTurn = BuffSystem.Get(state.PlayerBuffs, BuffId.StarNextTurn);
-        if (starNextTurn > 0)
-        {
-            Effects.CardEffects.GainStars(state, starNextTurn);
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.StarNextTurn);
-        }
-
-        // `ForegoneConclusionPower.BeforeHandDraw`: `ShuffleIfNecessary`, then that many cards
-        // CHOSEN from the whole draw pile go to hand, then the power removes itself. The game
-        // awaits the pick BEFORE the hand draw, so the pick is over the pile those cards are
-        // drawn from, not over what they leave of it.
-        int foregone = BuffSystem.Get(state.PlayerBuffs, BuffId.ForegoneConclusion);
-        if (foregone > 0)
-        {
-            Effects.CardEffects.ShuffleIfNecessary(state, rng);
-            AwaitSelection(
-                state,
-                Effects.CardEffects.DrawPileScreen(state, 204, foregone), // ForegoneConclusion
-                rng
-            );
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.ForegoneConclusion);
-        }
-
-        // `FurnacePower.AfterSideTurnStart`: a Forge of its amount, every turn.
-        int furnace = BuffSystem.Get(state.PlayerBuffs, BuffId.Furnace);
-        if (furnace > 0)
-        {
-            Effects.CardEffects.Forge(state, furnace);
-        }
-
-        // `SpectrumShiftPower.BeforeHandDraw`: distinct COLOURLESS cards into hand.
-        int spectrumShift = BuffSystem.Get(state.PlayerBuffs, BuffId.SpectrumShift);
-        if (spectrumShift > 0)
-        {
-            Effects.CardEffects.AddColorlessCardsToHand(state, spectrumShift, rng);
-        }
-
-        // `CallOfTheVoidPower.BeforeHandDraw`: cards from the character's OWN pool, each
-        // granted Ethereal, straight into hand. The pool filter is the ordinary combat one
-        // -- `GetUnlockedCards` drops Basic and Ancient, and `GetDistinctForCombat` runs
-        // FilterForCombat over what it is handed.
-        int callOfTheVoid = BuffSystem.Get(state.PlayerBuffs, BuffId.CallOfTheVoid);
-        for (int i = 0; i < callOfTheVoid; i++)
-        {
-            Effects.CardEffects.AddEtherealPoolCardToHand(state, rng);
-        }
-
-        // `Hook.BeforeHandDraw` for the relics, in the player's relic order. Turn one's visit is
-        // `StartFirstTurn`'s; Toolbox, the one relic here that asks, asks on turn one alone.
-        Effects.RelicEffects.ApplyBeforeHandDraw(state, state.Turn + 1, rng);
-
-        // `SentryModePower.BeforeHandDraw` -- BEFORE the hand is drawn, so the Gazes are
-        // at the bottom of the new hand rather than the top, and they count against the
-        // hand cap the draw then runs into.
-        int sentryMode = BuffSystem.Get(state.PlayerBuffs, BuffId.SentryMode);
-        for (int i = 0; i < sentryMode; i++)
-        {
-            Effects.CardEffects.AddGeneratedCardToHand(state, 485); // SweepingGaze
-        }
-
-        // Draw five cards -- less MindRot, which is `Math.Max(0, count - Amount)` on the
-        // whole draw rather than a per-card effect.
-        Effects.CardEffects.DrawCards(
-            state,
-            Math.Max(
-                0,
-                5
-                    + BuffSystem.Get(state.PlayerBuffs, BuffId.MachineLearning)
-                    // `PaleBlueDotPower.ModifyHandDraw`, and only past the threshold: five
-                    // card plays LAST turn, or the power adds nothing at all.
-                    + (
-                        state.CardPlaysLastTurn >= 5
-                            ? BuffSystem.Get(state.PlayerBuffs, BuffId.PaleBlueDot)
-                            : 0
-                    )
-                    // `TyrannyPower.ModifyHandDraw`, the half of that card that pays.
-                    + BuffSystem.Get(state.PlayerBuffs, BuffId.Tyranny)
-                    // `ToolsOfTheTradePower.ModifyHandDraw`: part of the HAND DRAW, so it is
-                    // in hand before any AfterPlayerTurnStart screen and Fiddle spares it.
-                    + BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade)
-                    // `DemesnePower.ModifyHandDraw`, the other half of a power that also
-                    // raises max energy -- both every turn, not once.
-                    + BuffSystem.Get(state.PlayerBuffs, BuffId.Demesne)
-                    + Effects.RelicEffects.ExtraHandDraw(state)
-                    // `DrawCardsNextTurnPower.ModifyHandDraw`: part of the HAND DRAW, not a
-                    // draw of its own. It was a separate `DrawCards` after this one, which
-                    // Fiddle's `ShouldDraw` then refused -- it vetoes every draw that is
-                    // not the hand draw, and the game's hand draw is exactly what this is.
-                    // A run holding Fiddle lost every next-turn draw it was owed.
-                    + BuffSystem.Get(state.PlayerBuffs, BuffId.NextTurnDraw)
-                    // `ClarityPower.ModifyHandDraw` adds ONE, however many turns are left
-                    // on it -- the counter is turns, not cards, which is the whole of what
-                    // the game's remark means by "distinct due to its stacking behavior".
-                    // Summing the amount here would pay three cards on the first turn and
-                    // none on the other two.
-                    + (BuffSystem.Get(state.PlayerBuffs, BuffId.Clarity) > 0 ? 1 : 0)
-                    - BuffSystem.Get(state.PlayerBuffs, BuffId.MindRot)
-            ),
-            rng,
-            fromHandDraw: true
-        );
-        // `AfterSideTurnStart` removes it once it has been spent on that draw.
-        BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnDraw);
-        // `ClarityPower.AfterSideTurnStart` decrements once per turn of the owner's, AFTER
-        // the draw it just paid for -- decrementing first would cost the last turn's card.
-        if (BuffSystem.Get(state.PlayerBuffs, BuffId.Clarity) > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Clarity, -1);
-        }
-        // `Hook.AfterPlayerTurnStart` for the powers, after the hand draw (SetupPlayerTurn).
-        AfterPlayerTurnStartPowers(state, rng);
-
-        // `Hook.AfterPlayerTurnStart` for the relics -- the end of `SetupPlayerTurn`, after the
-        // hand draw and after the powers' own pass above (a creature's powers come before its
-        // relics in `IterateHookListeners`). Mercury Hourglass, Mr. Struggles, Emotion Chip and
-        // Pendulum ran before the hand draw, so Pendulum's card was the FIRST in hand, and the
-        // Hourglass fired ahead of the Hardened Shell and Slow resets.
-        Effects.RelicEffects.ApplyAfterPlayerTurnStart(state, state.Turn + 1, rng);
-
-        // Its Late pass is a dispatch of its own, so a kill in the pass above shuts it.
-        if (!IsOverOrEnding(state))
-        {
-            Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, state.Turn + 1);
-        }
-
-        // `Hook.AfterSideTurnStart`, after `SetupPlayerTurn`: one gated dispatch, the player's
-        // powers, then the player's relics, then the enemies' powers. A kill in
-        // `AfterPlayerTurnStart` above (Inferno, Rolling Boulder, Mr. Struggles) reaches it with
-        // the fight ending, and none of it runs: the poison does not tick, Countdown rolls no
-        // CombatTargets, the flowers do not count the turn.
-        if (!IsOverOrEnding(state))
-        {
-            var afterSideTurnStart = RunAfterSideTurnStart(state, rng, extraTurn, turnEndStart);
-            if (afterSideTurnStart is { } lost)
+            state.PlayerHpLostThisTurn = 0;
+            state.CardsPlayedThisTurn = 0;
+            state.CardPlaysStartedThisTurn = 0;
+            // `HappenedThisTurn` on the damage history, which Beat Into Shape reads per target.
+            foreach (var enemy in state.Enemies)
             {
-                return lost;
+                enemy.PoweredHitsThisTurn = 0;
             }
+
+            state.ShivsPlayedThisTurn = 0;
+
+            // After the energy reset, which is where the game puts it and says why.
+            Effects.RelicEffects.ApplyBoundPhylacteryTurnStart(state, state.Turn + 1);
+
+            Effects.CardEffects.TriggerAllOrbAfterTurnStartPassives(state, rng);
+
+            int spinner = BuffSystem.Get(state.PlayerBuffs, BuffId.Spinner);
+            for (int i = 0; i < spinner; i++)
+            {
+                Effects.CardEffects.ChannelOrb(state, OrbType.Glass);
+            }
+
+            // Barricade: block does not reset. Blur is the same rule with a counter --
+            // `BlurPower.ShouldClearBlock` is false for its owner while any remains -- and it
+            // decrements at every side turn start its owner takes part in, whether or not it
+            // was the thing that saved the block. Barricade does NOT decrement, which is the
+            // whole difference between the two and why they cannot share an id.
+            int blur = BuffSystem.Get(state.PlayerBuffs, BuffId.Blur);
+            // Sturdy Clamp keeps the block and then trims it to ten -- not Barricade, which
+            // keeps all of it.
+            if (Effects.RelicEffects.KeepsBlockCappedAtTen(state))
+            {
+                state.PlayerBlock = Math.Min(state.PlayerBlock, 10);
+            }
+            else if (BuffSystem.Get(state.PlayerBuffs, BuffId.Barricade) == 0 && blur == 0)
+            {
+                state.PlayerBlock = 0;
+            }
+
+            // `Hook.AfterBlockCleared` fires whether or not the block was cleared.
+            // `CombatManager` calls it for every creature starting its turn, straight after
+            // `Creature.AfterTurnStart` has run `ClearBlock` -- and Barricade, Blur and Sturdy
+            // Clamp only stop `ClearBlock` from zeroing the block, not the hook after it.
+            // Gating it on the block clear cost a Barricade run the Rouge's Strength and
+            // Dexterity (seen live: Dexterity 1 -> 2 on turn three, predicted 1).
+            //
+            // `ToricToughnessPower.AfterBlockCleared`, once per INSTANCE, oldest first: the
+            // instance's own block comes straight back, and its counter -- which is TURNS, not an
+            // amount -- ticks down and removes it at zero.
+            TickToricToughness(state, rng);
+
+            // Sparkling Rouge answers the same hook, on turn three only.
+            Effects.RelicEffects.ApplyAfterBlockCleared(state, state.Turn + 1);
+
+            if (blur > 0)
+            {
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.Blur, -1);
+            }
+
+            ApplyBlockNextTurn(state, rng);
+
+            // `BiasedCognitionPower.AfterSideTurnStart` hands a point of Focus BACK every
+            // turn. Without it the card is 4 Focus for one energy and no downside at all.
+            int biasedCognition = BuffSystem.Get(state.PlayerBuffs, BuffId.BiasedCognition);
+            if (biasedCognition > 0)
+            {
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.Focus, -biasedCognition);
+            }
+
+            Effects.RelicEffects.ApplyStartOfPlayerTurnShared(state, state.Turn + 1, rng);
+            Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, state.Turn + 1, rng);
+            Effects.RelicEffects.RefreshBeltBuckle(state);
+
+            int coolant = BuffSystem.Get(state.PlayerBuffs, BuffId.Coolant);
+            if (coolant > 0)
+            {
+                Effects.CardEffects.GainUnpoweredBlock(
+                    state,
+                    coolant * state.Orbs.Select(o => o.Type).Distinct().Count()
+                );
+            }
+
+            foreach (var enemy in state.Enemies)
+            {
+                BuffSystem.Remove(enemy.Buffs, BuffId.SlowCount);
+            }
+
+            RefillHardenedShells(state);
+
+            Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
+
+            int prepTime = BuffSystem.Get(state.PlayerBuffs, BuffId.PrepTimePower);
+            if (prepTime > 0)
+            {
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.Vigor, prepTime);
+            }
+
+            // `RadiancePower.AfterEnergyReset`: `PlayerCmd.GainEnergy(1)` and DECREMENT, so the
+            // counter is TURNS and the energy is always one. Added to the bar the reset just
+            // filled rather than to the maximum -- a relic that raises max energy and this are
+            // not the same quantity, and only one of them survives a Void Form.
+            int radiance = BuffSystem.Get(state.PlayerBuffs, BuffId.Radiance);
+            if (radiance > 0)
+            {
+                // `PlayerCmd.GainEnergy`, which is what the power actually calls -- so a
+                // NoEnergyGain standing on the player zeroes it. Incrementing the energy field
+                // directly here built it where nothing could stop it, and the chokepoint guard
+                // in `BlockChokepointTests` is what caught it; its own comment records Seal of
+                // Gold making the identical mistake. (That guard counts TEXTUAL matches, so do
+                // not spell the raw increment out even in a comment -- this one used to.)
+                Effects.CardEffects.GainEnergy(state, 1);
+                // The DECREMENT is unconditional: the game awaits the gain and then decrements
+                // whatever the gain did, so a turn spent under NoEnergyGain still burns one.
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.Radiance, -1);
+            }
+
+            // `LightningRodPower.AfterEnergyReset` channels a Lightning orb and DECREMENTS,
+            // so an amount of 2 is two TURNS of orbs. Its own comment explains why it fires
+            // here rather than at side-turn start: an orb evoked to make room would otherwise
+            // have its Plasma energy wiped by the reset, or its Frost block cleared.
+            int lightningRod = BuffSystem.Get(state.PlayerBuffs, BuffId.LightningRod);
+            if (lightningRod > 0)
+            {
+                Effects.CardEffects.ChannelOrb(state, OrbType.Lightning, rng);
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.LightningRod, -1);
+            }
+
+            int nextTurnEnergy = BuffSystem.Get(state.PlayerBuffs, BuffId.NextTurnEnergy);
+            if (nextTurnEnergy > 0)
+            {
+                Effects.CardEffects.GainEnergy(state, nextTurnEnergy);
+                BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnEnergy);
+            }
+
+            // DemonForm: gain Strength at start of player turn.
+            int demonForm = BuffSystem.Get(state.PlayerBuffs, BuffId.DemonForm);
+            if (demonForm > 0)
+            {
+                Effects.RelicEffects.GainPlayerStrength(state, demonForm);
+            }
+
+            // `AggressionPower.BeforeSideTurnStart`: ATTACKS out of the DISCARD PILE into hand,
+            // upgraded. The player's own cards, moved -- not new ones rolled up.
+            int aggression = BuffSystem.Get(state.PlayerBuffs, BuffId.Aggression);
+            if (aggression > 0)
+            {
+                Effects.CardEffects.MoveDiscardedAttacksToHandForAggression(state, aggression, rng);
+            }
+
+            // Plating decays by 1 at start of player turn.
+            int platingNow = BuffSystem.Get(state.PlayerBuffs, BuffId.Plating);
+            if (platingNow > 0)
+            {
+                if (platingNow == 1)
+                {
+                    BuffSystem.Remove(state.PlayerBuffs, BuffId.Plating);
+                }
+                else
+                {
+                    BuffSystem.Apply(state.PlayerBuffs, BuffId.Plating, -1);
+                }
+            }
+
+            BuffSystem.Remove(state.PlayerBuffs, BuffId.FeralUsed);
+
+            // `SmoggyPower.AfterSideTurnEnd` clears the SMOG AFFLICTION off the cards; it does
+            // NOT remove the power, which has no self-removal at all and stands for the rest of
+            // the fight. `SkillPlayedWhileSmoggy` is the emulator's affliction -- one Skill a
+            // turn -- so clearing THAT is the faithful half.
+            //
+            // Removing the power here wiped it at the START of the player's turn, immediately
+            // after the enemy phase that applied it, so the player never paid it at all: the
+            // underdocks sweep has the Living Fog's gas landing SMOGGY_POWER on the live player
+            // at turn two against nothing on the emulator's.
+            state.SkillPlayedWhileSmoggy = false;
+            state.AttackCardsPlayedThisTurn = 0;
+            state.SkillCardsPlayedThisTurn = 0;
+            state.ExtraCardsDrawnThisTurn = 0;
+            state.DoomAppliedThisTurn = false;
+            state.OstyAttacksThisTurn = 0;
+            state.StarsGainedThisTurn = 0;
+            Effects.CardEffects.ClearPlayedThisTurn(state);
+            state.AttackOrSkillCardsPlayedThisTurn = 0;
+            // Carried over before the reset: Pale Blue Dot reads LAST turn's plays.
+            state.CardPlaysLastTurn = state.CardPlaysThisTurn;
+            state.CardPlaysThisTurn = 0;
+            state.BlockGainsThisTurn = 0;
+            state.CardsExhaustedThisTurn = 0;
+            state.StatusCardsDrawnThisTurn = 0;
+            state.EnergySpentThisTurn = 0;
+            state.UnblockedDamageThisTurn = 0;
+            state.RainbowRingAttacks = 0;
+            state.RainbowRingSkills = 0;
+            state.RainbowRingPowers = 0;
+            state.RainbowRingPaidThisTurn = false;
+
+            ReturnQueuedCardsToHandBeforeDraw(state);
+            DeliverQueuedCardCopiesBeforeDraw(state);
+
+            // `ShadowStepPower.AfterSideTurnStart` converts itself into DoubleDamage and then
+            // removes itself, which is what makes Shadow Step's payload land a turn late.
+            int shadowStep = BuffSystem.Get(state.PlayerBuffs, BuffId.ShadowStep);
+            if (shadowStep > 0)
+            {
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.DoubleDamage, shadowStep);
+                BuffSystem.Remove(state.PlayerBuffs, BuffId.ShadowStep);
+            }
+
+            // `InfiniteBladesPower.BeforeHandDraw` -- so the Shivs are in hand BEFORE the five
+            // are drawn, not after. It matters at the hand limit: the Shivs take their slots
+            // first and the draw is what gets cut short, which is the opposite of what the
+            // emulator did by adding them at the end.
+            int infiniteBlades = BuffSystem.Get(state.PlayerBuffs, BuffId.InfiniteBlades);
+            if (infiniteBlades > 0)
+            {
+                Effects.CardEffects.AddGeneratedCardsToHand(state, 430, infiniteBlades);
+            }
+
+            // `HelloWorldPower.BeforeHandDraw`, the same boundary as the Shivs above and for
+            // the same reason: the cards take their slots before the five are drawn.
+            int helloWorld = BuffSystem.Get(state.PlayerBuffs, BuffId.HelloWorld);
+            if (helloWorld > 0)
+            {
+                Effects.CardEffects.AddDistinctCommonCardsToHand(state, helloWorld, rng);
+            }
+
+            int creativeAi = BuffSystem.Get(state.PlayerBuffs, BuffId.CreativeAi);
+            if (creativeAi > 0)
+            {
+                Effects.CardEffects.AddRandomPowerCardsToHand(state, creativeAi, rng);
+            }
+
+            // `NeurosurgePower.AfterSideTurnStart`: Dooms its owner -- the PLAYER -- for its
+            // amount, every turn.
+            int neurosurge = BuffSystem.Get(state.PlayerBuffs, BuffId.Neurosurge);
+            if (neurosurge > 0)
+            {
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.Doom, neurosurge);
+            }
+
+            // `ReflectPower.AfterSideTurnStart` DECREMENTS at its owner's turn start, so a
+            // Reflect covers the enemies' turn and is gone by the player's next one.
+            if (BuffSystem.Get(state.PlayerBuffs, BuffId.Reflect) > 0)
+            {
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.Reflect, -1);
+            }
+
+            // `GenesisPower.AfterEnergyReset`: stars every turn, and this one does NOT remove
+            // itself.
+            int genesis = BuffSystem.Get(state.PlayerBuffs, BuffId.Genesis);
+            if (genesis > 0)
+            {
+                Effects.CardEffects.GainStars(state, genesis);
+            }
+
+            // `StarNextTurnPower.AfterEnergyReset`: the stars arrive at the turn's reset and the
+            // power removes itself, so Convergence pays out exactly once.
+            int starNextTurn = BuffSystem.Get(state.PlayerBuffs, BuffId.StarNextTurn);
+            if (starNextTurn > 0)
+            {
+                Effects.CardEffects.GainStars(state, starNextTurn);
+                BuffSystem.Remove(state.PlayerBuffs, BuffId.StarNextTurn);
+            }
+
+            // `ForegoneConclusionPower.BeforeHandDraw`: `ShuffleIfNecessary`, then that many cards
+            // CHOSEN from the whole draw pile go to hand, then the power removes itself. The game
+            // awaits the pick BEFORE the hand draw, so the pick is over the pile those cards are
+            // drawn from, not over what they leave of it.
+            int foregone = BuffSystem.Get(state.PlayerBuffs, BuffId.ForegoneConclusion);
+            if (foregone > 0)
+            {
+                Effects.CardEffects.ShuffleIfNecessary(state, rng);
+                AwaitSelection(
+                    state,
+                    () => Effects.CardEffects.DrawPileScreen(state, 204, foregone), // ForegoneConclusion
+                    rng
+                );
+                BuffSystem.Remove(state.PlayerBuffs, BuffId.ForegoneConclusion);
+            }
+
+            // `SpectrumShiftPower.BeforeHandDraw`: distinct COLOURLESS cards into hand.
+            int spectrumShift = BuffSystem.Get(state.PlayerBuffs, BuffId.SpectrumShift);
+            if (spectrumShift > 0)
+            {
+                Effects.CardEffects.AddColorlessCardsToHand(state, spectrumShift, rng);
+            }
+
+            // `CallOfTheVoidPower.BeforeHandDraw`: cards from the character's OWN pool, each
+            // granted Ethereal, straight into hand. The pool filter is the ordinary combat one
+            // -- `GetUnlockedCards` drops Basic and Ancient, and `GetDistinctForCombat` runs
+            // FilterForCombat over what it is handed.
+            int callOfTheVoid = BuffSystem.Get(state.PlayerBuffs, BuffId.CallOfTheVoid);
+            for (int i = 0; i < callOfTheVoid; i++)
+            {
+                Effects.CardEffects.AddEtherealPoolCardToHand(state, rng);
+            }
+
+            // `Hook.BeforeHandDraw` for the relics, in the player's relic order. Turn one's visit is
+            // `StartFirstTurn`'s; Toolbox, the one relic here that asks, asks on turn one alone.
+            Effects.RelicEffects.ApplyBeforeHandDraw(state, state.Turn + 1, rng);
+
+            // `SentryModePower.BeforeHandDraw` -- BEFORE the hand is drawn, so the Gazes are
+            // at the bottom of the new hand rather than the top, and they count against the
+            // hand cap the draw then runs into.
+            int sentryMode = BuffSystem.Get(state.PlayerBuffs, BuffId.SentryMode);
+            for (int i = 0; i < sentryMode; i++)
+            {
+                Effects.CardEffects.AddGeneratedCardToHand(state, 485); // SweepingGaze
+            }
+
+            // Draw five cards -- less MindRot, which is `Math.Max(0, count - Amount)` on the
+            // whole draw rather than a per-card effect.
+            Effects.CardEffects.DrawCards(
+                state,
+                Math.Max(
+                    0,
+                    5
+                        + BuffSystem.Get(state.PlayerBuffs, BuffId.MachineLearning)
+                        // `PaleBlueDotPower.ModifyHandDraw`, and only past the threshold: five
+                        // card plays LAST turn, or the power adds nothing at all.
+                        + (
+                            state.CardPlaysLastTurn >= 5
+                                ? BuffSystem.Get(state.PlayerBuffs, BuffId.PaleBlueDot)
+                                : 0
+                        )
+                        // `TyrannyPower.ModifyHandDraw`, the half of that card that pays.
+                        + BuffSystem.Get(state.PlayerBuffs, BuffId.Tyranny)
+                        // `ToolsOfTheTradePower.ModifyHandDraw`: part of the HAND DRAW, so it is
+                        // in hand before any AfterPlayerTurnStart screen and Fiddle spares it.
+                        + BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade)
+                        // `DemesnePower.ModifyHandDraw`, the other half of a power that also
+                        // raises max energy -- both every turn, not once.
+                        + BuffSystem.Get(state.PlayerBuffs, BuffId.Demesne)
+                        + Effects.RelicEffects.ExtraHandDraw(state)
+                        // `DrawCardsNextTurnPower.ModifyHandDraw`: part of the HAND DRAW, not a
+                        // draw of its own. It was a separate `DrawCards` after this one, which
+                        // Fiddle's `ShouldDraw` then refused -- it vetoes every draw that is
+                        // not the hand draw, and the game's hand draw is exactly what this is.
+                        // A run holding Fiddle lost every next-turn draw it was owed.
+                        + BuffSystem.Get(state.PlayerBuffs, BuffId.NextTurnDraw)
+                        // `ClarityPower.ModifyHandDraw` adds ONE, however many turns are left
+                        // on it -- the counter is turns, not cards, which is the whole of what
+                        // the game's remark means by "distinct due to its stacking behavior".
+                        // Summing the amount here would pay three cards on the first turn and
+                        // none on the other two.
+                        + (BuffSystem.Get(state.PlayerBuffs, BuffId.Clarity) > 0 ? 1 : 0)
+                        - BuffSystem.Get(state.PlayerBuffs, BuffId.MindRot)
+                ),
+                rng,
+                fromHandDraw: true
+            );
+            // `Hook.AfterPlayerTurnStart` for the powers, after the hand draw (SetupPlayerTurn).
+            AfterPlayerTurnStartPowers(state, rng);
+
+            // `Hook.AfterPlayerTurnStart` for the relics -- the end of `SetupPlayerTurn`, after the
+            // hand draw and after the powers' own pass above (a creature's powers come before its
+            // relics in `IterateHookListeners`). Mercury Hourglass, Mr. Struggles, Emotion Chip and
+            // Pendulum ran before the hand draw, so Pendulum's card was the FIRST in hand, and the
+            // Hourglass fired ahead of the Hardened Shell and Slow resets.
+            Effects.RelicEffects.ApplyAfterPlayerTurnStart(state, state.Turn + 1, rng);
+
+            // Its Late pass is a dispatch of its own, so a kill in the pass above shuts it.
+            if (!IsOverOrEnding(state))
+            {
+                Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, state.Turn + 1);
+            }
+        }
+        catch (TurnStartOver)
+        {
+            // The side's turn start, taken by a screen, killed the player: the combat ended
+            // with the screen unanswered and the rest of the setup never ran.
+            state.PendingSelection = null;
+            return new StepResult(
+                Terminal: true,
+                PlayerWon: false,
+                Reward: turnEndStart.Reward(state, playerDead: true, allDead: false)
+            );
+        }
+        finally
+        {
+            _sideTurnStart = outerSideTurnStart;
+        }
+
+        if (!sideTurnStart.Ran && SideTurnStart(state, rng, extraTurn))
+        {
+            return new StepResult(
+                Terminal: true,
+                PlayerWon: false,
+                Reward: turnEndStart.Reward(state, playerDead: true, allDead: false)
+            );
         }
 
         // Every kill the turn start has made, answered once. After the roll (made at the top of
@@ -2378,79 +2426,139 @@ public static class CombatEngine
     }
 
     /// <summary>
-    /// `Hook.AfterSideTurnStart` on the player side's turn start after turn one: the player's
-    /// powers that answer it here (the poison tick, Wraith Form, Noxious Fumes, Countdown), the
-    /// player's every-turn relics, then the enemies' Rampart. The caller asks the gate once, as
-    /// `Hook.IterateCombatHookListeners` does when the dispatch starts. Returns the step's
-    /// result when the poison tick kills the player.
+    /// The rest of `CombatManager.StartTurn` once `SetupPlayerTurn` has completed or paused:
+    /// `Hook.AfterSideTurnStart` for the player side, every listener in `IterateCombatHookListeners`
+    /// order (the player's powers in list order, then the player's relics, then the enemies'). One
+    /// gated dispatch: it asks `IsOverOrEnding` once, as it starts, so a kill in the setup (Inferno,
+    /// Rolling Boulder, Mr. Struggles) shuts all of it -- the poison does not tick, Countdown rolls
+    /// no CombatTargets, the flowers do not count the turn. True when it killed the player.
     /// </summary>
-    private static StepResult? RunAfterSideTurnStart(
-        CombatState state,
-        Random rng,
-        bool extraTurn,
-        in Baseline turnEndStart
-    )
+    /// <remarks>
+    /// Only the listeners the emulator ran AFTER the setup are here (and Furnace, which it ran
+    /// before the hand draw): Draw Cards Next Turn's removal, Clarity's decrement, the player's
+    /// Poison, Wraith Form, Noxious Fumes, Countdown, Furnace, the relics'
+    /// `RelicEffects.ApplyAfterSideTurnStart`, the Turret Operator's Rampart. Those are what a
+    /// screen in the setup has to see before it is asked. The emulator still runs the other
+    /// AfterSideTurnStart listeners (Demon Form, Brimstone, ...) and the orbs' turn start before
+    /// the setup, which puts them before such a screen too, as the game does, but before the hand
+    /// draw where the game has them after it (FINDINGS: open).
+    /// </remarks>
+    private static bool SideTurnStart(CombatState state, Random rng, bool extraTurn)
     {
-        // `PoisonPower.AfterSideTurnStart` on the player: `CreatureCmd.Damage(owner, Amount,
-        // Unblockable | Unpowered)`, once (the enemies hold no Accelerant). That is the HP loss
-        // of a self-damage card, so it runs the same after-damage hooks: Inferno's burst,
-        // Rupture, Self-Forming Clay, Centennial Puzzle, Demon Tongue, Emotion Chip's history,
-        // Red Skull. The player's powers come before the enemies' (`IterateHookListeners` walks
-        // the allies first), so ahead of Rampart. It ticked before the block clear and wrote HP
-        // directly: none of those hooks but Red Skull ran, and once they did, Clay's block would
-        // have come the same turn and Demon Tongue's flag been cleared after it healed the tick.
-        int playerPoison = BuffSystem.Get(state.PlayerBuffs, BuffId.Poison);
-        if (playerPoison > 0)
+        if (IsOverOrEnding(state))
         {
-            Effects.CardEffects.LoseHp(state, BuffSystem.CapHpLoss(playerPoison, state.PlayerBuffs));
-            if (PlayerIsDead(state))
+            return false;
+        }
+
+        foreach (var power in state.PlayerBuffs.Select(buff => buff.Id).Distinct().ToList())
+        {
+            switch (power)
             {
-                return new StepResult(
-                    Terminal: true,
-                    PlayerWon: false,
-                    Reward: turnEndStart.Reward(state, playerDead: true, allDead: false)
-                );
+                case BuffId.NextTurnDraw:
+                    // `DrawCardsNextTurnPower.AfterSideTurnStart` removes it once a hand draw has
+                    // read it. Taken by a screen before the hand draw (Foregone Conclusion), it is
+                    // gone before the draw reads it, as in the game.
+                    BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnDraw);
+                    break;
+                case BuffId.Clarity:
+                    // `ClarityPower.AfterSideTurnStart` decrements once per turn of the owner's.
+                    BuffSystem.Apply(state.PlayerBuffs, BuffId.Clarity, -1);
+                    break;
+                case BuffId.Furnace:
+                    // `FurnacePower.AfterSideTurnStart`: a Forge of its amount, every turn.
+                    Effects.CardEffects.Forge(state, BuffSystem.Get(state.PlayerBuffs, BuffId.Furnace));
+                    break;
+                case BuffId.Poison:
+                {
+                    // `PoisonPower.AfterSideTurnStart` on the player: `CreatureCmd.Damage(owner,
+                    // Amount, Unblockable | Unpowered)`, once (the enemies hold no Accelerant).
+                    // That is the HP loss of a self-damage card, so it runs the same after-damage
+                    // hooks: Inferno's burst, Rupture, Self-Forming Clay, Centennial Puzzle, Demon
+                    // Tongue, Emotion Chip's history, Red Skull.
+                    int poison = BuffSystem.Get(state.PlayerBuffs, BuffId.Poison);
+                    Effects.CardEffects.LoseHp(state, BuffSystem.CapHpLoss(poison, state.PlayerBuffs));
+                    if (PlayerIsDead(state))
+                    {
+                        return true;
+                    }
+
+                    BuffSystem.Apply(state.PlayerBuffs, BuffId.Poison, -1);
+                    break;
+                }
+                case BuffId.WraithForm:
+                    // `WraithFormPower.AfterSideTurnStart` takes its Amount in Dexterity every turn.
+                    BuffSystem.Apply(state.PlayerBuffs, BuffId.Dexterity, -BuffSystem.Get(state.PlayerBuffs, BuffId.WraithForm));
+                    break;
+                case BuffId.NoxiousFumes:
+                    Effects.CardEffects.ApplyPoisonToAllEnemies(state, BuffSystem.Get(state.PlayerBuffs, BuffId.NoxiousFumes), rng);
+                    break;
+                case BuffId.Countdown:
+                {
+                    // `CountdownPower.AfterSideTurnStart`: one RANDOM hittable enemy is Doomed for
+                    // its amount, rolled on the CombatTargets stream like every other unaimed card.
+                    int countdown = BuffSystem.Get(state.PlayerBuffs, BuffId.Countdown);
+                    var doomed = Effects.CardEffects.RandomLivingEnemy(state, rng);
+                    if (doomed != null)
+                    {
+                        // `PowerCmd.Apply<DoomPower>(..., base.Owner, null)` -- no card source, so
+                        // it skips the card-debuff chokepoint the Unsettling Lamp doubles, exactly
+                        // as Reaper Form's does.
+                        BuffSystem.Apply(doomed.Buffs, BuffId.Doom, countdown);
+                        Effects.CardEffects.ApplyPowerDoomRiders(state, doomed, countdown);
+                    }
+
+                    break;
+                }
             }
-
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Poison, -1);
         }
 
-        // `WraithFormPower.AfterSideTurnStart` takes its Amount in Dexterity every turn.
-        int wraithForm = BuffSystem.Get(state.PlayerBuffs, BuffId.WraithForm);
-        if (wraithForm > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Dexterity, -wraithForm);
-        }
-
-        int noxiousFumes = BuffSystem.Get(state.PlayerBuffs, BuffId.NoxiousFumes);
-        if (noxiousFumes > 0)
-        {
-            Effects.CardEffects.ApplyPoisonToAllEnemies(state, noxiousFumes, rng);
-        }
-
-        // `CountdownPower.AfterSideTurnStart`: one RANDOM hittable enemy is Doomed for its
-        // amount, rolled on the CombatTargets stream like every other unaimed card. It ran
-        // before the hand draw, so after a turn-start kill it still rolled the run's stream.
-        int countdown = BuffSystem.Get(state.PlayerBuffs, BuffId.Countdown);
-        if (countdown > 0)
-        {
-            var doomed = Effects.CardEffects.RandomLivingEnemy(state, rng);
-            if (doomed != null)
-            {
-                // `PowerCmd.Apply<DoomPower>(..., base.Owner, null)` -- no card source, so
-                // it skips the card-debuff chokepoint the Unsettling Lamp doubles, exactly
-                // as Reaper Form's does.
-                BuffSystem.Apply(doomed.Buffs, BuffId.Doom, countdown);
-                Effects.CardEffects.ApplyPowerDoomRiders(state, doomed, countdown);
-            }
-        }
-
+        // The player's relics after the player's powers, then the enemies' listeners: the Turret
+        // Operator's armour, after the relics' turn-start damage.
         Effects.RelicEffects.ApplyAfterSideTurnStart(state, rng);
-
-        // The Turret's armour: an enemy's power, so after the player's relics, and after the
-        // relics' turn-start damage, not before it.
         GrantRampartBlock(state, extraTurn);
-        return null;
+        return false;
+    }
+
+    /// <summary>A turn start's <see cref="SideTurnStart" />, not yet run.</summary>
+    private sealed class PendingSideTurnStart
+    {
+        public required CombatState State { get; init; }
+
+        public required Random Rng { get; init; }
+
+        public required bool ExtraTurn { get; init; }
+
+        public bool Ran;
+    }
+
+    /// <summary>The turn start whose setup is running on this thread, while its side's turn start is owed.</summary>
+    [ThreadStatic]
+    private static PendingSideTurnStart? _sideTurnStart;
+
+    /// <summary>
+    /// A screen about to be asked inside the turn start's setup: the setup pauses there, and the
+    /// side's turn start runs first (<see cref="SideTurnStart" />). True when it ran now.
+    /// </summary>
+    private static bool TakeSideTurnStart(CombatState state)
+    {
+        if (_sideTurnStart is not { Ran: false } pending || !ReferenceEquals(pending.State, state))
+        {
+            return false;
+        }
+
+        pending.Ran = true;
+        if (SideTurnStart(state, pending.Rng, pending.ExtraTurn))
+        {
+            throw TurnStartOver.Instance;
+        }
+
+        return true;
+    }
+
+    /// <summary>Unwinds a turn start whose side's turn start, taken by a screen, killed the player.</summary>
+    private sealed class TurnStartOver : Exception
+    {
+        public static readonly TurnStartOver Instance = new();
     }
 
     /// <summary>
@@ -2501,19 +2609,49 @@ public static class CombatEngine
     /// drawn and everything after them already done: Toolbox's pick landed after the opening
     /// hand rather than before it, and Gambling Chip came after Vexing Puzzlebox whatever order
     /// the player held them in.
+    /// <para>
+    /// A held screen is turn one's setup pausing, as on every turn (<see cref="SideTurnStart" />):
+    /// `CombatManager.StartTurn` runs on while it waits, and the player picks after. So the first
+    /// hold runs the rest of turn one's start first (<see cref="FirstTurnSide" />): Bone Tea upgrades
+    /// the hand Gambling Chip then pitches from, and before Toolbox's pick it upgrades a hand not yet
+    /// drawn (the game, pick_timing "ui"). It ran after the last screen, as if the pick came first.
+    /// </para>
     /// </remarks>
     internal static void StartFirstTurn(CombatState state, Random rng)
     {
         state.TurnStartHeldPhase = (int)TurnStartPhase.BeforeHandDraw;
         state.TurnStartHeldRelic = 0;
-        ContinueFirstTurn(state, rng);
+        ContinueFirstTurn(state, rng, resumed: false);
+    }
+
+    /// <summary>
+    /// Turn one's start past `SetupPlayerTurn`, and what the emulator deals with it: the
+    /// combat-start relics (`BeforeCombatStart`, `AfterRoomEntered`, which the game runs before the
+    /// turn starts at all) and the side's `AfterSideTurnStart` (Bone Tea, Lantern, Akabeko, ...,
+    /// Rampart). Run once, at the first screen that holds the turn, or after the setup.
+    /// </summary>
+    private static void FirstTurnSide(CombatState state, Random rng)
+    {
+        Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, 1, rng);
+        Effects.RelicEffects.ApplyCombatStart(state, rng);
+        Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
+        // `Hook.AfterSideTurnStart` is a gated dispatch: a turn-one kill (Festive Popper, Mercury
+        // Hourglass) shuts the relics' pass and Rampart (no flower tick).
+        if (!IsOverOrEnding(state))
+        {
+            Effects.RelicEffects.ApplyAfterSideTurnStart(state, rng);
+            GrantRampartBlock(state, extraTurn: false);
+        }
     }
 
     /// <summary>Whether turn one's start is waiting on a relic's screen.</summary>
     internal static bool FirstTurnHeld(CombatState state) =>
         state.TurnStartHeldPhase != (int)TurnStartPhase.None;
 
-    private static void ContinueFirstTurn(CombatState state, Random rng)
+    /// <param name="resumed">
+    /// Whether a screen held the turn before: the first hold ran <see cref="FirstTurnSide" />.
+    /// </param>
+    private static void ContinueFirstTurn(CombatState state, Random rng, bool resumed)
     {
         var phase = (TurnStartPhase)state.TurnStartHeldPhase;
         int from = state.TurnStartHeldRelic;
@@ -2525,6 +2663,11 @@ public static class CombatEngine
             int held = Effects.RelicEffects.ApplyBeforeHandDraw(state, 1, rng, from);
             if (held >= 0)
             {
+                if (!resumed)
+                {
+                    FirstTurnSide(state, rng);
+                }
+
                 HoldFirstTurn(state, TurnStartPhase.BeforeHandDraw, held);
                 return;
             }
@@ -2539,25 +2682,26 @@ public static class CombatEngine
             int held = Effects.RelicEffects.ApplyAfterPlayerTurnStart(state, 1, rng, from);
             if (held >= 0)
             {
+                if (!resumed)
+                {
+                    FirstTurnSide(state, rng);
+                }
+
                 HoldFirstTurn(state, TurnStartPhase.AfterPlayerTurnStart, held);
                 return;
             }
         }
 
-        // The Late pass and `AfterSideTurnStart` are gated dispatches of their own: a Festive
-        // Popper or Mercury Hourglass kill above shuts them (no Blood Vial heal, no flower tick).
+        // The Late pass is a gated dispatch of its own: a Festive Popper or Mercury Hourglass
+        // kill above shuts it (no Blood Vial heal).
         if (!IsOverOrEnding(state))
         {
             Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, 1);
         }
 
-        Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, 1, rng);
-        Effects.RelicEffects.ApplyCombatStart(state, rng);
-        Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
-        if (!IsOverOrEnding(state))
+        if (!resumed)
         {
-            Effects.RelicEffects.ApplyAfterSideTurnStart(state, rng);
-            GrantRampartBlock(state, extraTurn: false);
+            FirstTurnSide(state, rng);
         }
 
         CombatFactory.QueueCombatStartAutoPlays(state);
@@ -2612,7 +2756,7 @@ public static class CombatEngine
                         // were drawn in the hand draw.
                         _ => (CardSelectionKind.DiscardFromHandRepeated, Effects.SI.ToolsOfTheTrade),
                     };
-                    AwaitSelection(state, Effects.CardEffects.HandScreen(state, kind, source, amount), rng);
+                    AwaitSelection(state, () => Effects.CardEffects.HandScreen(state, kind, source, amount), rng);
                     break;
                 }
 
@@ -3315,7 +3459,7 @@ public static class CombatEngine
         bool resumedFirstTurn = state.PendingSelection is null && FirstTurnHeld(state);
         if (resumedFirstTurn)
         {
-            ContinueFirstTurn(state, rng);
+            ContinueFirstTurn(state, rng, resumed: true);
         }
 
         AnswerDeathsSince(state, beforeAnswer, rng);

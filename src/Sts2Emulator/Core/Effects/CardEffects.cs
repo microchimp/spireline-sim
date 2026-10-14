@@ -3835,7 +3835,7 @@ public static class CardEffects
         int stratagem = BuffSystem.Get(state.PlayerBuffs, BuffId.StratagemPower);
         if (stratagem > 0)
         {
-            CombatEngine.AwaitSelection(state, DrawPileScreen(state, CL.Stratagem, stratagem), rng);
+            CombatEngine.AwaitSelection(state, () => DrawPileScreen(state, CL.Stratagem, stratagem), rng);
         }
 
         RelicEffects.ApplyAfterShuffle(state, rng);
