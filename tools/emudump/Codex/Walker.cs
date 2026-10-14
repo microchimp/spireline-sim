@@ -99,7 +99,169 @@ public sealed class Walker
     // entry
     // =====================================================================================
 
+    /// <summary>Tests: changes the run each walk starts from (a relic the record's run held from the start).</summary>
+    internal Action<RunState>? AfterReset { get; init; }
+
+    // --- hidden fight facts ------------------------------------------------------------------
+    // A fact about a resolved fight that the history does not record: whether a Gremlin Merc
+    // stole before it died, whether a Thieving Hopper's room kept its gold row, which of the deck's
+    // identical copies a Hopper took, whether a hurt fight's damage was all unblockable. Each has
+    // ways 0 .. arity-1 (for a yes-or-no fact, 1 is yes), one of them the default.
+    readonly Dictionary<string, int> _facts = []; // fact -> the way this walk takes it
+    readonly HashSet<string> _openFacts = []; // settled facts whose best ways tie
+    readonly List<(string Key, int Arity, int Default)> _pending = []; // the facts this walk met, in order
+    readonly List<(string Key, int Arity, int Default)> _factsMet = [];
+    string? _taintAfterFloor;
+    int _passed;
+
+    sealed record Once(JsonObject Result, List<(string Key, int Arity, int Default)> Met, int Passed, string Ways);
+
+    /// <summary>
+    /// Walks a run. A fact of a fight the history leaves open is settled by consistency: when the
+    /// walk stops, it is walked again each other way from the fact on, and the way that gets
+    /// furthest through the history (the one the next observations fit) is kept. When the best
+    /// ways stop at the same check, or all walk to the end, the history cannot tell them apart and
+    /// the fact stays open: a fact that feeds the Rewards stream leaves it uncertain from there,
+    /// so a later stop on it is FIGHT-DEPENDENT, neither a match nor a mismatch. A walk that fits
+    /// the whole history settles nothing. The facts are settled in the order the walk meets them,
+    /// each with the earlier ones settled.
+    /// </summary>
     public JsonObject Walk(JsonElement rec)
+    {
+        _facts.Clear();
+        _openFacts.Clear();
+        var best = WalkOnce(rec);
+        int walks = 1;
+        var settled = new List<(string Key, int Arity, int Default)>();
+        while (best.Met.FirstOrDefault(m => !settled.Any(s => s.Key == m.Key)) is { Key: not null } fact)
+        {
+            settled.Add(fact);
+            int bestWay = _facts.TryGetValue(fact.Key, out int walked) ? walked : fact.Default;
+            bool tied = false;
+            for (int way = 0; way < fact.Arity; way++)
+            {
+                if (way == bestWay)
+                {
+                    continue;
+                }
+
+                _facts[fact.Key] = way;
+                var other = WalkOnce(rec);
+                walks++;
+                int further = Further(other, best);
+                if (further > 0)
+                {
+                    (best, bestWay, tied) = (other, way, false);
+                }
+                else if (further == 0)
+                {
+                    tied = true;
+                }
+            }
+
+            _facts[fact.Key] = bestWay;
+            if (tied)
+            {
+                _openFacts.Add(fact.Key);
+            }
+        }
+
+        if (best.Ways != Ways())
+        {
+            // The walk kept was made with a fact open that is settled now: walked again, so the
+            // stop is classed with it settled.
+            best = WalkOnce(rec);
+            walks++;
+        }
+
+        if (settled.Count > 0)
+        {
+            best.Result["hidden_facts"] = new JsonArray(settled.Select(f =>
+            {
+                string[] parts = f.Key.Split(':');
+                int way = _facts[f.Key];
+                return (JsonNode)new JsonObject
+                {
+                    ["floor"] = int.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture),
+                    ["fact"] = parts[1],
+                    ["settled"] = _openFacts.Contains(f.Key) ? "open" : f.Arity > 2 || parts[1] == CopyFact ? $"{way + 1} of {f.Arity}" : way == 1 ? "yes" : "no",
+                };
+            }).ToArray());
+            best.Result["walks"] = walks;
+        }
+
+        return best.Result;
+    }
+
+    /// <summary>The ways this walk takes the facts, open ones marked (what a walk's classes follow).</summary>
+    string Ways() => string.Join(";", _facts.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+        .Select(kv => $"{kv.Key}={kv.Value}{(_openFacts.Contains(kv.Key) ? "?" : "")}"));
+
+    /// <summary>
+    /// Above 0 when walk <paramref name="a" /> got further through the history than
+    /// <paramref name="b" />, below 0 when it stopped sooner, 0 when neither got further: both
+    /// walked to the end, or both stopped at the same check. The two walk the same run and differ
+    /// only from the fact on, so the first check where their verdicts part is where one fits.
+    /// </summary>
+    static int Further(Once a, Once b)
+    {
+        bool ca = (string?)a.Result["status"] == "complete", cb = (string?)b.Result["status"] == "complete";
+        if (ca || cb)
+        {
+            return ca == cb ? 0 : ca ? 1 : -1;
+        }
+
+        int fa = (int?)a.Result["floors_walked"] ?? 0, fb = (int?)b.Result["floors_walked"] ?? 0;
+        if (fa != fb)
+        {
+            return fa.CompareTo(fb);
+        }
+
+        if (a.Result["stop"] is JsonObject sa && b.Result["stop"] is JsonObject sb
+            && (string?)sa["component"] == (string?)sb["component"] && (string?)sa["field"] == (string?)sb["field"])
+        {
+            return 0;
+        }
+
+        return a.Passed.CompareTo(b.Passed);
+    }
+
+    /// <summary>
+    /// Notes that the history leaves a fact of this floor's fight open, and returns the way this
+    /// walk takes it (<paramref name="defaultWay" /> unless an earlier walk settled it otherwise)
+    /// and whether it is open: not settled yet, or settled with its best ways tied.
+    /// </summary>
+    (int Way, bool Open) Hidden(string fact, int arity = 2, int defaultWay = 0)
+    {
+        string key = $"{_floor}:{fact}";
+        if (!_pending.Any(p => p.Key == key))
+        {
+            _pending.Add((key, arity, defaultWay));
+        }
+
+        return _facts.TryGetValue(key, out int way) ? (way, _openFacts.Contains(key)) : (defaultWay, true);
+    }
+
+    /// <summary>The way this walk takes a fact of this floor's fight, met or not.</summary>
+    int Way(string fact) => _facts.GetValueOrDefault($"{_floor}:{fact}");
+
+    Once WalkOnce(JsonElement rec)
+    {
+        _pending.Clear();
+        _factsMet.Clear();
+        _taintAfterFloor = null;
+        _passed = 0;
+        var result = WalkRecord(rec);
+        if ((string?)result["status"] != "complete")
+        {
+            // Only a walk that stops needs its facts settled.
+            _factsMet.AddRange(_pending);
+        }
+
+        return new Once(result, [.. _factsMet], _passed, Ways());
+    }
+
+    JsonObject WalkRecord(JsonElement rec)
     {
         _checks.Clear();
         _taint.Clear();
@@ -130,6 +292,7 @@ public sealed class Walker
                 result["profile"] = ProfileFit.Describe(profile);
             }
 
+            AfterReset?.Invoke(S);
             _belt.Clear();
             _eventsSeen = 0;
             _paelsSacrifices = SavedInt(rec, "PAELS_WING", "RewardsSacrificed") ?? int.MaxValue;
@@ -251,6 +414,14 @@ public sealed class Walker
         Settle(kind, rooms);
         AfterFloor(kind, combat, deckBefore, relicsBefore, goldBefore);
         EndFloorBookkeeping();
+        if (_taintAfterFloor is { } why)
+        {
+            // An open fact of the floor's fight feeds the Rewards stream behind the floor's own
+            // rewards (a Heist row is populated after them): later offers on it are uncertain,
+            // this floor's are not.
+            _taint.TryAdd("Rewards", why);
+            _taintAfterFloor = null;
+        }
     }
 
     void ResetFloorCursors()
@@ -666,63 +837,48 @@ public sealed class Walker
         MarkFloor();
         // What the fight did that its rewards read, as far as the history shows it. The Gremlin
         // Merc's gold is rolled at half, or not at all, when the Fat Gremlin escapes (with the
-        // Merc's loot): no gold taken is the second, a short purse the first.
+        // Merc's loot): no gold taken is the second, a short purse the first. Under Ectoplasm
+        // every purse is empty, so only the loot tells.
         bool merc = S.ActiveCombat?.EncounterId == RunConstants.GremlinMercEncounterId;
+        bool goldBlind = S.Relics.Any(x => x.DefId == RelicEffects.Ectoplasm);
         int gained = Int("gold_gained");
         int Poverty(int g) => Ascension.Has(S.AscensionLevel, Ascension.Poverty) ? (int)(g * Ascension.PovertyGoldMultiplier) : g;
         int fullMin = Poverty(10), halfMax = (int)Math.Round(Poverty(20) * 0.5, MidpointRounding.AwayFromZero);
         // Loot still missing at the end of the floor (`StolenLoot`, which a Heist's or a Swipe's
         // return takes back off) left with a creature that escaped.
         int loot = Int("stolen_loot");
-        bool fatEscaped = merc && (gained < fullMin || loot > 0);
-        bool mercStole = merc && (gained == 0 || loot > 0);
+        bool fatEscaped = merc && (loot > 0 || (!goldBlind && gained < fullMin));
+        bool mercStole = merc && (loot > 0 || (!goldBlind && gained == 0));
         // A purse both a full roll and a half one can give: either way it is one Rewards draw,
         // so only its amount is unknown.
-        _goldUnknown = merc && gained >= fullMin && gained <= halfMax;
-        // The Fat Gremlin died holding the Merc's loot: `HeistPower.BeforeDeath`'s gold row. The
-        // Merc steals on every move while the player has gold; the history does not say whether
-        // it lived to move, and a fight of three turns or more is taken as one where it did (on
-        // the codex walk, two-turn fights mostly had no Heist: the Merc died on the first turn
-        // and its gremlins on the second). A `gold_stolen` still standing with no loot missing is
-        // a Heist left on the screen, and its amount. The theft and the claim net out, as in the
-        // game, so the purse check still holds.
-        int turns = room.ValueKind == JsonValueKind.Object && room.TryGetProperty("turns_taken", out var tt)
-            && tt.ValueKind == JsonValueKind.Number ? tt.GetInt32() : 0;
-        int heistLeft = loot == 0 ? Math.Max(0, Int("gold_stolen")) : 0;
-        int heistGold = !merc || fatEscaped ? 0
-            : heistLeft > 0 ? heistLeft
-            : turns >= 3 ? Math.Min(20, S.Gold)
-            : 0;
+        _goldUnknown = merc && !goldBlind && gained >= fullMin && gained <= halfMax;
+        int heistGold = merc && !fatEscaped ? HeistGold(room) : 0;
         if (heistGold > 0 && S.ActiveCombat is { } fight)
         {
             fight.PlayerGold = Math.Max(0, fight.PlayerGold - heistGold);
         }
 
         // A Thieving Hopper's THIEVERY took a card (`SwipePower.Steal` records it in
-        // `cards_removed`); killed, it hands the card back as a row the player claimed (in
-        // `cards_gained`) or left; escaped, it keeps the card and, alone in its encounter, the
-        // room's gold (no gold row at all).
+        // `cards_removed` and puts `stolen_loot` up); killed, it hands the card back as a row the
+        // player claimed (in `cards_gained`) or left, and takes the loot back off
+        // (`SwipePower.BeforeDeath`); with the loot still missing, it left with the card.
         bool hopper = S.ActiveCombat?.EncounterId == (int)CombatFactory.ActOneEncounter.ThievingHopper;
-        bool goldBlind = S.Relics.Any(x => x.DefId == RelicEffects.Ectoplasm);
-        bool hopperEscaped = hopper && (loot > 0 || (!goldBlind && gained < fullMin));
+        bool kept = hopper && loot > 0;
+        bool goldRow = hopper && HopperGoldRow(kept, gained, fullMin, goldBlind);
         CardInstance? stolen = null;
-        _specialCardTaken = _specialCardFirst = false;
         if (hopper && Arr("cards_removed").FirstOrDefault() is { ValueKind: JsonValueKind.Object } taken)
         {
             string name = CardName(taken);
-            int at = S.Deck.FindIndex(c => CardName(c.DefId, c.Upgraded) == name);
+            int at = StolenCopy(taken, name);
             if (at >= 0)
             {
+                // `SwipePower.Steal` takes the copy out of the deck (`CardPileCmd.RemoveFromDeck`).
+                // Taken here, not by the resolve, which finds a stolen card by value (the first
+                // equal copy) where the walk has settled which copy it was.
                 stolen = S.Deck[at];
+                S.Deck.RemoveAt(at);
                 _removeCursor++;
-                var gainedNames = Arr("cards_gained").Select(CardName).ToList();
-                _specialCardTaken = !hopperEscaped && gainedNames.Contains(name);
-                // Before the card reward's pick in `cards_gained`: claimed first.
-                var picks = Arr("card_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
-                    .Select(c => CardName(c.GetProperty("card"))).ToList();
-                int pickAt = gainedNames.FindIndex(g => picks.Contains(g) && g != name);
-                _specialCardFirst = _specialCardTaken && (pickAt < 0 || gainedNames.IndexOf(name) < pickAt);
-                if (!hopperEscaped && !_specialCardTaken)
+                if (!kept && !Arr("cards_gained").Select(CardName).Contains(name))
                 {
                     // `SpecialCardReward.OnSkipped` lists the card, unpicked, among the floor's
                     // card choices: last if the card reward was answered first, else first.
@@ -740,11 +896,15 @@ public sealed class Walker
             }
         }
         // Lava Lamp's flag is the fight's: no damage taken at all is no unblocked hit, for
-        // certain. Damage taken may all have been unblockable, which the flag ignores.
+        // certain. Damage taken may all have been unblockable, which the flag ignores and the
+        // history does not tell apart: the fact LampFact, which the card offer settles (met
+        // there, when an offer upgraded is the only difference).
         if (S.Relics.Any(x => x.DefId == RelicEffects.LavaLamp))
         {
-            S.TookUnblockedDamageThisCombat = Int("damage_taken") > 0;
-            _lavaLampUnsure = Int("damage_taken") > 0;
+            bool hurt = Int("damage_taken") > 0;
+            string key = $"{_floor}:{LampFact}";
+            S.TookUnblockedDamageThisCombat = hurt && Way(LampFact) != 1;
+            _lavaLampUnsure = hurt && (!_facts.ContainsKey(key) || _openFacts.Contains(key));
         }
 
         long f0 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -752,14 +912,125 @@ public sealed class Walker
             stolenBackGold: heistGold,
             fatGremlinEscaped: fatEscaped,
             mercGoldWasStolen: mercStole,
-            escapedEnemies: hopperEscaped ? 1 : 0,
-            stolenCards: stolen is { } s ? [s] : null,
-            stolenBackCards: stolen is { } back && !hopperEscaped ? [back] : null
+            escapedEnemies: hopper && !goldRow ? 1 : 0,
+            stolenBackCards: stolen is { } back && !kept ? [back] : null
         );
         FightSeconds += System.Diagnostics.Stopwatch.GetElapsedTime(f0).TotalSeconds;
         _rewardsCompared = false;
         _fightJustResolved = true;
     }
+
+    const string HeistFact = "heist", HopperRowFact = "hopper_gold_row", CopyFact = "stolen_copy",
+        LampFact = "lava_lamp_unblockable";
+
+    /// <summary>The most identical-copy ways a stolen card is walked (each is a walk of the run).</summary>
+    const int MaxCopyWays = 6;
+
+    /// <summary>
+    /// The gold of the Heist row a Gremlin Merc fight left when its Fat Gremlin died, or 0 for
+    /// none. Decompiled: on each of its moves the Merc's `ThieveryPower.Steal` takes up to 20 gold
+    /// while the player has any (`PlayerCmd.LoseGold(Stolen)`: `gold_stolen` and `stolen_loot` up);
+    /// `SurprisePower` hands the total to the Fat Gremlin as Heist, and `HeistPower.BeforeDeath`
+    /// adds `GoldReward(Amount, wasGoldStolenBack)` (one Rewards draw, behind the room's own) and
+    /// takes the loot back off `stolen_loot`. Claimed, `GainGold` takes what it pays (after gold
+    /// modifiers) off `gold_stolen`. So the history shows the row only when it was left, or paid
+    /// other than it took; a Heist claimed in full leaves both counters at 0, like no theft at
+    /// all. The theft and the claim net out, as in the game, so the purse check still holds.
+    /// </summary>
+    int HeistGold(JsonElement room)
+    {
+        int stolen = Int("gold_stolen");
+        if (stolen > 0)
+        {
+            // Left on the screen (or claimed under Ectoplasm, which pays nothing): its amount.
+            return stolen;
+        }
+
+        int take = Math.Min(20, S.Gold);
+        if (stolen < 0)
+        {
+            // Claimed through a gold modifier that paid more than was taken.
+            return Math.Max(1, take);
+        }
+
+        int turns = room.ValueKind == JsonValueKind.Object && room.TryGetProperty("turns_taken", out var tt)
+            && tt.ValueKind == JsonValueKind.Number ? tt.GetInt32() : 0;
+        // `turns_taken` is the player's `TurnNumber` at the end, which starts at 1 and moves on
+        // when the enemies' side hands back: a one-turn fight ended before the Merc's first move
+        // was over (its gremlins, spawned at its death, outlive the enemies' turn). An empty purse
+        // has nothing to take, and the Merc is the only enemy that could pay gold first.
+        if (turns == 1 || take == 0)
+        {
+            return 0;
+        }
+
+        // Otherwise the history cannot say whether the Merc lived to move: settled by what the
+        // Rewards stream gives next.
+        var (way, open) = Hidden(HeistFact);
+        if (open)
+        {
+            _taintAfterFloor ??= $"floor {_floor}: whether the Gremlin Merc stole before it died (a Heist gold row, one Rewards draw) is not in the history";
+        }
+
+        return way == 1 ? take : 0;
+    }
+
+    /// <summary>
+    /// Whether a Thieving Hopper's room has its gold row (one Rewards draw).
+    /// `EncounterModel.CalculateGoldProportion` is 1 - escaped / spawned kinds, so the lone
+    /// Hopper's room has none once it escaped. A thief that died left one: its card was taken
+    /// back off the loot (`SwipePower.BeforeDeath`). Otherwise the history leaves the row open,
+    /// and the next rewards settle it. A Hopper that kept its loot escaped, and by default has no
+    /// row; but the Codex has such floors that paid a purse, some with the row and some without
+    /// (another purse), so the gold does not tell. One that took nothing died if a full purse was
+    /// paid, by default (Ectoplasm empties every purse, so there it died by default too).
+    /// </summary>
+    bool HopperGoldRow(bool kept, int gained, int fullMin, bool goldBlind)
+    {
+        if (!kept && Arr("cards_removed").Any())
+        {
+            return true;
+        }
+
+        bool byDefault = !kept && (goldBlind || gained >= fullMin);
+        var (way, open) = Hidden(HopperRowFact, defaultWay: byDefault ? 1 : 0);
+        if (open)
+        {
+            _taintAfterFloor ??= $"floor {_floor}: whether the Thieving Hopper's room kept its gold row (one Rewards draw) is not in the history";
+        }
+
+        return way == 1;
+    }
+
+    /// <summary>
+    /// The deck copy a Thieving Hopper took, from the history's `cards_removed` entry: its card,
+    /// upgrade and enchantment say which copies it can be. Of identical copies the history does not
+    /// say which (the steal is the fight's own draw), and the deck's order after the floor depends
+    /// on it, as the copy leaves its place (and comes back at the bottom): a fact, with a way for
+    /// each run of side-by-side copies (taking any one of a run leaves the same deck), the first
+    /// by default.
+    /// </summary>
+    int StolenCopy(JsonElement taken, string name)
+    {
+        var ench = EnchantmentOf(taken);
+        var same = Enumerable.Range(0, S.Deck.Count).Where(i => CardName(S.Deck[i].DefId, S.Deck[i].Upgraded) == name).ToList();
+        var exact = same.Where(i => S.Deck[i].Enchantment == ench).ToList();
+        var copies = (exact.Count > 0 ? exact : same).Where(i => i == 0 || S.Deck[i - 1] != S.Deck[i]).ToList();
+        if (copies.Count <= 1)
+        {
+            return copies.Count == 1 ? copies[0] : -1;
+        }
+
+        return copies[Hidden(CopyFact, Math.Min(copies.Count, MaxCopyWays)).Way];
+    }
+
+    /// <summary>A history card's enchantment (`ENCHANTMENT.PERFECT_FIT` is PerfectFit), or None.</summary>
+    static Enchantment EnchantmentOf(JsonElement card) =>
+        card.TryGetProperty("enchantment", out var en) && en.ValueKind == JsonValueKind.Object && en.TryGetProperty("id", out var id)
+        && Enum.TryParse<Enchantment>(string.Concat(Names.Bare(id.GetString()).Split('_', StringSplitOptions.RemoveEmptyEntries)
+            .Select(w => w[..1] + w[1..].ToLowerInvariant())), out var e)
+            ? e
+            : Enchantment.None;
 
     void CompareEvent(JsonElement room)
     {
@@ -959,10 +1230,12 @@ public sealed class Walker
             index++;
         }
 
-        // A Thieving Hopper's stolen card, which the history claimed back (`cards_gained`). The
-        // rows sit after the card items. Claimed in the history's order: the deck takes each card
-        // at its bottom, so which came first is the deck's order.
-        if (_specialCardTaken && _specialCardFirst && ClaimSpecialCard(index))
+        // A special card row (a Thieving Hopper's stolen card, the Lantern Key off its knight),
+        // which the history claimed (`cards_gained`). The rows sit after the card items. Claimed in
+        // the history's order: the deck takes each card at its bottom, so which came first is the
+        // deck's order, and the deck-add hooks (Book of Five Rings, Lucky Fysh) see it arrive.
+        var (specialTaken, specialFirst) = SpecialCardClaim();
+        if (specialTaken && specialFirst && ClaimSpecialCard(index))
         {
             return;
         }
@@ -977,7 +1250,7 @@ public sealed class Walker
             }
         }
 
-        if (_specialCardTaken && ClaimSpecialCard(index))
+        if (specialTaken && ClaimSpecialCard(index))
         {
             return;
         }
@@ -1016,7 +1289,6 @@ public sealed class Walker
             return false;
         }
 
-        _specialCardTaken = _specialCardFirst = false;
         string offered = CardName(S.RewardSpecialCards[0].DefId, S.RewardSpecialCards[0].Upgraded);
         int at = S.Deck.Count;
         Do(special);
@@ -1031,7 +1303,33 @@ public sealed class Walker
         return true;
     }
 
-    bool _fightJustResolved, _combatFloor, _goldUnknown, _specialCardTaken, _specialCardFirst;
+    bool _fightJustResolved, _combatFloor, _goldUnknown;
+
+    /// <summary>
+    /// Whether the history claimed the screen's first special-card row (`SpecialCardReward`: the
+    /// card is in `cards_gained`), and whether before the card reward's pick, which `cards_gained`
+    /// lists in claim order.
+    /// </summary>
+    (bool Taken, bool First) SpecialCardClaim()
+    {
+        if (S.RewardSpecialCards.Count == 0)
+        {
+            return (false, false);
+        }
+
+        string name = CardName(S.RewardSpecialCards[0].DefId, S.RewardSpecialCards[0].Upgraded);
+        var gainedNames = Arr("cards_gained").Select(CardName).ToList();
+        if (!gainedNames.Contains(name))
+        {
+            return (false, false);
+        }
+
+        var picks = Arr("card_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
+            .Select(c => CardName(c.GetProperty("card"))).ToList();
+        int pickAt = gainedNames.FindIndex(g => picks.Contains(g) && g != name);
+        return (true, pickAt < 0 || gainedNames.IndexOf(name) < pickAt);
+    }
+
     (string Offered, string Landed)? _specialCardLanded;
     readonly HashSet<int> _skippedPotions = [];
     readonly HashSet<int> _skippedRelics = [];
@@ -1093,7 +1391,9 @@ public sealed class Walker
         {
             // Lava Lamp upgrades the offer when the fight dealt no unblocked, blockable damage.
             // The history counts every unblocked point, unblockable ones too, so a fight that
-            // only hurt through them is not told apart.
+            // only hurt through them is not told apart: the walk is tried with the lamp lit
+            // (Walk), and this stop stands only if that fits no better.
+            Hidden(LampFact);
             Fail("card_reward", "cards", string.Join(",", real), string.Join(",", shown), FightDependent,
                 "Lava Lamp's upgrades: whether the fight's damage was all unblockable is not recorded");
         }
@@ -2394,6 +2694,8 @@ public sealed class Walker
             // made means the next ones read a Rewards stream the fight moved.
             Fail(component, field, expected, emulator, source, note);
         }
+
+        _passed++;
     }
 
     void Fail(string component, string field, string expected, string emulator, Source source, string? note = null)

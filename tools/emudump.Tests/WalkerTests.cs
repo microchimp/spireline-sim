@@ -35,39 +35,7 @@ public class WalkerTests
         var e = new RunEngine();
         e.Reset(seed, Asc, PlayerCharacter.Ironclad, profile);
         var s = e.State;
-
-        // Floor 1: the first blessing that is a relic and nothing else (no screen, no cards).
-        int choice = -1;
-        for (int i = 0; i < 3 && choice < 0; i++)
-        {
-            var c = e.Clone();
-            c.Step(i, -1, out _, out _, out _);
-            if (c.State.Phase == RunPhase.Ancient && c.State.NeowAwaitingProceed && c.State.Deck.Count == s.Deck.Count
-                && c.State.Relics.Count == s.Relics.Count + 1 && c.State.Gold == s.Gold && c.State.PotionSlots.All(p => p == 0))
-            {
-                choice = i;
-            }
-        }
-
-        Assert.True(choice >= 0, "no plain relic blessing on this seed");
-        var options = s.NeowOptions.Select(Names.Relic).ToList();
-        string chosen = options[choice];
-        e.Step(choice, -1, out _, out _, out _);
-        e.Step(0, -1, out _, out _, out _); // Neow's Proceed
-        var neow = Stats(s, 0);
-        neow["ancient_choice"] = new JsonArray(options.Select((o, i) => (JsonNode)new JsonObject
-        {
-            ["TextKey"] = o,
-            ["title"] = new JsonObject { ["key"] = o + ".title", ["table"] = "relics" },
-            ["was_chosen"] = i == choice,
-        }).ToArray());
-        neow["relic_choices"] = new JsonArray(new JsonObject { ["choice"] = "RELIC." + chosen, ["was_picked"] = true });
-        var floor1 = new JsonObject
-        {
-            ["map_point_type"] = "ancient",
-            ["rooms"] = new JsonArray(new JsonObject { ["model_id"] = "EVENT.NEOW", ["room_type"] = "event" }),
-            ["player_stats"] = new JsonArray(neow),
-        };
+        var floor1 = NeowFloor(e) ?? throw new InvalidOperationException("no plain relic blessing on this seed");
 
         // Floor 2: the first monster node, its fight resolved, its gold and first card taken.
         int node = Array.IndexOf(s.MapNodeTypes, RunConstants.NodeNormal);
@@ -113,18 +81,65 @@ public class WalkerTests
             ["player_stats"] = new JsonArray(fightStats),
         };
 
+        return RunRecord(s, seed, floor1, floor2);
+    }
+
+    /// <summary>A won run's record of these floors, all of its first act, in the game's shape.</summary>
+    internal static JsonObject RunRecord(RunState s, string seed, params JsonNode[] floors) => new()
+    {
+        ["seed"] = seed,
+        ["ascension"] = Asc,
+        ["game_mode"] = "standard",
+        ["build_id"] = "v0.107.1",
+        ["win"] = true,
+        ["was_abandoned"] = false,
+        ["modifiers"] = new JsonArray(),
+        ["acts"] = new JsonArray(s.Acts.Select(a => (JsonNode)("ACT." + Names.Act(a.Act))).ToArray()),
+        ["players"] = new JsonArray(new JsonObject { ["character"] = "CHARACTER.IRONCLAD" }),
+        ["map_point_history"] = new JsonArray(new JsonArray(floors)),
+    };
+
+    /// <summary>
+    /// Floor 1 of the emulator's run as the game records it, taken: Neow's first blessing that is
+    /// a relic and nothing else (no screen, no cards). Null when the seed's Neow has none.
+    /// </summary>
+    internal static JsonObject? NeowFloor(RunEngine e)
+    {
+        var s = e.State;
+        int choice = -1;
+        for (int i = 0; i < 3 && choice < 0; i++)
+        {
+            var c = e.Clone();
+            c.Step(i, -1, out _, out _, out _);
+            if (c.State.Phase == RunPhase.Ancient && c.State.NeowAwaitingProceed && c.State.Deck.Count == s.Deck.Count
+                && c.State.Relics.Count == s.Relics.Count + 1 && c.State.Gold == s.Gold && c.State.PotionSlots.All(p => p == 0))
+            {
+                choice = i;
+            }
+        }
+
+        if (choice < 0)
+        {
+            return null;
+        }
+
+        var options = s.NeowOptions.Select(Names.Relic).ToList();
+        string chosen = options[choice];
+        e.Step(choice, -1, out _, out _, out _);
+        e.Step(0, -1, out _, out _, out _); // Neow's Proceed
+        var neow = Stats(s, 0);
+        neow["ancient_choice"] = new JsonArray(options.Select((o, i) => (JsonNode)new JsonObject
+        {
+            ["TextKey"] = o,
+            ["title"] = new JsonObject { ["key"] = o + ".title", ["table"] = "relics" },
+            ["was_chosen"] = i == choice,
+        }).ToArray());
+        neow["relic_choices"] = new JsonArray(new JsonObject { ["choice"] = "RELIC." + chosen, ["was_picked"] = true });
         return new JsonObject
         {
-            ["seed"] = seed,
-            ["ascension"] = Asc,
-            ["game_mode"] = "standard",
-            ["build_id"] = "v0.107.1",
-            ["win"] = true,
-            ["was_abandoned"] = false,
-            ["modifiers"] = new JsonArray(),
-            ["acts"] = new JsonArray(s.Acts.Select(a => (JsonNode)("ACT." + Names.Act(a.Act))).ToArray()),
-            ["players"] = new JsonArray(new JsonObject { ["character"] = "CHARACTER.IRONCLAD" }),
-            ["map_point_history"] = new JsonArray(new JsonArray(floor1, floor2)),
+            ["map_point_type"] = "ancient",
+            ["rooms"] = new JsonArray(new JsonObject { ["model_id"] = "EVENT.NEOW", ["room_type"] = "event" }),
+            ["player_stats"] = new JsonArray(neow),
         };
     }
 
