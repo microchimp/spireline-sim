@@ -222,8 +222,11 @@ public class StoppedStepRefusalTests
         Assert.Equal(stopped.Screens.Select(Text), loaded.Screens.Select(Text));
     }
 
+    /// <summary>A screen as text; a draw-pile screen's cards as a multiset, as the document writes them.</summary>
     private static string Text(StepScreen screen) =>
-        $"{screen.Kind} {screen.Source} {screen.Count} {screen.Taken} [{string.Join(",", screen.Cards)}] [{string.Join(",", screen.Generated)}]";
+        $"{screen.Kind} {screen.Source} {screen.Count} {screen.Taken} "
+        + $"[{string.Join(",", screen.Kind.ChoosesFromDrawPile() ? screen.Cards.Select(card => card.ToString()).Order() : screen.Cards.Select(card => card.ToString()))}] "
+        + $"[{string.Join(",", screen.Generated)}]";
 
     /// <summary>
     /// A search fork of a stop on Seeker Strike's screen offers the cards the Strike offered: the
@@ -248,4 +251,33 @@ public class StoppedStepRefusalTests
 
     private static List<string> Offered(CombatState state) =>
         [.. state.PendingSelection!.Candidates.Select(index => state.DrawPile[index].ToString()).Order()];
+
+    /// <summary>
+    /// Two combats that look the same -- the same cards in the draw pile in another true order --
+    /// stopped on the same screen write one document: a screen over the draw pile records the cards
+    /// it offered (Foregone Conclusion's whole pile, Seeker Strike's three), and in pile order they
+    /// would name the true order. The document writes them as the multiset it writes the pile as.
+    /// </summary>
+    [Theory]
+    [InlineData("ForegoneConclusion")]
+    [InlineData("SeekerStrike")]
+    public void TwoWorldsThatLookTheSameWriteOneDocument(string screen)
+    {
+        int[] unseen = [IC.Anger, IC.DefendIronclad, IC.Inflame, IC.TwinStrike, IC.ShrugItOff, IC.PommelStrike, IC.IronWave, IC.Thunderclap, IC.Bash, IC.Armaments];
+        var documents = new HashSet<string>();
+        foreach (int turn in Enumerable.Range(0, 4))
+        {
+            int[] order = [.. unseen.Skip(turn * 3), .. unseen.Take(turn * 3)];
+            var fight = Fight.Hand(TestDeck.Card(IC.DefendIronclad)).Energy(3).Enemy(hp: 400);
+            fight = screen == "ForegoneConclusion"
+                ? fight.Draw([.. TestDeck.Pile(order)]).PlayerBuff(BuffId.ForegoneConclusion, 1)
+                : fight.Draw([.. TestDeck.Pile([CL.SeekerStrike, .. order])]).PlayerBuff(BuffId.Hellraiser, 1);
+            CombatEngine.Step(fight.State, fight.State.Hand.Count, new CountingRandom(9));
+            Assert.NotNull(fight.Pending?.Replay);
+            Assert.True(fight.Pending!.Kind.ChoosesFromDrawPile());
+            documents.Add(Encoding.UTF8.GetString(CombatSnapshot.Write(fight.State)));
+        }
+
+        Assert.Single(documents);
+    }
 }

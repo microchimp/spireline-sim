@@ -1667,7 +1667,8 @@ public static class CombatSnapshot
     /// answers given so far (a pick from the draw pile as <c>{"card": ...}</c>, since its index
     /// points into the true order), the cards the step took off the draw pile before the screen in
     /// the order it took them (<c>taken</c>), each screen it reached (<c>screens</c>: kind, source
-    /// card, candidate count, the takes before it, the candidates it showed by card or generated id),
+    /// card, candidate count, the takes before it, the candidates it showed by card -- a draw-pile
+    /// screen's as a sorted multiset, since their places are the true order -- or by generated id),
     /// and the step's start (<c>before</c>) as the player saw it: the
     /// position the action was taken from, written as this document is written, its unseen cards a
     /// sorted multiset and no stream. That start is history the player has seen; the replay of a
@@ -1744,7 +1745,10 @@ public static class CombatSnapshot
                 writer.WriteNumber("source", reached.Source);
                 writer.WriteNumber("count", reached.Count);
                 writer.WriteNumber("taken", reached.Taken);
-                WriteItems(writer, "cards", reached.Cards, WriteCard);
+                // A screen over the draw pile offered cards, not places: in pile order they would
+                // name the true order (Foregone Conclusion's whole pile), so they are the multiset
+                // the pile's middle is. A hand's or a discard pile's order is the player's to see.
+                WriteItems<CardInstance>(writer, "cards", reached.Kind.ChoosesFromDrawPile() ? Sorted(reached.Cards) : reached.Cards, WriteCard);
                 WriteItems(writer, "generated", reached.Generated, (inner, id) => inner.WriteNumberValue(id));
                 writer.WriteEndObject();
             }

@@ -116,7 +116,9 @@ public sealed class HookChoiceReplay
 /// A screen a stopped step reached (<see cref="HookChoiceReplay.Screens" />), as the player saw it:
 /// its kind, the card that asked, how many candidates it offered and which (the cards for a screen
 /// over a pile, the generated ids for a choose-a-card screen), and how many cards the step had taken
-/// off the draw pile by then. A replay must reach the same screen there, or it is refused.
+/// off the draw pile by then. A replay must reach the same screen there, or it is refused. A
+/// draw-pile screen's cards are kept in pile order here and written as a sorted multiset
+/// (<c>CombatSnapshot</c>): which cards it offered is public, where they lay is not.
 /// </summary>
 public sealed record StepScreen(CardSelectionKind Kind, int Source, int Count, int Taken, CardInstance[] Cards, int[] Generated)
 {
