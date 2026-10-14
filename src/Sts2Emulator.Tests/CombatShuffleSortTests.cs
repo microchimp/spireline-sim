@@ -207,11 +207,16 @@ public class CombatShuffleSortTests
     /// `Hook.AfterShuffle` visits the player's powers before the player's relics: Stratagem
     /// takes its card out of the shuffled pile, and only then does Biiig Hug place its Soot.
     /// </summary>
+    /// <remarks>
+    /// Inside a step, where the game awaits Stratagem's pick (`CombatEngine.AwaitSelection`):
+    /// Pommel Strike's draw finds the pile empty and shuffles, the pick is the top card of the
+    /// new pile, the Soot goes into the five left, and the draw then takes the top.
+    /// </remarks>
     [Fact]
     public void StratagemTakesItsCardBeforeBiiigHugPlacesTheSoot()
     {
         var discard = Enumerable.Range(0, 6).Select(i => Copy(i % 2 == 0 ? "Bash" : "StrikeIronclad", i)).ToArray();
-        var fight = Fight.Hand().Enemy(hp: 100).Draw().Discard(discard);
+        var fight = Fight.Hand(TestDeck.Card(IC.PommelStrike)).Energy(3).Enemy(hp: 100).Draw().Discard(discard);
         fight.State.Relics.Add(new RelicInstance(RelicEffects.BiiigHug));
         BuffSystem.Apply(fight.State.PlayerBuffs, BuffId.StratagemPower, 1);
         fight.State.ShuffleRng = new CountingRandom(8);
@@ -221,10 +226,18 @@ public class CombatShuffleSortTests
         var taken = expected[0];
         expected.RemoveAt(0);
         int sootAt = oracle.Next(expected.Count + 1);
-        CardEffects.ShuffleDiscardIntoDraw(fight.State, new Random(0));
+        expected.Insert(sootAt, new CardInstance(Id("Soot"), false));
 
-        Assert.Equal(taken.ReplayCount, Assert.Single(fight.State.Hand).ReplayCount);
-        Assert.Equal(Id("Soot"), fight.State.DrawPile[sootAt].DefId);
-        Assert.Equal(6, fight.State.DrawPile.Count);
+        var rng = new CountingRandom(3);
+        CombatEngine.Step(fight.State, 0, rng);
+        Assert.Equal(CardSelectionKind.DrawPileToHand, fight.Pending!.Kind);
+        Assert.Equal(6, fight.Pending.Candidates.Count);
+        Assert.Equal(taken, fight.State.DrawPile[fight.Pending.Candidates[0]]);
+
+        CombatEngine.Step(fight.State, 0, rng);
+        Assert.Null(fight.State.PendingSelection);
+        Assert.Equal([taken, expected[0]], fight.State.Hand);
+        Assert.Equal(Tags(expected.Skip(1)), Tags(fight.State.DrawPile));
+        Assert.Equal(Id("Soot"), expected[sootAt].DefId);
     }
 }
