@@ -408,6 +408,32 @@ public class AutoPlayPipelineTests
         Assert.Contains(fight.State.DiscardPile, c => c.DefId == SI.FlickFlack);
     }
 
+    /// <summary>
+    /// An auto-played Survivor answers its discard screen at once, and the Sly card it
+    /// discards plays inside the discard command on the step's own stream: its target roll
+    /// (no run stream here) is the step's first draw, not a fresh `new Random(0)`'s.
+    /// </summary>
+    [Fact]
+    public void ASlyCardAnImmediateScreenDiscardsPlaysOnTheStepsStream()
+    {
+        var fight = Fight
+            .Hand(Card(IC.Havoc), Card(SI.StrikeSilent) with { SlyForCombat = true })
+            .Enemy(hp: 100)
+            .Enemy(hp: 100)
+            .Draw(Card(SI.Survivor))
+            .Energy(3);
+        fight.State.TargetRng = null;
+        var stream = new CountingRandom(11);
+        int rolled = stream.Copy().Next(2);
+
+        CombatEngine.Step(fight.State, 0, stream);
+
+        Assert.Equal(1, stream.CallCount);
+        Assert.Equal(94, fight.State.Enemies[rolled].Hp);
+        Assert.Equal(100, fight.State.Enemies[1 - rolled].Hp);
+        Assert.Equal(8, fight.State.PlayerBlock);
+    }
+
     // ── Play count: settled as the play is set up (`GeneratePlayCount`) ─────────────────
 
     /// <summary>

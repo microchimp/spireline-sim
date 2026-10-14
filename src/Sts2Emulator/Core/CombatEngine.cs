@@ -2161,7 +2161,8 @@ public static class CombatEngine
             Effects.CardEffects.OpenDiscardSelection(
                 state,
                 Effects.SI.ToolsOfTheTrade,
-                toolsOfTheTrade
+                toolsOfTheTrade,
+                rng
             );
         }
 
@@ -3269,7 +3270,8 @@ public static class CombatEngine
                         state,
                         selection.SourceCardDefId,
                         selection.Amount - 1,
-                        selection.AfterSelectionToHand
+                        selection.AfterSelectionToHand,
+                        rng
                     );
                 }
                 else

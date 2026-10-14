@@ -120,7 +120,7 @@ public class MasterPlannerTests
 
         // `CardCmd.DiscardAndDraw` auto-plays the Sly card inside the discard itself.
         int blockBefore = fight.State.PlayerBlock;
-        CardEffects.DiscardFirstCardsFromHand(fight.State, 1);
+        CardEffects.DiscardFirstCardsFromHand(fight.State, 1, new Random(0));
 
         Assert.Equal(blockBefore + 5, fight.State.PlayerBlock);
         Assert.Empty(fight.State.AutoPlayQueue);

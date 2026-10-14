@@ -1332,7 +1332,7 @@ public static class CardEffects
 
             case SI.Acrobatics: // 1-cost, draw 3/4 then discard a CHOSEN card
                 DrawCards(state, upgraded ? 4 : 3, rng);
-                OpenDiscardSelection(state, def.Id, 1);
+                OpenDiscardSelection(state, def.Id, 1, rng);
                 break;
 
             case SI.Adrenaline: // 0-cost, gain 1/2 energy and draw 2, exhaust
@@ -1478,7 +1478,7 @@ public static class CardEffects
             case SI.DaggerThrow: // 1-cost, 9/12 damage, draw 1, discard a CHOSEN card
                 DealDamage(state, Dmg(state, def, upgraded, card));
                 DrawCards(state, 1, rng);
-                OpenDiscardSelection(state, def.Id, 1);
+                OpenDiscardSelection(state, def.Id, 1, rng);
                 break;
 
             case SI.Dash: // 2-cost, 10/13 block and 10/13 damage
@@ -1709,6 +1709,7 @@ public static class CardEffects
                     state,
                     def.Id,
                     2,
+                    rng,
                     [.. Enumerable.Repeat(new CardInstance(SI.Shiv, upgraded), 2)]
                 );
                 break;
@@ -1951,7 +1952,7 @@ public static class CardEffects
 
             case SI.Prepared: // 0-cost, draw 1/2 then discard that many CHOSEN cards
                 DrawCards(state, upgraded ? 2 : 1, rng);
-                OpenDiscardSelection(state, def.Id, upgraded ? 2 : 1);
+                OpenDiscardSelection(state, def.Id, upgraded ? 2 : 1, rng);
                 break;
 
             case SI.Reflex: // 3-cost, draw 2/3
@@ -2092,7 +2093,7 @@ public static class CardEffects
 
             case SI.Survivor: // 1-cost, 8/11 block and discard a CHOSEN card
                 GainBlock(state, Blk(def, upgraded, card), rng);
-                OpenDiscardSelection(state, def.Id, 1);
+                OpenDiscardSelection(state, def.Id, 1, rng);
                 break;
 
             case SI.Tactician: // 3-cost, gain 1/2 energy
@@ -4623,6 +4624,7 @@ public static class CardEffects
         CombatState state,
         int sourceCardDefId,
         int amount,
+        Random rng,
         List<CardInstance>? afterwards = null
     )
     {
@@ -4635,9 +4637,13 @@ public static class CardEffects
 
         if (state.AutoPlaying)
         {
+            // Answered at once with the leftmost card, through the discard command, so a Sly
+            // card it discards plays there and then on the play's own stream.
             for (int pick = 0; pick < amount && state.Hand.Count > 0; pick++)
             {
-                ResolveSelectionImmediately(state, CardSelectionKind.DiscardFromHandRepeated, 0);
+                var card = state.Hand[0];
+                state.Hand.RemoveAt(0);
+                DiscardMovedCards(state, [card], rng);
             }
 
             AddCardsToHand(state, tail);
@@ -4676,8 +4682,9 @@ public static class CardEffects
         CombatState state,
         int sourceCardDefId,
         int remaining,
-        List<CardInstance> afterwards
-    ) => OpenDiscardSelection(state, sourceCardDefId, remaining, afterwards);
+        List<CardInstance> afterwards,
+        Random rng
+    ) => OpenDiscardSelection(state, sourceCardDefId, remaining, rng, afterwards);
 
     /// <summary>
     /// `CardPileCmd.Add(card, PileType.Hand)` for a card a selection picked: into the hand,
@@ -4803,14 +4810,6 @@ public static class CardEffects
                 // The chosen card stays exactly where it is; only copies of it are owed.
                 QueueHandCardCopies(state, state.Hand[index], amount);
                 break;
-
-            case CardSelectionKind.DiscardFromHandRepeated when index < state.Hand.Count:
-            {
-                var card = state.Hand[index];
-                state.Hand.RemoveAt(index);
-                DiscardMovedCards(state, [card]);
-                break;
-            }
         }
     }
 
@@ -10624,8 +10623,8 @@ public static class CardEffects
     public static void DiscardFirstCardsFromHand(
         CombatState state,
         int count,
-        int drawAfter = 0,
-        Random? rng = null
+        Random rng,
+        int drawAfter = 0
     )
     {
         var moved = new List<CardInstance>();
@@ -10656,12 +10655,14 @@ public static class CardEffects
     ///
     /// A Sly card lands in the discard pile like the rest, and once every card is down (and
     /// the draw, for `DiscardAndDraw`) it is auto-played FROM there -- from wherever it is by
-    /// then, as a draw can shuffle the discard pile under it -- and the play files it.
+    /// then, as a draw can shuffle the discard pile under it -- and the play files it. That
+    /// play, the draw and the discard hooks run on the caller's stream, which every caller
+    /// has to pass: a Sly card played on a fresh `new Random(0)` rolls its own target.
     /// </remarks>
     internal static void DiscardMovedCards(
         CombatState state,
         List<CardInstance> cards,
-        Random? rng = null,
+        Random rng,
         int drawAfter = 0
     )
     {
@@ -10686,7 +10687,7 @@ public static class CardEffects
         // discarded it, not after the whole action.
         if (drawAfter > 0)
         {
-            DrawCards(state, drawAfter, rng ?? new Random(0));
+            DrawCards(state, drawAfter, rng);
         }
 
         foreach (var card in sly)
@@ -10698,7 +10699,7 @@ public static class CardEffects
             int at = last;
             if (pile is not null)
             {
-                CombatEngine.AutoPlayFromPile(state, pile, at, rng ?? new Random(0));
+                CombatEngine.AutoPlayFromPile(state, pile, at, rng);
             }
         }
     }
