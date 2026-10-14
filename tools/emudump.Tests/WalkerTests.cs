@@ -24,11 +24,16 @@ public class WalkerTests
         ["stolen_loot"] = 0,
     };
 
-    /// <summary>Neow and the first monster fight of the emulator's run, as the game records them.</summary>
-    internal static JsonObject Record(Func<List<string>, List<string>>? tamperOffer = null)
+    /// <summary>
+    /// Neow and the first monster fight of the emulator's run, as the game records them: the run
+    /// of <paramref name="seed" /> generated for <paramref name="profile" /> (the mature one by
+    /// default), which the record, like the game's, does not name.
+    /// </summary>
+    internal static JsonObject Record(Func<List<string>, List<string>>? tamperOffer = null, string seed = Seed,
+        UnlockState? profile = null)
     {
         var e = new RunEngine();
-        e.Reset(Seed, Asc);
+        e.Reset(seed, Asc, PlayerCharacter.Ironclad, profile);
         var s = e.State;
 
         // Floor 1: the first blessing that is a relic and nothing else (no screen, no cards).
@@ -110,7 +115,7 @@ public class WalkerTests
 
         return new JsonObject
         {
-            ["seed"] = Seed,
+            ["seed"] = seed,
             ["ascension"] = Asc,
             ["game_mode"] = "standard",
             ["build_id"] = "v0.107.1",

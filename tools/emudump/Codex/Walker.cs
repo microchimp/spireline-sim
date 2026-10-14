@@ -9,6 +9,10 @@
 //   FIGHT-DEPENDENT the offer drew on a stream a resolved fight left behind the game's (the fight's
 //                   own turns, a creature that joined mid-fight, a reward the fight added);
 //   WALKER          the history cannot be followed here (an unmodelled screen, an unreadable pick).
+//
+// The run is generated for the profile its history fits (ProfileFit): the mature one unless the
+// acts, the fights, the ancients or Neow's options show otherwise. A fitted profile is reported
+// as "profile" (what it lacks); what is still unexplained afterwards is classed as below.
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Sts2Emulator.Core;
@@ -24,11 +28,10 @@ public sealed class Walker
     public const string WalkerLimit = "WALKER";
 
     /// <summary>
-    /// The player's profile decided it, and the history does not carry the profile: which acts
-    /// were discovered (`ActModel.GetRandomList` forces an undiscovered alternate act, and only
-    /// an unlocked one can be rolled), which characters are unlocked (Kaleidoscope is only
-    /// offered at Neow with every character's pool unlocked), and which epochs: the emulator
-    /// offered content an epoch unlocks of which nothing appears anywhere in the run.
+    /// The player's profile decided it, and no profile the fit tries explains it: the acts, or
+    /// Neow's options with Scroll Boxes barred (its bundles need an unlocked pool deep enough),
+    /// or the profile's first run (Overgrowth's set room order), or content an epoch unlocks of
+    /// which nothing appears anywhere in the run (the pools' epoch filters are not modelled).
     /// </summary>
     public const string Profile = "PROFILE-DEPENDENT";
 
@@ -118,9 +121,15 @@ public sealed class Walker
         _floor = 0;
         try
         {
-            // Reset starts every run on a fresh state, so one engine walks them all.
+            // Reset starts every run on a fresh state, so one engine walks them all. The fit resets
+            // it under the profile the history shows.
             long r0 = System.Diagnostics.Stopwatch.GetTimestamp();
-            _e.Reset(seed, asc, character);
+            var profile = ProfileFit.Fit(rec, _e, seed, asc, character);
+            if (!profile.IsAll)
+            {
+                result["profile"] = ProfileFit.Describe(profile);
+            }
+
             _belt.Clear();
             _eventsSeen = 0;
             _paelsSacrifices = SavedInt(rec, "PAELS_WING", "RewardsSacrificed") ?? int.MaxValue;
@@ -356,7 +365,7 @@ public sealed class Walker
     /// <summary>The emulator's option in the history's terms: a Sea Glass with its character.</summary>
     string EmulatorAncientOption(int relic) =>
         relic == RunConstants.RelicSeaGlass && S.SeaGlassCharacter >= 0
-            ? "SEA_GLASS." + Enum.GetValues<PlayerCharacter>().Where(c => c != S.Character).ElementAt(S.SeaGlassCharacter).ToString().ToUpperInvariant()
+            ? "SEA_GLASS." + RunConstants.SeaGlassCharacterOf(S).ToString().ToUpperInvariant()
             : Names.Relic(relic);
 
     /// <summary>
