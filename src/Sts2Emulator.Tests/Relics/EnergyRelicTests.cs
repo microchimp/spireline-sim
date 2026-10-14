@@ -168,12 +168,13 @@ public class EnergyRelicTests
     }
 
     /// <summary>
-    /// The queued auto-play path (Havoc, Hellraiser, Mayhem) refuses too. The queue drains
-    /// after the play that filled it, by which point that play has been counted — so a
-    /// sixth card that draws a Strike into a Hellraiser cannot smuggle a seventh play out.
+    /// `VelvetChoker` counts a play in `AfterCardPlayed`, when it FINISHES, and Hellraiser
+    /// auto-plays a drawn Strike inside the draw (`AfterCardDrawnEarly`). So the sixth card
+    /// drawing a Strike is still at five when the Strike's gate asks: the Strike plays. The
+    /// refusal of an auto-play once six have finished is the Stampede test above.
     /// </summary>
     [Fact]
-    public void VelvetChokerStopsQueuedAutoPlaysToo()
+    public void VelvetChokerLetsTheSixthCardsOwnAutoPlayThrough()
     {
         var fight = Fight.WithRelics(RelicEffects.VelvetChoker).Energy(20);
         BuffSystem.Apply(fight.State.PlayerBuffs, BuffId.Hellraiser, 1);
@@ -193,7 +194,8 @@ public class EnergyRelicTests
             fight.Play();
         }
 
-        Assert.Equal(hpBefore, fight.State.Enemies.Sum(enemy => enemy.Hp));
+        // Shrug It Off's draw: the Strike lands its 6 inside the sixth card's play.
+        Assert.Equal(hpBefore - 6, fight.State.Enemies.Sum(enemy => enemy.Hp));
         Assert.Contains(fight.State.DiscardPile, card => card.DefId == IC.StrikeIronclad);
     }
 

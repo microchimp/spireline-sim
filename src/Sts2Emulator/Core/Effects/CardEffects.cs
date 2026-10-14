@@ -1332,7 +1332,7 @@ public static class CardEffects
 
             case SI.Acrobatics: // 1-cost, draw 3/4 then discard a CHOSEN card
                 DrawCards(state, upgraded ? 4 : 3, rng);
-                OpenDiscardSelection(state, def.Id, 1);
+                OpenDiscardSelection(state, def.Id, 1, rng);
                 break;
 
             case SI.Adrenaline: // 0-cost, gain 1/2 energy and draw 2, exhaust
@@ -1452,9 +1452,9 @@ public static class CardEffects
 
             case SI.CalculatedGamble: // 0-cost, discard hand and draw that many; upgrade retains
             {
+                // `CardCmd.DiscardAndDraw(hand, hand.Count)`: the Sly cards play after the draw.
                 int count = state.Hand.Count;
-                DiscardFirstCardsFromHand(state, count);
-                DrawCards(state, count, rng);
+                DiscardFirstCardsFromHand(state, count, drawAfter: count, rng: rng);
                 break;
             }
 
@@ -1478,7 +1478,7 @@ public static class CardEffects
             case SI.DaggerThrow: // 1-cost, 9/12 damage, draw 1, discard a CHOSEN card
                 DealDamage(state, Dmg(state, def, upgraded, card));
                 DrawCards(state, 1, rng);
-                OpenDiscardSelection(state, def.Id, 1);
+                OpenDiscardSelection(state, def.Id, 1, rng);
                 break;
 
             case SI.Dash: // 2-cost, 10/13 block and 10/13 damage
@@ -1709,6 +1709,7 @@ public static class CardEffects
                     state,
                     def.Id,
                     2,
+                    rng,
                     [.. Enumerable.Repeat(new CardInstance(SI.Shiv, upgraded), 2)]
                 );
                 break;
@@ -1725,23 +1726,32 @@ public static class CardEffects
                 // damage and no block on the card at all.
                 //
                 // Thorns 4/6 was not a smaller version of that. It was a different card.
+                // The Shivs in the exhaust pile as the trap resolves (a snapshot), each
+                // `CardCmd.AutoPlay`ed there and then at the trap's own target -- given, so no
+                // roll. Inside the trap's play: under Velvet Choker the first Shiv still
+                // plays, because the trap's own AfterCardPlayed has not counted it yet.
+                var aim = FirstEnemy(state);
+                var source = new CombatEngine.AutoPlaySource(
+                    Target: aim is null ? null : state.Enemies.IndexOf(aim)
+                );
                 var trapped = state.ExhaustPile.Where(c => c.DefId == SI.Shiv).ToList();
                 foreach (var shiv in trapped)
                 {
-                    state.ExhaustPile.Remove(shiv);
-                }
+                    int at = state.ExhaustPile.IndexOf(shiv);
+                    if (at < 0)
+                    {
+                        continue;
+                    }
 
-                // Given a target, so the replays must not roll for one -- see
-                // CombatState.AutoPlayTargetIndex. The trap is TargetType.AnyEnemy, so the
-                // target is whichever enemy the play was aimed at.
-                var aim = FirstEnemy(state);
-                state.AutoPlayTargetIndex = aim is null ? -1 : state.Enemies.IndexOf(aim);
-                foreach (var shiv in trapped)
-                {
                     // `CardCmd.Upgrade(item)` happens before the play, so an upgraded trap
                     // replays UPGRADED Shivs -- the upgrade is on what it throws, not on
                     // how many.
-                    state.AutoPlayQueue.Add(upgraded ? shiv with { Upgraded = true } : shiv);
+                    if (upgraded)
+                    {
+                        state.ExhaustPile[at] = shiv with { Upgraded = true };
+                    }
+
+                    CombatEngine.AutoPlayFromPile(state, state.ExhaustPile, at, rng, source);
                 }
 
                 break;
@@ -1942,7 +1952,7 @@ public static class CardEffects
 
             case SI.Prepared: // 0-cost, draw 1/2 then discard that many CHOSEN cards
                 DrawCards(state, upgraded ? 2 : 1, rng);
-                OpenDiscardSelection(state, def.Id, upgraded ? 2 : 1);
+                OpenDiscardSelection(state, def.Id, upgraded ? 2 : 1, rng);
                 break;
 
             case SI.Reflex: // 3-cost, draw 2/3
@@ -1990,7 +2000,7 @@ public static class CardEffects
                 // where the card is an offensive one, and immediate where the card is
                 // delayed. Discarding your hand to take less damage is a different plan
                 // from discarding it to hit twice as hard next turn.
-                DiscardFirstCardsFromHand(state, state.Hand.Count);
+                DiscardFirstCardsFromHand(state, state.Hand.Count, rng: rng);
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.ShadowStep, 1);
                 break;
 
@@ -2041,7 +2051,7 @@ public static class CardEffects
             case SI.StormOfSteel: // 1-cost, discard hand and add upgraded Shivs if upgraded
             {
                 int count = state.Hand.Count;
-                DiscardFirstCardsFromHand(state, count);
+                DiscardFirstCardsFromHand(state, count, rng: rng);
                 for (int i = 0; i < count && state.Hand.Count < MaxCardsInHand; i++)
                 {
                     state.Hand.Add(new CardInstance(SI.Shiv, upgraded, FreeThisTurn: true));
@@ -2083,7 +2093,7 @@ public static class CardEffects
 
             case SI.Survivor: // 1-cost, 8/11 block and discard a CHOSEN card
                 GainBlock(state, Blk(def, upgraded, card), rng);
-                OpenDiscardSelection(state, def.Id, 1);
+                OpenDiscardSelection(state, def.Id, 1, rng);
                 break;
 
             case SI.Tactician: // 3-cost, gain 1/2 energy
@@ -2596,8 +2606,20 @@ public static class CardEffects
             return;
         }
 
+        // `CardPileCmd.Draw` stops once the combat is over (`IsOverOrEnding`), which a Strike
+        // Hellraiser plays out of this draw, or a draw hook's damage, can make it. Only a
+        // combat that ends INSIDE the draw is asked about: one already over when it starts is
+        // still drawn, because some turn-start kills land before the hand draw here where the
+        // game makes them after it (Inferno's `AfterPlayerTurnStart`), and the game's shuffle
+        // is then the emulator's only if it draws (referee/AUTOPLAY.md, open gaps).
+        bool overBefore = CombatEngine.CombatIsOver(state);
         for (int i = 0; i < count; i++)
         {
+            if (!overBefore && CombatEngine.CombatIsOver(state))
+            {
+                break;
+            }
+
             // `CardPileCmd.Draw` STOPS at a full hand -- `if (num <= 0) break`, and again on
             // `hand.Cards.Count >= MaxCardsInHand` -- so the card that would not fit stays in
             // the DRAW PILE. The emulator used to draw it anyway and put the overflow in the
@@ -2614,10 +2636,15 @@ public static class CardEffects
                 break;
             }
 
-            var card = BindOnDraw(
-                state,
-                ConfuseCostOnDraw(state, GrowKinglyCardOnDraw(state.DrawPile[0]))
-            );
+            // `HellraiserPower.AfterCardDrawnEarly`, the one EARLY draw hook: a drawn Strike
+            // is auto-played there and then -- before every `AfterCardDrawn` hook (Chains of
+            // Binding, Confused and the rest below) and before the next card is drawn.
+            bool hellraised =
+                BuffSystem.Get(state.PlayerBuffs, BuffId.Hellraiser) > 0
+                && IsStrikeCard(state.DrawPile[0].DefId);
+            var card = hellraised
+                ? GrowKinglyCardOnDraw(state.DrawPile[0])
+                : BindOnDraw(state, ConfuseCostOnDraw(state, GrowKinglyCardOnDraw(state.DrawPile[0])));
             state.RemoveFromDrawPileAt(0);
             // `Void.AfterCardDrawn` when the drawn card IS the Void: `LoseEnergy(1)`. The
             // card is Unplayable and Ethereal, so its whole existence is the energy it
@@ -2634,19 +2661,29 @@ public static class CardEffects
                 state.ExtraCardsDrawnThisTurn++;
             }
 
+            if (hellraised)
+            {
+                // It used to be queued and played once the whole action was over, after the
+                // rest of the draw and the card that drew it. Then the `AfterCardDrawn` hooks
+                // for it: Chains of Binding afflicts the copy where it came to rest and
+                // Confused re-rolls its cost.
+                var restsOn = CombatEngine.AutoPlayDrawnCard(state, card, rng);
+                int at =
+                    restsOn is null ? -1
+                    : ReferenceEquals(restsOn, state.DrawPile) ? 0
+                    : restsOn.Count - 1;
+                if (at >= 0 && restsOn![at].DefId == card.DefId)
+                {
+                    restsOn[at] = BindOnDraw(state, ConfuseCostOnDraw(state, restsOn[at]));
+                }
+            }
+
             CountDrawnCardForAutomation(state);
             PoisonAllForCorrosiveWave(state, rng);
             DamageAllForSpeedster(state, fromHandDraw);
             DrawForIteration(state, card, rng);
 
-            if (
-                BuffSystem.Get(state.PlayerBuffs, BuffId.Hellraiser) > 0
-                && IsStrikeCard(card.DefId)
-            )
-            {
-                state.AutoPlayQueue.Add(card);
-            }
-            else
+            if (!hellraised)
             {
                 // Slither.AfterCardDrawn re-rolls the card's cost for this combat, and a
                 // drawn card always lands in HAND now -- the loop breaks at the cap rather
@@ -4227,9 +4264,14 @@ public static class CardEffects
     /// fallback to the unfiltered pile. Cascade was pointed here because the helper's name
     /// matched its card text; the two run different commands.
     /// </summary>
-    private static void AutoPlayRandomFromDrawPile(CombatState state, int count, Random? rng = null)
+    /// <remarks>
+    /// Each card is picked and then played before the next pick, which therefore sees the
+    /// draw pile the first play left (a Pommel Strike's draw, a reshuffle). The picks roll
+    /// even once the fight is over; the auto-play then plays nothing and the card stays put.
+    /// </remarks>
+    private static void AutoPlayRandomFromDrawPile(CombatState state, int count, Random rng)
     {
-        var shuffle = state.ShuffleRng ?? rng ?? new Random(0);
+        var shuffle = state.ShuffleRng ?? rng;
         for (int i = 0; i < count && state.DrawPile.Count > 0; i++)
         {
             var all = Enumerable.Range(0, state.DrawPile.Count);
@@ -4243,9 +4285,7 @@ public static class CardEffects
                 eligible = StableShuffle(state.DrawPile, all, shuffle);
             }
 
-            var picked = state.DrawPile[eligible[0]];
-            state.RemoveFromDrawPileAt(eligible[0]);
-            state.AutoPlayQueue.Add(picked);
+            CombatEngine.AutoPlayFromPile(state, state.DrawPile, eligible[0], rng);
         }
     }
 
@@ -4266,7 +4306,13 @@ public static class CardEffects
     /// `StableShuffle` sorts by `ModelId` first, so the result does not depend on discard
     /// order.
     /// </remarks>
-    private static void AutoPlayAttacksFromDiscard(CombatState state, int count, Random? rng = null)
+    /// <remarks>
+    /// Then, for each taken card while the fight is on: an AnyEnemy card (its TargetType at
+    /// play time) gets a target rolled HERE, `Rng.CombatTargets.NextItem(HittableEnemies)`,
+    /// and is `CardCmd.AutoPlay`ed at it -- inside Beat Down's play, from wherever the card is
+    /// by then (an earlier play's draw can shuffle the discard pile into the draw pile).
+    /// </remarks>
+    private static void AutoPlayAttacksFromDiscard(CombatState state, int count, Random rng)
     {
         var taken = StableShuffle(
                 state.DiscardPile,
@@ -4277,20 +4323,63 @@ public static class CardEffects
                         var d = GeneratedData.Cards.Get(state.DiscardPile[i].DefId);
                         return d.Type == CardType.Attack && !d.Unplayable;
                     }),
-                state.ShuffleRng ?? rng ?? new Random(0)
+                state.ShuffleRng ?? rng
             )
             .Take(count)
             .ToList();
-        foreach (int index in taken)
+        var cards = taken.Select(i => state.DiscardPile[i]).ToList();
+        for (int k = 0; k < taken.Count; k++)
         {
-            state.AutoPlayQueue.Add(state.DiscardPile[index]);
+            if (CombatEngine.CombatIsOver(state))
+            {
+                break;
+            }
+
+            var card = cards[k];
+            int? target = null;
+            if (TargetTypeOf(state, card, GeneratedData.Cards.Get(card.DefId)) == CardTarget.AnyEnemy)
+            {
+                var rolled = RandomLivingEnemy(state, rng);
+                target = rolled is null ? null : state.Enemies.IndexOf(rolled);
+            }
+
+            // The very card picked: its slot less the picks before it already taken out (a
+            // played card goes on the END of the discard pile), unless a play moved the pile
+            // about, when it is wherever a copy of it is.
+            int at = taken[k] - taken.Take(k).Count(earlier => earlier < taken[k]);
+            List<CardInstance>? pile = state.DiscardPile;
+            if (at >= pile.Count || !pile[at].Equals(card))
+            {
+                pile = FindPileHolding(state, card, out at);
+            }
+
+            if (pile is not null)
+            {
+                CombatEngine.AutoPlayFromPile(
+                    state,
+                    pile,
+                    at,
+                    rng,
+                    new CombatEngine.AutoPlaySource(Target: target)
+                );
+            }
+        }
+    }
+
+    /// <summary>The pile a card is in now, and where: the discard, draw, hand, then exhaust.</summary>
+    private static List<CardInstance>? FindPileHolding(CombatState state, CardInstance card, out int at)
+    {
+        foreach (var pile in new[] { state.DiscardPile, state.DrawPile, state.Hand, state.ExhaustPile })
+        {
+            at = pile.IndexOf(card);
+            if (at >= 0)
+            {
+                return pile;
+            }
         }
 
-        // Back to front, so an earlier removal does not shift a later index.
-        foreach (int index in taken.OrderByDescending(i => i))
-        {
-            state.DiscardPile.RemoveAt(index);
-        }
+        at = -1;
+        return null;
     }
 
     /// <summary>
@@ -4535,6 +4624,7 @@ public static class CardEffects
         CombatState state,
         int sourceCardDefId,
         int amount,
+        Random rng,
         List<CardInstance>? afterwards = null
     )
     {
@@ -4547,9 +4637,13 @@ public static class CardEffects
 
         if (state.AutoPlaying)
         {
+            // Answered at once with the leftmost card, through the discard command, so a Sly
+            // card it discards plays there and then on the play's own stream.
             for (int pick = 0; pick < amount && state.Hand.Count > 0; pick++)
             {
-                ResolveSelectionImmediately(state, CardSelectionKind.DiscardFromHandRepeated, 0);
+                var card = state.Hand[0];
+                state.Hand.RemoveAt(0);
+                DiscardMovedCards(state, [card], rng);
             }
 
             AddCardsToHand(state, tail);
@@ -4588,8 +4682,9 @@ public static class CardEffects
         CombatState state,
         int sourceCardDefId,
         int remaining,
-        List<CardInstance> afterwards
-    ) => OpenDiscardSelection(state, sourceCardDefId, remaining, afterwards);
+        List<CardInstance> afterwards,
+        Random rng
+    ) => OpenDiscardSelection(state, sourceCardDefId, remaining, rng, afterwards);
 
     /// <summary>
     /// `CardPileCmd.Add(card, PileType.Hand)` for a card a selection picked: into the hand,
@@ -4715,14 +4810,6 @@ public static class CardEffects
                 // The chosen card stays exactly where it is; only copies of it are owed.
                 QueueHandCardCopies(state, state.Hand[index], amount);
                 break;
-
-            case CardSelectionKind.DiscardFromHandRepeated when index < state.Hand.Count:
-            {
-                var card = state.Hand[index];
-                state.Hand.RemoveAt(index);
-                DiscardMovedCards(state, [card]);
-                break;
-            }
         }
     }
 
@@ -6355,7 +6442,10 @@ public static class CardEffects
                 DealDamage(state, Dmg(state, def, upgraded, card));
                 int before = state.Hand.Count;
                 DrawCards(state, upgraded ? 5 : 4, rng);
-                for (int i = state.Hand.Count - 1; i >= before; i--)
+                // `CardCmd.Discard(drawn.Where(cost != 0 || X))`: in the order drawn, through
+                // the discard command, so the discard hooks fire and a Sly card plays.
+                var discarded = new List<CardInstance>();
+                for (int i = before; i < state.Hand.Count; )
                 {
                     var drawnDef = GeneratedData.Cards.Get(state.Hand[i].DefId);
                     int cost =
@@ -6364,11 +6454,16 @@ public static class CardEffects
                             : state.Hand[i].CostForCombat;
                     if (cost != 0 || drawnDef.Cost < 0)
                     {
-                        state.DiscardPile.Add(state.Hand[i] with { FreeThisTurn = false });
+                        discarded.Add(state.Hand[i]);
                         state.Hand.RemoveAt(i);
+                    }
+                    else
+                    {
+                        i++;
                     }
                 }
 
+                DiscardMovedCards(state, discarded, rng);
                 return true;
             }
             case "SweepingBeam":
@@ -7650,8 +7745,8 @@ public static class CardEffects
             case "ShiningStrike":
                 // 8 damage upgrading by 3, two stars, and then it puts ITSELF back on TOP
                 // of the draw pile -- unless something has given it Exhaust. That last part
-                // is in `CombatEngine.ShouldPlaceOnDrawPileAfterPlay`, which the play path
-                // reaches only after the exhaust branch, so the Exhaust guard falls out.
+                // is in `CombatEngine.DecideResultPile`, which asks about Exhaust first, so
+                // the Exhaust guard falls out.
                 DealDamage(state, Dmg(state, def, upgraded, card));
                 GainStars(state, 2);
                 return true;
@@ -7963,7 +8058,7 @@ public static class CardEffects
                 break;
             case "Acrobatics":
                 DrawCards(state, upgraded ? 4 : 3, rng);
-                DiscardFirstCardsFromHand(state, 1);
+                DiscardFirstCardsFromHand(state, 1, rng: rng);
                 break;
             case "Accuracy":
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.ShivDamage, upgraded ? 6 : 4);
@@ -7981,7 +8076,7 @@ public static class CardEffects
             case "Anticipate":
             case "Prepared":
                 DrawCards(state, upgraded ? 2 : 1, rng);
-                DiscardFirstCardsFromHand(state, 1);
+                DiscardFirstCardsFromHand(state, 1, rng: rng);
                 break;
             case "Apotheosis":
                 // `PlayerCombatState.AllCards` is Hand, Draw, Discard, EXHAUST and Play --
@@ -8226,7 +8321,7 @@ public static class CardEffects
 
                 break;
             case "CalculatedGamble":
-                DiscardFirstCardsFromHand(state, state.Hand.Count);
+                DiscardFirstCardsFromHand(state, state.Hand.Count, rng: rng);
                 DrawCards(state, state.DiscardPile.Count, rng);
                 break;
             case "Caltrops":
@@ -8319,7 +8414,7 @@ public static class CardEffects
                 break;
             case "DaggerThrow":
                 DrawCards(state, 1, rng);
-                DiscardFirstCardsFromHand(state, 1);
+                DiscardFirstCardsFromHand(state, 1, rng: rng);
                 break;
             case "DeadlyPoison":
             case "PoisonedStab":
@@ -8475,7 +8570,7 @@ public static class CardEffects
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.NextTurnDraw, upgraded ? 3 : 2);
                 break;
             case "Reboot":
-                DiscardFirstCardsFromHand(state, state.Hand.Count);
+                DiscardFirstCardsFromHand(state, state.Hand.Count, rng: rng);
                 DrawCards(state, upgraded ? 6 : 4, rng);
                 break;
             case "Reanimate":
@@ -8507,11 +8602,11 @@ public static class CardEffects
                 break;
             case "StormOfSteel":
                 int handCount = state.Hand.Count;
-                DiscardFirstCardsFromHand(state, handCount);
+                DiscardFirstCardsFromHand(state, handCount, rng: rng);
                 AddGeneratedCardsToHand(state, 430, handCount);
                 break;
             case "Survivor":
-                DiscardFirstCardsFromHand(state, 1);
+                DiscardFirstCardsFromHand(state, 1, rng: rng);
                 break;
             case "Tactician":
             case "Turbo":
@@ -9263,9 +9358,7 @@ public static class CardEffects
             return;
         }
 
-        var chosen = state.DrawPile[picks[0]];
-        state.RemoveFromDrawPileAt(picks[0]);
-        CombatEngine.AutoPlayCard(state, chosen, rng);
+        CombatEngine.AutoPlayFromPile(state, state.DrawPile, picks[0], rng);
     }
 
     /// <summary>Osty's max HP as a damage input, which is ZERO when it is not alive.</summary>
@@ -10527,7 +10620,12 @@ public static class CardEffects
 
     public static void KillDoomedEnemiesForTurnEnd(CombatState state) => KillDoomedEnemies(state);
 
-    public static void DiscardFirstCardsFromHand(CombatState state, int count)
+    public static void DiscardFirstCardsFromHand(
+        CombatState state,
+        int count,
+        Random rng,
+        int drawAfter = 0
+    )
     {
         var moved = new List<CardInstance>();
         for (int i = 0; i < count && state.Hand.Count > 0; i++)
@@ -10536,7 +10634,7 @@ public static class CardEffects
             state.Hand.RemoveAt(0);
         }
 
-        DiscardMovedCards(state, moved);
+        DiscardMovedCards(state, moved, rng, drawAfter);
     }
 
     /// <summary>
@@ -10555,14 +10653,17 @@ public static class CardEffects
     /// does not route through <c>CardCmd.Discard</c> in the game either, so holding a
     /// Tactician to the end of the turn is not a free point of energy.
     ///
-    /// A Sly card is queued instead of being added to the pile rather than as well as: the
-    /// game adds it and then plays it FROM the discard, and playing it here sends it to
-    /// whichever pile a played card lands in. Doing both would leave a copy behind.
+    /// A Sly card lands in the discard pile like the rest, and once every card is down (and
+    /// the draw, for `DiscardAndDraw`) it is auto-played FROM there -- from wherever it is by
+    /// then, as a draw can shuffle the discard pile under it -- and the play files it. That
+    /// play, the draw and the discard hooks run on the caller's stream, which every caller
+    /// has to pass: a Sly card played on a fresh `new Random(0)` rolls its own target.
     /// </remarks>
     internal static void DiscardMovedCards(
         CombatState state,
         List<CardInstance> cards,
-        Random? rng = null
+        Random rng,
+        int drawAfter = 0
     )
     {
         var sly = new List<CardInstance>();
@@ -10576,13 +10677,31 @@ public static class CardEffects
             if (moved.IsSlyThisTurn())
             {
                 sly.Add(moved);
-                continue;
             }
 
             state.DiscardPile.Add(moved);
         }
 
-        state.AutoPlayQueue.AddRange(sly);
+        // `CardCmd.DiscardAndDraw`: the draw, then each Sly card `CardCmd.AutoPlay`ed (type
+        // SlyDiscard) inside the discard command -- before the rest of the effect that
+        // discarded it, not after the whole action.
+        if (drawAfter > 0)
+        {
+            DrawCards(state, drawAfter, rng);
+        }
+
+        foreach (var card in sly)
+        {
+            // The copy just discarded: the last of its kind in the discard pile, unless the
+            // draw shuffled it away.
+            int last = state.DiscardPile.LastIndexOf(card);
+            var pile = last >= 0 ? state.DiscardPile : FindPileHolding(state, card, out last);
+            int at = last;
+            if (pile is not null)
+            {
+                CombatEngine.AutoPlayFromPile(state, pile, at, rng);
+            }
+        }
     }
 
     public static void AddGeneratedCardsToHand(

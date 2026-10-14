@@ -143,8 +143,6 @@ public class CombatSnapshotTests
     [
         // Step's own argument: overwritten on entry to every Step.
         nameof(CombatState.TargetEnemyIndex),
-        // Reset to -1 before every Step returns.
-        nameof(CombatState.AutoPlayTargetIndex),
         // Re-entrancy flag, restored before any nested play returns.
         nameof(CombatState.AutoPlaying),
         // Saved and restored around each card's resolution.
@@ -849,7 +847,9 @@ public class CombatSnapshotTests
 
         var unspent = PlayFirstCard(document);
 
-        Assert.True(unspent["counters"]!["cards_played_this_turn"]!.GetValue<int>() > 1);
+        // The earring's plays are auto-plays (`CardCmd.AutoPlay`), which the chosen-play count
+        // leaves out; every play started counts.
+        Assert.True(unspent["counters"]!["card_plays_started_this_turn"]!.GetValue<int>() > 1);
     }
 
     // ── (i) ──────────────────────────────────────────────────────────────────────────

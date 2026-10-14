@@ -123,10 +123,6 @@ public static class StateInvariants
             Bad("at_rest", "ResolvingDefendCard is set");
         }
 
-        if (s.AutoPlayTargetIndex != -1)
-        {
-            Bad("at_rest", $"AutoPlayTargetIndex {s.AutoPlayTargetIndex}");
-        }
 
         if (s.KnownTopCount < 0 || s.KnownBottomCount < 0 || s.KnownTopCount + s.KnownBottomCount > s.DrawPile.Count)
         {

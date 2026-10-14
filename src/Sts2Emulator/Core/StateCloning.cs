@@ -276,7 +276,6 @@ public static class StateCloning
         into.ExtraCardRewards = combat.ExtraCardRewards;
         into.StolenBackCards = [.. combat.StolenBackCards];
         into.ExecutedThisEnemyTurn = [.. combat.ExecutedThisEnemyTurn];
-        into.AutoPlayTargetIndex = combat.AutoPlayTargetIndex;
         into.RuptureOwed = combat.RuptureOwed;
         into.BlockGainsThisTurn = combat.BlockGainsThisTurn;
         into.PlayerHpLostThisTurn = combat.PlayerHpLostThisTurn;

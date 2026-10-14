@@ -65,7 +65,7 @@ public sealed class SnapshotException : Exception
 /// <c>counters</c> carries every per-turn and per-combat field of CombatState that has no
 /// place elsewhere in the document. Deliberately left out are the fields idle whenever a
 /// step has returned: <c>TargetEnemyIndex</c> (Step's own argument, overwritten on entry),
-/// <c>AutoPlayTargetIndex</c> (reset before Step returns), <c>AutoPlaying</c> and
+/// <c>AutoPlaying</c> and
 /// <c>ResolvingDefendCard</c> (restored around each play), <c>AutoPlayQueue</c> (drained
 /// before Step returns), <c>StrangleBeforePlay</c> (captured afresh at the start of every
 /// play) and <c>ExecutedThisEnemyTurn</c> (differential-testing introspection). Nor is

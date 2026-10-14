@@ -17,8 +17,8 @@ namespace Sts2Emulator.Tests;
 /// but a different card.
 ///
 /// The replays are given a target, so they must not roll for one: see
-/// `CombatState.AutoPlayTargetIndex`. That distinction only exists because this card is
-/// the one thing in the emulator that hands an auto-play an explicit target.
+/// `CombatEngine.AutoPlaySource.Target`. Knife Trap, Beat Down and Whispering Earring are
+/// the callers that hand an auto-play an explicit target.
 /// </remarks>
 public class KnifeTrapTests
 {

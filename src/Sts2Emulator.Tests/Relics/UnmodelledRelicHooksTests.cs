@@ -25,7 +25,7 @@ public class DiscardAndExhaustRelicTests
         var fight = Fight.WithRelics(RelicEffects.ToughBandages);
         int block = fight.State.PlayerBlock;
 
-        CardEffects.DiscardFirstCardsFromHand(fight.State, 2);
+        CardEffects.DiscardFirstCardsFromHand(fight.State, 2, new Random(0));
 
         Assert.Equal(block + 6, fight.State.PlayerBlock);
     }
@@ -56,7 +56,7 @@ public class DiscardAndExhaustRelicTests
         var fight = Fight.WithRelics(RelicEffects.Tingsha);
         int before = fight.State.Enemies.Sum(enemy => enemy.Hp);
 
-        CardEffects.DiscardFirstCardsFromHand(fight.State, 3);
+        CardEffects.DiscardFirstCardsFromHand(fight.State, 3, new Random(0));
 
         Assert.Equal(before - 9, fight.State.Enemies.Sum(enemy => enemy.Hp));
     }

@@ -186,6 +186,47 @@ public class WhisperingEarringTests
         Assert.Equal(CL.Lift, fight.State.Hand[0].DefId);
     }
 
+    /// <summary>
+    /// The earring's plays are `CardCmd.AutoPlay`s that paid for themselves: the energy is
+    /// spent, every play is started, and the chosen-play count Pael's Eye and Brilliant Scarf
+    /// read stays at zero (`CardPlay.IsAutoPlay`).
+    /// </summary>
+    [Fact]
+    public void ItsPlaysAreAutoPlaysThatPaid()
+    {
+        var fight = Earring(TestDeck.Card(IC.DefendIronclad), TestDeck.Card(IC.DefendIronclad));
+
+        CombatEngine.RunWhisperingEarringAutoPlay(fight.State, Rng);
+
+        Assert.Equal(1, fight.State.Energy);
+        Assert.Equal(10, fight.State.PlayerBlock);
+        Assert.Equal(2, fight.State.CardPlaysStartedThisTurn);
+        Assert.Equal(0, fight.State.CardsPlayedThisTurn);
+    }
+
+    /// <summary>
+    /// The earring holds a `VakuuCardSelector` for the loop, so a screen one of its plays
+    /// opens is answered with the first option rather than at once: Armaments upgrades the
+    /// Strike next to it, and lands in the discard pile once the screen is closed.
+    /// </summary>
+    [Fact]
+    public void ItsSelectorAnswersAScreenItsPlayOpens()
+    {
+        var fight = Earring(
+            TestDeck.Card(IC.Armaments),
+            TestDeck.Card(IC.StrikeIronclad),
+            TestDeck.Card(IC.DefendIronclad)
+        );
+
+        CombatEngine.RunWhisperingEarringAutoPlay(fight.State, Rng);
+
+        Assert.Null(fight.State.PendingSelection);
+        Assert.Empty(fight.State.Hand);
+        Assert.Contains(fight.State.DiscardPile, c => c.DefId == IC.StrikeIronclad && c.Upgraded);
+        Assert.Contains(fight.State.DiscardPile, c => c.DefId == IC.Armaments);
+        Assert.Equal(0, fight.State.Energy);
+    }
+
     /// <summary>The relic is no longer declared unmodelled.</summary>
     [Fact]
     public void ItIsNoLongerADeclaredGap()

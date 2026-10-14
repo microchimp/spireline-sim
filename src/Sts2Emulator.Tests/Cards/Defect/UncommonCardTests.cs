@@ -670,6 +670,32 @@ public class ScrapeTests
         Assert.Empty(fight.State.Hand);
         Assert.Equal(4, fight.State.DiscardPile.Count(c => c.DefId == SI.StrikeSilent));
     }
+
+    /// <summary>
+    /// `CardCmd.Discard`, so a Sly card among the discards is auto-played (Flick-Flack's 6 to
+    /// every enemy), and the cards go down in the order they were drawn.
+    /// </summary>
+    [Fact]
+    public void ItDiscardsThroughTheDiscardCommand()
+    {
+        var fight = DefectFight.Hand(Card(Scrape)).Energy(1).Enemy(hp: 200);
+        fight.State.DrawPile =
+        [
+            new CardInstance(SI.StrikeSilent, false),
+            new CardInstance(SI.FlickFlack, false),
+            new CardInstance(SI.DefendSilent, false),
+            new CardInstance(SI.Slice, false),
+        ];
+
+        fight.Play();
+
+        Assert.Equal(200 - 7 - 6, fight.Enemy0.Hp);
+        Assert.Equal([SI.Slice], Fight.Ids(fight.State.Hand));
+        Assert.Equal(
+            [SI.StrikeSilent, SI.DefendSilent, SI.FlickFlack, Scrape],
+            Fight.Ids(fight.State.DiscardPile)
+        );
+    }
 }
 
 public class ShadowShieldTests

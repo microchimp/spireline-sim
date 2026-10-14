@@ -152,11 +152,17 @@ public sealed class CombatState
     /// free-after-one-play only in the local variable.
     /// </remarks>
     public int PlayedCardCostForCombat = int.MinValue;
+
+    /// <summary>
+    /// The turn-one pre-play list: Imbued cards, played at the AutoPrePlay point
+    /// (`CombatEngine.ResolvePrePlayPhase`). Every other auto-play runs where the game
+    /// awaits `CardCmd.AutoPlay`, so nothing else is ever left here.
+    /// </summary>
     public List<CardInstance> AutoPlayQueue = [];
 
     /// <summary>
     /// The card just played, held out of its result pile while the selection screen it
-    /// opened or the auto-plays it queued resolve (the game moves it after `OnPlay`).
+    /// opened resolves (the game moves it after `OnPlay`).
     /// </summary>
     public CardInstance? HeldPlayedCard;
     public bool HeldPlayedCardExhausts;
@@ -510,17 +516,6 @@ public sealed class CombatState
     /// </remarks>
     public List<int> ExecutedThisEnemyTurn = [];
 
-    /// <summary>
-    /// The enemy an auto-play was given EXPLICITLY, or -1 when it has to pick its own.
-    /// </summary>
-    /// <remarks>
-    /// `CardCmd.AutoPlay` takes a target parameter. Almost everything that auto-plays
-    /// passes null and the card rolls `Rng.CombatTargets` for itself — but Knife Trap
-    /// hands each Shiv it replays the target the TRAP was aimed at, so those plays must
-    /// not roll at all. Rolling for them would hit the wrong creature and move the
-    /// stream for everything after it.
-    /// </remarks>
-    public int AutoPlayTargetIndex = -1;
     public int BlockGainsThisTurn;
     public int PlayerHpLostThisTurn;
     public int CardsExhaustedThisTurn;
