@@ -11,7 +11,7 @@ from gymnasium import spaces
 from . import native
 from . import run_constants as constants
 from .commands import execute_command
-from .env import ENCOUNTER_NAMES
+from .env import ENCOUNTER_LABELS
 
 REWARD_SKIP_ACTION = constants.REWARD_SKIP_ACTION
 SHOP_REMOVE_ACTION = constants.SHOP_REMOVE_ACTION
@@ -226,12 +226,12 @@ class Sts2RunEnv(gym.Env):
         return {
             "nodes": nodes,
             "edges": edges,
-            "boss_encounter": ENCOUNTER_NAMES.get(
+            "boss_encounter": ENCOUNTER_LABELS.get(
                 act_summary[1] if len(act_summary) > 1 else -1,
                 "unknown",
             ),
             "second_boss_encounter": (
-                ENCOUNTER_NAMES.get(second_boss, "unknown") if second_boss else None
+                ENCOUNTER_LABELS.get(second_boss, "unknown") if second_boss else None
             ),
             "current": (current[0], current[1]) if len(current) == 2 else None,
         }
@@ -460,7 +460,7 @@ class Sts2RunEnv(gym.Env):
             ),
             "player_won": native.run_player_won(self._run_handle),
             "encounter_id": native.run_encounter_id(self._run_handle),
-            "encounter": ENCOUNTER_NAMES.get(
+            "encounter": ENCOUNTER_LABELS.get(
                 native.run_encounter_id(self._run_handle),
                 "none",
             ),

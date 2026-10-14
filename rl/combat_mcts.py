@@ -63,16 +63,18 @@ from typing import Generator
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from sts2_gym import native
-from sts2_gym.env import ENCOUNTER_IDS, ENCOUNTER_LABELS, ENCOUNTER_NAMES
+from sts2_gym.env import ENCOUNTER_IDS, ENCOUNTER_LABELS
 
 # Overgrowth is one of the two acts a run can open in; these are its pools, copied from
 # Core/Run/RunConstants.cs. Underdocks is the other act 1 and is listed for the same
-# reason -- "act 1" in this game is a REGION, not an ordinal.
+# reason -- "act 1" in this game is a REGION, not an ordinal. A copy, so
+# tests/python/test_combat_mcts_pools.py holds every one equal to RunConstants: Underdocks
+# normal deals the normal Corpse Slugs (88) and Seapunk (22), not the weak 9 and 12.
 OVERGROWTH_WEAK = (8, 2, 11, 3)
 OVERGROWTH_NORMAL = (19, 17, 29, 5, 14, 15, 21, 28, 16, 27, 18, 20)
 OVERGROWTH_ELITE = (62, 68, 65)
 UNDERDOCKS_WEAK = (9, 12, 10, 13)
-UNDERDOCKS_NORMAL = (9, 0, 23, 7, 26, 30, 24, 12, 25, 6)
+UNDERDOCKS_NORMAL = (88, 0, 23, 7, 26, 30, 24, 22, 25, 6)
 UNDERDOCKS_ELITE = (72, 86, 67)
 
 ACT_ONE = {
@@ -1026,7 +1028,7 @@ def list_encounters() -> None:
     for pool, ids in ACT_ONE.items():
         print(f"  {pool}")
         for eid in ids:
-            print(f"      {eid:3d}  {ENCOUNTER_NAMES[eid]}")
+            print(f"      {eid:3d}  {ENCOUNTER_LABELS[eid]}")
 
 
 def main() -> None:
