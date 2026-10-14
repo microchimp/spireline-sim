@@ -1,0 +1,28 @@
+{
+  "_doc": "tools/fidelity/sweep_table.py: per game mechanism, the emulator methods that implement it (emulator), the words its sites use (terms, ranked first among a caller's grep hits) and sites an owner pinned per game caller (callers: {\"Class.Method\": [\"src/...cs:line\"]}). Identifiers only.",
+  "CardCmd.AutoPlay": {
+    "emulator": ["CombatEngine.AutoPlayCardFromHand", "CombatEngine.AutoPlayCardFromHandCore", "CombatEngine.AutoPlayMayhemCards",
+                 "CombatEngine.AutoPlayHowlsFromExhaust", "CombatEngine.AutoPlayBombardmentsFromExhaust",
+                 "CombatEngine.AutoPlayStampedeAttacks", "CombatFactory.QueueCombatStartAutoPlays", "CombatState.AutoPlayQueue"],
+    "terms": ["AutoPlay"],
+    "callers": {}
+  },
+  "PowerCmd.Apply": {
+    "emulator": ["BuffSystem.Apply"],
+    "terms": ["BuffSystem.Apply", "BuffId."],
+    "callers": {}
+  },
+  "CardSelectCmd.From*": {
+    "emulator": ["CardEffects.OpenCardSelection", "CardEffects.OpenExhaustFromHandSelection", "CardEffects.OpenDrawPileToHandSelection",
+                 "CardEffects.OpenTransformSelection", "CardEffects.OpenPutBackSelection", "CombatEngine.OpenRetainSelection",
+                 "CombatState.PendingSelection"],
+    "terms": ["Selection", "CardSelectionKind"],
+    "callers": {}
+  },
+  "CardSelectCmd.FromHand": {
+    "emulator": ["CardEffects.OpenCardSelection", "CardEffects.OpenExhaustFromHandSelection", "CombatEngine.OpenRetainSelection",
+                 "CombatState.PendingSelection"],
+    "terms": ["Selection", "CardSelectionKind"],
+    "callers": {}
+  }
+}

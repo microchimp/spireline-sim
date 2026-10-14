@@ -40,7 +40,9 @@ It streams: one pool of game servers (`--parallel`) plays the whole batch, finis
    - *Emulator bug*: the game's own code (decompiled) shows the emulator does something else. Fix `src/Sts2Emulator`.
 6. **Fixing an emulator bug** — root cause first, never a symptom patch:
    - Ask why the emulator differs: which mechanism is wrong (pool or list order, RNG stream, number or order of draws, hook timing, a shared helper)? A fix that only makes this one fight match is not done.
-   - Find every other place that uses the same mechanism (grep), check each against the game, and fix them together.
+   - Find every other place that uses the same mechanism, check each against the game, and fix them together: start from
+     the sweep table (`python -m tools.fidelity.sweep_table <Cmd.Method>`, section "Sweep table"), fill its status
+     column and attach it with `--check` passing.
    - In FINDINGS.md record the root cause and the sibling sites checked, not just the symptom.
    - Then think one level up: name the bug CLASS (hand-written orderings, a draw on the wrong RNG stream, an effect before rather than after a hook, a helper that ignores a modifier) and sweep the engine for other instances no fight has hit yet. Verify each against the decompiled game; aim the next referee batch at that class.
    - Read the game's class for that card, relic, power or monster in the decompiled tree, and the emulator's code for it.
@@ -187,6 +189,23 @@ python referee/probe.py run --name <n> --no-game     # after an engine change: r
   energy), measure one number or tuple, and write each hypothesis as a prediction from the pre-state. Name the game's
   class and method in `game_class`; never copy game code. A probe whose answer is an order inside one step (no state
   shows it) answers from the trace (`evidence`), and a second probe should make that order decide an outcome.
+
+## Sweep table (one mechanism, all its callers, before the fix)
+
+```
+python -m tools.fidelity.sweep_table CardCmd.AutoPlay --out sweep-autoplay.md          # or PowerCmd.Apply, "CardSelectCmd.From*"
+python -m tools.fidelity.sweep_table CardCmd.AutoPlay --keep sweep-autoplay.md --check  # exit 1 until every row has a status
+```
+
+Each game call in the local decompile gets a row: the class-qualified call anywhere, and the bare call inside the
+command's own class (the decompile drops the class there: CardCmd.DiscardAndDraw calls AutoPlay so). A caller in the
+game's Commands or Hooks namespaces is a wrapper and its callers are listed too, until no new wrapper turns up
+(`--depth` caps it): CardCmd.AutoPlay's Sly discards come through DiscardAndDraw and Discard. A call through a
+delegate or a virtual hook (Hook.AfterX calling each model's AfterX) is no textual call and is not found. Each row has
+its decompile site, the emulator sites naming the caller (`match` strong / weak / none / pinned; pin sites and add
+mechanism terms in `data/sweep_map.json`), the tests naming it, and a status the owner fills: `converted`, `tested`
+or `unreachable` (with the reason in the note). Attach the checked table to the review. It prints identifiers and
+line numbers only. Broken cases: `tests/python/test_sweep_table.py`.
 
 ## Speed settings check (`normal_settings`, `--windowed`)
 
