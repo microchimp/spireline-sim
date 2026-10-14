@@ -136,19 +136,22 @@ class PlayRunTests(unittest.TestCase):
                     [f["encounter"] for f in record["fights"]],
                     self.fights_seen[seed],
                 )
-                normal = 0
+                normal, act = 0, None
                 for fight in record["fights"]:
                     view = shards.state_view(record, fight)
                     self.assertEqual(view.hp, fight["hp_before"])
                     self.assertEqual(view.floor, fight["floor"])
                     self.assertEqual(fight["sims"], SIMS)
                     self.assertGreater(fight["decisions"], 0)
-                    # The first three normal fights of the act are its weak ones.
+                    # An act's first normal fights are its weak ones (`ActRoomCounts`: 3 in
+                    # the act-1 regions, 2 in Hive and Glory), each from the weak pool.
+                    if view.act_index != act:
+                        normal, act = 0, view.act_index
                     if fight["node_type"] == vocab.NODE_MONSTER:
                         normal += 1
                         self.assertEqual(
                             fight["weak"],
-                            normal <= engine.WEAK_ENCOUNTERS_PER_ACT,
+                            normal <= vocab.weak_fights(view.act_region),
                         )
                         pools = vocab.encounter_pools()[view.act_region]
                         pool = pools["weak"] if fight["weak"] else pools["normal"]

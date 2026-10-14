@@ -204,6 +204,9 @@ public static class RunNativeExports
             return -1;
         }
 
+        // The same rule as every combat reset: [0,3) keeps the weak encounter, anything
+        // else (a negative count included, which this export used to clamp to 0, the weak
+        // fight) is the normal one.
         int status = run.StartCombat(
             new ReadOnlySpan<int>(deckIds, deckLen),
             WeakContext.Resolve(encounterId, completedCombatRoomsBeforeCurrent),

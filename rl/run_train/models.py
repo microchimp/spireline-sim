@@ -192,7 +192,9 @@ N_ENCOUNTERS = 88
 
 # An encounter appended after FightNet was built over ids 0-87 reads as the encounter it is
 # a variant of. Corpse Slugs' normal fight (88) was the same id as its weak one (9) until
-# the two were told apart, so FightNet has only ever known them as one.
+# the two were told apart, so FightNet has only ever known them as one. The same table as
+# `sts2_gym.env.ENCOUNTER_NET_ALIASES` (which the combat tokens read; a test holds the two
+# equal): this module stays importable without the native library that env loads.
 ENCOUNTER_ALIASES = {88: 9}
 DECK_EMBED, RELIC_EMBED, POTION_EMBED = 64, 32, 8
 EMBED = DECK_EMBED + RELIC_EMBED + POTION_EMBED

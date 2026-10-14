@@ -41,7 +41,7 @@ public class ConsoleSetupTests
 
         Assert.Equal(0, plain.Step(option, -1, out _, out _, out _));
         // The first normal room of an act deals from the weak pool.
-        Assert.Equal(0, debug.EnterEncounterDebug(option, encounter, RunConstants.NodeNormal, weakVariant: true));
+        Assert.Equal(0, debug.EnterEncounterDebug(option, encounter, RunConstants.NodeNormal));
 
         CombatState a = plain.State.ActiveCombat!, b = debug.State.ActiveCombat!;
         Assert.Equal(a.Enemies.Select(x => (x.DefId, x.Hp, x.MaxHp)), b.Enemies.Select(x => (x.DefId, x.Hp, x.MaxHp)));
@@ -59,7 +59,7 @@ public class ConsoleSetupTests
         var e = AtMap();
         int option = FirstOption(e, RunConstants.NodeNormal);
 
-        Assert.Equal(0, e.EnterEncounterDebug(option, (int)CombatFactory.ActOneEncounter.Byrdonis, RunConstants.NodeElite, weakVariant: false));
+        Assert.Equal(0, e.EnterEncounterDebug(option, (int)CombatFactory.ActOneEncounter.Byrdonis, RunConstants.NodeElite));
 
         Assert.Equal(RunPhase.Combat, e.State.Phase);
         Assert.Equal(RunConstants.NodeElite, e.State.LastResolvedRoomType);
@@ -69,18 +69,25 @@ public class ConsoleSetupTests
     }
 
     [Theory]
-    [InlineData(true, 2)]
-    [InlineData(false, 3)]
-    public void TheNamedVariantDecidesTheRoster(bool weak, int slugs)
+    [InlineData(RunConstants.CorpseSlugsEncounterId, 2)]
+    [InlineData(RunConstants.CorpseSlugsNormalEncounterId, 3)]
+    [InlineData(RunConstants.SeapunkEncounterId, 1)]
+    [InlineData(RunConstants.SeapunkNormalEncounterId, 2)]
+    public void TheIdAloneDecidesTheRoster(int encounterId, int monsters)
     {
-        // CorpseSlugsWeak and CorpseSlugsNormal share one emulator id; the debug entry names
-        // which one the game entered, whatever the room count would have said.
+        // The setup fight names the encounter by its place in the game's act list, and a weak
+        // fight and its normal twin are two places and two ids. Rooms already fought (here
+        // more than any act's weak share, elites among them) are not consulted: the debug
+        // entry used to carry a weak flag of its own because the id could not say.
         var e = AtMap();
+        e.State.NormalEncountersVisited = 5;
+        e.State.EliteEncountersVisited = 2;
         int option = FirstOption(e, RunConstants.NodeNormal);
 
-        e.EnterEncounterDebug(option, RunConstants.CorpseSlugsEncounterId, RunConstants.NodeNormal, weak);
+        Assert.Equal(0, e.EnterEncounterDebug(option, encounterId, RunConstants.NodeNormal));
 
-        Assert.Equal(slugs, e.State.ActiveCombat!.Enemies.Count);
+        Assert.Equal(encounterId, e.State.ActiveCombat!.EncounterId);
+        Assert.Equal(monsters, e.State.ActiveCombat!.Enemies.Count);
     }
 
     [Fact]
@@ -89,11 +96,11 @@ public class ConsoleSetupTests
         var e = AtMap();
         int option = FirstOption(e, RunConstants.NodeNormal);
 
-        Assert.Equal(-1, e.EnterEncounterDebug(option, 1, RunConstants.NodeRest, weakVariant: false));
+        Assert.Equal(-1, e.EnterEncounterDebug(option, 1, RunConstants.NodeRest));
         Assert.Equal(RunPhase.Map, e.State.Phase);
 
-        e.EnterEncounterDebug(option, 1, RunConstants.NodeNormal, weakVariant: true);
-        Assert.Equal(-1, e.EnterEncounterDebug(option, 1, RunConstants.NodeNormal, weakVariant: true));
+        e.EnterEncounterDebug(option, 1, RunConstants.NodeNormal);
+        Assert.Equal(-1, e.EnterEncounterDebug(option, 1, RunConstants.NodeNormal));
     }
 
     [Fact]

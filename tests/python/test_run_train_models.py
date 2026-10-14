@@ -35,7 +35,7 @@ from test_run_train_features import (  # noqa: E402
 
 from rl.run_train import FEATURE_VERSION, features, models, shards, vocab  # noqa: E402
 from rl.run_train.features import CardRef  # noqa: E402
-from sts2_gym.env import ENCOUNTER_NAMES  # noqa: E402
+from sts2_gym.env import ENCOUNTER_NAMES, ENCOUNTER_NET_ALIASES  # noqa: E402
 
 TOLERANCE = 1e-5
 
@@ -107,6 +107,7 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(shards.FLOOR_CLASSES, models.FLOOR_CLASSES)
         self.assertEqual(models.N_ENCOUNTERS, len(ENCOUNTER_NAMES))
         self.assertEqual(set(ENCOUNTER_NAMES), set(range(models.N_ENCOUNTERS)))
+        self.assertEqual(models.ENCOUNTER_ALIASES, ENCOUNTER_NET_ALIASES)
 
     def test_parameter_counts_are_the_designs(self):
         # "About 180k" and "about 280k" parameters (5.1). Both share the embedding size,

@@ -425,8 +425,11 @@ public static class RunConstants
     public static ReadOnlySpan<int> UnderdocksWeakEncounters => [9, 12, 10, 13];
     public static ReadOnlySpan<int> OvergrowthNormalEncounters =>
         [19, 17, 29, 5, 14, 15, 21, 28, 16, 27, 18, 20];
+    // Literal ids like every other pool: rl/prior_loop and sts2_gym.position_sampler read
+    // these lists out of this file as integers. 88 is CorpseSlugsNormal, 22 SeapunkNormal
+    // (WeakAndNormalEncounterTests pins both).
     public static ReadOnlySpan<int> UnderdocksNormalEncounters =>
-        [CorpseSlugsNormalEncounterId, 0, 23, 7, 26, 30, 24, SeapunkNormalEncounterId, 25, 6];
+        [88, 0, 23, 7, 26, 30, 24, 22, 25, 6];
 
     // Pool order must match the act's own encounter-declaration order (the game
     // builds AllEliteEncounters/AllBossEncounters by filtering AllEncounters, which

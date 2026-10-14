@@ -236,14 +236,6 @@ public static class NativeExports
             CombatEngine.ResolvePrePlayPhase(State, Rng);
         }
 
-        public void Reset(ReadOnlySpan<int> deckIds, int encounterId)
-        {
-            UseDefaultLevel();
-            SeedStreams();
-            CombatFactory.Reset(State, Rng, deckIds, encounterId);
-            CombatEngine.ResolvePrePlayPhase(State, Rng);
-        }
-
         // Same as above plus the run's TotalFloor, which is the missing term in the
         // per-encounter RNG seed (run seed + floor + hash of the encounter id). Slime
         // rosters and Corpse Slug starting moves are rolled from that stream, so
@@ -287,7 +279,17 @@ public static class NativeExports
             CombatEngine.ResolvePrePlayPhase(State, Rng);
         }
 
-        public void Reset(ReadOnlySpan<int> deckIds, int encounterId, int completedCombatRooms)
+        // Every reset that names an encounter (this one, ResetAtFloor and ResetArena) takes
+        // the weak context with it and reads the pair through WeakContext.Resolve, the one
+        // place the C ABI's encounter ids are interpreted. An export with no context passes WeakContext.None, which is what its
+        // callers have always got: the normal encounter. There is no overload that takes a
+        // bare id, so a new export cannot skip the rule by calling the shorter one.
+        public void Reset(
+            ReadOnlySpan<int> deckIds,
+            int encounterId,
+            int completedCombatRooms,
+            ReadOnlySpan<int> relicIds = default
+        )
         {
             UseDefaultLevel();
             SeedStreams();
@@ -295,16 +297,9 @@ public static class NativeExports
                 State,
                 Rng,
                 deckIds,
-                WeakContext.Resolve(encounterId, completedCombatRooms)
+                WeakContext.Resolve(encounterId, completedCombatRooms),
+                relicIds
             );
-            CombatEngine.ResolvePrePlayPhase(State, Rng);
-        }
-
-        public void Reset(ReadOnlySpan<int> deckIds, int encounterId, ReadOnlySpan<int> relicIds)
-        {
-            UseDefaultLevel();
-            SeedStreams();
-            CombatFactory.Reset(State, Rng, deckIds, encounterId, relicIds);
             CombatEngine.ResolvePrePlayPhase(State, Rng);
         }
 
@@ -703,7 +698,7 @@ public static class NativeExports
     public static unsafe void Sts2_ResetEncounter(int handle, int encounterId, int* obsBuf)
     {
         var combat = _pool[handle]!;
-        combat.Reset(StarterDeckIds, encounterId);
+        combat.Reset(StarterDeckIds, encounterId, WeakContext.None);
         WriteObs(combat.State, obsBuf);
     }
 
@@ -889,7 +884,7 @@ public static class NativeExports
     )
     {
         var combat = _pool[handle]!;
-        combat.Reset(new ReadOnlySpan<int>(deckIds, deckLen), encounterId);
+        combat.Reset(new ReadOnlySpan<int>(deckIds, deckLen), encounterId, WeakContext.None);
         WriteObs(combat.State, obsBuf);
     }
 
@@ -908,6 +903,7 @@ public static class NativeExports
         combat.Reset(
             new ReadOnlySpan<int>(deckIds, deckLen),
             encounterId,
+            WeakContext.None,
             new ReadOnlySpan<int>(relicIds, relicLen)
         );
         WriteObs(combat.State, obsBuf);

@@ -45,7 +45,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from sts2_gym import names, native
-from sts2_gym.env import ENCOUNTER_NAMES
+from sts2_gym.env import ENCOUNTER_NAMES, ENCOUNTER_NET_ALIASES
 
 # Observation offsets, read from the library rather than hard-coded: this layout is a
 # committed interface and the library is the thing that owns it.
@@ -348,7 +348,9 @@ def encode(handle: int, obs, encounter_id: int, *, probe: bool = True) -> Tokens
     )
     push(
         TYPE_GLOBAL,
-        VOCAB.encounter.get(encounter_id, 0),
+        # An appended id (Corpse Slugs' normal fight, 88) reads as the id the vocabulary was
+        # built with, as FightNet's one-hot does; on its own it would be the unknown token.
+        VOCAB.encounter.get(ENCOUNTER_NET_ALIASES.get(encounter_id, encounter_id), 0),
         F_HP=min(1.0, hp / max(1, max_hp)),
         F_BLOCK=block / 50.0,
         F_ENERGY=energy / 10.0,

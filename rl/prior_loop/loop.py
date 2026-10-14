@@ -252,12 +252,20 @@ class _Tee(io.TextIOBase):
 
 # ---- the encounters and the fixed fight set (6.1, 6.3) --------------------------------
 
+# Underdocks' normal Corpse Slugs (88) and Seapunk (22) -> the weak ids the loop already
+# holds. The loop resets every fight with no weak context, and a reset with none deals the
+# NORMAL fight for 9 and 12 (`WeakContext.None` in the emulator's C ABI), so the pool's 9
+# and 12 have always been these two fights. They were one id each until the emulator told
+# the pairs apart; skipping the twins keeps the pool, and the frozen set, what they were.
+_DEALT_BY_A_WEAK_ID = {88: 9, 22: 12}
+
 
 def act_one_pool(source: Path = RUN_CONSTANTS) -> list[tuple[int, str]]:
     """Return the distinct act-1 encounter ids in `RunConstants.cs` order, with groups.
 
-    Overgrowth weak, normal, elite and boss, then Underdocks. An id listed twice (two
-    Underdocks encounters are both weak and normal) keeps its first group.
+    Overgrowth weak, normal, elite and boss, then Underdocks. An id listed twice keeps its
+    first group, and a normal twin the loop already plays under its weak id is left out
+    (`_DEALT_BY_A_WEAK_ID`).
 
     Raises:
         ValueError: If one of the eight lists is missing from `source`.
@@ -273,6 +281,8 @@ def act_one_pool(source: Path = RUN_CONSTANTS) -> list[tuple[int, str]]:
                 raise ValueError(f"no {region}{kind}Encounters in {source}")
             for token in match.group(1).split(","):
                 encounter = int(token)
+                if _DEALT_BY_A_WEAK_ID.get(encounter) in seen:
+                    continue
                 if encounter not in seen:
                     seen.add(encounter)
                     pool.append((encounter, f"{region.lower()}-{kind.lower()}"))

@@ -103,6 +103,18 @@ ENCOUNTER_NAMES = {
 ENCOUNTER_IDS = {name: encounter_id for encounter_id, name in ENCOUNTER_NAMES.items()}
 CORPSE_SLUGS_NORMAL_ID = 88  # RunConstants.CorpseSlugsNormalEncounterId
 
+# Encounters appended after the value nets were sized over ENCOUNTER_NAMES (ids 0-87), each
+# with the id the nets know it by: Corpse Slugs' normal fight (88) was the weak fight's id 9
+# until the two were told apart, so every net has only ever seen it as 9. One table, read by
+# FightNet's one-hot (rl/run_train/models.py) and the combat token vocabulary
+# (rl/combat_tokens.py), so the two cannot disagree about what 88 is.
+ENCOUNTER_NET_ALIASES = {CORPSE_SLUGS_NORMAL_ID: ENCOUNTER_IDS["corpse-slugs"]}
+
+# Every encounter id the emulator deals, by name: ENCOUNTER_NAMES plus the appended ones.
+# This is what the env names a fight with and accepts as an id; ENCOUNTER_NAMES stays the
+# id space the nets are sized from.
+ENCOUNTER_LABELS = {**ENCOUNTER_NAMES, CORPSE_SLUGS_NORMAL_ID: "corpse-slugs-normal"}
+
 # Names corrected against the game's own act pool (decompiled
 # MegaCrit.Sts2.Core.Models.Acts/Overgrowth.cs) — the emulator had invented labels
 # for four encounters. The old strings still resolve so existing traces and
@@ -343,7 +355,7 @@ class Sts2CombatEnv(gym.Env):
         return {
             "player_won": native.player_won(self._handle),
             "encounter_id": encounter_id,
-            "encounter": ENCOUNTER_NAMES.get(encounter_id, f"unknown-{encounter_id}"),
+            "encounter": ENCOUNTER_LABELS.get(encounter_id, f"unknown-{encounter_id}"),
         }
 
     @staticmethod
@@ -351,7 +363,7 @@ class Sts2CombatEnv(gym.Env):
         if encounter is None:
             return None
         if isinstance(encounter, int):
-            if encounter not in ENCOUNTER_NAMES:
+            if encounter not in ENCOUNTER_LABELS:
                 raise ValueError(f"Unknown encounter id: {encounter}")
             return encounter
         try:

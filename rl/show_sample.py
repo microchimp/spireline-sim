@@ -65,7 +65,7 @@ from combat_tokens import (
 from train_combat import CHECKPOINT, load
 
 from sts2_gym import names
-from sts2_gym.env import ENCOUNTER_IDS, ENCOUNTER_NAMES
+from sts2_gym.env import ENCOUNTER_IDS, ENCOUNTER_LABELS
 
 CARD_OF_INDEX = {index: card_id for card_id, index in VOCAB.card.items()}
 BUFF_OF_INDEX = {index: buff_id for buff_id, index in VOCAB.buff.items()}
@@ -131,7 +131,7 @@ def describe_state(tokens: Tokens, encounter_id: int) -> None:
             else:
                 enemy_buffs.append(f"{entry} -> enemy {owner}")
 
-    name = ENCOUNTER_NAMES.get(encounter_id, str(encounter_id))
+    name = ENCOUNTER_LABELS.get(encounter_id, str(encounter_id))
     print(f"\nencounter   {name} (id {encounter_id})")
     if globals_row is not None:
         print(

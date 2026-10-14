@@ -1705,8 +1705,8 @@ stats {unknown_decisions, forced_skips, potion_left_full_belt, steps, seconds}.
   `GenerateActMap`), so one map per run would give later states the wrong map. A state's
   `map` indexes `maps`.
 - **`final_floor` is 18 for a boss kill** (erratum E10), and a fight is `weak` when it is
-  one of the act's first three normal fights (`EncounterRngSeed` counts
-  `NormalEncountersVisited` against `WeakEncountersPerAct`), which the player can count.
+  one of the act's first normal fights its weak pool deals (`RunConstants.ActRoomCounts`:
+  3 in the act-1 regions, 2 in Hive and Glory), which the player can count.
 
 **Resuming.** On start, the loop finds the newest generation directory and resumes it at
 the first phase whose output is missing. Every output is written tmp-then-rename, so a

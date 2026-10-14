@@ -351,7 +351,7 @@ static class Setup
         int encounter = list[index];
         int node = kind switch { "elite" => RunConstants.NodeElite, "boss" => RunConstants.NodeBoss, _ => RunConstants.NodeNormal };
         log["encounter"] = ((CombatFactory.ActOneEncounter)encounter).ToString();
-        if (e.EnterEncounterDebug(option, encounter, node, weakVariant: kind == "weak") != 0)
+        if (e.EnterEncounterDebug(option, encounter, node) != 0)
             throw new InvalidOperationException("EnterEncounterDebug refused option " + option);
         return true;
     }

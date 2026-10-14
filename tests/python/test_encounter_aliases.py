@@ -10,6 +10,7 @@ this table (`replay_real_run`, the Codex walker's copy of it) was blind to it.
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -56,6 +57,18 @@ class WeakAndNormalNameTests(unittest.TestCase):
         self.assertEqual(tags.emulator_name("SeapunkNormal"), "SeapunkNormal")
         self.assertEqual(tags.emulator_name("CorpseSlugsWeak"), "CorpseSlugs")
         self.assertEqual(tags.emulator_name("SeapunkWeak"), "Seapunk")
+
+    def test_the_codex_walkers_copy_is_the_same_table(self) -> None:
+        # tools/emudump/Codex/Names.cs keeps its own copy for the walker (C#, no Python at
+        # run time). The copy kept folding the pairs after this table stopped, so every
+        # normal Corpse Slugs and Seapunk fight read as a mismatch; hold the two equal.
+        text = (ROOT / "tools" / "emudump" / "Codex" / "Names.cs").read_text(
+            encoding="utf-8",
+        )
+        block = re.search(r"EncounterAliases = new\(\)\s*\{(.*?)\};", text, re.DOTALL)
+        self.assertIsNotNone(block)
+        walker = dict(re.findall(r'\["(\w+)"\] = "(\w+)"', block.group(1)))
+        self.assertEqual(walker, tags.ALIASES)
 
 
 if __name__ == "__main__":

@@ -160,7 +160,6 @@ class ConstantsTests(unittest.TestCase):
             "EventResultPending": engine.EVENT_RESULT_PENDING,
             "CardRewardOptionCount": engine.CARD_REWARD_OPTION_COUNT,
             "TreasureTakeRelicAction": engine.TREASURE_TAKE_RELIC_ACTION,
-            "WeakEncountersPerAct": engine.WEAK_ENCOUNTERS_PER_ACT,
             "NodeNormal": vocab.NODE_MONSTER,
             "NodeElite": vocab.NODE_ELITE,
             "NodeRest": vocab.NODE_REST,

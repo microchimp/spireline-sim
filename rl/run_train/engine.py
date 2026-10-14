@@ -69,10 +69,6 @@ EVENT_RESULT_PENDING = -1  # RunConstants.cs:269
 # The treasure room's chest relic (erratum RF1): offered while it is still in the chest,
 # with the proceed (3) always beside it (`RunEngine.WriteActionMask`, `StepTreasure`).
 TREASURE_TAKE_RELIC_ACTION = rc.TREASURE_TAKE_RELIC_ACTION  # 0
-# The first three normal fights of an act are its weak ones (`EncounterRngSeed` counts
-# `NormalEncountersVisited` against it); the fight network gets the flag (DESIGN.md 5.1).
-WEAK_ENCOUNTERS_PER_ACT = 3
-
 # `DeckSelection` (`RunState.cs:5-76`): what an open card-select screen is for.
 SEL_NONE = 0
 SEL_ENCHANT = 1

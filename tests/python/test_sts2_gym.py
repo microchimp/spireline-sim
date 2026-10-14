@@ -524,6 +524,54 @@ class Sts2GymTests(unittest.TestCase):
         )
 
 
+def _fight(encounter: int | str, **kwargs: int | None) -> tuple[int, str, int]:
+    """Return the id, name and monster count of the fight a combat env deals for `encounter`."""
+    env = Sts2CombatEnv(seed=0, encounter=encounter, **kwargs)
+    try:
+        _, info = env.reset()
+        return (
+            info["encounter_id"],
+            info["encounter"],
+            len(native.get_enemies(env._handle)),
+        )
+    finally:
+        env.close()
+
+
+class WeakContextEnvTests(unittest.TestCase):
+    """Corpse Slugs and Seapunk through the combat env, which names them by their weak ids."""
+
+    def test_the_shared_ids_without_a_weak_context_are_the_normal_fights(self):
+        # Corpse Slugs (9) and Seapunk (12) are the weak encounters, but a caller that names
+        # them with no weak context has always been dealt the normal fight -- by either
+        # reset it reaches: without a total_floor that is Sts2_ResetEncounter, which takes no
+        # context at all and once quietly switched to the weak roster.
+        for name, fight in (
+            ("corpse-slugs", (88, "corpse-slugs-normal", 3)),
+            ("seapunk", (22, "cultist-and-seapunk", 2)),
+        ):
+            for total_floor in (None, 1):
+                with self.subTest(encounter=name, total_floor=total_floor):
+                    self.assertEqual(_fight(name, total_floor=total_floor), fight)
+
+    def test_a_weak_context_keeps_the_weak_fight(self):
+        for name, fight in (
+            ("corpse-slugs", (9, "corpse-slugs", 2)),
+            ("seapunk", (12, "seapunk", 1)),
+        ):
+            for total_floor in (None, 1):
+                with self.subTest(encounter=name, total_floor=total_floor):
+                    self.assertEqual(
+                        _fight(name, completed_combat_rooms=0, total_floor=total_floor),
+                        fight,
+                    )
+
+    def test_the_normal_slugs_are_an_id_the_env_names_and_takes(self):
+        fight = (88, "corpse-slugs-normal", 3)
+        self.assertEqual(_fight(88), fight)
+        self.assertEqual(_fight("corpse-slugs-normal", completed_combat_rooms=0), fight)
+
+
 class RunAscensionTests(unittest.TestCase):
     """The run is played at the ascension its caller gives, and a new caller gets 0."""
 

@@ -177,12 +177,14 @@ public static class Names
     static HashSet<string>? _encounterEnum;
 
     // Model class name -> the emulator's ActOneEncounter name, where the two differ: the same
-    // table as scripts/generate_encounter_tags.py ALIASES (verified there roster by roster).
+    // table as scripts/generate_encounter_tags.py ALIASES (verified there roster by roster;
+    // tests/python/test_encounter_aliases.py holds the two equal). A weak encounter and its
+    // normal twin are two names: CorpseSlugsNormal and SeapunkNormal are enum names of their
+    // own, so a weak fight dealt where the game dealt the normal one is an encounter mismatch.
     static readonly Dictionary<string, string> EncounterAliases = new()
     {
         ["BowlbugsNormal"] = "Bowlbugs",
         ["ChompersNormal"] = "Chompers",
-        ["CorpseSlugsNormal"] = "CorpseSlugs",
         ["CorpseSlugsWeak"] = "CorpseSlugs",
         ["ExoskeletonsNormal"] = "ExoskeletonsNormal",
         ["ExoskeletonsWeak"] = "Exoskeletons",
@@ -193,7 +195,6 @@ public static class Names
         ["KnightsElite"] = "Knights",
         ["ScrollsOfBitingNormal"] = "Scrolls",
         ["ScrollsOfBitingWeak"] = "ScrollsWeak",
-        ["SeapunkNormal"] = "Seapunk",
         ["SeapunkWeak"] = "Seapunk",
         ["ShrinkerBeetleWeak"] = "ShrinkerBeetle",
         ["SlumberingBeetleNormal"] = "SlumberingBeetle",

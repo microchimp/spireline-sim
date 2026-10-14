@@ -69,7 +69,7 @@ from combat_tokens import (
 from train_combat import CHECKPOINT
 
 from sts2_gym import names, native
-from sts2_gym.env import ENCOUNTER_NAMES
+from sts2_gym.env import ENCOUNTER_LABELS
 
 TEMPLATE = Path(__file__).resolve().parent / "fight_viewer.template.html"
 STEP_CAP = 300
@@ -276,7 +276,7 @@ def play_one(
         opening = steps[0] if steps else None
         predicted = opening["pdf_expected"] if opening and opening["pdf"] else None
         return {
-            "encounter": ENCOUNTER_NAMES.get(encounter_id, str(encounter_id)),
+            "encounter": ENCOUNTER_LABELS.get(encounter_id, str(encounter_id)),
             "encounter_id": encounter_id,
             "seed": seed,
             "deck": opening_deck,

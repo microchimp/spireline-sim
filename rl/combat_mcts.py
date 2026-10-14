@@ -63,7 +63,7 @@ from typing import Generator
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from sts2_gym import native
-from sts2_gym.env import ENCOUNTER_IDS, ENCOUNTER_NAMES
+from sts2_gym.env import ENCOUNTER_IDS, ENCOUNTER_LABELS, ENCOUNTER_NAMES
 
 # Overgrowth is one of the two acts a run can open in; these are its pools, copied from
 # Core/Run/RunConstants.cs. Underdocks is the other act 1 and is listed for the same
@@ -1091,7 +1091,7 @@ def main() -> None:
         verify(encounter_id, args.ascension, args.total_floor)
         return
 
-    name = ENCOUNTER_NAMES.get(encounter_id, str(encounter_id))
+    name = ENCOUNTER_LABELS.get(encounter_id, str(encounter_id))
     pools = [pool for pool, ids in ACT_ONE.items() if encounter_id in ids]
     where = ", ".join(pools) if pools else "NOT an act 1 pool"
 

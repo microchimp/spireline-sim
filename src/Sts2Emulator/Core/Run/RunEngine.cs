@@ -1159,12 +1159,12 @@ public sealed class RunEngine
     /// (<c>RunManager.EnterMapCoordDebug</c> with an encounter, the encounter's own Rng seeded as in
     /// any run): walk onto map option <paramref name="option"/> exactly as the map would, but meet
     /// <paramref name="encounterId"/> in a room of <paramref name="nodeType"/> (normal, elite or
-    /// boss) instead of the act's next encounter. <paramref name="weakVariant"/> names which of two
-    /// models sharing one emulator id the game entered (Corpse Slugs weak or normal), which the run
-    /// otherwise infers from how many normal rooms it has seen. Returns -1 off the map or for
-    /// another node type.
+    /// boss) instead of the act's next encounter. The id alone names the encounter: a weak fight and
+    /// its normal twin are two ids (Corpse Slugs 9 and 88, Seapunk 12 and 22), as they are two
+    /// models in the game, so nothing about the run's rooms so far is consulted. Returns -1 off the
+    /// map or for another node type.
     /// </summary>
-    public int EnterEncounterDebug(int option, int encounterId, int nodeType, bool weakVariant)
+    public int EnterEncounterDebug(int option, int encounterId, int nodeType)
     {
         if (
             State.Phase != RunPhase.Map
@@ -1178,19 +1178,8 @@ public sealed class RunEngine
 
         State.MapNodeTypes[option] = nodeType;
         State.MapChoices[option] = encounterId;
-        _weakVariantOverride = weakVariant;
-        try
-        {
-            return Step(option, -1, out _, out _, out _);
-        }
-        finally
-        {
-            _weakVariantOverride = null;
-        }
+        return Step(option, -1, out _, out _, out _);
     }
-
-    /// <summary>Set only while <see cref="EnterEncounterDebug" /> enters its room.</summary>
-    private bool? _weakVariantOverride;
 
     private int StepInner(
         int action,
