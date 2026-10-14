@@ -24,9 +24,9 @@ namespace Sts2Emulator.Core;
 /// </para>
 /// <para>
 /// It lives on the screen, not on the combat, so nothing can keep it once its screen is gone:
-/// whatever closes, replaces or clears <c>PendingSelection</c> (a reset, a re-anchor, a snapshot
-/// load) drops the stopped step with it. It is never changed once made, so a clone of the combat
-/// shares it.
+/// whatever closes, replaces or clears <c>PendingSelection</c> (a reset, a re-anchor) drops the
+/// stopped step with it, and a snapshot writes it down with the screen (<c>stopped_step</c>). It is
+/// never changed once made, so a clone of the combat shares it.
 /// </para>
 /// <para>
 /// The replay runs on the streams and the draw order the step started with, because only those
