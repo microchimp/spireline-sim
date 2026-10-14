@@ -111,7 +111,8 @@ static class Reanchor
         outp["steps"] = steps;
         try
         {
-            var e = Fight.EnterRoom(game, outp);
+            Sts2Emulator.Core.Run.RunEngine e;
+            using (Prof.Scope("enter_room")) e = Fight.EnterRoom(game, outp);
             var combat = e.State.ActiveCombat ?? throw new InvalidOperationException($"no combat after entering the room; phase {e.State.Phase}");
             var rng = e.State.ActiveCombatRng!;
             var gsteps = game["steps"]!.AsArray();
@@ -123,14 +124,17 @@ static class Reanchor
             {
                 var prior = gsteps[j - 1]!["state"]!.AsObject();
                 var a = gsteps[j]!["action"]!.AsObject();
+                var cloneSpan = Prof.Scope("clone");
                 var q = combat.Clone();
                 var qr = rng.Clone();
+                cloneSpan.Dispose();
                 if (mode.Stale != null) GoStale(q, start, mode.Stale);
                 if (mode.Scramble) Scramble(q);
                 var patched = new JsonArray();
                 var rec = new JsonObject { ["action"] = a.DeepClone(), ["patched"] = patched };
                 steps.Add(rec);
-                string? problem = Anchor(q, prior, patched);
+                string? problem;
+                using (Prof.Scope("anchor")) problem = Anchor(q, prior, patched);
                 if (problem != null)
                 {
                     rec["anchor_error"] = problem;  // this step cannot be tried, so neither can the rest
@@ -139,10 +143,12 @@ static class Reanchor
 
                 // The moves the enemies will make: the game's, where the emulator's AI can be put there.
                 if (mode.PerturbMoves) ShiftCycles(q);
-                rec["moves"] = AnchorMoves(q, prior, patched, rec, gsteps, j);
+                using (Prof.Scope("anchor_moves")) rec["moves"] = AnchorMoves(q, prior, patched, rec, gsteps, j);
                 if (mode.PerturbMoves && q.AiRng is CountingRandom ai0) q.AiRng = new CountingRandom(ai0.Seed ^ 0x2545F491, ai0.CallCount);
+                var cloneSpan2 = Prof.Scope("clone");
                 var pre = q.Clone();
                 var preRng = qr.Clone();
+                cloneSpan2.Dispose();
                 var stepChoices = gameChoices.Where(c => (int?)c!["step"] == j && (string?)c["kind"] == "cards").ToList();
                 try
                 {
@@ -156,7 +162,7 @@ static class Reanchor
                     JsonArray chosen;
                     try
                     {
-                        (terminal, chosen) = Apply(q, qr, a, stepChoices);
+                        using (Prof.Scope("apply")) (terminal, chosen) = Apply(q, qr, a, stepChoices);
                     }
                     finally
                     {
@@ -166,12 +172,15 @@ static class Reanchor
                     if (mode.Trace) rec["hidden"] = EmuTrace.Hidden(q);
                     rec["choices"] = chosen;
                     rec["fallback_rng_calls"] = qr.CallCount - preRng.CallCount;
-                    rec["state"] = DumpLite(q, !terminal);
+                    using (Prof.Scope("dumplite")) rec["state"] = DumpLite(q, !terminal);
                     bool gameGoesOn = j + 1 < gsteps.Count && (gsteps[j]!["state"]!["in_combat"]?.GetValue<bool>() ?? false);
                     if (terminal && !gameGoesOn) break;
                     // The emulator ended a fight the game continues: carry on from the state before the action.
                     (combat, rng) = terminal ? (pre, preRng) : (q, qr);
-                    if (!terminal) CarryGameMoves(q, pre, preRng, a, stepChoices, gsteps[j]!["state"]!.AsObject(), rec);
+                    if (!terminal)
+                    {
+                        using (Prof.Scope("carry_moves")) CarryGameMoves(q, pre, preRng, a, stepChoices, gsteps[j]!["state"]!.AsObject(), rec);
+                    }
                 }
                 catch (Exception ex)
                 {
