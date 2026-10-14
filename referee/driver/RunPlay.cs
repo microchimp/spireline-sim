@@ -538,6 +538,7 @@ public static partial class Driver
                 {
                     if (budget.Spent) throw new TimeoutException("SelectLocalReward " + reward.GetType().Name);
                     AnswerCardRewardRandom(reward, log, d);
+                    AnswerOpenScreens();  // a screen the reward opens outside the selector hook (Scroll Boxes' bundles), as in ClaimSet
                     if (NestedAbove(top) is { } nested && depth < 5)
                     {
                         log.End();

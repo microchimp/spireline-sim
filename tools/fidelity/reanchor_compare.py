@@ -131,6 +131,10 @@ def analyse(game: dict, anchored: dict, nm: dict, after_desync: str = "stop", ke
         if rs.get("anchor_error"):
             out["stop"] = {"at": j, "why": "cannot rebuild the game's state: " + rs["anchor_error"]}
             break
+        if "state" not in rs:
+            # EmuDump wrote the step without a state (its replay of the step threw): nothing to compare from here.
+            out["stop"] = {"at": j, "why": "the emulator's step has no state: " + str(rs.get("error") or sorted(rs))[:200]}
+            break
         gv, ev = game_view(gs["state"]), emu_view(rs["state"], nm)
         if out["first_divergence"] is None and diff(gv, ev):  # the strict test the plain replay uses
             out["first_divergence"] = j

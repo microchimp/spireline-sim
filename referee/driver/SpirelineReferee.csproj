@@ -13,6 +13,31 @@
     <GameData Condition="'$(GameData)' == ''">D:\spireline\referee\game\data_sts2_windows_x86_64</GameData>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>
+  <!--
+    The commit this DLL is built from, and whether the driver's sources differed from it, stamped into the
+    assembly (Capabilities.cs reports both at job start; referee/refset.py record refuses a dirty build or one
+    whose commit is not the checkout's).
+  -->
+  <Target Name="SpirelineStamp" BeforeTargets="GetAssemblyAttributes">
+    <Exec Command="git rev-parse HEAD" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true"
+          WorkingDirectory="$(MSBuildProjectDirectory)">
+      <Output TaskParameter="ConsoleOutput" PropertyName="SpirelineCommit" />
+    </Exec>
+    <Exec Command="git status --porcelain --untracked-files=all -- &quot;*.cs&quot; &quot;*.csproj&quot;" ConsoleToMSBuild="true"
+          StandardOutputImportance="low" IgnoreExitCode="true" WorkingDirectory="$(MSBuildProjectDirectory)">
+      <Output TaskParameter="ConsoleOutput" PropertyName="SpirelineDirty" />
+    </Exec>
+    <ItemGroup>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>spireline.commit</_Parameter1>
+        <_Parameter2>$(SpirelineCommit)</_Parameter2>
+      </AssemblyAttribute>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>spireline.dirty</_Parameter1>
+        <_Parameter2>$(SpirelineDirty)</_Parameter2>
+      </AssemblyAttribute>
+    </ItemGroup>
+  </Target>
   <ItemGroup>
     <Reference Include="sts2"><HintPath>$(GameData)\sts2.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="GodotSharp"><HintPath>$(GameData)\GodotSharp.dll</HintPath><Private>false</Private></Reference>

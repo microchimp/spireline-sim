@@ -230,6 +230,7 @@ public static partial class Driver
             StepCosts = (bool?)job["step_costs"] ?? false;
             IdleProbe = (int?)job["idle_probe"] ?? 0;
             CheckSettleFields();  // a game without the flag settle's field ends the job here, not every fight
+            GD.Print("[referee] driver " + DriverInfo().ToJsonString());  // build, capabilities, settle (Capabilities.cs)
             if (job["sleep_usec"] is { } sleep && !NormalSettings)
             {
                 // Headless, the main loop pads every frame to this many microseconds (Godot's

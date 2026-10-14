@@ -652,6 +652,19 @@ static class RunReplay
     {
         var s = e.State;
         var p = save["players"]![0]!.AsObject();
+        AnchorHoldings(e, p, anchored);
+        AnchorStreams(e, save, p, anchored);
+    }
+
+    /// <summary>
+    /// The holdings half of <see cref="Anchor" />: HP, gold, deck, relics, potions and slots from a save's
+    /// player (the game's save shape), then Toy Box's wax, the relics' saved properties RunSnap.RelicProps
+    /// compares, Mad Science's type and rider and Guilty's combats. The reference set's player_load item
+    /// (RefsetSetup.cs) puts a real run's holdings in place with it.
+    /// </summary>
+    internal static void AnchorHoldings(RunEngine e, JsonObject p, JsonArray anchored)
+    {
+        var s = e.State;
         int hp = (int)p["current_hp"]!, maxHp = (int)p["max_hp"]!, gold = (int)p["gold"]!;
         if (hp != s.PlayerHp) anchored.Add("hp");
         if (maxHp != s.PlayerMaxHp) anchored.Add("max_hp");
@@ -724,6 +737,12 @@ static class RunReplay
             s.GuiltyCombatsServed.Clear();
             s.GuiltyCombatsServed.AddRange(guilty);
         }
+    }
+
+    /// <summary>The RNG counters, odds and relic queues half of <see cref="Anchor" />.</summary>
+    static void AnchorStreams(RunEngine e, JsonObject save, JsonObject p, JsonArray anchored)
+    {
+        var s = e.State;
 
         void Counters(object set, JsonObject counters, string prefix)
         {

@@ -205,7 +205,7 @@ public static partial class Driver
                 return (true, "");
             }
             default:
-                return (false, "not a setup command: " + cmd);
+                return await RefsetItem(item, state, player) ?? (false, "not a setup command: " + cmd);
         }
     }
 
