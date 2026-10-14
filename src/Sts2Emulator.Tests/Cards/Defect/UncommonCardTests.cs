@@ -613,9 +613,12 @@ public class ScavengeTests
 
         fight.Play();
 
-        Assert.Equal(energy, fight.PlayerBuffAmount(BuffId.NextTurnEnergy));
+        // Stopped on the screen inside the card: the energy comes after the exhaust.
         Assert.Equal(CardSelectionKind.ExhaustFromHand, fight.Pending!.Kind);
         Assert.Equal(2, fight.Pending.Candidates.Count);
+        Assert.Equal(0, fight.PlayerBuffAmount(BuffId.NextTurnEnergy));
+        fight.Choose(0);
+        Assert.Equal(energy, fight.PlayerBuffAmount(BuffId.NextTurnEnergy));
     }
 
     [Fact]

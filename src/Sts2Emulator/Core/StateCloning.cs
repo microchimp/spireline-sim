@@ -217,32 +217,20 @@ public static class StateCloning
         into.Enemies = [.. combat.Enemies.Select(enemy => enemy.Clone())];
         into.EncounterId = combat.EncounterId;
         into.IsEliteCombat = combat.IsEliteCombat;
-        into.ShuffleRng = combat.ShuffleRng.Reseeded(rngSeed, nameof(combat.ShuffleRng));
-        into.TargetRng = combat.TargetRng.Reseeded(rngSeed, nameof(combat.TargetRng));
-        into.CardSelectionRng = combat.CardSelectionRng.Reseeded(
-            rngSeed,
-            nameof(combat.CardSelectionRng)
-        );
-        into.EnergyCostRng = combat.EnergyCostRng.Reseeded(rngSeed, nameof(combat.EnergyCostRng));
-        into.CardGenerationRng = combat.CardGenerationRng.Reseeded(
-            rngSeed,
-            nameof(combat.CardGenerationRng)
-        );
-        into.PotionGenerationRng = combat.PotionGenerationRng.Reseeded(
-            rngSeed,
-            nameof(combat.PotionGenerationRng)
-        );
-        into.OrbGenerationRng = combat.OrbGenerationRng.Reseeded(
-            rngSeed,
-            nameof(combat.OrbGenerationRng)
-        );
+        into.ShuffleRng = Carry(into.ShuffleRng, combat.ShuffleRng, rngSeed, nameof(combat.ShuffleRng));
+        into.TargetRng = Carry(into.TargetRng, combat.TargetRng, rngSeed, nameof(combat.TargetRng));
+        into.CardSelectionRng = Carry(into.CardSelectionRng, combat.CardSelectionRng, rngSeed, nameof(combat.CardSelectionRng));
+        into.EnergyCostRng = Carry(into.EnergyCostRng, combat.EnergyCostRng, rngSeed, nameof(combat.EnergyCostRng));
+        into.CardGenerationRng = Carry(into.CardGenerationRng, combat.CardGenerationRng, rngSeed, nameof(combat.CardGenerationRng));
+        into.PotionGenerationRng = Carry(into.PotionGenerationRng, combat.PotionGenerationRng, rngSeed, nameof(combat.PotionGenerationRng));
+        into.OrbGenerationRng = Carry(into.OrbGenerationRng, combat.OrbGenerationRng, rngSeed, nameof(combat.OrbGenerationRng));
         // A CountingRandom carries its seed and position, so it clones exactly. A
         // plain Random does not, and only the combat-only environment supplies one
         // -- that path has no clone export, so the shared reference is unreachable.
         into.AiRng = combat.AiRng is CountingRandom counting
-            ? counting.Reseeded(rngSeed, nameof(combat.AiRng))
+            ? Carry(into.AiRng as CountingRandom, counting, rngSeed, nameof(combat.AiRng))
             : combat.AiRng;
-        into.NicheHpRng = combat.NicheHpRng.Reseeded(rngSeed, nameof(combat.NicheHpRng));
+        into.NicheHpRng = Carry(into.NicheHpRng, combat.NicheHpRng, rngSeed, nameof(combat.NicheHpRng));
         into.PendingSelection = combat.PendingSelection?.Clone();
         into.AutoPlaying = combat.AutoPlaying;
         into.PlayedCardBonusDamage = combat.PlayedCardBonusDamage;
@@ -315,6 +303,34 @@ public static class StateCloning
         into.TargetEnemyIndex = combat.TargetEnemyIndex;
         into.KnownTopCount = combat.KnownTopCount;
         into.KnownBottomCount = combat.KnownBottomCount;
+    }
+
+    /// <summary>
+    /// A stream for <see cref="CopyTo" />: onto a combat that already holds the same stream (a
+    /// step restored for a replay), it is moved back in place, so whoever holds the object -- a
+    /// trace naming streams by object, a test counting draws -- keeps holding the combat's
+    /// stream; anywhere else it is a copy, reseeded as <see cref="Reseeded" /> says.
+    /// </summary>
+    private static CountingRandom? Carry(
+        CountingRandom? existing,
+        CountingRandom? source,
+        int? rngSeed,
+        string streamName
+    )
+    {
+        if (
+            rngSeed is null
+            && existing is not null
+            && source is not null
+            && !ReferenceEquals(existing, source)
+            && existing.Seed == source.Seed
+        )
+        {
+            existing.RestoreFrom(source);
+            return existing;
+        }
+
+        return source.Reseeded(rngSeed, streamName);
     }
 
     public static RunMapNode Clone(this RunMapNode node)

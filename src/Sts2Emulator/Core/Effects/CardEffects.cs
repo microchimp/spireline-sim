@@ -421,7 +421,6 @@ public static class CardEffects
                             CardSelectionKind.DiscardToHand,
                             state.DiscardPile.Count,
                             def.Id,
-                            autoPick: 0,
                             amount: wanted,
                             skippable: true
                         );
@@ -476,8 +475,7 @@ public static class CardEffects
                         state,
                         CardSelectionKind.DiscardToDrawPileTop,
                         state.DiscardPile.Count,
-                        def.Id,
-                        autoPick: state.DiscardPile.Count - 1
+                        def.Id
                     );
                 }
                 break;
@@ -756,8 +754,7 @@ public static class CardEffects
                         state,
                         CardSelectionKind.UpgradeInHand,
                         upgradable,
-                        def.Id,
-                        autoPick: upgradable.Count > 0 ? upgradable[0] : 0
+                        def.Id
                     );
                 }
 
@@ -765,20 +762,18 @@ public static class CardEffects
 
             case IC.Brand: // 0-cost, lose 1 HP, exhaust a CHOSEN card, gain 1/2 Strength
                 LoseHp(state, 1, fromPlayedCard: true);
-                // The game applies the Strength after the exhaust resolves. Nothing reads
-                // Strength during an exhaust, so granting it first is observationally the
-                // same and keeps the pending selection as the last thing this play does.
-                RelicEffects.GainPlayerStrength(state, upgraded ? 2 : 1);
                 if (state.Hand.Count > 0)
                 {
                     OpenCardSelection(
                         state,
                         CardSelectionKind.ExhaustFromHand,
                         state.Hand.Count,
-                        def.Id,
-                        autoPick: 0
+                        def.Id
                     );
                 }
+
+                // `PowerCmd.Apply<StrengthPower>` after the exhaust, as the game orders it.
+                RelicEffects.GainPlayerStrength(state, upgraded ? 2 : 1);
                 break;
 
             case IC.BattleTrance: // 0-cost, draw 3/4, then no more drawing this turn
@@ -806,13 +801,12 @@ public static class CardEffects
                         CardSelectionKind.ExhaustFromHandThenDraw,
                         state.Hand.Count,
                         def.Id,
-                        autoPick: 0,
                         amount: upgraded ? 3 : 2
                     );
                 }
-
-                if (state.PendingSelection is null)
+                else
                 {
+                    // No card to choose: the draw alone.
                     DrawCards(state, upgraded ? 3 : 2, rng);
                 }
                 break;
@@ -969,8 +963,7 @@ public static class CardEffects
                             state,
                             CardSelectionKind.ExhaustFromHand,
                             state.Hand.Count,
-                            def.Id,
-                            autoPick: 0
+                            def.Id
                         );
                     }
                     else
@@ -1205,7 +1198,6 @@ public static class CardEffects
                         CardSelectionKind.ExhaustFromHandRepeated,
                         state.Hand.Count,
                         def.Id,
-                        autoPick: 0,
                         amount: upgraded ? 5 : 3,
                         // `CardSelectorPrefs(prompt, 0, Cards)` -- the MINIMUM is zero, so
                         // declining is a legal answer and so is stopping after one. This
@@ -1233,8 +1225,7 @@ public static class CardEffects
                         state,
                         CardSelectionKind.HandToDrawPileTop,
                         state.Hand.Count,
-                        def.Id,
-                        autoPick: 0
+                        def.Id
                     );
                 }
                 break;
@@ -1695,8 +1686,7 @@ public static class CardEffects
                     state,
                     CardSelectionKind.MarkHandCardSly,
                     skills,
-                    def.Id,
-                    autoPick: skills.Count > 0 ? skills[0] : 0
+                    def.Id
                 );
                 break;
             }
@@ -1866,7 +1856,6 @@ public static class CardEffects
                     CardSelectionKind.QueueHandCardCopies,
                     state.Hand.Count,
                     def.Id,
-                    autoPick: 0,
                     amount: 3
                 );
                 break;
@@ -3482,15 +3471,18 @@ public static class CardEffects
             return;
         }
 
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = kind,
-            Candidates = candidates,
-            SourceCardDefId = sourceCardDefId,
-            Amount = amount,
-            Skippable = skippable,
-            GeneratedUpgraded = upgraded,
-        };
+        CombatEngine.AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = kind,
+                Candidates = candidates,
+                SourceCardDefId = sourceCardDefId,
+                Amount = amount,
+                Skippable = skippable,
+                GeneratedUpgraded = upgraded,
+            }
+        );
     }
 
     /// <summary>
@@ -3510,7 +3502,6 @@ public static class CardEffects
             CardSelectionKind.HandToDrawPileTop,
             hand,
             sourceCardDefId,
-            autoPick: 0,
             amount: 1
         );
     }
@@ -4313,22 +4304,16 @@ public static class CardEffects
     }
 
     /// <summary>
-    /// Raises a card-selection screen, or resolves it immediately when the caller cannot
-    /// answer one.
-    ///
-    /// An auto-played card (Havoc, Hellraiser, Stampede, Mayhem) resolves inside a queue
-    /// the engine is already draining, with no way to hand control back mid-drain, so it
-    /// falls back to <paramref name="autoPick" /> — the behaviour every one of these
-    /// choices had before selection existed.
-    ///
-    /// The fallback must not roll. The game asks the player here too: `CardCmd.AutoPlay`
-    /// pushes no selector, and `CardSelectCmd` draws from no stream at all
-    /// (CardSelectCmd.cs:376-436, 697-736). So a pick the emulator makes on the player's
-    /// behalf is a fixed one -- the first candidate or card, or for Headbutt, Hologram and
-    /// Hotfix the LAST card of the discard pile, the one most recently discarded -- and a
-    /// draw from the selection stream for it moves every later reader of that stream, in
-    /// the combat and in the run it is synced back to.
+    /// `CardSelectCmd.From*` for a card's or potion's own screen: awaited where the effect
+    /// raises it (<see cref="CombatEngine.AwaitSelection" />), so whatever the effect and the
+    /// play do afterwards comes after the answer, as in the game.
     /// </summary>
+    /// <remarks>
+    /// An auto-played card (Havoc, Hellraiser, Mayhem, Cascade) asks too: `CardCmd.AutoPlay`
+    /// pushes no selector, so the player chooses. The emulator used to answer those with a
+    /// fixed pick (the first candidate, or the last card of the discard pile) because it could
+    /// not hand control back in the middle of an auto-play.
+    /// </remarks>
     /// <summary>Also the entry point potions with a hand- or draw-pile-wide choice use
     /// (Ashwater, Droplet of Precognition): they are not cards and answer the same
     /// selection screens, so they share the opener rather than re-deriving it.</summary>
@@ -4337,7 +4322,6 @@ public static class CardEffects
         CardSelectionKind kind,
         int candidateCount,
         int sourceCardDefId,
-        int autoPick,
         int amount = 0,
         bool skippable = false
     ) =>
@@ -4346,7 +4330,6 @@ public static class CardEffects
             kind,
             [.. Enumerable.Range(0, candidateCount)],
             sourceCardDefId,
-            autoPick,
             amount,
             skippable
         );
@@ -4361,26 +4344,44 @@ public static class CardEffects
         CardSelectionKind kind,
         List<int> candidates,
         int sourceCardDefId,
-        int autoPick,
         int amount = 0,
         bool skippable = false
+    ) =>
+        CombatEngine.AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = kind,
+                Candidates = candidates,
+                Skippable = skippable,
+                SourceCardDefId = sourceCardDefId,
+                Amount = amount,
+            }
+        );
+
+    /// <summary>
+    /// A multi-pick screen reopened for its next pick, from inside the answer to the last one
+    /// (<c>CombatEngine.ResolveCardSelection</c>): it only stands, and whoever is awaiting the
+    /// screen takes the next pick from it.
+    /// </summary>
+    private static void ReopenCardSelection(
+        CombatState state,
+        CardSelectionKind kind,
+        int candidateCount,
+        int sourceCardDefId,
+        int amount,
+        bool skippable
     )
     {
-        if (candidates.Count == 0)
+        if (candidateCount == 0)
         {
-            return;
-        }
-
-        if (state.AutoPlaying)
-        {
-            ResolveSelectionImmediately(state, kind, autoPick, amount);
             return;
         }
 
         state.PendingSelection = new PendingCardSelection
         {
             Kind = kind,
-            Candidates = candidates,
+            Candidates = [.. Enumerable.Range(0, candidateCount)],
             Skippable = skippable,
             SourceCardDefId = sourceCardDefId,
             Amount = amount,
@@ -4598,8 +4599,7 @@ public static class CardEffects
             state,
             CardSelectionKind.DrawPileToHand,
             candidates,
-            sourceCardDefId,
-            autoPick: candidates[0]
+            sourceCardDefId
         );
     }
 
@@ -4658,8 +4658,7 @@ public static class CardEffects
             state,
             CardSelectionKind.DrawPileToHand,
             candidates,
-            sourceCardDefId,
-            autoPick: candidates.Count > 0 ? candidates[0] : 0
+            sourceCardDefId
         );
     }
 
@@ -4712,22 +4711,20 @@ public static class CardEffects
         }
 
         var options = ShuffleTake(state, pool, 3, rng);
-        if (state.AutoPlaying)
-        {
-            AddToHandOrDiscard(state, new CardInstance(options[0], upgraded, FreeThisTurn: true));
-            return;
-        }
-
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = CardSelectionKind.GeneratedCardToHand,
-            Candidates = [.. Enumerable.Range(0, options.Count)],
-            GeneratedCandidates = options,
-            SourceCardDefId = sourceCardDefId,
-            // `canSkip: true` on the choose-a-card screen.
-            Skippable = true,
-            GeneratedUpgraded = upgraded,
-        };
+        CombatEngine.AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = CardSelectionKind.GeneratedCardToHand,
+                Candidates = [.. Enumerable.Range(0, options.Count)],
+                GeneratedCandidates = options,
+                SourceCardDefId = sourceCardDefId,
+                // `canSkip: true` on the choose-a-card screen.
+                Skippable = true,
+                GeneratedUpgraded = upgraded,
+            },
+            rng
+        );
     }
 
     private static void OpenGeneratedCardSelection(
@@ -4744,21 +4741,19 @@ public static class CardEffects
             return;
         }
 
-        if (state.AutoPlaying)
-        {
-            AddToHandOrDiscard(state, new CardInstance(options[0], false, FreeThisTurn: true));
-            return;
-        }
-
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = CardSelectionKind.GeneratedCardToHand,
-            Candidates = [.. Enumerable.Range(0, options.Count)],
-            SourceCardDefId = sourceCardDefId,
-            GeneratedCandidates = options,
-            // `FromChooseACardScreen(..., canSkip: true)`.
-            Skippable = true,
-        };
+        CombatEngine.AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = CardSelectionKind.GeneratedCardToHand,
+                Candidates = [.. Enumerable.Range(0, options.Count)],
+                SourceCardDefId = sourceCardDefId,
+                GeneratedCandidates = options,
+                // `FromChooseACardScreen(..., canSkip: true)`.
+                Skippable = true,
+            },
+            rng
+        );
     }
 
     /// <summary>
@@ -4780,36 +4775,41 @@ public static class CardEffects
     )
     {
         var tail = afterwards ?? [];
-        if (state.Hand.Count == 0)
+        var screen = DiscardScreen(state, sourceCardDefId, amount, tail);
+        if (screen is null)
         {
             AddCardsToHand(state, tail);
             return;
         }
 
-        if (state.AutoPlaying)
+        // `FromHandForDiscard` returns nothing once the fight is ending, and the card goes on.
+        if (CombatEngine.IsOverOrEnding(state))
         {
-            // Answered at once with the leftmost card, through the discard command, so a Sly
-            // card it discards plays there and then on the play's own stream.
-            for (int pick = 0; pick < amount && state.Hand.Count > 0; pick++)
-            {
-                var card = state.Hand[0];
-                state.Hand.RemoveAt(0);
-                DiscardMovedCards(state, [card], rng);
-            }
-
             AddCardsToHand(state, tail);
             return;
         }
 
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = CardSelectionKind.DiscardFromHandRepeated,
-            Candidates = [.. Enumerable.Range(0, state.Hand.Count)],
-            SourceCardDefId = sourceCardDefId,
-            Amount = amount,
-            AfterSelectionToHand = tail,
-        };
+        // The tail lands with the last pick. The picks resolve on the play's stream, so a Sly
+        // card a pick discards plays there and then on it (`DiscardMovedCards`).
+        CombatEngine.AwaitSelection(state, screen, rng);
     }
+
+    private static PendingCardSelection? DiscardScreen(
+        CombatState state,
+        int sourceCardDefId,
+        int amount,
+        List<CardInstance> tail
+    ) =>
+        state.Hand.Count == 0
+            ? null
+            : new PendingCardSelection
+            {
+                Kind = CardSelectionKind.DiscardFromHandRepeated,
+                Candidates = [.. Enumerable.Range(0, state.Hand.Count)],
+                SourceCardDefId = sourceCardDefId,
+                Amount = amount,
+                AfterSelectionToHand = tail,
+            };
 
     /// <summary>Reopens the discard screen for its next pick.</summary>
     /// <summary>Neow's Fury's screen, reopened for each remaining pick.</summary>
@@ -4819,23 +4819,31 @@ public static class CardEffects
         int remaining,
         bool skippable
     ) =>
-        OpenCardSelection(
+        ReopenCardSelection(
             state,
             CardSelectionKind.DiscardToHand,
             state.DiscardPile.Count,
             sourceCardDefId,
-            autoPick: 0,
-            amount: remaining,
-            skippable: skippable
+            remaining,
+            skippable
         );
 
     internal static void ReopenDiscardSelection(
         CombatState state,
         int sourceCardDefId,
         int remaining,
-        List<CardInstance> afterwards,
-        Random rng
-    ) => OpenDiscardSelection(state, sourceCardDefId, remaining, rng, afterwards);
+        List<CardInstance> afterwards
+    )
+    {
+        if (DiscardScreen(state, sourceCardDefId, remaining, afterwards) is { } screen)
+        {
+            state.PendingSelection = screen;
+        }
+        else
+        {
+            AddCardsToHand(state, afterwards);
+        }
+    }
 
     /// <summary>
     /// `CardPileCmd.Add(card, PileType.Hand)` for a card a selection picked: into the hand,
@@ -4888,81 +4896,14 @@ public static class CardEffects
         // the player may stop after ONE as readily as before any, and a screen that can be
         // declined at the start and not at the second pick is a screen that forces the
         // rest of the card once you have used any of it.
-        OpenCardSelection(
+        ReopenCardSelection(
             state,
             CardSelectionKind.ExhaustFromHandRepeated,
             state.Hand.Count,
             sourceCardDefId,
-            autoPick: 0,
-            amount: remaining,
-            skippable: skippable
+            remaining,
+            skippable
         );
-
-    private static void ResolveSelectionImmediately(
-        CombatState state,
-        CardSelectionKind kind,
-        int index,
-        int amount = 0
-    )
-    {
-        switch (kind)
-        {
-            case CardSelectionKind.DiscardToDrawPileTop when index < state.DiscardPile.Count:
-            {
-                var card = state.DiscardPile[index];
-                state.DiscardPile.RemoveAt(index);
-                state.TopDeck(card);
-                break;
-            }
-
-            case CardSelectionKind.ExhaustFromHand when index < state.Hand.Count:
-            case CardSelectionKind.ExhaustFromHandThenDraw when index < state.Hand.Count:
-            case CardSelectionKind.ExhaustFromHandRepeated when index < state.Hand.Count:
-            {
-                var card = state.Hand[index];
-                state.Hand.RemoveAt(index);
-                ExhaustCard(state, card);
-                break;
-            }
-
-            case CardSelectionKind.DrawPileToHand when index < state.DrawPile.Count:
-            {
-                var card = state.DrawPile[index];
-                state.RemoveFromDrawPileAt(index);
-                AddToHandOrDiscard(state, card);
-                break;
-            }
-
-            case CardSelectionKind.HandToDrawPileTop when index < state.Hand.Count:
-            {
-                var card = state.Hand[index];
-                state.Hand.RemoveAt(index);
-                state.TopDeck(card);
-                break;
-            }
-
-            case CardSelectionKind.DiscardToHand when index < state.DiscardPile.Count:
-            {
-                var picked = state.DiscardPile[index];
-                state.DiscardPile.RemoveAt(index);
-                AddToHandOrDiscard(state, picked);
-                break;
-            }
-
-            case CardSelectionKind.MarkHandCardSly when index < state.Hand.Count:
-                state.Hand[index] = state.Hand[index] with { SlyThisTurn = true };
-                break;
-
-            case CardSelectionKind.UpgradeInHand when index < state.Hand.Count:
-                state.Hand[index] = state.Hand[index] with { Upgraded = true };
-                break;
-
-            case CardSelectionKind.QueueHandCardCopies when index < state.Hand.Count:
-                // The chosen card stays exactly where it is; only copies of it are owed.
-                QueueHandCardCopies(state, state.Hand[index], amount);
-                break;
-        }
-    }
 
     /// <summary>
     /// The stream an effect draws from when it picks WHICH existing card to act on.
@@ -6063,13 +6004,17 @@ public static class CardEffects
             return;
         }
 
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = CardSelectionKind.GeneratedCardToHand,
-            Candidates = [.. Enumerable.Range(0, offer.Count)],
-            SourceCardDefId = RelicEffects.Toolbox,
-            GeneratedCandidates = offer,
-        };
+        // Raised at combat start, outside any step: it stands until the first step answers it.
+        CombatEngine.AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = CardSelectionKind.GeneratedCardToHand,
+                Candidates = [.. Enumerable.Range(0, offer.Count)],
+                SourceCardDefId = RelicEffects.Toolbox,
+                GeneratedCandidates = offer,
+            }
+        );
     }
 
     /// <summary>
@@ -6089,15 +6034,19 @@ public static class CardEffects
             return;
         }
 
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = CardSelectionKind.GeneratedCardToHand,
-            Candidates = [.. Enumerable.Range(0, offer.Count)],
-            SourceCardDefId = sourceCardDefId,
-            GeneratedCandidates = offer,
-            GeneratedUpgraded = upgraded,
-            Skippable = true,
-        };
+        CombatEngine.AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = CardSelectionKind.GeneratedCardToHand,
+                Candidates = [.. Enumerable.Range(0, offer.Count)],
+                SourceCardDefId = sourceCardDefId,
+                GeneratedCandidates = offer,
+                GeneratedUpgraded = upgraded,
+                Skippable = true,
+            },
+            rng
+        );
     }
 
     /// <summary>
@@ -6595,8 +6544,7 @@ public static class CardEffects
                     state,
                     CardSelectionKind.DiscardToHand,
                     state.DiscardPile.Count,
-                    def.Id,
-                    autoPick: state.DiscardPile.Count - 1
+                    def.Id
                 );
                 return true;
             case "Hotfix":
@@ -6629,18 +6577,15 @@ public static class CardEffects
                 // burns. Exhausting the leftmost card is the ninth instance of picking for
                 // the player, and on a card whose whole trade is "lose your worst card for
                 // energy next turn" it inverts the trade.
-                //
-                // The energy is applied before the screen here where the game applies it
-                // after. Nothing about the choice can change the energy, and the
-                // alternative is parking a follow-up on the selection for no gain.
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.NextTurnEnergy, upgraded ? 3 : 2);
                 OpenCardSelection(
                     state,
                     CardSelectionKind.ExhaustFromHand,
                     state.Hand.Count,
-                    def.Id,
-                    autoPick: 0
+                    def.Id
                 );
+                // `PowerCmd.Apply<EnergyNextTurnPower>` after the exhaust, as the game orders it:
+                // the screen is awaited above, so this comes after the answer.
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.NextTurnEnergy, upgraded ? 3 : 2);
                 return true;
             case "SignalBoost":
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.SignalBoost, 1);
@@ -6882,7 +6827,6 @@ public static class CardEffects
                     CardSelectionKind.ExhaustFromDrawPile,
                     drawPile,
                     def.Id,
-                    autoPick: 0,
                     amount: 1
                 );
                 return true;
@@ -7044,7 +6988,6 @@ public static class CardEffects
                     CardSelectionKind.RetainForNextTurn,
                     keepable,
                     def.Id,
-                    autoPick: keepable.Count > 0 ? keepable[0] : 0,
                     amount: 1
                 );
                 return true;
@@ -7182,7 +7125,6 @@ public static class CardEffects
                         CardSelectionKind.DiscardToHand,
                         state.DiscardPile.Count,
                         def.Id,
-                        autoPick: 0,
                         amount: picks
                     );
                 }
@@ -7208,8 +7150,7 @@ public static class CardEffects
                     state,
                     CardSelectionKind.DiscardToHand,
                     state.DiscardPile.Count,
-                    def.Id,
-                    autoPick: 0
+                    def.Id
                 );
                 return true;
             case "Reave":
@@ -7384,7 +7325,6 @@ public static class CardEffects
                     CardSelectionKind.GrantEtherealInHand,
                     plain,
                     def.Id,
-                    autoPick: plain.Count > 0 ? plain[0] : 0,
                     amount: 1
                 );
                 return true;
@@ -7407,7 +7347,6 @@ public static class CardEffects
                     CardSelectionKind.TransformDrawPileToSoul,
                     pile,
                     def.Id,
-                    autoPick: 0,
                     amount: 1
                 );
                 return true;
@@ -7429,7 +7368,6 @@ public static class CardEffects
                     CardSelectionKind.TransfigureInHand,
                     anyCard,
                     def.Id,
-                    autoPick: 0,
                     amount: 1
                 );
                 return true;
@@ -7761,8 +7699,7 @@ public static class CardEffects
                         state,
                         CardSelectionKind.DiscardToDrawPileTop,
                         state.DiscardPile.Count,
-                        def.Id,
-                        autoPick: state.DiscardPile.Count - 1
+                        def.Id
                     );
                 }
 
@@ -7882,7 +7819,6 @@ public static class CardEffects
                     CardSelectionKind.AutoPlaySkillThrice,
                     skills,
                     def.Id,
-                    autoPick: skills.Count > 0 ? skills[0] : 0,
                     amount: 1
                 );
                 return true;
@@ -7946,8 +7882,7 @@ public static class CardEffects
                     state,
                     CardSelectionKind.CloneColorlessInHand,
                     colorless,
-                    def.Id,
-                    autoPick: 0
+                    def.Id
                 );
                 return true;
             }
@@ -9177,8 +9112,7 @@ public static class CardEffects
                         state,
                         CardSelectionKind.DrawPileToHand,
                         Enumerable.Range(0, state.DrawPile.Count).ToList(),
-                        def.Id,
-                        autoPick: 0
+                        def.Id
                     );
                 }
 
@@ -9940,24 +9874,19 @@ public static class CardEffects
         }
 
         var options = pool.Take(count).ToList();
-        if (state.AutoPlaying)
-        {
-            AddToHandOrDiscard(
-                state,
-                new CardInstance(options[0], false) { RetainForCombat = true }
-            );
-            return;
-        }
-
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = CardSelectionKind.GeneratedCardToHand,
-            Candidates = [.. Enumerable.Range(0, options.Count)],
-            GeneratedCandidates = options,
-            SourceCardDefId = 0,
-            Skippable = false,
-            GeneratedRetained = true,
-        };
+        // Raised at combat start, outside any step: it stands until the first step answers it.
+        CombatEngine.AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = CardSelectionKind.GeneratedCardToHand,
+                Candidates = [.. Enumerable.Range(0, options.Count)],
+                GeneratedCandidates = options,
+                SourceCardDefId = 0,
+                Skippable = false,
+                GeneratedRetained = true,
+            }
+        );
     }
 
     /// <summary>
@@ -11281,7 +11210,6 @@ public static class CardEffects
             CardSelectionKind.DualWield,
             candidates,
             sourceCardDefId: 0,
-            autoPick: candidates[0],
             amount: copies
         );
         _ = rng;

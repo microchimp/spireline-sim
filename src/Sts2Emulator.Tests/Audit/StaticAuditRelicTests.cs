@@ -258,27 +258,27 @@ public class StaticAuditRelicTests
 
     /// <summary>
     /// DarkEmbracePower.AfterCardExhausted draws for every non-Ethereal exhaust. The auto-resolved
-    /// selection path (state.AutoPlaying) calls ExhaustCard without the RNG, which skips the draw.
+    /// selection path (state.AutoPlaying) called ExhaustCard without the RNG, which skipped the
+    /// draw. That path is gone: an auto-played card's screen is awaited and answered like any
+    /// other (CombatEngine.AwaitSelection), through the one resolution, which draws.
     /// </summary>
-    [AuditFact("Dark Embrace draws on an auto-resolved exhaust; the engine fix (audit/static-pilot eb3c35f) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void DarkEmbraceDrawsWhenAnAutoPlayedSelectionExhausts()
     {
+        // Havoc plays True Grit+ off the draw pile; its exhaust screen over the lone Strike is
+        // answered without asking, and Dark Embrace draws for that exhaust and for Havoc's
+        // exhaust of True Grit itself.
         var fight = Fight
-            .Hand(Card(IC.StrikeIronclad))
-            .Draw(Card(IC.DefendIronclad), Card(IC.DefendIronclad), Card(IC.DefendIronclad))
+            .Hand(Card(IC.Havoc), Card(IC.StrikeIronclad))
+            .Energy(3)
+            .Draw(Card(IC.TrueGrit, upgraded: true), Card(IC.DefendIronclad), Card(IC.DefendIronclad))
             .Enemy(hp: 100)
             .PlayerBuff(BuffId.DarkEmbrace, 1);
-        fight.State.AutoPlaying = true;
 
-        CardEffects.OpenCardSelection(
-            fight.State,
-            CardSelectionKind.ExhaustFromHand,
-            candidateCount: 1,
-            sourceCardDefId: IC.TrueGrit,
-            autoPick: 0
-        );
+        fight.Play(0);
 
-        Assert.Single(fight.State.ExhaustPile);
-        Assert.Single(fight.State.Hand);
+        Assert.Null(fight.Pending);
+        Assert.Contains(fight.State.ExhaustPile, c => c.DefId == IC.StrikeIronclad);
+        Assert.Equal([IC.DefendIronclad, IC.DefendIronclad], fight.State.Hand.Select(c => c.DefId));
     }
 }

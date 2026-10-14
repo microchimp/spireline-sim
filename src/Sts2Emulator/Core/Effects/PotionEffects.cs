@@ -56,7 +56,6 @@ public static class PotionEffects
                     CardSelectionKind.ExhaustFromHandRepeated,
                     state.Hand.Count,
                     sourceCardDefId: 0,
-                    autoPick: 0,
                     amount: state.Hand.Count,
                     skippable: true
                 );
@@ -83,14 +82,18 @@ public static class PotionEffects
                             candidates.Add(i);
                         }
 
-                        state.PendingSelection = new PendingCardSelection
-                        {
-                            Kind = CardSelectionKind.GeneratedCardToHand,
-                            Candidates = candidates,
-                            GeneratedCandidates = options,
-                            SourceCardDefId = 0,
-                            Skippable = true,
-                        };
+                        CombatEngine.AwaitSelection(
+                            state,
+                            new PendingCardSelection
+                            {
+                                Kind = CardSelectionKind.GeneratedCardToHand,
+                                Candidates = candidates,
+                                GeneratedCandidates = options,
+                                SourceCardDefId = 0,
+                                Skippable = true,
+                            },
+                            rng
+                        );
                     }
                 }
 
@@ -151,14 +154,18 @@ public static class PotionEffects
                             candidates.Add(i);
                         }
 
-                        state.PendingSelection = new PendingCardSelection
-                        {
-                            Kind = CardSelectionKind.GeneratedCardToHand,
-                            Candidates = candidates,
-                            GeneratedCandidates = options,
-                            SourceCardDefId = 0,
-                            Skippable = true,
-                        };
+                        CombatEngine.AwaitSelection(
+                            state,
+                            new PendingCardSelection
+                            {
+                                Kind = CardSelectionKind.GeneratedCardToHand,
+                                Candidates = candidates,
+                                GeneratedCandidates = options,
+                                SourceCardDefId = 0,
+                                Skippable = true,
+                            },
+                            rng
+                        );
                     }
                 }
 
@@ -195,8 +202,7 @@ public static class PotionEffects
                     state,
                     CardSelectionKind.DrawPileToHand,
                     state.DrawPile.Count,
-                    sourceCardDefId: 0,
-                    autoPick: 0
+                    sourceCardDefId: 0
                 );
                 break;
             case 17: // Duplicator: play the next card an extra time.
@@ -294,7 +300,7 @@ public static class PotionEffects
                 // then draw that many. Exactly Gambling Chip's screen
                 // (CardSelectionKind.DiscardAnyThenDraw), which already exists for the
                 // relic and is reused rather than re-derived.
-                CombatEngine.OpenGamblingChipScreen(state);
+                CombatEngine.AwaitGamblingChipScreen(state, rng!);
                 break;
             case 31: // Ghost in a Jar: GhostInAJar.cs -- PowerVar<IntangiblePower>(1).
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Intangible, 1);
@@ -340,8 +346,7 @@ public static class PotionEffects
                     state,
                     CardSelectionKind.DiscardToHandFree,
                     state.DiscardPile.Count,
-                    sourceCardDefId: 0,
-                    autoPick: 0
+                    sourceCardDefId: 0
                 );
                 break;
             case 38: // Lucky Tonic: LuckyTonic.cs -- PowerVar<BufferPower>(1). Buffer already
@@ -444,14 +449,18 @@ public static class PotionEffects
                             candidates.Add(i);
                         }
 
-                        state.PendingSelection = new PendingCardSelection
-                        {
-                            Kind = CardSelectionKind.GeneratedCardToHand,
-                            Candidates = candidates,
-                            GeneratedCandidates = options,
-                            SourceCardDefId = 0,
-                            Skippable = true,
-                        };
+                        CombatEngine.AwaitSelection(
+                            state,
+                            new PendingCardSelection
+                            {
+                                Kind = CardSelectionKind.GeneratedCardToHand,
+                                Candidates = candidates,
+                                GeneratedCandidates = options,
+                                SourceCardDefId = 0,
+                                Skippable = true,
+                            },
+                            rng
+                        );
                     }
                 }
 
@@ -497,14 +506,18 @@ public static class PotionEffects
                             candidates.Add(i);
                         }
 
-                        state.PendingSelection = new PendingCardSelection
-                        {
-                            Kind = CardSelectionKind.GeneratedCardToHand,
-                            Candidates = candidates,
-                            GeneratedCandidates = options,
-                            SourceCardDefId = 0,
-                            Skippable = true,
-                        };
+                        CombatEngine.AwaitSelection(
+                            state,
+                            new PendingCardSelection
+                            {
+                                Kind = CardSelectionKind.GeneratedCardToHand,
+                                Candidates = candidates,
+                                GeneratedCandidates = options,
+                                SourceCardDefId = 0,
+                                Skippable = true,
+                            },
+                            rng
+                        );
                     }
                 }
 
@@ -586,8 +599,7 @@ public static class PotionEffects
                         state,
                         CardSelectionKind.FreeCardForCombat,
                         candidates,
-                        sourceCardDefId: 0,
-                        autoPick: 0
+                        sourceCardDefId: 0
                     );
                 }
 

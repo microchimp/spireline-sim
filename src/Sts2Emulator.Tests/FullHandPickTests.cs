@@ -128,6 +128,9 @@ public class FullHandPickTests
         fight.State.AutoPlayQueue.Add(Card(CL.SecretTechnique));
 
         CombatEngine.ResolvePrePlayPhase(fight.State, new Random(0));
+        // The game asks the player (`CardCmd.AutoPlay` pushes no selector); the first is taken.
+        Assert.NotNull(fight.Pending);
+        fight.Choose(0);
 
         Assert.Equal(10, fight.State.Hand.Count);
         Assert.Equal([IC.Bash], Fight.Ids(fight.State.DrawPile));
@@ -136,8 +139,8 @@ public class FullHandPickTests
 
     /// <summary>
     /// Wish is the same tutor (Wish.cs), and it asks whatever the hand holds: the screen
-    /// opens on a full hand too. Auto-played, the emulator's answer -- the first card --
-    /// goes to the discard pile. It used to refuse to open at all.
+    /// opens on a full hand too. Auto-played, the player's answer --
+    /// here the first card -- goes to the discard pile. It used to refuse to open at all.
     /// </summary>
     [Fact]
     public void AnAutoPlayedWishSendsItsPickToTheDiscardPile()
@@ -151,6 +154,9 @@ public class FullHandPickTests
         fight.State.AutoPlayQueue.Add(Card(wish));
 
         CombatEngine.ResolvePrePlayPhase(fight.State, new Random(0));
+        // The game asks the player (`CardCmd.AutoPlay` pushes no selector); the first is taken.
+        Assert.NotNull(fight.Pending);
+        fight.Choose(0);
 
         Assert.Equal(10, fight.State.Hand.Count);
         Assert.Equal([IC.Anger], Fight.Ids(fight.State.DrawPile));
@@ -159,22 +165,27 @@ public class FullHandPickTests
 
     /// <summary>
     /// Splash's pick is `CardPileCmd.AddGeneratedCardToCombat(card, PileType.Hand, ...)`
-    /// (Splash.cs). Auto-played on a full hand, the emulator's answer is made in the discard
+    /// (Splash.cs). Auto-played on a full hand, the player's pick is made in the discard
     /// pile -- ahead of Splash itself, which lands there once its play is over. It used to
     /// make an eleventh card.
     /// </summary>
     [Fact]
     public void AnAutoPlayedSplashMakesItsPickInTheDiscardPile()
     {
-        var fight = Fight.Hand(TenDefends()).Discard().Enemy(hp: 40);
+        var fight = Fight.Hand(TenDefends()).Energy(1).Discard().Enemy(hp: 40);
         fight.State.AutoPlayQueue.Add(Card(IC.Splash));
 
-        CombatEngine.ResolvePrePlayPhase(fight.State, new Random(0));
+        // Inside a step: the queued Splash goes off first, and the step stops on its screen
+        // (`CardCmd.AutoPlay` pushes no selector, so the player chooses); then the Defend.
+        fight.Play(0);
+        Assert.NotNull(fight.Pending);
+        fight.Choose(0);
 
-        Assert.Equal(10, fight.State.Hand.Count);
-        Assert.Equal(2, fight.State.DiscardPile.Count);
+        Assert.Equal(9, fight.State.Hand.Count);
+        Assert.Equal(3, fight.State.DiscardPile.Count);
         Assert.NotEqual(IC.Splash, fight.State.DiscardPile[0].DefId);
         Assert.Equal(IC.Splash, fight.State.DiscardPile[1].DefId);
+        Assert.Equal(IC.DefendIronclad, fight.State.DiscardPile[2].DefId);
     }
 
     /// <summary>
@@ -188,6 +199,9 @@ public class FullHandPickTests
         fight.State.AutoPlayQueue.Add(Card(CL.Discovery));
 
         CombatEngine.ResolvePrePlayPhase(fight.State, new Random(0));
+        // The game asks the player (`CardCmd.AutoPlay` pushes no selector); the first is taken.
+        Assert.NotNull(fight.Pending);
+        fight.Choose(0);
 
         Assert.Equal(10, fight.State.Hand.Count);
         Assert.Single(fight.State.DiscardPile);
@@ -269,6 +283,9 @@ public class FullHandPickTests
         fight.State.AutoPlayQueue.Add(Card(GeneratedData.Cards.FindId("Graveblast")!.Value));
 
         CombatEngine.ResolvePrePlayPhase(fight.State, new Random(0));
+        // The game asks the player (`CardCmd.AutoPlay` pushes no selector); the first is taken.
+        Assert.NotNull(fight.Pending);
+        fight.Choose(0);
 
         Assert.Equal(10, fight.State.Hand.Count);
         Assert.Equal([IC.Anger, IC.IronWave], Fight.Ids(fight.State.DiscardPile));

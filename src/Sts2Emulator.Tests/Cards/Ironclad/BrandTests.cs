@@ -11,7 +11,7 @@ namespace Sts2Emulator.Tests;
 public class BrandTests
 {
     [Fact]
-    public void LosesOneHpGainsStrengthAndAsksWhatToExhaust()
+    public void LosesOneHpAsksWhatToExhaustThenGainsStrength()
     {
         var fight = Fight
             .Hand(Card(IC.Brand), Card(IC.Bash), Card(IC.StrikeIronclad))
@@ -21,9 +21,12 @@ public class BrandTests
 
         fight.Play();
 
+        // Stopped on the screen: the HP is lost, the Strength comes after the exhaust.
         Assert.Equal(63, fight.State.PlayerHp);
-        Assert.Equal(1, fight.PlayerBuffAmount(BuffId.Strength));
+        Assert.Equal(0, fight.PlayerBuffAmount(BuffId.Strength));
         Assert.Equal(CardSelectionKind.ExhaustFromHand, fight.Pending?.Kind);
+        fight.Choose(0);
+        Assert.Equal(1, fight.PlayerBuffAmount(BuffId.Strength));
     }
 
     [Fact]
@@ -77,9 +80,8 @@ public class BrandTests
     /// <summary>
     /// Played by Havoc the game still asks the player: `CardCmd.AutoPlay` pushes no
     /// selector, and `CardSelectCmd.FromHand` rolls nothing whoever is playing
-    /// (CardSelectCmd.cs:697-736). The emulator cannot stop a nested play for a screen, so
-    /// it takes the first card for the player (AGENTS.md "Card Selection") -- and draws
-    /// nothing, where it used to draw one value the game never draws.
+    /// (CardSelectCmd.cs:697-736). The emulator asks too, and draws nothing, where it
+    /// used to draw one value the game never draws.
     /// </summary>
     [Fact]
     public void AnAutoPlayedBrandDrawsNothingFromTheSelectionStream()
@@ -93,6 +95,11 @@ public class BrandTests
         fight.State.CardSelectionRng = selectionRng;
 
         fight.Play();
+        // The game asks the player (`CardCmd.AutoPlay` pushes no selector), and so does the
+        // emulator now; the first card is the answer here.
+        Assert.NotNull(fight.Pending);
+        Assert.Equal(0, selectionRng.CallCount);
+        fight.Choose(0);
 
         Assert.Null(fight.Pending);
         Assert.Equal(0, selectionRng.CallCount);

@@ -61,6 +61,9 @@ internal sealed class StepInProgress
 
     public required CountingRandom RngBefore { get; init; }
 
+    /// <summary>The step's stream, which a screen's answer resolves on.</summary>
+    public required Random Rng { get; init; }
+
     public required int Action { get; init; }
 
     public required int TargetEnemyIndex { get; init; }

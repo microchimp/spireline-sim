@@ -98,7 +98,7 @@ public class CombatEngineTests
     }
 
     [Fact]
-    public void CardSelection_IsNotRaisedByAnAutoPlayedCard()
+    public void CardSelection_IsRaisedByAnAutoPlayedCardToo()
     {
         var state = CombatFactory.NewCombat(seed: 0);
         state.Hand = [new CardInstance(IC.Havoc, false)];
@@ -109,13 +109,16 @@ public class CombatEngineTests
             new CardInstance(IC.StrikeIronclad, false),
         ];
         state.Energy = 3;
+        var rng = new CountingRandom(0);
 
-        CombatEngine.Step(state, 0, new Random(0));
+        CombatEngine.Step(state, 0, rng);
 
-        // Havoc drains its play inline, so the choice resolves itself rather than
-        // stranding the queue: the most recent discard goes on top of the draw pile.
+        // `CardCmd.AutoPlay` pushes no selector: the player chooses Headbutt's card, in the
+        // middle of Havoc's play. The emulator used to put the most recent discard on top.
+        Assert.Equal(CardSelectionKind.DiscardToDrawPileTop, state.PendingSelection!.Kind);
+        CombatEngine.Step(state, 0, rng);
         Assert.Null(state.PendingSelection);
-        Assert.Equal(IC.StrikeIronclad, state.DrawPile[0].DefId);
+        Assert.Equal(IC.Bash, state.DrawPile[0].DefId);
     }
 
     [Fact]

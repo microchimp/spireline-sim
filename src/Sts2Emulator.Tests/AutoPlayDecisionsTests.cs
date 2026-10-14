@@ -39,13 +39,15 @@ public class AutoPlayDecisionsTests
     public void EachOfTheThreePlaysRollsItsOwnTargetAndCounts()
     {
         var fight = TauntThrice(out var targets);
-        fight.Play(1);
         int playsBefore = fight.State.CardPlaysThisTurn;
+        fight.Play(1);
 
         fight.Choose(0);
 
         Assert.Equal(3, targets.CallCount);
-        Assert.Equal(playsBefore + 3, fight.State.CardPlaysThisTurn);
+        // Decisions, Decisions itself and its three Taunts. (The step stopped on the screen
+        // inside the card, before its own play was counted, and the answer replayed it.)
+        Assert.Equal(playsBefore + 4, fight.State.CardPlaysThisTurn);
         var taunt = Assert.Single(AllCards(fight.State), card => card.DefId == IC.Taunt);
         Assert.Equal(0, taunt.ReplayCount);
         Assert.Contains(fight.State.DiscardPile, card => card.DefId == IC.Taunt);
@@ -60,8 +62,10 @@ public class AutoPlayDecisionsTests
     {
         var fight = TauntThrice(out var targets);
         fight.State.Relics.Add(new RelicInstance(RelicEffects.VelvetChoker));
-        fight.Play(1);
+        // Before the play: the screen stops the step inside it, and the answer replays the
+        // step from where it started, so a change made while it is stopped would not count.
         fight.State.CardPlaysThisTurn = 4;
+        fight.Play(1);
 
         fight.Choose(0);
 

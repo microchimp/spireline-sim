@@ -98,7 +98,7 @@ public class TrueGritTests
     /// <summary>
     /// Auto-played, the upgraded pick is still the player's in the game
     /// (`CardSelectCmd.FromHand`, no selector pushed by `CardCmd.AutoPlay`), so it rolls
-    /// nothing there either. The emulator takes the first card for the player.
+    /// nothing there either. The emulator asks too.
     /// </summary>
     [Fact]
     public void AnAutoPlayedUpgradedPickDrawsNothingFromTheCardSelectionStream()
@@ -112,6 +112,11 @@ public class TrueGritTests
         fight.State.CardSelectionRng = selectionRng;
 
         fight.Play();
+        // The game asks the player (`CardCmd.AutoPlay` pushes no selector), and so does the
+        // emulator now; the first card is the answer here.
+        Assert.NotNull(fight.Pending);
+        Assert.Equal(0, selectionRng.CallCount);
+        fight.Choose(0);
 
         Assert.Null(fight.Pending);
         Assert.Equal(0, selectionRng.CallCount);

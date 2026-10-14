@@ -23,22 +23,28 @@ public static class CombatEngine
             // The open screen was raised in the middle of a step: its answer runs that step
             // again from where it started, with every answer so far.
             bool decline = open.Skippable && action == open.Candidates.Count;
-            if (
-                rng is not CountingRandom live
-                || action < 0
-                || (action >= open.Candidates.Count && !decline)
-            )
+            if (action < 0 || (action >= open.Candidates.Count && !decline))
             {
                 return StepResult.Invalid;
             }
 
             stopped.Before.CopyTo(state);
-            live.RestoreFrom(stopped.RngBefore);
+            if (rng is CountingRandom live)
+            {
+                live.RestoreFrom(stopped.RngBefore);
+            }
+            else
+            {
+                // A stream that cannot be put back: the replay runs on a copy of the step's own.
+                rng = stopped.RngBefore.Copy();
+            }
+
             run = new StepInProgress
             {
                 State = state,
                 Before = stopped.Before,
                 RngBefore = stopped.RngBefore,
+                Rng = rng,
                 Action = stopped.Action,
                 TargetEnemyIndex = stopped.TargetEnemyIndex,
                 Answers = [.. stopped.Answers, action],
@@ -59,6 +65,7 @@ public static class CombatEngine
                         State = state,
                         Before = state.Clone(),
                         RngBefore = counting.Copy(),
+                        Rng = rng,
                         Action = action,
                         TargetEnemyIndex = targetEnemyIndex,
                         Answers = [],
@@ -91,6 +98,14 @@ public static class CombatEngine
     private static StepInProgress? _running;
 
     /// <summary>
+    /// Inside a <c>CardSelectCmd.PushSelector(new VakuuCardSelector())</c> scope (Whispering
+    /// Earring's plays), the stream its answers resolve on: every screen is answered with its
+    /// first options, `options.Take(maxSelect)`, never declined.
+    /// </summary>
+    [ThreadStatic]
+    private static Random? _vakuuSelector;
+
+    /// <summary>
     /// `CardSelectCmd`'s await: a screen raised in the middle of the game's sequence --
     /// Stratagem's from inside a draw, Tyranny's in the turn start -- answered where the game
     /// awaits it, so that the code that raised it goes on with the answer in place. Answers are
@@ -100,10 +115,12 @@ public static class CombatEngine
     /// <remarks>
     /// <para>
     /// No screen when there is nothing to choose, or when the combat is ending and the game's
-    /// command checks for it (<see cref="ClosesWhenEnding" />). A screen the game would not show is answered
-    /// without asking (<see cref="IsLoneSelection" />). Otherwise the answer comes from the
-    /// running step (<see cref="StepInProgress" />); with none left the step stops here with the
-    /// screen open.
+    /// command checks for it (<see cref="ClosesWhenEnding" />). A screen the game would not show
+    /// is answered without asking (<see cref="IsLoneSelection" />), and so is every screen under
+    /// Whispering Earring's selector. Otherwise the answer comes from the running step
+    /// (<see cref="StepInProgress" />); with none left the step stops here with the screen open.
+    /// <paramref name="rng" /> is the stream the answer resolves on, the running step's when the
+    /// caller has none to hand.
     /// </para>
     /// <para>
     /// Outside a step that can be replayed (the combat start, a caller stepping with a plain
@@ -114,7 +131,7 @@ public static class CombatEngine
     internal static void AwaitSelection(
         CombatState state,
         PendingCardSelection screen,
-        Random rng
+        Random? rng = null
     )
     {
         if (screen.Candidates.Count == 0 || (ClosesWhenEnding(screen) && IsOverOrEnding(state)))
@@ -122,16 +139,23 @@ public static class CombatEngine
             return;
         }
 
+        var run = _running is { } running && ReferenceEquals(running.State, state) ? running : null;
+        var stream = _vakuuSelector ?? rng ?? run?.Rng;
         var outer = state.PendingSelection;
         state.PendingSelection = screen;
         while (state.PendingSelection is { } open)
         {
             int answer;
-            if (IsLoneSelection(open))
+            if (stream is null)
+            {
+                // Nothing to answer it on (the combat start, outside any step): it stands.
+                return;
+            }
+            else if (_vakuuSelector is not null || IsLoneSelection(open))
             {
                 answer = 0;
             }
-            else if (_running is { } run && ReferenceEquals(run.State, state))
+            else if (run is not null)
             {
                 answer =
                     run.Used < run.Answers.Count
@@ -148,7 +172,7 @@ public static class CombatEngine
                 answer = 0;
             }
 
-            ResolveCardSelection(state, answer, rng);
+            ResolveCardSelection(state, answer, stream);
         }
 
         state.PendingSelection = outer;
@@ -809,10 +833,13 @@ public static class CombatEngine
         // `CardModel.OnPlay` is awaited BEFORE the card is moved to its result pile, so a
         // card that opens a selection screen (Purity, Survivor) is still in the play pile
         // while the picks land. It reaches the exhaust or discard pile after them, not
-        // before. The placement above ran first; take the card back out and hold it until
-        // the screen is done (`ReleaseHeldPlayedCard`). The auto-plays a card causes have all
-        // played inside it by now, and an auto-play answers its own screens at once, so only a
-        // chosen play or one of Whispering Earring's (whose selector answers them) is held.
+        // before. A screen raised in a step that can be replayed stops the step inside OnPlay
+        // (`AwaitSelection`), so the play reaches this line only once it is answered; a screen
+        // left standing (a step that cannot be replayed) is the one case. The placement above
+        // ran first; take the card back out and hold it until the screen is done
+        // (`ReleaseHeldPlayedCard`). An auto-play inside a play never takes the slot: the
+        // auto-plays a card causes have all played inside it by now, and the slot is the outer
+        // card's.
         if (state.PendingSelection is not null && !state.AutoPlaying)
         {
             if (
@@ -1088,22 +1115,9 @@ public static class CombatEngine
 
     private static StepResult EndTurn(CombatState state, Random rng)
     {
-        // `WellLaidPlansPower.BeforeFlushLate` asks which cards to keep, every turn, for
-        // as long as the power stands. It is the only selection the emulator raises
-        // outside a card play, so the end turn is parked here and resumed by whichever
-        // answer finishes the screen.
-        //
-        // The game asks in BeforeFlushLate rather than BeforeFlush "so that the player can
-        // have full information about the other BeforeFlush effects", which puts it after
-        // the end-of-turn self-damage. Asking at the top instead is the same question:
-        // nothing between here and the flush touches the hand, and losing HP does not
-        // change which card is worth keeping.
-        if (!state.EndTurnAwaitingSelection && OpenRetainSelection(state))
-        {
-            state.EndTurnAwaitingSelection = true;
-            return new StepResult(Terminal: false, PlayerWon: false, Reward: 0f);
-        }
-
+        // An end turn parked on Well-Laid Plans' screen by an older engine (a snapshot carries
+        // the flag) resumes here once that screen is answered, and asks it no second time.
+        bool retainAnswered = state.EndTurnAwaitingSelection;
         state.EndTurnAwaitingSelection = false;
         CombatTrace.At("turn_end", -1, state);
 
@@ -1414,6 +1428,16 @@ public static class CombatEngine
         if (CheckWinCondition(state, turnEndStart) is { } turnEndResult)
         {
             return turnEndResult;
+        }
+
+        // `WellLaidPlansPower.BeforeFlushLate` asks which cards to keep, every turn the hand is
+        // flushed (`Hook.ShouldFlush`), after the turn end above -- the Ethereal exhausts and the
+        // turn-end cards are gone -- "so that the player can have full information about the
+        // other BeforeFlush effects". The emulator parked the whole end turn at its top for
+        // this, so the screen offered cards the turn end then exhausted (Paels Eye, Ethereal).
+        if (retainHand <= 0 && !retainAnswered)
+        {
+            AwaitRetainSelection(state, rng);
         }
 
         // `FlushPlayerHand`: the hand as it stands NOW, cards the passes above drew
@@ -3613,8 +3637,7 @@ public static class CombatEngine
                         state,
                         selection.SourceCardDefId,
                         selection.Amount - 1,
-                        selection.AfterSelectionToHand,
-                        rng
+                        selection.AfterSelectionToHand
                     );
                 }
                 else
@@ -5145,6 +5168,30 @@ public static class CombatEngine
     /// worth spending a pick on and the game does not offer it.
     /// </summary>
     /// <summary>
+    /// Gambler's Brew: Gambling Chip's screen awaited inside the potion's use, and the draw for
+    /// what was pitched when it closes (`CardCmd.DiscardAndDraw`).
+    /// </summary>
+    internal static void AwaitGamblingChipScreen(CombatState state, Random rng)
+    {
+        if (state.Hand.Count == 0)
+        {
+            return;
+        }
+
+        AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = CardSelectionKind.DiscardAnyThenDraw,
+                Candidates = [.. Enumerable.Range(0, state.Hand.Count)],
+                SourceCardDefId = 0,
+                Skippable = true,
+            },
+            rng
+        );
+    }
+
+    /// <summary>
     /// Raises Gambling Chip's screen if there is anything left to offer, and reports
     /// whether it did. Reopened after every pick, because the count has no upper bound.
     /// </summary>
@@ -5179,12 +5226,16 @@ public static class CombatEngine
         }
     }
 
-    private static bool OpenRetainSelection(CombatState state)
+    /// <summary>
+    /// Well-Laid Plans: `CardSelectCmd.FromHand(prefs(prompt, 0, Amount), filter: not already
+    /// retained)`, awaited where the power asks, then a one-flush Retain on each card kept.
+    /// </summary>
+    private static void AwaitRetainSelection(CombatState state, Random rng)
     {
         int picks = BuffSystem.Get(state.PlayerBuffs, BuffId.WellLaidPlans);
         if (picks <= 0)
         {
-            return false;
+            return;
         }
 
         var candidates = new List<int>();
@@ -5196,20 +5247,18 @@ public static class CombatEngine
             }
         }
 
-        if (candidates.Count == 0)
-        {
-            return false;
-        }
-
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = CardSelectionKind.RetainForNextTurn,
-            Candidates = candidates,
-            SourceCardDefId = Effects.SI.WellLaidPlans,
-            Amount = picks,
-            Skippable = true,
-        };
-        return true;
+        AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = CardSelectionKind.RetainForNextTurn,
+                Candidates = candidates,
+                SourceCardDefId = Effects.SI.WellLaidPlans,
+                Amount = picks,
+                Skippable = true,
+            },
+            rng
+        );
     }
 
     /// <summary>
@@ -5826,7 +5875,20 @@ public static class CombatEngine
 
         state.WhisperingEarringSpent = true;
         int startTurn = state.Turn;
+        var outerSelector = _vakuuSelector;
+        _vakuuSelector = rng;
+        try
+        {
+            PlayAsVakuu(state, startTurn, rng);
+        }
+        finally
+        {
+            _vakuuSelector = outerSelector;
+        }
+    }
 
+    private static void PlayAsVakuu(CombatState state, int startTurn, Random rng)
+    {
         for (int played = 0; played < WhisperingEarringMaxCards; played++)
         {
             // `CombatManager.Instance.IsOverOrEnding`.
@@ -5997,9 +6059,10 @@ public static class CombatEngine
             return null;
         }
 
-        // `AutoPlaying`: the emulator cannot suspend a play for a screen, so one raised inside
-        // an auto-play is answered at once -- unless the caller holds a selector that answers
-        // it (the earring's), when the screen is raised and that selector closes it.
+        // `AutoPlaying` marks the play `CardCmd.AutoPlay` makes (Cascade spends no energy in it,
+        // and it never holds its card out of its pile). Its screens ask where they are raised,
+        // as a chosen play's do (`AwaitSelection`: `CardCmd.AutoPlay` pushes no selector), except
+        // under a caller that holds a selector of its own (the earring's), which answers them.
         bool wasAutoPlaying = state.AutoPlaying;
         state.AutoPlaying = wasAutoPlaying || !source.CallerSelector;
         var frame = PlayFrame.Save(state);

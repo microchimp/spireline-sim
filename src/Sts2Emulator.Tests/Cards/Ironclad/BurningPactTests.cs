@@ -88,8 +88,7 @@ public class BurningPactTests
     /// <summary>
     /// Auto-played by Havoc, the game still asks the player and rolls nothing
     /// (`CardSelectCmd.FromHand`; `CardCmd.AutoPlay` pushes no selector). The emulator
-    /// takes the first card for the player, draws nothing from the selection stream, and
-    /// then draws the two.
+    /// asks too, draws nothing from the selection stream, and then draws the two.
     /// </summary>
     [Fact]
     public void AnAutoPlayedPickDrawsNothingFromTheSelectionStream()
@@ -103,6 +102,11 @@ public class BurningPactTests
         fight.State.CardSelectionRng = selectionRng;
 
         fight.Play();
+        // The game asks the player (`CardCmd.AutoPlay` pushes no selector), and so does the
+        // emulator now; the first card is the answer here.
+        Assert.NotNull(fight.Pending);
+        Assert.Equal(0, selectionRng.CallCount);
+        fight.Choose(0);
 
         Assert.Null(fight.Pending);
         Assert.Equal(0, selectionRng.CallCount);
