@@ -25,8 +25,8 @@ public class FakeRelicTests
     }
 
     /// <summary>
-    /// `FakeBloodVial` heals 1 at TURN ONE's start; the real vial heals 2 at COMBAT start.
-    /// Different number and a different hook.
+    /// `FakeBloodVial` heals 1 at TURN ONE's start; the real vial heals 2. Both are
+    /// `AfterPlayerTurnStartLate` at TurnNumber <= 1: a different number on the same hook.
     /// </summary>
     [Fact]
     public void FakeBloodVialHealsOneOnTurnOne()
@@ -35,7 +35,7 @@ public class FakeRelicTests
         var fake = Fight.WithRelics(RelicEffects.FakeBloodVial);
         plain.State.PlayerHp = 50;
         fake.State.PlayerHp = 50;
-        RelicEffects.ApplyStartOfPlayerTurn(fake.State, new System.Random(0));
+        RelicEffects.ApplyAfterPlayerTurnStartLate(fake.State, 1);
 
         Assert.Equal(51, fake.State.PlayerHp);
     }
@@ -389,7 +389,7 @@ public class ActTwoEventRelicTests
         fight.State.PlayerHp = 50;
         fight.State.PlayerBlock = 99;
 
-        RelicEffects.ApplyStartOfPlayerTurn(fight.State, new System.Random(0));
+        RelicEffects.ApplyAfterPlayerTurnStart(fight.State, 1, new System.Random(0));
 
         // Unblockable: the block does not save it.
         Assert.Equal(46, fight.State.PlayerHp);

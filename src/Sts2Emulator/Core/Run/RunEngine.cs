@@ -211,6 +211,11 @@ public sealed class RunEngine
         // this was written first. See E492.
         combat.MaxPotionSlots = State.MaxPotionSlots;
 
+        // `FurCoat.BeforeCombatStart` bites the opening roster, which `CombatFactory.Reset` does
+        // before turn one starts; the flag stays on the combat so `AfterCreatureAddedToCombat`
+        // can bite reinforcements with the same rule -- see `RelicEffects.Spawned`.
+        combat.FurCoatBites = State.FurCoatRooms.Contains(State.CurrentMapCoord);
+
         CombatFactory.Reset(
             combat,
             combatRng,
@@ -236,15 +241,6 @@ public sealed class RunEngine
         State.TookUnblockedDamageThisCombat = false;
 
         Effects.RelicEffects.RestoreUsedUpRelics(combat, State.UsedUpRelics);
-
-        // `FurCoat.BeforeCombatStart` bites the opening roster; the flag it is read from
-        // stays on the combat so `AfterCreatureAddedToCombat` can bite reinforcements with
-        // the same rule -- see `RelicEffects.Spawned`.
-        combat.FurCoatBites = State.FurCoatRooms.Contains(State.CurrentMapCoord);
-        foreach (var enemy in combat.Enemies)
-        {
-            Effects.RelicEffects.BiteForFurCoat(combat, enemy);
-        }
 
         // The pre-play phase runs HERE rather than on the first `Step`, because the run
         // hands this combat straight to `CombatEngine.ValidActions` -- an observation of a

@@ -249,7 +249,8 @@ public static class StateCloning
         into.UnsettlingLampSpent = combat.UnsettlingLampSpent;
         into.UnsettlingLampCard = combat.UnsettlingLampCard;
         into.GamblingChipDiscarded = combat.GamblingChipDiscarded;
-        into.GamblingChipOwed = combat.GamblingChipOwed;
+        into.TurnStartHeldPhase = combat.TurnStartHeldPhase;
+        into.TurnStartHeldRelic = combat.TurnStartHeldRelic;
         into.BurningSticksUsed = combat.BurningSticksUsed;
         into.BeltBuckleApplied = combat.BeltBuckleApplied;
         into.IsEliteRoom = combat.IsEliteRoom;

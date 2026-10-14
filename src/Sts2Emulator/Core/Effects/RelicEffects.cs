@@ -619,65 +619,31 @@ public static class RelicEffects
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Confused, 1);
         }
 
-        if (HasRelic(state, BlessedAntler))
+        // `TeaOfDiscourtesy.BeforeCombatStart`: two Dazed into the DRAW pile at random
+        // positions. One combat, and it is the price the Tea Master's free tea charges. Before
+        // turn one, so the opening hand can draw them; it ran after the opening hand was dealt.
+        if (SpendTeaCombat(state, TeaOfDiscourtesy))
         {
-            // BeforeHandDraw on turn one: three Dazed into the draw pile at
-            // CardPilePosition.Random, which CardPileCmd resolves off Rng.Shuffle.
-            CardEffects.AddCardToDrawPileRandomly(state, ST.Dazed, 3, state.ShuffleRng ?? rng);
+            CardEffects.AddCardToDrawPileRandomly(
+                state,
+                ST.Dazed,
+                TeaOfDiscourtesyDazed,
+                state.ShuffleRng ?? rng
+            );
         }
 
-        // `NinjaScroll.BeforeHandDraw` at TurnNumber <= 1: `DynamicVar("Shivs", 3m)` into
-        // HAND, before the opening draw -- so the hand is three Shivs plus the usual five.
-        if (HasRelic(state, NinjaScroll))
+        // `PowerCell.BeforeSideTurnStart` at TurnNumber <= 1: CardsVar(2) ZERO-COST cards out of
+        // the draw pile and into hand, `StableShuffle(CombatCardSelection)` then Take. The side's
+        // turn start comes before `SetupPlayerTurn`, so they are in hand before the opening draw,
+        // which then draws five more; it ran after the opening hand was dealt.
+        if (HasRelic(state, PowerCell))
         {
-            CardEffects.AddGeneratedCardsToHand(state, 430, 3);
+            CardEffects.MoveZeroCostDrawCardsToHandForPowerCell(state, 2, rng);
         }
 
-        // `JeweledMask.BeforeHandDraw` at TurnNumber <= 1: one POWER from the draw pile,
-        // chosen off `Rng.CombatCardSelection`, into HAND and free for the turn. Like
-        // Ninja Scroll it lands before the opening draw, so the hand is that power plus
-        // the usual five -- and unlike Ninja Scroll it MOVES a card rather than making
-        // one, so the draw pile is one shorter and the reorder below sees that.
-        //
-        // The guard is `list.Count != 0` around a `NextItem`, so a draw pile holding
-        // exactly one power still spends a roll on picking it.
-        // Every-turn `BeforeHandDraw` relics, turn one's visit.
-        ApplyBeforeHandDraw(state, 1, rng);
-
-        // `RadiantPearl.BeforeHandDraw` at TurnNumber == 1: CardsVar(1) Luminesce into
-        // hand. Ninja Scroll's shape with a different card.
-        if (HasRelic(state, RadiantPearl))
-        {
-            CardEffects.AddGeneratedCardsToHand(state, 289, 1);
-        }
-
-        if (HasRelic(state, JeweledMask))
-        {
-            var powers = Enumerable
-                .Range(0, state.DrawPile.Count)
-                .Where(i => GeneratedData.Cards.Get(state.DrawPile[i].DefId).Type == CardType.Power)
-                .ToList();
-            if (powers.Count > 0)
-            {
-                var selection = CardEffects.CardSelectionRngFor(state, rng);
-                int chosen = powers[selection.Next(powers.Count)];
-                var card = state.DrawPile[chosen];
-                state.DrawPile.RemoveAt(chosen);
-                state.Hand.Add(card with { FreeThisTurn = true });
-            }
-        }
-
-        // `FuneraryMask.BeforeHandDraw` at TurnNumber == 1: CardsVar(3) Souls into the
-        // DRAW pile at CardPilePosition.Random, one insert point per card off Rng.Shuffle
-        // -- Blessed Antler's shape with a card the player wants.
-        //
-        // Note the guard is `== 1` where Ninja Scroll's is `<= 1`. Both mean turn one, and
-        // both are transcribed as they are written rather than normalised.
-        if (HasRelic(state, FuneraryMask))
-        {
-            CardEffects.AddCardToDrawPileRandomly(state, 446, 3, state.ShuffleRng ?? rng);
-        }
-
+        // The turn-one `BeforeHandDraw` relics (Blessed Antler, Ninja Scroll, Toolbox and the
+        // rest) are not here: they are turn one's visit to `ApplyBeforeHandDraw`, which the
+        // turn start makes in the order the player holds them.
     }
 
     public static void ApplyCombatStart(CombatState state, Random rng)
@@ -858,14 +824,6 @@ public static class RelicEffects
             CardEffects.AddDistinctEtherealCardsToHand(state, 2, rng);
         }
 
-        // `PowerCell`: CardsVar(2) ZERO-COST cards out of the draw pile and into hand.
-        // `StableShuffle(CombatCardSelection)` then Take -- a different stream from the
-        // generation ones above, because these cards already exist.
-        if (HasRelic(state, PowerCell))
-        {
-            CardEffects.MoveZeroCostDrawCardsToHandForPowerCell(state, 2, rng);
-        }
-
         // ── The three teas, and Sword of Jade ──────────────────────────────────
         // Each tea counts DOWN the combats it has left, and the count is run state: the
         // combat is handed the relic already charged (see CombatFactory.Reset), spends
@@ -887,28 +845,11 @@ public static class RelicEffects
             GainPlayerStrength(state, 2);
         }
 
-        // `TeaOfDiscourtesy.BeforeCombatStart`: two Dazed into the DRAW pile at random
-        // positions. One combat, and it is the price the Tea Master's free tea charges.
-        if (SpendTeaCombat(state, TeaOfDiscourtesy))
-        {
-            CardEffects.AddCardToDrawPileRandomly(
-                state,
-                ST.Dazed,
-                TeaOfDiscourtesyDazed,
-                state.ShuffleRng ?? rng
-            );
-        }
-
         // `SwordOfJade.AfterRoomEntered(CombatRoom)`: Strength 3, every fight, forever.
         // What Sword of Stone becomes after five elites.
         if (HasRelic(state, SwordOfJade))
         {
             GainPlayerStrength(state, 3);
-        }
-
-        if (HasRelic(state, BloodVial))
-        {
-            CardEffects.HealPlayer(state, 2);
         }
 
         if (HasRelic(state, Anchor))
@@ -1000,16 +941,6 @@ public static class RelicEffects
     {
         int turnNumber = state.Turn + 1;
 
-        // `ChoicesParadox.AfterPlayerTurnStart` on TURN ONE only: five distinct cards off
-        // the character's own pool, each granted Retain, and one of them is kept. Turn one
-        // reaches here through `CombatFactory` calling this straight after
-        // `ApplyCombatStart`, which is after the opening hand -- the same place the game's
-        // AfterPlayerTurnStart sits.
-        if (turnNumber == 1 && HasRelic(state, ChoicesParadox))
-        {
-            CardEffects.OpenChoicesParadoxOffer(state, ChoicesParadoxCards, rng);
-        }
-
         // `MusicBox.BeforeSideTurnStart` clears its used flag -- the box is once a TURN,
         // not once a combat.
         // `ChainsOfBindingPower.BeforeSideTurnEnd` clears the played latch AND strips Bound
@@ -1051,20 +982,6 @@ public static class RelicEffects
                 CardEffects.GainEnergy(state, 1);
             }
 
-            // `FakeBloodVial.AfterPlayerTurnStartLate` at TurnNumber <= 1: HealVar(1). The
-            // real Blood Vial heals 2 at COMBAT start; this one is a turn-one heal of one.
-            if (HasRelic(state, FakeBloodVial))
-            {
-                CardEffects.HealPlayer(state, 1);
-            }
-
-            // `RoyalPoison.AfterPlayerTurnStart` at TurnNumber <= 1: 4 damage to its OWN
-            // owner, Unblockable and Unpowered. The tea party's gift bites once a fight.
-            if (HasRelic(state, RoyalPoison))
-            {
-                CardEffects.LoseHp(state, 4);
-            }
-
             if (HasRelic(state, Akabeko))
             {
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Vigor, 8);
@@ -1084,12 +1001,6 @@ public static class RelicEffects
                 {
                     BuffSystem.Apply(enemy.Buffs, BuffId.Weak, 1);
                 }
-            }
-
-            if (HasRelic(state, FestivePopper))
-            {
-                // DamageVar(9m, ValueProp.Unpowered) — Strength does not raise it.
-                CardEffects.DealUnpoweredDamageToAll(state, 9);
             }
         }
 
@@ -1152,17 +1063,6 @@ public static class RelicEffects
             }
         }
 
-        // `EmotionChip.AfterPlayerTurnStart`: if the player took unblocked damage during
-        // the PREVIOUS player turn, every orb in the queue fires its passive. The history
-        // query is `HappenedLastPlayerTurn`, so it is the last turn's damage rather than
-        // any damage -- the flag is set when damage lands and read here.
-        if (HasRelic(state, EmotionChip) && GetCounter(state, EmotionChip) > 0)
-        {
-            CardEffects.TriggerEveryOrbPassive(state, DrawRng(state, rng));
-        }
-
-        SetCounter(state, EmotionChip, 0);
-
         // `MiniRegent` and `DemonTongue` both clear a once-per-turn flag in
         // `BeforeSideTurnStart`; the counter IS that flag.
         SetCounter(state, MiniRegent, 0);
@@ -1188,18 +1088,6 @@ public static class RelicEffects
         if (CountTowards(state, FakeHappyFlower, period: FakeHappyFlowerTurns))
         {
             CardEffects.GainEnergy(state, 1);
-        }
-
-        // `MrStruggles.AfterPlayerTurnStart`: unpowered damage to every hittable enemy
-        // equal to the TURN NUMBER -- 1 on turn one, 2 on turn two, and it keeps climbing.
-        if (HasRelic(state, MrStruggles))
-        {
-            CardEffects.DealUnpoweredDamageToAll(state, turnNumber);
-        }
-
-        if (CountTowards(state, Pendulum, period: 3))
-        {
-            CardEffects.DrawCards(state, 1, DrawRng(state, rng));
         }
 
         // Both of these ask what the player did LAST turn, and the engine clears its
@@ -1271,44 +1159,112 @@ public static class RelicEffects
         HasRelic(state, InfusedCore) ? 1 : 0;
 
     /// <summary>
-    /// The relics whose `BeforeHandDraw` fires on EVERY turn rather than only the first.
-    /// Called from both draw sites, because turn one's hand is dealt by `CombatFactory`
-    /// and every later one by `EndTurn` -- a relic wired into only one of them works for
-    /// exactly half the fight.
+    /// `Hook.BeforeHandDraw` for the relics, in the order the player holds them, from the relic
+    /// at <paramref name="from"/> on. Returns the index of the relic after one whose screen is
+    /// now up -- the turn start waits there, as the game awaits the screen -- or -1 when every
+    /// relic has answered.
     /// </summary>
-    internal static void ApplyBeforeHandDraw(CombatState state, int turnNumber, Random? rng)
+    /// <remarks>
+    /// `CombatState.IterateHookListeners` walks each creature's powers and then its relics in
+    /// list order, and `Hook.BeforeHandDraw` awaits each listener before the next. So two of
+    /// these that put cards in the hand or the pile do it in the player's relic order: Ninja
+    /// Scroll's Shivs before or after Toolbox's pick, Blessed Antler's Dazed before or after
+    /// Toasty Mittens takes the top card. Every turn runs this -- turn one from combat setup,
+    /// the rest from `EndTurn` -- and every relic below checks the turn itself, as the game's do.
+    /// </remarks>
+    internal static int ApplyBeforeHandDraw(CombatState state, int turnNumber, Random rng, int from = 0)
     {
-        if (!HasRelic(state, ToastyMittens))
+        for (int i = from; i < state.Relics.Count; i++)
         {
-            return;
-        }
-
-        // `ToastyMittens.BeforeHandDraw`: EXHAUST the top card of the draw pile, then
-        // Strength 1. On turn one it takes the first NON-Innate card and falls back to the
-        // first if every card is Innate -- the game writes both branches, and the fallback
-        // is what stops an all-Innate opener from skipping the exhaust.
-        //
-        // The Strength is applied whether or not a card was found, because the game's
-        // `PowerCmd.Apply` sits outside the null check.
-        //
-        // `ShuffleIfNecessary` comes first: with the draw pile spent the mittens exhaust the
-        // top of the RESHUFFLED discard, where the emulator found nothing to exhaust and let
-        // the hand draw do the shuffle afterwards.
-        CardEffects.ShuffleIfNecessary(state, rng ?? new Random(0));
-        if (state.DrawPile.Count > 0)
-        {
-            int index = turnNumber == 1 ? state.DrawPile.FindIndex(card => !card.IsInnate()) : 0;
-            if (index < 0)
+            switch (state.Relics[i].DefId)
             {
-                index = 0;
-            }
+                // `BlessedAntler`, TurnNumber == 1: three Dazed into the draw pile at
+                // CardPilePosition.Random, which CardPileCmd resolves off Rng.Shuffle.
+                case BlessedAntler when turnNumber == 1:
+                    CardEffects.AddCardToDrawPileRandomly(state, ST.Dazed, 3, state.ShuffleRng ?? rng);
+                    break;
 
-            var doomed = state.DrawPile[index];
-            state.DrawPile.RemoveAt(index);
-            CardEffects.ExhaustCard(state, doomed, rng: rng);
+                // `FuneraryMask`, TurnNumber == 1: CardsVar(3) Souls into the DRAW pile at
+                // CardPilePosition.Random, one insert point per card off Rng.Shuffle -- Blessed
+                // Antler's shape with a card the player wants.
+                case FuneraryMask when turnNumber == 1:
+                    CardEffects.AddCardToDrawPileRandomly(state, 446, 3, state.ShuffleRng ?? rng);
+                    break;
+
+                // `JeweledMask`, TurnNumber <= 1: one POWER from the draw pile, chosen off
+                // `Rng.CombatCardSelection`, into HAND and free for the turn. It MOVES a card
+                // rather than making one, so the draw pile is one shorter for the reorder. The
+                // guard is `list.Count != 0` around a `NextItem`, so a draw pile holding exactly
+                // one power still spends a roll on picking it.
+                case JeweledMask when turnNumber <= 1:
+                {
+                    var powers = Enumerable
+                        .Range(0, state.DrawPile.Count)
+                        .Where(k => GeneratedData.Cards.Get(state.DrawPile[k].DefId).Type == CardType.Power)
+                        .ToList();
+                    if (powers.Count > 0)
+                    {
+                        var selection = CardEffects.CardSelectionRngFor(state, rng);
+                        int chosen = powers[selection.Next(powers.Count)];
+                        var card = state.DrawPile[chosen];
+                        state.DrawPile.RemoveAt(chosen);
+                        state.Hand.Add(card with { FreeThisTurn = true });
+                    }
+
+                    break;
+                }
+
+                // `NinjaScroll`, TurnNumber <= 1: `DynamicVar("Shivs", 3m)` into HAND.
+                case NinjaScroll when turnNumber <= 1:
+                    CardEffects.AddGeneratedCardsToHand(state, 430, 3);
+                    break;
+
+                // `RadiantPearl`, TurnNumber == 1: CardsVar(1) Luminesce into hand.
+                case RadiantPearl when turnNumber == 1:
+                    CardEffects.AddGeneratedCardsToHand(state, 289, 1);
+                    break;
+
+                // `ToastyMittens`, every turn: EXHAUST the top card of the draw pile, then
+                // Strength 1. On turn one it takes the first NON-Innate card and falls back to
+                // the first if every card is Innate. The Strength is applied whether or not a
+                // card was found, because the game's `PowerCmd.Apply` sits outside the null
+                // check. `ShuffleIfNecessary` comes first: with the draw pile spent the mittens
+                // exhaust the top of the RESHUFFLED discard.
+                case ToastyMittens:
+                {
+                    CardEffects.ShuffleIfNecessary(state, rng);
+                    if (state.DrawPile.Count > 0)
+                    {
+                        int index = turnNumber == 1 ? state.DrawPile.FindIndex(card => !card.IsInnate()) : 0;
+                        if (index < 0)
+                        {
+                            index = 0;
+                        }
+
+                        var doomed = state.DrawPile[index];
+                        state.DrawPile.RemoveAt(index);
+                        CardEffects.ExhaustCard(state, doomed, rng: rng);
+                    }
+
+                    GainPlayerStrength(state, 1);
+                    break;
+                }
+
+                // `Toolbox`, TurnNumber == 1: `CardSelectCmd.FromChooseACardScreen` over three
+                // distinct colourless cards, and the pick goes to HAND -- before the hand draw,
+                // which waits for it.
+                case Toolbox when turnNumber == 1:
+                    CardEffects.OpenToolboxSelection(state, rng);
+                    if (state.PendingSelection is not null)
+                    {
+                        return i + 1;
+                    }
+
+                    break;
+            }
         }
 
-        GainPlayerStrength(state, 1);
+        return -1;
     }
 
     /// <summary>
@@ -1921,8 +1877,8 @@ public static class RelicEffects
     }
 
     /// <summary>
-    /// `MercuryHourglass.AfterPlayerTurnStart` and `Candelabra.AfterSideTurnStart`, both of
-    /// which fire at the start of the player's turn.
+    /// `Candelabra.AfterSideTurnStart`. Mercury Hourglass, which was here too, is an
+    /// `AfterPlayerTurnStart` relic and fires with the others in `ApplyAfterPlayerTurnStart`.
     /// </summary>
     internal static void ApplyStartOfPlayerTurnShared(
         CombatState state,
@@ -1930,11 +1886,6 @@ public static class RelicEffects
         Random? rng
     )
     {
-        if (HasRelic(state, MercuryHourglass))
-        {
-            CardEffects.DealUnpoweredDamageToAll(state, 3);
-        }
-
         // Candelabra is turn TWO only -- `TurnNumber == 2`, not "from turn two".
         if (turnNumber == 2 && HasRelic(state, Candelabra))
         {
@@ -2664,7 +2615,8 @@ public static class RelicEffects
     internal static bool KeepsBlockCappedAtTen(CombatState state) => HasRelic(state, SturdyClamp);
 
     /// <summary>
-    /// `Bellows`, `Chandelier`, `VexingPuzzlebox` — the rest of the turn-start rares.
+    /// `Chandelier`, turn three. Bellows and Vexing Puzzlebox, which were here too, are
+    /// `AfterPlayerTurnStart` relics and fire with the others in `ApplyAfterPlayerTurnStart`.
     /// </summary>
     internal static void ApplyStartOfPlayerTurnRares(CombatState state, int turnNumber, Random? rng)
     {
@@ -2673,21 +2625,135 @@ public static class RelicEffects
             CardEffects.GainEnergy(state, 3);
         }
 
-        if (turnNumber == 1 && HasRelic(state, Bellows))
+        _ = rng;
+    }
+
+    /// <summary>
+    /// `Hook.AfterPlayerTurnStart` for the relics: the last step of `CombatManager
+    /// .SetupPlayerTurn`, after the hand draw, in the order the player holds them, from the
+    /// relic at <paramref name="from"/> on. Returns the index of the relic after one whose
+    /// screen is now up -- the turn start waits there -- or -1 when every relic has answered.
+    /// </summary>
+    /// <remarks>
+    /// `IterateHookListeners` walks a creature's powers and then its relics in list order, and
+    /// each listener is awaited before the next: a Gambling Chip held before a Vexing Puzzlebox
+    /// pitches and redraws before the Puzzlebox card arrives, one held after it may pitch that
+    /// card, and Bellows upgrades whatever the relics before it put in the hand. Turn one runs
+    /// this from combat setup, every later turn from `EndTurn`.
+    /// </remarks>
+    internal static int ApplyAfterPlayerTurnStart(CombatState state, int turnNumber, Random rng, int from = 0)
+    {
+        for (int i = from; i < state.Relics.Count; i++)
         {
-            // `CardCmd.Upgrade(PileType.Hand.GetPile(owner).Cards)` -- the opening hand,
-            // and only the opening hand.
-            for (int i = 0; i < state.Hand.Count; i++)
+            switch (state.Relics[i].DefId)
             {
-                state.Hand[i] = state.Hand[i] with { Upgraded = true };
+                // `Bellows`, TurnNumber <= 1: `CardCmd.Upgrade(PileType.Hand...Cards)` -- the
+                // opening hand, and only the opening hand.
+                case Bellows when turnNumber <= 1:
+                    for (int k = 0; k < state.Hand.Count; k++)
+                    {
+                        state.Hand[k] = state.Hand[k] with { Upgraded = true };
+                    }
+
+                    break;
+
+                // `ChoicesParadox`, TurnNumber == 1: five distinct cards off the character's own
+                // pool, each granted Retain, and one of them is kept.
+                case ChoicesParadox when turnNumber == 1:
+                    CardEffects.OpenChoicesParadoxOffer(state, ChoicesParadoxCards, rng);
+                    if (state.PendingSelection is not null)
+                    {
+                        return i + 1;
+                    }
+
+                    break;
+
+                // `EmotionChip`: if the player lost HP during the PREVIOUS player turn, every orb
+                // in the queue fires its passive. The history query is `HappenedLastPlayerTurn`,
+                // so the flag is set when damage lands and read -- and cleared -- here.
+                case EmotionChip:
+                    if (GetCounter(state, EmotionChip) > 0)
+                    {
+                        CardEffects.TriggerEveryOrbPassive(state, DrawRng(state, rng));
+                    }
+
+                    SetCounter(state, EmotionChip, 0);
+                    break;
+
+                // `FestivePopper`, TurnNumber == 1: DamageVar(9m, ValueProp.Unpowered).
+                case FestivePopper when turnNumber == 1:
+                    CardEffects.DealUnpoweredDamageToAll(state, 9);
+                    break;
+
+                // `GamblingChip`, TurnNumber <= 1: `FromHandForDiscard` with a minimum of zero,
+                // then `DiscardAndDraw` for as many as were pitched. An empty hand has nothing
+                // to offer.
+                case GamblingChip when turnNumber <= 1:
+                    if (CombatEngine.OpenGamblingChipScreen(state))
+                    {
+                        return i + 1;
+                    }
+
+                    break;
+
+                // `MercuryHourglass`, every turn: DamageVar(3m, ValueProp.Unpowered) to every
+                // hittable enemy.
+                case MercuryHourglass:
+                    CardEffects.DealUnpoweredDamageToAll(state, 3);
+                    break;
+
+                // `MrStruggles`, every turn: unpowered damage to every hittable enemy equal to
+                // the TURN NUMBER.
+                case MrStruggles:
+                    CardEffects.DealUnpoweredDamageToAll(state, turnNumber);
+                    break;
+
+                // `Pendulum`, every turn: `TurnsSeen = (TurnsSeen + 1) % 3`, and at zero a draw
+                // of CardsVar(1) -- after the hand draw, so the card is the last one in hand.
+                case Pendulum:
+                    if (CountTowards(state, Pendulum, period: 3))
+                    {
+                        CardEffects.DrawCards(state, 1, DrawRng(state, rng));
+                    }
+
+                    break;
+
+                // `RoyalPoison`, TurnNumber <= 1: 4 damage to its OWN owner, Unblockable and
+                // Unpowered.
+                case RoyalPoison when turnNumber <= 1:
+                    CardEffects.LoseHp(state, 4);
+                    break;
+
+                // `VexingPuzzlebox`, TurnNumber == 1: one card from the character's WHOLE pool
+                // (Creative Ai filters to Power and this does not), free this turn.
+                case VexingPuzzlebox when turnNumber == 1:
+                    CardEffects.AddRandomPoolCardToHand(state, rng);
+                    break;
             }
         }
 
-        if (turnNumber == 1 && HasRelic(state, VexingPuzzlebox) && rng is not null)
+        return -1;
+    }
+
+    /// <summary>
+    /// `Hook.AfterPlayerTurnStart`'s LATE pass, which runs once every listener's ordinary pass
+    /// has: `BloodVial` (HealVar(2)) and `FakeBloodVial` (HealVar(1)), both TurnNumber <= 1.
+    /// So Royal Poison's bite lands before either heal, and a full-health opener keeps the heal.
+    /// </summary>
+    internal static void ApplyAfterPlayerTurnStartLate(CombatState state, int turnNumber)
+    {
+        for (int i = 0; i < state.Relics.Count; i++)
         {
-            // A card from the character's WHOLE pool, not just the powers -- Creative Ai
-            // filters to Power and this does not.
-            CardEffects.AddRandomPoolCardToHand(state, rng);
+            switch (state.Relics[i].DefId)
+            {
+                case BloodVial when turnNumber <= 1:
+                    CardEffects.HealPlayer(state, 2);
+                    break;
+
+                case FakeBloodVial when turnNumber <= 1:
+                    CardEffects.HealPlayer(state, 1);
+                    break;
+            }
         }
     }
 
@@ -2992,16 +3058,6 @@ public static class RelicEffects
     /// `GamblingChip.AfterPlayerTurnStart` on turn one: a discard screen with no upper
     /// bound, and the draw comes after.
     /// </summary>
-    /// <summary>
-    /// `Toolbox.BeforeHandDraw` on turn one: three distinct COLOURLESS cards offered, one
-    /// taken into hand. A choose-a-card screen, not a random grant.
-    /// </summary>
-    internal static bool OpensToolboxScreen(CombatState state, int turnNumber) =>
-        turnNumber <= 1 && HasRelic(state, Toolbox);
-
-    internal static bool OpensGamblingChipScreen(CombatState state, int turnNumber) =>
-        turnNumber <= 1 && state.Hand.Count > 0 && HasRelic(state, GamblingChip);
-
     /// <summary>
     /// `UnsettlingLamp`: the FIRST card of a combat that lands a debuff on an enemy has
     /// its debuffs doubled — all of them, for that one card.

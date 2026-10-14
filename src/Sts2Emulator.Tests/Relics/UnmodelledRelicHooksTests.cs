@@ -237,8 +237,8 @@ public class DemonTongueAndEmotionChipTests
         }
 
         CardEffects.LoseHp(hurt.State, 5);
-        RelicEffects.ApplyStartOfPlayerTurn(hurt.State, new System.Random(0));
-        RelicEffects.ApplyStartOfPlayerTurn(safe.State, new System.Random(0));
+        RelicEffects.ApplyAfterPlayerTurnStart(hurt.State, 2, new System.Random(0));
+        RelicEffects.ApplyAfterPlayerTurnStart(safe.State, 2, new System.Random(0));
 
         Assert.Equal(0, safe.State.PlayerBlock);
         Assert.True(
@@ -256,9 +256,9 @@ public class DemonTongueAndEmotionChipTests
         CardEffects.ChannelOrb(fight.State, OrbType.Frost, new System.Random(0));
 
         CardEffects.LoseHp(fight.State, 5);
-        RelicEffects.ApplyStartOfPlayerTurn(fight.State, new System.Random(0));
+        RelicEffects.ApplyAfterPlayerTurnStart(fight.State, 2, new System.Random(0));
         fight.State.PlayerBlock = 0;
-        RelicEffects.ApplyStartOfPlayerTurn(fight.State, new System.Random(0));
+        RelicEffects.ApplyAfterPlayerTurnStart(fight.State, 3, new System.Random(0));
 
         Assert.Equal(0, fight.State.PlayerBlock);
     }

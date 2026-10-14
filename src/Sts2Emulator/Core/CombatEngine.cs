@@ -1701,34 +1701,6 @@ public static class CombatEngine
             }
         }
 
-        // `RampartPower.AfterSideTurnStart` is the ONLY thing that armours the Turret
-        // Operator: the shield grants it at the start of the PLAYER's turn, and the
-        // turret's own moves are two Unloads and a Reload that takes Strength. A second
-        // grant of 25 sat in the ATTACK branch of `EnemyAI`, left behind when the block
-        // was moved off RELOAD_MOVE onto the power -- so the turret carried 50 where the
-        // game gives it 25. Settled by comparing enemy BLOCK, which nothing did until
-        // now; see O18.
-        // `RampartPower.AfterSideTurnStart` returns early when
-        // `PlayersTakingExtraTurn.Count > 0` -- the turret does NOT re-armour on a turn the
-        // player took for free. It is the only thing in the game that reads that, and Pael's
-        // Eye is the only thing that grants one, so this pair is the whole interaction.
-        int rampart = extraTurn
-            ? 0
-            : state
-                .Enemies.Where(e => e.Hp > 0)
-                .Select(e => BuffSystem.Get(e.Buffs, BuffId.Rampart))
-                .DefaultIfEmpty(0)
-                .Max();
-        if (rampart > 0)
-        {
-            foreach (
-                var turret in state.Enemies.Where(e => e.Hp > 0 && e.DefId == KE.TurretOperator)
-            )
-            {
-                turret.Block += rampart;
-            }
-        }
-
         Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
 
         int loop = BuffSystem.Get(state.PlayerBuffs, BuffId.Loop);
@@ -2010,8 +1982,8 @@ public static class CombatEngine
             Effects.CardEffects.AddEtherealPoolCardToHand(state, rng);
         }
 
-        // Every-turn `BeforeHandDraw` relics. Turn one's visit is in
-        // `ApplyBeforeOpeningHand`, because that hand is dealt by `CombatFactory`.
+        // `Hook.BeforeHandDraw` for the relics, in the player's relic order. Turn one's visit is
+        // `StartFirstTurn`'s; Toolbox, the one relic here that asks, asks on turn one alone.
         Effects.RelicEffects.ApplyBeforeHandDraw(state, state.Turn + 1, rng);
 
         // `SentryModePower.BeforeHandDraw` -- BEFORE the hand is drawn, so the Gazes are
@@ -2089,8 +2061,10 @@ public static class CombatEngine
         // card -- drawing one more and pitching your worst is the whole engine -- and
         // pitching whatever happens to be first is closer to a downside than an upside.
         //
-        // The screen is left standing when the turn-start work finishes: nothing is owed
-        // afterwards, so `ValidActions` simply restricts to it until it is answered.
+        // The screen is left standing when the turn-start work finishes, and `ValidActions`
+        // restricts to it until it is answered. A later turn does not wait on it: the relics'
+        // `AfterPlayerTurnStart` below runs with it up (only Pendulum's draw can tell), where
+        // the game answers it first. Turn one's relic screens do hold (`StartFirstTurn`).
         int toolsOfTheTrade = BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade);
         if (toolsOfTheTrade > 0)
         {
@@ -2101,6 +2075,18 @@ public static class CombatEngine
                 toolsOfTheTrade
             );
         }
+
+        // `Hook.AfterPlayerTurnStart` for the relics -- the end of `SetupPlayerTurn`, after the
+        // hand draw and after the powers' own pass above (a creature's powers come before its
+        // relics in `IterateHookListeners`). Mercury Hourglass, Mr. Struggles, Emotion Chip and
+        // Pendulum ran before the hand draw, so Pendulum's card was the FIRST in hand, and the
+        // Hourglass fired ahead of the Hardened Shell and Slow resets.
+        Effects.RelicEffects.ApplyAfterPlayerTurnStart(state, state.Turn + 1, rng);
+        Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, state.Turn + 1);
+
+        // `Hook.AfterSideTurnStart` comes after `SetupPlayerTurn`, so the Turret's armour is
+        // granted after the relics' turn-start damage, not before it.
+        GrantRampartBlock(state, extraTurn);
 
         // `WraithFormPower.AfterSideTurnStart` takes its Amount in Dexterity every turn.
         int wraithForm = BuffSystem.Get(state.PlayerBuffs, BuffId.WraithForm);
@@ -2132,6 +2118,113 @@ public static class CombatEngine
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
 
         return Settle(state, turnEndStart);
+    }
+
+    /// <summary>
+    /// `RampartPower.AfterSideTurnStart` on the PLAYER side's turn start, turn one included: the
+    /// ONLY thing that armours the Turret Operator.
+    /// </summary>
+    /// <remarks>
+    /// The shield grants it at the start of the PLAYER's turn, and the turret's own moves are two
+    /// Unloads and a Reload that takes Strength. A second grant of 25 sat in the ATTACK branch of
+    /// `EnemyAI`, left behind when the block was moved off RELOAD_MOVE onto the power -- so the
+    /// turret carried 50 where the game gives it 25. Settled by comparing enemy BLOCK; see O18.
+    /// The hook returns early when `PlayersTakingExtraTurn.Count > 0` -- the turret does NOT
+    /// re-armour on a turn the player took for free. Pael's Eye is the only thing that grants
+    /// one, so this pair is the whole interaction. Turn one's start is never an extra turn.
+    /// </remarks>
+    internal static void GrantRampartBlock(CombatState state, bool extraTurn)
+    {
+        int rampart = extraTurn
+            ? 0
+            : state
+                .Enemies.Where(e => e.Hp > 0)
+                .Select(e => BuffSystem.Get(e.Buffs, BuffId.Rampart))
+                .DefaultIfEmpty(0)
+                .Max();
+        if (rampart > 0)
+        {
+            foreach (
+                var turret in state.Enemies.Where(e => e.Hp > 0 && e.DefId == KE.TurretOperator)
+            )
+            {
+                turret.Block += rampart;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Turn one's start, from combat setup: the turn-start hooks every later turn runs from
+    /// <see cref="EndTurn" />, in `CombatManager.SetupPlayerTurn`'s order -- `BeforeHandDraw`,
+    /// the hand draw, `AfterPlayerTurnStart` and its late pass -- then the side's
+    /// `AfterSideTurnStart`. A relic's screen holds the rest (<see
+    /// cref="CombatState.TurnStartHeldPhase" />) until <see cref="AnswerSelection" /> answers it.
+    /// </summary>
+    /// <remarks>
+    /// The game has no separate first turn: `StartCombatInternal` runs `BeforeCombatStart` and
+    /// then the same `StartTurn` as every other turn. The emulator dealt turn one by hand, so a
+    /// hook only `EndTurn` called never fired on it -- Mercury Hourglass, the Turret Operator's
+    /// Rampart -- and the turn-one screens were raised in a fixed order with the hand already
+    /// drawn and everything after them already done: Toolbox's pick landed after the opening
+    /// hand rather than before it, and Gambling Chip came after Vexing Puzzlebox whatever order
+    /// the player held them in.
+    /// </remarks>
+    internal static void StartFirstTurn(CombatState state, Random rng)
+    {
+        state.TurnStartHeldPhase = (int)TurnStartPhase.BeforeHandDraw;
+        state.TurnStartHeldRelic = 0;
+        ContinueFirstTurn(state, rng);
+    }
+
+    /// <summary>Whether turn one's start is waiting on a relic's screen.</summary>
+    internal static bool FirstTurnHeld(CombatState state) =>
+        state.TurnStartHeldPhase != (int)TurnStartPhase.None;
+
+    private static void ContinueFirstTurn(CombatState state, Random rng)
+    {
+        var phase = (TurnStartPhase)state.TurnStartHeldPhase;
+        int from = state.TurnStartHeldRelic;
+        state.TurnStartHeldPhase = (int)TurnStartPhase.None;
+        state.TurnStartHeldRelic = 0;
+
+        if (phase == TurnStartPhase.BeforeHandDraw)
+        {
+            int held = Effects.RelicEffects.ApplyBeforeHandDraw(state, 1, rng, from);
+            if (held >= 0)
+            {
+                HoldFirstTurn(state, TurnStartPhase.BeforeHandDraw, held);
+                return;
+            }
+
+            CombatFactory.DrawOpeningHand(state, rng);
+            phase = TurnStartPhase.AfterPlayerTurnStart;
+            from = 0;
+        }
+
+        if (phase == TurnStartPhase.AfterPlayerTurnStart)
+        {
+            int held = Effects.RelicEffects.ApplyAfterPlayerTurnStart(state, 1, rng, from);
+            if (held >= 0)
+            {
+                HoldFirstTurn(state, TurnStartPhase.AfterPlayerTurnStart, held);
+                return;
+            }
+        }
+
+        Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, 1);
+        Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, 1, rng);
+        Effects.RelicEffects.ApplyCombatStart(state, rng);
+        Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
+        GrantRampartBlock(state, extraTurn: false);
+
+        CombatFactory.QueueCombatStartAutoPlays(state);
+        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+    }
+
+    private static void HoldFirstTurn(CombatState state, TurnStartPhase phase, int nextRelic)
+    {
+        state.TurnStartHeldPhase = (int)phase;
+        state.TurnStartHeldRelic = nextRelic;
     }
 
     private static StepResult UsePotion(CombatState state, int slot, Random rng)
@@ -2710,7 +2803,22 @@ public static class CombatEngine
             return result;
         }
 
+        // The answer to the last screen turn one's start was waiting on lets it go on: the
+        // relics after the one that asked, the hand draw if it had not happened, and the rest.
+        // Its kills are answered with the screen's own, and the pre-play phase -- which the
+        // game holds until `SetupPlayerTurn` is done -- follows it.
+        bool resumedFirstTurn = state.PendingSelection is null && FirstTurnHeld(state);
+        if (resumedFirstTurn)
+        {
+            ContinueFirstTurn(state, rng);
+        }
+
         AnswerDeathsSince(state, beforeAnswer, rng);
+        if (resumedFirstTurn && !FirstTurnHeld(state))
+        {
+            ResolvePrePlayPhase(state, rng);
+        }
+
         return Settle(state, beforeAnswer);
     }
 
@@ -3228,14 +3336,6 @@ public static class CombatEngine
                 }
 
                 return ResumeOwedEndTurn(state, rng);
-        }
-
-        // A screen that was owed while another stood follows it. Toolbox's pick is the one
-        // case: its screen is up at combat start where the Chip's would otherwise be.
-        if (state.PendingSelection is null && state.GamblingChipOwed)
-        {
-            state.GamblingChipOwed = false;
-            OpenGamblingChipScreen(state);
         }
 
         return new StepResult(Terminal: false, PlayerWon: false, Reward: 0f);
@@ -4400,15 +4500,11 @@ public static class CombatEngine
     /// `!card.ShouldRetainThisTurn` — a card that will survive the flush anyway is not
     /// worth spending a pick on and the game does not offer it.
     /// </summary>
-    /// <summary>Combat setup's entry to the same screen.</summary>
-    internal static void OpenGamblingChipScreenForCombatStart(CombatState state) =>
-        OpenGamblingChipScreen(state);
-
     /// <summary>
     /// Raises Gambling Chip's screen if there is anything left to offer, and reports
     /// whether it did. Reopened after every pick, because the count has no upper bound.
     /// </summary>
-    private static bool OpenGamblingChipScreen(CombatState state)
+    internal static bool OpenGamblingChipScreen(CombatState state)
     {
         if (state.Hand.Count == 0)
         {
@@ -5123,6 +5219,13 @@ public static class CombatEngine
     /// </remarks>
     internal static void ResolvePrePlayPhase(CombatState state, Random rng)
     {
+        // `RunAutoPrePlayPhase` awaits `SetupPlayerTurn` first: nothing plays itself while a
+        // turn-one screen is still holding the turn start.
+        if (FirstTurnHeld(state))
+        {
+            return;
+        }
+
         DrainAutoPlayQueue(state, rng);
 
         // `WhisperingEarring.AfterAutoPrePlayPhaseEnteredLate` -- LATE, and the game's own

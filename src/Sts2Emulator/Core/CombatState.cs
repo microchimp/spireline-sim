@@ -334,10 +334,16 @@ public sealed class CombatState
     public int GamblingChipDiscarded;
 
     /// <summary>
-    /// Whether Gambling Chip's screen is owed but could not be raised because another one
-    /// was already up. Only Toolbox does that, and only on turn one.
+    /// Turn one's start, stopped at a screen one of its relic hooks raised (Toolbox, Gambling
+    /// Chip, Choices Paradox): the hook pass it stopped in (<see cref="TurnStartPhase" />, as an
+    /// int) and the index of the next relic in that pass. Zero when nothing is held. The rest of
+    /// the turn start -- the hand draw, the relics after it, the pre-play phase -- runs when the
+    /// screen is answered, as the game awaits the screen inside `SetupPlayerTurn`.
     /// </summary>
-    public bool GamblingChipOwed;
+    public int TurnStartHeldPhase;
+
+    /// <inheritdoc cref="TurnStartHeldPhase" />
+    public int TurnStartHeldRelic;
 
     /// <summary>`BurningSticks`: whether its once-per-combat copy has been spent.</summary>
     public bool BurningSticksUsed;
@@ -722,4 +728,20 @@ public sealed class CombatState
         KnownTopCount = Math.Clamp(KnownTopCount, 0, DrawPile.Count);
         KnownBottomCount = Math.Clamp(KnownBottomCount, 0, DrawPile.Count - KnownTopCount);
     }
+}
+
+/// <summary>
+/// The relic hook passes of a turn start that can stop at a screen (<see
+/// cref="CombatState.TurnStartHeldPhase" />).
+/// </summary>
+public enum TurnStartPhase
+{
+    /// <summary>Nothing is held.</summary>
+    None = 0,
+
+    /// <summary>`Hook.BeforeHandDraw`: Toolbox's screen, before the hand draw.</summary>
+    BeforeHandDraw = 1,
+
+    /// <summary>`Hook.AfterPlayerTurnStart`: Gambling Chip's and Choices Paradox's screens.</summary>
+    AfterPlayerTurnStart = 2,
 }

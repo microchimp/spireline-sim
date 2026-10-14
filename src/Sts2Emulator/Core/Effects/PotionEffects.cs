@@ -294,7 +294,7 @@ public static class PotionEffects
                 // then draw that many. Exactly Gambling Chip's screen
                 // (CardSelectionKind.DiscardAnyThenDraw), which already exists for the
                 // relic and is reused rather than re-derived.
-                CombatEngine.OpenGamblingChipScreenForCombatStart(state);
+                CombatEngine.OpenGamblingChipScreen(state);
                 break;
             case 31: // Ghost in a Jar: GhostInAJar.cs -- PowerVar<IntangiblePower>(1).
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Intangible, 1);

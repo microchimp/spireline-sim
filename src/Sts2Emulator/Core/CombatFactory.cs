@@ -409,68 +409,44 @@ public static class CombatFactory
             CardEffects.ShufflePile(state.DrawPile, state.ShuffleRng ?? rng);
         }
 
+        // `FurCoat.BeforeCombatStart`, in a marked room: every hittable enemy to 1 HP. Before
+        // turn one starts, so its damage -- Mercury Hourglass, Festive Popper -- lands on the
+        // pinned HP. It was bitten after this returned, by which time that damage had been
+        // dealt to the full HP.
+        foreach (var enemy in state.Enemies)
+        {
+            RelicEffects.BiteForFurCoat(state, enemy);
+        }
+
         RelicEffects.ApplyBeforeOpeningHand(state, rng);
 
-        // Five, plus Ring of the Snake's two -- passed into the reorder rather than
-        // added after it, because the reorder is what decides WHICH cards the opening
-        // hand takes and it has to know how many that is.
+        // Turn one is a turn like any other: `StartCombatInternal` runs `BeforeCombatStart` and
+        // then the same `StartTurn` that every later turn runs. A relic screen on the way --
+        // Toolbox's before the hand draw, Gambling Chip's or Choices Paradox's after it -- holds
+        // the rest of it, so this can return with the hand not yet dealt.
+        CombatEngine.StartFirstTurn(state, rng);
+    }
+
+    /// <summary>
+    /// Turn one's hand draw, inside <see cref="CombatEngine.StartFirstTurn" />: the turn-1
+    /// draw-pile reorder, then the hand draw every later turn makes.
+    /// </summary>
+    /// <remarks>
+    /// Five, plus Ring of the Snake's two -- passed into the reorder rather than added after
+    /// it, because the reorder is what decides WHICH cards the opening hand takes. The draw is
+    /// `CardPileCmd.Draw(..., fromHandDraw: true)` in `SetupPlayerTurn` on every turn, so it
+    /// goes through <see cref="CardEffects.DrawCards" /> like the others: it stops at a full
+    /// hand (Ninja Scroll's Shivs and Toolbox's pick are already in it), a Slither card's cost
+    /// is rolled and a Confused player's re-rolled, Kingly cards grow and a Void costs its
+    /// energy, as on any draw. It was a loop of its own that did only the first two.
+    /// </remarks>
+    internal static void DrawOpeningHand(CombatState state, Random rng)
+    {
         int handDraw = ApplyTurnOneDrawPileReorder(
             state.DrawPile,
             5 + RelicEffects.ExtraOpeningHandDraw(state)
         );
-
-        for (int i = 0; i < handDraw && state.DrawPile.Count > 0; i++)
-        {
-            // Through the same rolls the ordinary draw path uses: the opening hand IS a
-            // draw, so a Slither-enchanted card in it costs what the stream says rather
-            // than what it is printed at -- and a Confused player has this hand's costs
-            // re-rolled too, because `BeforeCombatStart` puts the power up before the
-            // first card is dealt.
-            state.Hand.Add(
-                CardEffects.ConfuseCostOnDraw(
-                    state,
-                    CardEffects.RollSlitherCost(state, state.DrawPile[0], rng)
-                )
-            );
-            state.RemoveFromDrawPileAt(0);
-        }
-
-        // Bellows and Vexing Puzzlebox are `AfterPlayerTurnStart` on turn ONE, which is
-        // after the opening hand has been dealt -- so they cannot ride the ordinary
-        // turn-start seam, which only runs from turn two.
-        RelicEffects.ApplyStartOfPlayerTurnRares(state, 1, rng);
-
-        // `Toolbox.BeforeHandDraw` on turn one -- BEFORE the Gambling Chip screen, because
-        // the game's hook is a hand-draw one and the Chip's is a turn-start one, and a
-        // card the Toolbox added is a card the Chip may pitch.
-        if (RelicEffects.OpensToolboxScreen(state, 1))
-        {
-            CardEffects.OpenToolboxSelection(state, rng);
-        }
-
-        // `GamblingChip.AfterPlayerTurnStart` on turn one. Raised last of the turn-one
-        // hooks so Bellows has already upgraded the hand and the Puzzlebox has added its
-        // card -- both are things the player would want to see before choosing what to
-        // pitch, and the game's ordering gives them the same way.
-        // Only one screen can be up at a time, and Toolbox's is raised first -- so the
-        // Chip's is OWED rather than raised, and follows once the Toolbox pick is made.
-        if (RelicEffects.OpensGamblingChipScreen(state, 1))
-        {
-            if (state.PendingSelection is null)
-            {
-                CombatEngine.OpenGamblingChipScreenForCombatStart(state);
-            }
-            else
-            {
-                state.GamblingChipOwed = true;
-            }
-        }
-
-        RelicEffects.ApplyCombatStart(state, rng);
-        RelicEffects.ApplyStartOfPlayerTurn(state, rng);
-
-        QueueCombatStartAutoPlays(state);
-        RelicEffects.ApplyAfterPlayerHpChanged(state);
+        CardEffects.DrawCards(state, handDraw, rng, fromHandDraw: true);
     }
 
     /// <summary>The game's <c>CardPile.MaxCardsInHand</c>.</summary>

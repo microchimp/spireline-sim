@@ -307,8 +307,9 @@ public class ToolboxTests
     }
 
     /// <summary>
-    /// Only one screen can be up at a time, so a Gambling Chip held alongside is OWED and
-    /// follows once the Toolbox pick is made rather than being lost.
+    /// Only one screen can be up at a time: a Gambling Chip held alongside asks once the
+    /// Toolbox pick is made, because the turn start waits on the pick (the Chip is an
+    /// `AfterPlayerTurnStart` relic, after the hand draw that waits too).
     /// </summary>
     [Fact]
     public void AGamblingChipScreenFollowsIt()
@@ -316,11 +317,33 @@ public class ToolboxTests
         var fight = Fight.WithRelics(RelicEffects.Toolbox, RelicEffects.GamblingChip);
 
         Assert.Equal(CardSelectionKind.GeneratedCardToHand, fight.Pending!.Kind);
-        Assert.True(fight.State.GamblingChipOwed);
+        Assert.Equal((int)TurnStartPhase.BeforeHandDraw, fight.State.TurnStartHeldPhase);
 
         fight.Choose(0);
 
         Assert.NotNull(fight.Pending);
         Assert.Equal(CardSelectionKind.DiscardAnyThenDraw, fight.Pending!.Kind);
+        Assert.Equal((int)TurnStartPhase.AfterPlayerTurnStart, fight.State.TurnStartHeldPhase);
+    }
+
+    /// <summary>
+    /// `Toolbox.BeforeHandDraw` awaits its screen BEFORE `SetupPlayerTurn` draws the hand, so
+    /// the pick is the first card in hand and the five follow it. The pick was added after the
+    /// opening hand had been dealt (seed 8UAGRV20G8: the game's hand starts with Purity).
+    /// </summary>
+    [Fact]
+    public void ThePickIsInHandBeforeTheHandDraw()
+    {
+        var fight = Fight.WithRelics(RelicEffects.Toolbox);
+
+        Assert.Empty(fight.State.Hand);
+        int picked = fight.Pending!.GeneratedCandidates[2];
+
+        fight.Choose(2);
+
+        Assert.Null(fight.Pending);
+        Assert.Equal(6, fight.State.Hand.Count);
+        Assert.Equal(picked, fight.State.Hand[0].DefId);
+        Assert.Equal((int)TurnStartPhase.None, fight.State.TurnStartHeldPhase);
     }
 }
