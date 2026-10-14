@@ -608,12 +608,20 @@ public static class CombatEngine
         // Corruption: Skills exhaust instead of discard.
         bool corruptedSkill =
             def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Corruption) > 0;
-        if (def.Type == CardType.Power || request.IsDupe)
+        // `GetResultPileTypeForCardPlay` first -- none for a dupe and for a Power, exhaust for
+        // an Exhaust card or one Havoc forced -- and then `ModifyCardPlayResultPileTypeAndPosition`,
+        // whose Corruption (a Skill to the exhaust pile) and Feral (a free Attack to hand) do
+        // not ask what that was: a History Course dupe of a Skill is exhausted under
+        // Corruption, and a Shiv under Feral comes back. Rebound and Nostalgia only redirect
+        // the discard.
+        if ((def.Type == CardType.Power || request.IsDupe) && !corruptedSkill && !feralReturn)
         {
-            // `GetResultPileTypeForCardPlay` is None for a dupe and for a Power: the card
-            // leaves combat without firing exhaust hooks.
+            // The card leaves combat without firing exhaust hooks.
         }
-        else if (ShouldExhaustAfterPlay(def, card) || corruptedSkill || request.ForceExhaust)
+        else if (
+            corruptedSkill
+            || (!feralReturn && (ShouldExhaustAfterPlay(def, card) || request.ForceExhaust))
+        )
         {
             Effects.CardEffects.ExhaustCard(
                 state,

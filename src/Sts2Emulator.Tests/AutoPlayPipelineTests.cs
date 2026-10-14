@@ -462,4 +462,44 @@ public class AutoPlayPipelineTests
         Assert.Equal(2, shuffle.CallCount);
         Assert.Single(fight.State.DiscardPile, c => c.DefId == IC.StrikeIronclad);
     }
+
+    // ── The result pile: the card's own pile first, then the modifiers ──────────────────
+
+    /// <summary>
+    /// `CorruptionPower.ModifyCardPlayResultPileTypeAndPosition` sends every Skill to the
+    /// exhaust pile, whatever `GetResultPileTypeForCardPlay` said: History Course's dupe of a
+    /// Defend (pile none) is exhausted, next to the Defend Corruption exhausted the turn before.
+    /// </summary>
+    [Fact]
+    public void CorruptionExhaustsAHistoryCourseDupeOfASkill()
+    {
+        var fight = Fight.WithRelics(RelicEffects.HistoryCourse).Enemy(hp: 200).Energy(3);
+        fight.State.Hand = [Card(IC.DefendIronclad)];
+        BuffSystem.Apply(fight.State.PlayerBuffs, BuffId.Corruption, 1);
+
+        fight.Play(0);
+        fight.EndTurn();
+
+        Assert.Equal(2, fight.State.ExhaustPile.Count(c => c.DefId == IC.DefendIronclad));
+    }
+
+    /// <summary>
+    /// `FeralPower.ModifyCardPlayResultPileTypeAndPosition` returns a free Attack to hand
+    /// without asking where it was going: a Shiv (Exhaust) comes back instead of exhausting.
+    /// </summary>
+    [Fact]
+    public void FeralReturnsAShivToHand()
+    {
+        var fight = Fight
+            .Hand(Card(SI.Shiv))
+            .Enemy(hp: 100)
+            .PlayerBuff(BuffId.Feral, 1)
+            .Energy(3);
+
+        fight.Play(0);
+
+        Assert.Single(fight.State.Hand, c => c.DefId == SI.Shiv);
+        Assert.DoesNotContain(fight.State.ExhaustPile, c => c.DefId == SI.Shiv);
+        Assert.Equal(96, fight.State.Enemies[0].Hp);
+    }
 }
