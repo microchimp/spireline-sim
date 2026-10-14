@@ -25,7 +25,7 @@ public class WalkerTests
     };
 
     /// <summary>Neow and the first monster fight of the emulator's run, as the game records them.</summary>
-    static JsonObject Record(Func<List<string>, List<string>>? tamperOffer = null)
+    internal static JsonObject Record(Func<List<string>, List<string>>? tamperOffer = null)
     {
         var e = new RunEngine();
         e.Reset(Seed, Asc);
@@ -123,7 +123,7 @@ public class WalkerTests
         };
     }
 
-    static JsonObject Walk(JsonObject record)
+    internal static JsonObject Walk(JsonObject record)
     {
         using var doc = JsonDocument.Parse(record.ToJsonString());
         return new Walker(new EventOptionIndex(null)).Walk(doc.RootElement);
