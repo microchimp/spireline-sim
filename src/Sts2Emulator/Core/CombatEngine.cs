@@ -72,11 +72,9 @@ public static class CombatEngine
         {
             var next = state.AutoPlayQueue[0];
             state.AutoPlayQueue.RemoveAt(0);
-            var beforePlay = new Baseline(state);
-            AutoPlay(state, next, rng);
             // `CardCmd.AutoPlay` is a card play like any other: its kills are answered
-            // inside it, before the next card in the queue plays.
-            AnswerDeathsSince(state, beforePlay, rng);
+            // inside it (`ResolvePlay`), before the next card in the queue plays.
+            AutoPlay(state, next, rng);
 
             // Re-check terminality after auto-play.
             bool playerDead = PlayerIsDead(state);
@@ -242,6 +240,16 @@ public static class CombatEngine
     {
         public static PlayRequest Chosen(int handIndex, int energyToSpend, int starsToSpend) =>
             new(false, handIndex, energyToSpend, starsToSpend, energyToSpend, false);
+
+        /// <summary>
+        /// `CardCmd.AutoPlay`'s `ResourceInfo`: nothing spent, and `EnergyValue` the energy the
+        /// card would spend (`EnergyCost.GetAmountToSpend`: the whole bar for an X card).
+        /// </summary>
+        public static PlayRequest Auto(CombatState state, CardInstance card, CardDef def, bool forceExhaust)
+        {
+            ResolveCosts(state, card, def, out int energy, out _);
+            return new(true, -1, 0, 0, def.HasEnergyCostX ? state.Energy : energy, forceExhaust);
+        }
     }
 
     /// <summary>
@@ -263,9 +271,27 @@ public static class CombatEngine
         int energyToSpend = request.EnergyToSpend;
         int starsToSpend = request.StarsToSpend;
         int handIndex = request.HandIndex;
+        bool autoPlay = request.IsAutoPlay;
+        // A play nested in another stretch that answers its own deaths (an auto-play) sweeps
+        // only the corpses it answered: the enclosing card's own kills are its to answer.
+        var sweep = autoPlay ? CorpseSweep.Answered : CorpseSweep.All;
 
-        state.CardsPlayedThisTurn++;
+        // `CardPlaysStarted`, which every play adds to. The emulator's `CardsPlayedThisTurn`
+        // is the count Pael's Eye and Brilliant Scarf read, and both skip auto-plays.
+        if (!autoPlay)
+        {
+            state.CardsPlayedThisTurn++;
+        }
+
         state.CardPlaysStartedThisTurn++;
+        // `ChainsOfBindingPower.BeforeCardPlayed` latches that a BOUND card has been played,
+        // which is what shuts the door on the rest of them for this turn -- before the card
+        // resolves, so a Bound card it auto-plays is refused.
+        if (card.Bound)
+        {
+            state.BoundCardPlayedThisTurn = true;
+        }
+
         Effects.RelicEffects.ApplyBeforeCardPlayedRares(state, request.CostValue, rng);
         bool feralReturn =
             def.Type == CardType.Attack
@@ -287,7 +313,17 @@ public static class CombatEngine
         // an X-star card reads that back, because by the time its effect runs the counter
         // is already zero.
         state.Stars = Math.Max(0, state.Stars - starsToSpend);
-        state.PlayedCardStarsSpent = starsToSpend;
+        // An auto-play spends nothing and records its star cost (`CardCmd.AutoPlay`:
+        // `LastStarsSpent`, the whole counter for an X-star card).
+        if (autoPlay)
+        {
+            ResolveCosts(state, card, def, out _, out int starCost);
+            state.PlayedCardStarsSpent = def.HasStarCostX ? state.Stars : starCost;
+        }
+        else
+        {
+            state.PlayedCardStarsSpent = starsToSpend;
+        }
 
         // `Hook.AfterStarsSpent`, dispatched from `CardModel.SpendStars` and from nowhere
         // else -- paying a card's star COST is the only thing that counts as spending, so
@@ -307,9 +343,17 @@ public static class CombatEngine
         // What this play actually cost, which is what CardPlay.Resources.EnergyValue
         // reports: an X card is printed at zero and takes the rest of the bar inside its
         // own effect, so the printed cost would tell a relic the play was free.
-        int energySpent = def.HasEnergyCostX ? state.Energy : energyToSpend;
+        // An auto-play reports the energy the card would have spent.
+        int energySpent =
+            autoPlay ? request.CostValue
+            : def.HasEnergyCostX ? state.Energy
+            : energyToSpend;
         // `SpendEnergy` dispatches AfterEnergySpent here, before the card resolves.
-        Effects.CardEffects.ApplyAfterEnergySpent(state, energySpent);
+        if (!autoPlay)
+        {
+            Effects.CardEffects.ApplyAfterEnergySpent(state, energySpent);
+        }
+
         if (handIndex >= 0)
         {
             state.Hand.RemoveAt(handIndex);
@@ -349,7 +393,7 @@ public static class CombatEngine
         // pays nothing -- the resolved cost, not the printed one. Reads the CLAMPED cost,
         // which is the same test at this threshold: the clamp only moves values below zero.
         int danseMacabre = BuffSystem.Get(state.PlayerBuffs, BuffId.DanseMacabre);
-        if (danseMacabre > 0 && energyToSpend >= 2)
+        if (danseMacabre > 0 && request.CostValue >= 2)
         {
             Effects.CardEffects.GainUnpoweredBlock(state, danseMacabre, rng);
         }
@@ -531,7 +575,7 @@ public static class CombatEngine
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Gigantification, -1);
             }
         }
-        HandleEnemyDeaths(state, enemyHpsBefore, rng);
+        HandleEnemyDeaths(state, enemyHpsBefore, rng, sweep);
 
         // The play is not over, and what follows can kill too: the card's own exhaust under
         // Charon's Ashes, Serpent Form and Haunt, `AfterCardPlayed`'s Strangle and Panache
@@ -601,7 +645,7 @@ public static class CombatEngine
         {
             // Played powers leave hand without firing exhaust hooks.
         }
-        else if (ShouldExhaustAfterPlay(def, card) || corruptedSkill)
+        else if (ShouldExhaustAfterPlay(def, card) || corruptedSkill || request.ForceExhaust)
         {
             Effects.CardEffects.ExhaustCard(
                 state,
@@ -728,7 +772,8 @@ public static class CombatEngine
         // land. It reaches the exhaust or discard pile after them, not before. The
         // placement above ran first; take the card back out and hold it until the screen
         // and the queue are done (`ReleaseHeldPlayedCard`, called where both have settled).
-        if (state.PendingSelection is not null || state.AutoPlayQueue.Count > 0)
+        // An auto-play answers its own screens, so only a chosen play is ever held.
+        if (!autoPlay && (state.PendingSelection is not null || state.AutoPlayQueue.Count > 0))
         {
             if (
                 state.ExhaustPile.Count == exhaustCountBeforePlacement + 1
@@ -780,7 +825,7 @@ public static class CombatEngine
         // every copy sitting in the DISCARD pile back to hand. On the card, so it comes
         // back for the card that was expensive rather than for the one it belongs to --
         // and it costs nothing itself, so it can never bring itself back.
-        if (energyToSpend >= 2)
+        if (request.CostValue >= 2)
         {
             Effects.CardEffects.ReturnRightHandHandsFromDiscard(state);
         }
@@ -831,8 +876,8 @@ public static class CombatEngine
         }
 
         // `VoidFormPower.AfterCardPlayed` counts a play only when it is neither an auto-play
-        // nor a repeat, and this is the chosen-play path, so every arrival here counts once.
-        if (BuffSystem.Get(state.PlayerBuffs, BuffId.VoidForm) > 0)
+        // nor a repeat, so a chosen card counts once.
+        if (!autoPlay && BuffSystem.Get(state.PlayerBuffs, BuffId.VoidForm) > 0)
         {
             state.VoidFormCardsPlayedThisTurn++;
         }
@@ -852,13 +897,6 @@ public static class CombatEngine
 
         // Music Box needs the INSTANCE, not the definition: it clones the card that was
         // played, so the copy inherits its upgrade and its enchantment.
-        // `ChainsOfBindingPower.BeforeCardPlayed` latches that a BOUND card has been played,
-        // which is what shuts the door on the rest of them for this turn.
-        if (card.Bound)
-        {
-            state.BoundCardPlayedThisTurn = true;
-        }
-
         Effects.RelicEffects.ApplyMusicBox(state, card, def);
 
         ApplyAfterCardPlayedPowers(state, def, rng, energySpent);
@@ -871,7 +909,7 @@ public static class CombatEngine
         // The after-play kills, answered inside the play as the game answers every death,
         // and before the play's win check -- or the end of the turn Void Form forces. Left
         // unanswered, a lone Gremlin Merc finished off by Strangle was a won fight.
-        AnswerDeathsSince(state, afterEffects, rng);
+        AnswerDeathsSince(state, afterEffects, rng, sweep: sweep);
         return restsOn;
     }
 
@@ -3488,7 +3526,8 @@ public static class CombatEngine
     private static void HandleEnemyDeaths(
         CombatState state,
         ReadOnlySpan<int> enemyHpsBefore,
-        Random rng
+        Random rng,
+        CorpseSweep sweep = CorpseSweep.All
     )
     {
         List<EnemyState>? dead = null;
@@ -3500,7 +3539,7 @@ public static class CombatEngine
             }
         }
 
-        AnswerDeaths(state, dead, rng, CorpseSweep.All);
+        AnswerDeaths(state, dead, rng, sweep);
     }
 
     /// <summary>Which corpses a death answer sweeps once it is done.</summary>
@@ -4556,10 +4595,8 @@ public static class CombatEngine
             // Leaving it in place while auto-playing it adds a second copy every turn, so
             // the pile grows and next turn plays two.
             RemoveFirstMatchingCard(state.ExhaustPile, card);
-            var beforePlay = new Baseline(state);
-            AutoPlay(state, card, rng);
             // A card play: its kills are answered inside it, before the next one plays.
-            AnswerDeathsSince(state, beforePlay, rng);
+            AutoPlay(state, card, rng);
         }
     }
 
@@ -4765,18 +4802,15 @@ public static class CombatEngine
         }
     }
 
+    /// <summary>
+    /// `CardCmd.AutoPlay` on a card in hand (Stampede's pick): the card leaves hand whether or
+    /// not the gate lets it be played.
+    /// </summary>
     private static void AutoPlayCardFromHand(CombatState state, int handIndex, Random rng)
     {
-        bool wasAutoPlaying = state.AutoPlaying;
-        state.AutoPlaying = true;
-        try
-        {
-            AutoPlayCardFromHandCore(state, handIndex, rng);
-        }
-        finally
-        {
-            state.AutoPlaying = wasAutoPlaying;
-        }
+        var card = state.Hand[handIndex];
+        state.Hand.RemoveAt(handIndex);
+        AutoPlay(state, card, rng);
     }
 
     /// <summary>
@@ -4852,135 +4886,6 @@ public static class CombatEngine
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// An auto-play past the gate is a play that has started (`CardPlayStarted`), and its
-    /// BeforeCardPlayed hooks count it: Sloth's count and ChainsOfBindingPower's latch on a
-    /// Bound card, as for a chosen play.
-    /// </summary>
-    private static void StartAutoPlay(CombatState state, CardInstance card)
-    {
-        state.CardPlaysStartedThisTurn++;
-        if (card.Bound)
-        {
-            state.BoundCardPlayedThisTurn = true;
-        }
-    }
-
-    private static void AutoPlayCardFromHandCore(CombatState state, int handIndex, Random rng)
-    {
-        var card = state.Hand[handIndex];
-        var def = GeneratedData.Cards.Get(card.DefId);
-
-        // The card leaves hand whether or not the gate lets it be played.
-        state.Hand.RemoveAt(handIndex);
-        if (!BeginAutoPlay(state, card, def, rng, forceExhaust: false, out int targetIndex))
-        {
-            return;
-        }
-
-        Span<int> enemyHpsBefore = stackalloc int[state.Enemies.Count];
-        for (int i = 0; i < state.Enemies.Count; i++)
-        {
-            enemyHpsBefore[i] = state.Enemies[i].Hp;
-        }
-
-        // BeforeCardPlayed fires for an auto-play too -- it is an ordinary CardModel.Play.
-        StartAutoPlay(state, card);
-        int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);
-        CaptureBeforePlayPowers(state);
-        Effects.RelicEffects.BeforeCardPlayedRelics(state, def);
-        CombatTrace.At("play", card.DefId, state);
-        // Snapshotted before the effects for the same reason as the hand-played path:
-        // a Rebound applied by THIS card must not redirect this card.
-        int reboundBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.Rebound);
-        int callerTarget = state.TargetEnemyIndex;
-        state.TargetEnemyIndex = targetIndex;
-        Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
-        if (def.Type == CardType.Attack)
-        {
-            int oneTwoPunch = BuffSystem.Get(state.PlayerBuffs, BuffId.OneTwoPunch);
-            if (oneTwoPunch > 0)
-            {
-                Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
-                if (oneTwoPunch == 1)
-                {
-                    BuffSystem.Remove(state.PlayerBuffs, BuffId.OneTwoPunch);
-                }
-                else
-                {
-                    BuffSystem.Apply(state.PlayerBuffs, BuffId.OneTwoPunch, -1);
-                }
-            }
-            QueueAttackPlayLifecycleEffects(state, card);
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.Vigor);
-            // `GigantificationPower.AfterAttack` clears its latch and DECREMENTS once the
-            // attack it tripled has finished -- one attack CARD per stack, however many
-            // hits that card threw. All three play paths, because the game's hook is on the
-            // ATTACK and does not care which of them produced it.
-            if (BuffSystem.Get(state.PlayerBuffs, BuffId.Gigantification) > 0)
-            {
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.Gigantification, -1);
-            }
-        }
-        state.TargetEnemyIndex = callerTarget;
-        HandleEnemyDeaths(state, enemyHpsBefore, rng);
-
-        if (def.Type == CardType.Attack)
-        {
-            state.AttackCardsPlayedThisTurn++;
-            if (state.AttackCardsPlayedThisTurn == 3)
-            {
-                int juggling = BuffSystem.Get(state.PlayerBuffs, BuffId.Juggling);
-                for (int i = 0; i < juggling; i++)
-                {
-                    state.Hand.Add(new CardInstance(card.DefId, card.Upgraded));
-                }
-            }
-
-            int rage = BuffSystem.Get(state.PlayerBuffs, BuffId.Rage);
-            if (rage > 0)
-            {
-                // RagePower.AfterCardPlayed: `ValueProp.Unpowered` -- Dexterity does not
-                // apply.
-                Effects.CardEffects.GainUnpoweredBlock(state, rage, rng);
-            }
-
-            int calamity = BuffSystem.Get(state.PlayerBuffs, BuffId.CalamityPower);
-            if (calamity > 0)
-            {
-                Effects.CardEffects.AddRandomAttackCardsToHand(state, calamity, rng);
-            }
-        }
-
-        if (def.Type == CardType.Power)
-        {
-            // Played powers leave hand without firing exhaust hooks.
-        }
-        else if (ShouldExhaustAfterPlay(def, card))
-        {
-            Effects.CardEffects.ExhaustCard(state, card, rng: rng);
-        }
-        else if (ShouldPlaceOnDrawPileAfterPlay(state, def, reboundBefore))
-        {
-            state.TopDeck(card with { FreeThisTurn = false });
-        }
-        else
-        {
-            state.DiscardPile.Add(
-                card with
-                {
-                    FreeThisTurn = false,
-                    SlyForCombat = card.SlyForCombat || MasterPlannerMarks(state, def),
-                }
-            );
-        }
-
-        IncrementPlayedCardTypeCounters(state, def);
-        PayMonologue(state, monologueBefore);
-        ApplyAfterCardPlayedPowers(state, def, rng);
-        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
     }
 
     private static void QueueAttackPlayLifecycleEffects(CombatState state, CardInstance card)
@@ -5298,10 +5203,8 @@ public static class CombatEngine
         {
             var next = state.AutoPlayQueue[0];
             state.AutoPlayQueue.RemoveAt(0);
-            var beforePlay = new Baseline(state);
+            // Its kills are answered inside the play.
             AutoPlay(state, next, rng);
-            // Answered inside the play, as the drain after an action does.
-            AnswerDeathsSince(state, beforePlay, rng);
             if (PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
             {
                 state.AutoPlayQueue.Clear();
@@ -5517,9 +5420,7 @@ public static class CombatEngine
         bool forceExhaust = false
     )
     {
-        var beforePlay = new Baseline(state);
         AutoPlay(state, card, rng, forceExhaust);
-        AnswerDeathsSince(state, beforePlay, rng, sweep: CorpseSweep.Answered);
         return PlayerIsDead(state) || NoPrimaryEnemyLeft(state);
     }
 
@@ -5538,9 +5439,7 @@ public static class CombatEngine
     {
         for (int play = 0; ; play++)
         {
-            var beforePlay = new Baseline(state);
             var restsOn = AutoPlay(state, card, rng);
-            AnswerDeathsSince(state, beforePlay, rng, sweep: CorpseSweep.Answered);
             if (play + 1 >= times || PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
             {
                 return;
@@ -5616,6 +5515,11 @@ public static class CombatEngine
         }
     }
 
+    /// <summary>
+    /// `CardCmd.AutoPlay` for a card already out of its pile: the gate
+    /// (<see cref="BeginAutoPlay" />), then the play itself, which is the same body a chosen
+    /// play runs (<see cref="ResolvePlay" />) with nothing spent.
+    /// </summary>
     /// <returns>The pile the card came to rest on, or null when it left combat.</returns>
     private static List<CardInstance>? AutoPlayCore(
         CombatState state,
@@ -5627,90 +5531,32 @@ public static class CombatEngine
         var def = GeneratedData.Cards.Get(card.DefId);
 
         // The one gate (`BeginAutoPlay`): refusals first, then the target -- rolled only for
-        // an AnyEnemy card given none, and USED: a roll whose result was thrown away once
-        // sent every auto-played attack at the first living enemy. An Unplayable card is
-        // refused there too, before the hooks: Cascade or Mayhem taking an Injury or an
-        // Ascender's Bane off the draw pile moves it on without BeforeCardPlayed or
-        // AfterCardPlayed ever running -- a Panache does not count it.
+        // an AnyEnemy card given none, and USED. An Unplayable card is refused there too,
+        // before the hooks: Cascade or Mayhem taking an Injury or an Ascender's Bane off the
+        // draw pile moves it on without BeforeCardPlayed or AfterCardPlayed ever running.
+        // Filing it away can still kill (an exhaust hook's block under Juggernaut), and those
+        // deaths are answered here; a play answers its own.
+        var beforeGate = new Baseline(state);
         if (!BeginAutoPlay(state, card, def, rng, forceExhaust, out int targetIndex))
         {
+            AnswerDeathsSince(state, beforeGate, rng, sweep: CorpseSweep.Answered);
             return forceExhaust || ShouldExhaustAfterPlay(def, card)
                 ? state.ExhaustPile
                 : state.DiscardPile;
         }
 
-        // Apply card effects.
-        StartAutoPlay(state, card);
-        int monologueBefore = BuffSystem.InstanceCount(state.PlayerBuffs, BuffId.Monologue);
-        CaptureBeforePlayPowers(state);
-        Effects.RelicEffects.BeforeCardPlayedRelics(state, def);
-        CombatTrace.At("play", card.DefId, state);
+        // `CardModel.CurrentTarget` is the play's target for the whole of `OnPlayWrapper`.
         int callerTarget = state.TargetEnemyIndex;
         state.TargetEnemyIndex = targetIndex;
-        // Snapshotted before the effects for the same reason as the hand-played path:
-        // a Rebound applied by THIS card must not redirect this card.
-        int reboundBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.Rebound);
-        // `ReplayCount` is the card playing again, not another card: the hand-played path
-        // has always honoured it and this one did not, so a replay granted to a card that
-        // is then auto-played was simply lost. It is also how Decisions, Decisions gets
-        // its three plays out of ONE card -- the game calls `CardCmd.AutoPlay` three times
-        // on the same model, so the effects happen three times and the card comes to rest
-        // in one pile, once.
-        for (int play = 0; play <= card.ReplayCount; play++)
-        {
-            Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
-        }
-
+        var restsOn = ResolvePlay(
+            state,
+            card,
+            def,
+            PlayRequest.Auto(state, card, def, forceExhaust),
+            rng,
+            out _
+        );
         state.TargetEnemyIndex = callerTarget;
-        if (def.Type == CardType.Attack)
-        {
-            QueueAttackPlayLifecycleEffects(state, card);
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.Vigor);
-            // `GigantificationPower.AfterAttack` clears its latch and DECREMENTS once the
-            // attack it tripled has finished -- one attack CARD per stack, however many
-            // hits that card threw. All three play paths, because the game's hook is on the
-            // ATTACK and does not care which of them produced it.
-            if (BuffSystem.Get(state.PlayerBuffs, BuffId.Gigantification) > 0)
-            {
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.Gigantification, -1);
-            }
-        }
-
-        // Resolve status effects (Juggling, Rupture, etc. already handled in Apply or below).
-
-        // `GetResultPileTypeForCardPlay`: a Power leaves combat even when Havoc forced the
-        // exhaust (`ExhaustOnNextPlay` is read only after the Power check).
-        List<CardInstance>? restsOn = null;
-        if (def.Type == CardType.Power)
-        {
-            // Played powers leave hand without firing exhaust hooks.
-        }
-        else if (forceExhaust || ShouldExhaustAfterPlay(def, card))
-        {
-            Effects.CardEffects.ExhaustCard(state, card, rng: rng);
-            restsOn = state.ExhaustPile;
-        }
-        else if (ShouldPlaceOnDrawPileAfterPlay(state, def, reboundBefore))
-        {
-            state.TopDeck(card with { FreeThisTurn = false });
-            restsOn = state.DrawPile;
-        }
-        else
-        {
-            state.DiscardPile.Add(
-                card with
-                {
-                    FreeThisTurn = false,
-                    SlyForCombat = card.SlyForCombat || MasterPlannerMarks(state, def),
-                }
-            );
-            restsOn = state.DiscardPile;
-        }
-
-        IncrementPlayedCardTypeCounters(state, def);
-        PayMonologue(state, monologueBefore);
-        ApplyAfterCardPlayedPowers(state, def, rng);
-        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
         return restsOn;
     }
 
