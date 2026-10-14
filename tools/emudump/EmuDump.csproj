@@ -5,6 +5,11 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- An EmuDump call replays tens of fights and exits: TieredPGO's instrumented tier costs more than it gains (measured: 15-25% less CPU without it). -->
+    <TieredPGO>false</TieredPGO>
+    <!-- JsonArray.Add<T> and the like need the reflection resolver for plain values. The JIT build
+         has it on anyway; the NativeAOT build (aot.sh) would turn it off. -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
   <ItemGroup>
     <None Include="..\..\data\id_map.json" Link="id_map.json" CopyToOutputDirectory="PreserveNewest" />

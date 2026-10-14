@@ -24,7 +24,7 @@ static class Fight
         var setupLog = new JsonArray();
         if (Setup.Extended) outp["setup_log"] = setupLog;
         int asc = (int)game["ascension"]!;
-        e.Reset((string)game["seed"]!, asc);
+        using (Prof.Scope("reset")) e.Reset((string)game["seed"]!, asc);
         var s = e.State;
         outp["seed"] = s.StringSeed;
         outp["neow_options"] = new JsonArray(s.NeowOptions.Select(i => (JsonNode)i).ToArray());
@@ -84,7 +84,8 @@ static class Fight
         outp["steps"] = steps;
         try
         {
-            var e = EnterRoom(game, outp);
+            RunEngine e;
+            using (Prof.Scope("enter_room")) e = EnterRoom(game, outp);
             var s = e.State;
             steps.Add(new JsonObject { ["action"] = null, ["state"] = Dump(e) });
             OnStep?.Invoke(e, steps[^1]!.AsObject());
@@ -96,6 +97,7 @@ static class Fight
                 stepNo++;  // the referee tags a choice with the index of the step its action produced
                 var a = step!["action"]!.AsObject();
                 if (s.ActiveCombat == null) break;
+                var engineSpan = Prof.Scope("step");
                 if ((string)a["kind"]! == "end_turn")
                 {
                     e.Step(s.ActiveCombat.Hand.Count, -1, out _, out _, out _);
@@ -130,6 +132,7 @@ static class Fight
                     chosen.Add(new JsonObject { ["unexpected_selection"] = extra.Kind.ToString() });
                 }
 
+                engineSpan.Dispose();
                 steps.Add(new JsonObject { ["action"] = a.DeepClone(), ["choices"] = chosen, ["state"] = Dump(e) });
                 OnStep?.Invoke(e, steps[^1]!.AsObject());
                 AfterStep?.Invoke(e, stepNo);
@@ -207,7 +210,10 @@ static class Fight
         var c = e.State.ActiveCombat;
         var o = new JsonObject { ["in_combat"] = c != null && e.State.Phase == RunPhase.Combat, ["run_phase"] = e.State.Phase.ToString() };
         if (c == null) return o;
-        var snap = JsonNode.Parse(Sts2Emulator.Interop.CombatSnapshot.Write(c))!;
+        byte[] written;
+        using (Prof.Scope("dump.snapshot_write")) written = Sts2Emulator.Interop.CombatSnapshot.Write(c);
+        using var parse = Prof.Scope("dump.parse_and_rest");
+        var snap = JsonNode.Parse(written)!;
         // Buff ids are the emulator's BuffId enum, not id_map's power ids: name them here.
         foreach (var holder in new[] { snap["player"]! }.Concat(snap["enemies"]!.AsArray().Select(x => x!)))
         {

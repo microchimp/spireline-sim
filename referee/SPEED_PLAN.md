@@ -93,6 +93,13 @@ How the fight times were estimated:
 - Re-anchor each step after the first divergence: load the game's state into the emulator, apply the action, compare. Stop re-anchoring a fight once enemy intents differ.
 - Build decks that exercise more non-starter cards.
 - Pass: 100% of re-anchored steps match on fights that are already identical.
+- **Replay cost (2026-10-14, branch `speed/emudump-cost`):** `EMUDUMP_PROFILE=1` showed act 1's map at run start taking
+  ~70 ms of a ~94 ms fight replay (the duplicate-segment search of map pruning built every segment of every path); now
+  ~4 ms, same map. The other acts' maps are only made on entering them. Also one stdout write and TieredPGO off, and an
+  optional NativeAOT build (`tools/emudump/aot.sh`). CPU per fight on a busy PC, main -> JIT -> AOT: 12-fight call
+  (batch.py's part size) fight 290 -> 62 -> 16 ms, reanchor 271 -> 53 -> 14 ms; 100-fight call fight 151 -> 32 -> 16 ms,
+  reanchor 145 -> 24 -> 12 ms. Corpus run (2,839 fights, 16 processes): 371 s -> 74 s. Outputs byte-identical on the corpus.
+  batch.py still starts `dotnet EmuDump.dll`; pointing its replay at `bin/aot/EmuDump.exe` (when built) is the next step.
 
 **Fallback (20 h).** A host with no game scenes at all, audited against the normal host on 5% of fights. Only worth doing if CPU per fight is still above 0.6 s after step 4.
 - **Status (branch `speed/nodeless`): built** as `driver/Nodeless.cs` + `driver/NodelessPatches.cs`, job flag `"nodeless": true` (RUNBOOK.md). 300 night04 coverage fights, both hosts at once: 333 ms CPU and 148 frames per nodeless-hosted fight vs 2,913 ms and 339 frames on the full host (nodeless 142-191 ms with `"frame_sleep_usec": 0`); 518 ms per fight on average once the 14 fallback replays (4.7%) are counted. Results: 269 identical, 14 fallbacks replayed on the full host, 17 where the full host stalled on a turn-start autoplay and nodeless went on; no nodeless errors. 3 processes: 56 fights/min full host, 111 nodeless, 271 nodeless with frame sleep 0. 2,000 fights in one nodeless server: no errors, orphan count flat (1,081), private memory 345 -> 352 MB, every result identical to the same spec's first run.

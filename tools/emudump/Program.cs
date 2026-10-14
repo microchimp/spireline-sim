@@ -6,6 +6,15 @@ using System.Text.Json.Nodes;
 using Sts2Emulator.Core.Rng;
 using Sts2Emulator.Core.Run;
 
+if (!System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported && !AotChecked.Allows(args))
+{
+    // The NativeAOT build (aot.sh) is checked byte for byte against this one on the corpus for
+    // these calls only; the other modes read the engine through reflection, which it trims.
+    Console.Error.WriteLine("EmuDump (NativeAOT): only `fight <out.json> [--compact]` and `reanchor <out.json> [--seed S]...`; "
+        + "run everything else with `dotnet EmuDump.dll`");
+    Environment.Exit(2);
+}
+
 string[] actNames = ["", "OVERGROWTH", "UNDERDOCKS", "HIVE", "GLORY"];
 string[] nodeNames = ["Unassigned", "Monster", "Elite", "RestSite", "Shop", "Treasure", "Boss", "Unknown", "Ancient"];
 if (RunReplay.Main(args))  // run-level modes (RunReplay.cs): runstart, run
@@ -40,18 +49,23 @@ if (args[0] == "tables")
 
 if (args[0] == "fight")
 {
+    Prof.Start();
     if (args.Contains("--netstate"))
     {
         // The game's NetFullCombatState fields after each step (NetState.cs), for netstate_diff.
         Fight.OnStep = (e, step) => step["net"] = new JsonArray(new JsonObject { ["ctx"] = "step", ["state"] = NetState.From(e) });
     }
 
-    var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
+    JsonArray refs;
+    using (Prof.Scope("read_input")) refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
     // A fight the game never ran (an error placeholder) has nothing to replay.
     var fights = new JsonArray(refs.Select(r => (JsonNode)(r!["ascension"] == null
         ? new JsonObject { ["seed"] = r["seed"]?.DeepClone(), ["error"] = "no game result to replay", ["steps"] = new JsonArray() }
         : Fight.Replay(r.AsObject()))).ToArray());
-    Console.WriteLine(new JsonObject { ["results"] = fights }.ToJsonString(new JsonSerializerOptions { WriteIndented = !args.Contains("--compact") }));
+    string text;
+    using (Prof.Scope("serialize")) text = new JsonObject { ["results"] = fights }.ToJsonString(new JsonSerializerOptions { WriteIndented = !args.Contains("--compact") });
+    using (Prof.Scope("write")) StdOut.WriteLine(text);
+    Prof.Report("fight", fights.Count);
     return;
 }
 
@@ -96,17 +110,23 @@ if (args[0] == "reanchor")
         if (args[i] == "--trace-to") traceTo = int.Parse(args[i + 1]);
     }
 
+    Prof.Start();
     var mode = new Reanchor.Mode(Scramble: args.Contains("--scramble"), Stale: stale, PerturbMoves: args.Contains("--perturb-moves"),
         Trace: args.Contains("--trace") || traceTo != null, TraceTo: traceTo);
 
-    var refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray()
+    JsonArray all;
+    using (Prof.Scope("read_input")) all = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
+    var refs = all
         .Where(r => only.Count == 0 || only.Contains((string?)r!["seed"] ?? ""));
     var fights = new JsonArray(refs.Select(r => (JsonNode)(r!["ascension"] == null || r["steps"] == null
         ? new JsonObject { ["seed"] = r["seed"]?.DeepClone(), ["error"] = "no game result to replay", ["steps"] = new JsonArray() }
         : Reanchor.Run(r.AsObject(), mode))).ToArray());
     var doc = Reanchor.PowerKeys();
     doc["results"] = fights;
-    Console.WriteLine(doc.ToJsonString());
+    string text;
+    using (Prof.Scope("serialize")) text = doc.ToJsonString();
+    using (Prof.Scope("write")) StdOut.WriteLine(text);
+    Prof.Report("reanchor", fights.Count);
     return;
 }
 
@@ -141,3 +161,20 @@ object Dump(RunState s, int ascension) => new
         children = n.Children.OrderBy(c => c.Row).ThenBy(c => c.Col).Select(c => new[] { c.Col, c.Row }).ToArray(),
     }).ToArray(),
 };
+
+/// <summary>The calls the NativeAOT build is verified for (see tools/emudump/aot.sh).</summary>
+static class AotChecked
+{
+    internal static bool Allows(string[] args)
+    {
+        if (args.Length < 2) return false;
+        if (args[0] == "fight") return args.Skip(2).All(a => a == "--compact");
+        if (args[0] != "reanchor") return false;
+        for (int i = 2; i < args.Length; i += 2)
+        {
+            if (args[i] != "--seed" || i + 1 >= args.Length) return false;
+        }
+
+        return true;
+    }
+}

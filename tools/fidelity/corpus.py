@@ -593,6 +593,11 @@ def _below_normal() -> None:
         k.SetPriorityClass(k.GetCurrentProcess(), 0x00004000)  # BELOW_NORMAL_PRIORITY_CLASS
 
 
+def emudump_command(emudump) -> list:
+    """How to start an EmuDump: the JIT build through dotnet, the NativeAOT build (tools/emudump/aot.sh) as it is."""
+    return [str(emudump)] if str(emudump).lower().endswith(".exe") else ["dotnet", str(emudump)]
+
+
 def part_timeout(steps: int) -> float:
     """Seconds one EmuDump call over ``steps`` steps may take: about 15 times what it takes on a busy PC."""
     return 120 + 0.1 * steps
@@ -614,7 +619,7 @@ def replay_part(mode: str, ids: list, corpus_dir: str, emudump: str, work: str, 
         # --compact: a quarter less CPU than the indented default (older builds ignore it)
         extra = ["--compact"] if mode == "fight" else []
         try:
-            rc = subprocess.run(["dotnet", emudump, mode, str(src), *extra], stdout=so, stderr=se, check=False,
+            rc = subprocess.run([*emudump_command(emudump), mode, str(src), *extra], stdout=so, stderr=se, check=False,
                                 creationflags=BELOW_NORMAL, timeout=timeout).returncode
         except subprocess.TimeoutExpired:  # run() has killed it
             rc = None

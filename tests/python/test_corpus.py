@@ -288,6 +288,17 @@ class ReplayTest(CorpusTestCase):
         self.assertEqual(list(work.iterdir()), [])
         self.assertGreater(cp.part_timeout(2000), cp.part_timeout(20))
 
+    def test_the_native_build_runs_as_itself_and_the_jit_build_through_dotnet(self):
+        self.assertEqual(cp.emudump_command(Path("bin/aot/EmuDump.exe")), [str(Path("bin/aot/EmuDump.exe"))])
+        self.assertEqual(cp.emudump_command("EmuDump.dll"), ["dotnet", "EmuDump.dll"])
+        self.add(self.write("jobs/a.out.json", [recording()]))
+        fid = self.fights()[0]["id"]
+        work = self.dir / "work"
+        work.mkdir()
+        with mock.patch.object(cp.subprocess, "run", side_effect=subprocess.TimeoutExpired("x", 7)) as run:
+            cp.replay_part("reanchor", [fid], str(self.corpus.path), "EmuDump.exe", str(work), timeout=7)
+        self.assertEqual(run.call_args.args[0][:2], ["EmuDump.exe", "reanchor"])
+
     def test_the_run_names_uncommitted_judge_changes(self):
         with mock.patch.object(cp, "git", return_value="") as git:
             info = cp.emulator_id(self.dir / "none.dll")

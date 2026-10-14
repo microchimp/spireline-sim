@@ -27,6 +27,10 @@ It streams: one pool of game servers (`--parallel`) plays the whole batch, finis
    If not: stop, report, do not retry blindly.
 3. **Replay in the emulator**: `dotnet tools/emudump/bin/Release/net9.0/EmuDump.dll fight '<out.json>' > <name>.emu.json`
    (rebuild with `cd tools/emudump && dotnet build -c Release --source "$HOME/.nuget/packages"` after any engine change).
+   For many calls, `bash tools/emudump/aot.sh` also builds `tools/emudump/bin/aot/EmuDump.exe` (NativeAOT: no JIT, about a
+   third of the CPU on a 12-fight call, half on 100). It runs only `fight <out.json> [--compact]` and `reanchor <out.json>`,
+   byte-identical to the DLL on the corpus; rebuild it with the DLL. `corpus.py --emudump <EmuDump.exe>` takes it.
+   `EMUDUMP_PROFILE=1` prints a call's time per phase on stderr.
 4. **Compare**: `python -m tools.fidelity.fight_compare '<out.json>' '<emu.json>'`. It prints the first diverging step per fight.
 5. **Classify each difference** before touching code:
    - *Driver gap*: the game side errored or skipped a screen (e.g. `SelectLocalReward RelicReward did not finish`). Fix `referee/driver/*.cs`, never the engine.
