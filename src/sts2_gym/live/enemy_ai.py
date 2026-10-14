@@ -232,9 +232,11 @@ def ai_defaults() -> dict[str, Any]:
         # (CardEffects.cs:7076-7087); `convert` warns when that card is in a pile and
         # attacks were played this turn.
         "powered_hits_this_turn": 0,
-        # `HardenedShellPower.damageReceivedThisTurn`, private to the power: no live field
-        # carries it, so it converts to 0 -- a Skulking Colony captured part-way through a
-        # turn it has already lost HP in gets a full shell back for the rest of that turn.
+        # `HardenedShellPower.damageReceivedThisTurn`, private to the power. The live schema
+        # reports the power's `Amount`, the cap (20 all fight), and no field carries the HP
+        # lost, so it converts to 0 and `powers.to_buffs` warns that it is not carried: a
+        # Skulking Colony captured part-way through a turn it has already lost HP in gets a
+        # full shell back for the rest of that turn.
         "hardened_shell_damage_this_turn": 0,
         "stolen_card": None,
     }
