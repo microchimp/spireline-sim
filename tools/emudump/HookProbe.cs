@@ -6,7 +6,8 @@
 // mode builds one combat per scenario holding the scenario's listeners -- relics in obtain order,
 // potions by slot, powers in application order on the player and on one dummy enemy, cards in the
 // piles -- runs its actions and records the probe ids, with marks between the actions and at
-// CombatTrace's seams (play, played, turn_end, enemy_turn, move, moved, turn_start). The engine is
+// CombatTrace's seams (play, played, turn_end, enemy_turn, move, moved, turn_start), and a mark (-8)
+// where the harness answers an open screen: the point the game's setup was paused at. The engine is
 // read through reflection, so this compiles against the plain engine too and says so when run there.
 using System.Reflection;
 using System.Text.Json.Nodes;
@@ -14,7 +15,8 @@ using Sts2Emulator.Core;
 
 internal static class HookProbeMode
 {
-    // CombatTrace.Mark names -> the negative codes the log carries; an action boundary is -(100 + i).
+    // CombatTrace.Mark names -> the negative codes the log carries; an action boundary is -(100 + i),
+    // an answered screen -8.
     private static readonly Dictionary<string, int> MarkCodes = new()
     {
         ["turn_end"] = -1, ["enemy_turn"] = -2, ["turn_start"] = -3, ["play"] = -4, ["played"] = -5,
@@ -122,7 +124,7 @@ internal static class HookProbeMode
         state.CardGenerationRng = new CountingRandom(0);
         state.PotionGenerationRng = new CountingRandom(0);
         state.OrbGenerationRng = new CountingRandom(0);
-        Settle(state, rng);
+        Settle(state, rng, mark);
 
         // After the combat start: the listeners that cannot be there at the start of a fight.
         int enemyHp = sc["enemy_hp"]?.GetValue<int>() ?? 9999;
@@ -177,15 +179,18 @@ internal static class HookProbeMode
                 throw new InvalidOperationException($"unknown action {what}");
             }
 
-            if (result.Terminal || Settle(state, rng))
+            if (result.Terminal || Settle(state, rng, mark))
             {
                 break;
             }
         }
     }
 
-    /// <summary>Answers every open screen with its first valid choice. True when the fight ended.</summary>
-    private static bool Settle(CombatState state, Random rng)
+    /// <summary>
+    /// Answers every open screen with its first valid choice, marking each answer in the log (-8). True when
+    /// the fight ended.
+    /// </summary>
+    private static bool Settle(CombatState state, Random rng, Action<int> mark)
     {
         for (int guard = 0; guard < 40 && state.PendingSelection is not null; guard++)
         {
@@ -195,6 +200,7 @@ internal static class HookProbeMode
                 return false;
             }
 
+            mark(-8);
             if (CombatEngine.Step(state, valid[0], rng, 0).Terminal)
             {
                 return true;

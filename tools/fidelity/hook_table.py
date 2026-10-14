@@ -639,7 +639,8 @@ def model_tokens(engine: Engine, kind: str, name: str) -> list[str]:
         member = buff_member(engine.root, name)
         return ([f"BuffId.{member}"] if member else []) + [s]
     if kind == "card":
-        return [f"{c}.{name}" for c in CARD_CLASSES] + [s]
+        # ``RunConstants.SpoilsMapCard``, ``LanternKeyCard``: the run side's id for a card (quest cards) is ``<Name>Card``.
+        return [f"{c}.{name}" for c in CARD_CLASSES] + [s, f"@{name}Card"]
     if kind == "monster":
         return [f"KE.{name}", s]
     if kind == "enchantment":
@@ -956,6 +957,11 @@ def check(decompiled: str, engine: Engine, manifest: dict, unmodelled: dict, ope
                 problems.append(f"STALE dispatch point {h}: {m} is not a method of the engine")
         if h not in hook_names(decompiled):
             problems.append(f"STALE dispatch hook {h}: not a hook of the game")
+    for h, spec in manifest.get("hooks", {}).items():
+        for model, why in spec.get("generic", {}).items():
+            m = re.match(r"(\w+\.\w+):", why)      # a generic entry names the method that serves it
+            if m and m.group(1) not in names:
+                problems.append(f"STALE generic entry {h}/{model}: {m.group(1)} is not a method of the engine")
     counts = collections.Counter(r.status for r in rows)
     return {"format": FORMAT, "counts": {"overrides": len(rows), **{k: counts.get(k, 0) for k in
                                                                     ("registered", "not_modelled", "open", "missing")}},

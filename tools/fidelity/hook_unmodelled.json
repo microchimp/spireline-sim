@@ -23,5 +23,9 @@
     "AfterTargetingBlockedVfx": "visual effect only"
   },
   "models": {},
-  "pairs": {}
+  "pairs": {
+    "SandpitPower.AfterCreatureAddedToCombat": "only moves the creatures' nodes along the sandpit (a tween, and the track's music parameter); no game state changes",
+    "SandpitPower.AfterPowerAmountChanged": "only moves the creatures' nodes along the sandpit (a tween, and the track's music parameter); no game state changes",
+    "SandpitPower.AfterOstyRevived": "only moves the creatures' nodes along the sandpit (a tween, and the track's music parameter); no game state changes"
+  }
 }

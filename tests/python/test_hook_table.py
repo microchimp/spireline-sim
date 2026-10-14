@@ -179,13 +179,31 @@ MANIFEST = {"hooks": {"AfterCardPlayed": {"methods": ["RelicEffects.ApplyAfterCa
 UNMODELLED = {"ui_only": "feedback only"}
 
 
+# The turn start's last hook, for the order tests only (the table tests count the overrides of the fixture above).
+ABSTRACT_SIDE = ABSTRACT.rstrip()[:-1] + """	public virtual Task AfterSideTurnStart(CombatSide side, ICombatState combatState)
+	{
+		return Task.CompletedTask;
+	}
+}
+"""
+HOOK_SIDE = HOOK.rstrip()[:-1] + """	public static async Task AfterSideTurnStart(ICombatState combatState, CombatSide side)
+	{
+		foreach (AbstractModel model in IterateCombatHookListeners(combatState))
+		{
+			await model.AfterSideTurnStart(side, combatState);
+		}
+	}
+}
+"""
+
+
 class Fixture:
-    def __init__(self, relic_effects: str = RELIC_EFFECTS):
+    def __init__(self, relic_effects: str = RELIC_EFFECTS, abstract: str = ABSTRACT, hook: str = HOOK):
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
         self.decompiled = base / "decompiled"
-        for rel, text in {"MegaCrit.Sts2.Core.Models/AbstractModel.cs": ABSTRACT,
-                          "MegaCrit.Sts2.Core.Hooks/Hook.cs": HOOK, **MODELS}.items():
+        for rel, text in {"MegaCrit.Sts2.Core.Models/AbstractModel.cs": abstract,
+                          "MegaCrit.Sts2.Core.Hooks/Hook.cs": hook, **MODELS}.items():
             p = self.decompiled / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(textwrap.dedent(text), encoding="utf-8")
@@ -292,6 +310,34 @@ class StaticCheck(unittest.TestCase):
         finally:
             fx.close()
 
+    def test_stale_generic_entry_fails(self):
+        """A `generic` entry names the method that serves the listener; one that is renamed away is stale."""
+        fx = Fixture()
+        try:
+            _clear_caches()
+            hooks = dict(MANIFEST["hooks"], AfterCardPlayed={
+                "methods": ["RelicEffects.ApplyAfterCardPlayed"],
+                "generic": {"Lantern": "RelicEffects.Gone: the late pass is derived on read"}})
+            res = ht.check(str(fx.decompiled), fx.engine(), {"hooks": hooks}, UNMODELLED, {})
+            self.assertTrue(any("STALE generic entry AfterCardPlayed/Lantern" in p for p in res["problems"]), res["problems"])
+            hooks["AfterCardPlayed"]["generic"]["Lantern"] = "RelicEffects.ApplyAfterCardPlayed: the late pass is derived on read"
+            res = ht.check(str(fx.decompiled), fx.engine(), {"hooks": hooks}, UNMODELLED, {})
+            self.assertFalse(any("STALE generic" in p for p in res["problems"]), res["problems"])
+        finally:
+            fx.close()
+
+    def test_run_side_card_id_names_the_card(self):
+        """A quest card the run side holds as `<Name>Card` (RunConstants.SpoilsMapCard) is named where it is read."""
+        fx = Fixture(RELIC_EFFECTS + "\npublic static class RunMapGenerator\n{\n    static bool Holds(RunState s) => "
+                     "s.Deck.Any(c => c.DefId == RunConstants.PenNibCard);\n}\n")
+        try:
+            _clear_caches()
+            engine = fx.engine()
+            self.assertTrue(ht.references(engine, "card", "PenNib"))
+            self.assertFalse(ht.references(engine, "card", "Lantern"))
+        finally:
+            fx.close()
+
 
 SNIPPET = """
 public static class X
@@ -357,21 +403,23 @@ class OrderCheck(unittest.TestCase):
     """A swapped dispatch must fail the order check: listeners, then phases."""
 
     def setUp(self):
-        self.fx = Fixture()
+        self.fx = Fixture(abstract=ABSTRACT_SIDE, hook=HOOK_SIDE)
         _clear_caches()
         self.d = str(self.fx.decompiled)
         self.probes = {0: _probe(0, "TenderPower", "power", "AfterCardPlayed"),
                        1: _probe(1, "PenNib", "relic", "AfterCardPlayed"),
                        2: _probe(2, "Lantern", "relic", "AfterCardPlayedLate"),
                        3: _probe(3, "Toolbox", "relic", "BeforeHandDraw"),
-                       4: _probe(4, "Bellows", "relic", "AfterPlayerTurnStart")}
+                       4: _probe(4, "Bellows", "relic", "AfterPlayerTurnStart"),
+                       5: _probe(5, "Candle", "relic", "AfterSideTurnStart")}
         self.listener_of = {("TenderPower", "power"): "p", ("PenNib", "relic"): "r1", ("Lantern", "relic"): "r2",
-                            ("Toolbox", "relic"): "r3", ("Bellows", "relic"): "r4"}
+                            ("Toolbox", "relic"): "r3", ("Bellows", "relic"): "r4", ("Candle", "relic"): "r5"}
         self.positions = {"p": {"kind": "power", "creature": 0, "index": 0},
                           "r1": {"kind": "relic", "creature": 0, "index": 0},
                           "r2": {"kind": "relic", "creature": 0, "index": 1},
                           "r3": {"kind": "relic", "creature": 0, "index": 2},
-                          "r4": {"kind": "relic", "creature": 0, "index": 3}}
+                          "r4": {"kind": "relic", "creature": 0, "index": 3},
+                          "r5": {"kind": "relic", "creature": 0, "index": 4}}
 
     def tearDown(self):
         self.fx.close()
@@ -400,10 +448,42 @@ class OrderCheck(unittest.TestCase):
         self.assertEqual({"order turn_start BeforeHandDraw<AfterPlayerTurnStart phase relic>relic"}, keys)
 
     def test_reads_of_several_hooks_make_no_claim(self):
-        self.probes[5] = ho.Probe(5, "Core/X.cs", 5, [("Bellows", "relic", "AfterPlayerTurnStart"),
+        self.probes[6] = ho.Probe(6, "Core/X.cs", 5, [("Bellows", "relic", "AfterPlayerTurnStart"),
                                                     ("Bellows", "relic", "BeforeHandDraw")])
-        keys, _ = self._keys([-101, -3, 5, 3])
+        keys, _ = self._keys([-101, -3, 6, 3])
         self.assertEqual(set(), keys)
+
+    # A screen in the turn start's setup pauses it; the game runs on to AfterSideTurnStart before the screen is asked
+    # (the log shows the batch, then the harness answering the screen: -8), so the later setup listeners follow it.
+    def test_after_side_turn_start_before_the_setup_is_out_of_order(self):
+        keys, _ = self._keys([-101, -3, 5, 3, 4])
+        self.assertEqual({"order turn_start BeforeHandDraw<AfterSideTurnStart phase relic>relic",
+                          "order turn_start AfterPlayerTurnStart<AfterSideTurnStart phase relic>relic"}, keys)
+
+    def test_screen_pause_runs_after_side_turn_start_first(self):
+        # Toolbox asks (BeforeHandDraw): AfterSideTurnStart, the screen, then Bellows's AfterPlayerTurnStart
+        keys, inv = self._keys([-101, -3, 3, 5, -8, 4])
+        self.assertEqual(set(), keys)
+        self.assertEqual([], inv)
+
+    def test_pause_does_not_excuse_a_listener_that_belonged_before_it(self):
+        # Bellows (AfterPlayerTurnStart) raised the screen; Toolbox's BeforeHandDraw came before it in the game
+        keys, _ = self._keys([-101, -3, 4, 5, -8, 3])
+        self.assertEqual({"order turn_start BeforeHandDraw<AfterSideTurnStart phase relic>relic",
+                          "order turn_start BeforeHandDraw<AfterPlayerTurnStart phase relic>relic"}, keys)
+
+    def test_listener_that_ran_before_the_screen_was_answered_is_not_after_it(self):
+        # no screen between AfterSideTurnStart and the listener it ran ahead of: not a pause
+        keys, _ = self._keys([-101, -3, 3, 5, 4, -8])
+        self.assertEqual({"order turn_start AfterPlayerTurnStart<AfterSideTurnStart phase relic>relic"}, keys)
+
+    def test_after_side_turn_start_ahead_of_the_listener_that_raised_the_screen_stays_out_of_order(self):
+        # Candle ran before Toolbox (the screen's): out of order. Bellows came after the screen: in order.
+        keys, _ = self._keys([-101, -3, 5, 3, -8, 4])
+        self.assertEqual({"order turn_start BeforeHandDraw<AfterSideTurnStart phase relic>relic"}, keys)
+
+    def test_screen_mark_cuts_no_segment(self):
+        self.assertEqual([("turn_start", [(2, 3), (3, -8), (4, 4)])], ho.segments([-101, -3, 3, -8, 4])[-1:])
 
 
 DECOMPILED = Path(os.environ.get("SPIRELINE_DECOMPILED", r"D:\spireline\referee\decompiled"))
@@ -420,16 +500,16 @@ class RealTable(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("SPIRELINE_HOOK_E2E") == "1", "set SPIRELINE_HOOK_E2E=1 to build and run")
     def test_moved_dispatch_call_fails_the_order_gate(self):
-        """Turn one's AfterSideTurnStart relics moved ahead of the hand draw: a new phase inversion."""
+        """The turn start's AfterPlayerTurnStart powers moved ahead of BeforeHandDraw: a new phase inversion."""
         _clear_caches()
         engine = ht.Engine.load(ht.ENGINE)
         rel = "Core/CombatEngine.cs"
         text = engine.files[rel]
-        call = "            Effects.RelicEffects.ApplyAfterSideTurnStart(state, rng);\n"
-        draw = "            int held = Effects.RelicEffects.ApplyBeforeHandDraw(state, 1, rng, from);\n"
-        a = text.index("private static void ContinueFirstTurn(")
-        i = text.index(call, a)
-        j = text.index(draw, a)
+        call = "            AfterPlayerTurnStartPowers(state, rng);\n"
+        head = "            Effects.RelicEffects.ApplyBeforeHandDraw(state, state.Turn + 1, rng);\n"
+        i = text.index(call)
+        j = text.index(head)
+        self.assertLess(j, i)
         moved = text[:j] + call + text[j:i] + text[i + len(call):]
         broken = ht.Engine.load(ht.ENGINE, dict(engine.files, **{rel: moved}))
         res = ht.check(str(DECOMPILED), broken, ht.load_json(ht.DISPATCH), ht.load_json(ht.UNMODELLED), ht.read_open())
@@ -439,7 +519,7 @@ class RealTable(unittest.TestCase):
         keys = set(out["by_mutant"][-1]["keys"])
         open_order = {k for k in ht.read_open() if k.startswith("order ")}
         new = keys - open_order
-        self.assertTrue(any("BeforeHandDraw<AfterSideTurnStart" in k and "combat_start" in k for k in new), new)
+        self.assertTrue(any("BeforeHandDraw<AfterPlayerTurnStart" in k and "turn_start" in k for k in new), new)
 
 
 if __name__ == "__main__":

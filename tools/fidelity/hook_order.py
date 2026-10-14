@@ -18,7 +18,11 @@ Used by ``python -m tools.fidelity.hook_table order`` (and ``mutants``); see hoo
      listener order (``hook_table.game_order_key``): pass, creature, kind, then obtain/application order;
    * listeners of different phase hooks (``PHASES``) must fire in the game's phase order (CombatManager:
      BeforeSideTurnStart, AfterBlockCleared, AfterEnergyReset, BeforeHandDraw, AfterPlayerTurnStart,
-     AfterSideTurnStart, ...).
+     AfterSideTurnStart, ...), except across a pause: when a screen holds the setup of a turn start
+     (``SetupPlayerTurn``), the game runs on to AfterSideTurnStart before the screen is asked, so the setup
+     listeners after the screen's own come after AfterSideTurnStart (``pause_floors``). The harness marks each
+     screen it answers; an AfterSideTurnStart listener before a mark and a setup listener after it, of at least
+     the phase the setup had reached by then, are not an inversion.
 
    A listener whose probe sits in a method listed for several hooks may stand for any of them; a pair counts
    as out of order only when no choice puts it in order. Query hooks (Modify*, Should*, TryModify*) are read
@@ -586,6 +590,9 @@ def _lkey(x: Listener) -> str:
 # ---------------------------------------------------------------------------------------------- analysis
 
 MARKS = {-1: "turn_end", -2: "enemy_turn", -3: "turn_start", -4: "play", -5: "played", -6: "move", -7: "moved"}
+# The harness answers an open screen (a relic's pick, Entropy's transform ...) here: the point the turn start's
+# setup was paused at. It cuts no segment.
+SCREEN = -8
 
 
 def segments(log: list[int]) -> list[tuple[str, list[tuple[int, int]]]]:
@@ -594,7 +601,7 @@ def segments(log: list[int]) -> list[tuple[str, list[tuple[int, int]]]]:
     cur, items = "combat_start", []
     in_move = False
     for t, x in enumerate(log):
-        if x >= 0:
+        if x >= 0 or x == SCREEN:
             if not in_move:
                 items.append((t, x))
             continue
@@ -662,6 +669,7 @@ def analyse(decompiled: str, log: list[int], probes: dict[int, Probe], positions
         # events: (time, listener key, model, kind, candidate hooks)
         firsts: dict[tuple[str, str], int] = {}
         events = []
+        screens = [t for t, pid in items if pid == SCREEN]
         for t, pid in items:
             p = probes.get(pid)
             if p is None:
@@ -730,12 +738,42 @@ def analyse(decompiled: str, log: list[int], probes: dict[int, Probe], positions
             seen_phase.add(key)
             pe.append((t, idx[0], idx[-1], (kind, ht.short(model), "/".join(sorted(h for h in hooks if h in phases)))))
         pe.sort()
+        side, floors = pause_floors(phases, pe, screens)
         for i in range(len(pe)):
             for j in range(i + 1, len(pe)):
                 if pe[i][0] < pe[j][0] and pe[i][1] > pe[j][2]:
+                    if pe[i][1] in side:
+                        pause = next(((mark, floor) for mark, floor in floors if mark > pe[i][0]), None)
+                        if pause is not None and pe[j][0] > pause[0] and pe[j][2] >= pause[1]:
+                            continue        # the game ran on to AfterSideTurnStart while the screen waited
                     a, b = phases[pe[i][1]], phases[pe[j][2]]
                     inversions.append(Inversion(seg, "phase", f"{b} < {a}", pe[i][3], pe[j][3]))
     return inversions, {"probes_hit": sorted(hit_probes), "listeners_seen": sorted(seen_listeners)}
+
+
+SIDE_START = ("AfterSideTurnStart", "AfterSideTurnStartLate")
+SETUP_FIRST = "AfterEnergyReset"
+
+
+def pause_floors(phases: list[str], pe: list[tuple], screens: list[int]) -> tuple[set[int], list[tuple[int, int]]]:
+    """The phase indices of AfterSideTurnStart, and ``(time, floor)`` for each screen the harness answered.
+
+    ``CombatManager.StartTurn`` awaits ``SetupPlayerTurn`` (energy reset, BeforeHandDraw, the draw,
+    AfterPlayerTurnStart) only until it completes or pauses on a player's choice, then runs AfterSideTurnStart,
+    and the choice is asked after that. So when a screen paused the setup, an AfterSideTurnStart listener that ran
+    before the screen is answered and a setup listener that ran after it are in the game's order, as long as that
+    listener is no earlier in the game's phases than where the setup had reached: ``floor``, the latest setup
+    phase a listener had fired in by then (the first setup phase when none had). A listener of an earlier phase
+    that ran after the screen was owed before it, and stays out of order."""
+    if SETUP_FIRST not in phases:
+        return set(), []
+    side = {phases.index(h) for h in SIDE_START if h in phases}
+    first = phases.index(SETUP_FIRST)
+    out = []
+    for mark in screens:
+        reached = [e[2] for e in pe if e[0] < mark and first <= e[2] < min(side)]
+        out.append((mark, max(reached, default=first)))
+    return side, out
 
 
 def summarise(inversions: list[Inversion]) -> list[dict]:

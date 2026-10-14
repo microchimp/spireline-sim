@@ -28,7 +28,6 @@ missing Vambrace.AfterCardPlayed  # relic; RelicEffects.DoublesCardBlock
 missing IllusionPower.AfterCombatEnd  # power; BuffSystem.BuildDebuffIds, CardEffects.IsEnemyDebuff, CombatEngine.IsPrimaryEnemy
 missing PaelsTooth.AfterCombatEnd  # relic; RunNonCombatEffects.ApplyRelicPickup, RunNonCombatEffects.PaelOptions
 missing FurCoat.AfterCreatureAddedToCombat  # relic; RunMapGenerator.MarkRoomsForFurCoat, RunNonCombatEffects.ApplyRelicPickup
-missing SandpitPower.AfterCreatureAddedToCombat  # power; CardEffects.ApplyCore, CombatEngine.EndTurn, EnemyAI.ApplyBuffIntent
 missing Crusher.AfterCurrentHpChanged  # monster; CombatFactory.CreateKaiserCrab, EnemyAI.ApplyBuffIntent, EnemyAI.ExecuteIntent
 missing MeatOnTheBone.AfterCurrentHpChanged  # relic; RunRewardGenerator.GenerateCombatRewards
 missing Rocket.AfterCurrentHpChanged  # monster; CombatFactory.CreateKaiserCrab, EnemyAI.ApplyBuffIntent, EnemyAI.SelectIntent
@@ -48,16 +47,11 @@ missing TheInsatiable.AfterDeath  # monster; CombatFactory.CreateEncounter, Enem
 missing Vantom.AfterDeath  # monster; CombatFactory.CreateVantom, EnemyAI.ApplyBuffIntent, EnemyAI.ExecuteIntent
 missing WaterfallGiant.AfterDeath  # monster; CombatFactory.CreateEncounter, EnemyAI.ApplyBuffIntent, EnemyAI.DiedHoldingSteamEruption
 missing OrbitPower.AfterEnergySpent  # power; BuffSystem.IsInstanced, CardEffects.ApplyAfterEnergySpent, CardEffects.ApplyGeneratedCardApproximation
-missing MawBank.AfterItemPurchased  # relic; RunNonCombatEffects.CloseMawBank, RunNonCombatEffects.PayMawBank, RunNonCombatEffects.TrashHeapRelic
-missing SpoilsMap.AfterMapGenerated  # card; CardEffects.ApplyCore
 missing FeralPower.AfterModifyingCardPlayResultPileOrPosition  # power; CardEffects.ApplyDefectCard, CombatEngine.ResolvePlay
 missing SilkenTress.AfterModifyingCardRewardOptions  # relic; RunNonCombatEffects.ApplyRelicPickup
-missing SandpitPower.AfterOstyRevived  # power; CardEffects.ApplyCore, CombatEngine.EndTurn, EnemyAI.ApplyBuffIntent
-missing InfernoPower.AfterPlayerTurnStart  # power; CardEffects.ApplyCore, CardEffects.TriggerInfernoAfterPlayerDamage
 missing BeltBuckle.AfterPotionUsed  # relic; RelicEffects.RefreshBeltBuckle
 missing PossessSpeedPower.AfterPowerAmountChanged  # power; CombatEngine.AnswerDeaths, EnemyAI.ApplyDebuffIntent
 missing PossessStrengthPower.AfterPowerAmountChanged  # power; CombatEngine.AnswerDeaths, EnemyAI.ApplyDebuffIntent
-missing SandpitPower.AfterPowerAmountChanged  # power; CardEffects.ApplyCore, CombatEngine.EndTurn, EnemyAI.ApplyBuffIntent
 missing SwordSagePower.AfterPowerAmountChanged  # power; CardEffects.ApplyGeneratedCardApproximation, CardEffects.Forge
 missing ViciousPower.AfterPowerAmountChanged  # power; CardEffects.ApplyCore, CardEffects.DrawForVicious
 missing VitalSparkPower.AfterPowerAmountChanged  # power; CombatEngine.ApplyAfterCardPlayedPowers, CombatFactory.ApplyIntrinsicEnemyPowers, EnemyAI.ExecuteIntent
@@ -92,7 +86,6 @@ missing CalamityPower.BeforeCardPlayed  # power; CardEffects.ApplyCore, CombatEn
 missing ChainsOfBindingPower.BeforeCardPlayed  # power; CardEffects.BindOnDraw, EnemyAI.ApplyDebuffIntent
 missing PaelsEye.BeforeCardPlayed  # relic; RelicEffects.PaelsEyeWouldFire, RelicEffects.TakeExtraTurnForPaelsEye
 missing RupturePower.BeforeCardPlayed  # power; CardEffects.AfterPlayerDamageReceived, CardEffects.ApplyCore
-missing SpoilsMap.BeforeCardRemoved  # card; CardEffects.ApplyCore
 missing Byrdpip.BeforeCombatStart  # relic; RunEngine.StepRest, RunNonCombatEffects.ApplyRelicPickup
 missing FurCoat.BeforeCombatStart  # relic; RunMapGenerator.MarkRoomsForFurCoat, RunNonCombatEffects.ApplyRelicPickup
 missing GalvanicPower.BeforeCombatStart  # power; CombatEngine.ApplyAfterCardPlayedPowers, CombatFactory.ApplyIntrinsicEnemyPowers
@@ -119,57 +112,38 @@ missing FeralPower.ModifyCardPlayResultPileTypeAndPosition  # power; CardEffects
 missing HardToKillPower.ModifyDamageCap  # power; CardEffects.DealDamageToEnemy, CardEffects.DealUnpoweredDamageToEnemy, CombatFactory.CreateExoskeleton
 missing HangPower.ModifyDamageMultiplicative  # power; CardEffects.ApplyNecrobinderCard
 missing SlowPower.ModifyDamageMultiplicative  # power; CardEffects.DealDamageToEnemy, CombatEngine.ApplyAfterCardPlayedPowers, CombatFactory.ApplyIntrinsicEnemyPowers
-missing SpoilsMap.ModifyGeneratedMap  # card; CardEffects.ApplyCore
-missing SpoilsMap.ModifyGeneratedMapLate  # card; CardEffects.ApplyCore
-missing MembershipCard.ModifyMerchantPrice  # relic; RunRewardGenerator.EnterShop
-missing LanternKey.ModifyNextEvent  # card; RunEngine.StepEvent
 missing DieForYouPower.ModifyUnblockedDamageTarget  # power; named nowhere in Core
 missing LanternKey.ModifyUnknownMapPointRoomTypes  # card; RunEngine.StepEvent
-missing WingedBoots.ShouldAllowFreeTravel  # relic; RunMapGenerator.AllowsFreeTravel, RunMapGenerator.SpendFreeTravelIfUnconnected
 missing DieForYouPower.ShouldAllowHitting  # power; named nowhere in Core
 missing DieForYouPower.ShouldCreatureBeRemovedFromCombatAfterDeath  # power; named nowhere in Core
 missing ChainsOfBindingPower.ShouldPlay  # power; CardEffects.BindOnDraw, EnemyAI.ApplyDebuffIntent
 missing TheCourier.ShouldRefillMerchantEntry  # relic; RelicEffects.ModifyMerchantPrice
 missing SilkenTress.TryModifyCardRewardOptionsLate  # relic; RunNonCombatEffects.ApplyRelicPickup
-missing ByrdonisEgg.TryModifyRestSiteOptions  # card; RunEngine.StepEvent
 
 order combat_start AfterCardDrawn kind card>power  # KinglyKick.AfterCardDrawn ran before ConfusedPower.AfterCardDrawn
 order combat_start AfterCardDrawn kind enchantment>power  # Slither.AfterCardDrawn ran before PagestormPower.AfterCardDrawn
 order combat_start AfterCardExhausted kind relic>power  # JossPaper.AfterCardExhausted ran before DarkEmbracePower.AfterCardExhausted
-order combat_start AfterDamageReceived kind relic>power  # SelfFormingClay.AfterDamageReceived ran before SlumberPower.AfterDamageReceived
 order combat_start BeforeCardPlayed creature power>relic  # StranglePower.BeforeCardPlayed ran before PenNib.BeforeCardPlayed
 order combat_start BeforeCombatStart pass relic>relic  # PetrifiedToad.BeforeCombatStartLate ran before Anchor.BeforeCombatStart
 order combat_start AfterBlockCleared<AfterEnergyReset phase relic>relic  # VenerableTeaSet.AfterEnergyReset ran before HornCleat.AfterBlockCleared
-order combat_start AfterBlockCleared<AfterPlayerTurnStart phase relic>relic  # Bellows.AfterPlayerTurnStart ran before HornCleat.AfterBlockCleared
-order combat_start AfterBlockCleared<AfterPlayerTurnStartLate phase relic>relic  # BloodVial.AfterPlayerTurnStartLate ran before HornCleat.AfterBlockCleared
 order combat_start AfterBlockCleared<AfterSideTurnStart phase relic>relic  # Chandelier.AfterSideTurnStart ran before HornCleat.AfterBlockCleared
 order combat_start AfterBlockCleared<BeforeHandDraw phase relic>relic  # BlessedAntler.BeforeHandDraw ran before HornCleat.AfterBlockCleared
-order combat_start AfterEnergyReset<AfterPlayerTurnStart phase relic>relic  # Bellows.AfterPlayerTurnStart ran before VenerableTeaSet.AfterEnergyReset
-order combat_start AfterEnergyReset<AfterPlayerTurnStartLate phase relic>relic  # BloodVial.AfterPlayerTurnStartLate ran before VenerableTeaSet.AfterEnergyReset
 order combat_start AfterEnergyReset<AfterSideTurnStart phase relic>relic  # Chandelier.AfterSideTurnStart ran before VenerableTeaSet.AfterEnergyReset
 order combat_start AfterEnergyReset<BeforeHandDraw phase relic>relic  # BlessedAntler.BeforeHandDraw ran before VenerableTeaSet.AfterEnergyReset
-order combat_start AfterRoomEntered<AfterPlayerTurnStart phase relic>relic  # Bellows.AfterPlayerTurnStart ran before SlingOfCourage.AfterRoomEntered
-order combat_start AfterRoomEntered<AfterPlayerTurnStartLate phase relic>relic  # BloodVial.AfterPlayerTurnStartLate ran before SlingOfCourage.AfterRoomEntered
 order combat_start AfterRoomEntered<AfterSideTurnStart phase relic>relic  # Chandelier.AfterSideTurnStart ran before SlingOfCourage.AfterRoomEntered
 order combat_start AfterRoomEntered<BeforeCombatStart phase relic>relic  # FakeSneckoEye.BeforeCombatStart ran before SlingOfCourage.AfterRoomEntered
 order combat_start AfterRoomEntered<BeforeCombatStartLate phase relic>relic  # PetrifiedToad.BeforeCombatStartLate ran before EmberTea.AfterRoomEntered
 order combat_start AfterRoomEntered<BeforeHandDraw phase relic>relic  # BlessedAntler.BeforeHandDraw ran before SlingOfCourage.AfterRoomEntered
 order combat_start AfterRoomEntered<BeforeSideTurnStart phase relic>relic  # PowerCell.BeforeSideTurnStart ran before SlingOfCourage.AfterRoomEntered
 order combat_start AfterRoomEntered<BeforeSideTurnStart phase power>relic  # PlatingPower.AfterSideTurnStart/BeforeSideTurnStart ran before BronzeScales.AfterRoomEntered
-order combat_start BeforeCombatStart<AfterPlayerTurnStart phase relic>relic  # Bellows.AfterPlayerTurnStart ran before PhylacteryUnbound.BeforeCombatStart
-order combat_start BeforeCombatStart<AfterPlayerTurnStartLate phase relic>relic  # BloodVial.AfterPlayerTurnStartLate ran before PhylacteryUnbound.BeforeCombatStart
 order combat_start BeforeCombatStart<AfterSideTurnStart phase relic>relic  # Chandelier.AfterSideTurnStart ran before PhylacteryUnbound.BeforeCombatStart
 order combat_start BeforeCombatStart<BeforeCombatStartLate phase relic>relic  # PetrifiedToad.BeforeCombatStartLate ran before Anchor.BeforeCombatStart
 order combat_start BeforeCombatStart<BeforeHandDraw phase relic>relic  # BlessedAntler.BeforeHandDraw ran before PhylacteryUnbound.BeforeCombatStart
 order combat_start BeforeCombatStart<BeforeSideTurnStart phase relic>relic  # PowerCell.BeforeSideTurnStart ran before PhylacteryUnbound.BeforeCombatStart
-order combat_start BeforeCombatStartLate<AfterPlayerTurnStart phase relic>relic  # Bellows.AfterPlayerTurnStart ran before PetrifiedToad.BeforeCombatStartLate
-order combat_start BeforeCombatStartLate<AfterPlayerTurnStartLate phase relic>relic  # BloodVial.AfterPlayerTurnStartLate ran before PetrifiedToad.BeforeCombatStartLate
 order combat_start BeforeCombatStartLate<AfterSideTurnStart phase relic>relic  # Chandelier.AfterSideTurnStart ran before PetrifiedToad.BeforeCombatStartLate
 order combat_start BeforeCombatStartLate<BeforeHandDraw phase relic>relic  # BlessedAntler.BeforeHandDraw ran before PetrifiedToad.BeforeCombatStartLate
 order combat_start BeforeCombatStartLate<BeforeSideTurnStart phase relic>relic  # PowerCell.BeforeSideTurnStart ran before PetrifiedToad.BeforeCombatStartLate
 order combat_start BeforeSideTurnStart<AfterEnergyReset phase relic>relic  # VenerableTeaSet.AfterEnergyReset ran before BagOfMarbles.BeforeSideTurnStart
-order combat_start BeforeSideTurnStart<AfterPlayerTurnStart phase relic>relic  # Bellows.AfterPlayerTurnStart ran before CrackedCore.BeforeSideTurnStart
-order combat_start BeforeSideTurnStart<AfterPlayerTurnStartLate phase relic>relic  # BloodVial.AfterPlayerTurnStartLate ran before CrackedCore.BeforeSideTurnStart
 order combat_start BeforeSideTurnStart<AfterSideTurnStart phase relic>relic  # Chandelier.AfterSideTurnStart ran before CrackedCore.BeforeSideTurnStart
 order combat_start BeforeSideTurnStart<BeforeHandDraw phase relic>relic  # BlessedAntler.BeforeHandDraw ran before CrackedCore.BeforeSideTurnStart
 order enemy_turn_end AfterTurnEnd creature power>power  # HighVoltagePower.AfterSideTurnEnd ran before FrailPower.AfterSideTurnEnd
@@ -200,8 +174,6 @@ order turn_start AfterEnergyReset pass relic>power  # BoundPhylactery.AfterEnerg
 order turn_start AfterEnergyReset kind relic>power  # ArtOfWar.AfterEnergyReset ran before RadiancePower.AfterEnergyReset
 order turn_start AfterEnergyReset pass relic>relic  # BoundPhylactery.AfterEnergyResetLate ran before ArtOfWar.AfterEnergyReset
 order turn_start AfterSideTurnStart kind relic>power  # Candelabra.AfterSideTurnStart ran before CoolantPower.AfterSideTurnStart
-order turn_start AfterSideTurnStart creature power>relic  # PoisonPower.AfterSideTurnStart ran before Sai.AfterSideTurnStart
-order turn_start AfterSideTurnStart creature power>power  # PoisonPower.AfterSideTurnStart ran before WraithFormPower.AfterSideTurnStart
 order turn_start BeforeCardPlayed creature power>relic  # StranglePower.BeforeCardPlayed ran before PenNib.BeforeCardPlayed
 order turn_start BeforeHandDraw kind relic>power  # ToastyMittens.BeforeHandDraw ran before SentryModePower.BeforeHandDraw
 order turn_start BeforeSideTurnStart kind relic>power  # Kunai.BeforeSideTurnStart ran before AggressionPower.BeforeSideTurnStart
@@ -209,14 +181,10 @@ order turn_start AfterBlockCleared<AfterEnergyReset phase power>relic  # Spinner
 order turn_start AfterBlockCleared<AfterEnergyReset phase power>power  # SpinnerPower.AfterEnergyReset ran before ToricToughnessPower.AfterBlockCleared
 order turn_start AfterBlockCleared<AfterEnergyResetLate phase relic>relic  # BoundPhylactery.AfterEnergyResetLate ran before SparklingRouge.AfterBlockCleared
 order turn_start AfterBlockCleared<AfterEnergyResetLate phase relic>power  # BoundPhylactery.AfterEnergyResetLate ran before ToricToughnessPower.AfterBlockCleared
-order turn_start AfterBlockCleared<AfterPlayerTurnStart phase power>relic  # EntropyPower.AfterPlayerTurnStart ran before SparklingRouge.AfterBlockCleared
-order turn_start AfterBlockCleared<AfterPlayerTurnStart phase power>power  # EntropyPower.AfterPlayerTurnStart ran before ToricToughnessPower.AfterBlockCleared
 order turn_start AfterBlockCleared<AfterSideTurnStart phase relic>relic  # Candelabra.AfterSideTurnStart ran before HornCleat.AfterBlockCleared
 order turn_start AfterBlockCleared<AfterSideTurnStart phase power>relic  # BiasedCognitionPower.AfterSideTurnStart ran before HornCleat.AfterBlockCleared
 order turn_start AfterEnergyReset<AfterEnergyResetLate phase relic>power  # BoundPhylactery.AfterEnergyResetLate ran before SpinnerPower.AfterEnergyReset
 order turn_start AfterEnergyReset<AfterEnergyResetLate phase relic>relic  # BoundPhylactery.AfterEnergyResetLate ran before ArtOfWar.AfterEnergyReset
-order turn_start AfterEnergyReset<AfterPlayerTurnStart phase power>power  # EntropyPower.AfterPlayerTurnStart ran before RadiancePower.AfterEnergyReset
-order turn_start AfterEnergyReset<AfterPlayerTurnStart phase power>relic  # EntropyPower.AfterPlayerTurnStart ran before ArtOfWar.AfterEnergyReset
 order turn_start AfterEnergyReset<AfterSideTurnStart phase power>power  # BiasedCognitionPower.AfterSideTurnStart ran before RadiancePower.AfterEnergyReset
 order turn_start AfterEnergyReset<AfterSideTurnStart phase relic>power  # Candelabra.AfterSideTurnStart ran before RadiancePower.AfterEnergyReset
 order turn_start AfterEnergyReset<AfterSideTurnStart phase relic>relic  # Candelabra.AfterSideTurnStart ran before ArtOfWar.AfterEnergyReset
@@ -226,8 +194,6 @@ order turn_start AfterPlayerTurnStart<AfterSideTurnStart phase power>relic  # Bi
 order turn_start AfterPlayerTurnStart<AfterSideTurnStart phase power>power  # BiasedCognitionPower.AfterSideTurnStart ran before SummonNextTurnPower.AfterPlayerTurnStart
 order turn_start AfterPlayerTurnStart<AfterSideTurnStart phase relic>power  # Candelabra.AfterSideTurnStart ran before SummonNextTurnPower.AfterPlayerTurnStart
 order turn_start AfterPlayerTurnStart<AfterSideTurnStart phase relic>relic  # Candelabra.AfterSideTurnStart ran before EmotionChip.AfterPlayerTurnStart
-order turn_start BeforeHandDraw<AfterPlayerTurnStart phase power>power  # EntropyPower.AfterPlayerTurnStart ran before NightmarePower.BeforeHandDraw
-order turn_start BeforeHandDraw<AfterPlayerTurnStart phase power>relic  # EntropyPower.AfterPlayerTurnStart ran before ToastyMittens.BeforeHandDraw
 order turn_start BeforeHandDraw<AfterSideTurnStart phase power>power  # BiasedCognitionPower.AfterSideTurnStart ran before NightmarePower.BeforeHandDraw
 order turn_start BeforeHandDraw<AfterSideTurnStart phase relic>power  # Candelabra.AfterSideTurnStart ran before NightmarePower.BeforeHandDraw
 order turn_start BeforeHandDraw<AfterSideTurnStart phase power>relic  # BiasedCognitionPower.AfterSideTurnStart ran before ToastyMittens.BeforeHandDraw
@@ -241,8 +207,6 @@ order turn_start BeforeSideTurnStart<AfterEnergyReset phase power>power  # Spinn
 order turn_start BeforeSideTurnStart<AfterEnergyReset phase relic>power  # ArtOfWar.AfterEnergyReset ran before AggressionPower.BeforeSideTurnStart
 order turn_start BeforeSideTurnStart<AfterEnergyResetLate phase relic>relic  # BoundPhylactery.AfterEnergyResetLate ran before Kunai.BeforeSideTurnStart
 order turn_start BeforeSideTurnStart<AfterEnergyResetLate phase relic>power  # BoundPhylactery.AfterEnergyResetLate ran before AggressionPower.BeforeSideTurnStart
-order turn_start BeforeSideTurnStart<AfterPlayerTurnStart phase power>relic  # EntropyPower.AfterPlayerTurnStart ran before Kunai.BeforeSideTurnStart
-order turn_start BeforeSideTurnStart<AfterPlayerTurnStart phase power>power  # EntropyPower.AfterPlayerTurnStart ran before AggressionPower.BeforeSideTurnStart
 order turn_start BeforeSideTurnStart<AfterSideTurnStart phase relic>relic  # Candelabra.AfterSideTurnStart ran before Kunai.BeforeSideTurnStart
 order turn_start BeforeSideTurnStart<AfterSideTurnStart phase power>relic  # BiasedCognitionPower.AfterSideTurnStart ran before Kunai.BeforeSideTurnStart
 order turn_start BeforeSideTurnStart<AfterSideTurnStart phase power>power  # BiasedCognitionPower.AfterSideTurnStart ran before AggressionPower.BeforeSideTurnStart

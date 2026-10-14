@@ -553,18 +553,28 @@ python -m tools.fidelity.hook_table mutants --run <mutation run dir> --work <scr
   order reversed), and the probe order is held to the game's: within one dispatcher pass, creature (player
   first), kind (powers, relics, potions, orbs, cards), then obtain order; across hooks, CombatManager's phase
   order. `ORDER` rows are gated (`order ...` lines in `hook_open.txt`); `commutes` (value hooks inside one pass)
-  and `index` (obtain or application order within one kind) rows are reported only.
+  and `index` (obtain or application order within one kind) rows are reported only. A screen that pauses the turn
+  start's setup (a relic's pick, Entropy's transform) lets the game run on to AfterSideTurnStart before it is asked,
+  so the harness marks each screen it answers and an AfterSideTurnStart listener before a mark with a setup
+  listener after it (no earlier in the game's phases than where the setup had reached) is in order
+  (`hook_order.pause_floors`); the same pair with no screen between them is still an inversion.
 - Limits: a probe fires where the listener is checked, not where it acts; a probe in a method listed for several
   hooks of one model makes no claim; per-event hooks (hits, draws, exhausts) are compared within one creature;
   monsters, afflictions, orbs and enemies' combat-start powers are not in the scenarios (one dummy enemy).
 - `mutants` carries a mutation run's survivors onto this checkout by their line text and counts a kill when the
   table changes (the mutant applied as text) or the order run changes (all mutants behind `MutCov.Is(id)` in one
   instrumented build; the harness is deterministic, a no-op mutant gives the base log byte for byte).
-- Broken cases: `tests/python/test_hook_table.py`; `SPIRELINE_HOOK_E2E=1` adds the build-and-run one (turn one's
-  AfterSideTurnStart relics moved ahead of the hand draw must fail the order gate).
-- Measured on main 46079ad7 (2026-10-15): 951 overrides, 694 registered, 133 not modelled, 124 open, 0 missing;
-  114 gated order rows; of the 344 survivors of the 2f5fb8b mutation run, 310 carried over and 34 killed (11%:
-  15 by the table, 28 by the order run; 16 would fail the checked-in gates), delete-call 23/59, swap-calls 2/9.
+- Broken cases: `tests/python/test_hook_table.py`; `SPIRELINE_HOOK_E2E=1` adds the build-and-run one (the turn
+  start's AfterPlayerTurnStart powers moved ahead of BeforeHandDraw must fail the order gate).
+- When the engine renames or moves a dispatch method, `check` reports `STALE dispatch point <hook>: <Method> is not a
+  method of the engine`: point the hook at the method that now dispatches it (`generic` entries that start with
+  `File.Method:` are held to the same test). Do not move the row to `hook_open.txt` unless nothing models it.
+- Measured on main b03cefd8 (2026-10-15, the selection mechanism landed): 951 overrides, 704 registered, 136 not
+  modelled, 111 open, 0 missing; 91 gated order rows (turn one's combat-start relics now come before AfterPlayerTurnStart's but still after
+  BeforeHandDraw's, which run first up to the relic whose screen holds the turn; the turn start's AfterPlayerTurnStart
+  powers run in list order after the draw); of the 344 survivors of the 2f5fb8b mutation run, 294 carried over (the rest were on lines the selection
+  work changed) and 31 killed (10.5%: 15 by the table, 24 by the order run; 15 would fail the checked-in gates),
+  delete-call 21/56, swap-calls 2/8, cmp-negate 7/102, cmp-boundary 1/64, literal changes 0/61.
 
 ## Nightly (main against the previous main)
 
