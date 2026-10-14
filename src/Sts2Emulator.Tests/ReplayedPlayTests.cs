@@ -191,6 +191,35 @@ public class ReplayedPlayTests
     }
 
     /// <summary>
+    /// Every repetition's `CardPlay.Target` is `OnPlayWrapper`'s `target`, the creature, not
+    /// its slot: Panache's burst after the first play kills the enemy before it, whose corpse
+    /// leaves the roster, and the repeat still hits the creature aimed at (the middle one, or
+    /// the last, whose slot is then past the end).
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void TheRepeatHitsTheCreatureAimedAtAfterAnEarlierEnemyDies(int aimedAt)
+    {
+        var fight = Fight
+            .Hand(Card(IC.StrikeIronclad))
+            .Enemy(hp: 5)
+            .Enemy(hp: 50)
+            .Enemy(hp: 50)
+            .PlayerBuff(BuffId.Duplication, 1)
+            .PlayerBuff(BuffId.PanachePower, 10, data: 4)
+            .Energy(10);
+        var target = fight.State.Enemies[aimedAt];
+        var other = fight.State.Enemies[3 - aimedAt];
+
+        fight.Play(0, target: aimedAt);
+
+        Assert.Equal(2, fight.State.Enemies.Count);
+        Assert.Equal(50 - 6 - 10 - 6, target.Hp);
+        Assert.Equal(50 - 10, other.Hp);
+    }
+
+    /// <summary>
     /// `VoidFormPower.AfterCardPlayed` counts a play only when it `IsLastInSeries`: a
     /// Duplicated card is one of its free cards, so the next one is free too.
     /// </summary>

@@ -120,4 +120,32 @@ public class KnifeTrapTests
             Assert.Equal(before[i] - expected, living[i].Hp);
         }
     }
+
+    /// <summary>
+    /// `cardPlay.Target` is the creature, not its slot: Panache's burst after the first Shiv
+    /// kills the enemy before the trap's target, whose corpse leaves the roster, and the
+    /// second Shiv still hits the trap's target.
+    /// </summary>
+    [Fact]
+    public void EveryReplayHitsTheTrapsTargetAfterAnEarlierEnemyDies()
+    {
+        var fight = Fight
+            .Hand(Card(SI.KnifeTrap))
+            .Energy(9)
+            .Enemy(hp: 5)
+            .Enemy(hp: 50)
+            .Enemy(hp: 50)
+            .PlayerBuff(BuffId.PanachePower, 10, data: 4);
+        fight.State.ExhaustPile.Add(new CardInstance(SI.Shiv, false));
+        fight.State.ExhaustPile.Add(new CardInstance(SI.Shiv, false));
+        var target = fight.State.Enemies[1];
+        var other = fight.State.Enemies[2];
+        int shiv = GeneratedData.Cards.Get(SI.Shiv).BaseDamage;
+
+        fight.Play(0, target: 1);
+
+        Assert.Equal(2, fight.State.Enemies.Count);
+        Assert.Equal(50 - shiv - 10 - shiv, target.Hp);
+        Assert.Equal(50 - 10, other.Hp);
+    }
 }

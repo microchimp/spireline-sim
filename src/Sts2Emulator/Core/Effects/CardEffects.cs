@@ -1725,9 +1725,9 @@ public static class CardEffects
                 // `CardCmd.AutoPlay`ed there and then at the trap's own target -- given, so no
                 // roll. Inside the trap's play: under Velvet Choker the first Shiv still
                 // plays, because the trap's own AfterCardPlayed has not counted it yet.
-                var aim = FirstEnemy(state);
+                // The creature, not its slot: a Shiv's play can sweep a corpse before it.
                 var source = new CombatEngine.AutoPlaySource(
-                    Target: aim is null ? null : state.Enemies.IndexOf(aim)
+                    Target: CombatEngine.PlayTarget.On(FirstEnemy(state))
                 );
                 var trapped = state.ExhaustPile.Where(c => c.DefId == SI.Shiv).ToList();
                 foreach (var shiv in trapped)
@@ -4534,11 +4534,10 @@ public static class CardEffects
             }
 
             var card = cards[k];
-            int? target = null;
+            CombatEngine.PlayTarget target = default;
             if (TargetTypeOf(state, card, GeneratedData.Cards.Get(card.DefId)) == CardTarget.AnyEnemy)
             {
-                var rolled = RandomLivingEnemy(state, rng);
-                target = rolled is null ? null : state.Enemies.IndexOf(rolled);
+                target = CombatEngine.PlayTarget.On(RandomLivingEnemy(state, rng));
             }
 
             // The very card picked: its slot less the picks before it already taken out (a

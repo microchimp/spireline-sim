@@ -622,6 +622,9 @@ public static class CombatEngine
         // A play nested in another stretch that answers its own deaths (an auto-play) sweeps
         // only the corpses it answered: the enclosing card's own kills are its to answer.
         var sweep = autoPlay ? CorpseSweep.Answered : CorpseSweep.All;
+        // `OnPlayWrapper`'s `target`, the `Target` of every repetition's `CardPlay`: the
+        // creature, which a repetition's death check can move by sweeping a corpse.
+        var target = PlayTarget.Of(state);
 
         // The play's first repetition (`CardPlay.IsFirstInSeries`), the only one Echo Form
         // counts; every repetition, this one included, starts a play (`StartPlayRepetition`).
@@ -694,6 +697,7 @@ public static class CombatEngine
         for (int playIndex = 1; playIndex < playCount; playIndex++)
         {
             card = FoldPlayedCardGrowth(state, card);
+            target.Aim(state);
             StartPlayRepetition(state, card, request, rng);
             restsOn = ResolvePlayRepetition(
                 state,
@@ -5838,21 +5842,24 @@ public static class CombatEngine
     /// play time (<see cref="Effects.CardEffects.TargetTypeOf" />) -- is AnyEnemy and that was
     /// given no target rolls `Rng.CombatTargets.NextItem(HittableEnemies)`, even over a
     /// single enemy and whatever its type. AllEnemies, RandomEnemy and Self cards never touch
-    /// the stream here. A target the caller GAVE (Knife Trap's) is never rolled over.
+    /// the stream here. A target the caller GAVE (Knife Trap's) is never rolled over: it is
+    /// the creature, wherever it is now, alive or not.
     /// </summary>
     private static int RollAutoPlayTarget(
         CombatState state,
         CardInstance card,
         CardDef def,
-        int givenTarget,
+        in PlayTarget given,
         Random rng
     )
     {
-        int targetIndex = givenTarget;
-        if (
-            targetIndex < 0
-            && Effects.CardEffects.TargetTypeOf(state, card, def) == CardTarget.AnyEnemy
-        )
+        if (given.IsGiven)
+        {
+            return given.IndexIn(state);
+        }
+
+        int targetIndex = -1;
+        if (Effects.CardEffects.TargetTypeOf(state, card, def) == CardTarget.AnyEnemy)
         {
             var target = Effects.CardEffects.RandomLivingEnemy(state, rng);
             if (target != null)
@@ -5888,11 +5895,12 @@ public static class CombatEngine
         bool played =
             !def.Unplayable
             && !RefusedByShouldPlay(state, card, def)
-            && !(targetType == CardTarget.AnyAlly && source.TargetIndex < 0);
+            && !(targetType == CardTarget.AnyAlly && !source.Target.IsGiven);
         if (played)
         {
-            targetIndex = RollAutoPlayTarget(state, card, def, source.TargetIndex, rng);
-            played = targetIndex >= 0 || targetType != CardTarget.AnyEnemy;
+            targetIndex = RollAutoPlayTarget(state, card, def, source.Target, rng);
+            played =
+                source.Target.IsGiven || targetIndex >= 0 || targetType != CardTarget.AnyEnemy;
         }
 
         if (played)
@@ -6443,7 +6451,7 @@ public static class CombatEngine
             handIndex,
             rng,
             new AutoPlaySource(
-                Target: target >= 0 ? target : null,
+                Target: PlayTarget.At(state, target),
                 CallerSpentStars: starsToSpend,
                 CallerSelector: true
             )
@@ -6500,23 +6508,70 @@ public static class CombatEngine
     }
 
     /// <summary>
-    /// What a caller hands `CardCmd.AutoPlay`: its target (null: none, so an AnyEnemy card
-    /// rolls one; `default` means the same), Havoc's forced exhaust (`ExhaustOnNextPlay`),
+    /// What a caller hands `CardCmd.AutoPlay`: its target (`default`: none, so an AnyEnemy
+    /// card rolls one), Havoc's forced exhaust (`ExhaustOnNextPlay`),
     /// whether the card is a dupe (History Course's), which leaves combat when it is done,
     /// and, for Whispering Earring, that the caller has already run `SpendResources`
     /// (`skipXCapture`: the stars it spent) and holds a selector of its own
     /// (`VakuuCardSelector`) that answers the play's screens.
     /// </summary>
     internal readonly record struct AutoPlaySource(
-        int? Target = null,
+        PlayTarget Target = default,
         bool ForceExhaust = false,
         bool IsDupe = false,
         int? CallerSpentStars = null,
         bool CallerSelector = false
-    )
+    );
+
+    /// <summary>
+    /// A play's target as the creature it is, which is how the game holds it:
+    /// `CardModel.OnPlayWrapper`'s `target`, the `Target` of every repetition's `CardPlay`,
+    /// and the `target` a caller hands `CardCmd.AutoPlay` (Knife Trap's `cardPlay.Target`, for
+    /// each Shiv). <see cref="CombatState.TargetEnemyIndex" /> is only a position, and a corpse
+    /// swept out of the roster or a creature joining it moves every position after it, so
+    /// whatever keeps a target across a death check or a nested play keeps this and
+    /// <see cref="Aim" />s with it.
+    /// </summary>
+    internal readonly struct PlayTarget
     {
-        /// <summary>The given target as an enemy index, or -1 for none.</summary>
-        public int TargetIndex => Target is >= 0 ? Target.Value : -1;
+        private readonly EnemyState? _creature;
+        private readonly int _index;
+        private readonly bool _given;
+
+        private PlayTarget(EnemyState? creature, int index)
+        {
+            _creature = creature;
+            _index = index;
+            _given = true;
+        }
+
+        /// <summary>The enemy at <paramref name="index" />; none below zero.</summary>
+        public static PlayTarget At(CombatState state, int index) =>
+            index < 0 ? default
+            : new(index < state.Enemies.Count ? state.Enemies[index] : null, index);
+
+        /// <summary>What <see cref="CombatState.TargetEnemyIndex" /> aims at now.</summary>
+        public static PlayTarget Of(CombatState state) => At(state, state.TargetEnemyIndex);
+
+        /// <summary>This creature; none for null.</summary>
+        public static PlayTarget On(EnemyState? creature) =>
+            creature is null ? default : new(creature, -1);
+
+        /// <summary>Whether there is one: an AnyEnemy auto-play handed none rolls one.</summary>
+        public bool IsGiven => _given;
+
+        /// <summary>
+        /// Where it is now: -1 for none, and for a creature the roster no longer holds, which
+        /// the effects then aim as they aim a dead one, at the first targetable enemy (the
+        /// game's attack hits nobody: C5-F15). An index that named no creature stays as given.
+        /// </summary>
+        public int IndexIn(CombatState state) =>
+            !_given ? -1
+            : _creature is null ? _index
+            : state.Enemies.IndexOf(_creature);
+
+        /// <summary>Points <see cref="CombatState.TargetEnemyIndex" /> at it.</summary>
+        public void Aim(CombatState state) => state.TargetEnemyIndex = IndexIn(state);
     }
 
     /// <summary>
@@ -6604,7 +6659,8 @@ public static class CombatEngine
     /// </summary>
     private readonly struct PlayFrame
     {
-        private readonly int _target;
+        // The outer play's target, as a creature: the nested play can sweep a corpse.
+        private readonly PlayTarget _target;
         private readonly int _bonusDamage;
         private readonly int _bonusBlock;
         private readonly bool _enchantSpent;
@@ -6621,7 +6677,7 @@ public static class CombatEngine
 
         private PlayFrame(CombatState s)
         {
-            _target = s.TargetEnemyIndex;
+            _target = PlayTarget.Of(s);
             _bonusDamage = s.PlayedCardBonusDamage;
             _bonusBlock = s.PlayedCardBonusBlock;
             _enchantSpent = s.PlayedCardEnchantSpent;
@@ -6651,7 +6707,7 @@ public static class CombatEngine
 
         public void Restore(CombatState s)
         {
-            s.TargetEnemyIndex = _target;
+            _target.Aim(s);
             s.PlayedCardBonusDamage = _bonusDamage;
             s.PlayedCardBonusBlock = _bonusBlock;
             s.PlayedCardEnchantSpent = _enchantSpent;
@@ -6822,7 +6878,7 @@ public static class CombatEngine
         }
 
         // `CardModel.CurrentTarget` is the play's target for the whole of `OnPlayWrapper`.
-        int callerTarget = state.TargetEnemyIndex;
+        var callerTarget = PlayTarget.Of(state);
         state.TargetEnemyIndex = targetIndex;
         var restsOn = ResolvePlay(
             state,
@@ -6832,7 +6888,7 @@ public static class CombatEngine
             rng,
             out _
         );
-        state.TargetEnemyIndex = callerTarget;
+        callerTarget.Aim(state);
         return restsOn;
     }
 
