@@ -98,7 +98,8 @@ listed in `record.json`: `setup` (an item failed: a deck residual, a load the ga
 in another act), `game_error` (the game's code logged an error; each server's log is cut at the driver's Neow
 line, one per fight, and attributed by the result line's 0-based `_id`; faults in the visual layer,
 `Core.Nodes.*`, are kept and listed), `unstable` (the two recordings differ), `driver_wait_limit`,
-`neighbour_fault`, `log_uncut`, `no_result`. A wait limit, a neighbour's leaked fault or an uncuttable log is
+`stalled` (the fight killed two servers: a crash, a run-start exception or the watchdog), `neighbour_fault`,
+`log_uncut`, `no_result`. A wait limit, a neighbour's leaked fault or an uncuttable log is
 recorded twice more on fresh servers and judged on that pair. The safety checks are serve.py's; a breach writes
 no references.
 

@@ -136,6 +136,9 @@ public static partial class Driver
                 if (budget.Spent)
                     throw new TimeoutException("SelectLocalReward " + reward.GetType().Name + " did not finish within 60 s");
                 AnswerCardRewardScreen(reward, log);
+                // A reward that opens a screen outside the selector hook while it is taken (Neow's Bones' relic
+                // reward handing over Scroll Boxes, whose choose-a-bundle screen opens at once) waits on it here.
+                AnswerOpenScreens();
                 if (NestedAbove(top) is { } nested && depth < 5)
                 {
                     await ClaimSet(nested, log, depth + 1);

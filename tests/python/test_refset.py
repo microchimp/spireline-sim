@@ -395,6 +395,10 @@ class Recording(unittest.TestCase):
         self.assertEqual(refset.cause_of("game error: idle_timeout after step 3: {}"), "driver_wait_limit")
         self.assertEqual(refset.cause_of("unstable: the two recordings differ at step 4"), "unstable")
         self.assertEqual(refset.cause_of("game log: the game log cannot be cut into this server's fights"), "log_uncut")
+        # A fight that killed two servers (crash, run-start exception, the watchdog) is not a logged game error.
+        self.assertEqual(refset.cause_of("game error: stalled: the game failed this fight twice (no progress, crash or "
+                                         "run-start exception)"), "stalled")
+        self.assertEqual(refset.cause_of("game error: System.NullReferenceException"), "game_error")
 
     def test_the_summary_counts_exclusions_and_flags_per_cell(self) -> None:
         idx = [{"id": "a", "part": "realistic", "strata": {"act": 3, "room": "elite"}, "flags": []},
@@ -603,6 +607,38 @@ class Score(unittest.TestCase):
             # Build output and tests EmuDump does not compile are not its sources.
             self.assertEqual(refset_score.stale_sources(emu, dll),
                              ["src/Sts2Emulator.Tests/Support/Invariants/Inv.cs", "src/Sts2Emulator/Core/Card.cs"])
+
+    def test_a_codex_walk_is_reused_only_for_the_same_emulator_sources(self) -> None:
+        import subprocess  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as d:
+            emu = Path(d)
+
+            def git(*a):
+                return subprocess.run(["git", "-C", str(emu), *a], capture_output=True, text=True, check=True).stdout.strip()
+            git("init", "-q")
+            git("config", "user.email", "t@t")
+            git("config", "user.name", "t")
+            for sub, _ in refset_score.EMU_SOURCES:
+                (emu / sub).mkdir(parents=True)
+                (emu / sub / "a.cs").write_text("1", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "one")
+            c1 = git("rev-parse", "HEAD")
+            (emu / "referee").mkdir()
+            (emu / "referee" / "Driver.cs").write_text("driver only", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "driver")
+            c2 = git("rev-parse", "HEAD")
+            (emu / "src/Sts2Emulator/a.cs").write_text("2", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "engine")
+            c3 = git("rev-parse", "HEAD")
+            prev = emu / "prev.json"
+            prev.write_text(json.dumps({"codex": {"runs": 10, "complete": 5, "commit": {"commit": c1, "dirty": False}}}), encoding="utf-8")
+            self.assertEqual(refset_score.reuse_codex(prev, emu, c2)["reused_from"], {"score": "prev.json", "commit": c1})
+            self.assertIn("skipped", refset_score.reuse_codex(prev, emu, c3))
+            prev.write_text(json.dumps({"codex": {"runs": 10, "commit": {"commit": c1, "dirty": True}}}), encoding="utf-8")
+            self.assertIn("skipped", refset_score.reuse_codex(prev, emu, c2))
 
     def test_the_headline_states_exclusions_flags_both_rates_and_the_builds(self) -> None:
         rows = [{"id": i, "part": "realistic", "flags": []} for i in "abcd"]

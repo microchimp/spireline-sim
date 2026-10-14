@@ -1160,8 +1160,10 @@ def exclusion(entry: dict, r: dict | None) -> str | None:
     return None
 
 
-# Why a fight is not a reference, as counted in the record and the score: the first word of its exclusion.
-CAUSES = (("setup:", "setup"), ("game error", "game_error"), ("the game logged an error", "game_error"),
+# Why a fight is not a reference, as counted in the record and the score: the first word of its exclusion. A fight
+# that killed or stalled two servers (serve.py "stalled": a crash, a run-start exception or the driver's watchdog
+# seeing no progress) is not a logged game error: its own cause.
+CAUSES = (("setup:", "setup"), ("game error: stalled", "stalled"), ("game error", "game_error"), ("the game logged an error", "game_error"),
           ("unstable", "unstable"), ("after a faulted fight", "neighbour_fault"), ("no result", "no_result"),
           ("result seed", "no_result"), ("no steps", "no_result"), ("game log", "log_uncut"))
 

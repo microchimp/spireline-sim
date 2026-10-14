@@ -1,7 +1,8 @@
 """Score one emulator commit on the reference set (referee/refset.py): the accuracy numbers to quote.
 
     python -m tools.fidelity.refset_score [--version v2] [--subset all|pilot] [--emu <emulator checkout>]
-        [--procs 4] [--label <name>] [--codex [--codex-emu <checkout>] [--codex-limit N]] [--record <record dir>]
+        [--procs 4] [--label <name>] [--codex [--codex-emu <checkout>] [--codex-limit N] | --codex-from <score json>]
+        [--record <record dir>]
         [--allow-dirty-emu] [--allow-stale-emu] [--allow-unchecked-record]
 
 Run from the fork's root. --emu is a checkout with EmuDump built (tools/emudump/bin/Release/net9.0); its
@@ -9,7 +10,8 @@ commit is what the numbers are for, so a checkout with uncommitted changes is re
 it anyway, labelled <commit>-dirty and NOT QUOTABLE), as is an EmuDump build older than any of its sources (the
 DLL would not be that commit's: --allow-stale-emu, NOT QUOTABLE), and a record made before the driver reported its
 build (--allow-unchecked-record, also NOT QUOTABLE). --record scores one record directory (a trial) instead of the
-subset's current record (refs-<subset>.json), under the record's own name. Every recorded reference fight is replayed (EmuDump fight) and
+subset's current record (refs-<subset>.json), under the record's own name. --codex-from reuses another score's codex
+walk (it does not read the record) when that score's emulator commit builds the same EmuDump (equal source trees). Every recorded reference fight is replayed (EmuDump fight) and
 re-anchored (EmuDump reanchor) in --procs processes (one emulator per process) and judged with this checkout's
 comparers; each emulator result is paired with its reference by position AND seed (a seed mismatch is an error).
 
@@ -387,6 +389,27 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | N
             "commit": git_commit(emu)}
 
 
+def emu_trees(emu: Path, commit: str) -> list[str]:
+    """The git trees of what EmuDump is built from (EMU_SOURCES) at a commit: equal trees, the same EmuDump."""
+    return [subprocess.run(["git", "-C", str(emu), "rev-parse", f"{commit}:{sub}"], capture_output=True, text=True,
+                           check=False).stdout.strip() for sub, _ in EMU_SOURCES]
+
+
+def reuse_codex(path: Path, emu: Path, head: str) -> dict:
+    """The codex runs as another score scored them (its "codex"): the walk does not read the record, so it is reused
+    when that score's emulator commit was clean and builds the same EmuDump as this one (equal EMU_SOURCES trees)."""
+    prev = json.loads(path.read_text(encoding="utf-8")).get("codex") or {}
+    info = prev.get("commit") or {}
+    if not prev.get("runs") or not info.get("commit"):
+        return {"skipped": f"{path.name} holds no codex result"}
+    if info.get("dirty"):
+        return {"skipped": f"{path.name}'s codex result is a dirty checkout's"}
+    then, now = emu_trees(emu, info["commit"]), emu_trees(emu, head)
+    if "" in then or then != now:
+        return {"skipped": f"{path.name}'s codex result is {info['commit'][:12]}'s, whose emulator sources differ from {head[:12]}'s"}
+    return prev | {"reused_from": {"score": path.name, "commit": info["commit"]}}
+
+
 def runs_score(vdir: Path, emu: Path, work: Path) -> dict:
     """The seeded whole runs (refset.py record --parts runs) through EmuDump run and run_compare2 (feat/run-referee)."""
     latest = vdir / "refs-runs.json"
@@ -445,6 +468,8 @@ def main() -> int:
     ap.add_argument("--codex", action="store_true", help="also walk the codex runs (whole runs, run-level offers)")
     ap.add_argument("--codex-emu", type=Path, default=None, help="checkout with the codex replay (default --emu)")
     ap.add_argument("--codex-limit", type=int, default=0)
+    ap.add_argument("--codex-from", type=Path, default=None,
+                    help="reuse the codex result of this score JSON when its emulator sources are this commit's")
     ap.add_argument("--allow-dirty-emu", action="store_true", help="score a checkout with uncommitted changes (NOT QUOTABLE)")
     ap.add_argument("--allow-stale-emu", action="store_true", help="score an EmuDump build older than its sources (NOT QUOTABLE)")
     ap.add_argument("--record", type=Path, default=None, help="score this record directory (a trial) instead of refs-<subset>.json")
@@ -537,8 +562,13 @@ def main() -> int:
     open_bugs = [{"cause": k, "fights": len(ids), "example": ids[0]} for k, ids in sorted(bugs.items(), key=lambda kv: -len(kv[1]))]
     cov = coverage_report(verdicts, manifest.get("coverage_targets", {}))
     reg = regression_report(verdicts, entries)
-    codex = (codex_score((a.codex_emu or emu).resolve(), a.procs, a.codex_limit, work,
-                         (manifest.get("codex_stats") or {}).get("ironclad_a10_runs")) if a.codex else {"skipped": "not run (--codex)"})
+    if a.codex_from:
+        codex = reuse_codex(a.codex_from, emu, emu_info["commit"])
+    elif a.codex:
+        codex = codex_score((a.codex_emu or emu).resolve(), a.procs, a.codex_limit, work,
+                            (manifest.get("codex_stats") or {}).get("ironclad_a10_runs"))
+    else:
+        codex = {"skipped": "not run (--codex)"}
     runs = runs_score(vdir, emu, work)
     commit = emu_info["commit"][:12] + ("-dirty" if emu_info["dirty"] else "")
     name = a.label or commit
@@ -595,7 +625,8 @@ def summary_line(s: dict) -> str:
     reg = s["regression"]["emulator"]
     cx = s["codex"]
     codex = (f"codex runs {cx['complete']}/{cx['runs']} matching to the end ({cx['runs_matching_pct']}%) @ "
-             f"{cx['commit']['commit'][:12]}" if cx.get("runs") else "codex runs n/a")
+             f"{cx['commit']['commit'][:12]}" + (" (walked for " + cx["reused_from"]["score"] + ", same emulator sources)"
+                                                if cx.get("reused_from") else "") if cx.get("runs") else "codex runs n/a")
     rn = s.get("runs") or {}
     runs = (f"whole runs {rn['runs_matching']}/{rn['runs']} matching" if rn.get("runs") else "whole runs n/a")
     db = s["record"].get("driver_build") or {}
