@@ -189,7 +189,7 @@ def evidence(g: dict, ok_steps: set) -> dict:
     by variant, potion uses, relic flashes (the game's own "this relic did something"), the player's powers up
     when an enemy with an attack intent took its turn (Combat.cs end_turn steps), and those up when a MULTI-HIT
     attacker whose HP that power alone takes away before its last hit (HP <= amount x (hits - 1)) died in that turn
-    (the game stops the attack there: Thorns before the blow). Also what the classes in refset.CLASS_TRIGGERS need:
+    and the fight went on (the game stops the attack there: Thorns before the blow). Also what the classes in refset.CLASS_TRIGGERS need:
     the opening hand, the largest hand an end of turn discarded, enemy turns, the RNG streams an end of turn moved,
     the draws after an end of turn, the Neow pick, the enemies' powers at the start."""
     steps = g.get("steps", [])
@@ -228,7 +228,9 @@ def evidence(g: dict, ok_steps: set) -> dict:
                         left[key] -= 1
                         continue
                     h = max((_hits(i) for i in e.get("intents") or []), default=0)
-                    if h >= 2:
+                    # Only while the fight goes on: once the last enemy is dead the comparer compares nothing but
+                    # in_combat (fight_compare), so a kill that ends the fight shows nothing either way.
+                    if h >= 2 and nx.get("in_combat"):
                         killed.update(p for p, amt in pw.items() if isinstance(amt, (int, float)) and amt > 0
                                       and e.get("hp", 0) <= amt * (h - 1))
     fires = [[r, (j in ok_steps) if j > 0 else (0 in ok_steps)] for j, r in g.get("relic_flashes") or []]

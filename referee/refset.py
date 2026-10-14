@@ -917,6 +917,15 @@ def regression_specs(t: Tables) -> list[dict]:
                         "reason": f"minimal setup for the divergence class '{name}' ({source})", "chooser": "random",
                         "expect_act": t.encounters[enc or plain][0] if act > 1 else None,
                         "flags": ["cross_character"] if cross else [], "spec": spec})
+            if name in KILL_CLASSES:
+                # More seeds of the same minimal setup, from their own stream (the other specs' seeds stay put):
+                # whether a kill partway through an attack shows depends on the player's block that turn and on it
+                # not ending the fight (after the last enemy dies the comparer compares only in_combat).
+                xr, base = random.Random(f"refset-v2-kill-extra:{name}"), out[-1]
+                for k in range(KILL_EXTRA_FIGHTS):
+                    extra = dict(spec, seed=_seed(xr), chooser_seed=7700 + n + 100 * (k + 1), setup=json.loads(json.dumps(items)))
+                    out.append({**base, "id": f"G{n + 1:03d}{chr(ord('b') + k)}-{extra['seed']}", "spec": extra,
+                                "reason": f"minimal setup for the divergence class '{name}' ({source}), seed {k + 2}"})
         for s in seeds:
             got = find_original(s, cache)
             if not got:
@@ -941,6 +950,7 @@ PICKUP_CLASSES = {"potion roll without repeats: Phial Holster", "selection count
 # with HP low enough for the power alone to kill it before its last hit died in that enemy turn (the game stops the
 # attack there; the hits after are the case the open bug is about), not merely when it attacked into the power or died.
 KILL_CLASSES = {"hook order: the player's Thorns before an enemy hit lands (open)"}
+KILL_EXTRA_FIGHTS = 2  # extra seeds of a kill class's minimal setup (regression_specs)
 # Classes whose trigger is not one of their setup's cards, relics, potions or powers: what one of their recorded game
 # fights must show for a pass to count (refset_score.evidence). No class is reached by a plain replay.
 CLASS_TRIGGERS = {

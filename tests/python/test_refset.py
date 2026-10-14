@@ -334,6 +334,7 @@ class Specs(unittest.TestCase):
         # Its minimal setup meets Toadpoles (Spike Spit: 3 hits) with Thorns 15, which kills one before its last hit.
         self.assertTrue(any(c[0] == name and c[5] == "TOADPOLES_WEAK" and c[6] == [("THORNS_POWER", 15, "player")]
                             for c in refset.REGRESSION_CLASSES))
+        self.assertEqual(refset.KILL_EXTRA_FIGHTS, 2)
 
         def st(enemies, thorns=True):
             return {"in_combat": True, "round": 1, "hand": [["DEFEND_IRONCLAD", 0]],
@@ -351,15 +352,18 @@ class Specs(unittest.TestCase):
         partway = fight([("TOADPOLE", 25, 25, spit), ("TOADPOLE", 23, 23, whirl)], [("TOADPOLE", 23, 23, spit)])
         # A 3-hit attacker with 31 HP (> 15 x 2) that died (something else) is not the case.
         tough = fight([("TOADPOLE", 31, 31, spit)], [])
+        # The last enemy dying partway ends the fight: nothing after it is compared, so it shows nothing.
+        last = fight([("TOADPOLE", 4, 25, spit)], [])
+        last["steps"][1]["state"]["in_combat"] = False
         ev = {k: refset_score.evidence(f, {1}) for k, f in
-              {"attacked": attacked, "single": single, "partway": partway, "tough": tough}.items()}
+              {"attacked": attacked, "single": single, "partway": partway, "tough": tough, "last": last}.items()}
         self.assertEqual((ev["attacked"]["powers_hit"], ev["attacked"]["attacker_killed_midattack"]), (["THORNS_POWER"], []))
         self.assertEqual(ev["single"]["attacker_killed_midattack"], [])
         self.assertEqual(ev["partway"]["attacker_killed_midattack"], ["THORNS_POWER"])
         self.assertEqual(ev["tough"]["attacker_killed_midattack"], [])
         trig = refset.class_trigger(name)
         play = {"plays": [["DEFEND_IRONCLAD", True]]}
-        for k in ("attacked", "single", "tough"):
+        for k in ("attacked", "single", "tough", "last"):
             self.assertFalse(refset_score.trigger_reached(trig, [ev[k] | play]), k)
         self.assertTrue(refset_score.trigger_reached(trig, [ev["partway"] | play]))
 
