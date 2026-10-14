@@ -202,11 +202,14 @@ static class Fight
         ["colorless"] = new JsonArray(Sts2Emulator.GeneratedData.CardPools.Colorless.ToArray().Select(i => (JsonNode)i).ToArray()),
     };
 
-    static JsonObject Dump(RunEngine e)
+    internal static JsonObject Dump(RunEngine e)
     {
         var c = e.State.ActiveCombat;
-        var o = new JsonObject { ["in_combat"] = c != null && e.State.Phase == RunPhase.Combat, ["run_phase"] = e.State.Phase.ToString() };
+        bool inCombat = c != null && e.State.Phase == RunPhase.Combat;
+        var o = new JsonObject { ["in_combat"] = inCombat, ["run_phase"] = e.State.Phase.ToString() };
         if (c == null) return o;
+        // A finished fight keeps its CombatState on the run (SyncAfterCombat copies out what the run keeps).
+        if (!inCombat) o["final"] = Final(e.State, e.State.LastPlayerWon);
         var snap = JsonNode.Parse(Sts2Emulator.Interop.CombatSnapshot.Write(c))!;
         // Buff ids are the emulator's BuffId enum, not id_map's power ids: name them here.
         foreach (var holder in new[] { snap["player"]! }.Concat(snap["enemies"]!.AsArray().Select(x => x!)))
@@ -232,6 +235,34 @@ static class Fight
             ["CombatOrbGeneration"] = N(c.OrbGenerationRng), ["Niche"] = N(c.NicheHpRng),
         };
         return o;
+    }
+
+    /// <summary>
+    /// What a fight leaves once it is over, written beside the dump of the step that ended it.
+    /// The game tears a WON fight down inside that step (Player.AfterCombatEnd: the player's powers, block and
+    /// piles go, the roster with the combat), so its snapshot then shows what the run holds: hit points
+    /// with the after-combat heals in, the potion belt, the relics and the RNG streams. The emulator's
+    /// run is that state (the CombatState it keeps is not torn down), so this writes the run's. A LOST
+    /// fight ends the run and writes only that: the game freezes the combat where the player died, the
+    /// emulator finishes the enemy phase, and what either left goes nowhere.
+    /// Gold and the relics' counters are written too; the game's snapshot has neither yet, and
+    /// tools/fidelity/fight_compare.py compares them once a record has them.
+    /// </summary>
+    internal static JsonObject Final(RunState s, bool won)
+    {
+        var f = new JsonObject { ["won"] = won };
+        if (!won) return f;
+
+        f["player"] = new JsonObject { ["hp"] = s.PlayerHp, ["max_hp"] = s.PlayerMaxHp, ["gold"] = s.Gold };
+        f["rng"] = Setup.RunRng(s);
+        if (Setup.Extended)
+        {
+            f["potions"] = Setup.Belt(s.PotionSlots, s.MaxPotionSlots);
+            f["relics"] = new JsonArray(s.Relics.Select(r => (JsonNode)Setup.RelicEntry(r.DefId)).ToArray());
+            f["relic_counters"] = new JsonArray(s.Relics.Select(r => (JsonNode)r.Counter).ToArray());
+        }
+
+        return f;
     }
 
     /// <summary>
