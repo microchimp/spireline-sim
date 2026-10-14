@@ -34,6 +34,11 @@ It streams: one pool of game servers (`--parallel`) plays the whole batch, finis
 4. **Compare**: `python -m tools.fidelity.fight_compare '<out.json>' '<emu.json>'`. It prints the first diverging step per fight;
    a replay that stops early differs at the first step it lacks. Exit 1 on a difference, an emulator error (also after the
    last step), a missing result or one of another seed (broken cases: `tests/python/test_fight_compare_broken.py`).
+4b. **Diagnosis packet** (for a backlog item, or one failing fight): `python -m tools.fidelity.packet --item <ID>` / `--top 10` / `--fight <id>` writes
+   `D:\spireline\referee\backlog\packets\<ID>.md` (section "Diagnosis packets" below) and prints its path. **Every fixer is given the path of its item's
+   packet in its prompt ("Your diagnosis packet is <path>; read it first"), and so is the reviewer of its branch.** Record `packet=yes` in
+   `inputs_given` of `backlog/fix-attempts.csv`. A packet is evidence, not a verdict: its candidate case is tied to the item by a cited seed or by
+   model names, and the packet says which; confirm it is the same cause before using it.
 5. **Classify each difference** before touching code:
    - *Driver gap*: the game side errored or skipped a screen (e.g. `SelectLocalReward RelicReward did not finish`). Fix `referee/driver/*.cs`, never the engine.
    - *Comparer gap*: same game state, different representation (e.g. STUNNED is a buff in the emulator, a move in the game). Fix `tools/fidelity/fight_compare.py` and write the reason next to the rule.
@@ -206,6 +211,54 @@ its decompile site, the emulator sites naming the caller (`match` strong / weak 
 mechanism terms in `data/sweep_map.json`), the tests naming it, and a status the owner fills: `converted`, `tested`
 or `unreachable` (with the reason in the note). Attach the checked table to the review. It prints identifiers and
 line numbers only. Broken cases: `tests/python/test_sweep_table.py`.
+
+## Diagnosis packets (`packet.py`: everything about one item, in one file)
+
+```
+python -m tools.fidelity.packet --top 10                  # the first 10 open items of the newest backlog (in its order: by impact)
+python -m tools.fidelity.packet --item C3-F02 [--item ...] [--backlog backlog-c3.json]
+python -m tools.fidelity.packet --fight <corpus fight id | corpus seed | refset id>   # a failing fight with no item
+python -m tools.fidelity.packet --item-file item.json     # an item written by hand (id, title, evidence; optional setup, seeds)
+   [--out DIR] [--refresh-probes] [--no-sweep] [--no-emudump] [--codex-walk DIR] [--run <corpus run results.json>]
+```
+
+Output: `backlog/packets/<ID>.md` (what the fixer reads), `<ID>/` (the case as a referee `out.json` you can replay with `EmuDump fight` or
+`reanchor`, and the trace text when there is one), `sweeps/` (full sweep tables, cached per fork commit), `index.md` and `completeness.json`.
+It never starts a game; the emulator runs only through EmuDump on recordings that exist. Each packet has seven sections, each with a status
+(full, partial, missing, n/a) and a reason, tabulated at its head:
+
+1. **Smallest failing case.** The item's own setup spec with a stored shrink (`jobs-setup/*.packs/minimal/<seed>.json`) when there is one, else the
+   smallest recorded fight that still diverges on the current emulator and is tied to the item: the corpus (first divergences from the newest full run of
+   this commit) and the reference set's regression classes (one minimal setup each, replayed now). Tied means named: the item cites its seed or id (or quotes the
+   stop reason of the fight's stored result), or, as a guess that the packet labels as one, the diverging step involves model names the item also names
+   (weighed by how rare they are in the corpus; the step's card counts most, a held relic least). Order: named before guessed, re-anchored
+   divergences (self-contained: the rule is wrong from the game's own state) before ones that only diverge in the plain replay, earliest step, shortest
+   fight. For run-layer items (lane `run`, or no fight) the case is a codex walk stop (`EmuDump codex`, the run histories walked with no game; results under
+   `codex-walk/<label>/*.jsonl`): the run the item cites, else the earliest run of the stop signature (class, component, field) whose words match strongly,
+   with the run's floors up to the stop. Also: the one-step case (the game's state before the step, the action, game against emulator after it),
+   recording flags, selection-screen problems.
+2. **First differing event inside the step.** `trace_diff` of a traced game record (`jobs-trace/**/traced.out.json`, `jobs-checksum/*.trace.out.json`)
+   against this checkout's emulator re-anchored with `--trace` (an EmuDump run, no game), preferring the recording of the seed that the trace reproduces; a
+   game record the driver snapshotted early is flagged UNSETTLED (not an emulator difference). Without a trace: the re-anchored step's differing fields,
+   the emulator's own marks and draws, and the `trace_divergent.py` command that makes the trace (needs a game copy of your own; the packet does not run it).
+3. **The game's per-action checksum state.** `netstate_diff` when the fight was recorded with the checksum tap and its full state (traced re-runs now are),
+   else missing, with the re-run named. n/a for run-layer cases.
+4. **Game classes and methods, and the emulator sites.** The decompiled file and hook overrides of each model the item names, the emulator sites that
+   look like the same behaviour (`sweep_table`'s grep), the game commands it names (`Class.Method` found in the decompile) and the engine's own methods it
+   names, and a sweep for each game command and each model-level hook it names: callers for a command, every overriding class for a hook (cached in
+   `sweeps/`, the full table linked), so the siblings are in front of the fixer. Tool items list the code they are about and the RUNBOOK sections.
+5. **RNG draw difference.** The trace's first differing draw, else per stream the draws the game made and the emulator made from the game's state, with
+   the emulator's callers; n/a when no stream differs. Run-layer cases name the streams the stopped component draws on.
+6. **Rule probe.** The probes (`referee/probes.py`, reports under `probes/`) the item names, or ties by ledger tag, game class or model names: the game's
+   answer, what it did, the emulator's value when probed and now (`--refresh-probes` judges the recorded probe games again with this EmuDump, no game).
+   "Related" is not "settles": only a probe the item names counts as full.
+7. **Related ledger lines.** `backlog/ledger.md`, `FINDINGS.md` and `fix-attempts.csv` entries about the same thing (a cited seed, an old item tag, a method
+   or hook name that few entries use, or two rare model names): what was found, what was fixed, what earlier attempts were rejected for.
+
+Reading a packet: start with the completeness table; "partial" and "missing" say what is absent and whether only a game run would supply it. What a game
+run would add (a trace for a fight that has none, a shrink of a large setup, a checksum record) is named as `NEEDS A GAME RUN (not run here)` with the command.
+Packets are local (they quote the referee's recordings and the run histories) and are never committed. `tests/python/test_packet.py` has the
+synthetic cases (a tiny corpus, decompile, probe report, ledger, traced record, codex walk and reference set, with a fake EmuDump).
 
 ## Speed settings check (`normal_settings`, `--windowed`)
 

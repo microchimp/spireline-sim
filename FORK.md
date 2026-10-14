@@ -47,6 +47,10 @@ code must never see (review condition E12).
   snapshot round trip.
 - `reanchor_compare.py`: per-step verdicts when every recorded step of a referee fight is tried from the
   game's own state (`EmuDump reanchor`); see `referee/RUNBOOK.md`.
+- `packet.py`: one diagnosis packet per backlog item (or failing fight) for the fixer: the smallest failing
+  case, the first differing event, the checksum state, the game classes and emulator sites, the RNG draw
+  difference, the rule probe and the related ledger lines, each marked full, partial or missing; see
+  `referee/RUNBOOK.md`, section "Diagnosis packets". Starts no game.
 
 ```
 python -m tools.fidelity.checks --emu <emulator checkout with out/ built> --encounters all --seeds 4
