@@ -7746,8 +7746,8 @@ public static class CardEffects
             case "ShiningStrike":
                 // 8 damage upgrading by 3, two stars, and then it puts ITSELF back on TOP
                 // of the draw pile -- unless something has given it Exhaust. That last part
-                // is in `CombatEngine.ShouldPlaceOnDrawPileAfterPlay`, which the play path
-                // reaches only after the exhaust branch, so the Exhaust guard falls out.
+                // is in `CombatEngine.DecideResultPile`, which asks about Exhaust first, so
+                // the Exhaust guard falls out.
                 DealDamage(state, Dmg(state, def, upgraded, card));
                 GainStars(state, 2);
                 return true;

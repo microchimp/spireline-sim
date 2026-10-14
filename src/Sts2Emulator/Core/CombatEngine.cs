@@ -294,6 +294,7 @@ public static class CombatEngine
             && request.CostValue == 0
             && BuffSystem.Get(state.PlayerBuffs, BuffId.Feral)
                 > BuffSystem.Get(state.PlayerBuffs, BuffId.FeralUsed);
+        var resultPile = DecideResultPile(state, card, def, request, feralReturn);
 
         // Snapshot HP before effects: by position for the effects' own death check, by
         // reference for the reward.
@@ -439,13 +440,6 @@ public static class CombatEngine
         {
             oblivionBefore[i] = BuffSystem.Get(state.Enemies[i].Buffs, BuffId.Oblivion);
         }
-
-        // `ReboundPower` redirects a card bound for the discard to the top of the draw
-        // pile and is spent doing it. Snapshotted for the same reason Oblivion and
-        // Monologue are: the power does not exist yet while the card that APPLIES it is
-        // resolving, so Rebound never redirects its own play. The live capture is
-        // unambiguous -- the game leaves Rebound in the discard and the draw pile at 6.
-        int reboundBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.Rebound);
 
         // Read here, with Burst and Serpent Form, for the same reason all three are:
         // the power records what it was worth when the play STARTED.
@@ -605,23 +599,12 @@ public static class CombatEngine
         int exhaustCountBeforePlacement = state.ExhaustPile.Count;
         int discardCountBeforePlacement = state.DiscardPile.Count;
 
-        // Corruption: Skills exhaust instead of discard.
-        bool corruptedSkill =
-            def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Corruption) > 0;
-        // `GetResultPileTypeForCardPlay` first -- none for a dupe and for a Power, exhaust for
-        // an Exhaust card or one Havoc forced -- and then `ModifyCardPlayResultPileTypeAndPosition`,
-        // whose Corruption (a Skill to the exhaust pile) and Feral (a free Attack to hand) do
-        // not ask what that was: a History Course dupe of a Skill is exhausted under
-        // Corruption, and a Shiv under Feral comes back. Rebound and Nostalgia only redirect
-        // the discard.
-        if ((def.Type == CardType.Power || request.IsDupe) && !corruptedSkill && !feralReturn)
+        // The pile was decided as the play was set up (`DecideResultPile`).
+        if (resultPile == ResultPile.None)
         {
             // The card leaves combat without firing exhaust hooks.
         }
-        else if (
-            corruptedSkill
-            || (!feralReturn && (ShouldExhaustAfterPlay(def, card) || request.ForceExhaust))
-        )
+        else if (resultPile == ResultPile.Exhaust)
         {
             Effects.CardEffects.ExhaustCard(
                 state,
@@ -649,7 +632,7 @@ public static class CombatEngine
             );
             restsOn = state.ExhaustPile;
         }
-        else if (feralReturn)
+        else if (resultPile == ResultPile.Hand && feralReturn)
         {
             state.Hand.Add(
                 card with
@@ -668,10 +651,9 @@ public static class CombatEngine
                     FreeUntilPlayed = false,
                 }
             );
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.FeralUsed, 1);
             restsOn = state.Hand;
         }
-        else if (ShouldPlaceOnDrawPileAfterPlay(state, def, reboundBefore))
+        else if (resultPile == ResultPile.DrawTop)
         {
             state.TopDeck(
                 card with
@@ -693,7 +675,7 @@ public static class CombatEngine
             restsOn = state.DrawPile;
         }
         else if (
-            ReturnsToHandAfterPlay(def)
+            resultPile == ResultPile.Hand
             && state.Hand.Count < Effects.CardEffects.MaxCardsInHand
         )
         {
@@ -5189,30 +5171,76 @@ public static class CombatEngine
     /// </summary>
     private static bool ReturnsToHandAfterPlay(CardDef def) => def.Name == "ParticleWall";
 
-    private static bool ShouldPlaceOnDrawPileAfterPlay(
+    /// <summary>Where a played card goes when its play is over.</summary>
+    private enum ResultPile
+    {
+        None,
+        Exhaust,
+        Hand,
+        DrawTop,
+        Discard,
+    }
+
+    /// <summary>
+    /// `CardModel.OnPlayWrapper` decides the result pile as the play is set up, before
+    /// `BeforeCardPlayed` and the card's effect: `GetResultPileTypeForCardPlay` (none for a
+    /// dupe or a Power, exhaust for an Exhaust card or Havoc's `ExhaustOnNextPlay`, the top of
+    /// the draw pile for Shining Strike, hand for Particle Wall, else the discard), then
+    /// `Hook.ModifyCardPlayResultPileTypeAndPosition`. Corruption (a Skill to the exhaust
+    /// pile) and Feral (a free Attack to hand) do not ask what the card's own pile was, so a
+    /// History Course dupe of a Skill is exhausted under Corruption and a Shiv under Feral
+    /// comes back; Nostalgia and Rebound only redirect the discard, to the top of the draw
+    /// pile. A modifier that moves the card is spent here (`AfterModifyingCardPlayResultPile
+    /// OrPosition`: Feral's count, a stack of Rebound).
+    /// </summary>
+    /// <remarks>
+    /// Before the effect, so what the play itself does cannot move it: a Corruption that
+    /// Catastrophe auto-plays leaves Catastrophe in the discard, a Rebound the card applies
+    /// does not redirect its own play (the live capture leaves Rebound in the discard and the
+    /// draw pile at 6), and a card auto-played inside it finds Rebound already spent.
+    /// </remarks>
+    private static ResultPile DecideResultPile(
         CombatState state,
+        CardInstance card,
         CardDef def,
-        // No default: every play site has to say what Rebound was worth BEFORE the card
-        // resolved, because a card that applies Rebound must not redirect itself.
-        int reboundBefore
+        in PlayRequest request,
+        bool feralReturn
     )
     {
-        int nostalgia = BuffSystem.Get(state.PlayerBuffs, BuffId.Nostalgia);
-        // 429 is ShiningStrike, which returns itself to the TOP of the draw pile. Its own
-        // `!Keywords.Contains(Exhaust)` guard needs no code: this branch sits after the
-        // exhaust one, so a Shining Strike that has been given Exhaust never reaches it.
-        // `ReboundPower.ModifyCardPlayResultPileTypeAndPosition` sends a card bound for the
-        // DISCARD to the top of the DRAW pile instead, and is spent doing it -- so it moves
-        // the NEXT card played after Rebound itself, once.
-        if (reboundBefore > 0 && BuffSystem.Get(state.PlayerBuffs, BuffId.Rebound) > 0)
+        var pile =
+            def.Type == CardType.Power || request.IsDupe ? ResultPile.None
+            : ShouldExhaustAfterPlay(def, card) || request.ForceExhaust ? ResultPile.Exhaust
+            // 429 is Shining Strike, which returns itself to the TOP of the draw pile.
+            : def.Id == 429 ? ResultPile.DrawTop
+            : ReturnsToHandAfterPlay(def) ? ResultPile.Hand
+            : ResultPile.Discard;
+
+        if (def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Corruption) > 0)
         {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Rebound, -1);
-            return true;
+            return ResultPile.Exhaust;
         }
 
-        return def.Id == 429
-            || nostalgia > state.AttackOrSkillCardsPlayedThisTurn
-                && (def.Type == CardType.Attack || def.Type == CardType.Skill);
+        if (feralReturn)
+        {
+            BuffSystem.Apply(state.PlayerBuffs, BuffId.FeralUsed, 1);
+            return ResultPile.Hand;
+        }
+
+        if (pile != ResultPile.Discard)
+        {
+            return pile;
+        }
+
+        if (BuffSystem.Get(state.PlayerBuffs, BuffId.Rebound) > 0)
+        {
+            BuffSystem.Apply(state.PlayerBuffs, BuffId.Rebound, -1);
+            return ResultPile.DrawTop;
+        }
+
+        bool nostalgic =
+            BuffSystem.Get(state.PlayerBuffs, BuffId.Nostalgia) > state.AttackOrSkillCardsPlayedThisTurn
+            && (def.Type == CardType.Attack || def.Type == CardType.Skill);
+        return nostalgic ? ResultPile.DrawTop : ResultPile.Discard;
     }
 
     /// <summary>

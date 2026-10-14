@@ -511,6 +511,27 @@ public class AutoPlayPipelineTests
     }
 
     /// <summary>
+    /// The result pile is decided as the play is set up, before the card's effect: the
+    /// Corruption that Catastrophe auto-plays does not exhaust Catastrophe (refset
+    /// C0164-LHUH2MNFN9: the game's Catastrophe+ lands in the discard).
+    /// </summary>
+    [Fact]
+    public void ACorruptionPlayedInsideACardDoesNotExhaustIt()
+    {
+        var fight = Fight
+            .Hand(Card(CL.Catastrophe))
+            .Enemy(hp: 100)
+            .Draw(Card(IC.Corruption))
+            .Energy(3);
+
+        fight.Play(0);
+
+        Assert.Equal(1, fight.PlayerBuffAmount(BuffId.Corruption));
+        Assert.Contains(fight.State.DiscardPile, c => c.DefId == CL.Catastrophe);
+        Assert.DoesNotContain(fight.State.ExhaustPile, c => c.DefId == CL.Catastrophe);
+    }
+
+    /// <summary>
     /// `FeralPower.ModifyCardPlayResultPileTypeAndPosition` returns a free Attack to hand
     /// without asking where it was going: a Shiv (Exhaust) comes back instead of exhausting.
     /// </summary>
