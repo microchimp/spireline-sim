@@ -852,17 +852,37 @@ class UndefinedFieldTests(Refusals):
 # ── Warnings ─────────────────────────────────────────────────────────────────
 
 
+def unmodelled_power() -> str:
+    """Return a live power id the game has and the emulator has no BuffId for.
+
+    The first by name, so the choice is stable until that power is modelled. The two
+    powers `to_buffs` handles before it looks for a BuffId (the AI-field powers and
+    Thievery) are not candidates.
+    """
+    candidates = sorted(
+        entry
+        for entry in powers._known_powers()
+        if powers.buff_id(entry) is None
+        and entry not in powers.AI_FIELD_POWERS
+        and entry != powers._THIEVERY
+    )
+    assert candidates, "every live power has a BuffId now: the unmodelled-power warning is dead"
+    return candidates[0]
+
+
 class WarningTests(unittest.TestCase):
     """Known content the emulator cannot be told about warns instead of refusing."""
 
     def test_an_unmodelled_power_warns_and_is_unreliable(self) -> None:
-        # TankPower has no BuffId (it is MultiplayerOnly content; buff_map resolves it to
-        # nothing), so the emulator cannot hold it.
+        # A power the game has and the emulator has no BuffId for, so it cannot hold it.
+        # Taken from the tables, never named: this test named TANK_POWER until the emulator
+        # modelled it (9c9e3cba), and then no longer tested the warning at all.
+        unmodelled = unmodelled_power()
         doc = load("player")
-        doc["player"]["powers"].append({"id": "TANK_POWER", "amount": 1})
+        doc["player"]["powers"].append({"id": unmodelled, "amount": 1})
         result = convert.convert(doc)
         self.assertEqual(len(result.warnings), 1)
-        self.assertIn("TANK_POWER", result.warnings[0])
+        self.assertIn(unmodelled, result.warnings[0])
         self.assertFalse(result.reliable)
         self.assertEqual(
             result.doc["player"]["buffs"],

@@ -31,6 +31,7 @@ moves = importlib.import_module("sts2_gym.live.moves")
 names = importlib.import_module("sts2_gym.names")
 native = importlib.import_module("sts2_gym.native")
 live_package = importlib.import_module("sts2_gym.live")
+powers = importlib.import_module("sts2_gym.live.powers")
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "live"
 
@@ -688,11 +689,31 @@ class RareDrawTests(unittest.TestCase):
 # ── Checks that cannot be made ───────────────────────────────────────────────
 
 
+def unmodelled_power() -> str:
+    """Return a live power id the game has and the emulator has no BuffId for.
+
+    Taken from the tables, never named: these tests named TANK_POWER until the emulator
+    modelled it (9c9e3cba), and then they compared a position instead of refusing it. The
+    first by name, so the choice is stable until that power is modelled; the two powers
+    `to_buffs` handles before it looks for a BuffId (the AI-field powers and Thievery) are
+    not candidates.
+    """
+    candidates = sorted(
+        entry
+        for entry in powers._known_powers()
+        if powers.buff_id(entry) is None
+        and entry not in powers.AI_FIELD_POWERS
+        and entry != powers._THIEVERY
+    )
+    assert candidates, "every live power has a BuffId now: nothing is left to refuse"
+    return candidates[0]
+
+
 class NotComparableTests(unittest.TestCase):
-    # The Tank power is the co-op guardian's; the emulator has no buff for it.
-    UNMODELLED = {"id": "TANK_POWER", "amount": 1}
+    # A power the emulator has no buff for, so a position holding it cannot be compared.
+    UNMODELLED = {"id": unmodelled_power(), "amount": 1}
     WARNING = (
-        "player.powers[0]: TANK_POWER has no emulator BuffId (unmodelled); dropped"
+        f"player.powers[0]: {UNMODELLED['id']} has no emulator BuffId (unmodelled); dropped"
     )
 
     def assert_not_comparable(
