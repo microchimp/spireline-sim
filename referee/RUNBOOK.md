@@ -407,6 +407,12 @@ What the comparison does, per run:
   a snapshot carries that the emulator does not export is named per run (e.g. Spoils Map's
   `SpoilsActIndex`, Touch of Orobas' and Dusty Tome's pickup records, Byrdpip's skin).
 
+- Taken as divergences, never as passes: a game fight the replay never played, an offer the replay did not export
+  (an event's options are exported as its action mask, `enabled`, and compared at every index), a snapshot it did
+  not export and a replay paired with another seed's run. With `--id-map ''` the fight steps are not compared
+  (printed, never counted identical) while each fight's outcome still is (broken cases:
+  `tests/python/test_run_compare2_broken.py`).
+
 To compare a new relic counter, add it to `RunSnap.RelicProps` (getter and setter in the game's units;
 `Absent` for a `SaveIfNotTypeDefault` property, mirrored in `run_snapshot.SAVED_IF_NOT_DEFAULT`; a
 counter the game reads modulo n goes in `run_snapshot.PROP_MOD`).

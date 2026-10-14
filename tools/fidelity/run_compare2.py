@@ -117,11 +117,20 @@ def room_of(screen: str, game: dict, emu: dict) -> list:
     return out
 
 
+NOT_COMPARED_FIGHT = "fight steps (no --id-map)"
+
+
 def fight_diff(game: dict, emu: dict, nm: dict | None):
     """The first fight step whose state differs (fight_compare's views), or None. A replay that ends
-    before the game's fight (or goes on after it) differs at the first step one side lacks."""
-    if nm is None or "fight" not in game or "fight" not in emu:
+    before the game's fight (or goes on after it) differs at the first step one side lacks, and a game
+    fight the replay has no record of differs at step 0. Without an id map the steps cannot be compared:
+    NOT_COMPARED_FIGHT, which the caller counts as not compared, never as identical."""
+    if "fight" not in game:
         return None
+    if "fight" not in emu:
+        return 0, None, [("steps", len(game["fight"].get("steps", [])), "no fight in the replay")]
+    if nm is None:
+        return NOT_COMPARED_FIGHT
     from tools.fidelity.fight_compare import diff, emu_view, game_view
     gsteps, esteps = game["fight"]["steps"], emu["fight"]["steps"]
     for i, (gs, es) in enumerate(zip(gsteps, esteps)):
@@ -212,22 +221,35 @@ def compare_decision(d: dict, ed: dict, nm, game_maps: list | None = None) -> li
         diffs.append(("replay", d.get("choice"), ed["error"]))
     screen = d.get("screen", "")
     go, eo = norm_offer(screen, d.get("offer"), False), norm_offer(screen, ed.get("offer"), True)
-    if screen == "rewards" and d.get("depth") and go is not None and eo is not None:
+    if screen == "event":
+        # RunReplay.Apply exports an event's options as its action mask ("enabled", "option_count"), never
+        # as an offer (every other screen with an offer gets "offer"): event_options compares them, and a
+        # mask the replay did not export is a difference.
+        if d.get("offer") is not None and ed.get("enabled") is not None:
+            diffs += event_options(d, ed)[0]
+        elif d.get("offer") is not None and not ed.get("error"):
+            diffs.append(("event options enabled", [i for i, o in enumerate(d["offer"]) if not o[1]], None))
+    elif go is not None and eo is None:
+        # An offer the game showed and the replay did not export is a difference, not a pass (a replay
+        # that failed there has its error as the difference already).
+        if not ed.get("error"):
+            diffs.append(("offer", go, None))
+    elif screen == "rewards" and d.get("depth") and go is not None:
         # A screen a reward opened on top of another (Lost Coffer off Neow's Bones): the emulator
         # keeps one screen and adds the inner rewards to it, so the inner screen's offer is a
         # part of the emulator's.
         if any(x not in eo for x in go):
             diffs.append(("offer", go, eo))
-    elif go is not None and eo is not None and go != eo:
+    elif go is not None and go != eo:
         diffs.append(("offer", go, eo))
-    if screen == "event" and d.get("offer") is not None and ed.get("enabled") is not None:
-        diffs += event_options(d, ed)[0]
     diffs += room_of(screen, d, ed)
     if screen == "act_change" and ed.get("map") is not None and game_maps:
         act = (d.get("snap") or {}).get("current_act_index")
         if act is not None and act < len(game_maps):
             diffs += compare_map(game_maps[act], ed["map"])[:6]
-    if not diffs and d.get("snap") is not None and ed.get("snap") is not None:
+    if not diffs and d.get("snap") is not None and ed.get("snap") is None and not ed.get("error"):
+        diffs = [("run snapshot", "recorded", None)]
+    elif not diffs and d.get("snap") is not None and ed.get("snap") is not None:
         diffs = rs.compare(rs.from_save(d["snap"]), ed["snap"])
         if screen == "act_change":
             # Representation, not rules: on a new act the emulator stands on the act's start point
@@ -279,6 +301,11 @@ def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
             totals["not recorded"] += 1
             continue
         decisions = ref["decisions"]
+        if emu.get("seed") not in (None, seed):
+            # Results are paired by position: one of another run is never a match.
+            print(f"{seed}: paired with the emulator's replay of {emu.get('seed')}")
+            totals["mispaired"] += 1
+            continue
         edec = emu.get("decisions") or []
         totals["decisions"] += len(decisions)
         first = outside = None
@@ -299,13 +326,17 @@ def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
                 nf += 1
                 enc = rs.enc(d.get("encounter")) or "?"
                 fd = fight_diff(d, ed, nm)
-                if fd:
+                steps_compared = fd != NOT_COMPARED_FIGHT
+                if not steps_compared:
+                    # The steps are not compared (and never counted identical); the outcome still is.
+                    run_unchecked.add(NOT_COMPARED_FIGHT)
+                if fd and steps_compared:
                     in_fight[enc] += 1
                     step, act, fdiffs = fd
                     fdiv = [(f"step {step} after {rs.short(act, 60)}: {p}", g, e) for p, g, e in fdiffs[:3]]
                     kind = "in fight"
                 else:
-                    same_steps += 1
+                    same_steps += steps_compared
                     fdiv = fight_outcome(d, ed, decisions[i + 1] if i + 1 < len(decisions) else None)
                     kind = "outcome"
                     if d.get("result") not in ("win", "death"):
@@ -313,7 +344,7 @@ def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
                     elif fdiv:
                         outcome_fields[field_of(fdiv[0][0])] += 1
                     else:
-                        same_outcome += 1
+                        same_outcome += steps_compared
                 if fdiv:
                     notes.append(f"  fight at decision {i} ({enc}), {kind}: "
                                  + "; ".join(f"{p}: game {rs.short(g, 70)} emulator {rs.short(e, 70)}"
@@ -354,6 +385,8 @@ def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
         if run_unchecked:
             print("  not compared here: " + ", ".join(sorted(run_unchecked)))
     nruns = len(refs)
+    if len(emus) < nruns:
+        print(f"{nruns - len(emus)} runs have no emulator replay")
     print(f"{nruns} runs, {totals['decisions']} decisions; {clean} with no divergence in what is compared")
     print("first divergence per run, fights included: "
           + (", ".join(f"{k} {v}" for k, v in by_first.most_common()) or "none"))
