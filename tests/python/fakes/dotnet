@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# A stand-in for dotnet, for tests/python/test_build_and_test.py: tools/build_and_test.sh run
+# against it step by step. Each subcommand's exit status and output come from FAKE_* variables.
+case "$1" in
+  --version) echo "9.0.0-fake" ;;
+  restore) exit "${FAKE_RESTORE:-0}" ;;
+  publish)
+    if [ "${FAKE_PUBLISH:-0}" = 0 ]; then mkdir -p out && echo fake > out/Sts2Emulator.dll; fi
+    exit "${FAKE_PUBLISH:-0}" ;;
+  test)
+    # Unset: a passing summary. Set but empty: no summary at all (a crashed test host).
+    # tools/emudump.Tests has its own pair (FAKE_EMU_SUMMARY, FAKE_EMU_TEST).
+    case "$*" in
+      *emudump.Tests*)
+        summary="${FAKE_EMU_SUMMARY-Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3}"
+        [ -n "$summary" ] && echo "$summary"
+        exit "${FAKE_EMU_TEST:-0}" ;;
+    esac
+    summary="${FAKE_CS_SUMMARY-Passed!  - Failed:     0, Passed:     7, Skipped:     0, Total:     7}"
+    [ -n "$summary" ] && echo "$summary"
+    exit "${FAKE_TEST:-0}" ;;
+  build) exit "${FAKE_BUILD:-0}" ;;
+  *) echo "fake dotnet: unexpected $*" >&2; exit 9 ;;
+esac

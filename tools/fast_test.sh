@@ -6,7 +6,10 @@
 #
 #   bash tools/fast_test.sh [shards=8] [extra dotnet test --filter, e.g. "FullyQualifiedName~Splash"]
 #
-# Prints one line per shard and a total; exit 0 only if every shard passed.
+# The EmuDump tools' suite (tools/emudump.Tests: the codex walker, the dump, the setup mirror, the state
+# lifecycle) runs beside the shards in its own process, as one more line (test-emudump.log); a --filter
+# run is the emulator suite's only. Prints one line per shard and a total; exit 0 only if every shard
+# and the EmuDump suite passed (each with a summary).
 set -u -o pipefail
 N="${1:-8}"; EXTRA="${2:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +18,9 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 LOG="$(mktemp -d)"
 t0=$(date +%s)
 dotnet build src/Sts2Emulator.Tests/ --no-restore -v q > "$LOG/build.log" 2>&1 || { tail -20 "$LOG/build.log"; exit 2; }
+if [ -z "$EXTRA" ]; then
+  dotnet build tools/emudump.Tests/ --no-restore -v q >> "$LOG/build.log" 2>&1 || { tail -20 "$LOG/build.log"; exit 2; }
+fi
 if [ -n "$EXTRA" ]; then
   dotnet test src/Sts2Emulator.Tests/ --no-build --filter "$EXTRA" 2>&1 | grep -E "Passed!|Failed!|  Failed "
   exit "${PIPESTATUS[0]}"
@@ -32,15 +38,18 @@ for s in $(seq 0 $((N - 1))); do
   dotnet test src/Sts2Emulator.Tests/ --no-build --filter "$filter" > "$LOG/test$s.log" 2>&1 &
   pids+=($!)
 done
+dotnet test tools/emudump.Tests/ --no-build > "$LOG/test-emudump.log" 2>&1 &
+pids+=($!)
 rc=0
 for p in "${pids[@]}"; do wait "$p" || rc=1; done
 passed=0; failed=0
 for f in "$LOG"/test*.log; do
   line=$(grep -Eo 'Failed:\s*[0-9]+, Passed:\s*[0-9]+' "$f" | tail -1)
   echo "$(basename "$f"): ${line:-no summary}"
+  [ -n "$line" ] || rc=1  # a test host that crashed or ran nothing is no pass
   f_=$(echo "$line" | grep -Eo 'Failed:\s*[0-9]+' | grep -Eo '[0-9]+'); p_=$(echo "$line" | grep -Eo 'Passed:\s*[0-9]+' | grep -Eo '[0-9]+')
   failed=$((failed + ${f_:-0})); passed=$((passed + ${p_:-0}))
   grep -E "^\s+Failed " "$f" | head -5
 done
-echo "total: $total classes, passed $passed, failed $failed, $(( $(date +%s) - t0 )) s (logs $LOG)"
+echo "total: $total classes + tools/emudump.Tests, passed $passed, failed $failed, $(( $(date +%s) - t0 )) s (logs $LOG)"
 [ "$rc" = 0 ] && [ "$failed" = 0 ]

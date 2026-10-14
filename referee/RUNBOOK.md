@@ -47,6 +47,9 @@ It streams: one pool of game servers (`--parallel`) plays the whole batch, finis
    - Re-run the failing fights; the fix must make them identical.
 7. **Gate and push**: `BASELINE_FAILURES=/d/spireline/logs/baseline-python-failures.txt bash tools/build_and_test.sh /d/spireline/logs/fork-$(date +%Y%m%d-%H%M%S) /d/spireline/src/sts2/.venv/Scripts/python.exe`.
    Push only if C# shows `Failed: 0`, Python has no failures beyond the baseline (the deckfights stall test no longer races the process start: its workers are in a light module)
+   Push only if it exits 0 (`gate` is `pass` in `results.json`: restore and publish passed, `src/Sts2Emulator.Tests` and
+   `tools/emudump.Tests` each show `Failed: 0` in a summary; exit 1 when a step failed or its output is unreadable, 3 when
+   the corpus check was skipped), Python has no failures beyond the baseline (the deckfights stall test is a known 1-in-3 timing flake)
    and `corpus_check_exit` is `0`: no recorded fight regressed (section "Recorded-fight corpus" below; `5-corpus-check.log` lists any). Commit message: what diverged, the game class it was checked against, the fights that now match, ending with the attribution line the session gives. Then `git push origin main`.
 8. Log every finding in `referee/FINDINGS.md` (one line: date, seed, step, cause, fix commit or "open").
 

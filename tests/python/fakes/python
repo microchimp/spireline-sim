@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# A stand-in for the Python that tools/build_and_test.sh is given, for
+# tests/python/test_build_and_test.py. "-m unittest ..." prints FAKE_PY_LOG_FILE and exits
+# FAKE_PY_EXIT; "tools/fidelity/corpus.py ... check" prints a check line and exits FAKE_CORPUS.
+if [ "$1" = "-m" ]; then
+  [ -n "${FAKE_PY_LOG_FILE:-}" ] && cat "$FAKE_PY_LOG_FILE"
+  exit "${FAKE_PY_EXIT:-0}"
+fi
+echo "check: ${FAKE_CORPUS_LINE:-ok: 0 regressed fights}"
+exit "${FAKE_CORPUS:-0}"
