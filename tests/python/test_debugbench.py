@@ -356,7 +356,8 @@ class Bench(unittest.TestCase):
         with self.assertRaises(db.BenchError):
             db.Ctx(self.repo, self.bench, "main", truth=self.bench / "truth").need_truth()  # never under the bench
         with redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(db.main(["--fork", str(self.repo), "--bench", str(self.bench), "list", "--truth"]), 2)
+            self.assertEqual(db.main(["--fork", str(self.repo), "--bench", str(self.bench), "list", "--split", "all",
+                                      "--truth", "--heldout"]), 2)  # either split: the ids follow the commits
         self.assertIn("truth store", out.getvalue())
 
     def test_the_base_and_brief_name_nothing_of_the_fix(self):
