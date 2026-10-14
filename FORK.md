@@ -52,7 +52,8 @@ code must never see (review condition E12).
   difference, the rule probe and the related ledger lines, each marked full, partial or missing; see
   `referee/RUNBOOK.md`, section "Diagnosis packets". Starts no game.
 - `debugbench.py`: a debugging benchmark from this fork's own history (past engine fixes undone on today's
-  main, a held-out set, what the gates show, scores and reports); local data only, see `referee/RUNBOOK.md`.
+  main, a held-out set, what the gates show incl. the reference set and the codex replay, a fixer harness, scores
+  by behaviour and mechanism, reports); local data only, the answers in a truth store apart, see `referee/RUNBOOK.md`.
 
 ```
 python -m tools.fidelity.checks --emu <emulator checkout with out/ built> --encounters all --seeds 4
