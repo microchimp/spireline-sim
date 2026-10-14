@@ -72,10 +72,19 @@ PlayCard (chosen)                      AutoPlay(card, AutoPlaySource)  = CardCmd
   earring the stars it spent (`skipXCapture`) and its own selector (`VakuuCardSelector`).
 - `PlayRequest`: `IsAutoPlay`, the resources (`EnergyValue`, `LastStarsSpent`),
   `ForceExhaust`, `IsDupe`. `ResolvePlay` is the only body: chosen plays and every auto-play
-  get the same play count, Before/After hooks, counters and result pile.
+  run the same play-count rules, Before/After hooks, counters and result-pile rules, each
+  play settling its own count and pile when it is set up.
 - `DecideResultPile`: the result pile is decided as the play is set up, before the effect
   (the card's own pile, then Corruption and Feral over it, then Rebound and Nostalgia over a
-  discard, each spent there), so an auto-play inside the card cannot move it.
+  discard, each spent there), so an auto-play inside the card cannot move it. Shining
+  Strike's own pile is the discard (Rebound redirects it and is spent); it then tops itself
+  in its `OnPlay`.
+- `SettlePlayCount` (`GeneratePlayCount`): after the result pile and before the first
+  effect, the card's replays (Spiral, Glam, Hidden Gem's Replay), then Burst, Echo Form,
+  Throwing Axe, Signal Boost, Duplication and One-Two Punch, each spent there; Echo Form
+  counts the turn's plays started before this one. A play nested inside the card (Havoc's
+  Strike, a Sly card its discard plays, a Strike Hellraiser plays out of its draw) is set up
+  later and finds them already spent, so it never takes the outer card's.
 - `AutoPlayFromPile(pile, index)`: the card leaves its pile only if the auto-play starts.
 - A play nested inside another (a Strike Hellraiser plays out of a Pommel Strike's draw, a
   Shiv out of Knife Trap) saves and restores the outer play's per-play fields (`PlayFrame`).
