@@ -63,12 +63,13 @@ public static class NativeExports
     //      that a reload's shuffle pointed at other cards.
     // v33: a screen raised in the middle of a step (a card's, a potion's, a turn start's) stops the
     //      step there: the observation shows the screen over the combat as it stands mid-step, and
-    //      the answer runs the rest of the step. Sts2_GetStateJson writes such a combat as the
-    //      screen over the combat, as the player sees it, and nothing of the step: the step's
-    //      start in its true world names the future. Sts2_GetSaveJson, banned outside
-    //      verification and save code like Sts2_GetPile (review condition E12), writes it with
-    //      its stopped step (stopped_step), which Sts2_LoadCombatSnapshot puts back on the
-    //      screen; a library from before refuses the field.
+    //      the answer runs the rest of the step. Sts2_GetStateJson writes such a combat with the
+    //      public part of its stopped step (stopped_step: the kind of step, the card or potion in
+    //      play, the answers, the step's start as the player saw it; never the true order or a
+    //      stream), which Sts2_LoadCombatSnapshot puts back on the screen so that its answer
+    //      finishes the step as answering in memory does. Sts2_GetSaveJson, banned outside
+    //      verification and save code like Sts2_GetPile (review condition E12), adds the step's
+    //      true world. A library from before refuses the field.
     public const int NATIVE_API_VERSION = 33;
 
     /// <summary>

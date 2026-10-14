@@ -76,28 +76,29 @@ public sealed class SnapshotException : Exception
 /// </para>
 /// <para>
 /// A combat stopped on a screen raised in the middle of a step (a card's OnPlay, a potion, the
-/// turn start) is the one position a step has NOT returned from. <see cref="Write" /> writes it as
-/// the player sees it -- the screen over the combat as it stands at that moment -- and nothing of
-/// the step it stopped: what reaches the rest of the step is the step's start in its TRUE world,
-/// its exact draw order and the generator lanes of every stream, and that names the future (a
-/// stopped Burning Pact's start names the two cards it draws). So two determinized copies of one
-/// stopped combat, and two combats that look the same, write the same document. Loaded, the screen
-/// stands and is answered by itself, as a screen in a document from the live game is: the rest of
-/// the step (the played card's way to its pile and its after-play hooks, the turn start after the
-/// pick) is not in the document, and the live converter finishes the play in its document for
-/// that reason.
+/// turn end, the turn start) is the one position a step has NOT returned from: the screen stands over
+/// the combat as it is at that moment, with the card being played in the play pile, and the rest of
+/// the step -- the card's way to its pile and its after-play hooks, the hand draw after Foregone
+/// Conclusion's pick, the turn end after Well-Laid Plans' -- runs once the screen is answered.
+/// <see cref="Write" /> writes it with the public part of the step it stopped (<c>stopped_step</c>,
+/// <see cref="WriteStoppedStep" />): the kind of step, the card or potion in play, the action, the
+/// answers so far, and the step's start as the player saw it, written as this document is written.
+/// Never the start's true draw order or the streams: those name the future (a stopped Burning Pact's
+/// true start names the two cards it draws). So two determinized copies of one stopped combat write
+/// the same document. Loaded, the step goes on from the screen as it does in memory: its answer
+/// replays the step from the public start in the loader's world, and where the replay reaches the
+/// screen the loaded copy is put back whole (<see cref="HookChoiceReplay" />,
+/// <see cref="ScreenHiddenState" />), so the counts, the counters and the rest of the turn come out
+/// as answering in memory does. A document from the live game has no such block (the live
+/// converter finishes the play in its document instead).
 /// </para>
 /// <para>
-/// <see cref="WriteSave" /> is the emulator's save document: the same document plus
-/// <c>stopped_step</c>, the step's start as a document of its own with its draw order and streams,
-/// the action, and the answers given so far with the hidden state of each answering copy
-/// (<see cref="HookChoiceReplay" />). <see cref="Read" /> puts it back on the loaded screen, whose
-/// answer replays the step from that start and puts the loaded copy's own streams and order back at
-/// the screen, so the card goes on to its pile and the turn start goes on. It carries the true draw
-/// order and the RNG positions, so it is banned outside verification and save code, as
-/// <c>Sts2_GetPile</c> and <c>Sts2_RngCallCount</c> are (review condition E12): native
-/// <c>Sts2_GetSaveJson</c>, Python <c>native.get_save_json</c>. A document from the live game never
-/// has the block.
+/// <see cref="WriteSave" /> is the emulator's save document: the same document plus the true world of
+/// the stopped step (<c>before_draw</c>, <c>before_streams</c>, <c>answer_indices</c>, <c>hidden</c>):
+/// the start's draw order and streams and the hidden state of each answering copy, so that a load
+/// replays the step from its true start. It carries the true draw order and the RNG positions, so it
+/// is banned outside verification and save code, as <c>Sts2_GetPile</c> and <c>Sts2_RngCallCount</c>
+/// are (review condition E12): native <c>Sts2_GetSaveJson</c>, Python <c>native.get_save_json</c>.
 /// </para>
 /// <para>
 /// JsonDocument and Utf8JsonWriter only, never the reflection serializer: the core is
@@ -138,16 +139,18 @@ public static class CombatSnapshot
 
     /// <summary>
     /// The combat as a document. Every optional field is written explicitly, so a document
-    /// read back in reproduces the state exactly -- except a step stopped on a screen, which
-    /// the document leaves out (it reaches the true world; see the remarks): use it wherever
-    /// an agent, a search or the live game's side reads positions.
+    /// read back in reproduces the state exactly -- the unseen order and the streams aside, which
+    /// the loader's seed decides, and a step stopped on a screen, of which it writes the public
+    /// part (see the remarks): use it wherever an agent, a search or the live game's side reads
+    /// positions.
     /// </summary>
     public static byte[] Write(CombatState state) => WriteDocument(state, save: false);
 
     /// <summary>
-    /// The save document: <see cref="Write" />'s, plus the step stopped on the screen
-    /// (<c>stopped_step</c>), with its start's true draw order and streams. Banned outside
-    /// verification and save code (review condition E12), as the true pile is.
+    /// The save document: <see cref="Write" />'s, plus the true world of the step stopped on the
+    /// screen (<c>stopped_step</c>): its start's true draw order and streams, and each answer's
+    /// true index and hidden state. Banned outside verification and save code (review condition
+    /// E12), as the true pile is.
     /// </summary>
     public static byte[] WriteSave(CombatState state) => WriteDocument(state, save: true);
 
@@ -280,7 +283,10 @@ public static class CombatSnapshot
     ];
 
     private static readonly string[] StoppedStepFields =
-        ["action", "target", "answers", "before", "before_draw", "before_streams", "hidden"];
+        ["step", "card", "potion", "action", "target", "answers", "before", "answer_indices", "before_draw", "before_streams", "hidden"];
+
+    /// <summary>An answer the document names by card: a pick from the draw pile.</summary>
+    private static readonly string[] AnswerFields = ["card"];
 
     private static readonly string[] StreamFields = ["seed", "count", "lanes"];
 
@@ -471,7 +477,12 @@ public static class CombatSnapshot
     /// <summary>
     /// A screen raised in the middle of a step (<see cref="HookChoiceReplay" />): the step it stopped,
     /// as <see cref="WriteStoppedStep" /> wrote it, put back on the screen so that its answer runs the
-    /// rest of the step. Refused without a screen to put it on.
+    /// rest of the step. Refused without a screen to put it on, and when its kind or the card or
+    /// potion in play is not what its start and action make it. The agent's block (no
+    /// <c>before_streams</c>) is a step from a document (<see cref="HookChoiceReplay.FromDocument" />):
+    /// its start is read with <paramref name="seed" /> like the rest of the document, and its answers
+    /// have no hidden state. The save document's adds the start's true order and streams and each
+    /// answer's hidden state and true index.
     /// </summary>
     private static void ReadStoppedStep(Fields root, CombatState state, int seed)
     {
@@ -497,46 +508,140 @@ public static class CombatSnapshot
             throw new SnapshotException(fields.At("before"), "the step's start cannot itself be stopped");
         }
 
-        var order = fields.Items("before_draw", ReadCard);
-        if (!SameCards(order, before.DrawPile))
+        // Each answer is an index, or {"card": ...} for a pick from the draw pile, named by its card.
+        var given = fields.Items("answers", ReadAnswer);
+        HookChoiceReplay replay;
+        if (!fields.TryGet("before_streams", out _))
         {
-            throw new SnapshotException(fields.At("before_draw"), "not the cards of before's draw pile");
-        }
-
-        before.DrawPile = order;
-        var (streams, stepRng) = ReadStreams(fields.Child("before_streams", StreamNames));
-        for (int i = 0; i < streams.Length; i++)
-        {
-            StateCloning.SetStream(before, i, streams[i]);
-        }
-
-        var hidden = fields.Items(
-            "hidden",
-            (item, path) =>
+            foreach (string saveOnly in (string[])["before_draw", "hidden", "answer_indices"])
             {
-                var entry = new Fields(item, path, HiddenFields);
-                var (kept, keptStep) = ReadStreams(entry.Child("streams", StreamNames));
-                var candidates = entry.NullableItems("candidates", ReadCandidate);
-                return new ScreenHiddenState(kept, keptStep, [.. entry.Items("draw", ReadCard)], candidates?.ToArray());
+                if (fields.TryGet(saveOnly, out _))
+                {
+                    throw new SnapshotException(fields.At(saveOnly), "a save document's field without the step's streams (before_streams)");
+                }
             }
-        );
-        var answers = fields.Items("answers", (item, path) => AsInt(item, path));
-        if (hidden.Count != answers.Count)
-        {
-            throw new SnapshotException(fields.At("hidden"), $"{hidden.Count} entries for {answers.Count} answers");
-        }
 
-        state.PendingSelection = screen.Clone(
-            new HookChoiceReplay
+            replay = new HookChoiceReplay
+            {
+                Before = before,
+                RngBefore = null,
+                Action = fields.Int("action"),
+                TargetEnemyIndex = fields.Int("target"),
+                Answers = given,
+                Hidden = [.. given.Select(_ => ScreenHiddenState.None)],
+            };
+        }
+        else
+        {
+            var order = fields.Items("before_draw", ReadCard);
+            if (!SameCards(order, before.DrawPile))
+            {
+                throw new SnapshotException(fields.At("before_draw"), "not the cards of before's draw pile");
+            }
+
+            before.DrawPile = order;
+            var (streams, stepRng) = ReadStreams(fields.Child("before_streams", StreamNames));
+            for (int i = 0; i < streams.Length; i++)
+            {
+                StateCloning.SetStream(before, i, streams[i]);
+            }
+
+            var hidden = fields.Items(
+                "hidden",
+                (item, path) =>
+                {
+                    var entry = new Fields(item, path, HiddenFields);
+                    var (kept, keptStep) = ReadStreams(entry.Child("streams", StreamNames));
+                    var candidates = entry.NullableItems("candidates", ReadCandidate);
+                    return new ScreenHiddenState(kept, keptStep, [.. entry.Items("draw", ReadCard)], candidates?.ToArray());
+                }
+            );
+            var answers = fields.Items("answer_indices", (item, path) => AsInt(item, path));
+            if (hidden.Count != answers.Count || given.Count != answers.Count)
+            {
+                throw new SnapshotException(
+                    fields.At("answer_indices"),
+                    $"{answers.Count} answer indices for {given.Count} answers and {hidden.Count} hidden states"
+                );
+            }
+
+            replay = new HookChoiceReplay
             {
                 Before = before,
                 RngBefore = stepRng ?? throw new SnapshotException(fields.At("before_streams"), "no step stream"),
                 Action = fields.Int("action"),
                 TargetEnemyIndex = fields.Int("target"),
-                Answers = answers,
+                Answers = [.. answers.Zip(given, (index, answer) => answer with { Index = index })],
                 Hidden = hidden,
-            }
-        );
+            };
+        }
+
+        var (step, card, potion) = InPlay(replay, state.Turn);
+        string written = fields.Text("step");
+        if (written != step)
+        {
+            throw new SnapshotException(fields.At("step"), $"\"{written}\", but the step's start and action make it \"{step}\"");
+        }
+
+        if (fields.NullableCard("card") != card)
+        {
+            throw new SnapshotException(fields.At("card"), "not the card the action plays from the step's start");
+        }
+
+        int? potionWritten =
+            fields.TryGet("potion", out var potionElement) && potionElement.ValueKind != JsonValueKind.Null
+                ? AsInt(potionElement, fields.At("potion"))
+                : null;
+        if (potionWritten != potion)
+        {
+            throw new SnapshotException(fields.At("potion"), "not the potion the action drinks from the step's start");
+        }
+
+        state.PendingSelection = screen.Clone(replay);
+    }
+
+    /// <summary>An answer in a stopped step's block: an index, or a pick from the draw pile by its card (index -1).</summary>
+    private static StepAnswer ReadAnswer(JsonElement item, string path)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            return new StepAnswer(AsInt(item, path), null);
+        }
+
+        var answer = new Fields(item, path, AnswerFields);
+        return answer.NullableCard("card") is { } card
+            ? new StepAnswer(-1, card)
+            : throw new SnapshotException(answer.At("card"), "missing required field");
+    }
+
+    /// <summary>
+    /// What kind of step <paramref name="stopped" /> is and what it has in play: a card's play (the
+    /// card, in the play pile while its screen is open: in none of the document's piles), a potion
+    /// (its id), the turn end before the turn changes (Well-Laid Plans) or the next turn's start after
+    /// it (Foregone Conclusion, Tyranny, Entropy, Stratagem's shuffle), or the answer to a screen that
+    /// stood at the step's start. <paramref name="turn" /> is the turn on the screen.
+    /// </summary>
+    private static (string Step, CardInstance? Card, int? Potion) InPlay(HookChoiceReplay stopped, int turn)
+    {
+        var before = stopped.Before;
+        int hand = before.Hand.Count;
+        if (before.PendingSelection is not null)
+        {
+            return ("screen", null, null);
+        }
+
+        if (stopped.Action >= 0 && stopped.Action < hand)
+        {
+            return ("card_play", before.Hand[stopped.Action], null);
+        }
+
+        if (stopped.Action == hand)
+        {
+            return (turn != before.Turn ? "turn_start" : "end_turn", null, null);
+        }
+
+        int slot = stopped.Action - hand - 1;
+        return ("potion", null, slot >= 0 && slot < before.PotionSlots.Length ? before.PotionSlots[slot] : null);
     }
 
     private static (CountingRandom?[] Streams, CountingRandom? Step) ReadStreams(Fields fields)
@@ -1454,10 +1559,7 @@ public static class CombatSnapshot
         WriteItems(w, "enemies", state.Enemies, WriteEnemy);
         WriteCounters(w, state);
         WritePendingSelection(w, state);
-        if (save)
-        {
-            WriteStoppedStep(w, state);
-        }
+        WriteStoppedStep(w, state, save);
 
         w.WriteEndObject();
     }
@@ -1465,56 +1567,115 @@ public static class CombatSnapshot
     /// <summary>
     /// A screen raised in the middle of a step: the step it stopped (<see cref="HookChoiceReplay" />),
     /// so that a loaded copy's answer runs the rest of it -- the card goes on to its pile and its
-    /// after-play hooks run, the turn start goes on. The step's start is a document of its own (a
-    /// step has returned there, so the document holds it as it holds any position), with its draw
-    /// order and its streams: the history that leads to the screen, which the replay needs to reach
-    /// the same screen. The engine plays none of it past the screen -- there the replay puts back the
-    /// loaded copy's own streams and draw order (<see cref="ScreenHiddenState" />), and those, as
-    /// always, are the loader's -- but a reader of the block reads the true world, the future
-    /// included: the save document only (<see cref="WriteSave" />). Omitted when no step is stopped.
+    /// after-play hooks run, the hand is drawn after a turn-start pick, the turn ends after Well-Laid
+    /// Plans' -- as answering in memory does. Omitted when no step is stopped.
     /// </summary>
-    private static void WriteStoppedStep(Utf8JsonWriter w, CombatState state)
+    /// <remarks>
+    /// <para>
+    /// Every document writes the public part (<see cref="Write" />): the kind of step
+    /// (<c>step</c>: card_play, potion, end_turn, turn_start, screen), the card in play (<c>card</c>,
+    /// in the play pile: in none of the document's piles) or the potion, the action and target, the
+    /// answers given so far (a pick from the draw pile as <c>{"card": ...}</c>, since its index
+    /// points into the true order), and the step's start (<c>before</c>) as the player saw it: the
+    /// position the action was taken from, written as this document is written, its unseen cards a
+    /// sorted multiset and no stream. That start is history the player has seen; the replay of a
+    /// loaded one runs in the loader's world and reaches the screen's place in the step, where the
+    /// loaded copy is put back whole (<see cref="ScreenHiddenState" />). Two determinized copies of
+    /// one stopped combat write the same block, and so do two combats that look the same and started
+    /// the step from positions that look the same.
+    /// </para>
+    /// <para>
+    /// The save document (<see cref="WriteSave" />) adds the true world: the start's draw order
+    /// (<c>before_draw</c>) and streams (<c>before_streams</c>), each answer's true index
+    /// (<c>answer_indices</c>) and the hidden state of the copy that gave it (<c>hidden</c>). A reader
+    /// of those reads the future, so they are banned outside verification and save code. A step read
+    /// from the agent's document has no true world, and its save is the public part alone.
+    /// </para>
+    /// </remarks>
+    private static void WriteStoppedStep(Utf8JsonWriter w, CombatState state, bool save)
     {
         if (state.PendingSelection?.Replay is not { } stopped)
         {
             return;
         }
 
+        var (step, card, potion) = InPlay(stopped, state.Turn);
         w.WriteStartObject("stopped_step");
+        w.WriteString("step", step);
+        if (card is { } played)
+        {
+            w.WritePropertyName("card");
+            WriteCard(w, played);
+        }
+        else
+        {
+            w.WriteNull("card");
+        }
+
+        if (potion is { } drunk)
+        {
+            w.WriteNumber("potion", drunk);
+        }
+        else
+        {
+            w.WriteNull("potion");
+        }
+
         w.WriteNumber("action", stopped.Action);
         w.WriteNumber("target", stopped.TargetEnemyIndex);
-        WriteItems(w, "answers", stopped.Answers, (writer, answer) => writer.WriteNumberValue(answer));
-        w.WritePropertyName("before");
-        WriteCombat(w, stopped.Before, save: true);
-        WriteItems(w, "before_draw", stopped.Before.DrawPile, WriteCard);
-        w.WritePropertyName("before_streams");
-        WriteStreams(
-            w,
-            [.. Enumerable.Range(0, StateCloning.StreamCount).Select(i => StateCloning.Stream(stopped.Before, i))],
-            stopped.RngBefore
-        );
-        WriteItems(
-            w,
-            "hidden",
-            stopped.Hidden,
-            (writer, kept) =>
+        w.WriteStartArray("answers");
+        foreach (var answer in stopped.Answers)
+        {
+            if (answer.Pick is { } pick)
             {
-                writer.WriteStartObject();
-                writer.WritePropertyName("streams");
-                WriteStreams(writer, kept.Streams, kept.StepRng);
-                WriteItems(writer, "draw", kept.DrawPile, WriteCard);
-                if (kept.Candidates is { } candidates)
-                {
-                    WriteItems(writer, "candidates", candidates, (inner, index) => inner.WriteNumberValue(index));
-                }
-                else
-                {
-                    writer.WriteNull("candidates");
-                }
-
-                writer.WriteEndObject();
+                w.WriteStartObject();
+                w.WritePropertyName("card");
+                WriteCard(w, pick);
+                w.WriteEndObject();
             }
-        );
+            else
+            {
+                w.WriteNumberValue(answer.Index);
+            }
+        }
+
+        w.WriteEndArray();
+        w.WritePropertyName("before");
+        WriteCombat(w, stopped.Before, save: false);
+        if (save && !stopped.FromDocument)
+        {
+            WriteItems(w, "answer_indices", stopped.Answers, (writer, answer) => writer.WriteNumberValue(answer.Index));
+            WriteItems(w, "before_draw", stopped.Before.DrawPile, WriteCard);
+            w.WritePropertyName("before_streams");
+            WriteStreams(
+                w,
+                [.. Enumerable.Range(0, StateCloning.StreamCount).Select(i => StateCloning.Stream(stopped.Before, i))],
+                stopped.RngBefore
+            );
+            WriteItems(
+                w,
+                "hidden",
+                stopped.Hidden,
+                (writer, kept) =>
+                {
+                    writer.WriteStartObject();
+                    writer.WritePropertyName("streams");
+                    WriteStreams(writer, kept.Streams, kept.StepRng);
+                    WriteItems(writer, "draw", kept.DrawPile, WriteCard);
+                    if (kept.Candidates is { } candidates)
+                    {
+                        WriteItems(writer, "candidates", candidates, (inner, index) => inner.WriteNumberValue(index));
+                    }
+                    else
+                    {
+                        writer.WriteNull("candidates");
+                    }
+
+                    writer.WriteEndObject();
+                }
+            );
+        }
+
         w.WriteEndObject();
     }
 

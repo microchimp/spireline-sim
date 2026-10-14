@@ -346,7 +346,7 @@ public class CombatSnapshotTests
         foreach (var property in typeof(PendingCardSelection).GetProperties())
         {
             // The step a screen stopped is a whole combat to replay it from (HookChoiceReplay).
-            // A document carries the screen; its answer there resolves the screen alone.
+            // A document carries its public part, and its round trip is StoppedStepDocumentTests'.
             if (property.Name == nameof(PendingCardSelection.Replay))
             {
                 continue;

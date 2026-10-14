@@ -34,8 +34,9 @@ public class StoppedStepLifecycleTests
         [nameof(PendingCardSelection.GeneratedRetained)] = "data",
         [nameof(PendingCardSelection.Replay)] =
             "shared by Clone/CopyTo (never changed once made), dropped with the screen by Reset and Reanchor, "
-            + "written by the save document only (stopped_step), never by the agent's (it reaches the true "
-            + "world), and put back on the loaded screen: the tests below",
+            + "written by the agent's document as its public part (stopped_step: no true order, no stream) and "
+            + "by the save document with the true world, and put back on the loaded screen: the tests below "
+            + "and StoppedStepDocumentTests",
     };
 
     [Fact]
@@ -255,9 +256,9 @@ public class StoppedStepLifecycleTests
     /// <summary>
     /// The reviewer's probe, round 3: a fork determinized at a stopped Burning Pact wrote the step's
     /// start in its TRUE world (stopped_step.before_draw, before_streams), which names the two cards
-    /// the Pact really draws. The agent's document is the position as the player sees it: forks
-    /// resampled differently write the original's document, byte for byte, with no stopped step in
-    /// it, while the save document still holds the step.
+    /// the Pact really draws. The agent's document writes the public part of the step only: forks
+    /// resampled differently write the original's document, byte for byte, with no true order and no
+    /// stream in its stopped step, while the save document still holds them.
     /// </summary>
     [Fact]
     public void ForksResampledDifferentlyAtAStoppedPlayWriteTheSameDocument()
@@ -268,9 +269,10 @@ public class StoppedStepLifecycleTests
         var forks = new[] { 4242, 7, 999, 31337 }.Select(seed => Determinized(fight.State, seed)).ToList();
         Assert.True(forks.Select(fork => string.Join(",", fork.DrawPile.Select(card => card.DefId))).Distinct().Count() > 1);
 
-        Assert.False(Holds(original, "stopped_step"));
+        Assert.True(Holds(original, "stopped_step"));
+        Assert.False(Holds(original, "before_draw") || Holds(original, "before_streams") || Holds(original, "lanes"));
         Assert.All(forks, fork => Assert.Equal(original, CombatSnapshot.Write(fork)));
-        Assert.True(Holds(CombatSnapshot.WriteSave(fight.State), "stopped_step"));
+        Assert.True(Holds(CombatSnapshot.WriteSave(fight.State), "before_streams"));
     }
 
     /// <summary>
@@ -310,21 +312,25 @@ public class StoppedStepLifecycleTests
     }
 
     /// <summary>
-    /// The agent's document of a stopped play, loaded, is the screen alone, as a live document's is:
-    /// there is no step to replay, and the answer exhausts and draws from the loaded copy's own pile.
+    /// The agent's document of a stopped play, loaded under another seed and answered, finishes the
+    /// play (round 4's lost the card for good): Burning Pact goes to the discard, the play counts, and
+    /// the Pact draws its two from the loaded copy's own pile.
     /// </summary>
     [Fact]
-    public void TheAgentsDocumentOfAStoppedPlayLoadsAsTheScreenAlone()
+    public void TheAgentsDocumentOfAStoppedPlayFinishesThePlay()
     {
         var fight = StoppedPact(Twelve, seed: 77);
 
         var loaded = CombatSnapshot.Read(CombatSnapshot.Write(fight.State), seed: 5, out _);
-        Assert.Null(loaded.PendingSelection!.Replay);
+        Assert.True(loaded.PendingSelection!.Replay!.FromDocument);
         var top = loaded.DrawPile.Take(2).ToList();
         CombatEngine.Step(loaded, 0, new CountingRandom(5));
 
         Assert.Null(loaded.PendingSelection);
         Assert.Equal(top, loaded.Hand.TakeLast(2));
+        Assert.Contains(loaded.DiscardPile, card => card.DefId == IC.BurningPact);
+        Assert.Equal(16, loaded.Hand.Count + loaded.DrawPile.Count + loaded.DiscardPile.Count + loaded.ExhaustPile.Count);
+        Assert.Equal(1, loaded.CardsPlayedThisCombat);
     }
 
     /// <summary>The document carries no RNG of its own: hand the loaded copy the original's streams.</summary>

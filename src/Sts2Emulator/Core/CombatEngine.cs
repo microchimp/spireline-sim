@@ -29,10 +29,24 @@ public static class CombatEngine
             }
 
             // The combat answering is the copy that stood on the screen, perhaps determinized
-            // there: its hidden state goes back on when the replay reaches the screen.
-            var hidden = ScreenHiddenState.Of(state, rng);
+            // there: its hidden state goes back on when the replay reaches the screen -- the whole
+            // copy for a step read from the agent's document, whose start is public, not true.
+            var hidden = stopped.FromDocument ? ScreenHiddenState.WholeOf(state, rng) : ScreenHiddenState.Of(state, rng);
+            CardInstance? pick =
+                open.Kind.ChoosesFromDrawPile() && action < open.Candidates.Count && open.Candidates[action] is int at && at >= 0 && at < state.DrawPile.Count
+                    ? state.DrawPile[at]
+                    : null;
             stopped.Before.CopyTo(state);
-            if (rng is CountingRandom live)
+            if (stopped.RngBefore is null)
+            {
+                // A start from a document has no true streams: the replay up to the screen runs on
+                // the answering copy's, and the screen puts the copy back as it stood.
+                for (int i = 0; i < StateCloning.StreamCount; i++)
+                {
+                    StateCloning.SetStream(state, i, hidden.Streams[i]?.Copy());
+                }
+            }
+            else if (rng is CountingRandom live)
             {
                 live.RestoreFrom(stopped.RngBefore);
             }
@@ -50,7 +64,7 @@ public static class CombatEngine
                 Rng = rng,
                 Action = stopped.Action,
                 TargetEnemyIndex = stopped.TargetEnemyIndex,
-                Answers = [.. stopped.Answers, action],
+                Answers = [.. stopped.Answers, new StepAnswer(action, pick)],
                 Hidden = [.. stopped.Hidden, hidden],
             };
             (action, targetEnemyIndex) = (stopped.Action, stopped.TargetEnemyIndex);

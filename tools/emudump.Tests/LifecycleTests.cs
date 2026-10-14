@@ -68,6 +68,8 @@ public class LifecycleTests(ITestOutputHelper output)
     const string Counter = "a per-turn or per-combat counter or flag the game's snapshot does not show, carried (Reanchor.cs header)";
     const string TurnStartHeld = "a turn start stopped at a relic's screen: where it goes on, carried with the open selection it waits on (PendingSelection*)";
     const string StepLocal = "in-step bookkeeping, idle when a step has returned with the fight going on (Transient_fields_are_idle_after_every_step), carried";
+    const string SharedStop = "a stopped step's record (HookChoiceReplay) is never changed once made, so Clone and CopyTo share it by design: a replay copies Before and RngBefore into the combat, PutBack copies the streams and the whole copy out, and CardInstance is a value type (StoppedStepLifecycleTests.CloneAndCopyToShareTheStoppedStep)";
+    const string PublicStop = "the agent's document writes a stopped step's public part only (StoppedStepDocumentTests): no stream, no answering copy's hidden state, the start's unseen cards a multiset; Read gives back a step from a document, whose answer replays the start in the loader's world and puts the loaded copy back whole at the screen. The true world is the save document's (WriteSave; StoppedStepLifecycleTests)";
 
     /// <summary>
     /// Per stage, the fields it leaves alone on purpose, with the reason. A key ending in * matches every
@@ -83,8 +85,12 @@ public class LifecycleTests(ITestOutputHelper output)
             ["RunState.Rng.StringSeed"] = SeedDerived,
             ["RunState.PlayerRng"] = SeedDerived,
             ["RunState.PlayerRng.Seed"] = SeedDerived,
+            ["CombatState.PendingSelection.Replay*"] = SharedStop,
         },
-        ["copyto"] = new(),
+        ["copyto"] = new()
+        {
+            ["CombatState.PendingSelection.Replay*"] = SharedStop,
+        },
         ["reset"] = new()
         {
             ["CombatState.Unlocks"] = Profile,
@@ -131,6 +137,11 @@ public class LifecycleTests(ITestOutputHelper output)
             ["CombatState.LastAttackOrSkillThisTurn"] = HolderRetain,
             ["CombatState.LastAttackOrSkillLastTurn"] = HolderRetain,
             ["CombatState.Enemies[].StolenCard"] = HolderRetain,
+            ["CombatState.PendingSelection.Replay.Answers[].Pick"] = HolderRetain,
+            ["CombatState.PendingSelection.Replay"] = PublicStop,
+            ["CombatState.PendingSelection.Replay.Before"] = PublicStop,
+            ["CombatState.PendingSelection.Replay.RngBefore"] = PublicStop,
+            ["CombatState.PendingSelection.Replay.Hidden*"] = PublicStop,
             ["*.Retain"] = RetainUnread,
         },
         ["reanchor"] = new()
@@ -403,6 +414,7 @@ public class LifecycleTests(ITestOutputHelper output)
         if (t == typeof(string)) return "";
         if (t.IsArray) return Array.CreateInstance(t.GetElementType()!, 0);
         if (t == typeof(PendingCardSelection)) return OpenSelection();
+        if (t == typeof(HookChoiceReplay)) return StoppedStep();
         if (StateWalk.IsEngineType(t) && Prototype(t) is { } proto) return DeepCopy(proto)!;
         if (t.IsInterface && StateWalk.ElementType(t) is { } el) return Activator.CreateInstance(typeof(List<>).MakeGenericType(el))!;
         if (t.IsValueType && !StateWalk.IsEngineType(t)) return Activator.CreateInstance(t)!;
@@ -744,6 +756,20 @@ public class LifecycleTests(ITestOutputHelper output)
         Kind = Enum.GetValues<CardSelectionKind>().First(k => k != CardSelectionKind.None),
         Candidates = [0],
         SourceCardDefId = Template.Value.State.ActiveCombat!.Hand[0].DefId,
+    };
+
+    /// <summary>
+    /// A stopped step's record as a step that stops leaves one (the engine never makes one without its start
+    /// and its stream): the template's combat as the start, a play of its first card, no answer yet.
+    /// </summary>
+    static HookChoiceReplay StoppedStep() => new()
+    {
+        Before = Template.Value.State.ActiveCombat!.Clone(),
+        RngBefore = new CountingRandom(977),
+        Action = 0,
+        TargetEnemyIndex = -1,
+        Answers = new List<StepAnswer>(),
+        Hidden = new List<ScreenHiddenState>(),
     };
 
     static readonly Lazy<RunEngine> Template = new(BuildRunInCombat);

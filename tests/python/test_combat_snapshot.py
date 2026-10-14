@@ -197,9 +197,13 @@ class StoppedStepDocumentTests(unittest.TestCase):
         self.assertIsNotNone(native.get_state_json(self.handle)["pending_selection"])
 
     def test_forks_resampled_differently_export_the_same_document(self):
-        """No stopped step, so no true order or stream: every fork writes one document."""
+        """The stopped step's public part only, no true order or stream: every fork writes one document."""
         document = native.get_state_json(self.handle)
-        self.assertNotIn("stopped_step", document)
+        stopped = document["stopped_step"]
+        self.assertEqual(stopped["step"], "card_play")
+        self.assertEqual(stopped["card"]["def_id"], BURNING_PACT)
+        for true_world in ("before_draw", "before_streams", "answer_indices", "hidden"):
+            self.assertNotIn(true_world, stopped)
         piles = set()
         for resample_seed in (11, 12, 13, 14):
             obs = (ctypes.c_int * native.OBS_SIZE)()
@@ -211,17 +215,17 @@ class StoppedStepDocumentTests(unittest.TestCase):
                 native.destroy(fork)
         self.assertGreater(len(piles), 1)
 
-    def test_the_save_document_finishes_the_play_and_the_agents_does_not(self):
-        """The save document's load finishes the play; the agent's answers the screen alone."""
+    def test_both_documents_finish_the_play(self):
+        """Loaded and answered, the agent's document and the save document both finish the play."""
         save = native.get_save_json(self.handle)
-        self.assertIn("stopped_step", save)
-        finished = _answered(save)
-        self.assertEqual(_cards_held(finished), 3 + len(UNSEEN))
-        discarded = [card["def_id"] for card in finished["piles"]["discard"]]
-        self.assertIn(BURNING_PACT, discarded)
-
-        alone = _answered(native.get_state_json(self.handle))
-        self.assertEqual(_cards_held(alone), 2 + len(UNSEEN))
+        self.assertIn("before_streams", save["stopped_step"])
+        for document in (save, native.get_state_json(self.handle)):
+            finished = _answered(document)
+            self.assertEqual(_cards_held(finished), 3 + len(UNSEEN))
+            discarded = [card["def_id"] for card in finished["piles"]["discard"]]
+            self.assertIn(BURNING_PACT, discarded)
+            self.assertEqual(finished["counters"]["cards_played_this_combat"], 1)
+            self.assertIsNone(finished["pending_selection"])
 
 
 if __name__ == "__main__":

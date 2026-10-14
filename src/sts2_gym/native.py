@@ -1222,9 +1222,11 @@ def get_state_json(handle: int) -> dict:
     (docs/superpowers/specs/2026-09-24-snapshot-schemas.md Sec 2.1).
 
     The position as the player sees it. A combat stopped on a screen raised in the middle
-    of a step is written as that screen over the combat, without the step: loaded, the
-    screen is answered by itself, as a live document's is (CombatSnapshot.cs). An unknown
-    handle raises RuntimeError.
+    of a step is written with the public part of that step (`stopped_step`: the kind of
+    step, the card or potion in play, the answers so far, the step's start as the player
+    saw it; never the true draw order or an RNG stream): loaded, answering the screen
+    finishes the step as answering in memory does (CombatSnapshot.cs). An unknown handle
+    raises RuntimeError.
     """
     return _json_export(_lib.Sts2_GetStateJson, "Sts2_GetStateJson", handle)
 
@@ -1232,9 +1234,10 @@ def get_state_json(handle: int) -> dict:
 def get_save_json(handle: int) -> dict:
     """Export a combat as the emulator's save document (size-and-retry).
 
-    `get_state_json`'s document plus `stopped_step` when a step is stopped on a screen:
-    the step's start with its TRUE draw order and the exact state of every RNG stream, so
-    that `load_combat_snapshot` of it finishes the step. Banned outside verification and
+    `get_state_json`'s document plus the true world of a step stopped on a screen
+    (`stopped_step`'s `before_draw`, `before_streams`, `answer_indices` and `hidden`): the
+    step's start with its TRUE draw order and the exact state of every RNG stream, so that
+    `load_combat_snapshot` of it replays the step from its true start. Banned outside verification and
     save code, as `get_pile` and `rng_call_count` are (review condition E12): search and
     agent code that read it read the future. An unknown handle raises RuntimeError.
     """

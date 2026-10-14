@@ -80,38 +80,49 @@ public static class StateCloning
 
     public static CountingRandom Clone(this CountingRandom rng) => rng.Copy();
 
-    public static EnemyState Clone(this EnemyState enemy) =>
-        new()
-        {
-            DefId = enemy.DefId,
-            Hp = enemy.Hp,
-            MaxHp = enemy.MaxHp,
-            Block = enemy.Block,
-            CurrentIntent = enemy.CurrentIntent,
-            SecondaryIntent = enemy.SecondaryIntent,
-            Buffs = [.. enemy.Buffs],
-            LastSpawnedDefId = enemy.LastSpawnedDefId,
-            PoweredHitsThisTurn = enemy.PoweredHitsThisTurn,
-            MoveIndex = enemy.MoveIndex,
-            LastMove = enemy.LastMove,
-            LastMoveRepeats = enemy.LastMoveRepeats,
-            OnceOnlyMoveUsed = enemy.OnceOnlyMoveUsed,
-            MoveHistory = [.. enemy.MoveHistory],
-            StartsOnBranch = enemy.StartsOnBranch,
-            RollsNextMove = enemy.RollsNextMove,
-            CurlUpArmed = enemy.CurlUpArmed,
-            NemesisIntangibleOn = enemy.NemesisIntangibleOn,
-            StarterMove = enemy.StarterMove,
-            Slot = enemy.Slot,
-            StolenGold = enemy.StolenGold,
-            HeistGold = enemy.HeistGold,
-            StolenCard = enemy.StolenCard,
-            Escaped = enemy.Escaped,
-            OffBalance = enemy.OffBalance,
-            LastBranch = enemy.LastBranch,
-            RepeatStreak = enemy.RepeatStreak,
-            BranchCooldown = enemy.BranchCooldown,
-        };
+    public static EnemyState Clone(this EnemyState enemy)
+    {
+        var copy = new EnemyState();
+        enemy.CopyTo(copy);
+        return copy;
+    }
+
+    /// <summary>
+    /// Every field of <paramref name="enemy" /> onto <paramref name="into" />, as <see cref="Clone(EnemyState)" />
+    /// copies it (the one field list both use). <paramref name="inPlace" /> refills <paramref name="into" />'s
+    /// lists instead of replacing them (<see cref="CopyTo(CombatState, CombatState, int?, bool)" />).
+    /// </summary>
+    public static void CopyTo(this EnemyState enemy, EnemyState into, bool inPlace = false)
+    {
+        into.DefId = enemy.DefId;
+        into.Hp = enemy.Hp;
+        into.MaxHp = enemy.MaxHp;
+        into.Block = enemy.Block;
+        into.CurrentIntent = enemy.CurrentIntent;
+        into.SecondaryIntent = enemy.SecondaryIntent;
+        into.Buffs = Refill(into.Buffs, enemy.Buffs, inPlace);
+        into.LastSpawnedDefId = enemy.LastSpawnedDefId;
+        into.PoweredHitsThisTurn = enemy.PoweredHitsThisTurn;
+        into.MoveIndex = enemy.MoveIndex;
+        into.LastMove = enemy.LastMove;
+        into.LastMoveRepeats = enemy.LastMoveRepeats;
+        into.OnceOnlyMoveUsed = enemy.OnceOnlyMoveUsed;
+        into.MoveHistory = Refill(into.MoveHistory, enemy.MoveHistory, inPlace);
+        into.StartsOnBranch = enemy.StartsOnBranch;
+        into.RollsNextMove = enemy.RollsNextMove;
+        into.CurlUpArmed = enemy.CurlUpArmed;
+        into.NemesisIntangibleOn = enemy.NemesisIntangibleOn;
+        into.StarterMove = enemy.StarterMove;
+        into.Slot = enemy.Slot;
+        into.StolenGold = enemy.StolenGold;
+        into.HeistGold = enemy.HeistGold;
+        into.StolenCard = enemy.StolenCard;
+        into.Escaped = enemy.Escaped;
+        into.OffBalance = enemy.OffBalance;
+        into.LastBranch = enemy.LastBranch;
+        into.RepeatStreak = enemy.RepeatStreak;
+        into.BranchCooldown = enemy.BranchCooldown;
+    }
 
     public static PendingCardSelection Clone(this PendingCardSelection selection) =>
         selection.Clone(selection.Replay);
@@ -172,7 +183,14 @@ public static class StateCloning
     /// screen raised in the middle of it (<see cref="HookChoiceReplay" />); <paramref name="combat" />
     /// is left as it was.
     /// </summary>
-    public static void CopyTo(this CombatState combat, CombatState into, int? rngSeed = null)
+    /// <param name="inPlace">
+    /// Refill <paramref name="into" />'s lists, potion belt and enemies (each enemy onto the one at
+    /// its index) instead of replacing them: for a combat in the middle of a step, whose code holds
+    /// them, as when a step from a document puts the answering copy back whole at its screen
+    /// (<c>ScreenHiddenState.Whole</c>). The streams are moved back in place either way where they
+    /// are the same stream (<see cref="Carry" />).
+    /// </param>
+    public static void CopyTo(this CombatState combat, CombatState into, int? rngSeed = null, bool inPlace = false)
     {
         into.AscensionLevel = combat.AscensionLevel;
         into.Character = combat.Character;
@@ -190,12 +208,12 @@ public static class StateCloning
         into.PaelsLegionCooldown = combat.PaelsLegionCooldown;
         into.PaelsLegionCard = combat.PaelsLegionCard;
         into.MercGoldWasStolen = combat.MercGoldWasStolen;
-        into.Hand = [.. combat.Hand];
-        into.DrawPile = [.. combat.DrawPile];
-        into.DiscardPile = [.. combat.DiscardPile];
-        into.ExhaustPile = [.. combat.ExhaustPile];
-        into.ReturnToHandBeforeDraw = [.. combat.ReturnToHandBeforeDraw];
-        into.CopiesToHandBeforeDraw = [.. combat.CopiesToHandBeforeDraw];
+        into.Hand = Refill(into.Hand, combat.Hand, inPlace);
+        into.DrawPile = Refill(into.DrawPile, combat.DrawPile, inPlace);
+        into.DiscardPile = Refill(into.DiscardPile, combat.DiscardPile, inPlace);
+        into.ExhaustPile = Refill(into.ExhaustPile, combat.ExhaustPile, inPlace);
+        into.ReturnToHandBeforeDraw = Refill(into.ReturnToHandBeforeDraw, combat.ReturnToHandBeforeDraw, inPlace);
+        into.CopiesToHandBeforeDraw = Refill(into.CopiesToHandBeforeDraw, combat.CopiesToHandBeforeDraw, inPlace);
         into.EndTurnAwaitingSelection = combat.EndTurnAwaitingSelection;
         into.AfterimageBeforePlay = combat.AfterimageBeforePlay;
         into.StormBeforePlay = combat.StormBeforePlay;
@@ -203,22 +221,24 @@ public static class StateCloning
         into.StatusCardsDrawnThisTurn = combat.StatusCardsDrawnThisTurn;
         into.ResolvingDefendCard = combat.ResolvingDefendCard;
         into.PlayedCardCostForCombat = combat.PlayedCardCostForCombat;
-        into.AutoPlayQueue = [.. combat.AutoPlayQueue];
+        into.AutoPlayQueue = Refill(into.AutoPlayQueue, combat.AutoPlayQueue, inPlace);
         into.HeldPlayedCard = combat.HeldPlayedCard;
         into.HeldPlayedCardExhausts = combat.HeldPlayedCardExhausts;
-        into.Orbs = [.. combat.Orbs];
+        into.Orbs = Refill(into.Orbs, combat.Orbs, inPlace);
         into.OrbCapacity = combat.OrbCapacity;
         into.BaseOrbSlots = combat.BaseOrbSlots;
         into.OstyHp = combat.OstyHp;
         into.OstyMaxHp = combat.OstyMaxHp;
         into.Stars = combat.Stars;
-        into.StrangleBeforePlay = [.. combat.StrangleBeforePlay];
-        into.PotionSlots = (int[])combat.PotionSlots.Clone();
+        into.StrangleBeforePlay = Refill(into.StrangleBeforePlay, combat.StrangleBeforePlay, inPlace);
+        into.PotionSlots = inPlace && into.PotionSlots.Length == combat.PotionSlots.Length && !ReferenceEquals(into.PotionSlots, combat.PotionSlots)
+            ? Refill(into.PotionSlots, combat.PotionSlots)
+            : (int[])combat.PotionSlots.Clone();
         into.MaxPotionSlots = combat.MaxPotionSlots;
-        into.Relics = [.. combat.Relics];
-        into.PlayerBuffs = [.. combat.PlayerBuffs];
-        into.PlayerDebuffsAtRoundStart = [.. combat.PlayerDebuffsAtRoundStart];
-        into.Enemies = [.. combat.Enemies.Select(enemy => enemy.Clone())];
+        into.Relics = Refill(into.Relics, combat.Relics, inPlace);
+        into.PlayerBuffs = Refill(into.PlayerBuffs, combat.PlayerBuffs, inPlace);
+        into.PlayerDebuffsAtRoundStart = Refill(into.PlayerDebuffsAtRoundStart, combat.PlayerDebuffsAtRoundStart, inPlace);
+        into.Enemies = RefillEnemies(into.Enemies, combat.Enemies, inPlace);
         into.EncounterId = combat.EncounterId;
         into.IsEliteCombat = combat.IsEliteCombat;
         into.ShuffleRng = Carry(into.ShuffleRng, combat.ShuffleRng);
@@ -285,8 +305,8 @@ public static class StateCloning
         into.CardsDrawnThisCombat = combat.CardsDrawnThisCombat;
         into.ShivsPlayedThisTurn = combat.ShivsPlayedThisTurn;
         into.ExtraCardRewards = combat.ExtraCardRewards;
-        into.StolenBackCards = [.. combat.StolenBackCards];
-        into.ExecutedThisEnemyTurn = [.. combat.ExecutedThisEnemyTurn];
+        into.StolenBackCards = Refill(into.StolenBackCards, combat.StolenBackCards, inPlace);
+        into.ExecutedThisEnemyTurn = Refill(into.ExecutedThisEnemyTurn, combat.ExecutedThisEnemyTurn, inPlace);
         into.RuptureOwed = combat.RuptureOwed;
         into.BlockGainsThisTurn = combat.BlockGainsThisTurn;
         into.PlayerHpLostThisTurn = combat.PlayerHpLostThisTurn;
@@ -323,6 +343,55 @@ public static class StateCloning
     /// trace naming streams by object, a test counting draws -- keeps holding the combat's
     /// stream; anywhere else it is a copy.
     /// </summary>
+    /// <summary>
+    /// <paramref name="source" />'s items in a list of their own: <paramref name="existing" /> refilled when
+    /// <paramref name="inPlace" /> (so whoever holds that list goes on with it), else a new one.
+    /// </summary>
+    private static List<T> Refill<T>(List<T> existing, List<T> source, bool inPlace)
+    {
+        if (!inPlace || existing is null || ReferenceEquals(existing, source))
+        {
+            return [.. source];
+        }
+
+        existing.Clear();
+        existing.AddRange(source);
+        return existing;
+    }
+
+    private static int[] Refill(int[] existing, int[] source)
+    {
+        Array.Copy(source, existing, source.Length);
+        return existing;
+    }
+
+    /// <summary>
+    /// <paramref name="source" />'s enemies as copies; in place, each copied onto the enemy standing at its
+    /// index, so a reference held to it (the turn end's <c>Baseline</c>, a play's target) stays good. A roster
+    /// of another size is built anew.
+    /// </summary>
+    private static List<EnemyState> RefillEnemies(List<EnemyState> existing, List<EnemyState> source, bool inPlace)
+    {
+        if (!inPlace || existing is null || ReferenceEquals(existing, source) || existing.Count != source.Count)
+        {
+            return [.. source.Select(enemy => enemy.Clone())];
+        }
+
+        for (int i = 0; i < source.Count; i++)
+        {
+            if (ReferenceEquals(existing[i], source[i]))
+            {
+                existing[i] = source[i].Clone();
+            }
+            else
+            {
+                source[i].CopyTo(existing[i], inPlace: true);
+            }
+        }
+
+        return existing;
+    }
+
     private static CountingRandom? Carry(CountingRandom? existing, CountingRandom? source)
     {
         if (
