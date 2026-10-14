@@ -5,6 +5,12 @@
 Reports the first diverging step per fight with the differing fields: player HP, block, energy
 and powers; hand, draw (in order), discard and exhaust piles; living enemies' HP, block and
 powers; and each combat RNG stream's call count.
+
+The step that ends the fight is compared too, not only whether the fight is still on. Once a won
+fight is over the game's snapshot shows what the run holds (player HP and max HP with the after-combat
+heals in, the potion belt, the relics, the RNG streams; Player.AfterCombatEnd has cleared the block,
+powers and piles), and a lost fight keeps the combat as it ended; game_view and emu_view give both
+in the same shape (see "the state after the fight" below).
 """
 
 from __future__ import annotations
@@ -118,7 +124,9 @@ def game_powers(raw: list) -> list:
 
 
 def emu_view(st: dict, nm: dict) -> dict:
-    if "snapshot" not in st or not st["in_combat"]:
+    if not st["in_combat"]:
+        return _emu_end_view(st, nm)
+    if "snapshot" not in st:
         return {"in_combat": False}
     s = st["snapshot"]
     card = lambda c: [nm["cards"].get(c["def_id"], c["def_id"]), bool(c["upgraded"])]  # noqa: E731
@@ -141,9 +149,14 @@ def emu_view(st: dict, nm: dict) -> dict:
     }
 
 
+# The RNG streams a fight moves (the game's names); the others (UpFront, the map's, the treasure room's) stay put in one.
+RNG_STREAMS = ("Shuffle", "CombatTargets", "MonsterAi", "CombatCardSelection", "CombatCardGeneration",
+               "CombatEnergyCosts", "CombatPotionGeneration", "CombatOrbGeneration", "Niche")
+
+
 def game_view(st: dict) -> dict:
     if not st.get("in_combat"):
-        return {"in_combat": False}
+        return _game_end_view(st)
     p = st["player"]
     return {
         "in_combat": True,
@@ -152,11 +165,76 @@ def game_view(st: dict) -> dict:
         "hand": st["hand"], "draw": st["draw"], "discard": st["discard"], "exhaust": st["exhaust"],
         "enemies": [{"name": e["name"], "hp": e["hp"], "block": e["block"], "powers": game_powers(e["powers"]),
                      "intent": game_intent(e)} for e in st["enemies"] if e["hp"] > 0],
-        "rng": {k: v["counter"] for k, v in st["rng"].items() if k in (
-            "Shuffle", "CombatTargets", "MonsterAi", "CombatCardSelection", "CombatCardGeneration",
-            "CombatEnergyCosts", "CombatPotionGeneration", "CombatOrbGeneration", "Niche")},
+        "rng": {k: v["counter"] for k, v in st["rng"].items() if k in RNG_STREAMS},
         **({"potions": st["potions"]} if "potions" in st else {}),
     }
+
+
+# ---- the state after the fight ----------------------------------------------------------------------
+#
+# The step that ends a fight used to be compared on one thing: in_combat. A fight whose last hit left the
+# player at 68 in the emulator and 76 in the game was scored identical. That step's view now has the same
+# fields as a step in combat, so every consumer of game_view/emu_view (the plain replay, the re-anchored
+# replay, coverage, the corpus) judges it with no change of its own.
+#
+# WON (the player alive). The game's Player.AfterCombatEnd clears the player's powers, block and piles inside
+# the step and the combat is gone (no roster). What is left to compare is what the run holds: HP and max HP
+# with the after-combat heals in (Burning Blood, Meat on the Bone, Chosen Cheese ...), the RNG positions the
+# fight left, and, in a record that has them, the potion belt, the relics, the gold and the relics' counters.
+# The emulator keeps those on the run, and the run holds no block, powers, piles or roster, so its view has
+# them empty: that half of the view checks the game's record, the run's state is the other half.
+# LOST. The run is over, so nothing is carried on: the view is the outcome alone (both sides' HP is 0). The rest
+# of that step is only where each side stopped the combat, and the two stop in different places: the game's
+# record shows the enemy phase cut at the killing hit, the emulator's the phase played out (an enemy's Strength
+# gain, a debuff tick, a status card; three Scrolls of Biting fights end at another max HP, Paper Cuts' loss).
+# Comparing that leftover called fights different over state nothing reads (7 of the first 59 identical corpus
+# fights, 3 more in the rest).
+
+# What only some records have: it counts as a difference where both sides wrote the field. The game's
+# snapshot has no gold and no relic counters yet (referee/driver/Setup.cs Decorate), the emulator's dump has both.
+OPTIONAL = {".player.gold", ".relic_counters"}
+
+
+def _game_end_view(st: dict) -> dict:
+    p = st.get("player")
+    if p is None:  # a state that is no more than the flag: nothing was recorded to compare
+        return {"in_combat": False}
+    if p["hp"] <= 0:
+        return {"in_combat": False, "outcome": "lost"}
+    v = {
+        "in_combat": False, "outcome": "won",
+        "player": {"hp": p["hp"], "max_hp": p["max_hp"], "block": p["block"], "powers": game_powers(p["powers"]),
+                   **({"gold": p["gold"]} if "gold" in p else {})},
+        "hand": st["hand"], "draw": st["draw"], "discard": st["discard"], "exhaust": st["exhaust"],
+        "enemies": [{"name": e["name"], "hp": e["hp"], "block": e["block"], "powers": game_powers(e["powers"]),
+                     "intent": game_intent(e)} for e in st["enemies"] if e["hp"] > 0],
+        "rng": {k: v["counter"] for k, v in st["rng"].items() if k in RNG_STREAMS},
+    }
+    for k in ("potions", "relics", "relic_counters"):
+        if k in st:
+            v[k] = st[k]
+    return v
+
+
+def _emu_end_view(st: dict, nm: dict) -> dict:
+    """The emulator's state after the fight: ``final``, which EmuDump writes (Fight.Final)."""
+    fin = st.get("final")
+    if fin is None:  # an emulator dump that did not say how the fight ended: nothing was recorded to compare
+        return {"in_combat": False}
+    if not fin["won"]:
+        return {"in_combat": False, "outcome": "lost"}
+    p = fin["player"]
+    v = {
+        "in_combat": False, "outcome": "won",
+        "player": {"hp": p["hp"], "max_hp": p["max_hp"], "block": 0, "powers": [],
+                   **({"gold": p["gold"]} if "gold" in p else {})},
+        "hand": [], "draw": [], "discard": [], "exhaust": [], "enemies": [],
+        "rng": {k: n for k, n in fin["rng"].items() if k in RNG_STREAMS},
+    }
+    for k in ("potions", "relics", "relic_counters"):
+        if k in fin:
+            v[k] = fin[k]
+    return v
 
 
 def _recorded(a, b):
@@ -175,7 +253,15 @@ def _recorded(a, b):
 
 def diff(a, b, path="") -> list:
     if isinstance(a, dict) and isinstance(b, dict):
-        return [d for k in sorted(set(a) | set(b)) for d in diff(a.get(k), b.get(k), f"{path}.{k}")]
+        # One side's fight is on and the other's is over: the side that is over is its flag alone here, as it was
+        # before the end of a fight had a view (reanchor_compare stops on what such a step shows of the enemies).
+        if "in_combat" in a and "in_combat" in b and a["in_combat"] != b["in_combat"]:
+            a, b = ({"in_combat": False} if not x["in_combat"] else x for x in (a, b))
+        # Both over, one won and the other lost: the rest of the step cannot be compared.
+        if "outcome" in a and "outcome" in b and a["outcome"] != b["outcome"]:
+            return [(f"{path}.outcome", a["outcome"], b["outcome"])]
+        return [d for k in sorted(set(a) | set(b)) if f"{path}.{k}" not in OPTIONAL or (k in a and k in b)
+                for d in diff(a.get(k), b.get(k), f"{path}.{k}")]
     a, b = _recorded(a, b)
     return [] if a == b else [(path, a, b)]
 

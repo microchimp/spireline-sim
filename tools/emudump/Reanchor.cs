@@ -14,6 +14,7 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
+using Sts2Emulator.Core.Run;
 
 static class Reanchor
 {
@@ -158,11 +159,11 @@ static class Reanchor
                         EmuTrace.Begin(q);
                     }
 
-                    bool terminal;
+                    bool terminal, won;
                     JsonArray chosen;
                     try
                     {
-                        using (Prof.Scope("apply")) (terminal, chosen) = Apply(q, qr, a, stepChoices);
+                        using (Prof.Scope("apply")) (terminal, won, chosen) = Apply(q, qr, a, stepChoices);
                     }
                     finally
                     {
@@ -172,8 +173,11 @@ static class Reanchor
                     if (mode.Trace) rec["hidden"] = EmuTrace.Hidden(q);
                     rec["choices"] = chosen;
                     rec["fallback_rng_calls"] = qr.CallCount - preRng.CallCount;
-                    using (Prof.Scope("dumplite")) rec["state"] = DumpLite(q, !terminal);
                     bool gameGoesOn = j + 1 < gsteps.Count && (gsteps[j]!["state"]!["in_combat"]?.GetValue<bool>() ?? false);
+                    // The fight ends here in the game too: the state to judge is the one the game's snapshot shows
+                    // after it, so the fight is finished the way the run finishes it (SyncAfterCombat, the
+                    // after-combat relics). Where the game goes on, the step differs in in_combat, as it always did.
+                    using (Prof.Scope("dumplite")) rec["state"] = terminal && !gameGoesOn ? EndState(e, q, qr, won) : DumpLite(q, !terminal);
                     if (terminal && !gameGoesOn) break;
                     // The emulator ended a fight the game continues: carry on from the state before the action.
                     (combat, rng) = terminal ? (pre, preRng) : (q, qr);
@@ -199,13 +203,19 @@ static class Reanchor
     }
 
     /// <summary>The game's action, then the card choices the game made for it, as the plain replay applies them.</summary>
-    static (bool Terminal, JsonArray Chosen) Apply(CombatState q, CountingRandom qr, JsonObject a, List<JsonNode?> choices)
+    static (bool Terminal, bool Won, JsonArray Chosen) Apply(CombatState q, CountingRandom qr, JsonObject a, List<JsonNode?> choices)
     {
-        bool terminal = StepOnce(q, qr, a);
+        var first = StepOnce(q, qr, a);
+        bool terminal = first.Terminal, won = first.Terminal && first.PlayerWon;
         var chosen = new JsonArray();
         foreach (var choice in choices)
         {
-            chosen.Add(Fight.ApplyChoice(() => q, i => terminal |= CombatEngine.Step(q, i, qr).Terminal, choice!.AsObject()));
+            chosen.Add(Fight.ApplyChoice(() => q, i =>
+            {
+                var r = CombatEngine.Step(q, i, qr);
+                terminal |= r.Terminal;
+                won |= r.Terminal && r.PlayerWon;
+            }, choice!.AsObject()));
         }
 
         if (!terminal && q.PendingSelection is { } extra)  // a won fight leaves no screen to answer
@@ -214,20 +224,40 @@ static class Reanchor
             q.PendingSelection = null;  // nobody is there to answer it; the next anchor starts clean
         }
 
-        return (terminal, chosen);
+        return (terminal, won, chosen);
     }
 
-    /// <summary>Applies the game's action (end turn or a card play); true when the fight ended.</summary>
-    static bool StepOnce(CombatState q, CountingRandom qr, JsonObject a)
+    /// <summary>Applies the game's action (end turn or a card play); the step's result, Terminal when the fight ended.</summary>
+    static StepResult StepOnce(CombatState q, CountingRandom qr, JsonObject a)
     {
-        if ((string)a["kind"]! == "end_turn") return CombatEngine.Step(q, q.Hand.Count, qr).Terminal;
+        if ((string)a["kind"]! == "end_turn") return CombatEngine.Step(q, q.Hand.Count, qr);
         if ((string)a["kind"]! == "potion")
         {
-            if ((bool?)a["used"] == false) return false;  // the game cancelled the use
-            return CombatEngine.Step(q, q.Hand.Count + 1 + (int)a["slot"]!, qr, (int)a["target_slot"]!).Terminal;
+            if ((bool?)a["used"] == false) return new StepResult(Terminal: false, PlayerWon: false, Reward: 0f);  // the game cancelled the use
+            return CombatEngine.Step(q, q.Hand.Count + 1 + (int)a["slot"]!, qr, (int)a["target_slot"]!);
         }
         // target_slot indexes the game's living enemies, and Anchor made the emulator's roster the same list.
-        return CombatEngine.Step(q, (int)a["hand_index"]!, qr, (int)a["target_slot"]!).Terminal;
+        return CombatEngine.Step(q, (int)a["hand_index"]!, qr, (int)a["target_slot"]!);
+    }
+
+    /// <summary>
+    /// The state after the step that ended the fight in both the game and the emulator. A won fight is put
+    /// through the run's own end of combat on the engine <see cref="Fight.EnterRoom" /> made (DebugResolveCombat:
+    /// the sync back to the run and the after-combat hooks, Burning Blood's heal among them), so the hit points,
+    /// potions, relics and RNG positions written are the run's, as the game's snapshot shows them. A lost fight
+    /// ends the run and is written as lost and nothing else (see Fight.Final).
+    /// The run's own streams stand wherever the emulator's earlier steps left them, and the anchored combat's where
+    /// the game's did (Anchor, PatchRng); the sync moves the run's to the combat's and a stream cannot go back, so
+    /// the run's start from the seed and end where the combat did.
+    /// </summary>
+    static JsonObject EndState(RunEngine e, CombatState q, CountingRandom qr, bool won)
+    {
+        if (!won) return DumpLite(q, false, Fight.Final(e.State, false));
+        e.State.ActiveCombat = q;
+        e.State.ActiveCombatRng = qr;
+        e.State.Rng = new Sts2Emulator.Core.Rng.RunRngSet(e.State.StringSeed);
+        if (e.DebugResolveCombat() == -1) throw new InvalidOperationException($"no fight to finish; phase {e.State.Phase}");
+        return DumpLite(q, false, Fight.Final(e.State, true));
     }
 
     // ── enemy moves ─────────────────────────────────────────────────────────────────
@@ -750,9 +780,10 @@ static class Reanchor
 
     // ── what tools/fidelity/fight_compare.py reads, and no more ─────────────────────
 
-    static JsonObject DumpLite(CombatState c, bool inCombat)
+    static JsonObject DumpLite(CombatState c, bool inCombat, JsonObject? final = null)
     {
         var o = new JsonObject { ["in_combat"] = inCombat, ["run_phase"] = inCombat ? "Combat" : "Over" };
+        if (final != null) o["final"] = final;
         if (!inCombat) return o;
         JsonNode Card(CardInstance x) => new JsonObject { ["def_id"] = x.DefId, ["upgraded"] = x.Upgraded };
         JsonNode Buffs(List<BuffState> bs) => new JsonArray(bs.Select(b => (JsonNode)new JsonObject { ["id"] = (int)b.Id, ["name"] = b.Id.ToString(), ["amount"] = b.Magnitude, ["data"] = b.Data }).ToArray());

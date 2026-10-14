@@ -73,13 +73,32 @@ static class Setup
     internal static JsonArray Belt(int[] slots, int max) =>
         new(slots.Take(Math.Min(max, slots.Length)).Select(p => p == 0 ? null : (JsonNode)PotionEntry(p)).ToArray());
 
-    static JsonObject Counters(RunState s)
+    /// <summary>The run's RNG streams' call counts under the game's stream names (the game's snapshot "rng").</summary>
+    internal static JsonObject RunRng(RunState s)
     {
         var o = new JsonObject();
         foreach (var p in s.Rng.GetType().GetProperties().Where(p => p.PropertyType == typeof(GameRng)))
         {
             o[p.Name == "CombatOrbs" ? "CombatOrbGeneration" : p.Name] = ((GameRng)p.GetValue(s.Rng)!).CallCount;
         }
+
+        return o;
+    }
+
+    /// <summary>Game relic entry (BURNING_BLOOD) of an emulator relic id.</summary>
+    internal static string RelicEntry(int id)
+    {
+        foreach (var r in Sts2Emulator.GeneratedData.Relics.All)
+        {
+            if (r.Id == id) return r.Entry;
+        }
+
+        return id.ToString();
+    }
+
+    static JsonObject Counters(RunState s)
+    {
+        var o = RunRng(s);
 
         var pl = new JsonObject();
         foreach (var p in s.PlayerRng.GetType().GetProperties().Where(p => p.PropertyType == typeof(GameRng)))
