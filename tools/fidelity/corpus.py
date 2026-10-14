@@ -140,7 +140,7 @@ _FROZE = ("the game froze at {who}'s auto-play before the turn-start screen ({wh
 FIGHT_POLICY: dict[str, str] = {
     "4fbfad918b1f5ff8": _FROZE.format(who="Hellraiser", what="Stratagem", step=19, noop=11, after=14),  # 6V7YRDLB2L
     "3e3439d56fce03b6": _FROZE.format(who="Hellraiser", what="Entropy", step=15, noop=11, after=14),    # ET9FHLWRS7
-    "7b21e9f8e63f57aa": _FROZE.format(who="Mayhem", what="Stratagem", step=27, noop=29, after=35),      # AN1KDHMVHL
+    "7b21e9f8e63f57aa": _FROZE.format(who="Mayhem", what="Brand", step=27, noop=29, after=35),          # AN1KDHMVHL
     "495f56a1a3899974": _FROZE.format(who="Mayhem", what="Entropy", step=15, noop=15, after=17),        # V3LDXLDHW2
     "684a7fde207495a1": _FROZE.format(who="Hellraiser", what="Entropy", step=11, noop=15, after=25),    # TCU1SMLQHY
     "790cf1a5af4c3df0": _FROZE.format(who="Mayhem", what="Entropy", step=15, noop=16, after=18),        # V3LDXLDHW2, nodeless
