@@ -3,7 +3,13 @@
     python -m tools.fidelity.refset_score [--version v2] [--subset all|pilot] [--emu <emulator checkout>]
         [--procs 4] [--label <name>] [--codex [--codex-emu <checkout>] [--codex-limit N] | --codex-from <score json>]
         [--record <record dir>]
-        [--allow-dirty-emu] [--allow-stale-emu] [--allow-unchecked-record]
+        [--allow-dirty-emu] [--allow-stale-emu] [--allow-unchecked-record] [--against <score> [--explained <file>]]
+    python -m tools.fidelity.refset_score compare <old score> <new score> [--explained <file>]
+
+The gate (--against, or compare on two stored scores; gate() below) exits 1 when anything got worse per cell, per
+fight, per regression class, per coverage kind or per codex run (equal counts with fights swapped are worse), or when
+the two scores cannot be compared (another record or subset, a NOT QUOTABLE new score, a codex walk scored before
+the walk kept its runs). An explanation file accepts named lines (`fight <id>  <reason>`: two spaces or a tab).
 
 Run from the fork's root. --emu is a checkout with EmuDump built (tools/emudump/bin/Release/net9.0); its
 commit is what the numbers are for, so a checkout with uncommitted changes is refused (--allow-dirty-emu scores
@@ -84,6 +90,70 @@ def git_commit(path: Path) -> dict:
             # Untracked files count: EmuDump's build compiles every .cs file below its project, tracked or not, so a
             # checkout holding an untracked source is not its commit.
             "dirty": bool(g("status", "--porcelain", "--untracked-files=all"))}
+
+
+# The comparer: the Python that judges a score, below the checkout. A score stores each file's git blob id
+# (comparer_files), so the gate tells two scores' comparers apart by content, not by the checkout's commit.
+COMPARER = ("tools/fidelity/refset_score.py", "tools/fidelity/fight_compare.py", "tools/fidelity/reanchor_compare.py",
+            "tools/fidelity/run_compare2.py", "tools/fidelity/run_snapshot.py", "tools/fidelity/table_check.py",
+            "tools/fidelity/setup_compare.py", "referee/refset.py")
+
+
+def comparer_files(root: Path = ROOT) -> dict:
+    """{path: git blob id} of the comparer as it runs now: COMPARER and every other module of the checkout's
+    tools/fidelity or referee this process has loaded (git hash-object, so a modified file counts as such)."""
+    loaded = {Path(m.__file__).resolve() for m in list(sys.modules.values()) if getattr(m, "__file__", None)}
+    rels = set()
+    for f in loaded:
+        try:
+            rel = f.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            continue
+        if rel.endswith(".py") and rel.startswith(("tools/fidelity/", "referee/")):
+            rels.add(rel)
+    rels |= {r for r in COMPARER if (root / r).exists()}
+    rels = sorted(rels)
+    ids = subprocess.run(["git", "-C", str(root), "hash-object", "--", *rels], capture_output=True, text=True,
+                         check=False).stdout.split()
+    return dict(zip(rels, ids)) if len(ids) == len(rels) else {}
+
+
+def blobs_at(commit: str | None, paths, root: Path = ROOT) -> dict | None:
+    """{path: blob id, or None when absent} of these files at a commit of this repository; None when the commit
+    is not in it."""
+    if not commit:
+        return None
+
+    def g(*args):
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
+    if g("cat-file", "-e", f"{commit}^{{commit}}").returncode != 0:
+        return None
+    return {p: (g("rev-parse", "--verify", "-q", f"{commit}:{p}").stdout.strip() or None) for p in paths}
+
+
+def comparer_note(old: dict, new: dict) -> str | None:
+    """A note naming the comparer files that differ between the two scores, or saying it cannot tell; None when
+    they are the same. A score made before scores kept their files is read from its commit in git."""
+    oc, nc = old.get("comparer") or {}, new.get("comparer") or {}
+    of, nf = oc.get("files"), nc.get("files")
+    paths = sorted(set(of or {}) | set(nf or {})) or list(COMPARER)
+    for side, c in (("old", oc), ("new", nc)):
+        if c.get("files") is None and c.get("dirty"):
+            return (f"the {side} score's comparer ran from a modified checkout of {(c.get('commit') or '?')[:10]}: "
+                    "cannot tell whether the comparer changed")
+    if of is None:
+        of = blobs_at(oc.get("commit"), paths)
+    if nf is None:
+        nf = blobs_at(nc.get("commit"), paths)
+    if of is None or nf is None:
+        if oc.get("commit") == nc.get("commit"):
+            return None
+        return "cannot tell whether the comparer changed (a score's commit is not in this repository)"
+    changed = [p for p in paths if of.get(p) != nf.get(p)]
+    if not changed:
+        return None
+    return (f"the comparer changed ({', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''}): a difference may be "
+            "the judge's; score the old commit with this checkout's comparer to tell")
 
 
 # What EmuDump.dll is built from (tools/emudump/EmuDump.csproj and its project reference), below the checkout.
@@ -423,13 +493,17 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | N
         for line in err.splitlines():
             if line.startswith("{") and '"walked"' in line:
                 walker_skipped.update(json.loads(line).get("skipped", {}))
-    runs, comp = [], collections.defaultdict(lambda: [0, 0])
+    runs, comp, per_run = [], collections.defaultdict(lambda: [0, 0]), {}
     stops = collections.Counter()
     comp_stops: dict = collections.defaultdict(collections.Counter)  # component -> stop class -> runs
     for out in outs:
         for line in out.read_text(encoding="utf-8").splitlines():
             r = json.loads(line)
             runs.append(r.get("status"))
+            if "index" in r:  # the run's input line (EmuDump codex): the gate pairs two walks run by run
+                st = r.get("stop") or {}
+                per_run[str(r["index"])] = [r.get("status"), r.get("floors_walked"),
+                                            f"{st.get('class')}: {st.get('component')}" if st else str(r.get("error", ""))[:80]]
             for c, (checked, matched) in r.get("checks", {}).items():
                 comp[c][0] += checked
                 comp[c][1] += matched
@@ -462,7 +536,7 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | N
             "stops_by_class": dict(by_class), "stops": dict(stops.most_common(20)),
             "runs_in_set": set_runs, "walker_skipped": dict(walker_skipped),
             "gap": (set_runs - n) if set_runs is not None else None, "walker_modded_skips": walker_ironclad_a10_skips,
-            "commit": info}
+            "commit": info, "per_run": per_run if n and len(per_run) == n else None}
 
 
 def emu_trees(emu: Path, commit: str) -> list[str]:
@@ -534,6 +608,172 @@ def block(rows: list, vs: list) -> dict:
             "choosers": dict(collections.Counter(v.get("chooser", "random") for v in kept))}
 
 
+# ------------------------------------------------------------------------------ the gate: no worse per cell
+
+def _cells(s: dict) -> dict:
+    """Every cell a score has: each part's headline block and each act x room cell of the realistic table."""
+    return {**{f"part {p}": b for p, b in (s.get("headline") or {}).items()},
+            **{f"cell {k}": b for k, b in (s.get("realistic_table") or {}).items()}}
+
+
+def _codex_runs(cx: dict) -> dict | None:
+    """index -> (status, floors walked, stop) of a codex walk that kept its runs (per_run), else None."""
+    pr = (cx or {}).get("per_run")
+    return {k: tuple(v) for k, v in pr.items()} if pr else None
+
+
+def read_explained(path: Path | None) -> dict:
+    """An explanation file: one `<key>  <reason>` a line (two spaces or a tab between; # comments), the key as a
+    gate line names it (`fight R-0042`, `codex run 1234`, `cell act1 elite`)."""
+    out = {}
+    if path:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                parts = re.split(r"\t|  +", line, maxsplit=1)
+                out[parts[0].strip()] = (parts[1].strip() if len(parts) > 1 else "") or "(no reason given)"
+    return out
+
+
+def gate(old: dict, new: dict, explained: dict | None = None) -> dict:
+    """What got worse from score ``old`` to score ``new``: per cell, per fight, per class and per codex run.
+
+    Worse (each a line ``<key>: <what>``, the key what an explanation file names):
+      cell <name> / part <name>   fewer identical fights, fewer steps verified, or another spec or kept count
+      fight <id>                  identical before and not now, fewer steps verified, or missing from the new score
+      class <kind> <name>         a regression class failing that did not
+      coverage <kind>             fewer clean items
+      codex run <index>           complete before and not now, stopped at an earlier floor, an error it did not have,
+                                  or not walked now
+      codex                       walked before and not now; without per-run results, fewer complete runs
+      whole runs                  fewer runs matching
+    A comparison that cannot be made is unsound, which fails too: another subset or record, a NOT QUOTABLE new
+    score, a codex walk without per-run results. Equal counts with fights swapped are worse: the gate is per fight.
+    """
+    explained = explained or {}
+    worse, unsound, better, notes = [], [], [], []
+    note = comparer_note(old, new)
+    if note:
+        notes.append(note)
+    if new.get("not_quotable"):
+        unsound.append(f"unsound: the new score is NOT QUOTABLE ({'; '.join(new['not_quotable'])})")
+    if old.get("subset") != new.get("subset"):
+        unsound.append(f"unsound: subsets differ ({old.get('subset')} vs {new.get('subset')})")
+    if old.get("record") != new.get("record"):
+        unsound.append("unsound: the scores are of different records (score the old commit on this record too)")
+    oc, nc = _cells(old), _cells(new)
+    for name, ob in oc.items():
+        nb = nc.get(name)
+        if nb is None:
+            worse.append(f"{name}: missing from the new score")
+            continue
+        if nb.get("kept") != ob.get("kept") or nb.get("specs") != ob.get("specs"):
+            worse.append(f"{name}: specs/kept {ob.get('specs')}/{ob.get('kept')} before, {nb.get('specs')}/{nb.get('kept')} now")
+        for k in ("identical", "verified"):
+            if nb.get(k, 0) < ob.get(k, 0):
+                worse.append(f"{name}: {k} {ob.get(k, 0)} -> {nb.get(k, 0)}")
+            elif nb.get(k, 0) > ob.get(k, 0):
+                better.append(f"{name}: {k} {ob.get(k, 0)} -> {nb.get(k, 0)}")
+    ov = {v["id"]: v for v in old.get("verdicts", [])}
+    nv = {v["id"]: v for v in new.get("verdicts", [])}
+    for fid, a in ov.items():
+        b = nv.get(fid)
+        if b is None:
+            worse.append(f"fight {fid}: missing from the new score")
+            continue
+        if a.get("identical") and not b.get("identical"):
+            worse.append(f"fight {fid}: identical before, now differs at step {b.get('step')} ({b.get('field')} after {b.get('card')})"
+                         + (f": {b['error']}" if b.get("error") else ""))
+        elif b.get("verified", 0) < a.get("verified", 0):
+            worse.append(f"fight {fid}: steps verified {a.get('verified', 0)} -> {b.get('verified', 0)}")
+        elif b.get("identical") and not a.get("identical"):
+            better.append(f"fight {fid}: identical now")
+    for kind, r in (old.get("regression") or {}).items():
+        was = set(r.get("failing", []))
+        for c in sorted(set(((new.get("regression") or {}).get(kind) or {}).get("failing", [])) - was):
+            worse.append(f"class {kind} {c}: failing now")
+    ocv = (old.get("coverage") or {}).get("counts") or {}
+    ncv = (new.get("coverage") or {}).get("counts") or {}
+    for kind, c in ocv.items():
+        if (ncv.get(kind) or {}).get("clean", 0) < c.get("clean", 0):
+            worse.append(f"coverage {kind}: clean items {c.get('clean', 0)} -> {(ncv.get(kind) or {}).get('clean', 0)}")
+    ox, nx = old.get("codex") or {}, new.get("codex") or {}
+    if ox.get("runs") and not nx.get("runs"):
+        worse.append(f"codex: walked before ({ox['runs']} runs), not now ({nx.get('skipped', 'no codex result')})")
+    elif ox.get("runs"):
+        orun, nrun = _codex_runs(ox), _codex_runs(nx)
+        if orun is not None and nrun is not None:
+            for k, (st, fl, stop) in orun.items():
+                if k not in nrun:
+                    worse.append(f"codex run {k}: not walked now")
+                    continue
+                st2, fl2, stop2 = nrun[k]
+                if st == "complete" and st2 != "complete":
+                    worse.append(f"codex run {k}: complete before, now {st2} at floor {fl2} ({stop2})")
+                elif st2 == "error" and st != "error":
+                    worse.append(f"codex run {k}: an error now at floor {fl2} ({stop2})")
+                elif st2 != "complete" and (fl2 or 0) < (fl or 0):
+                    worse.append(f"codex run {k}: stops at floor {fl2} ({stop2}), at floor {fl} before ({stop})")
+                elif st2 == "complete" and st != "complete":
+                    better.append(f"codex run {k}: complete now")
+        else:
+            unsound.append("unsound: a codex walk without per-run results (scored before refset_score kept them); "
+                           "re-score it with --codex")
+            if nx.get("complete", 0) < ox.get("complete", 0):
+                worse.append(f"codex: complete runs {ox.get('complete', 0)} -> {nx.get('complete', 0)}")
+    orn, nrn = old.get("runs") or {}, new.get("runs") or {}
+    if orn.get("runs") and nrn.get("runs_matching", 0) < orn.get("runs_matching", 0):
+        worse.append(f"whole runs: matching {orn.get('runs_matching', 0)} -> {nrn.get('runs_matching', 0)}")
+
+    def key(line: str) -> str:
+        return line.split(":", 1)[0]
+    accepted = [f"{w}  [explained: {explained[key(w)]}]" for w in worse if key(w) in explained]
+    worse = [w for w in worse if key(w) not in explained]
+    unused = sorted(set(explained) - {key(w.split("  [explained", 1)[0]) for w in accepted})
+    return {"worse": worse, "unsound": unsound, "explained": accepted, "better": better, "notes": notes,
+            "unused_explanations": unused, "ok": not worse and not unsound}
+
+
+def print_gate(res: dict, old_name: str, show: int = 60) -> int:
+    for title, k in (("WORSE", "worse"), ("UNSOUND", "unsound"), ("EXPLAINED", "explained")):
+        if res[k]:
+            print(f"  {title} ({len(res[k])}):")
+            for w in res[k][:show]:
+                print("    " + w)
+            if len(res[k]) > show:
+                print(f"    ... {len(res[k]) - show} more")
+    for n in res.get("notes", []):
+        print(f"  note: {n}")
+    if res["unused_explanations"]:
+        print(f"  explanations that matched nothing (remove them): {', '.join(res['unused_explanations'][:10])}")
+    print(f"gate against {old_name}: {'ok' if res['ok'] else 'FAIL'}: {len(res['worse'])} worse, {len(res['unsound'])} unsound, "
+          f"{len(res['explained'])} explained, {len(res['better'])} better")
+    return 0 if res["ok"] else 1
+
+
+def resolve_score(arg: str, version: str = "v2") -> Path:
+    p = Path(arg)
+    if p.exists():
+        return p
+    for cand in (REFSET / version / "scores" / arg, REFSET / version / "scores" / f"{arg}.json"):
+        if cand.exists():
+            return cand
+    raise SystemExit(f"no score {arg} (a path, or a name under {REFSET / version / 'scores'})")
+
+
+def compare_main(argv: list) -> int:
+    """`refset_score compare OLD NEW [--explained FILE] [--version v2]`: the gate between two stored scores."""
+    ap = argparse.ArgumentParser(prog="refset_score compare")
+    ap.add_argument("old")
+    ap.add_argument("new")
+    ap.add_argument("--explained", type=Path)
+    ap.add_argument("--version", default="v2")
+    ap.add_argument("--show", type=int, default=60)
+    a = ap.parse_args(argv)
+    old, new = (json.loads(resolve_score(x, a.version).read_text(encoding="utf-8")) for x in (a.old, a.new))
+    return print_gate(gate(old, new, read_explained(a.explained)), a.old, a.show)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--version", default="v2")
@@ -552,6 +792,9 @@ def main() -> int:
     ap.add_argument("--allow-dirty-emu", action="store_true", help="score a checkout with uncommitted changes (NOT QUOTABLE)")
     ap.add_argument("--allow-stale-emu", action="store_true", help="score an EmuDump build older than its sources (NOT QUOTABLE)")
     ap.add_argument("--record", type=Path, default=None, help="score this record directory (a trial) instead of refs-<subset>.json")
+    ap.add_argument("--against", default=None,
+                    help="gate: compare with this score (a path or a name under scores/); exit 1 when anything is worse")
+    ap.add_argument("--explained", type=Path, default=None, help="with --against: `<key>  <reason>` lines for accepted changes")
     ap.add_argument("--allow-unchecked-record", action="store_true",
                     help="score a record made before the driver reported its build (NOT QUOTABLE)")
     a = ap.parse_args()
@@ -674,7 +917,7 @@ def main() -> int:
         commit += f" (engine src/ = {emu_info['engine_commit'][:12]})"
     name = a.label or emu_info["commit"][:12] + ("-dirty" if emu_info["dirty"] else "")
     score = {"set": f"{manifest['set']} {manifest['version']}", "subset": subset, "emulator": emu_info, "label": name,
-             "commit_label": commit, "not_quotable": not_quotable, "comparer": git_commit(ROOT), "record": record["stamp"],
+             "commit_label": commit, "not_quotable": not_quotable, "comparer": git_commit(ROOT) | {"files": comparer_files()}, "record": record["stamp"],
              "record_dir": str(rdir), "scored": time.strftime("%Y-%m-%d %H:%M"), "minutes": round((time.time() - t0) / 60, 1),
              "headline": head, "realistic_source": realistic_source(manifest), "realistic_table": table,
              "record_summary": record.get("summary"), "hosts": record.get("hosts"),
@@ -707,6 +950,9 @@ def main() -> int:
         work.rmdir()  # empty once every part's files are read and removed
     except OSError:
         pass
+    if a.against:
+        old = json.loads(resolve_score(a.against, a.version).read_text(encoding="utf-8"))
+        return print_gate(gate(old, score, read_explained(a.explained)), a.against)
     return 0
 
 
@@ -825,4 +1071,4 @@ def render_table(s: dict) -> str:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(compare_main(sys.argv[2:]) if sys.argv[1:2] == ["compare"] else main())

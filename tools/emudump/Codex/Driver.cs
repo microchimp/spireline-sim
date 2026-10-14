@@ -88,6 +88,9 @@ public static class Driver
             JsonObject result = walker.Walk(rec);
             double sec = Stopwatch.GetElapsedTime(t0).TotalSeconds;
             walkSeconds += sec;
+            // The run's line in the input: two walks of the same file are paired run by run by it
+            // (tools/fidelity/refset_score.py --against), whatever their shards.
+            result["index"] = index;
             result["character"] = Names.Bare(rec.GetProperty("players")[0].GetProperty("character").GetString());
             result["ms"] = Math.Round(sec * 1000, 3);
             writer.WriteLine(result.ToJsonString());

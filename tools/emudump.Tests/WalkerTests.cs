@@ -392,4 +392,52 @@ public class WalkerTests
         Assert.DoesNotContain("Niche", Streams.FightTurns);
         Assert.Contains("CombatCardGeneration", Streams.FightTurns);
     }
+    [Fact]
+    public void Each_result_names_its_input_line_whatever_the_shard()
+    {
+        // refset_score's gate pairs two codex walks run by run by this index: a walk split into other
+        // shards must give every run the same index, and a broken run must keep its own.
+        string dir = Directory.CreateTempSubdirectory("codex-index").FullName;
+        try
+        {
+            var good = Record();
+            var bad = Record();
+            // The first fight's card reward made another card: the walk stops there (WalkerBrokenCaseTests' card_reward).
+            bad["map_point_history"]![0]![1]!["player_stats"]![0]!["card_choices"]![1]!["card"]!["id"] = "CARD.ZAP";
+            foreach (var r in new[] { good, bad })
+            {
+                // The deck and relics the codex holds at the run's end, which the driver checks for modded content.
+                r["players"]![0]!["deck"] = new JsonArray(new JsonObject { ["id"] = "CARD.STRIKE_IRONCLAD" });
+                r["players"]![0]!["relics"] = new JsonArray(new JsonObject { ["id"] = "RELIC.BURNING_BLOOD" });
+            }
+
+            string input = Path.Combine(dir, "runs.jsonl");
+            File.WriteAllLines(input, [good.ToJsonString(), bad.ToJsonString(), good.ToJsonString()]);
+            Dictionary<int, string> Walk(params string[] extra)
+            {
+                var got = new Dictionary<int, string>();
+                for (int i = 0; i < (extra.Length == 0 ? 1 : 2); i++)
+                {
+                    string output = Path.Combine(dir, $"out{i}.jsonl");
+                    string[] shard = extra.Length == 0 ? [] : ["--shard", $"{i}/2"];
+                    Assert.Equal(0, EmuDump.Codex.Driver.Run([input, output, .. shard]));
+                    foreach (var line in File.ReadAllLines(output))
+                    {
+                        var r = JsonNode.Parse(line)!;
+                        got.Add((int)r["index"]!, (string)r["status"]!);
+                    }
+                }
+
+                return got;
+            }
+
+            var whole = Walk();
+            Assert.Equal(new Dictionary<int, string> { [0] = "complete", [1] = "mismatch", [2] = "complete" }, whole);
+            Assert.Equal(whole, Walk("sharded"));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
 }

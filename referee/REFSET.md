@@ -31,8 +31,18 @@ python -I referee/refset.py record --version v2 --parts runs        # the 30 who
 python -I referee/refset.py record --version v2 --ids <id,id,...> --label <name>   # a trial (also --limit N)
 python -I referee/refset.py rejudge --version v2 --record <dir>     # judge a record again from its saved passes
 python -m tools.fidelity.refset_score --version v2 --emu <checkout> [--codex --codex-emu <checkout>] [--record <dir>]
+python -m tools.fidelity.refset_score ... --against <old score> [--explained <file>]   # the gate: exit 1 when worse
+python -m tools.fidelity.refset_score compare <old score> <new score>                # the gate on two stored scores
 python -I referee/refset.py status --version v2                     # counts, the specs' realism flags per cause and cell
 ```
+
+The gate exits 1 when any cell, part, fight, regression class, coverage kind or codex run got worse: a fight identical
+before and not now fails even when another fight fixed keeps the counts equal. It is unsound (fails) on another record
+or subset, a NOT QUOTABLE score, or a codex walk scored before the walk kept its runs (`per_run`: score the old commit
+with this checkout's EmuDump, `--engine-commit`). A note names the comparer files that differ between the two scores
+(each score keeps its comparer's files by git blob id; an older score's are read from its commit). `--explained <file>`
+accepts named lines, `fight <id>  <reason>` (two spaces or a tab), and names explanations that matched nothing.
+Broken cases: `tests/python/test_refset_gate.py`.
 
 A trial (`--ids`, `--limit`) never replaces `refs-<subset>.json`, the record the score reads; `refset_score --record
 <dir>` scores it under its own name. `build` and `status` print the specs' realism flags (before any recording) per
