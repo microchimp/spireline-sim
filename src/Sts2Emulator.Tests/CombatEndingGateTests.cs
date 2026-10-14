@@ -616,6 +616,32 @@ public class CombatEndingGateTests
     }
 
     /// <summary>
+    /// A random-target attack stops with the leader's death: in the game its minion dies inside
+    /// the leader's `Kill`, so Sword Boomerang's later hits find no target and roll nothing on
+    /// CombatTargets. Each roll is a hit; the seeds put the leader's (killing) hit first or third
+    /// of the four, and the hits after it were rolled and landed on the minion.
+    /// </summary>
+    [Theory]
+    [InlineData(2, 1)]
+    [InlineData(0, 3)]
+    public void ARandomTargetAttackStopsWithTheLeadersDeath(int seed, int rolls)
+    {
+        var fight = Fight
+            .Hand(Card(IC.SwordBoomerang, upgraded: true))
+            .Enemy(hp: 1)
+            .Enemy(hp: 50, buffs: new BuffState(BuffId.Minion, 1))
+            .PlayerHp(60, 80);
+        fight.State.TargetRng = new CountingRandom(seed);
+        var minion = fight.Enemy1;
+
+        var result = fight.Play(0);
+
+        Assert.True(result.Terminal && result.PlayerWon);
+        Assert.Equal(rolls, fight.State.TargetRng!.CallCount);
+        Assert.Equal(50 - 3 * (rolls - 1), minion.Hp);
+    }
+
+    /// <summary>
     /// `OrbCmd.Passive`, `OrbCmd.Evoke` and `OrbCmd.Channel` do nothing once the fight is ending:
     /// a Lightning rolls no target, the queue keeps its orb, nothing is channeled.
     /// </summary>

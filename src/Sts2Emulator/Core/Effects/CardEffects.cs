@@ -4835,6 +4835,15 @@ public static class CardEffects
     {
         for (int i = 0; i < hits; i++)
         {
+            // `AttackCommand.Execute` stops when no hittable target is left, and in the game a
+            // leader's minions die inside its `Kill` -- so once the last primary enemy is dead no
+            // hit is left to roll. The emulator answers those deaths after the card, so the gate is
+            // what stops the rest of the hits rolling the run's CombatTargets over a minion.
+            if (CombatEngine.IsOverOrEnding(state))
+            {
+                return;
+            }
+
             var target = RandomLivingEnemy(state, rng);
             if (target == null)
             {
