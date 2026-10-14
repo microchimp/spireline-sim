@@ -149,6 +149,35 @@ public class TurnStartPickTimingTests
     }
 
     /// <summary>
+    /// Gambling Chip's held screen is shown over the hand as it stands once turn one's side has run:
+    /// Orange Dough's two colourless cards and Fencing Manual's Sovereign Blade reach the hand while
+    /// the chip waits (`AfterSideTurnStart`, TurnNumber &lt;= 1), and the chip offers them, as the UI
+    /// does (it selects from the live hand). The screen offered the five cards it counted when it
+    /// paused, so the added cards could not be pitched.
+    /// </summary>
+    [Theory]
+    [InlineData(RelicEffects.OrangeDough, 2)]
+    [InlineData(RelicEffects.FencingManual, 1)]
+    public void TurnOnesHeldChipScreenOffersTheCardsTheSideAdded(int relic, int added)
+    {
+        var (state, rng) = TurnOne(RelicEffects.GamblingChip, relic);
+
+        var open = state.PendingSelection!;
+        Assert.Equal(CardSelectionKind.DiscardAnyThenDraw, open.Kind);
+        Assert.Equal(5 + added, state.Hand.Count);
+        Assert.Equal(Enumerable.Range(0, state.Hand.Count), open.Candidates);
+
+        // Pitching the last card added, then closing the screen, draws one for it.
+        var pitched = state.Hand[^1];
+        CombatEngine.Step(state, open.Candidates.Count - 1, rng);
+        CombatEngine.Step(state, state.PendingSelection!.Candidates.Count, rng);
+
+        Assert.Null(state.PendingSelection);
+        Assert.Equal(pitched, state.DiscardPile[^1]);
+        Assert.Equal(5 + added, state.Hand.Count);
+    }
+
+    /// <summary>
     /// And Toolbox asks before the opening draw: Bone Tea's turn-one upgrade finds an empty hand, and
     /// nothing in the opening hand is upgraded (the game; the old picker upgraded all six).
     /// </summary>

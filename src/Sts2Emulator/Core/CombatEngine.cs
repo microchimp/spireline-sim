@@ -2666,6 +2666,7 @@ public static class CombatEngine
                 if (!resumed)
                 {
                     FirstTurnSide(state, rng);
+                    ShowHeldFirstTurnScreen(state);
                 }
 
                 HoldFirstTurn(state, TurnStartPhase.BeforeHandDraw, held);
@@ -2685,6 +2686,7 @@ public static class CombatEngine
                 if (!resumed)
                 {
                     FirstTurnSide(state, rng);
+                    ShowHeldFirstTurnScreen(state);
                 }
 
                 HoldFirstTurn(state, TurnStartPhase.AfterPlayerTurnStart, held);
@@ -2706,6 +2708,23 @@ public static class CombatEngine
 
         CombatFactory.QueueCombatStartAutoPlays(state);
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+    }
+
+    /// <summary>
+    /// Turn one's held screen, shown once the side's turn start has run (<see cref="FirstTurnSide" />)
+    /// -- the turn-one twin of <see cref="AwaitSelection(CombatState, Func{PendingCardSelection}, Random?)" />'s
+    /// rebuild. `CardSelectCmd` counts its pile and decides whether to ask before it pauses, and the
+    /// screen shows the pile as it stands when the pause ends: Orange Dough's, Big Hat's and Fencing
+    /// Manual's cards reach the hand while Gambling Chip waits (`AfterSideTurnStart`, TurnNumber
+    /// &lt;= 1), and the chip offers them. The choose-a-card screens that hold turn one (Toolbox,
+    /// Choices Paradox) offer cards of their own and stand as they were raised.
+    /// </summary>
+    private static void ShowHeldFirstTurnScreen(CombatState state)
+    {
+        if (state.PendingSelection is { Kind: CardSelectionKind.DiscardAnyThenDraw })
+        {
+            state.PendingSelection = GamblingChipScreen(state);
+        }
     }
 
     private static void HoldFirstTurn(CombatState state, TurnStartPhase phase, int nextRelic)
@@ -5391,15 +5410,19 @@ public static class CombatEngine
             return false;
         }
 
-        state.PendingSelection = new PendingCardSelection
+        state.PendingSelection = GamblingChipScreen(state);
+        return true;
+    }
+
+    /// <summary>Gambling Chip's screen over the hand as it stands: every card, and it can be declined.</summary>
+    private static PendingCardSelection GamblingChipScreen(CombatState state) =>
+        new()
         {
             Kind = CardSelectionKind.DiscardAnyThenDraw,
             Candidates = [.. Enumerable.Range(0, state.Hand.Count)],
             SourceCardDefId = 0,
             Skippable = true,
         };
-        return true;
-    }
 
     /// <summary>
     /// `CardCmd.DiscardAndDraw(list, list.Count)` — the draw is for as many as were
