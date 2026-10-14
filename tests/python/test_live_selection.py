@@ -1977,17 +1977,23 @@ class EmulatorAgreementTests(unittest.TestCase):
     def test_part_of_the_unknown_middle_is_named_by_card_and_offered_again(
         self,
     ) -> None:
-        # Seeker Strike samples three of five middle cards and Secret Technique finds a
-        # Skill beside two Attacks: the emulator opens a selection over indices that only
+        # Seeker Strike samples three of five middle cards and Secret Technique finds two
+        # Skills beside two Attacks: the emulator opens a selection over indices that only
         # its own shuffle decided. The screen maps to the same selection, its cards named,
         # and the emulator's position with that selection offers the same cards again at
-        # any load seed, wherever the load's shuffle puts them.
+        # any load seed, wherever the load's shuffle puts them. Two Skills, not one: a
+        # pick of exactly one from a pool of one is made without a screen
+        # (`CardSelectCmd` hands the pool back; 8a355bf3), and this staging's one Skill
+        # was picked unasked, so it opened nothing to map.
         for staging in (
             Staging(
                 ("card", "SEEKER_STRIKE"),
                 middle=(DEFEND, STRIKE, IRON_WAVE, BASH, ANGER),
             ),
-            Staging(("card", "SECRET_TECHNIQUE"), middle=(DEFEND, STRIKE, IRON_WAVE)),
+            Staging(
+                ("card", "SECRET_TECHNIQUE"),
+                middle=(DEFEND, STRIKE, SHRUG_IT_OFF, IRON_WAVE),
+            ),
         ):
             with self.subTest(staging.label):
                 played = _play(staging)
@@ -2072,11 +2078,17 @@ class EmulatorAgreementTests(unittest.TestCase):
                 native.destroy(handle)
             emulated = state["pending_selection"]
             with self.subTest(source):
-                # Both ask with the opening hand already dealt (CombatFactory.cs:430-476).
-                self.assertEqual(len(state["piles"]["hand"]), 5)
+                # The chip asks after the opening hand is dealt (`AfterPlayerTurnStart`).
+                # The Toolbox asks BEFORE the draw (`BeforeHandDraw`), as the game does
+                # (81cc5d4b: turn one runs the turn-start pipeline), so its screen opens
+                # on an empty hand.
+                self.assertEqual(
+                    len(state["piles"]["hand"]),
+                    0 if source == "TOOLBOX" else 5,
+                )
                 if source == "TOOLBOX":
-                    # The game's Toolbox asks BEFORE the draw, which a loaded position
-                    # cannot follow with one: unmappable.
+                    # A loaded position cannot follow a screen that precedes the draw
+                    # with one: unmappable.
                     self.assertEqual(emulated["kind"], GENERATED_TO_HAND)
                     continue
                 hand = [
