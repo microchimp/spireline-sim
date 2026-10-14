@@ -403,6 +403,7 @@ public static class CombatSnapshot
         "stolen_gold",
         "heist_gold",
         "powered_hits_this_turn",
+        "hardened_shell_damage_this_turn",
         "stolen_card",
     ];
 
@@ -922,6 +923,10 @@ public static class CombatSnapshot
         enemy.StolenGold = ai.Int("stolen_gold", enemy.StolenGold);
         enemy.HeistGold = ai.Int("heist_gold", enemy.HeistGold);
         enemy.PoweredHitsThisTurn = ai.Int("powered_hits_this_turn", enemy.PoweredHitsThisTurn);
+        enemy.HardenedShellDamageThisTurn = ai.Int(
+            "hardened_shell_damage_this_turn",
+            enemy.HardenedShellDamageThisTurn
+        );
         enemy.StolenCard = ai.NullableCard("stolen_card");
         return enemy;
     }
@@ -1936,6 +1941,7 @@ public static class CombatSnapshot
         w.WriteNumber("stolen_gold", enemy.StolenGold);
         w.WriteNumber("heist_gold", enemy.HeistGold);
         w.WriteNumber("powered_hits_this_turn", enemy.PoweredHitsThisTurn);
+        w.WriteNumber("hardened_shell_damage_this_turn", enemy.HardenedShellDamageThisTurn);
         WriteNullableCard(w, "stolen_card", enemy.StolenCard);
         w.WriteEndObject();
 

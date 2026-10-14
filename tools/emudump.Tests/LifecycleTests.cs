@@ -164,6 +164,7 @@ public class LifecycleTests(ITestOutputHelper output)
             ["CombatState.Enemies[].RepeatStreak"] = AiState,
             ["CombatState.Enemies[].BranchCooldown"] = AiState,
             ["CombatState.Enemies[].PoweredHitsThisTurn"] = EnemyHidden,
+            ["CombatState.Enemies[].HardenedShellDamageThisTurn"] = EnemyHidden,
             ["CombatState.Enemies[].CurlUpArmed"] = EnemyHidden,
             ["CombatState.Enemies[].NemesisIntangibleOn"] = EnemyHidden,
             ["CombatState.Enemies[].StolenGold"] = EnemyHidden,

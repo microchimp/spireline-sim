@@ -14,7 +14,8 @@ public class ReadPowerPinTests
 {
     /// <summary>
     /// `HardenedShellPower.ModifyHpLostBeforeOstyLate` caps HP LOST at what is left of the
-    /// shell this turn, and the Skulking Colony's refills to 20 at the turn boundary.
+    /// shell this turn, and `BeforeSideTurnStart` zeroes what was lost at the turn boundary.
+    /// The Amount (20) stays put throughout.
     /// </summary>
     [Fact]
     public void HardenedShellCapsHpLostAndRefillsEachTurn()
@@ -30,11 +31,13 @@ public class ReadPowerPinTests
 
         // Capped at the shell, not at the swing.
         Assert.Equal(hp - 20, colony.Hp);
-        Assert.Equal(0, BuffSystem.Get(colony.Buffs, BuffId.HardenedShell));
+        Assert.Equal(20, BuffSystem.Get(colony.Buffs, BuffId.HardenedShell));
+        Assert.Equal(20, colony.HardenedShellDamageThisTurn);
 
         fight.EndTurn();
 
         Assert.Equal(20, BuffSystem.Get(colony.Buffs, BuffId.HardenedShell));
+        Assert.Equal(0, colony.HardenedShellDamageThisTurn);
     }
 
     /// <summary>The shell is a per-turn POOL: two hits share it.</summary>

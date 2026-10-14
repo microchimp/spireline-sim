@@ -220,6 +220,7 @@ public class CombatSnapshotTests
                   "branch_cooldown": 0, "starter_move": 0, "off_balance": false,
                   "nemesis_intangible_on": false, "escaped": false, "last_spawned_def_id": 0,
                   "stolen_gold": 0, "heist_gold": 0, "powered_hits_this_turn": 0,
+                  "hardened_shell_damage_this_turn": 0,
                   "stolen_card": null
                 }
               }],
@@ -1436,7 +1437,8 @@ public class CombatSnapshotTests
                       "repeat_streak": 2, "branch_cooldown": 3, "starter_move": 1,
                       "off_balance": true, "nemesis_intangible_on": true, "escaped": true,
                       "last_spawned_def_id": {{KE.Inklet}}, "stolen_gold": 15, "heist_gold": 20,
-                      "powered_hits_this_turn": 3, "stolen_card": {{DefaultCard(IC.IronWave)}}
+                      "powered_hits_this_turn": 3, "hardened_shell_damage_this_turn": 7,
+                      "stolen_card": {{DefaultCard(IC.IronWave)}}
                     }
                   }],
                   "pending_selection": {

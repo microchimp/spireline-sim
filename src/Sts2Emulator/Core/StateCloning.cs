@@ -103,6 +103,7 @@ public static class StateCloning
         into.Buffs = Refill(into.Buffs, enemy.Buffs, inPlace);
         into.LastSpawnedDefId = enemy.LastSpawnedDefId;
         into.PoweredHitsThisTurn = enemy.PoweredHitsThisTurn;
+        into.HardenedShellDamageThisTurn = enemy.HardenedShellDamageThisTurn;
         into.MoveIndex = enemy.MoveIndex;
         into.LastMove = enemy.LastMove;
         into.LastMoveRepeats = enemy.LastMoveRepeats;

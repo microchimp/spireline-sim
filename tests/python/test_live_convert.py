@@ -146,6 +146,7 @@ EMU_AI_INTS = {
     "stolen_gold",
     "heist_gold",
     "powered_hits_this_turn",
+    "hardened_shell_damage_this_turn",
 }
 EMU_AI_BOOLS = {
     "once_only_move_used",

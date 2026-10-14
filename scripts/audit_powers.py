@@ -151,7 +151,7 @@ READ: dict[str, tuple[str, str]] = {
     "DampenPower": ("566dd23d7112", "downgrades every UPGRADED card the player holds, in every pile, and gives them back when the last caster dies. Only the buff was applied, so the Magi Knight's move was a debuff the player carried and never paid. The memory rides the CardInstance, the game keying its dictionary on a card object the emulator has no equivalent of"),
     "CrabRagePower": ("08d4a6f77926", "a partner's death hands the survivor Strength and UNPOWERED block, and spends the power. The spend is unreachable with exactly two crabs; it is modelled so a third could not set it off twice"),
     "CurlUpPower": ("181b5006106a", "the Louse Progenitor's: the first POWERED attack to land turns into block and the power goes with it"),
-    "HardenedShellPower": ("5cf1b5723c66", "caps HP LOST at what is left of the shell this turn -- a per-turn POOL two hits share, not a per-hit cap -- and the Skulking Colony's refills to 20 at the turn boundary"),
+    "HardenedShellPower": ("5cf1b5723c66", "caps HP LOST at what is left of the shell this turn -- a per-turn POOL two hits share, not a per-hit cap. The Amount (20) never changes; the HP lost so far is a tally (EnemyState.HardenedShellDamageThisTurn) that either side's turn start zeroes"),
     "HexPower": ("91913fe59d68", "grants Ethereal to the player's cards while it stands, so the hand burns off at end of turn instead of being discarded"),
     "BackAttackLeftPower": ("538d5f5be6e2", "a MARKER with no behaviour of its own; SurroundedPower reads it. The Kaiser Crab's Crusher faces one way"),
     "BackAttackRightPower": ("79749a7f8981", "the same marker for the Rocket, facing the other. No creature carries both"),

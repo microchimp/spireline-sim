@@ -285,7 +285,7 @@ HITS = (
 # `ai` fields that are not the monster's AI state: Beat Into Shape's count of powered hits
 # the enemy took this turn (Enemy.cs:88-93), which no live field carries and which a Strike
 # in the hit scenarios raises.
-NOT_AI = frozenset({"powered_hits_this_turn"})
+NOT_AI = frozenset({"powered_hits_this_turn", "hardened_shell_damage_this_turn"})
 
 # `TriggerAboutToBlowState`'s `SetMaxAndCurrentHp(Creature, 999999999m)` (decompiled
 # WaterfallGiant.cs:301-313): the dead giant revived, not a new creature.

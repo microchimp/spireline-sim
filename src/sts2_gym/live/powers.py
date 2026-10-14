@@ -255,10 +255,10 @@ _UNCARRIED_HALF = {
     "FERAL_POWER": "the zero-cost Attacks it has already returned this turn (BuffId.FeralUsed)",
     "SLOW_POWER": "this turn's count of cards played (BuffId.SlowCount)",
     "SWIPE_POWER": "the card it stole (EnemyState.StolenCard)",
-    # Here the emulator's MAGNITUDE is the other quantity, so the live amount stands in.
+    # The magnitude is the cap, as in the game; what has been lost this turn is a field.
     "HARDENED_SHELL_POWER": (
-        "the damage already taken this turn: the emulator's magnitude is the REMAINING "
-        "cap (CombatEngine.cs:1436-1441)"
+        "the damage already taken this turn (EnemyState.HardenedShellDamageThisTurn, "
+        "snapshot ai `hardened_shell_damage_this_turn`)"
     ),
     "WITHERING_PRESENCE_POWER": (
         "the cards left before the next Wither, which is the emulator's magnitude "

@@ -4496,17 +4496,17 @@ public static class CombatEngine
     /// for the enemy phase too: its poison ticks, and the Thorns and Flame Barrier its own
     /// attacks set off, draw on a full shell, not on what the player's turn left of it.
     /// </summary>
+    /// <remarks>
+    /// Only the tally is cleared. The power's Amount is the cap and never changes, so there
+    /// is nothing to put back; it used to be spent and dropped at zero, and refilled here.
+    /// </remarks>
     private static void RefillHardenedShells(CombatState state)
     {
         foreach (var enemy in state.Enemies)
         {
-            if (enemy.DefId == KE.SkulkingColony)
+            if (BuffSystem.Get(enemy.Buffs, BuffId.HardenedShell) > 0)
             {
-                BuffSystem.Apply(
-                    enemy.Buffs,
-                    BuffId.HardenedShell,
-                    20 - BuffSystem.Get(enemy.Buffs, BuffId.HardenedShell)
-                );
+                enemy.HardenedShellDamageThisTurn = 0;
             }
         }
     }

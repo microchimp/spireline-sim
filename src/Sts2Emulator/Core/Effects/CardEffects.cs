@@ -5244,13 +5244,15 @@ public static class CardEffects
         }
 
         // `HardenedShellPower.ModifyHpLostBeforeOstyLate` reads no props: the per-turn cap
-        // holds against a Combust tick or a poison tick as much as against a card.
-
+        // holds against a Combust tick or a poison tick as much as against a card. It caps
+        // what is LEFT of the shell -- `Amount - damageReceivedThisTurn` -- and never touches
+        // the Amount: the power stays on the creature at 20 all fight, and a shell that is
+        // spent caps every later hit of the turn down to nothing. (`Math.Max` only guards a
+        // tally the snapshot put above the cap; the game's own hooks cannot reach one here.)
         int hardened = BuffSystem.Get(target.Buffs, BuffId.HardenedShell);
-        if (hardened > 0)
+        if (hardened > 0 && hpLoss != 0)
         {
-            hpLoss = Math.Min(hpLoss, hardened);
-            BuffSystem.Apply(target.Buffs, BuffId.HardenedShell, -hpLoss);
+            hpLoss = Math.Min(hpLoss, Math.Max(0, hardened - target.HardenedShellDamageThisTurn));
         }
 
         int slippery = BuffSystem.Get(target.Buffs, BuffId.Slippery);
@@ -5259,7 +5261,17 @@ public static class CardEffects
             hpLoss = 1;
             BuffSystem.Apply(target.Buffs, BuffId.Slippery, -1);
         }
+        int hpBefore = target.Hp;
         target.Hp = Math.Max(0, target.Hp - hpLoss);
+
+        // `HardenedShellPower.AfterDamageReceived` adds the result's `UnblockedDamage` to its
+        // tally -- what `LoseHpInternal` really took (`currentHp - CurrentHp`, so a killing
+        // hit counts only the HP the creature had), after every modifier, and nothing for a
+        // fully blocked hit. It reads no props either.
+        if (hardened > 0)
+        {
+            target.HardenedShellDamageThisTurn += hpBefore - target.Hp;
+        }
 
         // `CurlUpPower.AfterDamageReceived` reads no damage result -- a hit the louse
         // blocks whole counts too -- and only REMEMBERS the card; the block comes when

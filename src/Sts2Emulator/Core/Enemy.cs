@@ -91,6 +91,19 @@ public sealed class EnemyState
     /// </summary>
     public int PoweredHitsThisTurn;
 
+    /// <summary>
+    /// <c>HardenedShellPower</c>'s private <c>damageReceivedThisTurn</c>: the HP this creature
+    /// has lost since the last <c>BeforeSideTurnStart</c> (<c>DamageResult.UnblockedDamage</c>,
+    /// summed in <c>AfterDamageReceived</c>). The shell caps a hit at <c>Amount</c> minus this;
+    /// the Amount itself never moves.
+    /// </summary>
+    /// <remarks>
+    /// Kept apart from the buff on purpose. The emulator once spent the Amount and dropped the
+    /// power at zero, and a power that is gone caps nothing: the rest of the turn's damage
+    /// landed in full. Zeroed at both sides' turn starts (<c>RefillHardenedShells</c>).
+    /// </remarks>
+    public int HardenedShellDamageThisTurn;
+
     public int MoveIndex;
     public int LastMove = -1; // ID of the last move chosen (to avoid repetition)
 
