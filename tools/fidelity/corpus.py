@@ -120,11 +120,42 @@ POLICY = {
     "jobs-nodeless": ("include", "nodeless-trial", ("speed/nodeless trials, the nodeless and the full host mixed (no "
                       "recording says which): per file, 88-100% of the fights also recorded elsewhere match a stock "
                       "copy, as in the full host's own files (91-100%)")),
+    "jobs-pickorder": ("include", None, ("fix/turn-start-choices-2: every corpus fight with a turn-start screen (87 specs) "
+                       'recorded again with pick_timing "ui" (a turn-start screen answered where the UI shows it), '
+                       "step-identical in 87 of 87 to the same driver's 'instant' recordings; and the probe and "
+                       "turn-start cases where the pick timing decides the outcome (P19, P20, Bone Tea with Toolbox, "
+                       "Gambling Chip and Choices Paradox, Tyranny with Furnace)")),
     "jobs-nodeless/fpm_full3s0.out.json": ("exclude", None, ("full host, frame-count settle with no frame sleep: 181 of "
                                            "295 fights match a stock copy (61%), against 88-100% in the folder's "
                                            "other files")),
 }
 UNREVIEWED = ("include", "unreviewed", "no entry in corpus.POLICY yet")
+
+# Single fights the gate leaves out, by fight id, each with its reason: a reference the game or the
+# driver got wrong, which no emulator should match. The fight stays in the corpus, flagged "excluded"
+# (status lists them); run does not replay it and check compares neither side of it.
+_FROZE = ("the game froze at {who}'s auto-play before the turn-start screen ({what}) and the driver went on "
+          "acting: from step {step} on, {noop} of the {after} steps change nothing (no-op-step); a bad reference, "
+          "not an emulator regression (fix/turn-start-choices-2)")
+FIGHT_POLICY: dict[str, str] = {
+    "4fbfad918b1f5ff8": _FROZE.format(who="Hellraiser", what="Stratagem", step=19, noop=11, after=14),  # 6V7YRDLB2L
+    "3e3439d56fce03b6": _FROZE.format(who="Hellraiser", what="Entropy", step=15, noop=11, after=14),    # ET9FHLWRS7
+    "7b21e9f8e63f57aa": _FROZE.format(who="Mayhem", what="Stratagem", step=27, noop=29, after=35),      # AN1KDHMVHL
+    "495f56a1a3899974": _FROZE.format(who="Mayhem", what="Entropy", step=15, noop=15, after=17),        # V3LDXLDHW2
+    "684a7fde207495a1": _FROZE.format(who="Hellraiser", what="Entropy", step=11, noop=15, after=25),    # TCU1SMLQHY
+    "790cf1a5af4c3df0": _FROZE.format(who="Mayhem", what="Entropy", step=15, noop=16, after=18),        # V3LDXLDHW2, nodeless
+}
+
+
+def apply_fight_policy(meta: dict) -> dict:
+    """Flag a fight FIGHT_POLICY leaves out ("excluded", with its reason under "excluded"), and only those."""
+    reason = FIGHT_POLICY.get(meta.get("id", ""))
+    meta["flags"] = [f for f in meta.get("flags", []) if f != "excluded"] + (["excluded"] if reason else [])
+    if reason:
+        meta["excluded"] = reason
+    else:
+        meta.pop("excluded", None)
+    return meta
 
 
 def canon(x) -> str:
@@ -354,7 +385,10 @@ class Corpus:
     def load_index(self) -> dict:
         if self.index_path.exists():
             idx = json.loads(self.index_path.read_text(encoding="utf-8"))
-            return self._migrate(idx) if idx.get("format", 1) < INDEX_FORMAT else idx
+            idx = self._migrate(idx) if idx.get("format", 1) < INDEX_FORMAT else idx
+            for m in idx["fights"]:
+                apply_fight_policy(m)
+            return idx
         return {"format": INDEX_FORMAT, "fights": [], "scanned": {}, "excluded": {}}
 
     def _migrate(self, idx: dict) -> dict:
@@ -719,7 +753,10 @@ def run(corpus: Corpus, procs: int, emudump: Path, label: str | None = None, onl
         limit: int | None = None, timeout: float | None = None, state_hash: bool = False) -> Path:
     idx = corpus.load_index()
     metas = [m for m in idx["fights"] if not only or m["id"] in only or m["seed"] in only][: limit or None]
-    metas, skipped = replayable(metas, emudump_features())
+    left_out = sum(1 for m in metas if "excluded" in m["flags"])
+    metas, skipped = replayable([m for m in metas if "excluded" not in m["flags"]], emudump_features())
+    if left_out:
+        skipped["excluded"] = left_out
     if not metas:
         raise SystemExit("corpus is empty: run `corpus.py build` first")
     if skipped:
@@ -896,12 +933,22 @@ def check(corpus: Corpus, run_doc: dict, base_path: Path, show: int = 40) -> int
         print(f"check: baseline {base_path.name} or the run predates results format {RESULTS_FORMAT}; "
               "store a new baseline with `corpus.py baseline` on the baseline's commit")
         return 2
-    res = compare(base["fights"], run_doc["fights"])
     subset = run_doc.get("subset", False)
     metas = {m["id"]: m for m in corpus.load_index()["fights"]}
-    bt, ct = base["totals"], run_doc["totals"]
+    # FIGHT_POLICY's fights are left out of both sides, and the totals counted over the rest.
+    out = {fid for fid, m in metas.items() if "excluded" in m["flags"]}
+    base_fights = {fid: r for fid, r in base["fights"].items() if fid not in out}
+    cur_fights = {fid: r for fid, r in run_doc["fights"].items() if fid not in out}
+    res = compare(base_fights, cur_fights)
+    bt = totals(base_fights) if len(base_fights) < len(base["fights"]) else base["totals"]
+    ct = totals(cur_fights) if len(cur_fights) < len(run_doc["fights"]) else run_doc["totals"]
     print(f"baseline {base['commit'][:10]} ({base['run']}): identical {bt.get('identical', 0)}, "
           f"re-anchored matched {bt.get('reanchor_matched', 0)}")
+    left = sorted(fid for fid in out if fid in base["fights"] or fid in run_doc["fights"])
+    if left:
+        print(f"excluded (corpus.FIGHT_POLICY), compared on neither side: {len(left)} fights")
+        for fid in left[:show]:
+            print(f"  {fid} {metas[fid].get('seed')}: {metas[fid]['excluded']}")
     if base.get("judge_sha256") and base["judge_sha256"] != run_doc["emulator"].get("judge_sha256"):
         print("note: the judge (tools/fidelity, data/id_map.json) changed since the baseline; a difference may be the judge's")
     for title, items, worse in (("REGRESSIONS", res["regressions"], True), ("IMPROVEMENTS", res["improvements"], False)):
@@ -1090,6 +1137,9 @@ def status(corpus: Corpus) -> None:
                                                          for n, c in needs.items()))
     for name, e in sorted(idx.get("excluded", {}).items()):
         print(f"  excluded {name} ({e['files']} files): {e['reason']}")
+    for m in fs:
+        if m.get("excluded"):
+            print(f"  excluded fight {m['id']} {m.get('seed')}: {m['excluded']}")
     bl = sorted((corpus.path / "baselines").glob("*.json"))
     print(f"  baselines: {', '.join(p.stem[:10] for p in bl) or 'none'}")
 

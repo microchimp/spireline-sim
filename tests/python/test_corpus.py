@@ -347,12 +347,13 @@ class GateTest(CorpusTestCase):
         return {"format": cp.RESULTS_FORMAT, "label": "t", "fights": fights, "totals": cp.totals(fights), "subset": subset,
                 "emulator": {"judge_sha256": "j"}}
 
-    def check(self, fights, subset=False, fmt=cp.RESULTS_FORMAT) -> tuple[int, str]:
+    def check(self, fights, subset=False, fmt=cp.RESULTS_FORMAT, base=None) -> tuple[int, str]:
+        base = self.BASE if base is None else base
         bdir = self.corpus.path / "baselines"
         bdir.mkdir(parents=True, exist_ok=True)
         bp = bdir / "abc.json"
         bp.write_text(json.dumps({"format": fmt, "commit": "abc", "run": "r0", "judge_sha256": "j",
-                                  "totals": cp.totals(self.BASE), "fights": self.BASE}), encoding="utf-8")
+                                  "totals": cp.totals(base), "fights": base}), encoding="utf-8")
         out = io.StringIO()
         with redirect_stdout(out):
             code = cp.check(self.corpus, self.run_doc(fights, subset), bp)
@@ -379,6 +380,24 @@ class GateTest(CorpusTestCase):
         self.assertIn("1 not compared", text)
         code, text = self.check(part, subset=True)  # --only / --limit: the rest is expected to be absent
         self.assertEqual(code, 0)
+
+    def test_a_fight_the_policy_leaves_out_is_compared_on_neither_side(self):
+        # The fight regresses, or is not in the run at all (run does not replay it): left out by FIGHT_POLICY,
+        # neither fails the check, and the totals are counted over the rest.
+        self.add(self.write("jobs/a.out.json", [recording()]))
+        fid = self.fights()[0]["id"]
+        base = {fid: self.BASE["f1"], "f2": self.BASE["f2"]}
+        with mock.patch.dict(cp.FIGHT_POLICY, {fid: "a bad reference"}):
+            self.assertIn("excluded", self.fights()[0]["flags"])
+            for cur in ({fid: {"n": 5, "fd": 2, "rv": "MDDD"}, "f2": self.BASE["f2"]}, {"f2": self.BASE["f2"]}):
+                code, text = self.check(cur, base=base)
+                self.assertEqual(code, 0, text)
+                self.assertIn("excluded (corpus.FIGHT_POLICY), compared on neither side: 1 fights", text)
+                self.assertIn("a bad reference", text)
+                self.assertIn("identical 0 -> 0", text)
+        self.assertNotIn("excluded", self.fights()[0]["flags"])  # out of the policy, back in the gate
+        code, text = self.check({"f2": self.BASE["f2"]}, base=base)
+        self.assertEqual(code, 1, text)
 
     def test_a_baseline_of_an_older_results_format_is_refused(self):
         self.assertEqual(self.check(self.BASE, fmt=1)[0], 2)
