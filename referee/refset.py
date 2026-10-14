@@ -907,7 +907,7 @@ def regression_specs(t: Tables) -> list[dict]:
                     "chooser_seed": 7700 + n, "max_actions": MAX_ACTIONS, "use_potions": True, "setup": items,
                     "chooser": "random", "relic_flashes": True, "tag": f"regression:{name}"}
             out.append({"id": f"G{n + 1:03d}-{spec['seed']}", "part": "regression", "class": name, "source": source,
-                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers),
+                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES),
                         "reason": f"minimal setup for the divergence class '{name}' ({source})", "chooser": "random",
                         "expect_act": t.encounters[enc or plain][0] if act > 1 else None,
                         "flags": ["cross_character"] if cross else [], "spec": spec})
@@ -921,13 +921,24 @@ def regression_specs(t: Tables) -> list[dict]:
             spec["tag"] = f"regression-original:{name}"
             spec["relic_flashes"] = True
             out.append({"id": f"G{n + 1:03d}o-{s}", "part": "regression", "class": name, "source": f"{source}; original {src}",
-                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers),
+                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES),
                         "reason": f"the fight that found '{name}', re-recorded with the fixed driver",
                         "chooser": "script" if spec.get("script") else spec.get("chooser", "random"), "flags": [], "spec": spec})
     return out
 
 
 FILLER_CARDS = {"STRIKE_IRONCLAD", "DEFEND_IRONCLAD"}
+# Classes about a relic's pickup itself (what it rolls or asks for as it is obtained), not about it in a fight: their
+# trigger is the relic obtained by the setup, held at the fight's start.
+PICKUP_CLASSES = {"potion roll without repeats: Phial Holster", "selection count: Kifuda / Gnarled Hammer take 0 to 3 cards"}
+
+
+def class_trigger(name: str) -> dict | None:
+    """The trigger of a regression class by name, from REGRESSION_CLASSES (the manifest keeps a copy)."""
+    for cname, _, cards, relics, potions, _, powers, _ in REGRESSION_CLASSES:
+        if cname == name:
+            return trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES)
+    return None
 
 
 def class_kind(name: str) -> str:
@@ -935,16 +946,17 @@ def class_kind(name: str) -> str:
     return "driver" if name.startswith("driver:") else "emulator"
 
 
-def trigger_of(cards: list, relics: list, potions: list, powers: list) -> dict:
+def trigger_of(cards: list, relics: list, potions: list, powers: list, pickup: bool = False) -> dict:
     """What a fight of the class must show for its pass to count (refset_score): one of the class's own cards
-    played (the fillers count only when they are all the class has), its relic fired (a flash), its potion used,
-    its power up when an enemy's attack lands. A class with none of these is reached by replaying its fight."""
+    played (the fillers count only when they are all the class has), its relic fired (a flash; for a pickup class,
+    obtained and held at the start), its potion used, its power up when an enemy's attack lands. A class with none
+    of these is reached by replaying its fight."""
     own = [c for c in cards if c not in FILLER_CARDS] or list(cards)
     out = {}
     if own:
         out["plays"] = sorted(set(own))
     if relics:
-        out["relic_flashes"] = sorted(set(relics))
+        out["pickup" if pickup else "relic_flashes"] = sorted(set(relics))
     if potions:
         out["potions"] = sorted(set(potions))
     if powers:

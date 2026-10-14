@@ -269,7 +269,7 @@ def trigger_reached(trigger: dict, vs: list) -> bool:
         played = {c.rstrip("+") for c, _ in v.get("plays", [])}
         fired = {r for r, _ in v.get("fires", [])}
         used = {p for p, _ in v.get("uses", [])}
-        if (all(k == "replay" or {"plays": played, "relic_flashes": fired, "potions": used,
+        if (all(k == "replay" or {"plays": played, "relic_flashes": fired, "potions": used, "pickup": set(v.get("relics", [])),
                                   "powers_hit": set(v.get("powers_hit", []))}[k] & set(want)
                 for k, want in trigger.items())):
             return True
@@ -283,11 +283,12 @@ def regression_report(verdicts: list, entries: dict) -> dict:
             classes[v["class"]].append(v)
     out = {}
     for kind in ("emulator", "driver"):
-        names = sorted(c for c, vs in classes.items() if entries.get(vs[0]["id"], {}).get("class_kind", "emulator") == kind)
+        names = sorted(c for c, vs in classes.items() if refset.class_kind(c or "") == kind)
         passing, untriggered, failing = [], [], []
         for c in names:
             vs = classes[c]
-            trig = entries.get(vs[0]["id"], {}).get("trigger") or {}
+            # The class list's own trigger (refset.REGRESSION_CLASSES), else the manifest's copy.
+            trig = refset.class_trigger(c) or entries.get(vs[0]["id"], {}).get("trigger") or {}
             if not all(v.get("identical") for v in vs):
                 failing.append(c)
             elif trigger_reached(trig, vs):

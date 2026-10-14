@@ -321,6 +321,10 @@ class Specs(unittest.TestCase):
                          {"plays": ["DEFEND_IRONCLAD"], "powers_hit": ["THORNS_POWER"]})
         self.assertEqual(refset.trigger_of([], ["PHIAL_HOLSTER"], [], []), {"relic_flashes": ["PHIAL_HOLSTER"]})
         self.assertEqual(refset.trigger_of([], [], [], []), {"replay": True})
+        self.assertEqual(refset.trigger_of([], ["PHIAL_HOLSTER"], [], [], pickup=True), {"pickup": ["PHIAL_HOLSTER"]})
+        v = [{"relics": ["BURNING_BLOOD", "PHIAL_HOLSTER"], "fires": []}]
+        self.assertTrue(refset_score.trigger_reached({"pickup": ["PHIAL_HOLSTER"]}, v))
+        self.assertFalse(refset_score.trigger_reached({"relic_flashes": ["PHIAL_HOLSTER"]}, v))
         self.assertEqual(refset.class_kind("driver: turn-start auto-play"), "driver")
 
 
