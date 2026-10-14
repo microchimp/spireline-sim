@@ -1221,20 +1221,21 @@ def realism(entry: dict, r: dict) -> dict:
 
 
 def _fight_of(r: dict) -> tuple[int | None, str] | None:
-    """(the pass's spec number, role) of one server result line, or None for a line with no fight of its own in the
-    log: a server's "_retire" line (Server.cs), or a nodeless line sent to the full host before it played
-    (Nodeless.Play: a fallback model in the spec, "_full" with no steps). Roles: "plain" (the result), "attempt" (a
-    nodeless line the pool replays on the full host: "_full"), "replay" (that full-host replay, id "<n>f")."""
+    """(the pass's spec number, role) of one server result line whose fight printed the driver's Neow line (its
+    result holds "neow_options", Combat.cs prints both together), or None for a line with no Neow line in the log: a
+    server's "_retire" line (Server.cs), a nodeless line sent to the full host before it played (Nodeless.Play: a
+    fallback model in the spec) or cut short before Neow, a spec the server could not read. Roles: "plain" (the
+    result), "attempt" (a nodeless line the pool replays on the full host: "_full"), "replay" (that full-host replay,
+    id "<n>f")."""
+    if "neow_options" not in r:
+        return None
     rid = r.get("_id")
     if rid is None:
-        # A line without an _id (a spec the server could not read) still had its fight's log, if any.
-        return None if r.get("_retire") else (None, "plain")
+        return None, "plain"
     rid = str(rid)
     if rid.endswith("f"):
         return int(rid[:-1]), "replay"
-    if r.get("_full"):
-        return (int(rid), "attempt") if "steps" in r else None
-    return int(rid), "plain"
+    return int(rid), ("attempt" if r.get("_full") else "plain")
 
 
 def log_errors(run_dir: Path, diag: dict | None = None) -> dict[int, list]:

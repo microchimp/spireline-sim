@@ -493,7 +493,7 @@ class GameLog(unittest.TestCase):
         run = Path(d)
         (run / "out").mkdir()
         (run / "scratch" / "s00").mkdir(parents=True)
-        (run / "out" / "s00.jsonl").write_text("\n".join(json.dumps({"_id": f"{i:06d}"} if i is not None else {}) for i in ids) + "\n",
+        (run / "out" / "s00.jsonl").write_text("\n".join(json.dumps({"_id": f"{i:06d}", "neow_options": []} if i is not None else {"neow_options": []}) for i in ids) + "\n",
                                                encoding="utf-8")
         (run / "scratch" / "s00" / "game-stdout.log").write_text("\n".join(log), encoding="utf-8")
         return run
@@ -525,10 +525,11 @@ class GameLog(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             run = Path(d)
             (run / "out").mkdir()
-            rows0 = [{"_id": "000000", "steps": []}, {"_id": "000001", "steps": [], "_full": {"why": "fallback", "reason": "errors: x"}},
+            n = {"steps": [], "neow_options": []}
+            rows0 = [{"_id": "000000", **n}, {"_id": "000001", **n, "_full": {"why": "fallback", "reason": "errors: x"}},
                      {"_id": "000002", "seed": "S", "_full": {"why": "fallback", "reason": "deck"}},
-                     {"_id": "000003", "steps": [], "_full": {"why": "audit"}}, {"_retire": "stale", "_after": "000003"}]
-            rows1 = [{"_id": "000001f", "steps": []}, {"_id": "000002f", "steps": []}, {"_id": "000003f", "steps": []}]
+                     {"_id": "000003", **n, "_full": {"why": "audit"}}, {"_retire": "stale", "_after": "000003"}]
+            rows1 = [{"_id": "000001f", **n}, {"_id": "000002f", **n}, {"_id": "000003f", **n}]
             logs = {"s00": [neow, neow, *mad, neow], "s01": [neow, *mad, neow, neow, *mad]}
             for name, rows in (("s00", rows0), ("s01", rows1)):
                 (run / "out" / f"{name}.jsonl").write_text("\n".join(map(json.dumps, rows)) + "\n", encoding="utf-8")
