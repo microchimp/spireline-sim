@@ -89,17 +89,17 @@ public static class CardEffects
 }
 
 
-def game_state(hp, shell, hand=1):
-    return {"in_combat": True, "round": 1, "player": {"hp": 70, "max_hp": 80, "block": 0, "energy": 2, "powers": []},
+def game_state(hp, shell, hand=1, player_powers=()):
+    return {"in_combat": True, "round": 1, "player": {"hp": 70, "max_hp": 80, "block": 0, "energy": 2, "powers": [list(p) for p in player_powers]},
             "hand": [["STRIKE_IRONCLAD", False]] * hand, "draw": [], "discard": [], "exhaust": [],
             "enemies": [{"name": "SKULKING_COLONY", "hp": hp, "max_hp": 80, "block": 0, "powers": [["HARDENED_SHELL_POWER", shell]]}],
             "rng": {"Shuffle": {"seed": 1, "counter": 1}, "CombatTargets": {"seed": 2, "counter": 0}}}
 
 
-def emu_state(hp, shell, hand=1):
+def emu_state(hp, shell, hand=1, player_buffs=()):
     card = {"def_id": CID["StrikeIronclad"], "upgraded": False}
     return {"in_combat": True, "draw_order": [], "rng": {"Shuffle": 1, "CombatTargets": 0},
-            "snapshot": {"player": {"hp": 70, "max_hp": 80, "block": 0, "energy": 2, "buffs": []},
+            "snapshot": {"player": {"hp": 70, "max_hp": 80, "block": 0, "energy": 2, "buffs": [dict(b) for b in player_buffs]},
                          "piles": {"hand": [card] * hand, "discard": [], "exhaust": []},
                          "enemies": [{"def_id": EID["SkulkingColony"], "hp": hp, "block": 0,
                                       "buffs": [{"name": "HardenedShell", "amount": shell}]}]}}
@@ -108,25 +108,30 @@ def emu_state(hp, shell, hand=1):
 PLAY = {"kind": "play", "hand_index": 0, "card": "STRIKE_IRONCLAD", "target": 0, "target_slot": 0}
 
 
-def fight(seed, n_steps=3, hp_after=70, shell_after=20, setup=None):
-    """A game recording: the colony keeps its Hardened Shell at 20 after the first Strike (the game's rule)."""
+def fight(seed, n_steps=3, hp_after=70, shell_after=20, setup=None, player_powers=()):
+    """A game recording: the colony keeps its Hardened Shell at 20 after the first Strike (the game's rule).
+    `player_powers` are the player's powers from the first Strike on."""
     steps = [{"action": None, "state": game_state(80, 20, hand=n_steps)}]
     for k in range(1, n_steps):
-        steps.append({"action": PLAY, "state": game_state(hp_after if k == 1 else hp_after - 6 * (k - 1), shell_after, hand=n_steps - k)})
+        steps.append({"action": PLAY, "state": game_state(hp_after if k == 1 else hp_after - 6 * (k - 1), shell_after, hand=n_steps - k,
+                                                          player_powers=player_powers)})
     rec = {"seed": seed, "character": "IRONCLAD", "ascension": 10, "neow_pick": 0, "room": [0, 1], "deck_add": [], "steps": steps}
     if setup:
         rec["setup"] = setup
     return rec
 
 
-def emu_doc_for(rec, shell_emulator=14, extra_draw=False, trace=False):
-    """What EmuDump writes for the recording when the emulator lowers the shell after the first Strike."""
+def emu_doc_for(rec, shell_emulator=14, extra_draw=False, trace=False, open_hp_off=0, player_buffs=()):
+    """What EmuDump writes for the recording when the emulator lowers the shell after the first Strike.
+    `open_hp_off`: the emulator's enemy HP at the opening state is that much off the game's.
+    `player_buffs`: the player's buffs from the first Strike on."""
     steps = []
     for k, st in enumerate(rec["steps"]):
         g = st["state"]
         hp = g["enemies"][0]["hp"]
         shell = g["enemies"][0]["powers"][0][1] if k < 1 else shell_emulator
-        s = {"action": st["action"], "state": emu_state(hp, shell, hand=len(g["hand"])), "rng_log": [], "choices": [], "moves": "same"}
+        s = {"action": st["action"], "state": emu_state(hp + (open_hp_off if k == 0 else 0), shell, hand=len(g["hand"]),
+                                                        player_buffs=player_buffs if k >= 1 else ()), "rng_log": [], "choices": [], "moves": "same"}
         if extra_draw and k == 1:
             s["rng_log"] = [["Shuffle", 2, "CardEffects.X"]]
             s["state"]["rng"] = {"Shuffle": 2, "CombatTargets": 0}
@@ -147,14 +152,19 @@ class FakeEmu:
     available = True
     dll = Path("FakeEmuDump.dll")
 
-    def __init__(self, shell_emulator=14, extra_draw=False):
+    def __init__(self, shell_emulator=14, extra_draw=False, open_hp_off=0, player_buffs=(), keys=None):
+        """`keys`: (buff_keys, internal_keys), which EmuDump reanchor writes beside its results (the comparer's power mask reads them)."""
         self.shell_emulator, self.extra_draw, self.calls = shell_emulator, extra_draw, []
+        self.open_hp_off, self.player_buffs, self.keys = open_hp_off, player_buffs, keys
 
     def run(self, mode, fights, *extra):
         self.calls.append((mode, extra))
         trace = "--trace-to" in extra
-        results = [emu_doc_for(f, self.shell_emulator, self.extra_draw, trace) for f in fights]
-        return {"results": results}
+        results = [emu_doc_for(f, self.shell_emulator, self.extra_draw, trace, self.open_hp_off, self.player_buffs) for f in fights]
+        doc = {"results": results}
+        if mode == "reanchor" and self.keys is not None:
+            doc["buff_keys"], doc["internal_keys"] = sorted(self.keys[0]), sorted(self.keys[1])
+        return doc
 
 
 def filler(i):
@@ -618,6 +628,203 @@ class RunLayerTest(unittest.TestCase):
         self.assertIn("*B", lines[0])
         self.assertTrue(lines[1].endswith("<- the stop"))
         self.assertIn("*BASH, ANGER", lines[1])
+
+
+class WalkerSiteTest(unittest.TestCase):
+    """A walk stop's field is the literal the walker passes to Check/Fail, so a field with a suffix is looked up whole:
+    'cards (fight floor)' and 'cards' are two checks, in two branches of the walker."""
+
+    LINES = ["class Walker", "{", "    void Floor()", "    {",
+             "        var emuDeck = DeckKeys();", "        var expected = History();",
+             "        string Fmt(IEnumerable<string> keys) => string.Join(\",\", keys.OrderBy(x => x));",
+             "        string emuDiff = Fmt(Minus(emuDeck, expected));",
+             "        var relics = S.Relics.ToList();  // read near the checks, compared by none of them",
+             "        if (fightFloor)", "        {",
+             '            Check("deck", "cards (fight floor)", "+" + Fmt(Minus(expected, emuDeck)), "+" + Fmt(Minus(emuDeck, expected)), Source.FloorDrawn,',
+             '                "a change the history does not show");',
+             '            Check("outcome", "max hp (fight floor)", a, S.PlayerMaxHp.ToString(), Source.FloorDrawn);',
+             "        }", "        else", "        {"] + [f"            // padding {i}" for i in range(20)] + [
+             "            int gold = S.Gold;",
+             '            Check("deck", "cards", a, "+" + emuDiff, Source.FloorDrawn);',
+             '            Check("outcome", "max hp", a, S.PlayerMaxHp.ToString(), Source.FloorDrawn);',
+             "        }",
+             '        Fail("deck_select", what, id, "(none)", Source.Drawn);  // the field is built at run time',
+             "    }", "",
+             "    List<string> DeckKeys() => S.Deck.Select(c => c.Name).ToList();",
+             "}"]
+
+    def line(self, needle):
+        return next(i for i, x in enumerate(self.LINES, 1) if needle in x)
+
+    def walker(self, t):
+        p = Path(t) / "Walker.cs"
+        p.write_text("\n".join(self.LINES) + "\n", encoding="utf-8")
+        return p
+
+    def test_a_field_with_a_suffix_is_looked_up_whole(self):
+        with tempfile.TemporaryDirectory() as t:
+            w = self.walker(t)
+            at = lambda n: [f"tools/emudump/Codex/Walker.cs:{n}"]  # noqa: E731
+            self.assertEqual(pk.walker_sites(w, "deck", "cards (fight floor)"), at(self.line('"cards (fight floor)"')))
+            self.assertEqual(pk.walker_sites(w, "deck", "cards"), at(self.line('"deck", "cards", a')))
+            self.assertEqual(pk.walker_sites(w, "outcome", "max hp (fight floor)"), at(self.line('"max hp (fight floor)"')))
+            self.assertEqual(pk.walker_sites(w, "outcome", "max hp"), at(self.line('"max hp", a')))
+            # the state a check compares is what its emulator value is built from (here through a local and a helper),
+            # not whatever the walker reads in the lines near it (S.Relics, S.Gold)
+            self.assertEqual(pk.walker_members(w, "deck", "cards (fight floor)"), ["Deck"])
+            self.assertEqual(pk.walker_members(w, "deck", "cards"), ["Deck"])
+            self.assertEqual(pk.walker_members(w, "outcome", "max hp (fight floor)"), ["PlayerMaxHp"])
+            self.assertEqual(pk.walker_members(w, "outcome", "max hp"), ["PlayerMaxHp"])
+
+    def test_a_field_built_at_run_time_names_no_site(self):
+        with tempfile.TemporaryDirectory() as t:
+            w = self.walker(t)
+            self.assertEqual(pk.walker_sites(w, "deck_select", "transform"), [])
+            self.assertEqual(pk.walker_members(w, "deck_select", "transform"), [])
+            self.assertEqual(pk.walker_sites(w, "deck", "no such field (fight floor)"), [])  # never the shortened field's site
+
+    def test_a_run_packet_names_the_walker_line_of_its_own_stop(self):
+        with tempfile.TemporaryDirectory() as t:
+            walk = Path(t) / "walk" / "main-abc"
+            walk.mkdir(parents=True)
+            row = {"seed": "RUNEEEEEE5", "ascension": 10, "character": "IRONCLAD", "status": "mismatch", "index": 3, "floors_recorded": 9,
+                   "stop": {"act": 1, "floor": 8, "component": "deck", "field": "cards (fight floor)", "expected": "+A", "emulator": "+B",
+                            "class": "EMULATOR", "streams": []}}
+            (walk / "s0.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+            w = World(Path(t), n_filler=2)
+            cx = w.context(Path(t), codex_walk=walk.parent, walker=self.walker(t))
+            item = {"id": "T-08", "lane": "run", "kind": "mechanism", "status": "open", "title": "deck after a fight floor", "evidence": "see RUNEEEEEE5",
+                    "impact_note": ""}
+            cx.run_cases["T-08"] = pk.run_case(item, pk.refs_of(item, cx.names, set(), cx.decomp), cx)
+            text = pk.build_packet(item, cx, Path(t) / "out")["text"]
+            fight_line, plain_line = self.line('"cards (fight floor)"'), self.line('"deck", "cards", a')
+            self.assertIn(f"the walker compares this at: tools/emudump/Codex/Walker.cs:{fight_line}", text)
+            self.assertIn(f"the codex walker checks deck/cards (fight floor) at: tools/emudump/Codex/Walker.cs:{fight_line}", text)
+            self.assertNotIn(f"Walker.cs:{plain_line}", text)  # the check of floors without a fight is another one
+
+
+class QuotedStopTest(unittest.TestCase):
+    """A fight tied to an item by a quoted stop reason is analysed at the step the reason names; that step is not
+    the plain replay's first divergence unless the replay says so."""
+
+    STOP = "enemy move/intent not reproducible after the end of turn"
+    ITEM = {"id": "T-07", "lane": "harness", "kind": "mechanism", "status": "open", "title": "AI judging", "impact_note": "", "subsystem": "",
+            "evidence": f"17 fights stop at '{STOP}'"}
+
+    def world(self, t, quoted=True):
+        w = World(Path(t), n_filler=2)
+        path = w.corpus.path / "runs" / "r1" / "results.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        for name in ("cited", "cited_long", "named"):
+            fid, rec = w.fights[name]
+            n = len(rec["steps"])
+            # the opening state already differs in the plain replay (fd 0); the stop reason names step 1
+            doc["fights"][fid] = {"n": n, "fd": 0, "field": ".enemies", "path": ".enemies", "card": "start", "rv": "D" + "M" * (n - 2),
+                                  "dp": {"1": [".enemies"]}, **({"stop": f"{self.STOP} at step 1"} if quoted else {})}
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        return w
+
+    def test_the_plain_replays_own_first_divergence_is_named_not_the_quoted_step(self):
+        with tempfile.TemporaryDirectory() as t:
+            w = self.world(t)
+            pkt = pk.build_packet(self.ITEM, w.context(Path(t), FakeEmu(open_hp_off=-1)), Path(t) / "out")
+            text = pkt["text"]
+            self.assertIn("first divergence, plain replay: step 0 (the opening state), fields .enemies; the case below is step 1", text)
+            self.assertNotIn("first divergence, plain replay: step 1", text)
+            self.assertIn("the plain replay first differs at step 0", pkt["sections"]["case"][1])
+            # the candidates say the same: the replay's first difference, and the quoted step apart
+            self.assertIn("plain replay first differs at step 0 (.enemies after start); the quoted stop reason is at step 1", text)
+            self.assertNotIn("step 1 .enemies after start", text)
+
+    def test_the_stored_run_gives_the_same_answer_without_an_emulator(self):
+        with tempfile.TemporaryDirectory() as t:
+            w = self.world(t)
+            cx = w.context(Path(t))
+            self.assertFalse(cx.emu.available)
+            text = pk.build_packet(self.ITEM, cx, Path(t) / "out")["text"]
+            self.assertIn("first divergence, plain replay: step 0 (the opening state), fields .enemies; the case below is step 1", text)
+            self.assertNotIn("first divergence, plain replay: step 1", text)
+
+    def test_a_case_at_the_first_divergence_reads_as_before(self):
+        with tempfile.TemporaryDirectory() as t:
+            w = World(Path(t), n_filler=2)
+            text = pk.build_packet(ITEM, w.context(Path(t), FakeEmu()), Path(t) / "out")["text"]
+            self.assertIn("first divergence, plain replay: step 1 after play STRIKE_IRONCLAD -> slot 0, fields .enemies\n", text)
+            self.assertNotIn("the case below is step", text)
+
+    def test_a_candidate_whose_plain_replay_matches_is_not_given_a_field_or_a_card(self):
+        with tempfile.TemporaryDirectory() as t:
+            w = World(Path(t), n_filler=2)
+            path = w.corpus.path / "runs" / "r1" / "results.json"
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc["fights"][w.fights["cited"][0]] = {"n": 3, "fd": None, "rv": "MD", "dp": {"2": [".hand"]}}
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            cx = w.context(Path(t))
+            refs = pk.refs_of(ITEM, cx.names, {m["seed"] for m in cx.metas}, cx.decomp)
+            cands = pk.rank_fights(refs, cx.corpus, cx.metas, cx.run, cx.idf)
+            table = "\n".join(pk.cand_table(cands, cands[0]))
+            self.assertIn("plain replay matches; the re-anchored replay first diverges at step 2 (.hand)", table)
+            self.assertNotIn("None", table)
+
+
+class NestedBulletTest(unittest.TestCase):
+    """The notes under a finding hold its root cause and the seeds it was checked on: a nested bullet is an entry of its own."""
+
+    FINDINGS = ["# Referee findings", "",
+                "- 2026-10-13, an unrelated finding about Splash and nothing else",
+                "  - a note that names no seed and nothing of the item",
+                "- 2026-10-13, the colony fight: fixed",
+                f"  - {SEED_CITED} step 1: the colony lost its shell. Root cause: CardEffects.LandDamageOnEnemy lowered the buff.",
+                f"    - sibling, checked on {SEED_CITED}: the same call in LandDamageOnEnemy.",
+                "    | a | table | row |"]
+
+    def test_notes_at_any_depth_are_found_and_say_where_they_stand(self):
+        with tempfile.TemporaryDirectory() as t:
+            f = Path(t) / "FINDINGS.md"
+            f.write_text("\n".join(self.FINDINGS) + "\n", encoding="utf-8")
+            w = World(Path(t), n_filler=2)
+            pkt = pk.build_packet(ITEM, w.context(Path(t), FakeEmu(), findings=f), Path(t) / "out")
+            text = pkt["text"]
+            self.assertIn("FINDINGS.md line 6, a note under line 5: " + self.FINDINGS[5][4:], text)
+            self.assertIn("FINDINGS.md line 7, a note under line 5: sibling, checked on", text)
+            self.assertNotIn("names no seed", text)
+            self.assertEqual(pkt["sections"]["ledger"][0], "full")
+
+    def test_bullet_entries_read_every_depth_and_leave_tables_and_text_out(self):
+        with tempfile.TemporaryDirectory() as t:
+            f = Path(t) / "ledger.md"
+            f.write_text("# Ledger\n\n## 2026-10-14, a branch\n\n- top | one\n  - nested one\n    - nested two\n    | a | table |\nplain text ends the list\n"
+                         "  - not under anything\n## next\n* star bullet\n", encoding="utf-8")
+            got = [(e["heading"], e["line"], e["text"], e["parent"]) for e in pk.ledger_entries(f)]
+            self.assertEqual(got, [("2026-10-14, a branch", 5, "top | one", 0), ("2026-10-14, a branch", 6, "nested one", 5),
+                                   ("2026-10-14, a branch", 7, "nested two", 5), ("2026-10-14, a branch", 10, "not under anything", 0),
+                                   ("next", 12, "star bullet", 0)])
+
+
+class MaskedPowersTest(unittest.TestCase):
+    """The comparer drops a game power the emulator has no buff for before it compares. The packet shows both power lists whole
+    and says what was left out, so a missing power is not read as a power the game never had."""
+
+    def packet(self, t):
+        w = World(Path(t), n_filler=2)
+        fid, _ = w.fights["cited"]
+        w.corpus.write(fid, fight(SEED_CITED, 3, player_powers=[("SELF_FORMING_CLAY_POWER", 3)]))
+        emu = FakeEmu(player_buffs=[{"name": "BlockNextTurn", "amount": 3}], keys=({"HARDENED_SHELL"}, set()))
+        return pk.build_packet(ITEM, w.context(Path(t), emu), Path(t) / "out")
+
+    def test_the_game_power_the_comparer_drops_is_shown_and_named(self):
+        with tempfile.TemporaryDirectory() as t:
+            text = self.packet(t)["text"]
+            self.assertIn("player.powers: game SELF_FORMING_CLAY:3  emulator BLOCK_NEXT_TURN:3", text)
+            self.assertIn("left out of the comparison by the comparer's power mask", text)
+            self.assertIn("player: game SELF_FORMING_CLAY:3", text)
+            self.assertIn("(differ: BLOCK_NEXT_TURN None/3)", text)  # what the comparer judged, after the mask
+
+    def test_nothing_is_said_when_the_mask_left_nothing_out(self):
+        with tempfile.TemporaryDirectory() as t:
+            w = World(Path(t), n_filler=2)
+            text = pk.build_packet(ITEM, w.context(Path(t), FakeEmu(keys=({"HARDENED_SHELL"}, set()))), Path(t) / "out")["text"]
+            self.assertNotIn("power mask", text)
 
 
 class OutputTest(unittest.TestCase):

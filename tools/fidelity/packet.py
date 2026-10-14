@@ -476,6 +476,7 @@ def refset_candidates(refs: Refs, cx: Context, limit: int = 4) -> list:
         step = case.step
         out.append({"id": sp["id"], "seed": rec.get("seed"), "cited": cited, "quoted": False, "live": step is not None, "score": round(sum(cx.idf_of(k) for k in hit), 1),
                     "hit": hit[:4], "step": step, "n": len(rec["steps"]), "iso": case.anchored_verdict == "DIVERGES",
+                    "fd": case.first_step, "dp": (case.anchored.get("dp") or {}).get(str(step)),
                     "field": case.plain.get("field"), "card": case.plain.get("card"), "setup": True, "meta": meta, "case": case, "rec": rec})
     return out
 
@@ -637,6 +638,7 @@ def rank_fights(refs: Refs, corpus: Corpus, metas: list, run: RunInfo | None, id
             continue
         out.append({"id": m["id"], "seed": m["seed"], "cited": cited, "quoted": quoted, "live": live, "score": round(score, 1),
                     "hit": hit[:6], "step": step, "n": m["steps"], "iso": isolated(res, step),
+                    "fd": (res or {}).get("fd"), "dp": ((res or {}).get("dp") or {}).get(str(step)),
                     "field": (res or {}).get("field"), "card": (res or {}).get("card"),
                     "setup": "setup" in (m.get("needs") or []), "meta": m})
     out.sort(key=lambda c: (not c["live"], not c["cited"], not c["iso"], c["step"] if c["step"] is not None else 10**6,
@@ -673,8 +675,53 @@ def view_lines(v: dict, indent: str = "  ") -> list:
     return out
 
 
+def masked_powers(gv_raw: dict, gv: dict, ev_raw: dict, ev: dict) -> list:
+    """[(holder, side, powers)] that reanchor_compare._mask left out of the comparison: the views as they were, against the
+    views the comparer judged. The mask drops a game power the emulator has no buff for, and the emulator's own helper buffs.
+    """
+    if not all(v.get("in_combat") for v in (gv_raw, gv, ev_raw, ev)):
+        return []
+    holders = [("player", gv_raw["player"], gv["player"], ev_raw["player"], ev["player"])]
+    holders += [(f"enemy[{i}] {a['name']}", a, b, c, d)
+                for i, (a, b, c, d) in enumerate(zip(gv_raw["enemies"], gv["enemies"], ev_raw["enemies"], ev["enemies"]))]
+    out = []
+    for who, g0, g1, e0, e1 in holders:
+        for side, raw, kept in (("game", g0, g1), ("emulator", e0, e1)):
+            gone = [p for p in raw["powers"] if p not in kept["powers"]]
+            if gone:
+                out.append((who, side, gone))
+    return out
+
+
+def mask_lines(masked: list) -> list:
+    """Say what the comparer's power mask left out, so a power list shown whole is not read as the list that was compared."""
+    if not masked:
+        return []
+    return ["- left out of the comparison by the comparer's power mask (reanchor_compare._mask drops a game power the emulator has no buff for, "
+            "and the emulator's own helper buffs, for that holder): " + "; ".join(f"{who}: {side} {fmt_powers(ps)}" for who, side, ps in masked)
+            + ". The power lists above are shown whole; `differ` names what is left after the mask."]
+
+
+def _at(view: dict | None, path: str, default):
+    """The value of a diff path (.player.powers) in a view, else `default`."""
+    cur = view
+    for part in path.strip(".").split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
+def _enemy_powers(view: dict | None, i: int, default):
+    """The powers of enemy i in a view, else `default`."""
+    es = (view or {}).get("enemies")
+    return es[i].get("powers", default) if isinstance(es, list) and i < len(es) and isinstance(es[i], dict) else default
+
+
 def diff_lines(gv: dict, ev: dict, d: list, limit: int = 14) -> list:
-    """The differing fields in words: piles trimmed to the differing region, powers by name, the rest by value."""
+    """The differing fields in words: piles trimmed to the differing region, powers by name, the rest by value. `gv` and `ev` are
+    the views as they are; the diff `d` may be of masked copies (mask_lines says so), so power lists are shown from the views.
+    """
     out = []
     for path, x, y in d[:limit]:
         top = path.strip(".").split(".")[0]
@@ -692,12 +739,13 @@ def diff_lines(gv: dict, ev: dict, d: list, limit: int = 14) -> list:
                 for k in ("name", "hp", "block", "powers", "intent"):
                     if a.get(k) != b.get(k):
                         if k == "powers":
-                            out.append(f"- enemy[{i}] {a['name']} powers: game {fmt_powers(a[k])}  emulator {fmt_powers(b[k])}  "
+                            out.append(f"- enemy[{i}] {a['name']} powers: game {fmt_powers(_enemy_powers(gv, i, a[k]))}  "
+                                       f"emulator {fmt_powers(_enemy_powers(ev, i, b[k]))}  "
                                        f"(differ: {', '.join(f'{n} {p}/{q}' for n, p, q in power_diffs(a[k], b[k]))})")
                         else:
                             out.append(f"- enemy[{i}] {a['name']} {k}: game {a.get(k)}  emulator {b.get(k)}")
         elif path.endswith(".powers"):
-            out.append(f"- {path.strip('.')}: game {fmt_powers(x)}  emulator {fmt_powers(y)}  "
+            out.append(f"- {path.strip('.')}: game {fmt_powers(_at(gv, path, x))}  emulator {fmt_powers(_at(ev, path, y))}  "
                        f"(differ: {', '.join(f'{n} {p}/{q}' for n, p, q in power_diffs(x, y))})")
         else:
             out.append(f"- {path.strip('.')}: game {clip(x, 160)}  emulator {clip(y, 160)}")
@@ -711,7 +759,9 @@ class Case:
     """What running the emulator on one recorded fight showed."""
 
     rec: dict
-    step: int | None = None
+    step: int | None = None  # the step the case is about: the first divergence, or the step a quoted stop reason names
+    first_step: int | None = None  # the plain replay's own first difference (None: it matches), whatever step the case is about
+    first_fields: list = dataclasses.field(default_factory=list)  # field groups differing at first_step
     plain: dict = dataclasses.field(default_factory=dict)  # corpus.judge_fight
     anchored: dict = dataclasses.field(default_factory=dict)  # corpus.judge_reanchor
     plain_diff: list = dataclasses.field(default_factory=list)  # [(path, game, emu)] at `step`, plain replay
@@ -720,7 +770,8 @@ class Case:
     gv_pre: dict = dataclasses.field(default_factory=dict)
     gv_post: dict = dataclasses.field(default_factory=dict)
     ev_plain: dict = dataclasses.field(default_factory=dict)
-    ev_anchored: dict = dataclasses.field(default_factory=dict)
+    ev_anchored: dict = dataclasses.field(default_factory=dict)  # the emulator's view as it is, before the comparer's power mask
+    masked: list = dataclasses.field(default_factory=list)  # [(holder, side, powers)] the comparer's power mask left out at the step
     emu_plain: dict = dataclasses.field(default_factory=dict)  # EmuDump fight result (with rng_log)
     emu_anchored: dict = dataclasses.field(default_factory=dict)
     emu_trace: dict = dataclasses.field(default_factory=dict)  # EmuDump reanchor --trace result, emulator side only
@@ -750,10 +801,14 @@ def analyse_fight(rec: dict, emu: Emu | None, nm: dict, stored: dict | None = No
             c.plain = judge_fight(rec, e, nm)
             c.anchored = judge_reanchor(rec, r, nm, c.keys)
             fd = fc.first_difference(rec, e, nm)
+            # a step handed in (the one a quoted stop reason names) is the step the case is about; the plain replay's own first
+            # difference is kept apart, so the packet never calls the quoted step "the first divergence"
+            c.first_step, c.first_fields = (fd[0], sorted({fc_group(p) for p, _, _ in fd[1]})) if fd else (None, [])
             c.step = step if step is not None else (fd[0] if fd else result_step({**c.plain, **c.anchored}))
     if not c.live:
         c.plain, c.anchored = {"fd": (stored or {}).get("fd"), "field": (stored or {}).get("field"),
                                "card": (stored or {}).get("card")}, {"rv": (stored or {}).get("rv", "")}
+        c.first_step, c.first_fields = c.plain["fd"], [c.plain["field"]] if c.plain["field"] else []
         c.step = step if step is not None else (result_step(stored) if stored else None)
         c.note = c.note or "no EmuDump build: step and fields come from the stored corpus run, no emulator values"
     if c.step is not None and 0 <= c.step < len(steps):
@@ -768,10 +823,12 @@ def analyse_fight(rec: dict, emu: Emu | None, nm: dict, stored: dict | None = No
                 c.choice_problems = [x for x in r["steps"][c.step].get("choices", []) if x.get("error") or x.get("unexpected_selection")]
             if c.step < len(r.get("steps", [])) and "state" in r["steps"][c.step]:
                 c.ev_anchored = fc.emu_view(r["steps"][c.step]["state"], nm)
-                gv = json.loads(json.dumps(c.gv_post))
-                if gv.get("in_combat") and c.ev_anchored.get("in_combat"):
-                    rc._mask(gv, c.ev_anchored, *(c.keys or (None, None)))
-                c.anchored_diff = fc.diff(gv, c.ev_anchored)
+                # the comparer judges the step on masked copies; both views stay whole here, and what the mask left out is kept
+                gv, ev = json.loads(json.dumps(c.gv_post)), json.loads(json.dumps(c.ev_anchored))
+                if gv.get("in_combat") and ev.get("in_combat"):
+                    rc._mask(gv, ev, *(c.keys or (None, None)))
+                c.anchored_diff = fc.diff(gv, ev)
+                c.masked = masked_powers(c.gv_post, gv, c.ev_anchored, ev)
             rv = c.anchored.get("rv", "")
             c.anchored_verdict = "n/a (step 0 is the opening state, the emulator's own)" if c.step == 0 else {"M": "matches", "D": "DIVERGES", "E": "ERROR", "U": "unjudged", "-": "not re-anchored (stopped earlier)"}.get(
                 rv[c.step - 1] if 0 < c.step <= len(rv) else "-", "-")
@@ -1132,17 +1189,36 @@ def probe_matches(item: dict, refs: Refs, probes: dict, names: Names, limit: int
     return out[:limit]
 
 
-def ledger_entries(path: Path | None) -> list:
-    """[{heading, line, text}] for each bullet of ledger.md, under the heading it stands in."""
+BULLET = re.compile(r"^(\s*)[-*] +(\S.*)$")
+
+
+def bullet_entries(path: Path | None, heading: str | None = None) -> list:
+    """[{heading, line, text, parent}] for every bullet of a markdown file at any depth, under the `##` heading it stands in (or the
+    fixed `heading` given). A nested bullet is an entry of its own (the notes under a finding hold its root cause, its siblings
+    and the seeds it was checked on) matched on its own text; `parent` is the line of the top-level bullet it stands under (0 for
+    a top-level one). Table rows and wrapped text are not bullets.
+    """
     if not path or not Path(path).is_file():
         return []
-    out, heading = [], ""
+    out, head, top = [], "", 0
     for ln, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
-        if line.startswith("## "):
-            heading = line[3:].strip()
-        elif line.startswith("- "):
-            out.append({"heading": heading, "line": ln, "text": line[2:].strip()})
+        if line.startswith("#"):
+            head, top = line.lstrip("#").strip(), 0
+            continue
+        m = BULLET.match(line)
+        if not m:
+            if line.strip() and not line[0].isspace():
+                top = 0  # plain text at the left margin ends the list
+            continue
+        if not m.group(1):
+            top = ln
+        out.append({"heading": heading if heading is not None else head, "line": ln, "text": m.group(2).strip(), "parent": top if m.group(1) else 0})
     return out
+
+
+def ledger_entries(path: Path | None) -> list:
+    """The bullets of ledger.md (bullet_entries), each under the heading it stands in."""
+    return bullet_entries(path)
 
 
 class IdentWeights:
@@ -1330,26 +1406,109 @@ def run_floor_lines(rec: dict, stop: dict, around: int = 3) -> list:
     return out
 
 
+def walker_call(component: str, field: str):
+    """The pattern of a walker Check/Fail call for exactly this component and field. A stop's field is the literal the walker passed
+    ("cards (fight floor)" and "cards" are two different checks, in two different branches), so it is never shortened.
+    """
+    return re.compile(r'\b(?:Check|Fail)\(\s*"' + re.escape(component) + r'"\s*,\s*"' + re.escape(field) + '"')
+
+
 def walker_sites(walker: Path, component: str, field: str, limit: int = 3) -> list:
-    """Lines of the walker that check or fail this component and field (identifiers and line numbers)."""
+    """Lines of the walker that check or fail this component and field (identifiers and line numbers). A field the walker builds at
+    run time has no literal call: no site is named for it.
+    """
     if not Path(walker).is_file():
         return []
-    pat = re.compile(r'\b(?:Check|Fail)\(\s*"' + re.escape(component) + r'"\s*,\s*"' + re.escape(field.split(" (", maxsplit=1)[0]) + '"')
+    pat = walker_call(component, field)
     out = [f"tools/emudump/Codex/Walker.cs:{n}" for n, line in enumerate(Path(walker).read_text(encoding="utf-8").splitlines(), 1) if pat.search(line)]
     return out[:limit]
 
 
-def walker_members(walker: Path, component: str, field: str, back: int = 16) -> list:
-    """Run-state members (S.Name) the walker reads in the lines before its check of this component and field."""
+CS_WORDS = frozenset("""var int string bool long double float decimal object new null true false this base return if else foreach for while in is as
+    not and or out ref default switch case typeof nameof await async static void char byte short uint ulong""".split())
+
+
+def _cs_statement(lines: list, at: int, limit: int = 8) -> str:
+    """The text from line `at` to the first line holding a `;` (a statement, or an expression-bodied member)."""
+    out = []
+    for line in lines[at:at + limit]:
+        out.append(line.strip())
+        if ";" in line:
+            break
+    return " ".join(out)
+
+
+def _cs_args(text: str) -> list:
+    """The top-level arguments of the first call in `text` (quotes and brackets respected); [] when the call is not closed in it."""
+    start = text.find("(")
+    if start < 0:
+        return []
+    out, cur, depth, quote, esc = [], "", 0, False, False
+    for ch in text[start + 1:]:
+        if quote:
+            cur += ch
+            esc, quote = (False, True) if esc else (ch == "\\", ch != '"')
+            continue
+        if ch == '"':
+            quote, cur = True, cur + ch
+        elif ch in "([{":
+            depth, cur = depth + 1, cur + ch
+        elif ch in ")]}":
+            if depth == 0:
+                return out + [cur]
+            depth, cur = depth - 1, cur + ch
+        elif ch == "," and depth == 0:
+            out, cur = out + [cur], ""
+        else:
+            cur += ch
+    return []
+
+
+def _cs_definition(lines: list, name: str, before: int, back: int) -> tuple[str, int] | None:
+    """(text, line index) of what defines `name` as used at line `before`: its nearest earlier assignment inside the same member, else a
+    member of the walker declared with an expression body (`List<string> DeckKeys() => ...;`). Anything else is not resolved.
+    """
+    assign = re.compile(r"\b" + re.escape(name) + r"\s*=(?![=>])")
+    for n in range(before - 1, max(-1, before - back - 1), -1):
+        if re.match(r"^    [A-Za-z].*\(.*\)\s*(=>.*)?$", lines[n]) and not lines[n].lstrip().startswith(("if", "for", "while", "switch", "foreach", "else")):
+            break  # the declaration of the member the call is in: a local is not defined above it
+        if assign.search(lines[n]):
+            return _cs_statement(lines, n), n
+    member = re.compile(r"^\s*(?:[\w<>\[\],.?]+\s+)+" + re.escape(name) + r"\s*\([^;]*\)\s*=>")
+    return next(((_cs_statement(lines, n), n) for n, line in enumerate(lines) if member.search(line)), None)
+
+
+def walker_members(walker: Path, component: str, field: str, back: int = 120) -> list:
+    """Run-state members (S.Name) the emulator side of the walker's check of this component and field reads: in its emulator-value
+    argument, and through the locals and expression-bodied helpers that argument names (the nearest earlier assignment of each).
+    What the walker reads near the check for other purposes is not the state it compares, and a value that cannot be traced to S.* names nothing.
+    """
     if not Path(walker).is_file():
         return []
     lines = Path(walker).read_text(encoding="utf-8").splitlines()
-    pat = re.compile(r'\b(?:Check|Fail)\(\s*"' + re.escape(component) + r'"\s*,\s*"' + re.escape(field.split(" (", maxsplit=1)[0]) + '"')
+    pat = walker_call(component, field)
     at = next((n for n, line in enumerate(lines) if pat.search(line)), None)
     if at is None:
         return []
-    names = re.findall(r"\bS\.([A-Z]\w+)", " ".join(lines[max(0, at - back):at + 1]))
-    return [n for n in dict.fromkeys(names) if n not in ("Phase",)]
+    args = _cs_args(_cs_statement(lines, at, limit=10))
+    if len(args) < 4:
+        return []
+    found, seen, todo = [], set(), [(args[3], at, 0)]
+    while todo:
+        text, pos, depth = todo.pop(0)
+        found += re.findall(r"\bS\.([A-Z]\w+)", text)
+        if depth >= 3:
+            continue
+        bare_text = re.sub(r'"(?:[^"\\]|\\.)*"', '""', text)
+        params = set(re.findall(r"\b(\w+)\s*=>", bare_text)) | {p.strip() for g in re.findall(r"\(([\w\s,]*)\)\s*=>", bare_text) for p in g.split(",")}
+        for tok in dict.fromkeys(re.findall(r"(?<![\w.])([A-Za-z_]\w*)", bare_text)):
+            if tok in seen or tok in CS_WORDS or tok in params or tok == "S":
+                continue
+            seen.add(tok)
+            got = _cs_definition(lines, tok, pos, back)
+            if got:
+                todo.append((got[0], got[1], depth + 1))
+    return list(dict.fromkeys(found))
 
 
 STRONG_SIGNATURE = 6.0  # run_signatures score from which a stop signature is taken for the item's case (class + component + field, or a model it names)
@@ -1456,10 +1615,7 @@ class Context:
         run = find_run(src) if corpus else None
         probes = load_probes(src)
         emu = Emu(src.emudump, work / "emu")
-        findings = []
-        if src.findings and Path(src.findings).is_file():
-            findings = [{"heading": "FINDINGS.md", "line": n, "text": ln[2:].strip()}
-                        for n, ln in enumerate(Path(src.findings).read_text(encoding="utf-8").splitlines(), 1) if ln.startswith("- ")]
+        findings = bullet_entries(src.findings, "FINDINGS.md")
         return cls(src=src, names=Names(id_map), nm=fc.names(id_map), decomp=Decompile(src.decompiled), corpus=corpus,
                    metas=metas, run=run, idf=Idf(corpus, metas) if corpus else None, emu=emu,
                    engine=EngineIndex(src.engine, src.tests), traces=TraceStore(src.trace_dirs), probes=probes,
@@ -1553,7 +1709,9 @@ def build_packet(item: dict, cx: Context, out_dir: Path, forced: list | None = N
         pass
     elif rec and case and case.step is not None:
         s.done("full" if case.live else "partial",
-               f"fight {chosen['id'][:8]} seed {chosen['seed']}, divergence at step {case.step}" + ("" if case.live else "; no emulator values (no EmuDump)"))
+               f"fight {chosen['id'][:8]} seed {chosen['seed']}, divergence at step {case.step}"
+               + (f" (the plain replay first differs at step {case.first_step})" if case.first_step is not None and case.first_step != case.step else "")
+               + ("" if case.live else "; no emulator values (no EmuDump)"))
     elif rec and case:
         s.done("partial", f"fight {chosen['id'][:8]}: " + (case.note or "no divergence found"))
     elif item.get("setup"):
@@ -1707,10 +1865,15 @@ def case_section(item, refs, cands, chosen, meta, rec, case, cx, files_dir, file
     j = case.step
     steps = rec["steps"]
     act = steps[j].get("action")
-    fields = sorted({fc_group(p) for p, _, _ in case.plain_diff}) if case.live else [case.plain.get("field")]
-    L += ["- first divergence, plain replay: " + (f"step {j}" + (f" after {action_text(act)}" if j else " (the opening state)")
-                                                   + f", fields {', '.join(f for f in fields if f)}" if any(fields) else
-                                                   f"none (the plain replay matches the game; step {j} is the first the re-anchored replay or a stop flags)"),
+    first = case.first_step  # the plain replay's own first difference; j may be another step (the one a quoted stop reason names)
+    if first is None:
+        plain = f"none (the plain replay matches the game; step {j} is the first the re-anchored replay or a stop flags)"
+    else:
+        a0 = steps[first].get("action") if first < len(steps) else None
+        plain = (f"step {first}" + (f" after {action_text(a0)}" if first else " (the opening state)")
+                 + (f", fields {', '.join(f for f in case.first_fields if f)}" if any(case.first_fields) else "")
+                 + (f"; the case below is step {j}, the step the item's quoted stop reason names" if first != j else ""))
+    L += ["- first divergence, plain replay: " + plain,
           f"- the same step re-anchored on the game's state before it: {case.anchored_verdict}"
           + (" (so the rule at this step is wrong, not only the state it started from)" if case.anchored_verdict == "DIVERGES" else
              " (so the emulator's rule at this step is right and its state before the step already differed: look earlier, at hidden state)"
@@ -1728,11 +1891,12 @@ def case_section(item, refs, cands, chosen, meta, rec, case, cx, files_dir, file
         which = "re-anchored" if case.anchored_diff else "plain replay"
         L.append(f"  - result differs ({which}), game vs emulator:")
         L += ["    " + t for t in diff_lines(case.gv_post, case.ev_anchored if case.anchored_diff else case.ev_plain, diff)]
+        L += ["  " + t for t in mask_lines(case.masked)]
     else:
         L.append("  - state after (game):")
         L += view_lines(case.gv_post, "    ")
         dp = ((cx.run.fights.get(chosen["id"], {}) if cx.run else {}).get("dp") or {}).get(str(j), [])
-        L.append(f"  - differing field groups (stored run): {', '.join(dp) or case.plain.get('field')}")
+        L.append(f"  - differing field groups (stored run): {', '.join(dp) or (case.plain.get('field') if first == j else 'not stored for this step')}")
     if case.choice_problems:
         L.append("  - selection screens at the step: " + "; ".join(
             (f"the emulator opened an unexpected selection ({x['unexpected_selection']})" if x.get("unexpected_selection") else f"error: {clip(x.get('error'), 120)}")
@@ -1768,13 +1932,29 @@ def fc_group(path: str) -> str:
     return rc.group(path) if path.startswith(".") else path
 
 
+def cand_step(c: dict) -> str:
+    """Where a candidate fails, said once for each of the two things a result holds: the plain replay's first difference
+    (fd, with the field and card there) and the step the candidate is about (the first re-anchored divergence, or the step a
+    quoted stop reason names). They are the same step for most fights, and not for a fight tied by a quoted stop.
+    """
+    step, fd = c["step"], c.get("fd")
+    if fd is not None and fd == step:
+        return f"step {step} {c['field']} after {c['card']}"
+    if fd is not None:
+        return (f"plain replay first differs at step {fd} ({c['field']} after {c['card']}); "
+                f"the quoted stop reason is at step {step}")
+    if c.get("quoted"):
+        return f"plain replay matches; the quoted stop reason is at step {step}"
+    return f"plain replay matches; the re-anchored replay first diverges at step {step}" + (f" ({', '.join(c['dp'])})" if c.get("dp") else "")
+
+
 def cand_table(cands: list, chosen) -> list:
     """The candidates, recordings of the same seed that fail the same way folded into one line."""
     if len(cands) <= 1:
         return [f"- candidates: {len(cands)}"] if not cands else []
     groups: dict = {}
     for c in cands:
-        groups.setdefault((c["seed"], c["live"], c["step"], c["field"], c["card"]), []).append(c)
+        groups.setdefault((c["seed"], c["live"], c["step"], c.get("fd"), c["field"], c["card"]), []).append(c)
     L = [f"- other fights tied to the item ({len(cands)} recordings, {len(groups)} distinct failure{'s' if len(groups) != 1 else ''}; "
          "id, seed, step, field, card, shape, steps, why; * = chosen):"]
     for n, (_, grp) in enumerate(groups.items()):
@@ -1783,7 +1963,7 @@ def cand_table(cands: list, chosen) -> list:
             break
         c = grp[0]
         mark = "*" if chosen and any(x["id"] == chosen["id"] for x in grp) else " "
-        state = (f"step {c['step']} {c['field']} after {c['card']}; "
+        state = (f"{cand_step(c)}; "
                  + ("re-anchors as a divergence" if c["iso"] else "plain only (earlier hidden state)") if c["live"]
                  else "identical now (fixed, or masked by a comparer change)")
         why = ("the item quotes its stop reason" if c.get("quoted") else "cited") if c["cited"] else f"{', '.join(c['hit'][:3])} ({c['score']})"
@@ -1843,6 +2023,7 @@ def event_section(case, traced, chosen, cx, files_dir, files, s) -> list:
         L += [f"- no usable game trace for this fight ({note}); what differs at the {'re-anchored' if case.anchored_diff else 'plain'} step {j} "
               "is the nearest thing (section 1 has it in full):"]
         L += ["  " + t for t in diff_lines(case.gv_post, case.ev_anchored if case.anchored_diff else case.ev_plain, diff, limit=8)]
+        L += ["  " + t for t in mask_lines(case.masked)]
         if case.choice_problems:
             L.append("  - selection screens: " + "; ".join(
                 (f"the emulator opened an unexpected selection ({x['unexpected_selection']})" if x.get("unexpected_selection")
@@ -2120,6 +2301,11 @@ def probe_section(item, refs, cx, s) -> list:
     return L
 
 
+def nested(e: dict) -> str:
+    """Where a nested bullet stands: under which top-level line."""
+    return f", a note under line {e['parent']}" if e.get("parent") else ""
+
+
 def ledger_section(refs, cx, s) -> list:
     L = []
     idf = cx.idf_of
@@ -2127,9 +2313,9 @@ def ledger_section(refs, cx, s) -> list:
     fnd = text_matches(cx.findings, refs, cx.names, idf, cx.ident_w, limit=5)
     att = attempts_matches(cx.src.attempts, refs, cx.names, idf)
     for _, e in led:
-        L.append(f"- ledger ({e['heading'][:48]}, line {e['line']}): {clip(e['text'], 420)}")
+        L.append(f"- ledger ({e['heading'][:48]}, line {e['line']}{nested(e)}): {clip(e['text'], 420)}")
     for _, e in fnd:
-        L.append(f"- FINDINGS.md line {e['line']}: {clip(e['text'], 300)}")
+        L.append(f"- FINDINGS.md line {e['line']}{nested(e)}: {clip(e['text'], 300)}")
     for _, r in att:
         L.append(f"- earlier fix attempt {r.get('attempt_id')} on {r.get('branch')}: {r.get('outcome')}"
                  + (f" ({r.get('rejection_causes')})" if r.get("rejection_causes") else "")

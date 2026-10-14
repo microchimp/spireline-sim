@@ -235,8 +235,12 @@ It never starts a game; the emulator runs only through EmuDump on recordings tha
    divergences (self-contained: the rule is wrong from the game's own state) before ones that only diverge in the plain replay, earliest step, shortest
    fight. For run-layer items (lane `run`, or no fight) the case is a codex walk stop (`EmuDump codex`, the run histories walked with no game; results under
    `codex-walk/<label>/*.jsonl`): the run the item cites, else the earliest run of the stop signature (class, component, field) whose words match strongly,
-   with the run's floors up to the stop. Also: the one-step case (the game's state before the step, the action, game against emulator after it),
-   recording flags, selection-screen problems.
+   with the run's floors up to the stop; the walker line named is the `Check`/`Fail` call of exactly the stop's field (`cards (fight floor)` is not
+   `cards`), and none is named for a field the walker builds at run time. Also: the one-step case (the game's state before the step, the action, game
+   against emulator after it), recording flags, selection-screen problems. "First divergence, plain replay" is the plain replay's own first difference
+   (from the replay, else the stored result's `fd`); for a fight tied by a quoted stop reason the case is the step the reason names, and the packet says
+   so when that is not the first divergence. Power lists are shown whole; what the comparer's power mask left out (a game power the emulator has no buff
+   for, the emulator's own helper buffs) is listed under them, and `differ` names what was compared after the mask.
 2. **First differing event inside the step.** `trace_diff` of a traced game record (`jobs-trace/**/traced.out.json`, `jobs-checksum/*.trace.out.json`)
    against this checkout's emulator re-anchored with `--trace` (an EmuDump run, no game), preferring the recording of the seed that the trace reproduces; a
    game record the driver snapshotted early is flagged UNSETTLED (not an emulator difference). Without a trace: the re-anchored step's differing fields,
@@ -253,7 +257,9 @@ It never starts a game; the emulator runs only through EmuDump on recordings tha
    answer, what it did, the emulator's value when probed and now (`--refresh-probes` judges the recorded probe games again with this EmuDump, no game).
    "Related" is not "settles": only a probe the item names counts as full.
 7. **Related ledger lines.** `backlog/ledger.md`, `FINDINGS.md` and `fix-attempts.csv` entries about the same thing (a cited seed, an old item tag, a method
-   or hook name that few entries use, or two rare model names): what was found, what was fixed, what earlier attempts were rejected for.
+   or hook name that few entries use, or two rare model names): what was found, what was fixed, what earlier attempts were rejected for. Every bullet is an
+   entry, nested ones too (the notes under a finding hold its root cause and the seeds it was checked on), matched on its own text and shown with the
+   line of the finding it stands under.
 
 Reading a packet: start with the completeness table; "partial" and "missing" say what is absent and whether only a game run would supply it. What a game
 run would add (a trace for a fight that has none, a shrink of a large setup, a checksum record) is named as `NEEDS A GAME RUN (not run here)` with the command.
