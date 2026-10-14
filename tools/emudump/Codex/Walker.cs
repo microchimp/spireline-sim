@@ -1480,11 +1480,6 @@ public sealed class Walker
             // them. What an Entropic Brew made is in the floor's potion picks that were not bought.
             Mark();
             var (usedHere, brewed) = UseAtTheMerchant(S, StrList("potion_used"), Do);
-            foreach (string p in usedHere)
-            {
-                _discardsLeft.Remove(p);
-            }
-
             _brewExpected = [];
             if (usedHere.Contains(EntropicBrew))
             {
@@ -1995,8 +1990,10 @@ public sealed class Walker
         // The belt as the history has it: what the floor picked or bought, less what it drank
         // or dropped, against the emulator's less what the history drank or dropped here. A
         // fight's own potions (Alchemize, a potion a relic procures) are the history's alone.
-        var emuBelt = Minus(S.PotionSlots.Where(x => x != 0).Select(Names.Potion).ToList(),
-            StrList("potion_used").Concat(StrList("potion_discarded")).ToList());
+        // Only what the walk has not taken off already (_discardsLeft): taking the floor's whole
+        // list off again dropped a second copy of a potion an event had traded (two Strength
+        // Potions into The Future of Potions left none).
+        var emuBelt = Minus(Held(), _discardsLeft);
         SyncPotions();
         var histBelt = _belt.ToList();
         var potionsExtra = Minus(emuBelt, histBelt);
@@ -2137,10 +2134,29 @@ public sealed class Walker
                 + $" belt=[{string.Join("/", S.PotionSlots.Select(x => x == 0 ? "-" : Names.Potion(x)))}] max={S.MaxPotionSlots}");
         }
 
+        var held = Held();
         int status = _e.Step(action, -1, out _, out _, out _);
         if (status != 0)
         {
             Fail("flow", "action", action.ToString(), $"refused in {S.Phase} ({LegalList()})", WalkerLimit);
+        }
+
+        TakeOff(_discardsLeft, held, Held());
+    }
+
+    List<string> Held() => S.PotionSlots.Where(x => x != 0).Select(Names.Potion).ToList();
+
+    /// <summary>
+    /// A potion a step took off the belt (an event's trade or drink, a use) that the history
+    /// lists as drunk or dropped on the floor is gone already: it leaves the floor's list of
+    /// potions still to take off, once per copy taken, so the floor's belt check does not take
+    /// it off a second time (and with it a second copy).
+    /// </summary>
+    public static void TakeOff(List<string> left, List<string> before, List<string> after)
+    {
+        foreach (string p in Minus(before, after))
+        {
+            left.Remove(p);
         }
     }
 

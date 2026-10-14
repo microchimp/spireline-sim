@@ -249,6 +249,20 @@ public class WalkerTests
     }
 
     [Fact]
+    public void A_potion_a_step_traded_is_not_taken_off_the_belt_again()
+    {
+        // The Future of Potions traded one of two Strength Potions; the history lists it as
+        // discarded. The floor's check used to take the whole list off the emulator's belt,
+        // which then held none against the history's one.
+        var left = new List<string> { "STRENGTH_POTION", "FIRE_POTION" };
+        Walker.TakeOff(left, ["STRENGTH_POTION", "STRENGTH_POTION", "SWIFT_POTION"], ["STRENGTH_POTION", "SWIFT_POTION"]);
+        Assert.Equal(["FIRE_POTION"], left);
+        // A potion the history does not list (the emulator traded another one) stays a difference.
+        Walker.TakeOff(left, ["SWIFT_POTION"], []);
+        Assert.Equal(["FIRE_POTION"], left);
+    }
+
+    [Fact]
     public void At_the_merchant_a_foul_potion_is_thrown_before_a_brew_is_drunk()
     {
         var e = new RunEngine();
