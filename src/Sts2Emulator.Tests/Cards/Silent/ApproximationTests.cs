@@ -118,15 +118,13 @@ public class MasterPlannerTests
         fight.State.Hand.Add(marked);
         fight.State.Hand.Add(Card(SI.Neutralize));
 
-        CardEffects.DiscardFirstCardsFromHand(fight.State, 1);
-        Assert.Contains(fight.State.AutoPlayQueue, c => c.DefId == SI.DefendSilent);
-
-        // The queue drains at the top of the next step, so playing anything resolves it --
-        // asserted before ending the turn, which would clear the block.
+        // `CardCmd.DiscardAndDraw` auto-plays the Sly card inside the discard itself.
         int blockBefore = fight.State.PlayerBlock;
-        fight.Play(0);
+        CardEffects.DiscardFirstCardsFromHand(fight.State, 1);
 
         Assert.Equal(blockBefore + 5, fight.State.PlayerBlock);
+        Assert.Empty(fight.State.AutoPlayQueue);
+        Assert.Contains(fight.State.DiscardPile, c => c.DefId == SI.DefendSilent);
     }
 }
 
