@@ -170,7 +170,7 @@ static class Reanchor
                     bool gameGoesOn = j + 1 < gsteps.Count && (gsteps[j]!["state"]!["in_combat"]?.GetValue<bool>() ?? false);
                     // The fight ends here in the game too: the state to judge is the one the game's snapshot shows
                     // after it, so the fight is finished the way the run finishes it (SyncAfterCombat, the
-                    // after-combat relics). Where the game goes on, the step is a difference in in_combat alone.
+                    // after-combat relics). Where the game goes on, the step differs in in_combat, as it always did.
                     rec["state"] = terminal && !gameGoesOn ? EndState(e, q, qr, won) : DumpLite(q, !terminal);
                     if (terminal && !gameGoesOn) break;
                     // The emulator ended a fight the game continues: carry on from the state before the action.
