@@ -63,9 +63,12 @@ public static class NativeExports
     //      that a reload's shuffle pointed at other cards.
     // v33: a screen raised in the middle of a step (a card's, a potion's, a turn start's) stops the
     //      step there: the observation shows the screen over the combat as it stands mid-step, and
-    //      the answer runs the rest of the step. Sts2_GetStateJson writes such a combat with its
-    //      stopped step (stopped_step), which Sts2_LoadCombatSnapshot puts back on the screen; a
-    //      library from before refuses the field, and lost the card a stopped play held.
+    //      the answer runs the rest of the step. Sts2_GetStateJson writes such a combat as the
+    //      screen over the combat, as the player sees it, and nothing of the step: the step's
+    //      start in its true world names the future. Sts2_GetSaveJson, banned outside
+    //      verification and save code like Sts2_GetPile (review condition E12), writes it with
+    //      its stopped step (stopped_step), which Sts2_LoadCombatSnapshot puts back on the
+    //      screen; a library from before refuses the field.
     public const int NATIVE_API_VERSION = 33;
 
     /// <summary>
@@ -686,6 +689,31 @@ public static class NativeExports
         }
 
         byte[] json = CombatSnapshot.Write(combat.State);
+        if (buf is not null && cap >= json.Length)
+        {
+            json.CopyTo(new Span<byte>(buf, cap));
+        }
+
+        return json.Length;
+    }
+
+    /// <summary>
+    /// The combat as the emulator's save document (<c>CombatSnapshot.WriteSave</c>): the
+    /// <c>Sts2_GetStateJson</c> document plus the step stopped on a screen, with its start's true
+    /// draw order and RNG positions. Verification and save code only (review condition E12): an
+    /// agent or a search that reads it reads the future. Size-and-retry, like
+    /// <c>Sts2_GetStateJson</c>.
+    /// </summary>
+    /// <returns>The document's length in bytes, or -1 for an unknown handle.</returns>
+    [UnmanagedCallersOnly(EntryPoint = "Sts2_GetSaveJson")]
+    public static unsafe int GetSaveJson(int handle, byte* buf, int cap)
+    {
+        if (handle < 0 || handle >= _pool.Length || _pool[handle] is not { } combat)
+        {
+            return -1;
+        }
+
+        byte[] json = CombatSnapshot.WriteSave(combat.State);
         if (buf is not null && cap >= json.Length)
         {
             json.CopyTo(new Span<byte>(buf, cap));

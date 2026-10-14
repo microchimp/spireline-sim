@@ -144,5 +144,85 @@ class CombatSnapshotTests(unittest.TestCase):
                 native.destroy(clone_handle)
 
 
+BURNING_PACT = 69
+UNSEEN = (STRIKE, DEFEND, BASH, STRIKE, DEFEND, BASH, STRIKE, DEFEND)
+
+
+def _cards_held(doc: dict) -> int:
+    piles = doc["piles"]
+    draw = piles["draw"]
+    return sum(
+        len(cards)
+        for cards in (
+            piles["hand"],
+            piles["discard"],
+            piles["exhaust"],
+            draw["known_top"],
+            draw["unordered"],
+            draw["known_bottom"],
+        )
+    )
+
+
+def _answered(doc: dict) -> dict:
+    """Load `doc` under another seed, answer its screen with the first card, export it."""
+    handle = native.load_combat_snapshot(doc, seed=5)
+    try:
+        obs = (ctypes.c_int * native.OBS_SIZE)()
+        reward = (ctypes.c_float * 1)()
+        native.step(handle, 0, obs, reward)
+        return native.get_state_json(handle)
+    finally:
+        native.destroy(handle)
+
+
+class StoppedStepDocumentTests(unittest.TestCase):
+    """A combat stopped mid-step: the agent's document and the save document."""
+
+    def setUp(self):
+        doc = _export_reset_doc(seed=0)
+        doc["player"]["energy"] = 3
+        doc["piles"]["hand"] = [_card(BURNING_PACT), _card(STRIKE), _card(DEFEND)]
+        doc["piles"]["discard"] = []
+        doc["piles"]["draw"] = {
+            "known_top": [],
+            "known_bottom": [],
+            "unordered": [_card(card) for card in UNSEEN],
+        }
+        obs = (ctypes.c_int * native.OBS_SIZE)()
+        reward = (ctypes.c_float * 1)()
+        self.handle = native.load_combat_snapshot(doc, seed=3)
+        self.addCleanup(native.destroy, self.handle)
+        native.step(self.handle, 0, obs, reward)
+        self.assertIsNotNone(native.get_state_json(self.handle)["pending_selection"])
+
+    def test_forks_resampled_differently_export_the_same_document(self):
+        """No stopped step, so no true order or stream: every fork writes one document."""
+        document = native.get_state_json(self.handle)
+        self.assertNotIn("stopped_step", document)
+        piles = set()
+        for resample_seed in (11, 12, 13, 14):
+            obs = (ctypes.c_int * native.OBS_SIZE)()
+            fork = native.clone(self.handle, True, resample_seed, obs)
+            try:
+                piles.add(tuple(native.get_pile(fork, "draw")))
+                self.assertEqual(native.get_state_json(fork), document)
+            finally:
+                native.destroy(fork)
+        self.assertGreater(len(piles), 1)
+
+    def test_the_save_document_finishes_the_play_and_the_agents_does_not(self):
+        """The save document's load finishes the play; the agent's answers the screen alone."""
+        save = native.get_save_json(self.handle)
+        self.assertIn("stopped_step", save)
+        finished = _answered(save)
+        self.assertEqual(_cards_held(finished), 3 + len(UNSEEN))
+        discarded = [card["def_id"] for card in finished["piles"]["discard"]]
+        self.assertIn(BURNING_PACT, discarded)
+
+        alone = _answered(native.get_state_json(self.handle))
+        self.assertEqual(_cards_held(alone), 2 + len(UNSEEN))
+
+
 if __name__ == "__main__":
     unittest.main()

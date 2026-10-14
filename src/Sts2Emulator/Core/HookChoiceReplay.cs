@@ -25,7 +25,9 @@ namespace Sts2Emulator.Core;
 /// <para>
 /// It lives on the screen, not on the combat, so nothing can keep it once its screen is gone:
 /// whatever closes, replaces or clears <c>PendingSelection</c> (a reset, a re-anchor) drops the
-/// stopped step with it, and a snapshot writes it down with the screen (<c>stopped_step</c>). It is
+/// stopped step with it, and a save document writes it down with the screen (<c>stopped_step</c>,
+/// <c>CombatSnapshot.WriteSave</c>; the agent's document leaves it out, since it reaches the true
+/// world). It is
 /// never changed once made, so a clone of the combat shares it.
 /// </para>
 /// <para>

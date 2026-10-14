@@ -71,17 +71,33 @@ public sealed class SnapshotException : Exception
 /// play) and <c>ExecutedThisEnemyTurn</c> (differential-testing introspection). Nor is
 /// <c>PlayerTurn</c>, which is true whenever the player is to act and which the loader
 /// sets. The RNG streams are not carried either: the live game's are hidden information,
-/// so the caller seeds them from its own load seed.
+/// so the caller seeds them from its own load seed. The one exception is the save document
+/// (below), which is not this one.
 /// </para>
 /// <para>
 /// A combat stopped on a screen raised in the middle of a step (a card's OnPlay, a potion, the
-/// turn start) is the one position a step has NOT returned from. Its document adds
-/// <c>stopped_step</c>, the emulator's own block: the step's start as a document of its own with
-/// its draw order and streams, the action, and the answers given so far with the hidden state of
-/// each answering copy (<see cref="HookChoiceReplay" />). The loaded screen's answer replays the
-/// step from that start and puts the loaded copy's own streams and order back at the screen, so the
-/// card goes on to its pile and the turn start goes on, and nothing after the screen reads the
-/// streams the block carries. A document from the live game never has one.
+/// turn start) is the one position a step has NOT returned from. <see cref="Write" /> writes it as
+/// the player sees it -- the screen over the combat as it stands at that moment -- and nothing of
+/// the step it stopped: what reaches the rest of the step is the step's start in its TRUE world,
+/// its exact draw order and the generator lanes of every stream, and that names the future (a
+/// stopped Burning Pact's start names the two cards it draws). So two determinized copies of one
+/// stopped combat, and two combats that look the same, write the same document. Loaded, the screen
+/// stands and is answered by itself, as a screen in a document from the live game is: the rest of
+/// the step (the played card's way to its pile and its after-play hooks, the turn start after the
+/// pick) is not in the document, and the live converter finishes the play in its document for
+/// that reason.
+/// </para>
+/// <para>
+/// <see cref="WriteSave" /> is the emulator's save document: the same document plus
+/// <c>stopped_step</c>, the step's start as a document of its own with its draw order and streams,
+/// the action, and the answers given so far with the hidden state of each answering copy
+/// (<see cref="HookChoiceReplay" />). <see cref="Read" /> puts it back on the loaded screen, whose
+/// answer replays the step from that start and puts the loaded copy's own streams and order back at
+/// the screen, so the card goes on to its pile and the turn start goes on. It carries the true draw
+/// order and the RNG positions, so it is banned outside verification and save code, as
+/// <c>Sts2_GetPile</c> and <c>Sts2_RngCallCount</c> are (review condition E12): native
+/// <c>Sts2_GetSaveJson</c>, Python <c>native.get_save_json</c>. A document from the live game never
+/// has the block.
 /// </para>
 /// <para>
 /// JsonDocument and Utf8JsonWriter only, never the reflection serializer: the core is
@@ -122,14 +138,25 @@ public static class CombatSnapshot
 
     /// <summary>
     /// The combat as a document. Every optional field is written explicitly, so a document
-    /// read back in reproduces the state exactly.
+    /// read back in reproduces the state exactly -- except a step stopped on a screen, which
+    /// the document leaves out (it reaches the true world; see the remarks): use it wherever
+    /// an agent, a search or the live game's side reads positions.
     /// </summary>
-    public static byte[] Write(CombatState state)
+    public static byte[] Write(CombatState state) => WriteDocument(state, save: false);
+
+    /// <summary>
+    /// The save document: <see cref="Write" />'s, plus the step stopped on the screen
+    /// (<c>stopped_step</c>), with its start's true draw order and streams. Banned outside
+    /// verification and save code (review condition E12), as the true pile is.
+    /// </summary>
+    public static byte[] WriteSave(CombatState state) => WriteDocument(state, save: true);
+
+    private static byte[] WriteDocument(CombatState state, bool save)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
-            WriteCombat(writer, state);
+            WriteCombat(writer, state, save);
         }
 
         return buffer.WrittenSpan.ToArray();
@@ -1348,7 +1375,7 @@ public static class CombatSnapshot
 
     // ── writing ──────────────────────────────────────────────────────────────────────
 
-    private static void WriteCombat(Utf8JsonWriter w, CombatState state)
+    private static void WriteCombat(Utf8JsonWriter w, CombatState state, bool save)
     {
         w.WriteStartObject();
         w.WriteString("schema", SchemaId);
@@ -1427,7 +1454,11 @@ public static class CombatSnapshot
         WriteItems(w, "enemies", state.Enemies, WriteEnemy);
         WriteCounters(w, state);
         WritePendingSelection(w, state);
-        WriteStoppedStep(w, state);
+        if (save)
+        {
+            WriteStoppedStep(w, state);
+        }
+
         w.WriteEndObject();
     }
 
@@ -1437,9 +1468,10 @@ public static class CombatSnapshot
     /// after-play hooks run, the turn start goes on. The step's start is a document of its own (a
     /// step has returned there, so the document holds it as it holds any position), with its draw
     /// order and its streams: the history that leads to the screen, which the replay needs to reach
-    /// the same screen. None of it reaches the future: at the screen the replay puts back the loaded
-    /// copy's own streams and draw order (<see cref="ScreenHiddenState" />), and those, as always, are
-    /// the loader's. Omitted when no step is stopped, so every other document is unchanged.
+    /// the same screen. The engine plays none of it past the screen -- there the replay puts back the
+    /// loaded copy's own streams and draw order (<see cref="ScreenHiddenState" />), and those, as
+    /// always, are the loader's -- but a reader of the block reads the true world, the future
+    /// included: the save document only (<see cref="WriteSave" />). Omitted when no step is stopped.
     /// </summary>
     private static void WriteStoppedStep(Utf8JsonWriter w, CombatState state)
     {
@@ -1453,7 +1485,7 @@ public static class CombatSnapshot
         w.WriteNumber("target", stopped.TargetEnemyIndex);
         WriteItems(w, "answers", stopped.Answers, (writer, answer) => writer.WriteNumberValue(answer));
         w.WritePropertyName("before");
-        WriteCombat(w, stopped.Before);
+        WriteCombat(w, stopped.Before, save: true);
         WriteItems(w, "before_draw", stopped.Before.DrawPile, WriteCard);
         w.WritePropertyName("before_streams");
         WriteStreams(

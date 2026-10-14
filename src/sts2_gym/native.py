@@ -6,6 +6,7 @@ import os
 import platform
 import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 _LIB_NAMES = {
@@ -280,6 +281,13 @@ _lib.Sts2_LoadCombatSnapshot.argtypes = [
 
 _lib.Sts2_GetStateJson.restype = ctypes.c_int
 _lib.Sts2_GetStateJson.argtypes = [
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_int,
+]
+
+_lib.Sts2_GetSaveJson.restype = ctypes.c_int
+_lib.Sts2_GetSaveJson.argtypes = [
     ctypes.c_int,
     ctypes.POINTER(ctypes.c_ubyte),
     ctypes.c_int,
@@ -1213,6 +1221,29 @@ def get_state_json(handle: int) -> dict:
     seed))` round-trips `doc`, modulo the unordered draw-pile middle, which is a multiset
     (docs/superpowers/specs/2026-09-24-snapshot-schemas.md Sec 2.1).
 
+    The position as the player sees it. A combat stopped on a screen raised in the middle
+    of a step is written as that screen over the combat, without the step: loaded, the
+    screen is answered by itself, as a live document's is (CombatSnapshot.cs). An unknown
+    handle raises RuntimeError.
+    """
+    return _json_export(_lib.Sts2_GetStateJson, "Sts2_GetStateJson", handle)
+
+
+def get_save_json(handle: int) -> dict:
+    """Export a combat as the emulator's save document (size-and-retry).
+
+    `get_state_json`'s document plus `stopped_step` when a step is stopped on a screen:
+    the step's start with its TRUE draw order and the exact state of every RNG stream, so
+    that `load_combat_snapshot` of it finishes the step. Banned outside verification and
+    save code, as `get_pile` and `rng_call_count` are (review condition E12): search and
+    agent code that read it read the future. An unknown handle raises RuntimeError.
+    """
+    return _json_export(_lib.Sts2_GetSaveJson, "Sts2_GetSaveJson", handle)
+
+
+def _json_export(export: Callable[..., int], name: str, handle: int) -> dict:
+    """Read a size-and-retry JSON export of one combat.
+
     Raises:
         RuntimeError: if the handle is unknown.
 
@@ -1220,9 +1251,9 @@ def get_state_json(handle: int) -> dict:
     capacity = 4096
     while True:
         buf = (ctypes.c_ubyte * capacity)()
-        length = int(_lib.Sts2_GetStateJson(handle, buf, capacity))
+        length = int(export(handle, buf, capacity))
         if length < 0:
-            raise RuntimeError(f"Sts2_GetStateJson failed: unknown handle {handle}.")
+            raise RuntimeError(f"{name} failed: unknown handle {handle}.")
         if length <= capacity:
             return json.loads(bytes(buf[:length]))
         capacity = length

@@ -34,7 +34,8 @@ public class StoppedStepLifecycleTests
         [nameof(PendingCardSelection.GeneratedRetained)] = "data",
         [nameof(PendingCardSelection.Replay)] =
             "shared by Clone/CopyTo (never changed once made), dropped with the screen by Reset and Reanchor, "
-            + "written by a snapshot (stopped_step) and put back on the loaded screen: the tests below",
+            + "written by the save document only (stopped_step), never by the agent's (it reaches the true "
+            + "world), and put back on the loaded screen: the tests below",
     };
 
     [Fact]
@@ -136,10 +137,10 @@ public class StoppedStepLifecycleTests
     }
 
     /// <summary>
-    /// The reviewer's probe: a snapshot written on Burning Pact's screen, read back, answered. The
-    /// play is stopped inside OnPlay, so a document of the screen alone left the card in no pile and
-    /// its after-play hooks unrun (7 cards became 6); the document now carries the stopped step, and
-    /// the loaded copy's answer finishes the play: the card goes to the discard.
+    /// The reviewer's probe: a save document written on Burning Pact's screen, read back, answered.
+    /// The play is stopped inside OnPlay, so a document of the screen alone leaves the card in no pile
+    /// and its after-play hooks unrun (7 cards become 6); the save document carries the stopped step,
+    /// and the loaded copy's answer finishes the play: the card goes to the discard.
     /// </summary>
     [Fact]
     public void ASnapshotOfAStoppedPlayKeepsThePlayedCard()
@@ -154,7 +155,7 @@ public class StoppedStepLifecycleTests
         Assert.NotNull(fight.Pending!.Replay);
         static int Cards(CombatState s) => s.Hand.Count + s.DrawPile.Count + s.DiscardPile.Count + s.ExhaustPile.Count;
 
-        var loaded = CombatSnapshot.Read(CombatSnapshot.Write(fight.State), seed: 0, out _);
+        var loaded = CombatSnapshot.Read(CombatSnapshot.WriteSave(fight.State), seed: 0, out _);
         Assert.NotNull(loaded.PendingSelection!.Replay);
         // The load shuffled the three unseen cards with its own seed; hand it the original's order too.
         ShareStreams(from: fight.State, to: loaded);
@@ -165,28 +166,28 @@ public class StoppedStepLifecycleTests
         Assert.Null(loaded.PendingSelection);
         Assert.Equal(7, Cards(loaded));
         Assert.Contains(loaded.DiscardPile, card => card.DefId == IC.BurningPact);
-        Assert.Equal(CombatSnapshot.Write(fight.State), CombatSnapshot.Write(loaded));
+        Assert.Equal(CombatSnapshot.WriteSave(fight.State), CombatSnapshot.WriteSave(loaded));
     }
 
     /// <summary>
-    /// A turn start stopped on Tyranny's screen: written, read and answered, the rest of the turn
-    /// start runs, as on the original, and a document of the step's start and of every answer so far
-    /// writes back the same.
+    /// A turn start stopped on Tyranny's screen: a save document written, read and answered, the rest
+    /// of the turn start runs, as on the original, and a save document of the step's start and of
+    /// every answer so far writes back the same.
     /// </summary>
     [Fact]
     public void ASnapshotOfAStoppedTurnStartGoesOnWithTheRestOfIt()
     {
         var (fight, rng) = Stopped();
-        byte[] written = CombatSnapshot.Write(fight.State);
+        byte[] written = CombatSnapshot.WriteSave(fight.State);
 
         var loaded = CombatSnapshot.Read(written, seed: 0, out _);
-        Assert.Equal(written, CombatSnapshot.Write(loaded));
+        Assert.Equal(written, CombatSnapshot.WriteSave(loaded));
         ShareStreams(from: fight.State, to: loaded);
         CombatEngine.Step(loaded, 2, rng.Clone());
         CombatEngine.Step(fight.State, 2, rng);
 
         Assert.Null(loaded.PendingSelection);
-        Assert.Equal(CombatSnapshot.Write(fight.State), CombatSnapshot.Write(loaded));
+        Assert.Equal(CombatSnapshot.WriteSave(fight.State), CombatSnapshot.WriteSave(loaded));
     }
 
     /// <summary>
@@ -210,7 +211,7 @@ public class StoppedStepLifecycleTests
 
         foreach (int seed in new[] { 1, 2, 3 })
         {
-            var loaded = CombatSnapshot.Read(CombatSnapshot.Write(fight.State), seed, out _);
+            var loaded = CombatSnapshot.Read(CombatSnapshot.WriteSave(fight.State), seed, out _);
             var offered = loaded.DrawPile[loaded.PendingSelection!.Candidates[0]];
 
             CombatEngine.Step(loaded, 0, new CountingRandom(seed));
@@ -218,6 +219,112 @@ public class StoppedStepLifecycleTests
             Assert.Null(loaded.PendingSelection);
             Assert.Equal(offered, loaded.Hand[0]);
         }
+    }
+
+    private static readonly int[] Twelve =
+    [
+        IC.Anger, IC.DefendIronclad, IC.Inflame, IC.TwinStrike, IC.ShrugItOff, IC.PommelStrike,
+        IC.IronWave, IC.Thunderclap, IC.Bash, IC.StrikeIronclad, IC.Armaments, IC.Headbutt,
+    ];
+
+    /// <summary>Burning Pact stopped on its screen, over twelve unseen cards in this order.</summary>
+    private static Fight StoppedPact(int[] pile, int seed)
+    {
+        var fight = Fight
+            .Hand(Card(IC.BurningPact), Card(IC.StrikeIronclad), Card(IC.DefendIronclad), Card(IC.Bash))
+            .Seed(seed)
+            .Energy(3)
+            .Draw([.. Pile(pile)])
+            .Enemy(hp: 400);
+        CombatEngine.Step(fight.State, 0, new CountingRandom(seed));
+        Assert.NotNull(fight.Pending!.Replay);
+        return fight;
+    }
+
+    /// <summary>A search fork, as <c>Sts2_Clone(resample)</c> makes one: the streams reseeded, the unseen order reshuffled.</summary>
+    private static CombatState Determinized(CombatState state, int seed)
+    {
+        var fork = state.Clone(seed);
+        fork.ReshuffleUnknownDrawOrder(new CountingRandom(seed));
+        return fork;
+    }
+
+    private static bool Holds(byte[] document, string text) =>
+        document.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes(text)) >= 0;
+
+    /// <summary>
+    /// The reviewer's probe, round 3: a fork determinized at a stopped Burning Pact wrote the step's
+    /// start in its TRUE world (stopped_step.before_draw, before_streams), which names the two cards
+    /// the Pact really draws. The agent's document is the position as the player sees it: forks
+    /// resampled differently write the original's document, byte for byte, with no stopped step in
+    /// it, while the save document still holds the step.
+    /// </summary>
+    [Fact]
+    public void ForksResampledDifferentlyAtAStoppedPlayWriteTheSameDocument()
+    {
+        var fight = StoppedPact(Twelve, seed: 77);
+        byte[] original = CombatSnapshot.Write(fight.State);
+
+        var forks = new[] { 4242, 7, 999, 31337 }.Select(seed => Determinized(fight.State, seed)).ToList();
+        Assert.True(forks.Select(fork => string.Join(",", fork.DrawPile.Select(card => card.DefId))).Distinct().Count() > 1);
+
+        Assert.False(Holds(original, "stopped_step"));
+        Assert.All(forks, fork => Assert.Equal(original, CombatSnapshot.Write(fork)));
+        Assert.True(Holds(CombatSnapshot.WriteSave(fight.State), "stopped_step"));
+    }
+
+    /// <summary>
+    /// Two combats that look the same -- the same hand and the same unseen cards, in a different
+    /// true order and on different streams -- write the same document at a stopped play, and at a
+    /// stopped turn start, where the step's start holds the whole pile left in true order. Their save
+    /// documents do not.
+    /// </summary>
+    [Fact]
+    public void CombatsThatLookTheSameWriteTheSameDocumentWhereAStepStopped()
+    {
+        var pact = StoppedPact(Twelve, seed: 1);
+        var twin = StoppedPact([.. Twelve.Reverse()], seed: 2);
+        Assert.Equal(CombatSnapshot.Write(pact.State), CombatSnapshot.Write(twin.State));
+        Assert.NotEqual(CombatSnapshot.WriteSave(pact.State), CombatSnapshot.WriteSave(twin.State));
+
+        // Tyranny: the hand drawn before the screen is the same six Strikes (five, and Tyranny's
+        // own draw); the seven cards under them are not in the same order.
+        static Fight TurnStart(int[] under, int seed)
+        {
+            var fight = Fight
+                .Hand(Card(IC.DefendIronclad))
+                .Seed(seed)
+                .Energy(3)
+                .Draw([.. Pile([.. Enumerable.Repeat(IC.StrikeIronclad, 6), .. under])])
+                .Enemy(hp: 500, intent: new Intent(IntentType.Attack, 7))
+                .PlayerBuff(BuffId.Tyranny, 1);
+            CombatEngine.Step(fight.State, fight.State.Hand.Count, new CountingRandom(seed));
+            Assert.NotNull(fight.Pending!.Replay);
+            return fight;
+        }
+
+        var start = TurnStart(Twelve[..7], seed: 3);
+        var other = TurnStart([.. Twelve[..7].Reverse()], seed: 4);
+        Assert.Equal(CombatSnapshot.Write(start.State), CombatSnapshot.Write(other.State));
+        Assert.NotEqual(CombatSnapshot.WriteSave(start.State), CombatSnapshot.WriteSave(other.State));
+    }
+
+    /// <summary>
+    /// The agent's document of a stopped play, loaded, is the screen alone, as a live document's is:
+    /// there is no step to replay, and the answer exhausts and draws from the loaded copy's own pile.
+    /// </summary>
+    [Fact]
+    public void TheAgentsDocumentOfAStoppedPlayLoadsAsTheScreenAlone()
+    {
+        var fight = StoppedPact(Twelve, seed: 77);
+
+        var loaded = CombatSnapshot.Read(CombatSnapshot.Write(fight.State), seed: 5, out _);
+        Assert.Null(loaded.PendingSelection!.Replay);
+        var top = loaded.DrawPile.Take(2).ToList();
+        CombatEngine.Step(loaded, 0, new CountingRandom(5));
+
+        Assert.Null(loaded.PendingSelection);
+        Assert.Equal(top, loaded.Hand.TakeLast(2));
     }
 
     /// <summary>The document carries no RNG of its own: hand the loaded copy the original's streams.</summary>
