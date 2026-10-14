@@ -283,6 +283,16 @@ searches run clones; the export waits for the prior integration in section 6.5.*
    that had already played other runs. It is intermittent and not a function of the
    seed. Flagged for the emulator backlog; the runner's retry absorbs it, and the job's
    `retries` keep its trace (5.8).
+8. **The emulator offers a potion-use move on nearly every screen.** Since `afa23768`
+   the mask carries actions 242..247, "use the potion in belt slot 0..5", wherever the belt
+   is open and the slot holds one of the four `AnyTime` potions (Blood Potion, Entropic
+   Brew, Foul Potion, Fruit Juice; `RunPotionUse.cs`). The engine front end does not model
+   them and the mod's screens do not carry them as decisions, so `_legal` drops them and
+   v1 never uses a potion away from a fight. A reader that indexed a per-slot list by every
+   legal action (`_map` reads list 7 by slot) failed with an IndexError on the first map
+   screen of a run that held one (`PotionUseActionTests`). Modelling the moves is a separate
+   decision: nothing here chooses them, and the live replay compares decisions with the mod's
+   screens, which carry no such option.
 
 ---
 

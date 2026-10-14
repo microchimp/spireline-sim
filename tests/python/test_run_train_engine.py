@@ -174,10 +174,17 @@ class ConstantsTests(unittest.TestCase):
             "ActGlory": vocab.REGION_GLORY,
             "FakeMerchantRelicCost": engine.FAKE_MERCHANT_RELIC_COST,
             "MapBossRow": vocab.MAP_BOSS_ROW,
+            "PotionSlotCapacity": engine.POTION_SLOT_CAPACITY,
+            # `UsePotionAction = 2 * CrystalSphereCells`: an expression, which the regex
+            # above does not read, so it is rebuilt from the board's side.
+            "UsePotionAction": 2 * cs["CrystalSphereSize"] ** 2,
         }
         for name, value in mirrored.items():
             with self.subTest(name=name):
-                self.assertEqual(value, cs[name])
+                if name == "UsePotionAction":
+                    self.assertEqual(engine.USE_POTION_ACTION, value)
+                else:
+                    self.assertEqual(value, cs[name])
 
     def test_the_mirrored_phases_match_run_phase(self):
         phases = _cs_phases()
@@ -202,6 +209,48 @@ class ConstantsTests(unittest.TestCase):
         }
         for name, ordinal in expected.items():
             self.assertEqual(selections[ordinal], name)
+
+
+class PotionUseActionTests(unittest.TestCase):
+    """The belt's use-a-potion moves (actions 242..247) belong to no screen's decision.
+
+    The emulator offers them wherever the belt is open and a slot holds one of the four
+    `AnyTime` potions (`RunPotionUse`, afa23768). The screen readers index per-slot lists by
+    action, so a map screen read with one of them in the mask failed with an IndexError, in
+    every run that picked up a Blood Potion, Fruit Juice, Entropic Brew or Foul Potion
+    (DESIGN.md 1.5.8).
+    """
+
+    BLOOD_POTION = 6
+
+    def test_a_held_anytime_potion_leaves_the_map_decision_as_it_was(self):
+        session = drive_until(
+            "POTION01",
+            lambda _s, d: d.type == "map",
+            sims=5,
+        )
+        self.assertIsNotNone(session, "the run ended before it reached a map screen")
+        try:
+            before = [(o.kind, o.action, o.node) for o in next_decision(session).options]
+            native.run_debug_set_player(
+                session.handle,
+                session.env._run_obs_buf,
+                potions=[self.BLOOD_POTION],
+            )
+            raw = [
+                i
+                for i, legal in enumerate(
+                    native.run_action_mask(session.handle, native.RUN_MAX_ACTIONS),
+                )
+                if legal
+            ]
+            # The setup does what the test is about: the emulator offers the move.
+            self.assertIn(engine.USE_POTION_ACTION, raw)
+            self.assertNotIn(engine.USE_POTION_ACTION, engine._legal(session.handle))
+            after = [(o.kind, o.action, o.node) for o in next_decision(session).options]
+            self.assertEqual(after, before)
+        finally:
+            session.close()
 
 
 class CombatBudgetTests(unittest.TestCase):

@@ -65,6 +65,11 @@ FAKE_MERCHANT_THROW_ACTION = 6  # RunConstants.cs:345
 FAKE_MERCHANT_LEAVE_ACTION = 7  # RunConstants.cs:348
 FAKE_MERCHANT_RELIC_COST = 50  # RunConstants.FakeMerchantRelicCost
 FAKE_MERCHANT_SLOTS = 6  # the stall's relics are actions 0-5
+# Actions 242..247 use the potion in belt slot 0..5 away from a fight (`RunPotionUse`,
+# `RunConstants.UsePotionAction`): `2 * CrystalSphereCells`, past the Crystal Sphere's board.
+# The emulator offers them on nearly every screen; v1 does not model them (DESIGN.md 1.5.8).
+USE_POTION_ACTION = 242
+POTION_SLOT_CAPACITY = 6  # RunConstants.PotionSlotCapacity
 EVENT_RESULT_PENDING = -1  # RunConstants.cs:269
 # The treasure room's chest relic (erratum RF1): offered while it is still in the chest,
 # with the proceed (3) always beside it (`RunEngine.WriteActionMask`, `StepTreasure`).
@@ -362,8 +367,21 @@ def treasure_action(legal: list[int]) -> int:
 
 
 def _legal(handle: int) -> list[int]:
+    """Return the screen's own legal actions: the belt's use-a-potion actions are not among them.
+
+    The emulator adds `USE_POTION_ACTION + slot` to the mask of every screen where the belt
+    is open and a slot holds one of the four `AnyTime` potions. Those are not part of any
+    screen's decision (DESIGN.md 1.5.8: v1 never uses a potion away from a fight), and a
+    reader that indexes by action (`_map` reads list 7 by slot, the shop and the rewards
+    screen read per-slot lists) must never be handed one.
+    """
     mask = native.run_action_mask(handle, native.RUN_MAX_ACTIONS)
-    return [i for i in range(native.RUN_MAX_ACTIONS) if mask[i]]
+    return [
+        i
+        for i in range(native.RUN_MAX_ACTIONS)
+        if mask[i]
+        and not USE_POTION_ACTION <= i < USE_POTION_ACTION + POTION_SLOT_CAPACITY
+    ]
 
 
 def _read_screen(
