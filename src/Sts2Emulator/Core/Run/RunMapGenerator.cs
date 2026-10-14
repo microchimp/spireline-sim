@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Sts2Emulator.Core.Rng;
 
 namespace Sts2Emulator.Core.Run;
@@ -824,75 +825,251 @@ public static class RunMapGenerator
         }
     }
 
-    private static List<List<RunMapNode[]>> FindMatchingSegments(RunState state)
+    /// <summary>
+    /// <c>MapPathPruning</c>'s duplicate-segment search: every path from the start to the boss
+    /// (depth first, children in list order), and in each path every segment from a valid start
+    /// point to a valid end point at least two steps on (by start, then by end), grouped by
+    /// <see cref="GenerateSegmentKey" />; a segment joins its group unless one already in it has
+    /// the same point at one of the interior places. The groups of two or more come back in key
+    /// order (ordinal).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same groups, segment for segment and in the same order, as listing every path and every
+    /// segment of each (MapSegmentSearchTests checks it against that), which built about 15,000
+    /// segments and their keys per search, 7 searches per map: three quarters of an EmuDump fight
+    /// replay's CPU. A segment met again, in a later path through the same points, never
+    /// joins a group: the group already holds it, or still holds the one that kept it out. So only
+    /// each segment's first meeting is looked at, and the walk knows which meetings are first
+    /// without comparing segments. The first path through a segment from A to B is the walk's
+    /// first way to A, the segment, then the first way on from B to the boss; so in the path just
+    /// completed, the segment from position i to position e is met for the first time exactly when
+    /// the visit at i is its point's first visit and this path is the first one completed below
+    /// the visit at e.
+    /// </para>
+    /// <para>
+    /// A group is found by the fields its key string is made of (the start point unless it is on
+    /// row 0, the end point, every point's type), which the string spells out unambiguously, so two
+    /// segments share a string exactly when they share those fields. Members are kept as copies of
+    /// their points in one list; arrays and key strings are made only for the groups returned,
+    /// sorted by key at the end (keys are unique, so that is the order an ordinal sorted
+    /// dictionary walks them in).
+    /// </para>
+    /// </remarks>
+    internal static List<List<RunMapNode[]>> FindMatchingSegments(RunState state)
     {
-        var paths = FindAllPaths(state, MapNodeAt(state, state.CurrentMapCoord));
-        var segments = new SortedDictionary<string, List<RunMapNode[]>>(StringComparer.Ordinal);
-        foreach (var path in paths)
-        {
-            AddSegmentsToDictionary(path, segments);
-        }
-
-        return segments.Values.Where(segmentList => segmentList.Count > 1).ToList();
+        OnSegmentSearch?.Invoke(state);
+        var walk = t_segmentWalk ??= new SegmentWalk();
+        walk.Begin(state);
+        walk.Visit(MapNodeAt(state, state.CurrentMapCoord));
+        return walk.Matching();
     }
 
-    private static List<List<RunMapNode>> FindAllPaths(RunState state, RunMapNode current)
+    // One walk per thread, its lists kept between searches: grown afresh each time they reached
+    // the large object heap and cost a gen-2 collection every few maps.
+    [ThreadStatic]
+    private static SegmentWalk? t_segmentWalk;
+
+    /// <summary>Called with the state at the start of each <see cref="FindMatchingSegments" /> (tests compare it with the plain search).</summary>
+    internal static Action<RunState>? OnSegmentSearch;
+
+    /// <summary>
+    /// What <see cref="GenerateSegmentKey" /> writes: the start column (<see cref="int.MinValue" />
+    /// for a start on row 0, whose column the key leaves out), start row, end column and row, the
+    /// number of points and their <see cref="GameMapPointType" />s, four bits each.
+    /// </summary>
+    private readonly record struct SegmentKeyFields(
+        int StartCol,
+        int StartRow,
+        int EndCol,
+        int EndRow,
+        int Count,
+        UInt128 Types
+    );
+
+    /// <summary>The depth-first walk of <see cref="FindMatchingSegments" />, one path at a time.</summary>
+    /// <remarks>
+    /// Its hot methods are jitted optimized at once: a replay process makes a few hundred maps,
+    /// and tiered compilation kept them at tier 0 for most of them.
+    /// </remarks>
+    private sealed class SegmentWalk
     {
-        if (current.NodeType == RunConstants.NodeBoss)
+        private RunState _state = null!;
+        private readonly List<RunMapNode> _path = [];
+
+        // Per position of the path: whether this is its point's first visit, and whether a path
+        // to the boss has already been completed below this visit.
+        private readonly List<bool> _firstVisit = [];
+        private readonly List<bool> _completedBelow = [];
+        private readonly HashSet<RunMapNode> _visited = new(ReferenceEqualityComparer.Instance);
+
+        // Each group's members in the order they joined: a member's points are
+        // _points[Start .. Start + the group's Count), Next is the group's next member (-1: the last).
+        private readonly Dictionary<SegmentKeyFields, int> _groupOf = [];
+        private readonly List<(int First, int Last, int Size, int Count)> _groups = [];
+        private readonly List<(int Start, int Next)> _members = [];
+        private readonly List<RunMapNode> _points = [];
+
+        internal void Begin(RunState state)
         {
-            return
-            [
-                [current],
-            ];
+            _state = state;
+            _path.Clear();
+            _firstVisit.Clear();
+            _completedBelow.Clear();
+            _visited.Clear();
+            _groupOf.Clear();
+            _groups.Clear();
+            _members.Clear();
+            _points.Clear();
         }
 
-        var paths = new List<List<RunMapNode>>();
-        foreach (var childCoord in current.Children)
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        internal void Visit(RunMapNode current)
         {
-            var child = MapNodeAt(state, childCoord);
-            foreach (var path in FindAllPaths(state, child))
+            int k = _path.Count;
+            _path.Add(current);
+            _firstVisit.Add(_visited.Add(current));
+            _completedBelow.Add(false);
+            if (current.NodeType == RunConstants.NodeBoss)
             {
-                path.Insert(0, current);
-                paths.Add(path);
+                AddSegments();
+                for (int t = 0; t <= k; t++)
+                {
+                    _completedBelow[t] = true;
+                }
             }
+            else
+            {
+                foreach (var childCoord in current.Children)
+                {
+                    Visit(MapNodeAt(_state, childCoord));
+                }
+            }
+
+            _path.RemoveAt(k);
+            _firstVisit.RemoveAt(k);
+            _completedBelow.RemoveAt(k);
         }
 
-        return paths;
-    }
-
-    private static void AddSegmentsToDictionary(
-        IReadOnlyList<RunMapNode> path,
-        IDictionary<string, List<RunMapNode[]>> segments
-    )
-    {
-        for (int i = 0; i < path.Count - 1; i++)
+        /// <summary>The segments of the path just completed that it is the first path through.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private void AddSegments()
         {
-            if (!IsValidSegmentStartMapPoint(path[i]))
+            var path = _path;
+            if (path.Count > 32)
             {
-                continue;
+                // A key holds 32 types; a map path is at most 18 points (the boss row is 17 at most).
+                throw new InvalidOperationException($"map path of {path.Count} points: longer than a segment key holds");
             }
 
-            for (int j = 2; j < path.Count - i; j++)
+            for (int i = 0; i < path.Count - 1; i++)
             {
-                var end = path[i + j];
-                if (!IsValidSegmentEndMapPoint(end))
+                if (!_firstVisit[i] || !IsValidSegmentStartMapPoint(path[i]))
                 {
                     continue;
                 }
 
-                var segment = path.Skip(i).Take(j + 1).ToArray();
-                string key = GenerateSegmentKey(segment);
-                if (!segments.TryGetValue(key, out var existing))
+                // The types of path[i..i+j], four bits each, the first lowest.
+                UInt128 types = TypeBits(path[i], 0) | TypeBits(path[i + 1], 1);
+                for (int j = 2; j < path.Count - i; j++)
                 {
-                    segments[key] = [segment];
-                }
-                else if (
-                    !existing.Any(existingSegment => OverlappingSegment(existingSegment, segment))
-                )
-                {
-                    existing.Add(segment);
+                    types |= TypeBits(path[i + j], j);
+                    if (_completedBelow[i + j] || !IsValidSegmentEndMapPoint(path[i + j]))
+                    {
+                        continue;
+                    }
+
+                    var start = path[i];
+                    var key = new SegmentKeyFields(
+                        start.Row == 0 ? int.MinValue : start.Col,
+                        start.Row,
+                        path[i + j].Col,
+                        path[i + j].Row,
+                        j + 1,
+                        types
+                    );
+                    if (!_groupOf.TryGetValue(key, out int group))
+                    {
+                        _groupOf[key] = _groups.Count;
+                        _groups.Add((_members.Count, _members.Count, 1, j + 1));
+                        AddMember(i, j + 1);
+                    }
+                    else if (!Overlapping(group, i, j + 1))
+                    {
+                        var (first, last, size, count) = _groups[group];
+                        _members[last] = (_members[last].Start, _members.Count);
+                        _groups[group] = (first, _members.Count, size + 1, count);
+                        AddMember(i, j + 1);
+                    }
                 }
             }
+        }
+
+        private void AddMember(int i, int count)
+        {
+            _members.Add((_points.Count, -1));
+            for (int k = 0; k < count; k++)
+            {
+                _points.Add(_path[i + k]);
+            }
+        }
+
+        /// <summary>
+        /// Whether a member of the group has the same point as _path[i..i+count-1] at one of the
+        /// interior places (a group's segments share a key, so a length).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private bool Overlapping(int group, int i, int count)
+        {
+            if (count < 3)
+            {
+                return false;
+            }
+
+            for (int m = _groups[group].First; m >= 0; m = _members[m].Next)
+            {
+                int start = _members[m].Start;
+                for (int k = 1; k <= count - 2; k++)
+                {
+                    if (ReferenceEquals(_points[start + k], _path[i + k]))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static UInt128 TypeBits(RunMapNode node, int at) =>
+            (UInt128)(uint)GameMapPointType(node.NodeType) << (4 * at);
+
+        /// <summary>The groups of two or more, each in joining order, sorted by their key strings.</summary>
+        internal List<List<RunMapNode[]>> Matching()
+        {
+            var kept = new List<(string Key, List<RunMapNode[]> Segments)>();
+            foreach (var (first, _, size, count) in _groups)
+            {
+                if (size < 2)
+                {
+                    continue;
+                }
+
+                var segments = new List<RunMapNode[]>(size);
+                for (int m = first; m >= 0; m = _members[m].Next)
+                {
+                    segments.Add(_points.GetRange(_members[m].Start, count).ToArray());
+                }
+
+                kept.Add((GenerateSegmentKey(segments[0]), segments));
+            }
+
+            kept.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+            _state = null!;
+            _points.Clear();  // let go of the map's nodes
+            _path.Clear();
+            _visited.Clear();
+            return kept.ConvertAll(group => group.Segments);
         }
     }
 
@@ -937,27 +1114,6 @@ public static class RunMapGenerator
                 ? $"{start.Row}-{end.Col},{end.Row}-"
                 : $"{start.Col},{start.Row}-{end.Col},{end.Row}-";
         return prefix + string.Join(",", segment.Select(node => GameMapPointType(node.NodeType)));
-    }
-
-    private static bool OverlappingSegment(
-        IReadOnlyList<RunMapNode> left,
-        IReadOnlyList<RunMapNode> right
-    )
-    {
-        if (left.Count < 3 || right.Count < 3)
-        {
-            return false;
-        }
-
-        for (int i = 1; i <= left.Count - 2; i++)
-        {
-            if (ReferenceEquals(left[i], right[i]))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static bool PrunePaths(
