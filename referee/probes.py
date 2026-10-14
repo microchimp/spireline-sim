@@ -425,7 +425,7 @@ PROBES.append(Probe(
 # draw: Draw Cards Next Turn is removed and Clarity ticks down before ModifyHandDraw reads them. Answered at once
 # (the old driver), the pick came first and the draw kept the bonus.
 PROBES.append(Probe(
-    "P19", ["selection"], "With a turn-start screen open (Foregone Conclusion), does the side's turn start run before the "
+    "P19", ["C1-F01"], "With a turn-start screen open (Foregone Conclusion), does the side's turn start run before the "
     "pick, so Draw Cards Next Turn is gone before the hand draw?",
     [fight("NIBBITS_WEAK"), power("FOREGONE_CONCLUSION_POWER", 1), power("DRAW_CARDS_NEXT_TURN_POWER", 2)],
     [end_turn()],
@@ -443,7 +443,7 @@ PROBES.append(Probe(
 ))
 
 PROBES.append(Probe(
-    "P20", ["selection"], "With Foregone Conclusion's screen open, does Clarity tick down (and go) before the hand draw?",
+    "P20", ["C1-F01"], "With Foregone Conclusion's screen open, does Clarity tick down (and go) before the hand draw?",
     [fight("NIBBITS_WEAK"), power("FOREGONE_CONCLUSION_POWER", 1), power("CLARITY_POWER", 1)],
     [end_turn()],
     lambda pre, post, ctx: None if post is None else len(post.hand),
