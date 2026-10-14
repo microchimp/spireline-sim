@@ -408,6 +408,92 @@ public class AutoPlayPipelineTests
         Assert.Contains(fight.State.DiscardPile, c => c.DefId == SI.FlickFlack);
     }
 
+    // ── Play count: settled as the play is set up (`GeneratePlayCount`) ─────────────────
+
+    /// <summary>
+    /// `DuplicationPower` is read and spent as Havoc is set up, before its `OnPlay`: Havoc
+    /// plays twice and each Strike it plays once, so both leave the draw pile.
+    /// </summary>
+    [Fact]
+    public void DuplicationDoublesHavocNotTheCardItPlays()
+    {
+        var fight = Fight
+            .Hand(Card(IC.Havoc))
+            .Enemy(hp: 100)
+            .Draw(Card(IC.StrikeIronclad), Card(IC.StrikeIronclad))
+            .PlayerBuff(BuffId.Duplication, 1)
+            .Energy(3);
+
+        fight.Play(0);
+
+        Assert.Empty(fight.State.DrawPile);
+        Assert.Equal(88, fight.State.Enemies[0].Hp);
+        Assert.Equal(0, fight.PlayerBuffAmount(BuffId.Duplication));
+    }
+
+    /// <summary>
+    /// `EchoFormPower` counts the turn's `CardPlaysStarted` before the play being set up, and
+    /// the Strike Havoc plays starts after Havoc: Havoc, the turn's first card, plays twice,
+    /// and each Strike once.
+    /// </summary>
+    [Fact]
+    public void EchoFormDoublesHavocNotTheCardItPlays()
+    {
+        var fight = Fight
+            .Hand(Card(IC.Havoc))
+            .Enemy(hp: 100)
+            .Draw(Card(IC.StrikeIronclad), Card(IC.StrikeIronclad))
+            .PlayerBuff(BuffId.EchoForm, 1)
+            .Energy(3);
+
+        fight.Play(0);
+
+        Assert.Equal(88, fight.State.Enemies[0].Hp);
+        Assert.Empty(fight.State.DrawPile);
+    }
+
+    /// <summary>
+    /// `BurstPower` is spent as Calculated Gamble is set up, so the Sly Defend its discard
+    /// plays finds none: the Gamble is doubled and the Defend plays once.
+    /// </summary>
+    [Fact]
+    public void BurstDoublesCalculatedGambleNotTheSlyCard()
+    {
+        var fight = Fight
+            .Hand(Card(SI.CalculatedGamble), Card(SI.DefendSilent) with { SlyForCombat = true })
+            .Enemy(hp: 100)
+            .Draw(Card(SI.StrikeSilent), Card(SI.StrikeSilent), Card(SI.StrikeSilent))
+            .PlayerBuff(BuffId.Burst, 1)
+            .Energy(3);
+
+        fight.Play(0);
+
+        Assert.Equal(5, fight.State.PlayerBlock);
+        Assert.Equal(0, fight.PlayerBuffAmount(BuffId.Burst));
+    }
+
+    /// <summary>
+    /// `OneTwoPunchPower` is spent as Pommel Strike is set up: Pommel Strike plays twice, and
+    /// each Strike Hellraiser plays out of its draws plays once.
+    /// </summary>
+    [Fact]
+    public void OneTwoPunchDoublesPommelStrikeNotTheStrikeHellraiserPlays()
+    {
+        var fight = Fight
+            .Hand(Card(IC.PommelStrike))
+            .Enemy(hp: 100)
+            .Draw(Card(IC.StrikeIronclad), Card(IC.StrikeIronclad), Card(IC.DefendIronclad))
+            .PlayerBuff(BuffId.Hellraiser, 1)
+            .PlayerBuff(BuffId.OneTwoPunch, 1)
+            .Energy(3);
+
+        fight.Play(0);
+
+        Assert.Equal(100 - 9 - 9 - 6 - 6, fight.State.Enemies[0].Hp);
+        Assert.Equal([IC.DefendIronclad], Fight.Ids(fight.State.DrawPile));
+        Assert.Equal(0, fight.PlayerBuffAmount(BuffId.OneTwoPunch));
+    }
+
     // ── Inside the card: the auto-play is part of the causing card's play ───────────────
 
     /// <summary>

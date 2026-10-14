@@ -327,6 +327,13 @@ public static class CombatEngine
             state.Hand.RemoveAt(handIndex);
         }
 
+        // `CardModel.GeneratePlayCount`, right after the result pile and before
+        // BeforeCardPlayed and the first `OnPlay`: every play-count modifier is read and
+        // spent here, so a play nested inside this card's effect (a Strike Havoc plays, a Sly
+        // card its discard plays, a Strike Hellraiser plays out of its draw) finds them
+        // already settled and cannot take this card's.
+        int extraPlays = SettlePlayCount(state, card, def);
+
         if (def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Smoggy) > 0)
         {
             state.SkillPlayedWhileSmoggy = true;
@@ -399,31 +406,6 @@ public static class CombatEngine
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Veilpiercer, -1);
         }
 
-        // `BurstPower.ModifyCardPlayCount` is OneTwoPunch's rule for SKILLS -- but the
-        // play count is settled when the play is SET UP, before the card resolves, which
-        // is why a Burst does not double itself. Read here for that reason; the emulator
-        // used to stack OneTwoPunch instead, which doubled Attacks rather than Skills.
-        int burstPlays =
-            def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Burst) > 0
-                ? 1
-                : 0;
-        // `EchoFormPower.ModifyCardPlayCount` is settled at the same moment Burst's is --
-        // when the play is SET UP, before the card resolves -- so Echo Form does not double
-        // ITSELF. Read after the resolution it doubled the card that applied it, which is
-        // exactly the mistake the comment above was written about.
-        //
-        // The game's count is `CardPlaysStarted ... HappenedThisTurn` NOT counting the play
-        // being set up, which is what CardPlaysThisTurn holds here: it is bumped after the
-        // card resolves.
-        int echoFormPlays =
-            state.CardPlaysThisTurn < BuffSystem.Get(state.PlayerBuffs, BuffId.EchoForm) ? 1 : 0;
-
-        // `ThrowingAxe.ModifyCardPlayCount` doubles the first card played in the combat.
-        // Read HERE, with Burst and Echo Form, because all three are settled when the play
-        // is set up -- and consumed here too, since the game's
-        // `AfterModifyingCardPlayCount` fires at that same moment.
-        int throwingAxePlays = Effects.RelicEffects.ConsumeThrowingAxePlay(state) ? 1 : 0;
-
         int serpentFormBefore = BuffSystem.Get(state.PlayerBuffs, BuffId.SerpentForm);
 
         // `MonologuePower.BeforeCardPlayed` records the power's Strength for THIS card, in each
@@ -450,81 +432,20 @@ public static class CombatEngine
         ApplyEnchantmentOnPlay(state, card, rng);
         Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
         Effects.RelicEffects.ApplyAfterEachPlay(state, def, rng);
-        if (burstPlays > 0)
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Burst, -1);
-        }
-
-        int extraPlays = echoFormPlays;
-
-        // Spiral.EnchantPlayCount(original) => original + Times, and Times is 1.
-        extraPlays += card.EnchantedWith(Enchantment.Spiral);
-
-        // Glam.EnchantPlayCount is the same +Times(1), but it burns out: `AfterCardPlayed`
-        // sets UsedThisCombat and the enchantment goes Disabled. `EnchantSpent` is the
-        // field Vigorous already uses for exactly that once-only shape.
-        if (card.Enchantment == Enchantment.Glam && !card.EnchantSpent)
-        {
-            extraPlays += card.EnchantAmount;
-        }
-
-        // Hidden Gem's Replay rides on the copy it was granted to, the same way.
-        extraPlays += card.ReplayCount;
-        extraPlays += burstPlays;
-        extraPlays += throwingAxePlays;
-        int signalBoost = BuffSystem.Get(state.PlayerBuffs, BuffId.SignalBoost);
-        if (def.Type == CardType.Power && signalBoost > 0)
-        {
-            extraPlays++;
-            if (signalBoost == 1)
-            {
-                BuffSystem.Remove(state.PlayerBuffs, BuffId.SignalBoost);
-            }
-            else
-            {
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.SignalBoost, -1);
-            }
-        }
 
         // `cardSource.CurrentPlayIndex > 0` returns 1m: a repeat of the same play gets no
         // Lethality, so the flag is spent by the first resolution.
         state.LethalAttackPlay = false;
 
+        // The repeats the play count settled at set-up (`SettlePlayCount`).
         for (int i = 0; i < extraPlays; i++)
         {
             Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
             Effects.RelicEffects.ApplyAfterEachPlay(state, def, rng);
         }
 
-        // `DuplicationPower.ModifyCardPlayCount` adds one play to ANY card and then
-        // `AfterModifyingCardPlayCount` decrements -- so it is spent by the card that used
-        // it, not by the turn. Outside the Attack branch below on purpose: that branch is
-        // `OneTwoPunchPower`, which is a DIFFERENT power of the same shape that refuses
-        // anything but an Attack. Stacking one for the other is E490.
-        int duplication = BuffSystem.Get(state.PlayerBuffs, BuffId.Duplication);
-        if (duplication > 0)
-        {
-            Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
-            Effects.RelicEffects.ApplyAfterEachPlay(state, def, rng);
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Duplication, -1);
-        }
-
         if (def.Type == CardType.Attack)
         {
-            int oneTwoPunch = BuffSystem.Get(state.PlayerBuffs, BuffId.OneTwoPunch);
-            if (oneTwoPunch > 0)
-            {
-                Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
-                Effects.RelicEffects.ApplyAfterEachPlay(state, def, rng);
-                if (oneTwoPunch == 1)
-                {
-                    BuffSystem.Remove(state.PlayerBuffs, BuffId.OneTwoPunch);
-                }
-                else
-                {
-                    BuffSystem.Apply(state.PlayerBuffs, BuffId.OneTwoPunch, -1);
-                }
-            }
             QueueAttackPlayLifecycleEffects(state, card);
             BuffSystem.Remove(state.PlayerBuffs, BuffId.Vigor);
             // `GigantificationPower.AfterAttack` clears its latch and DECREMENTS once the
@@ -869,6 +790,96 @@ public static class CombatEngine
         // unanswered, a lone Gremlin Merc finished off by Strangle was a won fight.
         AnswerDeathsSince(state, afterEffects, rng, sweep: sweep);
         return restsOn;
+    }
+
+    /// <summary>
+    /// `CardModel.GeneratePlayCount`: the card's own replays (enchantments, Hidden Gem's
+    /// Replay), then `Hook.ModifyCardPlayCount` and `AfterModifyingCardPlayCount`, which
+    /// spends what each modifier gave. Run as the play is set up, before BeforeCardPlayed and
+    /// the first `OnPlay`, for every play, chosen or auto.
+    /// </summary>
+    /// <remarks>
+    /// Settled before the effect because the effect can play other cards (Havoc, a Sly
+    /// discard, Hellraiser inside a draw), and each of those settles its own count when IT is
+    /// set up: reading a modifier after this card's first effect handed this card's
+    /// Duplication or Burst to the card it played. For the same reason a Burst or an Echo
+    /// Form does not double the card that applies it: it is not there yet.
+    /// </remarks>
+    /// <returns>The plays beyond the first.</returns>
+    private static int SettlePlayCount(CombatState state, CardInstance card, CardDef def)
+    {
+        // Spiral.EnchantPlayCount(original) => original + Times, and Times is 1.
+        int extraPlays = card.EnchantedWith(Enchantment.Spiral);
+
+        // Glam.EnchantPlayCount is the same +Times(1), but it burns out: `AfterCardPlayed`
+        // sets UsedThisCombat and the enchantment goes Disabled. `EnchantSpent` is the
+        // field Vigorous already uses for exactly that once-only shape.
+        if (card.Enchantment == Enchantment.Glam && !card.EnchantSpent)
+        {
+            extraPlays += card.EnchantAmount;
+        }
+
+        // Hidden Gem's Replay rides on the copy it was granted to, the same way.
+        extraPlays += card.ReplayCount;
+
+        // `BurstPower`: one more play of a SKILL, and a stack spent. (The emulator once
+        // stacked OneTwoPunch for it, which doubled Attacks rather than Skills.)
+        if (def.Type == CardType.Skill && SpendStack(state, BuffId.Burst))
+        {
+            extraPlays++;
+        }
+
+        // `EchoFormPower`: one more play while the turn's `CardPlaysStarted` (first of a
+        // series, chosen or auto) before THIS one are fewer than its amount. This play is
+        // already in `CardPlaysStartedThisTurn`; the plays nested inside the card that is
+        // being set up are not yet, as in the game.
+        if (state.CardPlaysStartedThisTurn - 1 < BuffSystem.Get(state.PlayerBuffs, BuffId.EchoForm))
+        {
+            extraPlays++;
+        }
+
+        // `ThrowingAxe`: the first card played in the combat; `AfterModifyingCardPlayCount`
+        // marks it used.
+        if (Effects.RelicEffects.ConsumeThrowingAxePlay(state))
+        {
+            extraPlays++;
+        }
+
+        // `SignalBoostPower`: one more play of a POWER, and a stack spent.
+        if (def.Type == CardType.Power && SpendStack(state, BuffId.SignalBoost))
+        {
+            extraPlays++;
+        }
+
+        // `DuplicationPower`: one more play of ANY card, and a stack spent -- by the card
+        // that used it, not by the turn. `OneTwoPunchPower` is a DIFFERENT power of the same
+        // shape that refuses anything but an Attack; stacking one for the other is E490.
+        if (SpendStack(state, BuffId.Duplication))
+        {
+            extraPlays++;
+        }
+
+        if (def.Type == CardType.Attack && SpendStack(state, BuffId.OneTwoPunch))
+        {
+            extraPlays++;
+        }
+
+        return extraPlays;
+    }
+
+    /// <summary>
+    /// `PowerCmd.Decrement` on a held power (the last stack removes it): false, and nothing
+    /// spent, when it is not held.
+    /// </summary>
+    private static bool SpendStack(CombatState state, BuffId id)
+    {
+        if (BuffSystem.Get(state.PlayerBuffs, id) <= 0)
+        {
+            return false;
+        }
+
+        BuffSystem.Apply(state.PlayerBuffs, id, -1);
+        return true;
     }
 
     /// <summary>
