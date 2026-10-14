@@ -174,6 +174,11 @@ public static class CombatEngine
         (state.HeldPlayedCardExhausts ? state.ExhaustPile : state.DiscardPile).Add(held);
     }
 
+    /// <summary>
+    /// The chosen play, `PlayCardAction.ExecuteAction`: `CanPlay`, then the card's resources
+    /// are spent and the play itself is <see cref="ResolvePlay" />, the one body every play
+    /// goes through.
+    /// </summary>
     private static StepResult PlayCard(CombatState state, int handIndex, Random rng)
     {
         var card = state.Hand[handIndex];
@@ -188,22 +193,89 @@ public static class CombatEngine
             return StepResult.Invalid;
         }
 
-        state.CardsPlayedThisTurn++;
-        state.CardPlaysStartedThisTurn++;
         // `EnergySpentEntry` amounts, summed over the turn. Helix Drill reads it and
         // subtracts its own cost, which is zero -- so the count excludes the drill itself
         // either way, and this runs before the card resolves.
         state.EnergySpentThisTurn += energyToSpend;
-        Effects.RelicEffects.ApplyBeforeCardPlayedRares(state, energyToSpend, rng);
+        ResolvePlay(
+            state,
+            card,
+            def,
+            PlayRequest.Chosen(handIndex, energyToSpend, starsToSpend),
+            rng,
+            out var beforePlay
+        );
+
+        // `PlayerCmd.EndTurn(canBackOut: false)` called from inside Void Form's OnPlay. Run
+        // once the play has fully resolved rather than mid-effect, and cleared first so a
+        // card played by the enemy turn's own machinery cannot re-enter it.
+        if (state.EndTurnAfterPlay)
+        {
+            state.EndTurnAfterPlay = false;
+            return EndTurn(state, rng);
+        }
+
+        return Settle(state, beforePlay);
+    }
+
+    /// <summary>
+    /// What `CardModel.OnPlayWrapper` is handed: the play's target, whether it is an
+    /// auto-play, and its `ResourceInfo`.
+    /// </summary>
+    /// <param name="HandIndex">A chosen play's slot in hand; the card is taken out once its
+    /// resources are spent. -1 for a card already out of its pile.</param>
+    /// <param name="EnergyToSpend">The energy a chosen play spends (`SpendResources`); an
+    /// auto-play spends none.</param>
+    /// <param name="StarsToSpend">The stars a chosen play spends.</param>
+    /// <param name="CostValue">The card's resolved energy cost, which `BeforeCardPlayed` hooks
+    /// read (Danse Macabre, Intimidating Helmet) and which an auto-play reports as its
+    /// `EnergyValue`.</param>
+    /// <param name="ForceExhaust">`ExhaustOnNextPlay`, Havoc's forced exhaust.</param>
+    private readonly record struct PlayRequest(
+        bool IsAutoPlay,
+        int HandIndex,
+        int EnergyToSpend,
+        int StarsToSpend,
+        int CostValue,
+        bool ForceExhaust
+    )
+    {
+        public static PlayRequest Chosen(int handIndex, int energyToSpend, int starsToSpend) =>
+            new(false, handIndex, energyToSpend, starsToSpend, energyToSpend, false);
+    }
+
+    /// <summary>
+    /// `CardModel.OnPlayWrapper`, the one body every card play goes through -- the chosen
+    /// play (<see cref="PlayCard" />) and every auto-play (`CardCmd.AutoPlay`): the
+    /// play-count and result-pile modifiers, BeforeCardPlayed, the card's effect and its
+    /// repeats, AfterCardPlayed, and the card on its result pile.
+    /// </summary>
+    /// <returns>The pile the card came to rest on, or null when it left combat or is held.</returns>
+    private static List<CardInstance>? ResolvePlay(
+        CombatState state,
+        CardInstance card,
+        CardDef def,
+        in PlayRequest request,
+        Random rng,
+        out Baseline beforePlay
+    )
+    {
+        int energyToSpend = request.EnergyToSpend;
+        int starsToSpend = request.StarsToSpend;
+        int handIndex = request.HandIndex;
+
+        state.CardsPlayedThisTurn++;
+        state.CardPlaysStartedThisTurn++;
+        Effects.RelicEffects.ApplyBeforeCardPlayedRares(state, request.CostValue, rng);
         bool feralReturn =
             def.Type == CardType.Attack
-            && energyToSpend == 0
+            && request.CostValue == 0
             && BuffSystem.Get(state.PlayerBuffs, BuffId.Feral)
                 > BuffSystem.Get(state.PlayerBuffs, BuffId.FeralUsed);
 
         // Snapshot HP before effects: by position for the effects' own death check, by
         // reference for the reward.
-        var beforePlay = new Baseline(state);
+        beforePlay = new Baseline(state);
         Span<int> enemyHpsBefore = stackalloc int[state.Enemies.Count];
         for (int i = 0; i < state.Enemies.Count; i++)
         {
@@ -238,7 +310,11 @@ public static class CombatEngine
         int energySpent = def.HasEnergyCostX ? state.Energy : energyToSpend;
         // `SpendEnergy` dispatches AfterEnergySpent here, before the card resolves.
         Effects.CardEffects.ApplyAfterEnergySpent(state, energySpent);
-        state.Hand.RemoveAt(handIndex);
+        if (handIndex >= 0)
+        {
+            state.Hand.RemoveAt(handIndex);
+        }
+
         if (def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Smoggy) > 0)
         {
             state.SkillPlayedWhileSmoggy = true;
@@ -514,6 +590,7 @@ public static class CombatEngine
             card = card with { Upgraded = true };
         }
 
+        List<CardInstance>? restsOn = null;
         int exhaustCountBeforePlacement = state.ExhaustPile.Count;
         int discardCountBeforePlacement = state.DiscardPile.Count;
 
@@ -550,6 +627,7 @@ public static class CombatEngine
                 },
                 rng: rng
             );
+            restsOn = state.ExhaustPile;
         }
         else if (feralReturn)
         {
@@ -571,6 +649,7 @@ public static class CombatEngine
                 }
             );
             BuffSystem.Apply(state.PlayerBuffs, BuffId.FeralUsed, 1);
+            restsOn = state.Hand;
         }
         else if (ShouldPlaceOnDrawPileAfterPlay(state, def, reboundBefore))
         {
@@ -591,6 +670,7 @@ public static class CombatEngine
                     FreeUntilPlayed = false,
                 }
             );
+            restsOn = state.DrawPile;
         }
         else if (
             ReturnsToHandAfterPlay(def)
@@ -617,6 +697,7 @@ public static class CombatEngine
                     FreeUntilPlayed = false,
                 }
             );
+            restsOn = state.Hand;
         }
         else
         {
@@ -638,6 +719,7 @@ public static class CombatEngine
                     SlyForCombat = card.SlyForCombat || MasterPlannerMarks(state, def),
                 }
             );
+            restsOn = state.DiscardPile;
         }
 
         // `CardModel.OnPlay` is awaited BEFORE the card is moved to its result pile, so a
@@ -656,6 +738,7 @@ public static class CombatEngine
                 state.HeldPlayedCard = state.ExhaustPile[^1];
                 state.HeldPlayedCardExhausts = true;
                 state.ExhaustPile.RemoveAt(state.ExhaustPile.Count - 1);
+                restsOn = null;
             }
             else if (
                 state.DiscardPile.Count == discardCountBeforePlacement + 1
@@ -665,6 +748,7 @@ public static class CombatEngine
                 state.HeldPlayedCard = state.DiscardPile[^1];
                 state.HeldPlayedCardExhausts = false;
                 state.DiscardPile.RemoveAt(state.DiscardPile.Count - 1);
+                restsOn = null;
             }
         }
 
@@ -788,17 +872,7 @@ public static class CombatEngine
         // and before the play's win check -- or the end of the turn Void Form forces. Left
         // unanswered, a lone Gremlin Merc finished off by Strangle was a won fight.
         AnswerDeathsSince(state, afterEffects, rng);
-
-        // `PlayerCmd.EndTurn(canBackOut: false)` called from inside Void Form's OnPlay. Run
-        // once the play has fully resolved rather than mid-effect, and cleared first so a
-        // card played by the enemy turn's own machinery cannot re-enter it.
-        if (state.EndTurnAfterPlay)
-        {
-            state.EndTurnAfterPlay = false;
-            return EndTurn(state, rng);
-        }
-
-        return Settle(state, beforePlay);
+        return restsOn;
     }
 
     private static StepResult EndTurn(CombatState state, Random rng)
