@@ -159,10 +159,6 @@ public class CombatSnapshotTests
         nameof(CombatState.ExecutedThisEnemyTurn),
         // Always true while the player is to act; the loader sets it.
         nameof(CombatState.PlayerTurn),
-        // A step stopped on a hook's screen, held to replay it: the copy it starts from is a
-        // whole combat. A document carries the screen; answering it there resolves the
-        // screen alone, as a card's would be.
-        nameof(CombatState.HookChoice),
     ];
 
     /// <summary>The streams, which a load seeds from its own seed rather than reading.</summary>
@@ -349,6 +345,13 @@ public class CombatSnapshotTests
         };
         foreach (var property in typeof(PendingCardSelection).GetProperties())
         {
+            // The step a screen stopped is a whole combat to replay it from (HookChoiceReplay).
+            // A document carries the screen; its answer there resolves the screen alone.
+            if (property.Name == nameof(PendingCardSelection.Replay))
+            {
+                continue;
+            }
+
             Assert.False(
                 SameContent(property.GetValue(selection), property.GetValue(bare)),
                 $"PendingCardSelection.{property.Name} is not carried by the snapshot"

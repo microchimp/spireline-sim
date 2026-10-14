@@ -2960,7 +2960,7 @@ public static class CardEffects
 
     /// <summary>
     /// `CardSelectCmd.FromCombatPile(Draw, prefs(prompt, amount))` with the picks going to hand,
-    /// for a hook to answer where it asks (CombatEngine.AnswerHookScreen):
+    /// for a hook to answer where it asks (CombatEngine.AwaitSelection):
     /// `StratagemPower.AfterShuffle` and `ForegoneConclusionPower.BeforeHandDraw`.
     /// </summary>
     internal static PendingCardSelection DrawPileScreen(
@@ -3447,7 +3447,7 @@ public static class CardEffects
 
     /// <summary>
     /// The screen `CardSelectCmd.FromHand(prefs(prompt, amount))` raises over the whole hand, for a
-    /// hook to answer where it asks (CombatEngine.AnswerHookScreen): Tyranny, Tools of the Trade.
+    /// hook to answer where it asks (CombatEngine.AwaitSelection): Tyranny, Tools of the Trade.
     /// </summary>
     internal static PendingCardSelection HandScreen(
         CombatState state,
@@ -3817,14 +3817,14 @@ public static class CardEffects
     /// `StratagemPower.AfterShuffle`: that many cards CHOSEN from the new pile go to hand.
     /// The emulator took the top card. The game awaits the pick here, inside whatever
     /// shuffled -- a draw goes on drawing after it, and Pillage keeps drawing until a
-    /// non-Attack (CombatEngine.AnswerHookScreen).
+    /// non-Attack (CombatEngine.AwaitSelection).
     /// </remarks>
     private static void AfterShuffle(CombatState state, Random rng)
     {
         int stratagem = BuffSystem.Get(state.PlayerBuffs, BuffId.StratagemPower);
         if (stratagem > 0)
         {
-            CombatEngine.AnswerHookScreen(state, DrawPileScreen(state, CL.Stratagem, stratagem), rng);
+            CombatEngine.AwaitSelection(state, DrawPileScreen(state, CL.Stratagem, stratagem), rng);
         }
 
         RelicEffects.ApplyAfterShuffle(state, rng);

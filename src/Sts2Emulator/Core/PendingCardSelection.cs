@@ -291,6 +291,15 @@ public sealed class PendingCardSelection
     /// opposite -- so this picks between the two rather than adding to one.
     /// </summary>
     public bool GeneratedRetained { get; init; }
+
+    /// <summary>
+    /// The step this screen stopped, when it was raised in the middle of one: its answer runs that
+    /// step again (<see cref="HookChoiceReplay" />). Null for a screen left standing outside a
+    /// step (the combat-start screens) and for one read from a snapshot, whose answer resolves the
+    /// screen alone. On the screen rather than the combat, so whatever closes or replaces the
+    /// screen drops the stopped step with it.
+    /// </summary>
+    public HookChoiceReplay? Replay { get; init; }
 }
 
 public static class CardSelectionKindExtensions

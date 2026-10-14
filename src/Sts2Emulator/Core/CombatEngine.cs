@@ -17,12 +17,11 @@ public static class CombatEngine
         int targetEnemyIndex = -1
     )
     {
-        HookChoiceReplay? replay;
-        if (state.HookChoice is { } stopped)
+        StepInProgress? run;
+        if (state.PendingSelection is { Replay: { } stopped } open)
         {
-            // The open screen was raised by a hook in the middle of a step: the answer runs
-            // that step again from where it started, with every answer so far.
-            var open = state.PendingSelection!;
+            // The open screen was raised in the middle of a step: its answer runs that step
+            // again from where it started, with every answer so far.
             bool decline = open.Skippable && action == open.Candidates.Count;
             if (
                 rng is not CountingRandom live
@@ -35,8 +34,9 @@ public static class CombatEngine
 
             stopped.Before.CopyTo(state);
             live.RestoreFrom(stopped.RngBefore);
-            replay = new HookChoiceReplay
+            run = new StepInProgress
             {
+                State = state,
                 Before = stopped.Before,
                 RngBefore = stopped.RngBefore,
                 Action = stopped.Action,
@@ -44,15 +44,19 @@ public static class CombatEngine
                 Answers = [.. stopped.Answers, action],
             };
             (action, targetEnemyIndex) = (stopped.Action, stopped.TargetEnemyIndex);
+            // A trace drops what the stopped run marked: the replay marks the step again.
+            CombatTrace.At("replay", -1, state);
         }
         else
         {
             // A step can be replayed when every stream it rolls on can be put back. The real
-            // entry points (RunEngine, the native combat) pass CountingRandoms throughout.
-            replay =
+            // entry points (RunEngine, the native combat, EmuDump) pass CountingRandoms
+            // throughout; a step that cannot be replayed leaves its screens standing instead.
+            run =
                 rng is CountingRandom counting && state.AiRng is null or CountingRandom
-                    ? new HookChoiceReplay
+                    ? new StepInProgress
                     {
+                        State = state,
                         Before = state.Clone(),
                         RngBefore = counting.Copy(),
                         Action = action,
@@ -62,32 +66,51 @@ public static class CombatEngine
                     : null;
         }
 
-        state.HookChoice = replay;
+        var outer = _running;
+        _running = run;
         try
         {
-            var result = StepCore(state, action, rng, targetEnemyIndex);
-            state.HookChoice = null;
-            return result;
+            return StepCore(state, action, rng, targetEnemyIndex);
         }
         catch (HookChoicePending)
         {
-            // Stopped on a hook's screen, which is open in state.PendingSelection; its answer
-            // replays the step, and the reward is paid by the run that finishes it.
+            // Stopped on a screen with no answer yet, open in state.PendingSelection; the step
+            // is kept on it, so its answer replays the step, and the reward is paid by the run
+            // that finishes it.
+            state.PendingSelection = state.PendingSelection!.Clone(replay: run!.Stop());
             return new StepResult(Terminal: false, PlayerWon: false, Reward: 0f);
+        }
+        finally
+        {
+            _running = outer;
         }
     }
 
+    /// <summary>The step running on this thread, if it can be replayed (see <see cref="Step" />).</summary>
+    [ThreadStatic]
+    private static StepInProgress? _running;
+
     /// <summary>
-    /// A screen raised by a HOOK in the middle of the game's sequence -- Stratagem's from inside
-    /// a draw, Tyranny's in the turn start -- answered where the game awaits it, so that the
-    /// hook's caller goes on with the answer in place: the draw that shuffled keeps drawing, the
-    /// turn start goes on to the intent roll. Answers are resolved exactly as a card's screen
-    /// is (<see cref="ResolveCardSelection" />), reopening included, and a screen the game would
-    /// not show is answered without asking (<see cref="IsLoneSelection" />). The answer comes
-    /// from the step's <see cref="HookChoiceReplay" />; with none left, the step stops here with
-    /// the screen open. A card's screen already standing is kept and stands again afterwards.
+    /// `CardSelectCmd`'s await: a screen raised in the middle of the game's sequence --
+    /// Stratagem's from inside a draw, Tyranny's in the turn start -- answered where the game
+    /// awaits it, so that the code that raised it goes on with the answer in place. Answers are
+    /// resolved exactly as a standing screen is (<see cref="ResolveCardSelection" />), reopening
+    /// included.
     /// </summary>
-    internal static void AnswerHookScreen(
+    /// <remarks>
+    /// <para>
+    /// No screen when there is nothing to choose. A screen the game would not show is answered
+    /// without asking (<see cref="IsLoneSelection" />). Otherwise the answer comes from the
+    /// running step (<see cref="StepInProgress" />); with none left the step stops here with the
+    /// screen open.
+    /// </para>
+    /// <para>
+    /// Outside a step that can be replayed (the combat start, a caller stepping with a plain
+    /// Random) there is nothing to stop: the screen is left standing for the next step to answer,
+    /// as every screen used to be. A screen already standing is kept and stands again afterwards.
+    /// </para>
+    /// </remarks>
+    internal static void AwaitSelection(
         CombatState state,
         PendingCardSelection screen,
         Random rng
@@ -102,27 +125,34 @@ public static class CombatEngine
         state.PendingSelection = screen;
         while (state.PendingSelection is { } open)
         {
-            ResolveCardSelection(state, IsLoneSelection(open) ? 0 : NextHookAnswer(state), rng);
+            int answer;
+            if (IsLoneSelection(open))
+            {
+                answer = 0;
+            }
+            else if (_running is { } run && ReferenceEquals(run.State, state))
+            {
+                answer =
+                    run.Used < run.Answers.Count
+                        ? run.Answers[run.Used++]
+                        : throw HookChoicePending.Instance;
+            }
+            else if (outer is null)
+            {
+                return;
+            }
+            else
+            {
+                // Two screens and no step to stop: the emulator keeps one standing screen.
+                answer = 0;
+            }
+
+            ResolveCardSelection(state, answer, rng);
         }
 
         state.PendingSelection = outer;
     }
 
-    private static int NextHookAnswer(CombatState state)
-    {
-        var replay =
-            state.HookChoice
-            ?? throw new InvalidOperationException(
-                "A hook raised a selection screen in a step that cannot be replayed; "
-                    + "step the combat with CountingRandom streams."
-            );
-        if (replay.Used < replay.Answers.Count)
-        {
-            return replay.Answers[replay.Used++];
-        }
-
-        throw HookChoicePending.Instance;
-    }
 
     private static StepResult StepCore(
         CombatState state,
@@ -2170,7 +2200,7 @@ public static class CombatEngine
         if (foregone > 0)
         {
             Effects.CardEffects.ShuffleIfNecessary(state, rng);
-            AnswerHookScreen(
+            AwaitSelection(
                 state,
                 Effects.CardEffects.DrawPileScreen(state, 204, foregone), // ForegoneConclusion
                 rng
@@ -2277,7 +2307,7 @@ public static class CombatEngine
         int entropy = BuffSystem.Get(state.PlayerBuffs, BuffId.EntropyPower);
         if (entropy > 0)
         {
-            AnswerHookScreen(
+            AwaitSelection(
                 state,
                 Effects.CardEffects.HandScreen(
                     state,
@@ -2297,7 +2327,7 @@ public static class CombatEngine
         int tyranny = BuffSystem.Get(state.PlayerBuffs, BuffId.Tyranny);
         if (tyranny > 0)
         {
-            AnswerHookScreen(
+            AwaitSelection(
                 state,
                 Effects.CardEffects.HandScreen(
                     state,
@@ -2323,7 +2353,7 @@ public static class CombatEngine
         int toolsOfTheTrade = BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade);
         if (toolsOfTheTrade > 0)
         {
-            AnswerHookScreen(
+            AwaitSelection(
                 state,
                 Effects.CardEffects.HandScreen(
                     state,

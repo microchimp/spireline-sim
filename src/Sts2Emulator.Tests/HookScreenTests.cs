@@ -29,14 +29,13 @@ public class HookScreenReplayTests
         fight.EndTurn();
 
         Assert.Equal(CardSelectionKind.ExhaustFromHandRepeated, fight.Pending!.Kind);
-        Assert.NotNull(fight.State.HookChoice);
+        Assert.NotNull(fight.Pending.Replay);
         Assert.Equal(hp - 7, fight.State.PlayerHp);
         var picked = fight.State.Hand[2];
 
         fight.Choose(2);
 
         Assert.Null(fight.Pending);
-        Assert.Null(fight.State.HookChoice);
         Assert.Equal([picked], fight.State.ExhaustPile);
         // The answer replayed the end of the turn from its start: the enemy hit once, not twice.
         Assert.Equal(hp - 7, fight.State.PlayerHp);
@@ -68,17 +67,22 @@ public class HookScreenReplayTests
         Assert.Equal(StepResult.Invalid, fight.Choose(fight.Pending!.Candidates.Count));
 
         Assert.Equal(before, CombatSnapshot.Write(fight.State));
-        Assert.NotNull(fight.State.HookChoice);
+        Assert.NotNull(fight.Pending!.Replay);
     }
 
     [Fact]
-    public void AStepOnStreamsThatCannotBePutBackRefusesToStopHalfway()
+    public void AStepOnStreamsThatCannotBePutBackLeavesTheScreenStanding()
     {
         var fight = TyrannyFight();
 
-        Assert.Throws<InvalidOperationException>(
-            () => CombatEngine.Step(fight.State, fight.State.Hand.Count, new Random(0))
-        );
+        CombatEngine.Step(fight.State, fight.State.Hand.Count, new Random(0));
+
+        // Nothing to replay it from: the screen stands over the finished step, as screens used to.
+        Assert.Equal(CardSelectionKind.ExhaustFromHandRepeated, fight.Pending!.Kind);
+        Assert.Null(fight.Pending.Replay);
+        CombatEngine.Step(fight.State, 0, new Random(0));
+        Assert.Null(fight.Pending);
+        Assert.Single(fight.State.ExhaustPile);
     }
 }
 
@@ -182,7 +186,6 @@ public class StratagemShuffleScreenTests
         // Anger, the pick, one more card: then Thinking Ahead puts one back.
         Assert.Equal(3, fight.State.Hand.Count);
         Assert.Equal(CardSelectionKind.HandToDrawPileTop, fight.Pending!.Kind);
-        Assert.Null(fight.State.HookChoice);
         var back = fight.State.Hand[0];
         fight.Choose(0);
 

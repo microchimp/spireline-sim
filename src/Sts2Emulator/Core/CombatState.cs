@@ -273,13 +273,6 @@ public sealed class CombatState
     // action until it is answered — see PendingCardSelection.
     public PendingCardSelection? PendingSelection;
 
-    /// <summary>
-    /// Non-null while <see cref="PendingSelection" /> is a screen a hook raised in the middle of
-    /// a step: answering it replays that step (<see cref="HookChoiceReplay" />). Null otherwise,
-    /// and a card's own screen is answered the ordinary way.
-    /// </summary>
-    public HookChoiceReplay? HookChoice;
-
     // True while the engine is playing a card the player did not choose to play
     // (Havoc, Hellraiser, Stampede, Mayhem). The game still prompts for choices there,
     // but the emulator has no way to hand an auto-play back to the caller mid-queue, so
