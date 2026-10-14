@@ -488,3 +488,13 @@ python -m tools.fidelity.mutate report --dir <run> --results <run>/schemata/resu
   but independent; `--ids` cross-checks schemata verdicts).
 - Mutants are drawn from blocks the fights ran, weighted by sqrt(fights); a block no fight runs is a blind spot
   by construction (`prepare` prints how many mutants sit in such blocks per file).
+
+## Nightly (main against the previous main)
+
+`python -m tools.fidelity.nightly run` builds main's EmuDump in `D:\spireline\referee\nightly\wt-night`, replays the
+corpus and runs `corpus.check` against last night's run (a first night: the nearest ancestor's corpus baseline),
+bisects up to `--bisect` fights that got worse (`git bisect run`, one fight per commit, after checking that the fight is
+worse at tonight's commit and not at the previous one under the bisect's own judge; otherwise it says so and blames
+no commit) and writes `<date>-<commit>.md`: five numbers, the bisects, the gate's lines. Exit 1 when the gate fails, 2
+when the night could not run or had nothing to compare with. Scheduling it (Task Scheduler, 03:00) is a standing
+task: the owner's go first. Broken cases: `tests/python/test_nightly.py`.
