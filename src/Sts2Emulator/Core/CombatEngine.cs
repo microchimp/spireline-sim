@@ -2323,6 +2323,7 @@ public static class CombatEngine
             state.CardsExhaustedThisTurn = 0;
             state.StatusCardsDrawnThisTurn = 0;
             state.EnergySpentThisTurn = 0;
+            // `BeatingRemnant.BeforeSideTurnStart`: its DamageReceivedThisTurn starts again.
             state.UnblockedDamageThisTurn = 0;
             state.RainbowRingAttacks = 0;
             state.RainbowRingSkills = 0;
@@ -2595,8 +2596,9 @@ public static class CombatEngine
                     // That is the HP loss of a self-damage card, so it runs the same after-damage
                     // hooks: Inferno's burst, Rupture, Self-Forming Clay, Centennial Puzzle, Demon
                     // Tongue, Emotion Chip's history, Red Skull.
+                    // Intangible caps it there too, as for every HP loss (`LosePlayerHp`).
                     int poison = BuffSystem.Get(state.PlayerBuffs, BuffId.Poison);
-                    Effects.CardEffects.LoseHp(state, BuffSystem.CapHpLoss(poison, state.PlayerBuffs));
+                    Effects.CardEffects.LoseHp(state, poison);
                     if (PlayerIsDead(state))
                     {
                         return true;

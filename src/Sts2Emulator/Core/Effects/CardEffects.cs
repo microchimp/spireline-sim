@@ -3970,33 +3970,67 @@ public static class CardEffects
         amount = BuffSystem.CapIncomingDamage(amount, state.PlayerBuffs);
         int absorbed = Math.Min(state.PlayerBlock, amount);
         state.PlayerBlock -= absorbed;
-        int hpLoss = RelicEffects.ModifyHpLost(state, amount - absorbed);
+        int hpLoss = LosePlayerHp(state, amount - absorbed);
         if (hpLoss > 0)
         {
-            int buffer = BuffSystem.Get(state.PlayerBuffs, BuffId.Buffer);
-            if (buffer > 0)
-            {
-                if (buffer == 1)
-                {
-                    BuffSystem.Remove(state.PlayerBuffs, BuffId.Buffer);
-                }
-                else
-                {
-                    BuffSystem.Apply(state.PlayerBuffs, BuffId.Buffer, -1);
-                }
-
-                return;
-            }
-
-            state.PlayerHp -= hpLoss;
             state.PlayerHpLostThisTurn += hpLoss;
             state.TookUnblockedDamage = true;
-            // Beating Remnant measures its 20-per-turn cap against what actually landed.
-            state.UnblockedDamageThisTurn += hpLoss;
             // A Burn at the turn's end, an enemy's Thorns, Constrict: none of these is the
             // card being played, so Rupture pays at once.
             AfterPlayerDamageReceived(state, hpLoss, fromPlayedCard: false);
         }
+    }
+
+    /// <summary>
+    /// The player's half of `CreatureCmd.Damage` once block (and Osty) have taken their
+    /// share: `Hook.ModifyHpLost` in its AfterOsty phase, `Hook.AfterModifyingHpLostAfterOsty`,
+    /// then `Creature.LoseHpInternal`. Every route by which the player loses HP in a fight --
+    /// an enemy's attack, a card's self-damage, a Burn, Poison, Thorns -- comes through the
+    /// one command, so every one of them comes through here. Returns the HP taken off
+    /// (`DamageResult.UnblockedDamage`: no more than the player had).
+    /// </summary>
+    /// <remarks>
+    /// The modifiers were applied per path: the enemy attack had the relics and no Buffer,
+    /// the self-damage path Buffer and no relics, the generic one both.
+    /// </remarks>
+    internal static int LosePlayerHp(CombatState state, int hpLoss)
+    {
+        // `ModifyHpLostAfterOsty`, in `CombatState.IterateHookListeners` order: the
+        // creature's powers (Intangible) before its player's relics (Tungsten Rod, Beating
+        // Remnant, in the order held).
+        hpLoss = BuffSystem.CapHpLoss(hpLoss, state.PlayerBuffs);
+        hpLoss = RelicEffects.ModifyHpLost(state, hpLoss);
+        if (hpLoss <= 0)
+        {
+            return 0;
+        }
+
+        // `BufferPower.ModifyHpLostAfterOstyLate` returns 0 for its owner, whatever the
+        // props; `Hook.ModifyHpLost` lists it as a modifier only when it moved the amount,
+        // so its `AfterModifyingHpLostAfterOsty` decrement is spent only on HP that would
+        // have come off -- not on a hit block or the rod already took to nothing.
+        int buffer = BuffSystem.Get(state.PlayerBuffs, BuffId.Buffer);
+        if (buffer > 0)
+        {
+            if (buffer == 1)
+            {
+                BuffSystem.Remove(state.PlayerBuffs, BuffId.Buffer);
+            }
+            else
+            {
+                BuffSystem.Apply(state.PlayerBuffs, BuffId.Buffer, -1);
+            }
+
+            return 0;
+        }
+
+        int hpBefore = state.PlayerHp;
+        state.PlayerHp = Math.Max(0, state.PlayerHp - hpLoss);
+        int lost = hpBefore - state.PlayerHp;
+        // `BeatingRemnant.AfterDamageReceived`: `DamageReceivedThisTurn += UnblockedDamage`
+        // on any damage to its owner, its cap measured against what actually landed.
+        state.UnblockedDamageThisTurn += lost;
+        return lost;
     }
 
     /// <summary>
@@ -5777,7 +5811,10 @@ public static class CardEffects
             LoseHp(state, state.PlayerHp - newMax);
         }
 
+        // `SetMaxHpInternal` clamps current HP to the new cap: what Tungsten Rod or Buffer
+        // kept off the damage above does not stay over the maximum.
         state.PlayerMaxHp = newMax;
+        state.PlayerHp = Math.Min(state.PlayerHp, newMax);
     }
 
     // Deals unblockable, unpowered HP loss to the player and triggers Rupture.
@@ -5789,25 +5826,9 @@ public static class CardEffects
     /// </param>
     public static void LoseHp(CombatState state, int amount, bool fromPlayedCard = false)
     {
-        int hpBefore = state.PlayerHp;
-        int buffer = BuffSystem.Get(state.PlayerBuffs, BuffId.Buffer);
-        if (amount > 0 && buffer > 0)
-        {
-            if (buffer == 1)
-            {
-                BuffSystem.Remove(state.PlayerBuffs, BuffId.Buffer);
-            }
-            else
-            {
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.Buffer, -1);
-            }
-
-            return;
-        }
-
-        state.PlayerHp = Math.Max(0, state.PlayerHp - amount);
-        state.PlayerHpLostThisTurn += Math.Max(0, hpBefore - state.PlayerHp);
-        AfterPlayerDamageReceived(state, hpBefore - state.PlayerHp, fromPlayedCard);
+        int lost = LosePlayerHp(state, amount);
+        state.PlayerHpLostThisTurn += lost;
+        AfterPlayerDamageReceived(state, lost, fromPlayedCard);
     }
 
     public static void ChannelOrb(CombatState state, OrbType type, Random? rng = null)

@@ -492,7 +492,7 @@ public static class RunNonCombatEffects
             case RunConstants.RelicFragrantMushroom:
                 // `HpLossVar(15)` Unblockable | Unpowered, then `CardsVar(2)` upgradable
                 // deck cards upgraded off `Rng.Niche` -- no type filter, unlike War Paint.
-                state.PlayerHp = Math.Max(0, state.PlayerHp - 15);
+                LoseHp(state, 15);
                 UpgradeRandomDeckCards(state, null, 2);
                 break;
             case RunConstants.RelicLeesWaffle:
@@ -1743,7 +1743,7 @@ public static class RunNonCombatEffects
             );
         }
 
-        state.PlayerHp = Math.Max(0, state.PlayerHp - state.PendingSelectionFollowUpHpLoss);
+        LoseHp(state, state.PendingSelectionFollowUpHpLoss);
 
         // `CreatureCmd.GainMaxHp` HEALS by the same amount it raises the maximum, which is
         // why the cook is worth taking at full HP as well as hurt.
@@ -2529,7 +2529,7 @@ public static class RunNonCombatEffects
     public static void Immerse(RunState state)
     {
         GainMaxHp(state, 2);
-        state.PlayerHp = Math.Max(0, state.PlayerHp - AbyssalBathsDamage(state));
+        LoseHp(state, AbyssalBathsDamage(state));
         state.EventPage++;
     }
 
@@ -3436,6 +3436,27 @@ public static class RunNonCombatEffects
         int newMaxHp = Math.Max(1, state.PlayerMaxHp - amount);
         state.PlayerHp = Math.Min(state.PlayerHp, newMaxHp);
         state.PlayerMaxHp = newMaxHp;
+    }
+
+    /// <summary>
+    /// <c>CreatureCmd.Damage</c> on the player outside a fight: every event's and relic's HP
+    /// cost goes through it. <c>Hook.ModifyHpLost</c> walks the run's listeners there too,
+    /// and of the HP-loss modifiers only <c>TungstenRod.ModifyHpLostAfterOsty</c> asks
+    /// nothing about combat (<c>BeatingRemnant</c> and <c>IntangiblePower</c> check
+    /// <c>CombatManager.IsInProgress</c>; Buffer is a combat power), so the rod takes 1 off
+    /// each loss. No block or power applies out of combat.
+    /// </summary>
+    public static void LoseHp(RunState state, int amount)
+    {
+        foreach (var relic in state.Relics)
+        {
+            if (relic.DefId == Effects.RelicEffects.TungstenRod)
+            {
+                amount = Math.Max(0, amount - 1);
+            }
+        }
+
+        state.PlayerHp = Math.Max(0, state.PlayerHp - amount);
     }
 
     /// <summary>

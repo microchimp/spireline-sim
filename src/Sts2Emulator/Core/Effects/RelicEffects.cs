@@ -2638,24 +2638,27 @@ public static class RelicEffects
     }
 
     /// <summary>
-    /// `ModifyHpLostAfterOsty` from the two relics that reduce or cap HP loss. Both are
-    /// `Late`-ish modifiers on the amount that would actually come off, so they run after
-    /// block has been taken off and before the HP is.
+    /// `ModifyHpLostAfterOsty` from the two relics that reduce or cap HP loss, run after
+    /// block has been taken off and before the HP is (`CardEffects.LosePlayerHp`). In the
+    /// order the player holds them, as `IterateHookListeners` walks them: the rod before the
+    /// remnant's cap takes one less than the cap, the rod after it one off what the cap left.
     /// </summary>
     internal static int ModifyHpLost(CombatState state, int hpLoss)
     {
-        // TungstenRod: `Math.Max(0m, amount - 1m)`.
-        if (HasRelic(state, TungstenRod))
+        foreach (var relic in state.Relics)
         {
-            hpLoss = Math.Max(0, hpLoss - 1);
-        }
-
-        // BeatingRemnant: `Math.Min(amount, 20 - DamageReceivedThisTurn)` -- a cap on the
-        // TURN's total unblocked damage, not on one hit, and the running total resets at
-        // the owner's side-turn start.
-        if (HasRelic(state, BeatingRemnant))
-        {
-            hpLoss = Math.Max(0, Math.Min(hpLoss, 20 - state.UnblockedDamageThisTurn));
+            if (relic.DefId == TungstenRod)
+            {
+                // TungstenRod: `Math.Max(0m, amount - 1m)`.
+                hpLoss = Math.Max(0, hpLoss - 1);
+            }
+            else if (relic.DefId == BeatingRemnant)
+            {
+                // BeatingRemnant: `Math.Min(amount, 20 - DamageReceivedThisTurn)` -- a cap on
+                // the TURN's total unblocked damage, not on one hit, and the running total
+                // resets at the owner's side-turn start.
+                hpLoss = Math.Max(0, Math.Min(hpLoss, 20 - state.UnblockedDamageThisTurn));
+            }
         }
 
         return hpLoss;

@@ -32,7 +32,6 @@ missing Crusher.AfterCurrentHpChanged  # monster; CombatFactory.CreateKaiserCrab
 missing MeatOnTheBone.AfterCurrentHpChanged  # relic; RunRewardGenerator.GenerateCombatRewards
 missing Rocket.AfterCurrentHpChanged  # monster; CombatFactory.CreateKaiserCrab, EnemyAI.ApplyBuffIntent, EnemyAI.SelectIntent
 missing ImbalancedPower.AfterDamageGiven  # power; CombatFactory.ApplyIntrinsicEnemyPowers
-missing BeatingRemnant.AfterDamageReceived  # relic; RelicEffects.ModifyHpLost
 missing EmotionChip.AfterDamageReceived  # relic; RelicEffects.ApplyAfterPlayerTurnStart
 missing LavaLamp.AfterDamageReceived  # relic; RelicEffects.UpgradesCardRewards
 missing Aeonglass.AfterDeath  # monster; CombatFactory.CreateAeonglass, EnemyAI.ApplyDebuffIntent, EnemyAI.ExecuteIntent
@@ -101,7 +100,6 @@ missing ThrummingHatchet.BeforeHandDraw  # card; CardEffects.ApplyCore
 missing SurroundedPower.BeforePotionUsed  # power; BuffSystem.IncomingDamage, CombatEngine.FacePast, CombatEngine.TurnPlayerToFaceSurvivor
 missing VoidFormPower.BeforePowerAmountChanged  # power; CardEffects.ApplyGeneratedCardApproximation, CombatEngine.IsFreeUnderVoidForm, CombatEngine.ResolvePlay
 missing ChainsOfBindingPower.BeforeSideTurnEnd  # power; CardEffects.BindOnDraw, EnemyAI.ApplyDebuffIntent
-missing BeatingRemnant.BeforeSideTurnStart  # relic; RelicEffects.ModifyHpLost
 missing FakeOrichalcum.BeforeSideTurnStart  # relic; RelicEffects.ApplyEndOfPlayerTurn, RunNonCombatEffects.RollFakeMerchantStock
 missing Orichalcum.BeforeSideTurnStart  # relic; RelicEffects.ApplyEndOfPlayerTurn
 missing PaelsFlesh.BeforeSideTurnStart  # relic; RelicEffects.ModifyMaxEnergy

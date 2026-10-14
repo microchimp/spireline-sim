@@ -4445,16 +4445,10 @@ public static class EnemyAI
             unblocked -= toOsty;
         }
 
-        // `ModifyHpLostAfterOsty` on what reaches the player: `CreatureCmd.Damage` runs the
-        // phase on every damage instance, so Tungsten Rod's 1 less and Beating Remnant's
-        // 20-a-turn cap apply to a monster's hit exactly as to any other HP loss, and
-        // Beating Remnant's `AfterDamageReceived` counts what landed. This path skipped
-        // both, so a live A10 fight with the rod lost 1 HP more per hit than the game.
-        if (unblocked > 0)
-        {
-            unblocked = Effects.RelicEffects.ModifyHpLost(state, unblocked);
-            state.UnblockedDamageThisTurn += unblocked;
-        }
+        // What reaches the player goes through the one HP-loss step every damage instance
+        // takes (`CreatureCmd.Damage`): Intangible, Tungsten Rod, Beating Remnant, then
+        // Buffer, which this path skipped -- a Lucky Tonic did not stop a monster's hit.
+        unblocked = Effects.CardEffects.LosePlayerHp(state, unblocked);
 
         if (unblocked > 0)
         {
@@ -4465,8 +4459,6 @@ public static class EnemyAI
             // upgraded every card reward (run referee, seed RXVFG7FZ86, Vantom).
             state.TookUnblockedDamage = true;
         }
-
-        state.PlayerHp = Math.Max(0, state.PlayerHp - unblocked);
 
         // TheGambitPower.AfterDamageReceived: any unblocked powered attack removes the
         // power and kills the owner outright. Modelling it as a lesser debuff would tell
@@ -4526,7 +4518,9 @@ public static class EnemyAI
         }
 
         ApplyPlayerThorns(enemy, state);
-        ApplyPlayerReflect(enemy, state, damage - unblocked);
+        // `result.BlockedDamage` is what block took, not the damage less the HP lost: Osty,
+        // the rod and Buffer shrink the HP side without blocking anything.
+        ApplyPlayerReflect(enemy, state, absorbed);
         ApplyPlayerFlameBarrier(enemy, state);
         return unblocked > 0;
     }

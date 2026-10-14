@@ -2881,7 +2881,7 @@ public sealed class RunEngine
                 // shifted by NextFloat(-15, 15) off the event's own stream.
                 if (action == 0)
                 {
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 18);
+                    RunNonCombatEffects.LoseHp(State, 18);
                     RunNonCombatEffects.GainGold(
                         State,
                         RunNonCombatEffects.JungleMazeSoloGold(State)
@@ -3026,7 +3026,7 @@ public sealed class RunEngine
                     // Rip offers a COLORLESS card reward -- three cards rolled from the
                     // colourless pool at the usual odds. Three card ids stood here,
                     // hard-written, which is the same reward whatever the seed.
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 5);
+                    RunNonCombatEffects.LoseHp(State, 5);
                     State.RewardGold = 0;
                     State.RewardPotion = 0;
                     State.RelicReward = 0;
@@ -3099,7 +3099,7 @@ public sealed class RunEngine
                     // `SlowlyFindAnExit`: the damage (lethal is allowed; Step ends the run at 0),
                     // then ONE `PlayerRng.Rewards.NextItem` over the character's potion pool
                     // followed by the shared one -- a uniform pick, not a reward's rarity roll.
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 8);
+                    RunNonCombatEffects.LoseHp(State, 8);
                     OfferPotionRewards(RunRewardGenerator.NextPoolPotion(State, State.PlayerRng.Rewards));
                     return 0;
                 }
@@ -3133,7 +3133,7 @@ public sealed class RunEngine
                     // and RunNonCombatEffects already rolled it. The handler was paying a
                     // flat 80, which is inside the range and so looked right in every
                     // capture that never checked the number.
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 8);
+                    RunNonCombatEffects.LoseHp(State, 8);
                     RunNonCombatEffects.GainGold(
                         State,
                         RunNonCombatEffects.DenseVegetationGold(State)
@@ -3241,7 +3241,7 @@ public sealed class RunEngine
                         State,
                         RunNonCombatEffects.SunkenStatueGold(State)
                     );
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 7);
+                    RunNonCombatEffects.LoseHp(State, 7);
                 }
                 else if (action != RunConstants.EventSkipAction)
                 {
@@ -3602,7 +3602,7 @@ public sealed class RunEngine
                 // pools -- the emulator had the two options' costs and prizes crossed.
                 if (action == 0)
                 {
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 8);
+                    RunNonCombatEffects.LoseHp(State, 8);
                     RunNonCombatEffects.ApplyRelicPickup(
                         State,
                         RunNonCombatEffects.TrashHeapRelic(State)
@@ -3728,7 +3728,7 @@ public sealed class RunEngine
                     // What the HP buys is the CHOICE, on a second page: five for two
                     // dolls, fifteen for all three. Costing the HP and finishing there
                     // charged the player for a decision they never got to make.
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - (action == 1 ? 5 : 15));
+                    RunNonCombatEffects.LoseHp(State, action == 1 ? 5 : 15);
                     State.EventPage = action;
                     return 0;
                 }
@@ -3896,7 +3896,7 @@ public sealed class RunEngine
                 }
                 else if (action == 1)
                 {
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 14);
+                    RunNonCombatEffects.LoseHp(State, 14);
                     RunNonCombatEffects.ApplyRelicPickup(
                         State,
                         RunNonCombatEffects.NamedRelic("ChosenCheese")
@@ -3928,9 +3928,9 @@ public sealed class RunEngine
                     // moves -- so 3, then 4, then 5 -- and each hold re-rolls which card
                     // the bridge is threatening. Holding on was a flat 3 that never
                     // escalated and never changed the card, which makes it free to repeat.
-                    State.PlayerHp = Math.Max(
-                        0,
-                        State.PlayerHp - RunNonCombatEffects.SlipperyBridgeHpLoss(State)
+                    RunNonCombatEffects.LoseHp(
+                        State,
+                        RunNonCombatEffects.SlipperyBridgeHpLoss(State)
                     );
                     State.EventPage++;
                     // GetNewRandomCard() again -- the re-roll is an explicit step now that
@@ -3975,7 +3975,7 @@ public sealed class RunEngine
                         return -1;
                     }
 
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 6);
+                    RunNonCombatEffects.LoseHp(State, 6);
                     return 0;
                 }
                 else if (action != RunConstants.EventSkipAction)
@@ -4115,7 +4115,7 @@ public sealed class RunEngine
                 // the event's own stream rather than a generic 55 +/- 15 off UpFront.
                 if (action == 0)
                 {
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 6);
+                    RunNonCombatEffects.LoseHp(State, 6);
                     RunNonCombatEffects.GainGold(State, RunNonCombatEffects.ThisOrThatGold(State));
                 }
                 else if (action == 1)
@@ -4525,7 +4525,7 @@ public sealed class RunEngine
                         )
                     )
                     {
-                        State.PlayerHp = Math.Max(0, State.PlayerHp - 10);
+                        RunNonCombatEffects.LoseHp(State, 10);
                         State.EventId = RunConstants.EventResultPending;
                     }
 
@@ -4771,7 +4771,7 @@ public sealed class RunEngine
                     // Unblockable and Unpowered, so no block and no Vulnerable apply --
                     // and at 11 it can end a run that walked in under 12, which is what
                     // the event's `CurrentHp >= 12` IsAllowed is there to prevent.
-                    State.PlayerHp = Math.Max(0, State.PlayerHp - 11);
+                    RunNonCombatEffects.LoseHp(State, 11);
                     RunNonCombatEffects.ApplyRelicPickup(
                         State,
                         RunRewardGenerator.NextRelic(State)
@@ -5752,10 +5752,7 @@ public sealed class RunEngine
     /// </summary>
     private void ColossalFlowerDig()
     {
-        State.PlayerHp = Math.Max(
-            0,
-            State.PlayerHp - RunConstants.ColossalFlowerDigDamage[State.EventPage]
-        );
+        RunNonCombatEffects.LoseHp(State, RunConstants.ColossalFlowerDigDamage[State.EventPage]);
     }
 
     private void TransformTwoMatchingCards(int cardId)
