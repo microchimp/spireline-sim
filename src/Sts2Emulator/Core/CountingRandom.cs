@@ -48,6 +48,13 @@ public sealed class CountingRandom : Random
         CallCount = callCount;
     }
 
+    /// <summary>The generator's lanes, which with <see cref="Seed" /> and <see cref="CallCount" /> are the whole stream.</summary>
+    internal (ulong S0, ulong S1, ulong S2, ulong S3) Lanes => _rng.Lanes;
+
+    /// <summary>The stream <see cref="Seed" />, <see cref="CallCount" /> and <see cref="Lanes" /> describe.</summary>
+    internal static CountingRandom FromLanes(int seed, int callCount, (ulong S0, ulong S1, ulong S2, ulong S3) lanes) =>
+        new(seed, MegaRandom.FromLanes(lanes), callCount);
+
     /// <summary>An exact copy at the same position, in O(1) (see <see cref="GameRng.Copy" />).</summary>
     public CountingRandom Copy() => new(Seed, _rng.Copy(), CallCount);
 

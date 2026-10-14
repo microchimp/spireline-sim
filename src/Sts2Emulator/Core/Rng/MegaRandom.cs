@@ -35,6 +35,17 @@ public sealed class MegaRandom
     /// </summary>
     public MegaRandom Copy() => new(this);
 
+    /// <summary>The four lanes: the generator's whole state, as a document writes it down.</summary>
+    internal (ulong S0, ulong S1, ulong S2, ulong S3) Lanes => (_s0, _s1, _s2, _s3);
+
+    /// <summary>A generator standing exactly at <paramref name="lanes" />.</summary>
+    internal static MegaRandom FromLanes((ulong S0, ulong S1, ulong S2, ulong S3) lanes)
+    {
+        var rng = new MegaRandom(0);
+        (rng._s0, rng._s1, rng._s2, rng._s3) = lanes;
+        return rng;
+    }
+
     /// <summary>Moves this generator to exactly <paramref name="other" />'s position.</summary>
     public void CopyStateFrom(MegaRandom other)
     {

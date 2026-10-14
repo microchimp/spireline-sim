@@ -61,7 +61,12 @@ public static class NativeExports
     //      follows through its shuffle and Sts2_GetStateJson writes back; an index into that
     //      middle is refused. A library from before refuses the field, and wrote indices
     //      that a reload's shuffle pointed at other cards.
-    public const int NATIVE_API_VERSION = 32;
+    // v33: a screen raised in the middle of a step (a card's, a potion's, a turn start's) stops the
+    //      step there: the observation shows the screen over the combat as it stands mid-step, and
+    //      the answer runs the rest of the step. Sts2_GetStateJson writes such a combat with its
+    //      stopped step (stopped_step), which Sts2_LoadCombatSnapshot puts back on the screen; a
+    //      library from before refuses the field, and lost the card a stopped play held.
+    public const int NATIVE_API_VERSION = 33;
 
     /// <summary>
     /// The plain resets' deck: the start of a run at the default level, from the one

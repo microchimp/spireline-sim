@@ -26,7 +26,7 @@ public unsafe class SelectionLifecycleTests
         [
             "Clone/CopyTo: shared, never changed once made; a copy determinized on the screen puts its own streams and draw order back at the screen, before the answer -- StoppedStepLifecycleTests.CloneAndCopyToShareTheStoppedStep, DeterminizedStopTests",
             "Reset: dropped with the screen, the native handle wiped too -- AResetDropsTheStoppedStepWithItsScreen, ANativeResetAfterAStoppedStepIsANewCombat",
-            "Snapshot: not written; the loaded screen is answered alone -- ASnapshotCarriesTheScreenAndItsAnswerResolvesItAlone",
+            "Snapshot: written (stopped_step: the step's start, its streams, the answers and their hidden states) and put back on the loaded screen -- StoppedStepLifecycleTests.ASnapshotOfAStoppedPlayKeepsThePlayedCard, ASnapshotOfAStoppedTurnStartGoesOnWithTheRestOfIt, ALoadedDrawPileScreenIsAnsweredWithTheCardItOffers",
             "Reanchor: an unanswered stop is finished by the emulator's own answer, then the screen goes -- EmuDump.Tests ReanchorFinishTests",
         ],
         [(typeof(RunState), nameof(RunState.PendingSelectionOptional))] =

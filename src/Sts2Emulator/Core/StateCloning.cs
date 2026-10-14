@@ -116,15 +116,19 @@ public static class StateCloning
     public static PendingCardSelection Clone(this PendingCardSelection selection) =>
         selection.Clone(selection.Replay);
 
-    /// <summary>A copy of the screen with <paramref name="replay" /> as the step it stopped.</summary>
+    /// <summary>
+    /// A copy of the screen with <paramref name="replay" /> as the step it stopped, and
+    /// <paramref name="candidates" /> as its candidates when given.
+    /// </summary>
     public static PendingCardSelection Clone(
         this PendingCardSelection selection,
-        HookChoiceReplay? replay
+        HookChoiceReplay? replay,
+        List<int>? candidates = null
     ) =>
         new()
         {
             Kind = selection.Kind,
-            Candidates = [.. selection.Candidates],
+            Candidates = candidates ?? [.. selection.Candidates],
             SourceCardDefId = selection.SourceCardDefId,
             Amount = selection.Amount,
             GeneratedCandidates = [.. selection.GeneratedCandidates],
@@ -355,7 +359,7 @@ public static class StateCloning
     /// (<see cref="ReseedStreams" />) and a stopped step's answer (<c>ScreenHiddenState</c>) go
     /// through. The name is mixed into a resampled stream's seed (<see cref="Reseeded" />).
     /// </summary>
-    private static readonly string[] StreamNames =
+    internal static readonly string[] StreamNames =
     [
         nameof(CombatState.ShuffleRng),
         nameof(CombatState.TargetRng),

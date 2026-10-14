@@ -74,6 +74,16 @@ public sealed class SnapshotException : Exception
 /// so the caller seeds them from its own load seed.
 /// </para>
 /// <para>
+/// A combat stopped on a screen raised in the middle of a step (a card's OnPlay, a potion, the
+/// turn start) is the one position a step has NOT returned from. Its document adds
+/// <c>stopped_step</c>, the emulator's own block: the step's start as a document of its own with
+/// its draw order and streams, the action, and the answers given so far with the hidden state of
+/// each answering copy (<see cref="HookChoiceReplay" />). The loaded screen's answer replays the
+/// step from that start and puts the loaded copy's own streams and order back at the screen, so the
+/// card goes on to its pile and the turn start goes on, and nothing after the screen reads the
+/// streams the block carries. A document from the live game never has one.
+/// </para>
+/// <para>
 /// JsonDocument and Utf8JsonWriter only, never the reflection serializer: the core is
 /// NativeAOT.
 /// </para>
@@ -239,6 +249,24 @@ public static class CombatSnapshot
         "enemies",
         "counters",
         "pending_selection",
+        "stopped_step",
+    ];
+
+    private static readonly string[] StoppedStepFields =
+        ["action", "target", "answers", "before", "before_draw", "before_streams", "hidden"];
+
+    private static readonly string[] StreamFields = ["seed", "count", "lanes"];
+
+    private static readonly string[] HiddenFields = ["streams", "draw", "candidates"];
+
+    /// <summary>
+    /// The streams a stopped step's block names: the combat's own (<c>StateCloning.StreamNames</c>,
+    /// in snake case) and the step's.
+    /// </summary>
+    private static readonly string[] StreamNames =
+    [
+        .. StateCloning.StreamNames.Select(name => System.Text.RegularExpressions.Regex.Replace(name, "(?<=[a-z])(?=[A-Z])", "_").ToLowerInvariant()),
+        "step",
     ];
 
     private static readonly string[] PlayerFields =
@@ -409,8 +437,123 @@ public static class CombatSnapshot
 
         ReadCounters(root.OptionalChild("counters", CounterFields), state);
         ReadPendingSelection(root, state, unordered);
+        ReadStoppedStep(root, state, seed);
         return state;
     }
+
+    /// <summary>
+    /// A screen raised in the middle of a step (<see cref="HookChoiceReplay" />): the step it stopped,
+    /// as <see cref="WriteStoppedStep" /> wrote it, put back on the screen so that its answer runs the
+    /// rest of the step. Refused without a screen to put it on.
+    /// </summary>
+    private static void ReadStoppedStep(Fields root, CombatState state, int seed)
+    {
+        if (!root.TryGet("stopped_step", out var element) || element.ValueKind == JsonValueKind.Null)
+        {
+            return;
+        }
+
+        var fields = new Fields(element, "stopped_step", StoppedStepFields);
+        if (state.PendingSelection is not { } screen)
+        {
+            throw new SnapshotException("stopped_step", "a stopped step needs the screen it stopped on (pending_selection)");
+        }
+
+        if (!fields.TryGet("before", out var beforeElement))
+        {
+            throw new SnapshotException(fields.At("before"), "missing");
+        }
+
+        var before = ReadCombat(beforeElement, seed);
+        if (before.PendingSelection?.Replay is not null)
+        {
+            throw new SnapshotException(fields.At("before"), "the step's start cannot itself be stopped");
+        }
+
+        var order = fields.Items("before_draw", ReadCard);
+        if (!SameCards(order, before.DrawPile))
+        {
+            throw new SnapshotException(fields.At("before_draw"), "not the cards of before's draw pile");
+        }
+
+        before.DrawPile = order;
+        var (streams, stepRng) = ReadStreams(fields.Child("before_streams", StreamNames));
+        for (int i = 0; i < streams.Length; i++)
+        {
+            StateCloning.SetStream(before, i, streams[i]);
+        }
+
+        var hidden = fields.Items(
+            "hidden",
+            (item, path) =>
+            {
+                var entry = new Fields(item, path, HiddenFields);
+                var (kept, keptStep) = ReadStreams(entry.Child("streams", StreamNames));
+                var candidates = entry.NullableItems("candidates", ReadCandidate);
+                return new ScreenHiddenState(kept, keptStep, [.. entry.Items("draw", ReadCard)], candidates?.ToArray());
+            }
+        );
+        var answers = fields.Items("answers", (item, path) => AsInt(item, path));
+        if (hidden.Count != answers.Count)
+        {
+            throw new SnapshotException(fields.At("hidden"), $"{hidden.Count} entries for {answers.Count} answers");
+        }
+
+        state.PendingSelection = screen.Clone(
+            new HookChoiceReplay
+            {
+                Before = before,
+                RngBefore = stepRng ?? throw new SnapshotException(fields.At("before_streams"), "no step stream"),
+                Action = fields.Int("action"),
+                TargetEnemyIndex = fields.Int("target"),
+                Answers = answers,
+                Hidden = hidden,
+            }
+        );
+    }
+
+    private static (CountingRandom?[] Streams, CountingRandom? Step) ReadStreams(Fields fields)
+    {
+        var streams = new CountingRandom?[StateCloning.StreamCount];
+        CountingRandom? step = null;
+        for (int i = 0; i < StreamNames.Length; i++)
+        {
+            if (!fields.TryGet(StreamNames[i], out var value) || value.ValueKind == JsonValueKind.Null)
+            {
+                continue;
+            }
+
+            var stream = new Fields(value, fields.At(StreamNames[i]), StreamFields);
+            string lanes = stream.Text("lanes");
+            var hex = System.Globalization.NumberStyles.HexNumber;
+            if (
+                lanes.Length != 64
+                || !ulong.TryParse(lanes.AsSpan(0, 16), hex, null, out ulong s0)
+                || !ulong.TryParse(lanes.AsSpan(16, 16), hex, null, out ulong s1)
+                || !ulong.TryParse(lanes.AsSpan(32, 16), hex, null, out ulong s2)
+                || !ulong.TryParse(lanes.AsSpan(48, 16), hex, null, out ulong s3)
+            )
+            {
+                throw new SnapshotException(stream.At("lanes"), "expected 64 hex digits, the generator's four lanes");
+            }
+
+            var rng = CountingRandom.FromLanes(stream.Int("seed"), stream.Int("count"), (s0, s1, s2, s3));
+            if (i < streams.Length)
+            {
+                streams[i] = rng;
+            }
+            else
+            {
+                step = rng;
+            }
+        }
+
+        return (streams, step);
+    }
+
+    private static bool SameCards(List<CardInstance> left, List<CardInstance> right) =>
+        left.Count == right.Count
+        && left.GroupBy(card => card).All(group => right.Count(card => card.Equals(group.Key)) == group.Count());
 
     private static int ReadEncounterId(Fields root)
     {
@@ -1284,6 +1427,85 @@ public static class CombatSnapshot
         WriteItems(w, "enemies", state.Enemies, WriteEnemy);
         WriteCounters(w, state);
         WritePendingSelection(w, state);
+        WriteStoppedStep(w, state);
+        w.WriteEndObject();
+    }
+
+    /// <summary>
+    /// A screen raised in the middle of a step: the step it stopped (<see cref="HookChoiceReplay" />),
+    /// so that a loaded copy's answer runs the rest of it -- the card goes on to its pile and its
+    /// after-play hooks run, the turn start goes on. The step's start is a document of its own (a
+    /// step has returned there, so the document holds it as it holds any position), with its draw
+    /// order and its streams: the history that leads to the screen, which the replay needs to reach
+    /// the same screen. None of it reaches the future: at the screen the replay puts back the loaded
+    /// copy's own streams and draw order (<see cref="ScreenHiddenState" />), and those, as always, are
+    /// the loader's. Omitted when no step is stopped, so every other document is unchanged.
+    /// </summary>
+    private static void WriteStoppedStep(Utf8JsonWriter w, CombatState state)
+    {
+        if (state.PendingSelection?.Replay is not { } stopped)
+        {
+            return;
+        }
+
+        w.WriteStartObject("stopped_step");
+        w.WriteNumber("action", stopped.Action);
+        w.WriteNumber("target", stopped.TargetEnemyIndex);
+        WriteItems(w, "answers", stopped.Answers, (writer, answer) => writer.WriteNumberValue(answer));
+        w.WritePropertyName("before");
+        WriteCombat(w, stopped.Before);
+        WriteItems(w, "before_draw", stopped.Before.DrawPile, WriteCard);
+        w.WritePropertyName("before_streams");
+        WriteStreams(
+            w,
+            [.. Enumerable.Range(0, StateCloning.StreamCount).Select(i => StateCloning.Stream(stopped.Before, i))],
+            stopped.RngBefore
+        );
+        WriteItems(
+            w,
+            "hidden",
+            stopped.Hidden,
+            (writer, kept) =>
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("streams");
+                WriteStreams(writer, kept.Streams, kept.StepRng);
+                WriteItems(writer, "draw", kept.DrawPile, WriteCard);
+                if (kept.Candidates is { } candidates)
+                {
+                    WriteItems(writer, "candidates", candidates, (inner, index) => inner.WriteNumberValue(index));
+                }
+                else
+                {
+                    writer.WriteNull("candidates");
+                }
+
+                writer.WriteEndObject();
+            }
+        );
+        w.WriteEndObject();
+    }
+
+    private static void WriteStreams(Utf8JsonWriter w, CountingRandom?[] streams, CountingRandom? step)
+    {
+        w.WriteStartObject();
+        for (int i = 0; i < StreamNames.Length; i++)
+        {
+            var rng = i < streams.Length ? streams[i] : step;
+            if (rng is null)
+            {
+                w.WriteNull(StreamNames[i]);
+                continue;
+            }
+
+            var (s0, s1, s2, s3) = rng.Lanes;
+            w.WriteStartObject(StreamNames[i]);
+            w.WriteNumber("seed", rng.Seed);
+            w.WriteNumber("count", rng.CallCount);
+            w.WriteString("lanes", $"{s0:x16}{s1:x16}{s2:x16}{s3:x16}");
+            w.WriteEndObject();
+        }
+
         w.WriteEndObject();
     }
 

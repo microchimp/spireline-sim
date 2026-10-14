@@ -34,7 +34,7 @@ public class StoppedStepLifecycleTests
         [nameof(PendingCardSelection.GeneratedRetained)] = "data",
         [nameof(PendingCardSelection.Replay)] =
             "shared by Clone/CopyTo (never changed once made), dropped with the screen by Reset and Reanchor, "
-            + "not written by a snapshot (the loaded screen is answered alone): the tests below",
+            + "written by a snapshot (stopped_step) and put back on the loaded screen: the tests below",
     };
 
     [Fact]
@@ -135,19 +135,98 @@ public class StoppedStepLifecycleTests
         Assert.Equal(turn + 1, fight.State.Turn);
     }
 
+    /// <summary>
+    /// The reviewer's probe: a snapshot written on Burning Pact's screen, read back, answered. The
+    /// play is stopped inside OnPlay, so a document of the screen alone left the card in no pile and
+    /// its after-play hooks unrun (7 cards became 6); the document now carries the stopped step, and
+    /// the loaded copy's answer finishes the play: the card goes to the discard.
+    /// </summary>
     [Fact]
-    public void ASnapshotCarriesTheScreenAndItsAnswerResolvesItAlone()
+    public void ASnapshotOfAStoppedPlayKeepsThePlayedCard()
     {
-        var (fight, _) = Stopped();
+        var fight = Fight
+            .Hand(Card(IC.BurningPact), Card(IC.StrikeIronclad), Card(IC.DefendIronclad), Card(IC.Bash))
+            .Energy(3)
+            .Draw([.. Pile(IC.Anger, IC.Inflame, IC.TwinStrike)])
+            .Enemy(hp: 400);
+        var rng = new CountingRandom(11);
+        CombatEngine.Step(fight.State, 0, rng);
+        Assert.NotNull(fight.Pending!.Replay);
+        static int Cards(CombatState s) => s.Hand.Count + s.DrawPile.Count + s.DiscardPile.Count + s.ExhaustPile.Count;
 
         var loaded = CombatSnapshot.Read(CombatSnapshot.Write(fight.State), seed: 0, out _);
+        Assert.NotNull(loaded.PendingSelection!.Replay);
+        // The load shuffled the three unseen cards with its own seed; hand it the original's order too.
+        ShareStreams(from: fight.State, to: loaded);
+        loaded.DrawPile = [.. fight.State.DrawPile];
+        CombatEngine.Step(loaded, 0, rng.Clone());
+        CombatEngine.Step(fight.State, 0, rng);
 
-        Assert.Equal(CardSelectionKind.ExhaustFromHandRepeated, loaded.PendingSelection!.Kind);
-        Assert.Null(loaded.PendingSelection.Replay);
-        var picked = loaded.Hand[2];
-        CombatEngine.Step(loaded, 2, new CountingRandom(3));
         Assert.Null(loaded.PendingSelection);
-        Assert.Equal([picked], loaded.ExhaustPile);
+        Assert.Equal(7, Cards(loaded));
+        Assert.Contains(loaded.DiscardPile, card => card.DefId == IC.BurningPact);
+        Assert.Equal(CombatSnapshot.Write(fight.State), CombatSnapshot.Write(loaded));
+    }
+
+    /// <summary>
+    /// A turn start stopped on Tyranny's screen: written, read and answered, the rest of the turn
+    /// start runs, as on the original, and a document of the step's start and of every answer so far
+    /// writes back the same.
+    /// </summary>
+    [Fact]
+    public void ASnapshotOfAStoppedTurnStartGoesOnWithTheRestOfIt()
+    {
+        var (fight, rng) = Stopped();
+        byte[] written = CombatSnapshot.Write(fight.State);
+
+        var loaded = CombatSnapshot.Read(written, seed: 0, out _);
+        Assert.Equal(written, CombatSnapshot.Write(loaded));
+        ShareStreams(from: fight.State, to: loaded);
+        CombatEngine.Step(loaded, 2, rng.Clone());
+        CombatEngine.Step(fight.State, 2, rng);
+
+        Assert.Null(loaded.PendingSelection);
+        Assert.Equal(CombatSnapshot.Write(fight.State), CombatSnapshot.Write(loaded));
+    }
+
+    /// <summary>
+    /// A draw-pile screen (Stratagem, inside the turn start's shuffle) loaded under another seed: the
+    /// load shuffles the unordered middle and follows the candidates through it, and the answer picks
+    /// the card the loaded screen offered at that index, not the card at that index of the true pile.
+    /// </summary>
+    [Fact]
+    public void ALoadedDrawPileScreenIsAnsweredWithTheCardItOffers()
+    {
+        var fight = Fight
+            .Hand(Card(IC.StrikeIronclad))
+            .Energy(3)
+            .Enemy(hp: 400)
+            .Draw()
+            .Discard([.. Pile(IC.Anger, IC.DefendIronclad, IC.Inflame, IC.TwinStrike, IC.ShrugItOff, IC.PommelStrike)])
+            .PlayerBuff(BuffId.StratagemPower, 1);
+        var rng = new CountingRandom(11);
+        CombatEngine.Step(fight.State, fight.State.Hand.Count, rng);
+        Assert.Equal(CardSelectionKind.DrawPileToHand, fight.Pending!.Kind);
+
+        foreach (int seed in new[] { 1, 2, 3 })
+        {
+            var loaded = CombatSnapshot.Read(CombatSnapshot.Write(fight.State), seed, out _);
+            var offered = loaded.DrawPile[loaded.PendingSelection!.Candidates[0]];
+
+            CombatEngine.Step(loaded, 0, new CountingRandom(seed));
+
+            Assert.Null(loaded.PendingSelection);
+            Assert.Equal(offered, loaded.Hand[0]);
+        }
+    }
+
+    /// <summary>The document carries no RNG of its own: hand the loaded copy the original's streams.</summary>
+    private static void ShareStreams(CombatState from, CombatState to)
+    {
+        for (int i = 0; i < StateCloning.StreamCount; i++)
+        {
+            StateCloning.SetStream(to, i, StateCloning.Stream(from, i)?.Copy());
+        }
     }
 
     [Fact]

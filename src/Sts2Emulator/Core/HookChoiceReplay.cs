@@ -126,29 +126,40 @@ internal sealed class StepInProgress
 }
 
 /// <summary>
-/// What a determinization can change in a combat standing on a screen, as it stood there: every
-/// stream the combat owns, the stream its steps are taken on, and the draw pile's order. Taken from
-/// the combat an answer is given to, put back where the replay reaches that screen
-/// (<see cref="HookChoiceReplay" />).
+/// What can differ between the combat that stopped on a screen and a copy answering it, as the copy
+/// stood there: every stream the combat owns, the stream its steps are taken on, the draw pile's
+/// order -- what a determinization changes -- and the screen's candidates, which a snapshot load
+/// follows through its own shuffle. Taken from the combat an answer is given to, put back where the
+/// replay reaches that screen (<see cref="HookChoiceReplay" />).
 /// </summary>
 /// <remarks>
 /// The streams are put back in place (<see cref="CountingRandom.Become" />), not replaced, so code
 /// in the middle of the step that holds one goes on with it. The draw pile is put back only as an
 /// order: when its cards are not the same as the replay's, something other than a determinization
-/// changed the combat on the screen, and the replay's own pile stands.
+/// changed the combat on the screen, and the replay's own pile stands. The candidates are put back
+/// only onto the same screen (kind, source and count), since the answer is an index into the screen
+/// the copy showed.
 /// </remarks>
 public sealed class ScreenHiddenState
 {
-    private readonly CountingRandom?[] _streams;
-    private readonly CountingRandom? _stepRng;
-    private readonly CardInstance[] _drawPile;
-
-    private ScreenHiddenState(CountingRandom?[] streams, CountingRandom? stepRng, CardInstance[] drawPile)
+    internal ScreenHiddenState(CountingRandom?[] streams, CountingRandom? stepRng, CardInstance[] drawPile, int[]? candidates)
     {
-        _streams = streams;
-        _stepRng = stepRng;
-        _drawPile = drawPile;
+        Streams = streams;
+        StepRng = stepRng;
+        DrawPile = drawPile;
+        Candidates = candidates;
     }
+
+    /// <summary>The combat's streams, in <c>StateCloning.StreamNames</c> order; null where it had none.</summary>
+    internal CountingRandom?[] Streams { get; }
+
+    /// <summary>The stream the answer was given on, when it can be put back.</summary>
+    internal CountingRandom? StepRng { get; }
+
+    internal CardInstance[] DrawPile { get; }
+
+    /// <summary>The open screen's candidates, null when no screen was open.</summary>
+    internal int[]? Candidates { get; }
 
     /// <summary><paramref name="state" />'s hidden state, with <paramref name="rng" /> as its step's stream.</summary>
     public static ScreenHiddenState Of(CombatState state, Random rng)
@@ -159,15 +170,15 @@ public sealed class ScreenHiddenState
             streams[i] = StateCloning.Stream(state, i)?.Copy();
         }
 
-        return new(streams, (rng as CountingRandom)?.Copy(), [.. state.DrawPile]);
+        return new(streams, (rng as CountingRandom)?.Copy(), [.. state.DrawPile], state.PendingSelection?.Candidates.ToArray());
     }
 
     /// <summary>Puts this hidden state back on <paramref name="state" /> and <paramref name="rng" />.</summary>
     public void PutBack(CombatState state, Random rng)
     {
-        for (int i = 0; i < _streams.Length; i++)
+        for (int i = 0; i < Streams.Length; i++)
         {
-            if (_streams[i] is not { } kept)
+            if (Streams[i] is not { } kept)
             {
                 continue;
             }
@@ -182,18 +193,28 @@ public sealed class ScreenHiddenState
             }
         }
 
-        if (_stepRng is not null && rng is CountingRandom step)
+        if (StepRng is not null && rng is CountingRandom step)
         {
-            step.Become(_stepRng);
+            step.Become(StepRng);
         }
 
         var pile = state.DrawPile;
-        if (pile.Count == _drawPile.Length && !pile.SequenceEqual(_drawPile) && SameCards(pile, _drawPile))
+        if (pile.Count == DrawPile.Length && !pile.SequenceEqual(DrawPile) && SameCards(pile, DrawPile))
         {
-            for (int i = 0; i < _drawPile.Length; i++)
+            for (int i = 0; i < DrawPile.Length; i++)
             {
-                pile[i] = _drawPile[i];
+                pile[i] = DrawPile[i];
             }
+        }
+
+        if (
+            Candidates is { } shown
+            && state.PendingSelection is { } open
+            && open.Candidates.Count == shown.Length
+            && !open.Candidates.SequenceEqual(shown)
+        )
+        {
+            state.PendingSelection = open.Clone(open.Replay, candidates: [.. shown]);
         }
     }
 
