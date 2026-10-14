@@ -361,6 +361,10 @@ and lists the fields the emulator does not model (`tools/emudump/NetState.cs`). 
 first by the other modes) flags a step whose action left no checksum: the driver recorded it before
 the game finished (seen with Mayhem, Hellraiser and Rolling Boulder, whose turn-start auto-play
 outlasts `Idle()`), so that fight is a driver artifact from the step before it, not an emulator bug.
+A fight recorded without the tap cannot be checked and fails `--check` (UNCHECKED); in a tapped fight a step
+without checksums is late. The compare modes exit 1 on any difference or gap: a fight the other side has no
+result for, a driver artifact, a missing trace, an emulator replay that stops before the game's last step or
+reports an error (broken cases: `tests/python/test_netstate_broken.py`).
 
 ## Whole runs (`runs.py`)
 

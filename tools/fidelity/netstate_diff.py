@@ -21,7 +21,12 @@ fields differ there when both runs were traced.
 --check (also done first in the other modes): a step whose action left no checksum of its own
 (a play without its PlayCardAction, an end of turn without "After player turn start" while the
 fight goes on) was recorded before the game finished it; such a fight is a driver artifact from
-that step on, not an emulator divergence.
+that step on, not an emulator divergence. A fight recorded without the tap (no step has checksums)
+cannot be checked and FAILS the check: it is never reported OK.
+
+Exit status: 0 only when every fight was checked (or compared) and nothing differs; 1 otherwise,
+including a fight the other side has no result for, a driver artifact, a fight with no trace and an
+emulator replay that stops before the game's last step or reports an error.
 """
 
 from __future__ import annotations
@@ -154,13 +159,22 @@ def compare(g: dict, e: dict) -> list:
 
 # ── driver integrity ───────────────────────────────────────────────────────────────────────
 
+def tapped(fight: dict) -> bool:
+    """Whether the fight was recorded with the checksum tap (some step carries checksums)."""
+    return any("checksums" in s for s in fight.get("steps", []))
+
+
 def late_steps(fight: dict) -> list:
-    """Steps recorded before the game finished their action (see the module doc)."""
+    """Steps recorded before the game finished their action (see the module doc).
+
+    Empty for a fight recorded without the tap, which says nothing either way (``tapped``); in a tapped
+    fight a step without checksums is a step that left none.
+    """
     out = []
+    if not tapped(fight):
+        return out
     for k, s in enumerate(fight.get("steps", [])[1:], 1):
-        if "checksums" not in s:
-            return []  # recorded without the tap
-        a, kinds = s["action"] or {}, [c[1] or c[0] for c in s["checksums"]]
+        a, kinds = s["action"] or {}, [c[1] or c[0] for c in s.get("checksums", [])]
         if (a.get("kind") == "play" and a.get("played") is not False and "PlayCardAction" not in kinds) or (a.get("kind") == "end_turn" and s["state"].get("in_combat") and END_OF_TURN not in kinds):
             out.append(k)
     return out
@@ -252,7 +266,16 @@ def diff_fight(g: dict, e: dict, verbose: bool, ignore_late: bool = False) -> di
             res["not_modelled"] = sorted(not_modelled)
             return res
         prev = gfin
-    res["verdict"] = f"{min(len(gsteps), len(esteps))} steps identical on every modelled field"
+    n_g, n_e = len(gsteps), len(esteps)
+    if n_e != n_g or e.get("error"):
+        # Identical as far as both go is not identical: a replay that stopped early (or went on, or threw
+        # after its last step) did not reproduce the fight.
+        res["verdict"] = (f"{min(n_g, n_e)} steps identical, then the emulator's replay "
+                          + (f"stops after {n_e} of the game's {n_g} steps" if n_e < n_g else
+                             f"has {n_e} steps to the game's {n_g}" if n_e > n_g else "reports an error")
+                          + (f": {_short(e['error'])}" if e.get("error") else ""))
+    else:
+        res["verdict"] = f"{n_g} steps identical on every modelled field"
     res["not_modelled"] = sorted(not_modelled)
     return res
 
@@ -304,25 +327,35 @@ def main() -> int:
     games = [r for r in json.loads(pathlib.Path(a.game).read_text(encoding="utf-8"))["results"]
              if not a.seed or r.get("seed") in a.seed]
     if a.check or not a.other:
-        bad = 0
+        bad = unchecked = 0
         for g in games:
             late = late_steps(g)
             bad += bool(late)
             what = "OK"
-            if late:
+            if not tapped(g):
+                unchecked += 1
+                what = "UNCHECKED: recorded without the checksum tap"
+            elif late:
                 what = f"{len(late)} late steps, first {late[0]} ({_act(g['steps'][late[0]]['action'])})"
             print(f"{g.get('seed')}: {what}")
-        print(f"{bad} of {len(games)} fights have steps recorded before the game finished them")
-        return 1 if bad else 0
+        print(f"{bad} of {len(games)} fights have steps recorded before the game finished them; "
+              f"{unchecked} could not be checked (no checksums)")
+        return 1 if bad or unchecked or not games else 0
     others = {r.get("seed"): r for r in json.loads(pathlib.Path(a.other).read_text(encoding="utf-8"))["results"]}
     vs_game = any("checksums" in s for r in others.values() for s in r.get("steps", []))
     nm_all: set = set()
+    bad = compared = 0
     for g in games:
         o = others.get(g.get("seed"))
         if o is None:
+            print(f"{g.get('seed')}: no result on the other side")
+            bad += 1
             continue
+        compared += 1
         if vs_game:
             r = diff_games(g, o)
+            if "index" in r or r.get("lengths", (0, 0))[0] != r.get("lengths", (0, 0))[1]:
+                bad += 1
             if "index" in r:
                 print(f"{r['seed']}: checksum #{r['index']} differs (steps {r['steps']}): {r['checksums'][0]} vs {r['checksums'][1]}")
                 for p, x, y in r.get("fields", [])[:10]:
@@ -335,6 +368,9 @@ def main() -> int:
             continue
         r = diff_fight(g, o, a.v, a.ignore_late)
         nm_all |= set(r.get("not_modelled", []))
+        # Identical only when every step was compared: a divergence, a driver artifact and a missing
+        # trace all fail.
+        bad += "step" in r or not r.get("verdict", "").endswith("identical on every modelled field")
         for k, mv in r.get("moved", [])[:3]:
             print(f"{r['seed']}: note: step {k} changed after its last checksum: {', '.join(mv[:6])}")
         if "step" in r:
@@ -348,7 +384,8 @@ def main() -> int:
             print(f"{r['seed']}: {r['verdict']}")
     if nm_all:
         print("not modelled by the emulator (game only):", ", ".join(sorted({p.split("[")[0] for p in nm_all})))
-    return 0
+    print(f"{compared} fights compared, {bad} not identical or not comparable")
+    return 1 if bad or not compared else 0
 
 
 if __name__ == "__main__":
