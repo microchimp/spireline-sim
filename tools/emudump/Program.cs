@@ -22,6 +22,12 @@ if (RunReplay.Main(args))  // run-level modes (RunReplay.cs): runstart, run
     return;
 }
 
+if (args[0] == "hookprobe")
+{
+    // EmuDump hookprobe <scenarios.json> <out.json>: listener probe order on an instrumented engine (HookProbe.cs).
+    Environment.Exit(HookProbeMode.Run(args[1..]));
+}
+
 if (args[0] == "codex")
 {
     // EmuDump codex <runs.jsonl[.gz]> <out.jsonl> [...]: real run histories against the run engine.

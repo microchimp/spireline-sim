@@ -524,6 +524,48 @@ python -m tools.fidelity.mutate report --dir <run> --results <run>/schemata/resu
 - Mutants are drawn from blocks the fights ran, weighted by sqrt(fights); a block no fight runs is a blind spot
   by construction (`prepare` prints how many mutants sit in such blocks per file).
 
+## Hook table (every game hook override against the emulator's dispatch points)
+
+The game dispatches every gameplay hook through `Hook.cs` over one listener list per pass; the emulator has a
+hand-written dispatch point per hook. This lists all 951 (model, hook) overrides of the decompile (inherited ones
+included) and holds each one to the emulator. Names and paths only: no game code is written anywhere.
+
+```
+python -m tools.fidelity.hook_table game  [--json game_hooks.json]     # overrides, Hook.cs passes and iterators
+python -m tools.fidelity.hook_table check [--json table.json]          # exit 1 on a MISSING override or a stale entry
+python -m tools.fidelity.hook_table order --work <scratch> [--json o]  # exit 1 on a new order inversion or a harness error
+python -m tools.fidelity.hook_table mutants --run <mutation run dir> --work <scratch> [--json m]   # kill rate
+```
+
+- The decompile comes from `--decompiled` or `SPIRELINE_DECOMPILED` (default `D:\spireline\referee\decompiled`).
+- `check`: an override is *registered* where the model's emulator id is named in one of its hook's dispatch
+  points (`tools/fidelity/hook_dispatch.json`: methods, a private helper they call, or a region of `EndTurn` /
+  `ResolvePlay` cut at the CombatTrace marks), or next to a comment citing `Model.Hook` in the same method;
+  `generic` entries name a mechanism that serves a listener without naming it (costs derived in `EffectiveCost`,
+  the per-turn play tallies). *Not modelled* needs a reason in `hook_unmodelled.json` (achievements, run
+  modifiers, badges, multiplayer, test mocks, unreachable powers, feedback-only bodies, combat-local resets).
+  Everything else must be in `hook_open.txt` as a known candidate bug, or the check fails; a fix deletes its line
+  (an open line that is no longer true fails the check too). `tests/python/test_hook_table.py` runs `check` on
+  this checkout whenever the decompile is there.
+- `order`: probes go before every dispatch-point statement that names a listener (a scratch copy of the engine
+  only), `EmuDump hookprobe` runs eight synthetic combats (combat start, attack, skill, power, exhaust, draw,
+  potion, a full turn round) holding every registered listener of their hooks, twice (obtain and application
+  order reversed), and the probe order is held to the game's: within one dispatcher pass, creature (player
+  first), kind (powers, relics, potions, orbs, cards), then obtain order; across hooks, CombatManager's phase
+  order. `ORDER` rows are gated (`order ...` lines in `hook_open.txt`); `commutes` (value hooks inside one pass)
+  and `index` (obtain or application order within one kind) rows are reported only.
+- Limits: a probe fires where the listener is checked, not where it acts; a probe in a method listed for several
+  hooks of one model makes no claim; per-event hooks (hits, draws, exhausts) are compared within one creature;
+  monsters, afflictions, orbs and enemies' combat-start powers are not in the scenarios (one dummy enemy).
+- `mutants` carries a mutation run's survivors onto this checkout by their line text and counts a kill when the
+  table changes (the mutant applied as text) or the order run changes (all mutants behind `MutCov.Is(id)` in one
+  instrumented build; the harness is deterministic, a no-op mutant gives the base log byte for byte).
+- Broken cases: `tests/python/test_hook_table.py`; `SPIRELINE_HOOK_E2E=1` adds the build-and-run one (turn one's
+  AfterSideTurnStart relics moved ahead of the hand draw must fail the order gate).
+- Measured on main 46079ad7 (2026-10-15): 951 overrides, 694 registered, 133 not modelled, 124 open, 0 missing;
+  114 gated order rows; of the 344 survivors of the 2f5fb8b mutation run, 310 carried over and 34 killed (11%:
+  15 by the table, 28 by the order run; 16 would fail the checked-in gates), delete-call 23/59, swap-calls 2/9.
+
 ## Nightly (main against the previous main)
 
 `python -m tools.fidelity.nightly run` builds main's EmuDump in `D:\spireline\referee\nightly\wt-night`, replays the

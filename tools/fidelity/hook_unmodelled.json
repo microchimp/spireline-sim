@@ -1,0 +1,27 @@
+{
+  "_about": "Game hook overrides the emulator does not model on purpose, each with its reason. Read by tools/fidelity/hook_table.py check. 'kinds' and 'namespaces' cover whole groups of listeners; 'ui_only' is the reason given to an override whose body only gives feedback (a flash, a sound, a wait) and changes no game state, found by reading the body; 'models' and 'pairs' (Model.Hook) name single ones. A missing override that is a gap, not a choice, belongs in hook_open.txt instead.",
+  "kinds": {
+    "achievement": "achievement unlocks only (AchievementModel); no game state changes",
+    "modifier": "custom and daily run modifiers (ModifierModel); the emulator runs standard runs only",
+    "badge": "end-of-run badges (BadgeModel), multiplayer stats; no game state changes",
+    "singleton": "MultiplayerScalingModel: multiplayer only; Spireline plays single player"
+  },
+  "namespaces": {
+    "MegaCrit.Sts2.Core.Models.Powers.Mocks": "a test mock in the game's assembly; no real content applies it"
+  },
+  "ui_only": "the override only gives feedback (Flash, sound, wait); no game state changes",
+  "reach": {
+    "unreachable": "no game content applies this power (only the model registries name it)",
+    "multiplayer": "only multiplayer-only cards lead to this power; Spireline plays single player"
+  },
+  "combat_reset": {
+    "hooks": ["AfterCombatEnd", "AfterCombatVictory", "BeforeCombatStart", "AfterRoomEntered"],
+    "reason": "only resets combat-local fields (none saved between combats); the emulator builds each combat's state fresh"
+  },
+  "hooks": {
+    "ModifyExtraRestSiteHealText": "rest-site heal description text only; no game state changes",
+    "AfterTargetingBlockedVfx": "visual effect only"
+  },
+  "models": {},
+  "pairs": {}
+}
