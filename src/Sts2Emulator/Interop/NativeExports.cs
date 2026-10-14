@@ -220,8 +220,20 @@ public static class NativeExports
             State.MaxPotionSlots = RunConstants.StartingPotionSlots(Ascension.DefaultLevel);
         }
 
+        /// <summary>
+        /// Every field of the pooled <see cref="State" /> back to a new combat's, through the
+        /// one field list Clone and CopyTo use, before a reset builds the next fight on it.
+        /// `CombatFactory.Reset` sets what a fight starts with and nothing else, which suits
+        /// the run (it hands it a new combat each time) but not a handle reused across
+        /// episodes: 69 fields kept the last episode's values -- the cards played and drawn
+        /// this combat, Pen Nib's charge, Whispering Earring spent, the elite room, the held
+        /// played card -- and so did a screen's stopped step until it moved onto the screen.
+        /// </summary>
+        private void Wipe() => new CombatState().CopyTo(State);
+
         public void Reset()
         {
+            Wipe();
             UseDefaultLevel();
             SeedStreams();
             CombatFactory.Reset(State, Rng);
@@ -230,6 +242,7 @@ public static class NativeExports
 
         public void Reset(ReadOnlySpan<int> deckIds)
         {
+            Wipe();
             UseDefaultLevel();
             SeedStreams();
             CombatFactory.Reset(State, Rng, deckIds);
@@ -253,6 +266,7 @@ public static class NativeExports
             int ascension
         )
         {
+            Wipe();
             State.AscensionLevel = ascension;
             // Set BEFORE the reset, for the reason the run engine gives where it hands a
             // fight its belt: `ApplyCombatStart` procures into the first free slot.
@@ -291,6 +305,7 @@ public static class NativeExports
             ReadOnlySpan<int> relicIds = default
         )
         {
+            Wipe();
             UseDefaultLevel();
             SeedStreams();
             CombatFactory.Reset(
@@ -333,6 +348,7 @@ public static class NativeExports
             int completedCombatRooms
         )
         {
+            Wipe();
             // The enchantment arrays run parallel to the deck and may be empty, which
             // reads as Enchantment.None on every card. An id list alone cannot carry
             // them, and ACT 1 hands them out: Self-Help Book, Stone of All Time and
@@ -409,6 +425,10 @@ public static class NativeExports
     }
 
     private static readonly NativeCombat?[] _pool = new NativeCombat?[256];
+
+    /// <summary>The combat behind a handle, for the suite (null for a free handle).</summary>
+    internal static CombatState? StateOf(int handle) =>
+        handle >= 0 && handle < _pool.Length ? _pool[handle]?.State : null;
 
     [UnmanagedCallersOnly(EntryPoint = "Sts2_ObsSize")]
     public static int Sts2_ObsSize() => OBS_SIZE;
