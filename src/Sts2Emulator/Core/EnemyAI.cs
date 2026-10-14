@@ -4228,7 +4228,7 @@ public static class EnemyAI
                 break;
 
             case KE.KnowledgeDemon:
-                OpenCurseOfKnowledge(enemy, state);
+                AwaitCurseOfKnowledge(enemy, state, rng);
                 break;
 
             case KE.Queen:
@@ -5155,9 +5155,8 @@ public static class EnemyAI
     /// for the player AND took the wrong curse twice out of three — the same defect the
     /// seven run-level policy sites had, in combat.
     ///
-    /// The screen opens during the ENEMY's turn and the player answers it on their next
-    /// action, which is what <c>PendingSelection</c> already does for every other
-    /// mid-play choice.
+    /// The screen opens during the ENEMY's turn and the step stops there; the answer replays
+    /// the end of the turn with the curse chosen where the demon awaits it.
     /// </remarks>
     /// <summary>
     /// Which of the Knowledge Demon's four moves a move index lands on.
@@ -5233,8 +5232,21 @@ public static class EnemyAI
     private static int KnowledgeDemonPhase(int moveIndex) =>
         moveIndex < 12 ? moveIndex % 4 : 1 + ((moveIndex - 12) % 3);
 
-    private static void OpenCurseOfKnowledge(EnemyState enemy, CombatState state)
+    /// <summary>
+    /// `KnowledgeDemon.ChooseCurse` awaits `CardSelectCmd.FromChooseACardScreen` inside the
+    /// demon's move, so the curse is chosen -- and its power applied -- before the rest of the
+    /// enemy turn and the player's turn start: Mind Rot takes its card off that very hand draw.
+    /// The screen used to be left standing until after the whole turn start, so Mind Rot,
+    /// Sloth, Waste Away and Disintegration all landed a turn late.
+    /// </summary>
+    private static void AwaitCurseOfKnowledge(EnemyState enemy, CombatState state, Random rng)
     {
+        // `ChooseCurse` returns for a dead target.
+        if (state.PlayerHp <= 0)
+        {
+            return;
+        }
+
         // Curses land on the demon's first move and every fourth after it, so the cast
         // index is the move index over four -- clamped, because the branch stops sending
         // it back to CURSE once it has cast three.
@@ -5243,14 +5255,18 @@ public static class EnemyAI
             0,
             Run.RunConstants.CurseOfKnowledgePairs.Length - 1
         );
-        state.PendingSelection = new PendingCardSelection
-        {
-            Kind = CardSelectionKind.CurseOfKnowledge,
-            Candidates = [0, 1],
-            GeneratedCandidates = [ST.Disintegration, Run.RunConstants.CurseOfKnowledgePairs[cast]],
-            SourceCardDefId = ST.Disintegration,
-            Amount = Run.RunConstants.DisintegrationDamageValues[cast],
-        };
+        CombatEngine.AwaitSelection(
+            state,
+            new PendingCardSelection
+            {
+                Kind = CardSelectionKind.CurseOfKnowledge,
+                Candidates = [0, 1],
+                GeneratedCandidates = [ST.Disintegration, Run.RunConstants.CurseOfKnowledgePairs[cast]],
+                SourceCardDefId = ST.Disintegration,
+                Amount = Run.RunConstants.DisintegrationDamageValues[cast],
+            },
+            rng
+        );
     }
 
     /// <summary>

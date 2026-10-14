@@ -135,6 +135,27 @@ public class KnowledgeDemonCurseTests
         Assert.Equal(6 + 7, BuffSystem.Get(fight.State.PlayerBuffs, BuffId.Disintegration));
     }
 
+    /// <summary>
+    /// `ChooseCurse` awaits the screen inside the demon's move, so the chosen power is in place
+    /// for the player's turn start that follows: `MindRotPower.ModifyHandDraw` takes its card off
+    /// that very hand draw. The screen used to stand until after the turn start, and Mind Rot
+    /// first cost a card a turn later.
+    /// </summary>
+    [Fact]
+    public void MindRotTakesItsCardOffTheHandDrawThatFollows()
+    {
+        var fight = Demon();
+
+        fight.EndTurn();
+        // Stopped inside the enemy turn: the old hand is discarded, the new one not yet drawn.
+        Assert.Equal(CardSelectionKind.CurseOfKnowledge, fight.Pending!.Kind);
+        Assert.Empty(fight.State.Hand);
+        fight.Choose(1);
+
+        Assert.Null(fight.Pending);
+        Assert.Equal(5 - RunConstants.MindRotAmount, fight.State.Hand.Count);
+    }
+
     /// <summary>While the screen is up, it owns the action space.</summary>
     [Fact]
     public void TheScreenOffersExactlyItsTwoCandidates()

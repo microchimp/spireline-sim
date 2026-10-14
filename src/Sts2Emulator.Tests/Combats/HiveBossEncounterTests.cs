@@ -11,9 +11,13 @@ internal static class Boss
     /// <summary>What this creature announces over the next turns, both sides kept alive.</summary>
     public static List<(IntentType, int, int)> Cycle(Fight fight, EnemyState subject, int turns)
     {
+        // By slot: a step stopped on a screen is answered by replaying it from a copy of the
+        // combat, so the creature objects after the answer are the copy's.
+        int slot = fight.State.Enemies.IndexOf(subject);
         var seen = new List<(IntentType, int, int)>();
         for (int turn = 0; turn < turns; turn++)
         {
+            subject = fight.State.Enemies[slot];
             foreach (var enemy in fight.State.Enemies)
             {
                 enemy.Hp = 9999;
