@@ -205,14 +205,17 @@ static class Fight
         ["colorless"] = new JsonArray(Sts2Emulator.GeneratedData.CardPools.Colorless.ToArray().Select(i => (JsonNode)i).ToArray()),
     };
 
-    internal static JsonObject Dump(RunEngine e)
+    internal static JsonObject Dump(RunEngine e) =>
+        DumpCombat(e.State.ActiveCombat, e.State.ActiveCombat != null && e.State.Phase == RunPhase.Combat, e.State.Phase.ToString(), e.State);
+
+    /// <summary>One step's state as `EmuDump fight` prints it (tools/emudump.Tests/LifecycleTests.cs reads it too).
+    /// <paramref name="run"/> gives a finished fight its <c>final</c> block.</summary>
+    internal static JsonObject DumpCombat(CombatState? c, bool inCombat, string phase, RunState? run = null)
     {
-        var c = e.State.ActiveCombat;
-        bool inCombat = c != null && e.State.Phase == RunPhase.Combat;
-        var o = new JsonObject { ["in_combat"] = inCombat, ["run_phase"] = e.State.Phase.ToString() };
+        var o = new JsonObject { ["in_combat"] = inCombat, ["run_phase"] = phase };
         if (c == null) return o;
         // A finished fight keeps its CombatState on the run (SyncAfterCombat copies out what the run keeps).
-        if (!inCombat) o["final"] = Final(e.State, e.State.LastPlayerWon);
+        if (!inCombat && run != null) o["final"] = Final(run, run.LastPlayerWon);
         byte[] written;
         using (Prof.Scope("dump.snapshot_write")) written = Sts2Emulator.Interop.CombatSnapshot.Write(c);
         using var parse = Prof.Scope("dump.parse_and_rest");

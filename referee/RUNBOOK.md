@@ -469,6 +469,41 @@ dotnet tools/emudump/bin/Release/net9.0/EmuDump.dll meta <out.json> --relations 
 - A relation that fails is read before it is trusted: some cards read the very thing a relation changes, by design (Mind Blast and
   Seeker Strike read the draw pile, Aggression takes an `UnstableShuffle` of the discard pile, Stampede rolls an index into the hand).
   `TRIAGE` in `tools/fidelity/invariants.py` records each such reason, checked against the game's class.
+## State lifecycle and the byte-safety of a refactor
+
+**State lifecycle** (`tools/emudump.Tests/LifecycleTests.cs`, `--filter Category=Lifecycle`, ~10 s). Every field of
+CombatState and RunState and what they hold, by reflection (`tools/emudump/StateWalk.cs`), is set and checked at each
+stage: Clone and CopyTo (copied, not shared), CombatFactory.Reset on a reused combat and RunEngine.Reset (fresh), the
+dump and RunSnap.Export (shown), CombatSnapshot (loads back), Reanchor (written, or carried on purpose). Fine-by-design
+gaps sit in `Allowed` with the reason; known defects in `tools/emudump.Tests/lifecycle-open.txt`. A stage fails on a
+finding in neither (a new field nobody handles: handle it, or add the reason) and on an open line that is fixed (delete
+it). The reasons that say a field is idle between steps rest on `Transient_fields_are_idle_after_every_step`: random
+play with decks that auto-play cards (Hellraiser, Havoc, Knife Trap, Sly discards), open selections and end fights,
+judged against the open list too (`transient` while the fight goes on, `transient-end` after a step that ended it; none is
+open on main: a fight-ending step leaves no auto-play queued or card held now). `LIFECYCLE_STRICT=1` fails on the open ones too. The full
+field x stage table is written to `tools/emudump.Tests/bin/Debug/net9.0/lifecycle-ledger.md`.
+
+**Byte-safety of a refactor** (commit A, structure only): the same state after every step, every field, and the same
+RNG draws by caller, not just the same dump bytes or counts:
+
+```
+dotnet build -c Release tools/emudump                  # in each checkout; keep the old build's DLL somewhere
+python tools/fidelity/corpus.py identity --a <old EmuDump.dll> --b <new EmuDump.dll> [--limit N]   # EmuDump fight --state-hash
+python -m tools.fidelity.rng_diff --a <old EmuDump.dll> --b <new EmuDump.dll> [--limit N]       # EmuDump fight --rng-log
+```
+
+`identity` names the first differing step's fields (`--state-hash=fields`); `rng_diff` names a draw that moved to
+another caller, step or stream position under equal counts, or a draw one build makes and the other does not. Each
+can miss what the other sees: two enemies' rolls swapped under one caller can leave the draw log the same, and a
+draw moved ahead of another can leave every step's state the same, so a refactor needs both. Both exit 1 on any
+difference or a replay error on one side; both builds need these flags. Both replay the same fights: every corpus
+fight this checkout's EmuDump source can replay, the setup fights included (47 draw sites, by caller, occur only
+there: potion rolls, the creation of Inklet, Fossil Stalker, Exoskeleton, Scrolls and others). A fight whose spec needs a feature the source lacks (`enemy_hp_mult`: 80 fights
+today) is left out by both, and both say so: `skipped, ...` (identity) and `NOT COMPARED ...` (rng_diff, in its last
+line too); that count is a gap in the check, not a pass. `rng_diff` compares draws by caller, so a refactor that only
+moves a draw into another method (extract-method around a draw) fails it though nothing else changed: that is by
+design, and the draw's new caller is what the diff names. Broken cases: `tests/python/test_build_identity.py`.
+
 ## Mutation testing (how strong are the recorded-fight checks?)
 
 Seeds bugs into the combat core (CombatEngine, BuffSystem, EnemyAI, Effects/*) and counts how many the

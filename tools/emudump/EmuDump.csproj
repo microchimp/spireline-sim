@@ -23,7 +23,7 @@
     <ProjectReference Include="..\..\src\Sts2Emulator\Sts2Emulator.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <!-- tools/emudump.Tests reaches the internal replay classes (Fight, Setup) directly. -->
+    <!-- tools/emudump.Tests reaches the internal replay classes (Fight, Setup), the dump, the write-back and the state walk directly. -->
     <InternalsVisibleTo Include="EmuDump.Tests" />
   </ItemGroup>
 </Project>

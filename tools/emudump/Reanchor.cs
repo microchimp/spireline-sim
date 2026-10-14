@@ -556,7 +556,7 @@ static class Reanchor
     /// reason when the state cannot be built (an enemy or card the emulator has no id for, an
     /// enemy the game has and the emulator lacks).
     /// </summary>
-    static string? Anchor(CombatState q, JsonObject g, JsonArray patched)
+    internal static string? Anchor(CombatState q, JsonObject g, JsonArray patched)
     {
         void Note(string what) => patched.Add(what);
         try

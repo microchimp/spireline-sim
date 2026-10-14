@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Tests of the EmuDump tools that need no game files: the codex replay's walker. -->
+  <!-- Tests of the EmuDump tools that need no game files: the codex replay's walker, the dump, the setup mirror, the state lifecycle. -->
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -10,6 +10,10 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.10.0" />
     <PackageReference Include="xunit" Version="2.9.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- LifecycleTests' open findings (the known ones on main, each an open defect). -->
+    <None Include="lifecycle-open.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\emudump\EmuDump.csproj" />

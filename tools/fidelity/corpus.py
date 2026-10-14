@@ -6,6 +6,8 @@
     python tools/fidelity/corpus.py baseline [--run <results>]  store a run as the baseline of this commit
     python tools/fidelity/corpus.py check [--run <results>] [--baseline <commit|file>]
     python tools/fidelity/corpus.py status
+    python tools/fidelity/corpus.py identity --a <old EmuDump.dll> --b <new EmuDump.dll>   byte-safety of a refactor
+    python tools/fidelity/corpus.py identity --runs <results.json> <results.json>     two `run --state-hash` runs
 
 Run from the fork's root (or anywhere: it finds the fork from its own path). The corpus lives outside
 the repo (default D:/spireline/referee/corpus, or $SPIRELINE_CORPUS) and is never committed: it holds
@@ -36,6 +38,10 @@ game recordings.
   fight in both EmuDump modes, split across processes (each EmuDump call has a timeout), and writes one
   result per fight: identical or the first divergence (step, field, card), any emulator exception, and
   the re-anchored verdict of every step (M match, D diverge, E error, U unjudged, - not re-anchored).
+- ``identity`` replays every fight with two EmuDump builds and compares the full-state hash after every
+  step (EmuDump fight --state-hash: every field of the run and combat state by reflection, the fields
+  Clone copies, not the dump's bytes), naming the fields that differ at the first differing step. A
+  structure-only refactor must leave every hash the same.
 - ``check`` compares a run with the baseline of this commit or its nearest ancestor that has one. A
   regression is a fight whose plain replay now diverges earlier than before (identical before and not
   now included), a new emulator exception in either replay, or a re-anchored step that matched and does
@@ -598,7 +604,8 @@ def part_timeout(steps: int) -> float:
     return 120 + 0.1 * steps
 
 
-def replay_part(mode: str, ids: list, corpus_dir: str, emudump: str, work: str, timeout: float | None = None) -> dict:
+def replay_part(mode: str, ids: list, corpus_dir: str, emudump: str, work: str, timeout: float | None = None,
+                state_hash: bool = False) -> dict:
     """One worker: EmuDump ``mode`` over these fights (one emulator in its own process), judged here."""
     from .fight_compare import names  # noqa: PLC0415
     from .reanchor_compare import keys_of  # noqa: PLC0415
@@ -612,7 +619,7 @@ def replay_part(mode: str, ids: list, corpus_dir: str, emudump: str, work: str, 
     t0 = time.time()
     with dst.open("wb") as so, err.open("wb") as se:
         # --compact: a quarter less CPU than the indented default (older builds ignore it)
-        extra = ["--compact"] if mode == "fight" else []
+        extra = (["--compact"] + (["--state-hash"] if state_hash else [])) if mode == "fight" else []
         try:
             rc = subprocess.run([*emudump_command(emudump), mode, str(src), *extra], stdout=so, stderr=se, check=False,
                                 creationflags=BELOW_NORMAL, timeout=timeout).returncode
@@ -635,6 +642,8 @@ def replay_part(mode: str, ids: list, corpus_dir: str, emudump: str, work: str, 
     for n, (fid, g) in enumerate(zip(ids, games)):
         e = res[n] if n < len(res) and isinstance(res[n], dict) else {"error": problem or "no emulator result", "steps": []}
         out[fid] = judge_fight(g, e, nm) if mode == "fight" else judge_reanchor(g, e, nm, keys)
+        if state_hash and mode == "fight":
+            out[fid]["sh"] = [st.get("state_hash") for st in e.get("steps", [])]
     for f in (src, dst, err):
         with contextlib.suppress(OSError):
             f.unlink()
@@ -707,7 +716,7 @@ def replayable(metas: list, features: set) -> tuple[list, dict]:
 
 
 def run(corpus: Corpus, procs: int, emudump: Path, label: str | None = None, only: set | None = None,
-        limit: int | None = None, timeout: float | None = None) -> Path:
+        limit: int | None = None, timeout: float | None = None, state_hash: bool = False) -> Path:
     idx = corpus.load_index()
     metas = [m for m in idx["fights"] if not only or m["id"] in only or m["seed"] in only][: limit or None]
     metas, skipped = replayable(metas, emudump_features())
@@ -729,7 +738,8 @@ def run(corpus: Corpus, procs: int, emudump: Path, label: str | None = None, onl
     got = collections.defaultdict(dict)
     problems, busy = [], collections.Counter()
     with ProcessPoolExecutor(max_workers=procs, mp_context=get_context("spawn"), initializer=_below_normal) as ex:
-        futs = [ex.submit(replay_part, mode, ids, str(corpus.path), str(emudump), str(work), timeout) for mode, ids in tasks]
+        futs = [ex.submit(replay_part, mode, ids, str(corpus.path), str(emudump), str(work), timeout, state_hash)
+                for mode, ids in tasks]
         for f in futs:
             r = f.result()
             busy[r["mode"]] += r["seconds"]
@@ -941,6 +951,127 @@ def check(corpus: Corpus, run_doc: dict, base_path: Path, show: int = 40) -> int
     return 1 if failed else 0
 
 
+# ------------------------------------------------------------------------- identity (byte-safety)
+
+
+def hash_part(ids: list, corpus_dir: str, emudump: str, work: str, fields: bool = False, timeout: float | None = None) -> dict:
+    """One worker: `EmuDump fight --state-hash` over these fights; per fight its step hashes (and field hashes)."""
+    c = Corpus(Path(corpus_dir))
+    games = [c.read(i) for i in ids]
+    timeout = timeout or part_timeout(sum(len(g["steps"]) for g in games))
+    tag = hashlib.sha256((emudump + ids[0]).encode()).hexdigest()[:10]
+    src, dst = Path(work) / f"hash-{tag}.in.json", Path(work) / f"hash-{tag}.out.json"
+    src.write_text(json.dumps({"results": games}), encoding="utf-8")
+    flag = "--state-hash=fields" if fields else "--state-hash"
+    res, problem = [], None
+    try:
+        with dst.open("wb") as so:
+            rc = subprocess.run(["dotnet", emudump, "fight", str(src), "--compact", flag], stdout=so, stderr=subprocess.DEVNULL,
+                                check=False, creationflags=BELOW_NORMAL, timeout=timeout).returncode
+        res = json.loads(dst.read_text(encoding="utf-8")).get("results", [])
+        if rc != 0 or len(res) != len(games):
+            problem = f"EmuDump fight exit {rc}, {len(res)} of {len(games)} results"
+    except (subprocess.TimeoutExpired, ValueError) as ex:
+        problem = f"EmuDump fight {type(ex).__name__}"
+    for f in (src, dst):
+        with contextlib.suppress(OSError):
+            f.unlink()
+    out = {}
+    for n, fid in enumerate(ids):
+        e = res[n] if n < len(res) else {"error": problem or "no result", "steps": []}
+        out[fid] = {"sh": [st.get("state_hash") for st in e.get("steps", [])], "err": _first_line(e.get("error"))}
+        if fields:
+            out[fid]["fields"] = [st.get("state_fields") for st in e.get("steps", [])]
+    return {"fights": out, "problem": problem}
+
+
+def hash_run(corpus: Corpus, ids: list, emudump: Path, procs: int, work: Path, fields: bool = False) -> dict:
+    metas = {m["id"]: m for m in corpus.load_index()["fights"]}
+    parts = balance([metas[i] for i in ids], 2 * procs)
+    got, problems = {}, []
+    with ProcessPoolExecutor(max_workers=procs, mp_context=get_context("spawn"), initializer=_below_normal) as ex:
+        for r in [f.result() for f in [ex.submit(hash_part, p, str(corpus.path), str(emudump), str(work), fields) for p in parts]]:
+            got.update(r["fights"])
+            if r["problem"]:
+                problems.append(r["problem"])
+    return {"fights": got, "problems": problems}
+
+
+def compare_hashes(a: dict, b: dict) -> dict:
+    """Per fight: the first step whose full-state hash differs, or a replay error on one side only."""
+    res = {"same": 0, "differ": [], "errors": [], "missing": []}
+    for fid, x in a.items():
+        y = b.get(fid)
+        if y is None or (not y.get("sh") and not y.get("err")):
+            res["missing"].append(fid)
+            continue
+        if bool(x.get("err")) != bool(y.get("err")) or (x.get("err") and x["err"] != y["err"]):
+            res["errors"].append((fid, x.get("err"), y.get("err")))
+            continue
+        sa, sb = x.get("sh") or [], y.get("sh") or []
+        if None in sa or None in sb:
+            res["missing"].append(fid)  # a build without --state-hash
+            continue
+        step = next((j for j, (p, q) in enumerate(zip(sa, sb)) if p != q), None)
+        if step is None and len(sa) != len(sb):
+            step = min(len(sa), len(sb))
+        if step is None:
+            res["same"] += 1
+        else:
+            res["differ"].append((fid, step))
+    return res
+
+
+def identity(corpus: Corpus, a: dict) -> int:
+    """Two builds (or two stored runs) agree on every field of the state after every step of every fight."""
+    if a.runs:
+        ra, rb = (json.loads(Path(p).read_text(encoding="utf-8"))["fights"] for p in a.runs)
+        res = compare_hashes(ra, rb)
+        explain = {}
+    else:
+        if not (a.a and a.b):
+            raise SystemExit("identity: --a and --b (two EmuDump.dll builds), or --runs A B")
+        idx = corpus.load_index()["fights"]
+        metas = [m for m in idx if not a.only or m["id"] in a.only or m["seed"] in a.only]
+        metas, skipped = replayable(metas[: a.limit or None], emudump_features())
+        ids = [m["id"] for m in metas]
+        work = corpus.path / "runs" / f"identity-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        work.mkdir(parents=True, exist_ok=True)
+        ha, hb = (hash_run(corpus, ids, Path(p), a.procs, work) for p in (a.a, a.b))
+        res = compare_hashes(ha["fights"], hb["fights"])
+        for side, h in (("a", ha), ("b", hb)):
+            for p in h["problems"][:3]:
+                print(f"EmuDump problem ({side}): {p}")
+        res["problems"] = ha["problems"] + hb["problems"]
+        explain = {}
+        if res["differ"] and a.explain:
+            # The fields behind the first differing step, from both builds' per-field hashes.
+            few = [fid for fid, _ in res["differ"][: a.explain]]
+            fa, fb = (hash_run(corpus, few, Path(p), min(a.procs, len(few)), work, fields=True)["fights"] for p in (a.a, a.b))
+            for fid, step in res["differ"][: a.explain]:
+                xa = (fa.get(fid, {}).get("fields") or [None] * (step + 1))
+                xb = (fb.get(fid, {}).get("fields") or [None] * (step + 1))
+                pa = xa[step] if step < len(xa) else None
+                pb = xb[step] if step < len(xb) else None
+                explain[fid] = sorted(k for k in set(pa or {}) | set(pb or {}) if (pa or {}).get(k) != (pb or {}).get(k))
+        with contextlib.suppress(OSError):
+            work.rmdir()
+        if skipped:
+            print(f"skipped, this EmuDump does not apply what they need: {skipped}")
+    metas = {m["id"]: m for m in corpus.load_index()["fights"]}
+    for fid, step in res["differ"][: a.show]:
+        m = metas.get(fid, {})
+        why = f": fields {', '.join(explain[fid][:8])}" if explain.get(fid) else ""
+        print(f"  {fid} {m.get('seed')}: state differs from step {step}{why}")
+    for fid, ea, eb in res["errors"][: a.show]:
+        print(f"  {fid}: replay error a: {ea or 'none'} | b: {eb or 'none'}")
+    bad = len(res["differ"]) + len(res["errors"]) + len(res["missing"]) + len(res.get("problems", []))
+    total = res["same"] + len(res["differ"]) + len(res["errors"]) + len(res["missing"])
+    print(f"identity: {'FAIL' if bad or not total else 'ok'}: {total} fights, {res['same']} identical in every field at every step, "
+          f"{len(res['differ'])} differ, {len(res['errors'])} replay errors on one side, {len(res['missing'])} without hashes")
+    return 1 if bad or not total else 0
+
+
 def status(corpus: Corpus) -> None:
     idx = corpus.load_index()
     fs = idx["fights"]
@@ -982,6 +1113,9 @@ def main(argv=None) -> int:
         p.add_argument("--limit", type=int)
         p.add_argument("--label")
         p.add_argument("--timeout", type=float, help="seconds per EmuDump call (default: from its steps)")
+        if name == "run":
+            p.add_argument("--state-hash", action="store_true",
+                           help="also store each step's full-state hash (EmuDump fight --state-hash), for `identity --runs`")
         if name != "run":
             p.add_argument("--run", type=Path, help="an existing run's results.json instead of a new run")
         if name == "baseline":
@@ -990,6 +1124,15 @@ def main(argv=None) -> int:
             p.add_argument("--baseline", help="a baseline file or commit (default: this commit or its nearest ancestor with one)")
             p.add_argument("--show", type=int, default=40)
     sub.add_parser("status")
+    idn = sub.add_parser("identity", help="two builds agree on every state field after every step (byte-safety of a refactor)")
+    idn.add_argument("--a", help="EmuDump.dll of the old build")
+    idn.add_argument("--b", help="EmuDump.dll of the new build")
+    idn.add_argument("--runs", nargs=2, type=Path, help="two `run --state-hash` results.json instead of running builds")
+    idn.add_argument("--procs", type=int, default=min(16, os.cpu_count() or 1))
+    idn.add_argument("--only", nargs="*", help="fight ids or seeds")
+    idn.add_argument("--limit", type=int)
+    idn.add_argument("--explain", type=int, default=5, help="name the differing fields of the first N differing fights")
+    idn.add_argument("--show", type=int, default=40)
     a = ap.parse_args(argv)
     corpus = Corpus(a.corpus)
     if a.cmd == "build":
@@ -1007,6 +1150,8 @@ def main(argv=None) -> int:
     if a.cmd == "status":
         status(corpus)
         return 0
+    if a.cmd == "identity":
+        return identity(corpus, a)
     base_path = None
     if a.cmd == "check":
         base_path = baseline_for(corpus, a.baseline)
@@ -1021,7 +1166,8 @@ def main(argv=None) -> int:
             n_new = got.get("new", 0) + got.get("truncated_new", 0)
             if n_new:
                 print(f"picked up {n_new} new fights from {got.get('files', 0)} new or changed recordings")
-        run_path = run(corpus, a.procs, a.emudump, a.label, set(a.only or []), a.limit, a.timeout)
+        run_path = run(corpus, a.procs, a.emudump, a.label, set(a.only or []), a.limit, a.timeout,
+                       state_hash=getattr(a, "state_hash", False))
     run_doc = json.loads(Path(run_path).read_text(encoding="utf-8"))
     if a.cmd == "baseline":
         print("baseline:", store_baseline(corpus, run_doc, a.force).name)

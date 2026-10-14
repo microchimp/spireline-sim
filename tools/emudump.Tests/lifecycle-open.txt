@@ -1,0 +1,132 @@
+# Open lifecycle findings: fields LifecycleTests found a stage does not handle, on main at the time
+# each line was added. Each is a real defect or blind spot waiting for an owner, NOT a reason it is
+# fine (fine-by-design reasons live in LifecycleTests.Allowed). The tests pass while every finding is
+# listed here and fail on a finding that is not (a new field or a regression), and on a line that no
+# longer matches a finding (fixed: delete the line). LIFECYCLE_STRICT=1 fails on every line too.
+# Stages are LifecycleTests' (reset, run-reset, dump, load, run-dump, reanchor) and transient / transient-end
+# (Transient_fields_are_idle_after_every_step, while the fight goes on / after a step that ended it).
+# Format: stage <TAB> field (a trailing * covers the field and everything under it) <TAB> what is wrong.
+reset	CombatState.AutoPlayQueue*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it). It now holds only the turn-one pre-play list (Imbued cards, queued by CombatFactory.QueueCombatStartAutoPlays, drained by ResolvePrePlayPhase, cleared when the fight ends) and no step in Transient_fields_are_idle_after_every_step leaves any, so a stale list needs an episode dropped between the combat's build and its first observation, or while a turn-one screen holds the turn start (FirstTurnHeld)
+reset	CombatState.HeldPlayedCard*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
+reset	CombatState.LastAttackOrSkillLastTurn*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
+reset	CombatState.LastAttackOrSkillThisTurn*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
+reset	CombatState.Orbs*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
+reset	CombatState.PlayerDebuffsAtRoundStart*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
+reset	CombatState.StolenBackCards*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
+reset	CombatState.AttackOrSkillCardsPlayedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.BaseOrbSlots	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.BattlewornDummyRanOutOfTime	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.BeltBuckleApplied	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.BlockGainsThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.BurningSticksUsed	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.CardPlaysLastTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.CardPlaysStartedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.CardPlaysThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.CardsDrawnThisCombat	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.CardsGeneratedThisCombat	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.CardsPlayedThisCombat	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.CardsPlayedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.Character	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.DoomAppliedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.EndTurnAfterPlay	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.EnergyCostRng	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.EnergySpentThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.EtherealCardPlaysThisCombat	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.EtherealExhaustCount	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.EtherealExhaustsThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.ExtraCardRewards	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.ExtraCardsDrawnThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.FatGremlinEscaped	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.FurCoatBites	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.GamblingChipDiscarded	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.IsEliteRoom	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.LethalAttackPlay	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.LightningOrbsChanneledThisCombat	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.MercGoldWasStolen	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.OrbCapacity	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.OrbGenerationRng	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.OstyAttacksThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.OstyHp	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.OstyMaxHp	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PaelsLegionCard	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PaelsLegionCooldown	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PenNibArmed	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PlayedCardBonusBlock	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PlayedCardBonusDamage	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PlayedCardCostBump	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PlayedCardEnchantGrew	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PlayedCardEnchantSpent	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PlayedCardStarsSpent	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PlayerHitTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.PlayerHitTurnBefore	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.RainbowRingAttacks	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.RainbowRingPaidThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.RainbowRingPowers	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.RainbowRingSkills	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.RoyaltiesGold	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.RuptureOwed	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.ShivsPlayedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.SkillCardsPlayedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.Stars	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.StarsGainedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.StolenBackGold	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.TenderCardsPlayedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.TookUnblockedDamage	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.UnblockedDamageHitCount	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.UnblockedDamageThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.UnsettlingLampCard	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.UnsettlingLampSpent	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.VambraceCard	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.VambraceSpent	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.VoidFormCardsPlayedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.WhisperingEarringSpent	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+run-dump	RunState.Acts[].Act	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.AddingBingBongClone	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.CardRemovalsOwed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.CardRewardRerollAvailable	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Character	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.CurrentNodeType	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].BonusBlock	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].BonusDamage	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].Bound	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].CostBump	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].CostForCombat	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].CostThisTurn	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].DampenedUpgrade	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].EnchantAmount	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].EnchantSpent	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].EtherealForCombat	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].FreeThisTurn	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].FreeUntilPlayed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].PlayedThisTurn	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].ReplayCount	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].Retain	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].RetainForCombat	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].RetainThisTurn	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].SlyForCombat	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].SlyThisTurn	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].TinkerRider	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.Deck[].TinkerType	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.ExtraCardRewardsOwed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.FurCoatAct	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.FurCoatRooms	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.GoldenPathAct	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.GuiltyCombatsServed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.LastResolvedRoomType	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.LastingCandyRewardCard	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.LastingCandyRewardUpgraded	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.LavaRockTriggered	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.ParasolSweepPending	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.RelicBag._originalRelics	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.RelicBag._refreshAllowed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.RelicReward	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.RoyaltiesGoldOwed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.SeaGlassCharacter	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.SharedRelicBag._originalRelics	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.SharedRelicBag._refreshAllowed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.SilverCrucibleTreasureRoomsEntered	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.SpoilsQuestCoord	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.TookUnblockedDamageThisCombat	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.UnknownMapPointsVisited	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.UsedUpRelics	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.WaxRelics	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
