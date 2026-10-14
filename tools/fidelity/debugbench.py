@@ -245,6 +245,14 @@ def worktree(repo: Path, path: Path, commit: str) -> Path:
     return path
 
 
+def park(ctx, slots: list) -> None:
+    """Leave the bench's worktrees on main, so no base (a held-out one least of all) stays checked out."""
+    for wt in slots:
+        if (wt / ".git").exists():
+            with contextlib.suppress(BenchError):
+                worktree(ctx.fork, wt, ctx.main)
+
+
 def overlay(tree: Path, files: dict) -> None:
     for rel, data in files.items():
         p = tree / rel
@@ -1114,6 +1122,7 @@ def harvest(ctx: Ctx, ref: str, only: list | None, limit: int, max_lines: int, j
         return r
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
         list(ex.map(one, todo))
+    park(ctx, [ctx.slot(f"h{k}") for k in range(jobs)])
     return write_index(ctx, state)
 
 
@@ -1399,6 +1408,7 @@ def run_signals(ctx: Ctx, tasks: list, jobs: int, invariants: bool, refset: str 
         return r
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
         res = list(ex.map(one, tasks))
+    park(ctx, [ctx.slot(f"s{k}") for k in range(jobs)])
     n = sum(1 for r in res if r.get("detected"))
     say(f"signal: {n} of {len(res)} tasks detected by today's gates")
     return 0

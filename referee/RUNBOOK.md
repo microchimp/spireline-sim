@@ -684,6 +684,11 @@ python -m tools.fidelity.debugbench report [--run <name>] [--split dev|heldout|a
 - **Report** per run: detection %, localisation top-1/top-3, fix correctness %, first-round acceptance (reviewer verdict
   `accept` in round 1), missed siblings per task, regressions added, cost per correct fix. Without `--run`: the task set
   and how many each gate detects.
+- First harvest (main 3fc51181, 2026-10-14): 453 candidates, 80 tasks (50 dev, 30 held out; 41 ours, 39 upstream
+  picks). Skipped: 298 reverts conflict on main, 41 over 300 engine lines, 14 not fixes, 12 tests that need the API the
+  fix added, 5 bases that do not build, 2 with no failing test, 1 root. Today's gates see 22 of the 80 bases (corpus
+  check 21, invariants 4; median 34 s): run-level fixes (rewards, events, shops, map) are invisible to a corpus of
+  fights. Harvesting took about 80 min with `--jobs 3`, the signal about 50.
 - Limits: the base keeps today's docs and comments, so text describing the fix in words (not by commit) stays; a fix
   whose tests need an API it added cannot be a task (its tests do not build without it); a fix later code covers
   (its tests pass on the base) is skipped. Broken cases: `tests/python/test_debugbench.py` (a synthetic fork).
