@@ -84,10 +84,17 @@ def check_encounter(emu: Emu, encounter: int, seeds: int, ascension: int, base_s
                     if d:
                         out["failures"].append({"check": "resample-visible", "seed": cfg.seed, "step": cut,
                                                 "diff": [list(map(str, x)) for x in d]})
-                    snap_a = native.get_state_json(combat.handle)["piles"]["draw"]
-                    snap_b = native.get_state_json(resampled.handle)["piles"]["draw"]
-                    if snap_a["known_top"] != snap_b["known_top"] or snap_a["known_bottom"] != snap_b["known_bottom"]:
-                        out["failures"].append({"check": "resample-known-ends", "seed": cfg.seed, "step": cut})
+                    try:
+                        snap_a = native.get_state_json(combat.handle)["piles"]["draw"]
+                        snap_b = native.get_state_json(resampled.handle)["piles"]["draw"]
+                    except native.ExportRefused as error:
+                        # A step stopped on a screen its document would not replay to: a
+                        # finding of its own, and the known ends go unchecked at this cut.
+                        out["failures"].append({"check": "export-refused", "seed": cfg.seed, "step": cut,
+                                                "why": str(error)})
+                    else:
+                        if snap_a["known_top"] != snap_b["known_top"] or snap_a["known_bottom"] != snap_b["known_bottom"]:
+                            out["failures"].append({"check": "resample-known-ends", "seed": cfg.seed, "step": cut})
                     for a in actions[cut:]:
                         if combat.done:
                             break

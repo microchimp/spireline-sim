@@ -245,7 +245,15 @@ class Service:
         # search: its hand, enemies and draw order are what every index is read against.
         handle = _load(converted.doc, int(settings["seed"]))
         try:
-            emu_doc = native.get_state_json(handle)
+            try:
+                emu_doc = native.get_state_json(handle)
+            except native.ExportRefused as error:
+                # Only a document with a stopped step can be refused, and the converter
+                # writes none: refused as the load would be.
+                raise RequestError(
+                    "load",
+                    f"the emulator cannot write the converted position back: {error}",
+                ) from error
             try:
                 maps = moves.index_maps(
                     live,
@@ -737,7 +745,12 @@ def _line(
     max_actions = _search_module().MAX_ACTIONS
     for step, (action, target, kind) in enumerate(search_line):
         if step:
-            now = native.get_state_json(handle)
+            try:
+                now = native.get_state_json(handle)
+            except native.ExportRefused:
+                # A step stopped on a screen its replay would not reach from a document:
+                # the emulator writes no position, so the line has nothing to name here.
+                break
             held = [card["def_id"] for card in now["piles"]["hand"]]
             legal = native.valid_actions(handle, max_actions)
             if held != tracker.hand_ids() or not legal[action]:
@@ -747,8 +760,11 @@ def _line(
             except moves.MappingError:
                 break
         tracker.play(action, kind)
-        if native.step(handle, action, obs, reward, target):
-            break  # the fight is over
+        try:
+            if native.step(handle, action, obs, reward, target):
+                break  # the fight is over
+        except native.StepRefused:
+            break  # an answer whose replay went another way: the line ends before it
     return named
 
 

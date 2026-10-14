@@ -60,7 +60,10 @@ def _card(names: dict, card: dict) -> list:
 def canonical(handle: int, native, id_map_path: str, *, done: bool = False, won: bool | None = None) -> dict:
     """Both levels for one combat handle. `native` is the emulator's sts2_gym.native module."""
     names = _names(id_map_path)
-    snap = native.get_state_json(handle)
+    # The save document: verification code (this reads the true pile and the RNG counts too),
+    # and the one export a step stopped on a screen never stops writing. The fields read here
+    # are the agent's document's; only its stopped_step block, unread, adds the true world.
+    snap = native.get_save_json(handle)
     player = snap["player"]
     piles = snap["piles"]
     true_draw = [[_name(names, "cards", cid), bool(up)] for cid, up in native.get_pile(handle, native.PILE_DRAW)]

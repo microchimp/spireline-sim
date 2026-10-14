@@ -15,7 +15,7 @@ _LIB_NAMES = {
     "darwin": "Sts2Emulator.dylib",
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
-_REQUIRED_NATIVE_API_VERSION = 33
+_REQUIRED_NATIVE_API_VERSION = 34
 _REQUIRED_RUN_NATIVE_API_VERSION = 22
 
 
@@ -775,8 +775,30 @@ class SnapshotError(Exception):
     """
 
 
+class ExportRefused(SnapshotError):
+    """Raised when `Sts2_GetStateJson` refuses to write a combat as a document.
+
+    The combat is stopped on a screen raised in the middle of a step, and the step's
+    replay from the document's public start would not reach that screen the way the step
+    went, so the document would load as another position (CombatSnapshot.Write). The
+    combat itself is untouched and can still be stepped. A `SnapshotError`, so code that
+    handles a refused document handles this too.
+    """
+
+
+class StepRefused(RuntimeError):
+    """Raised when `Sts2_Step` refuses an answer to a stopped step's screen.
+
+    The answer replays the step from its start, and the replay went another way than the
+    step did (another screen, other cards off the draw pile, answers left over): a loaded
+    document's step in a world where it does not reach its screen. The combat is left on
+    its screen as it was, and the observation buffer shows it. A `RuntimeError`, so code
+    that handles a failed native call handles this too.
+    """
+
+
 def _get_last_error() -> str:
-    """`Sts2_GetLastError`'s text (size-and-retry). Empty after a successful load."""
+    """`Sts2_GetLastError`'s text (size-and-retry): why the last load, export or answer was refused."""
     capacity = 256
     while True:
         buf = (ctypes.c_ubyte * capacity)()
@@ -1111,6 +1133,14 @@ def step(
     reward_buf: ctypes.Array,
     target_enemy_index: int = -1,
 ) -> bool:
+    """One action on a combat; True when the fight is over.
+
+    Raises:
+        StepRefused: if the action answers a screen raised in the middle of a step and the
+            step's replay went another way than the step did (a loaded document in a world
+            where it does not reach its screen). The combat stays on its screen as it was.
+
+    """
     if target_enemy_index >= 0:
         terminal = _lib.Sts2_StepTargeted(
             handle,
@@ -1121,6 +1151,8 @@ def step(
         )
     else:
         terminal = _lib.Sts2_Step(handle, action, obs_buf, reward_buf)
+    if terminal < 0:
+        raise StepRefused(_get_last_error())
     return bool(terminal)
 
 
@@ -1225,8 +1257,16 @@ def get_state_json(handle: int) -> dict:
     of a step is written with the public part of that step (`stopped_step`: the kind of
     step, the card or potion in play, the answers so far, the step's start as the player
     saw it; never the true draw order or an RNG stream): loaded, answering the screen
-    finishes the step as answering in memory does (CombatSnapshot.cs). An unknown handle
-    raises RuntimeError.
+    finishes the step as answering in memory does (CombatSnapshot.cs). The block also
+    carries what the player saw the step do before its screen (`taken`, `screens`), which
+    the load holds the replay to.
+
+    Raises:
+        ExportRefused: if the combat is stopped in the middle of a step whose replay from
+            the document's start would not reach its screen: no document is written rather
+            than one that loads as another position. The message is `Sts2_GetLastError`'s.
+        RuntimeError: if the handle is unknown.
+
     """
     return _json_export(_lib.Sts2_GetStateJson, "Sts2_GetStateJson", handle)
 
@@ -1255,6 +1295,8 @@ def _json_export(export: Callable[..., int], name: str, handle: int) -> dict:
     while True:
         buf = (ctypes.c_ubyte * capacity)()
         length = int(export(handle, buf, capacity))
+        if length == -3:
+            raise ExportRefused(_get_last_error())
         if length < 0:
             raise RuntimeError(f"{name} failed: unknown handle {handle}.")
         if length <= capacity:

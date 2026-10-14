@@ -118,6 +118,11 @@ def play(
         for _ in range(loop.STEP_CAP):
             if combat.done or not combat.legal():
                 break
+            # A combat stopped on a screen raised in the middle of a step is written with
+            # the part of the step the player saw. When that step's replay would not reach
+            # its screen from the document, the export is refused (native.ExportRefused, a
+            # SnapshotError) rather than handing the search another position: the fight
+            # stops there and `run` records it as an error, as it does a refused load.
             doc = loop.native.get_state_json(combat.handle)
             doc["encounter_id"] = None  # a live snapshot carries none
             result = searcher.search(doc, **COACH_SETTINGS, **prior_settings)
@@ -239,7 +244,10 @@ def run(
                 for arm in order:
                     row[arm] = play(fight, searcher, settings[arm], ascension)
             except (RuntimeError, ValueError, loop.native.SnapshotError) as error:
-                # A document the loader refused, or a move the fight does not have.
+                # A document the loader refused or the export would not write
+                # (native.ExportRefused), an answer the emulator refused
+                # (native.StepRefused, a RuntimeError), or a move the fight does not have.
+                # The fight is left out of the paired comparison for both arms.
                 row = {**row, "error": f"{type(error).__name__}: {error}"}
             rows[fight["index"]] = row
             with rows_path.open("a", encoding="utf-8") as sink:

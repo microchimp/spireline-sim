@@ -15,6 +15,7 @@ import importlib
 import json
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import numpy as np
@@ -226,6 +227,42 @@ class StoppedStepDocumentTests(unittest.TestCase):
             self.assertIn(BURNING_PACT, discarded)
             self.assertEqual(finished["counters"]["cards_played_this_combat"], 1)
             self.assertIsNone(finished["pending_selection"])
+
+    def test_the_document_carries_what_the_step_did_before_its_screen(self):
+        """Burning Pact took nothing off the draw pile before its screen, the one screen it reached."""
+        stopped = native.get_state_json(self.handle)["stopped_step"]
+        self.assertEqual(stopped["taken"], [])
+        (screen,) = stopped["screens"]
+        self.assertEqual(screen["source"], BURNING_PACT)
+        self.assertEqual(screen["taken"], 0)
+        self.assertEqual(screen["count"], len(screen["cards"]))
+
+    def test_a_document_whose_step_does_not_replay_to_its_screen_is_refused(self):
+        """A take the step never made: the replay reaches the screen after none, and the load refuses."""
+        document = native.get_state_json(self.handle)
+        document["stopped_step"]["taken"] = [_card(BASH)]
+        document["stopped_step"]["screens"][0]["taken"] = 1
+        with self.assertRaises(native.SnapshotError) as refused:
+            native.load_combat_snapshot(document, seed=5)
+        self.assertTrue(str(refused.exception).startswith("stopped_step"))
+
+
+class RefusalBindingTests(unittest.TestCase):
+    """`Sts2_GetStateJson`'s -3 and `Sts2_Step`'s -1 are raised, never read as a document or a fight's end."""
+
+    def test_a_refused_export_raises_export_refused(self):
+        with unittest.mock.patch.object(native._lib, "Sts2_GetStateJson", lambda handle, buf, cap: -3):
+            with self.assertRaises(native.ExportRefused) as refused:
+                native.get_state_json(0)
+        self.assertIsInstance(refused.exception, native.SnapshotError)
+
+    def test_a_refused_answer_raises_step_refused(self):
+        obs = (ctypes.c_int * native.OBS_SIZE)()
+        reward = (ctypes.c_float * 1)()
+        with unittest.mock.patch.object(native._lib, "Sts2_Step", lambda handle, action, o, r: -1):
+            with self.assertRaises(native.StepRefused) as refused:
+                native.step(0, 0, obs, reward)
+        self.assertIsInstance(refused.exception, RuntimeError)
 
 
 if __name__ == "__main__":

@@ -362,7 +362,16 @@ class _World:
             obs = (ctypes.c_int * native.OBS_SIZE)()
             reward = (ctypes.c_float * 1)()
             native.step(handle, action, obs, reward, target)
-            predicted = native.get_state_json(handle)
+            try:
+                predicted = native.get_state_json(handle)
+            except native.ExportRefused as error:
+                # The move stops on a screen inside its step, and that step's replay
+                # would not reach the screen from a document: there is no prediction to
+                # compare, rather than one of another position.
+                raise _NotComparableError(
+                    f"{self._move.label}: the emulator cannot write its position after "
+                    f"the move ({error}), so it predicts nothing",
+                ) from error
             reshuffled = (
                 native.rng_call_count(handle, _SHUFFLE) > shuffles
                 or len(predicted["piles"]["discard"]) < self._discarded
