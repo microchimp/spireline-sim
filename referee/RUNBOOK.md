@@ -644,3 +644,46 @@ worse at tonight's commit and not at the previous one under the bisect's own jud
 no commit) and writes `<date>-<commit>.md`: five numbers, the bisects, the gate's lines. Exit 1 when the gate fails, 2
 when the night could not run or had nothing to compare with. Scheduling it (Task Scheduler, 03:00) is a standing
 task: the owner's go first. Broken cases: `tests/python/test_nightly.py`.
+
+## Debugging benchmark (`debugbench.py`: how good is our debugging?)
+
+SWE-bench from our own history: past engine fixes, undone on today's main, for a fixer to find again. Local data only
+(`D:\spireline\referee\debugbench`): tasks, ground truth and scores are never committed. Builds run in worktrees under
+`debugbench\wt`; the main checkout is never touched.
+
+```
+python -m tools.fidelity.debugbench harvest [--jobs 3] [--only <sha>...]   # tasks from main's history (resumable)
+python -m tools.fidelity.debugbench signal --all [--missing] [--refset <main score>]   # what today's gates show on each base
+python -m tools.fidelity.debugbench list [--split dev] [--truth]            # held-out truth only with --heldout
+python -m tools.fidelity.debugbench prepare <task> --out <dir>              # a one-commit repo of the base, and <dir>.brief.md
+python -m tools.fidelity.debugbench score <task> --repo <dir> --ref <branch> --run <name> --report <report.json> [--verdict accept --round 1]
+python -m tools.fidelity.debugbench report [--run <name>] [--split dev|heldout|all]
+```
+
+- **Harvest.** A candidate is a non-merge commit on main that changed `src/Sts2Emulator/` and a test file. It becomes a
+  task when it is a fix (no `feat:`/`refactor:`/`style:`/... prefix, at most `--max-lines` 300 engine lines, not the same
+  engine patch as another candidate), its engine change reverts cleanly on main (3-way, engine files only), a test of
+  the classes it touched fails at the fix with its parent's engine and passes at the fix (fail-to-pass, built and run),
+  that test still fails on the base, and the rest of main's suites pass on the base once it is out. **Base** = main with
+  the engine change reverted, the fix's fail-to-pass tests (**hidden**) and any other main test that fails on the base
+  (**collateral**: it would point at the site) taken out, and `FINDINGS.md` lines naming the fix dropped. **Truth** = the
+  gold patch (base to main, engine only), its files and sites (`file::Type.Member`, `[case X]` inside a switch section),
+  and the fix's commit message. The task id is a hash of the fix commit; the split is by that hash
+  (`HELDOUT_PER_MILLE`), so a task never changes side. Every skip is logged with its reason (`harvest/<main>.jsonl`).
+- **Signal** (no truth): the corpus check of the base against main's own corpus run (the gate's rule), the invariants
+  against main's, and `--refset` the reference-set gate (~3 min a task; it appends to the refset score history, so it is
+  off by default). Per gate: detected, the fights and fields, seconds to detect (EmuDump build + gate).
+- **Fixer's loop.** `prepare` gives a repo with no history (nothing to read the fix from) and a brief with the gates'
+  output. Fix on a branch as in "The loop" above; report `{"suspects": ["src/Sts2Emulator/X.cs::Type.Member", ...], "hours":
+  h, "tokens": n}` (or Markdown with a "Suspects" section), most likely first. Held-out tasks are for evaluations
+  only: never `prepare --heldout`, `list --heldout` or read `tasks\heldout` during normal work.
+- **Score.** Correct = hidden and collateral tests pass (main's test files put back), the corpus check against main's
+  run has 0 regressions, no test main passes fails. Also: base fights restored, sibling sites missed (truth sites the
+  candidate did not touch, and missed members), localisation top-1/top-3 by file and by site, files changed outside
+  the engine. The candidate is judged with the base's judge (`tools/fidelity`, `data/id_map.json` put back).
+- **Report** per run: detection %, localisation top-1/top-3, fix correctness %, first-round acceptance (reviewer verdict
+  `accept` in round 1), missed siblings per task, regressions added, cost per correct fix. Without `--run`: the task set
+  and how many each gate detects.
+- Limits: the base keeps today's docs and comments, so text describing the fix in words (not by commit) stays; a fix
+  whose tests need an API it added cannot be a task (its tests do not build without it); a fix later code covers
+  (its tests pass on the base) is skipped. Broken cases: `tests/python/test_debugbench.py` (a synthetic fork).
