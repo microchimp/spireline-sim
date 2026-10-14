@@ -975,8 +975,10 @@ class DrawPileChoiceTests(unittest.TestCase):
         # The candidates are draw-pile indices and every imagined world reshuffles the pile,
         # so each choice is looked up by its card. Bludgeon is 32 damage for the energy
         # left, a Strike 6: with the lookup the two choices come apart clearly (by index,
-        # each would take whatever card the reshuffle put there), and the worlds whose
-        # candidates lost the card are counted rather than played.
+        # each would take whatever card the reshuffle put there). The screen's candidates
+        # follow their cards through the reshuffle, so no world loses the card: none is
+        # counted as a mapping failure. (They stayed as indices, and a world offered
+        # whatever its shuffle put there, a Skill on Secret Weapon's screen included.)
         fight = secret_weapon_choice()
         try:
             result = search_live(
@@ -995,7 +997,7 @@ class DrawPileChoiceTests(unittest.TestCase):
             strike.paired_diff_vs_best - Z90 * strike.paired_diff_stderr,
             0.0,
         )
-        self.assertGreater(result.select_mapping_failures, 0)
+        self.assertEqual(result.select_mapping_failures, 0)
 
     def test_a_draw_pile_candidate_is_looked_up_by_card_in_each_world(self):
         fight = secret_weapon_choice()
@@ -1033,7 +1035,8 @@ class DrawPileChoiceTests(unittest.TestCase):
         finally:
             fight.close()
 
-        self.assertEqual(set(outcomes), {True, False})
+        # Every world offers Bludgeon, wherever its reshuffle put it.
+        self.assertEqual(set(outcomes), {True})
 
 
 class RolloutTests(unittest.TestCase):

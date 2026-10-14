@@ -509,10 +509,13 @@ def _action_in(world: Combat, key: tuple, action: int) -> int | None:
     """Find a root move's action in a determinized world, or None if it is not there.
 
     Only a selection candidate can move: it is an index into its pile, and the resample
-    reshuffles the draw pile under it. So a root choice is looked up by its card, at its
-    own index when that still shows it (always, for a hand or a discard pile), otherwise
-    at the first candidate that does. The card is the move's key, the full visible
-    identity: def id, upgraded, enchantment and amount.
+    reshuffles the draw pile under it. The screen's candidates follow their cards through
+    the reshuffle (`ReshuffleUnknownDrawOrder`), so every world offers the cards the root
+    did, but in pile order, so a card can sit at another candidate index. So a root choice
+    is looked up by its card, at its own index when that still shows it (always, for a hand
+    or a discard pile), otherwise at the first candidate that does; None only past the
+    observation's ten slots. The card is the move's key, the full visible identity: def id,
+    upgraded, enchantment and amount.
     """
     if key[0] != "select":
         return action
