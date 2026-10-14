@@ -599,7 +599,7 @@ python -m tools.fidelity.hook_table mutants --run <mutation run dir> --work <scr
 - The decompile comes from `--decompiled` or `SPIRELINE_DECOMPILED` (default `D:\spireline\referee\decompiled`).
 - `check`: an override is *registered* where the model's emulator id is named in one of its hook's dispatch
   points (`tools/fidelity/hook_dispatch.json`: methods, a private helper they call, or a region of `EndTurn` /
-  `ResolvePlay` cut at the CombatTrace marks), or next to a comment citing `Model.Hook` in the same method;
+  `ResolvePlayRepetition` cut at the CombatTrace marks), or next to a comment citing `Model.Hook` in the same method;
   `generic` entries name a mechanism that serves a listener without naming it (costs derived in `EffectiveCost`,
   the per-turn play tallies). *Not modelled* needs a reason in `hook_unmodelled.json` (achievements, run
   modifiers, badges, multiplayer, test mocks, unreachable powers, feedback-only bodies, combat-local resets).

@@ -146,14 +146,17 @@ order combat_start BeforeSideTurnStart<AfterSideTurnStart phase relic>relic  # C
 order combat_start BeforeSideTurnStart<BeforeHandDraw phase relic>relic  # BlessedAntler.BeforeHandDraw ran before CrackedCore.BeforeSideTurnStart
 order enemy_turn_end AfterTurnEnd creature power>power  # HighVoltagePower.AfterSideTurnEnd ran before FrailPower.AfterSideTurnEnd
 order play_after AfterCardExhausted kind relic>power  # JossPaper.AfterCardExhausted ran before DarkEmbracePower.AfterCardExhausted
+order play_after AfterDamageGiven kind relic>power  # HandDrill.AfterDamageGiven ran before MonarchsGazePower.AfterDamageGiven
 order play_after AfterCardPlayed kind relic>power  # RazorTooth.AfterCardPlayed ran before MonologuePower.AfterCardPlayed
 order play_after AfterCardPlayed creature power>relic  # CurlUpPower.AfterCardPlayed ran before RainbowRing.AfterCardPlayed
 order play_after AfterCardPlayed creature power>power  # CurlUpPower.AfterCardPlayed ran before TenderPower.AfterCardPlayed
 order play_after BeforeCardPlayed creature power>relic  # StranglePower.BeforeCardPlayed ran before PenNib.BeforeCardPlayed
+order play_after BeforeCardPlayed kind relic>power  # IntimidatingHelmet.BeforeCardPlayed ran before FreeAttackPower.BeforeCardPlayed
 order play_before BeforeCardPlayed kind relic>power  # IntimidatingHelmet.BeforeCardPlayed ran before FreeAttackPower.BeforeCardPlayed
 order play_before BeforeCardPlayed creature power>relic  # StranglePower.BeforeCardPlayed ran before PenNib.BeforeCardPlayed
 order play_effect AfterCardExhausted kind relic>power  # CharonsAshes.AfterCardExhausted ran before FeelNoPainPower.AfterCardExhausted
 order play_effect AfterCardExhausted kind card>power  # DrumOfBattle.AfterCardExhausted ran before FeelNoPainPower.AfterCardExhausted
+order play_effect AfterDamageGiven kind relic>power  # HandDrill.AfterDamageGiven ran before MonarchsGazePower.AfterDamageGiven
 order play_effect ModifyDamage pass power>power  # GigantificationPower.ModifyDamageMultiplicative ran before VigorPower.ModifyDamageAdditive
 order play_effect ModifyDamage pass relic>power  # PenNib.ModifyDamageMultiplicative ran before VigorPower.ModifyDamageAdditive
 order turn_end AfterCardExhausted kind relic>power  # JossPaper.AfterCardExhausted ran before DarkEmbracePower.AfterCardExhausted

@@ -299,6 +299,7 @@ public static class StateCloning
         into.SkillPlayedWhileSmoggy = combat.SkillPlayedWhileSmoggy;
         into.CardsPlayedThisTurn = combat.CardsPlayedThisTurn;
         into.CardPlaysStartedThisTurn = combat.CardPlaysStartedThisTurn;
+        into.CardPlaySeriesStartedThisTurn = combat.CardPlaySeriesStartedThisTurn;
         into.AttackCardsPlayedThisTurn = combat.AttackCardsPlayedThisTurn;
         into.AttackOrSkillCardsPlayedThisTurn = combat.AttackOrSkillCardsPlayedThisTurn;
         into.CardPlaysThisTurn = combat.CardPlaysThisTurn;

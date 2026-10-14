@@ -82,9 +82,16 @@ PlayCard (chosen)                      AutoPlay(card, AutoPlaySource)  = CardCmd
 - `SettlePlayCount` (`GeneratePlayCount`): after the result pile and before the first
   effect, the card's replays (Spiral, Glam, Hidden Gem's Replay), then Burst, Echo Form,
   Throwing Axe, Signal Boost, Duplication and One-Two Punch, each spent there; Echo Form
-  counts the turn's plays started before this one. A play nested inside the card (Havoc's
+  counts the turn's first plays of a series (`IsFirstInSeries`, `CardPlaySeriesStartedThisTurn`)
+  started before this one. A play nested inside the card (Havoc's
   Strike, a Sly card its discard plays, a Strike Hellraiser plays out of its draw) is set up
   later and finds them already spent, so it never takes the outer card's.
+- `ResolvePlayRepetition`, once per play of the count: `CardPlayStarted` (the turn's play
+  counts), the BeforeCardPlayed hooks, the effect and the enchantment's `OnPlay`, the death
+  check, the AfterCardPlayed hooks. A repeat sees the card as the play before left it
+  (`FoldPlayedCardGrowth`: Rampage's growth, a spent Sown or Vigorous). The card reaches its
+  pile, Bolas is queued and `CheckForEmptyHand` runs once, after the last; Void Form counts
+  only the last (`IsLastInSeries`), Lethality only the first (`CurrentPlayIndex`).
 - `AutoPlayFromPile(pile, index)`: the card leaves its pile only if the auto-play starts.
 - A play nested inside another (a Strike Hellraiser plays out of a Pommel Strike's draw, a
   Shiv out of Knife Trap) saves and restores the outer play's per-play fields (`PlayFrame`).
@@ -126,9 +133,6 @@ Status: **converted** (goes through `AutoPlay` at the game's moment) and **teste
 
 ## Open gaps (owned here unless named)
 
-- Replays: a play count above one runs the effect again, not the whole
-  `BeforeCardPlayed`..`AfterCardPlayed` per play (Rage, Juggling, Velvet Choker and the
-  counters see one play). Same body for chosen and auto-plays; next unit of this owner.
 - Selection lock: Sly discards made by a screen (8 rows above); a Decisions Decisions that
   is itself auto-played answers its screen at once and plays no Skill; screens inside
   Havoc/Mayhem-played cards take the first card.

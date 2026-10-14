@@ -460,6 +460,12 @@ public sealed class CombatState
     /// </summary>
     public int CardPlaysStartedThisTurn;
 
+    /// <summary>
+    /// The plays in <see cref="CardPlaysStartedThisTurn" /> that are `IsFirstInSeries`: one per
+    /// card played, its repeats left out. What Echo Form counts.
+    /// </summary>
+    public int CardPlaySeriesStartedThisTurn;
+
     public int AttackCardsPlayedThisTurn;
     public int AttackOrSkillCardsPlayedThisTurn;
     public int CardPlaysThisTurn;

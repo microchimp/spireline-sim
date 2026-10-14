@@ -232,6 +232,7 @@ public class LifecycleTests(ITestOutputHelper output)
             ["CombatState.BurningSticksUsed"] = Counter,
             ["CombatState.CardPlaysLastTurn"] = Counter,
             ["CombatState.CardPlaysStartedThisTurn"] = Counter,
+            ["CombatState.CardPlaySeriesStartedThisTurn"] = Counter,
             ["CombatState.CardPlaysThisTurn"] = Counter,
             ["CombatState.CardsDrawnThisCombat"] = Counter,
             ["CombatState.CardsExhaustedThisTurn"] = Counter,

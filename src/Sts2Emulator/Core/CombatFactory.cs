@@ -378,6 +378,7 @@ public static class CombatFactory
         state.PlayerTurn = true;
         state.SkillPlayedWhileSmoggy = false;
         state.AttackCardsPlayedThisTurn = 0;
+        state.CardPlaySeriesStartedThisTurn = 0;
         state.PlayerHpLostThisTurn = 0;
         state.CardsExhaustedThisTurn = 0;
         // Preserve a ShuffleRng the caller set on the state (the direct combat env

@@ -623,23 +623,10 @@ public static class CombatEngine
         // only the corpses it answered: the enclosing card's own kills are its to answer.
         var sweep = autoPlay ? CorpseSweep.Answered : CorpseSweep.All;
 
-        // `CardPlaysStarted`, which every play adds to. The emulator's `CardsPlayedThisTurn`
-        // is the count Pael's Eye and Brilliant Scarf read, and both skip auto-plays.
-        if (!autoPlay)
-        {
-            state.CardsPlayedThisTurn++;
-        }
-
-        state.CardPlaysStartedThisTurn++;
-        // `ChainsOfBindingPower.BeforeCardPlayed` latches that a BOUND card has been played,
-        // which is what shuts the door on the rest of them for this turn -- before the card
-        // resolves, so a Bound card it auto-plays is refused.
-        if (card.Bound)
-        {
-            state.BoundCardPlayedThisTurn = true;
-        }
-
-        Effects.RelicEffects.ApplyBeforeCardPlayedRares(state, request.CostValue, rng);
+        // The play's first repetition (`CardPlay.IsFirstInSeries`), the only one Echo Form
+        // counts; every repetition, this one included, starts a play (`StartPlayRepetition`).
+        state.CardPlaySeriesStartedThisTurn++;
+        StartPlayRepetition(state, card, request, rng);
         bool feralReturn =
             def.Type == CardType.Attack
             && request.CostValue == 0
@@ -683,8 +670,148 @@ public static class CombatEngine
         // spent here, so a play nested inside this card's effect (a Strike Havoc plays, a Sly
         // card its discard plays, a Strike Hellraiser plays out of its draw) finds them
         // already settled and cannot take this card's.
-        int extraPlays = SettlePlayCount(state, card, def);
+        int playCount = 1 + SettlePlayCount(state, card, def);
 
+        // `OnPlayWrapper`'s loop: each of the `playCount` plays is a whole play --
+        // BeforeCardPlayed, `CardPlayStarted`, `OnPlay`, the enchantment's `OnPlay`,
+        // `CardPlayFinished`, AfterCardPlayed -- and the card reaches its result pile once,
+        // after the last. A repeat sees the card as the play before it left it (a Rampage
+        // hits harder, a Vigorous or Sown enchantment is spent).
+        var restsOn = ResolvePlayRepetition(
+            state,
+            ref card,
+            def,
+            request,
+            rng,
+            0,
+            playCount,
+            resultPile,
+            feralReturn,
+            energySpent,
+            sweep,
+            enemyHpsBefore
+        );
+        for (int playIndex = 1; playIndex < playCount; playIndex++)
+        {
+            card = FoldPlayedCardGrowth(state, card);
+            StartPlayRepetition(state, card, request, rng);
+            restsOn = ResolvePlayRepetition(
+                state,
+                ref card,
+                def,
+                request,
+                rng,
+                playIndex,
+                playCount,
+                resultPile,
+                feralReturn,
+                energySpent,
+                sweep,
+                EnemyHps(state)
+            );
+        }
+
+        return restsOn;
+    }
+
+    /// <summary>
+    /// What starts every repetition of a play, before the rest of BeforeCardPlayed: the
+    /// `CardPlayStarted` counts and the two hooks the emulator runs ahead of the result pile.
+    /// </summary>
+    private static void StartPlayRepetition(
+        CombatState state,
+        CardInstance card,
+        in PlayRequest request,
+        Random rng
+    )
+    {
+        // `CardPlaysStarted`, which every play adds to. The emulator's `CardsPlayedThisTurn`
+        // is the count Pael's Eye and Brilliant Scarf read, and both skip auto-plays.
+        if (!request.IsAutoPlay)
+        {
+            state.CardsPlayedThisTurn++;
+        }
+
+        state.CardPlaysStartedThisTurn++;
+        // `ChainsOfBindingPower.BeforeCardPlayed` latches that a BOUND card has been played,
+        // which is what shuts the door on the rest of them for this turn -- before the card
+        // resolves, so a Bound card it auto-plays is refused.
+        if (card.Bound)
+        {
+            state.BoundCardPlayedThisTurn = true;
+        }
+
+        Effects.RelicEffects.ApplyBeforeCardPlayedRares(state, request.CostValue, rng);
+    }
+
+    /// <summary>Every enemy's HP, by position: a repetition's own death check.</summary>
+    private static int[] EnemyHps(CombatState state)
+    {
+        var hps = new int[state.Enemies.Count];
+        for (int i = 0; i < hps.Length; i++)
+        {
+            hps[i] = state.Enemies[i].Hp;
+        }
+
+        return hps;
+    }
+
+    /// <summary>
+    /// Between two repetitions: what the last one did to the card (the growth and spent
+    /// enchantments the result pile would take) is on the card for the next one.
+    /// </summary>
+    private static CardInstance FoldPlayedCardGrowth(CombatState state, CardInstance card)
+    {
+        card = card with
+        {
+            EnchantSpent = card.EnchantSpent || state.PlayedCardEnchantSpent,
+            EnchantAmount = card.EnchantAmount + (state.PlayedCardEnchantGrew ? 1 : 0),
+            CostBump = card.CostBump + state.PlayedCardCostBump,
+            BonusDamage = card.BonusDamage + state.PlayedCardBonusDamage,
+            BonusBlock = card.BonusBlock + state.PlayedCardBonusBlock,
+            CostForCombat =
+                state.PlayedCardCostForCombat != int.MinValue
+                    ? state.PlayedCardCostForCombat
+                    : card.CostForCombat,
+        };
+        ResetPlayedCardGrowth(state);
+        return card;
+    }
+
+    private static void ResetPlayedCardGrowth(CombatState state)
+    {
+        state.PlayedCardBonusDamage = 0;
+        state.PlayedCardBonusBlock = 0;
+        state.PlayedCardEnchantSpent = false;
+        state.PlayedCardEnchantGrew = false;
+        state.PlayedCardCostBump = 0;
+        state.PlayedCardCostForCombat = int.MinValue;
+    }
+
+    /// <summary>
+    /// One repetition of <see cref="ResolvePlay" />, `CardPlay.PlayIndex`
+    /// <paramref name="playIndex" /> of <paramref name="playCount" />: BeforeCardPlayed, the
+    /// card's effect, AfterCardPlayed, and on the last one the card on its result pile.
+    /// </summary>
+    /// <returns>The last repetition: the pile the card came to rest on, or null when it left
+    /// combat or is held. Null for the others.</returns>
+    private static List<CardInstance>? ResolvePlayRepetition(
+        CombatState state,
+        ref CardInstance card,
+        CardDef def,
+        in PlayRequest request,
+        Random rng,
+        int playIndex,
+        int playCount,
+        ResultPile resultPile,
+        bool feralReturn,
+        int energySpent,
+        CorpseSweep sweep,
+        ReadOnlySpan<int> enemyHpsBefore
+    )
+    {
+        bool autoPlay = request.IsAutoPlay;
+        bool isLast = playIndex == playCount - 1;
         if (def.Type == CardType.Skill && BuffSystem.Get(state.PlayerBuffs, BuffId.Smoggy) > 0)
         {
             state.SkillPlayedWhileSmoggy = true;
@@ -744,7 +871,7 @@ public static class CombatEngine
         // count is still one. The counter is bumped after the play, so during resolution
         // it still holds the turn's earlier attacks -- zero means this is the first.
         state.LethalAttackPlay =
-            def.Type == CardType.Attack && state.AttackCardsPlayedThisTurn == 0;
+            playIndex == 0 && def.Type == CardType.Attack && state.AttackCardsPlayedThisTurn == 0;
 
         // Its own power, not part of the chain above: `VeilpiercerPower.BeforeCardPlayed`
         // fires on any Ethereal card, so an Ethereal Attack spends a stack of this AND a
@@ -785,19 +912,18 @@ public static class CombatEngine
         Effects.RelicEffects.ApplyAfterEachPlay(state, def, rng);
 
         // `cardSource.CurrentPlayIndex > 0` returns 1m: a repeat of the same play gets no
-        // Lethality, so the flag is spent by the first resolution.
+        // Lethality (`playIndex == 0` above), and the flag is spent by its resolution.
         state.LethalAttackPlay = false;
-
-        // The repeats the play count settled at set-up (`SettlePlayCount`).
-        for (int i = 0; i < extraPlays; i++)
-        {
-            Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
-            Effects.RelicEffects.ApplyAfterEachPlay(state, def, rng);
-        }
 
         if (def.Type == CardType.Attack)
         {
-            QueueAttackPlayLifecycleEffects(state, card);
+            // Bolas comes back for the CARD (`Bolas.BeforeHandDraw` asks whether it finished
+            // a play last turn), so a card played twice is queued once.
+            if (isLast)
+            {
+                QueueAttackPlayLifecycleEffects(state, card);
+            }
+
             BuffSystem.Remove(state.PlayerBuffs, BuffId.Vigor);
             // `GigantificationPower.AfterAttack` clears its latch and DECREMENTS once the
             // attack it tripled has finished -- one attack CARD per stack, however many
@@ -867,6 +993,136 @@ public static class CombatEngine
             card = card with { Upgraded = true };
         }
 
+        // `OnPlayWrapper` moves the card to its result pile after the last repetition.
+        var restsOn = isLast ? PlacePlayedCard(state, card, def, resultPile, feralReturn, rng) : null;
+        if (def.Name == "Shiv")
+        {
+            state.ShivsPlayedThisTurn++;
+        }
+
+        // `SerpentFormPower.AfterCardPlayed` spends the amount it recorded BEFORE the play,
+        // on a random hittable enemy. Recording before and spending after is what stops the
+        // Serpent Form that applied the power from triggering it -- so the amount is read
+        // from `serpentFormBefore`, captured above the card's own effect.
+        if (serpentFormBefore > 0)
+        {
+            var serpentTarget = Effects.CardEffects.RandomLivingEnemyFor(state, rng);
+            if (serpentTarget != null)
+            {
+                Effects.CardEffects.DealUnpoweredDamage(state, serpentTarget, serpentFormBefore);
+            }
+        }
+
+        // `RightHandHand.AfterCardPlayedLate`: a play that SPENT two or more energy pulls
+        // every copy sitting in the DISCARD pile back to hand. On the card, so it comes
+        // back for the card that was expensive rather than for the one it belongs to --
+        // and it costs nothing itself, so it can never bring itself back.
+        if (request.CostValue >= 2)
+        {
+            Effects.CardEffects.ReturnRightHandHandsFromDiscard(state);
+        }
+
+        // `CardPlayFinishedEntry.WasEthereal` -- counted when the play FINISHES, which is
+        // here and not up with the Veilpiercer decrement, so a card cannot count itself.
+        if (IsEtherealForPowers(state, card))
+        {
+            state.EtherealCardPlaysThisCombat++;
+        }
+
+        // `OblivionPower.AfterCardPlayed` pays out the amount its BeforeCardPlayed
+        // recorded, as Doom on the enemy carrying it. Paying the SNAPSHOT is what keeps
+        // Oblivion off the card that applied it -- at BeforeCardPlayed the enemy does not
+        // have the power yet, so there is nothing recorded for that play.
+        for (int i = 0; i < state.Enemies.Count && i < oblivionBefore.Length; i++)
+        {
+            if (oblivionBefore[i] > 0 && state.Enemies[i].Hp > 0)
+            {
+                BuffSystem.Apply(state.Enemies[i].Buffs, BuffId.Doom, oblivionBefore[i]);
+            }
+        }
+
+        PayMonologue(state, monologueBefore);
+
+        // `DevourLifePower.AfterCardPlayed`: the card played being a SOUL summons Osty for
+        // its amount.
+        int devourLife = BuffSystem.Get(state.PlayerBuffs, BuffId.DevourLife);
+        if (devourLife > 0 && card.DefId == 446) // Soul
+        {
+            Effects.CardEffects.SummonOsty(state, devourLife);
+        }
+
+        // `HauntPower.AfterCardPlayed`, the same Soul trigger: Unblockable and Unpowered
+        // damage to one random enemy, on the CombatTargets stream.
+        int haunt = BuffSystem.Get(state.PlayerBuffs, BuffId.Haunt);
+        if (haunt > 0 && card.DefId == 446) // Soul
+        {
+            var hauntTarget = Effects.CardEffects.RandomLivingEnemy(state, rng);
+            if (hauntTarget != null)
+            {
+                Effects.CardEffects.DealUnblockableUnpoweredDamageToEnemy(
+                    state,
+                    hauntTarget,
+                    haunt
+                );
+            }
+        }
+
+        // `VoidFormPower.AfterCardPlayed` counts a play only when it is neither an auto-play
+        // nor a repeat (`IsLastInSeries`), so a chosen card counts once.
+        if (!autoPlay && isLast && BuffSystem.Get(state.PlayerBuffs, BuffId.VoidForm) > 0)
+        {
+            state.VoidFormCardsPlayedThisTurn++;
+        }
+
+        IncrementPlayedCardTypeCounters(state, def, card, request.IsDupe);
+
+        // `MakeItSo.AfterCardPlayedLate`: playing a SKILL counts the Skills played this
+        // turn, and on every third one every Make It So NOT already in hand comes back to
+        // it. It reads `CardPlaysFinished`, so THIS play is in the count -- hence below
+        // the increment rather than beside the Right Hand Hand hook further up, where the
+        // counter is still one short and the card would come back on the second, fifth and
+        // eighth Skill instead.
+        if (def.Type == CardType.Skill && state.SkillCardsPlayedThisTurn % 3 == 0)
+        {
+            Effects.CardEffects.ReturnMakeItSosToHand(state);
+        }
+
+        // Music Box needs the INSTANCE, not the definition: it clones the card that was
+        // played, so the copy inherits its upgrade and its enchantment.
+        Effects.RelicEffects.ApplyMusicBox(state, card, def);
+
+        ApplyAfterCardPlayedPowers(state, def, rng, energySpent);
+        Effects.RelicEffects.ApplyAfterCardPlayedRares(state, def, rng);
+        // The Lamp's latch closes when the card that claimed it finishes resolving.
+        Effects.RelicEffects.FinishUnsettlingLampCard(state);
+        // `CheckForEmptyHand`, after the loop: once, with the card on its pile.
+        if (isLast)
+        {
+            Effects.RelicEffects.ApplyAfterHandEmptied(state, rng);
+        }
+
+        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+
+        // The after-play kills, answered inside the play as the game answers every death,
+        // and before the play's win check -- or the end of the turn Void Form forces. Left
+        // unanswered, a lone Gremlin Merc finished off by Strangle was a won fight.
+        AnswerDeathsSince(state, afterEffects, rng, sweep: sweep);
+        return restsOn;
+    }
+
+    /// <summary>
+    /// The card on the result pile <see cref="DecideResultPile" /> chose, carrying what the
+    /// play did to it, or held while a screen it opened is still up.
+    /// </summary>
+    private static List<CardInstance>? PlacePlayedCard(
+        CombatState state,
+        CardInstance card,
+        CardDef def,
+        ResultPile resultPile,
+        bool feralReturn,
+        Random rng
+    )
+    {
         List<CardInstance>? restsOn = null;
         int exhaustCountBeforePlacement = state.ExhaustPile.Count;
         int discardCountBeforePlacement = state.DiscardPile.Count;
@@ -1030,119 +1286,7 @@ public static class CombatEngine
             }
         }
 
-        state.PlayedCardBonusDamage = 0;
-        state.PlayedCardBonusBlock = 0;
-        state.PlayedCardEnchantSpent = false;
-        state.PlayedCardEnchantGrew = false;
-        state.PlayedCardCostBump = 0;
-        state.PlayedCardCostForCombat = int.MinValue;
-        if (def.Name == "Shiv")
-        {
-            state.ShivsPlayedThisTurn++;
-        }
-
-        // `SerpentFormPower.AfterCardPlayed` spends the amount it recorded BEFORE the play,
-        // on a random hittable enemy. Recording before and spending after is what stops the
-        // Serpent Form that applied the power from triggering it -- so the amount is read
-        // from `serpentFormBefore`, captured above the card's own effect.
-        if (serpentFormBefore > 0)
-        {
-            var serpentTarget = Effects.CardEffects.RandomLivingEnemyFor(state, rng);
-            if (serpentTarget != null)
-            {
-                Effects.CardEffects.DealUnpoweredDamage(state, serpentTarget, serpentFormBefore);
-            }
-        }
-
-        // `RightHandHand.AfterCardPlayedLate`: a play that SPENT two or more energy pulls
-        // every copy sitting in the DISCARD pile back to hand. On the card, so it comes
-        // back for the card that was expensive rather than for the one it belongs to --
-        // and it costs nothing itself, so it can never bring itself back.
-        if (request.CostValue >= 2)
-        {
-            Effects.CardEffects.ReturnRightHandHandsFromDiscard(state);
-        }
-
-        // `CardPlayFinishedEntry.WasEthereal` -- counted when the play FINISHES, which is
-        // here and not up with the Veilpiercer decrement, so a card cannot count itself.
-        if (IsEtherealForPowers(state, card))
-        {
-            state.EtherealCardPlaysThisCombat++;
-        }
-
-        // `OblivionPower.AfterCardPlayed` pays out the amount its BeforeCardPlayed
-        // recorded, as Doom on the enemy carrying it. Paying the SNAPSHOT is what keeps
-        // Oblivion off the card that applied it -- at BeforeCardPlayed the enemy does not
-        // have the power yet, so there is nothing recorded for that play.
-        for (int i = 0; i < state.Enemies.Count && i < oblivionBefore.Length; i++)
-        {
-            if (oblivionBefore[i] > 0 && state.Enemies[i].Hp > 0)
-            {
-                BuffSystem.Apply(state.Enemies[i].Buffs, BuffId.Doom, oblivionBefore[i]);
-            }
-        }
-
-        PayMonologue(state, monologueBefore);
-
-        // `DevourLifePower.AfterCardPlayed`: the card played being a SOUL summons Osty for
-        // its amount.
-        int devourLife = BuffSystem.Get(state.PlayerBuffs, BuffId.DevourLife);
-        if (devourLife > 0 && card.DefId == 446) // Soul
-        {
-            Effects.CardEffects.SummonOsty(state, devourLife);
-        }
-
-        // `HauntPower.AfterCardPlayed`, the same Soul trigger: Unblockable and Unpowered
-        // damage to one random enemy, on the CombatTargets stream.
-        int haunt = BuffSystem.Get(state.PlayerBuffs, BuffId.Haunt);
-        if (haunt > 0 && card.DefId == 446) // Soul
-        {
-            var hauntTarget = Effects.CardEffects.RandomLivingEnemy(state, rng);
-            if (hauntTarget != null)
-            {
-                Effects.CardEffects.DealUnblockableUnpoweredDamageToEnemy(
-                    state,
-                    hauntTarget,
-                    haunt
-                );
-            }
-        }
-
-        // `VoidFormPower.AfterCardPlayed` counts a play only when it is neither an auto-play
-        // nor a repeat, so a chosen card counts once.
-        if (!autoPlay && BuffSystem.Get(state.PlayerBuffs, BuffId.VoidForm) > 0)
-        {
-            state.VoidFormCardsPlayedThisTurn++;
-        }
-
-        IncrementPlayedCardTypeCounters(state, def, card, request.IsDupe);
-
-        // `MakeItSo.AfterCardPlayedLate`: playing a SKILL counts the Skills played this
-        // turn, and on every third one every Make It So NOT already in hand comes back to
-        // it. It reads `CardPlaysFinished`, so THIS play is in the count -- hence below
-        // the increment rather than beside the Right Hand Hand hook further up, where the
-        // counter is still one short and the card would come back on the second, fifth and
-        // eighth Skill instead.
-        if (def.Type == CardType.Skill && state.SkillCardsPlayedThisTurn % 3 == 0)
-        {
-            Effects.CardEffects.ReturnMakeItSosToHand(state);
-        }
-
-        // Music Box needs the INSTANCE, not the definition: it clones the card that was
-        // played, so the copy inherits its upgrade and its enchantment.
-        Effects.RelicEffects.ApplyMusicBox(state, card, def);
-
-        ApplyAfterCardPlayedPowers(state, def, rng, energySpent);
-        Effects.RelicEffects.ApplyAfterCardPlayedRares(state, def, rng);
-        // The Lamp's latch closes when the card that claimed it finishes resolving.
-        Effects.RelicEffects.FinishUnsettlingLampCard(state);
-        Effects.RelicEffects.ApplyAfterHandEmptied(state, rng);
-        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
-
-        // The after-play kills, answered inside the play as the game answers every death,
-        // and before the play's win check -- or the end of the turn Void Form forces. Left
-        // unanswered, a lone Gremlin Merc finished off by Strangle was a won fight.
-        AnswerDeathsSince(state, afterEffects, rng, sweep: sweep);
+        ResetPlayedCardGrowth(state);
         return restsOn;
     }
 
@@ -1183,11 +1327,15 @@ public static class CombatEngine
             extraPlays++;
         }
 
-        // `EchoFormPower`: one more play while the turn's `CardPlaysStarted` (first of a
-        // series, chosen or auto) before THIS one are fewer than its amount. This play is
-        // already in `CardPlaysStartedThisTurn`; the plays nested inside the card that is
-        // being set up are not yet, as in the game.
-        if (state.CardPlaysStartedThisTurn - 1 < BuffSystem.Get(state.PlayerBuffs, BuffId.EchoForm))
+        // `EchoFormPower`: one more play while the turn's `CardPlaysStarted` that are
+        // `IsFirstInSeries` (chosen or auto) before THIS one are fewer than its amount, so a
+        // card's own repeats are not counted. This play is already in
+        // `CardPlaySeriesStartedThisTurn`; the plays nested inside the card that is being set
+        // up are not yet, as in the game.
+        if (
+            state.CardPlaySeriesStartedThisTurn - 1
+            < BuffSystem.Get(state.PlayerBuffs, BuffId.EchoForm)
+        )
         {
             extraPlays++;
         }
@@ -2136,6 +2284,7 @@ public static class CombatEngine
             state.PlayerHpLostThisTurn = 0;
             state.CardsPlayedThisTurn = 0;
             state.CardPlaysStartedThisTurn = 0;
+            state.CardPlaySeriesStartedThisTurn = 0;
             // `HappenedThisTurn` on the damage history, which Beat Into Shape reads per target.
             foreach (var enemy in state.Enemies)
             {
