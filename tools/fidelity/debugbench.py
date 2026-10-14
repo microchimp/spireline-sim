@@ -1743,6 +1743,8 @@ def main(argv=None) -> int:
     rp.add_argument("--run")
     rp.add_argument("--split", choices=("dev", "heldout", "all"), default="all")
     a = ap.parse_args(argv)
+    with contextlib.suppress(AttributeError, ValueError):
+        sys.stdout.reconfigure(errors="replace")  # a commit subject the console cannot encode never stops a run
     if a.cmd == "signal" and not a.tasks and not a.all:
         ap.error("signal: name tasks or --all")
     try:
