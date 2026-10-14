@@ -94,7 +94,9 @@ python tools/fidelity/corpus.py status                # size, formats, flags, ta
 - `check` compares with `corpus/baselines/<commit>.json` of this commit or its nearest ancestor. REGRESSIONS: a fight whose
   plain replay diverges earlier than before (identical before included), a new emulator exception in either replay,
   or a re-anchored step that matched and no longer does, now throws, or now also diverges in another field.
-  IMPROVEMENTS: the reverse. A full check (no `--only`/`--limit`) also FAILS when a baseline fight was not compared.
+  IMPROVEMENTS: the reverse. A full check (no `--only`/`--limit`) also FAILS when a baseline fight was not compared, and
+  any check FAILS (`UNSOUND`) when it compared no baseline fight, ran an EmuDump older than the emulator's sources or
+  lost fights to EmuDump failures (broken cases: `tests/python/test_corpus_check_broken.py`).
   New fights without a baseline are counted, never a failure. A note says when the judge (`tools/fidelity`,
   `data/id_map.json`) changed since the baseline.
 - A regression is a bug in the change unless the old match was luck (two wrongs cancelling): then say so in the commit

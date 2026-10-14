@@ -40,7 +40,8 @@ game recordings.
   regression is a fight whose plain replay now diverges earlier than before (identical before and not
   now included), a new emulator exception in either replay, or a re-anchored step that matched and does
   not now, now throws, or now diverges in a field it did not before. A full check also fails when a
-  baseline fight was not compared. Exit 1 on any.
+  baseline fight was not compared. Exit 1 on any, and when the check compared no baseline fight, ran an
+  EmuDump older than the emulator sources, or lost fights to EmuDump failures (timeouts, crashes).
 """
 
 from __future__ import annotations
@@ -920,9 +921,21 @@ def check(corpus: Corpus, run_doc: dict, base_path: Path, show: int = 40) -> int
                 for k, v in res.items()}
         (rdir / "check.json").write_text(json.dumps({"baseline": base["commit"], **slim}), encoding="utf-8")
     lost = sum(len(it["steps"]) for it in res["regressions"])
-    failed = bool(res["regressions"]) or missing_fail
+    # A check that compared nothing, ran stale code or lost fights to EmuDump failures vouches for nothing.
+    compared = len(base["fights"]) - len(res["missing"])
+    unsound = []
+    if compared == 0:
+        unsound.append("no baseline fight was compared")
+    if run_doc.get("emulator", {}).get("stale_build"):
+        unsound.append("EmuDump.dll is older than the emulator sources (rebuild tools/emudump)")
+    if run_doc.get("problems"):
+        unsound.append(f"EmuDump failed in this run ({len(run_doc['problems'])} problems, first: {run_doc['problems'][0][:120]})")
+    for u in unsound:
+        print(f"UNSOUND: {u}")
+    failed = bool(res["regressions"]) or missing_fail or bool(unsound)
     print(f"check: {'FAIL' if failed else 'ok'}: {len(res['regressions'])} regressed fights ({lost} re-anchored steps), "
-          f"{len(res['missing']) if missing_fail else 0} not compared, {len(res['improvements'])} improved; "
+          f"{len(res['missing']) if missing_fail else 0} not compared, {len(res['improvements'])} improved, "
+          f"{compared} compared{', unsound' if unsound else ''}; "
           f"identical {bt.get('identical', 0)} -> {ct.get('identical', 0)}, "
           f"re-anchored matched {bt.get('reanchor_matched', 0)} -> {ct.get('reanchor_matched', 0)}")
     return 1 if failed else 0
