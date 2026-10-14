@@ -15,6 +15,17 @@ public static class CombatFactory
     // matching Creature.SetUniqueMonsterHpValue which excludes already-used MaxHp values.
     private static HashSet<int>? _usedNicheHps;
 
+    // HP values the opening roster rolled before the fight was built. A combat-layout
+    // event (EventRoom.EnterInternal -> EventModel.GenerateInternalCombatState) creates its
+    // encounter's creatures, and so rolls their HP on Niche, as the room is entered; the
+    // fight it starts later reuses those creatures (CombatRoom.ShouldCreateCombat is false)
+    // and draws nothing. Each CreateEnemy of the opening roster takes the next value here
+    // in place of its draw. See RollOpeningNicheHps.
+    private static Queue<int>? _presetNicheHps;
+
+    // Every Niche HP value CreateEnemy rolls while RollOpeningNicheHps builds its roster.
+    private static List<int>? _nicheHpLog;
+
     // The overloads that take no HP or deck start where a run at the default level
     // starts. Read off the run's own rules rather than restated, so the two cannot drift:
     // 64/80 and Ascender's Bane at A8.
@@ -316,7 +327,10 @@ public static class CombatFactory
         int? encounterRngSeed = null,
         int nicheSkipCount = 0,
         Random? aiRng = null,
-        IReadOnlyList<RelicInstance>? runRelics = null
+        IReadOnlyList<RelicInstance>? runRelics = null,
+        // The opening roster's HP, rolled before this fight (RollOpeningNicheHps): no Niche
+        // draw is made for the creatures it covers.
+        IReadOnlyList<int>? openingNicheHps = null
     )
     {
         state.PlayerMaxHp = Math.Max(1, playerMaxHp);
@@ -386,9 +400,11 @@ public static class CombatFactory
         _currentAscension = state.AscensionLevel;
         _currentNicheHpRng = state.NicheHpRng;
         _usedNicheHps = _currentNicheHpRng != null ? new HashSet<int>() : null;
+        _presetNicheHps = openingNicheHps is { Count: > 0 } ? new Queue<int>(openingNicheHps) : null;
         state.Enemies = CreateEncounter(encounter, rng, encounterRngSeed, state.AscensionLevel);
         _currentNicheHpRng = null;
         _usedNicheHps = null;
+        _presetNicheHps = null;
 
         // SurroundedPower goes on the PLAYER, so it cannot be applied while the roster is
         // being built. Direction.Right is the enum's zero, which is where the player
@@ -538,6 +554,40 @@ public static class CombatFactory
     }
 
     private static int[] StarterDeck() => RunConstants.StartingDeckIds(Ascension.DefaultLevel);
+
+    /// <summary>
+    /// The Niche HP rolls the opening roster of <paramref name="encounterId"/> makes, drawn
+    /// off <paramref name="nicheHpRng"/> exactly as <see cref="Reset"/> would draw them. For a
+    /// fight whose creatures exist before it starts: a combat-layout event builds them as the
+    /// room is entered. Hand the result to <c>Reset(openingNicheHps:)</c> and the fight takes
+    /// the same values without drawing again.
+    /// </summary>
+    /// <param name="rng">The combat rng the fight will be built with; the roster's other
+    /// rolls read it, and only the HP values are kept.</param>
+    public static int[] RollOpeningNicheHps(
+        int encounterId,
+        int ascension,
+        CountingRandom nicheHpRng,
+        Random rng,
+        int? encounterRngSeed
+    )
+    {
+        var saved = (_currentNicheHpRng, _usedNicheHps, _presetNicheHps, _nicheHpLog, _currentAscension);
+        try
+        {
+            _currentAscension = ascension;
+            _currentNicheHpRng = nicheHpRng;
+            _usedNicheHps = [];
+            _presetNicheHps = null;
+            _nicheHpLog = [];
+            CreateEncounter((ActOneEncounter)encounterId, rng, encounterRngSeed, ascension);
+            return [.. _nicheHpLog];
+        }
+        finally
+        {
+            (_currentNicheHpRng, _usedNicheHps, _presetNicheHps, _nicheHpLog, _currentAscension) = saved;
+        }
+    }
 
     private static List<EnemyState> CreateEncounter(
         ActOneEncounter encounter,
@@ -1818,12 +1868,22 @@ public static class CombatFactory
         // which calls rng.NextItem(remaining_set) to avoid duplicate HP values across
         // creatures on the same side.
         int hp;
-        if (fixedHp.HasValue)
+        if (_presetNicheHps is { Count: > 0 })
+        {
+            // Rolled when the event room was entered; the fight spends no draw on it.
+            int rolled = _presetNicheHps.Dequeue();
+            hp = fixedHp ?? rolled;
+            if (!fixedHp.HasValue)
+            {
+                _usedNicheHps?.Add(hp);
+            }
+        }
+        else if (fixedHp.HasValue)
         {
             hp = fixedHp.Value;
             if (_currentNicheHpRng != null)
             {
-                _currentNicheHpRng.Next(0, band.Max - band.Min + 1);
+                _nicheHpLog?.Add(_currentNicheHpRng.Next(0, band.Max - band.Min + 1));
             }
         }
         else if (_currentNicheHpRng != null)
@@ -1847,6 +1907,7 @@ public static class CombatFactory
                 hp = range.ElementAt(index);
             }
             _usedNicheHps?.Add(hp);
+            _nicheHpLog?.Add(hp);
         }
         else
         {

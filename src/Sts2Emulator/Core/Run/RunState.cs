@@ -416,6 +416,15 @@ public sealed class RunState
     public List<int> EventSkippedCards = [];
 
     /// <summary>
+    /// The creature HP a combat-layout event (Punch Off, The Lantern Key) rolled on Niche as
+    /// its room was entered: <c>EventRoom.EnterInternal</c> calls
+    /// <c>EventModel.GenerateInternalCombatState</c>, which creates the encounter's creatures
+    /// then, and the event's fight reuses them. Set by <see cref="RunNonCombatEffects.BeginEvent"/>,
+    /// taken (and cleared) by the fight; null when the open event has no such fight.
+    /// </summary>
+    public int[]? EventCombatHps;
+
+    /// <summary>
     /// Bing Bong is adding its own clone right now. The game's guard is a `CardsToSkip`
     /// set the relic checks and removes from; a re-entrancy flag says the same thing for a
     /// single-player deck and cannot leak an entry the way a set can.

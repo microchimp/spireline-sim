@@ -1162,11 +1162,17 @@ public static class RunNonCombatEffects
                     : RunFollowUp.None;
 
             case Effects.RelicEffects.RoyalStamp:
-                // The game shuffles the eligible cards on Rng.Niche before offering them,
-                // which changes the ORDER of the screen and not what is on it. The
-                // emulator offers the deck in deck order, so the shuffle is not modelled
-                // and no stream draw is spent -- recorded rather than faked, because a
-                // wrong draw on Niche desynchronises far more than a screen's ordering.
+                // RoyalStamp.AfterObtained shuffles the deck cards Royally Approved can
+                // enchant on Rng.Niche (the in-place unstable shuffle: one draw per card
+                // after the first) and offers them in that order. The emulator's screen is
+                // answered by deck position, so the order has nothing to change, but the
+                // draws are the game's: Niche feeds summon HP, egg and Wing Charm rolls later.
+                state.Rng.Niche.Shuffle(
+                    Enumerable
+                        .Range(0, state.Deck.Count)
+                        .Where(i => Enchantments.CanEnchant(state.Deck[i], Enchantment.RoyallyApproved))
+                        .ToList()
+                );
                 return BeginDeckSelection(
                     state,
                     DeckSelection.Enchant,
@@ -1356,7 +1362,48 @@ public static class RunNonCombatEffects
         state.EventSkippedCards = [];
         state.EventId = eventId;
         CalculateEventVars(state);
+        state.EventCombatHps = RollEventCombatHps(state, eventId);
         state.Phase = RunPhase.Event;
+    }
+
+    /// <summary>
+    /// The encounter of an event with a Combat layout, or null. The Architect's is not
+    /// built: the run ends at its PROCEED, so no later Niche roll reads its draws.
+    /// </summary>
+    public static int? EventCombatEncounter(int eventId) =>
+        eventId switch
+        {
+            RunConstants.EventPunchOff => RunConstants.PunchOffEncounterId,
+            RunConstants.EventTheLanternKey => RunConstants.MysteriousKnightEncounterId,
+            _ => null,
+        };
+
+    /// <summary>
+    /// <c>EventRoom.EnterInternal</c> -> <c>EventModel.GenerateInternalCombatState</c>: a
+    /// Combat-layout event creates its encounter's creatures as the room is entered, after
+    /// the options are generated, and <c>CombatState.CreateCreature</c> rolls each one's HP on
+    /// <c>Rng.Niche</c> there -- whether or not the player then fights. The fight it starts
+    /// reuses those creatures, so it takes these values and draws nothing.
+    /// </summary>
+    private static int[]? RollEventCombatHps(RunState state, int eventId)
+    {
+        if (EventCombatEncounter(eventId) is not int encounterId)
+        {
+            return null;
+        }
+
+        // The same combat rng and encounter stream the fight is built with
+        // (RunEngine.StartCombatWithDeck), so the roster is the fight's own.
+        var niche = CountingRandom.At(state.Rng.Niche);
+        int[] hps = CombatFactory.RollOpeningNicheHps(
+            encounterId,
+            state.AscensionLevel,
+            niche,
+            new CountingRandom(state.Rng.Niche.RawSeed),
+            EncounterRng.SeedFor((int)state.Rng.Seed, state.Floor, encounterId)
+        );
+        state.Rng.Niche.AdvanceToCallCount(niche.CallCount);
+        return hps;
     }
 
     public static void EnterEvent(RunState state)

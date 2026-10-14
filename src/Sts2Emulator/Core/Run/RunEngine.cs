@@ -225,6 +225,15 @@ public sealed class RunEngine
         // can bite reinforcements with the same rule -- see `RelicEffects.Spawned`.
         combat.FurCoatBites = State.FurCoatRooms.Contains(State.CurrentMapCoord);
 
+        // A Combat-layout event's fight reuses the creatures the room built on entry, HP
+        // and all (RunNonCombatEffects.BeginEvent): no Niche draw for them here.
+        int[]? openingHps =
+            State.Phase == RunPhase.Event
+            && RunNonCombatEffects.EventCombatEncounter(State.EventId) == encounterId
+                ? State.EventCombatHps
+                : null;
+        State.EventCombatHps = null;
+
         CombatFactory.Reset(
             combat,
             combatRng,
@@ -240,7 +249,8 @@ public sealed class RunEngine
             EncounterRngSeed(encounterId),
             nicheSkipCount: 0,
             aiRng,
-            runRelics
+            runRelics,
+            openingHps
         );
         // Sling of Courage reads the ROOM, not the encounter, so the room type travels
         // with the combat.
