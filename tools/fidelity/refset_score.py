@@ -171,10 +171,11 @@ def label(action: dict | None) -> str:
 
 def evidence(g: dict, ok_steps: set) -> dict:
     """What the recorded game fight shows happening, each with whether the emulator reproduced that step: card plays
-    by variant, potion uses, relic flashes (the game's own "this relic did something"), and the player's powers up
-    when an enemy with an attack intent took its turn (Combat.cs end_turn steps)."""
+    by variant, potion uses, relic flashes (the game's own "this relic did something"), the player's powers up
+    when an enemy with an attack intent took its turn (Combat.cs end_turn steps), and those up when such a turn
+    also left fewer enemies alive (an attacker died in its own turn: Thorns before the blow)."""
     steps = g.get("steps", [])
-    plays, uses, powers_hit = [], [], set()
+    plays, uses, powers_hit, killed = [], [], set(), set()
     for j in range(1, len(steps)):
         act = steps[j].get("action") or {}
         if act.get("kind") == "play" and act.get("played", True):
@@ -187,11 +188,14 @@ def evidence(g: dict, ok_steps: set) -> dict:
         elif act.get("kind") == "end_turn":
             # The enemies' turn: an enemy that showed an attack intent attacked while the player had these powers.
             st = steps[j - 1]["state"]
-            if any(str(i[0] if isinstance(i, list) else i).startswith("Attack")
-                   for e in st.get("enemies") or [] if e.get("hp", 0) > 0 for i in e.get("intents") or []):
-                powers_hit.update(p[0] if isinstance(p, list) else str(p) for p in (st.get("player") or {}).get("powers") or [])
+            living = [e for e in st.get("enemies") or [] if e.get("hp", 0) > 0]
+            if any(str(i[0] if isinstance(i, list) else i).startswith("Attack") for e in living for i in e.get("intents") or []):
+                up = {p[0] if isinstance(p, list) else str(p) for p in (st.get("player") or {}).get("powers") or []}
+                powers_hit.update(up)
+                if sum(1 for e in steps[j]["state"].get("enemies") or [] if e.get("hp", 0) > 0) < len(living):
+                    killed.update(up)
     fires = [[r, (j in ok_steps) if j > 0 else (0 in ok_steps)] for j, r in g.get("relic_flashes") or []]
-    return {"plays": plays, "uses": uses, "fires": fires, "powers_hit": sorted(powers_hit)}
+    return {"plays": plays, "uses": uses, "fires": fires, "powers_hit": sorted(powers_hit), "attacker_killed": sorted(killed)}
 
 
 def judge(entry_part: str, g: dict, e: dict, r: dict, nm: dict, keys) -> dict:
@@ -292,7 +296,8 @@ def trigger_reached(trigger: dict, vs: list) -> bool:
         fired = {r for r, _ in v.get("fires", [])}
         used = {p for p, _ in v.get("uses", [])}
         if (all(k == "replay" or {"plays": played, "relic_flashes": fired, "potions": used, "pickup": set(v.get("relics", [])),
-                                  "powers_hit": set(v.get("powers_hit", []))}[k] & set(want)
+                                  "powers_hit": set(v.get("powers_hit", [])), "attacker_killed": set(v.get("attacker_killed", []))}[k]
+                & set(want)
                 for k, want in trigger.items())):
             return True
     return False

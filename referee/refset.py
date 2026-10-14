@@ -812,7 +812,9 @@ REGRESSION_CLASSES = [
     ("factory potion roll: Alchemize", "FINDINGS / triage generation", ["ALCHEMIZE"], [], [], None, [], ["7LMBLSSF3M", "MX1GNK7KGX"]),
     ("random pile placement: Capture Spirit's Souls", "FINDINGS / triage generation", ["CAPTURE_SPIRIT"], [], [], None, [], ["Q91FAC7EJB"]),
     ("hook order: Thorns after the damage is fixed (Rupture)", "FINDINGS / triage enemy-effects", ["STRIKE_IRONCLAD", "RUPTURE"], [], [], "TOADPOLES_WEAK", [], ["P70F1RFA2Y"]),
-    ("hook order: the player's Thorns before an enemy hit lands (open)", "FINDINGS 2026-10-13", ["DEFEND_IRONCLAD"], [], [], "NIBBITS_NORMAL", [("THORNS_POWER", 3, "player")], []),
+    # Thorns 15, so an attacker dies to it inside its own attack (where the game's ThornsPower, before the blow, and
+    # the emulator's, after it, differ); at 3 a 48 HP Nibbit never does.
+    ("hook order: the player's Thorns before an enemy hit lands (open)", "FINDINGS 2026-10-13", ["DEFEND_IRONCLAD"], [], [], "NIBBITS_NORMAL", [("THORNS_POWER", 15, "player")], []),
     ("hidden counter: Inferno's self damage", "triage powers-a", ["INFERNO"], [], [], None, [], ["J1XUUAW07A"]),
     ("hidden counter: Crimson Mantle", "triage powers-a", ["CRIMSON_MANTLE"], [], [], None, [], ["S37M8GW3NE"]),
     ("hidden counter: The Bomb", "triage powers-a / night04", ["THE_BOMB"], [], [], None, [], ["2YCT30W7AY", "CDE3SPM32Z"]),
@@ -907,7 +909,8 @@ def regression_specs(t: Tables) -> list[dict]:
                     "chooser_seed": 7700 + n, "max_actions": MAX_ACTIONS, "use_potions": True, "setup": items,
                     "chooser": "random", "relic_flashes": True, "tag": f"regression:{name}"}
             out.append({"id": f"G{n + 1:03d}-{spec['seed']}", "part": "regression", "class": name, "source": source,
-                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES),
+                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES,
+                                                                             kill=name in KILL_CLASSES),
                         "reason": f"minimal setup for the divergence class '{name}' ({source})", "chooser": "random",
                         "expect_act": t.encounters[enc or plain][0] if act > 1 else None,
                         "flags": ["cross_character"] if cross else [], "spec": spec})
@@ -921,7 +924,8 @@ def regression_specs(t: Tables) -> list[dict]:
             spec["tag"] = f"regression-original:{name}"
             spec["relic_flashes"] = True
             out.append({"id": f"G{n + 1:03d}o-{s}", "part": "regression", "class": name, "source": f"{source}; original {src}",
-                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES),
+                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES,
+                                                                             kill=name in KILL_CLASSES),
                         "reason": f"the fight that found '{name}', re-recorded with the fixed driver",
                         "chooser": "script" if spec.get("script") else spec.get("chooser", "random"), "flags": [], "spec": spec})
     return out
@@ -931,13 +935,16 @@ FILLER_CARDS = {"STRIKE_IRONCLAD", "DEFEND_IRONCLAD"}
 # Classes about a relic's pickup itself (what it rolls or asks for as it is obtained), not about it in a fight: their
 # trigger is the relic obtained by the setup, held at the fight's start.
 PICKUP_CLASSES = {"potion roll without repeats: Phial Holster", "selection count: Kifuda / Gnarled Hammer take 0 to 3 cards"}
+# Classes about a player power that strikes back as an enemy attacks: reached only when an attacker died inside its own
+# turn against that power (the blow the game resolves the power before), not merely when it attacked into it.
+KILL_CLASSES = {"hook order: the player's Thorns before an enemy hit lands (open)"}
 
 
 def class_trigger(name: str) -> dict | None:
     """The trigger of a regression class by name, from REGRESSION_CLASSES (the manifest keeps a copy)."""
     for cname, _, cards, relics, potions, _, powers, _ in REGRESSION_CLASSES:
         if cname == name:
-            return trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES)
+            return trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES, kill=name in KILL_CLASSES)
     return None
 
 
@@ -946,11 +953,11 @@ def class_kind(name: str) -> str:
     return "driver" if name.startswith("driver:") else "emulator"
 
 
-def trigger_of(cards: list, relics: list, potions: list, powers: list, pickup: bool = False) -> dict:
+def trigger_of(cards: list, relics: list, potions: list, powers: list, pickup: bool = False, kill: bool = False) -> dict:
     """What a fight of the class must show for its pass to count (refset_score): one of the class's own cards
     played (the fillers count only when they are all the class has), its relic fired (a flash; for a pickup class,
-    obtained and held at the start), its potion used, its power up when an enemy's attack lands. A class with none
-    of these is reached by replaying its fight."""
+    obtained and held at the start), its potion used, its power up when an enemy's attack lands (for a kill class:
+    and an attacker died in its own turn against it). A class with none of these is reached by replaying its fight."""
     own = [c for c in cards if c not in FILLER_CARDS] or list(cards)
     out = {}
     if own:
@@ -961,6 +968,8 @@ def trigger_of(cards: list, relics: list, potions: list, powers: list, pickup: b
         out["potions"] = sorted(set(potions))
     if powers:
         out["powers_hit"] = sorted({p for p, _, tg in powers if tg == "player"})
+        if kill:
+            out["attacker_killed"] = out["powers_hit"]
     return out or {"replay": True}
 
 

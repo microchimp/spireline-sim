@@ -113,7 +113,8 @@ x room type.
 
 - every part names its chooser and how many fights used it;
 - regression: a class passes when its fights are identical AND its trigger was reached (its card played, its
-  relic fired, its potion used, its power up when an enemy attacked); driver classes are counted apart;
+  relic fired, its potion used, its power up when an enemy attacked; for the Thorns class an attacker dying in its
+  own turn against it, the case the open bug is about); driver classes are counted apart;
 - coverage: a relic counts only where its effect fired (a relic flash) at verified steps, not where it was held;
 - codex runs: per component, floors matching among the floors reached before each run's first difference;
   stops by class (profile-dependent apart), components at 0%, the walker's skips against the set's run count.

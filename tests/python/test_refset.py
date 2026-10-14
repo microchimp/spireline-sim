@@ -327,6 +327,26 @@ class Specs(unittest.TestCase):
         self.assertFalse(refset_score.trigger_reached({"relic_flashes": ["PHIAL_HOLSTER"]}, v))
         self.assertEqual(refset.class_kind("driver: turn-start auto-play"), "driver")
 
+    def test_the_thorns_class_is_reached_only_when_an_attacker_dies_against_it(self) -> None:
+        name = "hook order: the player's Thorns before an enemy hit lands (open)"
+        self.assertEqual(refset.class_trigger(name), {"plays": ["DEFEND_IRONCLAD"], "powers_hit": ["THORNS_POWER"],
+                                                      "attacker_killed": ["THORNS_POWER"]})
+        # Its minimal setup's Thorns can kill a 48 HP Nibbit inside its attacks (3 never did).
+        self.assertTrue(any(c[0] == name and c[6] == [("THORNS_POWER", 15, "player")] for c in refset.REGRESSION_CLASSES))
+
+        def st(nibbits, thorns=True):
+            return {"player": {"hp": 50, "powers": [["THORNS_POWER", 15]] if thorns else []},
+                    "enemies": [{"name": "NIBBIT", "hp": hp, "intents": [["Attack", 7, 1]]} for hp in nibbits]}
+        attacked = {"steps": [{"action": None, "state": st([40, 30])}, {"action": {"kind": "end_turn"}, "state": st([25, 15])}]}
+        killed = {"steps": [{"action": None, "state": st([40, 10])}, {"action": {"kind": "end_turn"}, "state": st([25, 0])}]}
+        ev_a, ev_k = refset_score.evidence(attacked, {1}), refset_score.evidence(killed, {1})
+        self.assertEqual((ev_a["powers_hit"], ev_a["attacker_killed"]), (["THORNS_POWER"], []))
+        self.assertEqual(ev_k["attacker_killed"], ["THORNS_POWER"])
+        trig = refset.class_trigger(name)
+        play = {"plays": [["DEFEND_IRONCLAD", True]]}
+        self.assertFalse(refset_score.trigger_reached(trig, [ev_a | play]))
+        self.assertTrue(refset_score.trigger_reached(trig, [ev_k | play]))
+
 
 def result(seed="S", steps=3, err=None, setup_ok=True, msg=""):
     r = {"seed": seed, "steps": [{"action": None if i == 0 else {"kind": "end_turn"}, "state": {"in_combat": True, "round": i}}
