@@ -29,7 +29,8 @@ public class StoppedStepRefusalTests
         HookChoiceReplay stopped,
         IReadOnlyList<StepAnswer>? answers = null,
         IReadOnlyList<CardInstance>? taken = null,
-        IReadOnlyList<StepScreen>? screens = null
+        IReadOnlyList<StepScreen>? screens = null,
+        IReadOnlyList<bool>? peeks = null
     ) =>
         new()
         {
@@ -41,6 +42,7 @@ public class StoppedStepRefusalTests
             Hidden = answers is null ? stopped.Hidden : [.. stopped.Hidden, .. Enumerable.Repeat(ScreenHiddenState.None, answers.Count - stopped.Answers.Count)],
             Taken = taken ?? stopped.Taken,
             Screens = screens ?? stopped.Screens,
+            Peeks = peeks ?? stopped.Peeks,
         };
 
     private static void Put(CombatState state, HookChoiceReplay replay) =>
@@ -77,6 +79,40 @@ public class StoppedStepRefusalTests
 
         Assert.Equal("stopped_step", refused.Path);
         Assert.Contains("take 1 off the draw pile", refused.Message);
+    }
+
+    /// <summary>
+    /// Well-Laid Plans' screen after a turn end where I Am Invincible did not play itself, with that
+    /// look written as one that played, or one look too few or too many: refused, never replayed into
+    /// a play the player did not see or out of one the player saw.
+    /// </summary>
+    [Theory]
+    [InlineData("[true]", "take")]
+    [InlineData("[]", "looks at the draw pile 1 times")]
+    [InlineData("[false,false]", "looked at the draw pile 1 times")]
+    public void ADocumentWhoseLooksAtTheTopAreNotTheStepsIsRefusedAtLoad(string peeks, string why)
+    {
+        var document = Document("WellLaidPlansIAmInvincibleSecond");
+        Assert.Equal("[false]", document["stopped_step"]!["peeks"]!.ToJsonString());
+        document["stopped_step"]!["peeks"] = JsonNode.Parse(peeks);
+
+        var refused = Refused(document);
+
+        Assert.Equal("stopped_step", refused.Path);
+        Assert.Contains(why, refused.Message);
+    }
+
+    /// <summary>In memory, a record whose look at the top decided otherwise is a replay gone another way: refused.</summary>
+    [Fact]
+    public void AnInMemoryLookThatDecidesOtherwiseIsRefusedAndTheScreenStays()
+    {
+        var (fight, rng, _) = Stopped("ForegoneConclusionIAmInvincibleSecond");
+        var stopped = fight.Pending!.Replay!;
+        Put(fight.State, Altered(stopped, peeks: [true]));
+
+        var refused = AnswerRefused(fight.State, rng);
+
+        Assert.Contains("look 1 at the draw pile played", refused.Message);
     }
 
     /// <summary>A document whose last screen is not the one it shows, or that reaches it after other takes.</summary>

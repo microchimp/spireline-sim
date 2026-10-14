@@ -35,11 +35,13 @@ namespace Sts2Emulator.Core;
 /// position the action was taken from, its unseen cards a multiset and no stream -- and what the step
 /// did before the screen that the player saw happen: the cards it took off the draw pile, in the order
 /// it took them (<see cref="Taken" />: the hand it drew, the card Havoc or Mayhem auto-played off the
-/// top, the picks), and each screen it reached (<see cref="Screens" />: kind, source card, the
-/// candidates it showed, how many cards had been taken by then). Read back, that start is the
+/// top, the picks), each screen it reached (<see cref="Screens" />: kind, source card, the
+/// candidates it showed, how many cards had been taken by then), and what each look at the top
+/// decided (<see cref="Peeks" />: I Am Invincible played itself or not). Read back, that start is the
 /// <see cref="Before" /> of a step from a document (<see cref="FromDocument" />), and its replay is held
 /// to that record (<see cref="StepInProgress" />): every take off the draw pile takes the recorded card
 /// (swapped into the place the replay takes from, which only reorders cards the player cannot see),
+/// every look at the top decides as the step's did (a card that does swapped in, likewise),
 /// every screen before the last shows the recorded candidates, and every screen must be the recorded
 /// one -- kind, source card, candidate count and the takes before it -- or the replay is REFUSED
 /// (<see cref="StoppedStepMismatch" />), as are answers left over and a pick by a card no candidate
@@ -110,6 +112,14 @@ public sealed class HookChoiceReplay
     /// <see cref="Answers" />, and last the screen it stopped on.
     /// </summary>
     public required IReadOnlyList<StepScreen> Screens { get; init; }
+
+    /// <summary>
+    /// What each look at the draw pile decided before the screen the step stopped on, in the order the
+    /// step looked (<c>CombatEngine.PeekDrawPile</c>): whether I Am Invincible, on top as the play
+    /// phase ended, played itself. The player saw it play or not, so the agent's document writes it;
+    /// what lay on top when it did not is not written.
+    /// </summary>
+    public required IReadOnlyList<bool> Peeks { get; init; }
 }
 
 /// <summary>
@@ -207,6 +217,9 @@ internal sealed class StepInProgress
     /// <summary>The screens this run has reached, in order (<see cref="HookChoiceReplay.Screens" />).</summary>
     public List<StepScreen> Screens { get; } = [];
 
+    /// <summary>What this run's looks at the draw pile decided, in order (<see cref="HookChoiceReplay.Peeks" />).</summary>
+    public List<bool> Peeks { get; } = [];
+
     /// <summary>
     /// Whether this run is still on its way to a screen <see cref="Record" /> reached, and so held to
     /// the record, takes and screens alike.
@@ -253,24 +266,63 @@ internal sealed class StepInProgress
     }
 
     /// <summary>
-    /// A look at the card at <paramref name="index" /> that decides what the step does without
-    /// taking it (<c>CombatEngine.PeekDrawPile</c>). A step from the agent's document shows there the
-    /// card the step takes next, when the pile holds it: the step took it from there, or the step
-    /// did not stop for it and takes it later (a draw from the top), and either way the replay then
-    /// decides as the step did. The take itself is held to the record.
+    /// A look at the card at <paramref name="index" /> that decides what the step does without taking
+    /// it (<c>CombatEngine.PeekDrawPile</c>): <paramref name="decides" /> of that card, recorded
+    /// (<see cref="Peeks" />). On the way to a recorded screen it must decide as the step's look did
+    /// (<see cref="HookChoiceReplay.Peeks" />). A step from the agent's document starts from a pile in
+    /// the loader's order, so there a card that decides as the step's did is swapped into
+    /// <paramref name="index" /> first when the card there does not: a reorder of cards the player
+    /// cannot see, as a take's is. When the look plays the card (I Am Invincible on top), that card is
+    /// the next take, off the top, so the recorded next take is the one swapped in; when it does not,
+    /// the next take may come from anywhere (Foregone Conclusion's pick), so the card swapped in is the
+    /// first below that does not play, and a later take off the top swaps its own card in
+    /// (<see cref="OnTake" />). A look too many, or no card in the pile that decides as the step's
+    /// did, or (in memory) any other decision is a replay gone another way: refused.
     /// </summary>
-    public void OnPeek(int index)
+    public bool OnPeek(int index, Func<CardInstance, bool> decides)
     {
         var pile = State.DrawPile;
-        if (Record is { FromDocument: true } record && InRecord && Taken.Count < record.Taken.Count)
+        bool decided = decides(pile[index]);
+        if (Record is { } record && InRecord)
         {
-            var expected = record.Taken[Taken.Count];
-            int at = pile[index].Equals(expected) ? -1 : pile.IndexOf(expected);
-            if (at >= 0)
+            if (Peeks.Count >= record.Peeks.Count)
             {
+                throw new StoppedStepMismatch(
+                    $"the replay looks at the draw pile {Peeks.Count + 1} times on its way to screen {Used + 1}, where the step looked {record.Peeks.Count} times before its last screen"
+                );
+            }
+
+            bool recorded = record.Peeks[Peeks.Count];
+            if (decided != recorded)
+            {
+                int at = -1;
+                if (record.FromDocument)
+                {
+                    if (recorded && Taken.Count < record.Taken.Count && decides(record.Taken[Taken.Count]))
+                    {
+                        at = pile.IndexOf(record.Taken[Taken.Count]);
+                    }
+
+                    if (at < 0)
+                    {
+                        at = Enumerable.Range(0, pile.Count).FirstOrDefault(i => i != index && decides(pile[i]) == recorded, -1);
+                    }
+                }
+
+                if (at < 0)
+                {
+                    throw new StoppedStepMismatch(
+                        $"look {Peeks.Count + 1} at the draw pile {(recorded ? "played" : "did not play")} its card, which the replay cannot do there"
+                    );
+                }
+
                 (pile[index], pile[at]) = (pile[at], pile[index]);
+                decided = recorded;
             }
         }
+
+        Peeks.Add(decided);
+        return decided;
     }
 
     /// <summary>
@@ -301,6 +353,13 @@ internal sealed class StepInProgress
             if (record.Screens[Used].Differs(open, Taken.Count) is { } why)
             {
                 throw new StoppedStepMismatch($"screen {Used + 1} of the replay is {why}");
+            }
+
+            if (Used == record.Screens.Count - 1 && Peeks.Count != record.Peeks.Count)
+            {
+                throw new StoppedStepMismatch(
+                    $"the replay looked at the draw pile {Peeks.Count} times on its way to its last screen, where the step looked {record.Peeks.Count} times"
+                );
             }
 
             if (record.FromDocument && Used < Answers.Count && Hidden[Used].Whole is null)
@@ -430,6 +489,7 @@ internal sealed class StepInProgress
             Hidden = [.. Hidden],
             Taken = [.. Taken],
             Screens = [.. Screens],
+            Peeks = [.. Peeks],
         };
 }
 

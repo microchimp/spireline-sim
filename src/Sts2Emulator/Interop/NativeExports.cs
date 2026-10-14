@@ -78,7 +78,12 @@ public static class NativeExports
     //      answer whose replay went another way, the combat left on its screen as it was.
     //      Sts2_GetLastError says why in each case. A library from before wrote no such fields and
     //      put the answering copy back at whatever screen the replay reached.
-    public const int NATIVE_API_VERSION = 34;
+    // v35: stopped_step also carries what each look at the draw pile decided before the screen
+    //      (peeks: whether I Am Invincible, on top as the play phase ended, played itself), and a
+    //      loaded step's replay is held to it. A library from before refuses the field, and refused
+    //      to write or load a valid document whenever the loader's order put I Am Invincible on
+    //      top where it had not played, or Foregone Conclusion had picked it.
+    public const int NATIVE_API_VERSION = 35;
 
     /// <summary>
     /// The plain resets' deck: the start of a run at the default level, from the one

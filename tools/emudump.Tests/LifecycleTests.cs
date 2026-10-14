@@ -768,6 +768,7 @@ public class LifecycleTests(ITestOutputHelper output)
         Hidden = new List<ScreenHiddenState>(),
         Taken = new List<CardInstance>(),
         Screens = new List<StepScreen>(),
+        Peeks = new List<bool>(),
     };
 
     static readonly Lazy<RunEngine> Template = new(BuildRunInCombat);

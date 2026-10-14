@@ -15,7 +15,7 @@ _LIB_NAMES = {
     "darwin": "Sts2Emulator.dylib",
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
-_REQUIRED_NATIVE_API_VERSION = 34
+_REQUIRED_NATIVE_API_VERSION = 35
 _REQUIRED_RUN_NATIVE_API_VERSION = 22
 
 
@@ -1258,8 +1258,9 @@ def get_state_json(handle: int) -> dict:
     step, the card or potion in play, the answers so far, the step's start as the player
     saw it; never the true draw order or an RNG stream): loaded, answering the screen
     finishes the step as answering in memory does (CombatSnapshot.cs). The block also
-    carries what the player saw the step do before its screen (`taken`, `screens`), which
-    the load holds the replay to.
+    carries what the player saw the step do before its screen (`taken`, `screens`, and
+    `peeks`: whether I Am Invincible played itself off the top), which the load holds the
+    replay to.
 
     Raises:
         ExportRefused: if the combat is stopped in the middle of a step whose replay from

@@ -320,7 +320,7 @@ public static class CombatSnapshot
     ];
 
     private static readonly string[] StoppedStepFields =
-        ["step", "card", "potion", "action", "target", "answers", "taken", "screens", "before", "answer_indices", "before_draw", "before_streams", "hidden"];
+        ["step", "card", "potion", "action", "target", "answers", "taken", "screens", "peeks", "before", "answer_indices", "before_draw", "before_streams", "hidden"];
 
     /// <summary>A screen the stopped step reached (<see cref="StepScreen" />).</summary>
     private static readonly string[] ScreenFields = ["kind", "source", "count", "taken", "cards", "generated"];
@@ -552,6 +552,8 @@ public static class CombatSnapshot
         var given = fields.Items("answers", ReadAnswer);
         var taken = fields.RequiredItems("taken", ReadCard);
         var screens = fields.RequiredItems("screens", ReadScreen);
+        // What each look at the top decided: whether I Am Invincible played itself.
+        var peeks = fields.RequiredItems("peeks", AsBool);
         if (screens.Count != given.Count + 1)
         {
             throw new SnapshotException(fields.At("screens"), $"{screens.Count} screens for {given.Count} answers; a stopped step reaches one screen per answer and the one it stopped on");
@@ -587,6 +589,7 @@ public static class CombatSnapshot
                 Hidden = [.. given.Select(_ => ScreenHiddenState.None)],
                 Taken = taken,
                 Screens = screens,
+                Peeks = peeks,
             };
         }
         else
@@ -633,6 +636,7 @@ public static class CombatSnapshot
                 Hidden = hidden,
                 Taken = taken,
                 Screens = screens,
+                Peeks = peeks,
             };
         }
 
@@ -1753,6 +1757,7 @@ public static class CombatSnapshot
                 writer.WriteEndObject();
             }
         );
+        WriteItems(w, "peeks", stopped.Peeks, (writer, played) => writer.WriteBooleanValue(played));
         w.WritePropertyName("before");
         WriteCombat(w, stopped.Before, save: false);
         if (save && !stopped.FromDocument)

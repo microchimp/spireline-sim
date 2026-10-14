@@ -211,19 +211,13 @@ public static class CombatEngine
 
     /// <summary>
     /// A look at the card at <paramref name="index" /> of the draw pile that decides what the step
-    /// does without taking it (I Am Invincible's, on top): a replay from the agent's document shows
-    /// there the card the step takes next, so it decides as the step did
+    /// does without taking it (I Am Invincible's, on top): <paramref name="decides" /> of that card.
+    /// The running step records the decision, and a replay is held to the step's: a replay from the
+    /// agent's document shows there a card that decides as the step's did
     /// (<see cref="StepInProgress.OnPeek" />).
     /// </summary>
-    internal static CardInstance PeekDrawPile(CombatState state, int index)
-    {
-        if (_running is { } run && ReferenceEquals(run.State, state))
-        {
-            run.OnPeek(index);
-        }
-
-        return state.DrawPile[index];
-    }
+    internal static bool PeekDrawPile(CombatState state, int index, Func<CardInstance, bool> decides) =>
+        _running is { } run && ReferenceEquals(run.State, state) ? run.OnPeek(index, decides) : decides(state.DrawPile[index]);
 
     /// <summary>The step running on this thread, if it can be replayed (see <see cref="Step" />).</summary>
     [ThreadStatic]
@@ -5450,7 +5444,7 @@ public static class CombatEngine
     {
         if (
             state.DrawPile.Count > 0
-            && GeneratedData.Cards.Get(PeekDrawPile(state, 0).DefId).Name == "IAmInvincible"
+            && PeekDrawPile(state, 0, card => GeneratedData.Cards.Get(card.DefId).Name == "IAmInvincible")
         )
         {
             AutoPlayFromDrawPile(state, 1, rng);

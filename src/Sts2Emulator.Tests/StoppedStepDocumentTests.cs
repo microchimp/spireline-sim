@@ -39,7 +39,10 @@ public class StoppedStepDocumentTests
     /// and round 5's stops whose way to the screen runs through the hidden order: Havoc's and Mayhem's
     /// Burning Pact (with Entropy answered first, too), Hellraiser's Seeker Strike, and Entropy's
     /// screen after a Hellraiser hand draw that drew the Seeker Strike (its pick answered) or did not;
-    /// and Entropy's after a turn end where I Am Invincible, on top of the true pile, played itself.
+    /// and Entropy's after a turn end where I Am Invincible, on top of the true pile, played itself;
+    /// and round 6's (review, ZReviewR6.B_): Well-Laid Plans' and Foregone Conclusion's screens after a
+    /// turn end where I Am Invincible, second from the top, did not play itself and nothing was taken
+    /// before the screen, and Foregone Conclusion's second pick after its first took I Am Invincible.
     /// </summary>
     public static TheoryData<string> Screens() =>
         new()
@@ -47,6 +50,7 @@ public class StoppedStepDocumentTests
             "BurningPact", "TrueGrit+", "Headbutt", "Armaments", "Brand", "ForegoneConclusion", "Tyranny", "Entropy", "WellLaidPlans", "GamblersBrew",
             "HavocBurningPact", "MayhemBurningPact", "MayhemEntropyBurningPact", "HellraiserSeekerStrike", "HellraiserEntropyStrikeDrawn", "HellraiserEntropyStrikeUndrawn",
             "IAmInvincibleEntropy",
+            "WellLaidPlansIAmInvincibleSecond", "ForegoneConclusionIAmInvincibleSecond", "ForegoneConclusionPicksIAmInvincible",
         };
 
     private const int IAmInvincible = 257;
@@ -174,6 +178,42 @@ public class StoppedStepDocumentTests
                 Assert.Contains(fight.State.ExhaustPile.Concat(fight.State.DiscardPile), card => card.DefId == IAmInvincible);
                 step = "turn_start";
                 break;
+
+            case "WellLaidPlansIAmInvincibleSecond" or "ForegoneConclusionIAmInvincibleSecond" or "ForegoneConclusionPicksIAmInvincible":
+            {
+                // I Am Invincible second from the top: it does not play itself as the play phase
+                // ends. Nothing is taken before Well-Laid Plans' screen or Foregone Conclusion's, and
+                // Foregone Conclusion's pick of it is taken from the middle: the loader's order must
+                // not play it.
+                bool picks = screen == "ForegoneConclusionPicksIAmInvincible";
+                fight = Fight
+                    .Hand(Card(IC.StrikeIronclad), Card(IC.DefendIronclad))
+                    .Energy(3)
+                    .Draw([Card(Twelve[0]), Card(IAmInvincible), .. Pile(Twelve[1..])])
+                    .Enemy(hp: 400)
+                    .PlayerBuff(screen.StartsWith("WellLaidPlans") ? BuffId.WellLaidPlans : BuffId.ForegoneConclusion, picks ? 2 : 1);
+                rng = new CountingRandom(9);
+                CombatEngine.Step(fight.State, fight.State.Hand.Count, rng);
+                Assert.Contains(fight.State.DrawPile, card => card.DefId == IAmInvincible);
+                Assert.Equal([false], fight.Pending!.Replay!.Peeks);
+                if (picks)
+                {
+                    var open = fight.Pending!;
+                    Assert.Equal(CardSelectionKind.DrawPileToHand, open.Kind);
+                    int offering = Enumerable.Range(0, open.Candidates.Count).First(c => fight.State.DrawPile[open.Candidates[c]].DefId == IAmInvincible);
+                    CombatEngine.Step(fight.State, offering, rng);
+                    Assert.Equal(CardSelectionKind.DrawPileToHand, fight.Pending!.Kind);
+                    Assert.Contains(fight.State.Hand, card => card.DefId == IAmInvincible);
+                    Assert.Equal(IAmInvincible, Assert.Single(fight.Pending.Replay!.Taken).DefId);
+                }
+                else
+                {
+                    Assert.Empty(fight.Pending!.Replay!.Taken);
+                }
+
+                step = screen.StartsWith("WellLaidPlans") ? "end_turn" : "turn_start";
+                break;
+            }
 
             case "GamblersBrew":
                 fight = Fight
@@ -353,6 +393,54 @@ public class StoppedStepDocumentTests
 
         Assert.Equal(written, CombatSnapshot.Write(loaded));
         Assert.Equal(written, CombatSnapshot.WriteSave(loaded));
+    }
+
+    /// <summary>
+    /// A full deck holding I Am Invincible in the draw pile at turn one, Foregone Conclusion and Mayhem
+    /// on: the first end turn stops on Foregone Conclusion's screen. The export checks its step on seed
+    /// 1 alone, so every order of one deck got the same answer, and round 6 refused to write 11 of 12
+    /// (review, ZReviewR6.F_). Every order now writes its document, and it loads and answers.
+    /// </summary>
+    [Fact]
+    public void AFullDeckTurnOnePileHoldingIAmInvincibleIsWrittenAtEveryOrder()
+    {
+        int[] deck =
+        [
+            IC.Hellraiser, IC.BattleTrance, IC.PommelStrike, CL.SeekerStrike, CL.SeekerStrike, IC.StrikeIronclad, IC.TwinStrike,
+            IC.BurningPact, IC.Armaments, IC.ShrugItOff, IC.DefendIronclad, IC.DefendIronclad, IC.Havoc, IAmInvincible,
+        ];
+        var refused = new List<string>();
+        int played = 0;
+        foreach (int seed in Seeds)
+        {
+            var order = new Random(seed);
+            var fight = Fight
+                .Hand()
+                .Energy(3)
+                .Draw([.. deck.OrderBy(_ => order.Next()).Select(id => new CardInstance(id, false))])
+                .Enemy(hp: 120)
+                .Enemy(hp: 90)
+                .Seed(seed)
+                .PlayerBuff(BuffId.ForegoneConclusion, 1)
+                .PlayerBuff(BuffId.MayhemPower, 1);
+            var rng = new CountingRandom(seed);
+            CombatEngine.Step(fight.State, 0, rng);
+            Assert.Equal(CardSelectionKind.DrawPileToHand, fight.Pending!.Kind);
+            played += fight.Pending.Replay!.Peeks.Count(peek => peek);
+            try
+            {
+                byte[] document = CombatSnapshot.Write(fight.State);
+                var loaded = CombatSnapshot.Read(document, seed: 1, out _);
+                Answer(loaded, new CountingRandom(seed));
+            }
+            catch (Exception e) when (e is SnapshotException or StoppedStepMismatch)
+            {
+                refused.Add($"order {seed}: {e.Message}");
+            }
+        }
+
+        Assert.True(refused.Count == 0, string.Join('\n', refused));
+        Assert.InRange(played, 0, Seeds.Length - 1);
     }
 
     /// <summary>
