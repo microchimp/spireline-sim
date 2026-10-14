@@ -118,6 +118,7 @@ static class Reanchor
             var rng = e.State.ActiveCombatRng!;
             var gsteps = game["steps"]!.AsArray();
             var gameChoices = (game["choices"]?.AsArray() ?? new JsonArray()).ToList();
+            var untagged = Fight.UntaggedChoices.Of(game);
             steps.Add(new JsonObject { ["action"] = null, ["state"] = DumpLite(combat, true) });
             var start = combat.Clone();
             int last = mode.TraceTo is int upTo ? Math.Min(upTo + 1, gsteps.Count) : gsteps.Count;
@@ -163,7 +164,7 @@ static class Reanchor
                     JsonArray chosen;
                     try
                     {
-                        using (Prof.Scope("apply")) (terminal, won, chosen) = Apply(q, qr, a, stepChoices);
+                        using (Prof.Scope("apply")) (terminal, won, chosen) = Apply(q, qr, a, stepChoices, untagged);
                     }
                     finally
                     {
@@ -178,6 +179,7 @@ static class Reanchor
                     // after it, so the fight is finished the way the run finishes it (SyncAfterCombat, the
                     // after-combat relics). Where the game goes on, the step differs in in_combat, as it always did.
                     using (Prof.Scope("dumplite")) rec["state"] = terminal && !gameGoesOn ? EndState(e, q, qr, won) : DumpLite(q, !terminal);
+                    if (!terminal && q.PendingSelection != null) terminal = Finish(q, qr);
                     if (terminal && !gameGoesOn) break;
                     // The emulator ended a fight the game continues: carry on from the state before the action.
                     (combat, rng) = terminal ? (pre, preRng) : (q, qr);
@@ -202,8 +204,14 @@ static class Reanchor
         return outp;
     }
 
-    /// <summary>The game's action, then the card choices the game made for it, as the plain replay applies them.</summary>
-    static (bool Terminal, bool Won, JsonArray Chosen) Apply(CombatState q, CountingRandom qr, JsonObject a, List<JsonNode?> choices)
+    /// <summary>
+    /// The game's action, then the card choices the game made for it, as the plain replay applies them
+    /// (a format-1 recording's untagged choices from <paramref name="untagged" />, which keeps track of
+    /// those used; the ones this step used are added to <paramref name="choices" />, so a redo of the
+    /// step in <see cref="CarryGameMoves" /> answers the same).
+    /// </summary>
+    static (bool Terminal, bool Won, JsonArray Chosen) Apply(CombatState q, CountingRandom qr, JsonObject a, List<JsonNode?> choices,
+        Fight.UntaggedChoices? untagged = null)
     {
         var first = StepOnce(q, qr, a);
         bool terminal = first.Terminal, won = first.Terminal && first.PlayerWon;
@@ -218,13 +226,42 @@ static class Reanchor
             }, choice!.AsObject()));
         }
 
+        if (untagged != null)
+        {
+            choices.AddRange(untagged.AnswerOpen(() => q, i =>
+            {
+                var r = CombatEngine.Step(q, i, qr);
+                terminal |= r.Terminal;
+                won |= r.Terminal && r.PlayerWon;
+            }, chosen));
+        }
+
         if (!terminal && q.PendingSelection is { } extra)  // a won fight leaves no screen to answer
         {
             chosen.Add(new JsonObject { ["unexpected_selection"] = extra.Kind.ToString() });
-            q.PendingSelection = null;  // nobody is there to answer it; the next anchor starts clean
         }
 
         return (terminal, won, chosen);
+    }
+
+    /// <summary>
+    /// Finishes a step left on a screen nobody answered (<see cref="Apply" /> logged it as unexpected),
+    /// after the step has been judged as it stands. The step is stopped ON the screen, half done: a
+    /// card's play in the middle of its OnPlay, a turn start in the middle of its hooks. Clearing the
+    /// screen would leave that half for the next anchor to start from (the play never counted, an
+    /// auto-play still queued: hidden state the anchor does not patch), so the emulator's own answer
+    /// -- decline when it may, else the first candidate -- finishes it. True when that ended the fight.
+    /// </summary>
+    internal static bool Finish(CombatState q, CountingRandom qr)
+    {
+        bool terminal = false;
+        for (int guard = 0; guard < 64 && !terminal && q.PendingSelection is { } open; guard++)
+        {
+            terminal |= CombatEngine.Step(q, open.Skippable ? open.Candidates.Count : 0, qr).Terminal;
+        }
+
+        q.PendingSelection = null;
+        return terminal;
     }
 
     /// <summary>Applies the game's action (end turn or a card play); the step's result, Terminal when the fight ended.</summary>
@@ -421,7 +458,7 @@ static class Reanchor
             t.AiRng = new CountingRandom(unchecked(seed * (int)0x9E3779B1));
             try
             {
-                if (Apply(t, tr, a, choices).Terminal || Shown(t) != shown) continue;
+                if (Apply(t, tr, a, choices).Terminal || (t.PendingSelection != null && Finish(t, tr)) || Shown(t) != shown) continue;
             }
             catch (Exception)
             {

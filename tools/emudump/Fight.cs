@@ -91,6 +91,7 @@ static class Fight
             OnStep?.Invoke(e, steps[^1]!.AsObject());
             AfterStep?.Invoke(e, 0);
             var gameChoices = (game["choices"]?.AsArray() ?? new JsonArray()).ToList();
+            var untagged = UntaggedChoices.Of(game);
             int stepNo = 0;
             foreach (var step in game["steps"]!.AsArray().Skip(1))
             {
@@ -127,6 +128,8 @@ static class Fight
                 {
                     chosen.Add(ApplyChoice(() => s.ActiveCombat, i => e.Step(i, -1, out _, out _, out _), choice!.AsObject()));
                 }
+
+                untagged?.AnswerOpen(() => s.ActiveCombat, i => e.Step(i, -1, out _, out _, out _), chosen);
 
                 if (s.ActiveCombat?.PendingSelection is { } extra)
                 {
@@ -177,6 +180,59 @@ static class Fight
         return log;
     }
 
+    /// <summary>
+    /// A format-1 recording's card choices (corpus.recording_format): the referee logged each screen's
+    /// options and picks in order, without the step whose action led to it. A screen left open after
+    /// an action takes the first unused choice whose options are its candidates, so a card's screen
+    /// gets the answer the game gave it rather than standing unanswered. Null for a recording whose
+    /// choices carry their step (format 2 on): those are applied by step.
+    /// </summary>
+    internal sealed class UntaggedChoices
+    {
+        readonly List<JsonObject> _left;
+
+        UntaggedChoices(List<JsonObject> left) => _left = left;
+
+        internal static UntaggedChoices? Of(JsonObject game)
+        {
+            var all = (game["choices"]?.AsArray() ?? new JsonArray()).Select(c => c!.AsObject()).ToList();
+            if (all.Any(c => c.ContainsKey("step"))) return null;
+            var cards = all.Where(c => (string?)c["kind"] == "cards" && c["options"] is JsonArray && c["picked"] is JsonArray).ToList();
+            return cards.Count == 0 ? null : new UntaggedChoices(cards);
+        }
+
+        /// <summary>Answers every screen open now that an unused choice fits; returns the choices used, in order.</summary>
+        internal List<JsonObject> AnswerOpen(Func<CombatState?> active, Action<int> step, JsonArray log)
+        {
+            var used = new List<JsonObject>();
+            for (int guard = 0; guard < 16 && active() is { PendingSelection: { } sel } c; guard++)
+            {
+                var have = CandidateIds(c, sel).Order().ToList();
+                int at = _left.FindIndex(ch => OptionIds(ch) is { } ids && ids.SequenceEqual(have));
+                if (at < 0) break;
+                var choice = _left[at];
+                _left.RemoveAt(at);
+                used.Add(choice);
+                log.Add(ApplyChoice(active, step, choice));
+            }
+
+            return used;
+        }
+
+        static List<int>? OptionIds(JsonObject choice)
+        {
+            var ids = new List<int>();
+            foreach (var o in choice["options"]!.AsArray())
+            {
+                if (!TryCardIdBySnake((string)o!, out int id)) return null;
+                ids.Add(id);
+            }
+
+            ids.Sort();
+            return ids;
+        }
+    }
+
     /// <summary>Card def id of each candidate: generated options, else the pile whose cards match.</summary>
     static List<int> CandidateIds(CombatState c, PendingCardSelection sel)
     {
@@ -189,8 +245,7 @@ static class Fight
 
     static Dictionary<string, int>? _bySnake;
 
-    /// <summary>Game card id (UPPER_SNAKE) to the emulator's def id, through data/id_map.json.</summary>
-    internal static int CardIdBySnake(string snake)
+    static Dictionary<string, int> BySnake()
     {
         if (_bySnake == null)
         {
@@ -199,8 +254,13 @@ static class Fight
                 "(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_").ToUpperInvariant(), kv => (int)kv.Value!);
         }
 
-        return _bySnake[snake];
+        return _bySnake;
     }
+
+    /// <summary>Game card id (UPPER_SNAKE) to the emulator's def id, through data/id_map.json.</summary>
+    internal static int CardIdBySnake(string snake) => BySnake()[snake];
+
+    internal static bool TryCardIdBySnake(string snake, out int id) => BySnake().TryGetValue(snake, out id);
 
     /// <summary>Card pools for the batch maker: <c>EmuDump pools</c>.</summary>
     public static JsonObject Pools() => new()
