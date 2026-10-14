@@ -30,8 +30,8 @@ def bare(x: str | None) -> str | None:
 
 
 def enc(x: str | None, emulator: bool = False) -> str | None:
-    """Encounter names compared without the _WEAK/_NORMAL/_ELITE/_BOSS suffix (see table_check.norm_enc):
-    the emulator keys an encounter by its enum value, which weak and normal variants can share."""
+    """Encounter names compared as the emulator's entry (see table_check.norm_enc): the game's model goes
+    through the shared alias table, so a weak encounter and its normal twin stay two names."""
     if not x:
         return None
     return norm_enc(bare(x), emulator=emulator)

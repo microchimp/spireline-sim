@@ -82,6 +82,34 @@ class RunSnapshotTest(unittest.TestCase):
         self.assertTrue(path.startswith("acts[0].normal[0]"))
         self.assertEqual((game, mine), ("CORPSESLUGS", "TOADPOLES"))
 
+    def test_a_weak_encounter_and_its_normal_twin_are_two_names(self):
+        # The act's normal list holds its weak fights first. A key without the _WEAK/_NORMAL
+        # suffix called the game's CORPSE_SLUGS_NORMAL and the emulator's weak CORPSE_SLUGS
+        # equal, so a weak fight dealt where the game dealt the normal one passed.
+        save = copy.deepcopy(SAVE)
+        save["acts"][0]["rooms"]["normal_encounter_ids"] = [
+            "ENCOUNTER.CORPSE_SLUGS_WEAK", "ENCOUNTER.NIBBITS_WEAK", "ENCOUNTER.CORPSE_SLUGS_NORMAL",
+            "ENCOUNTER.SEAPUNK_NORMAL", "ENCOUNTER.BOWLBUGS_NORMAL", "ENCOUNTER.SCROLLS_OF_BITING_WEAK",
+        ]
+        emu = copy.deepcopy(EMU)
+        emu["acts"][0]["normal"] = ["CORPSE_SLUGS", "NIBBITS_WEAK", "CORPSE_SLUGS_NORMAL",
+                                    "SEAPUNK_NORMAL", "BOWLBUGS", "SCROLLS_WEAK"]
+        self.assertEqual(rs.compare(rs.from_save(save), emu), [])
+        same = list(emu["acts"][0]["normal"])
+        # Each entry swapped for its twin: weak for normal, normal for weak.
+        for i, twin in enumerate(["CORPSE_SLUGS_NORMAL", "NIBBITS_NORMAL", "CORPSE_SLUGS", "SEAPUNK",
+                                  "BOWLBUGS_WEAK", "SCROLLS"]):
+            with self.subTest(position=i, emulator=twin):
+                emu["acts"][0]["normal"] = same[:i] + [twin] + same[i + 1:]
+                (path, _, _), = rs.compare(rs.from_save(save), emu)
+                self.assertTrue(path.startswith(f"acts[0].normal[{i}]"))
+
+    def test_a_normal_fight_dealt_weak_is_a_room_difference(self):
+        from tools.fidelity.run_compare2 import room_of
+        game = {"room": ["Monster", "ENCOUNTER.CORPSE_SLUGS_NORMAL"]}
+        self.assertEqual(room_of("map", game, {"room": ["Monster", "CORPSE_SLUGS_NORMAL", "Monster"]}), [])
+        self.assertEqual(len(room_of("map", game, {"room": ["Monster", "CORPSE_SLUGS", "Monster"]})), 1)
+
     def test_relic_counters_are_compared(self):
         emu = copy.deepcopy(EMU)
         emu["relic_props"]["PEN_NIB"]["AttacksPlayed"] = 0

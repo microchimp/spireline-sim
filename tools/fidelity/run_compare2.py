@@ -94,8 +94,8 @@ def norm_reward(r: dict) -> dict:
 
 def room_of(screen: str, game: dict, emu: dict) -> list:
     """The room a map move entered: its type (the game's RoomType) and its encounter or event id,
-    compared without variant suffixes. Rest sites, shops and chests have no id, so the type is what
-    tells them apart."""
+    an encounter compared as the emulator's entry (table_check.norm_enc: a weak fight and its normal
+    twin are two). Rest sites, shops and chests have no id, so the type is what tells them apart."""
     out = []
     groom, eroom = game.get("room"), emu.get("room")
     if screen != "map" or not groom:

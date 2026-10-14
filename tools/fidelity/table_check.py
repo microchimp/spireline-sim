@@ -16,6 +16,8 @@ Differences are reported, never fixed. Exit status 1 if there are any.
 from __future__ import annotations
 
 import argparse
+import functools
+import importlib.util
 import json
 import re
 import subprocess
@@ -26,18 +28,6 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EXPORT = Path("D:/spireline/referee/exports/v0.107.1.json")
 EMUDUMP = ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"
 MAP_GEN = ROOT / "src/Sts2Emulator/Core/Run/RunMapGenerator.cs"
-
-# Emulator encounter names that differ from the game's model names only in spelling. Matching is
-# on the name minus the _WEAK/_NORMAL/_ELITE/_BOSS suffix, ignoring underscores and case; these
-# map the normalised emulator key onto the game's.
-ENCOUNTER_ALIASES = {
-    "CHOMPER": "CHOMPERS",
-    "OBSCURA": "THEOBSCURA",
-    "AXEBOT": "AXEBOTS",
-    "EXOSKELETON": "EXOSKELETONS",
-    "SCROLLS": "SCROLLSOFBITING",
-    "LOSTANDFORGOTTEN": "THELOSTANDFORGOTTEN",
-}
 
 lines: list[str] = []
 counts: dict[str, int] = {}
@@ -74,9 +64,34 @@ def compare_lists(section: str, label: str, game: list[str], emu: list[str], lim
         report(section, f"{label}: emulator list has duplicates")
 
 
+@functools.cache
+def _encounter_names():
+    """scripts/generate_encounter_tags.py: the one model -> emulator name table (ALIASES, which the
+    Codex walker's Names.cs copies) and the rule beside it (emulator_name)."""
+    spec = importlib.util.spec_from_file_location("generate_encounter_tags", ROOT / "scripts/generate_encounter_tags.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@functools.cache
 def norm_enc(name: str, emulator: bool = False) -> str:
-    n = re.sub(r"_(WEAK|NORMAL|ELITE|BOSS)$", "", name).replace("_", "")
-    return ENCOUNTER_ALIASES.get(n, n) if emulator else n
+    """An encounter's comparison key: the emulator's entry name, in capitals without underscores.
+
+    The game's model (CORPSE_SLUGS_WEAK) is named by the same table every encounter name comparison
+    uses, so a weak encounter and its normal twin are two keys (CORPSESLUGS, CORPSESLUGSNORMAL): they
+    are two models in the game and two emulator entries, and a key without the _WEAK/_NORMAL suffix
+    would call a weak fight dealt where the game dealt the normal one equal. The emulator's entry
+    is its own name. A model the emulator has no entry for keeps its name minus the kind suffix, so
+    it shows as missing.
+    """
+    if emulator:
+        return name.replace("_", "").upper()
+    pascal = "".join(p[:1] + p[1:].lower() for p in name.split("_"))
+    try:
+        return _encounter_names().emulator_name(pascal).upper()
+    except SystemExit:
+        return re.sub(r"_(WEAK|NORMAL|ELITE|BOSS)$", "", name).replace("_", "")
 
 
 def parse_event_pools(src: str) -> dict[str, list[str]]:
