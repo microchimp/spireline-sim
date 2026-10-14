@@ -2838,6 +2838,12 @@ public static class CardEffects
     /// </remarks>
     internal static void Forge(CombatState state, int amount)
     {
+        // `ForgeCmd.Forge` forges nothing once the fight is over or ending (no `AfterForge`).
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         bool anyLive =
             state.Hand.Any(c => c.DefId == SovereignBladeId)
             || state.DrawPile.Any(c => c.DefId == SovereignBladeId)
@@ -5231,6 +5237,14 @@ public static class CardEffects
         bool? move = null
     )
     {
+        // `CreatureCmd.GainBlock` returns 0 once the fight is over or ending, before any
+        // modifier or `AfterBlockGained`: a block gained after the kill sets off no Juggernaut,
+        // whose hit would roll the run's CombatTargets stream over a minion still standing.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return 0;
+        }
+
         bool isMove = move ?? powered;
         decimal effective = powered
             ? BuffSystem.IncomingBlockExact(
@@ -5526,6 +5540,14 @@ public static class CardEffects
 
     public static void ChannelOrb(CombatState state, OrbType type, Random? rng = null)
     {
+        // `OrbCmd.Channel` does nothing once the fight is over or ending: no slot, no evoke to
+        // make room, no `AfterOrbChanneled`. A random orb's type is rolled by the caller first,
+        // as the game's cards roll it before the command.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         // `OrbCmd.Channel`: a character with no orb slots OF THEIR OWN is given one the
         // first time they channel -- which is why an Ironclad handed a Defect card can use
         // it at all. A Defect whose slots have been taken to zero is NOT given one, which
@@ -5572,7 +5594,9 @@ public static class CardEffects
 
     public static void EvokeNextOrb(CombatState state, Random? rng, bool dequeue = true)
     {
-        if (state.Orbs.Count == 0)
+        // `OrbCmd.Evoke` returns once the fight is over or ending, before the orb leaves the
+        // queue: a Lightning evoke rolls no CombatTargets after the kill.
+        if (state.Orbs.Count == 0 || CombatEngine.IsOverOrEnding(state))
         {
             return;
         }
@@ -5587,7 +5611,7 @@ public static class CardEffects
 
     public static void EvokeLastOrb(CombatState state, Random? rng)
     {
-        if (state.Orbs.Count == 0)
+        if (state.Orbs.Count == 0 || CombatEngine.IsOverOrEnding(state))
         {
             return;
         }
@@ -5628,6 +5652,13 @@ public static class CardEffects
 
     private static void TriggerOrbPassiveOnce(CombatState state, int index, Random rng)
     {
+        // `OrbCmd.Passive` asks the gate on every trigger: the second Lightning of a turn end
+        // whose first one killed the last enemy rolls no CombatTargets.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         var orb = state.Orbs[index];
         switch (orb.Type)
         {

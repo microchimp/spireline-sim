@@ -1321,6 +1321,16 @@ public static class CombatEngine
                     .ToArray()
             )
             {
+                // `CombatManager.ExecuteEnemyTurn` runs `CheckWinCondition` after every enemy and
+                // returns once the fight is over: no one acts after the player's death or after
+                // the last primary enemy's (Thorns, its own poison). A minion its leader's death
+                // left standing until the end-of-phase death answer acted here, and its move
+                // could roll the run's streams.
+                if (IsOverOrEnding(state))
+                {
+                    break;
+                }
+
                 if (BuffSystem.Get(enemy.Buffs, BuffId.Reviving) > 0)
                 {
                     // A segment that reattaches waits a whole enemy phase FIRST. `AfterDeath`
@@ -4645,8 +4655,12 @@ public static class CombatEngine
 
     private static void AutoPlayStampedeAttacks(CombatState state, Random rng)
     {
+        // `StampedePower.AfterAutoPostPlayPhaseEntered` picks once per stack whatever the
+        // earlier picks did: after a kill, `CardCmd.AutoPlay` does nothing and leaves the card in
+        // hand, but the next stack still draws its pick off the run's Shuffle stream. It stopped
+        // at the kill here, one Shuffle draw short of the game per stack left.
         int stampede = BuffSystem.Get(state.PlayerBuffs, BuffId.Stampede);
-        for (int i = 0; i < stampede && state.Enemies.Any(e => e.Hp > 0); i++)
+        for (int i = 0; i < stampede; i++)
         {
             var attackIndexes = state
                 .Hand.Select((card, index) => (card, index))
@@ -4699,7 +4713,7 @@ public static class CombatEngine
             var card in state.ExhaustPile.Where(c => c.DefId == Effects.IC.HowlFromBeyond).ToList()
         )
         {
-            if (NoPrimaryEnemyLeft(state))
+            if (IsOverOrEnding(state))
             {
                 return;
             }
@@ -4733,7 +4747,7 @@ public static class CombatEngine
                 .ToList()
         )
         {
-            if (NoPrimaryEnemyLeft(state))
+            if (IsOverOrEnding(state))
             {
                 return;
             }
@@ -5059,6 +5073,13 @@ public static class CombatEngine
     {
         var card = state.Hand[handIndex];
         var def = GeneratedData.Cards.Get(card.DefId);
+
+        // `CardCmd.AutoPlay` returns before anything once the fight is over or ending: the card
+        // stays where it was, no target is rolled, nothing plays.
+        if (IsOverOrEnding(state))
+        {
+            return;
+        }
 
         // The card leaves hand whether or not the gate lets it be played.
         state.Hand.RemoveAt(handIndex);
@@ -5489,7 +5510,7 @@ public static class CombatEngine
             AutoPlay(state, next, rng);
             // Answered inside the play, as the drain after an action does.
             AnswerDeathsSince(state, beforePlay, rng);
-            if (PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+            if (PlayerIsDead(state) || IsOverOrEnding(state))
             {
                 state.AutoPlayQueue.Clear();
                 return;
@@ -5576,7 +5597,7 @@ public static class CombatEngine
         for (int played = 0; played < WhisperingEarringMaxCards; played++)
         {
             // `CombatManager.Instance.IsOverOrEnding`.
-            if (PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+            if (PlayerIsDead(state) || IsOverOrEnding(state))
             {
                 return;
             }
@@ -5676,6 +5697,17 @@ public static class CombatEngine
         bool forceExhaust = false
     )
     {
+        // `CardCmd.AutoPlay` returns at once when the fight is over or ending (or its owner is
+        // dead): no ShouldPlay, no target roll on CombatTargets, no play -- so no AfterCardPlayed
+        // either, and a Nunchaku or Pen Nib does not count a card auto-played after the kill
+        // (a Sly discard, Uproar's pick, Hellraiser's Strike). The card was already taken out
+        // of its pile; it is filed in the discard, which goes with the fight.
+        if (IsOverOrEnding(state))
+        {
+            state.DiscardPile.Add(card with { FreeThisTurn = false });
+            return state.DiscardPile;
+        }
+
         bool wasAutoPlaying = state.AutoPlaying;
         state.AutoPlaying = true;
         try
@@ -5707,7 +5739,7 @@ public static class CombatEngine
         var beforePlay = new Baseline(state);
         AutoPlay(state, card, rng, forceExhaust);
         AnswerDeathsSince(state, beforePlay, rng, sweep: CorpseSweep.Answered);
-        return PlayerIsDead(state) || NoPrimaryEnemyLeft(state);
+        return PlayerIsDead(state) || IsOverOrEnding(state);
     }
 
     /// <summary>
@@ -5728,7 +5760,7 @@ public static class CombatEngine
             var beforePlay = new Baseline(state);
             var restsOn = AutoPlay(state, card, rng);
             AnswerDeathsSince(state, beforePlay, rng, sweep: CorpseSweep.Answered);
-            if (play + 1 >= times || PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+            if (play + 1 >= times || PlayerIsDead(state) || IsOverOrEnding(state))
             {
                 return;
             }
@@ -5775,7 +5807,7 @@ public static class CombatEngine
         bool forceExhaust = false
     )
     {
-        if (count <= 0 || PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+        if (count <= 0 || PlayerIsDead(state) || IsOverOrEnding(state))
         {
             return;
         }

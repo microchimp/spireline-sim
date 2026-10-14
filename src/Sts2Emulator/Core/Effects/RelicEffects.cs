@@ -2525,6 +2525,13 @@ public static class RelicEffects
     /// </remarks>
     internal static void ApplyAfterCardDiscarded(CombatState state, Random? rng)
     {
+        // `Hook.AfterCardDiscarded` is a gated dispatch: a discard after the kill sets off no
+        // Tingsha, whose hit would roll the run's CombatTargets stream over a minion left.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         // `ToughBandages`: BlockVar(3m, Unpowered) -- Dexterity does not raise it.
         if (HasRelic(state, ToughBandages))
         {

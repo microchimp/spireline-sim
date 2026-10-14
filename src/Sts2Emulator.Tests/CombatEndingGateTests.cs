@@ -578,4 +578,129 @@ public class CombatEndingGateTests
         Assert.Equal(0, fight.State.PotionSlots[0]);
         Assert.True(fight.State.PlayerHp > 0);
     }
+
+    // ── The other gated commands ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The leader dead and its minion still standing, as the emulator holds it until the death
+    /// is answered: in the game the fight is already ending (the minion is a secondary enemy).
+    /// </summary>
+    private static Fight LeaderDeadMinionStanding(bool leaderAlive = false)
+    {
+        var fight = Fight
+            .Hand()
+            .Enemy(hp: leaderAlive ? 30 : 0)
+            .Enemy(hp: 20, buffs: new BuffState(BuffId.Minion, 1))
+            .PlayerHp(60, 80);
+        return fight;
+    }
+
+    /// <summary>
+    /// `CreatureCmd.GainBlock` returns 0 once the fight is ending, before `AfterBlockGained`:
+    /// no block, and no Juggernaut hit rolling CombatTargets over the minion.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 5)]
+    public void ABlockGainedAfterTheKillSetsOffNoJuggernaut(bool leaderAlive, int block)
+    {
+        var fight = LeaderDeadMinionStanding(leaderAlive);
+        fight.PlayerBuff(BuffId.Juggernaut, 6);
+        int targets = fight.State.TargetRng!.CallCount;
+
+        int gained = CardEffects.GainUnpoweredBlock(fight.State, 5, new Random(0));
+
+        Assert.Equal(block, gained);
+        Assert.Equal(block, fight.State.PlayerBlock);
+        Assert.Equal(leaderAlive, fight.State.TargetRng!.CallCount > targets);
+    }
+
+    /// <summary>
+    /// `OrbCmd.Passive`, `OrbCmd.Evoke` and `OrbCmd.Channel` do nothing once the fight is ending:
+    /// a Lightning rolls no target, the queue keeps its orb, nothing is channeled.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NoOrbCommandRunsAfterTheKill(bool leaderAlive)
+    {
+        var fight = LeaderDeadMinionStanding(leaderAlive);
+        fight.State.OrbCapacity = 1;
+        fight.State.Orbs.Add(new OrbState(OrbType.Lightning));
+        int targets = fight.State.TargetRng!.CallCount;
+
+        CardEffects.TriggerOrbPassive(fight.State, 0, new Random(0));
+        int afterPassive = fight.State.TargetRng!.CallCount;
+        CardEffects.ChannelOrb(fight.State, OrbType.Frost, new Random(0));
+
+        Assert.Equal(leaderAlive, afterPassive > targets);
+        Assert.Equal(leaderAlive ? OrbType.Frost : OrbType.Lightning, fight.State.Orbs[0].Type);
+        Assert.Equal(leaderAlive, fight.State.TargetRng!.CallCount > afterPassive);
+    }
+
+    /// <summary>
+    /// `Hook.AfterCardDiscarded` is a gated dispatch: Tingsha's hit rolls no target after the
+    /// kill.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TingshaRollsNothingAfterTheKill(bool leaderAlive)
+    {
+        var fight = LeaderDeadMinionStanding(leaderAlive);
+        fight.State.Relics = [new RelicInstance(RelicEffects.Tingsha)];
+        int targets = fight.State.TargetRng!.CallCount;
+
+        RelicEffects.ApplyAfterCardDiscarded(fight.State, new Random(0));
+
+        Assert.Equal(leaderAlive, fight.State.TargetRng!.CallCount > targets);
+    }
+
+    /// <summary>
+    /// `StampedePower` picks once per stack off the run's Shuffle stream whatever the picks
+    /// before did: after its first Strike kills, `CardCmd.AutoPlay` does nothing and the second
+    /// Strike stays in hand, but the second pick is still drawn. It stopped at the kill here.
+    /// </summary>
+    [Fact]
+    public void StampedeStillPicksAfterItsFirstAutoPlayKills()
+    {
+        var fight = Fight
+            .Hand(Card(IC.StrikeIronclad), Card(IC.StrikeIronclad))
+            .Enemy(hp: 6)
+            .PlayerHp(60, 80);
+        fight.State.ShuffleRng = new CountingRandom(0);
+        fight.PlayerBuff(BuffId.Stampede, 2);
+
+        var result = fight.EndTurn();
+
+        Assert.True(result.Terminal && result.PlayerWon);
+        Assert.Equal(2, fight.State.ShuffleRng!.CallCount);
+        Assert.Single(fight.State.Hand);
+    }
+
+    /// <summary>
+    /// `CombatManager.ExecuteEnemyTurn` checks the win condition after every enemy: once the
+    /// leader's own poison has killed it, its minion (secondary, so dying with it) does not
+    /// act. It attacked here before the end-of-phase death answer swept it.
+    /// </summary>
+    [Theory]
+    [InlineData(2, 60, true)]
+    [InlineData(50, 50, false)]
+    public void NoEnemyActsOnceTheFightIsOver(int leaderHp, int playerHpAfter, bool ends)
+    {
+        var fight = Fight
+            .Hand()
+            .Enemy(hp: leaderHp, buffs: new BuffState(BuffId.Poison, 5))
+            .Enemy(
+                hp: 20,
+                intent: new Intent(IntentType.Attack, 10),
+                buffs: new BuffState(BuffId.Minion, 1)
+            )
+            .PlayerHp(60, 80);
+
+        var result = fight.EndTurn();
+
+        Assert.Equal(ends, result.Terminal && result.PlayerWon);
+        Assert.Equal(playerHpAfter, fight.State.PlayerHp);
+    }
 }
