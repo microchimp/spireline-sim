@@ -36,6 +36,8 @@ public static partial class Driver
     ///   nodeless_room_end   the nodeless host generates the room-end rewards at CombatWon, as NCombatUi does on
     ///                       the full host (NodelessPatches.cs)
     ///   heuristic_chooser   the "heuristic" chooser for realistic fights (Chooser.cs)
+    ///   ui_pick_timing      a turn-start screen is answered where the UI shows it, after the rest of the
+    ///                       turn start (Selector.cs, job key pick_timing)
     /// </summary>
     internal static List<string> Capabilities()
     {
@@ -57,6 +59,7 @@ public static partial class Driver
         Add("rule_flashes", Has("TakeDisplayFlashes") && Has("FlashFrames"));
         Add("nodeless_room_end", typeof(NodelessPatches).GetMember("OfferRoomEndRewardsNodeless", AnyStatic).Length > 0);
         Add("heuristic_chooser", Has("ChooseHeuristic"));
+        Add("ui_pick_timing", typeof(FirstChoiceSelector).GetMember("AnswerOnTheScreen", AnyStatic | BindingFlags.Instance).Length > 0);
         return caps;
     }
 
@@ -71,5 +74,6 @@ public static partial class Driver
         ["dirty"] = Stamp("spireline.dirty").Trim() != "",
         ["capabilities"] = new JsonArray(Capabilities().Select(c => (JsonNode)c).ToArray()),
         ["settle"] = SettleMode,
+        ["pick_timing"] = FirstChoiceSelector.PickTiming,
     };
 }

@@ -47,6 +47,7 @@ public static partial class Driver
         var selector = new FirstChoiceSelector();
         using var selection = MegaCrit.Sts2.Core.Commands.CardSelectCmd.UseSelector(selector);
         dump["choices"] = selector.Log;
+        dump["pick_timing"] = FirstChoiceSelector.PickTiming;
         ScreenLog = selector.Log;
         dump.Remove("save");
         dump["steps"] = steps;

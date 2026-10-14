@@ -419,4 +419,41 @@ PROBES.append(Probe(
     note="a fight that ends leaves the emulator only its run phase: the re-anchored dump cannot say who won, the plain replay can",
 ))
 
+# The turn start's screens (owner decision 2026-10-14, Selector.cs): with the UI, CombatManager.StartTurn runs on
+# while SetupPlayerTurn waits on a screen (Hook.AfterSideTurnStart, the orbs, the win check) and the player picks
+# after it. A screen in BeforeHandDraw (Foregone Conclusion) then has the side's turn start run BEFORE the hand
+# draw: Draw Cards Next Turn is removed and Clarity ticks down before ModifyHandDraw reads them. Answered at once
+# (the old driver), the pick came first and the draw kept the bonus.
+PROBES.append(Probe(
+    "P19", ["selection"], "With a turn-start screen open (Foregone Conclusion), does the side's turn start run before the "
+    "pick, so Draw Cards Next Turn is gone before the hand draw?",
+    [fight("NIBBITS_WEAK"), power("FOREGONE_CONCLUSION_POWER", 1), power("DRAW_CARDS_NEXT_TURN_POWER", 2)],
+    [end_turn()],
+    lambda pre, post, ctx: None if post is None else len(post.hand),
+    [Hyp("side-first", "AfterSideTurnStart runs while the screen waits: the bonus is removed before the draw: 1 + 5",
+         lambda pre, ctx: 6),
+     Hyp("pick-first", "the pick, the hand draw with the bonus, then AfterSideTurnStart: 1 + 5 + 2", lambda pre, ctx: 8)],
+    need=lambda pre, ctx: None if pre.power("FOREGONE_CONCLUSION") and pre.power("DRAW_CARDS_NEXT_TURN") else
+    "Foregone Conclusion or Draw Cards Next Turn not on the player",
+    evidence=lambda tr: trace_digest(tr, keep=("CardDrawn", "PowerReceived", "PowerRemoved"),
+                                     hooks=("BeforeHandDraw", "AfterSideTurnStart", "AfterPlayerTurnStart"), limit=20),
+    game_class="CombatManager.StartTurn / SetupPlayerTurn; HookPlayerChoiceContext.WaitForPauseOrCompletionWithoutAssigningTask; "
+               "DrawCardsNextTurnPower.AfterSideTurnStart",
+    note="the game's answer depends on the driver: pick_timing \"ui\" answers on the screen as a player does",
+))
+
+PROBES.append(Probe(
+    "P20", ["selection"], "With Foregone Conclusion's screen open, does Clarity tick down (and go) before the hand draw?",
+    [fight("NIBBITS_WEAK"), power("FOREGONE_CONCLUSION_POWER", 1), power("CLARITY_POWER", 1)],
+    [end_turn()],
+    lambda pre, post, ctx: None if post is None else len(post.hand),
+    [Hyp("side-first", "Clarity's last turn ticks off while the screen waits: no extra card: 1 + 5", lambda pre, ctx: 6),
+     Hyp("pick-first", "the hand draw reads Clarity first: 1 + 6", lambda pre, ctx: 7)],
+    need=lambda pre, ctx: None if pre.power("FOREGONE_CONCLUSION") and pre.power("CLARITY") else
+    "Foregone Conclusion or Clarity not on the player",
+    evidence=lambda tr: trace_digest(tr, keep=("CardDrawn", "PowerReceived", "PowerRemoved"),
+                                     hooks=("BeforeHandDraw", "AfterSideTurnStart"), limit=20),
+    game_class="CombatManager.StartTurn; ClarityPower.ModifyHandDraw / AfterSideTurnStart",
+))
+
 BY_ID = {p.id: p for p in PROBES}

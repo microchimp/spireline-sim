@@ -229,6 +229,8 @@ public static partial class Driver
             TraceFrames = (bool?)job["trace_frames"] ?? false;
             StepCosts = (bool?)job["step_costs"] ?? false;
             IdleProbe = (int?)job["idle_probe"] ?? 0;
+            // When a turn-start screen is answered: on the screen, as the UI does (default), or at once (Selector.cs).
+            FirstChoiceSelector.PickTiming = (string?)job["pick_timing"] ?? "ui";
             CheckSettleFields();  // a game without the flag settle's field ends the job here, not every fight
             GD.Print("[referee] driver " + DriverInfo().ToJsonString());  // build, capabilities, settle (Capabilities.cs)
             if (job["sleep_usec"] is { } sleep && !NormalSettings)
