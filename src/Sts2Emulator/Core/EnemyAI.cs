@@ -4702,13 +4702,14 @@ public static class EnemyAI
 
         var selection = state.CardGenerationRng ?? rng;
         var picked = candidates[selection.Next(candidates.Count)];
-        var stolen = Card(picked);
+        CardInstance stolen;
         if (picked.FromDraw)
         {
-            state.RemoveFromDrawPileAt(picked.Index);
+            stolen = state.RemoveFromDrawPileAt(picked.Index);
         }
         else
         {
+            stolen = Card(picked);
             state.DiscardPile.RemoveAt(picked.Index);
         }
 

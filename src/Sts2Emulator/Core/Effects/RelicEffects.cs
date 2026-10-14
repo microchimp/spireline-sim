@@ -1140,8 +1140,7 @@ public static class RelicEffects
                     {
                         var selection = CardEffects.CardSelectionRngFor(state, rng);
                         int chosen = powers[selection.Next(powers.Count)];
-                        var card = state.DrawPile[chosen];
-                        state.DrawPile.RemoveAt(chosen);
+                        var card = state.RemoveFromDrawPileAt(chosen);
                         state.Hand.Add(card with { FreeThisTurn = true });
                     }
 
@@ -1175,8 +1174,7 @@ public static class RelicEffects
                             index = 0;
                         }
 
-                        var doomed = state.DrawPile[index];
-                        state.DrawPile.RemoveAt(index);
+                        var doomed = state.RemoveFromDrawPileAt(index);
                         CardEffects.ExhaustCard(state, doomed, rng: rng);
                     }
 

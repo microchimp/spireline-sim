@@ -722,10 +722,14 @@ public sealed class CombatState
 
     /// <summary>
     /// Take a card out of the draw pile, shrinking whichever known region held it.
-    /// Drawing is this with index 0.
+    /// Drawing is this with index 0. Every take off the draw pile is this, and the card it
+    /// returns is the card taken: a replay of a stopped step may swap the card the step took
+    /// into <paramref name="index" /> first (<c>CombatEngine.OnDrawPileTake</c>), so a caller
+    /// reads the card from here, never from the pile before the call.
     /// </summary>
     public CardInstance RemoveFromDrawPileAt(int index)
     {
+        CombatEngine.OnDrawPileTake(this, index);
         int before = DrawPile.Count;
         var card = DrawPile[index];
         DrawPile.RemoveAt(index);

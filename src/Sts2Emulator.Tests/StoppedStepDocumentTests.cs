@@ -14,9 +14,17 @@ namespace Sts2Emulator.Tests;
 /// card being played was in no pile and lost for good (17 cards, not 18), the play was never counted,
 /// Brand's Strength never came, Foregone Conclusion's hand was never drawn (1 card, not 6) and
 /// Well-Laid Plans' turn never ended. The document now carries the public part of the step (the kind
-/// of step, the card or potion in play, the answers, the start as the player saw it) and never the
-/// true order or the streams.
+/// of step, the card or potion in play, the answers, the start as the player saw it, the cards the
+/// step took off the draw pile and the screens it reached) and never the true order or the streams.
 /// </summary>
+/// <remarks>
+/// Round 5's document lost the stops whose way to the screen ran through the hidden order (review,
+/// ZReviewR5Doc, seeds 1-30): Havoc's and Mayhem's Burning Pact were played off the top of a pile in
+/// the loader's order, so the replay played another card and the pick was dropped (24 and 26 of 30
+/// wrong, a card duplicated); Hellraiser's hand draw drew other Strikes, so the Seeker Strike was lost
+/// or doubled and visible damage undone (28, 8 and 22 of 30). The replay is now held to the cards the
+/// step took and the screens it reached, and each case below loads with thirty seeds.
+/// </remarks>
 public class StoppedStepDocumentTests
 {
     private static readonly int[] Twelve =
@@ -26,12 +34,28 @@ public class StoppedStepDocumentTests
         IC.Bash, IC.StrikeIronclad, IC.Armaments, IC.Headbutt,
     ];
 
-    /// <summary>The reviewer's ten screens (round 4, ZReviewR4Doc): five card plays, four turn screens, a potion.</summary>
+    /// <summary>
+    /// The reviewer's ten screens (round 4, ZReviewR4Doc): five card plays, four turn screens, a potion;
+    /// and round 5's stops whose way to the screen runs through the hidden order: Havoc's and Mayhem's
+    /// Burning Pact (with Entropy answered first, too), Hellraiser's Seeker Strike, and Entropy's
+    /// screen after a Hellraiser hand draw that drew the Seeker Strike (its pick answered) or did not;
+    /// and Entropy's after a turn end where I Am Invincible, on top of the true pile, played itself.
+    /// </summary>
     public static TheoryData<string> Screens() =>
-        new() { "BurningPact", "TrueGrit+", "Headbutt", "Armaments", "Brand", "ForegoneConclusion", "Tyranny", "Entropy", "WellLaidPlans", "GamblersBrew" };
+        new()
+        {
+            "BurningPact", "TrueGrit+", "Headbutt", "Armaments", "Brand", "ForegoneConclusion", "Tyranny", "Entropy", "WellLaidPlans", "GamblersBrew",
+            "HavocBurningPact", "MayhemBurningPact", "MayhemEntropyBurningPact", "HellraiserSeekerStrike", "HellraiserEntropyStrikeDrawn", "HellraiserEntropyStrikeUndrawn",
+            "IAmInvincibleEntropy",
+        };
+
+    private const int IAmInvincible = 257;
+
+    /// <summary>The seeds every case is loaded with.</summary>
+    private static readonly int[] Seeds = [.. Enumerable.Range(1, 30)];
 
     /// <summary>A combat stopped on <paramref name="screen" />, and the step stream it stopped on.</summary>
-    private static (Fight Fight, CountingRandom Rng, string Step) Stopped(string screen)
+    internal static (Fight Fight, CountingRandom Rng, string Step) Stopped(string screen)
     {
         Fight fight;
         CountingRandom rng;
@@ -59,6 +83,97 @@ public class StoppedStepDocumentTests
                 step = "card_play";
                 break;
             }
+
+            case "HavocBurningPact":
+                // Havoc plays the top of the draw pile: the true order's top is Burning Pact.
+                fight = Fight
+                    .Hand(Card(IC.Havoc), Card(IC.StrikeIronclad), Card(IC.DefendIronclad), Card(IC.Bash))
+                    .Energy(3)
+                    .Draw([.. Pile(IC.BurningPact, IC.Anger, IC.DefendIronclad, IC.Inflame, IC.ShrugItOff, IC.IronWave, IC.Thunderclap)])
+                    .Enemy(hp: 400);
+                rng = new CountingRandom(9);
+                CombatEngine.Step(fight.State, 0, rng);
+                step = "card_play";
+                break;
+
+            case "MayhemBurningPact" or "MayhemEntropyBurningPact":
+                // The turn start draws five and Mayhem plays the sixth, Burning Pact.
+                fight = Fight
+                    .Hand(Card(IC.DefendIronclad))
+                    .Energy(3)
+                    .Draw([.. Pile(IC.DefendIronclad, IC.Bash, IC.Anger, IC.Inflame, IC.ShrugItOff, IC.BurningPact, IC.IronWave, IC.Thunderclap, IC.DefendIronclad, IC.ShrugItOff)])
+                    .Enemy(hp: 400)
+                    .PlayerBuff(BuffId.MayhemPower, 1);
+                if (screen == "MayhemEntropyBurningPact")
+                {
+                    fight.PlayerBuff(BuffId.EntropyPower, 1);
+                }
+
+                rng = new CountingRandom(9);
+                CombatEngine.Step(fight.State, fight.State.Hand.Count, rng);
+                if (screen == "MayhemEntropyBurningPact")
+                {
+                    Assert.Equal(CardSelectionKind.TransformInHand, fight.Pending!.Kind);
+                    CombatEngine.Step(fight.State, 0, rng);
+                }
+
+                Assert.Equal(IC.BurningPact, fight.Pending!.SourceCardDefId);
+                step = "turn_start";
+                break;
+
+            case "HellraiserSeekerStrike" or "HellraiserEntropyStrikeDrawn" or "HellraiserEntropyStrikeUndrawn":
+            {
+                // Hellraiser plays a Strike the hand draw draws, there and then: the Seeker Strike
+                // on top asks inside the draw; at the bottom it is never drawn.
+                int[] rest = [IC.DefendIronclad, IC.Bash, IC.Anger, IC.Inflame, IC.ShrugItOff, IC.IronWave, IC.Thunderclap, IC.Armaments];
+                int[] pile = screen == "HellraiserEntropyStrikeUndrawn" ? [.. rest, CL.SeekerStrike] : [CL.SeekerStrike, .. rest];
+                fight = Fight
+                    .Hand(Card(IC.DefendIronclad))
+                    .Energy(3)
+                    .Draw([.. Pile(pile)])
+                    .Enemy(hp: 400)
+                    .PlayerBuff(BuffId.Hellraiser, 1);
+                if (screen != "HellraiserSeekerStrike")
+                {
+                    fight.PlayerBuff(BuffId.EntropyPower, 1);
+                }
+
+                rng = new CountingRandom(9);
+                CombatEngine.Step(fight.State, fight.State.Hand.Count, rng);
+                if (screen != "HellraiserEntropyStrikeUndrawn")
+                {
+                    Assert.Equal(CL.SeekerStrike, fight.Pending!.SourceCardDefId);
+                }
+
+                if (screen == "HellraiserEntropyStrikeDrawn")
+                {
+                    CombatEngine.Step(fight.State, 0, rng);
+                }
+
+                if (screen != "HellraiserSeekerStrike")
+                {
+                    Assert.Equal(CardSelectionKind.TransformInHand, fight.Pending!.Kind);
+                }
+
+                step = "turn_start";
+                break;
+            }
+
+            case "IAmInvincibleEntropy":
+                // I Am Invincible plays itself when it is on top as the play phase ends: whether
+                // it does is read off the hidden order, and its block meets the enemy's hit.
+                fight = Fight
+                    .Hand(Card(IC.DefendIronclad))
+                    .Energy(3)
+                    .Draw([Card(IAmInvincible), .. Pile(IC.DefendIronclad, IC.Bash, IC.Anger, IC.Inflame, IC.ShrugItOff, IC.IronWave, IC.Thunderclap, IC.Armaments)])
+                    .Enemy(hp: 400)
+                    .PlayerBuff(BuffId.EntropyPower, 1);
+                rng = new CountingRandom(9);
+                CombatEngine.Step(fight.State, fight.State.Hand.Count, rng);
+                Assert.Equal(CardSelectionKind.TransformInHand, fight.Pending!.Kind);
+                Assert.Contains(fight.State.ExhaustPile.Concat(fight.State.DiscardPile), card => card.DefId == IAmInvincible);
+                step = "turn_start";
+                break;
 
             case "GamblersBrew":
                 fight = Fight
@@ -99,7 +214,7 @@ public class StoppedStepDocumentTests
     }
 
     /// <summary>Answers the screen with its first candidate, and any screen after it with its decline (or first).</summary>
-    private static void Answer(CombatState state, Random rng)
+    internal static void Answer(CombatState state, Random rng)
     {
         CombatEngine.Step(state, 0, rng);
         for (int guard = 0; guard < 8 && state.PendingSelection is { } more; guard++)
@@ -108,10 +223,10 @@ public class StoppedStepDocumentTests
         }
     }
 
-    private static int Cards(CombatState s) => s.Hand.Count + s.DrawPile.Count + s.DiscardPile.Count + s.ExhaustPile.Count;
+    internal static int Cards(CombatState s) => s.Hand.Count + s.DrawPile.Count + s.DiscardPile.Count + s.ExhaustPile.Count;
 
     /// <summary>What the reviewer's probe compared, and the turn.</summary>
-    private static string Shape(CombatState s) =>
+    internal static string Shape(CombatState s) =>
         $"cards {Cards(s)} hand {s.Hand.Count} draw {s.DrawPile.Count} discard {s.DiscardPile.Count} exhaust {s.ExhaustPile.Count} "
         + $"strength {BuffSystem.Get(s.PlayerBuffs, BuffId.Strength)} played {s.CardsPlayedThisCombat}/{s.CardsPlayedThisTurn} "
         + $"energy {s.Energy} turn {s.Turn} hp {s.PlayerHp} enemy {s.Enemies[0].Hp} screen {s.PendingSelection?.Kind.ToString() ?? "-"}";
@@ -124,10 +239,11 @@ public class StoppedStepDocumentTests
     }
 
     /// <summary>
-    /// The reviewer's probe: Write, Read with seed 5, answer on a stream of its own, against answering
-    /// the same screen in memory. The unseen order and the streams are the loader's, so the cards
-    /// drawn may differ; the counts, the counters, Brand's Strength, the hand Foregone Conclusion
-    /// draws and Well-Laid Plans' next turn may not.
+    /// The reviewer's probe: Write, Read with each of thirty seeds, answer on a stream of its own,
+    /// against answering the same screen in memory. The unseen order and the streams are the
+    /// loader's, so the cards drawn after the screen may differ; the card count, the counts, the
+    /// counters, Brand's Strength, the hand Foregone Conclusion draws, Well-Laid Plans' next turn,
+    /// Havoc's and Mayhem's Burning Pact and Hellraiser's Strikes may not.
     /// </summary>
     [Theory]
     [MemberData(nameof(Screens))]
@@ -135,14 +251,24 @@ public class StoppedStepDocumentTests
     {
         var (fight, rng, step) = Stopped(screen);
         var inMemory = Answered(fight.State, rng);
+        byte[] document = CombatSnapshot.Write(fight.State);
+        Assert.Contains($"\"step\":\"{step}\"", Encoding.UTF8.GetString(document));
 
-        var loaded = CombatSnapshot.Read(CombatSnapshot.Write(fight.State), seed: 5, out _);
-        Assert.True(loaded.PendingSelection!.Replay!.FromDocument);
-        Answer(loaded, new CountingRandom(5));
+        var wrong = new List<string>();
+        foreach (int seed in Seeds)
+        {
+            var loaded = CombatSnapshot.Read(document, seed, out _);
+            Assert.True(loaded.PendingSelection!.Replay!.FromDocument);
+            Answer(loaded, new CountingRandom(seed));
+            if (Shape(loaded) != Shape(inMemory) || loaded.PendingSelection is not null)
+            {
+                wrong.Add($"seed {seed}: {Shape(loaded)}");
+            }
+        }
 
-        Assert.Equal(Shape(inMemory), Shape(loaded));
-        Assert.Null(loaded.PendingSelection);
-        Assert.Contains($"\"step\":\"{step}\"", Encoding.UTF8.GetString(CombatSnapshot.Write(fight.State)));
+        Assert.True(wrong.Count == 0, $"in memory {Shape(inMemory)}\n" + string.Join("\n", wrong));
+        // No card is made or lost by these steps: the step's start holds them all, in its piles.
+        Assert.Equal(Cards(fight.State.PendingSelection!.Replay!.Before), Cards(inMemory));
     }
 
     /// <summary>

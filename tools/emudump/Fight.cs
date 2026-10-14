@@ -281,7 +281,7 @@ static class Fight
         // A finished fight keeps its CombatState on the run (SyncAfterCombat copies out what the run keeps).
         if (!inCombat && run != null) o["final"] = Final(run, run.LastPlayerWon);
         byte[] written;
-        using (Prof.Scope("dump.snapshot_write")) written = Sts2Emulator.Interop.CombatSnapshot.Write(c);
+        using (Prof.Scope("dump.snapshot_write")) written = Sts2Emulator.Interop.CombatSnapshot.WriteUnchecked(c);
         using var parse = Prof.Scope("dump.parse_and_rest");
         var snap = JsonNode.Parse(written)!;
         // Buff ids are the emulator's BuffId enum, not id_map's power ids: name them here.

@@ -18,6 +18,7 @@ public static class CombatEngine
     )
     {
         StepInProgress? run;
+        (CombatState State, CountingRandom? Rng)? atScreen = null;
         if (state.PendingSelection is { Replay: { } stopped } open)
         {
             // The open screen was raised in the middle of a step: its answer runs that step
@@ -31,7 +32,10 @@ public static class CombatEngine
             // The combat answering is the copy that stood on the screen, perhaps determinized
             // there: its hidden state goes back on when the replay reaches the screen -- the whole
             // copy for a step read from the agent's document, whose start is public, not true.
+            // A replay that does not go the way the step went is refused, and the combat is put
+            // back on its screen as it stands now (atScreen).
             var hidden = stopped.FromDocument ? ScreenHiddenState.WholeOf(state, rng) : ScreenHiddenState.Of(state, rng);
+            atScreen = (state.Clone(), (rng as CountingRandom)?.Copy());
             CardInstance? pick =
                 open.Kind.ChoosesFromDrawPile() && action < open.Candidates.Count && open.Candidates[action] is int at && at >= 0 && at < state.DrawPile.Count
                     ? state.DrawPile[at]
@@ -66,6 +70,7 @@ public static class CombatEngine
                 TargetEnemyIndex = stopped.TargetEnemyIndex,
                 Answers = [.. stopped.Answers, new StepAnswer(action, pick)],
                 Hidden = [.. stopped.Hidden, hidden],
+                Record = stopped,
             };
             (action, targetEnemyIndex) = (stopped.Action, stopped.TargetEnemyIndex);
             // EmuDump's trace (tools/emudump/Trace.cs) drops what the stopped run marked here:
@@ -97,7 +102,9 @@ public static class CombatEngine
         _running = run;
         try
         {
-            return StepCore(state, action, rng, targetEnemyIndex);
+            var result = StepCore(state, action, rng, targetEnemyIndex);
+            run?.Finished();
+            return result;
         }
         catch (HookChoicePending)
         {
@@ -107,10 +114,115 @@ public static class CombatEngine
             state.PendingSelection = state.PendingSelection!.Clone(replay: run!.Stop());
             return new StepResult(Terminal: false, PlayerWon: false, Reward: 0f);
         }
+        catch (StoppedStepMismatch) when (atScreen is { } at)
+        {
+            // The answer is refused: the combat goes back on its screen, stopped step and all,
+            // and the caller's stream to where it stood there.
+            at.State.CopyTo(state);
+            if (at.Rng is { } screenRng && rng is CountingRandom live)
+            {
+                live.Become(screenRng);
+            }
+
+            throw;
+        }
         finally
         {
             _running = outer;
         }
+    }
+
+    /// <summary>
+    /// Why the step stopped on <paramref name="state" />'s screen cannot be replayed to it, or null
+    /// when it can: the replay runs on a copy, from the step's start, with the answers given so far,
+    /// held to the step's record (<see cref="StepInProgress" />), and must stop on the recorded last
+    /// screen. Nothing of <paramref name="state" /> is changed, and the trace hooks hear nothing.
+    /// <c>CombatSnapshot.Read</c> refuses a document whose step fails it, and so
+    /// <c>CombatSnapshot.Write</c> refuses to write one.
+    /// </summary>
+    /// <param name="seed">
+    /// The step's stream for a step from the agent's document, which has none of its own; the
+    /// replay runs on <paramref name="state" />'s streams as a loaded copy's answer does.
+    /// </param>
+    internal static string? CheckStoppedStep(CombatState state, int seed)
+    {
+        if (state.PendingSelection?.Replay is not { } stopped)
+        {
+            return null;
+        }
+
+        var probe = new CombatState();
+        stopped.Before.CopyTo(probe);
+        if (stopped.FromDocument)
+        {
+            for (int i = 0; i < StateCloning.StreamCount; i++)
+            {
+                StateCloning.SetStream(probe, i, StateCloning.Stream(state, i)?.Copy());
+            }
+        }
+
+        var run = new StepInProgress
+        {
+            State = probe,
+            Before = stopped.Before,
+            RngBefore = stopped.RngBefore,
+            Rng = stopped.RngBefore?.Copy() ?? new CountingRandom(seed),
+            Action = stopped.Action,
+            TargetEnemyIndex = stopped.TargetEnemyIndex,
+            Answers = [.. stopped.Answers],
+            Hidden = [.. stopped.Hidden],
+            Record = stopped,
+        };
+        var outer = _running;
+        _running = run;
+        using var quiet = CombatTrace.Quiet();
+        try
+        {
+            StepCore(probe, run.Action, run.Rng, run.TargetEnemyIndex);
+            run.Finished();
+            return $"the replay finished the step without stopping on screen {stopped.Screens.Count}";
+        }
+        catch (HookChoicePending)
+        {
+            return null;
+        }
+        catch (StoppedStepMismatch e)
+        {
+            return e.Message;
+        }
+        finally
+        {
+            _running = outer;
+        }
+    }
+
+    /// <summary>
+    /// A take off <paramref name="state" />'s draw pile at <paramref name="index" />, before it
+    /// happens (<c>CombatState.RemoveFromDrawPileAt</c>): the running step records it, and a replay
+    /// is held to the step's record (<see cref="StepInProgress.OnTake" />).
+    /// </summary>
+    internal static void OnDrawPileTake(CombatState state, int index)
+    {
+        if (_running is { } run && ReferenceEquals(run.State, state))
+        {
+            run.OnTake(index);
+        }
+    }
+
+    /// <summary>
+    /// A look at the card at <paramref name="index" /> of the draw pile that decides what the step
+    /// does without taking it (I Am Invincible's, on top): a replay from the agent's document shows
+    /// there the card the step takes next, so it decides as the step did
+    /// (<see cref="StepInProgress.OnPeek" />).
+    /// </summary>
+    internal static CardInstance PeekDrawPile(CombatState state, int index)
+    {
+        if (_running is { } run && ReferenceEquals(run.State, state))
+        {
+            run.OnPeek(index);
+        }
+
+        return state.DrawPile[index];
     }
 
     /// <summary>The step running on this thread, if it can be replayed (see <see cref="Step" />).</summary>
@@ -3578,8 +3690,7 @@ public static class CombatEngine
             case CardSelectionKind.ExhaustFromDrawPile:
                 if (index < state.DrawPile.Count)
                 {
-                    var doomedCard = state.DrawPile[index];
-                    state.RemoveFromDrawPileAt(index);
+                    var doomedCard = state.RemoveFromDrawPileAt(index);
                     Effects.CardEffects.ExhaustCard(state, doomedCard, rng: rng);
                 }
 
@@ -3638,8 +3749,7 @@ public static class CombatEngine
                 // the draw pile, for the discard pile (CardPileCmd.cs:420-423).
                 if (index < state.DrawPile.Count)
                 {
-                    var card = state.DrawPile[index];
-                    state.RemoveFromDrawPileAt(index);
+                    var card = state.RemoveFromDrawPileAt(index);
                     Effects.CardEffects.AddToHandOrDiscard(state, card);
                 }
 
@@ -5340,7 +5450,7 @@ public static class CombatEngine
     {
         if (
             state.DrawPile.Count > 0
-            && GeneratedData.Cards.Get(state.DrawPile[0].DefId).Name == "IAmInvincible"
+            && GeneratedData.Cards.Get(PeekDrawPile(state, 0).DefId).Name == "IAmInvincible"
         )
         {
             AutoPlayFromDrawPile(state, 1, rng);
@@ -5352,7 +5462,12 @@ public static class CombatEngine
         foreach (var card in state.ReturnToHandBeforeDraw)
         {
             RemoveFirstMatchingCard(state.DiscardPile, card);
-            RemoveFirstMatchingCard(state.DrawPile, card);
+            int drawn = state.DrawPile.FindIndex(pileCard => pileCard.DefId == card.DefId && pileCard.Upgraded == card.Upgraded);
+            if (drawn >= 0)
+            {
+                state.RemoveFromDrawPileAt(drawn);
+            }
+
             RemoveFirstMatchingCard(state.ExhaustPile, card);
             state.Hand.Add(card with { FreeThisTurn = false });
         }
@@ -6321,13 +6436,14 @@ public static class CombatEngine
             return true;
         }
 
-        var card = pile[index];
+        CardInstance card;
         if (ReferenceEquals(pile, state.DrawPile))
         {
-            state.RemoveFromDrawPileAt(index);
+            card = state.RemoveFromDrawPileAt(index);
         }
         else
         {
+            card = pile[index];
             pile.RemoveAt(index);
         }
 
@@ -6470,13 +6586,13 @@ public static class CombatEngine
                 return;
             }
 
-            card = restsOn![at];
             if (restsOn == state.DrawPile)
             {
-                state.RemoveFromDrawPileAt(at);
+                card = state.RemoveFromDrawPileAt(at);
             }
             else
             {
+                card = restsOn![at];
                 restsOn.RemoveAt(at);
             }
         }
@@ -6517,8 +6633,7 @@ public static class CombatEngine
                 break;
             }
 
-            cards.Add(state.DrawPile[0]);
-            state.RemoveFromDrawPileAt(0);
+            cards.Add(state.RemoveFromDrawPileAt(0));
         }
 
         foreach (var card in cards)

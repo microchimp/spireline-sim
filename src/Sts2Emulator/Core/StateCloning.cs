@@ -714,16 +714,44 @@ public static class StateCloning
     /// Deliberately not folded into <see cref="Clone(CombatState, int?)" />: a plain clone
     /// is a faithful copy and the differential tests depend on that, seed or no seed.
     /// </para>
+    /// <para>
+    /// An open screen over the draw pile offers CARDS the player has been shown -- Seeker
+    /// Strike's sample of three, Secret Weapon's Attacks -- at places they have not been: its
+    /// candidates follow their cards through the shuffle. Left as indices, the copy offered
+    /// whatever the shuffle put there (another sample, a Skill on Secret Weapon's screen).
+    /// </para>
     /// </remarks>
     public static void ReshuffleUnknownDrawOrder(this CombatState combat, Random rng)
     {
         int start = combat.KnownTopCount;
         int end = combat.DrawPile.Count - combat.KnownBottomCount;
+        var screen = combat.PendingSelection is { } open && open.Kind.ChoosesFromDrawPile() ? open : null;
+        // Where each card now in the pile came from, for the screen's candidates.
+        int[]? from = screen is null ? null : [.. Enumerable.Range(0, combat.DrawPile.Count)];
         // Fisher-Yates over [start, end), the region nothing has been shown.
         for (int i = end - 1; i > start; i--)
         {
             int j = start + rng.Next(i - start + 1);
             (combat.DrawPile[i], combat.DrawPile[j]) = (combat.DrawPile[j], combat.DrawPile[i]);
+            if (from is not null)
+            {
+                (from[i], from[j]) = (from[j], from[i]);
+            }
+        }
+
+        if (screen is not null && from is not null)
+        {
+            var to = new int[from.Length];
+            for (int place = 0; place < from.Length; place++)
+            {
+                to[from[place]] = place;
+            }
+
+            var followed = screen.Candidates.Select(index => index >= 0 && index < to.Length ? to[index] : index).Order().ToList();
+            if (!followed.SequenceEqual(screen.Candidates))
+            {
+                combat.PendingSelection = screen.Clone(screen.Replay, candidates: followed);
+            }
         }
     }
 }

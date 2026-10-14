@@ -69,7 +69,7 @@ public class LifecycleTests(ITestOutputHelper output)
     const string TurnStartHeld = "a turn start stopped at a relic's screen: where it goes on, carried with the open selection it waits on (PendingSelection*)";
     const string StepLocal = "in-step bookkeeping, idle when a step has returned with the fight going on (Transient_fields_are_idle_after_every_step), carried";
     const string SharedStop = "a stopped step's record (HookChoiceReplay) is never changed once made, so Clone and CopyTo share it by design: a replay copies Before and RngBefore into the combat, PutBack copies the streams and the whole copy out, and CardInstance is a value type (StoppedStepLifecycleTests.CloneAndCopyToShareTheStoppedStep)";
-    const string PublicStop = "the agent's document writes a stopped step's public part only (StoppedStepDocumentTests): no stream, no answering copy's hidden state, the start's unseen cards a multiset; Read gives back a step from a document, whose answer replays the start in the loader's world and puts the loaded copy back whole at the screen. The true world is the save document's (WriteSave; StoppedStepLifecycleTests)";
+    const string CheckedStop = "a stopped step loads only when its replay from the document's public start reaches its screen the way the step went (CombatEngine.CheckStoppedStep, run by Read and so by Write), and a stamped record is no real stop, so Write refuses it; real stops round-trip whole in StoppedStepDocumentTests (ALoadedStopWritesBackTheSameDocument, TheRecordComesBackFromTheDocument). The agent's document writes the public part only: no stream, no answering copy's hidden state, the start's unseen cards a multiset, the cards taken and the screens reached as the player saw them; the save document adds the true world (WriteSave; StoppedStepLifecycleTests)";
 
     /// <summary>
     /// Per stage, the fields it leaves alone on purpose, with the reason. A key ending in * matches every
@@ -137,11 +137,7 @@ public class LifecycleTests(ITestOutputHelper output)
             ["CombatState.LastAttackOrSkillThisTurn"] = HolderRetain,
             ["CombatState.LastAttackOrSkillLastTurn"] = HolderRetain,
             ["CombatState.Enemies[].StolenCard"] = HolderRetain,
-            ["CombatState.PendingSelection.Replay.Answers[].Pick"] = HolderRetain,
-            ["CombatState.PendingSelection.Replay"] = PublicStop,
-            ["CombatState.PendingSelection.Replay.Before"] = PublicStop,
-            ["CombatState.PendingSelection.Replay.RngBefore"] = PublicStop,
-            ["CombatState.PendingSelection.Replay.Hidden*"] = PublicStop,
+            ["CombatState.PendingSelection.Replay*"] = CheckedStop,
             ["*.Retain"] = RetainUnread,
         },
         ["reanchor"] = new()
@@ -770,6 +766,8 @@ public class LifecycleTests(ITestOutputHelper output)
         TargetEnemyIndex = -1,
         Answers = new List<StepAnswer>(),
         Hidden = new List<ScreenHiddenState>(),
+        Taken = new List<CardInstance>(),
+        Screens = new List<StepScreen>(),
     };
 
     static readonly Lazy<RunEngine> Template = new(BuildRunInCombat);

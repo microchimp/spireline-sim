@@ -254,11 +254,7 @@ public static class CombatObservation
             obs[SelectionCountOffset] = selection.Candidates.Count;
 
             // A generated choice has no pile behind it; its options are on the selection.
-            if (
-                selection.Kind
-                is CardSelectionKind.GeneratedCardToHand
-                    or CardSelectionKind.CurseOfKnowledge
-            )
+            if (selection.CandidatePile(s) is not { } pile)
             {
                 for (
                     int i = 0;
@@ -271,14 +267,6 @@ public static class CombatObservation
             }
             else
             {
-                var pile = selection.Kind switch
-                {
-                    CardSelectionKind.DiscardToDrawPileTop => s.DiscardPile,
-                    CardSelectionKind.DiscardToHand => s.DiscardPile,
-                    CardSelectionKind.DiscardToHandFree => s.DiscardPile,
-                    _ when selection.Kind.ChoosesFromDrawPile() => s.DrawPile,
-                    _ => s.Hand,
-                };
                 for (int i = 0; i < MaxSelectionCandidates && i < selection.Candidates.Count; i++)
                 {
                     int index = selection.Candidates[i];

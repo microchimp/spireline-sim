@@ -305,6 +305,22 @@ public sealed class PendingCardSelection
 public static class CardSelectionKindExtensions
 {
     /// <summary>
+    /// The pile <paramref name="selection" />'s candidates index into: the discard pile for
+    /// Headbutt's, Hologram's and Liquid Memories' screens, the draw pile for the four that choose
+    /// from it (<see cref="ChoosesFromDrawPile" />), the hand for the rest; null for a choose-a-card
+    /// screen, whose candidates index <see cref="PendingCardSelection.GeneratedCandidates" />. The
+    /// observation shows the candidates from it, and a stopped step records them from it.
+    /// </summary>
+    public static List<CardInstance>? CandidatePile(this PendingCardSelection selection, CombatState state) =>
+        selection.Kind switch
+        {
+            CardSelectionKind.GeneratedCardToHand or CardSelectionKind.CurseOfKnowledge => null,
+            CardSelectionKind.DiscardToDrawPileTop or CardSelectionKind.DiscardToHand or CardSelectionKind.DiscardToHandFree => state.DiscardPile,
+            _ when selection.Kind.ChoosesFromDrawPile() => state.DrawPile,
+            _ => state.Hand,
+        };
+
+    /// <summary>
     /// Whether the kind's candidates index the draw pile: <c>CombatEngine.ResolveCardSelection</c>
     /// reads <c>state.DrawPile[index]</c> for exactly these four. The observation shows their
     /// candidates from the draw pile, and a snapshot names the ones in the unordered middle

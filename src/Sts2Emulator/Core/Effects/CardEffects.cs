@@ -2532,17 +2532,13 @@ public static class CardEffects
             (rares[i], rares[j]) = (rares[j], rares[i]);
         }
 
-        // Removing by index invalidates the ones after it, so take the picks first and
-        // drop them from the pile back-to-front.
+        // Taken in the order they join the hand; each pick's place moves up by one for every
+        // pick taken from above it.
         var taken = rares.Take(Math.Max(0, room)).ToList();
-        foreach (var pick in taken)
+        for (int i = 0; i < taken.Count; i++)
         {
-            state.Hand.Add(pick.Card with { Retain = retain });
-        }
-
-        foreach (int index in taken.Select(x => x.Index).OrderByDescending(i => i))
-        {
-            state.RemoveFromDrawPileAt(index);
+            int index = taken[i].Index - taken.Take(i).Count(pick => pick.Index < taken[i].Index);
+            state.Hand.Add(state.RemoveFromDrawPileAt(index) with { Retain = retain });
         }
     }
 
@@ -2683,13 +2679,13 @@ public static class CardEffects
             // `HellraiserPower.AfterCardDrawnEarly`, the one EARLY draw hook: a drawn Strike
             // is auto-played there and then -- before every `AfterCardDrawn` hook (Chains of
             // Binding, Confused and the rest below) and before the next card is drawn.
+            var top = state.RemoveFromDrawPileAt(0);
             bool hellraised =
                 BuffSystem.Get(state.PlayerBuffs, BuffId.Hellraiser) > 0
-                && IsStrikeCard(state.DrawPile[0].DefId);
+                && IsStrikeCard(top.DefId);
             var card = hellraised
-                ? GrowKinglyCardOnDraw(state.DrawPile[0])
-                : BindOnDraw(state, ConfuseCostOnDraw(state, GrowKinglyCardOnDraw(state.DrawPile[0])));
-            state.RemoveFromDrawPileAt(0);
+                ? GrowKinglyCardOnDraw(top)
+                : BindOnDraw(state, ConfuseCostOnDraw(state, GrowKinglyCardOnDraw(top)));
             // `Void.AfterCardDrawn` when the drawn card IS the Void: `LoseEnergy(1)`. The
             // card is Unplayable and Ethereal, so its whole existence is the energy it
             // takes on the way past.
@@ -3439,8 +3435,7 @@ public static class CardEffects
                 continue;
             }
 
-            state.Hand.Add(state.DrawPile[index]);
-            state.DrawPile.RemoveAt(index);
+            state.Hand.Add(state.RemoveFromDrawPileAt(index));
         }
     }
 
@@ -9795,8 +9790,7 @@ public static class CardEffects
             return;
         }
 
-        var card = state.DrawPile[0];
-        state.RemoveFromDrawPileAt(0);
+        var card = state.RemoveFromDrawPileAt(0);
         ExhaustCard(state, card, rng: rng);
     }
 
@@ -11343,8 +11337,7 @@ public static class CardEffects
             return;
         }
 
-        var drawCard = state.DrawPile[index];
-        state.RemoveFromDrawPileAt(index);
+        var drawCard = state.RemoveFromDrawPileAt(index);
         state.Hand.Add(drawCard with { FreeThisTurn = false });
     }
 

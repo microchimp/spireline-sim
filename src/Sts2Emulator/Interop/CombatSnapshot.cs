@@ -82,15 +82,21 @@ public sealed class SnapshotException : Exception
 /// Conclusion's pick, the turn end after Well-Laid Plans' -- runs once the screen is answered.
 /// <see cref="Write" /> writes it with the public part of the step it stopped (<c>stopped_step</c>,
 /// <see cref="WriteStoppedStep" />): the kind of step, the card or potion in play, the action, the
-/// answers so far, and the step's start as the player saw it, written as this document is written.
-/// Never the start's true draw order or the streams: those name the future (a stopped Burning Pact's
-/// true start names the two cards it draws). So two determinized copies of one stopped combat write
-/// the same document. Loaded, the step goes on from the screen as it does in memory: its answer
-/// replays the step from the public start in the loader's world, and where the replay reaches the
-/// screen the loaded copy is put back whole (<see cref="HookChoiceReplay" />,
-/// <see cref="ScreenHiddenState" />), so the counts, the counters and the rest of the turn come out
-/// as answering in memory does. A document from the live game has no such block (the live
-/// converter finishes the play in its document instead).
+/// answers so far, the step's start as the player saw it, written as this document is written, and
+/// what the player saw the step do before the screen: the cards it took off the draw pile in order
+/// (<c>taken</c>: the hand it drew, the card Havoc, Mayhem or Hellraiser auto-played) and the screens
+/// it reached (<c>screens</c>). Never the start's true draw order or the streams: those name the
+/// future (a stopped Burning Pact's true start names the two cards it draws). So two determinized
+/// copies of one stopped combat write the same document. Loaded, the step goes on from the screen as
+/// it does in memory: its answer replays the step from the public start in the loader's world, held
+/// to <c>taken</c> and <c>screens</c> -- it takes exactly those cards and reaches exactly those
+/// screens, or the answer is refused -- and where the replay reaches the last screen the loaded copy
+/// is put back whole (<see cref="HookChoiceReplay" />, <see cref="ScreenHiddenState" />), so the
+/// counts, the counters and the rest of the turn come out as answering in memory does. A step whose
+/// replay does not reach its screen is refused at load (<see cref="Read" />), and so at export
+/// (<see cref="Write" />): never written as a document that would load as another position. A
+/// document from the live game has no such block (the live converter finishes the play in its
+/// document instead).
 /// </para>
 /// <para>
 /// <see cref="WriteSave" /> is the emulator's save document: the same document plus the true world of
@@ -144,7 +150,38 @@ public static class CombatSnapshot
     /// part (see the remarks): use it wherever an agent, a search or the live game's side reads
     /// positions.
     /// </summary>
-    public static byte[] Write(CombatState state) => WriteDocument(state, save: false);
+    /// <exception cref="SnapshotException">
+    /// The combat is stopped in the middle of a step whose replay from the document's public start
+    /// does not reach its screen (<c>CombatEngine.CheckStoppedStep</c>): its document would load as
+    /// another position, so none is written. The path is <c>stopped_step</c>.
+    /// </exception>
+    public static byte[] Write(CombatState state)
+    {
+        var document = WriteDocument(state, save: false);
+        if (state.PendingSelection?.Replay is not null)
+        {
+            try
+            {
+                Read(document, ExportCheckSeed, out _);
+            }
+            catch (SnapshotException e)
+            {
+                throw new SnapshotException("stopped_step", $"the stopped step cannot be written as a document that loads back as this position ({e.Message})");
+            }
+        }
+
+        return document;
+    }
+
+    /// <summary>
+    /// <see cref="Write" />'s document without its export check, for code that prints a state and
+    /// never loads it (EmuDump's dumps, the trace): a stopped step it would refuse is written all the
+    /// same. Never for a document an agent, a search or a loader reads.
+    /// </summary>
+    public static byte[] WriteUnchecked(CombatState state) => WriteDocument(state, save: false);
+
+    /// <summary>The load seed <see cref="Write" /> reads its own document back with, to check it loads.</summary>
+    private const int ExportCheckSeed = 1;
 
     /// <summary>
     /// The save document: <see cref="Write" />'s, plus the true world of the step stopped on the
@@ -283,7 +320,10 @@ public static class CombatSnapshot
     ];
 
     private static readonly string[] StoppedStepFields =
-        ["step", "card", "potion", "action", "target", "answers", "before", "answer_indices", "before_draw", "before_streams", "hidden"];
+        ["step", "card", "potion", "action", "target", "answers", "taken", "screens", "before", "answer_indices", "before_draw", "before_streams", "hidden"];
+
+    /// <summary>A screen the stopped step reached (<see cref="StepScreen" />).</summary>
+    private static readonly string[] ScreenFields = ["kind", "source", "count", "taken", "cards", "generated"];
 
     /// <summary>An answer the document names by card: a pick from the draw pile.</summary>
     private static readonly string[] AnswerFields = ["card"];
@@ -510,6 +550,22 @@ public static class CombatSnapshot
 
         // Each answer is an index, or {"card": ...} for a pick from the draw pile, named by its card.
         var given = fields.Items("answers", ReadAnswer);
+        var taken = fields.RequiredItems("taken", ReadCard);
+        var screens = fields.RequiredItems("screens", ReadScreen);
+        if (screens.Count != given.Count + 1)
+        {
+            throw new SnapshotException(fields.At("screens"), $"{screens.Count} screens for {given.Count} answers; a stopped step reaches one screen per answer and the one it stopped on");
+        }
+
+        if (screens.Select(reached => reached.Taken).Prepend(0).Zip(screens.Select(reached => reached.Taken)).Any(pair => pair.First > pair.Second) || screens[^1].Taken != taken.Count)
+        {
+            throw new SnapshotException(fields.At("screens"), $"the takes before each screen must run up to the {taken.Count} cards taken");
+        }
+
+        if (screens[^1].Differs(screen, taken.Count) is { } other)
+        {
+            throw new SnapshotException(fields.At("screens"), $"the last screen is not the one pending_selection shows: pending_selection is {other}");
+        }
         HookChoiceReplay replay;
         if (!fields.TryGet("before_streams", out _))
         {
@@ -529,6 +585,8 @@ public static class CombatSnapshot
                 TargetEnemyIndex = fields.Int("target"),
                 Answers = given,
                 Hidden = [.. given.Select(_ => ScreenHiddenState.None)],
+                Taken = taken,
+                Screens = screens,
             };
         }
         else
@@ -573,6 +631,8 @@ public static class CombatSnapshot
                 TargetEnemyIndex = fields.Int("target"),
                 Answers = [.. answers.Zip(given, (index, answer) => answer with { Index = index })],
                 Hidden = hidden,
+                Taken = taken,
+                Screens = screens,
             };
         }
 
@@ -598,6 +658,35 @@ public static class CombatSnapshot
         }
 
         state.PendingSelection = screen.Clone(replay);
+
+        // The replay must reach the screen the document shows, the way the step went: else an answer
+        // would put the loaded copy back at another screen, or finish another step.
+        if (CombatEngine.CheckStoppedStep(state, seed) is { } why)
+        {
+            throw new SnapshotException("stopped_step", $"the step does not replay to its screen from its start: {why}");
+        }
+    }
+
+    /// <summary>A screen in a stopped step's block (<see cref="StepScreen" />).</summary>
+    private static StepScreen ReadScreen(JsonElement item, string path)
+    {
+        var fields = new Fields(item, path, ScreenFields);
+        int kind = fields.Int("kind");
+        if (!Enum.IsDefined((CardSelectionKind)kind) || kind == (int)CardSelectionKind.None)
+        {
+            throw new SnapshotException(fields.At("kind"), $"unknown selection kind {kind}");
+        }
+
+        var cards = fields.Items("cards", ReadCard);
+        var generated = fields.Items("generated", (element, at) => AsInt(element, at));
+        int count = fields.Int("count");
+        int taken = fields.Int("taken");
+        if (count < 0 || taken < 0 || cards.Count > count || generated.Count > count)
+        {
+            throw new SnapshotException(path, $"{count} candidates, {cards.Count} cards and {generated.Count} generated, {taken} taken");
+        }
+
+        return new StepScreen((CardSelectionKind)kind, fields.Int("source"), count, taken, [.. cards], [.. generated]);
     }
 
     /// <summary>An answer in a stopped step's block: an index, or a pick from the draw pile by its card (index -1).</summary>
@@ -1576,7 +1665,10 @@ public static class CombatSnapshot
     /// (<c>step</c>: card_play, potion, end_turn, turn_start, screen), the card in play (<c>card</c>,
     /// in the play pile: in none of the document's piles) or the potion, the action and target, the
     /// answers given so far (a pick from the draw pile as <c>{"card": ...}</c>, since its index
-    /// points into the true order), and the step's start (<c>before</c>) as the player saw it: the
+    /// points into the true order), the cards the step took off the draw pile before the screen in
+    /// the order it took them (<c>taken</c>), each screen it reached (<c>screens</c>: kind, source
+    /// card, candidate count, the takes before it, the candidates it showed by card or generated id),
+    /// and the step's start (<c>before</c>) as the player saw it: the
     /// position the action was taken from, written as this document is written, its unseen cards a
     /// sorted multiset and no stream. That start is history the player has seen; the replay of a
     /// loaded one runs in the loader's world and reaches the screen's place in the step, where the
@@ -1640,6 +1732,23 @@ public static class CombatSnapshot
         }
 
         w.WriteEndArray();
+        WriteItems(w, "taken", stopped.Taken, WriteCard);
+        WriteItems(
+            w,
+            "screens",
+            stopped.Screens,
+            (writer, reached) =>
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("kind", (int)reached.Kind);
+                writer.WriteNumber("source", reached.Source);
+                writer.WriteNumber("count", reached.Count);
+                writer.WriteNumber("taken", reached.Taken);
+                WriteItems(writer, "cards", reached.Cards, WriteCard);
+                WriteItems(writer, "generated", reached.Generated, (inner, id) => inner.WriteNumberValue(id));
+                writer.WriteEndObject();
+            }
+        );
         w.WritePropertyName("before");
         WriteCombat(w, stopped.Before, save: false);
         if (save && !stopped.FromDocument)

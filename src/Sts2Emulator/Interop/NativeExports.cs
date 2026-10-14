@@ -70,7 +70,15 @@ public static class NativeExports
     //      finishes the step as answering in memory does. Sts2_GetSaveJson, banned outside
     //      verification and save code like Sts2_GetPile (review condition E12), adds the step's
     //      true world. A library from before refuses the field.
-    public const int NATIVE_API_VERSION = 33;
+    // v34: stopped_step also carries what the player saw the step do before its screen (taken: the
+    //      cards it took off the draw pile, in order; screens: each screen it reached), and a loaded
+    //      step's replay is held to them. A step whose replay does not reach its screen the way the
+    //      step went is refused: Sts2_LoadCombatSnapshot refuses the document, Sts2_GetStateJson
+    //      returns -3 instead of writing one, and Sts2_Step/Sts2_StepTargeted return -1 for an
+    //      answer whose replay went another way, the combat left on its screen as it was.
+    //      Sts2_GetLastError says why in each case. A library from before wrote no such fields and
+    //      put the answering copy back at whatever screen the replay reached.
+    public const int NATIVE_API_VERSION = 34;
 
     /// <summary>
     /// The plain resets' deck: the start of a run at the default level, from the one
@@ -613,7 +621,11 @@ public static class NativeExports
         return -2;
     }
 
-    /// <summary>Why the last <c>Sts2_LoadCombatSnapshot</c> was refused, as UTF-8; empty after a success.</summary>
+    /// <summary>
+    /// Why the last refusal was made, as UTF-8: a <c>Sts2_LoadCombatSnapshot</c> (empty after a
+    /// successful load), a <c>Sts2_GetStateJson</c> that returned -3, a <c>Sts2_Step</c> that
+    /// returned -1.
+    /// </summary>
     private static byte[] _lastLoadError = [];
 
     /// <summary>
@@ -680,7 +692,12 @@ public static class NativeExports
     /// The combat as an `sts2-emu-snapshot/1` document, UTF-8 JSON with no terminator.
     /// Size-and-retry: nothing is written unless <paramref name="cap" /> holds all of it.
     /// </summary>
-    /// <returns>The document's length in bytes, or -1 for an unknown handle.</returns>
+    /// <returns>
+    /// The document's length in bytes; -1 for an unknown handle; -3 when the combat is stopped in
+    /// the middle of a step whose replay from the document's public start would not reach its
+    /// screen (<c>CombatSnapshot.Write</c>), so no document is written: <c>Sts2_GetLastError</c>
+    /// says why.
+    /// </returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_GetStateJson")]
     public static unsafe int GetStateJson(int handle, byte* buf, int cap)
     {
@@ -689,7 +706,15 @@ public static class NativeExports
             return -1;
         }
 
-        byte[] json = CombatSnapshot.Write(combat.State);
+        byte[] json;
+        try
+        {
+            json = CombatSnapshot.Write(combat.State);
+        }
+        catch (SnapshotException e)
+        {
+            return RefuseLoad(e.Message, -3);
+        }
         if (buf is not null && cap >= json.Length)
         {
             json.CopyTo(new Span<byte>(buf, cap));
@@ -724,10 +749,12 @@ public static class NativeExports
     }
 
     /// <summary>
-    /// Why the last <c>Sts2_LoadCombatSnapshot</c> was refused, UTF-8 with no terminator,
-    /// naming the field by its JSON path. Size-and-retry, like <c>Sts2_GetStateJson</c>.
+    /// Why the last refusal was made, UTF-8 with no terminator: a <c>Sts2_LoadCombatSnapshot</c>
+    /// (naming the field by its JSON path), a <c>Sts2_GetStateJson</c> that returned -3, or a
+    /// <c>Sts2_Step</c>/<c>Sts2_StepTargeted</c> that returned -1. Size-and-retry, like
+    /// <c>Sts2_GetStateJson</c>.
     /// </summary>
-    /// <returns>The message's length in bytes; 0 when the last load succeeded.</returns>
+    /// <returns>The message's length in bytes; 0 when the last load succeeded and nothing was refused since.</returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_GetLastError")]
     public static unsafe int GetLastError(byte* buf, int cap)
     {
@@ -1075,17 +1102,44 @@ public static class NativeExports
             ? 1
             : 0;
 
+    /// <returns>1 when the fight is over, 0 when it goes on, -1 when the answer to a stopped step's
+    /// screen was refused (<see cref="StepOrRefuse" />).</returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_Step")]
     public static unsafe int Sts2_Step(int handle, int action, int* obsBuf, float* rewardOut)
     {
         var combat = _pool[handle]!;
-        var result = CombatEngine.Step(combat.State, action, combat.Rng);
+        return StepOrRefuse(combat, action, -1, obsBuf, rewardOut);
+    }
+
+    /// <summary>
+    /// One step, or a refused answer: a screen raised in the middle of a step is answered by
+    /// replaying the step, and a replay that does not go the way the step went (a loaded document's
+    /// step in a world where it reaches another screen) is refused rather than put back at the wrong
+    /// place (<c>StoppedStepMismatch</c>). The combat is then on its screen as it was, the
+    /// observation is written, and <c>Sts2_GetLastError</c> says why.
+    /// </summary>
+    private static unsafe int StepOrRefuse(NativeCombat combat, int action, int target, int* obsBuf, float* rewardOut)
+    {
+        StepResult result;
+        try
+        {
+            result = CombatEngine.Step(combat.State, action, combat.Rng, target);
+        }
+        catch (StoppedStepMismatch e)
+        {
+            _lastLoadError = Encoding.UTF8.GetBytes(e.Message);
+            WriteObs(combat.State, obsBuf);
+            *rewardOut = 0f;
+            return -1;
+        }
+
         combat.LastPlayerWon = result.Terminal && result.PlayerWon;
         WriteObs(combat.State, obsBuf);
         *rewardOut = result.Reward;
         return result.Terminal ? 1 : 0;
     }
 
+    /// <returns>As <c>Sts2_Step</c>: 1, 0, or -1 for a refused answer.</returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_StepTargeted")]
     public static unsafe int Sts2_StepTargeted(
         int handle,
@@ -1096,11 +1150,7 @@ public static class NativeExports
     )
     {
         var combat = _pool[handle]!;
-        var result = CombatEngine.Step(combat.State, action, combat.Rng, targetEnemyIdx);
-        combat.LastPlayerWon = result.Terminal && result.PlayerWon;
-        WriteObs(combat.State, obsBuf);
-        *rewardOut = result.Reward;
-        return result.Terminal ? 1 : 0;
+        return StepOrRefuse(combat, action, targetEnemyIdx, obsBuf, rewardOut);
     }
 
     [UnmanagedCallersOnly(EntryPoint = "Sts2_PlayerWon")]

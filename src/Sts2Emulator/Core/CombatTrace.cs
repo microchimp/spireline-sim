@@ -20,5 +20,37 @@ public static class CombatTrace
     /// <summary>Every draw from a <see cref="CountingRandom" />, after its counter moved.</summary>
     public static Action<CountingRandom>? RngCall;
 
-    internal static void At(string what, int subject, CombatState state) => Mark?.Invoke(what, subject, state);
+    internal static void At(string what, int subject, CombatState state)
+    {
+        if (Mark is { } mark && _quiet == 0)
+        {
+            mark(what, subject, state);
+        }
+    }
+
+    internal static void OnRng(CountingRandom rng)
+    {
+        if (RngCall is { } call && _quiet == 0)
+        {
+            call(rng);
+        }
+    }
+
+    /// <summary>
+    /// A scope on this thread in which neither sink hears anything: a check that replays a step on a
+    /// copy (<c>CombatEngine.CheckStoppedStep</c>) is not part of the fight being traced.
+    /// </summary>
+    internal static QuietScope Quiet()
+    {
+        _quiet++;
+        return default;
+    }
+
+    [ThreadStatic]
+    private static int _quiet;
+
+    internal readonly struct QuietScope : IDisposable
+    {
+        public void Dispose() => _quiet--;
+    }
 }
