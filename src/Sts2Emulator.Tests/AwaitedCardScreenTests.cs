@@ -86,6 +86,41 @@ public class AwaitedCardScreenTests
         Assert.Equal(40 - 9, fight.Enemy0.Hp);
     }
 
+    /// <summary>
+    /// `HellraiserPower.AfterCardDrawnEarly` plays a drawn Strike inside the hand draw, so a Seeker
+    /// Strike it plays asks there -- before the rest of the draw and before `AfterPlayerTurnStart`'s
+    /// Entropy -- as the game did in TCU1SMLQHY (jobs-pickorder, steps 10 and 18: the Seeker Strike
+    /// pick, then Entropy's). The Strike used to be queued and played once the step was over, so
+    /// Entropy asked first and the recorded Seeker Strike pick was refused.
+    /// </summary>
+    [Fact]
+    public void AStrikeHellraiserPlaysAsksInsideTheHandDrawBeforeEntropy()
+    {
+        var fight = Fight
+            .Hand(Card(IC.DefendIronclad))
+            .Energy(3)
+            .Draw([.. Pile(CL.SeekerStrike, IC.DefendIronclad, IC.Bash, IC.Anger, IC.Inflame, IC.ShrugItOff, IC.IronWave, IC.Thunderclap, IC.Armaments)])
+            .Enemy(hp: 400)
+            .PlayerBuff(BuffId.Hellraiser, 1)
+            .PlayerBuff(BuffId.EntropyPower, 1);
+
+        fight.EndTurn();
+
+        // The Seeker Strike's pick, with nothing drawn after it yet.
+        Assert.Equal(CardSelectionKind.DrawPileToHand, fight.Pending!.Kind);
+        Assert.Equal(CL.SeekerStrike, fight.Pending.SourceCardDefId);
+        Assert.Empty(fight.State.Hand);
+        Assert.Equal(400 - 9, fight.Enemy0.Hp);
+        fight.Choose(0);
+
+        // The draw goes on (the played Strike was one of the five), then Entropy asks over it.
+        Assert.Equal(CardSelectionKind.TransformInHand, fight.Pending!.Kind);
+        Assert.Equal(1 + 4, fight.State.Hand.Count);
+        Assert.Equal(5, fight.Pending.Candidates.Count);
+        fight.Choose(0);
+        Assert.Null(fight.Pending);
+    }
+
     [Theory]
     [InlineData(61)] // Touch of Insanity: `FromHand(prefs(prompt, 1))`
     [InlineData(48)] // Power Potion: `FromChooseACardScreen(..., canSkip: true)`
