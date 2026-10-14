@@ -449,6 +449,40 @@ public static class RunConstants
     // Overgrowth bosses: CeremonialBeast, TheKin, Vantom.
     public static ReadOnlySpan<int> OvergrowthBossEncounters => [74, 82, 83];
 
+    /// <summary>
+    /// <c>ActModel.BossDiscoveryOrder</c>, act by act: the order a profile meets the act's
+    /// bosses in. <c>ApplyDiscoveryOrderModifications</c> forces the first one the profile has
+    /// not seen, so it only matters to a profile that has not seen them all.
+    /// </summary>
+    public static int[] BossDiscoveryOrder(int act) =>
+        act switch
+        {
+            ActUnderdocks =>
+            [
+                (int)CombatFactory.ActOneEncounter.WaterfallGiant,
+                (int)CombatFactory.ActOneEncounter.SoulFysh,
+                (int)CombatFactory.ActOneEncounter.LagavulinMatriarch,
+            ],
+            ActHive =>
+            [
+                (int)CombatFactory.ActOneEncounter.TheInsatiable,
+                (int)CombatFactory.ActOneEncounter.KnowledgeDemon,
+                (int)CombatFactory.ActOneEncounter.KaiserCrab,
+            ],
+            ActGlory =>
+            [
+                (int)CombatFactory.ActOneEncounter.Queen,
+                (int)CombatFactory.ActOneEncounter.TestSubject,
+                (int)CombatFactory.ActOneEncounter.Aeonglass,
+            ],
+            _ =>
+            [
+                (int)CombatFactory.ActOneEncounter.Vantom,
+                (int)CombatFactory.ActOneEncounter.CeremonialBeast,
+                (int)CombatFactory.ActOneEncounter.TheKin,
+            ],
+        };
+
     // Underdocks bosses: LagavulinMatriarch, SoulFysh, WaterfallGiant.
     public static ReadOnlySpan<int> UnderdocksBossEncounters => [77, 79, 84];
 
@@ -562,21 +596,20 @@ public static class RunConstants
     public const int CardMadScience = 292;
 
     /// <summary>
-    /// How many characters Orobas may brand a Sea Glass with: everyone unlocked except
-    /// the player's own, which is four on the mature profile the captures are taken on.
-    /// Only the DRAW matters — the chosen character brands a relic the emulator does not
-    /// model — but skipping it would shift every pool pick after it.
+    /// The Sea Glass's cards: the pool of the character Orobas branded it with. Orobas draws
+    /// that character with <c>NextItem(UnlockState.Characters.Where(c => c.Id != own))</c>,
+    /// so <c>RunState.SeaGlassCharacter</c> indexes the profile's other characters in
+    /// <c>ModelDb.AllCharacters</c> order; a profile with no other character draws nothing
+    /// (-1) and brands the glass with the player's own.
     /// </summary>
-    public const int OtherCharacterCount = 4;
+    public static ReadOnlySpan<int> SeaGlassPool(RunState state) =>
+        CharacterPools.Cards(SeaGlassCharacterOf(state));
 
-    /// <summary>
-    /// The characters Orobas may brand a Sea Glass with, in the order it draws over them:
-    /// <c>ModelDb.AllCharacters</c> is Ironclad, Silent, Regent, Necrobinder, Defect, and
-    /// Orobas takes <c>Where(c => c.Id != Owner.Character.Id)</c> — so the index-th of
-    /// <see cref="CharacterPools.Others" />, in that order.
-    /// </summary>
-    public static ReadOnlySpan<int> OtherCharacterPoolFor(PlayerCharacter own, int index) =>
-        CharacterPools.Cards(CharacterPools.Others(own).ElementAt(index));
+    /// <summary>The character the Sea Glass is branded with (<see cref="SeaGlassPool" />).</summary>
+    public static PlayerCharacter SeaGlassCharacterOf(RunState state) =>
+        state.SeaGlassCharacter < 0
+            ? state.Character
+            : state.Unlocks.Others(state.Character).ElementAt(state.SeaGlassCharacter);
 
     public const string AncientNeow = "NEOW";
 
@@ -623,8 +656,8 @@ public static class RunConstants
     /// <c>ActModel.GetUnlockedAncients</c>, act by act. Both act-1 regions declare exactly
     /// ONE ancient and it is Neow, so act 1's pick is a one-item <c>NextItem</c> that
     /// still spends its draw. Hive declares three and drops Orobas when its epoch is
-    /// unrevealed; Glory declares three of its own. The mature profile the captures are
-    /// taken on has everything revealed.
+    /// unrevealed (<c>RunMapGenerator</c> applies the profile); Glory declares three of its
+    /// own.
     /// </summary>
     public static string[] AncientsFor(int act) =>
         act switch

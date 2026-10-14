@@ -18,6 +18,13 @@ public sealed class CombatState
     /// </summary>
     public PlayerCharacter Character = PlayerCharacter.Ironclad;
 
+    /// <summary>
+    /// The run's profile (<c>Player.UnlockState</c>): which characters' pools a walk over
+    /// <c>UnlockState.CharacterCardPools</c> (Splash) reads. A bare combat has everything.
+    /// Immutable, so a clone shares it.
+    /// </summary>
+    public UnlockState Unlocks { get; set; } = UnlockState.All;
+
     // Player
     public int PlayerHp;
     public int PlayerMaxHp;

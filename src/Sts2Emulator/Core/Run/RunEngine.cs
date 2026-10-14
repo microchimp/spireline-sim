@@ -20,11 +20,17 @@ public sealed class RunEngine
     /// "from the character's own" -- the relic bag above all, which is shuffled off UpFront
     /// before the rooms are, so the character moves every draw after it. Ironclad by default.
     /// </param>
+    /// <param name="unlocks">
+    /// The profile the run is generated for: <see cref="UnlockState.All" /> (every epoch, every
+    /// encounter seen, every act discovered) by default. The seed alone does not decide a run;
+    /// the act roll, the rooms, the ancients, the bosses and Neow's offer also read this.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">A level the run engine does not model.</exception>
     public void Reset(
         string seed,
         int ascension = Ascension.DefaultLevel,
-        PlayerCharacter character = PlayerCharacter.Ironclad
+        PlayerCharacter character = PlayerCharacter.Ironclad,
+        UnlockState? unlocks = null
     )
     {
         if (ascension is < 0 or > Ascension.MaxRunLevel)
@@ -44,6 +50,8 @@ public sealed class RunEngine
         State.AscensionLevel = ascension;
         // Set before anything is generated: the relic bag reads the character's pool.
         State.Character = character;
+        // `RunState.UnlockState`, which everything below generates from.
+        State.Unlocks = unlocks ?? UnlockState.All;
         // Store the canonical seed, not the typed one: the game canonicalizes before it
         // hashes, so "abcdefo" and "ABCDEF0" are the same run.
         State.Rng = new RunRngSet(seed);
@@ -153,6 +161,7 @@ public sealed class RunEngine
         {
             AscensionLevel = State.AscensionLevel,
             Character = State.Character,
+            Unlocks = State.Unlocks,
         };
         var combatRng = new CountingRandom(State.Rng.Niche.RawSeed);
         var nicheHpRng = CountingRandom.At(State.Rng.Niche);
@@ -1608,7 +1617,15 @@ public sealed class RunEngine
     private void GenerateNeowOptions()
     {
         var rng = State.Rng.NeowRng();
-        int[] curseOptions = RunConstants.NeowCurseOptions.ToArray();
+        // `Neow.GenerateInitialOptions` drops every option `IsAllowedAtNeow` refuses twice: from
+        // the curses before their NextItem, and from the positives after the pairs are added and
+        // before the shuffle -- so a refused blessing changes which two the shuffle deals.
+        int[] curseOptions =
+        [
+            .. RunConstants
+                .NeowCurseOptions.ToArray()
+                .Where(relic => RunNonCombatEffects.IsAllowedAtNeow(State, relic)),
+        ];
         int cursed = curseOptions[rng.NextInt(curseOptions.Length)];
 
         List<int> positive = RunConstants.NeowPositiveOptions.ToArray().ToList();
@@ -1640,6 +1657,7 @@ public sealed class RunEngine
             rng.NextBool() ? RunConstants.RelicNutritiousOyster : RunConstants.RelicStoneHumidifier
         );
         positive.Add(rng.NextBool() ? RunConstants.RelicNeowsTalisman : RunConstants.RelicPomander);
+        positive.RemoveAll(r => !RunNonCombatEffects.IsAllowedAtNeow(State, r));
         rng.Shuffle(positive);
 
         State.NeowOptions[0] = positive[0];
@@ -5671,7 +5689,7 @@ public sealed class RunEngine
     /// <summary>The surviving pools, in option order. Rolled on entry, never here.</summary>
     private List<int[]> ColorfulPhilosopherPools()
     {
-        var order = RunNonCombatEffects.ColorfulPhilosopherPoolOrder(State.Character);
+        var order = RunNonCombatEffects.ColorfulPhilosopherPoolOrder(State);
         return RunNonCombatEffects
             .ColorfulPhilosopherPools(State)
             .Select(index => order[index])

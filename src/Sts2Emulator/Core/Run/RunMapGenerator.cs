@@ -48,19 +48,15 @@ public static class RunMapGenerator
     {
         // Act 1 is picked by StartRunLobby.BeginRunLocally from the *unlocked* acts for
         // index 0, via rng.NextItem on a dedicated "act_selection" stream — not a coin
-        // flip on the raw seed, which is what this used to do.
-        //
-        // Caveat: like boss discovery, this is not a pure function of the seed. The
-        // candidate list is whatever the profile has unlocked, and the game
-        // force-selects an unlocked-but-undiscovered alt act instead of rolling. We
-        // model the mature-profile case (both Act-1 options unlocked and discovered),
-        // which is what the differential captures are taken on. A profile without
-        // Underdocks unlocked would always get Overgrowth.
+        // flip on the raw seed, which is what this used to do. Like boss discovery it is
+        // not a pure function of the seed: the profile decides the candidates (see
+        // SelectAct).
         var actRng = new GameRng(state.Rng.Seed, "act_selection");
+        var unlocks = state.Unlocks;
         int[] acts =
         [
             .. RunConstants.ActCandidatesByIndex.Select(candidates =>
-                candidates[actRng.NextInt(candidates.Length)]
+                SelectAct(candidates, unlocks, actRng)
             ),
         ];
         // RunManager.GenerateRooms drives one UpFront stream in a fixed order:
@@ -84,7 +80,15 @@ public static class RunMapGenerator
         // ancient that is two draws, which is what this used to spend as a constant --
         // but the VALUES matter, because taking it or not decides whether an act can open
         // on Darv at all.
-        var remainingShared = SharedAncientPool.ToList();
+        // `UnlockState.SharedAncients` leaves Darv out until its epoch is revealed. Either way
+        // each act after the first spends its NextInt: a count of 0 or 1 out of an empty or a
+        // one-item list.
+        var remainingShared = SharedAncientPool
+            .Where(ancient =>
+                ancient != RunConstants.AncientDarv
+                || unlocks.IsEpochRevealed(UnlockState.Epochs.Darv)
+            )
+            .ToList();
         var sharedSubsets = new List<string[]>();
         for (int i = 1; i < RunConstants.ActCandidatesByIndex.Length; i++)
         {
@@ -104,7 +108,7 @@ public static class RunMapGenerator
         {
             // The game's loop is `Acts.Skip(1)`, so act 1 is dealt no shared ancients.
             string[] subset = index == 0 ? [] : sharedSubsets[index - 1];
-            state.Acts.Add(GenerateRoomsForAct(acts[index], upFront, subset));
+            state.Acts.Add(GenerateRoomsForAct(acts[index], upFront, subset, unlocks));
         }
 
         // `i == State.Acts.Count - 1 && AscensionManager.HasLevel(DoubleBoss)`: the LAST
@@ -122,6 +126,38 @@ public static class RunMapGenerator
     }
 
     /// <summary>
+    /// <c>ActModel.GetRandomList</c> for one act index: the candidates the profile has
+    /// unlocked, in <c>ModelDb.ActsByIndex</c> order, and one <c>NextItem</c> over them -- unless
+    /// one of them is an alternate (not <c>IsDefault</c>, which the first of each row is) that
+    /// the profile has never been to, which is taken outright and costs the stream nothing.
+    /// </summary>
+    private static int SelectAct(int[] candidates, UnlockState unlocks, GameRng rng)
+    {
+        var unlocked = new List<int>();
+        foreach (int act in candidates)
+        {
+            if (!IsActUnlocked(act, unlocks))
+            {
+                continue;
+            }
+
+            if (act != candidates[0] && !unlocks.IsActDiscovered(act))
+            {
+                return act;
+            }
+
+            unlocked.Add(act);
+        }
+
+        return unlocked[rng.NextInt(unlocked.Count)];
+    }
+
+    /// <summary><c>ActModel.IsUnlocked</c>: Underdocks waits for its epoch, the rest are open.</summary>
+    private static bool IsActUnlocked(int act, UnlockState unlocks) =>
+        act != RunConstants.ActUnderdocks
+        || unlocks.IsEpochRevealed(UnlockState.Epochs.Underdocks);
+
+    /// <summary>
     /// <c>ActModel.GenerateRooms</c>, which is the same six steps for every act: shuffle
     /// the event pool, fill the weak encounters, fill the regular ones up to the act's
     /// room count, fill fifteen elites, take a boss, take an ancient.
@@ -133,7 +169,12 @@ public static class RunMapGenerator
     /// rolled from the act's own three plus whatever shared ones it was dealt -- but the
     /// DRAW has to happen either way, and that is what keeps everything after it aligned.
     /// </remarks>
-    private static ActRooms GenerateRoomsForAct(int act, GameRng upFront, string[] sharedSubset)
+    private static ActRooms GenerateRoomsForAct(
+        int act,
+        GameRng upFront,
+        string[] sharedSubset,
+        UnlockState unlocks
+    )
     {
         var (weakCount, roomCount) = RunConstants.ActRoomCounts(act);
         int[] weakPool = WeakPoolFor(act);
@@ -141,7 +182,7 @@ public static class RunMapGenerator
         int[] elitePool = ElitePoolFor(act);
         int[] bossPool = BossPoolFor(act);
 
-        int[] events = GenerateEventSequence(act, upFront);
+        int[] events = GenerateEventSequence(act, upFront, unlocks);
 
         var normalSequence = new List<int>();
         var weakBag = weakPool.ToList();
@@ -190,6 +231,17 @@ public static class RunMapGenerator
         }
 
         int boss = bossPool[(int)(upFront.NextDouble() * bossPool.Length)];
+        // `ApplyDiscoveryOrderModifications` (a standard run always applies it): the first boss
+        // of the act's BossDiscoveryOrder the profile has never fought replaces the one drawn.
+        // Nothing is drawn for it, and the draw above is spent all the same.
+        foreach (int undiscovered in RunConstants.BossDiscoveryOrder(act))
+        {
+            if (!unlocks.HasSeenEncounter(undiscovered))
+            {
+                boss = undiscovered;
+                break;
+            }
+        }
 
         // `_rooms.Ancient = rng.NextItem(GetUnlockedAncients().Concat(sharedSubset))`.
         // The subset is empty on this profile -- SharedAncients is empty, so the two
@@ -198,7 +250,11 @@ public static class RunMapGenerator
         // value"; it is the real pick now, so the run knows WHICH ancient each act opens
         // on. Both act-1 regions declare Neow alone, so act 1 is a one-item pick that
         // still costs its draw.
-        string[] ancients = [.. RunConstants.AncientsFor(act), .. sharedSubset];
+        string[] ancients =
+        [
+            .. RunConstants.AncientsFor(act).Where(ancient => IsAncientUnlocked(ancient, unlocks)),
+            .. sharedSubset,
+        ];
         // NextItem spelled out: it is `items[(int)(NextDouble() * count)]`, and having the
         // raw roll is what lets a mismatch be solved rather than guessed at.
         double ancientRoll = upFront.NextDouble();
@@ -213,6 +269,35 @@ public static class RunMapGenerator
             ancient
         );
     }
+
+    /// <summary>
+    /// <c>ActModel.GetUnlockedAncients</c>: Hive drops Orobas until its epoch is revealed (and
+    /// both act-1 regions drop Neow until its own, which <see cref="UnlockState" /> refuses).
+    /// </summary>
+    private static bool IsAncientUnlocked(string ancient, UnlockState unlocks) =>
+        ancient != RunConstants.AncientOrobas
+        || unlocks.IsEpochRevealed(UnlockState.Epochs.Orobas);
+
+    /// <summary>
+    /// The events an epoch holds back (each epoch's <c>Events</c>), which
+    /// <c>ActModel.GenerateRooms</c> removes from the act's list before the shuffle -- one
+    /// event fewer is one UpFront draw fewer, which moves every encounter after it.
+    /// </summary>
+    private static readonly (string Epoch, int Event)[] EpochEvents =
+    [
+        (UnlockState.Epochs.Event1, RunConstants.EventTrashHeap),
+        (UnlockState.Epochs.Event2, RunConstants.EventReflections),
+        (UnlockState.Epochs.Event3, RunConstants.EventColorfulPhilosophers),
+    ];
+
+    private static int[] UnlockedEvents(int[] pool, UnlockState unlocks) =>
+        [
+            .. pool.Where(eventId =>
+                !EpochEvents.Any(locked =>
+                    locked.Event == eventId && !unlocks.IsEpochRevealed(locked.Epoch)
+                )
+            ),
+        ];
 
     // Glory reads the GENERATED pool; act 1 and Hive still read the constants they were
     // verified with. The generator reproduces those sixteen pools exactly -- which is
@@ -307,7 +392,7 @@ public static class RunMapGenerator
         RunConstants.EventWelcomeToWongos,
     ];
 
-    private static int[] GenerateEventSequence(int act, GameRng rng)
+    private static int[] GenerateEventSequence(int act, GameRng rng, UnlockState unlocks)
     {
         if (act == RunConstants.ActHive)
         {
@@ -327,6 +412,7 @@ public static class RunMapGenerator
                 RunConstants.EventZenWeaver,
                 .. SharedEventPool,
             ];
+            hivePool = UnlockedEvents(hivePool, unlocks);
             rng.Shuffle(hivePool);
             return hivePool.Where(eventId => eventId != 0).ToArray();
         }
@@ -348,6 +434,7 @@ public static class RunMapGenerator
                 RunConstants.EventTinkerTime,
                 .. SharedEventPool,
             ];
+            gloryPool = UnlockedEvents(gloryPool, unlocks);
             rng.Shuffle(gloryPool);
             return gloryPool.Where(eventId => eventId != 0).ToArray();
         }
@@ -420,6 +507,7 @@ public static class RunMapGenerator
                 RunConstants.EventWelcomeToWongos,
             ];
 
+        eventPool = UnlockedEvents(eventPool, unlocks);
         rng.Shuffle(eventPool);
         return eventPool.Where(eventId => eventId != 0).ToArray();
     }

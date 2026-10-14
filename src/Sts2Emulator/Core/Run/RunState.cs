@@ -190,6 +190,13 @@ public sealed class RunState
     /// with the character's own starting deck, relic and HP.
     /// </summary>
     public PlayerCharacter Character = PlayerCharacter.Ironclad;
+
+    /// <summary>
+    /// The profile the run is generated for (<c>RunState.UnlockState</c>; in a single-player run
+    /// it is the player's own). <c>RunEngine.Reset</c> sets it before anything is generated, and
+    /// every combat the run starts is handed it. Immutable, so a clone shares it.
+    /// </summary>
+    public UnlockState Unlocks { get; set; } = UnlockState.All;
     public RunRngSet Rng = new("0");
     public PlayerRngSet PlayerRng = new(new RunRngSet("0"));
     public int PlayerHp;

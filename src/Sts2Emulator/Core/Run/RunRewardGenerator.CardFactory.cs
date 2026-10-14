@@ -102,7 +102,8 @@ public static partial class RunRewardGenerator
             ? CardRewardPool(
                 state.Character,
                 Effects.RelicEffects.AddsColourlessToCardRewards(state),
-                Effects.RelicEffects.WidensCardRewardsToEveryPool(state)
+                Effects.RelicEffects.WidensCardRewardsToEveryPool(state),
+                state.Unlocks
             )
             : OwnCardPool(state).ToArray();
 

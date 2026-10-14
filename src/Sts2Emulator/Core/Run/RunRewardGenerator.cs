@@ -569,7 +569,8 @@ public static partial class RunRewardGenerator
     internal static int[] CardRewardPool(
         PlayerCharacter character,
         bool addColourless,
-        bool everyCharacter
+        bool everyCharacter,
+        UnlockState? unlocks = null
     )
     {
         // Prismatic Gem's Union starts from `CharacterCardPools`, so the player's own pool
@@ -577,7 +578,7 @@ public static partial class RunRewardGenerator
         var pool = new List<int>();
         if (everyCharacter)
         {
-            foreach (var each in Enum.GetValues<PlayerCharacter>())
+            foreach (var each in (unlocks ?? UnlockState.All).Characters)
             {
                 pool.AddRange(CharacterPools.Cards(each).ToArray());
             }
@@ -602,7 +603,7 @@ public static partial class RunRewardGenerator
     /// </summary>
     private static List<int[]> OtherCharacterPools(RunState state) =>
         [
-            .. CharacterPools
+            .. state.Unlocks
                 .Others(state.Character)
                 .OrderBy(character => character.ToString(), StringComparer.Ordinal)
                 .Select(character => CharacterPools.Cards(character).ToArray()),
@@ -1065,7 +1066,8 @@ public static partial class RunRewardGenerator
         int[] pool = CardRewardPool(
             state.Character,
             Effects.RelicEffects.AddsColourlessToCardRewards(state),
-            Effects.RelicEffects.WidensCardRewardsToEveryPool(state)
+            Effects.RelicEffects.WidensCardRewardsToEveryPool(state),
+            state.Unlocks
         );
         var cards = new int[CardRewardSize];
         var upgraded = new bool[CardRewardSize];
@@ -1200,7 +1202,8 @@ public static partial class RunRewardGenerator
         int[] pool = CardRewardPool(
             state.Character,
             Effects.RelicEffects.AddsColourlessToCardRewards(state),
-            Effects.RelicEffects.WidensCardRewardsToEveryPool(state)
+            Effects.RelicEffects.WidensCardRewardsToEveryPool(state),
+            state.Unlocks
         );
 
         state.RewardEnchantIndex = -1;

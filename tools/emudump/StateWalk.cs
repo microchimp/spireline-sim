@@ -23,9 +23,15 @@ static class StateWalk
     static readonly Assembly Engine = typeof(CombatState).Assembly;
     static readonly Dictionary<Type, FieldInfo[]> FieldCache = new();
 
-    /// <summary>A class, struct or record of the engine whose fields are state (not an enum, not a stream).</summary>
+    /// <summary>A class, struct or record of the engine whose fields are state (not an enum, not a stream, not the profile).</summary>
     internal static bool IsEngineType(Type t) =>
-        t.Assembly == Engine && !t.IsEnum && !IsStream(t) && !typeof(Delegate).IsAssignableFrom(t);
+        t.Assembly == Engine && !t.IsEnum && !IsStream(t) && !IsProfile(t) && !typeof(Delegate).IsAssignableFrom(t);
+
+    /// <summary>
+    /// The run's profile (UnlockState): immutable input a run is generated for, one value written
+    /// whole (what it lacks) rather than a holder of fields.
+    /// </summary>
+    internal static bool IsProfile(Type t) => t == typeof(UnlockState);
 
     internal static bool IsStream(Type t) =>
         t == typeof(CountingRandom) || t == typeof(GameRng) || t == typeof(MegaRandom) || t == typeof(Random);
@@ -119,6 +125,9 @@ static class StateWalk
                 return;
             case Random:
                 sb.Append("Random");  // a plain Random has no readable position (only the combat-only env makes one)
+                return;
+            case UnlockState profile:
+                sb.Append("UL(").Append(profile.ToString()).Append(')');
                 return;
         }
 

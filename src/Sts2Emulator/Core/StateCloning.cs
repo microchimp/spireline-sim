@@ -162,6 +162,7 @@ public static class StateCloning
     {
         into.AscensionLevel = combat.AscensionLevel;
         into.Character = combat.Character;
+        into.Unlocks = combat.Unlocks;
         into.PlayerHp = combat.PlayerHp;
         into.PlayerMaxHp = combat.PlayerMaxHp;
         into.PlayerBlock = combat.PlayerBlock;
@@ -371,6 +372,7 @@ public static class StateCloning
             StringSeed = state.StringSeed,
             AscensionLevel = state.AscensionLevel,
             Character = state.Character,
+            Unlocks = state.Unlocks,
             Rng = rng,
             PlayerRng = CloneAt(rng, state.PlayerRng),
             PlayerHp = state.PlayerHp,

@@ -55,7 +55,8 @@ internal static class CharacterPools
     /// <summary>
     /// `UnlockState.CharacterCardPools` minus the player's own (Splash's
     /// `list.Remove(Owner.Character.CardPool)`): the other four characters, in
-    /// <c>ModelDb.AllCharacters</c> order. The emulator's profile has every character unlocked.
+    /// <c>ModelDb.AllCharacters</c> order, on a profile with every character unlocked. A run or
+    /// combat asks its own <see cref="UnlockState.Others" />.
     /// </summary>
     public static IEnumerable<PlayerCharacter> Others(PlayerCharacter own) =>
         Enum.GetValues<PlayerCharacter>().Where(character => character != own);

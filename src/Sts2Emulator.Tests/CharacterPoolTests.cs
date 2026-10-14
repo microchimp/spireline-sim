@@ -558,11 +558,16 @@ public class CharacterPoolTests
     [Fact]
     public void SeaGlassAndColorfulPhilosophersSkipTheOwnersPool()
     {
+        var run = new RunState { Character = Silent };
         var seaGlass = Enumerable
-            .Range(0, RunConstants.OtherCharacterCount)
-            .Select(i => RunConstants.OtherCharacterPoolFor(Silent, i).ToArray())
+            .Range(0, run.Unlocks.Others(Silent).Count())
+            .Select(i =>
+            {
+                run.SeaGlassCharacter = i;
+                return RunConstants.SeaGlassPool(run).ToArray();
+            })
             .ToArray();
-        var philosophers = RunNonCombatEffects.ColorfulPhilosopherPoolOrder(Silent);
+        var philosophers = RunNonCombatEffects.ColorfulPhilosopherPoolOrder(run);
 
         // Sea Glass walks AllCharacters; the philosophers walk their own colour order.
         Assert.Equal(

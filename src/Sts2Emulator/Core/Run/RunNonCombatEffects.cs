@@ -891,10 +891,7 @@ public static class RunNonCombatEffects
                         RunRewardGenerator.CreateForReward(
                             state,
                             5,
-                            RunConstants.OtherCharacterPoolFor(
-                                state.Character,
-                                Math.Max(0, state.SeaGlassCharacter)
-                            ),
+                            RunConstants.SeaGlassPool(state),
                             CardCreationFlags.NoUpgradeRoll
                                 | CardCreationFlags.NoRarityModification
                                 | CardCreationFlags.NoCardPoolModifications,
@@ -1199,9 +1196,24 @@ public static class RunNonCombatEffects
 
         candidates.AddRange(RunConstants.NeowPositiveOptions);
         candidates.AddRange(RunConstants.NeowPairedOptions);
+        // One candidate fewer is one Rewards draw fewer: the shuffle spends one per element.
+        candidates.RemoveAll(relicId => !IsAllowedAtNeow(state, relicId));
         state.PlayerRng.Rewards.Shuffle(candidates);
         return candidates.Take(2).ToList();
     }
+
+    /// <summary>
+    /// <c>RelicModel.IsAllowedAtNeow</c> for the relics Neow and Neow's Bones offer. Two
+    /// override it: <c>Kaleidoscope</c> wants every character unlocked
+    /// (<c>UnlockState.CharacterCardPools.Count() == ModelDb.AllCharacters.Count()</c>), and
+    /// <c>ScrollBoxes</c> wants enough Commons and Uncommons in the character's unlocked pool to
+    /// make its bundles, which an unfiltered pool always has (the pools' epoch filters are not
+    /// modelled; see <see cref="UnlockState" />). The base rule is <c>IsAllowed</c>, which every
+    /// other one passes at the start of a run.
+    /// </summary>
+    public static bool IsAllowedAtNeow(RunState state, int relicId) =>
+        relicId != RunConstants.RelicKaleidoscope
+        || state.Unlocks.Characters.Count == Enum.GetValues<PlayerCharacter>().Length;
 
     /// <summary>
     /// The curse Neow's Bones adds once its relics are claimed:
@@ -1577,9 +1589,8 @@ public static class RunNonCombatEffects
                 Enchantments.CanEnchant(card, Enchantment.SoulsPower)
             ),
             // `All(p => p.UnlockState.CharacterCardPools.Count() > 1)` -- a profile that
-            // has unlocked a second character. The emulator runs a fixed profile with all
-            // five pools, so this is true. See the fixed-profile note in HANDOFF.md.
-            RunConstants.EventColorfulPhilosophers => true,
+            // has unlocked a second character.
+            RunConstants.EventColorfulPhilosophers => state.Unlocks.Characters.Count > 1,
             _ => true,
         };
     }
@@ -2222,7 +2233,7 @@ public static class RunNonCombatEffects
         }
 
         var candidates = Enumerable
-            .Range(0, ColorfulPhilosopherPoolOrder(state.Character).Length)
+            .Range(0, ColorfulPhilosopherPoolOrder(state).Length)
             .ToList();
         var rng = EventRng(state, "COLORFUL_PHILOSOPHERS");
         while (candidates.Count > 3)
@@ -2235,10 +2246,11 @@ public static class RunNonCombatEffects
     }
 
     /// <summary>
-    /// The four pools the event can offer, in `CardPoolColorOrder` (Necrobinder, Ironclad,
-    /// Regent, Silent, Defect) minus the player's own.
+    /// The pools the event can offer, in `CardPoolColorOrder` (Necrobinder, Ironclad,
+    /// Regent, Silent, Defect): each one the profile has unlocked
+    /// (`UnlockState.CharacterCardPools.Contains`) except the player's own.
     /// </summary>
-    public static int[][] ColorfulPhilosopherPoolOrder(PlayerCharacter own) =>
+    public static int[][] ColorfulPhilosopherPoolOrder(RunState state) =>
         [
             .. new[]
             {
@@ -2248,7 +2260,9 @@ public static class RunNonCombatEffects
                 PlayerCharacter.Silent,
                 PlayerCharacter.Defect,
             }
-                .Where(character => character != own)
+                .Where(character =>
+                    character != state.Character && state.Unlocks.Characters.Contains(character)
+                )
                 .Select(character => CharacterPools.Cards(character).ToArray()),
         ];
 
@@ -3147,7 +3161,9 @@ public static class RunNonCombatEffects
     {
         // The character is kept, not just spent: if the Sea Glass is offered AND taken,
         // its cards come from that character's pool.
-        state.SeaGlassCharacter = rng.NextInt(RunConstants.OtherCharacterCount);
+        // `NextItem` over the others draws nothing when there are none.
+        int others = state.Unlocks.Others(state.Character).Count();
+        state.SeaGlassCharacter = others == 0 ? -1 : rng.NextInt(others);
         bool prismaticGem = rng.NextDouble() < 1.0 / 3.0;
 
         var pool1 = RunConstants.OrobasPool1.ToArray().ToList();

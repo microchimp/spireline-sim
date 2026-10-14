@@ -52,6 +52,7 @@ public class LifecycleTests(ITestOutputHelper output)
     const string HolderRetain = "the holder as a whole carries Retain (see *.Retain); each of its other fields is checked on its own";
     const string SeedDerived = "derived from RunState.StringSeed: RunState.Clone rebuilds every stream from it at the original's positions (StateCloning.CloneAt)";
     const string RunSeed = "the run's seed, fixed for the run; the replay starts from the game's own seed, and the stream counters are in the snapshot";
+    const string Profile = "the run's profile (UnlockState): immutable input, set by RunEngine.Reset and handed to each combat the run builds; a bare, loaded or re-anchored combat has the mature one (every character), and so do the game's recorded fights";
 
     // Reanchor (Reanchor.cs header): the game's snapshot shows HP, block, energy, powers, the four piles
     // (card id, upgrade, order), the living enemies and every stream; everything else is the emulator's
@@ -86,12 +87,14 @@ public class LifecycleTests(ITestOutputHelper output)
         ["copyto"] = new(),
         ["reset"] = new()
         {
+            ["CombatState.Unlocks"] = Profile,
             ["CombatState.TargetEnemyIndex"] = StepArgument,
             ["CombatState.StrangleBeforePlay"] = Captured,
             ["CombatState.ExecutedThisEnemyTurn"] = Unread,
         },
         ["dump"] = new()
         {
+            ["CombatState.Unlocks"] = Profile,
             ["CombatState.TargetEnemyIndex"] = StepArgument,
             ["CombatState.AutoPlaying"] = Idle,
             ["CombatState.ResolvingDefendCard"] = Idle,
@@ -105,6 +108,7 @@ public class LifecycleTests(ITestOutputHelper output)
         },
         ["load"] = new()
         {
+            ["CombatState.Unlocks"] = Profile,
             ["CombatState.ShuffleRng"] = NoRng,
             ["CombatState.TargetRng"] = NoRng,
             ["CombatState.AiRng"] = NoRng,
@@ -133,6 +137,7 @@ public class LifecycleTests(ITestOutputHelper output)
         {
             ["CombatState.AscensionLevel"] = Setup,
             ["CombatState.Character"] = Setup,
+            ["CombatState.Unlocks"] = Profile,
             ["CombatState.EncounterId"] = Setup,
             ["CombatState.IsEliteCombat"] = Setup,
             ["CombatState.IsEliteRoom"] = Setup,
@@ -271,6 +276,7 @@ public class LifecycleTests(ITestOutputHelper output)
         ["run-reset"] = new(),
         ["run-dump"] = new()
         {
+            ["RunState.Unlocks"] = Profile,
             ["RunState.StringSeed"] = RunSeed,
             ["RunState.Rng.Seed"] = RunSeed,
             ["RunState.Rng.StringSeed"] = RunSeed,
@@ -556,6 +562,13 @@ public class LifecycleTests(ITestOutputHelper output)
         if (t == typeof(short)) return (short)((short)(cur ?? (short)0) + salt);
         if (t == typeof(byte)) return (byte)((byte)(cur ?? (byte)0) + salt);
         if (t == typeof(bool)) return !(bool)(cur ?? false);
+        if (t == typeof(UnlockState))
+        {
+            // Another profile: one more (or one fewer) modelled epoch locked.
+            var profile = (UnlockState?)cur ?? UnlockState.All;
+            string epoch = UnlockState.Epochs.Modelled.Order(StringComparer.Ordinal).ElementAt(Math.Abs(salt) % UnlockState.Epochs.Modelled.Count);
+            return profile.IsEpochRevealed(epoch) ? profile.WithLockedEpochs(epoch) : UnlockState.All;
+        }
         if (t == typeof(float)) return (float)(cur ?? 0f) + 0.5f * salt;
         if (t == typeof(double)) return (double)(cur ?? 0d) + 0.5 * salt;
         if (t == typeof(string)) return ((string?)cur ?? "") + "~" + salt;

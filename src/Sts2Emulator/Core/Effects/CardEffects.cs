@@ -4646,12 +4646,15 @@ public static class CardEffects
     /// Splash's candidates before the shuffle: `UnlockState.CharacterCardPools` minus the
     /// player's own (`list.Remove(Owner.Character.CardPool)`), in ModelDb.AllCharacters order,
     /// Attacks only. The order decides which cards a shuffle hands out; the referee (the game
-    /// run headless) caught a hand-written Silent, Defect, Necrobinder, Regent here.
+    /// run headless) caught a hand-written Silent, Defect, Necrobinder, Regent here. The removal
+    /// is under `list.Count > 1`, so a profile with one character splashes its own Attacks.
     /// </summary>
     internal static List<int> SplashPool(CombatState state)
     {
         var pool = new List<int>();
-        foreach (var other in CharacterPools.Others(state.Character))
+        var characters = state.Unlocks.Characters;
+        var others = characters.Count > 1 ? state.Unlocks.Others(state.Character) : characters;
+        foreach (var other in others)
         {
             pool.AddRange(CombatGenerationPool(CharacterPools.Cards(other), CardType.Attack));
         }

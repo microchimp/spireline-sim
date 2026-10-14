@@ -237,7 +237,8 @@ public class AncientBlessingTests
     {
         var engine = Pristine.Clone();
         RunNonCombatEffects.GenerateAncientOptions(engine.State, RunConstants.AncientOrobas);
-        Assert.InRange(engine.State.SeaGlassCharacter, 0, RunConstants.OtherCharacterCount - 1);
+        int others = UnlockState.All.Others(engine.State.Character).Count();
+        Assert.InRange(engine.State.SeaGlassCharacter, 0, others - 1);
 
         RunNonCombatEffects.ApplyRelicPickup(engine.State, RunConstants.RelicSeaGlass);
 
@@ -353,7 +354,8 @@ public class AncientBlessingTests
 
         RunNonCombatEffects.GenerateAncientOptions(engine.State, RunConstants.AncientOrobas);
 
-        Assert.InRange(engine.State.SeaGlassCharacter, 0, RunConstants.OtherCharacterCount - 1);
+        int others = UnlockState.All.Others(engine.State.Character).Count();
+        Assert.InRange(engine.State.SeaGlassCharacter, 0, others - 1);
     }
 
     // ---- the four that enchant --------------------------------------------------
