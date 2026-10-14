@@ -543,7 +543,8 @@ def main() -> int:
     ap.add_argument("--codex-emu", type=Path, default=None, help="checkout with the codex replay (default --emu)")
     ap.add_argument("--codex-limit", type=int, default=0)
     ap.add_argument("--codex-from", type=Path, default=None,
-                    help="reuse the codex result of this score JSON when its emulator sources are this commit's")
+                    help="reuse the codex result of this score JSON when its emulator sources are the codex checkout's "
+                         "(--codex-emu, default --emu)")
     ap.add_argument("--allow-dirty-emu", action="store_true", help="score a checkout with uncommitted changes (NOT QUOTABLE)")
     ap.add_argument("--allow-stale-emu", action="store_true", help="score an EmuDump build older than its sources (NOT QUOTABLE)")
     ap.add_argument("--record", type=Path, default=None, help="score this record directory (a trial) instead of refs-<subset>.json")
@@ -568,6 +569,14 @@ def main() -> int:
         print(f"no EmuDump build in {emu}: dotnet build -c Release in tools/emudump first", file=sys.stderr)
         return 2
     emu_info = git_commit(emu) | {"emudump_mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(dll.stat().st_mtime))}
+    if not (emu / "tools" / "emudump" / "RefsetSetup.cs").exists() and any(
+            it.get("cmd") == "player_load" for e in manifest["specs"] for it in e["spec"].get("setup", [])):
+        # Without the mirror of the references' player_load (tools/emudump/RefsetSetup.cs) every realistic and
+        # coverage fight would start from another state: numbers about the setup, not the emulator.
+        print(f"REFUSED: {emu}'s EmuDump has no RefsetSetup.cs, so it cannot build the references' player_load setups; "
+              "score a checkout with the reference set's EmuDump mirror (feat/reference-set) on the emulator commit",
+              file=sys.stderr)
+        return 2
     not_quotable = []
     if emu_info["dirty"]:
         if not a.allow_dirty_emu:
@@ -638,7 +647,9 @@ def main() -> int:
     cov = coverage_report(verdicts, manifest.get("coverage_targets", {}))
     reg = regression_report(verdicts, entries)
     if a.codex_from:
-        codex = reuse_codex(a.codex_from, emu, emu_info["commit"])
+        # The walk is the codex checkout's (--codex-emu, default --emu): reused when it builds the same EmuDump.
+        cemu = (a.codex_emu or emu).resolve()
+        codex = reuse_codex(a.codex_from, cemu, git_commit(cemu)["commit"])
     elif a.codex:
         codex = codex_score((a.codex_emu or emu).resolve(), a.procs, a.codex_limit, work,
                             (manifest.get("codex_stats") or {}).get("ironclad_a10_runs"))
