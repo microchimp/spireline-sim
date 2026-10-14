@@ -54,7 +54,8 @@ public static class CombatEngine
                 Hidden = [.. stopped.Hidden, hidden],
             };
             (action, targetEnemyIndex) = (stopped.Action, stopped.TargetEnemyIndex);
-            // A trace drops what the stopped run marked: the replay marks the step again.
+            // EmuDump's trace (tools/emudump/Trace.cs) drops what the stopped run marked here:
+            // the replay marks the step again.
             CombatTrace.At("replay", -1, state);
         }
         else

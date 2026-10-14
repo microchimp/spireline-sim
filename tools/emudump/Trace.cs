@@ -60,6 +60,19 @@ static class EmuTrace
 
     static void OnMark(string what, int subject, CombatState s)
     {
+        if (what == "replay")
+        {
+            // A screen's answer runs the step again from its start (CombatEngine.Step,
+            // HookChoiceReplay), and marks it again: what the stopped run marked goes, down to the
+            // re-anchored start, so the trace holds the step once, as the game ran it.
+            while (_events is { Count: > 1 })
+            {
+                _events.RemoveAt(_events.Count - 1);
+            }
+
+            return;
+        }
+
         string? name = subject < 0 ? null : what is "move" or "moved" ? Enemy(subject) : Card(subject);
         _events?.Add(new JsonArray("M", what, name, Mini(s)));
     }

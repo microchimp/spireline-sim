@@ -23,6 +23,27 @@ public class ReanchorFinishTests
     }
 
     [Fact]
+    public void ATraceHoldsAStoppedStepOnceAsTheAnswerReplayedIt()
+    {
+        // The stopped run marks the play, stops, and the answer replays the play and marks it again;
+        // the trace keeps the replay alone (it held play, play, played).
+        var state = CombatFactory.NewCombat(seed: 0);
+        state.Hand = [new CardInstance(IC.Headbutt, false)];
+        state.DiscardPile = [new CardInstance(IC.StrikeIronclad, false), new CardInstance(IC.Bash, false)];
+        state.Energy = 3;
+        var rng = new CountingRandom(1);
+        EmuTrace.Begin(state);
+        CombatEngine.Step(state, 0, rng);
+        CombatEngine.Step(state, 0, rng);
+        var marks = EmuTrace.End().Select(e => e!.AsArray()).Where(e => (string?)e[0] == "M").Select(e => (string?)e[1]).ToList();
+
+        Assert.Equal("start", marks[0]);
+        Assert.Equal(1, marks.Count(m => m == "play"));
+        Assert.Equal(1, marks.Count(m => m == "played"));
+        Assert.DoesNotContain("replay", marks);
+    }
+
+    [Fact]
     public void AStopNobodyAnsweredIsFinishedNotLeftHalfDone()
     {
         // Cleared instead, the play would never count and Headbutt would sit in no pile: hidden
