@@ -2224,15 +2224,6 @@ public static class CombatEngine
             BuffSystem.Remove(state.PlayerBuffs, BuffId.StarNextTurn);
         }
 
-        // `SummonNextTurnPower.AfterPlayerTurnStart`: summons for its amount and then
-        // removes itself, so Invoke pays out exactly once.
-        int summonNextTurn = BuffSystem.Get(state.PlayerBuffs, BuffId.SummonNextTurn);
-        if (summonNextTurn > 0)
-        {
-            Effects.CardEffects.SummonOsty(state, summonNextTurn);
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.SummonNextTurn);
-        }
-
         // `ForegoneConclusionPower.BeforeHandDraw`: `ShuffleIfNecessary`, then that many cards
         // CHOSEN from the whole draw pile go to hand, then the power removes itself. The game
         // awaits the pick BEFORE the hand draw, so the pick is over the pile those cards are
@@ -2335,38 +2326,8 @@ public static class CombatEngine
         {
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Clarity, -1);
         }
-        // The powers' `AfterPlayerTurnStart`, the last step of `SetupPlayerTurn`, after the hand
-        // draw: the kills a turn start makes there come after the hand is dealt.
-        ApplyAfterPlayerTurnStartPowers(state, rng);
-
-        // The three `AfterPlayerTurnStart` screens, in the order their powers were applied:
-        // `CombatState.IterateHookListeners` walks a creature's powers in list order, and the
-        // emulator's buff list keeps application order. Each is `CardSelectorPrefs(prompt,
-        // Amount)`, min = max = Amount, so the pick is compulsory and the CHOICE the player's,
-        // and the game awaits it where it is raised, before the rest of the turn start.
-        foreach (var screen in TurnStartScreenOrder(state))
-        {
-            int amount = BuffSystem.Get(state.PlayerBuffs, screen);
-            if (amount <= 0)
-            {
-                continue;
-            }
-
-            var (kind, source) = screen switch
-            {
-                // `EntropyPower`: TRANSFORM the chosen cards (`CardCmd.TransformToRandom`). The
-                // emulator transformed a random card at the top of the turn, before the draw.
-                BuffId.EntropyPower => (CardSelectionKind.TransformInHand, Effects.CL.Entropy),
-                // `TyrannyPower`: EXHAUST them -- the half of that card that costs, after the
-                // draw the other half paid for.
-                BuffId.Tyranny => (CardSelectionKind.ExhaustFromHandRepeated, 520), // Tyranny
-                // `ToolsOfTheTradePower`: DISCARD them (`FromHandForDiscard`). The emulator threw
-                // away the leftmost card, and drew the power's cards here, outside the hand
-                // draw, after the other screens and under Fiddle's veto.
-                _ => (CardSelectionKind.DiscardFromHandRepeated, Effects.SI.ToolsOfTheTrade),
-            };
-            AwaitSelection(state, Effects.CardEffects.HandScreen(state, kind, source, amount), rng);
-        }
+        // `Hook.AfterPlayerTurnStart` for the powers, after the hand draw (SetupPlayerTurn).
+        AfterPlayerTurnStartPowers(state, rng);
 
         // `Hook.AfterPlayerTurnStart` for the relics -- the end of `SetupPlayerTurn`, after the
         // hand draw and after the powers' own pass above (a creature's powers come before its
@@ -2492,69 +2453,6 @@ public static class CombatEngine
     }
 
     /// <summary>
-    /// The player's powers on `Hook.AfterPlayerTurnStart` that can kill: Loop, Rolling
-    /// Boulder, Crimson Mantle and Inferno.
-    /// </summary>
-    /// <remarks>
-    /// `CombatManager.SetupPlayerTurn` dispatches `AfterPlayerTurnStart` once the hand is drawn
-    /// (`CardPileCmd.Draw(..., fromHandDraw: true)`), so a turn start whose Inferno burst or
-    /// Rolling Boulder kills the last enemy has already dealt the hand and reshuffled for it.
-    /// These ran before the hand draw here, which the combat-ending gate turned into a hand
-    /// that was never drawn (corpus L80WXWJ1F5 and 29 more: Rng.Shuffle 28 in the game, 16 here
-    /// after an Inferno kill). What their HP loss sets off (Centennial Puzzle's draw, Rupture)
-    /// now comes after the hand draw too, as in the game.
-    ///
-    /// In the order they ran before the move. Tyranny's exhaust and Tools of the Trade's discard,
-    /// the pass's other two, already came after the draw (Tools of the Trade's cards are part of
-    /// the hand draw); Entropy (a choice from hand, the selection mechanism's) and Summon Next
-    /// Turn (no kill) are left where they were.
-    /// </remarks>
-    private static void ApplyAfterPlayerTurnStartPowers(CombatState state, Random rng)
-    {
-        // `LoopPower.AfterPlayerTurnStart`: the front orb's passive, Amount times.
-        int loop = BuffSystem.Get(state.PlayerBuffs, BuffId.Loop);
-        for (int i = 0; i < loop; i++)
-        {
-            Effects.CardEffects.TriggerOrbPassive(state, 0, rng);
-        }
-
-        // `RollingBoulderPower.AfterPlayerTurnStart`, once per INSTANCE, oldest first: its own
-        // Amount to every enemy, then its Amount grows by its DamageVar (5). A second Boulder
-        // starts again from its own 5 instead of joining the first one's climb.
-        var boulders = state.PlayerBuffs;
-        for (int k = 0, at; (at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k)) >= 0; k++)
-        {
-            Effects.CardEffects.DealUnpoweredDamageToAll(state, boulders[at].Magnitude);
-            at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k);
-            if (at >= 0)
-            {
-                boulders[at] = boulders[at] with { Magnitude = boulders[at].Magnitude + 5 };
-            }
-        }
-
-        // `CrimsonMantlePower.AfterPlayerTurnStart`: the self-damage, then the block.
-        int crimsonDmg = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleSelfDamage);
-        if (crimsonDmg > 0)
-        {
-            Effects.CardEffects.LoseHp(state, crimsonDmg);
-        }
-
-        int crimsonBlock = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleBlock);
-        if (crimsonBlock > 0)
-        {
-            Effects.CardEffects.GainUnpoweredBlock(state, crimsonBlock, rng);
-        }
-
-        // `InfernoPower.AfterPlayerTurnStart`: the burn. Its kills are answered with the rest
-        // of the turn start's.
-        int infernoSelfDamage = BuffSystem.Get(state.PlayerBuffs, BuffId.InfernoSelfDamage);
-        if (infernoSelfDamage > 0)
-        {
-            Effects.CardEffects.LoseHp(state, infernoSelfDamage);
-        }
-    }
-
-    /// <summary>
     /// `RampartPower.AfterSideTurnStart` on the PLAYER side's turn start, turn one included: the
     /// ONLY thing that armours the Turret Operator.
     /// </summary>
@@ -2672,20 +2570,161 @@ public static class CombatEngine
     }
 
     /// <summary>
-    /// Entropy, Tyranny and Tools of the Trade as they stand in the player's power list, which
-    /// is the order the game's listeners run them in.
+    /// `Hook.AfterPlayerTurnStart` for the player's powers: every power with the hook, after the
+    /// hand draw (`CombatManager.SetupPlayerTurn`), in the order the powers stand in the list
+    /// (`CombatState.IterateHookListeners`; the emulator's buff list keeps application order, a
+    /// helper buff in its power's place), each awaited before the next.
     /// </summary>
-    private static List<BuffId> TurnStartScreenOrder(CombatState state)
+    /// <remarks>
+    /// <para>
+    /// The emulator ran Loop, Rolling Boulder, Crimson Mantle, Inferno and Summon Next Turn at the top
+    /// of the turn start, BEFORE the hand draw: a turn-start kill by Inferno's burst or the Boulder
+    /// came ahead of the draw, so the draw found the fight ending and drew nothing where the game
+    /// draws (and shuffles) first; Loop's orb fired before the draw, Crimson Mantle's block came
+    /// before the screens. Entropy, Tyranny and Tools of the Trade raise screens, which are awaited
+    /// here (`CardSelectorPrefs(prompt, Amount)`, min = max = Amount: compulsory, the choice the
+    /// player's), so the rest of the pass and the relics' come after the pick.
+    /// </para>
+    /// </remarks>
+    private static void AfterPlayerTurnStartPowers(CombatState state, Random rng)
     {
-        var order = new List<BuffId>(3);
+        foreach (var (power, instance) in AfterPlayerTurnStartOrder(state))
+        {
+            switch (power)
+            {
+                case BuffId.EntropyPower or BuffId.Tyranny or BuffId.ToolsOfTheTrade:
+                {
+                    int amount = BuffSystem.Get(state.PlayerBuffs, power);
+                    if (amount <= 0)
+                    {
+                        break;
+                    }
+
+                    var (kind, source) = power switch
+                    {
+                        // `EntropyPower`: TRANSFORM the chosen cards (`CardCmd.TransformToRandom`).
+                        // The emulator transformed a random card at the top of the turn.
+                        BuffId.EntropyPower => (CardSelectionKind.TransformInHand, Effects.CL.Entropy),
+                        // `TyrannyPower`: EXHAUST them, after the draw the other half paid for.
+                        BuffId.Tyranny => (CardSelectionKind.ExhaustFromHandRepeated, 520), // Tyranny
+                        // `ToolsOfTheTradePower`: DISCARD them (`FromHandForDiscard`); its cards
+                        // were drawn in the hand draw.
+                        _ => (CardSelectionKind.DiscardFromHandRepeated, Effects.SI.ToolsOfTheTrade),
+                    };
+                    AwaitSelection(state, Effects.CardEffects.HandScreen(state, kind, source, amount), rng);
+                    break;
+                }
+
+                case BuffId.Inferno:
+                {
+                    // `InfernoPower.AfterPlayerTurnStart`: its self-damage, whose
+                    // `AfterDamageReceived` is the burst. The kills are answered with the rest of
+                    // the turn start's (AnswerDeathsSince).
+                    int self = BuffSystem.Get(state.PlayerBuffs, BuffId.InfernoSelfDamage);
+                    if (self > 0)
+                    {
+                        Effects.CardEffects.LoseHp(state, self);
+                    }
+
+                    break;
+                }
+
+                case BuffId.RollingBoulderPower:
+                {
+                    // Per INSTANCE: its own Amount to every enemy, then its Amount grows by its
+                    // DamageVar (5). A second Boulder starts again from its own 5.
+                    int at = BuffSystem.InstanceIndex(state.PlayerBuffs, BuffId.RollingBoulderPower, instance);
+                    if (at < 0)
+                    {
+                        break;
+                    }
+
+                    Effects.CardEffects.DealUnpoweredDamageToAll(state, state.PlayerBuffs[at].Magnitude);
+                    at = BuffSystem.InstanceIndex(state.PlayerBuffs, BuffId.RollingBoulderPower, instance);
+                    if (at >= 0)
+                    {
+                        state.PlayerBuffs[at] = state.PlayerBuffs[at] with
+                        {
+                            Magnitude = state.PlayerBuffs[at].Magnitude + 5,
+                        };
+                    }
+
+                    break;
+                }
+
+                case BuffId.CrimsonMantleSelfDamage:
+                {
+                    // `CrimsonMantlePower.AfterPlayerTurnStart`: the self-damage, then the block.
+                    int dmg = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleSelfDamage);
+                    if (dmg > 0)
+                    {
+                        Effects.CardEffects.LoseHp(state, dmg);
+                    }
+
+                    int block = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleBlock);
+                    if (block > 0)
+                    {
+                        Effects.CardEffects.GainUnpoweredBlock(state, block, rng);
+                    }
+
+                    break;
+                }
+
+                case BuffId.Loop:
+                {
+                    // `LoopPower.AfterPlayerTurnStart`: the first orb's passive, Amount times.
+                    int loop = BuffSystem.Get(state.PlayerBuffs, BuffId.Loop);
+                    for (int i = 0; i < loop; i++)
+                    {
+                        Effects.CardEffects.TriggerOrbPassive(state, 0, rng);
+                    }
+
+                    break;
+                }
+
+                case BuffId.SummonNextTurn:
+                {
+                    // `SummonNextTurnPower.AfterPlayerTurnStart`: summons for its amount, then
+                    // removes itself, so Invoke pays out exactly once.
+                    int summon = BuffSystem.Get(state.PlayerBuffs, BuffId.SummonNextTurn);
+                    if (summon > 0)
+                    {
+                        Effects.CardEffects.SummonOsty(state, summon);
+                        BuffSystem.Remove(state.PlayerBuffs, BuffId.SummonNextTurn);
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The player's powers with an `AfterPlayerTurnStart` hook, in list order as the pass starts:
+    /// each once (an instanced Rolling Boulder once per instance), a power's helper buff
+    /// (Inferno's self-damage, Crimson Mantle's block) standing for it where it comes first.
+    /// </summary>
+    private static List<(BuffId Power, int Instance)> AfterPlayerTurnStartOrder(CombatState state)
+    {
+        var order = new List<(BuffId, int)>(4);
+        int boulders = 0;
         foreach (var buff in state.PlayerBuffs)
         {
-            if (
-                buff.Id is BuffId.EntropyPower or BuffId.Tyranny or BuffId.ToolsOfTheTrade
-                && !order.Contains(buff.Id)
-            )
+            BuffId? power = buff.Id switch
             {
-                order.Add(buff.Id);
+                BuffId.EntropyPower or BuffId.Tyranny or BuffId.ToolsOfTheTrade or BuffId.Loop
+                    or BuffId.SummonNextTurn => buff.Id,
+                BuffId.Inferno or BuffId.InfernoSelfDamage => BuffId.Inferno,
+                BuffId.CrimsonMantleSelfDamage or BuffId.CrimsonMantleBlock => BuffId.CrimsonMantleSelfDamage,
+                _ => null,
+            };
+            if (buff.Id == BuffId.RollingBoulderPower)
+            {
+                order.Add((BuffId.RollingBoulderPower, boulders++));
+            }
+            else if (power is { } id && !order.Contains((id, 0)))
+            {
+                order.Add((id, 0));
             }
         }
 
