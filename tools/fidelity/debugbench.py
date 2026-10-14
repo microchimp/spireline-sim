@@ -110,6 +110,10 @@ class BenchError(RuntimeError):
     pass
 
 
+class CorpusRunFailed(BenchError):
+    """corpus.py run itself failed on this tree (an EmuDump crash takes the whole run down): the gate fails."""
+
+
 def say(*a) -> None:
     print(*a, flush=True)
 
@@ -682,7 +686,12 @@ class Gates:
         rdir = self.corpus / "runs" / label
         res = rdir / "results.json"
         if r.returncode != 0 or not res.exists():
-            raise BenchError(f"corpus run failed: {scrub(r.stdout + r.stderr)[-600:]}")
+            text = scrub(r.stdout + r.stderr)
+            keep.mkdir(parents=True, exist_ok=True)
+            (keep / "corpus-run.log").write_text(text, encoding="utf-8")
+            shutil.rmtree(rdir, ignore_errors=True)
+            last = [ln.strip() for ln in text.splitlines() if ln.strip()][-1:] or ["no output"]
+            raise CorpusRunFailed(f"corpus run failed (exit {r.returncode}): {last[0][:300]}")
         doc = json.loads(res.read_text(encoding="utf-8"))
         keep.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(res, keep / "corpus-results.json")
@@ -697,7 +706,10 @@ class Gates:
                            cwd=str(tree), env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), creationflags=BELOW_NORMAL)
         shutil.rmtree(w, ignore_errors=True)
         if r.returncode != 0 or not out.exists():
-            return {"error": scrub(r.stdout + r.stderr)[-600:]}
+            text = scrub(r.stdout + r.stderr)
+            (work / "invariants.log").write_text(text, encoding="utf-8")
+            last = [ln.strip() for ln in text.splitlines() if ln.strip()][-1:] or ["no output"]
+            return {"error": f"invariants run failed (exit {r.returncode}): {last[0][:300]}"}
         doc = json.loads(out.read_text(encoding="utf-8"))
         return {"emulator": doc["emulator"].get("violations", {}), "live": {k: v.get("violations", 0) for k, v in
                                                                             (doc.get("live", {}).get("checks") or {}).items()},
@@ -746,6 +758,23 @@ class Ctx:
                         idx.setdefault(k, f)
             self._index = idx
         return self._index
+
+
+@contextlib.contextmanager
+def bench_lock(bench: Path, name: str):
+    """One harvest, signal or score at a time per bench: they share its worktrees (wt/h*, wt/s*, wt/score)."""
+    bench.mkdir(parents=True, exist_ok=True)
+    p = bench / f".{name}.lock"
+    try:
+        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise BenchError(f"another {name} runs on this bench ({p}; delete it if that run is gone)") from None
+    try:
+        os.write(fd, f"{os.getpid()} {datetime.datetime.now().isoformat(timespec='seconds')}\n".encode())
+        os.close(fd)
+        yield
+    finally:
+        p.unlink(missing_ok=True)
 
 
 def task_id(fix: str) -> str:
@@ -1019,7 +1048,8 @@ def verify(ctx: Ctx, cand: dict, wt_path: Path) -> dict:
 
 
 def cmd_harvest(a) -> int:
-    return harvest(Ctx(a.fork, a.bench, a.ref), a.ref, a.only, a.limit, a.max_lines, a.jobs, a.force)
+    with bench_lock(Path(a.bench), "harvest"):
+        return harvest(Ctx(a.fork, a.bench, a.ref), a.ref, a.only, a.limit, a.max_lines, a.jobs, a.force)
 
 
 def harvest(ctx: Ctx, ref: str, only: list | None, limit: int, max_lines: int, jobs: int, force: bool) -> int:
@@ -1290,16 +1320,25 @@ def signal_one(ctx: Ctx, task: dict, tdir: Path, wt_path: Path, invariants: bool
         return res
     base = main_corpus(ctx)
     t1 = time.time()
-    with ctx.lock:  # one corpus run at a time: its wall time is the gate's
-        doc = ctx.gates.corpus_run(wt, dll, f"debugbench-{task['id']}-signal", work)
-    g = judge_corpus(ctx, doc, base, tdir / "corpus-check.txt")
-    g["run_s"] = round(time.time() - t1, 1)
-    g["detected"] = bool(g["regressed"]) or g["problems"] > 0
-    g["seconds_to_detect"] = round(build_s + g["run_s"], 1) if g["detected"] else None
-    res["gates"]["corpus"] = g
-    lines = [f"corpus check against main: {g['regressed']} fights worse"
-             + (f" (fields {', '.join(list(g['fields'])[:6])})" if g["fields"] else "")
-             + f", {g['improved']} better; identical {g['main_totals'].get('identical')} -> {g['totals'].get('identical')}"]
+    try:
+        with ctx.lock:  # one corpus run at a time: its wall time is the gate's
+            doc = ctx.gates.corpus_run(wt, dll, f"debugbench-{task['id']}-signal", work)
+    except CorpusRunFailed as ex:
+        # Main's run went through, so the base takes the gate down: the fixer sees the check fail.
+        g = {"detected": True, "crashed": str(ex), "regressed": 0, "regressed_ids": [], "fields": {}, "fights": [],
+             "run_s": round(time.time() - t1, 1)}
+        g["seconds_to_detect"] = round(build_s + g["run_s"], 1)
+        res["gates"]["corpus"] = g
+        lines = [f"corpus check against main: the run fails on this repo ({ex})"]
+    else:
+        g = judge_corpus(ctx, doc, base, tdir / "corpus-check.txt")
+        g["run_s"] = round(time.time() - t1, 1)
+        g["detected"] = bool(g["regressed"]) or g["problems"] > 0
+        g["seconds_to_detect"] = round(build_s + g["run_s"], 1) if g["detected"] else None
+        res["gates"]["corpus"] = g
+        lines = [f"corpus check against main: {g['regressed']} fights worse"
+                 + (f" (fields {', '.join(list(g['fields'])[:6])})" if g["fields"] else "")
+                 + f", {g['improved']} better; identical {g['main_totals'].get('identical')} -> {g['totals'].get('identical')}"]
     if invariants:
         t2 = time.time()
         inv = judge_invariants(main_invariants(ctx), ctx.gates.invariants(wt, dll, work))
@@ -1328,7 +1367,8 @@ def cmd_signal(a) -> int:
     tasks = all_tasks(ctx.bench) if a.all else [load_task(ctx.bench, t)[0] for t in a.tasks]
     if a.missing:
         tasks = [t for t in tasks if not (ctx.tasks_dir / t["split"] / t["id"] / "signal.json").exists()]
-    return run_signals(ctx, tasks, a.jobs, not a.no_invariants, a.refset)
+    with bench_lock(ctx.bench, "signal"):
+        return run_signals(ctx, tasks, a.jobs, not a.no_invariants, a.refset)
 
 
 def run_signals(ctx: Ctx, tasks: list, jobs: int, invariants: bool, refset: str | None) -> int:
@@ -1463,12 +1503,17 @@ def score_one(ctx: Ctx, task: dict, tdir: Path, repo: Path, ref: str, run: str, 
         res.update(builds=False, correct=False, corpus=None, hidden_pass=False)
         return finish(ctx, res, report, run)
     res["builds"] = True
-    with ctx.lock:
-        doc = ctx.gates.corpus_run(tree, dll, f"debugbench-{task['id']}-{run}", work)
-    g = judge_corpus(ctx, doc, main_corpus(ctx), work / "corpus-check.txt")
+    try:
+        with ctx.lock:
+            doc = ctx.gates.corpus_run(tree, dll, f"debugbench-{task['id']}-{run}", work)
+    except CorpusRunFailed as ex:
+        doc = None
+        g = {"crashed": str(ex), "regressed": None, "regressed_ids": [], "problems": 1, "fights": []}
+    if doc is not None:
+        g = judge_corpus(ctx, doc, main_corpus(ctx), work / "corpus-check.txt")
     sig = tdir / "signal.json"
-    was = set(json.loads(sig.read_text(encoding="utf-8"))["gates"]["corpus"]["regressed_ids"]) if sig.exists() else set()
-    g["restored"] = len(was - set(g["regressed_ids"]))
+    was = set(json.loads(sig.read_text(encoding="utf-8"))["gates"]["corpus"].get("regressed_ids", [])) if sig.exists() else set()
+    g["restored"] = len(was - set(g["regressed_ids"])) if doc is not None else 0
     g["base_regressed"] = len(was)
     res["corpus"] = {k: v for k, v in g.items() if k != "fights"} | {"fights": g["fights"][:10]}
     # Hidden and collateral tests: main's test files over the candidate's.
@@ -1528,7 +1573,8 @@ def cmd_score(a) -> int:
     for k in ("hours", "tokens", "verdict", "round"):
         if getattr(a, k) is not None:
             report[k] = getattr(a, k)
-    res = score_one(ctx, task, tdir, Path(a.repo), a.ref, a.run, report, a.quick, ctx.slot("score"))
+    with bench_lock(ctx.bench, "score"):
+        res = score_one(ctx, task, tdir, Path(a.repo), a.ref, a.run, report, a.quick, ctx.slot("score"))
     c = res.get("corpus") or {}
     loc = res["localisation"]
     say(f"score {task['id']} ({a.run}): {'CORRECT' if res['correct'] else 'not correct'}: hidden "
