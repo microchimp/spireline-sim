@@ -390,6 +390,18 @@ class Recording(unittest.TestCase):
         self.assertNotEqual(refset.comparable(a), refset.comparable(b))
         self.assertTrue(refset.first_difference(a, b).startswith("step 2"))
 
+    def test_relic_flashes_that_differ_are_dropped_not_the_fight(self) -> None:
+        a, b = result(), result()
+        a["relic_flashes"] = [[1, "TOXIC_EGG"], [2, "BURNING_BLOOD"]]
+        b["relic_flashes"] = [[3, "TOXIC_EGG"], [2, "BURNING_BLOOD"]]
+        j = refset.judge_pair([{"id": "x", "spec": {"seed": "S"}}], {"x": (a, None)}, {"x": (b, None)})["x"]
+        self.assertNotIn("excluded", j)
+        self.assertEqual(j["result"]["relic_flashes"], [[2, "BURNING_BLOOD"]])  # only what both recordings hold
+        self.assertEqual(j["unsteady_flashes"], [[1, "TOXIC_EGG"], [3, "TOXIC_EGG"]])
+        b["steps"][2]["state"]["round"] = 9  # the game state differs too: unstable
+        j = refset.judge_pair([{"id": "x", "spec": {"seed": "S"}}], {"x": (a, None)}, {"x": (b, None)})["x"]
+        self.assertTrue(j["excluded"].startswith("unstable"))
+
     def test_causes(self) -> None:
         self.assertEqual(refset.cause_of("the game logged an error: X at Y"), "game_error")
         self.assertEqual(refset.cause_of("game error: idle_timeout after step 3: {}"), "driver_wait_limit")
@@ -407,7 +419,7 @@ class Recording(unittest.TestCase):
                {"id": "d", "part": "coverage", "strata": {"act": 1, "room": "monster"}, "flags": []}]
         s = refset.summarize(idx)
         self.assertEqual(s["realistic_cells"]["act3 elite"], {"specs": 3, "kept": 2, "excluded": {"setup": 1}, "flagged": 1,
-                                                              "flags": {"state_unknown": 1}})
+                                                              "flags": {"state_unknown": 1}, "unsteady_flash_evidence": 0})
         self.assertEqual(s["parts"]["coverage"]["kept"], 1)
         self.assertEqual(s["flags_by_item"], {"state_unknown:PEN_NIB.AttacksPlayed": 1})
 

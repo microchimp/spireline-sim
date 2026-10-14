@@ -1226,6 +1226,24 @@ def log_errors(run_dir: Path) -> dict[int, list]:
     return out
 
 
+def steady_flashes(ra: dict, rb: dict) -> tuple[dict, list] | None:
+    """Two recordings that differ only in their relic flashes ([step, relic], driver evidence, not game state; a
+    flash raised from a pickup's deferred animation lands on whatever step the driver has reached): the recording
+    with only the flashes both hold, and the ones dropped. None when anything else differs."""
+    fa, fb = ra.get("relic_flashes") or [], rb.get("relic_flashes") or []
+    if comparable({k: v for k, v in ra.items() if k != "relic_flashes"}) != comparable({k: v for k, v in rb.items() if k != "relic_flashes"}):
+        return None
+    left = [tuple(x) for x in fb]
+    both, dropped = [], []
+    for x in fa:
+        if tuple(x) in left:
+            left.remove(tuple(x))
+            both.append(x)
+        else:
+            dropped.append(x)
+    return dict(ra, relic_flashes=both), dropped + [list(x) for x in left]
+
+
 def judge_pair(entries: list[dict], pa: dict, pb: dict) -> dict:
     """Per spec id: the kept recording, or why the fight is excluded (and whether a retry may clear it)."""
     out = {}
@@ -1249,7 +1267,11 @@ def judge_pair(entries: list[dict], pa: dict, pb: dict) -> dict:
             j["excluded"] = why
             j["retry"] = "idle_timeout" in why
         elif comparable(ra) != comparable(rb):
-            j["excluded"] = "unstable: the two recordings differ at " + first_difference(ra, rb)
+            kept = steady_flashes(ra, rb)
+            if kept is None:
+                j["excluded"] = "unstable: the two recordings differ at " + first_difference(ra, rb)
+            else:
+                j["result"], j["unsteady_flashes"] = kept
         else:
             j["result"] = ra
         out[e["id"]] = j
@@ -1477,7 +1499,8 @@ def summarize(index: list[dict]) -> dict:
         return {"specs": len(rows), "kept": len(kept),
                 "excluded": dict(collections.Counter(cause_of(r["excluded"]) for r in rows if "excluded" in r)),
                 "flagged": sum(1 for r in kept if r.get("flags")),
-                "flags": dict(collections.Counter(f.split(":")[0] for r in kept for f in r.get("flags", [])))}
+                "flags": dict(collections.Counter(f.split(":")[0] for r in kept for f in r.get("flags", []))),
+                "unsteady_flash_evidence": sum(1 for r in kept if r.get("unsteady_flashes"))}
     out = {"parts": {p: block([r for r in index if r["part"] == p]) for p in dict.fromkeys(r["part"] for r in index)}}
     cells = collections.defaultdict(list)
     for r in index:
@@ -1495,7 +1518,7 @@ def build_index(entries: list[dict], judged: dict, stamp: dict) -> tuple[list[di
         j = judged[e["id"]]
         row = {"id": e["id"], "part": e["part"], "seed": e["spec"]["seed"], "chooser": e.get("chooser", e["spec"].get("chooser", "random")),
                "strata": e.get("strata", {}), "flags": list(e.get("flags", []))}
-        for k in ("excluded", "retried", "visual_errors"):
+        for k in ("excluded", "retried", "visual_errors", "unsteady_flashes"):
             if j.get(k):
                 row[k] = j[k]
         if not j.get("excluded"):
