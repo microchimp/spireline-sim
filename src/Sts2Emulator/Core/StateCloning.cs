@@ -205,6 +205,8 @@ public static class StateCloning
         into.StolenBackGold = combat.StolenBackGold;
         into.RoyaltiesGold = combat.RoyaltiesGold;
         into.FatGremlinEscaped = combat.FatGremlinEscaped;
+        into.EscapedEnemies = combat.EscapedEnemies;
+        into.DepartedEnemyDefIds = Refill(into.DepartedEnemyDefIds, combat.DepartedEnemyDefIds, inPlace);
         into.BattlewornDummyRanOutOfTime = combat.BattlewornDummyRanOutOfTime;
         into.PaelsLegionCooldown = combat.PaelsLegionCooldown;
         into.PaelsLegionCard = combat.PaelsLegionCard;
@@ -307,6 +309,7 @@ public static class StateCloning
         into.CardsDrawnThisCombat = combat.CardsDrawnThisCombat;
         into.ShivsPlayedThisTurn = combat.ShivsPlayedThisTurn;
         into.ExtraCardRewards = combat.ExtraCardRewards;
+        into.StolenCards = Refill(into.StolenCards, combat.StolenCards, inPlace);
         into.StolenBackCards = Refill(into.StolenBackCards, combat.StolenBackCards, inPlace);
         into.ExecutedThisEnemyTurn = Refill(into.ExecutedThisEnemyTurn, combat.ExecutedThisEnemyTurn, inPlace);
         into.RuptureOwed = combat.RuptureOwed;
@@ -662,6 +665,7 @@ public static class StateCloning
             VisitedEventIds = [.. state.VisitedEventIds],
             PendingSelectionEventEntry = state.PendingSelectionEventEntry,
             PendingGoldRewards = [.. state.PendingGoldRewards],
+            RewardSpecialCards = [.. state.RewardSpecialCards],
             PendingCardOffers =
             [
                 .. state.PendingCardOffers.Select(offer => new CardOffer(

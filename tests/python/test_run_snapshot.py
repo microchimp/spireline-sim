@@ -167,12 +167,15 @@ class RunSnapshotTest(unittest.TestCase):
 class RunCompareTest(unittest.TestCase):
     """tools.fidelity.run_compare2: offers compare as what the screen lets the player take."""
 
-    def test_reward_offers_compare_as_sets_without_returned_stolen_cards(self):
+    def test_reward_offers_compare_as_sets_with_returned_stolen_cards(self):
         from tools.fidelity.run_compare2 import norm_offer
         game = [{"type": "card", "cards": [["CARD.ANGER", 0]]}, {"type": "gold", "amount": 12},
-                {"type": "special_card", "card": ["STRIKE_IRONCLAD", 0]}]
-        emu = [{"type": "gold", "amount": 12}, {"type": "card", "cards": [["ANGER", 0]]}]
+                {"type": "special_card", "card": ["CARD.STRIKE_IRONCLAD", 0]}]
+        emu = [{"type": "gold", "amount": 12}, {"type": "card", "cards": [["ANGER", 0]]},
+               {"type": "special_card", "card": ["STRIKE_IRONCLAD", 0]}]
         self.assertEqual(norm_offer("rewards", game, False), norm_offer("rewards", emu, True))
+        # A stolen card the emulator's screen lacks is a difference, not hidden.
+        self.assertNotEqual(norm_offer("rewards", game, False), norm_offer("rewards", emu[:2], True))
 
     def test_rest_offers_compare_enabled_options_only(self):
         from tools.fidelity.run_compare2 import norm_offer

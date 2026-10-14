@@ -181,6 +181,7 @@ public class LifecycleTests(ITestOutputHelper output)
             ["CombatState.ExhaustPile[].*"] = CardHidden,
             ["CombatState.ReturnToHandBeforeDraw*"] = HiddenCards,
             ["CombatState.CopiesToHandBeforeDraw*"] = HiddenCards,
+            ["CombatState.StolenCards*"] = HiddenCards,
             ["CombatState.StolenBackCards*"] = HiddenCards,
             ["CombatState.AutoPlayQueue*"] = HiddenCards,
             ["CombatState.HeldPlayedCard*"] = HiddenCards,
@@ -246,6 +247,8 @@ public class LifecycleTests(ITestOutputHelper output)
             ["CombatState.EtherealExhaustsThisTurn"] = Counter,
             ["CombatState.ExtraCardRewards"] = Counter,
             ["CombatState.ExtraCardsDrawnThisTurn"] = Counter,
+            ["CombatState.EscapedEnemies"] = Counter,
+            ["CombatState.DepartedEnemyDefIds"] = Counter,
             ["CombatState.FatGremlinEscaped"] = Counter,
             ["CombatState.FurCoatBites"] = Counter,
             ["CombatState.GamblingChipDiscarded"] = Counter,
@@ -737,6 +740,7 @@ public class LifecycleTests(ITestOutputHelper output)
         var c = e.State.ActiveCombat!;
         BuffSystem.Apply(c.PlayerBuffs, BuffId.Strength, 2);
         foreach (var en in c.Enemies) BuffSystem.Apply(en.Buffs, BuffId.Weak, 1);
+        c.NoteDeparted(c.Enemies[0]);  // an enemy id, not the card id an empty int list is stamped with
         c.Orbs.Add(new OrbState(OrbType.Frost));
         c.DiscardPile.Add(c.DrawPile[^1]);
         c.ExhaustPile.Add(c.DrawPile[^2]);

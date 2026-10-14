@@ -45,11 +45,71 @@ public sealed class CombatState
     public int StolenBackGold;
 
     /// <summary>
-    /// `RoyaltiesPower.AfterCombatEnd` calls `AddExtraReward(new GoldReward(Amount))`. Its
-    /// own row like the Heist's, and carried here for the same reason: a combat cannot
-    /// reach the reward generator.
+    /// The gold Royalties played this fight have promised. Informational: the reward row is
+    /// built from the power itself as the combat ends (`RoyaltiesPower.AfterCombatEnd` reads
+    /// its own `Amount`; RunEngine.FinishCombat reads the buff), and paying from this counter
+    /// as well paid the gold twice.
     /// </summary>
     public int RoyaltiesGold;
+
+    /// <summary>
+    /// The game's <c>CombatState.EscapedCreatures.Count</c>: enemies that left the fight by
+    /// <c>CreatureCmd.Escape</c> rather than dying (a Thieving Hopper, a Fat Gremlin, the
+    /// Battleworn Dummy's friend). <c>EncounterModel.CalculateGoldProportion</c> cuts the
+    /// room's gold by the share that escaped.
+    /// </summary>
+    public int EscapedEnemies;
+
+    /// <summary>
+    /// The DefId of each kind of enemy swept out of the roster after leaving the fight, dead
+    /// or escaped, once per kind. With the roster still standing, the distinct DefIds over
+    /// both are the game's <c>Encounter.SpawnedEnemies</c>, which the gold proportion divides
+    /// by: <c>EncounterModel.OnCreatureSpawned</c> adds a creature's
+    /// <c>Monster.CanonicalInstance</c> only when the list does not hold it yet, so it counts
+    /// kinds of monster (summons included), not creatures.
+    /// </summary>
+    public List<int> DepartedEnemyDefIds = [];
+
+    /// <summary>
+    /// Takes the enemies that match out of the roster, noting each one's kind in
+    /// <see cref="DepartedEnemyDefIds" />. Returns how many left.
+    /// </summary>
+    public int RemoveDepartedEnemies(Predicate<EnemyState> departs)
+    {
+        // List.RemoveAll's pass, front to back, with a note of each kind that leaves.
+        int kept = 0;
+        for (int i = 0; i < Enemies.Count; i++)
+        {
+            var enemy = Enemies[i];
+            if (departs(enemy))
+            {
+                NoteDeparted(enemy);
+                continue;
+            }
+
+            Enemies[kept++] = enemy;
+        }
+
+        int removed = Enemies.Count - kept;
+        Enemies.RemoveRange(kept, removed);
+        return removed;
+    }
+
+    /// <summary>Notes one enemy's kind as having taken part, for <see cref="SpawnedEnemyKinds" />.</summary>
+    public void NoteDeparted(EnemyState enemy)
+    {
+        if (!DepartedEnemyDefIds.Contains(enemy.DefId))
+        {
+            DepartedEnemyDefIds.Add(enemy.DefId);
+        }
+    }
+
+    /// <summary>
+    /// <c>Encounter.SpawnedEnemies.Count</c>: the kinds of enemy that took part, those still
+    /// in the roster and those that left it.
+    /// </summary>
+    public int SpawnedEnemyKinds() =>
+        Enemies.Select(enemy => enemy.DefId).Concat(DepartedEnemyDefIds).Distinct().Count();
 
     /// <summary>A Fat Gremlin left the fight under its own steam rather than dying.</summary>
     /// <remarks>
@@ -510,9 +570,18 @@ public sealed class CombatState
     public int ExtraCardRewards;
 
     /// <summary>
-    /// Cards a Thieving Hopper stole and then died holding. `SwipePower.BeforeDeath` puts
-    /// them straight back in the deck and shows a row saying so; carried here for the same
-    /// reason `StolenBackGold` is, because a combat cannot reach the run's deck.
+    /// Every card a Thieving Hopper took this fight, as it was taken. `SwipePower.Steal` calls
+    /// `CardPileCmd.RemoveFromDeck(card.DeckVersion)`: the deck loses the card at the steal,
+    /// whatever happens to the thief, and the run takes its deck version out as the combat
+    /// ends (a combat cannot reach the run's deck).
+    /// </summary>
+    public List<CardInstance> StolenCards = [];
+
+    /// <summary>
+    /// Cards a Thieving Hopper stole and then died holding. `SwipePower.BeforeDeath` hangs a
+    /// `SpecialCardReward` of each card's deck version on the room, which the player claims
+    /// back into the deck or leaves; carried here for the same reason `StolenBackGold` is,
+    /// because a combat cannot reach the reward generator.
     /// </summary>
     public List<CardInstance> StolenBackCards = [];
 

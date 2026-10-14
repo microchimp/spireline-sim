@@ -2081,7 +2081,7 @@ public static class CombatEngine
             // A Gas Bomb kills itself as it explodes and leaves the roster. Left in place at
             // zero HP it kept announcing an intent every turn, so a Living Fog fight grew an
             // extra attacker per Bloat where the live game shows one bomb appear and go.
-            state.Enemies.RemoveAll(e => e.Hp <= 0 && e.DefId == KE.GasBomb);
+            state.RemoveDepartedEnemies(e => e.Hp <= 0 && e.DefId == KE.GasBomb);
 
             // Before the duration tick, and over every LIVING enemy rather than the ones that
             // acted: `HighVoltagePower.AfterSideTurnEnd` pays each PARTICIPANT, which includes
@@ -2221,6 +2221,7 @@ public static class CombatEngine
                 // flag is what tells the event this was an escape and not a kill.
                 enemy.Hp = 0;
                 enemy.Escaped = true;
+                state.EscapedEnemies++;
                 state.BattlewornDummyRanOutOfTime = true;
             }
         }
@@ -4592,7 +4593,7 @@ public static class CombatEngine
         // A death that holds the fight open and is still unanswered is never swept: its
         // answer is what sends in the reinforcements, the Wrigglers or the new Axebot, and a
         // swept corpse would never get one.
-        state.Enemies.RemoveAll(enemy =>
+        state.RemoveDepartedEnemies(enemy =>
             enemy.Hp <= 0
             && EnemyAI.ShouldRemoveOnDeath(enemy)
             && (

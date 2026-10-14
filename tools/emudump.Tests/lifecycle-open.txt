@@ -13,6 +13,7 @@ reset	CombatState.LastAttackOrSkillThisTurn*	CombatFactory.Reset on a reused com
 reset	CombatState.Orbs*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
 reset	CombatState.PlayerDebuffsAtRoundStart*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
 reset	CombatState.StolenBackCards*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
+reset	CombatState.StolenCards*	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode (the holder and every field in it)
 reset	CombatState.AttackOrSkillCardsPlayedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.BaseOrbSlots	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.BattlewornDummyRanOutOfTime	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
@@ -27,10 +28,12 @@ reset	CombatState.CardsGeneratedThisCombat	CombatFactory.Reset on a reused comba
 reset	CombatState.CardsPlayedThisCombat	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.CardsPlayedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.Character	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.DepartedEnemyDefIds	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.DoomAppliedThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.EndTurnAfterPlay	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.EnergyCostRng	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.EnergySpentThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
+reset	CombatState.EscapedEnemies	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.EtherealCardPlaysThisCombat	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.EtherealExhaustCount	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.EtherealExhaustsThisTurn	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode

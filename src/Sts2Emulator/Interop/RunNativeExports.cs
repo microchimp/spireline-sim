@@ -590,13 +590,16 @@ public static class RunNativeExports
 
     private static int WriteRewardList(RunState state, Span<int> output)
     {
-        Span<int> rewards = stackalloc int[4];
+        Span<int> rewards = stackalloc int[5];
         rewards[0] = state.RewardGold;
         rewards[1] = state.RewardPotion;
         rewards[2] = state.RelicReward;
         // How many CARD items the screen holds, not whether it holds one. The action mask
         // offers exactly this many after the other items, so the two are one count.
         rewards[3] = RunRewardGenerator.CardItemCount(state);
+        // Then the SpecialCardReward rows (a Hopper's stolen card, the Lantern Key), one
+        // action each after the card items. Last, so a reader of the first four is unchanged.
+        rewards[4] = RunRewardGenerator.SpecialCardItemCount(state);
         int count = Math.Min(rewards.Length, output.Length);
         rewards[..count].CopyTo(output);
         return rewards.Length;

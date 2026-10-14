@@ -194,20 +194,14 @@ public static partial class RunRewardGenerator
             && state.CurrentActIndex >= state.Acts.Count - 1;
         int aubergineGold = Effects.RelicEffects.ExtraCombatRewardGold(state, finalActBoss);
 
-        // `RoyaltiesPower.AfterCombatEnd` hangs a `GoldReward(Amount)` on the room. Through
-        // `GainGold` like the fight's own gold, so Ectoplasm still zeroes it and Bowler Hat
-        // still raises it -- the power pays out through the run's chokepoint, not past it.
-        // It is one of the room's `ExtraRewards`, which the last act's boss room never
-        // offers (see OpenLastActBossRewardScreen).
-        if (state.RoyaltiesGoldOwed > 0)
-        {
-            if (!finalActBoss)
-            {
-                RunNonCombatEffects.GainGold(state, state.RoyaltiesGoldOwed);
-            }
-
-            state.RoyaltiesGoldOwed = 0;
-        }
+        // `RoyaltiesPower.AfterCombatEnd` hangs a `GoldReward(Amount)` on the room: a row on
+        // the screen, claimed through `GainGold` (so Ectoplasm still zeroes it and Bowler Hat
+        // still raises it) and populated with the room's other ExtraRewards below. It used to
+        // be paid into the purse here AND queued again off the combat's own counter, so it
+        // paid twice and drew nothing. The last act's boss room offers no ExtraRewards at all
+        // (see OpenLastActBossRewardScreen).
+        int royaltiesGold = state.RoyaltiesGoldOwed;
+        state.RoyaltiesGoldOwed = 0;
 
         // `PrayerWheel.TryModifyRewards` after a Monster room and `WhiteStar` after an
         // Elite each add a WHOLE extra CardReward of three. The room type is the gate, and
@@ -239,70 +233,15 @@ public static partial class RunRewardGenerator
             return;
         }
 
+        // `RewardsSet.GenerateRewardsFor` builds the room's own list -- gold, the potion roll
+        // (drawn as the list is built), cards, an elite's relic -- and `WithRewardsFromRoom`
+        // appends the room's `ExtraRewards` behind it (PopulateExtraRewards).
+        // `GenerateWithoutOffering` calls `Populate()` on every one of them in that order and
+        // sorts by `RewardsSetIndex` only afterwards, so the sort moves the display and never
+        // the draws.
         bool hasPotionReward = CheckPotionRoll(state, state.PlayerRng.Rewards.NextDouble());
         ClearRewardScreen(state);
         state.RewardGold = GoldRewardForCurrentNode(state);
-        // A Heist's gold is its own row, claimed separately and shown after the fight's
-        // ordinary gold.
-        if (state.ActiveCombat?.StolenBackGold > 0)
-        {
-            state.PendingGoldRewards.Add(state.ActiveCombat.StolenBackGold);
-            state.ActiveCombat.StolenBackGold = 0;
-        }
-
-        ReturnStolenCards(state);
-
-        // `RoyaltiesPower.AfterCombatEnd` adds a GoldReward the same way, so it is another
-        // row rather than more gold on the fight's own.
-        if (state.ActiveCombat?.RoyaltiesGold > 0)
-        {
-            state.PendingGoldRewards.Add(state.ActiveCombat.RoyaltiesGold);
-            state.ActiveCombat.RoyaltiesGold = 0;
-        }
-
-        // The aubergine's pile is a hook's (`Hook.ModifyRewards`), after the room's own.
-        if (aubergineGold > 0)
-        {
-            state.PendingGoldRewards.Add(aubergineGold);
-        }
-
-        // A room with no gold of its own (a Gremlin Merc that kept it) still shows the queued
-        // piles: the first takes the screen's slot, or it could never be claimed.
-        OfferNextGold(state);
-
-        // A `SpecialCardReward` the room owes outright -- the Lantern Key, off its knight.
-        // It is not one of three rolled offers and there is nothing to choose, so it takes
-        // the first slot and the ordinary offer is not rolled over it.
-        if (state.PendingSpecialCardReward != 0)
-        {
-            state.RewardCards[0] = state.PendingSpecialCardReward;
-            state.RewardUpgraded[0] = false;
-            state.PendingSpecialCardReward = 0;
-        }
-
-        // The Hunt's kill adds a whole extra CardReward to the room. `CardReward` does not
-        // roll its cards in the constructor -- `Populate()` does, when the screen is built
-        // -- so the extra offer's three cards come off the rewards stream here with the
-        // rest, not at the moment of the kill.
-        //
-        // AFTER, and the source says so outright -- this needed no capture in the end.
-        // `RewardsSet.WithRewardsFromRoom` does `Rewards.AddRange(GenerateRewardsFor(...))`
-        // and THEN `Rewards.AddRange(combatRoom.ExtraRewards[player])`, so the ordinary
-        // set is in the list first. `GenerateWithoutOffering` then walks that list in
-        // order calling `Populate()` on each, and only sorts by `RewardsSetIndex`
-        // AFTERWARDS -- so the sort moves the display and cannot move the rolls. The
-        // ordinary offer draws its three first and the extra one draws next, which is
-        // what this does. Closes O23.
-        int extraCardRewards = state.ActiveCombat?.ExtraCardRewards ?? 0;
-        for (int i = 0; i < extraCardRewards; i++)
-        {
-            state.PendingCardOffers.Add(RollExtraCardOffer(state));
-        }
-
-        if (state.ActiveCombat is not null)
-        {
-            state.ActiveCombat.ExtraCardRewards = 0;
-        }
 
         if (hasPotionReward)
         {
@@ -376,13 +315,81 @@ public static partial class RunRewardGenerator
         // offer the relic's value and shifted all three cards by a draw.
         PopulateCardReward(state);
 
-        // `PunchOff.Fight` hangs [RelicReward, PotionReward] on the room (EnterCombatWithoutExitingEvent's
-        // extra rewards). `RewardsSet.WithRewardsFromRoom` appends them to the room's own list, so they
-        // populate after the cards and before anything a hook adds: the relic's pull, then the potion's
-        // rarity roll and pick -- a second potion beside the one the room's odds may have rolled.
-        if (state.ActiveCombat?.EncounterId == RunConstants.PunchOffEncounterId)
+        // The Elite case's RelicReward is the last of the room's own list, so it is pulled
+        // before the room's ExtraRewards; the relics a hook adds come after them.
+        bool roomRelic = state.CurrentNodeType is RunConstants.NodeElite;
+        if (roomRelic)
         {
-            state.RelicReward = NextRelic(state);
+            OfferRelic(state, NextRelic(state));
+        }
+
+        PopulateExtraRewards(state, royaltiesGold);
+
+        // `Hook.ModifyRewards` runs on the populated list, and what it adds is populated
+        // after it. Lava Rock's and Wongo's relics (and Black Star's) are such additions; the
+        // flag counts one of them when the room has no relic of its own.
+        int hookRelics = bonusRelicsOwed + (state.PendingRelicReward && !roomRelic ? 1 : 0);
+        for (int i = 0; i < hookRelics; i++)
+        {
+            OfferRelic(state, NextRelic(state));
+        }
+
+        // The aubergine's pile is a hook's too, and a `GoldReward(15)` is populated when it
+        // is built, so it draws nothing (`GenerateWithoutOffering` populates an addition only
+        // when `!IsPopulated`).
+        if (aubergineGold > 0)
+        {
+            state.PendingGoldRewards.Add(aubergineGold);
+        }
+
+        // A room with no gold of its own (a Gremlin Merc that kept it, an escaped Hopper)
+        // still shows the queued piles: the first takes the screen's slot, or it could never
+        // be claimed.
+        OfferNextGold(state);
+
+        state.RewardCardPending = true;
+        state.Phase = RunPhase.RelicReward;
+    }
+
+    /// <summary>The screen's relic slot if it is free, else the queue behind it.</summary>
+    private static void OfferRelic(RunState state, int relicId)
+    {
+        if (state.RelicReward == 0)
+        {
+            state.RelicReward = relicId;
+        }
+        else
+        {
+            state.PendingBonusRelicRewards.Add(relicId);
+        }
+    }
+
+    /// <summary>
+    /// The room's <c>ExtraRewards</c>, populated after its own list in the order
+    /// <c>CombatRoom.AddExtraReward</c> added them: the event's (attached when the room is
+    /// made), then the fight's own (The Hunt's kills, a Heist's and a Swipe's loot, each at
+    /// its creature's death), then <c>AfterCombatEnd</c>'s (Royalties' gold; Forbidden
+    /// Grimoire's removals, which draw nothing and are answered as the screen is left).
+    /// </summary>
+    /// <remarks>
+    /// <c>RewardsSet.GenerateWithoutOffering</c> calls <c>Populate()</c> on every reward of
+    /// the list, populated or not, so a fixed-amount <c>GoldReward</c> still spends
+    /// <c>Rewards.NextInt(amount, amount + 1)</c>: the Heist's and the Royalties' rows each
+    /// draw one value. A <c>SpecialCardReward</c>'s <c>Populate</c> is empty. The Hunt's
+    /// offer and a Heist's gold are both added during the fight, in the order the kills
+    /// happened; that order is not recorded, and the Hunt's comes first here.
+    /// </remarks>
+    private static void PopulateExtraRewards(RunState state, int royaltiesGold)
+    {
+        var combat = state.ActiveCombat;
+
+        // `PunchOff.Fight` hangs [RelicReward, PotionReward] on the room
+        // (EnterCombatWithoutExitingEvent's extra rewards): the relic's pull, then the
+        // potion's rarity roll and pick -- a second potion beside the one the room's odds may
+        // have rolled.
+        if (combat?.EncounterId == RunConstants.PunchOffEncounterId)
+        {
+            OfferRelic(state, NextRelic(state));
             int extraPotion = NextPotion(state, state.PlayerRng.Rewards);
             if (state.RewardPotion == 0)
             {
@@ -394,26 +401,54 @@ public static partial class RunRewardGenerator
             }
         }
 
-        if (state.PendingRelicReward)
+        // `TheLanternKey` hangs a `SpecialCardReward(LanternKey)` on its knight's room. It
+        // took the card screen's first slot, which `PopulateCardReward` then cleared, so the
+        // key was never offered.
+        if (state.PendingSpecialCardReward != 0)
         {
-            int hooked = NextRelic(state);
-            if (state.RelicReward == 0)
-            {
-                state.RelicReward = hooked;
-            }
-            else
-            {
-                state.PendingBonusRelicRewards.Insert(0, hooked);
-            }
+            state.RewardSpecialCards.Add(new CardInstance(state.PendingSpecialCardReward, false));
+            state.PendingSpecialCardReward = 0;
         }
 
-        for (int i = 0; i < bonusRelicsOwed; i++)
+        if (combat is null)
         {
-            state.PendingBonusRelicRewards.Add(NextRelic(state));
+            QueueExtraGold(state, royaltiesGold);
+            return;
         }
 
-        state.RewardCardPending = true;
-        state.Phase = RunPhase.RelicReward;
+        // The Hunt's kill: `AddExtraReward(new CardReward(..., 3, ...))`, whose cards are
+        // rolled by `Populate()` here, after the room's own offer -- not before the room's
+        // potion and cards, where it was rolled while its comment said "after".
+        for (int i = 0; i < combat.ExtraCardRewards; i++)
+        {
+            state.PendingCardOffers.Add(RollExtraCardOffer(state));
+        }
+
+        combat.ExtraCardRewards = 0;
+
+        // `HeistPower.BeforeDeath`: `GoldReward(Amount, wasGoldStolenBack: true)`.
+        QueueExtraGold(state, combat.StolenBackGold);
+        combat.StolenBackGold = 0;
+
+        // `SwipePower.BeforeDeath`: `SpecialCardReward(StolenCard.DeckVersion)` -- a row the
+        // player claims into the deck or leaves. `runState.AddCard` beside it only registers
+        // the card with the run; it is not the deck.
+        state.RewardSpecialCards.AddRange(combat.StolenBackCards);
+        combat.StolenBackCards.Clear();
+
+        QueueExtraGold(state, royaltiesGold);
+    }
+
+    /// <summary>
+    /// A <c>GoldReward(amount)</c> in the room's list: <c>Populate()</c> draws
+    /// <c>Rewards.NextInt(min, max + 1)</c> with min and max both the amount.
+    /// </summary>
+    private static void QueueExtraGold(RunState state, int amount)
+    {
+        if (amount > 0)
+        {
+            state.PendingGoldRewards.Add(state.PlayerRng.Rewards.NextInt(amount, amount + 1));
+        }
     }
 
     /// <summary>
@@ -437,7 +472,6 @@ public static partial class RunRewardGenerator
         Array.Clear(state.RewardUpgraded);
         state.LastingCandyRewardCard = 0;
         state.LastingCandyRewardUpgraded = false;
-        ReturnStolenCards(state);
         state.PendingRelicReward = false;
         if (Effects.RelicEffects.WongosTicketPaysOut(state))
         {
@@ -454,24 +488,6 @@ public static partial class RunRewardGenerator
 
         state.RewardCardPending = false;
         state.Phase = RunPhase.RelicReward;
-    }
-
-    /// <summary>
-    /// `SwipePower.BeforeDeath` calls `runState.AddCard` -- the card goes straight back into
-    /// the DECK, and the reward row beside it only says so. So this restores the card rather
-    /// than offering it, and a Hopper that escaped never got here.
-    /// </summary>
-    private static void ReturnStolenCards(RunState state)
-    {
-        if (state.ActiveCombat is { StolenBackCards.Count: > 0 } combat)
-        {
-            foreach (var card in combat.StolenBackCards)
-            {
-                RunNonCombatEffects.AddCardToDeck(state, card);
-            }
-
-            combat.StolenBackCards.Clear();
-        }
     }
 
     public static void EnterCardReward(RunState state)
@@ -648,6 +664,14 @@ public static partial class RunRewardGenerator
         (state.RewardCardPending || state.PendingCardOffers.Count > 0 ? 1 : 0)
         + state.PendingOtherCharacterCardRewards;
 
+    /// <summary>
+    /// The screen's <c>SpecialCardReward</c> rows, one item each, after the card items. The
+    /// game shows them above the card reward (<c>RewardsSetIndex</c> 4 against 5); the items
+    /// sit last here so the gold, potion, relic and card indices a driver already counts do
+    /// not move.
+    /// </summary>
+    public static int SpecialCardItemCount(RunState state) => state.RewardSpecialCards.Count;
+
     public static bool HasPendingRewards(RunState state)
     {
         return state.RewardGold != 0
@@ -656,7 +680,8 @@ public static partial class RunRewardGenerator
             || state.RewardCardPending
             || state.PendingCardOffers.Count > 0
             || state.PendingOtherCharacterCardRewards > 0
-            || state.PendingBonusRelicRewards.Count > 0;
+            || state.PendingBonusRelicRewards.Count > 0
+            || state.RewardSpecialCards.Count > 0;
     }
 
     public static bool ClaimNextReward(RunState state)
@@ -761,6 +786,19 @@ public static partial class RunRewardGenerator
             return true;
         }
 
+        itemIndex -= state.PendingOtherCharacterCardRewards;
+
+        // `SpecialCardReward.OnSelect`: `CardPileCmd.Add(card, PileType.Deck)`, so the card
+        // arrives the way any card does and the deck-add hooks see it (Lucky Fysh's gold,
+        // Book of Five Rings' count, the eggs). Left on the screen, it is lost.
+        if (itemIndex >= 0 && itemIndex < state.RewardSpecialCards.Count)
+        {
+            var card = state.RewardSpecialCards[itemIndex];
+            state.RewardSpecialCards.RemoveAt(itemIndex);
+            RunNonCombatEffects.AddCardToDeck(state, card);
+            return true;
+        }
+
         return false;
     }
 
@@ -855,6 +893,7 @@ public static partial class RunRewardGenerator
         state.PendingRelicReward = false;
         state.PendingGoldRewards.Clear();
         state.PendingCardOffers.Clear();
+        state.RewardSpecialCards.Clear();
     }
 
     /// <summary>Moves the next queued gold pile onto the screen, if the screen is free.</summary>
@@ -2005,22 +2044,35 @@ public static partial class RunRewardGenerator
             : gold;
 
     /// <summary>
-    /// <c>CombatRoom.GoldProportion</c>. Every encounter is 1 except the Gremlin Merc's,
-    /// the only one that overrides <c>CalculateGoldProportion</c>.
+    /// <c>CombatRoom.GoldProportion</c>, set from <c>Encounter.CalculateGoldProportion</c> as
+    /// the combat ends. The base is <c>1 - EscapedCreatures.Count / SpawnedEnemies.Count</c>:
+    /// escaped CREATURES over spawned KINDS of monster (<c>EncounterModel.OnCreatureSpawned</c>
+    /// adds each canonical monster once), so one of two creatures of one kind escaping leaves
+    /// nothing, and an escaped Thieving Hopper -- alone in its encounter -- takes the room's
+    /// gold row, and its draw, with it. The Gremlin Merc's encounter overrides it.
     /// </summary>
     private static double CombatGoldProportion(RunState state)
     {
         var combat = state.ActiveCombat;
-        if (
-            combat is null
-            || combat.EncounterId != RunConstants.GremlinMercEncounterId
-            || !combat.FatGremlinEscaped
-        )
+        if (combat is null)
         {
             return 1;
         }
 
-        return combat.MercGoldWasStolen ? 0 : 0.5;
+        if (combat.EncounterId == RunConstants.GremlinMercEncounterId)
+        {
+            return !combat.FatGremlinEscaped ? 1
+                : combat.MercGoldWasStolen ? 0
+                : 0.5;
+        }
+
+        if (combat.EscapedEnemies <= 0)
+        {
+            return 1;
+        }
+
+        int spawned = combat.SpawnedEnemyKinds();
+        return spawned <= 0 ? 0 : 1 - (double)combat.EscapedEnemies / spawned;
     }
 
     /// <summary>

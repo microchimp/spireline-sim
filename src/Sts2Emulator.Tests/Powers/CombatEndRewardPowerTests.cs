@@ -23,9 +23,12 @@ public class CombatEndRewardPowerTests
         return engine;
     }
 
-    /// <summary>Royalties' gold goes through GainGold, the run's chokepoint.</summary>
+    /// <summary>
+    /// `RoyaltiesPower.AfterCombatEnd` adds a `GoldReward(Amount)` to the room: a row on the
+    /// screen, not gold in the purse. It was paid at generation and queued again, twice over.
+    /// </summary>
     [Fact]
-    public void RoyaltiesPaysItsGoldAtTheRewardScreen()
+    public void RoyaltiesIsOneRowOnTheScreenPaidWhenClaimed()
     {
         var engine = Run();
         int before = engine.State.Gold;
@@ -33,11 +36,21 @@ public class CombatEndRewardPowerTests
 
         RunRewardGenerator.GenerateCombatRewards(engine.State);
 
-        Assert.True(engine.State.Gold >= before + 30);
+        Assert.Equal(before, engine.State.Gold);
         Assert.Equal(0, engine.State.RoyaltiesGoldOwed);
+        Assert.Equal(new[] { 30 }, engine.State.PendingGoldRewards);
+        int piles = 0;
+        while (engine.State.RewardGold != 0)
+        {
+            Assert.True(RunRewardGenerator.ClaimRewardAtIndex(engine.State, 0));
+            piles++;
+        }
+
+        Assert.Equal(2, piles);
+        Assert.True(engine.State.Gold >= before + 30);
     }
 
-    /// <summary>Ectoplasm zeroes it, which a bare `Gold +=` would have walked past.</summary>
+    /// <summary>Ectoplasm zeroes it at the claim, which a bare `Gold +=` would have walked past.</summary>
     [Fact]
     public void EctoplasmStillZeroesIt()
     {
@@ -49,26 +62,36 @@ public class CombatEndRewardPowerTests
         engine.State.RoyaltiesGoldOwed = 30;
 
         RunRewardGenerator.GenerateCombatRewards(engine.State);
+        while (engine.State.RewardGold != 0)
+        {
+            RunRewardGenerator.ClaimRewardAtIndex(engine.State, 0);
+        }
 
         Assert.Equal(before, engine.State.Gold);
     }
 
-    /// <summary>Nothing owed, nothing paid.</summary>
+    /// <summary>
+    /// `GenerateWithoutOffering` populates every reward in the room's list, and the Royalties
+    /// row is one of its ExtraRewards: `GoldReward.Populate` draws `NextInt(30, 31)`, one
+    /// Rewards value after the room's own -- so the room's own rewards are unchanged and the
+    /// stream is one further on.
+    /// </summary>
     [Fact]
-    public void NothingOwedPaysNothingExtra()
+    public void TheRoyaltiesRowDrawsOneRewardsValueAfterTheRoomsOwn()
     {
-        var engine = Run();
-        int before = engine.State.Gold;
-
-        RunRewardGenerator.GenerateCombatRewards(engine.State);
-        int plain = engine.State.Gold - before;
-
+        var plain = Run();
         var owed = Run();
-        int owedBefore = owed.State.Gold;
         owed.State.RoyaltiesGoldOwed = 30;
+
+        RunRewardGenerator.GenerateCombatRewards(plain.State);
         RunRewardGenerator.GenerateCombatRewards(owed.State);
 
-        Assert.Equal(plain + 30, owed.State.Gold - owedBefore);
+        Assert.Equal(plain.State.RewardGold, owed.State.RewardGold);
+        Assert.Equal(plain.State.RewardCards, owed.State.RewardCards);
+        Assert.Equal(
+            plain.State.PlayerRng.Rewards.CallCount + 1,
+            owed.State.PlayerRng.Rewards.CallCount
+        );
     }
 
     /// <summary>

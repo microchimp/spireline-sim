@@ -456,6 +456,14 @@ public sealed class RunState
     public List<int> PendingGoldRewards = [];
 
     /// <summary>
+    /// The screen's <c>SpecialCardReward</c> rows: one specific card each, which the player
+    /// claims into the deck (<c>CardPileCmd.Add</c>, so the deck-add hooks run) or leaves on
+    /// the screen, where it is lost. A Thieving Hopper's stolen card (its deck version, from
+    /// <c>SwipePower.BeforeDeath</c>) and the Lantern Key are the game's two.
+    /// </summary>
+    public List<CardInstance> RewardSpecialCards = [];
+
+    /// <summary>
     /// Card offers still owed, each already rolled: three card ids the player will choose
     /// one of. The Crystal Sphere can uncover a card reward of each rarity and the screen
     /// shows one offer at a time, so the rest wait here.
@@ -672,9 +680,10 @@ public sealed class RunState
     public bool ParasolSweepPending;
 
     /// <summary>
-    /// A card the next combat's reward screen owes outright, rather than as one of three
-    /// rolled offers -- the game's `SpecialCardReward`. The Lantern Key's knight fight is
-    /// the only one so far: beat it and the key is yours, and it is not a choice.
+    /// A card the next combat's room owes as a `SpecialCardReward` -- one of the room's
+    /// ExtraRewards, attached by the event that starts the fight. The Lantern Key's knight
+    /// fight is the only one. It becomes a <see cref="RewardSpecialCards" /> row when the
+    /// rewards are built, which the player may claim or leave.
     /// </summary>
     public int PendingSpecialCardReward;
 

@@ -66,7 +66,8 @@ public class ReplayDebugHookTests
 
     /// <summary>
     /// <c>HeistPower.BeforeDeath</c>'s <c>GoldReward(Amount, wasGoldStolenBack: true)</c> is
-    /// its own row beside the fight's gold, claimed separately and rolled from nothing.
+    /// its own row beside the fight's gold, claimed separately; its fixed amount still spends
+    /// one Rewards draw (StolenLootRewardTests).
     /// </summary>
     [Fact]
     public void AResolvedFightHandsBackTheHeistGoldItWasGiven()

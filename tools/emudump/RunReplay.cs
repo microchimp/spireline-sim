@@ -351,6 +351,8 @@ static class RunReplay
         if (s.RewardCardPending || s.Phase == RunPhase.CardReward)
             o.Add(CardOffer(s.RewardCards, s.RewardUpgraded));
         foreach (var off in s.PendingCardOffers) o.Add(CardOffer(off.Cards, off.Upgraded));
+        foreach (var sc in s.RewardSpecialCards)
+            o.Add(new JsonObject { ["type"] = "special_card", ["card"] = new JsonArray(RunSnap.CardEntry(sc.DefId), sc.Upgraded ? 1 : 0) });
         return o;
     }
 
@@ -375,16 +377,6 @@ static class RunReplay
         }
 
         string type = (string)d["choice"]!["type"]!;
-        if (type == "special_card")
-        {
-            // A Thieving Hopper's stolen card, handed back as a reward the player claims. The
-            // emulator returns it to the deck when the fight ends (ReturnStolenCards), which the
-            // fight's anchoring undid to match the game; the claim puts it back the same way.
-            var sc = d["choice"]!["card"]!.AsArray();
-            RunNonCombatEffects.AddCardToDeck(s, new Sts2Emulator.Core.CardInstance(Fight.CardIdBySnake((string)sc[0]!), (int)sc[1]! != 0));
-            od["special_card"] = "claimed outside the emulator's screen";
-            return;
-        }
 
         // A lone card reward (Dream Catcher's on a rest, an event's) opens the card screen
         // straight away in the emulator; the game shows it on a rewards screen first.
@@ -407,6 +399,27 @@ static class RunReplay
         if (s.RewardPotion != 0) { if (type == "potion") goto claim; idx++; }
         if (s.RelicReward != 0) { if (type == "relic") goto claim; idx++; }
         if (s.RewardCardPending || s.PendingCardOffers.Count > 0) { if (type == "card") goto claim; idx++; }
+        idx += s.PendingOtherCharacterCardRewards;
+        if (type == "special_card")
+        {
+            // A SpecialCardReward row (a Thieving Hopper's stolen card, the Lantern Key): the
+            // rows sit after the card items, one each.
+            var sc = d["choice"]!["card"]!.AsArray();
+            int want = Fight.CardIdBySnake((string)sc[0]!);
+            bool up = (int)sc[1]! != 0;
+            int at = s.RewardSpecialCards.FindIndex(c => c.DefId == want && c.Upgraded == up);
+            if (at < 0)
+            {
+                // Not on the emulator's screen (its fight went otherwise): the offer comparison
+                // shows the difference, and the claim is made outside the screen so the walk goes on.
+                RunNonCombatEffects.AddCardToDeck(s, new Sts2Emulator.Core.CardInstance(want, up));
+                od["special_card"] = "not on the emulator's screen; claimed outside it";
+                return;
+            }
+
+            idx += at;
+            goto claim;
+        }
         throw new Divergence($"reward {type} not on the emulator's screen");
     claim:
         Step(e, idx, od, $"claim {type}");

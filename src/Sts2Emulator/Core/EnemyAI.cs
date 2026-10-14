@@ -777,6 +777,7 @@ public static class EnemyAI
         {
             enemy.Hp = 0;
             enemy.Escaped = true;
+            state.EscapedEnemies++;
         }
 
         // `FatGremlin.FLEE_MOVE`: it runs off with whatever it is holding. Zeroing the HP
@@ -788,6 +789,7 @@ public static class EnemyAI
         {
             enemy.Hp = 0;
             enemy.Escaped = true;
+            state.EscapedEnemies++;
             state.FatGremlinEscaped = true;
         }
 
@@ -4715,6 +4717,11 @@ public static class EnemyAI
             thief.StolenCard = stolen;
             BuffSystem.Apply(thief.Buffs, BuffId.Swipe, 1);
         }
+
+        // `SwipePower.Steal`: `CardPileCmd.RemoveFromDeck(card.DeckVersion)` -- the deck
+        // loses the card now, and gets it back only by claiming the reward the thief's
+        // death leaves.
+        state.StolenCards.Add(stolen);
     }
 
     /// <summary>
@@ -4972,6 +4979,7 @@ public static class EnemyAI
                 // Reuse the corpse's place: the game freed that slot and refilled it.
                 var corpse = deadEggs[0];
                 deadEggs.RemoveAt(0);
+                state.NoteDeparted(corpse);
                 state.Enemies[state.Enemies.IndexOf(corpse)] = spawned;
                 continue;
             }

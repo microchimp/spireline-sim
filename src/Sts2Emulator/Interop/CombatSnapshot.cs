@@ -215,6 +215,7 @@ public static class CombatSnapshot
     [
         new("stolen_back_gold", s => ref s.StolenBackGold),
         new("royalties_gold", s => ref s.RoyaltiesGold),
+        new("escaped_enemies", s => ref s.EscapedEnemies),
         new("paels_legion_cooldown", s => ref s.PaelsLegionCooldown),
         new("afterimage_before_play", s => ref s.AfterimageBeforePlay),
         new("storm_before_play", s => ref s.StormBeforePlay),
@@ -295,6 +296,8 @@ public static class CombatSnapshot
 
     private const string LastAttackOrSkillThisTurn = "last_attack_or_skill_this_turn";
     private const string LastAttackOrSkillLastTurn = "last_attack_or_skill_last_turn";
+    private const string DepartedEnemyDefIds = "departed_enemy_def_ids";
+    private const string StolenCards = "stolen_cards";
     private const string StolenBackCards = "stolen_back_cards";
 
     // ── the fields each object may hold ──────────────────────────────────────────────
@@ -456,6 +459,8 @@ public static class CombatSnapshot
         .. BoolCounters.Select(counter => counter.Name),
         LastAttackOrSkillThisTurn,
         LastAttackOrSkillLastTurn,
+        DepartedEnemyDefIds,
+        StolenCards,
         StolenBackCards,
     ];
 
@@ -1068,6 +1073,11 @@ public static class CombatSnapshot
 
         state.LastAttackOrSkillThisTurn = counters.NullableCard(LastAttackOrSkillThisTurn);
         state.LastAttackOrSkillLastTurn = counters.NullableCard(LastAttackOrSkillLastTurn);
+        state.DepartedEnemyDefIds = counters.Items(
+            DepartedEnemyDefIds,
+            (value, path) => EnemyId(AsInt(value, path), path)
+        );
+        state.StolenCards = counters.Items(StolenCards, ReadCard);
         state.StolenBackCards = counters.Items(StolenBackCards, ReadCard);
     }
 
@@ -1972,6 +1982,8 @@ public static class CombatSnapshot
 
         WriteNullableCard(w, LastAttackOrSkillThisTurn, state.LastAttackOrSkillThisTurn);
         WriteNullableCard(w, LastAttackOrSkillLastTurn, state.LastAttackOrSkillLastTurn);
+        WriteItems(w, DepartedEnemyDefIds, state.DepartedEnemyDefIds, (writer, id) => writer.WriteNumberValue(id));
+        WriteItems(w, StolenCards, state.StolenCards, WriteCard);
         WriteItems(w, StolenBackCards, state.StolenBackCards, WriteCard);
         w.WriteEndObject();
     }

@@ -1443,6 +1443,8 @@ public sealed class RunEngine
         // the removals never arrived.
         if (State.ActiveCombat is { } finished)
         {
+            // First, because the deck the after-combat hooks read had already lost them.
+            TakeStolenCardsFromTheDeck(finished);
             State.RoyaltiesGoldOwed += BuffSystem.Get(finished.PlayerBuffs, BuffId.Royalties);
             State.CardRemovalsOwed += BuffSystem.Get(
                 finished.PlayerBuffs,
@@ -1516,13 +1518,20 @@ public sealed class RunEngine
     /// resolved fight cannot produce by itself: gold a Heist hands back
     /// (<see cref="CombatState.StolenBackGold" />), and how a Gremlin Merc fight ended
     /// (<see cref="CombatState.FatGremlinEscaped" />, <see cref="CombatState.MercGoldWasStolen" />),
-    /// which decides whether the fight's gold is rolled at all.
+    /// which decides whether the fight's gold is rolled at all. So are the creatures that
+    /// escaped (<see cref="CombatState.EscapedEnemies" />, which cut the gold), the cards a
+    /// Thieving Hopper took (<see cref="CombatState.StolenCards" />, gone from the deck) and
+    /// those its death handed back (<see cref="CombatState.StolenBackCards" />, offered as
+    /// rewards).
     /// Returns -1, changing nothing, when no fight is in progress.
     /// </remarks>
     public int DebugResolveCombat(
         int stolenBackGold = 0,
         bool fatGremlinEscaped = false,
-        bool mercGoldWasStolen = false
+        bool mercGoldWasStolen = false,
+        int escapedEnemies = 0,
+        IReadOnlyList<CardInstance>? stolenCards = null,
+        IReadOnlyList<CardInstance>? stolenBackCards = null
     )
     {
         if (State.Phase != RunPhase.Combat || State.ActiveCombat is not { } combat)
@@ -1533,8 +1542,61 @@ public sealed class RunEngine
         combat.StolenBackGold = Math.Max(0, stolenBackGold);
         combat.FatGremlinEscaped = fatGremlinEscaped;
         combat.MercGoldWasStolen = mercGoldWasStolen;
+        combat.EscapedEnemies = Math.Max(0, escapedEnemies);
+        combat.StolenCards = [.. stolenCards ?? []];
+        combat.StolenBackCards = [.. stolenBackCards ?? []];
         State.LastPlayerWon = true;
         return FinishCombat(playerWon: true, out _);
+    }
+
+    /// <summary>
+    /// <c>SwipePower.Steal</c> removed each stolen card's <c>DeckVersion</c> from the deck as
+    /// it was taken, and <c>BeforeDeath</c> offers that deck version back. The combat holds
+    /// only its own copy, so the deck version is the deck card it was dealt from: the same
+    /// card if nothing in the fight changed it, else the same card id (an Armaments upgrade
+    /// is the fight's, not the deck's).
+    /// </summary>
+    private void TakeStolenCardsFromTheDeck(CombatState combat)
+    {
+        if (combat.StolenCards.Count == 0)
+        {
+            return;
+        }
+
+        var returned = new List<CardInstance>();
+        foreach (var stolen in combat.StolenCards)
+        {
+            int at = State.Deck.IndexOf(stolen);
+            if (at < 0)
+            {
+                at = State.Deck.FindIndex(card =>
+                    card.DefId == stolen.DefId
+                    && card.Enchantment == stolen.Enchantment
+                    && card.TinkerType == stolen.TinkerType
+                );
+            }
+
+            if (at < 0)
+            {
+                at = State.Deck.FindIndex(card => card.DefId == stolen.DefId);
+            }
+
+            var deckVersion = at >= 0 ? State.Deck[at] : stolen;
+            if (at >= 0)
+            {
+                State.Deck.RemoveAt(at);
+            }
+
+            int back = combat.StolenBackCards.IndexOf(stolen);
+            if (back >= 0)
+            {
+                combat.StolenBackCards.RemoveAt(back);
+                returned.Add(deckVersion);
+            }
+        }
+
+        combat.StolenCards.Clear();
+        combat.StolenBackCards.InsertRange(0, returned);
     }
 
     /// <summary>
@@ -6235,6 +6297,11 @@ public sealed class RunEngine
 
         // The same count the state list reports (`RunRewardGenerator.CardItemCount`).
         for (int i = 0; i < RunRewardGenerator.CardItemCount(State); i++)
+        {
+            SetMask(mask, action++);
+        }
+
+        for (int i = 0; i < RunRewardGenerator.SpecialCardItemCount(State); i++)
         {
             SetMask(mask, action++);
         }

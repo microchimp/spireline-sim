@@ -60,6 +60,7 @@ public class CombatSnapshotTests
         {
           "stolen_back_gold": 0,
           "royalties_gold": 0,
+          "escaped_enemies": 0,
           "paels_legion_cooldown": 0,
           "afterimage_before_play": 0,
           "storm_before_play": 0,
@@ -132,6 +133,8 @@ public class CombatSnapshotTests
           "end_turn_after_play": false,
           "last_attack_or_skill_this_turn": null,
           "last_attack_or_skill_last_turn": null,
+          "departed_enemy_def_ids": [],
+          "stolen_cards": [],
           "stolen_back_cards": []
         }
         """;
@@ -1473,6 +1476,7 @@ public class CombatSnapshotTests
             {
                 null when name == "played_card_cost_for_combat" => 2,
                 null => JsonNode.Parse(DefaultCard(IC.PommelStrike, upgraded: true)),
+                JsonArray when name == "departed_enemy_def_ids" => new JsonArray(KE.Inklet),
                 JsonArray => new JsonArray(JsonNode.Parse(DefaultCard(IC.Headbutt))),
                 _ when value.GetValueKind() == JsonValueKind.True => false,
                 _ when value.GetValueKind() == JsonValueKind.False => true,

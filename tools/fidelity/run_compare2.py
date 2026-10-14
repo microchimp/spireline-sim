@@ -68,11 +68,9 @@ def norm_offer(screen: str, offer, emulator: bool):
     if screen == "map":
         return sorted((x[0], x[1], x[2]) for x in offer)
     if screen == "rewards":
-        # Known gap, not hidden: a Thieving Hopper's stolen card comes back in the game as a
-        # SpecialCardReward the player claims; the emulator puts it straight back into the deck
-        # (RunRewardGenerator.ReturnStolenCards). The deck is compared (and anchored) instead.
-        return sorted(json.dumps(norm_reward(r), sort_keys=True) for r in offer
-                      if r.get("type") not in ("special_card", "SpecialCardReward"))
+        # A SpecialCardReward (a Thieving Hopper's stolen card, the Lantern Key) is a row on both
+        # screens, compared like the others.
+        return sorted(json.dumps(norm_reward(r), sort_keys=True) for r in offer)
     if screen == "rest":
         return sorted(x[0] for x in offer if x[1])
     if screen == "fake_merchant":
@@ -89,6 +87,8 @@ def norm_reward(r: dict) -> dict:
         r["id"] = rs.bare(r["id"])
     if "cards" in r:
         r["cards"] = [[rs.bare(c[0]), int(c[1])] for c in r["cards"]]
+    if isinstance(r.get("card"), list):
+        r["card"] = [rs.bare(r["card"][0]), int(r["card"][1])]
     return r
 
 

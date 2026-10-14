@@ -346,6 +346,8 @@ public class ThievingHopperTests
 
         Assert.Equal(0, hopper.Hp);
         Assert.Contains(fight.State.StolenBackCards, card => card.DefId == swiped.DefId);
+        // `SwipePower.Steal` took it out of the deck as well, which the run settles at the end.
+        Assert.Equal(new[] { swiped }, fight.State.StolenCards);
     }
 
     /// <summary>
@@ -411,9 +413,9 @@ public class ThievingHopperTests
     /// which this fix would have produced a Hopper that leaves and a fight that never ends.
     /// </summary>
     /// <remarks>
-    /// A win, and a fully paid one: only `GremlinMercNormal` overrides
-    /// `CalculateGoldProportion`, so every other encounter pays 1 whether its occupants
-    /// died or ran. The player is down the stolen card and nothing else.
+    /// A win, but not a paid one: `EncounterModel.CalculateGoldProportion` is
+    /// `1 - escaped / spawned`, and the Hopper is the whole encounter, so the room's gold row
+    /// is never built (StolenLootRewardTests). The escape is counted for it here.
     /// </remarks>
     [Fact]
     public void TheEscapeEndsTheFightAsAWin()
@@ -432,6 +434,7 @@ public class ThievingHopperTests
         Assert.True(hopper.Escaped);
         Assert.True(result.Terminal);
         Assert.True(result.PlayerWon);
+        Assert.Equal(1, fight.State.EscapedEnemies);
     }
 
     /// <summary>
@@ -455,6 +458,7 @@ public class ThievingHopperTests
         Assert.True(hopper.Escaped);
         Assert.NotNull(hopper.StolenCard);
         Assert.Empty(fight.State.StolenBackCards);
+        Assert.Equal(new[] { hopper.StolenCard!.Value }, fight.State.StolenCards);
     }
 
     /// <summary>One hit spends exactly one, however large it is.</summary>
