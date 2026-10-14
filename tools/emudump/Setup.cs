@@ -191,9 +191,32 @@ static class Setup
             case "card":
             {
                 string pile = ((string?)item["pile"] ?? "Deck").ToLowerInvariant();
-                if (pile != "deck" || c != null) return (false, "unsupported: card into " + pile + (c != null ? " in a fight" : ""));
-                RunNonCombatEffects.AddCardToDeck(s, new CardInstance(Fight.CardIdBySnake(id), Upgraded: (bool?)item["upgraded"] == true));
-                return (true, null);
+                var card = new CardInstance(Fight.CardIdBySnake(id), Upgraded: (bool?)item["upgraded"] == true);
+                if (c == null)
+                {
+                    if (pile != "deck") return (false, "unsupported: card into " + pile + " on the map");
+                    RunNonCombatEffects.AddCardToDeck(s, card);
+                    return (true, null);
+                }
+
+                // In a fight, the referee's CardPileCmd.Add of a card made in the combat's scope: the hand and the
+                // discard pile take it at the end, the draw pile at the bottom or, with "pos": "top", on top (the
+                // next card drawn). No hook runs for it here; a card that reacts to entering a pile is a mirror gap.
+                switch (pile)
+                {
+                    case "hand":
+                        c.Hand.Add(card);
+                        return (true, null);
+                    case "discard":
+                        c.DiscardPile.Add(card);
+                        return (true, null);
+                    case "draw":
+                        if ((string?)item["pos"] == "top") c.TopDeck(card);
+                        else c.BottomDeck(card);
+                        return (true, null);
+                    default:
+                        return (false, "unsupported: card into " + pile + " in a fight");
+                }
             }
             case "power":
             {
