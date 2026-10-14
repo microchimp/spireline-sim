@@ -49,6 +49,14 @@ NOT_POWERS = {
     "PANACHE_ARMED",               # emulator flag for Panache's every-5th-card trigger
     "CLAW_DAMAGE",                 # Claw.BuffFromClawPlay raises the Claws' own damage, no power
     "SLOW_COUNT",                  # SlowPower's "SlowAmount" DynamicVar (cards played this turn), not a power
+    # SkittishPower.HasGainedBlockThisTurn (H01): the once-a-turn latch lives in the power's internal
+    # Data (GetInternalData<Data>), never in the power list. The game's Skittish is its Amount alone
+    # (SkittishAmount: 7 at A8, 6 below), still compared as SKITTISH. The latch shows only as the block
+    # it paid, and as the block it withholds from a second hit, or from the next turn's first if it sticks:
+    # the block is compared. As a power of its own it sat in the emulator's list and never in the game's,
+    # so every step with the latch up differed, and the first of those ended the fight's verdict before
+    # the Skittish timing it stands for.
+    "SKITTISH_SPENT",
 }
 
 # Emulator buff -> the game power with the same rules and amount.

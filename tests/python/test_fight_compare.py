@@ -48,6 +48,16 @@ class PowerListTest(unittest.TestCase):
                           ["TheBombDamage", 40], ["Stunned", 1]])
         self.assertEqual(emu, [["INFERNO", 2]])
 
+    def test_skittish_latch_is_no_power_but_its_amount_is(self):
+        # SkittishPower.HasGainedBlockThisTurn is internal Data (the game's list holds Skittish's Amount alone),
+        # the emulator's SkittishSpent companion is its once-a-turn latch.
+        game = game_powers([["SKITTISH_POWER", 7]])
+        self.assertEqual(game, [["SKITTISH", 7]])
+        self.assertEqual(game, emu_powers([["Skittish", 7], ["SkittishSpent", 1]]))
+        self.assertEqual(game, emu_powers([["Skittish", 7]]))
+        self.assertTrue(diff(game, emu_powers([["Skittish", 6], ["SkittishSpent", 1]])), "the amount is compared")
+        self.assertTrue(diff(game, emu_powers([["SkittishSpent", 1]])), "the power is compared")
+
     def test_renames(self):
         emu = emu_powers([["CrimsonMantleBlock", 4], ["NextTurnEnergy", 2], ["NextTurnDraw", 1]])
         game = game_powers([["CRIMSON_MANTLE_POWER", 4], ["ENERGY_NEXT_TURN_POWER", 2], ["DRAW_CARDS_NEXT_TURN_POWER", 1]])

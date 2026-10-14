@@ -15,7 +15,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
-from broken_cases import NM, NOT_COMPARED, PERTURB, fight_pair, run_main, write_json  # noqa: E402
+from broken_cases import (  # noqa: E402
+    NM, NOT_COMPARED, PERTURB, SKITTISH, SKITTISH_BROKEN, SKITTISH_NOT_COMPARED, fight_pair, gardener_pair, run_main, write_json)
 from tools.fidelity import corpus as cp  # noqa: E402
 from tools.fidelity import fight_compare as fc  # noqa: E402
 
@@ -83,6 +84,41 @@ class FightCompareBrokenCases(unittest.TestCase):
             self.assertEqual(run_main(fc.main, [write_json(Path(d) / "g0.json", {"results": [empty_g]}),
                                                 write_json(Path(d) / "e0.json", {"results": [empty_e]})])[0], 1)
             self.assertIsNone(fc.first_difference(g, thrown, NM), "the shared judges keep the error apart (corpus ferr)")
+
+
+class SkittishBrokenCases(unittest.TestCase):
+    """H01: the emulator's SkittishSpent latch is no game power; Skittish's amount and its block are compared."""
+
+    def test_the_faithful_gardener_fight_is_identical_with_the_latch_up(self):
+        g, e = gardener_pair()
+        up = [s["state"]["snapshot"]["enemies"][0]["buffs"] for s in e["steps"]]
+        self.assertTrue(any(b["name"] == "SkittishSpent" for buffs in up for b in buffs), "the fixture holds the latch")
+        self.assertIsNone(fc.first_difference(g, e, NM))
+        self.assertEqual(fc.emu_view(e["steps"][1]["state"], NM)["enemies"][0]["powers"], [["SKITTISH", SKITTISH]])
+
+    def test_every_wrong_skittish_is_a_difference_at_its_step(self):
+        for name, (step, wreck) in SKITTISH_BROKEN.items():
+            g, e = gardener_pair()
+            wreck(e["steps"][step]["state"])
+            fd = fc.first_difference(g, e, NM)
+            self.assertIsNotNone(fd, name)
+            self.assertEqual(fd[0], step, name)
+            self.assertTrue(all(p == ".enemies" for p, _, _ in fd[1]), name)
+
+    def test_the_latch_alone_is_not_compared(self):
+        for name, (step, change) in SKITTISH_NOT_COMPARED.items():
+            g, e = gardener_pair()
+            change(e["steps"][step]["state"])
+            self.assertIsNone(fc.first_difference(g, e, NM), name)
+
+    def test_the_shared_judges_agree(self):
+        from tools.fidelity import coverage
+        for name, (step, wreck) in {None: (None, None), **SKITTISH_BROKEN}.items():
+            g, e = gardener_pair()
+            if wreck:
+                wreck(e["steps"][step]["state"])
+            self.assertEqual(coverage.first_divergence(g, e, NM), step, name)
+            self.assertEqual(cp.judge_fight(g, e, NM)["fd"], step, name)
 
 
 if __name__ == "__main__":

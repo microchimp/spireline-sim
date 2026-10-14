@@ -120,3 +120,60 @@ NOT_COMPARED = {
     "move position": lambda st: st["snapshot"]["enemies"][0]["intent"].__setitem__("move_index", 9),
     "run phase": lambda st: st.__setitem__("run_phase", "Over"),
 }
+
+
+# ------------------------------------------------------------------------------ Skittish (H01)
+# SkittishPower keeps its once-a-turn latch (HasGainedBlockThisTurn) in internal Data, so the game's
+# power list holds the Amount alone and the latch shows as the block it paid. The emulator keeps the
+# latch as the SkittishSpent buff, which the comparison leaves out; the Skittish power and the block
+# stay compared.
+SKITTISH = 7  # SkittishAmount at A8 and above
+# One gardener through two turns, as (hp, block, latch up) at each step: the start; a Strike lands and
+# Skittish pays its block; a second Strike hits that block (the latch stays up, nothing pays again); the
+# turn ends (block and latch cleared); the next turn's first Strike pays again.
+GARDENER_STEPS = ((30, 0, False), (24, SKITTISH, True), (24, SKITTISH - 6, True), (24, 0, False), (18, SKITTISH, True))
+GARDENER_ACTIONS = ({"kind": "play", "card": "STRIKE_IRONCLAD"}, {"kind": "play", "card": "STRIKE_IRONCLAD"},
+                    {"kind": "end_turn"}, {"kind": "play", "card": "STRIKE_IRONCLAD"})
+
+
+def gardener_pair(seed: str = "GARDENERCASE") -> tuple[dict, dict]:
+    """A game record and the emulator's faithful replay of that gardener fight (latch up where it is up)."""
+    g = {"seed": seed, "ascension": 10, "steps": []}
+    e = {"seed": seed, "steps": []}
+    for j, (hp, block, latch) in enumerate(GARDENER_STEPS):
+        action = None if j == 0 else GARDENER_ACTIONS[j - 1]
+        gs, es = game_state(), emu_state()
+        gs["enemies"] = [{"name": "PHANTASMAL_GARDENER", "hp": hp, "max_hp": 32, "block": block,
+                          "powers": [["SKITTISH_POWER", SKITTISH]], "intents": [["Attack", 7, 1]]}]
+        es["snapshot"]["enemies"] = [{"def_id": EID["PhantasmalGardener"], "hp": hp, "block": block,
+                                      "buffs": [{"name": "Skittish", "amount": SKITTISH},
+                                                *([{"name": "SkittishSpent", "amount": 1}] if latch else [])],
+                                      "intent": {"type": 0, "magnitude": 7, "hits": 1, "carries_damage": False,
+                                                 "secondary": None}}]
+        g["steps"].append({"action": action, "state": gs})
+        e["steps"].append({"action": action, "state": es})
+    return g, e
+
+
+def _gardener(st: dict) -> dict:
+    return st["snapshot"]["enemies"][0]
+
+
+def _drop_buff(st: dict, name: str) -> None:
+    _gardener(st)["buffs"] = [b for b in _gardener(st)["buffs"] if b["name"] != name]
+
+
+# What a wrong Skittish looks like: (the step it is wrong at, the wreck of the emulator's state there).
+SKITTISH_BROKEN = {
+    "never pays its block": (1, lambda st: _gardener(st).__setitem__("block", 0)),
+    "pays the second hit too": (2, lambda st: _gardener(st).__setitem__("block", SKITTISH - 6 + SKITTISH)),
+    "latch sticks past the turn (the next first hit pays nothing)": (4, lambda st: _gardener(st).__setitem__("block", 0)),
+    "holds six where the game holds seven": (4, lambda st: _gardener(st)["buffs"][0].__setitem__("amount", 6)),
+    "power gone": (1, lambda st: _drop_buff(st, "Skittish")),
+}
+# The latch alone is left out on purpose: its work is the block above, which the comparison judges.
+SKITTISH_NOT_COMPARED = {
+    "latch dropped while the game's block says it is up": (1, lambda st: _drop_buff(st, "SkittishSpent")),
+    "latch left up where the game's turn has just begun": (3, lambda st: _gardener(st)["buffs"].append(
+        {"name": "SkittishSpent", "amount": 1})),
+}
