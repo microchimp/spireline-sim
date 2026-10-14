@@ -148,6 +148,35 @@ Plausibility flags (`cross_act`, `debug_room`, `cross_character`, `duplicate_rel
 `--shrink K` reduces K diverging fights to a minimal setup (`referee/shrink.py`: script-mode re-runs of item subsets, ddmin, all
 cases in one game round at a time, 48 fights a case at most) and writes `<n>.packs/minimal/<seed>.json`, a spec that runs as is.
 
+A `card` item after `fight` goes into a combat pile: `{"cmd": "card", "id": "HAVOC", "pile": "Hand"}` (the end of the hand),
+`"pile": "Discard"`, or `"pile": "Draw"` at the bottom or with `"pos": "top"` on top (drawn next). EmuDump mirrors these too;
+no hook runs for the added card in the mirror, so a card that reacts to entering a pile would be a mirror gap.
+
+## Rule probes (`probe.py`: ask the game how a disputed rule works)
+
+Before writing a fix that depends on how the game reads a rule, ask the game. A probe (`referee/probes.py`) is a setup
+fight plus a `script`, one measured step, and hypotheses that each predict the measurement from the game's state before
+that step (so the random opening hand does not matter):
+
+```
+python referee/probe.py list
+python referee/probe.py run --name <n> [--only P01,P05] [--game D:/spireline/referee/game-probe] [--servers 2]
+python referee/probe.py run --name <n> --no-game     # after an engine change: replay the recorded games again
+```
+
+- The game side runs in trace mode through `serve.py` (every safety check, at most 2 game processes, no hot spare);
+  each step records what the game did in order, and the report prints the relevant part ("game did").
+- The emulator's value is the same step re-anchored on the game's state (`EmuDump reanchor`), else the plain replay's
+  while it still matched the game before the step; a step that ends the fight is read from the plain replay's run
+  phase (the re-anchored dump says only "Over"). A probe with no emulator value is never AGREE.
+- Per probe: the game's value and the hypothesis it matches (the rule), the emulator's and its hypothesis,
+  AGREE/DIFFER, the whole-state verdict of that re-anchored step, and notes on representation differences the
+  probe works around. Outputs in `D:\spireline\referee\probes\<n>.*` (local only).
+- A new probe: put the factor in the setup (relic, potion, power, cards into the hand or on top of the draw pile,
+  energy), measure one number or tuple, and write each hypothesis as a prediction from the pre-state. Name the game's
+  class and method in `game_class`; never copy game code. A probe whose answer is an order inside one step (no state
+  shows it) answers from the trace (`evidence`), and a second probe should make that order decide an outcome.
+
 ## Speed settings check (`normal_settings`, `--windowed`)
 
 A job with `"normal_settings": true` skips every speed change (Instant fast mode, Engine.MaxFps, `fast_patches`, `silent`,
