@@ -370,6 +370,24 @@ public sealed class CombatState
     public bool TookUnblockedDamage;
 
     /// <summary>
+    /// The latest player turn in which the player took unblocked damage, as the game numbers it
+    /// (`PlayerCombatState.TurnNumber`, which is <see cref="Turn" /> + 1); zero for none. With
+    /// <see cref="PlayerHitTurnBefore" />, the turn before that, this answers the game's
+    /// `DamageReceivedEntry.HappenedLastPlayerTurn` -- Emotion Chip's query.
+    /// </summary>
+    /// <remarks>
+    /// History stamps every entry with the TurnNumber current when it lands, and TurnNumber
+    /// moves only at the side switch into the player's turn. So an enemy-phase hit belongs to
+    /// the turn before it, and a turn-start burn (Inferno, Crimson Mantle, Royal Poison) to the
+    /// turn it starts. Two stamps are enough: they only grow, and a reader at turn N asks about
+    /// N - 1, which is the latest or the one before when anything was hit since.
+    /// </remarks>
+    public int PlayerHitTurn;
+
+    /// <inheritdoc cref="PlayerHitTurn" />
+    public int PlayerHitTurnBefore;
+
+    /// <summary>
     /// A once-per-combat enchantment on the card being played has just fired, so the copy
     /// that lands in its result pile must carry the spent flag. CardEffects takes the card
     /// by value and cannot hand a mutation back, which is the same reason

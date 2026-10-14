@@ -220,7 +220,7 @@ public class DemonTongueAndEmotionChipTests
     /// the player took unblocked damage.
     /// </summary>
     /// <remarks>
-    /// Driven through `ApplyStartOfPlayerTurn` directly rather than through a real turn,
+    /// Driven through `ApplyAfterPlayerTurnStart` directly rather than through a real turn,
     /// because a real turn has the enemies attacking in it -- which arms the chip on both
     /// sides of the comparison and hides the effect entirely.
     /// </remarks>
@@ -261,6 +261,67 @@ public class DemonTongueAndEmotionChipTests
         RelicEffects.ApplyAfterPlayerTurnStart(fight.State, 3, new System.Random(0));
 
         Assert.Equal(0, fight.State.PlayerBlock);
+    }
+
+    /// <summary>
+    /// A turn's own start is not the previous turn. Inferno's and Crimson Mantle's burns land
+    /// in `AfterPlayerTurnStart`, and History stamps them with the TurnNumber that turn start
+    /// has already moved to, so `HappenedLastPlayerTurn` sees a burn one turn later. The chip
+    /// fired off the burn of its own turn once its check ran after the powers' turn start.
+    /// </summary>
+    [Theory]
+    [InlineData(BuffId.InfernoSelfDamage)]
+    [InlineData(BuffId.CrimsonMantleSelfDamage)]
+    public void ATurnStartBurnCountsOnTheTurnAfterIt(BuffId burn)
+    {
+        var fight = ChipWithAFrostOrb(RelicEffects.EmotionChip, RelicEffects.RunicCapacitor);
+        BuffSystem.Apply(fight.State.PlayerBuffs, burn, 1);
+
+        Assert.Equal(0, ChipBlockAtTheNextTurnStart(fight)); // turn 2: only its own burn
+        Assert.Equal(2, ChipBlockAtTheNextTurnStart(fight)); // turn 3: turn 2's burn
+    }
+
+    /// <summary>
+    /// History has no turn zero, so nothing counts on turn one: Royal Poison's bite, held
+    /// before the chip, counts on turn two like any turn-one hit. A flag cleared by the check
+    /// fired on turn one and then forgot the bite.
+    /// </summary>
+    [Fact]
+    public void ATurnOneHitCountsOnTurnTwoAndNotOnTurnOne()
+    {
+        var fight = ChipWithAFrostOrb(RelicEffects.EmotionChip, RelicEffects.RunicCapacitor);
+        fight.State.PlayerBlock = 0;
+        CardEffects.LoseHp(fight.State, 4);
+        RelicEffects.ApplyAfterPlayerTurnStart(fight.State, 1, new System.Random(0));
+        Assert.Equal(0, fight.State.PlayerBlock);
+
+        var bitten = ChipWithAFrostOrb(
+            RelicEffects.RoyalPoison,
+            RelicEffects.EmotionChip,
+            RelicEffects.RunicCapacitor
+        );
+        Assert.Equal(2, ChipBlockAtTheNextTurnStart(bitten));
+    }
+
+    private static Fight ChipWithAFrostOrb(params int[] relics)
+    {
+        var fight = Fight.WithRelics(relics);
+        fight.State.Orbs.Clear();
+        CardEffects.ChannelOrb(fight.State, OrbType.Frost, new System.Random(0));
+        fight.State.PlayerMaxHp = 999;
+        fight.State.PlayerHp = 999;
+        return fight;
+    }
+
+    /// <summary>
+    /// Ends the turn behind enough block that no enemy hit lands, and reads the block the next
+    /// turn start leaves: the Frost orb's passive when the chip fired, or nothing.
+    /// </summary>
+    private static int ChipBlockAtTheNextTurnStart(Fight fight)
+    {
+        fight.State.PlayerBlock = 9999;
+        fight.EndTurn();
+        return fight.State.PlayerBlock;
     }
 }
 

@@ -183,6 +183,8 @@ public static class CombatSnapshot
         new("tender_cards_played_this_turn", s => ref s.TenderCardsPlayedThisTurn),
         new("rupture_owed", s => ref s.RuptureOwed),
         new("unblocked_damage_hit_count", s => ref s.UnblockedDamageHitCount),
+        new("player_hit_turn", s => ref s.PlayerHitTurn),
+        new("player_hit_turn_before", s => ref s.PlayerHitTurnBefore),
     ];
 
     private static readonly BoolCounter[] BoolCounters =

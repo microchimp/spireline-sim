@@ -1505,14 +1505,9 @@ public static class RelicEffects
             CardEffects.DrawCards(state, 3, DrawRng(state, rng));
         }
 
-        // `EmotionChip.AfterDamageReceived` sets `Status = Active` on ANY unblocked hit,
-        // whichever side dealt it -- the flag is read at the next player turn start and
-        // cleared there. History stamps an entry with the player's TurnNumber, which does
-        // not move during the enemy phase, so an enemy attack counts as "last turn" too.
-        if (HasRelic(state, EmotionChip))
-        {
-            SetCounter(state, EmotionChip, 1);
-        }
+        // The combat history's `DamageReceivedEntry`, as Emotion Chip reads it: ANY unblocked
+        // hit, whichever side dealt it, stamped with the player turn it landed in.
+        RecordPlayerHit(state);
 
         // `DemonTongue.AfterDamageReceived`: the FIRST unblocked hit the player takes on
         // their own turn is healed straight back, once per turn.
@@ -1637,6 +1632,28 @@ public static class RelicEffects
     }
 
     /// <summary>This relic's counter, or 0 when the run does not hold it.</summary>
+    /// <summary>
+    /// Stamps an unblocked hit on the player with the player turn it lands in (<see
+    /// cref="CombatState.PlayerHitTurn" />).
+    /// </summary>
+    private static void RecordPlayerHit(CombatState state)
+    {
+        int turn = state.Turn + 1;
+        if (turn != state.PlayerHitTurn)
+        {
+            state.PlayerHitTurnBefore = state.PlayerHitTurn;
+            state.PlayerHitTurn = turn;
+        }
+    }
+
+    /// <summary>
+    /// Whether the player took unblocked damage during player turn <paramref name="turn" />
+    /// (the game's TurnNumber): `DamageReceivedEntry.HappenedLastPlayerTurn` when it is the
+    /// current turn less one.
+    /// </summary>
+    internal static bool PlayerHitInTurn(CombatState state, int turn) =>
+        turn > 0 && (state.PlayerHitTurn == turn || state.PlayerHitTurnBefore == turn);
+
     private static int GetCounter(CombatState state, int relicId)
     {
         int index = state.Relics.FindIndex(relic => relic.DefId == relicId);
@@ -2669,15 +2686,16 @@ public static class RelicEffects
                     break;
 
                 // `EmotionChip`: if the player lost HP during the PREVIOUS player turn, every orb
-                // in the queue fires its passive. The history query is `HappenedLastPlayerTurn`,
-                // so the flag is set when damage lands and read -- and cleared -- here.
+                // in the queue fires its passive. `LostHpInPreviousTurn` asks the history for a
+                // hit stamped TurnNumber - 1, so this turn's own start -- Inferno's and Crimson
+                // Mantle's burn, Royal Poison -- counts next turn, not now, and nothing ever
+                // counts on turn one.
                 case EmotionChip:
-                    if (GetCounter(state, EmotionChip) > 0)
+                    if (PlayerHitInTurn(state, turnNumber - 1))
                     {
                         CardEffects.TriggerEveryOrbPassive(state, DrawRng(state, rng));
                     }
 
-                    SetCounter(state, EmotionChip, 0);
                     break;
 
                 // `FestivePopper`, TurnNumber == 1: DamageVar(9m, ValueProp.Unpowered).

@@ -105,6 +105,8 @@ public class CombatSnapshotTests
           "tender_cards_played_this_turn": 0,
           "rupture_owed": 0,
           "unblocked_damage_hit_count": 0,
+          "player_hit_turn": 0,
+          "player_hit_turn_before": 0,
           "fat_gremlin_escaped": false,
           "battleworn_dummy_ran_out_of_time": false,
           "merc_gold_was_stolen": false,

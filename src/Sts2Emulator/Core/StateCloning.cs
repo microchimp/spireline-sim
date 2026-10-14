@@ -255,6 +255,8 @@ public static class StateCloning
         into.BeltBuckleApplied = combat.BeltBuckleApplied;
         into.IsEliteRoom = combat.IsEliteRoom;
         into.TookUnblockedDamage = combat.TookUnblockedDamage;
+        into.PlayerHitTurn = combat.PlayerHitTurn;
+        into.PlayerHitTurnBefore = combat.PlayerHitTurnBefore;
         into.PlayedCardEnchantSpent = combat.PlayedCardEnchantSpent;
         into.PlayedCardEnchantGrew = combat.PlayedCardEnchantGrew;
         into.PlayedCardCostBump = combat.PlayedCardCostBump;
