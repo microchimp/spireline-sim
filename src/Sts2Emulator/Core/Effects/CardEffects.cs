@@ -1537,11 +1537,11 @@ public static class CardEffects
                 // empty pile the draw reshuffles the discard and the peek describes a card
                 // that no longer exists, and with a full hand the draw returns nothing at
                 // all while the peek still says Skill.
-                int handBefore = state.Hand.Count;
-                DrawCards(state, 1, rng);
+                var drawn = new List<CardInstance>(1);
+                DrawCards(state, 1, rng, drawn);
                 bool drewSkill =
-                    state.Hand.Count > handBefore
-                    && GeneratedData.Cards.Get(state.Hand[^1].DefId).Type == CardType.Skill;
+                    drawn.Count > 0
+                    && GeneratedData.Cards.Get(drawn[0].DefId).Type == CardType.Skill;
                 if (drewSkill)
                 {
                     GainBlock(state, Blk(def, upgraded, card), rng);
@@ -2609,6 +2609,22 @@ public static class CardEffects
         int count,
         Random rng,
         bool fromHandDraw = false
+    ) => DrawCards(state, count, rng, drawn: null, fromHandDraw);
+
+    /// <summary>
+    /// <see cref="DrawCards(CombatState, int, Random, bool)" /> that also hands back what it drew:
+    /// `CardPileCmd.Draw`'s result, the cards THIS draw took off the pile, in order, as they
+    /// landed (a Hellraiser Strike included, though it is played rather than kept). Not a card
+    /// another hook put in hand during the draw -- Stratagem's pick, answered in the shuffle --
+    /// nor one a nested draw took (Iteration's, Pagestorm's). Pillage, Escape Plan and Scrape read
+    /// the result; they used to read the end of the hand, which is those cards too.
+    /// </summary>
+    internal static void DrawCards(
+        CombatState state,
+        int count,
+        Random rng,
+        List<CardInstance>? drawn,
+        bool fromHandDraw = false
     )
     {
         // `CardPileCmd.Draw` draws nothing once the fight is over or ending, ahead of every
@@ -2694,7 +2710,9 @@ public static class CardEffects
                 // It used to be queued and played once the whole action was over, after the
                 // rest of the draw and the card that drew it. Then the `AfterCardDrawn` hooks
                 // for it: Chains of Binding afflicts the copy where it came to rest and
-                // Confused re-rolls its cost.
+                // Confused re-rolls its cost. `CardPileCmd.Draw` returns it among the cards drawn
+                // all the same (Pillage reads it).
+                drawn?.Add(card);
                 var restsOn = CombatEngine.AutoPlayDrawnCard(state, card, rng);
                 int at =
                     restsOn is null ? -1
@@ -2716,7 +2734,9 @@ public static class CardEffects
                 // Slither.AfterCardDrawn re-rolls the card's cost for this combat, and a
                 // drawn card always lands in HAND now -- the loop breaks at the cap rather
                 // than drawing a card it has nowhere to put.
-                state.Hand.Add(RollSlitherCost(state, card, rng));
+                var landed = RollSlitherCost(state, card, rng);
+                state.Hand.Add(landed);
+                drawn?.Add(landed);
             }
 
             // AFTER the card has landed, not next to DrawForIteration above: the hook is
@@ -6675,26 +6695,22 @@ public static class CardEffects
             case "Scrape":
             {
                 DealDamage(state, Dmg(state, def, upgraded, card));
-                int before = state.Hand.Count;
-                DrawCards(state, upgraded ? 5 : 4, rng);
-                // `CardCmd.Discard(drawn.Where(cost != 0 || X))`: in the order drawn, through
-                // the discard command, so the discard hooks fire and a Sly card plays.
+                // `CardPileCmd.Draw`'s result, filtered, then `CardCmd.Discard(drawn.Where(cost !=
+                // 0 || X))`: only what this draw took, wherever it now sits in hand, in the order
+                // drawn, through the discard command, so the discard hooks fire and a Sly card
+                // plays.
+                var drawn = new List<CardInstance>(upgraded ? 5 : 4);
+                DrawCards(state, upgraded ? 5 : 4, rng, drawn);
                 var discarded = new List<CardInstance>();
-                for (int i = before; i < state.Hand.Count; )
+                foreach (var c in drawn)
                 {
-                    var drawnDef = GeneratedData.Cards.Get(state.Hand[i].DefId);
-                    int cost =
-                        state.Hand[i].CostForCombat == int.MinValue
-                            ? drawnDef.Cost
-                            : state.Hand[i].CostForCombat;
-                    if (cost != 0 || drawnDef.Cost < 0)
+                    var drawnDef = GeneratedData.Cards.Get(c.DefId);
+                    int cost = c.CostForCombat == int.MinValue ? drawnDef.Cost : c.CostForCombat;
+                    int at = state.Hand.LastIndexOf(c);
+                    if ((cost != 0 || drawnDef.Cost < 0) && at >= 0)
                     {
-                        discarded.Add(state.Hand[i]);
-                        state.Hand.RemoveAt(i);
-                    }
-                    else
-                    {
-                        i++;
+                        discarded.Add(state.Hand[at]);
+                        state.Hand.RemoveAt(at);
                     }
                 }
 
@@ -9430,19 +9446,25 @@ public static class CardEffects
 
     internal const int MaxCardsInHand = 10;
 
+    /// <summary>
+    /// Pillage: `do { card = await CardPileCmd.Draw(...) } while (card is an Attack and the hand
+    /// is not full)`, on what each draw returned -- a Hellraiser Strike (played, not kept) is an
+    /// Attack that keeps it drawing, and a card Stratagem's pick or Iteration's draw put in hand
+    /// is not what was drawn.
+    /// </summary>
     private static void DrawUntilNonAttack(CombatState state, Random rng)
     {
+        var drawn = new List<CardInstance>(1);
         while (state.Hand.Count < MaxCardsInHand)
         {
-            int handCountBefore = state.Hand.Count;
-            DrawCards(state, 1, rng);
-            if (state.Hand.Count == handCountBefore)
+            drawn.Clear();
+            DrawCards(state, 1, rng, drawn);
+            if (drawn.Count == 0)
             {
                 return;
             }
 
-            var drawnCard = state.Hand[^1];
-            if (GeneratedData.Cards.Get(drawnCard.DefId).Type != CardType.Attack)
+            if (GeneratedData.Cards.Get(drawn[0].DefId).Type != CardType.Attack)
             {
                 return;
             }
