@@ -141,6 +141,51 @@ public class UnpoweredDamageHookTests
     }
 
     /// <summary>
+    /// The player's own Poison: `PoisonPower.AfterSideTurnStart` deals the tick through
+    /// `CreatureCmd.Damage(Unblockable | Unpowered)` on the player's side turn, so Inferno
+    /// answers it like a self-damage card. The tick wrote HP directly and set nothing off.
+    /// </summary>
+    [Fact]
+    public void InfernoBurnsWhenThePlayersPoisonTicks()
+    {
+        var fight = Fight
+            .Hand()
+            .Enemy(hp: 100)
+            .PlayerHp(60)
+            .PlayerBuff(BuffId.Inferno, 6)
+            .PlayerBuff(BuffId.Poison, 4);
+        var enemy = fight.Enemy0;
+
+        fight.EndTurn();
+
+        Assert.Equal(56, fight.State.PlayerHp);
+        Assert.Equal(94, enemy.Hp);
+        Assert.Equal(3, fight.PlayerBuffAmount(BuffId.Poison));
+    }
+
+    /// <summary>
+    /// The tick lands in `AfterSideTurnStart`, after `DemonTongue.BeforeSideTurnStart` has
+    /// cleared the once-per-turn flag: the tick is the turn's first unblocked hit on the
+    /// player's own side, so it is healed back and the flag stays spent, and a self-damage
+    /// card later that turn is not healed.
+    /// </summary>
+    [Fact]
+    public void DemonTongueHealsThePoisonTickAndNothingElseThatTurn()
+    {
+        var fight = Fight
+            .WithRelics(RelicEffects.DemonTongue)
+            .Enemy(hp: 100)
+            .PlayerHp(60)
+            .PlayerBuff(BuffId.Poison, 4);
+
+        fight.EndTurn();
+        Assert.Equal(60, fight.State.PlayerHp);
+
+        CardEffects.LoseHp(fight.State, 5);
+        Assert.Equal(55, fight.State.PlayerHp);
+    }
+
+    /// <summary>
     /// `PoisonPower`'s tick is `CreatureCmd.Damage(Unblockable | Unpowered)`, and
     /// `HardenedShellPower.ModifyHpLostBeforeOstyLate` reads no props: 30 poison takes 20
     /// off a Skulking Colony, not 30.

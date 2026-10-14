@@ -187,11 +187,11 @@ public class StaticAuditRelicTests
     /// <summary>
     /// PoisonPower deals its tick through CreatureCmd.Damage, so the unblocked HP it takes runs
     /// AfterDamageReceived like any hit: Self-Forming Clay arms its block, Demon Tongue heals,
-    /// Centennial Puzzle draws. The emulator's turn-start tick writes HP directly and only tells
-    /// Red Skull. Not reachable today (no monster or card in the Ironclad's game poisons the
-    /// player), so it is parked rather than fixed.
+    /// Centennial Puzzle draws. The tick is `AfterSideTurnStart`, after this turn's block clear,
+    /// so the Clay's block comes on the NEXT turn. Not reachable today (nothing in the game
+    /// poisons the player); fixed with the other unpowered-damage routes (C1-F02).
     /// </summary>
-    [AuditFact("player Poison tick at turn start skips the unblocked-damage relic hooks (unreachable today)")]
+    [Fact]
     public void PoisonTickArmsSelfFormingClay()
     {
         var fight = Fight
@@ -201,6 +201,7 @@ public class StaticAuditRelicTests
 
         fight.EndTurn();
 
+        Assert.Equal(0, fight.State.PlayerBlock);
         Assert.Equal(3, fight.PlayerBuffAmount(BuffId.BlockNextTurn));
     }
 

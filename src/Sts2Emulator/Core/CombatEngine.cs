@@ -1612,26 +1612,6 @@ public static class CombatEngine
             Effects.CardEffects.ChannelOrb(state, OrbType.Glass);
         }
 
-        // Poison damage at start of player turn.
-        int playerPoison = BuffSystem.Get(state.PlayerBuffs, BuffId.Poison);
-        if (playerPoison > 0)
-        {
-            state.PlayerHp -= BuffSystem.CapHpLoss(playerPoison, state.PlayerBuffs);
-            // Poison is a route to under-half like any other, and it is the one that
-            // ticks with no card played -- so without this Red Skull could stay unarmed
-            // through a whole turn it should have been active for.
-            Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Poison, -1);
-            if (PlayerIsDead(state))
-            {
-                return new StepResult(
-                    Terminal: true,
-                    PlayerWon: false,
-                    Reward: turnEndStart.Reward(state, playerDead: true, allDead: false)
-                );
-            }
-        }
-
         int entropy = BuffSystem.Get(state.PlayerBuffs, BuffId.EntropyPower);
         for (int i = 0; i < entropy; i++)
         {
@@ -2092,6 +2072,30 @@ public static class CombatEngine
         // Hourglass fired ahead of the Hardened Shell and Slow resets.
         Effects.RelicEffects.ApplyAfterPlayerTurnStart(state, state.Turn + 1, rng);
         Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, state.Turn + 1);
+
+        // `PoisonPower.AfterSideTurnStart` on the player: `CreatureCmd.Damage(owner, Amount,
+        // Unblockable | Unpowered)`, once (the enemies hold no Accelerant). That is the HP loss
+        // of a self-damage card, so it runs the same after-damage hooks: Inferno's burst,
+        // Rupture, Self-Forming Clay, Centennial Puzzle, Demon Tongue, Emotion Chip's history,
+        // Red Skull. The player's powers come before the enemies' (`IterateHookListeners` walks
+        // the allies first), so ahead of Rampart. It ticked before the block clear and wrote HP
+        // directly: none of those hooks but Red Skull ran, and once they did, Clay's block would
+        // have come the same turn and Demon Tongue's flag been cleared after it healed the tick.
+        int playerPoison = BuffSystem.Get(state.PlayerBuffs, BuffId.Poison);
+        if (playerPoison > 0)
+        {
+            Effects.CardEffects.LoseHp(state, BuffSystem.CapHpLoss(playerPoison, state.PlayerBuffs));
+            if (PlayerIsDead(state))
+            {
+                return new StepResult(
+                    Terminal: true,
+                    PlayerWon: false,
+                    Reward: turnEndStart.Reward(state, playerDead: true, allDead: false)
+                );
+            }
+
+            BuffSystem.Apply(state.PlayerBuffs, BuffId.Poison, -1);
+        }
 
         // `Hook.AfterSideTurnStart` comes after `SetupPlayerTurn`, so the Turret's armour is
         // granted after the relics' turn-start damage, not before it.
