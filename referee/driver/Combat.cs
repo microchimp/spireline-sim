@@ -152,6 +152,7 @@ public static partial class Driver
             }
             for (int i = 0; inRoom && i < maxActions && CombatManager.Instance.IsInProgress; i++)
             {
+                Nodeless.ThrowIfFallback();  // a fallback model in the state just recorded: no further action nodeless
                 CurrentStep = i + 1;  // choices this action opens are logged against its step
                 var combat = CombatManager.Instance.DebugOnlyGetState()!;
                 var enemies = combat.Enemies.Where(e => e.IsAlive).ToList();

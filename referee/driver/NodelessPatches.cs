@@ -279,9 +279,10 @@ public static class NodelessPatches
 
             foreach (var m in t.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
             {
-                if (m.ReturnType.IsValueType || m.ReturnType == typeof(void) || m.IsGenericMethodDefinition || m.GetMethodBody() == null)
+                if (m.ReturnType.IsValueType || m.ReturnType == typeof(void) || m.IsGenericMethodDefinition
+                    || m.GetMethodBody()?.GetILAsByteArray() is not { } raw || !TestModeNullPrologue(raw))
                 {
-                    continue;
+                    continue;  // the raw prologue first: decoding every method's IL cost most of a nodeless boot's patch time
                 }
 
                 List<CodeInstruction> il;
@@ -307,6 +308,15 @@ public static class NodelessPatches
         GD.Print($"[referee] nodeless: {names.Count} test-mode-null node factories: " + string.Join(", ", names.Distinct()));
         return names.Count;
     }
+
+    /// <summary>
+    /// Whether raw IL can start `call &lt;token&gt;; brfalse(.s) &lt;target&gt;; ldnull; ret` (0x28 + 4 bytes, then 0x2C + 1 byte
+    /// or 0x39 + 4 bytes, 0x14, 0x2A). A filter only: the decoded instructions and the call's target are checked after it.
+    /// </summary>
+    private static bool TestModeNullPrologue(byte[] il) =>
+        il.Length >= 9 && il[0] == 0x28
+        && ((il[5] == 0x2C && il[7] == 0x14 && il[8] == 0x2A)
+            || (il.Length >= 12 && il[5] == 0x39 && il[10] == 0x14 && il[11] == 0x2A));
 
     private static bool SkipVoid() => !Nodeless.Active;
 

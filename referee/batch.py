@@ -179,6 +179,32 @@ class Stream:
         return None
 
 
+def hosts_line(pool) -> str:
+    """Nodeless pools: where the fights ran (driver/Nodeless.cs cost.host), the full-host replays and what each host
+    cost per fight (process CPU from the run's start to the fight's end, cost.cpu_ms; a fallback's wasted attempt and
+    an audit's replay counted apart)."""
+    hosts, cpu, wasted = collections.Counter(), collections.defaultdict(list), []
+    audits = diffs = 0
+    for r in pool.results.values():
+        c = r.get("cost") or {}
+        host = c.get("host", "?") + ("+fallback" if c.get("fallback") else "")
+        hosts[host] += 1
+        if isinstance(c.get("cpu_ms"), (int, float)):
+            cpu[host].append(c["cpu_ms"])
+        if isinstance((c.get("nodeless_attempt") or {}).get("cpu_ms"), (int, float)):
+            wasted.append(c["nodeless_attempt"]["cpu_ms"])
+        if isinstance(c.get("audit"), dict):
+            audits += 1
+            diffs += c["audit"].get("same") is False
+            if isinstance(c["audit"].get("full_cpu_ms"), (int, float)):
+                cpu["audit replay"].append(c["audit"]["full_cpu_ms"])
+    per = ", ".join(f"{h} {len(v)} x {sum(v) / len(v):.0f} ms" for h, v in sorted(cpu.items()) if v)
+    route = (f"full lane {pool.full_lane} server(s), replays {dict(pool.full_replays)}" if pool.route_full
+             else "replays in each server's own process")
+    return (f"hosts: {dict(sorted(hosts.items()))}; audits {audits} ({diffs} differ); {route}; retired {pool.retired}; "
+            f"CPU per fight: {per}" + (f"; wasted nodeless attempts {len(wasted)} x {sum(wasted) / len(wasted):.0f} ms" if wasted else ""))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--name", required=True)
@@ -200,6 +226,12 @@ def main() -> int:
                     help="extra job key for every server, as serve.py's (e.g. nodeless=true); repeatable")
     ap.add_argument("--old-settle", action="store_true",
                     help="six-stable-frame settle, awaited tweens and stock frame pacing (before SPEED_PLAN steps 3-4)")
+    ap.add_argument("--spares", type=int, default=1, choices=(0, 1), help="hot spares booted and held (as serve.py)")
+    ap.add_argument("--full-lane", type=int, default=None,
+                    help="nodeless servers (--job-opt nodeless=true): servers that take the full-host replays first "
+                         "(fallbacks, audits; default about 15%% of --parallel, at least 1), as serve.py")
+    ap.add_argument("--full-here", action="store_true",
+                    help="nodeless servers replay their own fallbacks and audits in their own process, as serve.py")
     a = ap.parse_args()
     JOBS, GAME = a.jobs, a.game.resolve()
     JOBS.mkdir(parents=True, exist_ok=True)
@@ -244,7 +276,8 @@ def main() -> int:
     # at once, frames are not padded to 6.9 ms, and a share of fights is settle-audited.
     jopts = serve.job_options(None, old_settle=a.old_settle, settle_audit=None if a.old_settle else a.settle_audit,
                               job_opt=a.job_opt)
-    pool = serve.Pool(GAME, run_dir, servers=n_servers, spares=1, jopts=jopts, echo=None,
+    pool = serve.Pool(GAME, run_dir, servers=n_servers, spares=a.spares, jopts=jopts, echo=None,
+                      full_lane=a.full_lane, route_full=not a.full_here,
                       max_restarts=a.max_restarts if a.max_restarts is not None else 3 * n_servers + 3 + a.fights // 50)
     serve.rr.install(GAME, ROOT / "referee" / "driver" / "bin" / "Release" / "net9.0")  # once, before any server starts
     chunk_dir = pool.run_dir / "chunks"
@@ -410,6 +443,8 @@ def main() -> int:
              f"settle audit: {len(audited)} fights, {sum(len(r['settle_audit']) for r in audited)} steps, "
              f"{len(audit_bad)} disagreements{(' e.g. ' + str(audit_bad[:5])) if audit_bad else ''}",
              f"identical: {same}", f"diverging: {sum(len(v) for v in groups.values())}", f"errors: {len(errors)}"]
+    if jopts.get("nodeless"):
+        lines.insert(3, hosts_line(pool))
     if reason:
         lines.insert(1, f"STOPPED EARLY: {reason}; {len(played)} of {a.fights} fights played")
     for field, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):

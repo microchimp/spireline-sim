@@ -39,6 +39,14 @@ format as a runs-mode out file, in spec order) and results.jsonl (arrival order)
 A server that dies or hangs is restarted; the spec it had claimed goes back to the front of the queue
 once, and is recorded as stalled if it kills a server a second time. One hot spare (--spares) is booted
 and held (hold.<pid> in its inbox) so a restart costs no boot time. At the end STOP goes into every inbox.
+A server whose fight left the game's turn flags set writes a "_retire" line and exits 5 (driver/Server.cs);
+it is replaced like a dead one, with nothing to re-queue.
+
+Nodeless servers ("nodeless": true): their fallback and audit replays on the full host come back to the pool
+(job key "nodeless_full": "pool", a result line with "_full") and are played as "<id>f" with "host": "full",
+first by the --full-lane servers (default about 15%, at least 1) and by any server whose own queue is empty;
+the pool merges both lines into what one process would have returned (driver/Nodeless.cs). --full-here
+keeps the replays in each server's own process.
 --verify-against <out.json> compares every result with a reference from "runs" mode, ignoring timing and
 the diagnostics above (settle_audit, idle_probe, per-step cost and trace).
 
@@ -62,8 +70,25 @@ sys.path.insert(0, str(HERE))
 import run_referee as rr  # noqa: E402
 
 TIMING_KEYS = {"timing_ms", "phase_ms", "cost", "cost_setup"}  # per-run timing and CPU/frame cost, never compared
-META_KEYS = {"_id", "_pid", "_t"}  # added by the server to each result line
+META_KEYS = {"_id", "_pid", "_t", "_full"}  # added by the server to each result line
 STALLED = "stalled: the game failed this fight twice (no progress, crash or run-start exception)"
+FULL_SUFFIX = "f"  # id of a spec's full-host replay (fallback or audit of a nodeless fight): "<id>f"
+
+
+def default_full_lane(servers: int) -> int:
+    """Servers that prefer full-host replays in a nodeless pool. On the 240 sp-nodeless specs 5.4% of fights
+    were fallbacks and 5% audits, each a full-host fight at ~4x a nodeless fight's CPU: ~15% of the servers' time."""
+    return 0 if servers < 2 else max(1, round(0.15 * servers))
+
+
+def first_diff(a: dict, b: dict) -> str | None:
+    """Nodeless.FirstDiff: the first result key, timing, cost and server keys aside, where two results differ."""
+    for k in list(a) + [k for k in b if k not in a]:
+        if k in TIMING_KEYS or k in META_KEYS:
+            continue
+        if a.get(k) != b.get(k):
+            return k
+    return None
 
 
 class Server:
@@ -80,6 +105,8 @@ class Server:
         self.offset = 0
         self.lines: list[dict] = []
         self.killed = ""
+        self.retiring = ""  # the server's own "_retire" line: a fight left the game state stale (driver/Server.cs)
+        self.lane = "main"  # "full": takes the pool's full-host replays before anything else
         self.connections: set[str] = set()
         self.log = None
 
@@ -193,7 +220,8 @@ class Pool:
 
     def __init__(self, game: Path, run_dir: Path, *, servers: int = 4, spares: int = 1, jopts: dict | None = None,
                  boot_timeout: float = 180, max_restarts: int | None = None, net_interval: float = 1.0,
-                 hold_timeout: float = 60, dotnet_tuning: bool = True,
+                 hold_timeout: float = 60, dotnet_tuning: bool = True, full_lane: int | None = None,
+                 route_full: bool | None = None,
                  below_normal: bool = True, depth: int = 1, echo=print, launch=rr.launch, connections=rr.connections_by_pid,
                  profile_state=rr.real_profile_state, check_build=rr.check_build, kill=_taskkill):
         self.game = game
@@ -201,6 +229,23 @@ class Pool:
         self.n = max(1, servers)
         self.spares = spares
         self.jopts = dict(jopts if jopts is not None else job_options(None))
+        # Full-host replays of nodeless fights (driver/Nodeless.cs "nodeless_full": "pool"): a fallback or an
+        # audit comes back as a line with "_full", and the spec is played again with "host": "full" by a server
+        # of the full lane (any server takes it when its own queue is empty), so nodeless servers never run
+        # the full host's scenes, and a server whose fight left stale state can retire without losing it.
+        nodeless = bool(self.jopts.get("nodeless"))
+        self.route_full = nodeless if route_full is None else (route_full and nodeless)
+        if self.route_full:
+            self.jopts["nodeless_full"] = "pool"
+        else:
+            self.jopts.pop("nodeless_full", None)
+        lane = default_full_lane(self.n) if full_lane is None else full_lane
+        self.full_lane = max(0, min(lane, self.n - 1)) if self.route_full else 0
+        self.fqueue: collections.deque[str] = collections.deque()  # full-host replay ids, not yet in an inbox
+        self.fjobs: dict[str, dict] = {}  # replay id -> {"rid", "why", "reason", "line"} until its result is merged
+        self.full_replays: collections.Counter = collections.Counter()  # by why: fallback, audit
+        self.audit_diffs = 0
+        self.retired = 0
         self.stall_s = int(self.jopts.get("stall_s", 20))
         # The driver rewrites its status file every frame (driver/Watchdog.cs), so an old file means no frame
         # has ended. That alone is not a hang: a starved server can take minutes over one frame, and the
@@ -257,8 +302,8 @@ class Pool:
 
     @property
     def unclaimed(self) -> int:
-        """Specs no server has taken yet: queued here plus waiting in the servers' inboxes."""
-        return len(self.queue) + sum(len(self._pending(s)) for s in self.servers if s.alive)
+        """Specs no server has taken yet: queued here (full-host replays too) plus waiting in the servers' inboxes."""
+        return len(self.queue) + len(self.fqueue) + sum(len(self._pending(s)) for s in self.servers if s.alive)
 
     @property
     def outstanding(self) -> int:
@@ -351,6 +396,7 @@ class Pool:
         live = [s for s in self.servers if s.alive]
         if abandon:
             self.queue.clear()
+            self.fqueue.clear()
             t_hold_ms = int(time.time() * 1000)
             for s in live:  # hold first, so no server is claiming while its specs are withdrawn
                 (s.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
@@ -392,6 +438,8 @@ class Pool:
                 s.proc.wait()
             self._collect(s)
             self._handle_exit(s, s.proc.returncode)
+        for fid in list(self.fjobs):  # full-host replays nobody played (an abandoned or early close)
+            self._unreplayed(fid, "not replayed: the pool closed first")
         # Every server, exited ones too: a child the game started (crashpad_handler) can outlive it.
         for pid, conns in self._connections([s.pid for s in self.servers if s.pid]).items():
             self.seen_net |= conns
@@ -424,7 +472,8 @@ class Pool:
             game_ms = [r["timing_ms"]["play"] + r["timing_ms"]["reset"] for r in done if "timing_ms" in r]
             lines.append(f"{s.name:7} {boot:>7} {len(done):>6} {span:>13.1f} {span / len(done) if done else 0:>12.2f} "
                          f"{sum(game_ms) / len(game_ms) if game_ms else 0:>13.0f}  "
-                         f"{'spare ' if s.spare else ''}exit {s.rc}{' (' + s.killed + ')' if s.killed else ''}")
+                         f"{'spare ' if s.spare else ''}{'full lane ' if s.lane == 'full' else ''}exit {s.rc}"
+                         f"{' (' + s.killed + ')' if s.killed else ''}{' (retired: ' + s.retiring + ')' if s.retiring else ''}")
         return lines
 
     def summary(self) -> dict:
@@ -440,8 +489,11 @@ class Pool:
             "wall_after_first_ready_s": round(post_boot, 1), "fights_per_min": round(60 * n_res / max(1e-9, wall), 1),
             "fights_per_min_after_boot": round(60 * n_res / max(1e-9, post_boot), 1),
             "s_per_fight_per_server": round(post_boot * self.n / max(1, n_res), 2),
-            "first_boot_s": round(first_boot, 1), "restarts": self.restarts, "requeued": self.requeued,
-            "stalled_results": stalls, "errors": errors, "sts2_dll_sha256": self.digest,
+            "first_boot_s": round(first_boot, 1), "restarts": self.restarts, "retired": self.retired,
+            "requeued": self.requeued, "stalled_results": stalls, "errors": errors,
+            **({"full_lane": self.full_lane, "full_replays": dict(self.full_replays), "audit_diffs": self.audit_diffs}
+               if self.route_full else {}),
+            "sts2_dll_sha256": self.digest,
             "network_connections": sorted(self.seen_net), "real_profile_touched": self.profile_touched,
             "run_dir": self.run_dir.name,
         }
@@ -488,21 +540,89 @@ class Pool:
             return []
 
     def _feed(self) -> None:
-        """Top every active server's inbox up to `depth` waiting specs, from the front of the queue."""
-        if self.stopping:
+        """Top every active server's inbox up to `depth` waiting specs, from the front of a queue: full-lane
+        servers first, from the full-host replays, then (theirs empty) from the main queue; the others the
+        other way round, so no work waits while a server idles."""
+        if self.stopping or not (self.queue or self.fqueue):
             return
-        for s in self.servers:
-            if not self.queue:
-                return
-            if not s.alive or s.spare:
-                continue
+        self._assign_lanes()
+        actives = [s for s in self.servers if s.alive and not s.spare]
+        for s in sorted(actives, key=lambda s: s.lane != "full"):
             for _ in range(self.depth - len(self._pending(s))):
-                if not self.queue:
-                    break
-                rid = self.queue.popleft()
+                order = (self.fqueue, self.queue) if s.lane == "full" or not self.full_lane else (self.queue, self.fqueue)
+                q = next((q for q in order if q), None)
+                if q is None:
+                    return
+                rid = q.popleft()
                 tmp = s.inbox / f"{rid}.tmp"
-                tmp.write_text(json.dumps(self.specs[rid]), encoding="utf-8")
+                tmp.write_text(json.dumps(self._spec_for(rid)), encoding="utf-8")
                 os.replace(tmp, s.inbox / f"{rid}.json")
+
+    def _assign_lanes(self) -> None:
+        """Keep `full_lane` active servers in the full lane: those already in it, else the oldest others (a lane
+        is only the dispatcher's preference; every server runs the same job)."""
+        actives = [s for s in self.servers if s.alive and not s.spare]
+        n_full = sum(s.lane == "full" for s in actives)
+        for s in actives:
+            if n_full >= self.full_lane:
+                break
+            if s.lane != "full":
+                s.lane = "full"
+                n_full += 1
+                self.log(f"{s.name} takes the full-host lane")
+
+    def _spec_for(self, rid: str) -> dict:
+        """The spec file for an id: a submitted spec, or its full-host replay ("host": "full", driver/Nodeless.cs)."""
+        job = self.fjobs.get(rid)
+        return self.specs[rid] if job is None else {**self.specs[job["rid"]], "host": "full"}
+
+    def _route_full(self, rid: str, line: dict) -> None:
+        """A nodeless server left a full-host replay to the pool ("_full"): queue it, ahead of the lane's other work."""
+        why = (line.get("_full") or {}).get("why", "fallback")
+        fid = rid + FULL_SUFFIX
+        self.fjobs[fid] = {"rid": rid, "why": why, "reason": (line.get("_full") or {}).get("reason"), "line": line}
+        self.full_replays[why] += 1
+        self.fqueue.append(fid)
+
+    def _merge_full(self, fid: str, full: dict) -> None:
+        """A full-host replay is back: the result Nodeless.Play would have returned in one process. Fallback: the
+        full host's result with cost.fallback and cost.nodeless_attempt. Audit: the nodeless result, with
+        cost.audit saying whether the full host agrees (Nodeless.Audit)."""
+        job = self.fjobs.pop(fid)
+        rid, first = job["rid"], job["line"]
+        if job["why"] == "audit":
+            res = {k: v for k, v in first.items() if k != "_full"}
+            diff = first_diff(res, full)
+            if diff is not None:
+                self.audit_diffs += 1
+                self.log(f"nodeless audit: {res.get('seed')} differs from the full host at '{diff}'")
+            fc = full.get("cost") or {}
+            res.setdefault("cost", {})["audit"] = {"same": diff is None, "first_diff": diff, "full_error": full.get("error"),
+                                                   "full_cpu_ms": fc.get("cpu_ms"), "full_errors": fc.get("errors")}
+        else:
+            res = {**full, "_id": rid}
+            res.setdefault("seed", self.specs[rid].get("seed"))  # a "bad spec file" line has none
+            cost = res.setdefault("cost", {})
+            cost["fallback"] = job["reason"]
+            wasted = {k: v for k, v in (first.get("cost") or {}).items() if k != "health"}
+            if wasted:
+                cost["nodeless_attempt"] = wasted
+        self._finish(rid, res)
+
+    def _unreplayed(self, fid: str, why: str) -> None:
+        """A full-host replay that will not be played (stalled twice, or the pool closed): an audit keeps its nodeless
+        result and says so; a fallback has no valid result, so it is an error."""
+        job = self.fjobs.pop(fid)
+        rid, first = job["rid"], job["line"]
+        if rid in self.results:
+            return
+        if job["why"] == "audit":
+            res = {k: v for k, v in first.items() if k != "_full"}
+            res.setdefault("cost", {})["audit"] = {"same": None, "first_diff": None, "full_error": why}
+        else:
+            res = {"seed": first.get("seed") or self.specs[rid].get("seed"), "steps": [], "_id": rid,
+                   "error": why if why == STALLED else f"nodeless fallback ({job['reason']}) {why}"}
+        self._finish(rid, res)
 
     def _spawn(self, spare: bool) -> Server:
         s = Server(self._next_sid, spare, self.inbox)
@@ -531,12 +651,24 @@ class Pool:
             s.lines.append(r)
             rid = r.get("_id")
             if rid is None:
+                if r.get("_retire"):
+                    s.retiring = str(r["_retire"])
+                    self.log(f"{s.name} retires after spec {r.get('_after')}: game state left stale ({s.retiring})")
+                    continue
                 where = f" on spec {r['_fatal']}" if r.get("_fatal") is not None else ""
                 self.log(f"{s.name} server error{where}: {str(r.get('error'))[:300]}")
+            elif rid in self.fjobs:
+                self._merge_full(rid, r)
             elif rid not in self.results and rid in self.specs:
                 if "seed" not in r:  # the driver's "bad spec file" line cannot know it; the dispatcher does
                     r["seed"] = self.specs[rid].get("seed")
-                self._finish(rid, r)
+                if r.get("_full"):
+                    self._route_full(rid, r)
+                    if self.stopping:  # STOP is out: no server takes new work any more
+                        self.fqueue.remove(rid + FULL_SUFFIX)
+                        self._unreplayed(rid + FULL_SUFFIX, "not replayed: the pool was closing")
+                else:
+                    self._finish(rid, r)
 
     def _check_ready(self, s: Server) -> None:
         if s.t_ready is None:
@@ -557,8 +689,9 @@ class Pool:
         lost, back = [], []
         for taken in sorted(s.inbox.glob(f"*.json.taken.{s.pid}")):
             rid = taken.name.split(".json.taken.")[0]
-            if rid in self.results:  # appended before the process died; only the delete was lost
-                taken.unlink()
+            replay = rid.endswith(FULL_SUFFIX)
+            if (rid in self.results) or (replay and rid not in self.fjobs):
+                taken.unlink()  # appended (or merged) before the process died; only the delete was lost
                 continue
             self.attempts[rid] += 1
             if self.attempts[rid] == 1:
@@ -567,14 +700,24 @@ class Pool:
                 self.requeued += 1
                 lost.append(f"{rid} re-queued")
             else:
-                self._finish(rid, {"seed": self.specs.get(rid, {}).get("seed"), "steps": [], "_id": rid, "error": STALLED})
+                if replay:
+                    self._unreplayed(rid, STALLED)
+                else:
+                    self._finish(rid, {"seed": self.specs.get(rid, {}).get("seed"), "steps": [], "_id": rid, "error": STALLED})
                 taken.unlink()
                 lost.append(f"{rid} recorded as stalled")
         for f in self._pending(s):  # handed to it but never claimed: back too, not an attempt
             f.unlink()
             back.append(f.name[: -len(".json")])
-        self.queue.extendleft(reversed(back))
-        if not stopping:
+        self.queue.extendleft(reversed([r for r in back if not r.endswith(FULL_SUFFIX)]))
+        self.fqueue.extendleft(reversed([r for r in back if r.endswith(FULL_SUFFIX)]))
+        if s.retiring and not stopping:
+            # Planned: the driver wrote its last result, then exited for a fresh process (driver/Server.cs).
+            # Counted as a restart too, so a fight that poisons every server still ends the run.
+            self.retired += 1
+            self.restarts += 1
+            self.log(f"{s.name} retired (exit {rc}); {'; '.join(lost) or 'no spec in flight'}")
+        elif not stopping:
             self.restarts += 1
             self.log(f"{s.name} died (exit {rc}{', ' + s.killed if s.killed else ''}); {'; '.join(lost) or 'no spec in flight'}")
         elif rc != 0:
@@ -626,6 +769,10 @@ def main() -> int:
                     help="six-stable-frame settle, awaited tweens and stock frame pacing (before SPEED_PLAN steps 3-4)")
     ap.add_argument("--verify-ignore", default="", help="comma-separated keys dropped at any depth before --verify-against "
                     "compares (fields the reference predates, e.g. move,intents)")
+    ap.add_argument("--full-lane", type=int, default=None, help="nodeless pool: servers that take the full-host replays "
+                    "(fallbacks, audits) first (default about 15%% of --servers, at least 1)")
+    ap.add_argument("--full-here", action="store_true", help="nodeless pool: each server replays its own fallbacks and "
+                    "audits on the full host in its own process (before the full-host lane)")
     a = ap.parse_args()
 
     game = a.game.resolve()
@@ -638,7 +785,7 @@ def main() -> int:
     run_dir = a.run_dir or game.parent / "serve" / time.strftime("%Y%m%d-%H%M%S")
     pool = Pool(game, run_dir, servers=a.servers, spares=a.spares, jopts=jopts, boot_timeout=a.boot_timeout,
                 max_restarts=a.max_restarts, net_interval=a.net_interval, below_normal=not a.normal_priority,
-                dotnet_tuning=not a.no_dotnet_tuning)
+                dotnet_tuning=not a.no_dotnet_tuning, full_lane=a.full_lane, route_full=not a.full_here)
     if not a.no_install:
         for attempt in range(30):  # a running game holds the mod DLL open; wait for it
             try:

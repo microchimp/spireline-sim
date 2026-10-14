@@ -18,7 +18,11 @@
 //     site are on the proven-harmless list (HarmlessCancels) or the same cancellation (type, site,
 //     token owner) happens when the spec is replayed on the full host right away (cost.cancel_check);
 //   - "nodeless_audit": f also plays a stable fraction f of nodeless fights on the full host and
-//     records in cost.audit whether both results agree.
+//     records in cost.audit whether both results agree;
+//   - "nodeless_full": "pool" (set by serve.Pool) leaves the fallback and audit replays to the
+//     dispatcher, which plays them ("host": "full") on its full-host lane and merges the lines;
+//   - a fight broken off mid-turn can leave the turn flags set (Driver.StaleState): nothing more is
+//     played in this process, and the server retires after the result (Server.cs).
 // A full-host fight (fallback, audit, cancel check, or an "error_log" job) with a game error during
 // the fight gets "error" too ("full host: ..."), so a UI abort is never output as a clean result.
 // Diagnostics go under "cost" (never compared): host, fallback reason, errors, cancellations, audit.
@@ -64,6 +68,16 @@ public static class Nodeless
     internal static string? FallbackHit;
 
     private static bool _errorsToFull;
+
+    /// <summary>
+    /// Job "nodeless_full": "pool" (serve.Pool sets it when it routes full-host work): a fallback or an
+    /// audit is not replayed in this process; the result line carries "_full" ({"why": "fallback" |
+    /// "audit", "reason"}) and the dispatcher plays the spec again with "host": "full" on a server of its
+    /// full-host lane, then merges the two lines into what Play would have returned here. Cancel checks
+    /// stay in this process (they compare cancellation sites, which only this process records).
+    /// </summary>
+    private static bool _fullInPool;
+
     private static readonly object _lock = new();
     private static Control? _emptyScene;
 
@@ -137,6 +151,7 @@ public static class Nodeless
         Enabled = true;
         ErrorLog = true;
         _errorsToFull = (string?)job["nodeless_on_error"] == "full";
+        _fullInPool = (string?)job["nodeless_full"] == "pool";
         _audit = (double?)job["nodeless_audit"] ?? 0;
         NodelessPatches.Apply();
         Log.LogCallback += OnLog;
@@ -162,12 +177,31 @@ public static class Nodeless
         var tree = (SceneTree)Engine.GetMainLoop();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         int fps = Engine.MaxFps;
-        Engine.MaxFps = 30;
-        while (clock.Elapsed.TotalSeconds < 2.5)
+        // The fade counts process deltas (NTransition.FadeIn adds GetProcessDeltaTime() each frame until it
+        // reaches its 2 s), which Engine.TimeScale scales: at 100x it runs out within a few frames instead of
+        // 2.5 s of wall time per boot. Only the menu's own visuals run meanwhile, no run exists yet, and the
+        // scale is 1 again before Prepare returns.
+        double scale = Engine.TimeScale;
+        Engine.TimeScale = 100;
+        Engine.MaxFps = 0;
+        double menuTime = 0;
+        int menuFrames = 0;
+        try
         {
-            Driver.Heartbeat();
-            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+            while ((menuTime < 2.5 || menuFrames < 10) && clock.Elapsed.TotalSeconds < 2.5)
+            {
+                Driver.Heartbeat();
+                await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+                menuTime += tree.Root.GetProcessDeltaTime();
+                menuFrames++;
+            }
         }
+        finally
+        {
+            Engine.TimeScale = scale;
+        }
+
+        GD.Print($"[referee] menu fade-in run out: {menuTime:F1} s of game time in {menuFrames} frames, {clock.ElapsedMilliseconds} ms");
 
         if (!Enabled)
         {
@@ -507,7 +541,7 @@ public static class Nodeless
         if (Active && FallbackHit == null)
         {
             FallbackHit = reason;
-            GD.Print("[referee] nodeless: fallback model " + reason + "; replaying on the full host");
+            GD.Print("[referee] nodeless: fallback model " + reason + (_fullInPool ? "; the dispatcher replays it on the full host" : "; replaying on the full host"));
         }
     }
 
@@ -557,8 +591,19 @@ public static class Nodeless
     /// </summary>
     internal static async Task<JsonObject> Play(JsonObject spec, Func<JsonObject, Task<JsonObject>> play, Action reset)
     {
+        if ((string?)spec["host"] == "full")
+        {
+            return await PlayFull(spec, play, reset);  // the dispatcher's full-host replay of a fallback or an audit
+        }
+
         string? reason = NodelessPatches.FallbackInSpec(spec);
         JsonObject? attempt = null;
+        if (reason != null && _fullInPool)
+        {
+            _fallbacks++;
+            return ToPool(new JsonObject { ["seed"] = (string?)spec["seed"] }, "fallback", reason);
+        }
+
         if (reason == null)
         {
             var (between, betweenCancels) = Harvest();  // what the last fight's coroutines threw since its harvest
@@ -578,6 +623,14 @@ public static class Nodeless
             long orphans1 = (long)Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount);
             gameOvers = NodelessPatches.GameOvers - gameOvers;
             var allCancels = betweenCancels.Concat(cancels).Concat(teardownCancels).ToArray();
+            // An attempt broken off mid-turn (a fallback model seen during an end of turn) can leave the turn
+            // flags set (Driver.StaleState): no full-host fight can settle in this process any more, so
+            // nothing is replayed here; the server retires after this result (Server.cs).
+            string? stale = Driver.StaleState();
+            if (stale != null)
+            {
+                Cost(attempt)["stale"] = stale;
+            }
 
             if (FallbackHit == null)
             {
@@ -611,6 +664,14 @@ public static class Nodeless
                     }
                     else if (Unexplained(cancels) is { Count: > 0 } unexplained)
                     {
+                        if (stale != null)
+                        {
+                            _failed++;
+                            string first = "nodeless: cancellation not checked on the full host (game state stale: " + stale + "): " + unexplained[0].Key;
+                            attempt["error"] = attempt["error"] is { } prior ? first + " || " + prior : first;
+                            return attempt;
+                        }
+
                         var full = await CancelCheck(spec, attempt, unexplained, play, reset);
                         if (full != null)
                         {
@@ -620,7 +681,15 @@ public static class Nodeless
 
                     if (IsAudited(spec))
                     {
-                        await Audit(spec, attempt, play, reset);
+                        if (_fullInPool)
+                        {
+                            return ToPool(attempt, "audit", null);
+                        }
+
+                        if (stale == null)
+                        {
+                            await Audit(spec, attempt, play, reset);
+                        }
                     }
 
                     return attempt;
@@ -646,6 +715,18 @@ public static class Nodeless
                     ac["cancel_sites"] = CancelSites(allCancels);
                 }
             }
+
+            if (_fullInPool)
+            {
+                return ToPool(attempt, "fallback", reason);
+            }
+
+            if (stale != null)
+            {
+                _failed++;
+                attempt["error"] = $"nodeless: fallback ({reason}) not replayed: game state stale after the attempt ({stale})";
+                return attempt;
+            }
         }
 
         var result = await PlayFull(spec, play, reset);
@@ -657,6 +738,23 @@ public static class Nodeless
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Job "nodeless_full": "pool": the full-host replay is the dispatcher's (serve.Pool). "fallback": the
+    /// line is the wasted attempt (its cost becomes the replay's cost.nodeless_attempt); "audit": the line is
+    /// the nodeless result, which stands, and the replay fills its cost.audit.
+    /// </summary>
+    private static JsonObject ToPool(JsonObject line, string why, string? reason)
+    {
+        var full = new JsonObject { ["why"] = why };
+        if (reason != null)
+        {
+            full["reason"] = reason;
+        }
+
+        line["_full"] = full;
+        return line;
     }
 
     /// <summary>

@@ -12,6 +12,12 @@ fight to the job's "out" file, deletes the claim, and exits 0 once STOP is in th
   {"hang": "once"}     stop heartbeating and wait to be killed, the first time
   {"fatal": "once"}    write a server-error line ({"_fatal": id}) and exit 1, the first time
   {"bad": true}        answer like a spec file that could not be read (an error line with no seed)
+  {"full": why}        a nodeless server with "nodeless_full": "pool" (driver/Nodeless.cs): unless the spec says
+                       "host": "full", the line carries "_full" {"why": why, "reason": "FakePower"} ("fallback":
+                       the attempt, "audit": the nodeless result); with "host": "full" it is a full-host result
+  {"differ": true}     with "host": "full", the full host's steps differ from the nodeless ones (an audit diff)
+  {"retire": "once"}   write the result, then a "_retire" line, and exit 5 (driver/Server.cs), the first time
+  {"crash_full": true} exit 3 holding the claim, only when the spec says "host": "full"
 """
 
 from __future__ import annotations
@@ -92,6 +98,8 @@ def main() -> int:
         fake = spec.get("fake", {})
         if fake.get("crash") == "always" or (fake.get("crash") == "once" and first_time(inbox, rid, "crash")):
             return 3
+        if fake.get("crash_full") and spec.get("host") == "full":  # only the pool's full-host replay crashes
+            return 3
         if fake.get("hang") == "once" and first_time(inbox, rid, "hang"):
             time.sleep(3600)
         if fake.get("fatal") == "once" and first_time(inbox, rid, "fatal"):
@@ -104,12 +112,22 @@ def main() -> int:
             taken.unlink()
             continue
         time.sleep(fake.get("sleep", 0.02))
-        result = {"seed": spec.get("seed"), "steps": [{"i": i} for i in range(spec.get("n_steps", 3))],
-                  "timing_ms": {"play": 5, "reset": 1}, "cost": {"cpu_ms": 1}, "_id": rid, "_pid": pid,
-                  "_t": int(time.time() * 1000)}
+        full_host = spec.get("host") == "full"
+        steps = [{"i": i, **({"x": 1} if full_host and fake.get("differ") else {})} for i in range(spec.get("n_steps", 3))]
+        result = {"seed": spec.get("seed"), "steps": steps, "timing_ms": {"play": 5, "reset": 1},
+                  "cost": {"cpu_ms": 7 if full_host else 1, "host": "full" if full_host else "nodeless"},
+                  "_id": rid, "_pid": pid, "_t": int(time.time() * 1000)}
+        if fake.get("full") and not full_host and job.get("nodeless_full") == "pool":
+            result["_full"] = {"why": fake["full"], **({"reason": "FakePower"} if fake["full"] == "fallback" else {})}
+            if fake["full"] == "fallback":
+                result["error"] = "nodeless fallback: FakePower"
         with open(out, "a", encoding="utf-8") as f:
             f.write(json.dumps(result) + "\n")
         taken.unlink()
+        if fake.get("retire") == "once" and first_time(inbox, rid, "retire"):
+            with open(out, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"_retire": "EndingPlayerTurnPhaseTwo", "_after": rid, "_pid": pid}) + "\n")
+            return 5
 
 
 if __name__ == "__main__":
