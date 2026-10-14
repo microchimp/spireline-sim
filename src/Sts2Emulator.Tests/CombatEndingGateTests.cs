@@ -414,6 +414,30 @@ public class CombatEndingGateTests
     }
 
     /// <summary>
+    /// `Hook.BeforeTurnEnd` is a gated dispatch, asked as it starts: a Howl From Beyond that kills
+    /// the last enemy in the AutoPostPlay pass (`AfterAutoPostPlayPhaseEntered`, ahead of it) shuts
+    /// every BeforeSideTurnEnd hook, and phase one's `CheckWinCondition` ends the turn. So the
+    /// player's Ritual pays no Strength.
+    /// </summary>
+    [Theory]
+    [InlineData(3, true)]
+    [InlineData(100, false)]
+    public void AnAutoPostPlayKillShutsTheTurnEndHooks(int enemyHp, bool ends)
+    {
+        var fight = Fight
+            .Hand()
+            .Enemy(hp: enemyHp)
+            .PlayerHp(50)
+            .Exhausted(Card(IC.HowlFromBeyond))
+            .PlayerBuff(BuffId.Ritual, 2);
+
+        var result = fight.EndTurn();
+
+        Assert.Equal(ends, result.Terminal && result.PlayerWon);
+        Assert.Equal(ends ? 0 : 2, BuffSystem.Get(fight.State.PlayerBuffs, BuffId.Strength));
+    }
+
+    /// <summary>
     /// The first phase's kill is still answered before the fight ends: `Hook.BeforeDeath` is not
     /// gated, so a Thieving Hopper killed by the Ethereal exhaust's Charon's Ashes hit gives its
     /// stolen card back (`SwipePower.BeforeDeath`), and a Fat Gremlin its Heist gold

@@ -963,6 +963,15 @@ public static class CombatEngine
         AutoPlayIAmInvincible(state, rng);
         AutoPlayHowlsFromExhaust(state, rng);
 
+        // `Hook.BeforeTurnEnd` comes next, a gated dispatch that asks as it starts: a kill in
+        // the pass above (each play answers its own deaths) shuts every BeforeSideTurnEnd hook
+        // below, and phase one's `CheckWinCondition` ends the turn there. The BeforeTurnEnd
+        // passes ran after such a kill: Ritual paid, The Bomb ticked, the relics fired.
+        if (IsOverOrEnding(state) && CheckWinCondition(state, turnEndStart) is { } autoPostPlayResult)
+        {
+            return autoPostPlayResult;
+        }
+
         // `Orichalcum.BeforeSideTurnEndVeryEarly` (and the fake's) reads the block before
         // any turn-end hook grants some, and pays in `BeforeSideTurnEnd`: Plating's
         // `BeforeSideTurnEndEarly` block in between does not rob it of the trigger.
