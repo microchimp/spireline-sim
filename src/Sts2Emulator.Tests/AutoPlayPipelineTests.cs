@@ -209,6 +209,33 @@ public class AutoPlayPipelineTests
     }
 
     /// <summary>
+    /// The case the game was run on (fix/autoplay-target-2 review): Catastrophe over five
+    /// Pommel Strikes makes 6 Shuffle draws in the game -- 4 for the first pick, the Pommel
+    /// Strike's draw, then 2 over the three left. Picking both first made 7.
+    /// </summary>
+    [Fact]
+    public void CatastropheOverFivePommelStrikesDrawsSixAsTheGameDoes()
+    {
+        var fight = Fight
+            .Hand(Card(CL.Catastrophe))
+            .Enemy(hp: 200)
+            .Draw(
+                Card(IC.PommelStrike),
+                Card(IC.PommelStrike),
+                Card(IC.PommelStrike),
+                Card(IC.PommelStrike),
+                Card(IC.PommelStrike)
+            )
+            .Energy(3);
+        var shuffle = new CountingRandom(7);
+        fight.State.ShuffleRng = shuffle;
+
+        fight.Play(0);
+
+        Assert.Equal(6, shuffle.CallCount);
+    }
+
+    /// <summary>
     /// The combat ending stops the plays, not the picks: Catastrophe's second
     /// `StableShuffle` still rolls after the first Strike kills, and the card it picked stays
     /// in the draw pile because `CardCmd.AutoPlay` returns at once.
