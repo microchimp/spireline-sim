@@ -1,9 +1,12 @@
 // How a fight picks its actions, and which relics fired. Spec "chooser": "random" (the default: a seeded
 // random legal action, for coverage fights) or "heuristic" (realistic fights: a deterministic, plain
 // player's policy, so a fight lasts as long as a real one rather than ending in a random-play death).
-// Spec "relic_flashes": true records every relic flash (RelicModel.Flashed, the game's own "this relic
-// did something" signal) as [step, relic] in the result's "relic_flashes": the evidence that a relic's
-// effect fired (coverage, regression triggers). Both only read the state; neither changes a rule.
+// Spec "relic_flashes": true records every relic flash the rules raise (RelicModel.Flashed, the game's
+// own "this relic did something" signal) as [step, relic] in the result's "relic_flashes": the evidence
+// that a relic's effect fired (coverage, regression triggers). A flash raised by display code (a screen,
+// a VFX, the card preview's tween: FlashSource.cs) is no rule evidence and exists only where the node
+// does; it goes to cost.display_flashes ([step, relic, raiser], never compared) instead. Both only read
+// the state; neither changes a rule.
 
 using System;
 using System.Collections.Generic;
@@ -88,16 +91,63 @@ public static partial class Driver
 
     private static readonly List<(RelicModel relic, Action<RelicModel, IEnumerable<Creature>> handler)> _flashHandlers = new();
 
-    /// <summary>Starts recording the flashes of the relics the player holds into <paramref name="log" /> ([step, relic]).</summary>
+    /// <summary>The display-raised flashes of the fight being recorded ([step, relic, raiser]; cost.display_flashes).</summary>
+    private static JsonArray? _displayFlashes;
+
+    /// <summary>
+    /// Starts recording the flashes of the relics the player holds into <paramref name="log" /> ([step, relic]):
+    /// those the rules raise. One a display node or the card preview raised goes to the display list instead.
+    /// </summary>
     internal static void RecordRelicFlashes(Player player, JsonArray log)
     {
         StopRelicFlashes();
+        _displayFlashes = new JsonArray();
         foreach (var relic in player.Relics)
         {
-            Action<RelicModel, IEnumerable<Creature>> h = (r, _) => log.Add(new JsonArray(CurrentStep, r.Id.Entry));
+            Action<RelicModel, IEnumerable<Creature>> h = (r, _) =>
+            {
+                var raiser = FlashSource.Raiser(FlashFrames(), typeof(RelicModel));
+                if (FlashSource.IsDisplay(raiser))
+                {
+                    _displayFlashes?.Add(new JsonArray(CurrentStep, r.Id.Entry, FlashSource.Name(raiser)));
+                    return;
+                }
+
+                log.Add(new JsonArray(CurrentStep, r.Id.Entry));
+            };
             relic.Flashed += h;
             _flashHandlers.Add((relic, h));
         }
+    }
+
+    /// <summary>
+    /// The calling frames' methods, innermost first. A method Harmony patched shows as its replacement; the
+    /// original is what raised the flash.
+    /// </summary>
+    private static IEnumerable<System.Reflection.MethodBase?> FlashFrames()
+    {
+        foreach (var f in new System.Diagnostics.StackTrace(1, false).GetFrames())
+        {
+            System.Reflection.MethodBase? m;
+            try
+            {
+                m = HarmonyLib.Harmony.GetOriginalMethodFromStackframe(f) ?? f.GetMethod();
+            }
+            catch (Exception)
+            {
+                m = f.GetMethod();
+            }
+
+            yield return m;
+        }
+    }
+
+    /// <summary>The display-raised flashes since RecordRelicFlashes, or null when there were none.</summary>
+    internal static JsonArray? TakeDisplayFlashes()
+    {
+        var d = _displayFlashes;
+        _displayFlashes = null;
+        return d is { Count: > 0 } ? d : null;
     }
 
     internal static void StopRelicFlashes()

@@ -1459,15 +1459,18 @@ def record_runs(man: dict, a, rdir: Path, stamp: dict, build: Path) -> int:
 # What a recording needs from the driver (driver/Capabilities.cs names them; each is present only when its code is
 # compiled in): the fixed settle and its Play-phase gate, the frame-counting watchdog, the console and reference
 # setup items with the save-load path and the act entry, a deck residual failing its item, relic flashes (coverage
-# and regression evidence) and the heuristic chooser of the realistic part.
+# and regression evidence) raised by the rules only (a display-raised flash lands on any step, full host only), the
+# heuristic chooser of the realistic part, and the nodeless host's room-end rewards (generated at CombatWon, as the
+# full host's NCombatUi does: without them the two hosts' last steps differ in the reward draws).
 REQUIRED_CAPS = ("settle_flags", "play_phase_gate", "watchdog_v2", "console_setup", "refset_setup", "player_load",
-                 "act_entry", "deck_residual_fails", "relic_flashes", "heuristic_chooser")
+                 "act_entry", "deck_residual_fails", "relic_flashes", "heuristic_chooser", "rule_flashes", "nodeless_room_end")
 # The members each capability is read off (Capabilities.cs), for the check before any game starts.
 CAP_MEMBERS = {"settle_flags": ("CheckSettleFields", "SettleMode"), "play_phase_gate": ("InPlayPhase",),
                "watchdog_v2": ("BudgetFrames", "Budget", "ArmWatchdog"), "console_setup": ("SetupItem", "EnterFight"),
                "refset_setup": ("RefsetItem",), "player_load": ("PlayerLoad",), "act_entry": ("EnterActItem",),
                "deck_residual_fails": ("DeckResidualFails",), "relic_flashes": ("RecordRelicFlashes",),
-               "heuristic_chooser": ("ChooseHeuristic",)}
+               "heuristic_chooser": ("ChooseHeuristic",), "rule_flashes": ("TakeDisplayFlashes", "FlashFrames"),
+               "nodeless_room_end": ("OfferRoomEndRewardsNodeless",)}
 
 
 def dll_stamp(dll: Path) -> dict:

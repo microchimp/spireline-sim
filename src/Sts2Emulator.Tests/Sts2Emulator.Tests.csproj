@@ -22,5 +22,7 @@
   <ItemGroup>
     <!-- The referee servers' inbox claim has no game types, so it is raced here (RefereeInboxClaimTests). -->
     <Compile Include="..\..\referee\driver\InboxClaim.cs" Link="Referee\InboxClaim.cs" />
+    <!-- Which relic flashes the referee records has no game types either (RefereeFlashSourceTests). -->
+    <Compile Include="..\..\referee\driver\FlashSource.cs" Link="Referee\FlashSource.cs" />
   </ItemGroup>
 </Project>

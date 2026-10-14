@@ -20,6 +20,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -181,6 +182,16 @@ public static class NodelessPatches
         Count++;
         FindStopMusic();
 
+        // --- Combat won ------------------------------------------------------------------------
+        // CombatManager.EndCombatInternal raises CombatWon (after AfterCombatEnd, AfterCombatVictory and the save,
+        // before CombatEnded). On the full host NCombatUi.OnCombatWon answers it, and that answer holds rules: for an
+        // encounter that gives rewards it calls the room's own CombatRoom.OfferRoomEndRewards (RewardsSet
+        // .GenerateWithoutOffering: each reward's Populate, Hook.ModifyRewards, Hook.AfterModifyingRewards; it draws
+        // from the RNG, e.g. Wing Charm's Niche draw, and adds Amethyst Aubergine's gold reward, which flashes), else
+        // RunManager.ProceedFromTerminalRewardsScreen. Nodeless there is no NCombatUi, so no room-end reward was ever
+        // generated. The subscription makes the same calls at the same moment through the game's own methods.
+        CombatManager.Instance.CombatWon += OnCombatWonNodeless;
+
         // --- Timing ------------------------------------------------------------------------
         // CombatStateTracker.CallCombatStateChangedDeferred waits one process frame on NRun before it
         // recalculates card values (enchantments such as Adroit) and raises CombatStateChanged. With
@@ -210,6 +221,44 @@ public static class NodelessPatches
 
         // Diagnostics (driver code, read-only): the orphan-node count after each recorded step.
         h.Patch(AccessTools.Method(typeof(Driver), "Snapshot"), postfix: new HarmonyMethod(typeof(NodelessPatches), nameof(SnapshotPostfix)));
+    }
+
+    /// <summary>Room-end reward generations started by OnCombatWonNodeless in this process (diagnostics).</summary>
+    internal static int RoomEndRewards { get; private set; }
+
+    /// <summary>NCombatUi.OnCombatWon's rules, nodeless only (the full host has the node, which does it).</summary>
+    private static void OnCombatWonNodeless(CombatRoom room)
+    {
+        if (!Nodeless.Active) return;
+        RoomEndRewards++;
+        TaskHelper.RunSafely(room.Encounter.ShouldGiveRewards ? OfferRoomEndRewardsNodeless(room) : ProceedWithoutRewardsNodeless());
+    }
+
+    /// <summary>
+    /// NCombatUi.ShowRewards without its display: the same scaled wait (none in Instant mode, which the driver
+    /// sets; its extra time for death animations still playing is 0 with no creature nodes), then the room's own
+    /// OfferRoomEndRewards. Run inside the CombatWon event, as on the full host, so in Instant mode the rewards
+    /// are generated before CombatEnded and the fight's last recorded step holds them on both hosts.
+    /// </summary>
+    private static async Task OfferRoomEndRewardsNodeless(CombatRoom room)
+    {
+        if (room.RoomType == RoomType.Boss)
+        {
+            await Cmd.CustomScaledWait(0f, 1f);
+        }
+        else
+        {
+            await Cmd.CustomScaledWait(0.5f, 1f);
+        }
+
+        await room.OfferRoomEndRewards();
+    }
+
+    /// <summary>NCombatUi.ProceedWithoutRewards: a one-second wait (none in Instant mode), then the screen's Proceed.</summary>
+    private static async Task ProceedWithoutRewardsNodeless()
+    {
+        await Cmd.Wait(1f);
+        await RunManager.Instance.ProceedFromTerminalRewardsScreen();
     }
 
     /// <summary>Orphan nodes after each step of the current fight (cost.orphans_by_step).</summary>

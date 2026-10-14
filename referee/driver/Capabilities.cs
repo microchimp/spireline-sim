@@ -32,6 +32,9 @@ public static partial class Driver
     ///   act_entry           the fight's own act entered first, as the console's act command (RefsetSetup.cs)
     ///   deck_residual_fails a deck the setup cannot build fails its item (RefsetSetup.cs)
     ///   relic_flashes       which relics fired, per step (Chooser.cs)
+    ///   rule_flashes        only flashes the rules raise are recorded, not display ones (FlashSource.cs)
+    ///   nodeless_room_end   the nodeless host generates the room-end rewards at CombatWon, as NCombatUi does on
+    ///                       the full host (NodelessPatches.cs)
     ///   heuristic_chooser   the "heuristic" chooser for realistic fights (Chooser.cs)
     /// </summary>
     internal static List<string> Capabilities()
@@ -51,6 +54,8 @@ public static partial class Driver
         Add("act_entry", Has("EnterActItem"));
         Add("deck_residual_fails", Has("DeckResidualFails"));
         Add("relic_flashes", Has("RecordRelicFlashes"));
+        Add("rule_flashes", Has("TakeDisplayFlashes") && Has("FlashFrames"));
+        Add("nodeless_room_end", typeof(NodelessPatches).GetMember("OfferRoomEndRewardsNodeless", AnyStatic).Length > 0);
         Add("heuristic_chooser", Has("ChooseHeuristic"));
         return caps;
     }

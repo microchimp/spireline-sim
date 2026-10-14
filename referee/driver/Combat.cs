@@ -258,7 +258,10 @@ public static partial class Driver
 
         timing["fight_end"] = phase.ElapsedMilliseconds;
         ChecksumTap.End(dump);
-        dump["cost"] = Cost();
+        var cost = Cost();
+        // Flashes raised by display code (Chooser.cs, FlashSource.cs): diagnostics, never compared.
+        if (TakeDisplayFlashes() is { } shown) cost["display_flashes"] = shown;
+        dump["cost"] = cost;
         return dump;
     }
 
