@@ -162,7 +162,10 @@ class PerFightHelpersTest(unittest.TestCase):
             finally:
                 sys.argv = argv
         lines = [ln for g, e in pairs for ln in fc.report(g, e, NM)[0]]
-        self.assertEqual(buf.getvalue().splitlines(), lines)
+        printed = buf.getvalue().splitlines()
+        self.assertEqual(printed[:-1], lines)
+        # main's own summary, and it exits 1: the differing fight, and E, whose recording failed (no fight compared)
+        self.assertEqual(printed[-1], "3 fights, 2 not reproduced")
         self.assertEqual(lines[-1], "E: 0 steps identical (game 0, emulator 0)")
         firsts = [fc.report(g, e, NM)[1] for g, e in pairs]
         self.assertEqual(firsts, [coverage.first_divergence(g, e, NM) for g, e in pairs])

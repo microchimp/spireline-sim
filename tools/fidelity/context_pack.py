@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-from tools.fidelity.fight_compare import diff, emu_view, game_view, names, snake
+from tools.fidelity.fight_compare import emu_view, first_difference, game_view, names, snake
 
 ROOT = Path(__file__).resolve().parents[2]
 DECOMPILED = Path(r"D:\spireline\referee\decompiled")
@@ -43,14 +43,15 @@ def norm(s: str) -> str:
 
 def first_divergence(g: dict, e: dict, nm: dict):
     """(step index, action, diffs, game view, emulator view, previous actions) or None."""
-    steps = list(zip(g.get("steps", []), e.get("steps", [])))
-    for i, (gs, es) in enumerate(steps):
-        gv, ev = game_view(gs["state"]), emu_view(es["state"], nm)
-        d = diff(gv, ev)
-        if d:
-            prev = [steps[j][0]["action"] for j in range(max(0, i - 2), i)]
-            return i, gs["action"], d, gv, ev, prev
-    return None
+    fd = first_difference(g, e, nm)
+    if fd is None:
+        return None
+    i, d = fd
+    gsteps, esteps = g["steps"], e.get("steps", [])
+    gv = game_view(gsteps[i]["state"])
+    ev = emu_view(esteps[i]["state"], nm) if i < len(esteps) else {"in_combat": False}
+    prev = [gsteps[j]["action"] for j in range(max(0, i - 2), i)]
+    return i, gsteps[i]["action"], d, gv, ev, prev
 
 
 def top_fields(d, gv=None, ev=None) -> tuple:

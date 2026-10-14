@@ -536,18 +536,12 @@ def judge_fight(g: dict, e: dict, nm: dict) -> dict:
     The first step whose state differs (or where the emulator's fight broke off), and any emulator
     exception (``ferr``), also one after the last step.
     """
-    from .fight_compare import diff, emu_view, game_view  # noqa: PLC0415
+    from .fight_compare import first_difference  # noqa: PLC0415
     from .reanchor_compare import group  # noqa: PLC0415
 
-    gsteps, esteps = g.get("steps", []), e.get("steps", [])
-    idx, path = None, None
-    for i, (gs, es) in enumerate(zip(gsteps, esteps)):
-        d = diff(game_view(gs["state"]), emu_view(es["state"], nm))
-        if d:
-            idx, path = i, d[0][0]
-            break
-    if idx is None and len(esteps) < len(gsteps):
-        idx, path = len(esteps), "(error)" if e.get("error") else "(length)"
+    gsteps = g.get("steps", [])
+    fd = first_difference(g, e, nm)
+    idx, path = (None, None) if fd is None else (fd[0], fd[1][0][0])
     out = {"fd": idx}
     if idx is not None:
         out.update(field=group(path) if path.startswith(".") else path, path=path,

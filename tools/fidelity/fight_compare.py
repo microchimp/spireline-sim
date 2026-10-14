@@ -266,25 +266,52 @@ def diff(a, b, path="") -> list:
     return [] if a == b else [(path, a, b)]
 
 
+def first_difference(g: dict, e: dict, nm: dict):
+    """(index, diff list) of the first game step the emulator's replay does not reproduce, or None.
+
+    The one test every comparer of a plain replay uses (corpus, coverage, batch.py, scenarios, refset):
+    a replay that stops before the game's last step differs at the first step it lacks, with the
+    pseudo-path ``(error)`` when the emulator reported an error and ``(length)`` when it did not. Pairing
+    the steps with zip() alone took such a replay for identical.
+    """
+    gsteps, esteps = g.get("steps", []), e.get("steps", [])
+    for i, (gs, es) in enumerate(zip(gsteps, esteps)):
+        d = diff(game_view(gs["state"]), emu_view(es["state"], nm))
+        if d:
+            return i, d
+    if len(esteps) < len(gsteps):
+        why = "(error)" if e.get("error") else "(length)"
+        return len(esteps), [(why, f"{len(gsteps)} steps", f"{len(esteps)} steps")]
+    return None
+
+
 def report(g: dict, e: dict, nm: dict) -> tuple[list, int | None]:
-    """One fight's lines of the comparison main prints, and the index of its first differing step
-    (None when every compared step matches). batch.py calls it per fight as fights finish."""
+    """One fight's lines of the comparison main prints, and the index of its first differing step.
+
+    The index is None when every game step is reproduced. batch.py calls it per fight as fights finish.
+    """
     lines = []
     for side, doc in (("game", g), ("emulator", e)):
         if doc.get("error"):
             lines.append(f"{g.get('seed')}: {side} error: {doc['error'][:400]}")
-    steps = list(zip(g.get("steps", []), e.get("steps", [])))
-    for i, (gs, es) in enumerate(steps):
-        d = diff(game_view(gs["state"]), emu_view(es["state"], nm))
-        if d:
-            lines.append(f"{g.get('seed')}: first difference at step {i} after {gs['action']}")
-            lines += [f"    {path}: game {x}  emulator {y}" for path, x, y in d[:12]]
-            return lines, i
-    lines.append(f"{g.get('seed')}: {len(steps)} steps identical (game {len(g.get('steps', []))}, emulator {len(e.get('steps', []))})")
+    fd = first_difference(g, e, nm)
+    if fd is not None:
+        i, d = fd
+        act = g["steps"][i]["action"] if i < len(g.get("steps", [])) else None
+        lines.append(f"{g.get('seed')}: first difference at step {i} after {act}")
+        lines += [f"    {path}: game {x}  emulator {y}" for path, x, y in d[:12]]
+        return lines, i
+    n_g, n_e = len(g.get("steps", [])), len(e.get("steps", []))
+    lines.append(f"{g.get('seed')}: {min(n_g, n_e)} steps identical (game {n_g}, emulator {n_e})")
     return lines, None
 
 
 def main() -> int:
+    """Compare every fight; exit 0 only when every game fight was reproduced step for step.
+
+    Exit 1 when a fight differs, the emulator reported an error for it, an emulator result is missing or
+    belongs to another seed, or nothing was compared.
+    """
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("referee")
     ap.add_argument("emulator")
@@ -294,12 +321,24 @@ def main() -> int:
     games = json.load(open(a.referee, encoding="utf-8"))["results"]
     emus = json.load(open(a.emulator, encoding="utf-8"))["results"]
     bad = 0
-    for g, e in zip(games, emus):
+    for k, g in enumerate(games):
+        e = emus[k] if k < len(emus) else None
+        if e is None or e.get("seed") not in (None, g.get("seed")):
+            # Results are paired by position; one missing or out of order is never a match.
+            print(f"{g.get('seed')}: no emulator result" + (f" (position {k} holds seed {e.get('seed')})" if e else ""))
+            bad += 1
+            continue
         lines, first = report(g, e, nm)
         for line in lines:
             print(line)
-        bad += first is not None
-    return 0 if not bad else 1
+        # An emulator error fails the fight even when every step it replayed matched (an exception after
+        # the last step, or a fight with no steps at all).
+        bad += first is not None or bool(e.get("error"))
+    if len(emus) > len(games):
+        print(f"{len(emus) - len(games)} emulator results have no game fight")
+        bad += 1
+    print(f"{len(games)} fights, {bad} not reproduced")
+    return 0 if games and not bad else 1
 
 
 if __name__ == "__main__":

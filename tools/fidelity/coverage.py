@@ -12,17 +12,18 @@ import json
 import random
 from pathlib import Path
 
-from .fight_compare import diff, emu_view, game_view
+from .fight_compare import first_difference
 
 VERIFIED_ENOUGH = 5  # identical plays after which a card is drawn rarely
 
 
 def first_divergence(game: dict, emu: dict, nm: dict) -> int | None:
-    """Index of the first step whose states differ, or None if every compared step matches."""
-    for i, (gs, es) in enumerate(zip(game.get("steps", []), emu.get("steps", []))):
-        if diff(game_view(gs["state"]), emu_view(es["state"], nm)):
-            return i
-    return None
+    """Index of the first game step the replay does not reproduce, or None.
+
+    fight_compare.first_difference: a replay that stops early differs at the first step it lacks.
+    """
+    fd = first_difference(game, emu, nm)
+    return None if fd is None else fd[0]
 
 
 def load(path: Path) -> dict:

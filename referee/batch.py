@@ -336,13 +336,14 @@ def main() -> int:
                  "errors": [f"{seed}: {side} error: {str(x['error'])[:200]}" for side, x in (("game", g), ("emulator", e))
                             if x.get("error")]}
             if ok:
-                f["first"] = idx = cv.first_divergence(g, e, nm)
-                if idx is None:
+                fd = fc.first_difference(g, e, nm)
+                f["first"] = idx = None if fd is None else fd[0]
+                if fd is None:
                     f["line"] = f"{seed}: {len(g['steps'])} steps identical"
                 else:
+                    d = fd[1]
                     act = g["steps"][idx].get("action")
-                    d = fc.diff(fc.game_view(g["steps"][idx]["state"]), fc.emu_view(e["steps"][idx]["state"], nm))
-                    field = rc.group(d[0][0]) if d else "(length)"
+                    field = rc.group(d[0][0]) if d[0][0].startswith(".") else d[0][0]
                     card = (act or {}).get("card") or ("end_turn" if act else "start")
                     head = f"{seed}: first difference at step {idx} after {act}"
                     f["group"] = (f"{field} after {card}", head[:200])

@@ -292,11 +292,12 @@ def first_divergence(g: dict, e: dict, nm: dict):
     """(step, field group, action) of the first differing step, or None if every compared step matches."""
     from tools.fidelity import fight_compare as fc  # noqa: PLC0415
     from tools.fidelity.reanchor_compare import group  # noqa: PLC0415
-    for i, (gs, es) in enumerate(zip(g.get("steps", []), e.get("steps", []))):
-        d = fc.diff(fc.game_view(gs["state"]), fc.emu_view(es["state"], nm))
-        if d:
-            return i, group(d[0][0]), gs.get("action"), d
-    return None
+    fd = fc.first_difference(g, e, nm)
+    if fd is None:
+        return None
+    i, d = fd
+    path = d[0][0]
+    return i, group(path) if path.startswith(".") else path, g["steps"][i].get("action") if i < len(g["steps"]) else None, d
 
 
 def upgraded_plays(g: dict, matched_steps: set) -> list[str]:
