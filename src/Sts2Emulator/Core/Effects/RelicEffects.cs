@@ -3044,20 +3044,28 @@ public static class RelicEffects
     /// </summary>
     public static bool KeepsRestSiteOpen(Run.RunState state) => Has(state.Relics, MiniatureTent);
 
-    /// <summary>`TheAbacus.AfterShuffle`: 6 unpowered block every time the pile is shuffled.</summary>
+    /// <summary>
+    /// The relics' `AfterShuffle`, in the order they are held (the hook visits relics in
+    /// `player.Relics` order), once the shuffled pile is in place.
+    /// </summary>
     internal static void ApplyAfterShuffle(CombatState state, Random? rng)
     {
-        if (HasRelic(state, TheAbacus))
+        // By index: a block gain's hooks may write a relic's counter back into the list.
+        for (int i = 0; i < state.Relics.Count; i++)
         {
-            CardEffects.GainUnpoweredBlock(state, 6, rng);
-        }
-
-        // `BiiigHug.AfterShuffle`: a SOOT into the draw pile at a random position, every
-        // shuffle, for the whole run. Only its pickup half -- remove four chosen cards --
-        // was modelled, which made a hug that costs nothing a hug that only pays.
-        if (HasRelic(state, BiiigHug))
-        {
-            CardEffects.AddCardToDrawPileRandomly(state, ST.Soot, 1, rng ?? new Random());
+            int relic = state.Relics[i].DefId;
+            // `TheAbacus.AfterShuffle`: 6 unpowered block every time the pile is shuffled.
+            if (relic == TheAbacus)
+            {
+                CardEffects.GainUnpoweredBlock(state, 6, rng);
+            }
+            // `BiiigHug.AfterShuffle`: a SOOT into the draw pile at a random position, every
+            // shuffle, for the whole run. Only its pickup half -- remove four chosen cards --
+            // was modelled, which made a hug that costs nothing a hug that only pays.
+            else if (relic == BiiigHug)
+            {
+                CardEffects.AddCardToDrawPileRandomly(state, ST.Soot, 1, rng ?? new Random());
+            }
         }
     }
 

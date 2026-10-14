@@ -3694,6 +3694,12 @@ public static class CardEffects
     /// `CardPileCmd.Shuffle` does nothing once the fight is over or ending: no
     /// `StableShuffle` on the run's Shuffle stream and no `AfterShuffle`. Every mid-combat
     /// shuffle comes through here (the opening one is the deck's, in `CombatFactory`).
+    ///
+    /// `Hook.AfterShuffle` comes LAST, once every card is in the draw pile, and only if the
+    /// fight is still on. It ran first, so Biiig Hug's Soot went in before the shuffle and
+    /// was shuffled with the rest: one Fisher-Yates draw more and a Soot the shuffle put
+    /// somewhere else (probe P09: the game shuffled ten cards and drew the Soot; here eleven,
+    /// and the Soot stayed in the pile).
     /// </remarks>
     public static void ShuffleDiscardIntoDraw(CombatState state, Random rng)
     {
@@ -3702,7 +3708,6 @@ public static class CardEffects
             return;
         }
 
-        RelicEffects.ApplyAfterShuffle(state, rng);
         int count = state.DiscardPile.Count + state.DrawPile.Count;
         if (_shuffleCards is null || _shuffleCards.Length < count)
         {
@@ -3714,23 +3719,24 @@ public static class CardEffects
         var cards = _shuffleCards;
         var keys = _shuffleKeys!;
 
-        // Discard first and then draw, which is the order the merged list used to be
-        // built in -- and the low bits of the key are the position, so equal cards keep
-        // it. That is what makes this sort STABLE, as OrderBy's was: two cards can match
-        // on Entry and Upgraded while differing in an enchantment the key does not see,
-        // and an unstable sort would put them either way round and shuffle differently.
+        // Discard first and then draw, the order the game merges them in. The key is the
+        // card's sort key alone, with no position in it: `List<CardModel>.Sort()` is the
+        // runtime's introsort, which does not keep equal cards in order, and this is that
+        // same introsort. Which of two equal copies comes first decides which copy the
+        // Fisher-Yates puts where -- and the copies can differ in what the key does not see
+        // (an enchantment, a cost bump, Stone Cracker's upgrade landing on one of them).
         int index = 0;
         foreach (var card in state.DiscardPile)
         {
             cards[index] = card;
-            keys[index] = Key(card, index);
+            keys[index] = ShuffleSortKey(card);
             index++;
         }
 
         foreach (var card in state.DrawPile)
         {
             cards[index] = card;
-            keys[index] = Key(card, index);
+            keys[index] = ShuffleSortKey(card);
             index++;
         }
 
@@ -3765,40 +3771,56 @@ public static class CardEffects
 
         state.ForgetDrawOrder();
         state.DiscardPile.Clear();
-        MoveStratagemCardsToHandAfterShuffle(state);
 
-        static long Key(CardInstance card, int position)
+        if (!CombatEngine.IsOverOrEnding(state))
         {
-            int id = Math.Abs(card.DefId);
-            int rank = id < EntryRank.Length ? EntryRank[id] : EntryRank.Length;
-            return ((long)rank << 32) | ((long)(card.Upgraded ? 1 : 0) << 31) | (uint)position;
+            AfterShuffle(state, rng);
         }
     }
 
     /// <summary>
+    /// `Hook.AfterShuffle`, in the order the hook visits its listeners: the player's powers
+    /// (Stratagem) before the player's relics, and the relics in the order they are held.
+    /// </summary>
+    private static void AfterShuffle(CombatState state, Random rng)
+    {
+        MoveStratagemCardsToHandAfterShuffle(state);
+        RelicEffects.ApplyAfterShuffle(state, rng);
+    }
+
+    /// <summary>
     /// `ListExtensions.StableShuffle` over the cards of <paramref name="pile" /> at
-    /// <paramref name="indices" />: sorted as `CardModel.CompareTo` sorts (ModelId, i.e.
-    /// Entry as an ordinal string, then upgrade level), then `UnstableShuffle`'s
+    /// <paramref name="indices" />: `List.Sort()` as `CardModel.CompareTo` sorts (ModelId,
+    /// i.e. Entry as an ordinal string, then upgrade level), then `UnstableShuffle`'s
     /// Fisher-Yates, n-1 draws. Returns the pile indices in shuffled order.
     /// </summary>
+    /// <remarks>
+    /// The sort is the runtime's introsort, as the game's is, and it does not keep equal
+    /// cards in the order they came: [B, B, A] sorts to [A, second B, first B], and past
+    /// sixteen cards the partitioning moves ties too (four to sixteen insertion-sort and
+    /// keep them). LINQ's stable `OrderBy` kept every tie in order, so equal copies came out
+    /// where the game put other copies -- the wrong Strike upgraded by Stone Cracker, the
+    /// wrong copy auto-played. <paramref name="indices" /> must come in pile order, as the
+    /// game's `pile.Cards.Where(...)` list does.
+    /// </remarks>
     internal static List<int> StableShuffle(
         List<CardInstance> pile,
         IEnumerable<int> indices,
         Random rng
     )
     {
-        var order = indices
-            .OrderBy(i => EntryRankOf(pile[i]))
-            .ThenBy(i => pile[i].Upgraded ? 1 : 0)
-            .ToList();
+        var order = indices.ToList();
+        order.Sort((a, b) => ShuffleSortKey(pile[a]).CompareTo(ShuffleSortKey(pile[b])));
         ShufflePile(order, rng);
         return order;
     }
 
-    private static int EntryRankOf(CardInstance card)
+    /// <summary>`CardModel.CompareTo` as one number: Entry's ordinal rank, then upgraded.</summary>
+    private static long ShuffleSortKey(CardInstance card)
     {
         int id = Math.Abs(card.DefId);
-        return id < EntryRank.Length ? EntryRank[id] : EntryRank.Length;
+        int rank = id < EntryRank.Length ? EntryRank[id] : EntryRank.Length;
+        return ((long)rank << 1) | (card.Upgraded ? 1L : 0L);
     }
 
     public static void ShufflePile<T>(IList<T> pile, Random rng)
