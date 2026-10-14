@@ -73,6 +73,9 @@ PlayCard (chosen)                      AutoPlay(card, AutoPlaySource)  = CardCmd
 - `PlayRequest`: `IsAutoPlay`, the resources (`EnergyValue`, `LastStarsSpent`),
   `ForceExhaust`, `IsDupe`. `ResolvePlay` is the only body: chosen plays and every auto-play
   get the same play count, Before/After hooks, counters and result pile.
+- `DecideResultPile`: the result pile is decided as the play is set up, before the effect
+  (the card's own pile, then Corruption and Feral over it, then Rebound and Nostalgia over a
+  discard, each spent there), so an auto-play inside the card cannot move it.
 - `AutoPlayFromPile(pile, index)`: the card leaves its pile only if the auto-play starts.
 - A play nested inside another (a Strike Hellraiser plays out of a Pommel Strike's draw, a
   Shiv out of Knife Trap) saves and restores the outer play's per-play fields (`PlayFrame`).
