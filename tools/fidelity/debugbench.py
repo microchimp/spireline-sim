@@ -32,7 +32,7 @@ harvest  A candidate is a non-merge commit on --ref that changed the engine (src
            other main tests that fail on the base (they would point at the site). Both are taken out of the
            base (the test methods, or a test file the fix added once nothing of it is left) and run at
            scoring. Outside the engine, the base loses every line that names the answer (scrub_hints: in
-           docs the line or list item, in test sources a whole-line comment, naming the fix's commit, its
+           Markdown the line or list item, in test sources a whole-line comment, naming the fix's commit, its
            hidden or collateral tests, or code the gold patch adds that the base lacks), and its one commit
            says "base".
          Ground truth: the gold patch (base -> main, engine only), its files and sites (file::Type.Member
@@ -659,7 +659,7 @@ def test_key(name: str) -> str:
 
 NAME = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{5,}\b")
 BULLET = re.compile(r"\s*(?:[-*+]|\d+[.)])\s")
-DOCS = (".md", ".txt")
+DOCS = (".md",)  # a .txt or .json beside a test can be its data: only Markdown is prose for sure
 # Never scrubbed: the engine is the task itself; the judge and its data are main's again at scoring.
 NO_SCRUB = (ENGINE, "tools/fidelity/", "data/")
 
@@ -721,7 +721,7 @@ def _drop_comment_lines(text: str, hit) -> tuple[str, int]:
 
 def scrub_hints(ctx: "Ctx", tree: str, names: list, shas: list) -> tuple[str, dict]:
     """tree without the lines outside the engine that name the answer (a hint name, or the fix's commit): in docs
-    (*.md, *.txt) the line, a list item with its continuation and sub-items; in test sources a whole-line comment.
+    (*.md) the line, a list item with its continuation and sub-items; in test sources a whole-line comment.
     A name left in code, in a string or in another file is listed ("left"), for the truth."""
     shas = [s for s in shas if s]
     pats = [re.compile(rf"(?<!\w){re.escape(n)}(?!\w)") for n in names] + [re.compile(re.escape(s)) for s in shas]

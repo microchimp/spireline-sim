@@ -672,7 +672,7 @@ python -m tools.fidelity.debugbench --truth-store <dir> migrate        # a bench
   that test still fails on the base, and the rest of main's suites pass on the base once it is out. **Base** = main with
   the engine change reverted and the fix's fail-to-pass tests (**hidden**) and any other main test that fails on the base
   (**collateral**: it would point at the site) taken out. Outside the engine it loses every line that names the answer:
-  in docs the line (a list item with its sub-items), in test sources a whole-line comment, that names the fix's commit,
+  in Markdown docs the line (a list item with its sub-items), in test sources a whole-line comment, that names the fix's commit,
   a hidden or collateral test, or code the gold patch adds that the base lacks (a game name in a comment is no hint);
   a name left in code or another file is listed in the truth (`hints.left`). Its one commit says `base`. **Truth** = the
   gold patch (base to main, engine only), its files and sites (`file::Type.Member`, `[case X]` inside a switch section;
@@ -719,6 +719,14 @@ python -m tools.fidelity.debugbench --truth-store <dir> migrate        # a bench
   picks). Skipped: 298 reverts conflict on main, 41 over 300 engine lines, 14 not fixes, 12 tests that need the API the
   fix added, 5 bases that do not build, 2 with no failing test, 1 root. The first signal (corpus check, invariants) saw
   22 of the 80 bases (corpus check 21, invariants 4; median 34 s). Harvesting took about 80 min with `--jobs 3`.
+- Added gates (2026-10-15, the same 80 bases and main; the first run's corpus and invariants results kept): the
+  reference set v2 sees 19, the codex whole-run replay 29 (main against its own score: 0 worse on either). With the
+  first gates 46 of the 80 are detected (dev 32 of 50, held out 14 of 30). Of the 58 the first gates miss, the codex
+  replay catches 23 and the reference set 1 (24 in all; the reference set mostly overlaps the corpus check, both
+  being fights); 34 stay silent. The walk's added stops are mostly events, shops, the deck, ancients and card
+  rewards: the run-level fixes. Median 165 s a task for both (one refset_score run, 16 processes), 3.7 h for 79.
+  The truth store took the 80 tasks' truth (`migrate`): 20 lines naming an answer left their bases' docs and test
+  comments; the hook table applies to all 80 and gives 9 of them (model, hook) pairs, 60 have callers to count.
 - Limits: a fixer runs as the same Windows user as the scorer, so the boundary is the sandbox, the stripped variables,
   the deny profile and the audit, not the file system's permissions; text that describes the fix in words without a
   name the scrub knows stays in the base's docs; a fix whose tests need an API it added cannot be a task (its tests do
