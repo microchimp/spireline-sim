@@ -70,11 +70,12 @@ trace_real_game = _load("trace_real_game")
 
 # BOTH pools are reachable here, which is worth understanding before adding encounters.
 #
-# `completed_combat_rooms in [0,3)` picks the weak variant, but that rule only governs
-# what the MAP hands you: `debug_start_encounter` looks the encounter up by class name
-# (ModelDb.AllEncounters) and enters a CombatRoom for it directly, so naming
-# "NibbitsNormal" gets the normal pool on floor 1 with no combats behind it. The
-# emulator matches by passing completed_combat_rooms = -1 for those, which
+# The map hands out the weak pool first because the act's list holds its weak
+# encounters first (ActModel.GenerateRooms), but `debug_start_encounter` looks the
+# encounter up by class name (ModelDb.AllEncounters) and enters a CombatRoom for it
+# directly, so naming "NibbitsNormal" gets the normal fight on floor 1 with no combats
+# behind it. The emulator's ids name each fight too; only Corpse Slugs and Seapunk are
+# named by their weak id plus a weak context, which
 # validate_real_game_trace.emulator_completed_combat_rooms derives from the name.
 #
 # What DOES have to hold is stream freshness: the direct combat env assumes every named

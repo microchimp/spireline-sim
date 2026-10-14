@@ -822,8 +822,10 @@ def reset_encounter(
 ) -> None:
     """Reset into a chosen encounter.
 
-    completed_combat_rooms in [0,3) selects weak encounter variants (fewer/weaker
-    enemies on early floors); -1 keeps the normal variant (unchanged default).
+    completed_combat_rooms is the weak context, read only for Corpse Slugs (9) and
+    Seapunk (12), the weak ids their normal twins (88, 22) once shared: [0,3) keeps the
+    weak fight, -1 (the default) deals the normal one, whichever reset runs. Every other
+    id names its own fight (WeakContext.Resolve, the one rule at the C ABI).
 
     total_floor is the run's TotalFloor, and it is not optional decoration: it is the
     missing term in the per-encounter RNG seed (run seed + floor + hash of the encounter

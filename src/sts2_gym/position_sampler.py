@@ -234,7 +234,8 @@ class Position:
 
     @property
     def completed_combat_rooms(self) -> int:
-        """Weak variants are selected by a completed-combat count in [0,3)."""
+        """The weak context for the C ABI: a weak position keeps Corpse Slugs' and Seapunk's
+        weak ids, every other id names its own fight whatever the context."""
         return 0 if self.klass == "weak" else -1
 
     def reset_into(self, handle: int, obs_buf: ctypes.Array) -> None:
