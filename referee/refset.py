@@ -1124,7 +1124,18 @@ def select(man: dict, subset: str, parts: list[str]) -> list[dict]:
     return [e for e in man["specs"] if e["part"] in parts and (ids is None or e["id"] in ids)]
 
 
+def host_error(r: dict | None) -> bool:
+    """A full-host replay's error_log verdict (Nodeless.PlayFull "full host: N game error(s)", any error or first-chance
+    exception), which a full pass does not write: the fight's errors are judged from the game log on both hosts."""
+    return bool(r) and str(r.get("error") or "").startswith("full host: ") and bool(r.get("steps"))
+
+
+def without_host_error(r: dict) -> dict:
+    return {k: v for k, v in r.items() if k != "error"} if host_error(r) else r
+
+
 def comparable(r: dict) -> dict:
+    r = without_host_error(r)
     try:
         import serve  # noqa: PLC0415  (referee/serve.py)
         return serve.comparable(r)
@@ -1159,7 +1170,7 @@ def exclusion(entry: dict, r: dict | None) -> str | None:
     # A nodeless pass's full-host replays run with error_log (Nodeless.PlayFull): "full host: N game error(s)" for any
     # error or first-chance exception. A full pass judges a fight's errors from the game log (log_errors: a visual
     # fault is kept, the game's own code throwing excludes), so a replay is judged the same way, not by that line.
-    if r.get("error") and not (str(r["error"]).startswith("full host: ") and r.get("steps")):
+    if r.get("error") and not host_error(r):
         return "game error: " + str(r["error"]).splitlines()[0][:160]
     if r.get("seed") != entry["spec"]["seed"]:
         return f"result seed {r.get('seed')} is not the spec's"
@@ -1341,9 +1352,9 @@ def judge_pair(entries: list[dict], pa: dict, pb: dict) -> dict:
             elif kept is None:
                 j["excluded"] = "unstable: the two recordings differ at " + first_difference(ra, rb)
             else:
-                j["result"], j["unsteady_flashes"] = kept
+                j["result"], j["unsteady_flashes"] = without_host_error(kept[0]), kept[1]
         else:
-            j["result"] = ra
+            j["result"] = without_host_error(ra)
         out[e["id"]] = j
     return out
 
@@ -1544,6 +1555,17 @@ def pass_results(rdir: Path, name: str, order: list[dict], diag: dict | None = N
     errors of recordings that do not stand (log_errors), by spec id."""
     out = rdir / f"pass-{name}.out.json"
     got = json.loads(out.read_text(encoding="utf-8"))["results"] if out.exists() else []
+    # serve.py's merged out file drops "cost"; its arrival file keeps each result's cost (the host it came from, a
+    # fallback's reason, an audit's verdict), by the pass's spec number.
+    arrival = rdir / f"pass-{name}" / "results.jsonl"
+    costs = {}
+    if arrival.exists():
+        for line in arrival.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                x = json.loads(line)
+                if x.get("_id") is not None and x.get("cost") is not None:
+                    costs[int(str(x["_id"]).rstrip("f"))] = x["cost"]
+    got = [dict(r, cost=costs[i]) if isinstance(r, dict) and "cost" not in r and i in costs else r for i, r in enumerate(got)]
     d: dict = {}
     errs = log_errors(rdir / f"pass-{name}", d)
     if diag is not None:
@@ -1645,6 +1667,9 @@ def build_index(entries: list[dict], judged: dict, stamp: dict) -> tuple[list[di
                 row[k] = j[k]
         if not j.get("excluded"):
             ra = dict(j["result"])
+            cost = ra.pop("cost", None) or {}  # (pass_results' diagnostics; a reference carries none, as before)
+            if cost.get("host"):
+                row["host"] = cost["host"]
             row["realism"] = realism(e, ra)
             ra["refset"] = {"id": e["id"], "part": e["part"], "stamp": stamp, "flags": row["flags"], "chooser": row["chooser"]}
             refs[e["part"]].append(ra)
@@ -1674,6 +1699,17 @@ def print_summary(report: dict) -> None:
               f"{b['flagged']} kept with realism flags {b['flags'] or ''}")
     for cell, b in report["summary"]["realistic_cells"].items():
         print(f"[refset]   {cell:<14} {b['specs']:>4} specs {b['kept']:>4} kept  excluded {b['excluded'] or 0}  flagged {b['flagged']}")
+
+
+def print_hosts(rep: dict) -> None:
+    if not rep:
+        return
+    print(f"[refset] full vs nodeless: {rep['identical']}/{rep['compared']} fights identical between the hosts "
+          f"({rep['identical_on_nodeless']} of them played nodeless; nodeless pass hosts {rep['nodeless_pass_hosts']}, "
+          f"fallbacks {rep['fallbacks']}, audits {rep['audits']}); {rep['differ']} differ ({rep['differ_flashes_only']} only in "
+          f"relic flashes); not compared {len(rep['not_compared'])}")
+    for d in rep["differences"][:60]:
+        print(f"  {d['id']} ({d['nodeless_host']}): {d['at']}; full retry same as a: {d['full_retry_same_as_a']}; {d['verdict']}"[:300])
 
 
 def record_pointer(subset: str, ids: str, limit: int) -> str | None:
@@ -1771,12 +1807,7 @@ def cmd_record(a) -> int:
     print(f"[refset] {len(entries)} fights recorded twice in {minutes:.1f} min ({len(retried)} retried after a wait limit), "
           f"driver {info['commit'][:12]} {','.join(lines[0].get('capabilities', []))}")
     print_summary(report)
-    if hosts_rep:
-        print(f"[refset] full vs nodeless: {hosts_rep['identical']}/{hosts_rep['compared']} fights identical between the hosts "
-              f"(nodeless pass hosts {hosts_rep['nodeless_pass_hosts']}, fallbacks {hosts_rep['fallbacks']}, audits "
-              f"{hosts_rep['audits']}); {hosts_rep['differ']} differ ({hosts_rep['differ_flashes_only']} only in relic flashes)")
-        for d in hosts_rep["differences"][:40]:
-            print(f"  {d['id']} ({d['nodeless_host']}): {d['at']}; full retry same as a: {d['full_retry_same_as_a']}; {d['verdict']}"[:300])
+    print_hosts(hosts_rep)
     print(f"[refset] references: {rdir}" + (" (a trial: refset_score --record <dir> scores it)" if trial else ""))
     return 0
 
@@ -1806,7 +1837,7 @@ def cmd_rejudge(a) -> int:
                if (before.get(r["id"]) or None) != (r.get("excluded") or None)]
     report = {"stamp": stamp, "fights": len(entries), "kept": sum(1 for r in index if "excluded" not in r),
               "summary": summarize(index), "excluded": [r for r in index if "excluded" in r], "index": index,
-              "changed": changed}
+              "changed": changed, "hosts": hosts_rep}
     (rdir / "record.rejudged.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     if a.write:
         # The record itself, judged again: references and record.json rewritten from the same passes (the first
@@ -1818,6 +1849,7 @@ def cmd_rejudge(a) -> int:
         write_record(rdir, a, parts, entries, judged, retried, stamp, old.get("minutes", 0), old.get("passes", {}), None, hosts_rep)
         print(f"[refset] {rdir / 'record.json'} and its references rewritten")
     print(f"[refset] {rdir.name} judged again: {old['kept']} -> {report['kept']} kept of {len(entries)}; {len(changed)} verdicts changed")
+    print_hosts(hosts_rep)
     for c in changed:
         print(f"  {c['id']}: was {c['was'] or 'kept'} | now {c['now'] or 'kept'}"[:300])
     print_summary(report)

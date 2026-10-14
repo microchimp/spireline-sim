@@ -548,6 +548,13 @@ class GameLog(unittest.TestCase):
         self.assertIn("game error", refset.exclusion(e, result(err="nodeless: cancellation not checked")))
         self.assertEqual(refset.cause_of("game error: nodeless: x"), "nodeless_host")
 
+    def test_a_replays_error_log_line_is_no_difference_and_leaves_the_reference(self) -> None:
+        e = {"id": "X", "spec": {"seed": "S", "setup": []}}
+        full, replay = result(), result(err="full host: 4 game error(s); first: exception: ObjectDisposedException")
+        j = refset.judge_pair([e], {"X": (replay, None)}, {"X": (full, None)})["X"]
+        self.assertNotIn("excluded", j)
+        self.assertNotIn("error", j["result"])
+
     def test_a_difference_between_the_hosts_is_retried_on_the_full_host(self) -> None:
         e = {"id": "X", "spec": {"seed": "S", "setup": []}}
         full, nl = result(), result()
