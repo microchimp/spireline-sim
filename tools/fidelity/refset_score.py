@@ -524,7 +524,8 @@ def main() -> int:
             return 2
         not_quotable.append("record made by an unchecked driver")
     nm = fc.names(json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8")))
-    work = vdir / "scores" / "work"
+    # One work directory per score run: two scores at once (a pilot and a trial) never share EmuDump's files.
+    work = vdir / "scores" / "work" / f"{subset}-{os.getpid()}"
     work.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     verdicts = []
@@ -607,6 +608,10 @@ def main() -> int:
         print("  vs " + prev["label"] + ": " + delta(prev["headline"], head))
     print(render_table(score))
     print(f"  stored {sdir / (subset + '-' + name + '.json')}")
+    try:
+        work.rmdir()  # empty once every part's files are read and removed
+    except OSError:
+        pass
     return 0
 
 
