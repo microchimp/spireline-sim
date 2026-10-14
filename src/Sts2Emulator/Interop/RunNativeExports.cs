@@ -594,9 +594,9 @@ public static class RunNativeExports
         rewards[0] = state.RewardGold;
         rewards[1] = state.RewardPotion;
         rewards[2] = state.RelicReward;
-        // How many CARD items the screen holds, not whether it holds one: Kaleidoscope
-        // puts two there at once.
-        rewards[3] = (state.RewardCardPending ? 1 : 0) + state.PendingOtherCharacterCardRewards;
+        // How many CARD items the screen holds, not whether it holds one. The action mask
+        // offers exactly this many after the other items, so the two are one count.
+        rewards[3] = RunRewardGenerator.CardItemCount(state);
         int count = Math.Min(rewards.Length, output.Length);
         rewards[..count].CopyTo(output);
         return rewards.Length;

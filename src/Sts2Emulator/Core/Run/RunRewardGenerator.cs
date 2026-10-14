@@ -630,6 +630,23 @@ public static partial class RunRewardGenerator
         RunNonCombatEffects.AddNeowsBonesCurse(state);
     }
 
+    /// <summary>
+    /// How many card items the rewards screen offers: one slot for the card offer on the card
+    /// screen or, when none is, the head of the queue; then the counted other-character rewards.
+    /// </summary>
+    /// <remarks>
+    /// The action mask (<c>WriteRewardActionMask</c>) and the state list a driver reads the screen
+    /// from (<c>Sts2Run_GetStateList</c>, list 6) both take their card items from here, and
+    /// <see cref="ClaimRewardAtIndex" /> walks the same slots. They were separate copies, and the
+    /// list kept the old one when Kaleidoscope's rewards moved from the counter to the queue
+    /// (154c8dd2): after the first card was picked the mask offered the second reward while the
+    /// list said the screen held no card, so a driver that reads the list left the screen with it
+    /// unclaimed.
+    /// </remarks>
+    public static int CardItemCount(RunState state) =>
+        (state.RewardCardPending || state.PendingCardOffers.Count > 0 ? 1 : 0)
+        + state.PendingOtherCharacterCardRewards;
+
     public static bool HasPendingRewards(RunState state)
     {
         return state.RewardGold != 0

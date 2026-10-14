@@ -6199,16 +6199,8 @@ public sealed class RunEngine
             SetMask(mask, action++);
         }
 
-        if (State.RewardCardPending)
-        {
-            SetMask(mask, action++);
-        }
-        else if (State.PendingCardOffers.Count > 0)
-        {
-            SetMask(mask, action++);
-        }
-
-        for (int i = 0; i < State.PendingOtherCharacterCardRewards; i++)
+        // The same count the state list reports (`RunRewardGenerator.CardItemCount`).
+        for (int i = 0; i < RunRewardGenerator.CardItemCount(State); i++)
         {
             SetMask(mask, action++);
         }
