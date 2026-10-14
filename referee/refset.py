@@ -4,6 +4,7 @@
     python -I referee/refset.py build   [--version v2] [--realistic 600] [--codex <runs.jsonl.gz>]
     python -I referee/refset.py record  [--version v2] [--subset all|pilot] [--parts realistic,coverage,regression]
                                         [--game D:/spireline/referee/game-refset] [--servers 3] [--label <name>]
+                                        [--nodeless-pass none|a|b]   (one pass on the stripped-down game)
     python -I referee/refset.py rejudge [--version v2] --record <record dir>     (judge saved passes again)
     python -I referee/refset.py status  [--version v2]
     python -m tools.fidelity.refset_score --version v2 [--subset pilot] --emu <emulator checkout>   (the numbers)
@@ -107,7 +108,8 @@ def git_commit(path: Path) -> dict:
     def g(*args):
         return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=False).stdout.strip()
     return {"commit": g("rev-parse", "HEAD"), "branch": g("rev-parse", "--abbrev-ref", "HEAD"),
-            "dirty": bool(g("status", "--porcelain", "--untracked-files=no"))}
+            # Untracked files count: a build compiles every source file in the tree, tracked or not.
+            "dirty": bool(g("status", "--porcelain", "--untracked-files=all"))}
 
 
 def vdir(version: str) -> Path:
@@ -812,9 +814,11 @@ REGRESSION_CLASSES = [
     ("factory potion roll: Alchemize", "FINDINGS / triage generation", ["ALCHEMIZE"], [], [], None, [], ["7LMBLSSF3M", "MX1GNK7KGX"]),
     ("random pile placement: Capture Spirit's Souls", "FINDINGS / triage generation", ["CAPTURE_SPIRIT"], [], [], None, [], ["Q91FAC7EJB"]),
     ("hook order: Thorns after the damage is fixed (Rupture)", "FINDINGS / triage enemy-effects", ["STRIKE_IRONCLAD", "RUPTURE"], [], [], "TOADPOLES_WEAK", [], ["P70F1RFA2Y"]),
-    # Thorns 15, so an attacker dies to it inside its own attack (where the game's ThornsPower, before the blow, and
-    # the emulator's, after it, differ); at 3 a 48 HP Nibbit never does.
-    ("hook order: the player's Thorns before an enemy hit lands (open)", "FINDINGS 2026-10-13", ["DEFEND_IRONCLAD"], [], [], "NIBBITS_NORMAL", [("THORNS_POWER", 15, "player")], []),
+    # Thorns 15 against Toadpoles (22-26 HP at A10, Spike Spit 3 hits): the game's ThornsPower strikes back before
+    # each blow and AttackCommand stops the hits once the attacker is dead, so a Toadpole dies after its first or
+    # second hit; the emulator's DealAttack lands every hit and its Thorns after each. A Nibbit's single hit lands
+    # either way, so the old Nibbit setup never reached the bug.
+    ("hook order: the player's Thorns before an enemy hit lands (open)", "FINDINGS 2026-10-13", ["DEFEND_IRONCLAD"], [], [], "TOADPOLES_WEAK", [("THORNS_POWER", 15, "player")], []),
     ("hidden counter: Inferno's self damage", "triage powers-a", ["INFERNO"], [], [], None, [], ["J1XUUAW07A"]),
     ("hidden counter: Crimson Mantle", "triage powers-a", ["CRIMSON_MANTLE"], [], [], None, [], ["S37M8GW3NE"]),
     ("hidden counter: The Bomb", "triage powers-a / night04", ["THE_BOMB"], [], [], None, [], ["2YCT30W7AY", "CDE3SPM32Z"]),
@@ -909,8 +913,7 @@ def regression_specs(t: Tables) -> list[dict]:
                     "chooser_seed": 7700 + n, "max_actions": MAX_ACTIONS, "use_potions": True, "setup": items,
                     "chooser": "random", "relic_flashes": True, "tag": f"regression:{name}"}
             out.append({"id": f"G{n + 1:03d}-{spec['seed']}", "part": "regression", "class": name, "source": source,
-                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES,
-                                                                             kill=name in KILL_CLASSES),
+                        "class_kind": class_kind(name), "trigger": class_trigger(name),
                         "reason": f"minimal setup for the divergence class '{name}' ({source})", "chooser": "random",
                         "expect_act": t.encounters[enc or plain][0] if act > 1 else None,
                         "flags": ["cross_character"] if cross else [], "spec": spec})
@@ -924,8 +927,7 @@ def regression_specs(t: Tables) -> list[dict]:
             spec["tag"] = f"regression-original:{name}"
             spec["relic_flashes"] = True
             out.append({"id": f"G{n + 1:03d}o-{s}", "part": "regression", "class": name, "source": f"{source}; original {src}",
-                        "class_kind": class_kind(name), "trigger": trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES,
-                                                                             kill=name in KILL_CLASSES),
+                        "class_kind": class_kind(name), "trigger": class_trigger(name),
                         "reason": f"the fight that found '{name}', re-recorded with the fixed driver",
                         "chooser": "script" if spec.get("script") else spec.get("chooser", "random"), "flags": [], "spec": spec})
     return out
@@ -935,13 +937,32 @@ FILLER_CARDS = {"STRIKE_IRONCLAD", "DEFEND_IRONCLAD"}
 # Classes about a relic's pickup itself (what it rolls or asks for as it is obtained), not about it in a fight: their
 # trigger is the relic obtained by the setup, held at the fight's start.
 PICKUP_CLASSES = {"potion roll without repeats: Phial Holster", "selection count: Kifuda / Gnarled Hammer take 0 to 3 cards"}
-# Classes about a player power that strikes back as an enemy attacks: reached only when an attacker died inside its own
-# turn against that power (the blow the game resolves the power before), not merely when it attacked into it.
+# Classes about a player power that strikes back per hit as an enemy attacks: reached only when a multi-hit attacker
+# with HP low enough for the power alone to kill it before its last hit died in that enemy turn (the game stops the
+# attack there; the hits after are the case the open bug is about), not merely when it attacked into the power or died.
 KILL_CLASSES = {"hook order: the player's Thorns before an enemy hit lands (open)"}
+# Classes whose trigger is not one of their setup's cards, relics, potions or powers: what one of their recorded game
+# fights must show for a pass to count (refset_score.evidence). No class is reached by a plain replay.
+CLASS_TRIGGERS = {
+    "power on play: Tank": {"plays": ["TANK"]},
+    "fight start: opening draw": {"opening_hand": True},
+    "end of turn: discard pile order": {"end_turn_discard": 2},
+    "end of turn: enemy moves": {"enemy_turn": True},
+    "end of turn: CombatTargets stream": {"rng_end_turn": ["CombatTargets"]},
+    "end of turn: hand after the draw": {"end_turn_draw": True},
+    "end of turn: MonsterAi stream": {"rng_end_turn": ["MonsterAi"]},
+    "run start: Neow's Bones nested rewards": {"neow": ["NEOWS_BONES"]},
+    "room type: elites outside the hand-written list (Soul Nexus)": {"encounter": ["SOUL_NEXUS_ELITE"]},
+    "monster start: Turret Operator's Rampart": {"encounter": ["TURRET_OPERATOR_WEAK"], "enemy_powers_start": ["RAMPART_POWER"]},
+    "monster classes: Decimillipede segments": {"encounter": ["DECIMILLIPEDE_ELITE"]},
+}
 
 
 def class_trigger(name: str) -> dict | None:
-    """The trigger of a regression class by name, from REGRESSION_CLASSES (the manifest keeps a copy)."""
+    """The trigger of a regression class by name: CLASS_TRIGGERS, else from its REGRESSION_CLASSES entry (the manifest
+    keeps a copy)."""
+    if name in CLASS_TRIGGERS:
+        return dict(CLASS_TRIGGERS[name])
     for cname, _, cards, relics, potions, _, powers, _ in REGRESSION_CLASSES:
         if cname == name:
             return trigger_of(cards, relics, potions, powers, pickup=name in PICKUP_CLASSES, kill=name in KILL_CLASSES)
@@ -957,7 +978,8 @@ def trigger_of(cards: list, relics: list, potions: list, powers: list, pickup: b
     """What a fight of the class must show for its pass to count (refset_score): one of the class's own cards
     played (the fillers count only when they are all the class has), its relic fired (a flash; for a pickup class,
     obtained and held at the start), its potion used, its power up when an enemy's attack lands (for a kill class:
-    and an attacker died in its own turn against it). A class with none of these is reached by replaying its fight."""
+    and a multi-hit attacker the power alone kills before its last hit died in that turn). A class with none of these
+    has its trigger in CLASS_TRIGGERS; {"replay": True} is never evidence (refset_score.trigger_reached)."""
     own = [c for c in cards if c not in FILLER_CARDS] or list(cards)
     out = {}
     if own:
@@ -969,7 +991,7 @@ def trigger_of(cards: list, relics: list, potions: list, powers: list, pickup: b
     if powers:
         out["powers_hit"] = sorted({p for p, _, tg in powers if tg == "player"})
         if kill:
-            out["attacker_killed"] = out["powers_hit"]
+            out["attacker_killed_midattack"] = out["powers_hit"]
     return out or {"replay": True}
 
 
@@ -1134,7 +1156,10 @@ def exclusion(entry: dict, r: dict | None) -> str | None:
     """Why a recording cannot be a reference (game-side trouble), or None."""
     if not r:
         return "no result (server produced none)"
-    if r.get("error"):
+    # A nodeless pass's full-host replays run with error_log (Nodeless.PlayFull): "full host: N game error(s)" for any
+    # error or first-chance exception. A full pass judges a fight's errors from the game log (log_errors: a visual
+    # fault is kept, the game's own code throwing excludes), so a replay is judged the same way, not by that line.
+    if r.get("error") and not (str(r["error"]).startswith("full host: ") and r.get("steps")):
         return "game error: " + str(r["error"]).splitlines()[0][:160]
     if r.get("seed") != entry["spec"]["seed"]:
         return f"result seed {r.get('seed')} is not the spec's"
@@ -1163,9 +1188,18 @@ def exclusion(entry: dict, r: dict | None) -> str | None:
 # Why a fight is not a reference, as counted in the record and the score: the first word of its exclusion. A fight
 # that killed or stalled two servers (serve.py "stalled": a crash, a run-start exception or the driver's watchdog
 # seeing no progress) is not a logged game error: its own cause.
-CAUSES = (("setup:", "setup"), ("game error: stalled", "stalled"), ("game error", "game_error"), ("the game logged an error", "game_error"),
-          ("unstable", "unstable"), ("after a faulted fight", "neighbour_fault"), ("no result", "no_result"),
-          ("result seed", "no_result"), ("no steps", "no_result"), ("game log", "log_uncut"))
+CAUSES = (("setup:", "setup"), ("game error: stalled", "stalled"), ("game error: nodeless", "nodeless_host"),
+          ("game error", "game_error"), ("the game logged an error", "game_error"),
+          ("unstable", "unstable"), ("host difference", "host_difference"), ("after a faulted fight", "neighbour_fault"),
+          ("no result", "no_result"), ("result seed", "no_result"), ("no steps", "no_result"), ("game log", "log_uncut"))
+# The job keys of a pass on the stripped-down game (driver/Nodeless.cs: no NRun scene; a fight whose models need
+# nodes, or whose nodeless attempt logged an error, is replayed on the full host; 5% of the others are audited there).
+NODELESS_JOB = {"nodeless": True, "nodeless_on_error": "full", "nodeless_audit": 0.05}
+
+
+def host_of(r: dict | None) -> str:
+    """Which host a recording came from: "nodeless", "full" (a nodeless pass's fallback or a full pass), "" unknown."""
+    return str(((r or {}).get("cost") or {}).get("host") or "")
 
 
 def cause_of(excluded: str) -> str:
@@ -1186,28 +1220,58 @@ def realism(entry: dict, r: dict) -> dict:
             if entry.get("neow_relic") else None}
 
 
-def log_errors(run_dir: Path) -> dict[int, list]:
+def _fight_of(r: dict) -> tuple[int | None, str] | None:
+    """(the pass's spec number, role) of one server result line, or None for a line with no fight of its own in the
+    log: a server's "_retire" line (Server.cs), or a nodeless line sent to the full host before it played
+    (Nodeless.Play: a fallback model in the spec, "_full" with no steps). Roles: "plain" (the result), "attempt" (a
+    nodeless line the pool replays on the full host: "_full"), "replay" (that full-host replay, id "<n>f")."""
+    rid = r.get("_id")
+    if rid is None:
+        # A line without an _id (a spec the server could not read) still had its fight's log, if any.
+        return None if r.get("_retire") else (None, "plain")
+    rid = str(rid)
+    if rid.endswith("f"):
+        return int(rid[:-1]), "replay"
+    if r.get("_full"):
+        return (int(rid), "attempt") if "steps" in r else None
+    return int(rid), "plain"
+
+
+def log_errors(run_dir: Path, diag: dict | None = None) -> dict[int, list]:
     """The game's own [ERROR] lines per fight of one pass, by the fight's place in the pass (0-based, as serve.py
     numbers the specs: a result line's "_id"): each server's log is cut at the driver's Neow line, one per fight, in
-    the order of the server's result lines."""
+    the order of the server's result lines. On a nodeless pass (driver/Nodeless.cs, the pool's full-host lane) a
+    fight's errors are those of the recording that stands: a fallback's full-host replay ("<n>f"), an audited fight's
+    nodeless one. The others (a fallback's nodeless attempt, an audit's full-host replay) go to diag
+    {"nodeless_attempt" | "audit_replay": {n: errors}} when it is given."""
     out: dict[int, list] = {}
+    servers = []
+    why: dict[int, str] = {}  # spec number -> "fallback" | "audit", from the nodeless line the pool replayed
     for res in sorted((run_dir / "out").glob("s*.jsonl")):
-        ids: list[int | None] = []
-        for line in res.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                # A line without an _id (a spec the server could not read) still had its fight's log, if any.
-                rid = json.loads(line).get("_id")
-                ids.append(None if rid is None else int(rid))
+        rows = [json.loads(x) for x in res.read_text(encoding="utf-8").splitlines() if x.strip()]
+        for r in rows:
+            if r.get("_full") and r.get("_id") is not None:
+                why[int(str(r["_id"]).rstrip("f"))] = (r["_full"] or {}).get("why", "fallback")
+        servers.append((res, [f for f in map(_fight_of, rows) if f is not None]))
+
+    def put(i: int | None, role: str, errs: list) -> None:
+        if i is None:
+            return
+        stands = role == "plain" or (role == "attempt" and why.get(i) == "audit") or (role == "replay" and why.get(i) != "audit")
+        if stands:
+            out[i] = errs
+        elif diag is not None:
+            diag.setdefault("nodeless_attempt" if role == "attempt" else "audit_replay", {})[i] = errs
+    for res, fights in servers:
         log = run_dir / "scratch" / res.stem / "game-stdout.log"
         lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.exists() else []
         starts = [k for k, x in enumerate(lines) if x.startswith("[referee] neow options")]
-        if len(starts) != len(ids):
-            for i in ids:
-                if i is not None:
-                    out[i] = [["the game log cannot be cut into this server's fights", "", "uncut"]]
+        if len(starts) != len(fights):
+            for i, role in fights:
+                put(i, role, [["the game log cannot be cut into this server's fights", "", "uncut"]])
             continue
         before: set = set()
-        for n, i in enumerate(ids):
+        for n, (i, role) in enumerate(fights):
             seg = lines[starts[n]:starts[n + 1] if n + 1 < len(starts) else len(lines)]
             errs = []
             for k, x in enumerate(seg):
@@ -1221,8 +1285,8 @@ def log_errors(run_dir: Path) -> dict[int, list]:
                     # (The game spells one Nodes namespace "MegaCrit.sts2.Core.Nodes.TopBar": compare without case.)
                     errs.append([*sig, frame.lower().startswith("megacrit.sts2.core.nodes.") or ("leaked" if sig in before else False)])
             before = {(x[0], x[1]) for x in errs} | (before if any(x[2] == "leaked" for x in errs) else set())
-            if errs and i is not None:
-                out[i] = errs
+            if errs:
+                put(i, role, errs)
     return out
 
 
@@ -1268,7 +1332,12 @@ def judge_pair(entries: list[dict], pa: dict, pb: dict) -> dict:
             j["retry"] = "idle_timeout" in why
         elif comparable(ra) != comparable(rb):
             kept = steady_flashes(ra, rb)
-            if kept is None:
+            if kept is None and "nodeless" in (host_of(ra), host_of(rb)):
+                # The full game and the stripped-down one disagree: a host difference, not the game's instability
+                # until two more full-host recordings say so (passes c and d).
+                j["excluded"] = "host difference: the full and the nodeless recordings differ at " + first_difference(ra, rb)
+                j["retry"] = True
+            elif kept is None:
                 j["excluded"] = "unstable: the two recordings differ at " + first_difference(ra, rb)
             else:
                 j["result"], j["unsteady_flashes"] = kept
@@ -1278,10 +1347,12 @@ def judge_pair(entries: list[dict], pa: dict, pb: dict) -> dict:
     return out
 
 
-def play_pass(specs: list[dict], game: str, servers: int, run_dir: Path, out: Path, timeout: float, build: Path) -> tuple[list, dict]:
+def play_pass(specs: list[dict], game: str, servers: int, run_dir: Path, out: Path, timeout: float, build: Path,
+              jopts: dict | None = None) -> tuple[list, dict]:
+    """One pass through serve.py; jopts are job keys for every server (NODELESS_JOB: the stripped-down game)."""
     job = run_dir.with_suffix(".job.json")
     run_dir.parent.mkdir(parents=True, exist_ok=True)
-    job.write_text(json.dumps({"runs": [e["spec"] for e in specs]}), encoding="utf-8")
+    job.write_text(json.dumps({"runs": [e["spec"] for e in specs], **(jopts or {})}), encoding="utf-8")
     cmd = [sys.executable, str(HERE / "serve.py"), "--game", game, "--specs", str(job), "--servers", str(servers),
            "--spares", "0", "--run-dir", str(run_dir), "--out", str(out), "--timeout", str(int(timeout)), "--build", str(build)]
     print(f"[refset] {run_dir.name}: {len(specs)} fights on {servers} servers", flush=True)
@@ -1467,12 +1538,62 @@ def driver_runtime_problems(lines: list[dict], head: str) -> list[str]:
 
 # ---------------------------------------------------------------- record and judge
 
-def pass_results(rdir: Path, name: str, order: list[dict]) -> dict:
-    """{spec id: (result, the game's errors)} of one recorded pass, results by their place in the pass."""
+def pass_results(rdir: Path, name: str, order: list[dict], diag: dict | None = None) -> dict:
+    """{spec id: (result, the game's errors)} of one recorded pass, results by their place in the pass; diag gets the
+    errors of recordings that do not stand (log_errors), by spec id."""
     out = rdir / f"pass-{name}.out.json"
     got = json.loads(out.read_text(encoding="utf-8"))["results"] if out.exists() else []
-    errs = log_errors(rdir / f"pass-{name}")
+    d: dict = {}
+    errs = log_errors(rdir / f"pass-{name}", d)
+    if diag is not None:
+        for kind, by_n in d.items():
+            diag.setdefault(kind, {}).update({order[n]["id"]: v for n, v in by_n.items() if n < len(order)})
     return {e["id"]: (got[i] if i < len(got) else None, errs.get(i)) for i, e in enumerate(order)}
+
+
+def host_report(entries: list[dict], passes: dict, judged: dict, hosts: dict, diag: dict) -> dict:
+    """The full game against the stripped-down one, fight by fight (pass a against the nodeless pass): which host
+    each nodeless-pass recording came from (fallbacks by reason, audits), how many fights are identical between the
+    hosts, and every difference with its first differing step and what the full-host retries (c, d) found."""
+    nl = next((n for n, h in hosts.items() if h == "nodeless"), None)
+    full = next((n for n, h in hosts.items() if h == "full" and n in ("a", "b")), None)
+    if not nl or not full:
+        return {}
+    by_host, fallbacks, audits = collections.Counter(), collections.Counter(), collections.Counter()
+    same, same_nodeless, flashes_only, diffs, missing = 0, 0, 0, [], []
+    for e in entries:
+        rf, _ = passes[full].get(e["id"], (None, None))
+        rn, _ = passes[nl].get(e["id"], (None, None))
+        cost = (rn or {}).get("cost") or {}
+        host = host_of(rn) or "none"
+        by_host[host] += 1
+        if cost.get("fallback"):
+            fallbacks[str(cost["fallback"]).split(":")[0][:60]] += 1
+        if isinstance(cost.get("audit"), dict):
+            a = cost["audit"]
+            audits["same" if a.get("same") else ("not replayed" if a.get("same") is None else "differ")] += 1
+        if not rf or not rn or not rf.get("steps") or not rn.get("steps"):
+            missing.append(e["id"])
+            continue
+        if comparable(rf) == comparable(rn):
+            same += 1
+            same_nodeless += host == "nodeless"
+            continue
+        if steady_flashes(rf, rn) is not None:
+            flashes_only += 1
+        j = judged.get(e["id"], {})
+        rc = passes.get("c", {}).get(e["id"], (None, None))[0]
+        diffs.append({"id": e["id"], "nodeless_host": host, "at": first_difference(rf, rn),
+                      "flashes_only": steady_flashes(rf, rn) is not None,
+                      "full_retry_same_as_a": (comparable(rc) == comparable(rf)) if rc and rc.get("steps") else None,
+                      "verdict": j.get("excluded") or "kept"})
+    compared = len(entries) - len(missing)
+    return {"full_pass": full, "nodeless_pass": nl, "fights": len(entries), "nodeless_pass_hosts": dict(by_host),
+            "fallbacks": dict(fallbacks), "audits": dict(audits), "compared": compared, "identical": same,
+            "identical_on_nodeless": same_nodeless,
+            "differ": len(diffs), "differ_flashes_only": flashes_only, "differences": diffs, "not_compared": missing,
+            "nodeless_attempt_errors": {k: v[:3] for k, v in (diag.get("nodeless_attempt") or {}).items()},
+            "audit_replay_errors": {k: v[:3] for k, v in (diag.get("audit_replay") or {}).items()}}
 
 
 def judge_passes(entries: list[dict], passes: dict) -> tuple[dict, list[str]]:
@@ -1531,14 +1652,14 @@ def build_index(entries: list[dict], judged: dict, stamp: dict) -> tuple[list[di
 
 
 def write_record(rdir: Path, a, parts: list[str], entries: list[dict], judged: dict, retry: list, stamp: dict,
-                 minutes: float, passes_summary: dict, latest_name: str | None) -> dict:
+                 minutes: float, passes_summary: dict, latest_name: str | None, hosts: dict | None = None) -> dict:
     index, refs = build_index(entries, judged, stamp)
     for part in parts:
         (rdir / f"{part}.refs.json").write_text(json.dumps({"refset": stamp, "results": refs.get(part, [])}), encoding="utf-8")
     kept = sum(1 for r in index if "excluded" not in r)
     report = {"stamp": stamp, "minutes": round(minutes, 1), "fights": len(entries), "kept": kept,
               "summary": summarize(index), "excluded": [r for r in index if "excluded" in r], "index": index,
-              "retried": len(retry), "passes": passes_summary}
+              "retried": len(retry), "passes": passes_summary, "hosts": hosts or {}}
     (rdir / "record.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     if latest_name:
         latest = vdir(a.version) / latest_name
@@ -1599,11 +1720,16 @@ def cmd_record(a) -> int:
     t0 = time.time()
     orders = {"a": entries, "b": list(reversed(entries))}
     summaries = {}
+    # Which game each pass runs: the full game, or (--nodeless-pass) the stripped-down one for one of the two, so the
+    # record also checks the stripped-down game against the full one fight by fight. Retries are on the full game.
+    hosts = {n: ("nodeless" if a.nodeless_pass == n else "full") for n in ("a", "b", "c", "d")}
+    stamp["hosts"] = {n: hosts[n] for n in ("a", "b")} | ({"nodeless_job": NODELESS_JOB} if a.nodeless_pass != "none" else {})
     # Two passes: in spec order, then reversed (other neighbours on other servers).
     for name in ("a", "b"):
         _, summaries[name] = play_pass(orders[name], a.game, a.servers, rdir / f"pass-{name}", rdir / f"pass-{name}.out.json",
-                                       a.timeout, build)
-    passes = {n: pass_results(rdir, n, orders[n]) for n in ("a", "b")}
+                                       a.timeout, build, NODELESS_JOB if hosts[name] == "nodeless" else None)
+    diag: dict = {}
+    passes = {n: pass_results(rdir, n, orders[n], diag) for n in ("a", "b")}
     first = judge_pair(entries, passes["a"], passes["b"])
     # A fight that only hit a driver wait limit (idle_timeout), with no error of its own in the game's log, is
     # recorded twice more on fresh servers: the timeout is often a neighbour's doing (a fight whose game code threw
@@ -1617,6 +1743,7 @@ def cmd_record(a) -> int:
             passes[name] = pass_results(rdir, name, orders[name])
     (rdir / "orders.json").write_text(json.dumps({n: [e["id"] for e in o] for n, o in orders.items()}), encoding="utf-8")
     judged, retried = judge_passes(entries, passes)
+    hosts_rep = host_report(entries, passes, first, hosts, diag)
     minutes = (time.time() - t0) / 60
     for name, summ in summaries.items():
         if summ.get("network_connections") or summ.get("real_profile_touched") is not False:
@@ -1637,11 +1764,18 @@ def cmd_record(a) -> int:
     stamp["driver_build"] = lines[0]
     report = write_record(rdir, a, parts, entries, judged, retried, stamp, minutes,
                           {n: {k: summ.get(k) for k in ("fights", "wall_s", "s_per_fight_per_server", "fights_per_min", "restarts",
-                                                        "errors", "exit")} for n, summ in summaries.items()},
-                          record_pointer(a.subset, a.ids, a.limit))
+                                                        "retired", "errors", "full_lane", "full_replays", "audit_diffs", "exit")}
+                           for n, summ in summaries.items()},
+                          record_pointer(a.subset, a.ids, a.limit), hosts_rep)
     print(f"[refset] {len(entries)} fights recorded twice in {minutes:.1f} min ({len(retried)} retried after a wait limit), "
           f"driver {info['commit'][:12]} {','.join(lines[0].get('capabilities', []))}")
     print_summary(report)
+    if hosts_rep:
+        print(f"[refset] full vs nodeless: {hosts_rep['identical']}/{hosts_rep['compared']} fights identical between the hosts "
+              f"(nodeless pass hosts {hosts_rep['nodeless_pass_hosts']}, fallbacks {hosts_rep['fallbacks']}, audits "
+              f"{hosts_rep['audits']}); {hosts_rep['differ']} differ ({hosts_rep['differ_flashes_only']} only in relic flashes)")
+        for d in hosts_rep["differences"][:40]:
+            print(f"  {d['id']} ({d['nodeless_host']}): {d['at']}; full retry same as a: {d['full_retry_same_as_a']}; {d['verdict']}"[:300])
     print(f"[refset] references: {rdir}" + (" (a trial: refset_score --record <dir> scores it)" if trial else ""))
     return 0
 
@@ -1659,8 +1793,11 @@ def cmd_rejudge(a) -> int:
         if job.exists():
             orders[n] = [by_seed[s["seed"]] for s in json.loads(job.read_text(encoding="utf-8"))["runs"]]
     entries = [by_seed[r["seed"]] for r in old["index"]]
-    passes = {n: pass_results(rdir, n, o) for n, o in orders.items()}
+    diag: dict = {}
+    passes = {n: pass_results(rdir, n, o, diag) for n, o in orders.items()}
     judged, retried = judge_passes(entries, passes)
+    hosts = {n: "full" for n in ("a", "b", "c", "d")} | (old["stamp"].get("hosts") or {})
+    hosts_rep = host_report(entries, passes, judge_pair(entries, passes["a"], passes["b"]), hosts, diag)
     stamp = dict(old["stamp"]) | {"rejudged": time.strftime("%Y-%m-%d %H:%M"), "rejudged_by": git_commit(ROOT)}
     index, _ = build_index(entries, judged, stamp)
     before = {r["id"]: r.get("excluded") for r in old["index"]}
@@ -1677,7 +1814,7 @@ def cmd_rejudge(a) -> int:
         if not first.exists():
             first.write_text(json.dumps(old, indent=1), encoding="utf-8")
         parts = list(dict.fromkeys(e["part"] for e in entries))
-        write_record(rdir, a, parts, entries, judged, retried, stamp, old.get("minutes", 0), old.get("passes", {}), None)
+        write_record(rdir, a, parts, entries, judged, retried, stamp, old.get("minutes", 0), old.get("passes", {}), None, hosts_rep)
         print(f"[refset] {rdir / 'record.json'} and its references rewritten")
     print(f"[refset] {rdir.name} judged again: {old['kept']} -> {report['kept']} kept of {len(entries)}; {len(changed)} verdicts changed")
     for c in changed:
@@ -1716,7 +1853,9 @@ def main() -> int:
     r.add_argument("--subset", choices=("all", "pilot"), default="all")
     r.add_argument("--parts", default=",".join(PARTS), help="realistic,coverage,regression and/or runs (whole runs: needs the run referee driver)")
     r.add_argument("--game", default=GAME)
-    r.add_argument("--servers", type=int, default=3, help="game processes (at most 3 on this PC)")
+    r.add_argument("--servers", type=int, default=3, help="game processes (at most 6 on this PC)")
+    r.add_argument("--nodeless-pass", choices=("none", "a", "b"), default="none",
+                   help="record this pass on the stripped-down game (NODELESS_JOB), the other on the full game")
     r.add_argument("--build", default=str(DRIVER_BUILD))
     r.add_argument("--timeout", type=float, default=6 * 3600)
     r.add_argument("--label", default=None)
@@ -1729,8 +1868,8 @@ def main() -> int:
     j.add_argument("--record", required=True, help="the record directory (record/<subset>-<label>)")
     j.add_argument("--write", action="store_true", help="rewrite the record's references and record.json from the new judgement")
     a = ap.parse_args()
-    if a.cmd == "record" and a.servers > 3:
-        ap.error("at most 3 game processes")
+    if a.cmd == "record" and a.servers > 6:
+        ap.error("at most 6 game processes")
     return {"build": cmd_build, "record": cmd_record, "status": cmd_status, "rejudge": cmd_rejudge}[a.cmd](a)
 
 

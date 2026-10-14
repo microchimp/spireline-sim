@@ -81,7 +81,9 @@ def git_commit(path: Path) -> dict:
     def g(*args):
         return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=False).stdout.strip()
     return {"commit": g("rev-parse", "HEAD"), "branch": g("rev-parse", "--abbrev-ref", "HEAD"),
-            "dirty": bool(g("status", "--porcelain", "--untracked-files=no"))}
+            # Untracked files count: EmuDump's build compiles every .cs file below its project, tracked or not, so a
+            # checkout holding an untracked source is not its commit.
+            "dirty": bool(g("status", "--porcelain", "--untracked-files=all"))}
 
 
 # What EmuDump.dll is built from (tools/emudump/EmuDump.csproj and its project reference), below the checkout.
@@ -171,13 +173,28 @@ def label(action: dict | None) -> str:
     return "END_TURN" if k == "end_turn" else ("POTION:" + action.get("potion", "?") if k == "potion" else action.get("card", "?"))
 
 
+def _alive(enemies) -> list:
+    return [e for e in enemies or [] if e.get("hp", 0) > 0]
+
+
+def _hits(intent) -> int:
+    """Hits of an attack intent ([type, base damage per hit, hits], Combat.cs Intents), else 0."""
+    if isinstance(intent, list) and intent and str(intent[0]).startswith("Attack"):
+        return int(intent[2]) if len(intent) > 2 and isinstance(intent[2], (int, float)) else 1
+    return 0
+
+
 def evidence(g: dict, ok_steps: set) -> dict:
     """What the recorded game fight shows happening, each with whether the emulator reproduced that step: card plays
     by variant, potion uses, relic flashes (the game's own "this relic did something"), the player's powers up
-    when an enemy with an attack intent took its turn (Combat.cs end_turn steps), and those up when such a turn
-    also left fewer enemies alive (an attacker died in its own turn: Thorns before the blow)."""
+    when an enemy with an attack intent took its turn (Combat.cs end_turn steps), and those up when a MULTI-HIT
+    attacker whose HP that power alone takes away before its last hit (HP <= amount x (hits - 1)) died in that turn
+    (the game stops the attack there: Thorns before the blow). Also what the classes in refset.CLASS_TRIGGERS need:
+    the opening hand, the largest hand an end of turn discarded, enemy turns, the RNG streams an end of turn moved,
+    the draws after an end of turn, the Neow pick, the enemies' powers at the start."""
     steps = g.get("steps", [])
     plays, uses, powers_hit, killed = [], [], set(), set()
+    discard_max, enemy_turns, draws, rng_moved = 0, 0, 0, set()
     for j in range(1, len(steps)):
         act = steps[j].get("action") or {}
         if act.get("kind") == "play" and act.get("played", True):
@@ -188,16 +205,42 @@ def evidence(g: dict, ok_steps: set) -> dict:
         elif act.get("kind") == "potion" and act.get("used"):
             uses.append([act.get("potion"), j in ok_steps])
         elif act.get("kind") == "end_turn":
+            st, nx = steps[j - 1]["state"], steps[j]["state"]
+            living, after = _alive(st.get("enemies")), _alive(nx.get("enemies"))
+            discard_max = max(discard_max, len(st.get("hand") or []))
+            back = bool(nx.get("in_combat")) and (nx.get("round") or 0) > (st.get("round") or 0)
+            if living and back:
+                enemy_turns += 1
+                draws += bool(nx.get("hand"))
+            r0, r1 = st.get("rng") or {}, nx.get("rng") or {}
+            rng_moved |= {k for k, v in r1.items()
+                          if isinstance(v, dict) and v.get("counter", 0) > (r0.get(k) or {}).get("counter", 0)}
             # The enemies' turn: an enemy that showed an attack intent attacked while the player had these powers.
-            st = steps[j - 1]["state"]
-            living = [e for e in st.get("enemies") or [] if e.get("hp", 0) > 0]
-            if any(str(i[0] if isinstance(i, list) else i).startswith("Attack") for e in living for i in e.get("intents") or []):
-                up = {p[0] if isinstance(p, list) else str(p) for p in (st.get("player") or {}).get("powers") or []}
-                powers_hit.update(up)
-                if sum(1 for e in steps[j]["state"].get("enemies") or [] if e.get("hp", 0) > 0) < len(living):
-                    killed.update(up)
+            if any(_hits(i) for e in living for i in e.get("intents") or []):
+                pw = {(p[0] if isinstance(p, list) else str(p)): (p[1] if isinstance(p, list) and len(p) > 1 else 0)
+                      for p in (st.get("player") or {}).get("powers") or []}
+                powers_hit.update(pw)
+                # Enemies are matched by name and max HP (a dead one leaves the list).
+                left = collections.Counter((e.get("name"), e.get("max_hp")) for e in after)
+                for e in living:
+                    key = (e.get("name"), e.get("max_hp"))
+                    if left[key] > 0:
+                        left[key] -= 1
+                        continue
+                    h = max((_hits(i) for i in e.get("intents") or []), default=0)
+                    if h >= 2:
+                        killed.update(p for p, amt in pw.items() if isinstance(amt, (int, float)) and amt > 0
+                                      and e.get("hp", 0) <= amt * (h - 1))
     fires = [[r, (j in ok_steps) if j > 0 else (0 in ok_steps)] for j, r in g.get("relic_flashes") or []]
-    return {"plays": plays, "uses": uses, "fires": fires, "powers_hit": sorted(powers_hit), "attacker_killed": sorted(killed)}
+    st0 = steps[0].get("state", {}) if steps else {}
+    opts, pick = g.get("neow_options") or [], g.get("neow_pick")
+    return {"plays": plays, "uses": uses, "fires": fires, "powers_hit": sorted(powers_hit),
+            "attacker_killed_midattack": sorted(killed), "opening_hand": len(st0.get("hand") or []),
+            "end_turn_discard_max": discard_max, "enemy_turns": enemy_turns, "end_turn_draws": draws,
+            "rng_end_turn": sorted(rng_moved),
+            "neow": opts[pick] if isinstance(pick, int) and 0 <= pick < len(opts) else None,
+            "enemy_powers_start": sorted({p[0] if isinstance(p, list) else str(p) for e in st0.get("enemies") or []
+                                          for p in e.get("powers") or []})}
 
 
 def judge(entry_part: str, g: dict, e: dict, r: dict, nm: dict, keys) -> dict:
@@ -289,20 +332,39 @@ def coverage_report(verdicts: list, targets: dict) -> dict:
     return out
 
 
+def shows(v: dict, kind: str, want) -> bool:
+    """Whether one fight's evidence (evidence()) shows one kind of a class's trigger."""
+    if kind == "plays":
+        return bool({c.rstrip("+") for c, _ in v.get("plays", [])} & set(want))
+    if kind == "relic_flashes":
+        return bool({r for r, _ in v.get("fires", [])} & set(want))
+    if kind == "potions":
+        return bool({p for p, _ in v.get("uses", [])} & set(want))
+    if kind == "pickup":
+        return bool(set(v.get("relics", [])) & set(want))
+    if kind in ("powers_hit", "attacker_killed_midattack", "rng_end_turn", "enemy_powers_start"):
+        return bool(set(v.get(kind, [])) & set(want))
+    if kind == "opening_hand":
+        return v.get("opening_hand", 0) > 0
+    if kind == "end_turn_discard":
+        return v.get("end_turn_discard_max", 0) >= int(want)
+    if kind == "enemy_turn":
+        return v.get("enemy_turns", 0) > 0
+    if kind == "end_turn_draw":
+        return v.get("end_turn_draws", 0) > 0
+    if kind == "neow":
+        return v.get("neow") in set(want)
+    if kind == "encounter":
+        return v.get("encounter") in set(want)
+    return False  # "replay", or a kind this scorer does not know: no evidence
+
+
 def trigger_reached(trigger: dict, vs: list) -> bool:
-    """Whether one of the class's fights shows its trigger (refset.trigger_of): every kind it names, in one fight."""
+    """Whether one of the class's fights shows its trigger (refset.class_trigger): every kind it names, in one fight.
+    A class with no trigger, or only {"replay": True}, has no evidence: a plain replay shows nothing fired."""
     if not trigger or trigger.get("replay"):
-        return bool(vs)
-    for v in vs:
-        played = {c.rstrip("+") for c, _ in v.get("plays", [])}
-        fired = {r for r, _ in v.get("fires", [])}
-        used = {p for p, _ in v.get("uses", [])}
-        if (all(k == "replay" or {"plays": played, "relic_flashes": fired, "potions": used, "pickup": set(v.get("relics", [])),
-                                  "powers_hit": set(v.get("powers_hit", [])), "attacker_killed": set(v.get("attacker_killed", []))}[k]
-                & set(want)
-                for k, want in trigger.items())):
-            return True
-    return False
+        return False
+    return any(all(shows(v, k, want) for k, want in trigger.items()) for v in vs)
 
 
 def regression_report(verdicts: list, entries: dict) -> dict:
@@ -313,18 +375,24 @@ def regression_report(verdicts: list, entries: dict) -> dict:
     out = {}
     for kind in ("emulator", "driver"):
         names = sorted(c for c, vs in classes.items() if refset.class_kind(c or "") == kind)
-        passing, untriggered, failing = [], [], []
+        passing, untriggered, failing, no_evidence = [], [], [], []
         for c in names:
             vs = classes[c]
-            # The class list's own trigger (refset.REGRESSION_CLASSES), else the manifest's copy.
+            # The class list's own trigger (refset.class_trigger), else the manifest's copy.
             trig = refset.class_trigger(c) or entries.get(vs[0]["id"], {}).get("trigger") or {}
+            reached = trigger_reached(trig, vs)
+            if not reached:
+                no_evidence.append(c)
             if not all(v.get("identical") for v in vs):
                 failing.append(c)
-            elif trigger_reached(trig, vs):
+            elif reached:
                 passing.append(c)
             else:
                 untriggered.append(c)
-        out[kind] = {"classes": len(names), "passing": len(passing), "identical_but_trigger_not_reached": untriggered,
+        # A class passes only when every fight is identical AND one shows its trigger fired; "with evidence" counts
+        # the classes whose trigger fired in a recorded fight, passing or not.
+        out[kind] = {"classes": len(names), "passing": len(passing), "with_evidence": len(names) - len(no_evidence),
+                     "without_evidence": no_evidence, "identical_but_trigger_not_reached": untriggered,
                      "failing": failing}
     return out
 
@@ -582,7 +650,8 @@ def main() -> int:
     score = {"set": f"{manifest['set']} {manifest['version']}", "subset": subset, "emulator": emu_info, "label": name,
              "commit_label": commit, "not_quotable": not_quotable, "comparer": git_commit(ROOT), "record": record["stamp"],
              "record_dir": str(rdir), "scored": time.strftime("%Y-%m-%d %H:%M"), "minutes": round((time.time() - t0) / 60, 1),
-             "headline": head, "realistic_table": table, "record_summary": record.get("summary"),
+             "headline": head, "realistic_source": realistic_source(manifest), "realistic_table": table,
+             "record_summary": record.get("summary"), "hosts": record.get("hosts"),
              "flags_by_item": (record.get("summary") or {}).get("flags_by_item"),
              "exclusions": [{"id": r["id"], "part": r["part"], "cause": refset.cause_of(r["excluded"]), "why": r["excluded"]}
                             for r in rows if "excluded" in r],
@@ -602,7 +671,7 @@ def main() -> int:
         f.write(json.dumps({"label": name, "subset": subset, "commit": emu_info["commit"], "dirty": emu_info["dirty"],
                             "scored": score["scored"], "headline": head, "regression": {k: v["passing"] for k, v in reg.items()},
                             "line": line, "not_quotable": not_quotable,
-                            "codex": {k: codex.get(k) for k in ("runs", "runs_matching_pct")}}) + "\n")
+                            "codex": {k: codex.get(k) for k in ("runs", "complete", "runs_matching_pct", "judged", "judged_matching_pct", "runs_in_set")}}) + "\n")
     print(line)
     if prev:
         print("  vs " + prev["label"] + ": " + delta(prev["headline"], head))
@@ -635,19 +704,44 @@ def summary_line(s: dict) -> str:
     nc = sum(v["not_clean"] + v["not_reached"] for v in c.values())
     reg = s["regression"]["emulator"]
     cx = s["codex"]
-    codex = (f"codex runs {cx['complete']}/{cx['runs']} matching to the end ({cx['runs_matching_pct']}%) @ "
-             f"{cx['commit']['commit'][:12]}" + (" (walked for " + cx["reused_from"]["score"] + ", same emulator sources)"
-                                                if cx.get("reused_from") else "") if cx.get("runs") else "codex runs n/a")
+    if cx.get("runs"):
+        # Two rates: of the runs the walk can judge (complete, or stopped by an emulator difference), and of every
+        # Ironclad A10 run in the set (the walker's skips and the stops that are not the emulator's count as failures).
+        total = cx.get("runs_in_set") or cx["runs"]
+        codex = (f"codex runs {cx['complete']} matching to the end = {pct(cx['complete'], cx['judged'])} of {cx['judged']} "
+                 f"judgeable, {pct(cx['complete'], total)} of all {total} ({cx['runs']} walked, "
+                 f"{max(0, total - cx['runs'])} skipped by the walker) @ {cx['commit']['commit'][:12]}"
+                 + (" (walked for " + cx["reused_from"]["score"] + ", same emulator sources)" if cx.get("reused_from") else ""))
+    else:
+        codex = "codex runs n/a"
     rn = s.get("runs") or {}
     runs = (f"whole runs {rn['runs_matching']}/{rn['runs']} matching" if rn.get("runs") else "whole runs n/a")
     db = s["record"].get("driver_build") or {}
     nq = f"NOT QUOTABLE ({'; '.join(s['not_quotable'])}) " if s["not_quotable"] else ""
     return (f"{nq}{s['set']} [{s['subset']}] emulator {s['commit_label']}, references by driver {str(db.get('commit', '?'))[:12]} "
             f"[{','.join(db.get('capabilities', [])) or 'unchecked'}; settle {db.get('settle', '?')}] | "
-            f"{part('realistic', True)} | {part('coverage')}, {nc} items not yet clean | "
-            f"regression {reg['passing']}/{reg['classes']} emulator classes pass with their trigger reached "
+            f"{part('realistic', True)}{source_note(s)} | {part('coverage')}, {nc} items not yet clean | "
+            f"regression {reg['passing']}/{reg['classes']} emulator classes pass (every fight identical and the trigger "
+            f"shown fired), {reg.get('with_evidence', '?')}/{reg['classes']} with evidence their trigger fired "
             f"({len(reg['identical_but_trigger_not_reached'])} identical without it) | {codex} | {runs} | "
             f"{len(s['open_bug_classes'])} open bug classes")
+
+
+def source_note(s: dict) -> str:
+    """Where the realistic fights come from: real states the setup can copy, and the real states skipped before
+    sampling because the setup cannot copy them (manifest codex_stats)."""
+    src = s.get("realistic_source") or {}
+    if not src.get("candidates"):
+        return ""
+    sk = src.get("skipped") or {}
+    return (f" [real states the setup can copy: sampled from {src['candidates']}; {sum(sk.values())} real states skipped "
+            f"as not copyable ({', '.join(f'{k} {n}' for k, n in sorted(sk.items(), key=lambda kv: -kv[1]))})]")
+
+
+def realistic_source(manifest: dict) -> dict:
+    st = manifest.get("codex_stats") or {}
+    return {"candidates": st.get("candidates"),
+            "skipped": {k[len("cand_skip_"):]: v for k, v in st.items() if k.startswith("cand_skip_") and v}}
 
 
 def delta(old: dict, new: dict) -> str:
@@ -687,8 +781,10 @@ def render_table(s: dict) -> str:
         f"{b['cause']} {b['fights']}" for b in s["open_bug_classes"][:12]))
     for kind, r in s["regression"].items():
         if r["classes"]:
-            rows.append(f"  regression ({kind}): {r['passing']}/{r['classes']} pass with the trigger reached; identical without "
-                        f"it: {', '.join(r['identical_but_trigger_not_reached'][:6]) or '-'}; failing: {', '.join(r['failing'][:10]) or '-'}")
+            rows.append(f"  regression ({kind}): {r['passing']}/{r['classes']} pass with the trigger reached; "
+                        f"{r.get('with_evidence', '?')}/{r['classes']} with evidence (none: "
+                        f"{', '.join(r.get('without_evidence', [])) or '-'}); identical without it: "
+                        f"{', '.join(r['identical_but_trigger_not_reached'][:6]) or '-'}; failing: {', '.join(r['failing'][:10]) or '-'}")
     cx = s["codex"]
     if cx.get("components"):
         rows.append("  codex, " + cx["components_note"] + ": " + "; ".join(

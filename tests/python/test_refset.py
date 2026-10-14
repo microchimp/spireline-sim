@@ -327,25 +327,67 @@ class Specs(unittest.TestCase):
         self.assertFalse(refset_score.trigger_reached({"relic_flashes": ["PHIAL_HOLSTER"]}, v))
         self.assertEqual(refset.class_kind("driver: turn-start auto-play"), "driver")
 
-    def test_the_thorns_class_is_reached_only_when_an_attacker_dies_against_it(self) -> None:
+    def test_the_thorns_class_is_reached_only_when_a_multi_hit_attacker_dies_partway_against_it(self) -> None:
         name = "hook order: the player's Thorns before an enemy hit lands (open)"
         self.assertEqual(refset.class_trigger(name), {"plays": ["DEFEND_IRONCLAD"], "powers_hit": ["THORNS_POWER"],
-                                                      "attacker_killed": ["THORNS_POWER"]})
-        # Its minimal setup's Thorns can kill a 48 HP Nibbit inside its attacks (3 never did).
-        self.assertTrue(any(c[0] == name and c[6] == [("THORNS_POWER", 15, "player")] for c in refset.REGRESSION_CLASSES))
+                                                      "attacker_killed_midattack": ["THORNS_POWER"]})
+        # Its minimal setup meets Toadpoles (Spike Spit: 3 hits) with Thorns 15, which kills one before its last hit.
+        self.assertTrue(any(c[0] == name and c[5] == "TOADPOLES_WEAK" and c[6] == [("THORNS_POWER", 15, "player")]
+                            for c in refset.REGRESSION_CLASSES))
 
-        def st(nibbits, thorns=True):
-            return {"player": {"hp": 50, "powers": [["THORNS_POWER", 15]] if thorns else []},
-                    "enemies": [{"name": "NIBBIT", "hp": hp, "intents": [["Attack", 7, 1]]} for hp in nibbits]}
-        attacked = {"steps": [{"action": None, "state": st([40, 30])}, {"action": {"kind": "end_turn"}, "state": st([25, 15])}]}
-        killed = {"steps": [{"action": None, "state": st([40, 10])}, {"action": {"kind": "end_turn"}, "state": st([25, 0])}]}
-        ev_a, ev_k = refset_score.evidence(attacked, {1}), refset_score.evidence(killed, {1})
-        self.assertEqual((ev_a["powers_hit"], ev_a["attacker_killed"]), (["THORNS_POWER"], []))
-        self.assertEqual(ev_k["attacker_killed"], ["THORNS_POWER"])
+        def st(enemies, thorns=True):
+            return {"in_combat": True, "round": 1, "hand": [["DEFEND_IRONCLAD", 0]],
+                    "player": {"hp": 50, "powers": [["THORNS_POWER", 15]] if thorns else []},
+                    "enemies": [{"name": n, "hp": hp, "max_hp": mx, "intents": [it]} for n, hp, mx, it in enemies]}
+
+        def fight(before, after):
+            return {"steps": [{"action": None, "state": st(before)}, {"action": {"kind": "end_turn"}, "state": st(after)}]}
+        spit, whirl = ["Attack", 4, 3], ["Attack", 8, 1]
+        # Attacked into Thorns, nobody died.
+        attacked = fight([("TOADPOLE", 40, 40, spit)], [("TOADPOLE", 10, 40, spit)])
+        # A single-hit attacker died to Thorns: its hit lands in the game too (the old Nibbit case).
+        single = fight([("TOADPOLE", 10, 24, whirl)], [])
+        # A 3-hit attacker with 25 HP (<= 15 x 2) died: the game stopped its attack after the second hit.
+        partway = fight([("TOADPOLE", 25, 25, spit), ("TOADPOLE", 23, 23, whirl)], [("TOADPOLE", 23, 23, spit)])
+        # A 3-hit attacker with 31 HP (> 15 x 2) that died (something else) is not the case.
+        tough = fight([("TOADPOLE", 31, 31, spit)], [])
+        ev = {k: refset_score.evidence(f, {1}) for k, f in
+              {"attacked": attacked, "single": single, "partway": partway, "tough": tough}.items()}
+        self.assertEqual((ev["attacked"]["powers_hit"], ev["attacked"]["attacker_killed_midattack"]), (["THORNS_POWER"], []))
+        self.assertEqual(ev["single"]["attacker_killed_midattack"], [])
+        self.assertEqual(ev["partway"]["attacker_killed_midattack"], ["THORNS_POWER"])
+        self.assertEqual(ev["tough"]["attacker_killed_midattack"], [])
         trig = refset.class_trigger(name)
         play = {"plays": [["DEFEND_IRONCLAD", True]]}
-        self.assertFalse(refset_score.trigger_reached(trig, [ev_a | play]))
-        self.assertTrue(refset_score.trigger_reached(trig, [ev_k | play]))
+        for k in ("attacked", "single", "tough"):
+            self.assertFalse(refset_score.trigger_reached(trig, [ev[k] | play]), k)
+        self.assertTrue(refset_score.trigger_reached(trig, [ev["partway"] | play]))
+
+    def test_every_regression_class_names_evidence_and_a_replay_is_none(self) -> None:
+        for c in refset.REGRESSION_CLASSES:
+            self.assertNotIn("replay", refset.class_trigger(c[0]), c[0])
+        self.assertFalse(refset_score.trigger_reached({"replay": True}, [{"plays": []}]))
+        self.assertFalse(refset_score.trigger_reached({}, [{"plays": []}]))
+
+    def test_the_classes_without_a_setup_item_show_their_own_trigger(self) -> None:
+        def st(rnd, hand, rng, enemies=1):
+            return {"in_combat": True, "round": rnd, "hand": [["STRIKE_IRONCLAD", 0]] * hand, "player": {"powers": []},
+                    "rng": {"MonsterAi": {"counter": rng[0]}, "CombatTargets": {"counter": rng[1]}},
+                    "enemies": [{"name": "SEAPUNK", "hp": 30, "max_hp": 44, "intents": [["Buff"]],
+                                 "powers": [["RAMPART_POWER", 25]]}] * enemies}
+        g = {"neow_options": ["A", "B", "NEOWS_BONES"], "neow_pick": 2,
+             "steps": [{"action": None, "state": st(1, 5, (1, 0))}, {"action": {"kind": "end_turn"}, "state": st(2, 5, (2, 0))}]}
+        v = refset_score.evidence(g, {1}) | {"encounter": "TURRET_OPERATOR_WEAK"}
+        reached = {name: refset_score.trigger_reached(refset.class_trigger(name), [v]) for name in refset.CLASS_TRIGGERS}
+        self.assertEqual(sorted(n for n, ok in reached.items() if not ok),
+                         ["end of turn: CombatTargets stream", "monster classes: Decimillipede segments",
+                          "power on play: Tank", "room type: elites outside the hand-written list (Soul Nexus)"])
+        # One card left at the end of the turn is no discard order; a fight that ends at the end of the turn draws nothing.
+        g["steps"][0]["state"]["hand"] = g["steps"][0]["state"]["hand"][:1]
+        g["steps"][1]["state"]["in_combat"] = False
+        v = refset_score.evidence(g, {1})
+        self.assertFalse(refset_score.trigger_reached({"end_turn_discard": 2}, [v]))
+        self.assertFalse(refset_score.trigger_reached({"end_turn_draw": True}, [v]))
 
 
 def result(seed="S", steps=3, err=None, setup_ok=True, msg=""):
@@ -474,6 +516,70 @@ class GameLog(unittest.TestCase):
         self.assertIn("MadScience", errs[2][0][1])
         self.assertNotIn(1, errs)
 
+    def test_a_nodeless_pass_charges_each_fight_with_the_recording_that_stands(self) -> None:
+        # Server 0 (nodeless): spec 0 plain; spec 1's attempt fell back after it played (its MadScience error is the
+        # nodeless attempt's); spec 2 went to the full host before playing (no log); spec 3 audited; then retired.
+        # Server 1 (the full-host lane): spec 1's replay (its own error: the fight's), spec 2's, spec 3's audit replay.
+        neow = "[referee] neow options [] choosing 0"
+        mad = ["[ERROR] System.ArgumentOutOfRangeException: x", "   at MegaCrit.Sts2.Core.Models.Cards.MadScience.OnPlay()"]
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            (run / "out").mkdir()
+            rows0 = [{"_id": "000000", "steps": []}, {"_id": "000001", "steps": [], "_full": {"why": "fallback", "reason": "errors: x"}},
+                     {"_id": "000002", "seed": "S", "_full": {"why": "fallback", "reason": "deck"}},
+                     {"_id": "000003", "steps": [], "_full": {"why": "audit"}}, {"_retire": "stale", "_after": "000003"}]
+            rows1 = [{"_id": "000001f", "steps": []}, {"_id": "000002f", "steps": []}, {"_id": "000003f", "steps": []}]
+            logs = {"s00": [neow, neow, *mad, neow], "s01": [neow, *mad, neow, neow, *mad]}
+            for name, rows in (("s00", rows0), ("s01", rows1)):
+                (run / "out" / f"{name}.jsonl").write_text("\n".join(map(json.dumps, rows)) + "\n", encoding="utf-8")
+                (run / "scratch" / name).mkdir(parents=True)
+                (run / "scratch" / name / "game-stdout.log").write_text("\n".join(logs[name]), encoding="utf-8")
+            diag: dict = {}
+            errs = refset.log_errors(run, diag)
+        self.assertEqual(sorted(errs), [1])  # spec 1: its full-host replay's error, not "uncut"
+        self.assertIs(errs[1][0][2], False)
+        self.assertEqual(sorted(diag["nodeless_attempt"]), [1])
+        self.assertEqual(sorted(diag["audit_replay"]), [3])
+
+    def test_a_full_host_replays_error_log_line_is_judged_from_the_log(self) -> None:
+        e = {"id": "X", "spec": {"seed": "S", "setup": []}}
+        self.assertIsNone(refset.exclusion(e, result(err="full host: 1 game error(s); first: exception: x")))
+        self.assertIn("game error", refset.exclusion(e, result(err="nodeless: cancellation not checked")))
+        self.assertEqual(refset.cause_of("game error: nodeless: x"), "nodeless_host")
+
+    def test_a_difference_between_the_hosts_is_retried_on_the_full_host(self) -> None:
+        e = {"id": "X", "spec": {"seed": "S", "setup": []}}
+        full, nl = result(), result()
+        nl["cost"] = {"host": "nodeless"}
+        nl["steps"][2]["state"]["round"] = 9
+        j = refset.judge_pair([e], {"X": (full, None)}, {"X": (nl, None)})["X"]
+        self.assertEqual(refset.cause_of(j["excluded"]), "host_difference")
+        self.assertTrue(j["retry"])
+        nl["cost"] = {"host": "full"}
+        j = refset.judge_pair([e], {"X": (full, None)}, {"X": (nl, None)})["X"]
+        self.assertEqual(refset.cause_of(j["excluded"]), "unstable")
+        nl["steps"][2]["state"]["round"] = 2
+        rep = refset.host_report([e], {"a": {"X": (full, None)}, "b": {"X": (dict(nl, cost={"host": "nodeless"}), None)}},
+                                 {"X": {}}, {"a": "full", "b": "nodeless"}, {})
+        self.assertEqual((rep["compared"], rep["identical"], rep["identical_on_nodeless"], rep["differ"]), (1, 1, 1, 0))
+
+    def test_the_dirty_check_sees_untracked_files(self) -> None:
+        import subprocess  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as d:
+            def git(*a):
+                return subprocess.run(["git", "-C", d, *a], capture_output=True, text=True, check=True).stdout.strip()
+            git("init", "-q")
+            git("config", "user.email", "t@t")
+            git("config", "user.name", "t")
+            (Path(d) / "a.cs").write_text("1", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "one")
+            self.assertFalse(refset_score.git_commit(Path(d))["dirty"])
+            (Path(d) / "sub").mkdir()
+            (Path(d) / "sub" / "Old.cs").write_text("untracked", encoding="utf-8")
+            self.assertTrue(refset_score.git_commit(Path(d))["dirty"])
+            self.assertTrue(refset.git_commit(Path(d))["dirty"])
+
     def test_the_top_bar_namespace_is_visual_too(self) -> None:
         log = ["[referee] neow options [] choosing 0", "[ERROR] System.ObjectDisposedException: Cannot access a disposed object.",
                "   at MegaCrit.sts2.Core.Nodes.TopBar.NTopBarGold.UpdateGoldAnim()"]
@@ -590,14 +696,19 @@ class Score(unittest.TestCase):
     def test_a_regression_class_passes_only_with_its_trigger_reached(self) -> None:
         entries = {"g1": {"class_kind": "emulator", "trigger": {"plays": ["RUPTURE"]}},
                    "g2": {"class_kind": "emulator", "trigger": {"powers_hit": ["THORNS_POWER"]}},
+                   "g4": {"class_kind": "emulator", "trigger": {"plays": ["BASH"]}},
                    "g3": {"class_kind": "driver", "trigger": {"replay": True}}}
         vs = [{"id": "g1", "part": "regression", "class": "rupture", "identical": True, "plays": [["RUPTURE", True]]},
               {"id": "g2", "part": "regression", "class": "thorns", "identical": True, "plays": [], "powers_hit": []},
+              {"id": "g4", "part": "regression", "class": "bash", "identical": False, "plays": [["BASH", False]]},
               {"id": "g3", "part": "regression", "class": "driver: x", "identical": True}]
         rep = refset_score.regression_report(vs, entries)
         self.assertEqual(rep["emulator"]["passing"], 1)
         self.assertEqual(rep["emulator"]["identical_but_trigger_not_reached"], ["thorns"])
-        self.assertEqual((rep["driver"]["classes"], rep["driver"]["passing"]), (1, 1))
+        # Evidence counts the classes whose trigger fired, passing or failing.
+        self.assertEqual((rep["emulator"]["with_evidence"], rep["emulator"]["without_evidence"]), (2, ["thorns"]))
+        # A plain replay is no evidence: identical, but it does not pass.
+        self.assertEqual((rep["driver"]["classes"], rep["driver"]["passing"], rep["driver"]["with_evidence"]), (1, 0, 0))
 
     def test_an_emudump_build_older_than_its_sources_is_not_the_commits(self) -> None:
         import os  # noqa: PLC0415
@@ -665,12 +776,21 @@ class Score(unittest.TestCase):
         s = {"set": "Ironclad A10 reference set v2", "subset": "pilot", "commit_label": "abc123def456", "not_quotable": [],
              "record": {"driver_build": {"commit": "f" * 40, "capabilities": ["settle_flags", "play_phase_gate"], "settle": "flags"}},
              "headline": {"realistic": b}, "coverage": {"counts": {}},
-             "regression": {"emulator": {"classes": 2, "passing": 1, "identical_but_trigger_not_reached": ["x"], "failing": []}},
-             "codex": {}, "runs": {}, "open_bug_classes": []}
+             "regression": {"emulator": {"classes": 2, "passing": 1, "with_evidence": 2, "identical_but_trigger_not_reached": ["x"],
+                                         "failing": []}},
+             "codex": {"runs": 20294, "complete": 11070, "judged": 17592, "runs_in_set": 20381, "commit": {"commit": "c" * 40}},
+             "realistic_source": refset_score.realistic_source({"codex_stats": {
+                 "candidates": 205493, "cand_skip_relic_unmodelled": 10434, "cand_skip_card_unmodelled": 111,
+                 "cand_skip_potion_unmodelled": 0, "skip_modded": 6904}}),
+             "runs": {}, "open_bug_classes": []}
         line = refset_score.summary_line(s)
         for want in ("emulator abc123def456", "driver ffffffffffff", "settle_flags,play_phase_gate", "4 specs, 3 kept, 1 excluded (setup 1), 1 flagged",
                      "realistic [chooser heuristic 1, random 2]",
-                     "2/3 = 66.7% of kept", "50.0% counting exclusions as failures"):
+                     "2/3 = 66.7% of kept", "50.0% counting exclusions as failures",
+                     "real states the setup can copy: sampled from 205493; 10545 real states skipped as not copyable "
+                     "(relic_unmodelled 10434, card_unmodelled 111)",
+                     "regression 1/2 emulator classes pass", "2/2 with evidence their trigger fired",
+                     "11070 matching to the end = 62.9% of 17592 judgeable, 54.3% of all 20381 (20294 walked, 87 skipped by the walker)"):
             self.assertIn(want, line)
         self.assertFalse(line.startswith("NOT QUOTABLE"))
         s["not_quotable"] = ["dirty emulator checkout"]

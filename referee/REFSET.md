@@ -25,7 +25,8 @@ realistic specs are derived from per-run third-party data.
 
 ```
 python -I referee/refset.py build --version v2                      # the manifest (about 7 min: reads the codex once)
-python -I referee/refset.py record --version v2                     # every fight, twice (the final record)
+python -I referee/refset.py record --version v2 --servers 6 --nodeless-pass b   # every fight, twice (the final record):
+                                                                    # pass a on the full game, pass b stripped down
 python -I referee/refset.py record --version v2 --parts runs        # the 30 whole runs (driver/RunPlay.cs)
 python -I referee/refset.py record --version v2 --ids <id,id,...> --label <name>   # a trial (also --limit N)
 python -I referee/refset.py rejudge --version v2 --record <dir>     # judge a record again from its saved passes
@@ -38,7 +39,7 @@ A trial (`--ids`, `--limit`) never replaces `refs-<subset>.json`, the record the
 part, per cause and per act x room cell; the manifest keeps them under `flags`.
 
 `--subset pilot` takes the pilot list (60 realistic, 60 coverage, all regression); `--limit N` the first N
-of each part. Game copy `D:/spireline/referee/game-refset` (`referee/linkcopy.py`), 3 game processes.
+of each part. Game copy `D:/spireline/referee/game-refset` (`referee/linkcopy.py`), 3 game processes by default, at most 6.
 
 ## Setup
 
@@ -93,6 +94,13 @@ starts and again on every server's job-start line (`[referee] driver {...}`, `dr
 also has to show the flag settle. The stamp of every reference names the driver commit, its capabilities, the
 tools commit and sts2.dll.
 
+With `--nodeless-pass b` the second pass runs on the stripped-down game (`refset.NODELESS_JOB`: `nodeless`, `nodeless_on_error`
+"full", `nodeless_audit` 0.05; driver/Nodeless.cs): a fight whose models need nodes, or whose nodeless attempt logged an
+error, is replayed on the pool's full-host lane, and that replay is the pass's recording; its game errors are judged from
+the log as on the full pass (a replay's own `full host:` line is not the verdict). A fight whose full and nodeless
+recordings differ is a `host_difference`: recorded twice more on the full game (passes c and d) and judged on that pair.
+`record.json` `hosts` compares the two hosts fight by fight (identical, fallbacks by reason, audits, every difference).
+
 Each fight is recorded twice (the second pass in reverse order on fresh servers). Excluded, by cause, and
 listed in `record.json`: `setup` (an item failed: a deck residual, a load the game does not hold, the fight met
 in another act), `game_error` (the game's code logged an error; each server's log is cut at the driver's Neow
@@ -115,12 +123,20 @@ failures, steps verified, the emulator commit and the driver build and capabilit
 x room type.
 
 - every part names its chooser and how many fights used it;
-- regression: a class passes when its fights are identical AND its trigger was reached (its card played, its
-  relic fired, its potion used, its power up when an enemy attacked; for the Thorns class an attacker dying in its
-  own turn against it, the case the open bug is about); driver classes are counted apart;
+- regression: a class passes only when its fights are identical AND one shows its trigger fired (no class is reached by
+  a plain replay: `refset.CLASS_TRIGGERS` names what the classes without a setup item must show; the Thorns class needs a
+  multi-hit attacker with HP <= Thorns x (hits - 1) to die in its turn, Toadpoles' Spike Spit against Thorns 15); the
+  line also counts the classes with evidence their trigger fired, passing or not (its card played, its
+  relic fired, its potion used, its power up when an enemy attacked); driver classes are counted apart;
+- realistic: the line says the fights are real states the setup can copy, and how many real fight states the build
+  skipped before sampling because the setup cannot copy them (by reason);
 - coverage: a relic counts only where its effect fired (a relic flash) at verified steps, not where it was held;
 - codex runs: per component, floors matching among the floors reached before each run's first difference;
-  stops by class (profile-dependent apart), components at 0%, the walker's skips against the set's run count.
+  stops by class (profile-dependent apart), components at 0%, the walker's skips against the set's run count; the
+  line gives the runs matching to the end as a share of the judgeable runs (complete, or stopped by an emulator
+  difference) AND of every Ironclad A10 run in the set (the walker's skips counted as failures).
+
+`refset_score` and the record count untracked files as uncommitted changes (a build compiles every source file).
 
 "Identical" compares the player's HP, max HP, block, energy and powers, the four piles (card id and upgrade),
 each living enemy's name, HP, block, powers and intent, nine RNG counters and the potion belt; not relic
