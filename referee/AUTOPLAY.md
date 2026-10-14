@@ -132,11 +132,9 @@ Status: **converted** (goes through `AutoPlay` at the game's moment) and **teste
 - Selection lock: Sly discards made by a screen (8 rows above); a Decisions Decisions that
   is itself auto-played answers its screen at once and plays no Skill; screens inside
   Havoc/Mayhem-played cards take the first card.
-- Draw at a fight already over: the game's `Draw` returns, the emulator draws (only a fight
-  that ends inside the draw stops it). Asking at entry too improves 5 corpus fights (Pommel
-  Strike, Pillage, Flash of Steel killing then drawing) but loses 30, because Inferno's burn
-  runs before the hand draw here and after it in the game (`AfterPlayerTurnStart`). Turn-start
-  owner.
+- Draw at a fight already over: closed by own/combat-end, which asks `IsOverOrEnding` at the
+  draw's entry and before each card, and moves the turn-start kills (Inferno's burn) after the
+  hand draw, as the game's `AfterPlayerTurnStart` has them.
 - Deaths inside a card (Uproar's own kill and Gremlin Horn's draw before Uproar picks): death
   pipeline owner.
 - A given target that has died (Knife Trap's later Shivs, Beat Down's roll): the card-target

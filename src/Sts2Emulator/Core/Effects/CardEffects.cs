@@ -2589,6 +2589,14 @@ public static class CardEffects
         bool fromHandDraw = false
     )
     {
+        // `CardPileCmd.Draw` draws nothing once the fight is over or ending, ahead of every
+        // veto: a Pommel Strike, Flash of Steel or Pillage that kills the last enemy draws no
+        // card, and so reshuffles nothing on the run's Shuffle stream.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         // `NoDrawPower.ShouldDraw` returns TRUE for a hand draw -- it spares it, exactly as
         // Fiddle's does, and gags only the extra draws. Battle Trance's gag is removed at
         // the end of the turn it was played on, so it never survives to meet a hand draw
@@ -2606,26 +2614,22 @@ public static class CardEffects
             return;
         }
 
-        // `CardPileCmd.Draw` stops once the combat is over (`IsOverOrEnding`), which a Strike
-        // Hellraiser plays out of this draw, or a draw hook's damage, can make it. Only a
-        // combat that ends INSIDE the draw is asked about: one already over when it starts is
-        // still drawn, because some turn-start kills land before the hand draw here where the
-        // game makes them after it (Inferno's `AfterPlayerTurnStart`), and the game's shuffle
-        // is then the emulator's only if it draws (referee/AUTOPLAY.md, open gaps).
-        bool overBefore = CombatEngine.CombatIsOver(state);
         for (int i = 0; i < count; i++)
         {
-            if (!overBefore && CombatEngine.CombatIsOver(state))
-            {
-                break;
-            }
-
             // `CardPileCmd.Draw` STOPS at a full hand -- `if (num <= 0) break`, and again on
             // `hand.Cards.Count >= MaxCardsInHand` -- so the card that would not fit stays in
             // the DRAW PILE. The emulator used to draw it anyway and put the overflow in the
             // discard, which is a different card in a different place: a live Prophesize
             // drew five of its six and left the sixth on top of the pile.
             if (state.Hand.Count >= MaxCardsInHand)
+            {
+                break;
+            }
+
+            // And again before each card: a card's `AfterCardDrawn` (Speedster's hit, a
+            // Void's) or a Strike Hellraiser plays out of the draw can end the fight in the
+            // middle of it, and the rest is not drawn.
+            if (CombatEngine.IsOverOrEnding(state))
             {
                 break;
             }
@@ -2860,6 +2864,12 @@ public static class CardEffects
     /// </remarks>
     internal static void Forge(CombatState state, int amount)
     {
+        // `ForgeCmd.Forge` forges nothing once the fight is over or ending (no `AfterForge`).
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         bool anyLive =
             state.Hand.Any(c => c.DefId == SovereignBladeId)
             || state.DrawPile.Any(c => c.DefId == SovereignBladeId)
@@ -3680,8 +3690,18 @@ public static class CardEffects
         }
     }
 
+    /// <remarks>
+    /// `CardPileCmd.Shuffle` does nothing once the fight is over or ending: no
+    /// `StableShuffle` on the run's Shuffle stream and no `AfterShuffle`. Every mid-combat
+    /// shuffle comes through here (the opening one is the deck's, in `CombatFactory`).
+    /// </remarks>
     public static void ShuffleDiscardIntoDraw(CombatState state, Random rng)
     {
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         RelicEffects.ApplyAfterShuffle(state, rng);
         int count = state.DiscardPile.Count + state.DrawPile.Count;
         if (_shuffleCards is null || _shuffleCards.Length < count)
@@ -3790,7 +3810,19 @@ public static class CardEffects
         }
     }
 
-    // Adds card to exhaust pile and triggers exhaust hooks.
+    /// <summary>
+    /// `CardCmd.Exhaust`: the card goes to the exhaust pile and `Hook.AfterCardExhausted` fires.
+    /// Every exhaust comes through here: the played card's own Exhaust, Ethereal at turn end,
+    /// random and chosen picks.
+    /// </summary>
+    /// <remarks>
+    /// The command does nothing once the fight is over or ending (`CombatEngine.IsOverOrEnding`):
+    /// the card the last kill left to exhaust (True Grit's random pick after Juggernaut's hit, a
+    /// killing card with Exhaust, the second Ethereal card after the first one's Charon's Ashes
+    /// hit) fires no exhaust hook. So Joss Paper's saved count (run referee NQH1R9PA6V: 3 in the
+    /// game, 4 here) and the run streams Forgotten Soul and the hooks' draws would roll on stay
+    /// as they were. The card still lands in the pile here, which goes with the fight.
+    /// </remarks>
     public static void ExhaustCard(
         CombatState state,
         CardInstance card,
@@ -3799,6 +3831,11 @@ public static class CardEffects
     )
     {
         state.ExhaustPile.Add(card with { FreeThisTurn = false });
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         state.CardsExhaustedThisTurn++;
         RelicEffects.ApplyAfterCardExhausted(state, causedByEthereal, rng);
         RelicEffects.ApplyBurningSticks(state, card);
@@ -4330,7 +4367,7 @@ public static class CardEffects
         var cards = taken.Select(i => state.DiscardPile[i]).ToList();
         for (int k = 0; k < taken.Count; k++)
         {
-            if (CombatEngine.CombatIsOver(state))
+            if (CombatEngine.IsOverOrEnding(state))
             {
                 break;
             }
@@ -4874,6 +4911,15 @@ public static class CardEffects
     {
         for (int i = 0; i < hits; i++)
         {
+            // `AttackCommand.Execute` stops when no hittable target is left, and in the game a
+            // leader's minions die inside its `Kill` -- so once the last primary enemy is dead no
+            // hit is left to roll. The emulator answers those deaths after the card, so the gate is
+            // what stops the rest of the hits rolling the run's CombatTargets over a minion.
+            if (CombatEngine.IsOverOrEnding(state))
+            {
+                return;
+            }
+
             var target = RandomLivingEnemy(state, rng);
             if (target == null)
             {
@@ -5276,6 +5322,14 @@ public static class CardEffects
         bool? move = null
     )
     {
+        // `CreatureCmd.GainBlock` returns 0 once the fight is over or ending, before any
+        // modifier or `AfterBlockGained`: a block gained after the kill sets off no Juggernaut,
+        // whose hit would roll the run's CombatTargets stream over a minion still standing.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return 0;
+        }
+
         bool isMove = move ?? powered;
         decimal effective = powered
             ? BuffSystem.IncomingBlockExact(
@@ -5571,6 +5625,14 @@ public static class CardEffects
 
     public static void ChannelOrb(CombatState state, OrbType type, Random? rng = null)
     {
+        // `OrbCmd.Channel` does nothing once the fight is over or ending: no slot, no evoke to
+        // make room, no `AfterOrbChanneled`. A random orb's type is rolled by the caller first,
+        // as the game's cards roll it before the command.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         // `OrbCmd.Channel`: a character with no orb slots OF THEIR OWN is given one the
         // first time they channel -- which is why an Ironclad handed a Defect card can use
         // it at all. A Defect whose slots have been taken to zero is NOT given one, which
@@ -5617,7 +5679,9 @@ public static class CardEffects
 
     public static void EvokeNextOrb(CombatState state, Random? rng, bool dequeue = true)
     {
-        if (state.Orbs.Count == 0)
+        // `OrbCmd.Evoke` returns once the fight is over or ending, before the orb leaves the
+        // queue: a Lightning evoke rolls no CombatTargets after the kill.
+        if (state.Orbs.Count == 0 || CombatEngine.IsOverOrEnding(state))
         {
             return;
         }
@@ -5632,7 +5696,7 @@ public static class CardEffects
 
     public static void EvokeLastOrb(CombatState state, Random? rng)
     {
-        if (state.Orbs.Count == 0)
+        if (state.Orbs.Count == 0 || CombatEngine.IsOverOrEnding(state))
         {
             return;
         }
@@ -5673,6 +5737,13 @@ public static class CardEffects
 
     private static void TriggerOrbPassiveOnce(CombatState state, int index, Random rng)
     {
+        // `OrbCmd.Passive` asks the gate on every trigger: the second Lightning of a turn end
+        // whose first one killed the last enemy rolls no CombatTargets.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         var orb = state.Orbs[index];
         switch (orb.Type)
         {

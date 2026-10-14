@@ -68,7 +68,7 @@ public class AncientStarterRelicTests
         BuffSystem.Apply(combat.PlayerBuffs, BuffId.Dexterity, 3);
         combat.PlayerBlock = 0;
 
-        RelicEffects.ApplyStartOfPlayerTurn(combat, new System.Random(1));
+        RelicEffects.ApplyAfterSideTurnStart(combat, new System.Random(1));
 
         Assert.Equal(7, combat.PlayerBlock);
     }
@@ -378,7 +378,7 @@ public class CrossbowTests
         var combat = Fight();
         int before = combat.Hand.Count;
 
-        RelicEffects.ApplyStartOfPlayerTurn(combat, new System.Random(7));
+        RelicEffects.ApplyAfterSideTurnStart(combat, new System.Random(7));
 
         Assert.Equal(before + 1, combat.Hand.Count);
     }
@@ -488,7 +488,7 @@ public class StarterAndPaelRelicTests
 
         RelicEffects.ApplyBeforeEndOfPlayerTurnShared(combat, new System.Random(1));
         int banked = combat.Energy;
-        RelicEffects.ApplyStartOfPlayerTurn(combat, new System.Random(1));
+        RelicEffects.ApplyAfterSideTurnStart(combat, new System.Random(1));
 
         Assert.Equal(banked + 2, combat.Energy);
     }
@@ -501,7 +501,7 @@ public class StarterAndPaelRelicTests
         combat.Energy = 0;
 
         RelicEffects.ApplyBeforeEndOfPlayerTurnShared(combat, new System.Random(1));
-        RelicEffects.ApplyStartOfPlayerTurn(combat, new System.Random(1));
+        RelicEffects.ApplyAfterSideTurnStart(combat, new System.Random(1));
 
         Assert.Equal(0, combat.Energy);
     }

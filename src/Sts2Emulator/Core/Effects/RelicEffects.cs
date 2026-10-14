@@ -1004,64 +1004,9 @@ public static class RelicEffects
             }
         }
 
-        // `Brimstone.AfterSideTurnStart` with NO turn guard: 2 Strength to the player and
-        // 1 to every LIVING opponent, every single turn. The enemy half is the point --
-        // it is a Shop relic that arms the room as fast as it arms you.
-        // `Sai.AfterSideTurnStart` with no turn guard: BlockVar(7m, ValueProp.Unpowered),
-        // so Dexterity does not raise it. Anchor's shape without Anchor's one-shot guard.
-        if (HasRelic(state, Sai))
-        {
-            CardEffects.GainUnpoweredBlock(state, 7, rng);
-        }
-
-        // `PaelsTears`: EnergyVar(2) at turn start, but only if `BeforeSideTurnEnd` saw
-        // energy left over LAST turn. The counter is that flag -- it is written at end of
-        // turn and read here, so the relic pays for thrift one turn late.
-        if (HasRelic(state, PaelsTears) && GetCounter(state, PaelsTears) > 0)
-        {
-            CardEffects.GainEnergy(state, 2);
-        }
-
-        // `PhylacteryUnbound.AfterSideTurnStart`: SummonVar("StartOfTurn", 2), EVERY turn
-        // including the first -- unlike Bound Phylactery, whose turn-start summon skips
-        // turn one because `BeforeCombatStart` already did it. This one does both, so
-        // turn one is five plus two.
-        if (HasRelic(state, PhylacteryUnbound))
-        {
-            CardEffects.SummonOsty(state, 2);
-        }
-
-        // `Crossbow.AfterSideTurnStart` with no turn guard: one ATTACK from the player's
-        // own pool into hand, free for the turn, every turn. The game returns early when
-        // the pool has no Attack in it, which no character's does -- but the guard is
-        // transcribed rather than dropped, because Big Hat's identical guard is the
-        // difference between two cards and none for an Ironclad.
-        if (HasRelic(state, Crossbow))
-        {
-            CardEffects.AddFreeAttackCardToHand(state, 1, DrawRng(state, rng));
-        }
-
-        // `SealOfGold.AfterSideTurnStart`: energy for gold, every turn, and only while the
-        // player can still pay. The guard is `Gold >= GoldVar(5)` BEFORE the spend, so a
-        // player on exactly five buys one last turn of it and then stops.
-        if (HasRelic(state, SealOfGold) && state.PlayerGold >= SealOfGoldPrice)
-        {
-            // Through `GainEnergy` rather than a bare add, so NoEnergyGain stops it --
-            // the chokepoint test is what caught the raw write. The gold goes
-            // either way: the game's two commands are sequential and unconditional, so a
-            // turn where the energy is blocked still pays the toll.
-            CardEffects.GainEnergy(state, 1);
-            state.PlayerGold -= SealOfGoldPrice;
-        }
-
-        if (HasRelic(state, Brimstone))
-        {
-            GainPlayerStrength(state, 2);
-            foreach (var enemy in state.Enemies.Where(enemy => enemy.Hp > 0))
-            {
-                BuffSystem.Apply(enemy.Buffs, BuffId.Strength, 1);
-            }
-        }
+        // Sai, Pael's Tears, Phylactery Unbound, Crossbow, Seal of Gold, Brimstone and the
+        // flowers are `AfterSideTurnStart` relics: `ApplyAfterSideTurnStart`, after the turn
+        // start's kills.
 
         // `MiniRegent` and `DemonTongue` both clear a once-per-turn flag in
         // `BeforeSideTurnStart`; the counter IS that flag.
@@ -1077,17 +1022,6 @@ public static class RelicEffects
         if (turnNumber == 3 && HasRelic(state, CaptainsWheel))
         {
             CardEffects.GainUnpoweredBlock(state, 18, rng);
-        }
-
-        if (CountTowards(state, HappyFlower, period: 3))
-        {
-            CardEffects.GainEnergy(state, 1);
-        }
-
-        // The fake flower is the same clock at five turns instead of three.
-        if (CountTowards(state, FakeHappyFlower, period: FakeHappyFlowerTurns))
-        {
-            CardEffects.GainEnergy(state, 1);
         }
 
         // Both of these ask what the player did LAST turn, and the engine clears its
@@ -1677,6 +1611,16 @@ public static class RelicEffects
     private static Random DrawRng(CombatState state, Random? rng) =>
         state.ShuffleRng ?? rng ?? new Random(0);
 
+    /// <summary>
+    /// Whether Lizard Tail would still refuse the player's death: held and not spent (its
+    /// counter is set once it fires, and carried across the run).
+    /// </summary>
+    internal static bool LizardTailUnspent(CombatState state)
+    {
+        int index = state.Relics.FindIndex(relic => relic.DefId == LizardTail);
+        return index >= 0 && state.Relics[index].Counter == 0;
+    }
+
     public static void ApplyAfterPlayerHpChanged(CombatState state)
     {
         // LizardTail.ShouldDieLate refuses the death once per run, then heals HealVar(50m)
@@ -1951,6 +1895,98 @@ public static class RelicEffects
     }
 
     /// <summary>
+    /// The player's relics on `Hook.AfterSideTurnStart` that run every turn: Sai, Pael's Tears,
+    /// Phylactery Unbound, Crossbow, Seal of Gold, Brimstone and the two Happy Flowers.
+    /// </summary>
+    /// <remarks>
+    /// `CombatManager.StartTurn` dispatches `Hook.AfterSideTurnStart` after `SetupPlayerTurn`
+    /// (energy, hand draw, `AfterPlayerTurnStart`), and the dispatch is a gated one: a turn start
+    /// whose Inferno, Rolling Boulder or Festive Popper kills the last enemy reaches it with the
+    /// fight ending, and none of these runs (`CombatEngine.IsOverOrEnding`, which the caller asks).
+    /// What outlives the fight: the flowers' turn counts saved on the relic (run referee
+    /// CGXZ45F6HL: Happy Flower's TurnsSeen 0 in the game, 1 here, after Inferno ended a
+    /// Slumbering Beetle fight at a turn start), Crossbow's roll on the run's
+    /// CombatCardGeneration stream and Seal of Gold's gold. They ran before the hand draw, so
+    /// Crossbow's card now comes after the hand, and its roll after the BeforeHandDraw rolls
+    /// (Call of the Void, Spectrum Shift), as in the game.
+    ///
+    /// The relics on this hook with a turn guard (Lantern, Akabeko, Big Hat, Candelabra,
+    /// Chandelier and the rest of turn one's) stay with their turn's other effects.
+    /// </remarks>
+    internal static void ApplyAfterSideTurnStart(CombatState state, Random? rng)
+    {
+        // `Brimstone.AfterSideTurnStart` with NO turn guard: 2 Strength to the player and
+        // 1 to every LIVING opponent, every single turn. The enemy half is the point --
+        // it is a Shop relic that arms the room as fast as it arms you.
+        // `Sai.AfterSideTurnStart` with no turn guard: BlockVar(7m, ValueProp.Unpowered),
+        // so Dexterity does not raise it. Anchor's shape without Anchor's one-shot guard.
+        if (HasRelic(state, Sai))
+        {
+            CardEffects.GainUnpoweredBlock(state, 7, rng);
+        }
+
+        // `PaelsTears`: EnergyVar(2) at turn start, but only if `BeforeSideTurnEnd` saw
+        // energy left over LAST turn. The counter is that flag -- it is written at end of
+        // turn and read here, so the relic pays for thrift one turn late.
+        if (HasRelic(state, PaelsTears) && GetCounter(state, PaelsTears) > 0)
+        {
+            CardEffects.GainEnergy(state, 2);
+        }
+
+        // `PhylacteryUnbound.AfterSideTurnStart`: SummonVar("StartOfTurn", 2), EVERY turn
+        // including the first -- unlike Bound Phylactery, whose turn-start summon skips
+        // turn one because `BeforeCombatStart` already did it. This one does both, so
+        // turn one is five plus two.
+        if (HasRelic(state, PhylacteryUnbound))
+        {
+            CardEffects.SummonOsty(state, 2);
+        }
+
+        // `Crossbow.AfterSideTurnStart` with no turn guard: one ATTACK from the player's
+        // own pool into hand, free for the turn, every turn. The game returns early when
+        // the pool has no Attack in it, which no character's does -- but the guard is
+        // transcribed rather than dropped, because Big Hat's identical guard is the
+        // difference between two cards and none for an Ironclad.
+        if (HasRelic(state, Crossbow))
+        {
+            CardEffects.AddFreeAttackCardToHand(state, 1, DrawRng(state, rng));
+        }
+
+        // `SealOfGold.AfterSideTurnStart`: energy for gold, every turn, and only while the
+        // player can still pay. The guard is `Gold >= GoldVar(5)` BEFORE the spend, so a
+        // player on exactly five buys one last turn of it and then stops.
+        if (HasRelic(state, SealOfGold) && state.PlayerGold >= SealOfGoldPrice)
+        {
+            // Through `GainEnergy` rather than a bare add, so NoEnergyGain stops it --
+            // the chokepoint test is what caught the raw write. The gold goes
+            // either way: the game's two commands are sequential and unconditional, so a
+            // turn where the energy is blocked still pays the toll.
+            CardEffects.GainEnergy(state, 1);
+            state.PlayerGold -= SealOfGoldPrice;
+        }
+
+        if (HasRelic(state, Brimstone))
+        {
+            GainPlayerStrength(state, 2);
+            foreach (var enemy in state.Enemies.Where(enemy => enemy.Hp > 0))
+            {
+                BuffSystem.Apply(enemy.Buffs, BuffId.Strength, 1);
+            }
+        }
+
+        if (CountTowards(state, HappyFlower, period: 3))
+        {
+            CardEffects.GainEnergy(state, 1);
+        }
+
+        // The fake flower is the same clock at five turns instead of three.
+        if (CountTowards(state, FakeHappyFlower, period: FakeHappyFlowerTurns))
+        {
+            CardEffects.GainEnergy(state, 1);
+        }
+    }
+
+    /// <summary>
     /// `JossPaper.AfterSideTurnEnd` folds the turn's ETHEREAL exhausts into the count in
     /// one go — they are deliberately not counted as they happen.
     /// </summary>
@@ -1958,11 +1994,16 @@ public static class RelicEffects
     /// AFTER the hand flush, unlike Ripple Basin above. The distinction is load-bearing:
     /// cards drawn before the flush are thrown straight back out, so a Joss Paper that
     /// paid out early would appear to do nothing at all.
+    ///
+    /// `Hook.AfterTurnEnd` dispatches it, and fires nothing once the fight is ending: with
+    /// <paramref name="fold" /> false (the caller's gate, asked as the dispatch starts) the
+    /// Ethereal exhausts banked before a turn-end kill are dropped, as `JossPaper.AfterCombatEnd`
+    /// drops them, and never reach the saved count.
     /// </remarks>
-    internal static void ApplyAfterEndOfPlayerTurnShared(CombatState state, Random? rng)
+    internal static void ApplyAfterEndOfPlayerTurnShared(CombatState state, Random? rng, bool fold = true)
     {
         int index = state.Relics.FindIndex(relic => relic.DefId == JossPaper);
-        if (index >= 0 && state.EtherealExhaustsThisTurn > 0)
+        if (index >= 0 && state.EtherealExhaustsThisTurn > 0 && fold)
         {
             AddJossPaperExhausts(state, index, state.EtherealExhaustsThisTurn, rng);
         }
@@ -2484,6 +2525,13 @@ public static class RelicEffects
     /// </remarks>
     internal static void ApplyAfterCardDiscarded(CombatState state, Random? rng)
     {
+        // `Hook.AfterCardDiscarded` is a gated dispatch: a discard after the kill sets off no
+        // Tingsha, whose hit would roll the run's CombatTargets stream over a minion left.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         // `ToughBandages`: BlockVar(3m, Unpowered) -- Dexterity does not raise it.
         if (HasRelic(state, ToughBandages))
         {

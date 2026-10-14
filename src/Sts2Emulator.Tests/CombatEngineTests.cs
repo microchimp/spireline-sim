@@ -288,6 +288,11 @@ public class CombatEngineTests
                 new CardInstance(IC.Bash, false),
                 new CardInstance(IC.DefendIronclad, false),
             ],
+            // A fight still on: `CardPileCmd.Draw` draws nothing once nobody is standing or
+            // the player is dead.
+            PlayerHp = 80,
+            PlayerMaxHp = 80,
+            Enemies = [new EnemyState { DefId = 21, Hp = 30, MaxHp = 30, Buffs = [] }],
         };
 
         CardEffects.DrawCards(state, 2, new Random(0));

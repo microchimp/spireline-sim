@@ -19,7 +19,7 @@ namespace Sts2Emulator.Tests;
 /// </remarks>
 public class GremlinHornTests
 {
-    private static CombatState WithHorn(int enemyHp)
+    private static CombatState WithHorn(int enemyHp, bool alone = false)
     {
         var state = CombatFactory.NewCombat(seed: 0);
         state.Relics.Add(new RelicInstance(RelicEffects.GremlinHorn, 0));
@@ -39,8 +39,43 @@ public class GremlinHornTests
                 Buffs = [],
             },
         ];
+        if (!alone)
+        {
+            // Someone still standing after the kill, so the fight goes on and the horn pays.
+            state.Enemies.Add(
+                new EnemyState
+                {
+                    DefId = 21,
+                    Hp = 30,
+                    MaxHp = 30,
+                    CurrentIntent = new Intent(IntentType.Attack, 5),
+                    Buffs = [],
+                }
+            );
+        }
+
         state.Energy = 3;
         return state;
+    }
+
+    /// <summary>
+    /// The LAST kill pays no card: `AfterDeath` is not a gated hook, but the horn's
+    /// `CardPileCmd.Draw` draws nothing once the fight is ending, so the run's Shuffle stream
+    /// is not touched either.
+    /// </summary>
+    [Fact]
+    public void TheKillThatEndsTheFightDrawsNothing()
+    {
+        var state = WithHorn(enemyHp: 1, alone: true);
+        state.DrawPile.Clear();
+        state.DiscardPile.Add(new CardInstance(IC.DefendIronclad, false));
+        state.DiscardPile.Add(new CardInstance(IC.DefendIronclad, false));
+
+        var result = CombatEngine.Step(state, 0, new Random(0));
+
+        Assert.True(result.Terminal && result.PlayerWon);
+        Assert.Empty(state.Hand);
+        Assert.Empty(state.DrawPile);
     }
 
     [Fact]

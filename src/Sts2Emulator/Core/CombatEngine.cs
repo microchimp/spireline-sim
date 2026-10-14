@@ -986,8 +986,6 @@ public static class CombatEngine
             }
         }
 
-        TickTheBomb(state);
-
         // Metallicize: gain block at end of player turn.
         int metallicize = BuffSystem.Get(state.PlayerBuffs, BuffId.Metallicize);
         if (metallicize > 0)
@@ -1015,18 +1013,31 @@ public static class CombatEngine
             Effects.RelicEffects.GainPlayerStrength(state, ritual);
         }
 
-        int hailstorm = BuffSystem.Get(state.PlayerBuffs, BuffId.Hailstorm);
-        if (hailstorm > 0 && state.Orbs.Any(o => o.Type == OrbType.Frost))
+        // `Hook.BeforeTurnEnd`'s BeforeSideTurnEnd pass: the player's powers that kill, in the
+        // order the player holds them (`IterateHookListeners` walks a creature's powers in list
+        // order), then the relics. One dispatch: a kill partway through does not stop the
+        // listeners after it, but Doom asks the gate itself.
+        foreach (var power in PlayerPowersInOrder(state, BuffId.TheBombPower, BuffId.Hailstorm, BuffId.Doom))
         {
-            Effects.CardEffects.DealUnpoweredDamageToAll(state, hailstorm);
-        }
+            switch (power)
+            {
+                case BuffId.TheBombPower:
+                    TickTheBomb(state);
+                    break;
 
-        Effects.CardEffects.TriggerAllOrbBeforeTurnEndPassives(state, rng);
+                case BuffId.Hailstorm:
+                    int hailstorm = BuffSystem.Get(state.PlayerBuffs, BuffId.Hailstorm);
+                    if (state.Orbs.Any(o => o.Type == OrbType.Frost))
+                    {
+                        Effects.CardEffects.DealUnpoweredDamageToAll(state, hailstorm);
+                    }
 
-        int consumingShadow = BuffSystem.Get(state.PlayerBuffs, BuffId.ConsumingShadow);
-        for (int i = 0; i < consumingShadow; i++)
-        {
-            Effects.CardEffects.EvokeLastOrb(state, rng);
+                    break;
+
+                case BuffId.Doom:
+                    DoomThePlayerAtTurnEnd(state);
+                    break;
+            }
         }
 
         Effects.RelicEffects.ApplyEndOfPlayerTurn(state, rng, heldNoBlock);
@@ -1069,14 +1080,28 @@ public static class CombatEngine
             state.TenderCardsPlayedThisTurn = 0;
         }
 
-        bool allDeadAfterEndTurnPowers = NoPrimaryEnemyLeft(state);
-        if (allDeadAfterEndTurnPowers)
+        // `EndPlayerTurnPhaseOneInternal` ends `BeforeTurnEnd` with `CheckWinCondition`, which
+        // takes a pending loss FIRST: lethal Doom on the player kills in the pass above, and a
+        // kill the same turn makes later (an Ethereal exhaust's Charon's Ashes hit) never comes.
+        if (CheckWinCondition(state, turnEndStart) is { } beforeTurnEndResult)
         {
-            return new StepResult(
-                Terminal: true,
-                PlayerWon: true,
-                Reward: turnEndStart.Reward(state, playerDead: false, allDead: true)
-            );
+            return beforeTurnEndResult;
+        }
+
+        // `DoTurnEnd` opens with the orbs' `BeforeTurnEnd` (`OrbQueue.BeforeTurnEnd`) and returns
+        // if they end the fight, before any Ethereal card is exhausted. Consuming Shadow's evokes
+        // ride with them.
+        Effects.CardEffects.TriggerAllOrbBeforeTurnEndPassives(state, rng);
+
+        int consumingShadow = BuffSystem.Get(state.PlayerBuffs, BuffId.ConsumingShadow);
+        for (int i = 0; i < consumingShadow; i++)
+        {
+            Effects.CardEffects.EvokeLastOrb(state, rng);
+        }
+
+        if (CheckWinCondition(state, turnEndStart) is { } orbsResult)
+        {
+            return orbsResult;
         }
 
         int temporaryStrength = BuffSystem.Get(state.PlayerBuffs, BuffId.TemporaryStrength);
@@ -1199,6 +1224,28 @@ public static class CombatEngine
             }
         }
 
+        // `EndPlayerTurnPhaseOneInternal` ends on `CheckWinCondition`: a kill made by the passes
+        // above (an Ethereal exhaust's Charon's Ashes or Forgotten Soul hit) ends the fight
+        // there, and phase two -- the flush, `Hook.AfterFlush` and `Hook.AfterTurnEnd` with its
+        // Late pass -- never runs (`IsInProgress` is false). So Bookmark rolls no
+        // CombatCardSelection, Joss Paper folds nothing in, and Constrict and Disintegration take
+        // no HP once the fight is won. A turn-end card that kills the player (Burn, Regret) loses
+        // it here even if the last enemy died too.
+        //
+        // The kills are answered first. The game answers each inside its `CreatureCmd.Kill`, and
+        // `Hook.BeforeDeath` is not gated: a Thieving Hopper's Swipe gives its card back and a
+        // Fat Gremlin's Heist its gold even on the last kill. This return skipped the enemy
+        // phase's answer, and the card or gold was lost to the run.
+        if (IsOverOrEnding(state))
+        {
+            AnswerDeathsSince(state, turnEndStart, rng, countEscapes: true, sweepAlways: true);
+        }
+
+        if (CheckWinCondition(state, turnEndStart) is { } turnEndResult)
+        {
+            return turnEndResult;
+        }
+
         // `FlushPlayerHand`: the hand as it stands NOW, cards the passes above drew
         // included, is discarded or kept. No hook fires in here.
         var nextHand = new List<CardInstance>();
@@ -1253,18 +1300,6 @@ public static class CombatEngine
 
         EndMonologue(state);
 
-        Effects.CardEffects.KillDoomedEnemiesForTurnEnd(state);
-
-        // `DoomPower.BeforeSideTurnEnd` kills its owner when `CurrentHp <= Amount`, and the
-        // owner can be the PLAYER -- Neurosurge Dooms you every turn. The emulator only
-        // ever looked at enemies.
-        int playerDoom = BuffSystem.Get(state.PlayerBuffs, BuffId.Doom);
-        if (playerDoom > 0 && state.PlayerHp <= playerDoom)
-        {
-            state.PlayerHp = 0;
-            return new StepResult(Terminal: true, PlayerWon: false, Reward: -1f);
-        }
-
         // A giant the player's turn end killed -- The Bomb, Stone Calendar, an orb -- was
         // back and about to blow the moment it died, so ABOUT_TO_BLOW is the move it takes
         // in the enemy phase below. Left for the end-of-phase death check, it would sit
@@ -1273,8 +1308,8 @@ public static class CombatEngine
         AnswerDeathsHoldingTheFightOpen(state, rng);
 
         // `OblivionPower.AfterSideTurnEnd` removes itself when the PLAYER's side turn ends
-        // -- not its owner's, which is the enemy's. Removed after the Doom it spent the
-        // turn stacking has been paid, so the last card played still counts.
+        // -- not its owner's, which is the enemy's. Removed once the turn's cards have stacked
+        // their Doom, so the last card played still counts.
         foreach (var enemy in state.Enemies)
         {
             BuffSystem.Remove(enemy.Buffs, BuffId.Oblivion);
@@ -1295,8 +1330,16 @@ public static class CombatEngine
         // it. Taking it off HP directly is indistinguishable in a capture that plays no
         // cards and so holds no block, and wrong in every fight that does. Disintegration
         // is the same kind of damage in the LATE pass, further down.
+        //
+        // `Hook.AfterTurnEnd` is a gated dispatch: asked once here, as it starts. A kill made
+        // since the phase-one check shuts the whole pass -- Constrict and Joss Paper's fold --
+        // and the Late pass asks again. (I Am Invincible plays in the AutoPostPlay pass now, at
+        // the top of the turn end.) An enemy's Doom is not such a kill: in
+        // the game it kills at the end of its owner's side turn, so the doomed enemy is alive
+        // through this whole pass (see the Doom kill below the Late pass).
+        bool afterTurnEndOpen = !IsOverOrEnding(state);
         int constrict = BuffSystem.Get(state.PlayerBuffs, BuffId.Constrict);
-        if (constrict > 0)
+        if (constrict > 0 && afterTurnEndOpen)
         {
             Effects.CardEffects.DealDamageToPlayer(state, constrict);
         }
@@ -1313,16 +1356,34 @@ public static class CombatEngine
         // `Hook.AfterTurnEnd` pass as the player's powers above, but
         // `CombatState.IterateHookListeners` walks a creature's powers BEFORE its player's
         // relics, so No Draw has lifted by the time the paper draws.
-        Effects.RelicEffects.ApplyAfterEndOfPlayerTurnShared(state, rng);
+        Effects.RelicEffects.ApplyAfterEndOfPlayerTurnShared(state, rng, fold: afterTurnEndOpen);
 
         // `DisintegrationPower.AfterSideTurnEndLate`: the LATE pass, which
         // `Hook.AfterTurnEnd` runs only once every `AfterSideTurnEnd` above is done. So it
         // lands after the flush and after No Draw lifts: a Centennial Puzzle it trips draws
-        // its three for the next turn. Block absorbs it, as it does Constrict.
+        // its three for the next turn. Block absorbs it, as it does Constrict. A dispatch of
+        // its own, so it asks the gate again.
         int disintegration = BuffSystem.Get(state.PlayerBuffs, BuffId.Disintegration);
-        if (disintegration > 0)
+        if (disintegration > 0 && !IsOverOrEnding(state))
         {
             Effects.CardEffects.DealDamageToPlayer(state, disintegration);
+        }
+
+        // `DoomPower.BeforeSideTurnEnd` kills a doomed enemy at the end of the ENEMY side's
+        // turn, after it has acted (FINDINGS 4W1BFLMWVJ); the emulator still kills it here, at
+        // the player's (backlog). It comes after the player's whole `Hook.AfterTurnEnd`, so
+        // both of that hook's gates above see the doomed enemy alive, as the game's do: a
+        // Doom on the last enemy does not take Constrict's damage, Joss Paper's fold or
+        // Disintegration away. The power asks the gate itself (`!IsOverOrEnding`), so after a
+        // Constrict or Disintegration death it kills nothing, and Book Repair Knife does not
+        // heal a dead player.
+        if (!IsOverOrEnding(state))
+        {
+            Effects.CardEffects.KillDoomedEnemiesForTurnEnd(state);
+
+            // A doomed giant or Test Subject is answered before the enemy phase, as the
+            // turn end's other kills are above.
+            AnswerDeathsHoldingTheFightOpen(state, rng);
         }
 
         // `PaelsEye.ShouldTakeExtraTurn`: a turn in which the owner played NOTHING, once
@@ -1373,6 +1434,16 @@ public static class CombatEngine
                     .ToArray()
             )
             {
+                // `CombatManager.ExecuteEnemyTurn` runs `CheckWinCondition` after every enemy and
+                // returns once the fight is over: no one acts after the player's death or after
+                // the last primary enemy's (Thorns, its own poison). A minion its leader's death
+                // left standing until the end-of-phase death answer acted here, and its move
+                // could roll the run's streams.
+                if (IsOverOrEnding(state))
+                {
+                    break;
+                }
+
                 if (BuffSystem.Get(enemy.Buffs, BuffId.Reviving) > 0)
                 {
                     // A segment that reattaches waits a whole enemy phase FIRST. `AfterDeath`
@@ -1792,12 +1863,6 @@ public static class CombatEngine
 
         Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
 
-        int loop = BuffSystem.Get(state.PlayerBuffs, BuffId.Loop);
-        for (int i = 0; i < loop; i++)
-        {
-            Effects.CardEffects.TriggerOrbPassive(state, 0, rng);
-        }
-
         int prepTime = BuffSystem.Get(state.PlayerBuffs, BuffId.PrepTimePower);
         if (prepTime > 0)
         {
@@ -1841,32 +1906,6 @@ public static class CombatEngine
             BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnEnergy);
         }
 
-        // `RollingBoulderPower.AfterPlayerTurnStart`, once per INSTANCE, oldest first: its own
-        // Amount to every enemy, then its Amount grows by its DamageVar (5). A second Boulder
-        // starts again from its own 5 instead of joining the first one's climb.
-        var boulders = state.PlayerBuffs;
-        for (int k = 0, at; (at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k)) >= 0; k++)
-        {
-            Effects.CardEffects.DealUnpoweredDamageToAll(state, boulders[at].Magnitude);
-            at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k);
-            if (at >= 0)
-            {
-                boulders[at] = boulders[at] with { Magnitude = boulders[at].Magnitude + 5 };
-            }
-        }
-
-        int crimsonDmg = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleSelfDamage);
-        if (crimsonDmg > 0)
-        {
-            Effects.CardEffects.LoseHp(state, crimsonDmg);
-        }
-
-        int crimsonBlock = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleBlock);
-        if (crimsonBlock > 0)
-        {
-            Effects.CardEffects.GainUnpoweredBlock(state, crimsonBlock, rng);
-        }
-
         // DemonForm: gain Strength at start of player turn.
         int demonForm = BuffSystem.Get(state.PlayerBuffs, BuffId.DemonForm);
         if (demonForm > 0)
@@ -1880,13 +1919,6 @@ public static class CombatEngine
         if (aggression > 0)
         {
             Effects.CardEffects.MoveDiscardedAttacksToHandForAggression(state, aggression, rng);
-        }
-
-        int infernoSelfDamage = BuffSystem.Get(state.PlayerBuffs, BuffId.InfernoSelfDamage);
-        if (infernoSelfDamage > 0)
-        {
-            // The burn's kills are answered with the rest of the turn start's, below.
-            Effects.CardEffects.LoseHp(state, infernoSelfDamage);
         }
 
         // Plating decays by 1 at start of player turn.
@@ -2013,22 +2045,6 @@ public static class CombatEngine
             BuffSystem.Remove(state.PlayerBuffs, BuffId.SummonNextTurn);
         }
 
-        // `CountdownPower.AfterSideTurnStart`: one RANDOM hittable enemy is Doomed for its
-        // amount, rolled on the CombatTargets stream like every other unaimed card.
-        int countdown = BuffSystem.Get(state.PlayerBuffs, BuffId.Countdown);
-        if (countdown > 0)
-        {
-            var doomed = Effects.CardEffects.RandomLivingEnemy(state, rng);
-            if (doomed != null)
-            {
-                // `PowerCmd.Apply<DoomPower>(..., base.Owner, null)` -- no card source, so
-                // it skips the card-debuff chokepoint the Unsettling Lamp doubles, exactly
-                // as Reaper Form's does.
-                BuffSystem.Apply(doomed.Buffs, BuffId.Doom, countdown);
-                Effects.CardEffects.ApplyPowerDoomRiders(state, doomed, countdown);
-            }
-        }
-
         // `ForegoneConclusionPower.BeforeHandDraw`: that many cards CHOSEN from the draw
         // pile go to hand, then the power removes itself. Raised BEFORE the draw, so the
         // screen stands over the old hand -- and the end-turn work is already finished, so
@@ -2117,6 +2133,12 @@ public static class CombatEngine
                     // Summing the amount here would pay three cards on the first turn and
                     // none on the other two.
                     + (BuffSystem.Get(state.PlayerBuffs, BuffId.Clarity) > 0 ? 1 : 0)
+                    // `ToolsOfTheTradePower.ModifyHandDraw`: its cards are part of the hand
+                    // draw, ahead of every `AfterPlayerTurnStart`. They were a separate draw
+                    // after Rolling Boulder and Inferno, which a turn-start kill then refused
+                    // (the game deals them and reshuffles for them), and which Fiddle and
+                    // No Draw vetoed, Speedster hit for and Death March counted as extra.
+                    + BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade)
                     - BuffSystem.Get(state.PlayerBuffs, BuffId.MindRot)
             ),
             rng,
@@ -2130,6 +2152,10 @@ public static class CombatEngine
         {
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Clarity, -1);
         }
+        // The powers' `AfterPlayerTurnStart`, the last step of `SetupPlayerTurn`, after the hand
+        // draw: the kills a turn start makes there come after the hand is dealt.
+        ApplyAfterPlayerTurnStartPowers(state, rng);
+
         // `TyrannyPower.AfterPlayerTurnStart`: EXHAUST that many cards CHOSEN from hand --
         // `CardSelectorPrefs(prompt, Amount)`, whose single count sets min and max alike, so
         // the exhaust is compulsory and the CHOICE is the player's. The half of that card
@@ -2141,7 +2167,7 @@ public static class CombatEngine
         }
 
         // `ToolsOfTheTradePower` is two hooks. `ModifyHandDraw` adds its amount to the
-        // hand draw, and `AfterPlayerTurnStart` raises a DISCARD SELECTION for that many
+        // hand draw (above), and `AfterPlayerTurnStart` raises a DISCARD SELECTION for that many
         // cards -- `CardSelectCmd.FromHandForDiscard` with a `CardSelectorPrefs(prompt,
         // Amount)`, whose single-count constructor sets min and max alike, so the discard
         // is compulsory but the CHOICE is the player's.
@@ -2157,7 +2183,6 @@ public static class CombatEngine
         int toolsOfTheTrade = BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade);
         if (toolsOfTheTrade > 0)
         {
-            Effects.CardEffects.DrawCards(state, toolsOfTheTrade, rng);
             Effects.CardEffects.OpenDiscardSelection(
                 state,
                 Effects.SI.ToolsOfTheTrade,
@@ -2172,8 +2197,61 @@ public static class CombatEngine
         // Pendulum ran before the hand draw, so Pendulum's card was the FIRST in hand, and the
         // Hourglass fired ahead of the Hardened Shell and Slow resets.
         Effects.RelicEffects.ApplyAfterPlayerTurnStart(state, state.Turn + 1, rng);
-        Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, state.Turn + 1);
 
+        // Its Late pass is a dispatch of its own, so a kill in the pass above shuts it.
+        if (!IsOverOrEnding(state))
+        {
+            Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, state.Turn + 1);
+        }
+
+        // `Hook.AfterSideTurnStart`, after `SetupPlayerTurn`: one gated dispatch, the player's
+        // powers, then the player's relics, then the enemies' powers. A kill in
+        // `AfterPlayerTurnStart` above (Inferno, Rolling Boulder, Mr. Struggles) reaches it with
+        // the fight ending, and none of it runs: the poison does not tick, Countdown rolls no
+        // CombatTargets, the flowers do not count the turn.
+        if (!IsOverOrEnding(state))
+        {
+            var afterSideTurnStart = RunAfterSideTurnStart(state, rng, extraTurn, turnEndStart);
+            if (afterSideTurnStart is { } lost)
+            {
+                return lost;
+            }
+        }
+
+        // Every kill the turn start has made, answered once. After the roll (made at the top of
+        // the turn start), so a death that sets a move lands on top of the rolled one -- the
+        // Test Subject's RESPAWN_MOVE, and `RavenousPower.AfterDeath`'s `CreatureCmd.Stun`,
+        // which the roll used to overwrite with an attack. Before the auto-pre-play phase
+        // (CombatManager.cs:614-620), since the game's kills here -- Rolling Boulder and
+        // Inferno in `AfterPlayerTurnStart`, the orbs after it -- all come ahead of it: a
+        // Gremlin Horn's card is drawn before Mayhem takes the top of the pile.
+        AnswerDeathsSince(state, turnStart, rng);
+
+        // `Bombardment.AfterAutoPrePlayPhaseEnteredEarly` -- EARLY, so ahead of Mayhem's
+        // hook, which is the plain `AfterAutoPrePlayPhaseEntered`. Each card's kills are
+        // answered as it is played.
+        AutoPlayBombardmentsFromExhaust(state, rng);
+        AutoPlayMayhemCards(state, rng);
+        AutoPlayHistoryCourseDupe(state, rng);
+        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+
+        return Settle(state, turnEndStart);
+    }
+
+    /// <summary>
+    /// `Hook.AfterSideTurnStart` on the player side's turn start after turn one: the player's
+    /// powers that answer it here (the poison tick, Wraith Form, Noxious Fumes, Countdown), the
+    /// player's every-turn relics, then the enemies' Rampart. The caller asks the gate once, as
+    /// `Hook.IterateCombatHookListeners` does when the dispatch starts. Returns the step's
+    /// result when the poison tick kills the player.
+    /// </summary>
+    private static StepResult? RunAfterSideTurnStart(
+        CombatState state,
+        Random rng,
+        bool extraTurn,
+        in Baseline turnEndStart
+    )
+    {
         // `PoisonPower.AfterSideTurnStart` on the player: `CreatureCmd.Damage(owner, Amount,
         // Unblockable | Unpowered)`, once (the enemies hold no Accelerant). That is the HP loss
         // of a self-damage card, so it runs the same after-damage hooks: Inferno's burst,
@@ -2198,10 +2276,6 @@ public static class CombatEngine
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Poison, -1);
         }
 
-        // `Hook.AfterSideTurnStart` comes after `SetupPlayerTurn`, so the Turret's armour is
-        // granted after the relics' turn-start damage, not before it.
-        GrantRampartBlock(state, extraTurn);
-
         // `WraithFormPower.AfterSideTurnStart` takes its Amount in Dexterity every turn.
         int wraithForm = BuffSystem.Get(state.PlayerBuffs, BuffId.WraithForm);
         if (wraithForm > 0)
@@ -2215,24 +2289,92 @@ public static class CombatEngine
             Effects.CardEffects.ApplyPoisonToAllEnemies(state, noxiousFumes, rng);
         }
 
-        // Every kill the turn start has made, answered once. After the roll (made at the top of
-        // the turn start), so a death that sets a move lands on top of the rolled one -- the
-        // Test Subject's RESPAWN_MOVE, and `RavenousPower.AfterDeath`'s `CreatureCmd.Stun`,
-        // which the roll used to overwrite with an attack. Before the auto-pre-play phase
-        // (CombatManager.cs:614-620), since the game's kills here -- Rolling Boulder and
-        // Inferno in `AfterPlayerTurnStart`, the orbs after it -- all come ahead of it: a
-        // Gremlin Horn's card is drawn before Mayhem takes the top of the pile.
-        AnswerDeathsSince(state, turnStart, rng);
+        // `CountdownPower.AfterSideTurnStart`: one RANDOM hittable enemy is Doomed for its
+        // amount, rolled on the CombatTargets stream like every other unaimed card. It ran
+        // before the hand draw, so after a turn-start kill it still rolled the run's stream.
+        int countdown = BuffSystem.Get(state.PlayerBuffs, BuffId.Countdown);
+        if (countdown > 0)
+        {
+            var doomed = Effects.CardEffects.RandomLivingEnemy(state, rng);
+            if (doomed != null)
+            {
+                // `PowerCmd.Apply<DoomPower>(..., base.Owner, null)` -- no card source, so
+                // it skips the card-debuff chokepoint the Unsettling Lamp doubles, exactly
+                // as Reaper Form's does.
+                BuffSystem.Apply(doomed.Buffs, BuffId.Doom, countdown);
+                Effects.CardEffects.ApplyPowerDoomRiders(state, doomed, countdown);
+            }
+        }
 
-        // `Bombardment.AfterAutoPrePlayPhaseEnteredEarly` -- EARLY, so ahead of Mayhem's
-        // hook, which is the plain `AfterAutoPrePlayPhaseEntered`. Each card's kills are
-        // answered as it is played.
-        AutoPlayBombardmentsFromExhaust(state, rng);
-        AutoPlayMayhemCards(state, rng);
-        AutoPlayHistoryCourseDupe(state, rng);
-        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+        Effects.RelicEffects.ApplyAfterSideTurnStart(state, rng);
 
-        return Settle(state, turnEndStart);
+        // The Turret's armour: an enemy's power, so after the player's relics, and after the
+        // relics' turn-start damage, not before it.
+        GrantRampartBlock(state, extraTurn);
+        return null;
+    }
+
+    /// <summary>
+    /// The player's powers on `Hook.AfterPlayerTurnStart` that can kill: Loop, Rolling
+    /// Boulder, Crimson Mantle and Inferno.
+    /// </summary>
+    /// <remarks>
+    /// `CombatManager.SetupPlayerTurn` dispatches `AfterPlayerTurnStart` once the hand is drawn
+    /// (`CardPileCmd.Draw(..., fromHandDraw: true)`), so a turn start whose Inferno burst or
+    /// Rolling Boulder kills the last enemy has already dealt the hand and reshuffled for it.
+    /// These ran before the hand draw here, which the combat-ending gate turned into a hand
+    /// that was never drawn (corpus L80WXWJ1F5 and 29 more: Rng.Shuffle 28 in the game, 16 here
+    /// after an Inferno kill). What their HP loss sets off (Centennial Puzzle's draw, Rupture)
+    /// now comes after the hand draw too, as in the game.
+    ///
+    /// In the order they ran before the move. Tyranny's exhaust and Tools of the Trade's discard,
+    /// the pass's other two, already came after the draw (Tools of the Trade's cards are part of
+    /// the hand draw); Entropy (a choice from hand, the selection mechanism's) and Summon Next
+    /// Turn (no kill) are left where they were.
+    /// </remarks>
+    private static void ApplyAfterPlayerTurnStartPowers(CombatState state, Random rng)
+    {
+        // `LoopPower.AfterPlayerTurnStart`: the front orb's passive, Amount times.
+        int loop = BuffSystem.Get(state.PlayerBuffs, BuffId.Loop);
+        for (int i = 0; i < loop; i++)
+        {
+            Effects.CardEffects.TriggerOrbPassive(state, 0, rng);
+        }
+
+        // `RollingBoulderPower.AfterPlayerTurnStart`, once per INSTANCE, oldest first: its own
+        // Amount to every enemy, then its Amount grows by its DamageVar (5). A second Boulder
+        // starts again from its own 5 instead of joining the first one's climb.
+        var boulders = state.PlayerBuffs;
+        for (int k = 0, at; (at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k)) >= 0; k++)
+        {
+            Effects.CardEffects.DealUnpoweredDamageToAll(state, boulders[at].Magnitude);
+            at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k);
+            if (at >= 0)
+            {
+                boulders[at] = boulders[at] with { Magnitude = boulders[at].Magnitude + 5 };
+            }
+        }
+
+        // `CrimsonMantlePower.AfterPlayerTurnStart`: the self-damage, then the block.
+        int crimsonDmg = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleSelfDamage);
+        if (crimsonDmg > 0)
+        {
+            Effects.CardEffects.LoseHp(state, crimsonDmg);
+        }
+
+        int crimsonBlock = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleBlock);
+        if (crimsonBlock > 0)
+        {
+            Effects.CardEffects.GainUnpoweredBlock(state, crimsonBlock, rng);
+        }
+
+        // `InfernoPower.AfterPlayerTurnStart`: the burn. Its kills are answered with the rest
+        // of the turn start's.
+        int infernoSelfDamage = BuffSystem.Get(state.PlayerBuffs, BuffId.InfernoSelfDamage);
+        if (infernoSelfDamage > 0)
+        {
+            Effects.CardEffects.LoseHp(state, infernoSelfDamage);
+        }
     }
 
     /// <summary>
@@ -2326,11 +2468,21 @@ public static class CombatEngine
             }
         }
 
-        Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, 1);
+        // The Late pass and `AfterSideTurnStart` are gated dispatches of their own: a Festive
+        // Popper or Mercury Hourglass kill above shuts them (no Blood Vial heal, no flower tick).
+        if (!IsOverOrEnding(state))
+        {
+            Effects.RelicEffects.ApplyAfterPlayerTurnStartLate(state, 1);
+        }
+
         Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, 1, rng);
         Effects.RelicEffects.ApplyCombatStart(state, rng);
         Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
-        GrantRampartBlock(state, extraTurn: false);
+        if (!IsOverOrEnding(state))
+        {
+            Effects.RelicEffects.ApplyAfterSideTurnStart(state, rng);
+            GrantRampartBlock(state, extraTurn: false);
+        }
 
         CombatFactory.QueueCombatStartAutoPlays(state);
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
@@ -4038,6 +4190,126 @@ public static class CombatEngine
         );
 
     /// <summary>
+    /// `CombatManager.CheckWinCondition` at a safe point of the turn: a pending loss first
+    /// (`ProcessPendingLoss`), then a win (`IsEnding`). Null while the fight goes on.
+    /// </summary>
+    /// <remarks>
+    /// The order is the rule: a player dead at the same safe point as the last enemy has lost.
+    /// The death is answered first (<see cref="PlayerIsDead" />: a Fairy in a Bottle still to
+    /// refuse it stands the player back up), as the game refuses it inside the `Kill`.
+    /// </remarks>
+    private static StepResult? CheckWinCondition(CombatState state, in Baseline baseline)
+    {
+        if (PlayerIsDead(state))
+        {
+            return new StepResult(
+                Terminal: true,
+                PlayerWon: false,
+                Reward: baseline.Reward(state, playerDead: true, allDead: NoPrimaryEnemyLeft(state))
+            );
+        }
+
+        if (NoPrimaryEnemyLeft(state))
+        {
+            return new StepResult(
+                Terminal: true,
+                PlayerWon: true,
+                Reward: baseline.Reward(state, playerDead: false, allDead: true)
+            );
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// <paramref name="ids" /> the player holds, in the order the player's powers list holds
+    /// them -- the order `CombatState.IterateHookListeners` hands a creature's powers to a hook.
+    /// </summary>
+    private static List<BuffId> PlayerPowersInOrder(CombatState state, params BuffId[] ids)
+    {
+        var held = new List<BuffId>(ids.Length);
+        foreach (var buff in state.PlayerBuffs)
+        {
+            if (Array.IndexOf(ids, buff.Id) >= 0 && !held.Contains(buff.Id))
+            {
+                held.Add(buff.Id);
+            }
+        }
+
+        return held;
+    }
+
+    /// <summary>
+    /// `DoomPower.BeforeSideTurnEnd` on the PLAYER (Neurosurge Dooms its owner every turn): at
+    /// the player's turn end, `CurrentHp &lt;= Amount` kills them through `DoomKill`.
+    /// </summary>
+    /// <remarks>
+    /// In `BeforeTurnEnd`'s BeforeSideTurnEnd pass, before `DoTurnEnd` exhausts the Ethereal
+    /// cards: so lethal Doom kills before an Ethereal exhaust's Charon's Ashes hit could kill
+    /// the last enemy, and the turn's `CheckWinCondition` takes the pending loss first. It ran
+    /// after the flush, and a fight that the game loses scored a win once the exhaust's kill
+    /// ended the turn early. The power asks the gate itself (`!IsOverOrEnding`): a Bomb that
+    /// went off ahead of it in the same pass and killed the last enemy spares the player.
+    /// `DoomKill` is a `CreatureCmd.Kill` without force, so Lizard Tail and Fairy in a Bottle
+    /// refuse it as they refuse any death.
+    /// </remarks>
+    private static void DoomThePlayerAtTurnEnd(CombatState state)
+    {
+        int doom = BuffSystem.Get(state.PlayerBuffs, BuffId.Doom);
+        if (doom <= 0 || state.PlayerHp <= 0 || state.PlayerHp > doom || IsOverOrEnding(state))
+        {
+            return;
+        }
+
+        state.PlayerHp = 0;
+        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+    }
+
+    /// <summary>
+    /// `CombatManager.IsOverOrEnding`, the combat-ending gate: true from the moment the last
+    /// primary enemy dies with nothing holding the fight open (`IsEnding`'s won side,
+    /// <see cref="NoPrimaryEnemyLeft" />) or the player's death is pending
+    /// (<see cref="IsAboutToLose" />).
+    /// </summary>
+    /// <remarks>
+    /// The emulator asks it wherever the game does, so the rule lives in one place:
+    /// <list type="bullet">
+    /// <item>Commands that do nothing once it is shut: `CardPileCmd.Draw` (asked again before
+    /// each card), `CardPileCmd.Shuffle`, `CardPileCmd.AutoPlayFromDrawPile`, `CardCmd.AutoPlay`,
+    /// `CardCmd.Exhaust`, `CreatureCmd.GainBlock`, the orb commands.</item>
+    /// <item>`Hook.IterateCombatHookListeners`: a gated hook dispatch asks once, when it
+    /// STARTS, and then runs every listener even if one of them shuts it -- a Joss Paper still
+    /// counts the exhaust whose Charon's Ashes hit kills. The kill and death hooks
+    /// (`AfterDamageGiven`, `AfterDamageReceived`, `AfterDeath`, `AfterCardPlayed`,
+    /// `AfterCurrentHpChanged`) do not ask at all.</item>
+    /// <item>`CheckWinCondition`, at the turn's safe points, which takes a pending loss BEFORE
+    /// a win: a turn in which the player and the last enemy both die is lost.</item>
+    /// </list>
+    /// What it decides outlives the fight: the run-level RNG streams (a draw after the killing
+    /// blow reshuffled on `Rng.Shuffle`, and every hand for the rest of the run came off the
+    /// wrong position), the tallies saved on relics, gold, HP and the outcome. Combat setup
+    /// (`IsStarting`, which the game exempts) asks nothing: no setup step reaches a gate.
+    /// </remarks>
+    internal static bool IsOverOrEnding(CombatState state) =>
+        NoPrimaryEnemyLeft(state) || IsAboutToLose(state);
+
+    /// <summary>
+    /// `CombatManager.IsAboutToLose`: the player is dead and nothing will stand them back up,
+    /// so `CreatureCmd.Kill` has called `LoseCombat` and the loss waits for the next
+    /// `CheckWinCondition`.
+    /// </summary>
+    /// <remarks>
+    /// Two things refuse the player's death (`ShouldDie`): Fairy in a Bottle, which the
+    /// emulator answers at the next <see cref="PlayerIsDead" />, and an unspent Lizard Tail,
+    /// answered as the HP changes. While either is still to answer, a player at 0 HP is not
+    /// losing: the game refuses the death inside the same `Kill`.
+    /// </remarks>
+    internal static bool IsAboutToLose(CombatState state) =>
+        state.PlayerHp <= 0
+        && Array.IndexOf(state.PotionSlots, FairyInABottlePotionId) < 0
+        && !Effects.RelicEffects.LizardTailUnspent(state);
+
+    /// <summary>
     /// <c>IllusionPower</c>: the owner is never removed from combat when it dies, keeps
     /// its buffs through the death, and spends its next turn on a forced REVIVE_MOVE that
     /// heals it back to full.
@@ -4488,6 +4760,10 @@ public static class CombatEngine
 
     private static void AutoPlayStampedeAttacks(CombatState state, Random rng)
     {
+        // `StampedePower.AfterAutoPostPlayPhaseEntered` picks once per stack whatever the
+        // earlier picks did: after a kill, `CardCmd.AutoPlay` does nothing and leaves the card in
+        // hand, but the next stack still draws its pick off the run's Shuffle stream. It stopped
+        // at the kill here, one Shuffle draw short of the game per stack left.
         int stampede = BuffSystem.Get(state.PlayerBuffs, BuffId.Stampede);
         // One pick per stack, rolled even once the fight is over (the Shuffle stream is the
         // run's): `CardCmd.AutoPlay` then returns at once and the card stays in hand.
@@ -4544,7 +4820,7 @@ public static class CombatEngine
             var card in state.ExhaustPile.Where(c => c.DefId == Effects.IC.HowlFromBeyond).ToList()
         )
         {
-            if (NoPrimaryEnemyLeft(state))
+            if (IsOverOrEnding(state))
             {
                 return;
             }
@@ -4578,7 +4854,7 @@ public static class CombatEngine
                 .ToList()
         )
         {
-            if (NoPrimaryEnemyLeft(state))
+            if (IsOverOrEnding(state))
             {
                 return;
             }
@@ -5276,7 +5552,7 @@ public static class CombatEngine
             state.AutoPlayQueue.RemoveAt(0);
             // Its kills are answered inside the play.
             AutoPlay(state, next, rng);
-            if (PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+            if (PlayerIsDead(state) || IsOverOrEnding(state))
             {
                 state.AutoPlayQueue.Clear();
                 return;
@@ -5363,7 +5639,7 @@ public static class CombatEngine
         for (int played = 0; played < WhisperingEarringMaxCards; played++)
         {
             // `CombatManager.Instance.IsOverOrEnding`.
-            if (PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+            if (PlayerIsDead(state) || IsOverOrEnding(state))
             {
                 return;
             }
@@ -5525,7 +5801,7 @@ public static class CombatEngine
         in AutoPlaySource source
     )
     {
-        if (CombatIsOver(state))
+        if (IsOverOrEnding(state))
         {
             return null;
         }
@@ -5548,15 +5824,6 @@ public static class CombatEngine
     }
 
     /// <summary>
-    /// `CombatManager.IsOverOrEnding`: the player is dead or no primary enemy is left. Asks
-    /// without answering: a player at 0 HP with Fairy in a Bottle is not dead, and the
-    /// potion is spent where the death is answered (<see cref="PlayerIsDead" />), not here.
-    /// </summary>
-    internal static bool CombatIsOver(CombatState state) =>
-        (state.PlayerHp <= 0 && Array.IndexOf(state.PotionSlots, FairyInABottlePotionId) < 0)
-        || NoPrimaryEnemyLeft(state);
-
-    /// <summary>
     /// `CardCmd.AutoPlay` on a card sitting in <paramref name="pile" />: once the combat is
     /// over the card stays where it is, as in the game, which plays nothing then. True when
     /// the combat is over.
@@ -5569,7 +5836,7 @@ public static class CombatEngine
         in AutoPlaySource source = default
     )
     {
-        if (CombatIsOver(state))
+        if (IsOverOrEnding(state))
         {
             return true;
         }
@@ -5585,7 +5852,7 @@ public static class CombatEngine
         }
 
         AutoPlay(state, card, rng, source);
-        return CombatIsOver(state);
+        return IsOverOrEnding(state);
     }
 
     /// <summary>
@@ -5678,7 +5945,7 @@ public static class CombatEngine
     )
     {
         AutoPlay(state, card, rng, forceExhaust);
-        return PlayerIsDead(state) || NoPrimaryEnemyLeft(state);
+        return PlayerIsDead(state) || IsOverOrEnding(state);
     }
 
     /// <summary>
@@ -5690,7 +5957,7 @@ public static class CombatEngine
         CombatState state,
         CardInstance card,
         Random rng
-    ) => CombatIsOver(state) ? null : AutoPlay(state, card, rng);
+    ) => IsOverOrEnding(state) ? null : AutoPlay(state, card, rng);
 
     /// <summary>
     /// `CardCmd.AutoPlay(card, null)` <paramref name="times" /> times on the SAME card, as
@@ -5708,7 +5975,7 @@ public static class CombatEngine
         for (int play = 0; ; play++)
         {
             var restsOn = AutoPlay(state, card, rng);
-            if (play + 1 >= times || PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+            if (play + 1 >= times || PlayerIsDead(state) || IsOverOrEnding(state))
             {
                 return;
             }
@@ -5755,7 +6022,7 @@ public static class CombatEngine
         bool forceExhaust = false
     )
     {
-        if (count <= 0 || PlayerIsDead(state) || NoPrimaryEnemyLeft(state))
+        if (count <= 0 || PlayerIsDead(state) || IsOverOrEnding(state))
         {
             return;
         }

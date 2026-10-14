@@ -17,7 +17,14 @@ public class KnownDrawOrderTests
 {
     private static CombatState PileOf(int count)
     {
-        var state = new CombatState();
+        // A fight still on: with nobody standing it is over, and `CardPileCmd.Shuffle`
+        // shuffles nothing (`CombatEngine.IsOverOrEnding`).
+        var state = new CombatState
+        {
+            PlayerHp = 80,
+            PlayerMaxHp = 80,
+            Enemies = [new EnemyState { DefId = 21, Hp = 30, MaxHp = 30, Buffs = [] }],
+        };
         for (int i = 0; i < count; i++)
         {
             state.DrawPile.Add(new CardInstance(IC.StrikeIronclad, false));
