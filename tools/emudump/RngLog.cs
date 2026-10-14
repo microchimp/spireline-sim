@@ -8,6 +8,13 @@
 // local-function suffixes dropped so a new lambda elsewhere in a method does not rename its draws.
 // The JIT inlines small methods away from the stack, and how it inlines can change with any edit, so
 // rng_diff.py runs EmuDump with DOTNET_TieredCompilation=0 and DOTNET_JITMinOpts=1 (no inlining).
+//
+// A screen raised in the middle of a step stops the step, and its answer runs the step again from its
+// start (CombatEngine.Step, HookChoiceReplay), with the streams moved back to where the step found them.
+// The replay draws the stopped run's draws again, so at the replay's mark ("replay") every draw logged
+// past its stream's position now is dropped -- from this step's draws, and from a step already written
+// when the screen was answered a step later -- as trace mode drops the stopped run's events (Trace.cs):
+// the log holds each draw once, as the game made it.
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Sts2Emulator.Core;
@@ -15,22 +22,64 @@ using Sts2Emulator.Core.Run;
 
 static class RngLog
 {
-    static readonly List<(CountingRandom Stream, int Index, string Caller)> Pending = [];
+    /// <summary>A draw: its stream, the stream's counter after it, its caller, and the step array it went to (null while pending).</summary>
+    sealed class Draw(CountingRandom stream, int index, string caller)
+    {
+        public readonly CountingRandom Stream = stream;
+        public readonly int Index = index;
+        public readonly string Caller = caller;
+        public JsonArray? WrittenIn;
+        public JsonNode? Node;
+    }
+
+    /// <summary>The fight's draws so far, in order, the written ones too: a replay takes back a stopped run's.</summary>
+    static readonly List<Draw> Logged = [];
 
     /// <summary>Starts logging every draw of every CountingRandom in this process.</summary>
-    public static void Install() => CombatTrace.RngCall = r => Pending.Add((r, r.CallCount, Caller()));
+    public static void Install()
+    {
+        CombatTrace.RngCall = r => Logged.Add(new Draw(r, r.CallCount, Caller()));
+        var marked = CombatTrace.Mark;
+        CombatTrace.Mark = (what, subject, state) =>
+        {
+            marked?.Invoke(what, subject, state);
+            if (what == "replay") DropRewound();
+        };
+    }
 
-    /// <summary>The draws since the last call, named by the streams of <paramref name="e"/>'s combat; then forgotten.</summary>
+    /// <summary>
+    /// The replay of a stopped step has moved its streams back to the step's start: a draw past its
+    /// stream's position is the stopped run's, which the replay draws again. Dropped, wherever it was written.
+    /// </summary>
+    static void DropRewound()
+    {
+        for (int i = Logged.Count - 1; i >= 0; i--)
+        {
+            var d = Logged[i];
+            if (d.Index <= d.Stream.CallCount) continue;
+            d.WrittenIn?.Remove(d.Node);
+            Logged.RemoveAt(i);
+        }
+    }
+
+    /// <summary>The draws since the last call, named by the streams of <paramref name="e"/>'s combat.</summary>
     public static JsonArray Take(RunEngine e)
     {
         var c = e.State.ActiveCombat;
-        var arr = new JsonArray(Pending.Select(p => (JsonNode)new JsonArray(Name(p.Stream, c, e), p.Index, p.Caller)).ToArray());
-        Pending.Clear();
+        var arr = new JsonArray();
+        foreach (var d in Logged)
+        {
+            if (d.WrittenIn != null) continue;
+            d.Node = new JsonArray(Name(d.Stream, c, e), d.Index, d.Caller);
+            arr.Add(d.Node);
+            d.WrittenIn = arr;
+        }
+
         return arr;
     }
 
-    /// <summary>Drops what was logged (a fight that threw before its first step).</summary>
-    public static void Clear() => Pending.Clear();
+    /// <summary>Forgets the fight's draws: a new fight, or one that threw before its first step.</summary>
+    public static void Clear() => Logged.Clear();
 
     static string Name(CountingRandom r, CombatState? c, RunEngine e)
     {
