@@ -1,13 +1,15 @@
 """Score one emulator commit on the reference set (referee/refset.py): the accuracy numbers to quote.
 
     python -m tools.fidelity.refset_score [--version v2] [--subset all|pilot] [--emu <emulator checkout>]
-        [--procs 4] [--label <name>] [--codex [--codex-emu <checkout>] [--codex-limit N]]
-        [--allow-dirty-emu] [--allow-unchecked-record]
+        [--procs 4] [--label <name>] [--codex [--codex-emu <checkout>] [--codex-limit N]] [--record <record dir>]
+        [--allow-dirty-emu] [--allow-stale-emu] [--allow-unchecked-record]
 
 Run from the fork's root. --emu is a checkout with EmuDump built (tools/emudump/bin/Release/net9.0); its
 commit is what the numbers are for, so a checkout with uncommitted changes is refused (--allow-dirty-emu scores
-it anyway, labelled <commit>-dirty and NOT QUOTABLE), and so is a record made before the driver reported its
-build (--allow-unchecked-record, also NOT QUOTABLE). Every recorded reference fight is replayed (EmuDump fight) and
+it anyway, labelled <commit>-dirty and NOT QUOTABLE), as is an EmuDump build older than any of its sources (the
+DLL would not be that commit's: --allow-stale-emu, NOT QUOTABLE), and a record made before the driver reported its
+build (--allow-unchecked-record, also NOT QUOTABLE). --record scores one record directory (a trial) instead of the
+subset's current record (refs-<subset>.json), under the record's own name. Every recorded reference fight is replayed (EmuDump fight) and
 re-anchored (EmuDump reanchor) in --procs processes (one emulator per process) and judged with this checkout's
 comparers; each emulator result is paired with its reference by position AND seed (a seed mismatch is an error).
 
@@ -78,6 +80,26 @@ def git_commit(path: Path) -> dict:
         return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=False).stdout.strip()
     return {"commit": g("rev-parse", "HEAD"), "branch": g("rev-parse", "--abbrev-ref", "HEAD"),
             "dirty": bool(g("status", "--porcelain", "--untracked-files=no"))}
+
+
+# What EmuDump.dll is built from (tools/emudump/EmuDump.csproj and its project reference), below the checkout.
+EMU_SOURCES = (("src/Sts2Emulator", ("*.cs", "*.csproj")), ("src/Sts2Emulator.Tests/Support/Invariants", ("*.cs",)),
+               ("tools/emudump", ("*.cs", "*.csproj")))
+
+
+def stale_sources(emu: Path, dll: Path) -> list[str]:
+    """The sources (in a clean checkout: the commit's) changed after the EmuDump DLL was built, so the DLL is not
+    that commit's build; empty when the DLL is newer than every one."""
+    built = dll.stat().st_mtime
+    out = []
+    for sub, globs in EMU_SOURCES:
+        for g in globs:
+            for f in (emu / sub).rglob(g):
+                if "bin" in f.relative_to(emu / sub).parts[:-1] or "obj" in f.relative_to(emu / sub).parts[:-1]:
+                    continue
+                if f.stat().st_mtime > built:
+                    out.append(f.relative_to(emu).as_posix())
+    return sorted(out)
 
 
 def emudump(dll: Path, mode: str, results: list, work: Path, procs: int) -> list:
@@ -419,12 +441,20 @@ def main() -> int:
     ap.add_argument("--codex-emu", type=Path, default=None, help="checkout with the codex replay (default --emu)")
     ap.add_argument("--codex-limit", type=int, default=0)
     ap.add_argument("--allow-dirty-emu", action="store_true", help="score a checkout with uncommitted changes (NOT QUOTABLE)")
+    ap.add_argument("--allow-stale-emu", action="store_true", help="score an EmuDump build older than its sources (NOT QUOTABLE)")
+    ap.add_argument("--record", type=Path, default=None, help="score this record directory (a trial) instead of refs-<subset>.json")
     ap.add_argument("--allow-unchecked-record", action="store_true",
                     help="score a record made before the driver reported its build (NOT QUOTABLE)")
     a = ap.parse_args()
     vdir = REFSET / a.version
-    latest = json.loads((vdir / f"refs-{a.subset}.json").read_text(encoding="utf-8"))
-    rdir = Path(latest["record"])
+    if a.record:
+        rdir = a.record.resolve()
+        latest = {"record": str(rdir), "parts": [p for p in PARTS if (rdir / f"{p}.refs.json").exists()]}
+        subset = rdir.name  # a trial is scored and stored under its own record's name
+    else:
+        latest = json.loads((vdir / f"refs-{a.subset}.json").read_text(encoding="utf-8"))
+        rdir = Path(latest["record"])
+        subset = a.subset
     record = json.loads((rdir / "record.json").read_text(encoding="utf-8"))
     manifest = json.loads((vdir / "manifest.json").read_text(encoding="utf-8"))
     entries = {e["id"]: e for e in manifest["specs"]}
@@ -441,6 +471,15 @@ def main() -> int:
                   "it anyway, NOT QUOTABLE)", file=sys.stderr)
             return 2
         not_quotable.append("dirty emulator checkout")
+    stale = stale_sources(emu, dll)
+    if stale:
+        if not a.allow_stale_emu:
+            print(f"REFUSED: {dll} is older than {len(stale)} of its sources ({', '.join(stale[:3])}): it is not "
+                  f"{emu_info['commit'][:12]}'s build; dotnet build -c Release tools/emudump (--allow-stale-emu scores it "
+                  "anyway, NOT QUOTABLE)", file=sys.stderr)
+            return 2
+        not_quotable.append(f"EmuDump older than {len(stale)} of its sources")
+    emu_info["emudump_stale_sources"] = stale[:20]
     driver_build = record["stamp"].get("driver_build")
     if not driver_build:
         if not a.allow_unchecked_record:
@@ -498,7 +537,7 @@ def main() -> int:
     runs = runs_score(vdir, emu, work)
     commit = emu_info["commit"][:12] + ("-dirty" if emu_info["dirty"] else "")
     name = a.label or commit
-    score = {"set": f"{manifest['set']} {manifest['version']}", "subset": a.subset, "emulator": emu_info, "label": name,
+    score = {"set": f"{manifest['set']} {manifest['version']}", "subset": subset, "emulator": emu_info, "label": name,
              "commit_label": commit, "not_quotable": not_quotable, "comparer": git_commit(ROOT), "record": record["stamp"],
              "record_dir": str(rdir), "scored": time.strftime("%Y-%m-%d %H:%M"), "minutes": round((time.time() - t0) / 60, 1),
              "headline": head, "realistic_table": table, "record_summary": record.get("summary"),
@@ -513,12 +552,12 @@ def main() -> int:
     if hist.exists():
         for line in hist.read_text(encoding="utf-8").splitlines():
             x = json.loads(line)
-            if x.get("subset") == a.subset and x.get("label") != name:
+            if x.get("subset") == subset and x.get("label") != name:
                 prev = x
     line = summary_line(score)
-    (sdir / f"{a.subset}-{name}.json").write_text(json.dumps(score, indent=1), encoding="utf-8")
+    (sdir / f"{subset}-{name}.json").write_text(json.dumps(score, indent=1), encoding="utf-8")
     with open(hist, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"label": name, "subset": a.subset, "commit": emu_info["commit"], "dirty": emu_info["dirty"],
+        f.write(json.dumps({"label": name, "subset": subset, "commit": emu_info["commit"], "dirty": emu_info["dirty"],
                             "scored": score["scored"], "headline": head, "regression": {k: v["passing"] for k, v in reg.items()},
                             "line": line, "not_quotable": not_quotable,
                             "codex": {k: codex.get(k) for k in ("runs", "runs_matching_pct")}}) + "\n")
@@ -526,7 +565,7 @@ def main() -> int:
     if prev:
         print("  vs " + prev["label"] + ": " + delta(prev["headline"], head))
     print(render_table(score))
-    print(f"  stored {sdir / (a.subset + '-' + name + '.json')}")
+    print(f"  stored {sdir / (subset + '-' + name + '.json')}")
     return 0
 
 
@@ -538,7 +577,9 @@ def summary_line(s: dict) -> str:
         if not b:
             return f"{p} n/a"
         causes = ", ".join(f"{k} {n}" for k, n in sorted(b["excluded_by_cause"].items(), key=lambda kv: -kv[1]))
-        x = (f"{p}: {b['specs']} specs, {b['kept']} kept, {b['excluded']} excluded ({causes or 'none'}), {b['flagged']} flagged; "
+        ch = ", ".join(f"{k} {n}" for k, n in sorted((b.get("choosers") or {}).items()))
+        x = (f"{p} [chooser {ch or '-'}]: {b['specs']} specs, {b['kept']} kept, {b['excluded']} excluded ({causes or 'none'}), "
+             f"{b['flagged']} flagged; "
              f"identical {b['identical']}/{b['kept']} = {pct(b['identical'], b['kept'])} of kept, "
              f"{pct(b['identical'], b['specs'])} counting exclusions as failures")
         if steps:

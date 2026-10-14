@@ -27,10 +27,15 @@ realistic specs are derived from per-run third-party data.
 python -I referee/refset.py build --version v2                      # the manifest (about 7 min: reads the codex once)
 python -I referee/refset.py record --version v2                     # every fight, twice (the final record)
 python -I referee/refset.py record --version v2 --parts runs        # the 30 whole runs (driver/RunPlay.cs)
+python -I referee/refset.py record --version v2 --ids <id,id,...> --label <name>   # a trial (also --limit N)
 python -I referee/refset.py rejudge --version v2 --record <dir>     # judge a record again from its saved passes
-python -m tools.fidelity.refset_score --version v2 --emu <checkout> [--codex --codex-emu <checkout>]
-python -I referee/refset.py status --version v2
+python -m tools.fidelity.refset_score --version v2 --emu <checkout> [--codex --codex-emu <checkout>] [--record <dir>]
+python -I referee/refset.py status --version v2                     # counts, the specs' realism flags per cause and cell
 ```
+
+A trial (`--ids`, `--limit`) never replaces `refs-<subset>.json`, the record the score reads; `refset_score --record
+<dir>` scores it under its own name. `build` and `status` print the specs' realism flags (before any recording) per
+part, per cause and per act x room cell; the manifest keeps them under `flags`.
 
 `--subset pilot` takes the pilot list (60 realistic, 60 coverage, all regression); `--limit N` the first N
 of each part. Game copy `D:/spireline/referee/game-refset` (`referee/linkcopy.py`), 3 game processes.
@@ -100,12 +105,13 @@ no references.
 ## Numbers
 
 `refset_score` replays and re-anchors every reference with the given emulator checkout (refused when it has
-uncommitted changes, or when the record names no driver build; both can be scored anyway, labelled NOT
-QUOTABLE) and stores `scores/<subset>-<commit>.json` and a line in `scores/history.jsonl`. The line states, per
+uncommitted changes, when its EmuDump build is older than any of its sources, so not that commit's build, or when the
+record names no driver build; each can be scored anyway, labelled NOT QUOTABLE) and stores `scores/<subset>-<commit>.json` and a line in `scores/history.jsonl`. The line states, per
 part, specs, kept, excluded by cause, flagged, identical as a share of the kept fights AND counting exclusions as
 failures, steps verified, the emulator commit and the driver build and capabilities; the table repeats it per act
 x room type.
 
+- every part names its chooser and how many fights used it;
 - regression: a class passes when its fights are identical AND its trigger was reached (its card played, its
   relic fired, its potion used, its power up when an enemy attacked); driver classes are counted apart;
 - coverage: a relic counts only where its effect fired (a relic flash) at verified steps, not where it was held;

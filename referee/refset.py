@@ -982,6 +982,32 @@ def runs_part(stats: collections.Counter) -> dict:
 
 # ---------------------------------------------------------------- build
 
+def manifest_flags(entries: list) -> dict:
+    """The realism flags the set's own specs carry before any recording, per part: specs, flagged, specs per flag
+    cause (a spec counted once per cause), per act x room cell (realistic), and per flag."""
+    def block(rows):
+        return {"specs": len(rows), "flagged": sum(1 for e in rows if e.get("flags")),
+                "by_cause": dict(collections.Counter(c for e in rows for c in sorted({f.split(":")[0] for f in e.get("flags", [])})))}
+    out: dict = {}
+    for part in dict.fromkeys(e["part"] for e in entries):
+        es = [e for e in entries if e["part"] == part]
+        out[part] = block(es)
+        if part == "realistic":
+            cells = collections.defaultdict(list)
+            for e in es:
+                cells[f"act{e['strata']['act']} {e['strata']['room']}"].append(e)
+            out[part]["cells"] = {k: block(v) for k, v in sorted(cells.items())}
+        out[part]["by_flag"] = dict(collections.Counter(f for e in es for f in e.get("flags", [])).most_common())
+    return out
+
+
+def print_manifest_flags(flags: dict) -> None:
+    for part, b in flags.items():
+        print(f"  {part}: {b['specs']} specs, {b['flagged']} flagged {b['by_cause'] or ''}")
+        for cell, c in (b.get("cells") or {}).items():
+            print(f"    {cell:<14} {c['specs']:>4} specs  {c['flagged']:>3} flagged {c['by_cause'] or ''}")
+
+
 def pilot_ids(entries: list, n_real: int, n_cov: int, regression: bool = True) -> list[str]:
     real = [e for e in entries if e["part"] == "realistic"]
     cells = collections.defaultdict(list)
@@ -1036,6 +1062,7 @@ def cmd_build(a) -> int:
                                        "potions": tg["potions"], "encounters": tg["encounters"]}},
         "codex_stats": dict(stats), "runs": runs, "specs": entries,
         "pilot": pilot_ids(entries, a.pilot_realistic, a.pilot_coverage),
+        "flags": manifest_flags(entries),
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     print(f"{SET_NAME} {a.version}: {manifest['counts']} in {time.time() - t0:.0f} s -> {out / 'manifest.json'}")
@@ -1043,6 +1070,8 @@ def cmd_build(a) -> int:
           + ", ".join(f"{k} {v}" for k, v in sorted(stats.items()) if k.startswith(("short_", "cand_skip", "skip_"))))
     print(f"  coverage targets: {manifest['coverage_targets']['card_variants']} card variants, {len(tg['relics'])} relics, "
           f"{len(tg['potions'])} potions, {len(tg['encounters'])} encounters; pilot {len(manifest['pilot'])} specs")
+    print("  realism flags of the specs (before recording):")
+    print_manifest_flags(manifest["flags"])
     return 0
 
 
@@ -1491,6 +1520,12 @@ def print_summary(report: dict) -> None:
         print(f"[refset]   {cell:<14} {b['specs']:>4} specs {b['kept']:>4} kept  excluded {b['excluded'] or 0}  flagged {b['flagged']}")
 
 
+def record_pointer(subset: str, ids: str, limit: int) -> str | None:
+    """The file naming a subset's current record (refs-<subset>.json, what refset_score reads), or None for a
+    trial (only some specs: --ids, --limit), which never replaces it."""
+    return None if (ids or limit) else f"refs-{subset}.json"
+
+
 def cmd_record(a) -> int:
     man = load_manifest(a.version)
     parts = a.parts.split(",")
@@ -1522,6 +1557,11 @@ def cmd_record(a) -> int:
     rdir = vdir(a.version) / "record" / f"{a.subset}-{label}"
     rdir.mkdir(parents=True, exist_ok=True)
     stamp = base_stamp | {"subset": a.subset, "label": label}
+    # A trial (--ids, --limit) is not the subset's record: it never replaces refs-<subset>.json, which the score
+    # reads; refset_score --record <dir> scores it by its own name.
+    trial = record_pointer(a.subset, a.ids, a.limit) is None
+    if trial:
+        stamp["trial"] = {"specs": len(entries), "by_ids": bool(a.ids), "limit": a.limit or None}
     t0 = time.time()
     orders = {"a": entries, "b": list(reversed(entries))}
     summaries = {}
@@ -1564,11 +1604,11 @@ def cmd_record(a) -> int:
     report = write_record(rdir, a, parts, entries, judged, retried, stamp, minutes,
                           {n: {k: summ.get(k) for k in ("fights", "wall_s", "s_per_fight_per_server", "fights_per_min", "restarts",
                                                         "errors", "exit")} for n, summ in summaries.items()},
-                          f"refs-{a.subset}.json")
+                          record_pointer(a.subset, a.ids, a.limit))
     print(f"[refset] {len(entries)} fights recorded twice in {minutes:.1f} min ({len(retried)} retried after a wait limit), "
           f"driver {info['commit'][:12]} {','.join(lines[0].get('capabilities', []))}")
     print_summary(report)
-    print(f"[refset] references: {rdir}")
+    print(f"[refset] references: {rdir}" + (" (a trial: refset_score --record <dir> scores it)" if trial else ""))
     return 0
 
 
@@ -1614,7 +1654,9 @@ def cmd_rejudge(a) -> int:
 
 def cmd_status(a) -> int:
     man = load_manifest(a.version)
-    print(f"{man['set']} {man['version']} ({man['created']}): {man['counts']}")
+    print(f"{man['set']} {man['version']} ({man['created']}, generator {man['generator']['commit'][:12]}): {man['counts']}")
+    print("  realism flags of the specs (before recording):")
+    print_manifest_flags(manifest_flags(man["specs"]))
     for sub in ("all", "pilot"):
         p = vdir(a.version) / f"refs-{sub}.json"
         if p.exists():

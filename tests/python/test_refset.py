@@ -388,6 +388,28 @@ class Recording(unittest.TestCase):
         self.assertEqual(s["flags_by_item"], {"state_unknown:PEN_NIB.AttacksPlayed": 1})
 
 
+    def test_the_manifest_counts_its_specs_flags_per_cause_and_cell(self) -> None:
+        es = [{"id": "a", "part": "realistic", "strata": {"act": 3, "room": "elite"},
+               "flags": ["state_unknown:PEN_NIB.AttacksPlayed", "state_unknown:JOSS_PAPER.CardsExhausted"]},
+              {"id": "b", "part": "realistic", "strata": {"act": 3, "room": "elite"}, "flags": ["state_unverified:GUILTY.CombatsSeen"]},
+              {"id": "c", "part": "realistic", "strata": {"act": 1, "room": "boss"}, "flags": []},
+              {"id": "d", "part": "coverage", "strata": {"act": 1, "room": "monster"}, "flags": []}]
+        f = refset.manifest_flags(es)
+        self.assertEqual((f["realistic"]["specs"], f["realistic"]["flagged"]), (3, 2))
+        # A spec counts once per cause, however many of its items carry that cause.
+        self.assertEqual(f["realistic"]["by_cause"], {"state_unknown": 1, "state_unverified": 1})
+        self.assertEqual(f["realistic"]["cells"]["act3 elite"]["flagged"], 2)
+        self.assertEqual(f["realistic"]["cells"]["act1 boss"], {"specs": 1, "flagged": 0, "by_cause": {}})
+        self.assertEqual(f["realistic"]["by_flag"]["state_unknown:PEN_NIB.AttacksPlayed"], 1)
+        self.assertEqual(f["coverage"], {"specs": 1, "flagged": 0, "by_cause": {}, "by_flag": {}})
+
+    def test_a_trial_never_replaces_the_subsets_record(self) -> None:
+        self.assertEqual(refset.record_pointer("pilot", "", 0), "refs-pilot.json")
+        self.assertEqual(refset.record_pointer("all", "", 0), "refs-all.json")
+        self.assertIsNone(refset.record_pointer("all", "R1M-X-F03,C0001-Y", 0))
+        self.assertIsNone(refset.record_pointer("pilot", "", 5))
+
+
 class GameLog(unittest.TestCase):
     def run_dir(self, d: str, ids: list, log: list) -> Path:
         run = Path(d)
@@ -541,6 +563,27 @@ class Score(unittest.TestCase):
         self.assertEqual(rep["emulator"]["identical_but_trigger_not_reached"], ["thorns"])
         self.assertEqual((rep["driver"]["classes"], rep["driver"]["passing"]), (1, 1))
 
+    def test_an_emudump_build_older_than_its_sources_is_not_the_commits(self) -> None:
+        import os  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as d:
+            emu = Path(d)
+            dll = emu / "tools/emudump/bin/Release/net9.0/EmuDump.dll"
+            for f in ("src/Sts2Emulator/Core/Card.cs", "src/Sts2Emulator/obj/x.cs", "tools/emudump/Program.cs",
+                      "src/Sts2Emulator.Tests/Support/Invariants/Inv.cs", "src/Sts2Emulator.Tests/Combats/T.cs"):
+                (emu / f).parent.mkdir(parents=True, exist_ok=True)
+                (emu / f).write_text("x", encoding="utf-8")
+                os.utime(emu / f, (1000, 1000))
+            dll.parent.mkdir(parents=True, exist_ok=True)
+            dll.write_bytes(b"MZ")
+            os.utime(dll, (2000, 2000))
+            self.assertEqual(refset_score.stale_sources(emu, dll), [])
+            for f in ("src/Sts2Emulator/Core/Card.cs", "src/Sts2Emulator/obj/x.cs", "src/Sts2Emulator.Tests/Combats/T.cs",
+                      "src/Sts2Emulator.Tests/Support/Invariants/Inv.cs"):
+                os.utime(emu / f, (3000, 3000))
+            # Build output and tests EmuDump does not compile are not its sources.
+            self.assertEqual(refset_score.stale_sources(emu, dll),
+                             ["src/Sts2Emulator.Tests/Support/Invariants/Inv.cs", "src/Sts2Emulator/Core/Card.cs"])
+
     def test_the_headline_states_exclusions_flags_both_rates_and_the_builds(self) -> None:
         rows = [{"id": i, "part": "realistic", "flags": []} for i in "abcd"]
         rows[3]["excluded"] = "setup: item 0 player_load failed: deck 9 cards, asked 10"
@@ -558,6 +601,7 @@ class Score(unittest.TestCase):
              "codex": {}, "runs": {}, "open_bug_classes": []}
         line = refset_score.summary_line(s)
         for want in ("emulator abc123def456", "driver ffffffffffff", "settle_flags,play_phase_gate", "4 specs, 3 kept, 1 excluded (setup 1), 1 flagged",
+                     "realistic [chooser heuristic 1, random 2]",
                      "2/3 = 66.7% of kept", "50.0% counting exclusions as failures"):
             self.assertIn(want, line)
         self.assertFalse(line.startswith("NOT QUOTABLE"))
