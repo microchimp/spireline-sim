@@ -618,6 +618,34 @@ public class AutoPlayPipelineTests
     }
 
     /// <summary>
+    /// `ShiningStrike` does not override `GetResultPileTypeForCardPlay`: its pile is the
+    /// discard, so `ReboundPower` redirects it and is spent (`AfterModifyingCardPlayResultPile
+    /// OrPosition`); the card then tops itself in its own `OnPlay`. A Rebound left over would
+    /// send the next card to the draw pile.
+    /// </summary>
+    [Fact]
+    public void ReboundIsSpentOnShiningStrike()
+    {
+        Assert.Equal("ShiningStrike", GeneratedData.Cards.Get(429).Name);
+        var fight = Fight
+            .Hand(Card(429), Card(IC.StrikeIronclad))
+            .Enemy(hp: 100)
+            .Draw(Card(IC.DefendIronclad))
+            .PlayerBuff(BuffId.Rebound, 1)
+            .Energy(3);
+
+        fight.Play(0, 0);
+
+        Assert.Equal(429, fight.State.DrawPile[0].DefId);
+        Assert.Equal(0, fight.PlayerBuffAmount(BuffId.Rebound));
+
+        fight.Play(0, 0);
+
+        Assert.Contains(fight.State.DiscardPile, c => c.DefId == IC.StrikeIronclad);
+        Assert.Equal(429, fight.State.DrawPile[0].DefId);
+    }
+
+    /// <summary>
     /// `FeralPower.ModifyCardPlayResultPileTypeAndPosition` returns a free Attack to hand
     /// without asking where it was going: a Shiv (Exhaust) comes back instead of exhausting.
     /// </summary>

@@ -5195,8 +5195,8 @@ public static class CombatEngine
     /// <summary>
     /// `CardModel.OnPlayWrapper` decides the result pile as the play is set up, before
     /// `BeforeCardPlayed` and the card's effect: `GetResultPileTypeForCardPlay` (none for a
-    /// dupe or a Power, exhaust for an Exhaust card or Havoc's `ExhaustOnNextPlay`, the top of
-    /// the draw pile for Shining Strike, hand for Particle Wall, else the discard), then
+    /// dupe or a Power, exhaust for an Exhaust card or Havoc's `ExhaustOnNextPlay`, hand for
+    /// Particle Wall, else the discard, Shining Strike's included), then
     /// `Hook.ModifyCardPlayResultPileTypeAndPosition`. Corruption (a Skill to the exhaust
     /// pile) and Feral (a free Attack to hand) do not ask what the card's own pile was, so a
     /// History Course dupe of a Skill is exhausted under Corruption and a Shiv under Feral
@@ -5221,8 +5221,6 @@ public static class CombatEngine
         var pile =
             def.Type == CardType.Power || request.IsDupe ? ResultPile.None
             : ShouldExhaustAfterPlay(def, card) || request.ForceExhaust ? ResultPile.Exhaust
-            // 429 is Shining Strike, which returns itself to the TOP of the draw pile.
-            : def.Id == 429 ? ResultPile.DrawTop
             : ReturnsToHandAfterPlay(def) ? ResultPile.Hand
             : ResultPile.Discard;
 
@@ -5251,7 +5249,11 @@ public static class CombatEngine
         bool nostalgic =
             BuffSystem.Get(state.PlayerBuffs, BuffId.Nostalgia) > state.AttackOrSkillCardsPlayedThisTurn
             && (def.Type == CardType.Attack || def.Type == CardType.Skill);
-        return nostalgic ? ResultPile.DrawTop : ResultPile.Discard;
+        // 429 is Shining Strike. Its own pile is the discard (it does not override
+        // `GetResultPileTypeForCardPlay`), so Rebound above redirects it and is spent; then its
+        // `OnPlay` puts it on top of the draw pile itself, unless it exhausts, so it never
+        // reaches the discard.
+        return nostalgic || def.Id == 429 ? ResultPile.DrawTop : ResultPile.Discard;
     }
 
     /// <summary>
