@@ -333,6 +333,12 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | N
     dll = emu / "tools" / "emudump" / "bin" / "Release" / "net9.0" / "EmuDump.dll"
     if not (emu / "tools" / "emudump" / "Codex").exists():
         return {"skipped": f"{emu} has no codex replay (feat/codex-replay)"}
+    # The commit as the walk starts (the checkout may move while it runs), and the same build checks as --emu's.
+    info = git_commit(emu)
+    stale = stale_sources(emu, dll)
+    if info["dirty"] or stale:
+        return {"skipped": f"{emu} is not a clean build of {info['commit'][:12]} (dirty {info['dirty']}, "
+                           f"{len(stale)} sources newer than its EmuDump)"}
     outs, running = [], []
     for i in range(procs):
         out = work / f"codex.s{i}.jsonl"
@@ -386,7 +392,7 @@ def codex_score(emu: Path, procs: int, limit: int, work: Path, set_runs: int | N
             "stops_by_class": dict(by_class), "stops": dict(stops.most_common(20)),
             "runs_in_set": set_runs, "walker_skipped": dict(walker_skipped),
             "gap": (set_runs - n) if set_runs is not None else None, "walker_modded_skips": walker_ironclad_a10_skips,
-            "commit": git_commit(emu)}
+            "commit": info}
 
 
 def emu_trees(emu: Path, commit: str) -> list[str]:
