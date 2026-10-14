@@ -358,3 +358,46 @@ public class EntropyScreenTests
         Assert.Single(fight.State.ExhaustPile);
     }
 }
+
+// `CardPileCmd.Draw` and `Shuffle` return at once when the combat `IsOverOrEnding`, and
+// `CardSelectCmd.FromHand`/`FromCombatPile` return nothing without asking: a fight won by the card
+// that would draw, shuffle or ask ends there. The emulator drew, shuffled and asked anyway, so
+// a lethal Pommel Strike under Stratagem left a won fight open on a screen.
+public class NoScreenOnceTheFightIsWonTests
+{
+    [Fact]
+    public void ALethalDrawOverAnEmptyPileEndsTheFightWithoutAsking()
+    {
+        var fight = Fight
+            .Hand(Card(IC.PommelStrike))
+            .Energy(3)
+            .Draw()
+            .Discard(Card(IC.StrikeIronclad), Card(IC.DefendIronclad), Card(IC.Bash))
+            .Enemy(hp: 5)
+            .PlayerBuff(BuffId.StratagemPower, 1);
+
+        var result = fight.Play();
+
+        Assert.True(result.Terminal);
+        Assert.True(result.PlayerWon);
+        Assert.Null(fight.Pending);
+        // No shuffle and no draw: the discard is where it was.
+        Assert.Equal(4, fight.State.DiscardPile.Count + fight.State.ExhaustPile.Count);
+        Assert.Empty(fight.State.DrawPile);
+    }
+
+    [Fact]
+    public void ALethalDrawDrawsNothing()
+    {
+        var fight = Fight
+            .Hand(Card(IC.PommelStrike))
+            .Energy(3)
+            .Draw(Card(IC.StrikeIronclad), Card(IC.DefendIronclad))
+            .Enemy(hp: 5);
+
+        Assert.True(fight.Play().Terminal);
+
+        Assert.Equal(2, fight.State.DrawPile.Count);
+        Assert.Empty(fight.State.Hand);
+    }
+}

@@ -79,6 +79,20 @@ public class GremlinHornTests
     }
 
     [Fact]
+    public void TheLastKillRefundsTheEnergyButDrawsNothing()
+    {
+        // `CardPileCmd.Draw` returns at once when the combat `IsOverOrEnding`, and a fight
+        // whose last enemy just died is ending.
+        var state = WithHorn(enemyHp: 1, alone: true);
+        int drawBefore = state.DrawPile.Count;
+
+        Assert.True(CombatEngine.Step(state, 0, new Random(0)).Terminal);
+
+        Assert.Equal(3, state.Energy);
+        Assert.Equal(drawBefore, state.DrawPile.Count);
+    }
+
+    [Fact]
     public void AKillRefundsTheEnergyAndDrawsACard()
     {
         var state = WithHorn(enemyHp: 1);

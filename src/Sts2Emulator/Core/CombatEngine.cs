@@ -99,7 +99,8 @@ public static class CombatEngine
     /// </summary>
     /// <remarks>
     /// <para>
-    /// No screen when there is nothing to choose. A screen the game would not show is answered
+    /// No screen when there is nothing to choose, or when the combat is ending and the game's
+    /// command checks for it (<see cref="ClosesWhenEnding" />). A screen the game would not show is answered
     /// without asking (<see cref="IsLoneSelection" />). Otherwise the answer comes from the
     /// running step (<see cref="StepInProgress" />); with none left the step stops here with the
     /// screen open.
@@ -116,7 +117,7 @@ public static class CombatEngine
         Random rng
     )
     {
-        if (screen.Candidates.Count == 0)
+        if (screen.Candidates.Count == 0 || (ClosesWhenEnding(screen) && IsOverOrEnding(state)))
         {
             return;
         }
@@ -152,6 +153,17 @@ public static class CombatEngine
 
         state.PendingSelection = outer;
     }
+
+    /// <summary>
+    /// Whether the game's command behind this screen returns nothing once the combat is ending:
+    /// `FromHand` (and `FromHandForDiscard`, `FromHandForUpgrade`) on `IsOverOrEnding`,
+    /// `FromCombatPile` and `FromSimpleGrid` on `IsEnding`. `FromChooseACardScreen` has no such
+    /// check -- the choose-a-card screens over generated cards (Discovery, the potions, Toolbox,
+    /// Knowledge Demon's curse) still ask -- except Choices Paradox's, which is a `FromSimpleGrid`.
+    /// </summary>
+    private static bool ClosesWhenEnding(PendingCardSelection screen) =>
+        screen.Kind is not (CardSelectionKind.GeneratedCardToHand or CardSelectionKind.CurseOfKnowledge)
+        || screen.GeneratedRetained;
 
 
     private static StepResult StepCore(
