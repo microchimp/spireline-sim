@@ -1677,6 +1677,16 @@ public static class RelicEffects
     private static Random DrawRng(CombatState state, Random? rng) =>
         state.ShuffleRng ?? rng ?? new Random(0);
 
+    /// <summary>
+    /// Whether Lizard Tail would still refuse the player's death: held and not spent (its
+    /// counter is set once it fires, and carried across the run).
+    /// </summary>
+    internal static bool LizardTailUnspent(CombatState state)
+    {
+        int index = state.Relics.FindIndex(relic => relic.DefId == LizardTail);
+        return index >= 0 && state.Relics[index].Counter == 0;
+    }
+
     public static void ApplyAfterPlayerHpChanged(CombatState state)
     {
         // LizardTail.ShouldDieLate refuses the death once per run, then heals HealVar(50m)

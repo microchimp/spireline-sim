@@ -1692,12 +1692,6 @@ public static class CombatEngine
 
         Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
 
-        int loop = BuffSystem.Get(state.PlayerBuffs, BuffId.Loop);
-        for (int i = 0; i < loop; i++)
-        {
-            Effects.CardEffects.TriggerOrbPassive(state, 0, rng);
-        }
-
         int prepTime = BuffSystem.Get(state.PlayerBuffs, BuffId.PrepTimePower);
         if (prepTime > 0)
         {
@@ -1741,32 +1735,6 @@ public static class CombatEngine
             BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnEnergy);
         }
 
-        // `RollingBoulderPower.AfterPlayerTurnStart`, once per INSTANCE, oldest first: its own
-        // Amount to every enemy, then its Amount grows by its DamageVar (5). A second Boulder
-        // starts again from its own 5 instead of joining the first one's climb.
-        var boulders = state.PlayerBuffs;
-        for (int k = 0, at; (at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k)) >= 0; k++)
-        {
-            Effects.CardEffects.DealUnpoweredDamageToAll(state, boulders[at].Magnitude);
-            at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k);
-            if (at >= 0)
-            {
-                boulders[at] = boulders[at] with { Magnitude = boulders[at].Magnitude + 5 };
-            }
-        }
-
-        int crimsonDmg = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleSelfDamage);
-        if (crimsonDmg > 0)
-        {
-            Effects.CardEffects.LoseHp(state, crimsonDmg);
-        }
-
-        int crimsonBlock = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleBlock);
-        if (crimsonBlock > 0)
-        {
-            Effects.CardEffects.GainUnpoweredBlock(state, crimsonBlock, rng);
-        }
-
         // DemonForm: gain Strength at start of player turn.
         int demonForm = BuffSystem.Get(state.PlayerBuffs, BuffId.DemonForm);
         if (demonForm > 0)
@@ -1780,13 +1748,6 @@ public static class CombatEngine
         if (aggression > 0)
         {
             Effects.CardEffects.MoveDiscardedAttacksToHandForAggression(state, aggression, rng);
-        }
-
-        int infernoSelfDamage = BuffSystem.Get(state.PlayerBuffs, BuffId.InfernoSelfDamage);
-        if (infernoSelfDamage > 0)
-        {
-            // The burn's kills are answered with the rest of the turn start's, below.
-            Effects.CardEffects.LoseHp(state, infernoSelfDamage);
         }
 
         // Plating decays by 1 at start of player turn.
@@ -2017,6 +1978,12 @@ public static class CombatEngine
                     // Summing the amount here would pay three cards on the first turn and
                     // none on the other two.
                     + (BuffSystem.Get(state.PlayerBuffs, BuffId.Clarity) > 0 ? 1 : 0)
+                    // `ToolsOfTheTradePower.ModifyHandDraw`: its cards are part of the hand
+                    // draw, ahead of every `AfterPlayerTurnStart`. They were a separate draw
+                    // after Rolling Boulder and Inferno, which a turn-start kill then refused
+                    // (the game deals them and reshuffles for them), and which Fiddle and
+                    // No Draw vetoed, Speedster hit for and Death March counted as extra.
+                    + BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade)
                     - BuffSystem.Get(state.PlayerBuffs, BuffId.MindRot)
             ),
             rng,
@@ -2030,6 +1997,10 @@ public static class CombatEngine
         {
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Clarity, -1);
         }
+        // The powers' `AfterPlayerTurnStart`, the last step of `SetupPlayerTurn`, after the hand
+        // draw: the kills a turn start makes there come after the hand is dealt.
+        ApplyAfterPlayerTurnStartPowers(state, rng);
+
         // `TyrannyPower.AfterPlayerTurnStart`: EXHAUST that many cards CHOSEN from hand --
         // `CardSelectorPrefs(prompt, Amount)`, whose single count sets min and max alike, so
         // the exhaust is compulsory and the CHOICE is the player's. The half of that card
@@ -2041,7 +2012,7 @@ public static class CombatEngine
         }
 
         // `ToolsOfTheTradePower` is two hooks. `ModifyHandDraw` adds its amount to the
-        // hand draw, and `AfterPlayerTurnStart` raises a DISCARD SELECTION for that many
+        // hand draw (above), and `AfterPlayerTurnStart` raises a DISCARD SELECTION for that many
         // cards -- `CardSelectCmd.FromHandForDiscard` with a `CardSelectorPrefs(prompt,
         // Amount)`, whose single-count constructor sets min and max alike, so the discard
         // is compulsory but the CHOICE is the player's.
@@ -2057,7 +2028,6 @@ public static class CombatEngine
         int toolsOfTheTrade = BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade);
         if (toolsOfTheTrade > 0)
         {
-            Effects.CardEffects.DrawCards(state, toolsOfTheTrade, rng);
             Effects.CardEffects.OpenDiscardSelection(
                 state,
                 Effects.SI.ToolsOfTheTrade,
@@ -2131,6 +2101,69 @@ public static class CombatEngine
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
 
         return Settle(state, turnEndStart);
+    }
+
+    /// <summary>
+    /// The player's powers on `Hook.AfterPlayerTurnStart` that can kill: Loop, Rolling
+    /// Boulder, Crimson Mantle and Inferno.
+    /// </summary>
+    /// <remarks>
+    /// `CombatManager.SetupPlayerTurn` dispatches `AfterPlayerTurnStart` once the hand is drawn
+    /// (`CardPileCmd.Draw(..., fromHandDraw: true)`), so a turn start whose Inferno burst or
+    /// Rolling Boulder kills the last enemy has already dealt the hand and reshuffled for it.
+    /// These ran before the hand draw here, which the combat-ending gate turned into a hand
+    /// that was never drawn (corpus L80WXWJ1F5 and 29 more: Rng.Shuffle 28 in the game, 16 here
+    /// after an Inferno kill). It also puts what their HP loss sets off after the hand, as in the
+    /// game: Centennial Puzzle's three are drawn on top of the five, not under them.
+    ///
+    /// In the order they ran before the move. Tyranny's exhaust and Tools of the Trade's discard,
+    /// the pass's other two, already came after the draw (Tools of the Trade's cards are part of
+    /// the hand draw); Entropy (a choice from hand, the selection mechanism's) and Summon Next
+    /// Turn (no kill) are left where they were.
+    /// </remarks>
+    private static void ApplyAfterPlayerTurnStartPowers(CombatState state, Random rng)
+    {
+        // `LoopPower.AfterPlayerTurnStart`: the front orb's passive, Amount times.
+        int loop = BuffSystem.Get(state.PlayerBuffs, BuffId.Loop);
+        for (int i = 0; i < loop; i++)
+        {
+            Effects.CardEffects.TriggerOrbPassive(state, 0, rng);
+        }
+
+        // `RollingBoulderPower.AfterPlayerTurnStart`, once per INSTANCE, oldest first: its own
+        // Amount to every enemy, then its Amount grows by its DamageVar (5). A second Boulder
+        // starts again from its own 5 instead of joining the first one's climb.
+        var boulders = state.PlayerBuffs;
+        for (int k = 0, at; (at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k)) >= 0; k++)
+        {
+            Effects.CardEffects.DealUnpoweredDamageToAll(state, boulders[at].Magnitude);
+            at = BuffSystem.InstanceIndex(boulders, BuffId.RollingBoulderPower, k);
+            if (at >= 0)
+            {
+                boulders[at] = boulders[at] with { Magnitude = boulders[at].Magnitude + 5 };
+            }
+        }
+
+        // `CrimsonMantlePower.AfterPlayerTurnStart`: the self-damage, then the block.
+        int crimsonDmg = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleSelfDamage);
+        if (crimsonDmg > 0)
+        {
+            Effects.CardEffects.LoseHp(state, crimsonDmg);
+        }
+
+        int crimsonBlock = BuffSystem.Get(state.PlayerBuffs, BuffId.CrimsonMantleBlock);
+        if (crimsonBlock > 0)
+        {
+            Effects.CardEffects.GainUnpoweredBlock(state, crimsonBlock, rng);
+        }
+
+        // `InfernoPower.AfterPlayerTurnStart`: the burn. Its kills are answered with the rest
+        // of the turn start's.
+        int infernoSelfDamage = BuffSystem.Get(state.PlayerBuffs, BuffId.InfernoSelfDamage);
+        if (infernoSelfDamage > 0)
+        {
+            Effects.CardEffects.LoseHp(state, infernoSelfDamage);
+        }
     }
 
     /// <summary>
@@ -3932,6 +3965,50 @@ public static class CombatEngine
         !state.Enemies.Any(enemy =>
             (IsPrimaryEnemy(enemy) && enemy.Hp > 0) || HoldsTheFightOpen(enemy)
         );
+
+    /// <summary>
+    /// `CombatManager.IsOverOrEnding`, the combat-ending gate: true from the moment the last
+    /// primary enemy dies with nothing holding the fight open (`IsEnding`'s won side,
+    /// <see cref="NoPrimaryEnemyLeft" />) or the player's death is pending
+    /// (<see cref="IsAboutToLose" />).
+    /// </summary>
+    /// <remarks>
+    /// The emulator asks it wherever the game does, so the rule lives in one place:
+    /// <list type="bullet">
+    /// <item>Commands that do nothing once it is shut: `CardPileCmd.Draw` (asked again before
+    /// each card), `CardPileCmd.Shuffle`, `CardPileCmd.AutoPlayFromDrawPile`, `CardCmd.AutoPlay`,
+    /// `CardCmd.Exhaust`, `CreatureCmd.GainBlock`, the orb commands.</item>
+    /// <item>`Hook.IterateCombatHookListeners`: a gated hook dispatch asks once, when it
+    /// STARTS, and then runs every listener even if one of them shuts it -- a Joss Paper still
+    /// counts the exhaust whose Charon's Ashes hit kills. The kill and death hooks
+    /// (`AfterDamageGiven`, `AfterDamageReceived`, `AfterDeath`, `AfterCardPlayed`,
+    /// `AfterCurrentHpChanged`) do not ask at all.</item>
+    /// <item>`CheckWinCondition`, at the turn's safe points, which takes a pending loss BEFORE
+    /// a win: a turn in which the player and the last enemy both die is lost.</item>
+    /// </list>
+    /// What it decides outlives the fight: the run-level RNG streams (a draw after the killing
+    /// blow reshuffled on `Rng.Shuffle`, and every hand for the rest of the run came off the
+    /// wrong position), the tallies saved on relics, gold, HP and the outcome. Combat setup
+    /// (`IsStarting`, which the game exempts) asks nothing: no setup step reaches a gate.
+    /// </remarks>
+    internal static bool IsOverOrEnding(CombatState state) =>
+        NoPrimaryEnemyLeft(state) || IsAboutToLose(state);
+
+    /// <summary>
+    /// `CombatManager.IsAboutToLose`: the player is dead and nothing will stand them back up,
+    /// so `CreatureCmd.Kill` has called `LoseCombat` and the loss waits for the next
+    /// `CheckWinCondition`.
+    /// </summary>
+    /// <remarks>
+    /// Two things refuse the player's death (`ShouldDie`): Fairy in a Bottle, which the
+    /// emulator answers at the next <see cref="PlayerIsDead" />, and an unspent Lizard Tail,
+    /// answered as the HP changes. While either is still to answer, a player at 0 HP is not
+    /// losing: the game refuses the death inside the same `Kill`.
+    /// </remarks>
+    internal static bool IsAboutToLose(CombatState state) =>
+        state.PlayerHp <= 0
+        && Array.IndexOf(state.PotionSlots, FairyInABottlePotionId) < 0
+        && !Effects.RelicEffects.LizardTailUnspent(state);
 
     /// <summary>
     /// <c>IllusionPower</c>: the owner is never removed from combat when it dies, keeps

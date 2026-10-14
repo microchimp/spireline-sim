@@ -2579,6 +2579,14 @@ public static class CardEffects
         bool fromHandDraw = false
     )
     {
+        // `CardPileCmd.Draw` draws nothing once the fight is over or ending, ahead of every
+        // veto: a Pommel Strike, Flash of Steel or Pillage that kills the last enemy draws no
+        // card, and so reshuffles nothing on the run's Shuffle stream.
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         // `NoDrawPower.ShouldDraw` returns TRUE for a hand draw -- it spares it, exactly as
         // Fiddle's does, and gags only the extra draws. Battle Trance's gag is removed at
         // the end of the turn it was played on, so it never survives to meet a hand draw
@@ -2604,6 +2612,13 @@ public static class CardEffects
             // discard, which is a different card in a different place: a live Prophesize
             // drew five of its six and left the sixth on top of the pile.
             if (state.Hand.Count >= MaxCardsInHand)
+            {
+                break;
+            }
+
+            // And again before each card: a card's `AfterCardDrawn` (Speedster's hit, a
+            // Void's) can end the fight in the middle of a draw, and the rest is not drawn.
+            if (CombatEngine.IsOverOrEnding(state))
             {
                 break;
             }
@@ -3643,8 +3658,18 @@ public static class CardEffects
         }
     }
 
+    /// <remarks>
+    /// `CardPileCmd.Shuffle` does nothing once the fight is over or ending: no
+    /// `StableShuffle` on the run's Shuffle stream and no `AfterShuffle`. Every mid-combat
+    /// shuffle comes through here (the opening one is the deck's, in `CombatFactory`).
+    /// </remarks>
     public static void ShuffleDiscardIntoDraw(CombatState state, Random rng)
     {
+        if (CombatEngine.IsOverOrEnding(state))
+        {
+            return;
+        }
+
         RelicEffects.ApplyAfterShuffle(state, rng);
         int count = state.DiscardPile.Count + state.DrawPile.Count;
         if (_shuffleCards is null || _shuffleCards.Length < count)
