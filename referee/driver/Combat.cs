@@ -135,7 +135,7 @@ public static partial class Driver
             timing["enter_room"] = phase.ElapsedMilliseconds;
             dump["cost_setup"] = Cost();
             var rng = new Random((int?)spec["chooser_seed"] ?? 1);
-            // "random" (default) or "heuristic" (Chooser.cs); flashes recorded when the spec asks.
+            // "random" (default) or "heuristic" (Chooser.cs).
             bool heuristic = (string?)spec["chooser"] == "heuristic";
             ResetChooser();
             int maxActions = (int?)spec["max_actions"] ?? 80;
