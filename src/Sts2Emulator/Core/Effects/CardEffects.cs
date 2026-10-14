@@ -1518,14 +1518,19 @@ public static class CardEffects
                 //
                 // The old comment here said the card "gains damage per kill", which is a
                 // different card: the damage never changes, the number of volleys does.
+                //
+                // The volleys are the hits of ONE `AttackContext`, whose `AfterAttack` runs
+                // when the card disposes it -- after the last volley.
                 int damage = Dmg(state, def, upgraded, card);
                 int volleys = 1;
+                var slash = default(AttackOutcome);
                 while (volleys > 0)
                 {
                     volleys--;
-                    volleys += DealDamageToAllCountingKills(state, damage);
+                    volleys += DealDamageToAllCountingKills(state, damage, ref slash);
                 }
 
+                slash.Finish(state);
                 break;
             }
 
@@ -1971,6 +1976,7 @@ public static class CardEffects
                 //
                 // The damage never upgrades. `RepeatVar(4)` does: 4 hits, 5 upgraded.
                 int damage = Dmg(state, def, upgraded, card);
+                var ricochet = default(AttackOutcome);
                 for (int i = 0; i < (upgraded ? 5 : 4); i++)
                 {
                     var target = RandomLivingEnemy(state, rng);
@@ -1979,9 +1985,10 @@ public static class CardEffects
                         break;
                     }
 
-                    DealDamageToEnemy(state, target, damage);
+                    DealDamageToEnemy(state, target, damage, out _, ref ricochet);
                 }
 
+                ricochet.Finish(state);
                 break;
             }
 
@@ -4074,15 +4081,21 @@ public static class CardEffects
 
     public static void DealDamageToAll(CombatState state, int amount)
     {
+        // One command with every enemy as a target.
+        var attack = default(AttackOutcome);
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
         {
-            DealDamageToEnemy(state, enemy, amount);
+            DealDamageToEnemy(state, enemy, amount, out _, ref attack);
         }
+
+        attack.Finish(state);
     }
 
     // Deals `amount` to first living enemy, `hits` times.
     /// <summary>
-    /// A single-targeted attack that lands <paramref name="hits" /> times on ONE enemy.
+    /// A single-targeted attack that lands <paramref name="hits" /> times on ONE enemy: ONE
+    /// `AttackCommand` with `WithHitCount`. A card that loops over a one-hit command is
+    /// <see cref="DealDamageAsSeparateAttacks" />.
     /// </summary>
     /// <remarks>
     /// <c>AttackCommand.Execute</c> re-filters its possible targets before every hit and
@@ -4098,6 +4111,7 @@ public static class CardEffects
     public static void DealDamageMultiHit(CombatState state, int amount, int hits, Random rng)
     {
         var target = FirstEnemy(state);
+        var attack = default(AttackOutcome);
         for (int i = 0; i < hits; i++)
         {
             if (target is null || target.Hp <= 0)
@@ -4105,6 +4119,41 @@ public static class CardEffects
                 break;
             }
 
+            DealDamageToEnemy(state, target, amount, out _, ref attack);
+        }
+
+        attack.Finish(state);
+    }
+
+    /// <summary>
+    /// A single-targeted attack the game issues as SEVERAL `AttackCommand`s in a row, each one
+    /// hit: a card whose play loops `DamageCmd.Attack(...).Execute(...)` (Mad Science with the
+    /// Violence rider) rather than handing one command `WithHitCount`. Contrast
+    /// <see cref="DealDamageMultiHit" />, which is ONE command of many hits.
+    /// </summary>
+    /// <remarks>
+    /// The difference is every `Hook.AfterAttack` listener, which runs once per command. A
+    /// gardener's Skittish block, earned by the first command, is already up for the second:
+    /// one command of three hits would take all three as HP, three commands take the second on
+    /// the block. The target is the one `Targeting(target)` was given, so as in
+    /// <see cref="DealDamageMultiHit" /> a target that dies partway eats the commands left.
+    /// </remarks>
+    public static void DealDamageAsSeparateAttacks(
+        CombatState state,
+        int amount,
+        int attacks,
+        Random rng
+    )
+    {
+        var target = FirstEnemy(state);
+        for (int i = 0; i < attacks; i++)
+        {
+            if (target is null || target.Hp <= 0)
+            {
+                break;
+            }
+
+            // The one-hit overload is a command of its own: it finishes (`AfterAttack`) here.
             DealDamageToEnemy(state, target, amount);
         }
     }
@@ -4112,13 +4161,16 @@ public static class CardEffects
     // Deals `amount` to every living enemy, repeated `hits` times.
     public static void DealDamageToAllMultiHit(CombatState state, int amount, int hits)
     {
+        var attack = default(AttackOutcome);
         for (int i = 0; i < hits; i++)
         {
             foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
             {
-                DealDamageToEnemy(state, enemy, amount);
+                DealDamageToEnemy(state, enemy, amount, out _, ref attack);
             }
         }
+
+        attack.Finish(state);
     }
 
     /// <summary>
@@ -4149,8 +4201,10 @@ public static class CardEffects
         switch (card.TinkerType)
         {
             case CardType.Attack:
-                // Violence is read HERE rather than as a rider: it multiplies the hits.
-                DealDamageMultiHit(
+                // Violence is read HERE rather than as a rider: it multiplies the attacks.
+                // `ExecuteAttack` loops `ViolenceHits` times over one `DamageCmd.Attack`, each
+                // a command of one hit with its own `AfterAttack` -- not one `WithHitCount(3)`.
+                DealDamageAsSeparateAttacks(
                     state,
                     DmgFrom(state, AttackDamage, GeneratedData.Cards.Get(card.DefId), card),
                     card.TinkerRider == TinkerRider.Violence ? 3 : 1,
@@ -4931,6 +4985,7 @@ public static class CardEffects
         Random rng
     )
     {
+        var attack = default(AttackOutcome);
         for (int i = 0; i < hits; i++)
         {
             // `AttackCommand.Execute` stops when no hittable target is left, and in the game a
@@ -4939,19 +4994,26 @@ public static class CardEffects
             // what stops the rest of the hits rolling the run's CombatTargets over a minion.
             if (CombatEngine.IsOverOrEnding(state))
             {
-                return;
+                break;
             }
 
             var target = RandomLivingEnemy(state, rng);
             if (target == null)
             {
-                return;
+                break;
             }
 
-            DealDamageToEnemy(state, target, amount);
+            DealDamageToEnemy(state, target, amount, out _, ref attack);
         }
+
+        attack.Finish(state);
     }
 
+    /// <summary>
+    /// One hit, as an `AttackCommand` of its own: a card that attacks once. A card whose attack
+    /// has several hits or several targets is ONE command and calls the overload below with a
+    /// shared <see cref="AttackOutcome" />, finishing it when its last hit has landed.
+    /// </summary>
     private static int DealDamageToEnemy(CombatState state, EnemyState target, int amount) =>
         DealDamageToEnemy(state, target, amount, out _);
 
@@ -4965,6 +5027,25 @@ public static class CardEffects
         EnemyState target,
         int amount,
         out int totalDamage
+    )
+    {
+        var attack = default(AttackOutcome);
+        int hpLoss = DealDamageToEnemy(state, target, amount, out totalDamage, ref attack);
+        attack.Finish(state);
+        return hpLoss;
+    }
+
+    /// <summary>
+    /// One hit of the `AttackCommand` that <paramref name="attack" /> collects the results of.
+    /// The command's `AfterAttack` listeners run when the CALLER has landed its last hit and
+    /// calls <see cref="AttackOutcome.Finish" />, not here.
+    /// </summary>
+    private static int DealDamageToEnemy(
+        CombatState state,
+        EnemyState target,
+        int amount,
+        out int totalDamage,
+        ref AttackOutcome attack
     )
     {
         // `CreatureCmd.Damage` skips a target that is already dead before it does anything
@@ -5013,7 +5094,96 @@ public static class CardEffects
         totalDamage = damage;
         // One `DamageReceivedEntry` per hit, which is what Beat Into Shape counts.
         target.PoweredHitsThisTurn++;
-        return LandDamageOnEnemy(state, target, damage, powered: true, unblockable: false);
+        int hpLoss = LandDamageOnEnemy(state, target, damage, powered: true, unblockable: false);
+        attack.Note(target, hpLoss);
+        return hpLoss;
+    }
+
+    /// <summary>
+    /// What `AfterAttack` listeners that sit on an ENEMY read off one `AttackCommand`'s
+    /// `Results`, collected as its hits land and acted on by <see cref="Finish" /> once the
+    /// command has finished -- `AttackCommand.Execute` runs `Hook.AfterAttack` after its
+    /// last hit, so nothing it grants can protect the rest of the attack that earned it.
+    /// </summary>
+    /// <remarks>
+    /// Only `SkittishPower` is one. It takes the command's FIRST result against its owner
+    /// (`Results.SelectMany(r => r).FirstOrDefault(r => r.Receiver == Owner)`) and asks that
+    /// result for `UnblockedDamage != 0`, so a first hit the gardener's block soaks whole sets
+    /// nothing off even when a later hit gets through. Hence one entry per enemy, the first.
+    ///
+    /// A struct handed down by `ref` so that the ordinary one-hit attack allocates nothing;
+    /// the list exists only when an enemy that listens is hit. It never outlives the card's
+    /// attack (no selection opens inside one), so it is not state a clone has to carry.
+    /// </remarks>
+    private struct AttackOutcome
+    {
+        private List<(EnemyState Enemy, int HpLost)>? _firstResults;
+
+        /// <summary>
+        /// A result of this command against <paramref name="enemy" />: the HP the hit took off
+        /// it (`UnblockedDamage`; zero for one its block soaked or a hit it was already dead
+        /// for). A hit on an enemy that was dead before it began has no result: not noted.
+        /// </summary>
+        public void Note(EnemyState enemy, int hpLost)
+        {
+            if (BuffSystem.Get(enemy.Buffs, BuffId.Skittish) <= 0)
+            {
+                return;
+            }
+
+            _firstResults ??= [];
+            foreach (var (seen, _) in _firstResults)
+            {
+                if (ReferenceEquals(seen, enemy))
+                {
+                    return;
+                }
+            }
+
+            _firstResults.Add((enemy, hpLost));
+        }
+
+        /// <summary>
+        /// `Hook.AfterAttack`: `SkittishPower.AfterAttack` for a card's command whose first
+        /// result against its owner took HP, once a turn. The owner gains its amount as
+        /// Unpowered block and is spent until the player's turn ends -- the power stays,
+        /// unlike Curl Up's.
+        /// </summary>
+        /// <remarks>
+        /// The game's `IterateCombatHookListeners` yields nothing once combat is over or ending
+        /// when the dispatch begins, and a dead owner is no longer a listener. `Move` and
+        /// `ModelSource is CardModel` are met by every command that reaches here: they are the
+        /// card attacks, and no card's attack is `Unpowered`.
+        /// </remarks>
+        public void Finish(CombatState state)
+        {
+            if (_firstResults is null)
+            {
+                return;
+            }
+
+            var results = _firstResults;
+            _firstResults = null;
+            if (CombatEngine.IsOverOrEnding(state))
+            {
+                return;
+            }
+
+            foreach (var (enemy, hpLost) in results)
+            {
+                int skittish = BuffSystem.Get(enemy.Buffs, BuffId.Skittish);
+                if (
+                    hpLost > 0
+                    && enemy.Hp > 0
+                    && skittish > 0
+                    && BuffSystem.Get(enemy.Buffs, BuffId.SkittishSpent) == 0
+                )
+                {
+                    BuffSystem.Apply(enemy.Buffs, BuffId.SkittishSpent, 1);
+                    enemy.Block += skittish;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -5029,7 +5199,7 @@ public static class CardEffects
     /// Asleep, Burrowed, Slumber, Shrink's `AfterDeath`) fire for Inferno, Juggernaut,
     /// Charon's Ashes, a potion or a poison tick exactly as for a Strike. Only the ones that
     /// ask `props.IsPoweredAttack()` -- The Boot, Curl Up, Monarch's Gaze, Reaper Form,
-    /// Flutter, Envenom, Personal Hive, Skittish -- are behind <paramref name="powered" />.
+    /// Flutter, Envenom, Personal Hive -- are behind <paramref name="powered" />.
     /// The unpowered helper used to stop at block, Intangible, Hard to Kill and Slippery,
     /// so a Thorns Toadpole that an Inferno burst killed, or a Matriarch a Combust tick hit,
     /// went on as if nothing had touched it.
@@ -5234,21 +5404,10 @@ public static class CardEffects
             );
         }
 
-        if (powered && hpLoss > 0)
-        {
-            // SkittishPower.AfterAttack: the FIRST card each turn to land unblocked
-            // damage on the gardener makes it flinch behind N block. Unlike Curl Up the
-            // power stays -- it is spent for the turn, not consumed -- and the flag
-            // clears when the player's turn ends. This sits inside the `hpLoss > 0`
-            // branch because the game requires UnblockedDamage != 0: a hit the gardener
-            // fully blocks does not set it off.
-            int skittish = BuffSystem.Get(target.Buffs, BuffId.Skittish);
-            if (skittish > 0 && BuffSystem.Get(target.Buffs, BuffId.SkittishSpent) == 0)
-            {
-                BuffSystem.Apply(target.Buffs, BuffId.SkittishSpent, 1);
-                target.Block += skittish;
-            }
-        }
+        // `SkittishPower.AfterAttack` is NOT here: it fires once the whole `AttackCommand`
+        // has finished, off the command's results, so it cannot be told from inside one hit.
+        // See `AttackOutcome`.
+
         if (target.Hp == 0)
         {
             // `ShrinkPower.AfterDeath` runs whatever dealt the blow. The held-open answer in
@@ -6776,10 +6935,13 @@ public static class CardEffects
                 // The count is taken BEFORE this attack, which is why it is read here. The
                 // emulator hit once, always.
                 int swings = state.OstyAttacksThisTurn;
+                var rattle = default(AttackOutcome);
                 for (int i = 0; i < 1 + swings; i++)
                 {
-                    DealOstyDamage(state, upgraded ? 9 : 7);
+                    DealOstyDamage(state, upgraded ? 9 : 7, ref rattle);
                 }
+
+                rattle.Finish(state);
 
                 // One `WithHitCount` attack, so it is ONE entry however many times it
                 // lands -- restored here because each hit went through the counting
@@ -8054,10 +8216,19 @@ public static class CardEffects
                     // `ConquerorPower.ModifyDamageMultiplicative` is gated on
                     // `cardSource is SovereignBlade`, so it lives here rather than in
                     // BuffSystem.IncomingDamage -- the same reason Hang's does.
+                    var sweep = default(AttackOutcome);
                     foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToArray())
                     {
-                        DealDamageToEnemy(state, enemy, ConqueredDamage(enemy, bladeDamage));
+                        DealDamageToEnemy(
+                            state,
+                            enemy,
+                            ConqueredDamage(enemy, bladeDamage),
+                            out _,
+                            ref sweep
+                        );
                     }
+
+                    sweep.Finish(state);
                 }
                 else
                 {
@@ -9592,6 +9763,17 @@ public static class CardEffects
 
     private static void DealOstyDamage(CombatState state, int amount)
     {
+        var attack = default(AttackOutcome);
+        DealOstyDamage(state, amount, ref attack);
+        attack.Finish(state);
+    }
+
+    /// <summary>
+    /// One Osty hit of the `AttackCommand` that <paramref name="attack" /> collects the results
+    /// of -- Rattle's hits are one command, however many swing.
+    /// </summary>
+    private static void DealOstyDamage(CombatState state, int amount, ref AttackOutcome attack)
+    {
         if (state.OstyHp <= 0)
         {
             return;
@@ -9603,7 +9785,7 @@ public static class CardEffects
             return;
         }
 
-        DealDamageToEnemy(state, target, OstyAttackDamage(state, amount));
+        DealDamageToEnemy(state, target, OstyAttackDamage(state, amount), out _, ref attack);
 
         int sicEm = BuffSystem.Get(target.Buffs, BuffId.SicEm);
         if (sicEm > 0)
@@ -9982,9 +10164,14 @@ public static class CardEffects
             return;
         }
 
-        int splashDamage = DealDamageToEnemy(state, target, amount);
+        // One `AttackContext`: the aimed hit and the splash are two `AddHit`s of the same
+        // command, whose `AfterAttack` runs when the card disposes it -- so a gardener that is
+        // only splashed has a result in it too (`Unpowered | Move`; Skittish asks for `Move`).
+        var attack = default(AttackOutcome);
+        int splashDamage = DealDamageToEnemy(state, target, amount, out _, ref attack);
         if (splashDamage <= 0)
         {
+            attack.Finish(state);
             return;
         }
 
@@ -9992,8 +10179,17 @@ public static class CardEffects
             var enemy in state.Enemies.Where(e => e.Hp > 0 && !ReferenceEquals(e, target)).ToList()
         )
         {
-            DealUnpoweredDamageToEnemy(state, enemy, splashDamage, triggerThorns: true);
+            // Dead before its hit: `CreatureCmd.Damage` gives it no result.
+            if (enemy.Hp <= 0)
+            {
+                continue;
+            }
+
+            int lost = DealUnpoweredDamageToEnemy(state, enemy, splashDamage, triggerThorns: true);
+            attack.Note(enemy, lost);
         }
+
+        attack.Finish(state);
     }
 
     /// <summary>
@@ -10091,7 +10287,7 @@ public static class CardEffects
     /// asked (Omnislice is the one unpowered hit `ThornsPower` answers), then the same
     /// landing as a card's hit -- `LandDamageOnEnemy` -- with the powered-only hooks off.
     /// </summary>
-    private static void DealUnpoweredDamageToEnemy(
+    private static int DealUnpoweredDamageToEnemy(
         CombatState state,
         EnemyState target,
         int amount,
@@ -10104,7 +10300,7 @@ public static class CardEffects
         // saw at the start runs no Thorns of one that died on the way.
         if (target.Hp <= 0)
         {
-            return;
+            return 0;
         }
 
         int damage = BuffSystem.CapIncomingDamage(Math.Max(0, amount), target.Buffs);
@@ -10120,7 +10316,7 @@ public static class CardEffects
             TriggerEnemyThorns(state, target);
         }
 
-        LandDamageOnEnemy(state, target, damage, powered: false, unblockable);
+        return LandDamageOnEnemy(state, target, damage, powered: false, unblockable);
     }
 
     private static void DealUnpoweredDamageToRandomEnemy(CombatState state, int amount, Random? rng)
@@ -10829,7 +11025,11 @@ public static class CardEffects
     /// `enumerable.Count(r => r.WasTargetKilled)`, which Echoing Slash spends as extra
     /// volleys.
     /// </summary>
-    private static int DealDamageToAllCountingKills(CombatState state, int amount)
+    private static int DealDamageToAllCountingKills(
+        CombatState state,
+        int amount,
+        ref AttackOutcome attack
+    )
     {
         int killed = 0;
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
@@ -10841,7 +11041,7 @@ public static class CardEffects
                 continue;
             }
 
-            DealDamageToEnemy(state, enemy, amount);
+            DealDamageToEnemy(state, enemy, amount, out _, ref attack);
             if (enemy.Hp <= 0)
             {
                 killed++;

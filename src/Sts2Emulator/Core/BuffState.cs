@@ -95,7 +95,7 @@ public enum BuffId
     Ravenous, // enemy: gain Strength and skip next move when an ally dies
     Stunned, // enemy: skip the next intent
     Slippery, // enemy: each unblocked hit loses at most 1 HP, then decrements
-    Skittish, // enemy: the first card to land unblocked damage each turn gives it N block
+    Skittish, // enemy: once a turn, after a card's attack takes HP off it, it gains N block
     SkittishSpent, // enemy: Skittish's HasGainedBlockThisTurn, cleared when the player's turn ends
     Surprise, // Gremlin Merc: spawn reinforcements on death
     SummonCooldown, // Two-Tailed Rat: turns until Call for Backup is available
