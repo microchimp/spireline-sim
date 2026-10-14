@@ -545,6 +545,8 @@ def main() -> int:
     ap.add_argument("--codex-from", type=Path, default=None,
                     help="reuse the codex result of this score JSON when its emulator sources are the codex checkout's "
                          "(--codex-emu, default --emu)")
+    ap.add_argument("--engine-commit", default=None,
+                    help="name the engine commit whose src/ the --emu checkout holds (refused when the trees differ)")
     ap.add_argument("--allow-dirty-emu", action="store_true", help="score a checkout with uncommitted changes (NOT QUOTABLE)")
     ap.add_argument("--allow-stale-emu", action="store_true", help="score an EmuDump build older than its sources (NOT QUOTABLE)")
     ap.add_argument("--record", type=Path, default=None, help="score this record directory (a trial) instead of refs-<subset>.json")
@@ -657,7 +659,18 @@ def main() -> int:
         codex = {"skipped": "not run (--codex)"}
     runs = runs_score(vdir, emu, work)
     commit = emu_info["commit"][:12] + ("-dirty" if emu_info["dirty"] else "")
-    name = a.label or commit
+    if a.engine_commit:
+        # The checkout's engine (src/) is that commit's: the numbers are that engine's, with this checkout's EmuDump.
+        def tree(c):
+            return subprocess.run(["git", "-C", str(emu), "rev-parse", f"{c}:src"], capture_output=True, text=True,
+                                  check=False).stdout.strip()
+        if not tree(a.engine_commit) or tree(a.engine_commit) != tree(emu_info["commit"]):
+            print(f"REFUSED: {emu}'s src/ is not {a.engine_commit}'s", file=sys.stderr)
+            return 2
+        emu_info["engine_commit"] = subprocess.run(["git", "-C", str(emu), "rev-parse", a.engine_commit], capture_output=True,
+                                                   text=True, check=False).stdout.strip()
+        commit += f" (engine src/ = {emu_info['engine_commit'][:12]})"
+    name = a.label or emu_info["commit"][:12] + ("-dirty" if emu_info["dirty"] else "")
     score = {"set": f"{manifest['set']} {manifest['version']}", "subset": subset, "emulator": emu_info, "label": name,
              "commit_label": commit, "not_quotable": not_quotable, "comparer": git_commit(ROOT), "record": record["stamp"],
              "record_dir": str(rdir), "scored": time.strftime("%Y-%m-%d %H:%M"), "minutes": round((time.time() - t0) / 60, 1),
