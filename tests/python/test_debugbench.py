@@ -357,6 +357,11 @@ class Bench(unittest.TestCase):
         self.assertIn("localisation, file: top-1 50% (1/2)", text)
         self.assertIn("cost per correct fix: 2.00 h, 500 tokens", text)
 
+    def test_a_harvest_of_another_main_never_overwrites_this_mains_tasks(self):
+        ctx = db.Ctx(self.repo, self.bench, "main~1", toolchain=self.tc, gates=self.gates)
+        with self.assertRaises(db.BenchError):
+            db.harvest(ctx, "main~1", None, 0, 300, 1, False)
+
     def test_a_held_out_task_is_not_prepared_without_the_flag(self):
         t, tdir = self.task("fix1")
         held = self.bench / "tasks" / "heldout" / "db-heldout00"
@@ -472,7 +477,8 @@ public sealed class Engine : Base
     def test_the_split_is_fixed_by_the_id(self):
         ids = [db.task_id(f"{i:040x}") for i in range(600)]
         held = sum(db.split_of(t) == "heldout" for t in ids)
-        self.assertTrue(150 < held < 250, held)
+        want = 600 * db.HELDOUT_PER_MILLE / 1000
+        self.assertTrue(want - 50 < held < want + 50, held)
         self.assertEqual([db.split_of(t) for t in ids], [db.split_of(t) for t in ids])
 
 

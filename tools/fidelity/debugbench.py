@@ -96,8 +96,8 @@ TEST_DIRS = {"src/Sts2Emulator.Tests/": "src/Sts2Emulator.Tests/Sts2Emulator.Tes
 JUDGE_PATHS = ("tools/fidelity/", "data/id_map.json")
 FINDINGS = "referee/FINDINGS.md"
 # Held out: this many per mille of task ids, by the id's own hash. Fixed: changing it moves tasks a fixer has
-# already seen into the held-out set. 333 holds out about 30 of the 2026-10-14 harvest.
-HELDOUT_PER_MILLE = 333
+# already seen into the held-out set. 425 holds out 30 of the 80 tasks of the 2026-10-14 harvest (main 3fc51181).
+HELDOUT_PER_MILLE = 425
 NOT_A_FIX = re.compile(r"^(feat|refactor|style|perf|chore|docs|test|tests|build|ci)(\([^)]*\))?!?:", re.I)
 TRAILER = re.compile(r"^\s*(co-authored-by|signed-off-by|reviewed-by|reported-by):|^\s*\(cherry picked from commit", re.I)
 CHERRY = re.compile(r"\(cherry picked from commit ([0-9a-f]{7,40})\)")
@@ -1023,6 +1023,11 @@ def cmd_harvest(a) -> int:
 
 
 def harvest(ctx: Ctx, ref: str, only: list | None, limit: int, max_lines: int, jobs: int, force: bool) -> int:
+    # One bench holds one main's tasks: a task's id is its fix's, so another main's harvest would overwrite them.
+    other = {t["main"] for t in all_tasks(ctx.bench)} - {ctx.main}
+    if other:
+        raise BenchError(f"{ctx.bench} holds the tasks of main {sorted(other)[0][:10]}; harvest {ref} "
+                         f"({ctx.main[:10]}) into another --bench, or --ref {sorted(other)[0][:10]} to add to them")
     state = ctx.bench / "harvest" / f"{ctx.main[:12]}.jsonl"
     state.parent.mkdir(parents=True, exist_ok=True)
     done = {}
