@@ -671,11 +671,74 @@ public sealed class Walker
         int gained = Int("gold_gained");
         int Poverty(int g) => Ascension.Has(S.AscensionLevel, Ascension.Poverty) ? (int)(g * Ascension.PovertyGoldMultiplier) : g;
         int fullMin = Poverty(10), halfMax = (int)Math.Round(Poverty(20) * 0.5, MidpointRounding.AwayFromZero);
-        bool fatEscaped = merc && gained < fullMin;
-        bool mercStole = merc && gained == 0;
+        // Loot still missing at the end of the floor (`StolenLoot`, which a Heist's or a Swipe's
+        // return takes back off) left with a creature that escaped.
+        int loot = Int("stolen_loot");
+        bool fatEscaped = merc && (gained < fullMin || loot > 0);
+        bool mercStole = merc && (gained == 0 || loot > 0);
         // A purse both a full roll and a half one can give: either way it is one Rewards draw,
         // so only its amount is unknown.
         _goldUnknown = merc && gained >= fullMin && gained <= halfMax;
+        // The Fat Gremlin died holding the Merc's loot: `HeistPower.BeforeDeath`'s gold row. The
+        // Merc steals on every move while the player has gold; the history does not say whether
+        // it lived to move, and a fight of three turns or more is taken as one where it did (on
+        // the codex walk, two-turn fights mostly had no Heist: the Merc died on the first turn
+        // and its gremlins on the second). A `gold_stolen` still standing with no loot missing is
+        // a Heist left on the screen, and its amount. The theft and the claim net out, as in the
+        // game, so the purse check still holds.
+        int turns = room.ValueKind == JsonValueKind.Object && room.TryGetProperty("turns_taken", out var tt)
+            && tt.ValueKind == JsonValueKind.Number ? tt.GetInt32() : 0;
+        int heistLeft = loot == 0 ? Math.Max(0, Int("gold_stolen")) : 0;
+        int heistGold = !merc || fatEscaped ? 0
+            : heistLeft > 0 ? heistLeft
+            : turns >= 3 ? Math.Min(20, S.Gold)
+            : 0;
+        if (heistGold > 0 && S.ActiveCombat is { } fight)
+        {
+            fight.PlayerGold = Math.Max(0, fight.PlayerGold - heistGold);
+        }
+
+        // A Thieving Hopper's THIEVERY took a card (`SwipePower.Steal` records it in
+        // `cards_removed`); killed, it hands the card back as a row the player claimed (in
+        // `cards_gained`) or left; escaped, it keeps the card and, alone in its encounter, the
+        // room's gold (no gold row at all).
+        bool hopper = S.ActiveCombat?.EncounterId == (int)CombatFactory.ActOneEncounter.ThievingHopper;
+        bool goldBlind = S.Relics.Any(x => x.DefId == RelicEffects.Ectoplasm);
+        bool hopperEscaped = hopper && (loot > 0 || (!goldBlind && gained < fullMin));
+        CardInstance? stolen = null;
+        _specialCardTaken = _specialCardFirst = false;
+        if (hopper && Arr("cards_removed").FirstOrDefault() is { ValueKind: JsonValueKind.Object } taken)
+        {
+            string name = CardName(taken);
+            int at = S.Deck.FindIndex(c => CardName(c.DefId, c.Upgraded) == name);
+            if (at >= 0)
+            {
+                stolen = S.Deck[at];
+                _removeCursor++;
+                var gainedNames = Arr("cards_gained").Select(CardName).ToList();
+                _specialCardTaken = !hopperEscaped && gainedNames.Contains(name);
+                // Before the card reward's pick in `cards_gained`: claimed first.
+                var picks = Arr("card_choices").Where(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True)
+                    .Select(c => CardName(c.GetProperty("card"))).ToList();
+                int pickAt = gainedNames.FindIndex(g => picks.Contains(g) && g != name);
+                _specialCardFirst = _specialCardTaken && (pickAt < 0 || gainedNames.IndexOf(name) < pickAt);
+                if (!hopperEscaped && !_specialCardTaken)
+                {
+                    // `SpecialCardReward.OnSkipped` lists the card, unpicked, among the floor's
+                    // card choices: last if the card reward was answered first, else first.
+                    var choices = Arr("card_choices").ToList();
+                    bool picked = choices.Any(c => c.TryGetProperty("was_picked", out var p) && p.ValueKind == JsonValueKind.True);
+                    foreach (int i in picked ? new[] { choices.Count - 1, 0 } : new[] { 0, choices.Count - 1 })
+                    {
+                        if (i >= 0 && choices.Count % 3 == 1 && CardName(choices[i].GetProperty("card")) == name)
+                        {
+                            _cardUsed.Add(i);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         // Lava Lamp's flag is the fight's: no damage taken at all is no unblocked hit, for
         // certain. Damage taken may all have been unblockable, which the flag ignores.
         if (S.Relics.Any(x => x.DefId == RelicEffects.LavaLamp))
@@ -685,7 +748,14 @@ public sealed class Walker
         }
 
         long f0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        _e.DebugResolveCombat(fatGremlinEscaped: fatEscaped, mercGoldWasStolen: mercStole);
+        _e.DebugResolveCombat(
+            stolenBackGold: heistGold,
+            fatGremlinEscaped: fatEscaped,
+            mercGoldWasStolen: mercStole,
+            escapedEnemies: hopperEscaped ? 1 : 0,
+            stolenCards: stolen is { } s ? [s] : null,
+            stolenBackCards: stolen is { } back && !hopperEscaped ? [back] : null
+        );
         FightSeconds += System.Diagnostics.Stopwatch.GetElapsedTime(f0).TotalSeconds;
         _rewardsCompared = false;
         _fightJustResolved = true;
@@ -889,6 +959,14 @@ public sealed class Walker
             index++;
         }
 
+        // A Thieving Hopper's stolen card, which the history claimed back (`cards_gained`). The
+        // rows sit after the card items. Claimed in the history's order: the deck takes each card
+        // at its bottom, so which came first is the deck's order.
+        if (_specialCardTaken && _specialCardFirst && ClaimSpecialCard(index))
+        {
+            return;
+        }
+
         if (S.RewardCardPending || S.PendingCardOffers.Count > 0 || S.PendingOtherCharacterCardRewards > 0)
         {
             // Opened only if the history shows the offer.
@@ -897,6 +975,11 @@ public sealed class Walker
                 Do(index);
                 return;
             }
+        }
+
+        if (_specialCardTaken && ClaimSpecialCard(index))
+        {
+            return;
         }
 
         // More card offers in the history than the emulator made: the fight added a reward
@@ -919,7 +1002,37 @@ public sealed class Walker
         Do(RunConstants.RewardSkipAction);
     }
 
-    bool _fightJustResolved, _combatFloor, _goldUnknown;
+    /// <summary>Claims the screen's first special-card row, if its action is reachable.</summary>
+    bool ClaimSpecialCard(int index)
+    {
+        if (S.RewardSpecialCards.Count == 0)
+        {
+            return false;
+        }
+
+        int special = index + RunRewardGenerator.CardItemCount(S);
+        if (special == RunConstants.RewardSkipAction)
+        {
+            return false;
+        }
+
+        _specialCardTaken = _specialCardFirst = false;
+        string offered = CardName(S.RewardSpecialCards[0].DefId, S.RewardSpecialCards[0].Upgraded);
+        int at = S.Deck.Count;
+        Do(special);
+        // `CardPileCmd.Add` lists the card in `cards_gained` BEFORE
+        // `Hook.ModifyCardBeingAddedToDeck` (an egg's upgrade), so the history names the card as
+        // offered and the deck holds what landed.
+        if (S.Deck.Count > at && CardName(S.Deck[at].DefId, S.Deck[at].Upgraded) is var landed && landed != offered)
+        {
+            _specialCardLanded = (offered, landed);
+        }
+
+        return true;
+    }
+
+    bool _fightJustResolved, _combatFloor, _goldUnknown, _specialCardTaken, _specialCardFirst;
+    (string Offered, string Landed)? _specialCardLanded;
     readonly HashSet<int> _skippedPotions = [];
     readonly HashSet<int> _skippedRelics = [];
     readonly HashSet<int> _cardUsed = [];
@@ -1867,6 +1980,14 @@ public sealed class Walker
         {
             Add(CardName(c), 1);
         }
+
+        if (_specialCardLanded is var (offered, landed) && expected.GetValueOrDefault(offered) > 0)
+        {
+            Add(offered, -1);
+            Add(landed, 1);
+        }
+
+        _specialCardLanded = null;
 
         foreach (var t in Arr("cards_transformed"))
         {
