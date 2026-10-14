@@ -317,6 +317,9 @@ python -m tools.fidelity.reanchor_compare '<out.json>' <name>.reanchor.json [--a
 - Enemy moves: the snapshot records each enemy's next move (`move`, `intents`), EmuDump dumps the emulator's (`intent`), and fight_compare compares them, so a wrong move shows at the step that chose it. Before each step `reanchor` puts the emulator's AI on the game's moves where its own state allows (a cycle's position, ranked by the game's later moves; a drawn choice redrawn after the step that chose it) and records `moves` = same / set / unknown; an end of turn whose moves are unknown is left unjudged. `--perturb-moves` tests this (every cycle moved one on, the AI on another stream). Records without intents fall back to the old guess: re-anchoring stops at the first end of turn an enemy move could explain, or with `--after-enemy-desync plays` leaves later ends of turn unjudged.
 - What the snapshot lacks (relic counters, enemy AI and intent, per-card modifiers, combat counters) comes from the emulator's own previous result. The `--scramble` and `--stale enemy,cards,relics,counters|all` options of `reanchor` test the write-back and show which hidden state a step needs.
 - `reanchor_compare.learn` / `coverage.update_reanchored` replace `coverage.update` for a re-anchored batch (do not use both).
+- `reanchor_compare` exits 0 only when every recorded step was re-anchored and matched; 1 on a diverging or throwing step,
+  an unusable result or a game fight without a result (results are paired by seed when the order differs); 3 when
+  nothing differed but some steps were not judged (broken cases: `tests/python/test_reanchor_broken.py`).
 
 ## Trace mode (re-runs of fights that diverged)
 

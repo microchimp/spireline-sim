@@ -23,6 +23,11 @@ and the emulator lacks, ends it too. Steps after a stop are reported as not re-a
 A diverging step is "primary" when the step before it matched, and "knock-on" otherwise: the
 hidden state it started from (relic counters, card modifiers, AI state) may already be wrong.
 Coverage suspects are taken from primary divergences only.
+
+Exit status: 0 when every recorded step of every fight was re-anchored and matched; 1 when a step
+diverged or threw, a fight had no usable emulator result, or a game fight has no result at all
+(results are paired by position when the seeds agree, else by seed); 3 when nothing differed but
+some steps were not judged (a stop, an unjudged end of turn), so the run is not a full pass.
 """
 
 from __future__ import annotations
@@ -212,7 +217,11 @@ def summarise(analyses: list) -> dict:
 
 
 def pair(games: list, res: list) -> list:
-    if len(games) == len(res):
+    """(game, emulator result) pairs, by position when the seeds agree, else by seed.
+
+    A game fight without a result is left out (main counts it).
+    """
+    if len(games) == len(res) and all(r.get("seed") in (None, g.get("seed")) for g, r in zip(games, res)):
         return list(zip(games, res))
     by_seed = {r.get("seed"): r for r in res}
     return [(g, by_seed[g.get("seed")]) for g in games if g.get("seed") in by_seed]
@@ -256,6 +265,9 @@ def main() -> int:
     pairs = pair(games, doc["results"])
     keys = keys_of(doc)
     analyses = [analyse(g, r, nm, a.after_enemy_desync, keys) for g, r in pairs]
+    missing = len(games) - len(pairs)
+    if missing:
+        print(f"{missing} game fights have no re-anchored result")
     for (g, _), an in zip(pairs, analyses):
         if an["error"] and not an["steps"]:
             print(f"{an['seed']}: not usable: {str(an['error'])[:120]}")
@@ -308,8 +320,10 @@ def main() -> int:
         print("coverage:", coverage.update_reanchored(cov, analyses, a.commit))
         coverage.save(path, cov)
     if a.json:
-        json.dump({"summary": sm, "fights": analyses}, Path(a.json).open("w", encoding="utf-8"))
-    return 0
+        json.dump({"summary": sm, "fights": analyses}, pathlib.Path(a.json).open("w", encoding="utf-8"))
+    if missing or t.get("fights_unusable") or t.get("diverging") or not t.get("fights"):
+        return 1
+    return 3 if t.get("not_reanchored") else 0
 
 
 if __name__ == "__main__":
