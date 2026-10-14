@@ -481,6 +481,9 @@ static class RunReplay
             // A grid that allows fewer picks than it holds is closed with DONE.
             if (s.Phase == RunPhase.TransformSelect && s.PendingOfferCards.Length > 0 && s.PendingOfferOptional)
                 Step(e, s.PendingOfferCards.Length, od, "selection done");
+            // So is a deck selection whose minimum is zero (Kifuda, Gnarled Hammer, Claws).
+            else if (s.Phase == RunPhase.TransformSelect && s.PendingSelectionKind != DeckSelection.None && s.PendingSelectionOptional)
+                Step(e, s.Deck.Count, od, "selection done");
         }
     }
 

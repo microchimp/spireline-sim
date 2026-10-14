@@ -77,6 +77,102 @@ public class GnarledHammerTests
 }
 
 /// <summary>
+/// Kifuda, Gnarled Hammer and Claws ask with `CardSelectorPrefs(prompt, 0, max)`: a minimum of
+/// zero, so the screen can be closed with fewer picks, none included. The emulator took exactly
+/// the maximum, with no way to stop (13 dense fights logged it as a mirror gap, FINDINGS).
+/// </summary>
+public class OptionalDeckSelectionTests
+{
+    private static RunEngine Picked(int relicId)
+    {
+        var engine = new RunEngine();
+        engine.Reset("ABCDEF");
+        engine.State.Relics.Add(new RelicInstance(relicId, 0));
+        Assert.Equal(RunFollowUp.TransformSelect, RunNonCombatEffects.ApplyRelicPickup(engine.State, relicId));
+        engine.State.Phase = RunPhase.TransformSelect;
+        return engine;
+    }
+
+    private static int[] Mask(RunEngine engine)
+    {
+        var mask = new int[RunConstants.MaxActions];
+        engine.WriteActionMask(mask);
+        return mask;
+    }
+
+    [Theory]
+    [InlineData(RelicEffects.Kifuda, Enchantment.Adroit)]
+    [InlineData(RelicEffects.GnarledHammer, Enchantment.Sharp)]
+    public void DoneClosesTheScreenWithTheOnePickMade(int relicId, Enchantment enchantment)
+    {
+        var engine = Picked(relicId);
+        int done = engine.State.Deck.Count;
+        Assert.Equal(1, Mask(engine)[done]);
+        int first = Enumerable.Range(0, done).First(i => RunNonCombatEffects.CanSelectCard(engine.State, i));
+
+        engine.Step(first, -1, out _, out _, out _);
+        Assert.Equal(1, Mask(engine)[done]);
+        engine.Step(done, -1, out _, out _, out _);
+
+        Assert.Equal(DeckSelection.None, engine.State.PendingSelectionKind);
+        Assert.NotEqual(RunPhase.TransformSelect, engine.State.Phase);
+        Assert.Equal(1, engine.State.Deck.Count(c => c.Enchantment == enchantment));
+    }
+
+    [Fact]
+    public void DoneBeforeAnyPickTakesNone()
+    {
+        var engine = Picked(RelicEffects.Kifuda);
+
+        engine.Step(engine.State.Deck.Count, -1, out _, out _, out _);
+
+        Assert.Equal(DeckSelection.None, engine.State.PendingSelectionKind);
+        Assert.DoesNotContain(engine.State.Deck, c => c.Enchantment == Enchantment.Adroit);
+    }
+
+    [Fact]
+    public void ClawsTransformsAsFewAsThePlayerPicks()
+    {
+        // `Claws.AfterObtained`: `CardSelectorPrefs(prompt, 0, Cards)` with a manual confirm --
+        // up to six, any number. One pick and DONE transforms that one card.
+        var engine = Picked(RunConstants.RelicClaws);
+        var before = engine.State.Deck.ToList();
+        int done = before.Count;
+        Assert.True(engine.State.PendingSelectionOptional);
+        int first = Enumerable.Range(0, done).First(i => RunNonCombatEffects.CanSelectCard(engine.State, i));
+
+        engine.Step(first, -1, out _, out _, out _);
+        engine.Step(engine.State.Deck.Count, -1, out _, out _, out _);
+
+        Assert.Equal(DeckSelection.None, engine.State.PendingSelectionKind);
+        Assert.Equal(before.Count, engine.State.Deck.Count);
+        // One card left the deck and one came in for it; the rest are the cards they were.
+        var after = engine.State.Deck.Select(c => c.DefId).ToList();
+        var gone = before.Select(c => c.DefId).ToList();
+        foreach (int id in after.ToList())
+        {
+            if (gone.Remove(id))
+            {
+                after.Remove(id);
+            }
+        }
+
+        Assert.Single(gone);
+        Assert.Single(after);
+    }
+
+    [Fact]
+    public void ACompulsoryOneOffersNoDone()
+    {
+        // Punch Dagger: `CardSelectorPrefs(prompt, 1)`.
+        var engine = Picked(RelicEffects.PunchDagger);
+
+        Assert.Equal(0, Mask(engine)[engine.State.Deck.Count]);
+        Assert.False(engine.State.PendingSelectionOptional);
+    }
+}
+
+/// <summary>
 /// Kifuda's Adroit: block equal to its amount whenever the card is played, any card type.
 /// </summary>
 public class KifudaTests

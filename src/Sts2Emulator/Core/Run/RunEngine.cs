@@ -790,6 +790,12 @@ public sealed class RunEngine
                             SetMask(mask, i);
                         }
                     }
+
+                    // One past the last card is DONE, for a selection whose minimum is zero.
+                    if (State.PendingSelectionOptional)
+                    {
+                        SetMask(mask, State.Deck.Count);
+                    }
                 }
                 else
                 {
@@ -5307,7 +5313,9 @@ public sealed class RunEngine
 
         if (State.PendingSelectionKind != DeckSelection.None)
         {
-            if (!RunNonCombatEffects.ApplyDeckSelection(State, action))
+            // DONE closes a selection whose minimum is zero with the picks made so far.
+            bool done = State.PendingSelectionOptional && action == State.Deck.Count;
+            if (!done && !RunNonCombatEffects.ApplyDeckSelection(State, action))
             {
                 return -1;
             }
@@ -5316,7 +5324,8 @@ public sealed class RunEngine
             // deck has run out of cards it would take, which is where the game's own
             // selector stops too.
             if (
-                State.PendingSelectionCount > 0
+                !done
+                && State.PendingSelectionCount > 0
                 && Enumerable
                     .Range(0, State.Deck.Count)
                     .Any(i => RunNonCombatEffects.CanSelectCard(State, i))

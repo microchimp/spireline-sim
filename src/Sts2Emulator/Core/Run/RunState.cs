@@ -774,6 +774,15 @@ public sealed class RunState
     public bool PendingOfferOptional;
 
     /// <summary>
+    /// Whether the deck selection may be closed with fewer picks than
+    /// <see cref="PendingSelectionCount" />, which is `CardSelectorPrefs(prompt, 0, max)`: a
+    /// minimum of ZERO and a manual confirm. Kifuda and Gnarled Hammer enchant up to three, Claws
+    /// transforms up to six; the emulator took exactly that many, so a player who wanted fewer
+    /// could not choose them. DONE is the action one past the last deck card.
+    /// </summary>
+    public bool PendingSelectionOptional;
+
+    /// <summary>
     /// Which page of a multi-page event is showing; 0 is the one it opens on. Most
     /// events answer a choice by finishing, but a few answer it with a fresh page of
     /// their own options -- Punch Off's "I Can Take Them" leads to a page whose only

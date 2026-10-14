@@ -1264,6 +1264,14 @@ public sealed class Walker
             return;
         }
 
+        // A deck selection whose minimum is zero (Kifuda, Gnarled Hammer, Claws) the history
+        // closed with fewer picks: DONE, one past the last deck card.
+        if (S.PendingSelectionKind != DeckSelection.None && S.PendingSelectionOptional && Legal(S.Deck.Count))
+        {
+            Do(S.Deck.Count);
+            return;
+        }
+
         Fail("deck_select", what, "(none named)", $"{S.PendingSelectionKind} x{S.PendingSelectionCount}", WalkerLimit,
             "the history does not say which card");
     }

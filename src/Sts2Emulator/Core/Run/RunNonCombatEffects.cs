@@ -847,7 +847,14 @@ public static class RunNonCombatEffects
                 // original's upgrade on the Maul when the Maul is upgradable; the emulator's
                 // TransformTo does not carry that across yet, which is the one thing this
                 // arm approximates.
-                return BeginDeckSelection(state, DeckSelection.TransformToCarrying, 299, count: 6)
+                // `CardSelectorPrefs(prompt, 0, 6)`: up to six, any number including none.
+                return BeginDeckSelection(
+                    state,
+                    DeckSelection.TransformToCarrying,
+                    299,
+                    count: 6,
+                    optional: true
+                )
                     ? RunFollowUp.TransformSelect
                     : RunFollowUp.None;
 
@@ -1123,19 +1130,22 @@ public static class RunNonCombatEffects
                     (int)Enchantment.Sharp,
                     count: 3,
                     enchantAmount: 3,
-                    returnTo: returnTo
+                    returnTo: returnTo,
+                    optional: true
                 )
                     ? RunFollowUp.TransformSelect
                     : RunFollowUp.None;
 
             case Effects.RelicEffects.Kifuda:
+                // `CardSelectorPrefs(prompt, 0, 3)` too: up to three, any number including none.
                 return BeginDeckSelection(
                     state,
                     DeckSelection.Enchant,
                     (int)Enchantment.Adroit,
                     count: 3,
                     enchantAmount: 3,
-                    returnTo: returnTo
+                    returnTo: returnTo,
+                    optional: true
                 )
                     ? RunFollowUp.TransformSelect
                     : RunFollowUp.None;
@@ -1677,10 +1687,12 @@ public static class RunNonCombatEffects
         string? eventEntry = null,
         int enchantAmount = 0,
         SelectionReturn returnTo = SelectionReturn.EventResult,
-        CardType? cardType = null
+        CardType? cardType = null,
+        bool optional = false
     )
     {
         state.PendingSelectionEventEntry = eventEntry;
+        state.PendingSelectionOptional = optional;
         state.PendingSelectionCardType = cardType;
         state.PendingSelectionKind = kind;
         state.PendingSelectionArg = arg;
@@ -1714,6 +1726,7 @@ public static class RunNonCombatEffects
         state.PendingSelectionCardType = null;
         state.PendingSelectionReturn = SelectionReturn.EventResult;
         state.PendingSelectionReturnsToEvent = false;
+        state.PendingSelectionOptional = false;
     }
 
     /// <summary>

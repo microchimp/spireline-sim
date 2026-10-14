@@ -502,6 +502,7 @@ public static class StateCloning
             PendingOfferSwiftIndexes = [.. state.PendingOfferSwiftIndexes],
             PendingOfferHooked = state.PendingOfferHooked,
             PendingOfferOptional = state.PendingOfferOptional,
+            PendingSelectionOptional = state.PendingSelectionOptional,
             EventPage = state.EventPage,
             EventResumesAfterRewards = state.EventResumesAfterRewards,
             CrystalSphere = state.CrystalSphere?.Clone(),
