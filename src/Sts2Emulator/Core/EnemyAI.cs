@@ -4565,10 +4565,10 @@ public static class EnemyAI
             return;
         }
 
-        int barrier = BuffSystem.CapIncomingDamage(flameBarrier, enemy.Buffs);
-        int absorbed = Math.Min(enemy.Block, barrier);
-        enemy.Block -= absorbed;
-        enemy.Hp = Math.Max(0, enemy.Hp - (barrier - absorbed));
+        // `CreatureCmd.Damage(dealer, Amount, Unpowered, Owner)`: the player's unpowered
+        // damage, landing through the same helper as every other (Hard to Kill, Hardened
+        // Shell, Slippery, Hand Drill, the after-damage and death hooks).
+        Effects.CardEffects.DealUnpoweredDamageToEnemy(state, enemy, flameBarrier);
     }
 
     private static void TriggerSuck(EnemyState enemy, int hitCount = 1)
@@ -4593,10 +4593,7 @@ public static class EnemyAI
             return;
         }
 
-        int spikes = BuffSystem.CapIncomingDamage(blocked, enemy.Buffs);
-        int absorbed = Math.Min(enemy.Block, spikes);
-        enemy.Block -= absorbed;
-        enemy.Hp = Math.Max(0, enemy.Hp - (spikes - absorbed));
+        Effects.CardEffects.DealUnpoweredDamageToEnemy(state, enemy, blocked);
     }
 
     private static void ApplyPlayerThorns(EnemyState enemy, CombatState state)
@@ -4607,10 +4604,8 @@ public static class EnemyAI
             return;
         }
 
-        int spikes = BuffSystem.CapIncomingDamage(thorns, enemy.Buffs);
-        int absorbed = Math.Min(enemy.Block, spikes);
-        enemy.Block -= absorbed;
-        enemy.Hp = Math.Max(0, enemy.Hp - (spikes - absorbed));
+        // `ThornsPower`: `CreatureCmd.Damage(dealer, Amount, Unpowered | SkipHurtAnim, Owner)`.
+        Effects.CardEffects.DealUnpoweredDamageToEnemy(state, enemy, thorns);
     }
 
     /// <summary>

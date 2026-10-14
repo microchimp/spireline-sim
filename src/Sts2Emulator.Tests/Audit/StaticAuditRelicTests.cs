@@ -40,11 +40,10 @@ public class StaticAuditRelicTests
     }
 
     /// <summary>
-    /// ShrinkPower.AfterDeath removes the power when its applier dies, whatever killed it.
-    /// The emulator clears Shrink only in the powered-attack death path (CardEffects.OnEnemyDeath),
-    /// so a beetle killed by Charon's Ashes (unpowered damage) leaves the player shrunk.
+    /// ShrinkPower.AfterDeath removes the power when its applier dies, whatever killed it: a
+    /// beetle killed by Charon's Ashes (unpowered damage) takes the Shrink with it.
     /// </summary>
-    [AuditFact("the death hooks run for a kill by unpowered damage (Charon's Ashes); the engine fix (audit/static-pilot eb3c35f) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void ShrinkEndsWhenTheBeetleDiesToCharonsAshes()
     {
         var fight = Fight
@@ -63,7 +62,7 @@ public class StaticAuditRelicTests
     /// The same ShrinkPower.AfterDeath, reached by poison: the tick kills the beetle at the start
     /// of the enemy turn and the Shrink goes with it.
     /// </summary>
-    [AuditFact("the death hooks run for a kill by Poison; the engine fix (audit/static-pilot d2f8384) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void ShrinkEndsWhenThePoisonKillsTheBeetle()
     {
         var fight = Fight
@@ -79,9 +78,9 @@ public class StaticAuditRelicTests
 
     /// <summary>
     /// HardenedShellPower.ModifyHpLostBeforeOstyLate caps HP lost per turn for EVERY damage
-    /// instance (no props check). The emulator applies the cap only on the powered-attack path.
+    /// instance (no props check).
     /// </summary>
-    [AuditFact("unpowered damage trips the after-damage hooks a card's damage trips; the engine fix (audit/static-pilot d2f8384) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void HardenedShellCapsUnpoweredDamageToo()
     {
         var fight = Fight.Hand().Enemy(hp: 100, buffs: new BuffState(BuffId.HardenedShell, 20, 0));
@@ -93,10 +92,10 @@ public class StaticAuditRelicTests
 
     /// <summary>
     /// AsleepPower.AfterDamageReceived wakes the Lagavulin Matriarch on ANY unblocked damage
-    /// (it reads no props): its Plating goes and it is stunned. The emulator wakes it only from
-    /// the powered-attack path, so Charon's Ashes / Combust / Juggernaut / potions leave it asleep.
+    /// (it reads no props): its Plating goes and it is stunned, whether Charon's Ashes, Combust,
+    /// Juggernaut or a potion struck her.
     /// </summary>
-    [AuditFact("unpowered damage trips the after-damage hooks a card's damage trips; the engine fix (audit/static-pilot d2f8384) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void UnpoweredDamageWakesTheMatriarch()
     {
         var fight = Fight
@@ -117,7 +116,7 @@ public class StaticAuditRelicTests
     /// SlumberPower.AfterDamageReceived (Slumbering Beetle) costs a point of sleep per instance
     /// of unblocked damage and reads no props; at zero it stuns the beetle into its wake-up.
     /// </summary>
-    [AuditFact("unpowered damage trips the after-damage hooks a card's damage trips; the engine fix (audit/static-pilot d2f8384) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void UnpoweredDamageWearsDownASleepingBeetle()
     {
         var fight = Fight
@@ -134,7 +133,7 @@ public class StaticAuditRelicTests
     /// ShriekPower.AfterDamageReceived (Terror Eel): unblocked damage that leaves it at or below
     /// the threshold stuns it into TERROR, whatever the damage's props.
     /// </summary>
-    [AuditFact("unpowered damage trips the after-damage hooks a card's damage trips; the engine fix (audit/static-pilot d2f8384) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void UnpoweredDamageTripsTheEelsShriek()
     {
         var fight = Fight
@@ -151,7 +150,7 @@ public class StaticAuditRelicTests
     /// BurrowedPower.AfterBlockBroken (Tunneler) fires for any damage that takes the last block
     /// off: the Tunneler is stunned out of its burrow.
     /// </summary>
-    [AuditFact("unpowered damage trips the after-damage hooks a card's damage trips; the engine fix (audit/static-pilot d2f8384) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void UnpoweredDamageBreaksTheTunnelersBurrow()
     {
         var fight = Fight
@@ -174,7 +173,7 @@ public class StaticAuditRelicTests
     /// the absorb. A hit exactly the size of the block breaks it (it is also fully blocked), and
     /// Hand Drill reads WasBlockBroken without asking whether any HP was lost.
     /// </summary>
-    [AuditFact("Hand Drill counts a hit exactly the size of the block as a break; the engine fix (audit/static-pilot d2f8384) is not merged, only the pilot's tools and tests")]
+    [Fact]
     public void HandDrillCountsAHitExactlyTheSizeOfTheBlock()
     {
         var fight = Fight.Encounter(3, RelicEffects.HandDrill).Enemy(hp: 200);

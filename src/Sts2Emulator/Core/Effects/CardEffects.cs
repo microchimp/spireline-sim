@@ -3849,21 +3849,80 @@ public static class CardEffects
             state.TookUnblockedDamage = true;
             // Beating Remnant measures its 20-per-turn cap against what actually landed.
             state.UnblockedDamageThisTurn += hpLoss;
-            // Hook.AfterDamageReceived does not care who dealt the damage, so a card that
-            // hits its own owner arms Centennial Puzzle and Self-Forming Clay too.
-            RelicEffects.ApplyAfterUnblockedDamageReceived(state, unblocked: hpLoss);
-            // `RupturePower.AfterDamageReceived` pays for any unblocked damage on the
-            // player's OWN turn -- a Burn at the turn's end, an enemy's Thorns, Constrict --
-            // and none of these comes from the card being played, so it pays at once. The
-            // enemy turn's attacks are the other side's, and pay nothing.
-            int rupture = BuffSystem.Get(state.PlayerBuffs, BuffId.RupturePower);
-            if (rupture > 0 && state.PlayerTurn)
+            // A Burn at the turn's end, an enemy's Thorns, Constrict: none of these is the
+            // card being played, so Rupture pays at once.
+            AfterPlayerDamageReceived(state, hpLoss, fromPlayedCard: false);
+        }
+    }
+
+    /// <summary>
+    /// `Hook.AfterDamageReceived` on the player, for the damage the player takes outside an
+    /// enemy's attack: the hooks that read no props, so a card that hits its own owner, an
+    /// enemy's Thorns, Constrict, a Burn and Inferno's own tick all trip them alike.
+    /// </summary>
+    /// <remarks>
+    /// `CombatState.IterateHookListeners` walks a creature's powers before its player's
+    /// relics, so Rupture and Inferno answer before Centennial Puzzle, Self-Forming Clay and
+    /// Demon Tongue. Rupture and Inferno both ask `CurrentSide == Owner.Side`, the player's
+    /// own turn. Inferno lived only on the self-damage path, so a Strike into a Thorns
+    /// Toadpole with Inferno up skipped the burst the game deals every enemy -- the very
+    /// Toadpole the Strike was about to hit included, since Thorns retaliates in
+    /// `BeforeDamageReceived`, before that hit lands.
+    /// </remarks>
+    /// <param name="fromPlayedCard">
+    /// The HP is what the card being PLAYED costs: `RupturePower` banks that and pays it
+    /// once the card has finished (`CombatEngine.PayRupture`).
+    /// </param>
+    private static void AfterPlayerDamageReceived(
+        CombatState state,
+        int unblocked,
+        bool fromPlayedCard
+    )
+    {
+        if (unblocked <= 0)
+        {
+            return;
+        }
+
+        // `CreatureCmd.Damage` sends a result whose target it killed to `Kill` instead of
+        // `AfterDamageReceived`; `AfterCurrentHpChanged` (Red Skull, and the emulator's
+        // Lizard Tail) runs either way.
+        if (state.PlayerHp <= 0)
+        {
+            RelicEffects.ApplyAfterPlayerHpChanged(state);
+            return;
+        }
+
+        int rupture = BuffSystem.Get(state.PlayerBuffs, BuffId.RupturePower);
+        if (rupture > 0 && state.PlayerTurn)
+        {
+            if (fromPlayedCard)
+            {
+                state.RuptureOwed += rupture;
+            }
+            else
             {
                 RelicEffects.GainPlayerStrength(state, rupture);
             }
-
-            RelicEffects.ApplyAfterPlayerHpChanged(state);
         }
+
+        TriggerInfernoAfterPlayerDamage(state, unblocked);
+
+        // Self-inflicted HP loss IS damage received. Blood Wall, Offering and Hemokinesis
+        // all call `CreatureCmd.Damage(owner, ..., Unblockable | Unpowered)`, and that
+        // command dispatches `Hook.AfterDamageReceived` like any other -- there is no
+        // separate `LoseHp` command that skips it. Centennial Puzzle and Self-Forming Clay
+        // check no props at all.
+        //
+        // `state.TookUnblockedDamage` deliberately stays OUT of this: it is Lava Lamp's
+        // private flag, and Lava Lamp is the one relic on the hook that checks
+        // `props.HasFlag(ValueProp.Unblockable)` and refuses. The blockable callers set it.
+        RelicEffects.ApplyAfterUnblockedDamageReceived(state, unblocked: unblocked);
+
+        // Every route that changes current HP dispatches `AfterCurrentHpChanged`, and
+        // self-damage is a route: Offering and Hemokinesis can put the player under half
+        // and arm Red Skull, and can kill outright and reach Lizard Tail.
+        RelicEffects.ApplyAfterPlayerHpChanged(state);
     }
 
     /// <summary>
@@ -4753,6 +4812,17 @@ public static class CardEffects
         out int totalDamage
     )
     {
+        // `CreatureCmd.Damage` skips a target that is already dead before it does anything
+        // else -- no `Hook.ModifyDamage`, no Thorns, no history entry, no result. An AoE
+        // walks the enemies it saw at the start, and one of them can die before its turn
+        // comes (an earlier target's Thorns setting off Inferno): its Thorns must not hit
+        // the player, and set off a second burst, from beyond the grave.
+        if (target.Hp <= 0)
+        {
+            totalDamage = 0;
+            return 0;
+        }
+
         // `CreatureCmd.Damage` runs `Hook.ModifyDamage` for the hit FIRST and only then
         // `Hook.BeforeDamageReceived`, which is where `ThornsPower` retaliates. So Thorns
         // fires after the damage number is fixed: a Rupture that turns the retaliation into
@@ -4788,16 +4858,59 @@ public static class CardEffects
         totalDamage = damage;
         // One `DamageReceivedEntry` per hit, which is what Beat Into Shape counts.
         target.PoweredHitsThisTurn++;
+        return LandDamageOnEnemy(state, target, damage, powered: true, unblockable: false);
+    }
+
+    /// <summary>
+    /// The rest of `CreatureCmd.Damage` once a hit's number is fixed and
+    /// `BeforeDamageReceived` (Thorns) has run: block, the HP-loss modifiers, the HP itself,
+    /// and the block-broken, after-damage and death hooks. Returns the HP lost (before the
+    /// clamp at zero).
+    /// </summary>
+    /// <remarks>
+    /// The game has ONE damage pipeline, and each hook decides for itself whether the props
+    /// matter. So every damage the player's side deals an enemy lands here, a card's or not:
+    /// the hooks that read no props (Hand Drill, Hardened Shell, Slippery, Shriek, Plow,
+    /// Asleep, Burrowed, Slumber, Shrink's `AfterDeath`) fire for Inferno, Juggernaut,
+    /// Charon's Ashes, a potion or a poison tick exactly as for a Strike. Only the ones that
+    /// ask `props.IsPoweredAttack()` -- The Boot, Curl Up, Monarch's Gaze, Reaper Form,
+    /// Flutter, Envenom, Personal Hive, Skittish -- are behind <paramref name="powered" />.
+    /// The unpowered helper used to stop at block, Intangible, Hard to Kill and Slippery,
+    /// so a Thorns Toadpole that an Inferno burst killed, or a Matriarch a Combust tick hit,
+    /// went on as if nothing had touched it.
+    ///
+    /// A target already dead when its hit lands -- killed in between by what the hit's own
+    /// `BeforeDamageReceived` set off (Thorns into Inferno) -- loses nothing:
+    /// `Creature.LoseHpInternal` on a creature at 0 HP takes nothing and kills nothing. One
+    /// dead BEFORE its hit began never gets here: the callers skip it ahead of Thorns.
+    /// </remarks>
+    private static int LandDamageOnEnemy(
+        CombatState state,
+        EnemyState target,
+        int damage,
+        bool powered,
+        bool unblockable
+    )
+    {
+        if (target.Hp <= 0)
+        {
+            return 0;
+        }
+
         int blockBefore = target.Block;
-        int absorbed = Math.Min(target.Block, damage);
+        int absorbed = unblockable ? 0 : Math.Min(target.Block, damage);
         target.Block -= absorbed;
         int hpLoss = damage - absorbed;
 
-        // `HandDrill.AfterDamageGiven` on `result.WasBlockBroken`: the hit has to have
-        // GONE THROUGH block that was actually there. A target with no block to start
-        // with did not have it broken, and a hit that fails to get through does not
-        // count either -- which is why this reads the block BEFORE the absorb.
-        if (blockBefore > 0 && target.Block == 0 && hpLoss > 0)
+        // `HandDrill.AfterDamageGiven` on `result.WasBlockBroken`, which `CreatureCmd.Damage`
+        // computes AFTER the absorb as `Block <= 0 && blockedDamage > 0`: block that was
+        // actually there and is now gone. A target with no block to start with did not have
+        // it broken, and a hit that leaves some standing does not count -- which is why this
+        // reads the block BEFORE the absorb. A hit exactly the size of the block breaks it
+        // (and is also fully blocked), so there is no condition on the HP lost. The relic
+        // asks only that its owner dealt the hit; every caller here is the player's side,
+        // and the two that are not (Poison, Demise) are Unblockable and break nothing.
+        if (blockBefore > 0 && target.Block == 0)
         {
             RelicEffects.ApplyAfterBlockBroken(state, target);
         }
@@ -4806,7 +4919,13 @@ public static class CardEffects
         // pet that would take between 1 and 4 off an enemy takes 5 instead. The floor is
         // on HP LOST, after block and after the pet redirect -- so it does not turn a
         // fully blocked hit into damage, and it does not lower a bigger one.
-        hpLoss = RelicEffects.BootDamageFloor(state, hpLoss);
+        if (powered)
+        {
+            hpLoss = RelicEffects.BootDamageFloor(state, hpLoss);
+        }
+
+        // `HardenedShellPower.ModifyHpLostBeforeOstyLate` reads no props: the per-turn cap
+        // holds against a Combust tick or a poison tick as much as against a card.
 
         int hardened = BuffSystem.Get(target.Buffs, BuffId.HardenedShell);
         if (hardened > 0)
@@ -4827,11 +4946,14 @@ public static class CardEffects
         // blocks whole counts too -- and only REMEMBERS the card; the block comes when
         // that card has finished (`CombatEngine.PayCurlUp`). Curling here, mid-card, let
         // a multi-hit card's later hits spend the block the game hands out after them.
-        if (BuffSystem.Get(target.Buffs, BuffId.CurlUp) > 0)
+        // Powered attacks only (`props.IsPoweredAttack()`).
+        if (powered && BuffSystem.Get(target.Buffs, BuffId.CurlUp) > 0)
         {
             target.CurlUpArmed = true;
         }
 
+        // `ShriekPower`, `PlowPower` and `AsleepPower.AfterDamageReceived` ask only for
+        // unblocked damage, whatever its props.
         if (hpLoss > 0)
         {
             EnemyAI.TriggerShriekIfWounded(target);
@@ -4840,18 +4962,18 @@ public static class CardEffects
         }
 
         // `ReaperFormPower.AfterDamageGiven`, on `result.TotalDamage` -- blocked plus
-        // unblocked, so an attack into a full shield still Dooms for all of it. This
-        // function is the player's POWERED-attack path (the pet's too, and the power
-        // counts `dealer.PetOwner`), which is exactly what `props.IsPoweredAttack()` asks.
+        // unblocked, so an attack into a full shield still Dooms for all of it. Both of
+        // these ask `props.IsPoweredAttack()` (the pet's attacks count too, through
+        // `dealer.PetOwner`), which is what `powered` says.
         // `MonarchsGazePower.AfterDamageGiven`: a powered attack by its owner takes that
         // much temporary Strength off whatever it hit.
-        int monarchsGaze = BuffSystem.Get(state.PlayerBuffs, BuffId.MonarchsGaze);
+        int monarchsGaze = powered ? BuffSystem.Get(state.PlayerBuffs, BuffId.MonarchsGaze) : 0;
         if (monarchsGaze > 0 && target.Hp > 0)
         {
             ApplyTemporaryStrengthDownTo(target, monarchsGaze);
         }
 
-        int reaperForm = BuffSystem.Get(state.PlayerBuffs, BuffId.ReaperForm);
+        int reaperForm = powered ? BuffSystem.Get(state.PlayerBuffs, BuffId.ReaperForm) : 0;
         if (reaperForm > 0 && damage > 0 && target.Hp > 0)
         {
             // Applied directly rather than through ApplyEnemyDebuffToTarget, which is the
@@ -4864,7 +4986,8 @@ public static class CardEffects
         }
 
         // BurrowedPower.AfterBlockBroken -- checked on every hit, because breaking the
-        // burrow is the only way to interrupt a Tunneler and it can happen mid-attack.
+        // burrow is the only way to interrupt a Tunneler and it can happen mid-attack. The
+        // hook has no props to read: a potion or an Inferno burst breaks it too.
         EnemyAI.BreakBurrowIfBlockGone(target);
 
         // SlumberPower.AfterDamageReceived: a sleeper loses a point of sleep for every
@@ -4878,7 +5001,7 @@ public static class CardEffects
         // The game also reads `GetNextState` off `MonsterAi` when it stuns -- no draw
         // here, because the hopper's chain is linear (THIEVERY -> FLUTTER -> HAT_TRICK ->
         // NAB -> ESCAPE) and only a RandomBranchState spends a value.
-        if (hpLoss > 0 && BuffSystem.Get(target.Buffs, BuffId.Flutter) > 0)
+        if (powered && hpLoss > 0 && BuffSystem.Get(target.Buffs, BuffId.Flutter) > 0)
         {
             BuffSystem.Apply(target.Buffs, BuffId.Flutter, -1);
             if (BuffSystem.Get(target.Buffs, BuffId.Flutter) <= 0)
@@ -4887,6 +5010,7 @@ public static class CardEffects
             }
         }
 
+        // Slumber reads no props: a Combust tick or a poison tick costs a point of sleep too.
         if (hpLoss > 0 && BuffSystem.Get(target.Buffs, BuffId.Slumber) > 0)
         {
             BuffSystem.Apply(target.Buffs, BuffId.Slumber, -1);
@@ -4907,7 +5031,7 @@ public static class CardEffects
             }
         }
 
-        if (hpLoss > 0)
+        if (powered && hpLoss > 0)
         {
             // `EnvenomPower.AfterDamageGiven` applies its Poison through `PowerCmd.Apply`,
             // which is the same door every other Poison goes through -- so Snecko Skull's
@@ -4941,7 +5065,7 @@ public static class CardEffects
         // attack on its owner and never reads the damage result, and `CreatureCmd.Damage`
         // calls `AfterDamageReceived` for every result whose target was not killed -- a
         // fully blocked hit included, the killing one not.
-        int personalHive = BuffSystem.Get(target.Buffs, BuffId.PersonalHive);
+        int personalHive = powered ? BuffSystem.Get(target.Buffs, BuffId.PersonalHive) : 0;
         if (personalHive > 0 && target.Hp > 0)
         {
             // No rng parameter reaches this far down the damage path, and the helper
@@ -4955,7 +5079,7 @@ public static class CardEffects
             );
         }
 
-        if (hpLoss > 0)
+        if (powered && hpLoss > 0)
         {
             // SkittishPower.AfterAttack: the FIRST card each turn to land unblocked
             // damage on the gardener makes it flinch behind N block. Unlike Curl Up the
@@ -4972,19 +5096,43 @@ public static class CardEffects
         }
         if (target.Hp == 0)
         {
-            OnEnemyDeath(state, target);
+            // `ShrinkPower.AfterDeath` runs whatever dealt the blow. The held-open answer in
+            // `OnEnemyDeath` stays with the powered path: answered inside a turn-end bomb it
+            // would move a Gremlin Horn draw ahead of the hand flush, and inside the Thorns
+            // that kill a Waterfall Giant on its own turn it would blow a round early
+            // (FightHeldOpenTests, WaterfallGiantTests). The engine answers those deaths.
+            if (powered)
+            {
+                OnEnemyDeath(state, target);
+            }
+            else
+            {
+                RemoveDeathBoundPowers(state, target);
+            }
         }
 
         return hpLoss;
     }
 
-    private static void OnEnemyDeath(CombatState state, EnemyState enemy)
+    /// <summary>
+    /// The powers of OTHER creatures that end when this one dies, which the game runs from
+    /// each power's `AfterDeath` whatever dealt the blow. Idempotent, so every kill route
+    /// calls it: the damage path (inside the blow, so the rest of a multi-hit card is
+    /// already unshrunk) and the engine's death answer (Doom, and anything else that kills
+    /// without damage).
+    /// </summary>
+    internal static void RemoveDeathBoundPowers(CombatState state, EnemyState enemy)
     {
         // ShrinkerBeetle: permanent Shrink (ShrinkPower) is removed when its applier dies.
         if (enemy.DefId == KE.ShrinkerBeetle)
         {
             BuffSystem.Remove(state.PlayerBuffs, BuffId.Shrink);
         }
+    }
+
+    private static void OnEnemyDeath(CombatState state, EnemyState enemy)
+    {
+        RemoveDeathBoundPowers(state, enemy);
 
         // A death that holds the fight open (Steam Eruption among the powers that do,
         // `CombatEngine.HoldsTheFightOpen`) must not wait for the card's own end-of-card
@@ -5331,50 +5479,7 @@ public static class CardEffects
 
         state.PlayerHp = Math.Max(0, state.PlayerHp - amount);
         state.PlayerHpLostThisTurn += Math.Max(0, hpBefore - state.PlayerHp);
-
-        int rupt = BuffSystem.Get(state.PlayerBuffs, BuffId.RupturePower);
-        if (rupt > 0 && hpBefore > state.PlayerHp)
-        {
-            if (fromPlayedCard)
-            {
-                state.RuptureOwed += rupt;
-            }
-            else
-            {
-                RelicEffects.GainPlayerStrength(state, rupt);
-            }
-        }
-
-        TriggerInfernoAfterPlayerSelfDamage(state, hpBefore - state.PlayerHp);
-
-        // Self-inflicted HP loss IS damage received. Blood Wall, Offering and Hemokinesis
-        // all call `CreatureCmd.Damage(owner, ..., Unblockable | Unpowered)`, and that
-        // command dispatches `Hook.AfterDamageReceived` like any other -- there is no
-        // separate `LoseHp` command that skips it. This path did skip it, so Centennial
-        // Puzzle and Self-Forming Clay were silently blind to every card that hurts you
-        // to pay for itself; Demon Tongue is what made that visible.
-        //
-        // `state.TookUnblockedDamage` deliberately stays OUT of this: it is Lava Lamp's
-        // private flag, and Lava Lamp is the one relic on the hook that checks
-        // `props.HasFlag(ValueProp.Unblockable)` and refuses. The hook fires; the relic
-        // filters. Centennial Puzzle and Self-Forming Clay check no props at all, so they
-        // do fire here -- which is the distinction that makes this a hook rather than a
-        // flag on the state.
-        if (hpBefore > state.PlayerHp)
-        {
-            RelicEffects.ApplyAfterUnblockedDamageReceived(
-                state,
-                unblocked: hpBefore - state.PlayerHp
-            );
-        }
-
-        // Every route that changes current HP dispatches `AfterCurrentHpChanged`, and
-        // self-damage is a route: Offering and Hemokinesis can put the player under half
-        // and arm Red Skull, and can kill outright and reach Lizard Tail.
-        if (state.PlayerHp != hpBefore)
-        {
-            RelicEffects.ApplyAfterPlayerHpChanged(state);
-        }
+        AfterPlayerDamageReceived(state, hpBefore - state.PlayerHp, fromPlayedCard);
     }
 
     public static void ChannelOrb(CombatState state, OrbType type, Random? rng = null)
@@ -9662,7 +9767,11 @@ public static class CardEffects
         RelicEffects.ApplyAfterDiedToDoom(state, fatal);
     }
 
-    private static void TriggerInfernoAfterPlayerSelfDamage(CombatState state, int unblockedDamage)
+    /// <summary>
+    /// `InfernoPower.AfterDamageReceived`: unblocked damage to its owner on the owner's own
+    /// side turn, whoever dealt it and whatever its props.
+    /// </summary>
+    private static void TriggerInfernoAfterPlayerDamage(CombatState state, int unblockedDamage)
     {
         int inferno = BuffSystem.Get(state.PlayerBuffs, BuffId.Inferno);
         if (!state.PlayerTurn || unblockedDamage <= 0 || inferno <= 0)
@@ -9670,9 +9779,12 @@ public static class CardEffects
             return;
         }
 
+        // `CreatureCmd.Damage(HittableEnemies, Amount, Unpowered, Owner)`: the player's own
+        // damage, so it lands like any other -- a burst that kills a Shrinker Beetle lifts
+        // the Shrink, one that empties a block trips Hand Drill.
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
         {
-            DealUnpoweredDamageToEnemy(enemy, inferno);
+            DealUnpoweredDamageToEnemy(state, enemy, inferno);
         }
     }
 
@@ -9770,9 +9882,6 @@ public static class CardEffects
         return filtered;
     }
 
-    private static void DealUnpoweredDamageToEnemy(EnemyState target, int amount) =>
-        DealUnpoweredDamageToEnemy(null, target, amount, triggerThorns: false);
-
     internal static void DealUnpoweredDamageToEnemy(
         CombatState state,
         EnemyState target,
@@ -9790,17 +9899,26 @@ public static class CardEffects
         int amount
     ) => DealUnpoweredDamageToEnemy(state, target, amount, triggerThorns: false, unblockable: true);
 
+    /// <summary>
+    /// Unpowered damage the player's side deals one enemy: `Hook.ModifyDamage` without
+    /// Strength or Vulnerable (Intangible and Hard to Kill still cap it), Thorns only when
+    /// asked (Omnislice is the one unpowered hit `ThornsPower` answers), then the same
+    /// landing as a card's hit -- `LandDamageOnEnemy` -- with the powered-only hooks off.
+    /// </summary>
     private static void DealUnpoweredDamageToEnemy(
-        CombatState? state,
+        CombatState state,
         EnemyState target,
         int amount,
         bool triggerThorns,
         bool unblockable = false
     )
     {
-        if (triggerThorns && state != null)
+        // A target already dead is skipped before anything runs, as on the powered path
+        // (`DealDamageToEnemy`): an Omnislice splash or an Inferno burst over the enemies it
+        // saw at the start runs no Thorns of one that died on the way.
+        if (target.Hp <= 0)
         {
-            TriggerEnemyThorns(state, target);
+            return;
         }
 
         int damage = BuffSystem.CapIncomingDamage(Math.Max(0, amount), target.Buffs);
@@ -9810,16 +9928,13 @@ public static class CardEffects
             damage = Math.Min(damage, cap);
         }
 
-        int absorbed = unblockable ? 0 : Math.Min(target.Block, damage);
-        target.Block -= absorbed;
-        int hpLoss = damage - absorbed;
-        int slippery = BuffSystem.Get(target.Buffs, BuffId.Slippery);
-        if (slippery > 0 && hpLoss >= 1)
+        // `Hook.BeforeDamageReceived` runs after the number is fixed, as on the powered path.
+        if (triggerThorns)
         {
-            hpLoss = 1;
-            BuffSystem.Apply(target.Buffs, BuffId.Slippery, -1);
+            TriggerEnemyThorns(state, target);
         }
-        target.Hp = Math.Max(0, target.Hp - hpLoss);
+
+        LandDamageOnEnemy(state, target, damage, powered: false, unblockable);
     }
 
     private static void DealUnpoweredDamageToRandomEnemy(CombatState state, int amount, Random? rng)
@@ -10507,6 +10622,13 @@ public static class CardEffects
         int killed = 0;
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
         {
+            // Dead before its hit (an earlier target's Thorns into Inferno): `CreatureCmd.Damage`
+            // skips it and returns no result for it, so there is no kill to count.
+            if (enemy.Hp <= 0)
+            {
+                continue;
+            }
+
             DealDamageToEnemy(state, enemy, amount);
             if (enemy.Hp <= 0)
             {
@@ -10785,7 +10907,7 @@ public static class CardEffects
                 var target = FirstEnemy(state);
                 if (target != null)
                 {
-                    DealUnpoweredDamageToEnemy(target, Math.Max(0, (upgraded ? 10 : 8) + focus));
+                    DealUnpoweredDamageToEnemy(state, target, Math.Max(0, (upgraded ? 10 : 8) + focus));
                 }
 
                 break;

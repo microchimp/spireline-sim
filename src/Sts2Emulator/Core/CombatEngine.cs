@@ -1231,6 +1231,11 @@ public static class CombatEngine
             {
                 BuffSystem.Remove(enemy.Buffs, BuffId.SkittishSpent);
             }
+
+            // The enemy side's `BeforeSideTurnStart`, ahead of its poison ticks and of the
+            // Thorns and Flame Barrier its own attacks set off.
+            RefillHardenedShells(state);
+
             // Block clears for the WHOLE side before anyone acts, not as each creature takes
             // its turn. The difference is a creature that GIVES block to another: a Guardbot
             // hands its Fabricator 15, and when the clear was per-creature the Fabricator --
@@ -1313,10 +1318,20 @@ public static class CombatEngine
                         poison,
                         1 + BuffSystem.Get(state.PlayerBuffs, BuffId.Accelerant)
                     );
+                    //
+                    // The tick is `CreatureCmd.Damage(owner, Amount, Unblockable | Unpowered)`,
+                    // so it lands like any other damage: Hard to Kill and Hardened Shell cap
+                    // it, Slippery shrinks it, and it costs a sleeper its sleep, wakes the
+                    // Matriarch, trips Shriek and Plow and, killing a Shrinker Beetle, lifts
+                    // the Shrink. Written straight to HP, it skipped all of them.
                     for (int tick = 0; tick < triggers && enemy.Hp > 0; tick++)
                     {
                         int amount = BuffSystem.Get(enemy.Buffs, BuffId.Poison);
-                        enemy.Hp -= BuffSystem.CapHpLoss(amount, enemy.Buffs);
+                        Effects.CardEffects.DealUnblockableUnpoweredDamageToEnemy(
+                            state,
+                            enemy,
+                            amount
+                        );
                         if (enemy.Hp > 0)
                         {
                             BuffSystem.Apply(enemy.Buffs, BuffId.Poison, -1);
@@ -1691,15 +1706,9 @@ public static class CombatEngine
         foreach (var enemy in state.Enemies)
         {
             BuffSystem.Remove(enemy.Buffs, BuffId.SlowCount);
-            if (enemy.DefId == KE.SkulkingColony)
-            {
-                BuffSystem.Apply(
-                    enemy.Buffs,
-                    BuffId.HardenedShell,
-                    20 - BuffSystem.Get(enemy.Buffs, BuffId.HardenedShell)
-                );
-            }
         }
+
+        RefillHardenedShells(state);
 
         Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
 
@@ -3497,6 +3506,10 @@ public static class CombatEngine
                 BuffSystem.Remove(fallen.Buffs, BuffId.PossessStrength);
             }
 
+            // `ShrinkPower.AfterDeath`: the Shrink goes with the beetle that applied it,
+            // by Doom as much as by a hit (the damage path lifts it inside the blow).
+            Effects.CardEffects.RemoveDeathBoundPowers(state, fallen);
+
             // `HexPower.AfterDeath` removes the Hex when its APPLIER dies (with removal not
             // prevented), and `AfterRemoved` clears the Hexed cards. The Spectral Knight is
             // the only creature that applies Hex, and a Knights fight has one, so its death
@@ -3676,6 +3689,27 @@ public static class CombatEngine
         enemy.Hp <= 0
         && BuffSystem.Get(enemy.Buffs, BuffId.Reviving) <= 0
         && HoldsTheFightOpen(enemy);
+
+    /// <summary>
+    /// `HardenedShellPower.BeforeSideTurnStart` clears the turn's tally at the start of
+    /// EITHER side's turn -- it reads no side -- so the Skulking Colony's 20 is a fresh pool
+    /// for the enemy phase too: its poison ticks, and the Thorns and Flame Barrier its own
+    /// attacks set off, draw on a full shell, not on what the player's turn left of it.
+    /// </summary>
+    private static void RefillHardenedShells(CombatState state)
+    {
+        foreach (var enemy in state.Enemies)
+        {
+            if (enemy.DefId == KE.SkulkingColony)
+            {
+                BuffSystem.Apply(
+                    enemy.Buffs,
+                    BuffId.HardenedShell,
+                    20 - BuffSystem.Get(enemy.Buffs, BuffId.HardenedShell)
+                );
+            }
+        }
+    }
 
     /// <summary>
     /// Answers every death that holds the fight open and has not been answered yet: its
