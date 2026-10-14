@@ -1670,6 +1670,7 @@ class Played:
 
     before: dict[str, Any]
     after: dict[str, Any]
+    finished: dict[str, Any]
     screen: dict[str, Any]
     hand: list[dict[str, Any]]
     discard: list[dict[str, Any]]
@@ -1746,11 +1747,32 @@ def _bounds(opens: Any, emulated: dict[str, Any]) -> tuple[int, int]:
     return 0, ANY
 
 
+def _answer_until_closed(
+    handle: int,
+    obs: Any,
+    reward: Any,
+) -> None:
+    """Answer the open screen until it closes: declined where it can be, else its first card.
+
+    Raises:
+        AssertionError: if the screen is still open after sixteen answers.
+
+    """
+    for _ in range(16):
+        pending = native.get_state_json(handle)["pending_selection"]
+        if pending is None:
+            return
+        count = obs[native.OBS_SELECTION_COUNT_OFFSET]
+        native.step(handle, count if pending["skippable"] else 0, obs, reward)
+    raise AssertionError("the screen did not close")
+
+
 def _play(staging: Staging, seed: int = 7) -> Played:
     """Stage, play or use the source, and render the game's screen from the emulator's.
 
-    A card source's screen carries the card the emulator played as `played_card`, the
-    way the game's play pile holds it.
+    The emulator's play stops on the screen, as the game's does (`after`), and runs to its
+    end once the screen is answered (`finished`). A card source's screen carries the card
+    the emulator played as `played_card`, the way the game's play pile holds it.
     """
     doc = _emu_doc(staging)
     obs = (ctypes.c_int * native.OBS_SIZE)()
@@ -1767,6 +1789,8 @@ def _play(staging: Staging, seed: int = 7) -> Played:
             native.step(handle, size + 1, obs, reward)
         after = native.get_state_json(handle)
         order = native.get_pile(handle, "draw")
+        _answer_until_closed(handle, obs, reward)
+        finished = native.get_state_json(handle)
     finally:
         native.destroy(handle)
 
@@ -1777,11 +1801,11 @@ def _play(staging: Staging, seed: int = 7) -> Played:
         _live(c["def_id"], c["upgraded"], f"h{i}")
         for i, c in enumerate(after["piles"]["hand"])
     ]
-    # The game's card is in its play pile; the emulator's already landed on the discard.
-    held = after["piles"]["discard"]
-    if kind == "card" and held and held[-1]["def_id"] == ids.card_id(entry):
-        held = held[:-1]
-    discard = [_live(c["def_id"], c["upgraded"], f"x{i}") for i, c in enumerate(held)]
+    # The game's card is in its play pile, and the emulator's stopped play holds it in none.
+    discard = [
+        _live(c["def_id"], c["upgraded"], f"x{i}")
+        for i, c in enumerate(after["piles"]["discard"])
+    ]
     known = len(staging.top)
     shown = [_live(d, up, f"d{i}") for i, (d, up) in enumerate(order)]
     draw = selection.Draw(top=shown[:known], middle=shown[known:])
@@ -1807,7 +1831,7 @@ def _play(staging: Staging, seed: int = 7) -> Played:
         played_card=played and _live(played["def_id"], played["upgraded"], "p1"),
         **{f"source_{kind}": entry},
     )
-    return Played(before, after, screen, hand, discard, draw)
+    return Played(before, after, finished, screen, hand, discard, draw)
 
 
 FIVE_CARDS = (
@@ -1896,6 +1920,8 @@ class EmulatorAgreementTests(unittest.TestCase):
                 self.assertEqual(warnings, [])
 
     def test_a_card_source_is_finished_as_the_emulator_finishes_it(self) -> None:
+        # The emulator lands and counts the card once its screen is answered; the converter,
+        # whose loaded screen is answered by itself, does it in the document.
         counted = (
             "cards_played_this_turn",
             "card_plays_this_turn",
@@ -1918,9 +1944,9 @@ class EmulatorAgreementTests(unittest.TestCase):
                 defaults = {
                     k: v for k, v in plain.items() if k not in ("def_id", "upgraded")
                 }
-                self.assertEqual(played.after["piles"][pile][-1], defaults | landed)
+                self.assertEqual(played.finished["piles"][pile][-1], defaults | landed)
                 before = {k: played.before["counters"][k] for k in counted}
-                after = {k: played.after["counters"][k] for k in counted}
+                after = {k: played.finished["counters"][k] for k in counted}
                 self.assertEqual(
                     selection.count_play(before, ids.card_id(staging.source[1])),
                     after,
@@ -1944,11 +1970,12 @@ class EmulatorAgreementTests(unittest.TestCase):
                     relics,
                     selection.owed_strength(played.screen),
                 )
-                self.assertEqual(buffs, played.after["player"]["buffs"])
-                self.assertEqual(relics, played.after["relics"])
+                self.assertEqual(buffs, played.finished["player"]["buffs"])
+                self.assertEqual(relics, played.finished["relics"])
 
     def test_without_the_played_card_upgrades_look_alike(self) -> None:
-        # The screens are the same; the emulator's Amount, or Strength, is not.
+        # The screens are the same; the emulator's Amount, or the Strength its play
+        # grants once answered, is not.
         for source, hand in (
             ("BURNING_PACT", ((STRIKE, False), (DEFEND, False))),
             ("DUAL_WIELD", WIELDABLE),
@@ -1965,11 +1992,11 @@ class EmulatorAgreementTests(unittest.TestCase):
                 self.assertNotEqual(
                     (
                         plain.after["pending_selection"]["amount"],
-                        plain.after["player"]["buffs"],
+                        plain.finished["player"]["buffs"],
                     ),
                     (
                         upgraded.after["pending_selection"]["amount"],
-                        upgraded.after["player"]["buffs"],
+                        upgraded.finished["player"]["buffs"],
                     ),
                 )
                 self.assertIsNone(to_pending(screens[0], plain.hand)[0])

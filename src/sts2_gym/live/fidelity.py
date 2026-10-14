@@ -113,7 +113,14 @@ def check(
     not hold (`moves.index_maps`, `moves.to_action`).
     """
     before = _converted(pre, "pre")
-    after = _converted(post, "post")
+    # The position after is converted as the emulator holds it after the move. A play the
+    # move begins stops on the screen it opens, unfinished, in the emulator as in the game;
+    # a play the position before was already in was finished there, in its document.
+    after = _converted(
+        post,
+        "post",
+        finish_play=before.doc["pending_selection"] is not None,
+    )
     if not (before.reliable and after.reliable):
         return _not_comparable([*_marked("pre", before), *_marked("post", after)])
     # The converted enemies are the live ones, in their order.
@@ -196,7 +203,12 @@ def _more_plays(samples: Sequence[_Sample], after: Mapping[str, Any]) -> str | N
 # ── The two sides ────────────────────────────────────────────────────────────
 
 
-def _converted(live: dict[str, Any], side: str) -> ConversionResult:
+def _converted(
+    live: dict[str, Any],
+    side: str,
+    *,
+    finish_play: bool = True,
+) -> ConversionResult:
     """Convert one side's snapshot.
 
     Raises:
@@ -204,7 +216,7 @@ def _converted(live: dict[str, Any], side: str) -> ConversionResult:
 
     """
     try:
-        return convert(live)
+        return convert(live, finish_play=finish_play)
     except ConversionError as error:
         path = side if error.path in {None, "$"} else f"{side}.{error.path}"
         raise ConversionError(error.reason, path=path) from error

@@ -780,8 +780,15 @@ def _held(
     }
 
 
-def convert(live: dict[str, Any]) -> ConversionResult:
+def convert(live: dict[str, Any], *, finish_play: bool = True) -> ConversionResult:
     """Translate one live snapshot into the emulator's snapshot document.
+
+    A screen a card opened is in the middle of that card's play. A document loaded there
+    answers the screen by itself, so by default the play is finished in the document as the
+    emulator finishes it once answered (`selection.count_play`, `land_played_card`,
+    `owed_strength`). `finish_play=False` leaves it as it stands -- the card in its play
+    pile, which a document has none of, and the play neither counted nor finished -- which
+    is how the emulator's own play stands when it stops on that screen.
 
     Raises:
         ConversionError: for any key the live schema does not define, any id the emulator
@@ -875,8 +882,8 @@ def convert(live: dict[str, Any]) -> ConversionResult:
     history = _history(top["history"])
 
     # The live piles, validated, and the open selection over them. A selection is mapped
-    # before anything reads history: when a card opened it, the emulator has already
-    # counted that card's play (selection.count_play).
+    # before anything reads history: when a card opened it, the document counts that
+    # card's play (selection.count_play), unless the play is left as it stands.
     hand = _hand(top)
     discard = _cards(top["discard_pile"], "discard_pile")
     exhaust = _cards(top["exhaust_pile"], "exhaust_pile")
@@ -898,7 +905,7 @@ def convert(live: dict[str, Any]) -> ConversionResult:
             warnings=warnings,
         )
         opened = live_pending if pending is not None else None
-    played = opened["source_card"] if opened is not None else None
+    played = opened["source_card"] if opened is not None and finish_play else None
     if played is not None:
         history = selection.count_play(history, ids.card_id(played))
 
@@ -1014,7 +1021,7 @@ def convert(live: dict[str, Any]) -> ConversionResult:
             relic_state.relics,
             selection.owed_strength(opened),
         )
-    elif opened is not None:
+    elif opened is not None and opened["source_card"] is None:
         warnings.extend(
             selection.hook_warnings(
                 opened,

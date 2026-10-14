@@ -8,12 +8,16 @@ selection DOES, so it is derived here from the source, the card, potion or relic
 `CombatState.PendingSelection` for it (CardEffects.cs, PotionEffects.cs, CombatEngine.cs)
 and checked against the running emulator by the test suite.
 
-The emulator asks AFTER a play (AGENTS.md, "Card Selection"). By the time the question
-is put, the card that asked is in its result pile and counted, and whatever it does once
-answered rides on the selection. The game asks mid-play, with that card in its play pile,
-which the live snapshot carries as `played_card`. So for a card source `count_play` and
-`land_played_card` finish the play the emulator's way, and a warning names whatever the
-game still does for the play that the loaded position will not (`AFTER_PLAY`).
+The game asks mid-play, with the card that asked in its play pile, which the live
+snapshot carries as `played_card`; the emulator's own play stops there too, the card in no
+pile and its play neither counted nor finished, and the answer runs the rest of the play
+(a stopped step, `HookChoiceReplay`). A document carries no stopped step from the live
+game, so the loaded screen is answered by itself and the rest of the play never runs. So
+for a card source `count_play` and `land_played_card` finish the play in the document as
+the emulator finishes it once the screen is answered, `owed_strength` grants what Brand
+grants after the pick, and a warning names whatever else the game still does for the play
+that the loaded position will not (`AFTER_PLAY`). `convert(..., finish_play=False)` leaves
+the play as it stands, for comparing the position with the emulator's own stopped play.
 
 A selection this cannot carry exactly maps to None, with a warning naming why:
 - a source the table does not know, or a screen other than the one it expects;
@@ -933,10 +937,9 @@ def land_played_card(
 ) -> tuple[str | None, dict[str, Any]]:
     """Return the pile the card that asked lands in, and the emulator card that lands.
 
-    The emulator's selection comes after `CombatEngine.PlayCard` has put the played card
-    in its result pile (CombatEngine.cs:395-521), marked `PlayedThisTurn`: exhausted if the
-    copy exhausts or Corruption takes a Skill, else discarded; a Power goes to no pile,
-    which is the None. The card is `played_card`, translated like any live card, when the
+    Where `CombatEngine.PlayCard` puts the played card once the answered play is over,
+    marked `PlayedThisTurn`: exhausted if the copy exhausts or Corruption takes a Skill,
+    else discarded; a Power goes to no pile, which is the None. The card is `played_card`, translated like any live card, when the
     snapshot carries it. Otherwise it is a copy as exact as the screen allows -- its
     upgrade what `SOURCES` can prove, else unupgraded -- and a warning says so.
 
@@ -1026,13 +1029,14 @@ def _result_pile(card: Mapping[str, Any], *, corruption: bool) -> str | None:
 
 
 def count_play(counters: Mapping[str, int], def_id: int) -> dict[str, int]:
-    """Count a card source's play in the history counters, as the emulator already has.
+    """Count a card source's play in the history counters, as the emulator does once answered.
 
-    The live history counts finished plays, so the card still resolving is not in it. By
-    the time the emulator asks, `PlayCard` has counted it:
-    - `CardsPlayedThisTurn` as the play starts (CombatEngine.cs:105);
-    - `AttackCardsPlayedThisTurn` for an Attack (:368);
-    - the finished-play tallies in `IncrementPlayedCardTypeCounters` (:628, :4716-4743).
+    The live history counts finished plays, so the card still resolving is not in it. The
+    emulator's play counts it by the end of the play, which the answer runs and a loaded
+    screen answered by itself never reaches:
+    - `CardsPlayedThisTurn` as the play starts;
+    - `AttackCardsPlayedThisTurn` for an Attack, after its effect;
+    - the finished-play tallies in `IncrementPlayedCardTypeCounters`.
     A counter history did not report stays unreported.
     """
     card_type = names.cards()[def_id].card_type
@@ -1052,10 +1056,11 @@ def count_play(counters: Mapping[str, int], def_id: int) -> dict[str, int]:
 
 
 def owed_strength(live_pending: Mapping[str, Any]) -> int:
-    """Return the Strength the emulator grants before a mapped selection's answer.
+    """Return the Strength the play grants after a mapped selection's answer.
 
-    Brand's, which the game grants after (`Opens.strength`); 0 for any other source.
-    Only for a selection `to_pending` mapped, so the upgrade it needs is known.
+    Brand's (`Opens.strength`), which the game and the emulator grant after the pick and a
+    loaded screen answered by itself never does; 0 for any other source. Only for a
+    selection `to_pending` mapped, so the upgrade it needs is known.
     """
     who = source(live_pending)
     opens = SOURCES.get(who) if who is not None else None
