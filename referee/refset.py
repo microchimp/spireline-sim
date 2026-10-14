@@ -1367,6 +1367,13 @@ def play_pass(specs: list[dict], game: str, servers: int, run_dir: Path, out: Pa
     job.write_text(json.dumps({"runs": [e["spec"] for e in specs], **(jopts or {})}), encoding="utf-8")
     cmd = [sys.executable, str(HERE / "serve.py"), "--game", game, "--specs", str(job), "--servers", str(servers),
            "--spares", "0", "--run-dir", str(run_dir), "--out", str(out), "--timeout", str(int(timeout)), "--build", str(build)]
+    if (jopts or {}).get("nodeless"):
+        # A nodeless attempt that meets a fallback model inside a turn leaves the turn flags set, and its server
+        # retires after the result (Driver.StaleState, exit 5): a planned exit, nothing re-queued, so at most one per
+        # spec and one per full-host replay. serve.py counts retirements against its crash budget (3 x servers + 3),
+        # which a full set's ~20% fallbacks exceed (22 retirements ended the first v2 record's nodeless pass at 791
+        # of 1000), so the budget grows by those planned exits.
+        cmd += ["--max-restarts", str(3 * servers + 3 + 2 * len(specs))]
     print(f"[refset] {run_dir.name}: {len(specs)} fights on {servers} servers", flush=True)
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
     (run_dir.with_suffix(".log")).write_text(p.stdout, encoding="utf-8")
