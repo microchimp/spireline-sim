@@ -419,18 +419,25 @@ class ReplayAgreementTests(unittest.TestCase):
         # Every compared screen but the 4 card-select screens after a click (the replay's
         # held selection, above).
         self.assertEqual(compared, 954)
-        # Erratum E2: the mask is applied on exactly the 44 compared screens after an
-        # enchant, in these three fixtures, and on no other screen.
+        # Erratum E2: the mask is applied on exactly the 106 compared screens after an
+        # enchant, in these five fixtures, and on no other screen. 44 of them (the first
+        # three) were all there was until f9c8f400: Silken Tress, taken at Neow in
+        # 41TJ3T2Y0Q-a8 (18 screens) and J09SPL8Y3V-a8 (44), makes the first card reward
+        # arrive Glam-enchanted, as the game does (`SilkenTress.TryModifyCardRewardOptionsLate`),
+        # so the engine's deck carries a Glam card from that pick on and the payload cannot say so.
+        # The two counts were 0 while the emulator left the first reward plain.
         self.assertEqual(
             dict(masked),
             {
                 "1UL0BRX8WC-a8.json": 13,
+                "41TJ3T2Y0Q-a8.json": 18,
                 "9V9WN98106-a8-neowstalisman.json": 26,
+                "J09SPL8Y3V-a8.json": 44,
                 "ZY1E5128P6-a8-scrollboxes.json": 5,
             },
         )
         self.assertEqual(post_enchant, set())  # every post-enchant screen was masked
-        self.assertEqual(strict, 910)
+        self.assertEqual(strict, 848)
 
     def test_event_steps_agree_on_every_captured_event(self):
         # The session's own page count (`VisitTracker`, driven by the captured actions)
