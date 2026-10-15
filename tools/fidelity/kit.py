@@ -139,11 +139,44 @@ def matching_groups(item: dict, item_entities: set, doc: dict) -> list:
 
 # ================================================================== the minimal repro's game record
 
-class RecordIndex:
-    """Game records under the lab (LAB/runs/*/**/*.out.json and *.json holding {"results": [...]}) by seed, read once."""
+# EmuDump's own outputs beside a batch (<b>.emu.json, <b>.shrink.emu.json, <b>.reanchor.json): replays, never the game's record.
+EMU_OUTPUTS = (".emu.json", ".reanchor.json")
+# What fight_compare.game_view reads of a state in combat; EmuDump's states hold a snapshot and a draw order instead.
+GAME_STATE_KEYS = ("player", "hand", "draw", "discard", "exhaust", "enemies", "rng")
+EMU_STATE_KEYS = ("snapshot", "draw_order")
+SHRINK_PROBE = re.compile(r"\.shrink\d+\.out\.json$")  # referee/shrink.py's rounds: the game's records of reduced setups
 
-    def __init__(self, lab: Path | None):
+
+def is_game_record(r) -> bool:
+    """Whether r is a game recording (the referee's shape: the fight's opening state and every state in combat hold what
+    game_view reads), not EmuDump's replay of one or anything else that holds steps."""
+    steps = r.get("steps") if isinstance(r, dict) else None
+    if not isinstance(steps, list) or not steps:
+        return False
+    for s in steps:
+        st = s.get("state") if isinstance(s, dict) else None
+        if not isinstance(st, dict) or any(k in st for k in EMU_STATE_KEYS):
+            return False
+        if st.get("in_combat") and not all(k in st for k in GAME_STATE_KEYS):
+            return False
+    return bool(steps[0]["state"].get("in_combat"))
+
+
+class RecordIndex:
+    """The game records an example's ref names, read once.
+
+    A ref is a path (optionally '#seed' or '#index') relative to the lab, or to a base its tag names ('referee/...': the
+    referee folder, 'fork/...': the fork; tools/fidelity/lab_groups.py writes refs this way); a path without its extension is a
+    batch (<b>.out.json and its shrink rounds <b>.shrinkN.out.json); a pack spec's record is found by its seed and setup. A
+    bare seed is searched in every game record under LAB/runs. Only game records count (is_game_record): EmuDump's outputs
+    beside them are skipped. A path that leaves its base is refused.
+    """
+
+    def __init__(self, lab: Path | None, bases: dict | None = None):
         self.lab = Path(lab) if lab else None
+        self.bases = {k: Path(v) for k, v in (bases or {}).items() if v and k}
+        if self.lab:
+            self.bases[""] = self.lab
         self._by_seed: dict | None = None
         self._docs: dict = {}
 
@@ -155,6 +188,24 @@ class RecordIndex:
             self._docs[key] = read_json(path)
         return self._docs[key]
 
+    @staticmethod
+    def _holds_results(p: Path) -> bool:
+        if p.name == "job.json" or p.name.endswith(EMU_OUTPUTS):
+            return False
+        try:
+            if p.stat().st_size < 64:
+                return False
+            with open(p, encoding="utf-8", errors="replace") as f:
+                return '"results"' in f.read(64)
+        except OSError:
+            return False
+
+    def _records(self, p: Path, scan: bool = True) -> list:
+        """[(path, index, record)] of the game records in one results file (scan: skip, unread, a file that is none)."""
+        doc = self.doc(p) if not scan or self._holds_results(p) else None
+        res = doc.get("results") if isinstance(doc, dict) else None
+        return [(p, i, r) for i, r in enumerate(res or []) if is_game_record(r)]
+
     @property
     def by_seed(self) -> dict:
         if self._by_seed is None:
@@ -162,39 +213,69 @@ class RecordIndex:
             runs = self.lab / "runs" if self.lab else None
             if runs and runs.is_dir():
                 for p in sorted(runs.rglob("*.json")):
-                    if p.name in ("job.json",) or p.stat().st_size < 64:
-                        continue
-                    with open(p, encoding="utf-8", errors="replace") as f:
-                        head = f.read(64)
-                    if '"results"' not in head:
-                        continue
-                    doc = read_json(p, {}) or {}
-                    for i, r in enumerate(doc.get("results") or []):
-                        if isinstance(r, dict) and r.get("seed") and r.get("steps"):
+                    for _, i, r in self._records(p):
+                        if r.get("seed"):
                             self._by_seed.setdefault(r["seed"], []).append((p, i))
                     self._docs.clear()
         return self._by_seed
 
+    def resolve(self, path: str) -> tuple[Path, str] | None:
+        """(file system path, its base's tag) of a ref's path, or None when it is not a path under a known base."""
+        if not path or ":" in path or "\\" in path or path.startswith("/"):
+            return None  # refset:, corpus:, a codex line (<file>:<n>), an absolute path
+        for tag in sorted(self.bases, key=len, reverse=True):
+            if path.startswith(tag):
+                base, rest = self.bases[tag], path[len(tag):]
+                break
+        else:
+            return None
+        if not rest or ".." in Path(rest).parts:
+            return None
+        p = base / rest
+        try:
+            p.resolve().relative_to(base.resolve())
+        except (ValueError, OSError):
+            return None
+        return p, tag
+
+    def label(self, p: Path) -> str:
+        """A record file's path as refs write it: relative to the lab, or to a tagged base with its tag."""
+        for tag in sorted(self.bases, key=len):
+            with contextlib.suppress(ValueError, OSError):
+                return tag + p.resolve().relative_to(self.bases[tag].resolve()).as_posix()
+        return p.name
+
     def find(self, ref, minimal: list, seed_hint: str | None = None) -> tuple[dict | None, str]:
-        """(record, where) for one example: a path relative to the lab (optionally '#seed' or '#index'), or a seed."""
+        """(record, where) for one example; `where` is the record file as label() writes it, '#<index>' added."""
         want = setup_items(minimal)
         ref = str(ref or "")
         path, _, sel = ref.partition("#")
         cands: list = []
-        if path and self.lab and (self.lab / path).is_file():
-            p = self.lab / path
+        named = False  # the ref names a file or a batch that holds game records: they are the only candidates
+        hit = None if SEED.match(path) else self.resolve(path)
+        if hit and hit[0].is_file():
+            p = hit[0]
             doc = self.doc(p) or {}
             if isinstance(doc, dict) and isinstance(doc.get("results"), list):
-                for i, r in enumerate(doc["results"]):
-                    cands.append((p, i, r))
+                cands += self._records(p, scan=False)
             elif isinstance(doc, dict) and isinstance(doc.get("runs"), list):  # a pack spec: its record is elsewhere
                 spec = doc["runs"][0] if doc["runs"] else {}
                 seed_hint = spec.get("seed") or seed_hint
                 want = want or setup_items(spec.get("setup"))
-            elif isinstance(doc, dict) and doc.get("steps"):
+            elif is_game_record(doc):
                 cands.append((p, 0, doc))
+            named = bool(cands)
+        elif hit and hit[0].parent.is_dir():  # a batch: its records and its shrink rounds' records
+            prefix = hit[0]
+            for p in sorted(prefix.parent.glob(prefix.name + ".*json")):
+                if p.name == prefix.name + ".out.json" or SHRINK_PROBE.search(p.name):
+                    recs = self._records(p)
+                    cands += recs
+                    named = named or bool(recs)
         seed = sel if SEED.match(sel or "") else (path if SEED.match(path) else seed_hint)
-        if not cands and seed:
+        # a seed alone is searched lab-wide; a ref whose path held no game record only with a setup to tell its fight from
+        # another fight on the same seed (a targets batch reuses recorded fights' seeds)
+        if not cands and seed and not named and (not hit or want):
             for p, i in self.by_seed.get(seed, []):
                 doc = self.doc(p) or {}
                 cands.append((p, i, doc["results"][i]))
@@ -205,12 +286,18 @@ class RecordIndex:
         if want:
             exact = [c for c in cands if setup_items(c[2].get("setup")) == want]
             cands = exact or [c for c in cands if set(want) <= set(setup_items(c[2].get("setup")))]
+            cands.sort(key=lambda c: (len(c[2].get("setup") or []), len(c[2].get("steps") or [])))
+        else:  # no minimal setup to match: the fight the batch played, not a shrink round's reduced setup
+            cands.sort(key=lambda c: bool(SHRINK_PROBE.search(c[0].name)))
         if not cands:
             return None, f"no game record found for ref {ref or '-'}" + (f" (seed {seed})" if seed else "")
-        cands.sort(key=lambda c: (len(c[2].get("setup") or []), len(c[2].get("steps") or [])))
         p, i, r = cands[0]
-        where = p.relative_to(self.lab).as_posix() if self.lab else p.name
-        return r, f"{where}#{i}"
+        return r, f"{self.label(p)}#{i}"
+
+
+def where_text(where: str) -> str:
+    """A record's place for the packet: LAB/<path> for the lab's, the tagged path for the others."""
+    return where if where.startswith(("referee/", "fork/")) else "LAB/" + where
 
 
 def trim_record(rec: dict, upto: int) -> dict:

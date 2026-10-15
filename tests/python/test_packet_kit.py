@@ -105,6 +105,71 @@ class KitPacketTest(unittest.TestCase):
         self.assertNotIn("Fix kit", (self.out / "T-01.md").read_text(encoding="utf-8"))
         self.assertFalse((self.out / "grades.json").exists())
 
+    def test_a_seed_ref_with_an_emulator_twin_and_no_minimal_setup_still_finds_the_game_record(self):
+        rec = tp.fight(tp.SEED_CITED, 3, setup=SETUP)
+        ex = dict(group()["examples"][0], ref=tp.SEED_CITED, minimal_setup=[])
+        self.lab = lab_with(self.t, [group(examples=[ex])], {f"{JOB}/batch.out.json": [rec],
+                                                              f"{JOB}/batch.emu.json": [tp.emu_doc_for(rec)],
+                                                              f"{JOB}/batch.shrink.emu.json": [tp.emu_doc_for(rec)]})
+        pk_, seen = self.run_kit()
+        self.assertEqual(pk_["kit"]["grade"], "A")
+        self.assertNotIn("errors", pk_["kit"])
+        self.assertIn(f"record LAB/{JOB}/batch.out.json#0; on this checkout first wrong at step 1", (self.out / "T-01.md").read_text(encoding="utf-8"))
+
+    def run_two(self, **patches):
+        """Kits for T-01 and T-02 (one group names both), with kit functions patched to fail; every generated test fails as stated."""
+        self.lab = lab_with(self.t, [group(backlog_ids=["T-01", "T-02"])])
+        cx = self.w.context(self.t, emu=tp.FakeEmu(), do_sweep=True)
+        cx.kit_cfg = {"groups": kt.load_groups(self.lab / "groups.json"), "lab": self.lab, "verify": True}
+
+        def fake_verify(sources, dll, work):
+            return {c: {"outcome": "failed", "message": "Assert.Fail(): KIT step 1 .enemies: game x | emulator y"} for c in sources}
+        with mock.patch.object(pk.kt, "verify_tests", side_effect=fake_verify), \
+                mock.patch.object(pk.kt, "load_hook_check", return_value=self.check), mock.patch.multiple(pk.kt, **patches):
+            res = pk.write_packets([tp.ITEM, dict(tp.ITEM, id="T-02")], cx, self.out, quiet=True)
+        return {r["item"]["id"]: r for r in res}, json.loads((self.out / "grades.json").read_text(encoding="utf-8"))
+
+    def failing_once(self, name, exc):
+        real, calls = getattr(kt, name), []
+
+        def f(*a, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise exc
+            return real(*a, **kw)
+        return f
+
+    def test_a_test_that_cannot_be_generated_costs_that_test_only(self):
+        res, grades = self.run_two(test_source=self.failing_once("test_source", KeyError("player")))
+        self.assertEqual((res["T-01"]["kit"]["grade"], res["T-02"]["kit"]["grade"]), ("B", "A"))
+        self.assertIn("KeyError: 'player'", grades["T-01"]["errors"][0])
+        self.assertNotIn("errors", grades["T-02"])
+        text = (self.out / "T-01.md").read_text(encoding="utf-8")
+        self.assertIn("failing test: not generated, the test could not be generated from LAB/", text)
+        self.assertIn("kit parts that failed", text)
+
+    def test_a_group_that_fails_degrades_its_kit_and_the_run_goes_on(self):
+        res, grades = self.run_two(sibling_targets=self.failing_once("sibling_targets", RuntimeError(f"bad file {self.t / 'x.cs'}")))
+        self.assertEqual((res["T-01"]["kit"]["grade"], res["T-02"]["kit"]["grade"]), ("C", "A"))
+        (err,) = grades["T-01"]["errors"]
+        self.assertTrue(err.startswith("group g1a2b3c4d5e6: RuntimeError: bad file <x.cs>"), err)  # no machine folders
+        self.assertIn("this group's kit part failed: RuntimeError", (self.out / "T-01.md").read_text(encoding="utf-8"))
+        self.assertTrue((self.out / "T-02.md").is_file())
+
+    def test_a_kit_that_cannot_be_built_is_grade_c_with_its_reason(self):
+        res, grades = self.run_two(rule_pointers=self.failing_once("rule_pointers", ValueError("odd")))
+        self.assertEqual((res["T-01"]["kit"]["grade"], res["T-02"]["kit"]["grade"]), ("C", "A"))
+        self.assertEqual(grades["T-01"]["errors"], ["the item's kit: ValueError: odd"])
+        self.assertNotIn("no lab group names this item", (self.out / "T-01.md").read_text(encoding="utf-8"))
+
+    def test_a_record_the_comparison_cannot_read_is_no_repro(self):
+        rec = tp.fight(tp.SEED_CITED, 3, setup=SETUP)
+        del rec["steps"][1]["state"]["player"]["hp"]  # the game's shape at the top, a field the comparison needs missing
+        self.lab = lab_with(self.t, [group()], {f"{JOB}/minimal/{tp.SEED_CITED}.out.json": [rec]})
+        pk_, seen = self.run_kit()
+        self.assertEqual((pk_["kit"]["grade"], seen), ("C", {}))
+        self.assertIn("not comparable (KeyError: 'hp')", (self.out / "T-01.md").read_text(encoding="utf-8"))
+
     def test_an_item_no_group_matches_gets_grade_c(self):
         self.lab = lab_with(self.t, [group(backlog_ids=["OTHER"], entities=["VAJRA"], ingredient_effect=[])])
         pk_, _ = self.run_kit()

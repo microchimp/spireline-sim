@@ -113,6 +113,69 @@ class RecordTest(unittest.TestCase):
         self.assertIsNone(rec)
         self.assertIn("no game record", why)
 
+    def add_emulator_twins(self):
+        """EmuDump's outputs beside the batch, as a real lab job holds them: the replays carry the seed but no setup."""
+        twins = {"results": [tp.emu_doc_for(tp.fight(tp.SEED_OTHER, 2)), tp.emu_doc_for(tp.fight(tp.SEED_CITED, 3))]}
+        for name in ("batch.emu.json", "batch.shrink.emu.json"):
+            (self.lab / JOB / name).write_text(json.dumps(twins), encoding="utf-8")
+        (self.lab / JOB / "batch.reanchor.json").write_text(json.dumps({"results": twins["results"], "buff_keys": []}), encoding="utf-8")
+        return kt.RecordIndex(self.lab)
+
+    def test_an_emulator_twin_of_the_seed_is_never_the_game_record(self):
+        ix = self.add_emulator_twins()
+        rec, where = ix.find(tp.SEED_CITED, [])  # no setup to filter on: the twins (no setup) used to sort first
+        self.assertTrue(kt.is_game_record(rec))
+        self.assertEqual(where, f"{JOB}/batch.out.json#1")  # the fight the batch played, not a shrink round's reduced setup
+        self.assertTrue(all(not p.name.endswith((".emu.json", ".reanchor.json")) for ps in ix.by_seed.values() for p, _ in ps))
+        rec, why = ix.find(f"{JOB}/batch.emu.json#{tp.SEED_CITED}", [])
+        self.assertIsNone(rec)
+        self.assertIn("no game record", why)
+
+    def test_only_the_games_shape_is_a_game_record(self):
+        rec = tp.fight(tp.SEED_CITED, 3, setup=SETUP)
+        self.assertTrue(kt.is_game_record(rec))
+        self.assertFalse(kt.is_game_record(tp.emu_doc_for(rec)))
+        self.assertFalse(kt.is_game_record({"seed": "X", "steps": []}))
+        broken = json.loads(json.dumps(rec))
+        del broken["steps"][1]["state"]["enemies"]
+        self.assertFalse(kt.is_game_record(broken))
+
+    def test_a_seed_only_ref_finds_the_game_record(self):
+        ix = self.add_emulator_twins()
+        rec, where = ix.find(tp.SEED_OTHER, [])
+        self.assertEqual((rec["seed"], where), (tp.SEED_OTHER, f"{JOB}/batch.out.json#0"))
+        rec, where = ix.find(tp.SEED_CITED, SETUP)
+        self.assertEqual((rec["setup"], where), (SETUP, f"{JOB}/batch.shrink3.out.json#0"))
+
+    def test_a_batch_ref_without_its_extension_reads_the_batch_and_its_shrink_rounds(self):
+        ix = self.add_emulator_twins()
+        rec, where = ix.find(f"{JOB}/batch#{tp.SEED_CITED}", SETUP)
+        self.assertEqual((rec["setup"], where), (SETUP, f"{JOB}/batch.shrink3.out.json#0"))
+        rec, where = ix.find(f"{JOB}/batch#{tp.SEED_CITED}", [])
+        self.assertEqual(where, f"{JOB}/batch.out.json#1")
+
+    def test_a_tagged_ref_reads_its_base_and_never_another_fight_on_its_seed(self):
+        base = Path(self.tmp.name) / "referee"
+        other = tp.fight(tp.SEED_CITED, 2, setup=[{"cmd": "fight", "id": "OVICOPTER_NORMAL"}])
+        (base / "jobs-setup").mkdir(parents=True)
+        (base / "jobs-setup" / "dense60.out.json").write_text(json.dumps({"results": [other]}), encoding="utf-8")
+        (base / "jobs-setup" / "dense60.emu.json").write_text(json.dumps({"results": [tp.emu_doc_for(other)]}), encoding="utf-8")
+        ix = kt.RecordIndex(self.lab, {"referee/": base})
+        rec, where = ix.find(f"referee/jobs-setup/dense60#{tp.SEED_CITED}", [])
+        self.assertEqual((rec["setup"], where), (other["setup"], "referee/jobs-setup/dense60.out.json#0"))
+        self.assertEqual(kt.where_text(where), "referee/jobs-setup/dense60.out.json#0")
+        self.assertEqual(kt.where_text(f"{JOB}/batch.out.json#1"), f"LAB/{JOB}/batch.out.json#1")
+        # without that base the ref's fight is unknown: the lab's fight on the same seed is another fight
+        rec, _ = self.ix.find(f"referee/jobs-setup/dense60#{tp.SEED_CITED}", [])
+        self.assertIsNone(rec)
+
+    def test_a_ref_that_leaves_its_base_is_refused(self):
+        outside = Path(self.tmp.name) / "outside.out.json"
+        outside.write_text(json.dumps({"results": [tp.fight(tp.SEED_CITED, 3)]}), encoding="utf-8")
+        for ref in ("../outside.out.json", f"{JOB}/../../../outside.out.json", outside.as_posix(), str(outside)):
+            rec, _ = self.ix.find(ref, [])
+            self.assertIsNone(rec, ref)
+
     def test_the_trimmed_record_carries_actions_and_no_states(self):
         rec = tp.fight(tp.SEED_CITED, 3, setup=SETUP)
         rec["setup_log"] = [{"i": 0, "cmd": "power", "id": "X", "ok": True, "msg": "", "rng": {"big": 1}}]
