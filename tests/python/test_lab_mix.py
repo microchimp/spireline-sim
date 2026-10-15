@@ -440,6 +440,14 @@ class RunnerMixTest(unittest.TestCase):
                                                        run.data["params"]["run_batch"], run.data["params"]["start"]))
         self.assertEqual(1004, r.state["next_run_start"])  # four calls of ten runs make forty
 
+    def test_once_fights_returns_the_runs_job_when_the_mix_picks_whole_runs(self):
+        self.trivial_plans()
+        write(self.tmp / "lab" / "mix.json", {"whole-runs": 1})
+        r = self.runner("--once", "fights")
+        job, _, why = r.choose("abc")
+        self.assertEqual(("runs", None), (job, r.next_strategy), why)
+        self.assertEqual("whole-runs", r.new_run(job, "abc").data["params"]["strategy"])
+
     def test_new_jobs_get_the_budgets_and_the_defaults_of_the_task(self):
         r = self.runner()
         p = r.default_params("fights")

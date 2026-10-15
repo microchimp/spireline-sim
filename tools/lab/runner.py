@@ -417,8 +417,8 @@ class Runner:
                 picked, strategy = self.pick_fights(sha)
                 if not picked:
                     return "", None, "no fights strategy is runnable"
-                self.next_strategy = strategy
-                return "fights", None, f"--once, {strategy}"
+                self.next_strategy = strategy if picked == "fights" else None
+                return picked, None, f"--once, {strategy}"  # the mix may pick whole-runs, its own job type
             why = self.unavailable(a.once, sha)
             if why is not None:
                 self.log(f"{a.once}: not runnable ({why})")
