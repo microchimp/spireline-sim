@@ -4,7 +4,11 @@
     python referee/scenarios.py --name <name> --mode dense|coverage --fights 60 [--start 0] [--servers 2]
         [--game D:/spireline/referee/game-setup] [--shrink K] [--shrink-budget 400] [--make-only]
     python referee/scenarios.py --name <name> --mode targets --targets LAB/targets.json --fights N [--start S]
-        [--servers K] --game <game copy> --shrink K [--jobs <dir>] [--trace N]
+        [--servers K] --game <game copy> --shrink K [--jobs <dir>] [--trace N] [--aim all|bugs|gaps]
+    python referee/scenarios.py --name <name> --mode choices --fights N [--edges random|cycle|none|one|max|last|unusual]
+        [--features LAB/cache/model_features.json] [...as above]
+    python referee/scenarios.py --name <name> --mode analyze --jobs <dir holding batch.py's <name>.*> --game <copy>
+        --shrink K --trace N
 
 Run from the fork's root. Specs carry a "setup" list (referee/driver/Setup.cs) built from the game's
 own content tables (the export, see RUNBOOK "Table check"), limited to what EmuDump can mirror:
@@ -26,6 +30,21 @@ own content tables (the export, see RUNBOOK "Table check"), limited to what EmuD
   --jobs puts every output in that folder instead of jobs-setup; <name>.aims.json names each spec's target
   (and seed_from: cache for a seed borrowed from a recorded fight, fresh otherwise)
   and <name>.shrink.json every shrink case's status.
+  --aim bugs keeps the targets an open backlog item names (lab_targets writes backlog_items); --aim gaps
+  weighs the starter items (BURNING_BLOOD, BASH, STRIKE_IRONCLAD, DEFEND_IRONCLAD, ASCENDERS_BANE) 1/20,
+  since every real run holds them and their meet share would drown the gaps. --aim all (default) is as before.
+- choices (the fix lab): a small deck, 1-3 relics whose pickup opens a card screen (the setup info's
+  TransformSelect follow-up), cards that open one (the game commands each model calls, --features), a
+  screen-opening card or two in the hand, and the driver's edge answers (spec "choice_edges": none, one, the most
+  a screen takes, the last eligible card, the most unusual one; --edges, default one drawn per spec), so a
+  difference in how many a screen takes, or which cards it offers, shows as a divergence.
+- analyze: no new fights. The finished batch.py batch <name> in --jobs (<name>.json, .out.json, .emu.json,
+  .reanchor.json) is judged, shrunk, traced and given verdicts and packs like any other batch, so
+  tools/fidelity/lab_groups.py reads it.
+--shrink-cap N is the game fights one diverging fight may cost (48), --shrink-minutes M and --trace-minutes M stop
+starting shrink rounds and trace calls after M minutes (a per-batch budget), --trace-servers K (up to 8) the
+servers for the traced re-runs. A failure in the context packs is a warning: verdicts.json and summary.txt
+are written before them.
 
 Every spec uses potions (use_potions). The job goes to serve.py (one game per server), the results to
 EmuDump fight and reanchor, and each fight is judged as batch.py does, plus the setup items themselves
@@ -87,6 +106,7 @@ class Content:
         follow = info.get("relics", {})
         self.relics = sorted({r["id"] for pool in (own_relics, "SharedRelicPool") for r in export["relic_pools"][pool]["all"]
                               if r["rarity"] in RELIC_RARITIES and follow.get(r["id"]) in MIRRORED_FOLLOW_UPS})
+        self.relic_follow = {r: follow.get(r) for r in self.relics}  # what picking the relic up opens (None: nothing)
         self.potions = sorted({p["id"] for pool in (own_potions, "SharedPotionPool") for p in export["potion_pools"][pool]["all"]})
         game_powers = {snake(k) for k in id_map["powers"]}
         buff_keys = set(info.get("buff_keys", [])) - set(info.get("internal_keys", []))
@@ -100,6 +120,11 @@ class Content:
         self.other_cards = {c["id"] for o in others for c in pools[export["character_info"][o]["card_pool"]]["all"]}
         self.other_relics = {r["id"] for o in others for r in export["relic_pools"][export["character_info"][o]["relic_pool"]]["all"]}
         self.other_potions = {p["id"] for o in others for p in export["potion_pools"][export["character_info"][o]["potion_pool"]]["all"]}
+
+
+class NoContent:
+    """Stands in for Content where fights were not made from setup items (a batch.py batch): nothing is another character's."""
+    other_cards = other_relics = other_potions = frozenset()
 
 
 def load_content() -> Content:
@@ -230,12 +255,78 @@ def dense_spec(content: Content, cov: dict, rng: random.Random, n: int) -> dict:
     return _spec(rng, n, setup, "dense", act, kind)
 
 
+# ---------------------------------------------------------------- choice edges (--mode choices)
+
+CHOICE_FOLLOW = "TransformSelect"  # a relic whose pickup opens a card screen the setup mirror answers
+CHOICE_CARDS_FALLBACK = ("ARMAMENTS", "BRAND", "BURNING_PACT", "DUAL_WIELD", "HEADBUTT", "TRUE_GRIT")
+SELECT_CMD = "cmd:CardSelectCmd."  # lab_groups.model_features: a model whose class calls a card-screen command
+EDGE_NAMES = ("none", "one", "max", "last", "unusual")
+# random: each spec draws one edge and keeps it for every screen of its fight (the shrinker replays subsets of a spec,
+# and an edge that depends on how many screens came before would move when an item is dropped); cycle: the driver
+# walks through the five, one per screen.
+EDGE_MODES = ("random", "cycle", *EDGE_NAMES)
+
+
+class ChoicePools:
+    """Which relics, cards and potions open a card-choice screen. Relics by the follow-up the setup info gives their
+    pickup; cards and potions by the game commands their model calls (features: lab_groups.model_features, the
+    lab's cache/model_features.json), else a short list of the cards every Ironclad deck knows."""
+
+    def __init__(self, content: Content, features: dict | None = None):
+        feats = features or {}
+
+        def opens(kind: str, ident: str) -> bool:
+            return any(str(f).startswith(SELECT_CMD) for f in feats.get(f"{kind}:{ident}", ()))
+
+        self.relics = [r for r in content.relics if content.relic_follow.get(r) == CHOICE_FOLLOW]
+        self.cards = [c for c in content.cards if c not in BASICS and opens("card", c)] \
+            or [c for c in CHOICE_CARDS_FALLBACK if c in set(content.cards)]
+        self.potions = [p for p in content.potions if opens("potion", p)]
+
+
+def choice_spec(content: Content, pools: ChoicePools, cov: dict, rng: random.Random, n: int, edges: str = "random") -> dict:
+    """A setup fight built to open card screens, answered with the driver's edge answers (spec "choice_edges": none,
+    one, the most, the last eligible, the most unusual card). Small decks, so a screen may offer fewer cards than
+    it allows; relics that open a screen on pickup land among the deck's cards; screen-opening cards also start in
+    the hand, so they are played early; screen-opening potions fill the belt first."""
+    enc, act, kind = encounter_key(content, cov, rng)
+    relics = rng.sample(pools.relics, min(rng.randint(1, 3), len(pools.relics)))
+    plain = [r for r in content.relics if r not in pools.relics]
+    relics += rng.sample(plain, min(rng.randint(0, 2), len(plain)))
+    held = rng.sample(pools.cards, min(rng.randint(1, 3), len(pools.cards)))
+    fill = [c for c in content.cards if c not in BASICS and c not in held]
+    cards = [{"cmd": "card", "id": c, "upgraded": c in content.upgradable and rng.random() < 0.35}
+             for c in held + rng.sample(fill, min(rng.randint(0, 8), len(fill)))]
+    basics = {"STRIKE_IRONCLAD": rng.randint(1, 5), "DEFEND_IRONCLAD": rng.randint(0, 4), "BASH": rng.randint(0, 1),
+              "ASCENDERS_BANE": rng.randint(0, 1)}
+    deck = [{"id": b, "upgraded": False} for b in BASICS for _ in range(basics[b])]
+    mixed = [{"cmd": "relic", "id": r} for r in relics] + cards
+    rng.shuffle(mixed)
+    slots = 2 + (2 if "POTION_BELT" in relics else 0)
+    belt = rng.sample(pools.potions, min(rng.randint(0, 2), len(pools.potions)))
+    belt += rng.sample([p for p in content.potions if p not in belt], 1) if len(belt) < slots and rng.random() < 0.5 else []
+    in_hand = [{"cmd": "card", "id": c, "pile": "Hand", "upgraded": c in content.upgradable and rng.random() < 0.35} for c in held]
+    setup = [{"cmd": "deck_set", "cards": deck}] + mixed + [{"cmd": "potion", "id": p} for p in belt[:slots]]
+    setup += [{"cmd": "fight", "id": enc}] + in_hand
+    spec = _spec(rng, n, setup, "choices", act, kind)
+    spec["choice_edges"] = rng.choice(EDGE_NAMES) if edges == "random" else edges
+    return spec
+
+
 # ---------------------------------------------------------------- aimed fights (--mode targets)
 
 ACT_NUMBER = {"OVERGROWTH": 1, "UNDERDOCKS": 1, "HIVE": 2, "GLORY": 3}
 ROOM_OF_KIND = {"weak": "monster", "normal": "monster", "elite": "elite", "boss": "boss"}
 BASICS = ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH", "ASCENDERS_BANE")
 STARTER_DECK = {"STRIKE_IRONCLAD": 5, "DEFEND_IRONCLAD": 4, "BASH": 1, "ASCENDERS_BANE": 1}
+STARTERS = frozenset(("BURNING_BLOOD", *BASICS))  # every run holds them, so their meet share dwarfs any gap
+GAP_DOWNWEIGHT = 20.0  # --aim gaps divides a starter target's weight by this
+AIMS = ("all", "bugs", "gaps")
+
+
+def names_backlog(target: dict) -> bool:
+    """Whether an open backlog item names this target (lab_targets writes backlog_items, and a reason line before that)."""
+    return bool(target.get("backlog_items")) or any(str(r).startswith("open backlog items name it") for r in target.get("reasons", []))
 
 
 def _hist_draw(rng: random.Random, hist: dict, default: int) -> int:
@@ -277,10 +368,12 @@ class Aim:
     """What targets mode draws from: the lab's weighted targets (only those the setup can reach) and the
     Codex profile's aggregate counts per act. One Aim makes one batch: it keeps the batch's seeds apart."""
 
-    def __init__(self, targets_doc: dict, profile_doc: dict | None, content: Content, act1_seeds: dict | None = None):
+    def __init__(self, targets_doc: dict, profile_doc: dict | None, content: Content, act1_seeds: dict | None = None,
+                 aim: str = "all"):
         from tools.fidelity.lab_targets import Profile  # noqa: PLC0415
         self.prof = Profile(profile_doc)
         self.content = content
+        self.aim = aim
         self.act1_seeds = dict(act1_seeds or {})
         self.used, self.borrowed = set(), set()  # this batch's seeds; those taken from the cache
         self.enc = {e: (act, kind) for e, act, kind in content.encounters}
@@ -288,8 +381,14 @@ class Aim:
         self.card_power = {c + "_POWER": c for c in content.cards}
         self.targets, self.skipped = [], collections.Counter()
         for t in targets_doc.get("targets", []):
-            if t.get("weight", 0) > 0 and self.reachable(t["kind"], t["id"]):
-                self.targets.append((t["kind"], t["id"], float(t["weight"])))
+            w = float(t.get("weight", 0))
+            if w > 0 and self.reachable(t["kind"], t["id"]):
+                if aim == "bugs" and not names_backlog(t):
+                    self.skipped["not_in_backlog"] += 1  # bugs: only what an open backlog item names
+                    continue
+                if aim == "gaps" and t["id"] in STARTERS:
+                    w /= GAP_DOWNWEIGHT  # gaps: the starter items every run holds are met anyway
+                self.targets.append((t["kind"], t["id"], w))
             else:
                 self.skipped[t["kind"]] += 1
 
@@ -449,19 +548,45 @@ def act1_seed_cache(path: Path, games: list | None = None, scan: list | None = N
     return cache
 
 
-def trace_batch(name: str, game: str, servers: int, n: int, log: Path) -> str:
-    """referee/trace_divergent.py on the batch's diverging fights: their first differing event, into the packs."""
+TRACE_CHUNK = 48  # fights per trace_divergent call when the work is cut into safe points
+TRACE_SERVERS = 3  # the default cap on game servers for traced re-runs (the lab passes more)
+
+
+def trace_order(games: list, emus: list, rea: dict, verdicts: list, nm: dict) -> list[str]:
+    """The seeds trace_divergent can trace, plausible setups first and the earliest divergence first."""
+    import trace_divergent as td  # noqa: PLC0415  (referee/trace_divergent.py)
+    found = td.targets(games, emus, rea, nm)
+    flagged = {v.get("seed"): bool(v.get("flags")) for v in verdicts}
+    return sorted(found, key=lambda s: (flagged.get(s, False), found[s][1], s))
+
+
+def trace_batch(name: str, game: str, servers: int, n: int, log: Path, seeds: list[str] | None = None,
+                deadline: float | None = None, chunk: int = TRACE_CHUNK, max_servers: int = TRACE_SERVERS) -> str:
+    """referee/trace_divergent.py on the batch's diverging fights: their first differing event, into the packs.
+
+    With `seeds` (best first) at most `n` of them are traced in calls of `chunk` fights, each call a safe point; no
+    new call starts after `deadline` (time.time()), and what earlier calls traced stays."""
     out = JOBS / f"{name}.out.json"
     cmd = [sys.executable, str(ROOT / "referee" / "trace_divergent.py"), str(out), "--game", game,
            "--specs", str(JOBS / f"{name}.json"), "--emu", str(JOBS / f"{name}.emu.json"),
            "--reanchor", str(JOBS / f"{name}.reanchor.json"), "--packs", str(JOBS / f"{name}.packs"),
-           "--max", str(n), "--servers", str(max(1, min(3, servers)))]
+           "--servers", str(max(1, min(max_servers, servers)))]
+    seeds = seeds[:n] if seeds is not None else None
+    parts = [seeds[i:i + chunk] for i in range(0, len(seeds), chunk)] if seeds is not None else [None]
+    rc, stopped = 0, ""
     with open(log, "w", encoding="utf-8") as fh:
-        p = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True, check=False,
-                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-    idx = JOBS / f"{name}.packs" / "traces" / "index.md"
-    traced = sum(1 for line in idx.read_text(encoding="utf-8").splitlines() if line.startswith("- ")) if idx.exists() else 0
-    return f"traces: {traced} fights (exit {p.returncode}), {idx.relative_to(JOBS).as_posix() if idx.exists() else 'none'}"
+        for k, part in enumerate(parts):
+            if k and deadline is not None and time.time() >= deadline:
+                stopped = f", stopped at the time limit after {k * chunk} of {len(seeds or [])}"
+                break
+            args = ["--max", str(n)] if part is None else ["--max", str(len(part))] + [x for s in part for x in ("--seed", s)]
+            p = subprocess.run(cmd + args, stdout=fh, stderr=subprocess.STDOUT, text=True, check=False,
+                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+            rc = rc or p.returncode
+    tdir = JOBS / f"{name}.packs" / "traces"
+    traced = len(list(tdir.glob("*.trace.json"))) if tdir.is_dir() else 0
+    idx = tdir / "index.md"
+    return f"traces: {traced} fights (exit {rc}){stopped}, {idx.relative_to(JOBS).as_posix() if idx.exists() else 'none'}"
 
 
 def _spec(rng: random.Random, n: int, setup: list, mode: str, act: str, kind: str) -> dict:
@@ -578,6 +703,8 @@ def judge(specs: list, games: list, emus: list, rea: dict, nm: dict, content: Co
             continue
         sc = compare(g, e)
         v["mirror_gap"] = sc["unsupported"]
+        if sc.get("gap_why"):
+            v["mirror_gap_why"] = {str(i): m for i, m in sc["gap_why"].items()}  # item -> the mirror's message (lab_groups reads it)
         v["setup_first"] = sc["first"]
         fd = first_divergence(g, e, nm)
         v["identical"] = fd is None
@@ -620,10 +747,21 @@ def summarise(verdicts: list, minutes: float, rep: dict) -> list[str]:
     return lines
 
 
+def load_batch(name: str) -> tuple[list, list, list, dict]:
+    """A finished batch.py batch in JOBS: its specs, the game's results, the emulator's replay and re-anchored replay."""
+    def read(ext: str) -> dict:
+        return json.loads((JOBS / f"{name}{ext}").read_text(encoding="utf-8"))
+    specs, games, emus, rea = read(".json")["runs"], read(".out.json")["results"], read(".emu.json")["results"], read(".reanchor.json")
+    sizes = (len(specs), len(games), len(emus), len(rea.get("results", [])))
+    if len(set(sizes)) != 1:
+        raise SystemExit(f"{name}: specs, game, emulator and re-anchor results differ in number {sizes}; not a finished batch")
+    return specs, games, emus, rea
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--name", required=True)
-    ap.add_argument("--mode", choices=("dense", "coverage", "targets"), required=True)
+    ap.add_argument("--mode", choices=("dense", "coverage", "targets", "choices", "analyze"), required=True)
     ap.add_argument("--fights", type=int, default=60)
     ap.add_argument("--start", type=int, default=0, help="spec stream offset")
     ap.add_argument("--game", default=GAME)
@@ -631,10 +769,20 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=5400)
     ap.add_argument("--shrink", type=int, default=0, help="shrink up to this many diverging fights")
     ap.add_argument("--shrink-budget", type=int, default=400, help="game fights the shrinker may spend in all")
+    ap.add_argument("--shrink-cap", type=int, default=48, help="game fights the shrinker may spend on one diverging fight")
+    ap.add_argument("--shrink-minutes", type=float, default=None, help="start no new shrink round after this long")
     ap.add_argument("--make-only", action="store_true", help="write the job file and stop")
     ap.add_argument("--targets", type=Path, help="targets mode: tools/fidelity/lab_targets.py's targets.json (in the lab)")
+    ap.add_argument("--aim", choices=AIMS, default="all",
+                    help="targets mode: all targets; bugs = only those an open backlog item names; gaps = starter items weigh 1/20")
+    ap.add_argument("--edges", choices=EDGE_MODES, default="random", help="choices mode: the driver's choice_edges answers")
+    ap.add_argument("--features", type=Path, help="choices mode: lab_groups' model_features.json (which models open card screens)")
+    ap.add_argument("--decompiled", type=Path, default=Path(r"D:\spireline\referee\decompiled"),
+                    help="choices mode: the decompile model_features is read from when --features is missing or stale")
     ap.add_argument("--jobs", type=Path, help="write every output here instead of jobs-setup")
     ap.add_argument("--trace", type=int, default=None, help="trace up to N diverging fights (default: 40 in targets mode, else 0)")
+    ap.add_argument("--trace-servers", type=int, default=TRACE_SERVERS, help="game servers for the traced re-runs (at most 8)")
+    ap.add_argument("--trace-minutes", type=float, default=None, help="start no new trace call after this long")
     a = ap.parse_args()
     if a.mode == "targets" and not a.targets:
         ap.error("--mode targets needs --targets")
@@ -650,25 +798,36 @@ def main() -> int:
     cov = json.loads(cov_path.read_text(encoding="utf-8")) if cov_path.exists() else {"items": {}}
     rng = random.Random(f"{a.mode}:{a.start}")
     aims, act1_path = [], None
-    if a.mode == "targets":
+    analysing = a.mode == "analyze"
+    if analysing:
+        specs, games, emus, rea = load_batch(a.name)
+    elif a.mode == "targets":
         tdoc = json.loads(a.targets.read_text(encoding="utf-8"))
         lab = a.targets.resolve().parent
         prof_path = lab / tdoc.get("profile", "cache/codex_profile.json")
         prof = json.loads(prof_path.read_text(encoding="utf-8")) if prof_path.exists() else None
         act1_path = lab / "cache" / "act1_seeds.json"
         known = act1_seed_cache(act1_path, scan=sorted(DEFAULT_JOBS.glob("*.out.json")))
-        aim = Aim(tdoc, prof, content, known)
+        aim = Aim(tdoc, prof, content, known, a.aim)
         if not aim.targets:
-            print("no reachable target in", a.targets)
+            print("no reachable target in", a.targets, f"(aim {a.aim})")
             return 1
         specs = []
         for i in range(a.fights):
             s, m = aimed_spec(aim, rng, a.start * 1000 + i)
             specs.append(s)
             aims.append(m)
-        (JOBS / f"{a.name}.aims.json").write_text(json.dumps({"targets": a.targets.name, "skipped": dict(aim.skipped),
+        (JOBS / f"{a.name}.aims.json").write_text(json.dumps({"targets": a.targets.name, "aim": a.aim, "skipped": dict(aim.skipped),
                                                               "profile_runs": aim.prof.runs, "aims": aims}, indent=1),
                                                   encoding="utf-8")
+    elif a.mode == "choices":
+        from tools.fidelity.lab_groups import model_features  # noqa: PLC0415
+        feats = model_features(a.decompiled, a.features) if a.features or a.decompiled.is_dir() else {}
+        pools = ChoicePools(content, feats)
+        if not (pools.relics or pools.cards or pools.potions):
+            print("no relic, card or potion that opens a card screen is reachable")
+            return 1
+        specs = [choice_spec(content, pools, cov, rng, a.start * 1000 + i, a.edges) for i in range(a.fights)]
     else:
         make = dense_spec if a.mode == "dense" else coverage_spec
         specs = [make(content, cov, rng, a.start * 1000 + i) for i in range(a.fights)]
@@ -678,28 +837,37 @@ def main() -> int:
         return 0
 
     t0 = time.time()
-    games, rep = play(a.name, specs, a.game, a.servers, a.timeout)
-    emus = emudump("fight", games, JOBS / f"{a.name}.emu.json")["results"]
-    rea = emudump("reanchor", games, JOBS / f"{a.name}.reanchor.json")
+    if analysing:
+        rep = {"network_connections": "n/a (the batch summary above)", "real_profile_touched": "n/a"}
+    else:
+        games, rep = play(a.name, specs, a.game, a.servers, a.timeout)
+        emus = emudump("fight", games, JOBS / f"{a.name}.emu.json")["results"]
+        rea = emudump("reanchor", games, JOBS / f"{a.name}.reanchor.json")
     minutes = (time.time() - t0) / 60
     verdicts = judge(specs, games, emus, rea, nm, content)
-    update_coverage(cov, specs, verdicts)
-    cov_path.write_text(json.dumps(cov, indent=1, sort_keys=True), encoding="utf-8")
+    if not analysing:  # a batch.py batch keeps its own coverage
+        update_coverage(cov, specs, verdicts)
+        cov_path.write_text(json.dumps(cov, indent=1, sort_keys=True), encoding="utf-8")
     lines = summarise(verdicts, minutes, rep)
     if a.mode == "targets":
         act1_seed_cache(act1_path, games)
         lines.append(f"targets: {len(specs)} fights in {minutes:.1f} min = {len(specs) / max(minutes, 1e-9):.1f} fights/min "
-                     f"(play and replay); {len(aim.targets)} reachable targets, skipped {dict(aim.skipped)}")
+                     f"(play and replay); aim {a.aim}, {len(aim.targets)} reachable targets, skipped {dict(aim.skipped)}")
+    if a.mode == "choices":
+        screens = sum(1 for g in games for c in g.get("choices", []) if c.get("kind") == "cards")
+        edges = collections.Counter(c.get("edge") for g in games for c in g.get("choices", []) if c.get("kind") == "cards")
+        lines.append(f"choices: {len(specs)} fights opened {screens} card screens, answered {dict(sorted(edges.items(), key=str))}")
 
     minimal = {}
     if a.shrink:
         import shrink  # noqa: PLC0415  (referee/shrink.py)
         t_shrink = time.time()
-        cases = shrink.cases_from(specs, games, verdicts, a.shrink)
+        deadline = t_shrink + 60 * a.shrink_minutes if a.shrink_minutes else None
+        cases = shrink.cases_from(specs, games, verdicts, a.shrink, a.shrink_cap)
         run_round = shrink.oracle(lambda n, s: play(n, s, a.game, a.servers, a.timeout)[0],
                                   lambda rs: emudump("fight", rs, JOBS / f"{a.name}.shrink.emu.json")["results"], nm)
-        minimal, srep = shrink.shrink_all(cases, run_round, a.name, budget=a.shrink_budget)
-        lines.append(f"shrink: {srep['summary']}" + (f"; {(time.time() - t_shrink) / 60:.1f} min" if a.mode == "targets" else ""))
+        minimal, srep = shrink.shrink_all(cases, run_round, a.name, budget=a.shrink_budget, deadline=deadline)
+        lines.append(f"shrink: {srep['summary']}" + (f"; {(time.time() - t_shrink) / 60:.1f} min" if a.mode in ("targets", "choices", "analyze") else ""))
         lines += ["  " + x for x in srep["lines"]]
         mdir = JOBS / f"{a.name}.packs" / "minimal"
         mdir.mkdir(parents=True, exist_ok=True)
@@ -712,16 +880,33 @@ def main() -> int:
     n_trace = a.trace if a.trace is not None else (40 if a.mode == "targets" else 0)
     if n_trace > 0 and any(not v.get("identical") and not v.get("error") for v in verdicts):
         t_trace = time.time()
-        lines.append(trace_batch(a.name, a.game, a.servers, n_trace, JOBS / f"{a.name}.trace.log")
+        seeds = None
+        if a.trace_minutes:  # a time limit needs the fights in calls of their own; their order is plausible ones first
+            try:
+                seeds = trace_order(games, emus, rea, verdicts, nm)
+            except Exception as e:  # noqa: BLE001  (one call for all, as without a limit)
+                lines.append(f"warning: trace order not computed ({type(e).__name__}); tracing in one call")
+        lines.append(trace_batch(a.name, a.game, a.trace_servers, n_trace, JOBS / f"{a.name}.trace.log", seeds=seeds,
+                                 deadline=t_trace + 60 * a.trace_minutes if a.trace_minutes else None, max_servers=8)
                      + f"; {(time.time() - t_trace) / 60:.1f} min")
 
-    from tools.fidelity import context_pack  # noqa: PLC0415
-    context_pack.run(JOBS / f"{a.name}.out.json", JOBS / f"{a.name}.emu.json", JOBS / f"{a.name}.packs",
-                     minimal=minimal, flags={v["seed"]: v["flags"] for v in verdicts})
-    lines.append(f"context packs: {JOBS / (a.name + '.packs') / 'index.md'}")
+    # The batch's own outputs first: a failure in the packs below must not lose them (it cost two 500-fight batches
+    # their verdicts once). The summary is written again with the packs' line when they are done.
     (JOBS / f"{a.name}.verdicts.json").write_text(json.dumps(verdicts, indent=1), encoding="utf-8")
+    summary = JOBS / f"{a.name}.summary.txt"
+    head = ""
+    if analysing and summary.exists():  # batch.py's own summary stays above this analysis
+        head = summary.read_text(encoding="utf-8").split("\n\n# analysis\n")[0].rstrip("\n") + "\n\n# analysis\n"
+    summary.write_text(head + "\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        from tools.fidelity import context_pack  # noqa: PLC0415
+        context_pack.run(JOBS / f"{a.name}.out.json", JOBS / f"{a.name}.emu.json", JOBS / f"{a.name}.packs",
+                         minimal=minimal, flags={v["seed"]: v["flags"] for v in verdicts})
+        lines.append(f"context packs: {JOBS / (a.name + '.packs') / 'index.md'}")
+    except Exception as e:  # noqa: BLE001  (a warning: the packs are a convenience over files that are already written)
+        lines.append(f"warning: context packs not written ({type(e).__name__}: {str(e)[:200]})")
     text = "\n".join(lines)
-    (JOBS / f"{a.name}.summary.txt").write_text(text + "\n", encoding="utf-8")
+    summary.write_text(head + text + "\n", encoding="utf-8")
     print(text)
     return 0
 

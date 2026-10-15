@@ -30,6 +30,7 @@ def compare(game: dict, emu: dict) -> dict:
     fight_at = next((i for i, it in enumerate(game.get("setup", [])) if it.get("cmd") == "fight"), None)
     res = {"items": len(game.get("setup", [])), "unsupported": sorted(i for i, e in elog.items() if e.get("unsupported")),
            "first": None}
+    res["gap_why"] = {i: str(elog[i].get("msg") or "")[:140] for i in res["unsupported"]}  # what the mirror said it could not do
     for i in sorted(glog):
         g, e = glog[i], elog.get(i)
         if e is None:

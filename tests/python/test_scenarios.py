@@ -151,6 +151,27 @@ class SetupCompareTests(unittest.TestCase):
         self.assertEqual([0], r["unsupported"])
         self.assertEqual(1, r["first"]["i"])
 
+    def test_the_mirrors_message_is_kept_for_each_gap(self):
+        g = {"setup": self.SETUP, "setup_log": [log(0, "relic"), log(1, "relic")]}
+        e = {"setup_log": [elog(0, "relic", unsupported=True, ok=False, msg="unsupported: selection wants more cards"), elog(1, "relic")]}
+        e["setup_log"][0]["msg"] = "unsupported: selection wants more cards"
+        self.assertEqual({0: "unsupported: selection wants more cards"}, compare(g, e)["gap_why"])
+        self.assertEqual({}, compare(g, {"setup_log": [elog(0, "relic"), elog(1, "relic")]})["gap_why"])
+
+    def test_judge_keeps_the_gap_messages_in_the_verdict_only_when_there_are_some(self):
+        import unittest.mock as mock
+        content = scenarios.Content(EXPORT, INFO, ID_MAP)
+        step = {"state": {}, "action": None}
+        game = {"seed": "SEED000001", "steps": [step], "setup": self.SETUP, "setup_log": [log(0, "relic")]}
+        gap = {"steps": [step], "setup_log": [elog(0, "relic", unsupported=True, ok=False)]}
+        gap["setup_log"][0]["msg"] = "unsupported: the emulator's selection wants more cards than the game's screen required"
+        clean = {"steps": [step], "setup_log": [elog(0, "relic")]}
+        with mock.patch.object(scenarios, "first_divergence", return_value=None),                 mock.patch("tools.fidelity.reanchor_compare.analyse", return_value={"transitions": 0, "steps": []}),                 mock.patch("tools.fidelity.reanchor_compare.keys_of", return_value=None):
+            vs = scenarios.judge([{"seed": "SEED000001", "setup": self.SETUP}] * 2, [game, game], [gap, clean], {"results": [{}, {}]}, {}, content)
+        self.assertEqual({"0": "unsupported: the emulator's selection wants more cards than the game's screen required"}, vs[0]["mirror_gap_why"])
+        self.assertEqual([0], vs[0]["mirror_gap"])
+        self.assertNotIn("mirror_gap_why", vs[1])
+
 
 if __name__ == "__main__":
     unittest.main()

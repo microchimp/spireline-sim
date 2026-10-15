@@ -641,7 +641,8 @@ def compute_targets(prof: Profile, uni: dict, cov: dict, reach: dict, cells: dic
             if walk.get(key):
                 gap *= 1.5
                 reasons.append(f"the codex walk stops at it in {walk[key]} runs")
-            targets.append({"kind": kind, "id": ident, "weight": round(share * gap, 6), "reasons": reasons})
+            targets.append({"kind": kind, "id": ident, "weight": round(share * gap, 6), "reasons": reasons,
+                            **({"backlog_items": items} if items else {})})  # scenarios.py --aim bugs keeps these
     targets.sort(key=lambda t: (-t["weight"], t["kind"], t["id"]))
     return targets
 
