@@ -303,7 +303,7 @@ class Runner:
 
     def main_sha(self) -> str | None:
         r = subprocess.run(["git", "-C", str(self.fork), "rev-parse", "--verify", f"refs/heads/{self.a.branch}"],
-                           capture_output=True, text=True, check=False)
+                           capture_output=True, text=True, check=False, creationflags=winsys.NO_WINDOW)
         return r.stdout.strip() if r.returncode == 0 else None
 
     def newest_backlog(self) -> Path | None:
@@ -826,7 +826,8 @@ class Runner:
         a = self.a
         sha = self.main_sha()
         g = self.guards
-        v = g.poll() if not self.lab.root.exists() else g.poll()
+        g.prune = None  # a dry run reports the disk guard; it never prunes
+        v = g.poll()
         mon = guards.LoadMonitor(lambda: 0, window=5, interval=0)
         mon.sample()
         time.sleep(1.0)

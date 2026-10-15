@@ -24,6 +24,8 @@ IS_WIN = os.name == "nt"
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 CREATE_SUSPENDED = 0x00000004
+CREATE_NO_WINDOW = 0x08000000
+NO_WINDOW = CREATE_NO_WINDOW if os.name == "nt" else 0  # creationflags for helper calls: no console flashes under pythonw
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JobObjectBasicAccountingInformation = 1
 JobObjectBasicProcessIdList = 3
@@ -250,7 +252,7 @@ def acquire_mutex(name: str) -> bool:
 def kill_tree_by_pid(pid: int) -> None:
     """Last resort for a process that is in no job: taskkill /T /F."""
     if IS_WIN:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False, creationflags=NO_WINDOW)
     else:  # pragma: no cover
         try:
             os.kill(pid, 9)

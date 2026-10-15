@@ -624,6 +624,16 @@ class RunnerCase(unittest.TestCase):
         self.assertFalse((self.tmp / "lab-dry").exists())
         self.assertFalse((self.tmp / "tree").exists())
 
+    def test_dry_run_reports_a_full_disk_but_never_prunes(self):
+        job = make_fights_job(self.tmp / "lab", "20260101T0000-fights")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rn.main(["--dry-run", "--lab", str(self.tmp / "lab"), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "g"),
+                     "--backlog-dir", str(self.tmp / "bl"), "--lab-gb", "0.000001"])
+        self.assertIn("guard verdict now: disk", buf.getvalue())
+        self.assertTrue((job / "serve").exists())
+        self.assertTrue((job / "fights" / "x.shrink.emu.json").exists())
+
     def test_atomic_write_and_state_roundtrip(self):
         r = self.runner()
         r.state["rotation"] = 3

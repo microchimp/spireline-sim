@@ -18,6 +18,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from tools.lab.winsys import NO_WINDOW
+
 TOKEN = re.compile(r"\{(\w+)\}")
 EMUDUMP = "tools/emudump/bin/Release/net9.0/EmuDump.dll"
 DRIVER_DLL = "referee/driver/bin/Release/net9.0/SpirelineReferee.dll"
@@ -123,7 +125,8 @@ def _rel(s: str, c: Ctx) -> str:
 
 def git_head(tree: Path) -> str:
     try:
-        return subprocess.run(["git", "-C", str(tree), "rev-parse", "HEAD"], capture_output=True, text=True, check=False).stdout.strip()
+        return subprocess.run(["git", "-C", str(tree), "rev-parse", "HEAD"], capture_output=True, text=True, check=False,
+                              creationflags=NO_WINDOW).stdout.strip()
     except OSError:
         return ""
 
