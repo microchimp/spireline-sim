@@ -567,7 +567,7 @@ class RunnerCase(unittest.TestCase):
         r = self.runner()
         r.guards.disabled.discard("user")
         r.guards.idle_fn = lambda: 3.0
-        r.setup = lambda: 0  # not the priority, job object and signal handlers of the test process
+        r.setup = lambda: None  # not the priority, job object and signal handlers of the test process
         self.assertEqual(r.run(), 0)
         self.assertIn("stopped(user)", (r.lab.root / "status.txt").read_text())
         self.assertEqual(list((r.lab.root / "runs").iterdir()), [])
@@ -575,11 +575,34 @@ class RunnerCase(unittest.TestCase):
 
     def test_a_crash_in_a_pass_is_retried_and_three_in_a_row_end_the_runner(self):
         r = self.runner("--idle-poll", "0.1")
-        r.setup = lambda: 0
+        r.setup = lambda: None
         r.main_sha = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
         self.assertEqual(r.run(), 1)
         self.assertIn("CRASH 3/3", (r.lab.root / "runner.log").read_text())
         self.assertIn("crashed", (r.lab.root / "status.txt").read_text())
+
+    @unittest.skipUnless(WIN, "the lab mutex is a Windows object")
+    def test_a_second_runner_on_a_lab_in_use_does_nothing(self):
+        lab = self.tmp / "lab"
+        code = textwrap.dedent(f"""
+            import sys, time
+            sys.path.insert(0, {str(ROOT)!r})
+            from tools.lab import runner as rn
+            a = rn.parse_args(["--lab", {str(lab)!r}, "--tree", {str(self.tmp / "tree")!r}, "--game", {str(self.tmp / "g")!r}, "--backlog-dir", {str(self.tmp / "bl")!r}])
+            r = rn.Runner(a)
+            lab_ok = r.setup()
+            print("first", lab_ok, flush=True)
+            time.sleep(60)
+        """)
+        first = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(first.stdout.readline().strip(), "first None")  # it holds the lab
+            r = self.runner()
+            self.assertEqual(r.run(), 0)  # exits at once ...
+            self.assertEqual(list((r.lab.root / "runs").iterdir()), [])  # ... and starts nothing
+            self.assertIn("another runner already holds", (r.lab.root / "runner.log").read_text())
+        finally:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(first.pid)], capture_output=True, check=False)
 
     def test_setup_refuses_the_main_checkout_and_the_reviewed_tree(self):
         a = rn.parse_args(["--lab", str(self.tmp / "lab"), "--tree", str(ROOT), "--fork", str(ROOT)])

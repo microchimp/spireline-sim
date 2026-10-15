@@ -705,8 +705,8 @@ class Runner:
 
     # ---- top level
 
-    def setup(self) -> int:
-        a = self.a
+    def setup(self) -> int | None:
+        """None: go on. An int: the exit code (2 refused arguments, 0 another runner already holds this lab)."""
         for label, p in (("lab", self.lab.root), ("tree", self.tree), ("game", self.game)):
             q = str(p.resolve()).replace("\\", "/").lower()
             if any(q.startswith(f.lower()) for f in FORBIDDEN):
@@ -739,14 +739,14 @@ class Runner:
                     signal.signal(getattr(signal, sig), self.on_signal)
                 except ValueError:  # not the main thread (a test)
                     pass
-        return 0
+        return None
 
     def on_signal(self, signum: int, _frame: Any) -> None:
         self.stop_signal = f"signal {signum}"
 
     def run(self) -> int:
         rc = self.setup()
-        if rc or self.a.dry_run:
+        if rc is not None:
             return rc
         self.log(f"runner started (trial={self.a.trial}, once={self.a.once}, guards off: {self.a.no_guard or 'none'})")
         crashes = 0
