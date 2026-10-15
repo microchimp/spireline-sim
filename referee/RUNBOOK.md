@@ -287,6 +287,40 @@ run would add (a trace for a fight that has none, a shrink of a large setup, a c
 Packets are local (they quote the referee's recordings and the run histories) and are never committed. `tests/python/test_packet.py` has the
 synthetic cases (a tiny corpus, decompile, probe report, ledger, traced record, codex walk and reference set, with a fake EmuDump).
 
+## Crash reports (Windows Error Reporting) and H2
+
+**Incident 2026-10-15.** A game process crashed during an aimed fights batch; Windows started `WerFault.exe` for it, WerFault opened
+a TCP connection to Microsoft (:443) to send the crash report, and the network check counted it against the game tree: the lab
+wrote `HALT`. (A whole-runs session had also exited `0xC0000005` earlier that day.) The check was right to halt; the crash report
+should never have been started.
+
+**Fix (our launcher only; no Windows setting is touched).** Every game process starts in `run_referee.launch`, which spawns through
+`popen_no_wer`: for the length of the spawn the launcher's error mode has `SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
+SEM_NOOPENFILEERRORBOX` (`GAME_ERROR_MODE`, 0x8003) added, the child inherits it (and so do the processes it starts, e.g.
+`crashpad_handler.exe`), and the launcher's own mode is put back. With `SEM_NOGPFAULTERRORBOX` an unhandled exception ends the
+process without calling Windows Error Reporting. `CREATE_DEFAULT_ERROR_MODE` would undo this, so `popen_no_wer` refuses it and a test
+fails if any other file under `referee/` or `tools/` names it or the game's exe. `serve.py`, `batch.py`, `scenarios.py`, `refset.py`,
+`runs.py` and the lab start the game only through `run_referee.py` or `serve.Pool(launch=run_referee.launch)`.
+
+**Second line of defence.** Each `netstat` tick (and at a server's exit and at close) the pool also lists any `WerFault.exe` that the
+game tree started or whose command line names (`-p` / `-ip`) a game process: `wer_reports` in `run_referee.py`'s session result,
+in `serve.py`'s `summary.json`, a `WER:` line in the pool log, and `, WER REPORTS [...]` on the scenario / batch summary line when
+there are any. It does not halt the lab (the connection check does, unchanged); it makes an attempt visible when no connection was seen.
+Command lines are read once per WerFault through PowerShell (WMI), and only when a `WerFault.exe` exists.
+
+**Test** (`tests/python/test_referee_wer.py`, about 25 s): the launch flags; the error mode inside the spawn and restored after; the WerFault matching on
+fake process tables; the pool summary; and a crash on purpose: a child started by `launch` prints its own `GetErrorMode`, **exits 99
+instead of crashing if the mode is not there**, otherwise reads address 0. It asserts exit `0xC0000005`, child mode `0x8003`, no WerFault
+naming it or started by it for 20 s, and no connection. The test process runs in error mode 0 for it, so the harness that started the
+tests cannot supply the mode. To read a running game's mode from outside: `NtQueryInformationProcess(ProcessDefaultHardErrorMode = 12)`,
+bit 0 inverted (`GetErrorMode` only reads the calling process).
+
+**What is not proved.** The mode is per process: code in the game that calls `SetErrorMode` itself would replace it (live game servers
+and their `crashpad_handler.exe` children read 0x8003 mid-session, so none does at that point). The crash test covers an unhandled access
+violation in a native process; a .NET fatal error or a fast-fail (`__fastfail`, `RaiseFailFastException`) takes other paths in Windows,
+and no such crash was provoked in a game process. The owner's optional Windows Firewall outbound block (addendum 1, H2) remains the
+layer that does not depend on any of this.
+
 ## Speed settings check (`normal_settings`, `--windowed`)
 
 A job with `"normal_settings": true` skips every speed change (Instant fast mode, Engine.MaxFps, `fast_patches`, `silent`,

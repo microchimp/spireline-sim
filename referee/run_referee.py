@@ -7,7 +7,9 @@ What it does, per Spireline security addendum 1, section 3:
   H1  refuses unless sts2.dll is the known v0.107.1 build (sha256 below);
   H2  launches with --force-steam off and an override.cfg that blanks the Sentry DSN, and records
       every network connection the game process and its children (crashpad_handler.exe) open
-      (there should be none);
+      (there should be none). The game starts with the error mode GAME_ERROR_MODE, which keeps Windows
+      Error Reporting (WerFault.exe, a connection to Microsoft) from running for a crash of it; any
+      WerFault.exe about the game's tree is reported as "wer_reports";
   H3  points APPDATA/LOCALAPPDATA at a scratch folder, so saves, logs and settings land there,
       and checks the real profile folder was not created or touched.
 The driver mod is copied into <game>/mods/SpirelineReferee and is inert without the job variable.
@@ -16,12 +18,15 @@ The driver mod is copied into <game>/mods/SpirelineReferee and is inert without 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import subprocess
+import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -115,6 +120,72 @@ def connections(pid: int) -> set[str]:
     return connections_by_pid([pid])[pid]
 
 
+# Second line of defence: a Windows Error Reporting attempt for a game process is visible even when it
+# opens no connection. WerFault.exe names the crashed process in its command line
+# (`WerFault.exe -u -p <pid> -s <handle>`, or `-pss -s <n> -p <pid> -ip <pid>`).
+WER_EXE = "werfault.exe"
+_WER_PID = re.compile(r"(?<![\w-])-(?:p|ip)\s+(\d+)\b")
+_WER_COMMAND_CACHE: dict[int, str] = {}  # WerFault pid -> command line (fixed for the life of the process)
+
+
+def werfault_named_pids(command_line: str) -> set[int]:
+    """The pids a WerFault.exe command line names (-p and -ip)."""
+    return {int(x) for x in _WER_PID.findall(command_line or "")}
+
+
+def command_lines(pids) -> dict[int, str]:
+    """pid -> command line of those processes, from WMI through PowerShell (a process that is gone, or
+    whose line cannot be read, is missing). Only called when a WerFault.exe exists."""
+    ids = sorted({int(p) for p in pids})
+    if not ids:
+        return {}
+    query = " or ".join(f"ProcessId={i}" for i in ids)
+    script = (f"Get-CimInstance Win32_Process -Filter '{query}' | "
+              "ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.CommandLine }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                             text=True, check=False, timeout=60, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    lines: dict[int, str] = {}
+    for line in out.splitlines():
+        pid, _, cmd = line.partition("|")
+        if pid.strip().isdigit():
+            lines[int(pid)] = cmd.strip()
+    return lines
+
+
+def wer_reports_by_pid(pids, table: dict[int, tuple[int, str]] | None = None,
+                       read_command_lines=command_lines, cache: dict[int, str] | None = None) -> dict[int, set[str]]:
+    """Every WerFault.exe that exists now and is about a game process: pid -> report lines. A WerFault is about
+    a game process when it was started by one (it is in that process's tree) or its command line names one."""
+    table = process_table() if table is None else table
+    cache = _WER_COMMAND_CACHE if cache is None else cache
+    owner = process_trees(pids, table)
+    found: dict[int, set[str]] = {root: set() for root, _ in owner.values()}
+    wer = {pid: ppid for pid, (ppid, name) in table.items() if name.lower() == WER_EXE}
+    for gone in [w for w in cache if w not in wer]:
+        del cache[gone]  # a pid can be reused by another WerFault
+    if not wer:
+        return found
+    todo = [w for w, ppid in wer.items() if ppid not in owner and w not in cache]
+    if todo:
+        got = read_command_lines(todo)
+        cache.update({w: got.get(w, "") for w in todo})
+    for w, ppid in wer.items():
+        hits = {p for p in werfault_named_pids(cache.get(w, "")) if p in owner}
+        if ppid in owner:
+            hits.add(ppid)
+        for p in hits:
+            root, name = owner[p]
+            found[root].add(f"WerFault.exe pid {w} for game pid {p}" + ("" if p == root else f" ({name} of pid {root})"))
+    return found
+
+
+def wer_reports(pid: int) -> set[str]:
+    return wer_reports_by_pid([pid])[pid]
+
+
 def check_build(game: Path) -> str:
     """H1: the sha256 of sts2.dll, or SystemExit if it is not a known build."""
     digest = sha256(game / "data_sts2_windows_x86_64" / "sts2.dll")
@@ -173,16 +244,70 @@ def game_env(scratch: Path, job: Path, dotnet_tuning: bool = True) -> dict[str, 
     return env
 
 
+# Error mode of every game process (kernel32 SetErrorMode flags). A process that crashes with an
+# unhandled exception normally starts WerFault.exe, Windows Error Reporting, which sends the crash
+# report to Microsoft: a network connection from the game tree (addendum 1, H2; incident 2026-10-15,
+# a WerFault of a crashed game process opened TCP :443 and the lab halted). With SEM_NOGPFAULTERRORBOX
+# set, the unhandled-exception filter ends the process without calling WER. A child inherits its
+# parent's error mode unless CreateProcess gets CREATE_DEFAULT_ERROR_MODE, which nothing here may pass.
+SEM_FAILCRITICALERRORS = 0x0001
+SEM_NOGPFAULTERRORBOX = 0x0002
+SEM_NOOPENFILEERRORBOX = 0x8000
+GAME_ERROR_MODE = SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+CREATE_DEFAULT_ERROR_MODE = 0x04000000
+_ERROR_MODE_LOCK = threading.Lock()  # SetErrorMode is process-wide: one spawn at a time sets and restores it
+
+
+def _kernel32():
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.SetErrorMode.restype = wintypes.UINT
+    k32.SetErrorMode.argtypes = [wintypes.UINT]
+    k32.GetErrorMode.restype = wintypes.UINT
+    k32.GetErrorMode.argtypes = []
+    return k32
+
+
+@contextlib.contextmanager
+def game_error_mode():
+    """While the block runs, this process has GAME_ERROR_MODE on top of its own error mode, so a child
+    started inside it inherits that; the launcher's own mode is put back afterwards (a crash of the
+    launcher itself reports as it always did)."""
+    if os.name != "nt":
+        yield
+        return
+    with _ERROR_MODE_LOCK:
+        k32 = _kernel32()
+        before = k32.GetErrorMode()
+        k32.SetErrorMode(before | GAME_ERROR_MODE)
+        try:
+            yield
+        finally:
+            k32.SetErrorMode(before)
+
+
+def popen_no_wer(args, **kw) -> subprocess.Popen:
+    """subprocess.Popen for a game process: it starts with GAME_ERROR_MODE, so a crash of it or of anything
+    it starts is not handed to Windows Error Reporting. The only way to start a game process."""
+    if kw.get("creationflags", 0) & CREATE_DEFAULT_ERROR_MODE:
+        raise ValueError("CREATE_DEFAULT_ERROR_MODE would give the game process the default error mode back "
+                         "(and its crashes to Windows Error Reporting)")
+    with game_error_mode():
+        return subprocess.Popen(args, **kw)
+
+
 def launch(game: Path, scratch: Path, job: Path, below_normal: bool = False, dotnet_tuning: bool = True,
-           windowed: bool = False):
+           windowed: bool = False, command: list[str] | None = None):
     """Start the game headless (or, with windowed, in a normal window) on a scratch profile;
-    returns (process, log file). CREATE_NO_WINDOW only hides a console; the game's window still shows."""
+    returns (process, log file). CREATE_NO_WINDOW only hides a console; the game's window still shows.
+    The process gets GAME_ERROR_MODE (popen_no_wer). `command` replaces the game's command line: tests only."""
     env = game_env(scratch, job, dotnet_tuning)
     log = open(scratch / "game-stdout.log", "wb")
     flags = subprocess.CREATE_NO_WINDOW | (subprocess.BELOW_NORMAL_PRIORITY_CLASS if below_normal else 0)
-    args = [str(game / "SlayTheSpire2.exe")] + ([] if windowed else ["--headless"]) + ["--force-steam", "off"]
-    proc = subprocess.Popen(args,
-                            cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+    args = command or [str(game / "SlayTheSpire2.exe")] + ([] if windowed else ["--headless"]) + ["--force-steam", "off"]
+    proc = popen_no_wer(args, cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
     return proc, log
 
 
@@ -235,8 +360,10 @@ def main() -> int:
     proc, _log = launch(game, scratch, a.job, below_normal=a.below_normal, dotnet_tuning=not a.no_dotnet_tuning,
                         windowed=a.windowed)
     seen: set[str] = set()
+    wer: set[str] = set()
     while proc.poll() is None and time.time() - t0 < a.timeout:
         seen |= connections(proc.pid)
+        wer |= wer_reports(proc.pid)
         time.sleep(0.5)
     if proc.poll() is None:
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
@@ -244,10 +371,13 @@ def main() -> int:
     else:
         rc = proc.returncode
     seen |= connections(proc.pid)  # a child the game started (crashpad_handler) can outlive it
+    wer |= wer_reports(proc.pid)
+    for line in sorted(wer):
+        print(f"WER: {line}: Windows Error Reporting started for a game process", file=sys.stderr)
     after = real_profile_state()
     report = {
         "exit": rc, "seconds": round(time.time() - t0, 1), "sts2_dll_sha256": digest,
-        "network_connections": sorted(seen), "real_profile_touched": before != after,
+        "network_connections": sorted(seen), "wer_reports": sorted(wer), "real_profile_touched": before != after,
         "scratch": scratch.name, **({"windowed": True} if a.windowed else {}),
     }
     (scratch / "session.json").write_text(json.dumps(report, indent=1), encoding="utf-8")

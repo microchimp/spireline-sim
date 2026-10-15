@@ -605,7 +605,8 @@ def summarise(verdicts: list, minutes: float, rep: dict) -> list[str]:
     lines = [f"{len(verdicts)} fights: {same} identical, {len(div)} diverging ({len(gaps)} with a mirror gap), "
              f"{len(verdicts) - len(ok)} errors; re-anchored {vt} of {trans} steps match = {vt / max(1, len(ok)):.1f} VT/fight; "
              f"{minutes:.1f} min, {rep.get('s_per_fight_per_server')} s/fight/server, network {rep.get('network_connections')}, "
-             f"real profile touched {rep.get('real_profile_touched')}"]
+             f"real profile touched {rep.get('real_profile_touched')}"
+             + (f", WER REPORTS {rep.get('wer_reports')}" if rep.get("wer_reports") else "")]
     groups = collections.defaultdict(list)
     for v in div:
         groups[f"{v.get('field')} after {v.get('card')}"].append(v)

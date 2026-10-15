@@ -388,7 +388,7 @@ def main() -> int:
     rea_path.write_text(json.dumps({**rea_meta, "results": [data[i]["rea"] for i in ids]}), encoding="utf-8")
     pool_ok = not pool.failed and psum["results"] == psum["fights"] and not pool.seen_net and not pool.profile_touched
     report = {"exit": [0 if pool_ok else 1], "seconds": psum["wall_s"], "network_connections": psum["network_connections"],
-              "real_profile_touched": psum["real_profile_touched"]}
+              "wer_reports": psum["wer_reports"], "real_profile_touched": psum["real_profile_touched"]}
 
     same, groups, errors = 0, collections.defaultdict(list), []
     for i in ids:
@@ -440,7 +440,8 @@ def main() -> int:
              f"identical {metrics['identical_pct']}%, stalls {stalls}; "
              f"re-anchored {vt} of {metrics['reanchored']} steps match (first-divergence method: {metrics['vt_first_div_per_min']}/min)")
     lines = [speed, f"batch {a.name}: {a.fights} fights, session exit {report.get('exit')}, {report.get('seconds')} s, "
-             f"network {report.get('network_connections')}, real profile touched {report.get('real_profile_touched')}",
+             f"network {report.get('network_connections')}, real profile touched {report.get('real_profile_touched')}"
+             + (f", WER REPORTS {report.get('wer_reports')}" if report.get("wer_reports") else ""),
              f"settle audit: {len(audited)} fights, {sum(len(r['settle_audit']) for r in audited)} steps, "
              f"{len(audit_bad)} disagreements{(' e.g. ' + str(audit_bad[:5])) if audit_bad else ''}",
              f"identical: {same}", f"diverging: {sum(len(v) for v in groups.values())}", f"errors: {len(errors)}"]

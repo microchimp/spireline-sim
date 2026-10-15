@@ -70,7 +70,7 @@ def main() -> int:
         reports = [_report(p) for p in procs]
         failed = []
         for r in reports:
-            print("session:", {k: r.get(k) for k in ("exit", "seconds", "network_connections", "real_profile_touched",
+            print("session:", {k: r.get(k) for k in ("exit", "seconds", "network_connections", "wer_reports", "real_profile_touched",
                                                      "scratch")})
             problem = session_problem(r)
             if problem and problem.startswith("SAFETY"):

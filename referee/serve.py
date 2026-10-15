@@ -209,7 +209,9 @@ class Pool:
     returns the last results. The caller sleeps between polls and decides when it is done.
 
     The safety checks live here, so every user of the pool gets them: H1 the known sts2.dll (at
-    construction), H2 one netstat call per net_interval for every live server (seen_net), H3 the real
+    construction), H2 one netstat call per net_interval for every live server (seen_net; the same tick lists
+    any WerFault.exe about a game process in seen_wer, a crash report attempt even without a connection;
+    the games start with an error mode that keeps Windows Error Reporting away, run_referee.launch), H3 the real
     profile compared between start() and close() (profile_touched). The rules: a server that dies or
     hangs is replaced (the hot spare first); the spec it had claimed goes back to the front of the queue
     once and is recorded as stalled if it kills a second server (specs it had not claimed go back too,
@@ -223,7 +225,8 @@ class Pool:
                  hold_timeout: float = 60, dotnet_tuning: bool = True, full_lane: int | None = None,
                  route_full: bool | None = None,
                  below_normal: bool = True, depth: int = 1, echo=print, launch=rr.launch, connections=rr.connections_by_pid,
-                 profile_state=rr.real_profile_state, check_build=rr.check_build, kill=_taskkill):
+                 profile_state=rr.real_profile_state, check_build=rr.check_build, kill=_taskkill,
+                 wer_reports=rr.wer_reports_by_pid):
         self.game = game
         self.digest = check_build(game)
         self.n = max(1, servers)
@@ -260,7 +263,7 @@ class Pool:
         self.dotnet_tuning = dotnet_tuning  # run_referee.DOTNET_ENV in the games' environment
         self.depth = max(1, depth)
         self.window = 2 * self.n * self.depth  # unclaimed specs a caller feeding the pool keeps ready
-        self._echo, self._launch, self._connections = echo, launch, connections
+        self._echo, self._launch, self._connections, self._wer_reports = echo, launch, connections, wer_reports
         self._profile_state, self._kill_fn = profile_state, kill
         self.run_dir = Path(run_dir).resolve()
         self.inbox, self.outdir = self.run_dir / "inbox", self.run_dir / "out"
@@ -278,6 +281,7 @@ class Pool:
         self.attempts: collections.Counter = collections.Counter()
         self.restarts = self.requeued = 0
         self.seen_net: set[str] = set()
+        self.seen_wer: set[str] = set()  # WerFault.exe about a game process (a crash report attempt)
         self.events: list[str] = []
         self.more = 0  # specs the caller still means to submit (only decides whether a hot spare pays)
         self.failed = ""  # why the pool gave up; empty while it is healthy
@@ -340,6 +344,7 @@ class Pool:
                 for s in live:
                     if s.pid == pid:
                         s.connections |= conns
+            self._check_wer(live)
         for s in live:
             code = s.proc.poll()
             if code is not None:
@@ -446,6 +451,7 @@ class Pool:
             for s in self.servers:
                 if s.pid == pid:
                     s.connections |= conns
+        self._check_wer(self.servers)
         self.t_end = time.time()
         self.after = self._profile_state()
         return self._drain()
@@ -494,8 +500,8 @@ class Pool:
             **({"full_lane": self.full_lane, "full_replays": dict(self.full_replays), "audit_diffs": self.audit_diffs}
                if self.route_full else {}),
             "sts2_dll_sha256": self.digest,
-            "network_connections": sorted(self.seen_net), "real_profile_touched": self.profile_touched,
-            "run_dir": self.run_dir.name,
+            "network_connections": sorted(self.seen_net), "wer_reports": sorted(self.seen_wer),
+            "real_profile_touched": self.profile_touched, "run_dir": self.run_dir.name,
         }
 
     def write_run_files(self, summary: dict) -> None:
@@ -678,8 +684,17 @@ class Pool:
             except (FileNotFoundError, ValueError):
                 pass
 
+    def _check_wer(self, servers) -> None:
+        """Log (once each) any WerFault.exe about these servers' game trees: Windows Error Reporting started for
+        a crash. The error mode the games start with should make this impossible; this is the check that says so."""
+        for reports in self._wer_reports([s.pid for s in servers if s.pid]).values():
+            for line in sorted(reports - self.seen_wer):
+                self.log(f"WER: {line}: Windows Error Reporting started for a game process")
+            self.seen_wer |= reports
+
     def _handle_exit(self, s: Server, rc: int) -> None:
         s.t_exit, s.rc = time.time(), rc
+        self._check_wer([s])
         self._collect(s)
         if s.log:
             s.log.close()
