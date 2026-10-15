@@ -45,9 +45,15 @@ public static partial class Driver
         var run = RunManager.Instance;
         var steps = new JsonArray();
         var selector = new FirstChoiceSelector();
+        // Spec "choice_edges" (Selector.cs): a mode name, or true for "cycle". Absent: the first cards, as always.
+        string? edges = spec["choice_edges"] is JsonValue ev
+            ? (ev.TryGetValue<string>(out var es) ? es : ev.TryGetValue<bool>(out var eb) && eb ? "cycle" : null)
+            : null;
+        selector.ConfigureEdges(edges, (int?)spec["chooser_seed"] ?? 1);
         using var selection = MegaCrit.Sts2.Core.Commands.CardSelectCmd.UseSelector(selector);
         dump["choices"] = selector.Log;
         dump["pick_timing"] = FirstChoiceSelector.PickTiming;
+        if (edges != null) dump["choice_edges"] = edges;
         ScreenLog = selector.Log;
         dump.Remove("save");
         dump["steps"] = steps;

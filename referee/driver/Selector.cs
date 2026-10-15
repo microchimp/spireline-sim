@@ -21,6 +21,16 @@
 // stands then (the UI's hand and pile screens show the live pile, not the list counted before the
 // pause), then SignalPlayerChoiceEnded. Job key "pick_timing": "ui" (default) or "instant" (the
 // old answer at once, for comparison).
+//
+// Edge answers. Spec key "choice_edges" (absent: off, and every output is as it always was) makes the
+// answers probe the counts and the eligibility of a screen rather than take its first card: "none" (the
+// fewest the screen allows), "one", "max" (the most it takes), "last" (one card, the last eligible) and
+// "unusual" (one card, the least ordinary: enchanted, upgraded, a curse or status, a rare); "cycle" walks
+// through the five, one per screen, starting where the spec's chooser_seed says. The emulator is told what
+// the game was given (the log's "picked" indices, and "min"/"max" for the decline), so a difference in how
+// many a screen takes, or which cards it offers, shows as a divergence. Each such entry says which edge it
+// is ("edge"). Cards are told apart for the emulator by id only, so a copy that is not the first of its id
+// in the offer is picked only when nothing else is left to pick.
 
 using System;
 using System.Collections.Generic;
@@ -49,6 +59,54 @@ public sealed class FirstChoiceSelector : ICardSelector
     public JsonArray Log { get; } = new();
 
     public FirstChoiceSelector() => CaptureChoiceContexts();
+
+    private static readonly string[] EdgeCycle = { "none", "one", "max", "last", "unusual" };
+    private string? _edges;
+    private int _edgeSeed;
+    private int _edgeScreens;
+
+    /// <summary>The spec's "choice_edges" (null: off), with the seed that sets where "cycle" starts.</summary>
+    public void ConfigureEdges(string? mode, int seed)
+    {
+        _edges = string.IsNullOrEmpty(mode) ? null : mode;
+        _edgeSeed = Math.Abs(seed % EdgeCycle.Length);
+        _edgeScreens = 0;
+    }
+
+    /// <summary>The edge for the next screen, or null when edge answers are off.</summary>
+    private string? NextEdge()
+    {
+        if (_edges == null) return null;
+        string edge = _edges == "cycle" || _edges == "true" ? EdgeCycle[(_edgeSeed + _edgeScreens) % EdgeCycle.Length] : _edges;
+        _edgeScreens++;
+        return Array.IndexOf(EdgeCycle, edge) >= 0 ? edge : "one";
+    }
+
+    /// <summary>How unusual a card is to pick: enchanted first, then a curse or status, a rare, an upgraded one.</summary>
+    private static int Unusual(CardModel c)
+    {
+        int s = c.Enchantment != null ? 8 : 0;
+        s += c.Type is CardType.Curse or CardType.Status ? 5 : c.Type == CardType.Power ? 2 : 0;
+        s += c.Rarity switch { CardRarity.Rare or CardRarity.Ancient => 3, CardRarity.Uncommon => 1, CardRarity.Basic => -1, _ => 0 };
+        return s + (c.IsUpgraded ? 2 : 0);
+    }
+
+    /// <summary>The indices an edge answer takes, ascending: how many (by the screen's min and max) and which.</summary>
+    internal static List<int> EdgeIndices(string edge, List<CardModel> list, int minSelect, int maxSelect)
+    {
+        int cap = Math.Min(list.Count, Math.Max(maxSelect, 0));
+        int lo = Math.Min(Math.Max(minSelect, 0), cap);
+        int n = edge switch { "none" => lo, "max" => cap, _ => Math.Min(Math.Max(1, lo), cap) };
+        IEnumerable<int> order = edge switch
+        {
+            "last" => Enumerable.Range(0, list.Count).Reverse(),
+            "unusual" => Enumerable.Range(0, list.Count).OrderByDescending(i => Unusual(list[i])).ThenByDescending(i => i),
+            _ => Enumerable.Range(0, list.Count),
+        };
+        var ordered = order.ToList();
+        bool First(int i) => list.FindIndex(c => c.Id.Entry == list[i].Id.Entry) == i;
+        return ordered.Where(First).Concat(ordered.Where(i => !First(i))).Take(n).OrderBy(i => i).ToList();
+    }
 
     /// <summary>The CardSelectCmd call now asking the selector: its context, the UI's choice options, and how to read the live pile.</summary>
     private sealed record Asking(PlayerChoiceContext Context, PlayerChoiceOptions Options, Func<List<CardModel>>? Live);
@@ -142,16 +200,23 @@ public sealed class FirstChoiceSelector : ICardSelector
 
     private List<CardModel> Pick(List<CardModel> list, int minSelect, int maxSelect, bool waited)
     {
+        string? edge = NextEdge();
         int n = Math.Min(list.Count, Math.Max(minSelect, Math.Min(1, maxSelect)));
-        var picked = list.Take(n).ToList();
+        var at = edge == null ? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
+        var picked = edge == null ? list.Take(n).ToList() : at.Select(i => list[i]).ToList();
         var entry = new JsonObject
         {
             ["kind"] = "cards",
             ["step"] = Driver.CurrentStep,
             ["options"] = new JsonArray(list.Select(c => (JsonNode)c.Id.Entry).ToArray()),
             ["min"] = minSelect, ["max"] = maxSelect,
-            ["picked"] = new JsonArray(Enumerable.Range(0, n).Select(i => (JsonNode)i).ToArray()),
+            ["picked"] = new JsonArray(at.Select(i => (JsonNode)i).ToArray()),
         };
+        if (edge != null)
+        {
+            entry["edge"] = edge;
+        }
+
         if (waited)
         {
             // Answered on the screen, after the rest of the turn start (pick_timing "ui").
