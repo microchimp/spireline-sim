@@ -48,6 +48,7 @@ static class Reanchor
     static readonly Dictionary<string, string> GameRename = Aliases["emu_rename"]!.AsObject().ToDictionary(kv => (string)kv.Value!, kv => kv.Key);
     static readonly Dictionary<string, string> Folds = Aliases["folds"]!.AsObject()
         .SelectMany(kv => kv.Value!.AsArray().Select(sub => ((string)sub!, kv.Key))).ToDictionary(t => t.Item1, t => t.Item2);
+    static readonly HashSet<string> FoldTargets = Folds.Values.ToHashSet();
     static readonly HashSet<BuffId> RenameTargets = GameRename.Values.Where(BuffByPower.ContainsKey).Select(k => BuffByPower[k]).ToHashSet();
 
     /// <summary>The game power an emulator-only buff is a piece of (InfernoSelfDamage of INFERNO), by name; null for pure bookkeeping.</summary>
@@ -622,7 +623,7 @@ static class Reanchor
         }
     }
 
-    static bool PatchBuffs(List<BuffState> cur, JsonArray powers, out List<BuffState> result, JsonArray patched, string where)
+    internal static bool PatchBuffs(List<BuffState> cur, JsonArray powers, out List<BuffState> result, JsonArray patched, string where)
     {
         var want = new List<BuffState>();
         var folded = new Dictionary<BuffId, int>();
@@ -637,7 +638,9 @@ static class Reanchor
             bool fold = Folds.TryGetValue(key, out var into);
             string emuKey = fold ? into! : GameRename.GetValueOrDefault(key, key);
             if (!BuffByPower.TryGetValue(emuKey, out var id)) continue;  // modelled in pieces, which Keep leaves alone
-            if (fold) folded[id] = folded.GetValueOrDefault(id) + amount;
+            // The game's own power of a fold target's name (BlockNextTurnPower beside SelfFormingClayPower) is part of the
+            // same sum: the emulator holds one buff, and two wanted entries of it could never match its one.
+            if (fold || FoldTargets.Contains(emuKey)) folded[id] = folded.GetValueOrDefault(id) + amount;
             else want.Add(new BuffState(id, amount));
         }
 

@@ -834,20 +834,22 @@ class NestedBulletTest(unittest.TestCase):
 class MaskedPowersTest(unittest.TestCase):
     """The comparer drops a game power the emulator has no buff for before it compares. The packet shows both power lists whole
     and says what was left out, so a missing power is not read as a power the game never had."""
+    # Flanking is a game power the emulator holds no buff for. Self-Forming Clay used to be the example here, until the
+    # comparer folded it into BLOCK_NEXT_TURN (power_aliases.json), which the emulator has.
 
     def packet(self, t):
         w = World(Path(t), n_filler=2)
         fid, _ = w.fights["cited"]
-        w.corpus.write(fid, fight(SEED_CITED, 3, player_powers=[("SELF_FORMING_CLAY_POWER", 3)]))
+        w.corpus.write(fid, fight(SEED_CITED, 3, player_powers=[("FLANKING_POWER", 3)]))
         emu = FakeEmu(player_buffs=[{"name": "BlockNextTurn", "amount": 3}], keys=({"HARDENED_SHELL"}, set()))
         return pk.build_packet(ITEM, w.context(Path(t), emu), Path(t) / "out")
 
     def test_the_game_power_the_comparer_drops_is_shown_and_named(self):
         with tempfile.TemporaryDirectory() as t:
             text = self.packet(t)["text"]
-            self.assertIn("player.powers: game SELF_FORMING_CLAY:3  emulator BLOCK_NEXT_TURN:3", text)
+            self.assertIn("player.powers: game FLANKING:3  emulator BLOCK_NEXT_TURN:3", text)
             self.assertIn("left out of the comparison by the comparer's power mask", text)
-            self.assertIn("player: game SELF_FORMING_CLAY:3", text)
+            self.assertIn("player: game FLANKING:3", text)
             self.assertIn("(differ: BLOCK_NEXT_TURN None/3)", text)  # what the comparer judged, after the mask
 
     def test_nothing_is_said_when_the_mask_left_nothing_out(self):

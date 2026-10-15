@@ -116,6 +116,21 @@ class ReanchorCompareTest(unittest.TestCase):
         self.assertEqual(masked["steps"][1]["verdict"], "match")
         self.assertIsNone(masked["first_divergence"])  # the plain replay maps it too (EMU_RENAME)
 
+    def test_self_forming_clay_after_self_damage_is_not_a_power_only_the_emulator_has(self):
+        # Bloodletting under Self-Forming Clay: the game holds SELF_FORMING_CLAY 3, the emulator its BlockNextTurn 3. The mask
+        # drops a game power the emulator has no buff for, and BLOCK_NEXT_TURN is a buff it has: dropping the game's clay but
+        # keeping the emulator's buff read as "game nothing; emulator BLOCK_NEXT_TURN" after every self-damage card.
+        keys = ({"STRENGTH", "BLOCK_NEXT_TURN"}, {"CRIMSON_MANTLE_BLOCK"})
+        game = dict(hp=21, php=67, player_powers=[("SELF_FORMING_CLAY_POWER", 3)])
+        emu = dict(hp=21, php=67, player_buffs=[("BlockNextTurn", 3)])
+        g, e = fight([(None, {}, {}), (PLAY, game, emu)])
+        masked = rc.analyse(g, e, NM, keys=keys)
+        self.assertEqual(masked["steps"][1]["verdict"], "match")
+        self.assertIsNone(masked["first_divergence"])
+        # and the amount is still judged
+        g, e = fight([(None, {}, {}), (PLAY, game, dict(emu, player_buffs=[("BlockNextTurn", 6)]))])
+        self.assertEqual(rc.analyse(g, e, NM, keys=keys)["steps"][1]["verdict"], "diverge")
+
     def test_unrebuildable_state_ends_the_fight_before_the_step(self):
         g, e = fight([(None, {}, {}), (PLAY, dict(hp=21), dict(hp=21))])
         e["steps"][1] = {"action": PLAY, "anchor_error": "no emulator id for BOGUS"}

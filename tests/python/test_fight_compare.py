@@ -66,6 +66,20 @@ class PowerListTest(unittest.TestCase):
     def test_real_amount_difference_still_shows(self):
         self.assertTrue(diff(game_powers([["DARK_SHACKLES_POWER", 9]]), emu_powers([["TemporaryStrength", 8]])))
 
+    def test_self_forming_clay_is_the_block_next_turn_buff(self):
+        # SelfFormingClayPower pays unpowered block after the next block clear, as BlockNextTurnPower does: the emulator's
+        # relic applies BlockNextTurn, so the game's SELF_FORMING_CLAY is that buff, not a power the emulator lacks.
+        self.assertEqual(game_powers([["SELF_FORMING_CLAY_POWER", 3]]), emu_powers([["BlockNextTurn", 3]]))
+        self.assertTrue(diff(game_powers([["SELF_FORMING_CLAY_POWER", 3]]), emu_powers([["BlockNextTurn", 6]])), "the amount is compared")
+        self.assertTrue(diff(game_powers([["SELF_FORMING_CLAY_POWER", 3]]), emu_powers([])), "the power is compared")
+
+    def test_a_game_power_of_the_buffs_own_name_joins_the_folded_sum(self):
+        # Dodge and Roll (BlockNextTurnPower 5) and a Clay hit the same turn: two game powers, one emulator buff of 8.
+        game = game_powers([["BLOCK_NEXT_TURN_POWER", 5], ["SELF_FORMING_CLAY_POWER", 3], ["STRENGTH_POWER", 1]])
+        self.assertEqual(game, [["BLOCK_NEXT_TURN", 8], ["STRENGTH", 1]])
+        self.assertEqual(game, emu_powers([["BlockNextTurn", 8], ["Strength", 1]]))
+        self.assertEqual(game_powers([["BLOCK_NEXT_TURN_POWER", 5]]), [["BLOCK_NEXT_TURN", 5]])  # alone it is what it was
+
 
 def g_enemy(intents, name="NIBBIT"):
     e = {"name": name, "hp": 10, "block": 0, "powers": []}

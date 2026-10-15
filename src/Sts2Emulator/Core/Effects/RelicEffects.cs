@@ -1419,6 +1419,14 @@ public static class RelicEffects
     /// Hook.AfterDamageReceived, which runs per damage instance; here the caller is the
     /// enemy attack path, so self-damage from a card does not trigger them.
     /// </summary>
+    /// <remarks>
+    /// `CreatureCmd.Damage` sends a result whose target it killed to `Kill` instead of
+    /// `Hook.AfterDamageReceived` (`WasTargetKilled && IsDead`, read before the death is
+    /// prevented), so a hit that empties the player's HP arms none of these even when Lizard
+    /// Tail or a Fairy in a Bottle then refuses the death; the combat history entry below is
+    /// written earlier in the same command and stays. `CardEffects.AfterPlayerDamageReceived`
+    /// makes the same cut for the self-damage route.
+    /// </remarks>
     /// <param name="unblocked">How much of the hit actually landed, for Demon Tongue.</param>
     public static void ApplyAfterUnblockedDamageReceived(
         CombatState state,
@@ -1426,13 +1434,14 @@ public static class RelicEffects
         int unblocked = 0
     )
     {
-        if (HasRelic(state, SelfFormingClay))
+        bool killed = state.PlayerHp <= 0;
+        if (!killed && HasRelic(state, SelfFormingClay))
         {
             // SelfFormingClayPower: 3 unpowered block after the next block clear.
             BuffSystem.Apply(state.PlayerBuffs, BuffId.BlockNextTurn, 3);
         }
 
-        if (FiresOncePerCombat(state, CentennialPuzzle))
+        if (!killed && FiresOncePerCombat(state, CentennialPuzzle))
         {
             CardEffects.DrawCards(state, 3, DrawRng(state, rng));
         }
@@ -1447,7 +1456,8 @@ public static class RelicEffects
         // which `state.PlayerTurn` is. So it heals self-inflicted damage (Blood Wall,
         // Offering, Hemokinesis, a card that hits its owner) and never an enemy attack.
         if (
-            state.PlayerTurn
+            !killed
+            && state.PlayerTurn
             && unblocked > 0
             && HasRelic(state, DemonTongue)
             && GetCounter(state, DemonTongue) == 0

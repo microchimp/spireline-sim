@@ -119,12 +119,19 @@ def emu_intent(e: dict):
 TEMP_DEXTERITY = {sub for sub, buff in FOLDS.items() if buff == "TEMPORARY_DEXTERITY"}
 
 
+FOLD_TARGETS = set(FOLDS.values())
+
+
 def game_powers(raw: list) -> list:
     out, folded = [], collections.Counter()
     for n, a in raw:
         name = power(n)
         if name in FOLDS:
             folded[FOLDS[name]] += a
+        elif name in FOLD_TARGETS:
+            # The game's own power of the buff's name (BlockNextTurnPower beside SelfFormingClayPower): the emulator holds
+            # one sum, so it joins the folded ones instead of standing beside them as a second entry of that name.
+            folded[name] += a
         else:
             out.append([name, a])
     out += [[k, v] for k, v in folded.items() if v]
