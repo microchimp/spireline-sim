@@ -3,6 +3,8 @@
 
     python referee/scenarios.py --name <name> --mode dense|coverage --fights 60 [--start 0] [--servers 2]
         [--game D:/spireline/referee/game-setup] [--shrink K] [--shrink-budget 400] [--make-only]
+    python referee/scenarios.py --name <name> --mode targets --targets LAB/targets.json --fights N [--start S]
+        [--servers K] --game <game copy> --shrink K [--jobs <dir>] [--trace N]
 
 Run from the fork's root. Specs carry a "setup" list (referee/driver/Setup.cs) built from the game's
 own content tables (the export, see RUNBOOK "Table check"), limited to what EmuDump can mirror:
@@ -12,6 +14,17 @@ own content tables (the export, see RUNBOOK "Table check"), limited to what EmuD
 - dense: an encounter, 10-20 cards from the Ironclad and colourless pools (about 35% upgraded,
   so 20-30 in the deck), 10-20 Ironclad or shared relics, a full potion belt, 0-3 powers on the
   player and 0-2 on the first enemies.
+- targets (the fix lab): each spec aims at one target of tools/fidelity/lab_targets.py's list, drawn by
+  weight, and stays realistic: the act the Codex profile (aggregate counts, LAB/cache/codex_profile.json)
+  says the target is held in or met in (the act item from act 2 on; in act 1 a seed whose act-1 variant
+  is known to match, LAB/cache/act1_seeds.json, when one is), a room and encounter of that act by how
+  often real runs meet them, a deck of that act's size with its Strikes and Defends (one deck_set item),
+  then cards, relics and potions drawn by how often real runs hold them at that act, mixed half and half
+  with how often they are held together with the target. Each card, relic and potion is its own item,
+  so the shrinker can tell which ones the divergence needs. Diverging fights are shrunk (--shrink) and
+  traced (referee/trace_divergent.py, --trace N, default 40 in this mode) for their first differing event.
+  --jobs puts every output in that folder instead of jobs-setup; <name>.aims.json names each spec's target
+  and <name>.shrink.json every shrink case's status.
 
 Every spec uses potions (use_potions). The job goes to serve.py (one game per server), the results to
 EmuDump fight and reanchor, and each fight is judged as batch.py does, plus the setup items themselves
@@ -37,6 +50,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 JOBS = Path(r"D:\spireline\referee\jobs-setup")
+DEFAULT_JOBS = JOBS
 GAME = r"D:\spireline\referee\game-setup"
 EXPORT = Path(r"D:\spireline\referee\exports\v0.107.1.json")
 EMU_DLL = ROOT / "tools" / "emudump" / "bin" / "Release" / "net9.0" / "EmuDump.dll"
@@ -215,6 +229,229 @@ def dense_spec(content: Content, cov: dict, rng: random.Random, n: int) -> dict:
     return _spec(rng, n, setup, "dense", act, kind)
 
 
+# ---------------------------------------------------------------- aimed fights (--mode targets)
+
+ACT_NUMBER = {"OVERGROWTH": 1, "UNDERDOCKS": 1, "HIVE": 2, "GLORY": 3}
+ROOM_OF_KIND = {"weak": "monster", "normal": "monster", "elite": "elite", "boss": "boss"}
+BASICS = ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH", "ASCENDERS_BANE")
+STARTER_DECK = {"STRIKE_IRONCLAD": 5, "DEFEND_IRONCLAD": 4, "BASH": 1, "ASCENDERS_BANE": 1}
+
+
+def _hist_draw(rng: random.Random, hist: dict, default: int) -> int:
+    """A value drawn from a {value: count} histogram (its keys may be strings)."""
+    items = [(int(k), int(v)) for k, v in (hist or {}).items() if int(v) > 0]
+    if not items:
+        return default
+    x = rng.random() * sum(v for _, v in items)
+    for k, v in sorted(items):
+        x -= v
+        if x <= 0:
+            return k
+    return items[-1][0]
+
+
+def _weighted(rng: random.Random, pairs: list) -> object | None:
+    pairs = [(x, w) for x, w in pairs if w > 0]
+    if not pairs:
+        return None
+    x = rng.random() * sum(w for _, w in pairs)
+    for item, w in pairs:
+        x -= w
+        if x <= 0:
+            return item
+    return pairs[-1][0]
+
+
+def _sample(rng: random.Random, pairs: list, k: int) -> list:
+    """k distinct items, each drawn by weight from what is left."""
+    pool, out = [p for p in pairs if p[1] > 0], []
+    for _ in range(min(k, len(pool))):
+        got = _weighted(rng, pool)
+        out.append(got)
+        pool = [p for p in pool if p[0] != got]
+    return out
+
+
+class Aim:
+    """What targets mode draws from: the lab's weighted targets (only those the setup can reach) and the
+    Codex profile's aggregate counts per act."""
+
+    def __init__(self, targets_doc: dict, profile_doc: dict | None, content: Content, act1_seeds: dict | None = None):
+        from tools.fidelity.lab_targets import Profile  # noqa: PLC0415
+        self.prof = Profile(profile_doc)
+        self.content = content
+        self.act1_seeds = dict(act1_seeds or {})
+        self.enc = {e: (act, kind) for e, act, kind in content.encounters}
+        self.cards, self.relics, self.potions = set(content.cards), set(content.relics), set(content.potions)
+        self.card_power = {c + "_POWER": c for c in content.cards}
+        self.targets, self.skipped = [], collections.Counter()
+        for t in targets_doc.get("targets", []):
+            if t.get("weight", 0) > 0 and self.reachable(t["kind"], t["id"]):
+                self.targets.append((t["kind"], t["id"], float(t["weight"])))
+            else:
+                self.skipped[t["kind"]] += 1
+
+    def reachable(self, kind: str, ident: str) -> bool:
+        if kind == "card":
+            return ident in self.cards
+        if kind == "relic":
+            return ident in self.relics
+        if kind == "potion":
+            return ident in self.potions
+        if kind == "encounter":
+            return ident in self.enc
+        if kind == "enemy":
+            return any(ident in self.prof.encounter_monsters(e) for e in self.enc)
+        if kind == "power":
+            return (ident in self.content.player_powers or ident in self.content.enemy_powers
+                    or ident in self.card_power and self.card_power[ident] in self.cards)
+        if kind == "act":
+            return ident in ACT_NUMBER
+        return False
+
+    def encounter_weight(self, e: str) -> float:
+        act, kind = self.enc[e]
+        return float(self.prof.act(ACT_NUMBER[act]).get("encounters", {}).get(ROOM_OF_KIND[kind], {}).get(e, 0))
+
+    def pick_encounter(self, rng: random.Random, act: int, act_name: str | None = None) -> str:
+        """An encounter of the act: a room by how often real runs enter it, then one of its encounters by count."""
+        rooms = self.prof.act(act).get("rooms", {}) or {"monster": 7, "elite": 2, "boss": 1}
+        room = _weighted(rng, sorted(rooms.items())) or "monster"
+        names = [act_name] if act_name else [n for n, a in ACT_NUMBER.items() if a == act]
+        cands = [e for e, (an, kind) in sorted(self.enc.items()) if an in names and ROOM_OF_KIND[kind] == room]
+        got = _weighted(rng, [(e, self.encounter_weight(e)) for e in cands])
+        return got or rng.choice(cands or sorted(e for e, (an, _) in self.enc.items() if an in names))
+
+    def held_item(self, kind: str, ident: str) -> str | None:
+        """The profile key of a held target ("card:X"), the power card for a card's power."""
+        if kind in ("card", "relic", "potion"):
+            return f"{kind}:{ident}"
+        if kind == "power" and self.card_power.get(ident) in self.cards:
+            return f"card:{self.card_power[ident]}"
+        return None
+
+    def place(self, rng: random.Random, kind: str, ident: str) -> tuple[int, str, str]:
+        """(act number, act name, encounter) for a target."""
+        if kind == "encounter":
+            act_name = self.enc[ident][0]
+            return ACT_NUMBER[act_name], act_name, ident
+        if kind == "enemy":
+            cands = [(e, max(1.0, self.encounter_weight(e))) for e in sorted(self.enc) if ident in self.prof.encounter_monsters(e)]
+            e = _weighted(rng, cands)
+            return ACT_NUMBER[self.enc[e][0]], self.enc[e][0], e
+        if kind == "act":
+            act = ACT_NUMBER[ident]
+            return act, ident, self.pick_encounter(rng, act, ident)
+        held = self.held_item(kind, ident)
+        shares = self.prof.held_acts(*held.split(":", 1)) if held else {}
+        act = _weighted(rng, [(a, s * max(1, self.prof.act(a).get("snapshots", 0))) for a, s in sorted(shares.items())]) or 1
+        act_name = None
+        if act == 1:
+            names = self.prof.act(1).get("act_names", {}) or {"OVERGROWTH": 1, "UNDERDOCKS": 1}
+            act_name = _weighted(rng, sorted((n, v) for n, v in names.items() if ACT_NUMBER.get(n) == 1)) or "OVERGROWTH"
+        e = self.pick_encounter(rng, act, act_name)
+        return act, self.enc[e][0], e
+
+    def seed(self, rng: random.Random, act: int, act_name: str) -> str:
+        """A seed whose act 1 is act_name when one is known (act-1 fights are met in the seed's own act 1)."""
+        if act == 1:
+            known = sorted(s for s, v in self.act1_seeds.items() if v == act_name)
+            if known and rng.random() < 0.8:
+                return rng.choice(known)
+        return _seed(rng)
+
+    def draws(self, rng: random.Random, kind: str, pool: list, act: int, k: int, anchor: str | None) -> list:
+        """k items of one kind (card, relic, potion) held at the act: half how often real runs hold each, half how
+        often it is held together with the anchor (the target)."""
+        snaps = max(1, int(self.prof.act(act).get("snapshots", 0)))
+        held_anchor = self.prof.held(*anchor.split(":", 1), act) if anchor else 0
+        out = []
+        for x in pool:
+            p = self.prof.held(kind, x, act) / snaps
+            if anchor and held_anchor >= 5 and f"{kind}:{x}" != anchor:
+                p = 0.5 * p + 0.5 * self.prof.pair(act, f"{kind}:{x}", anchor) / held_anchor
+            out.append((x, p))
+        return _sample(rng, out, k)
+
+
+def aimed_spec(aim: Aim, rng: random.Random, n: int) -> tuple[dict, dict]:
+    """One realistic spec aimed at one target, and what it aimed at."""
+    kind, ident, w = _weighted(rng, [((k, i, w), w) for k, i, w in aim.targets])
+    act, act_name, enc = aim.place(rng, kind, ident)
+    prof, content = aim.prof, aim.content
+    doc = prof.act(act)
+    anchor = aim.held_item(kind, ident)
+    basics = {b: _hist_draw(rng, (doc.get("basics") or {}).get(b), STARTER_DECK[b]) for b in BASICS}
+    size = _hist_draw(rng, doc.get("deck_size"), 10 + 3 * act)
+    want_cards = max(0, size - sum(basics.values()))
+    pool = [c for c in content.cards if c not in BASICS]
+    chosen = aim.draws(rng, "card", pool, act, want_cards, anchor)
+    if anchor and anchor.startswith("card:") and anchor[5:] not in chosen:
+        chosen = [anchor[5:]] + chosen[: max(0, want_cards - 1)]
+    cards = []
+    for c in chosen:
+        copies, presence = doc.get("copies", {}).get(c, 0), doc.get("cards", {}).get(c, 0)
+        n_copies = 1 + (1 if presence and rng.random() < min(1.0, copies / presence - 1) else 0)
+        up_rate = doc.get("upgraded", {}).get(c, 0) / copies if copies else 0.3
+        for _ in range(n_copies):
+            cards.append({"cmd": "card", "id": c, "upgraded": c in content.upgradable and rng.random() < up_rate})
+    relics = aim.draws(rng, "relic", content.relics, act, _hist_draw(rng, doc.get("relic_count"), act * 3), anchor)
+    if kind == "relic" and ident not in relics:
+        relics = [ident] + relics[:-1] if relics else [ident]
+    slots = 2 + (2 if "POTION_BELT" in relics else 0)
+    potions = aim.draws(rng, "potion", content.potions, act, min(slots, _hist_draw(rng, doc.get("potion_count"), 1)), anchor)
+    if kind == "potion" and ident not in potions:
+        potions = [ident] + potions[: max(0, slots - 1)]
+    mixed = [{"cmd": "relic", "id": r} for r in relics] + cards
+    rng.shuffle(mixed)  # relics that act on the deck meet cards on both sides of them, as over a real run
+    deck = [{"id": b, "upgraded": False} for b in BASICS for _ in range(basics[b])]
+    after = []
+    if kind == "power" and not anchor:
+        target = "player" if ident in content.player_powers else "enemy:0"
+        after.append(_power_item(rng, ident, target))
+    setup = ([{"cmd": "act", "index": act}] if act > 1 else []) + [{"cmd": "deck_set", "cards": deck}] + mixed
+    setup += [{"cmd": "potion", "id": p} for p in potions] + [{"cmd": "fight", "id": enc}] + after
+    spec = _spec(rng, n, setup, "targets", aim.enc[enc][0], aim.enc[enc][1])
+    spec["seed"] = aim.seed(rng, act, aim.enc[enc][0])
+    return spec, {"seed": spec["seed"], "target": f"{kind}:{ident}", "weight": w, "act": act, "encounter": enc}
+
+
+def act1_seed_cache(path: Path, games: list | None = None, scan: list | None = None) -> dict:
+    """seed -> the act-1 variant its run starts in, from recorded setup fights (their fight.current_act)."""
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+        for f in scan or []:
+            try:
+                got = json.loads(Path(f).read_text(encoding="utf-8")).get("results", [])
+            except (OSError, ValueError):
+                continue
+            games = list(games or []) + got
+    for g in games or []:
+        cur = (g or {}).get("fight", {}) or {}
+        if g and g.get("seed") and ACT_NUMBER.get(cur.get("current_act")) == 1:
+            cache[g["seed"]] = cur["current_act"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, sort_keys=True), encoding="utf-8")
+    return cache
+
+
+def trace_batch(name: str, game: str, servers: int, n: int, log: Path) -> str:
+    """referee/trace_divergent.py on the batch's diverging fights: their first differing event, into the packs."""
+    out = JOBS / f"{name}.out.json"
+    cmd = [sys.executable, str(ROOT / "referee" / "trace_divergent.py"), str(out), "--game", game,
+           "--specs", str(JOBS / f"{name}.json"), "--emu", str(JOBS / f"{name}.emu.json"),
+           "--reanchor", str(JOBS / f"{name}.reanchor.json"), "--packs", str(JOBS / f"{name}.packs"),
+           "--max", str(n), "--servers", str(max(1, min(3, servers)))]
+    with open(log, "w", encoding="utf-8") as fh:
+        p = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True, check=False,
+                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    idx = JOBS / f"{name}.packs" / "traces" / "index.md"
+    traced = sum(1 for line in idx.read_text(encoding="utf-8").splitlines() if line.startswith("- ")) if idx.exists() else 0
+    return f"traces: {traced} fights (exit {p.returncode}), {idx.relative_to(JOBS).as_posix() if idx.exists() else 'none'}"
+
+
 def _spec(rng: random.Random, n: int, setup: list, mode: str, act: str, kind: str) -> dict:
     return {"kind": "combat", "seed": _seed(rng), "character": "IRONCLAD", "ascension": 10, "neow": n % 3,
             "chooser_seed": 7000 + n, "max_actions": 150, "setup": setup, "use_potions": True,
@@ -373,7 +610,7 @@ def summarise(verdicts: list, minutes: float, rep: dict) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--name", required=True)
-    ap.add_argument("--mode", choices=("dense", "coverage"), required=True)
+    ap.add_argument("--mode", choices=("dense", "coverage", "targets"), required=True)
     ap.add_argument("--fights", type=int, default=60)
     ap.add_argument("--start", type=int, default=0, help="spec stream offset")
     ap.add_argument("--game", default=GAME)
@@ -382,7 +619,15 @@ def main() -> int:
     ap.add_argument("--shrink", type=int, default=0, help="shrink up to this many diverging fights")
     ap.add_argument("--shrink-budget", type=int, default=400, help="game fights the shrinker may spend in all")
     ap.add_argument("--make-only", action="store_true", help="write the job file and stop")
+    ap.add_argument("--targets", type=Path, help="targets mode: tools/fidelity/lab_targets.py's targets.json (in the lab)")
+    ap.add_argument("--jobs", type=Path, help="write every output here instead of jobs-setup")
+    ap.add_argument("--trace", type=int, default=None, help="trace up to N diverging fights (default: 40 in targets mode, else 0)")
     a = ap.parse_args()
+    if a.mode == "targets" and not a.targets:
+        ap.error("--mode targets needs --targets")
+    global JOBS  # noqa: PLW0603  (--jobs moves every output of this run)
+    if a.jobs:
+        JOBS = a.jobs.resolve()
 
     JOBS.mkdir(parents=True, exist_ok=True)
     content = load_content()
@@ -391,8 +636,29 @@ def main() -> int:
     cov_path = JOBS / "coverage-setup.json"
     cov = json.loads(cov_path.read_text(encoding="utf-8")) if cov_path.exists() else {"items": {}}
     rng = random.Random(f"{a.mode}:{a.start}")
-    make = dense_spec if a.mode == "dense" else coverage_spec
-    specs = [make(content, cov, rng, a.start * 1000 + i) for i in range(a.fights)]
+    aims, act1_path = [], None
+    if a.mode == "targets":
+        tdoc = json.loads(a.targets.read_text(encoding="utf-8"))
+        lab = a.targets.resolve().parent
+        prof_path = lab / tdoc.get("profile", "cache/codex_profile.json")
+        prof = json.loads(prof_path.read_text(encoding="utf-8")) if prof_path.exists() else None
+        act1_path = lab / "cache" / "act1_seeds.json"
+        known = act1_seed_cache(act1_path, scan=sorted(DEFAULT_JOBS.glob("*.out.json")))
+        aim = Aim(tdoc, prof, content, known)
+        if not aim.targets:
+            print("no reachable target in", a.targets)
+            return 1
+        specs = []
+        for i in range(a.fights):
+            s, m = aimed_spec(aim, rng, a.start * 1000 + i)
+            specs.append(s)
+            aims.append(m)
+        (JOBS / f"{a.name}.aims.json").write_text(json.dumps({"targets": a.targets.name, "skipped": dict(aim.skipped),
+                                                              "profile_runs": aim.prof.runs, "aims": aims}, indent=1),
+                                                  encoding="utf-8")
+    else:
+        make = dense_spec if a.mode == "dense" else coverage_spec
+        specs = [make(content, cov, rng, a.start * 1000 + i) for i in range(a.fights)]
     if a.make_only:
         (JOBS / f"{a.name}.json").write_text(json.dumps({"runs": specs}), encoding="utf-8")
         print(f"wrote {JOBS / (a.name + '.json')}: {len(specs)} specs")
@@ -407,20 +673,34 @@ def main() -> int:
     update_coverage(cov, specs, verdicts)
     cov_path.write_text(json.dumps(cov, indent=1, sort_keys=True), encoding="utf-8")
     lines = summarise(verdicts, minutes, rep)
+    if a.mode == "targets":
+        act1_seed_cache(act1_path, games)
+        lines.append(f"targets: {len(specs)} fights in {minutes:.1f} min = {len(specs) / max(minutes, 1e-9):.1f} fights/min "
+                     f"(play and replay); {len(aim.targets)} reachable targets, skipped {dict(aim.skipped)}")
 
     minimal = {}
     if a.shrink:
         import shrink  # noqa: PLC0415  (referee/shrink.py)
+        t_shrink = time.time()
         cases = shrink.cases_from(specs, games, verdicts, a.shrink)
         run_round = shrink.oracle(lambda n, s: play(n, s, a.game, a.servers, a.timeout)[0],
                                   lambda rs: emudump("fight", rs, JOBS / f"{a.name}.shrink.emu.json")["results"], nm)
         minimal, srep = shrink.shrink_all(cases, run_round, a.name, budget=a.shrink_budget)
-        lines.append(f"shrink: {srep['summary']}")
+        lines.append(f"shrink: {srep['summary']}" + (f"; {(time.time() - t_shrink) / 60:.1f} min" if a.mode == "targets" else ""))
         lines += ["  " + x for x in srep["lines"]]
         mdir = JOBS / f"{a.name}.packs" / "minimal"
         mdir.mkdir(parents=True, exist_ok=True)
         for seed, m in minimal.items():
             (mdir / f"{seed}.json").write_text(json.dumps({"runs": [m["spec"]]}, indent=1), encoding="utf-8")
+        (JOBS / f"{a.name}.shrink.json").write_text(json.dumps({"summary": srep["summary"], "fights": srep["fights"],
+                                                               "cases": [{k: v for k, v in c.result().items() if k != "spec"}
+                                                                         for c in cases]}, indent=1), encoding="utf-8")
+
+    n_trace = a.trace if a.trace is not None else (40 if a.mode == "targets" else 0)
+    if n_trace > 0 and any(not v.get("identical") and not v.get("error") for v in verdicts):
+        t_trace = time.time()
+        lines.append(trace_batch(a.name, a.game, a.servers, n_trace, JOBS / f"{a.name}.trace.log")
+                     + f"; {(time.time() - t_trace) / 60:.1f} min")
 
     from tools.fidelity import context_pack  # noqa: PLC0415
     context_pack.run(JOBS / f"{a.name}.out.json", JOBS / f"{a.name}.emu.json", JOBS / f"{a.name}.packs",
