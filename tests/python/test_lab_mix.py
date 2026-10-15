@@ -164,6 +164,21 @@ class YieldTest(unittest.TestCase):
         self.assertEqual(["aimed-bugs", "aimed-bugs"], [r["strategy"] for r in mix.read_yield(lab)])
         self.assertEqual("NA", mix.read_yield(lab)[1]["groups"])
 
+    def test_an_older_file_with_fewer_columns_is_widened_and_a_foreign_one_is_kept_aside(self):
+        lab = self.tmp / "lab"
+        lab.mkdir()
+        old_cols = mix.YIELD_COLUMNS[:-1]
+        (lab / "yield.tsv").write_text("\t".join(old_cols) + "\n" + "\t".join(str(i) for i in range(len(old_cols))) + "\n", encoding="utf-8")
+        mix.append_yield(lab, {c: "x" for c in mix.YIELD_COLUMNS})
+        rows = mix.read_yield(lab)
+        self.assertEqual(["NA", "x"], [r["screen_groups"] for r in rows])
+        self.assertEqual("0", rows[0]["utc"])
+        self.assertNotIn("\r", (lab / "yield.tsv").read_bytes().decode("utf-8"))
+        (lab / "yield.tsv").write_text("a\tb\n1\t2\n", encoding="utf-8")  # not ours
+        mix.append_yield(lab, {c: "y" for c in mix.YIELD_COLUMNS})
+        self.assertEqual(["y"], [r["utc"] for r in mix.read_yield(lab)])
+        self.assertTrue((lab / "yield.tsv.old").exists())
+
     def test_a_job_without_a_strategy_is_named_by_its_type(self):
         job = self.job()
         row = mix.yield_row(job, {"name": job.name, "job": "mutation", "params": {}}, None, False, "t")

@@ -143,7 +143,8 @@ Interactive. Task Scheduler's idle test is its own (input, CPU, disk) and may co
 of idle, priority 7, no execution time limit, MultipleInstances IgnoreNew (a second start is ignored), restart on failure
 every 5 minutes up to 3 times, still Interactive and Limited with no password, and the runner gets `--always-on` (and not
 `--exit-with-parent`: a parent that Task Scheduler's service does not let the user's token open would read as gone and end a
-week's work at once; the Job Object that holds the task already kills every child when it stops). The idle mode stays the default.
+week's work at once; the Job Object that holds the task already kills every child when it stops) and `--lab-gb 100` (a week
+of unattended data; `-LabGb N` sets it, in either mode). The idle mode stays the default.
 
 ## Tests
 

@@ -38,7 +38,8 @@ param(
     [string]$Tree = 'D:\spireline\fork\wt-lab',
     [string]$Game = 'D:\spireline\referee\game-lab',
     [int]$IdleMinutes = 10,
-    [int]$ExecutionHours = 12
+    [int]$ExecutionHours = 12,
+    [int]$LabGb = 0   # the runner's --lab-gb; 0: its default (30) for Idle, 100 for Logon (a week of unattended data; D: has the room)
 )
 $ErrorActionPreference = 'Stop'
 
@@ -55,7 +56,12 @@ $arguments = 'tools\lab\runner.py --lab "{0}" --tree "{1}" --game "{2}" --exit-w
 # Always on: no --exit-with-parent. Whatever starts the task is not the runner's owner, and an exit on a parent that Task
 # Scheduler (a service) does not let the user's token open would end a week's work at once; the Job Object that holds
 # the task kills every child when the task stops, and MultipleInstances IgnoreNew plus the runner's mutex keep it single.
-if ($Trigger -eq 'Logon') { $arguments = 'tools\lab\runner.py --lab "{0}" --tree "{1}" --game "{2}" --always-on' -f $Lab, $Tree, $Game }
+if ($Trigger -eq 'Logon') {
+    if ($LabGb -le 0) { $LabGb = 100 }
+    $arguments = 'tools\lab\runner.py --lab "{0}" --tree "{1}" --game "{2}" --always-on --lab-gb {3}' -f $Lab, $Tree, $Game, $LabGb
+} elseif ($LabGb -gt 0) {
+    $arguments += ' --lab-gb {0}' -f $LabGb
+}
 $user = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
 
 $action = New-ScheduledTaskAction -Execute $python -Argument $arguments -WorkingDirectory $Fork

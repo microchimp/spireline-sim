@@ -189,12 +189,27 @@ def yield_row(job_dir: Path, data: dict, groups_doc: object, groups_ran: bool, u
 
 
 def append_yield(lab: Path, row: dict[str, object]) -> None:
-    """Add a row to LAB/yield.tsv (the header first when the file is new)."""
+    """Add a row to LAB/yield.tsv (the header first when the file is new). A file written with fewer columns (the same
+    ones, fewer at the end) is rewritten with the new header and NA in the old rows; one with other columns is kept
+    aside as yield.tsv.old and a new file is started."""
     p = Path(lab) / "yield.tsv"
-    new = not p.exists() or p.stat().st_size == 0
+    head = "\t".join(YIELD_COLUMNS)
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    if lines and lines[0] != head:
+        old = lines[0].split("\t")
+        if list(YIELD_COLUMNS[: len(old)]) == old:
+            pad = "\t".join(["NA"] * (len(YIELD_COLUMNS) - len(old)))
+            with open(p, "w", encoding="utf-8", newline="") as fh:
+                fh.write("\n".join([head] + [ln + "\t" + pad for ln in lines[1:] if ln.strip()]) + "\n")
+        else:
+            p.replace(p.with_name("yield.tsv.old"))
+            lines = []
     with open(p, "a", encoding="utf-8", newline="") as fh:
-        if new:
-            fh.write("\t".join(YIELD_COLUMNS) + "\n")
+        if not lines:
+            fh.write(head + "\n")
         fh.write("\t".join(str(row.get(c, "")) for c in YIELD_COLUMNS) + "\n")
 
 

@@ -886,6 +886,11 @@ class RegisterTaskTest(unittest.TestCase):
                               capture_output=True, text=True, timeout=120, check=False)
         self.assertNotIn("--always-on", idle.stdout)  # the idle mode stays the default and is unchanged
         self.assertIn("--exit-with-parent", idle.stdout)
+        self.assertNotIn("--lab-gb", idle.stdout)
+        self.assertIn("--lab-gb 100", r.stdout)  # a week of unattended data gets room; D: has it
+        sized = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Trigger", "Logon", "-LabGb", "40",
+                                "-WhatIf"], capture_output=True, text=True, timeout=120, check=False)
+        self.assertIn("--lab-gb 40", sized.stdout)
         bad = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Trigger", "Weekly", "-WhatIf"],
                              capture_output=True, text=True, timeout=120, check=False)
         self.assertNotEqual(bad.returncode, 0)
