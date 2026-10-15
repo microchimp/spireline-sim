@@ -186,6 +186,13 @@ class VerifyTest(unittest.TestCase):
             self.assertIn("<AssemblyName>EmuDump.Tests</AssemblyName>", proj)  # EmuDump's InternalsVisibleTo
             self.assertIn("EmuDump.dll", proj)
 
+    def test_tool_output_loses_the_machines_folders(self):
+        s = kt.scrub(r"error in C:\Users\someone\AppData\Local\Temp\kit-x\kit-tests\Kit_B.cs and /home/someone/w/x.log, D:/spireline/fork/a.dll")
+        self.assertNotIn("someone", s)
+        self.assertNotIn("spireline", s)
+        self.assertIn("<Kit_B.cs>", s)
+        self.assertEqual(kt.scrub("KIT step 1 .enemies: game [1] | emulator [2]"), "KIT step 1 .enemies: game [1] | emulator [2]")
+
     def test_no_build_means_no_verdict(self):
         res = kt.verify_tests({"Kit_A": "x"}, Path("nowhere/EmuDump.dll"), Path("w"))
         self.assertEqual(res["Kit_A"]["outcome"], "error")

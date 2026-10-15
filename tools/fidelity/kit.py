@@ -578,6 +578,19 @@ def parse_trx(path: Path) -> dict:
 
 
 COMPILE_ERR = re.compile(r"([^\\/\s(]+\.cs)\(\d+,\d+\): error ([A-Z]+\d+): (.*?)(?: \[|$)")
+ABS_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|/[a-z]/|/(?:home|Users|tmp)/)[^\s\"'<>|]*")
+
+
+def scrub(text: str) -> str:
+    """A tool's output without the machine's folders (results and logs hold no user names or absolute paths): each absolute
+    path becomes its last component."""
+    return ABS_PATH.sub(lambda m: "<" + re.split(r"[\\/]", m.group().rstrip("\\/"))[-1] + ">", text or "")
+
+
+def _log_tail(log: Path, mark: int = 0, n: int = 300) -> str:
+    text = log.read_text(encoding="utf-8", errors="replace")[mark:] if log.is_file() else ""
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("$ ")]
+    return clip(scrub(" | ".join(lines[-4:])), n)
 
 
 def verify_tests(sources: dict, emudump: Path, work: Path, timeout: float = 600) -> dict:
@@ -605,7 +618,7 @@ def verify_tests(sources: dict, emudump: Path, work: Path, timeout: float = 600)
         (proj / f"{name}.cs").write_text(text, encoding="utf-8")
     cache = Path.home() / ".nuget" / "packages"
     if _run(["dotnet", "restore", proj, "--source", cache, "-v", "q", "-p:NuGetAudit=false"], proj, timeout, log) != 0:
-        return {k: {"outcome": "error", "message": f"offline restore failed (see {log.name})"} for k in sources}
+        return {k: {"outcome": "error", "message": "offline restore failed: " + _log_tail(log)} for k in sources}
     live = dict(sources)
     for _attempt in range(3):
         mark = log.stat().st_size if log.is_file() else 0
@@ -619,9 +632,9 @@ def verify_tests(sources: dict, emudump: Path, work: Path, timeout: float = 600)
             if stem in live and stem not in bad:
                 bad[stem] = f"{m.group(2)}: {m.group(3)}"
         if not bad:
-            return {**res, **{k: {"outcome": "error", "message": "the build failed: " + clip(text[-600:], 300)} for k in live}}
+            return {**res, **{k: {"outcome": "error", "message": "the build failed: " + _log_tail(log, mark)} for k in live}}
         for stem, why in bad.items():
-            res[stem] = {"outcome": "compile_error", "message": why}
+            res[stem] = {"outcome": "compile_error", "message": scrub(why)}
             live.pop(stem)
             (proj / f"{stem}.cs").unlink()
         if not live:
@@ -634,7 +647,7 @@ def verify_tests(sources: dict, emudump: Path, work: Path, timeout: float = 600)
     got = parse_trx(trx)
     for name in live:
         outcome, msg = got.get(name, ("error", "no result in the test log"))
-        res[name] = {"outcome": {"Failed": "failed", "Passed": "passed"}.get(outcome, "error"), "message": msg}
+        res[name] = {"outcome": {"Failed": "failed", "Passed": "passed"}.get(outcome, "error"), "message": scrub(msg)}
     return res
 
 
