@@ -880,10 +880,12 @@ class RegisterTaskTest(unittest.TestCase):
                      "RestartInterval=PT5M", "Nothing changed"):
             self.assertIn(want, r.stdout)
         self.assertNotIn("on idle", r.stdout)
+        self.assertNotIn("--exit-with-parent", r.stdout)  # nothing would start it again if it took its starter's exit for its own
         self.assertEqual(self.tasks(), before)
         idle = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-WhatIf"],
                               capture_output=True, text=True, timeout=120, check=False)
         self.assertNotIn("--always-on", idle.stdout)  # the idle mode stays the default and is unchanged
+        self.assertIn("--exit-with-parent", idle.stdout)
         bad = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Trigger", "Weekly", "-WhatIf"],
                              capture_output=True, text=True, timeout=120, check=False)
         self.assertNotEqual(bad.returncode, 0)

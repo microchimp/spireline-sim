@@ -17,7 +17,7 @@ share (least CPU seconds spent per unit of weight; a tie goes to the heavier, th
 
 ``LAB/yield.tsv`` has one row per finished job (tab separated, header first):
 
-  utc  job  strategy  main  rc  wall_min  cpu_min  fights  mismatches  unbuildable  groups  fix_ready
+  utc  job  strategy  main  rc  wall_min  cpu_min  fights  mismatches  unbuildable  groups  fix_ready  screen_groups
 
   fights       fights judged (whole runs: runs recorded or not)
   mismatches   fights (runs) that diverge from the game, mirror gaps included
@@ -26,6 +26,9 @@ share (least CPU seconds spent per unit of weight; a tie goes to the heavier, th
   groups       distinct root-mechanism groups (tools/fidelity/lab_groups.py) with a symptom from this job
   fix_ready    of those, groups that are not host-suspect and have a symptom from this job with a traced first event
                and no mirror gap: the ones a fixer can start from
+  screen_groups  of those, groups with a symptom from this job that is a card screen the setup mirror could not answer as
+               the game was answered (a count or eligibility difference, what choice-edges looks for). Never fix-ready
+               (the setup has a mirror gap), but a precise finding: the screen, the relic or card that opened it.
 
 NA where a column cannot be known (the job's groups step did not finish; an older lab_groups without by_job).
 """
@@ -40,7 +43,8 @@ from pathlib import Path
 
 STRATEGIES = ("aimed-bugs", "aimed-gaps", "choice-edges", "whole-runs", "dense", "under-tested", "random")
 DEFAULT_MIX = {"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-runs": 10, "dense": 10, "under-tested": 10, "random": 5}
-YIELD_COLUMNS = ("utc", "job", "strategy", "main", "rc", "wall_min", "cpu_min", "fights", "mismatches", "unbuildable", "groups", "fix_ready")
+YIELD_COLUMNS = ("utc", "job", "strategy", "main", "rc", "wall_min", "cpu_min", "fights", "mismatches", "unbuildable", "groups", "fix_ready",
+                 "screen_groups")
 NOTE = "weights of the CPU time the fights slots spend, per strategy; 0 or absent: never. Read at every job."
 
 
@@ -156,19 +160,21 @@ def job_counts(job_dir: Path) -> dict[str, int]:
     return {"fights": fights, "mismatches": mismatches, "unbuildable": unbuildable}
 
 
-def job_groups(groups_doc: object, job_name: str) -> tuple[int, int] | None:
-    """(groups with a symptom from the job, of those the fix-ready ones) from groups.json; None when it cannot say."""
+def job_groups(groups_doc: object, job_name: str) -> tuple[int, int, int] | None:
+    """(groups with a symptom from the job, of those the fix-ready ones, of those the card-screen ones) from groups.json;
+    None when it cannot say."""
     if not isinstance(groups_doc, dict) or not isinstance(groups_doc.get("groups"), list):
         return None
     if groups_doc["groups"] and not any("by_job" in g for g in groups_doc["groups"] if isinstance(g, dict)):
         return None  # written by a lab_groups that does not count per job
-    n = ready = 0
+    n = ready = screens = 0
     for g in groups_doc["groups"]:
         mine = (g.get("by_job") or {}).get(job_name) if isinstance(g, dict) else None
         if mine:
             n += 1
             ready += 1 if not g.get("host_suspect") and mine.get("ready", 0) > 0 else 0
-    return n, ready
+            screens += 1 if mine.get("gap", 0) > 0 else 0
+    return n, ready, screens
 
 
 def yield_row(job_dir: Path, data: dict, groups_doc: object, groups_ran: bool, utc: str) -> dict[str, object]:
@@ -179,7 +185,7 @@ def yield_row(job_dir: Path, data: dict, groups_doc: object, groups_ran: bool, u
     return {"utc": utc, "job": data.get("name", ""), "strategy": params.get("strategy") or data.get("job", ""),
             "main": str(data.get("main_sha", ""))[:7], "rc": data.get("rc", ""),
             "wall_min": round(float(data.get("wall_secs", 0)) / 60, 1), "cpu_min": round(float(data.get("cpu_secs", 0)) / 60, 1),
-            **counts, "groups": g[0] if g else "NA", "fix_ready": g[1] if g else "NA"}
+            **counts, "groups": g[0] if g else "NA", "fix_ready": g[1] if g else "NA", "screen_groups": g[2] if g else "NA"}
 
 
 def append_yield(lab: Path, row: dict[str, object]) -> None:

@@ -52,7 +52,10 @@ if ($Unregister) {
 $python = Join-Path $VenvScripts 'pythonw.exe'
 if (-not (Test-Path $python)) { $python = Join-Path $VenvScripts 'python.exe' }
 $arguments = 'tools\lab\runner.py --lab "{0}" --tree "{1}" --game "{2}" --exit-with-parent' -f $Lab, $Tree, $Game
-if ($Trigger -eq 'Logon') { $arguments += ' --always-on' }
+# Always on: no --exit-with-parent. Whatever starts the task is not the runner's owner, and an exit on a parent that Task
+# Scheduler (a service) does not let the user's token open would end a week's work at once; the Job Object that holds
+# the task kills every child when the task stops, and MultipleInstances IgnoreNew plus the runner's mutex keep it single.
+if ($Trigger -eq 'Logon') { $arguments = 'tools\lab\runner.py --lab "{0}" --tree "{1}" --game "{2}" --always-on' -f $Lab, $Tree, $Game }
 $user = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
 
 $action = New-ScheduledTaskAction -Execute $python -Argument $arguments -WorkingDirectory $Fork

@@ -12,7 +12,8 @@ fetched) as cwd. See tools/lab/README.md and referee/RUNBOOK.md "Fix lab".
 Jobs, by value: presort (when local main changed: move and rebuild the tree, codex walk, refset score, corpus
 check, then groups and kits), fights (one strategy of tools/lab/mix.py per job, chosen from LAB/mix.json: aimed
 batches, shrink, first events, groups, kits), runs (the whole-runs strategy), probes, mutation, invariants. Every
-finished job adds a row to LAB/yield.tsv (CPU minutes, fights, mismatches, unbuildable, groups, fix-ready groups). A job is a folder LAB/runs/<UTC yyyymmddThhmm>-<job>/ with job.json (inputs, main sha, steps), logs/,
+finished job adds a row to LAB/yield.tsv (CPU minutes, fights, mismatches, unbuildable, groups, fix-ready groups).
+A job is a folder LAB/runs/<UTC yyyymmddThhmm>-<job>/ with job.json (inputs, main sha, steps), logs/,
 its outputs and done.rc (the exit code, written last). It is resumable: an interrupted job is resumed at its
 first unfinished step if main has not moved, else closed with done.rc 3.
 

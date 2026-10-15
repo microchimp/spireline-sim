@@ -353,8 +353,9 @@ def selection_symptom(prefix: Path, lab: Path, when: str, src: str, v: dict, spe
 
 def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None) -> list[dict]:
     """The diverging fights of one setup or aimed batch (<prefix>.verdicts.json and its neighbours); a batch.py batch has
-    no verdicts file, so its verdicts are derived. A matching fight whose setup mirror could not answer a card screen
-    as the game did is a symptom too (selection_symptom)."""
+    no verdicts file, so its verdicts are derived. A fight whose setup mirror could not answer a card screen as the game
+    did is one symptom, the screen (selection_symptom), whether or not the fight then diverges: what follows a gap says
+    nothing about the emulator."""
     verdicts = read_json(prefix.with_name(prefix.name + ".verdicts.json"))
     if verdicts is None:
         verdicts = derived_verdicts(prefix)
@@ -379,11 +380,12 @@ def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None
         if v.get("error"):
             continue
         seed = v["seed"]
+        gaps = selection_gaps(v)
+        if gaps:  # the mirror could not answer a card screen: the fight's later differences say nothing about the emulator
+            out.append(selection_symptom(prefix, lab, when, src, v, by_index(specs, i, seed, seed in dup) or {},
+                                         by_index(aim_list, i, seed, seed in dup) or {}, gaps[0], seed in dup))
+            continue
         if v.get("identical") or "step" not in v:
-            gaps = selection_gaps(v)
-            if gaps:
-                out.append(selection_symptom(prefix, lab, when, src, v, by_index(specs, i, seed, seed in dup) or {},
-                                             by_index(aim_list, i, seed, seed in dup) or {}, gaps[0], seed in dup))
             continue
         spec = by_index(specs, i, seed, seed in dup) or {}
         aim = by_index(aim_list, i, seed, seed in dup) or {}
@@ -1068,16 +1070,18 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
 
 
 def by_job(members: list[dict]) -> dict:
-    """{job folder: {"n": symptoms of it in the group, "ready": those a fixer can start from}}. Ready: the first
-    differing event is traced and the setup was fully mirrored (the group's host suspicion is judged on the group).
-    The runner's yield.tsv counts a job's groups, and the fix-ready ones, from this."""
+    """{job folder: {"n": symptoms of it in the group, "ready": those a fixer can start from, "gap": those that are a card
+    screen the setup mirror could not answer}}. Ready: the first differing event is traced and the setup was fully
+    mirrored, in a fight (a whole run's divergence is located, not traced; the group's host suspicion is judged on the
+    group). The runner's yield.tsv counts a job's groups, its fix-ready ones and its card-screen ones from this."""
     out: dict = {}
     for s in members:
         m = JOB_REF.match(str(s.get("ref")))
         if m:
-            j = out.setdefault(m.group(1), {"n": 0, "ready": 0})
+            j = out.setdefault(m.group(1), {"n": 0, "ready": 0, "gap": 0})
             j["n"] += 1
-            j["ready"] += 1 if s.get("first_event") and not s.get("mirror_gap") else 0
+            j["ready"] += 1 if s.get("first_event") and not s.get("mirror_gap") and s.get("source") != "run" else 0  # a whole run has no trace
+            j["gap"] += 1 if s.get("field") == "setup.selection" else 0
     return out
 
 

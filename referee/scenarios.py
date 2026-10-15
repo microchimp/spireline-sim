@@ -781,7 +781,7 @@ def main() -> int:
                     help="choices mode: the decompile model_features is read from when --features is missing or stale")
     ap.add_argument("--jobs", type=Path, help="write every output here instead of jobs-setup")
     ap.add_argument("--trace", type=int, default=None, help="trace up to N diverging fights (default: 40 in targets mode, else 0)")
-    ap.add_argument("--trace-servers", type=int, default=TRACE_SERVERS, help="game servers for the traced re-runs (at most 8)")
+    ap.add_argument("--trace-servers", type=int, default=None, help="game servers for the traced re-runs (at most 8; default: --servers, at most 3)")
     ap.add_argument("--trace-minutes", type=float, default=None, help="start no new trace call after this long")
     a = ap.parse_args()
     if a.mode == "targets" and not a.targets:
@@ -886,8 +886,9 @@ def main() -> int:
                 seeds = trace_order(games, emus, rea, verdicts, nm)
             except Exception as e:  # noqa: BLE001  (one call for all, as without a limit)
                 lines.append(f"warning: trace order not computed ({type(e).__name__}); tracing in one call")
-        lines.append(trace_batch(a.name, a.game, a.trace_servers, n_trace, JOBS / f"{a.name}.trace.log", seeds=seeds,
-                                 deadline=t_trace + 60 * a.trace_minutes if a.trace_minutes else None, max_servers=8)
+        lines.append(trace_batch(a.name, a.game, a.trace_servers or a.servers, n_trace, JOBS / f"{a.name}.trace.log", seeds=seeds,
+                                 deadline=t_trace + 60 * a.trace_minutes if a.trace_minutes else None,
+                                 max_servers=8 if a.trace_servers else TRACE_SERVERS)
                      + f"; {(time.time() - t_trace) / 60:.1f} min")
 
     # The batch's own outputs first: a failure in the packs below must not lose them (it cost two 500-fight batches

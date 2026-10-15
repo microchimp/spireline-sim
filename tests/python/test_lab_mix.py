@@ -130,14 +130,15 @@ class YieldTest(unittest.TestCase):
 
     def test_groups_and_fix_ready_come_from_by_job(self):
         doc = {"groups": [
-            {"id": "G1", "host_suspect": False, "by_job": {"J1": {"n": 2, "ready": 1}, "J2": {"n": 1, "ready": 1}}},
+            {"id": "G1", "host_suspect": False, "by_job": {"J1": {"n": 2, "ready": 1, "gap": 0}, "J2": {"n": 1, "ready": 1}}},
             {"id": "G2", "host_suspect": True, "by_job": {"J1": {"n": 1, "ready": 1}}},   # host-flagged: a group, not fix-ready
             {"id": "G3", "host_suspect": False, "by_job": {"J1": {"n": 4, "ready": 0}}},  # nothing traced
+            {"id": "G5", "host_suspect": False, "by_job": {"J1": {"n": 2, "ready": 0, "gap": 2}}},  # a card screen the mirror missed
             {"id": "G4", "host_suspect": False, "by_job": {"J2": {"n": 1, "ready": 1}}}]}
-        self.assertEqual((3, 1), mix.job_groups(doc, "J1"))
-        self.assertEqual((2, 2), mix.job_groups(doc, "J2"))
-        self.assertEqual((0, 0), mix.job_groups(doc, "J9"))
-        self.assertEqual((0, 0), mix.job_groups({"groups": []}, "J1"))
+        self.assertEqual((4, 1, 1), mix.job_groups(doc, "J1"))
+        self.assertEqual((2, 2, 0), mix.job_groups(doc, "J2"))
+        self.assertEqual((0, 0, 0), mix.job_groups(doc, "J9"))
+        self.assertEqual((0, 0, 0), mix.job_groups({"groups": []}, "J1"))
         self.assertIsNone(mix.job_groups({"groups": [{"id": "G1"}]}, "J1"))  # an older lab_groups: cannot say
         self.assertIsNone(mix.job_groups(None, "J1"))
 
@@ -145,13 +146,14 @@ class YieldTest(unittest.TestCase):
         job = self.job()
         data = {"name": job.name, "job": "fights", "main_sha": "abcdef0123", "rc": 0, "cpu_secs": 150, "wall_secs": 90,
                 "params": {"strategy": "aimed-bugs"}}
-        doc = {"groups": [{"host_suspect": False, "by_job": {job.name: {"n": 1, "ready": 1}}}]}
+        doc = {"groups": [{"host_suspect": False, "by_job": {job.name: {"n": 1, "ready": 1}}},
+                          {"host_suspect": False, "by_job": {job.name: {"n": 1, "ready": 0, "gap": 1}}}]}
         row = mix.yield_row(job, data, doc, True, "2026-10-15T01:00:00Z")
-        self.assertEqual(("aimed-bugs", "abcdef0", 2.5, 1.5, 6, 2, 3, 1, 1),
+        self.assertEqual(("aimed-bugs", "abcdef0", 2.5, 1.5, 6, 2, 3, 2, 1, 1),
                          (row["strategy"], row["main"], row["cpu_min"], row["wall_min"], row["fights"], row["mismatches"], row["unbuildable"],
-                          row["groups"], row["fix_ready"]))
+                          row["groups"], row["fix_ready"], row["screen_groups"]))
         na = mix.yield_row(job, data, doc, False, "t")  # the groups step did not finish: no count is better than a stale one
-        self.assertEqual(("NA", "NA"), (na["groups"], na["fix_ready"]))
+        self.assertEqual(("NA", "NA", "NA"), (na["groups"], na["fix_ready"], na["screen_groups"]))
         lab = self.tmp / "lab"
         mix.append_yield(lab, row)
         mix.append_yield(lab, na)

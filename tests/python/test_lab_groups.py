@@ -393,9 +393,9 @@ class StrategyInputsTests(unittest.TestCase):
             self.assertEqual(1, len(doc["groups"]))
             g = doc["groups"][0]
             self.assertIn("relic:KIFUDA", g["entities"])
-            self.assertEqual({"20261015T0100-fights": {"n": 1, "ready": 0}}, g["by_job"])  # a mirror gap is never fix-ready
+            self.assertEqual({"20261015T0100-fights": {"n": 1, "ready": 0, "gap": 1}}, g["by_job"])  # a mirror gap is never fix-ready
 
-    def test_a_diverging_fight_with_a_gap_is_one_symptom_not_two(self):
+    def test_a_diverging_fight_with_a_gap_is_the_screen_not_its_later_divergence(self):
         with tempfile.TemporaryDirectory() as td:
             lab, _ = self.lab(td)
             job = lab / "runs" / "20261015T0100-fights"
@@ -403,7 +403,12 @@ class StrategyInputsTests(unittest.TestCase):
             write(job / "fights" / "c.verdicts.json", [{"seed": "CHOICE0000", "identical": False, "step": 2, "field": ".hand", "card": "BASH",
                                                         "diff": [[".hand", "a", "b"]], "mirror_gap": [0], "mirror_gap_why": {"0": "unsupported: selection"}}])
             got = lg.batch_symptoms(job / "fights" / "c", lab, "w")
-            self.assertEqual([".hand"], [s["field"] for s in got])
+            self.assertEqual(["setup.selection"], [s["field"] for s in got])  # what follows a gap says nothing about the emulator
+            self.assertEqual("relic:KIFUDA", got[0]["implicated"][0])
+            verdicts = json.loads((job / "fights" / "c.verdicts.json").read_text(encoding="utf-8"))
+            verdicts[0]["mirror_gap_why"] = {"0": "unsupported: relic in a fight"}  # another kind of gap: the divergence stays a symptom
+            write(job / "fights" / "c.verdicts.json", verdicts)
+            self.assertEqual([".hand"], [s["field"] for s in lg.batch_symptoms(job / "fights" / "c", lab, "w")])
 
     def test_a_batch_py_batch_without_verdicts_is_judged_from_its_records(self):
         import unittest.mock as mock
@@ -454,14 +459,15 @@ class StrategyInputsTests(unittest.TestCase):
             doc = self.groups(lab, td, hosts)
             self.assertEqual([2], [g["count"] for g in doc["groups"]])  # the same place, one group
             self.assertEqual(2, doc["groups"][0]["impact_runs_est"])
-            self.assertEqual({"20261015T0300-runs": {"n": 2, "ready": 2}}, doc["groups"][0]["by_job"])
+            self.assertEqual({"20261015T0300-runs": {"n": 2, "ready": 0, "gap": 0}}, doc["groups"][0]["by_job"])  # located, not traced
             self.assertEqual(4, lg.pool_size("run", job / "runs" / "r.runs.json", 0))  # the runs played, clean ones included
 
     def test_by_job_counts_the_symptoms_a_fixer_can_start_from(self):
-        mk = lambda ref, ev, gap: {"ref": ref, "first_event": ev, "mirror_gap": gap}  # noqa: E731
+        mk = lambda ref, ev, gap, field=".hand": {"ref": ref, "first_event": ev, "mirror_gap": gap, "field": field}  # noqa: E731
         got = lg.by_job([mk("runs/J1/fights/b#S1", "hand +A", False), mk("runs/J1/fights/b#S2", None, False),
-                         mk("runs/J1/fights/b#S3", "hand +A", True), mk("runs/J2/fights/b#S1", "x", False), mk("corpus:F1", "x", False)])
-        self.assertEqual({"J1": {"n": 3, "ready": 1}, "J2": {"n": 1, "ready": 1}}, got)
+                         mk("runs/J1/fights/b#S3", "hand +A", True), mk("runs/J1/fights/b#S4", "a screen", True, "setup.selection"),
+                         mk("runs/J2/fights/b#S1", "x", False), mk("corpus:F1", "x", False)])
+        self.assertEqual({"J1": {"n": 4, "ready": 1, "gap": 1}, "J2": {"n": 1, "ready": 1, "gap": 0}}, got)
 
 
 if __name__ == "__main__":

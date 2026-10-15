@@ -94,7 +94,7 @@ backlog for aimed-bugs, ...) is passed over with the reason, and one that fails 
 `LAB/yield.tsv`, one row when a job finishes (or is closed as superseded), so the next week's mix can be set from data:
 
 ```
-utc  job  strategy  main  rc  wall_min  cpu_min  fights  mismatches  unbuildable  groups  fix_ready
+utc  job  strategy  main  rc  wall_min  cpu_min  fights  mismatches  unbuildable  groups  fix_ready  screen_groups
 ```
 
 `cpu_min` is the CPU time of everything the runner started for the job (its Job Object), summed over the stretches of a
@@ -102,8 +102,11 @@ resumed job; `fights` are the verdicts the job wrote (for whole runs, the runs);
 `unbuildable` are fights the emulator's setup mirror could not build (a mirror gap) or that gave no result (an error),
 and runs with no result; `groups` are the root-mechanism groups of `lab_groups.py` with a symptom from this job (read
 from the `by_job` count of each group) and `fix_ready` those not host-suspect with a symptom from the job that has a
-traced first event and no mirror gap. `NA` where the job's groups step did not finish. The rows of the other job types
-carry the job type as strategy. The runner keeps each strategy's CPU seconds in `state.json` (`strategy_cpu`).
+traced first event and no mirror gap. `screen_groups` are the groups with a symptom from the job that is a card screen the
+setup mirror could not answer as the game was answered (what `choice-edges` looks for: a relic that allows up to N picks
+treated as exactly N, a card the game picked that the emulator does not offer); they are never fix-ready by that
+definition (the setup has a mirror gap), so this column is how that strategy's findings are counted. `NA` where the job's
+groups step did not finish. The rows of the other job types carry the job type as strategy. The runner keeps each strategy's CPU seconds in `state.json` (`strategy_cpu`).
 
 ## Lab folder
 
@@ -138,8 +141,9 @@ Interactive. Task Scheduler's idle test is its own (input, CPU, disk) and may co
 
 `-Trigger Logon` is the always-on version for a week away: starts at the user's logon, no idle condition, no stop at the end
 of idle, priority 7, no execution time limit, MultipleInstances IgnoreNew (a second start is ignored), restart on failure
-every 5 minutes up to 3 times, still Interactive and Limited with no password, and the runner gets `--always-on`. The idle
-mode stays the default.
+every 5 minutes up to 3 times, still Interactive and Limited with no password, and the runner gets `--always-on` (and not
+`--exit-with-parent`: a parent that Task Scheduler's service does not let the user's token open would read as gone and end a
+week's work at once; the Job Object that holds the task already kills every child when it stops). The idle mode stays the default.
 
 ## Tests
 
