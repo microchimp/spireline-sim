@@ -464,7 +464,8 @@ def plan_runs(c: Ctx) -> list[Step]:
     for i in range(p["batches"]):
         name = f"lab{c.job_name.split('-')[0]}-w{i:02d}"
         cmd = Cmd(f"runs-{i:02d}", ["{py}", "referee/runs.py", "--name", name, "--runs", str(p["run_batch"]), "--start", str(p["start"] + i),
-                                    "--procs", str(p["procs"]), "--game", "{game}", "--jobs", "{job}/runs"],
+                                    "--procs", str(p["procs"]), "--stop-after-act", str(p.get("stop_after_act", 3)), "--game", "{game}",
+                                    "--jobs", "{job}/runs"],
                   needs=["{tree}/referee/runs.py", "{tree}/" + EMUDUMP, "{tree}/" + DRIVER_DLL], mkdirs=["{job}/runs"],
                   cleanup=[f"{{job}}/runs/{name}.*", f"{{job}}/runs/scratch/{name}-*"], ok_rcs=(0, 1, 3, 4),  # 3: a session crashed, 4: halted below
                   post=_halt_on_unsafe_runs(name), core=True, counts={"runs": p["run_batch"]}, outputs={"runs": f"runs/{name}.runs.json"})

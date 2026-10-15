@@ -127,6 +127,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--runs", type=int, default=40, help="whole runs in one whole-runs job")
     ap.add_argument("--run-batch", type=int, default=10, help="whole runs per runs.py call (a safe point between calls)")
     ap.add_argument("--run-procs", type=int, default=4, help="game sessions per runs.py call")
+    ap.add_argument("--run-stop-act", type=int, default=3, help="a whole run stops after this act (3: the whole run; 1 for a short trial)")
     ap.add_argument("--procs", type=int, default=8, help="processes for the corpus check")
     ap.add_argument("--mutants", type=int, default=150)
     ap.add_argument("--idle-seconds", type=float, default=60.0, help="user input within this many seconds stops the lab")
@@ -358,7 +359,7 @@ class Runner:
                     "trace_minutes": a.trace_minutes, "strategy": self.next_strategy}
         if job == "runs":
             return {"batches": max(1, math.ceil(a.runs / max(1, a.run_batch))), "run_batch": a.run_batch, "start": st["next_run_start"],
-                    "procs": a.run_procs, "strategy": "whole-runs"}
+                    "procs": a.run_procs, "stop_after_act": a.run_stop_act, "strategy": "whole-runs"}
         if job == "probes":
             return {"probe_ids": plans.probe_ids(Path(a.backlog_dir))}
         if job == "mutation":

@@ -22,7 +22,7 @@ python tools/lab/runner.py [--lab D:/spireline/referee/lab] [--tree D:/spireline
     [--skip PREFIX,...] [--no-guard user,load,disk,pause,lock,halt,parent] [--exit-with-parent] [--always-on]
     [--fights 300] [--batch 50] [--servers 8] [--procs 8] [--mutants 150]
     [--shrink 1000] [--shrink-cap 160] [--shrink-budget 6000] [--shrink-minutes 45] [--trace 1000] [--trace-minutes 20]
-    [--runs 40] [--run-batch 10] [--run-procs 4]
+    [--runs 40] [--run-batch 10] [--run-procs 4] [--run-stop-act 3]
     [--idle-seconds 60] [--load-pct 50] [--load-window 120] [--lab-gb 30] [--free-gb 50] [--grace 90]
     [--fork <main checkout>] [--branch main] [--game-src D:/spireline/referee/game] [--backlog-dir ...] [--backlog FILE]
     [--codex DATASET] [--decompiled DIR] [--records DIR] [--poll 2] [--wait-poll 10] [--idle-poll 300]
