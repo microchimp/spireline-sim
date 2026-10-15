@@ -4,6 +4,8 @@
     python -m tools.fidelity.packet --top 10 [--backlog backlog-c3.json] [--out DIR]     the first 10 open items
     python -m tools.fidelity.packet --fight <corpus fight id | corpus seed | refset id> [--out DIR]
     python -m tools.fidelity.packet --item-file item.json [--out DIR]                     an item written by hand
+    python -m tools.fidelity.packet <item id>... --groups LAB/groups.json [--lab LAB]     with the fix lab's fix kit (grades.json)
+    python -m tools.fidelity.packet --top N --groups LAB/groups.json --backlog <newest>   kits for the top N open items
 
 A packet answers, in this order, what a fixer would otherwise dig out of ten tools by hand:
 
@@ -31,6 +33,10 @@ packet and index.md tabulate them, so a thin packet is visible as thin.
 Only identifiers, paths and line numbers are written, never game code. The game side's state and event logs
 come from recordings the referee made; they stay under the referee folder, which is local and not committed.
 Packets are written to the referee backlog folder (default D:/spireline/referee/backlog/packets).
+
+With --groups (the fix lab's LAB/groups.json) each packet starts with a fix kit (tools/fidelity/kit.py): the matching
+groups' minimal repros replayed on this checkout, which ingredient causes them, a generated test verified to fail here,
+the game's rule pointer and the sibling sites, graded A/B/C in <out>/grades.json. Without --groups nothing changes.
 """
 
 from __future__ import annotations
@@ -59,6 +65,7 @@ if __name__ == "__main__":  # run as a script: import the package so pool worker
     sys.path.insert(0, str(ROOT))
 
 from tools.fidelity import fight_compare as fc  # noqa: E402
+from tools.fidelity import kit as kt  # noqa: E402
 from tools.fidelity import netstate_diff as nd  # noqa: E402
 from tools.fidelity import reanchor_compare as rc  # noqa: E402
 from tools.fidelity import sweep_table as sw  # noqa: E402
@@ -1048,11 +1055,14 @@ def override_rows(decompiled: Path, hook: str) -> list:
     return rows
 
 
-def make_sweep(target: str, decompiled: Path, idx: EngineIndex, mapping: dict, depth: int | None, out: Path) -> dict:
+def make_sweep(target: str, decompiled: Path, idx: EngineIndex, mapping: dict, depth: int | None, out: Path,
+               by_overrides: bool | None = None) -> dict:
     """sweep_table for one target, written in full to `out`; returns the rows and the counts. A bare hook name (no class) is swept
-    by its overrides.
+    by its overrides; by_overrides=False sweeps a bare name as an identifier (every use of it) instead.
     """
-    rows = override_rows(decompiled, target) if "." not in target else sw.decompile_callers(decompiled, target, depth)
+    if by_overrides is None:
+        by_overrides = "." not in target
+    rows = override_rows(decompiled, target) if by_overrides else sw.decompile_callers(decompiled, target, depth)
     built = sw.build_rows(rows, idx.idx, idx.test_idx, mapping, target, {})
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(sw.table(target, rows, built, mapping) + "\n" + sweep_stamp() + "\n", encoding="utf-8")
@@ -1604,6 +1614,8 @@ class Context:
     codex_runs: dict = dataclasses.field(default_factory=dict)  # line index -> run history, filled before the packets
     run_cases: dict = dataclasses.field(default_factory=dict)  # item id -> run_case
     id_map: dict = dataclasses.field(default_factory=dict)
+    kit_cfg: dict | None = None  # --groups: {"groups": doc, "lab": Path, "verify": bool}; None keeps the packet as it was
+    kits: dict = dataclasses.field(default_factory=dict)  # item id -> fix kit (precompute_kits)
 
     @classmethod
     def build(cls, src: Sources, work: Path, sweep_dir: Path, do_sweep: bool = True, refresh: bool = False) -> Context:
@@ -1778,9 +1790,15 @@ def build_packet(item: dict, cx: Context, out_dir: Path, forced: list | None = N
             secs[k].lines = ["- not applicable: this item is about what the checks cover, not about one step of a fight"]
             secs[k].done("n/a", "tests item: no fight step")
 
-    text = render(item, secs, cx, chosen, case)
-    return {"item": item, "text": text, "sections": {k: (v.status, v.why) for k, v in secs.items()},
-            "files": [rel(f, out_dir) for f in files], "chosen": chosen["id"] if chosen else None, "refs": refs}
+    kit = cx.kits.get(iid)
+    if kit is not None:
+        finish_kit(kit, secs)
+    text = render(item, secs, cx, chosen, case, kit)
+    pk_ = {"item": item, "text": text, "sections": {k: (v.status, v.why) for k, v in secs.items()},
+           "files": [rel(f, out_dir) for f in files], "chosen": chosen["id"] if chosen else None, "refs": refs}
+    if kit is not None:
+        pk_["kit"] = {"grade": kit["grade"], "missing": kit["missing"]}
+    return pk_
 
 
 def about_opening(item: dict) -> bool:
@@ -2329,7 +2347,7 @@ def ledger_section(refs, cx, s) -> list:
 
 # ------------------------------------------------------------------ rendering
 
-def render(item: dict, secs: dict, cx: Context, chosen, case) -> str:
+def render(item: dict, secs: dict, cx: Context, chosen, case, kit: dict | None = None) -> str:
     em = cx.emu.dll
     info = {}
     if em:
@@ -2342,8 +2360,10 @@ def render(item: dict, secs: dict, cx: Context, chosen, case) -> str:
             + f"; EmuDump {'sha ' + info['emudump_sha256'][:8] if info.get('emudump_sha256') else 'not available'}"
             + (" STALE (a source is newer than the build)" if info.get("stale_build") else "")
             + (f"; first divergences from corpus run {cx.run.label}" if cx.run else "; no corpus run"),
-            "- no game process was started for this packet", "", "## Completeness", "",
-            "| # | section | status | reason |", "|---|---|---|---|"]
+            "- no game process was started for this packet", ""]
+    if kit is not None:  # --groups: the fix kit comes first, it is what the fixer reads before anything else
+        head += kit["lines"] + [""]
+    head += ["## Completeness", "", "| # | section | status | reason |", "|---|---|---|---|"]
     for n, (k, t) in enumerate(SECTIONS, 1):
         head.append(f"| {n} | {t} | {secs[k].status} | {secs[k].why or '-'} |")
     head += ["", "## The item", "", f"> {clip(item.get('evidence'), 1800)}", "",
@@ -2357,6 +2377,252 @@ def render(item: dict, secs: dict, cx: Context, chosen, case) -> str:
 def completeness(sections: dict) -> str:
     c = collections.Counter(v[0] for v in sections.values())
     return ", ".join(f"{c[s]} {s}" for s in STATUS if c[s])
+
+
+# ================================================================== fix kits (--groups; tools/fidelity/kit.py has the parts)
+
+def kit_repros(group: dict, cx: Context, index: kt.RecordIndex) -> list:
+    """The group's examples (smallest first, at most kit.MAX_EXAMPLES), each with its game record from the lab and, when
+    EmuDump is there, the first step this checkout gets wrong on it."""
+    reps = []
+    for ex in group.get("examples", [])[: kt.MAX_EXAMPLES]:
+        ref = ex.get("ref")
+        seed = ex.get("seed") or (ref if isinstance(ref, str) and kt.SEED.match(ref) else None)
+        rec, where = index.find(ref, ex.get("minimal_setup"), seed)
+        r = {"ex": ex, "rec": rec, "where": where, "now": None, "status": "no record"}
+        if rec is not None and cx.emu.available:
+            try:
+                fw = kt.first_wrong(rec, cx.emu.run("fight", [rec])["results"][0], cx.nm)
+                r["now"], r["status"] = fw, ("reproduces" if fw else "matches")
+            except EmuError as e:
+                r["status"], r["err"] = "emulator error", str(e)
+        elif rec is not None:
+            r["status"] = "not replayed (no EmuDump)"
+        reps.append(r)
+    return reps
+
+
+def kit_implicated(group: dict, prim: dict | None) -> list:
+    """(entity key, why) pairs a rule pointer starts from: the shrink's culprits, the group's entities, the card played at the
+    wrong step, the fight, and the Neow pick when the divergence is at the fight's start or the shrink left the fight alone."""
+    culp = kt.culprits(group)
+    out = [(k, "the shrink's culprit") for k in culp] + [(e, "named by the group") for e in group.get("entities", []) if e not in culp]
+    rec = (prim or {}).get("rec") or {}
+    step, _d, act = prim["now"] if prim and prim.get("now") else (None, None, None)
+    if act and act.get("card"):
+        out.append((act["card"], "played at the wrong step"))
+    if act and act.get("potion"):
+        out.append((act["potion"], "used at the wrong step"))
+    fight = (rec.get("fight") or {}).get("id")
+    if fight:
+        out.append((fight, "the fight"))
+    opts, pick = rec.get("neow_options") or [], rec.get("neow_pick")
+    if isinstance(pick, int) and 0 <= pick < len(opts) and (step == 0 or not culp):
+        out.append((opts[pick], "the Neow pick"))
+    seen, uniq = set(), []
+    for k, why in out:
+        if k and str(k) not in seen:
+            seen.add(str(k))
+            uniq.append((str(k), why))
+    return uniq
+
+
+def kit_sweep(target: str, cx: Context, hook_names: set) -> dict | None:
+    """A sweep for the kit: a hook by its overrides, a bare method name that is no hook by its call sites, Class.Member by its uses."""
+    by_overrides = "." not in target and target in hook_names
+    ident = "." not in target and not by_overrides  # a bare game method: its uses, in a table of its own name
+    cached = cx.sweep_dir / f"{sweep_cache_name(target)}{'.uses' if ident else ''}.md"
+    key = target + (" uses" if ident else "")
+    res = cx.sweeps.get(key) or (parse_sweep(cached, target) if sweep_fresh(cached) else None)
+    if res is None and cx.do_sweep and cx.decomp.root:
+        with contextlib.suppress(Exception):
+            res = make_sweep(target, cx.decomp.root, cx.engine, read_json(cx.src.sweep_map, {}), 1, cached, by_overrides=by_overrides)
+    if res:
+        res["file"], res["by_overrides"] = cached.name, by_overrides
+        cx.sweeps[key] = res
+    return res
+
+
+def precompute_kits(items: list, cx: Context, out: Path) -> None:
+    """Every item's fix kit, before the packets: the matching groups' repros replayed, one scratch build for all the generated
+    tests (only those that fail as stated are kept, in <packets>/<id>/kit-test/), rule pointers and sibling tables."""
+    cfg = cx.kit_cfg
+    index = kt.RecordIndex(cfg["lab"])
+    seeds = {m["seed"] for m in cx.metas}
+    hook_check = kt.load_hook_check(cx.sweep_dir / "hook_check.json", sweep_stamp(), cx.decomp.root) if cx.do_sweep else None
+    hook_names = {r["hook"] for r in (hook_check or {}).get("rows", [])}
+    for p in cx.decomp.files.get("AbstractModel", []) if not hook_names and cx.decomp.root else []:  # no hook table: the virtuals
+        hook_names |= set(re.findall(r"\bvirtual\s+(?:async\s+)?[\w<>\[\],.? ]+?\s+(\w+)\s*\(", cx.decomp.text(p)))
+    sha = git("rev-parse", "HEAD")
+    tests: dict = {}
+    for it in items:
+        iid = it["id"]
+        refs = refs_of(it, cx.names, seeds, cx.decomp)
+        matches = kt.matching_groups(it, set(refs.entities), cfg["groups"])
+        probes = probe_matches(it, refs, cx.probes, cx.names)
+        kit = {"item": it, "sha": sha, "groups": [], "more": len(matches[kt.MAX_GROUPS:]), "hook_check": bool(hook_check),
+               "probes": [(v["id"], v.get("status"), gc) for _, v, gc, _ in probes],
+               "pointers": kt.rule_pointers([], "", None, refs.game_calls, [gc for _, _, gc, _ in probes], cx.names, cx.decomp,
+                                            lambda p: rel_decomp(p, cx)),
+               "cmd_sweeps": list(sweep_targets(refs))}
+        tdir = out / iid / "kit-test"
+        if tdir.is_dir():
+            shutil.rmtree(tdir)  # a kit's test is only ever the one verified on this checkout
+        for g, how in matches[: kt.MAX_GROUPS]:
+            reps = kit_repros(g, cx, index)
+            prim = next((r for r in reps if r["status"] == "reproduces"), None)
+            field = prim["now"][1][0][0] if prim else str((g.get("key") or {}).get("field") or (g["examples"] or [{}])[0].get("field") or "")
+            hook = kt.event_hook(g, prim["ex"] if prim else (g["examples"] or [None])[0])
+            impl = kit_implicated(g, prim)
+            e = {"group": g, "how": how, "reps": reps, "primary": prim, "test": None, "implicated": impl, "field": field,
+                 "pointers": kt.rule_pointers(impl, field, hook, [], [], cx.names, cx.decomp, lambda p: rel_decomp(p, cx)),
+                 "targets": kt.sibling_targets(impl, field, hook, cx.names, cx.decomp, hook_names), "hook_names": hook_names}
+            if prim and cfg["verify"] and cx.emu.available:
+                step, d, _ = prim["now"]
+                cls = kt.cs_name("Kit", iid, prim["rec"].get("seed"), str(g["id"])[:8])
+                meta = {"item": iid, "title": it.get("title"), "group": g["id"], "where": "LAB/" + prim["where"], "sha": sha[:8],
+                        "setup": ", ".join(f"{c} {i}" for c, i in kt.setup_items(prim["rec"].get("setup")))}
+                tests[cls] = (e, step, d[0][0], kt.test_source(cls, meta, prim["rec"], step, d[0][0]), tdir)
+            kit["groups"].append(e)
+        cx.kits[iid] = kit
+    if tests:
+        with tempfile.TemporaryDirectory(prefix="kit-") as tmp:
+            res = kt.verify_tests({c: t[3] for c, t in tests.items()}, Path(cx.emu.dll), Path(tmp))
+        for cls, (e, step, path, src, tdir) in tests.items():
+            r = res.get(cls, {"outcome": "error", "message": "not run"})
+            e["test"] = {"cls": cls, "result": r, "step": step, "path": path, "kept": kt.fails_as_stated(r, step, path), "file": None,
+                         "rel": f"{tdir.parent.name}/kit-test/{cls}.cs"}
+            if e["test"]["kept"]:
+                tdir.mkdir(parents=True, exist_ok=True)
+                (tdir / f"{cls}.cs").write_text(src, encoding="utf-8")
+                e["test"]["file"] = tdir / f"{cls}.cs"
+    for kit in cx.kits.values():
+        for e in kit["groups"]:
+            e["sweeps"] = [s for s in (kit_sweep(t, cx, e["hook_names"]) for t in e["targets"]) if s]
+            models = set()
+            for key, why in e["implicated"]:
+                if why in kt.MAIN:
+                    models.update(p.stem for p in kt.class_files(key, cx.names, cx.decomp)[:1])
+            e["hook_rows"] = kt.hook_rows(hook_check, models, {t for t in e["targets"] if t in hook_names})
+        kit["cmd_sweeps"] = [s for s in (kit_sweep(t, cx, hook_names) for t in kit["cmd_sweeps"]) if s]
+
+
+def kit_sweep_lines(s: dict, want: set, limit: int = 6) -> list:
+    """A sweep table in a few lines: its counts, the implicated models' rows, then rows with no or a weak emulator site."""
+    rows = [r for r in s["rows"] if not r["game caller"].startswith("Mock") and "autoslay" not in r["kind"]]
+    by = collections.Counter(r["match"] for r in rows)
+    what = "classes that override it" if s.get("by_overrides", "." not in s["target"]) else "game sites"
+    own = [r for r in rows if any(len(norm(k)) >= 4 and norm(k) in norm(r["game caller"].split(".")[0]) for k in want)]
+    rest = sorted((r for r in rows if r not in own), key=lambda r: (r["match"] != "none", r["match"] != "weak", r["game caller"]))
+    out = [f"- sweep `{s['target']}`: {s['n']} {what} ({', '.join(f'{k} {v}' for k, v in by.most_common())}); full table: "
+           f"sweeps/{s.get('file') or sweep_cache_name(s['target']) + '.md'}"]
+    for r in (own + rest)[:limit]:
+        out.append(f"  - {r['game caller']} ({r['decompile']}, {r['kind']}) -> {clip(r['emulator sites'].replace('<br>', ' ; '), 160)} [{r['match']}]"
+                   + ("  <- implicated" if r in own else ""))
+    if len(rows) > limit:
+        out.append(f"  - ...(+{len(rows) - limit} more in the full table)")
+    return out
+
+
+def _vals(d: list, n: int = 240) -> str:
+    path, g, e = d[0]
+    more = f" (+{len(d) - 1} more: {', '.join(x[0] for x in d[1:5])})" if len(d) > 1 else ""
+    return f"{path}: game {clip(json.dumps(g), n)} | emulator {clip(json.dumps(e), n)}{more}"
+
+
+def finish_kit(kit: dict, secs: dict) -> None:
+    """Grade the kit (now that the packet's sections say what they found) and write its lines."""
+    have = set()
+    G = kit["groups"]
+    if any(e["primary"] for e in G):
+        have.add("minimal repro")
+    elif any(r["ex"].get("minimal_setup") and r["ex"].get("step") is not None and r["status"] in ("no record", "not replayed (no EmuDump)")
+             for e in G for r in e["reps"]):
+        have.add("minimal repro")  # the lab's stored values, not checked again here
+    if any(e["test"] and e["test"]["kept"] for e in G):
+        have.add("failing test")
+    if any("." in p["what"] for e in G for p in e["pointers"]) or any("." in p["what"] for p in kit["pointers"]):
+        have.add("rule pointer")
+    if any(s["n"] for e in G for s in e.get("sweeps", [])) or any(e.get("hook_rows") for e in G if e["targets"]):
+        have.add("sibling list")
+    if any(r["ex"].get("first_event") for e in G for r in e["reps"]) or secs["event"].status == "full":
+        have.add("first differing event")
+    if any(e["group"].get("ingredient_effect") for e in G):
+        have.add("ingredient effect")
+    if kit["probes"] or secs["probe"].status in ("full", "partial"):
+        have.add("probe answer")
+    kit["grade"], kit["missing"] = kt.grade(have)
+    L = [f"## Fix kit [grade {kit['grade']}]", "",
+         f"- grade {kit['grade']} (A: minimal repro + failing test verified + rule pointer + sibling list; B: minimal repro + rule pointer; "
+         f"C: the rest); has {', '.join(p for p in kt.PARTS if p in have) or 'nothing'}; missing {', '.join(kit['missing']) or 'nothing'}",
+         f"- {len(G)} lab group(s) match this item" + (f" (+{kit['more']} more, not expanded)" if kit["more"] else "")]
+    kept = [e["test"] for e in G if e["test"] and e["test"]["kept"]]
+    if kept:
+        t = kept[0]
+        L.append(f"- start here: run the failing test, `python -m tools.fidelity.kit verify <packets>/{t['rel']}` (<packets> is this packet's folder; on fork {kit['sha'][:8]} it fails with "
+                 f"\"KIT step {t['step']} {t['path']}: ...\"); read the game's rule below; fix the mechanism at every sibling site; the test "
+                 "then passes, and the group's other repros should match too")
+    for e in G:
+        g = e["group"]
+        key = g.get("key") or {}
+        L += ["", f"### Group {g['id']}: {clip(g.get('title') or '-', 160)} (matched by {e['how']})", "",
+              f"- key: {clip('; '.join(f'{k} ' + (', '.join(map(str, v)) if isinstance(v, list) else str(v)) for k, v in key.items()), 300) or '-'}; {g.get('count', '?')} divergences, impact ~{g.get('impact_runs_est', '?')} runs, "
+              f"first seen {g.get('first_seen_utc', '?')}, relation {g.get('relation', '?')}, sources {', '.join(map(str, g.get('sources') or [])) or '-'}"]
+        if g.get("host_suspect"):
+            L.append(f"- HOST SUSPECT: {clip(g.get('host_reason') or 'no reason given', 240)} (the game host may be the cause, not the emulator)")
+        L.append("- minimal repros (smallest first):")
+        for r in e["reps"]:
+            ex = r["ex"]
+            setup = ", ".join(f"{c} {i}" for c, i in kt.setup_items(ex.get("minimal_setup"))) or "-"
+            line = f"  - {(r['rec'] or {}).get('seed') or ex.get('ref') or '?'}: minimal setup [{setup}]; record " + (f"LAB/{r['where']}" if r["rec"] else r["where"])
+            if r["status"] == "reproduces":
+                step, d, act = r["now"]
+                line += f"; on this checkout first wrong at step {step} (after {kt.action_label(act)}), {_vals(d)}"
+            elif r["status"] == "matches":
+                line += "; MATCHES the game on this checkout (fixed since the lab saw it, or the record is not the group's)"
+            else:
+                line += f"; {r['status']}" + (f" ({clip(r.get('err'), 160)})" if r.get("err") else "")
+            L.append(line)
+            if ex.get("step") is not None or ex.get("field"):
+                L.append(f"    - the lab saw: step {ex.get('step')} {ex.get('field')}: game {clip(ex.get('game'), 160)} | emulator {clip(ex.get('emu'), 160)} (from {ex.get('source', '?')})")
+            if ex.get("first_event"):
+                L.append(f"    - first differing event: {kt.event_text(ex['first_event'])}")
+        eff = g.get("ingredient_effect") or []
+        if eff:
+            cause = [str(x.get("item")) for x in eff if x.get("removal_vanishes")]
+            inert = [str(x.get("item")) for x in eff if not x.get("removal_vanishes")]
+            L.append(f"- which ingredient causes it: {', '.join(cause) or 'none alone (the fight itself, or the Neow pick)'}"
+                     + (f"; removing any of {', '.join(inert[:12])}{' ...' if len(inert) > 12 else ''} leaves it" if inert else ""))
+        t = e["test"]
+        if t and t["kept"]:
+            L.append(f"- failing test: {t['rel']} ({t['cls']}); verified on fork {kit['sha'][:8]}: FAILS with \"{clip(t['result']['message'], 300)}\"")
+        elif t:
+            L.append(f"- failing test: not kept, {t['result']['outcome']}: {clip(t['result']['message'], 240) or '-'} (expected \"KIT step {t['step']} {t['path']}:\")")
+        elif e["primary"]:
+            L.append("- failing test: not generated (--no-kit-test or no EmuDump)")
+        else:
+            L.append("- failing test: none (no repro of this group diverges on this checkout)")
+        L.append(f"- implicated: {'; '.join(f'{k} ({why})' for k, why in e['implicated']) or '-'}")
+        L.append("- the game's rule (decompile names, paths and lines; no code):" if e["pointers"] else "- the game's rule: no decompiled class found for the implicated entities")
+        L += [f"  - {p['what']} at {p['where']}: {p['why']}" for p in e["pointers"]]
+        if e["targets"] or e.get("hook_rows"):
+            L.append(f"- siblings (every game site of {', '.join(e['targets']) or 'the implicated models'}; fix the mechanism, not one model):")
+            for s in e.get("sweeps", []):
+                L += ["  " + x for x in kit_sweep_lines(s, {k for k, _ in e["implicated"]})]
+            if e.get("hook_rows"):
+                L.append("  - hook table (tools/fidelity/hook_table.py check):")
+                L += ["  " + x for x in e["hook_rows"]]
+        else:
+            L.append("- siblings: no hook, command, stream or enum member found to sweep" + ("" if kit["hook_check"] else " (no hook table: --no-sweep or no decompile)"))
+    if kit["pointers"]:
+        L += ["", "- the item's own pointers (its evidence and probes):"] + [f"  - {p['what']} at {p['where']}: {p['why']}" for p in kit["pointers"]]
+    for s in kit["cmd_sweeps"]:
+        L += kit_sweep_lines(s, set())
+    if kit["probes"]:
+        L.append("- probe answers (section 6 has them in full): " + "; ".join(f"{pid} {st}" + (f" ({clip(gc, 60)})" if gc else "") for pid, st, gc in kit["probes"]))
+    if not G:
+        L.append("- no lab group names this item or shares its implicated entities: nothing the lab measured is tied to it yet")
+    kit["lines"] = L
 
 
 # ================================================================== running
@@ -2416,13 +2682,21 @@ def write_packets(items: list, cx: Context, out: Path, forced: dict | None = Non
     out.mkdir(parents=True, exist_ok=True)
     precompute_sweeps(items, cx, jobs)
     precompute_runs(items, cx)
+    if cx.kit_cfg is not None:
+        precompute_kits(items, cx, out)
     results = []
     for it in items:
         pk = build_packet(it, cx, out, (forced or {}).get(it["id"]))
         (out / f"{it['id']}.md").write_text(pk["text"], encoding="utf-8")
         results.append(pk)
         if not quiet:
-            print(f"{it['id']}: {completeness(pk['sections'])}")
+            print(f"{it['id']}: {completeness(pk['sections'])}" + (f"; kit grade {pk['kit']['grade']}" if "kit" in pk else ""))
+    if cx.kit_cfg is not None:  # packets/grades.json: every kit in the folder (a run of one item keeps the others')
+        sha = git("rev-parse", "HEAD")
+        grades = read_json(out / "grades.json", {}) or {}
+        grades.update({pk_["item"]["id"]: {"grade": pk_["kit"]["grade"], "missing": pk_["kit"]["missing"], "main_sha": sha}
+                       for pk_ in results if "kit" in pk_})
+        (out / "grades.json").write_text(json.dumps(grades, indent=1, sort_keys=True), encoding="utf-8")
     # the index lists every packet in the folder: a run of one item keeps the others' rows
     comp = read_json(out / "completeness.json", {}) or {}
     comp.update({pk["item"]["id"]: {k: list(v) for k, v in pk["sections"].items()} for pk in results})
@@ -2440,6 +2714,7 @@ def write_packets(items: list, cx: Context, out: Path, forced: dict | None = Non
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
+    ap.add_argument("ids", nargs="*", help="backlog item ids (as --item)")
     ap.add_argument("--item", action="append", default=[], help="a backlog item id (repeatable)")
     ap.add_argument("--top", type=int, help="the first N open items of the backlog (in its order: by impact)")
     ap.add_argument("--fight", action="append", default=[], help="a corpus fight id or seed, or a reference-set id")
@@ -2455,7 +2730,11 @@ def main(argv=None) -> int:
     ap.add_argument("--jobs", type=int, default=4, help="processes for the sweep tables")
     ap.add_argument("--codex-walk", type=Path, help="a folder of EmuDump codex outputs (default: <referee>/codex-walk, the newest folder in it)")
     ap.add_argument("--codex-data", type=Path, help="the run histories (default: <referee>/../data/spire-codex/runs-v0.107.1.jsonl.gz)")
+    ap.add_argument("--groups", type=Path, help="the fix lab's groups.json: add a fix kit to each packet and write grades.json (tools/fidelity/kit.py)")
+    ap.add_argument("--lab", type=Path, help="the lab the groups' refs are relative to (default: the folder of --groups)")
+    ap.add_argument("--no-kit-test", action="store_true", help="with --groups: do not generate, compile or run the kits' failing tests")
     a = ap.parse_args(argv)
+    a.item = list(a.ids) + [i for i in a.item if i not in a.ids]
 
     kw = {"run": a.run} if a.run else {}
     if a.codex_walk:
@@ -2493,9 +2772,12 @@ def main(argv=None) -> int:
         ap.error("give --item, --top, --fight or --item-file")
     with tempfile.TemporaryDirectory(prefix="packet-") as tmp:
         cx = Context.build(src, Path(tmp), out / "sweeps", do_sweep=not a.no_sweep, refresh=a.refresh_probes)
+        if a.groups:
+            cx.kit_cfg = {"groups": kt.load_groups(a.groups), "lab": a.lab or a.groups.resolve().parent, "verify": not a.no_kit_test}
         results = write_packets(items, cx, out, forced, a.jobs)
     for pk_ in results:  # what the loop hands to each fixer: the path of its packet
-        print(f"packet {pk_['item']['id']}: {(out / (pk_['item']['id'] + '.md')).resolve().as_posix()}")
+        print(f"packet {pk_['item']['id']}: {(out / (pk_['item']['id'] + '.md')).resolve().as_posix()}"
+              + (f" (kit grade {pk_['kit']['grade']})" if "kit" in pk_ else ""))
     print(f"packets: {out}")
     return 0
 
