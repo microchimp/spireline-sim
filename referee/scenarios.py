@@ -17,13 +17,14 @@ own content tables (the export, see RUNBOOK "Table check"), limited to what EmuD
 - targets (the fix lab): each spec aims at one target of tools/fidelity/lab_targets.py's list, drawn by
   weight, and stays realistic: the act the Codex profile (aggregate counts, LAB/cache/codex_profile.json)
   says the target is held in or met in (the act item from act 2 on; in act 1 a seed whose act-1 variant
-  is known to match, LAB/cache/act1_seeds.json, when one is), a room and encounter of that act by how
-  often real runs meet them, a deck of that act's size with its Strikes and Defends (one deck_set item),
-  then cards, relics and potions drawn by how often real runs hold them at that act, mixed half and half
-  with how often they are held together with the target. Each card, relic and potion is its own item,
-  so the shrinker can tell which ones the divergence needs. Diverging fights are shrunk (--shrink) and
+  is known to match, LAB/cache/act1_seeds.json, when one is; no seed twice in a batch), a room and
+  encounter of that act by how often real runs meet them, a deck of that act's size with its Strikes and
+  Defends (one deck_set item), then cards, relics and potions drawn by how often real runs hold them at
+  that act, mixed half and half with how often they are held together with the target. Each card, relic
+  and potion is its own item, so the shrinker can tell which ones the divergence needs. Diverging fights are shrunk (--shrink) and
   traced (referee/trace_divergent.py, --trace N, default 40 in this mode) for their first differing event.
   --jobs puts every output in that folder instead of jobs-setup; <name>.aims.json names each spec's target
+  (and seed_from: cache for a seed borrowed from a recorded fight, fresh otherwise)
   and <name>.shrink.json every shrink case's status.
 
 Every spec uses potions (use_potions). The job goes to serve.py (one game per server), the results to
@@ -274,13 +275,14 @@ def _sample(rng: random.Random, pairs: list, k: int) -> list:
 
 class Aim:
     """What targets mode draws from: the lab's weighted targets (only those the setup can reach) and the
-    Codex profile's aggregate counts per act."""
+    Codex profile's aggregate counts per act. One Aim makes one batch: it keeps the batch's seeds apart."""
 
     def __init__(self, targets_doc: dict, profile_doc: dict | None, content: Content, act1_seeds: dict | None = None):
         from tools.fidelity.lab_targets import Profile  # noqa: PLC0415
         self.prof = Profile(profile_doc)
         self.content = content
         self.act1_seeds = dict(act1_seeds or {})
+        self.used, self.borrowed = set(), set()  # this batch's seeds; those taken from the cache
         self.enc = {e: (act, kind) for e, act, kind in content.encounters}
         self.cards, self.relics, self.potions = set(content.cards), set(content.relics), set(content.potions)
         self.card_power = {c + "_POWER": c for c in content.cards}
@@ -353,12 +355,21 @@ class Aim:
         return act, self.enc[e][0], e
 
     def seed(self, rng: random.Random, act: int, act_name: str) -> str:
-        """A seed whose act 1 is act_name when one is known (act-1 fights are met in the seed's own act 1)."""
+        """A seed whose act 1 is act_name when one is known (act-1 fights are met in the seed's own act 1).
+
+        Each seed is used once per batch (one Aim): cached seeds are drawn without replacement and a fresh one
+        is redrawn on a clash, since everything after the play step (shrink's minimal packs, traces, context
+        packs, lab_groups) is keyed by seed. A cached seed is noted in borrowed: it names another fight too."""
+        got = None
         if act == 1:
-            known = sorted(s for s, v in self.act1_seeds.items() if v == act_name)
+            known = sorted(s for s, v in self.act1_seeds.items() if v == act_name and s not in self.used)
             if known and rng.random() < 0.8:
-                return rng.choice(known)
-        return _seed(rng)
+                got = rng.choice(known)
+                self.borrowed.add(got)
+        while got is None or got in self.used:
+            got = _seed(rng)
+        self.used.add(got)
+        return got
 
     def draws(self, rng: random.Random, kind: str, pool: list, act: int, k: int, anchor: str | None) -> list:
         """k items of one kind (card, relic, potion) held at the act: half how often real runs hold each, half how
@@ -413,7 +424,8 @@ def aimed_spec(aim: Aim, rng: random.Random, n: int) -> tuple[dict, dict]:
     setup += [{"cmd": "potion", "id": p} for p in potions] + [{"cmd": "fight", "id": enc}] + after
     spec = _spec(rng, n, setup, "targets", aim.enc[enc][0], aim.enc[enc][1])
     spec["seed"] = aim.seed(rng, act, aim.enc[enc][0])
-    return spec, {"seed": spec["seed"], "target": f"{kind}:{ident}", "weight": w, "act": act, "encounter": enc}
+    return spec, {"seed": spec["seed"], "target": f"{kind}:{ident}", "weight": w, "act": act, "encounter": enc,
+                  "seed_from": "cache" if spec["seed"] in aim.borrowed else "fresh"}
 
 
 def act1_seed_cache(path: Path, games: list | None = None, scan: list | None = None) -> dict:

@@ -20,7 +20,8 @@ card or potion it acted with. Groups are made of equal signatures and then merge
 two groups with the same phase, field and event merge when their minimal setups differ only in ingredients
 that share a primitive or a hook (the game's own model classes in the decompile: the hooks each overrides,
 tools/fidelity/hook_table.py, and the game commands it calls), and an unshrunk symptom joins the shrunk group
-whose ingredients hold its card (or its encounter, for a start or end of turn). A feature shared by more than a
+whose ingredients hold its card (or its encounter, for a start or end of turn) when that is not a starter card
+and the fight is known to hold every other ingredient the group needs (join_target). A feature shared by more than a
 tenth of a kind's models (DamageCmd.Attack) does not count, unless the step's trace names that hook; a command
 data/sweep_map.json names (a swept mechanism) counts up to three tenths. A fight-alone minimal setup has its
 encounter as the ingredient (an encounter's features are its monsters'). Codex-walk stops group by component,
@@ -30,9 +31,10 @@ Each group gets a stable id (a hash of its key), its examples (smallest minimal 
 the game's and the emulator's value at the first wrong step), the ingredient effect, host_suspect (it matches
 a known gap of the headless host, referee/host_gaps.json, or a generic rule: setups no real run has, a game
 side that stands still, a trace that does not reproduce), the backlog items it matches (by entities, seeds
-the evidence cites and the field) with the relation: confirms (one item, one group), splits (the item matches
-several groups), merges (the group matches several items) or new, and impact_runs_est (real Ironclad A10
-runs that meet its ingredients together, from the lab's Codex profile; codex-walk groups count their runs).
+the evidence cites for the fight the seed names, see cited_seeds, and the field) with the relation: confirms
+(one item, one group), splits (the item matches several groups), merges (the group matches several items) or
+new, and impact_runs_est (real Ironclad A10 runs that meet its ingredients together, from the lab's Codex
+profile; codex-walk groups count their runs).
 summary.md: totals and the top 20 groups by impact, one line each. Paths are relative to LAB.
 """
 
@@ -55,6 +57,7 @@ for p in (ROOT, ROOT / "referee"):
         sys.path.insert(0, str(p))
 
 from tools.fidelity.lab_targets import (  # noqa: E402
+    BASIC_CARDS,
     REFEREE,
     Profile,
     newest_backlog,
@@ -300,8 +303,17 @@ def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None
     """The diverging fights of one setup or aimed batch (<prefix>.verdicts.json and its neighbours)."""
     verdicts = read_json(prefix.with_name(prefix.name + ".verdicts.json"), []) or []
     specs = (read_json(prefix.with_name(prefix.name + ".json"), {}) or {}).get("runs", [])
-    aims = {m["seed"]: m for m in (read_json(prefix.with_name(prefix.name + ".aims.json"), {}) or {}).get("aims", [])}
-    src = source or ("aimed" if aims or prefix.with_name(prefix.name + ".aims.json").exists() else "setup")
+    aim_list = (read_json(prefix.with_name(prefix.name + ".aims.json"), {}) or {}).get("aims", [])
+    src = source or ("aimed" if aim_list or prefix.with_name(prefix.name + ".aims.json").exists() else "setup")
+    # A seed on two specs of one batch (an older targets batch drew cached seeds with replacement): the spec, aim and
+    # game record are taken by index. Shrink and trace_divergent key their outputs by seed, so the shrink case, the
+    # minimal pack and the trace are used only when one of the seed's fights diverges; the trace also only when its
+    # step is past the start or its fight is the seed's last (a start divergence is traced off the reanchor record
+    # trace_divergent takes by seed, the last one).
+    dup = {s for s, n in collections.Counter(x.get("seed") for x in (specs or verdicts)).items() if n > 1}
+    dup_div = {s for s, n in collections.Counter(x.get("seed") for x in verdicts if not x.get("error")
+                                                 and not x.get("identical") and "step" in x).items() if n > 1}
+    last = {x.get("seed"): i for i, x in enumerate(specs or verdicts)}
     cases = shrink_cases(prefix)
     tdir = prefix.with_name(prefix.name + ".packs") / "traces"
     games = None
@@ -309,11 +321,13 @@ def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None
     for i, v in enumerate(verdicts):
         if v.get("error") or v.get("identical") or "step" not in v:
             continue
-        spec = specs[i] if i < len(specs) and specs[i].get("seed") == v.get("seed") else next(
-            (s for s in specs if s.get("seed") == v.get("seed")), {})
         seed = v["seed"]
-        case = cases.get(seed) or {}
-        mini = minimal_spec(prefix, seed) if case.get("status") in ("minimal", "capped") or not case else None
+        spec = by_index(specs, i, seed, seed in dup) or {}
+        aim = by_index(aim_list, i, seed, seed in dup) or {}
+        case = {} if seed in dup_div else cases.get(seed) or {}
+        mini = None
+        if seed not in dup_div and (case.get("status") in ("minimal", "capped") or not case):
+            mini = minimal_spec(prefix, seed)
         if mini is None and case.get("status") in ("minimal", "capped"):
             mini = {"setup": case.get("items", [])}
         enc = next((it.get("id") for it in spec.get("setup", []) if it.get("cmd") == "fight"), None)
@@ -321,16 +335,23 @@ def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None
         kept = [k for k in (item_key(it) for it in (mini or {}).get("setup", [])) if k] if mini else None
         if kept is not None and enc and not [k for k in kept if not k.startswith(("deck:", "act:"))]:
             kept.append(f"encounter:{enc}")  # the fight alone diverges: the encounter is the ingredient
-        tr = read_json(tdir / f"{seed}.trace.json")
+        traced_alone = seed not in dup or (seed not in dup_div and (v.get("step", 0) > 0 or last.get(seed) == i))
+        tr = read_json(tdir / f"{seed}.trace.json") if traced_alone else None
         event, hooks, text, repro = trace_event(tr)
         stale = False
         if v.get("step", 0) > 0:
             if games is None:
-                games = {g.get("seed"): g for g in (read_json(prefix.with_name(prefix.name + ".out.json"), {}) or {}).get("results", [])}
-            stale = stale_after(games.get(seed), v["step"])
+                games = (read_json(prefix.with_name(prefix.name + ".out.json"), {}) or {}).get("results", [])
+            stale = stale_after(by_index(games, i, seed, seed in dup), v["step"])
         diff = (v.get("diff") or [[None, None, None]])[0]
+        # a seed names this fight only when the batch made it fresh: a borrowed one (targets mode reuses seeds of
+        # recorded fights for their act-1 variant) also names the recorded fight a backlog item may cite
+        own = seed not in dup and (src != "aimed" or aim.get("seed_from") == "fresh")
+        held = sorted({entity_of(k) for k in full if not k.startswith(("deck:", "act:"))} | ({f"encounter:{enc}"} if enc else set()))
         out.append({
             "source": src, "ref": f"{rel(prefix, lab)}#{seed}", "seed": seed, "when": when,
+            "batch": [prefix.name] + ([prefix.parent.name] if prefix.parent.parent.name == "runs" else []), "seed_own": own,
+            "held": held,
             "step": v.get("step"), "field": v.get("field"), "phase": phase_of(v.get("card")), "card": v.get("card"),
             "game": clip(diff[1]), "emu": clip(diff[2]), "first_event": event, "event_text": clip(text, 240),
             "hooks": hooks, "reproducible": repro, "stale": stale, "flags": v.get("flags", []),
@@ -338,9 +359,16 @@ def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None
             "shrink": case.get("status") if case else None, "minimal_setup": (mini or {}).get("setup") if mini else None,
             "ingredients": sorted(set(kept)) if kept is not None else None,
             "dropped": sorted(set(full) - set(kept)) if kept is not None else [],
-            "implicated": implicated(v.get("card"), enc, kept), "aim": (aims.get(seed) or {}).get("target"),
+            "implicated": implicated(v.get("card"), enc, kept), "aim": aim.get("target"),
         })
     return out
+
+
+def by_index(rows: list, i: int, seed: str, shared: bool) -> dict | None:
+    """Row i of a batch file when it is this seed's, else the seed's own row (none when two fights share the seed)."""
+    if i < len(rows) and (rows[i] or {}).get("seed") == seed:
+        return rows[i]
+    return None if shared else next((r for r in rows if (r or {}).get("seed") == seed), None)
 
 
 def implicated(card, enc: str | None, kept: list | None) -> list:
@@ -604,9 +632,16 @@ def pair_explained(a: tuple, b: tuple, feats: Features, hooks: set) -> set | Non
 def group_symptoms(symptoms: list[dict], feats: Features) -> list[dict]:
     """Merge symptoms into root-mechanism groups; each group: its key, member indices, why it merged."""
     prelim: dict = collections.OrderedDict()
+    keys_of = [base_key(s) for s in symptoms]
+    shrunk_sizes = collections.Counter(k for k in keys_of if k[0] == "fight" and k[4] == "shrunk")
     for i, s in enumerate(symptoms):
-        prelim.setdefault(base_key(s), []).append(i)
+        k = keys_of[i]
+        if k[0] == "fight" and k[4] == "unshrunk":
+            to = join_target(s, k, shrunk_sizes)
+            k = k + (to,) if to else k
+        prelim.setdefault(k, []).append(i)
     keys = list(prelim)
+    index = {k: j for j, k in enumerate(keys)}
     dsu = DSU(len(keys))
     why: dict = collections.defaultdict(set)
     hooks_of = {k: {f"hook:{h}" for i in prelim[k] for h in symptoms[i].get("hooks", [])} for k in keys}
@@ -631,20 +666,8 @@ def group_symptoms(symptoms: list[dict], feats: Features) -> list[dict]:
             same = [s_ for s_ in shrunk if keys[s_][3] == keys[t][3]]
             if same:
                 dsu.union(t, max(same, key=lambda s_: len(prelim[keys[s_]])))
-        for u in (j for j in js if keys[j][4] == "unshrunk"):
-            imp = keys[u][5]
-            best = None
-            for s_ in shrunk:
-                ing = {entity_of(z) for z in keys[s_][5]}
-                direct = any(z in ing for z in imp)  # the acted card or the encounter is a weak hint: direct only
-                sh = set()
-                if direct:
-                    size = len(prelim[keys[s_]])
-                    if best is None or (direct, size) > (best[1], best[2]):
-                        best = (s_, direct, size, sh)
-            if best:
-                dsu.union(u, best[0])
-                why[dsu.find(u)] |= best[3]
+        for u in (j for j in js if keys[j][4] == "unshrunk" and len(keys[j]) > 6):
+            dsu.union(u, index[keys[u][6]])
     comps = collections.defaultdict(list)
     for j in range(len(keys)):
         comps[dsu.find(j)].append(j)
@@ -657,6 +680,30 @@ def group_symptoms(symptoms: list[dict], feats: Features) -> list[dict]:
             reasons |= why.get(j, set())
         groups.append({"keys": ks, "members": members, "mechanism": sorted(reasons)})
     return groups
+
+
+STARTER = frozenset(f"card:{c}" for c in BASIC_CARDS)  # every deck holds them: no hint of a mechanism
+
+
+def join_target(s: dict, k: tuple, shrunk_sizes: dict) -> tuple | None:
+    """The shrunk key (same phase and field) an unshrunk symptom joins, or None.
+
+    The acted card or the encounter is a weak hint, so it must be one no deck holds by default (not a starter
+    card), and the minimal setup's every needed ingredient (starter cards aside) must be one the unshrunk fight
+    is known to hold: its setup's items for a setup or aimed batch, else only what it acted with and its
+    encounter. The most common such shrunk key wins (the first on a tie)."""
+    hints = set(k[5]) - STARTER
+    if not hints:
+        return None
+    known = set(k[5]) | set(s.get("held") or ()) | ({f"encounter:{s['encounter']}"} if s.get("encounter") else set())
+    best = None
+    for sk, n in shrunk_sizes.items():
+        if (sk[1], sk[2]) != (k[1], k[2]):
+            continue
+        need = {entity_of(z) for z in sk[5] if not z.startswith(("deck:", "act:"))} - STARTER
+        if need & hints and need <= known and (best is None or n > best[1]):
+            best = (sk, n)
+    return best[0] if best else None
 
 
 def group_key(g: dict) -> dict:
@@ -748,27 +795,57 @@ def backlog_index(backlog: dict | None, id_map: dict) -> list[dict]:
     return out
 
 
+def seed_refs(g: dict) -> set:
+    """(seed, batch names, the seed names this fight alone) of a group's members; _seeds alone: own seeds."""
+    if "_seedrefs" in g:
+        return set(g["_seedrefs"])
+    return {(s, (), True) for s in g.get("_seeds", ()) if s}
+
+
+def names_batch(name: str, text: str) -> bool:
+    return bool(name) and re.search(rf"(?<![\w-]){re.escape(name.lower())}(?![\w-])", text) is not None
+
+
+def cited_seeds(refs: set, it: dict, batches_of: dict) -> set:
+    """The seeds an item's evidence cites for these symptoms' own fights. A seed may name several fights (targets
+    mode borrows recorded fights' seeds): when the evidence names one of the batches a seed was seen in, it cites
+    those batches' fights; when it names none, it cites the fight the seed is its own, never a borrowed copy."""
+    got = set()
+    for sd, names, own in refs:
+        if sd not in it["seeds"]:
+            continue
+        named = {b for b in batches_of.get(sd, ()) if names_batch(b, it["text"])}
+        if (named & set(names)) or (own and not named):
+            got.add(sd)
+    return got
+
+
 def match_backlog(groups: list[dict], items: list[dict], min_score: float = 2.5) -> None:
     """backlog_ids and relation on each group (see the module doc)."""
     df = collections.Counter(e.split(":", 1)[1] for it in items for e in {x for x in it["entities"]})
     n = max(1, len(items))
     # 3 for an id one item names, falling to 1 for one every item names: a lone id matches when few items name it
     idf = lambda e: 3.0 if df.get(e, 0) <= 1 else min(3.0, 1.0 + 2.0 * max(0.0, math.log((n + 1) / (1 + df[e]))) / math.log(max(3.0, (n + 1) / 2)))  # noqa: E731
+    refs = [seed_refs(g) for g in groups]
+    batches_of = collections.defaultdict(set)  # seed -> every batch name a symptom with it came from
+    for rs in refs:
+        for sd, names, _ in rs:
+            batches_of[sd] |= set(names)
     hits = collections.defaultdict(list)
     for gi, g in enumerate(groups):
         ents = {e.split(":", 1)[1] for e in g["_entities"]}
-        seeds = {s for s in g["_seeds"] if s}
         for it in items:
             item_ids = {e.split(":", 1)[1] for e in it["entities"]}
             common = ents & item_ids
-            score = sum(idf(e) for e in common) + 4.0 * len(seeds & it["seeds"])
+            seeds = cited_seeds(refs[gi], it, batches_of)
+            score = sum(idf(e) for e in common) + 4.0 * len(seeds)
             if score and g["_fields"] & it["fields"]:
                 score += 0.5
             if g["key"].get("family") == "run" and it.get("lane") == "run":
                 comp = (g["key"].get("parts") or [""])[0].split(".")[0]
                 if comp and comp.lower() in it["text"]:
                     score += 1.0
-            if (common or seeds & it["seeds"]) and score >= min_score:
+            if (common or seeds) and score >= min_score:
                 hits[gi].append((score, it["id"]))
     by_item = collections.defaultdict(list)
     for gi, hs in hits.items():
@@ -879,11 +956,12 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
             "ingredient_effect": [{"item": k, "removal_vanishes": v} for k, v in sorted(effect.items(), key=lambda kv: (not kv[1], kv[0]))][:24],
             "host_suspect": host, "host_reason": host_reason, "impact_runs_est": int(est),
             "sources": sorted({s["source"] for s in members}),
-            "_entities": ents, "_seeds": {s.get("seed") for s in members}, "_fields": {s.get("field") for s in members},
+            "_entities": ents, "_fields": {s.get("field") for s in members},
+            "_seedrefs": {(s["seed"], tuple(s.get("batch") or ()), bool(s.get("seed_own", True))) for s in members if s.get("seed")},
         })
     match_backlog(groups, items)
     for g in groups:
-        for k in ("_entities", "_seeds", "_fields"):
+        for k in ("_entities", "_seedrefs", "_fields"):
             g.pop(k, None)
     groups.sort(key=lambda g: (-g["impact_runs_est"], -g["count"], g["id"]))
     return groups

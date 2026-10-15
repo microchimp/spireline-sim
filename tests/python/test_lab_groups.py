@@ -67,12 +67,28 @@ class GroupingTests(unittest.TestCase):
         self.assertEqual(2, len(got))
 
     def test_unshrunk_symptom_joins_the_group_holding_its_card(self):
-        shrunk = sym("D1", ["card:BASH"], phase="play", card="BASH")
-        loose = sym("D2", None, phase="play", card="BASH", source="corpus")
+        shrunk = sym("D1", ["card:HEADBUTT"], phase="play", card="HEADBUTT")
+        loose = sym("D2", None, phase="play", card="HEADBUTT", source="corpus")
         other = sym("D3", None, phase="play", card="ANGER", source="corpus")
         got = self.groups([shrunk, loose, other])
         self.assertEqual(2, len(got))
         self.assertEqual({0, 1}, set(next(g for g in got if len(g["members"]) == 2)["members"]))
+
+    def test_unshrunk_joins_only_with_a_rare_card_and_every_needed_ingredient(self):
+        # a 3-item repro keeping a basic Strike once absorbed every unshrunk '.enemies after STRIKE_IRONCLAD' symptom
+        shrunk = sym("E1", ["card:HEADBUTT", "card:STRIKE_IRONCLAD", "potion:BLOCK_POTION", "deck:set"], phase="play",
+                     card="STRIKE_IRONCLAD", field=".enemies")
+        strike = sym("E2", None, phase="play", card="STRIKE_IRONCLAD", source="corpus", field=".enemies")
+        bash = sym("E3", None, phase="play", card="BASH", source="refset", field=".enemies")
+        headbutt = sym("E4", None, phase="play", card="HEADBUTT", source="corpus", field=".enemies")  # potion unknown
+        holds = sym("E5", None, phase="play", card="HEADBUTT", source="setup", field=".enemies",
+                    held=["card:HEADBUTT", "card:ANGER", "potion:BLOCK_POTION", "encounter:SLIMES_WEAK"])
+        lacks = sym("E6", None, phase="play", card="HEADBUTT", source="setup", field=".enemies",
+                    held=["card:HEADBUTT", "encounter:SLIMES_WEAK"])
+        got = self.groups([shrunk, strike, bash, headbutt, holds, lacks])
+        self.assertEqual([[0, 4], [1], [2], [3, 5]], sorted(sorted(g["members"]) for g in got))
+        key = lg.group_key(next(g for g in got if 1 in g["members"]))
+        self.assertEqual(([], ["card:STRIKE_IRONCLAD"]), (key["ingredients"], key["implicated"]))  # none it never had
 
     def test_traced_symptoms_group_by_their_event(self):
         ev = "play: game nothing; emulator player BLOCK_NEXT_TURN"
@@ -146,6 +162,21 @@ class HostAndBacklogTests(unittest.TestCase):
         self.assertEqual(("confirms", ["I4"]), rel[4])      # the item cites the group's seed
         self.assertEqual(("new", []), rel[5])
 
+    def test_seed_citations_count_for_the_fight_the_seed_names(self):
+        # targets mode borrowed SEEDSEED01 from cov60's recorded fight; aimed60s' fight with it is another fight
+        def match(text):
+            groups = [{"key": {"family": "fight"}, "_entities": {"potion:X"}, "_fields": set(),
+                       "_seedrefs": {("SEEDSEED01", ("aimed60s", "20261015T0100-fights"), False)}},
+                      {"key": {"family": "fight"}, "_entities": {"potion:Y"}, "_fields": set(),
+                       "_seedrefs": {("SEEDSEED01", ("cov60",), True)}}]
+            items = [{"id": "I1", "lane": "fight", "entities": set(), "seeds": {"SEEDSEED01"}, "fields": set(), "text": text}]
+            lg.match_backlog(groups, items)
+            return [g["backlog_ids"] for g in groups]
+        self.assertEqual([[], ["I1"]], match("block lost after seedseed01"))         # no batch named: the seed's own fight
+        self.assertEqual([[], ["I1"]], match("cov60 seedseed01 block lost"))
+        self.assertEqual([["I1"], []], match("lab aimed60s seedseed01 block lost"))  # the borrowed copy, named
+        self.assertEqual([["I1"], []], match("runs/20261015t0100-fights seedseed01"))
+
     def test_impact_from_the_profile(self):
         prof = Profile({"runs": 100, "meet": {"relic": {"EGG_A": 40, "LANTERN": 10}, "card": {"AGGRESSION": 30}},
                         "acts": {"1": {"relics": {"LANTERN": 10}, "pairs": {"relic:EGG_A|relic:LANTERN": 5}}}})
@@ -214,6 +245,50 @@ class EndToEndTests(unittest.TestCase):
                                          "--host-gaps", str(hosts), "--backlog", str(backlog)]))
             again = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual({g["id"]: g["first_seen_utc"] for g in doc["groups"]}, {g["id"]: g["first_seen_utc"] for g in again["groups"]})
+
+    def test_a_seed_on_two_specs_of_a_batch(self):
+        # an older targets batch drew cached seeds with replacement: spec 0 diverges, spec 2 (same seed) is identical
+        with tempfile.TemporaryDirectory() as td:
+            lab = Path(td) / "lab"
+            job = lab / "runs" / "20261015T0100-fights"
+            specs = [{"seed": s, "setup": [{"cmd": "card", "id": c}, {"cmd": "fight", "id": "SLIMES_WEAK"}]}
+                     for s, c in (("SHAREDSD01", "HEADBUTT"), ("FRESHSEED1", "ANGER"), ("SHAREDSD01", "STAMPEDE"))]
+            write(job / "b.json", {"runs": specs})
+            write(job / "b.aims.json", {"aims": [{"seed": "SHAREDSD01", "target": "card:HEADBUTT", "seed_from": "cache"},
+                                                 {"seed": "FRESHSEED1", "target": "card:ANGER", "seed_from": "fresh"},
+                                                 {"seed": "SHAREDSD01", "target": "card:STAMPEDE", "seed_from": "cache"}]})
+            write(job / "b.verdicts.json", [{"seed": "SHAREDSD01", "identical": False, "step": 1, "field": ".hand", "card": "HEADBUTT",
+                                             "diff": [[".hand", "[A]", "[B]"]]},
+                                            {"seed": "FRESHSEED1", "identical": False, "step": 0, "field": ".hand", "card": "start",
+                                             "diff": [[".hand", "[A]", "[C]"]]},
+                                            {"seed": "SHAREDSD01", "identical": True}])
+            moving = {"seed": "SHAREDSD01", "steps": [{"state": {"hand": [i]}, "action": {"kind": "play"}} for i in range(6)]}
+            still = {"seed": "SHAREDSD01", "steps": [{"state": {"hand": [0]}, "action": {"kind": "play"}} for _ in range(6)]}
+            write(job / "b.out.json", {"results": [moving, {"seed": "FRESHSEED1", "steps": []}, still]})
+            write(job / "b.shrink.json", {"cases": [{"seed": "SHAREDSD01", "status": "minimal", "items": [specs[0]["setup"][0]]}]})
+            write(job / "b.packs" / "minimal" / "SHAREDSD01.json", {"runs": [specs[0]]})
+            write(job / "b.packs" / "traces" / "SHAREDSD01.trace.json",
+                  {"segment": {"from": "x", "game": ["hand +A"], "emu": ["hand +B"]}, "reproducible": True})
+            got = {s["seed"]: s for s in lg.batch_symptoms(job / "b", lab, "w")}
+            shared, fresh = got["SHAREDSD01"], got["FRESHSEED1"]
+            self.assertEqual("card:HEADBUTT", shared["aim"])           # by index, not the last spec with the seed
+            self.assertFalse(shared["stale"])                          # spec 0's record, not spec 2's
+            self.assertEqual(["card:HEADBUTT"], shared["ingredients"])  # only spec 0 diverged: the shrink case is its
+            self.assertEqual("x: game hand +A; emulator hand +B", shared["first_event"])  # past the start: its own
+            verdicts = json.loads((job / "b.verdicts.json").read_text(encoding="utf-8"))
+            write(job / "b.verdicts.json", [dict(verdicts[0], step=0)] + verdicts[1:])
+            at_start = next(s for s in lg.batch_symptoms(job / "b", lab, "w") if s["seed"] == "SHAREDSD01")
+            self.assertIsNone(at_start["first_event"])  # traced off spec 2's reanchor record (trace_divergent's by seed)
+            write(job / "b.verdicts.json", verdicts)
+            verdicts = json.loads((job / "b.verdicts.json").read_text(encoding="utf-8"))
+            verdicts[2] = dict(verdicts[0], card="STAMPEDE")
+            write(job / "b.verdicts.json", verdicts)
+            both = [s for s in lg.batch_symptoms(job / "b", lab, "w") if s["seed"] == "SHAREDSD01"]
+            self.assertEqual([None, None], [s["ingredients"] for s in both])  # two diverge: the case is either one's
+            self.assertEqual(["card:HEADBUTT", "card:STAMPEDE"], [s["aim"] for s in both])
+            self.assertEqual(["card:HEADBUTT", "encounter:SLIMES_WEAK"], shared["held"])
+            self.assertEqual((False, True), (shared["seed_own"], fresh["seed_own"]))
+            self.assertEqual(["b", "20261015T0100-fights"], shared["batch"])
 
     def test_source_kinds(self):
         with tempfile.TemporaryDirectory() as td:

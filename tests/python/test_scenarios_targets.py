@@ -120,18 +120,40 @@ class AimTests(unittest.TestCase):
                 self.assertEqual(2, basics["STRIKE_IRONCLAD"])
                 self.assertTrue(all(it["id"] in ("IC2", "IC4") for it in cards))
 
+    def big_cache(self):
+        cache = {f"KNOWNOVR{i:02d}": "OVERGROWTH" for i in range(80)} | {f"KNOWNUND{i:02d}": "UNDERDOCKS" for i in range(80)}
+        return scenarios.Aim(TARGETS, PROFILE, self.content, cache), cache
+
     def test_act_one_seeds_come_from_the_cache_mostly(self):
-        known = sum(1 for spec, m in self.specs(200) if m["act"] == 1 and spec["seed"] in ("KNOWNOVER1", "KNOWNUNDR1"))
-        act1 = sum(1 for _, m in self.specs(200) if m["act"] == 1)
+        self.aim, cache = self.big_cache()
+        specs = self.specs(200)
+        known = sum(1 for spec, m in specs if m["act"] == 1 and spec["seed"] in cache)
+        act1 = sum(1 for _, m in specs if m["act"] == 1)
         self.assertGreater(known, act1 // 2)
-        for spec, m in self.specs(200):
-            if spec["seed"] == "KNOWNOVER1":
-                self.assertEqual("OVERGROWTH", self.aim.enc[m["encounter"]][0])
-            if spec["seed"] == "KNOWNUNDR1":
-                self.assertEqual("UNDERDOCKS", self.aim.enc[m["encounter"]][0])
+        for spec, m in specs:
+            if spec["seed"] in cache:
+                self.assertEqual(cache[spec["seed"]], self.aim.enc[m["encounter"]][0])
+            self.assertEqual("cache" if spec["seed"] in cache else "fresh", m["seed_from"])
+
+    def test_no_seed_twice_in_a_batch(self):
+        # shrink's packs, traces and lab_groups key a batch's outputs by seed: a seed on two specs mixes their fights
+        specs = self.specs(300)  # 2 cached seeds, many more act-1 specs
+        seeds = [s["seed"] for s, _ in specs]
+        self.assertEqual(len(seeds), len(set(seeds)))
+        self.assertEqual(2, sum(1 for _, m in specs if m["seed_from"] == "cache"))
+        self.aim, cache = self.big_cache()
+        seeds = [s["seed"] for s, _ in self.specs(300)]
+        self.assertEqual(len(seeds), len(set(seeds)))
+        self.assertGreater(len(set(seeds) & set(cache)), 60)
+        clash = scenarios._seed(random.Random(1))  # a fresh seed that clashes with one already used is redrawn
+        self.aim.used.add(clash)
+        got = self.aim.seed(random.Random(1), 2, "HIVE")
+        self.assertNotEqual(clash, got)
+        self.assertIn(got, self.aim.used)
 
     def test_deterministic(self):
         a = [json.dumps(s, sort_keys=True) for s, _ in self.specs(30, 9)]
+        self.setUp()  # one Aim is one batch (it holds the batch's used seeds)
         b = [json.dumps(s, sort_keys=True) for s, _ in self.specs(30, 9)]
         self.assertEqual(a, b)
 
