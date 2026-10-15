@@ -170,6 +170,18 @@ A `card` item after `fight` goes into a combat pile: `{"cmd": "card", "id": "HAV
 `"pile": "Discard"`, or `"pile": "Draw"` at the bottom or with `"pos": "top"` on top (drawn next). EmuDump mirrors these too;
 no hook runs for the added card in the mirror, so a card that reacts to entering a pile would be a mirror gap.
 
+Fix lab steering (`--mode targets`): `python tools/fidelity/lab_targets.py --lab LAB --out LAB/targets.json` weighs every
+card, relic, potion, enemy, encounter, event, power and act by how often real Ironclad A10 runs meet it (Spire Codex
+aggregate counts, built once into `LAB/cache/codex_profile.json` by an isolated interpreter) times its gap factors
+(nothing recorded reaches it, unreached engine blocks, a low-accuracy reference-set cell, open backlog items or codex-walk
+stops naming it; each is a `reasons` line). `scenarios.py --mode targets --targets LAB/targets.json --jobs <dir>` draws
+each spec's target by weight and builds a realistic setup around it from the profile (the act, an encounter of that act,
+its deck size, Strikes and Defends, cards, relics and potions held there and held with the target), shrinks `--shrink K`
+diverging fights and traces up to `--trace N` (40) of them. `python tools/fidelity/lab_groups.py --lab LAB --out
+LAB/groups.json --summary LAB/summary.md` merges every finished lab job's symptoms (and `--batch`, `--corpus-results`,
+`--codex-walk`, `--refset-score`) into root-mechanism groups, flags `host_suspect` ones from `referee/host_gaps.json`
+(known headless-host gaps, each citing its FINDINGS entry) and matches them to the newest backlog.
+
 ## Rule probes (`probe.py`: ask the game how a disputed rule works)
 
 Before writing a fix that depends on how the game reads a rule, ask the game. A probe (`referee/probes.py`) is a setup
