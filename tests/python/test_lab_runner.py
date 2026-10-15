@@ -781,7 +781,8 @@ class RunnerCase(unittest.TestCase):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rn.main(["--dry-run", "--lab", str(self.tmp / "lab"), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "g"),
-                     "--backlog-dir", str(self.tmp / "bl"), "--lab-gb", "0.000001"])
+                     "--backlog-dir", str(self.tmp / "bl"), "--lab-gb", "0.000001",
+                     "--no-guard", "user,load"])  # someone at the PC (or a busy CPU) would otherwise answer before the disk guard
         self.assertIn("guard verdict now: disk", buf.getvalue())
         self.assertTrue((job / "serve").exists())
         self.assertTrue((job / "fights" / "x.shrink.emu.json").exists())
@@ -898,3 +899,17 @@ class RegisterTaskTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HiddenConsoleTest(unittest.TestCase):
+    """Job commands get a hidden console of their own, so the console programs they start share it instead of each
+    opening a visible window (CREATE_NO_WINDOW leaves them no console to share)."""
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_job_commands_get_a_hidden_console_of_their_own(self):
+        kw = rn.hidden_console_kw()
+        self.assertEqual(rn.CREATE_NEW_CONSOLE, kw["creationflags"])
+        self.assertFalse(kw["creationflags"] & rn.CREATE_NO_WINDOW)
+        si = kw["startupinfo"]
+        self.assertTrue(si.dwFlags & subprocess.STARTF_USESHOWWINDOW)
+        self.assertEqual(0, si.wShowWindow)

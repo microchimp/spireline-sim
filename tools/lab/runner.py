@@ -60,6 +60,17 @@ FORBIDDEN = ("D:/spireline/src",)  # the reviewed upstream checkout: never a lab
 RESUME_HOURS = 24.0
 CHILD_ENV = {"PYTHONDONTWRITEBYTECODE": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1", "PYTHONIOENCODING": "utf-8"}
 CREATE_NO_WINDOW = 0x08000000
+CREATE_NEW_CONSOLE = 0x00000010
+
+
+def hidden_console_kw() -> dict[str, Any]:
+    """Popen keywords for a job command: a console of its own, hidden. CREATE_NO_WINDOW would leave the command with no
+    console at all, so every console program it starts in turn (dotnet, python) opens a visible window of its own; with a
+    hidden console they share it instead."""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return {"creationflags": CREATE_NEW_CONSOLE, "startupinfo": si}
 
 
 def utc(t: float | None = None) -> str:
@@ -738,7 +749,7 @@ class Runner:
             err = subprocess.STDOUT
         kw: dict[str, Any] = {"cwd": ctx.expand(cmd.cwd), "env": env, "stdout": out, "stderr": err, "stdin": subprocess.DEVNULL}
         if winsys.IS_WIN:
-            kw["creationflags"] = CREATE_NO_WINDOW
+            kw.update(hidden_console_kw())
         in_job = True
         try:
             proc = winsys.suspended_popen(argv, sj, **kw)
