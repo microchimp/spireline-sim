@@ -21,8 +21,10 @@ public static class BuffSystem
     /// is then the stack.
     ///
     /// The game's other Instanced powers are not listed. Covered, Flanking and Guarded come from
-    /// multiplayer-only cards; Heist, MagicBomb and Thievery are not modelled as buffs; Swipe,
-    /// Sandpit and Withering Presence are put on once per fight by the monster that owns them.
+    /// multiplayer-only cards; MagicBomb is not modelled as a buff; Heist and Thievery are
+    /// (<see cref="BuffId.Heist" />, <see cref="BuffId.Thievery" />) but with one instance by
+    /// construction, as a lone player is the only one a Merc steals from; Swipe, Sandpit and
+    /// Withering Presence are put on once per fight by the monster that owns them.
     ///
     /// The counters an instance keeps for itself -- Toric Toughness's block, how many cards an
     /// Automation or a Panache has counted, how much energy an Orbit has seen, how much Strength

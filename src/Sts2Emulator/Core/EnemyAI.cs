@@ -4365,6 +4365,14 @@ public static class EnemyAI
         int landed = 0;
         for (int i = 0; i < hits; i++)
         {
+            // `AttackCommand.Execute` asks `Attacker.IsDead` before every hit: an attacker
+            // that a retaliating Flame Barrier or Thorns killed on the first hit lands no
+            // second one.
+            if (i > 0 && enemy.Hp <= 0)
+            {
+                break;
+            }
+
             if (DealAttackDamage(enemy, state, baseDamage, triggerSuck: false))
             {
                 landed++;
@@ -4617,6 +4625,16 @@ public static class EnemyAI
     private static void StealGremlinMercGold(EnemyState enemy, CombatState state)
     {
         if (state.PlayerHp <= 0)
+        {
+            return;
+        }
+
+        // The Merc can die inside its own attack (Flame Barrier or Thorns hitting back).
+        // `CreatureCmd.Kill` runs `SurprisePower.AfterDeath` -- the Fat Gremlin's Heist is
+        // what the Merc has taken SO FAR -- and then `RemoveAllPowersAfterDeath`, so the
+        // `GetPowerInstances<ThieveryPower>()` loop that follows the attack finds nothing: the
+        // move's steal never happens, and the gold stays with the player.
+        if (enemy.Hp <= 0)
         {
             return;
         }

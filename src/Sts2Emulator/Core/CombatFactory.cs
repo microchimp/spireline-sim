@@ -2101,7 +2101,11 @@ public static class CombatFactory
     private static EnemyState CreateGremlinMerc(Random rng)
     {
         var enemy = CreateEnemy(KE.GremlinMerc, rng, new Intent(IntentType.Attack, 16));
+        // `GremlinMerc.AfterAddedToRoom`: SurprisePower(1), then one ThieveryPower(20) per
+        // player (a lone player: one). Both stay on the creature until it dies, so both are
+        // in the power list from the first state on.
         BuffSystem.Apply(enemy.Buffs, BuffId.Surprise, 1);
+        BuffSystem.Apply(enemy.Buffs, BuffId.Thievery, 20);
         return enemy;
     }
 

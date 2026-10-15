@@ -4523,6 +4523,7 @@ public static class CombatEngine
                 // claimed, the way it is for the fight's ordinary gold.
                 state.StolenBackGold += fallen.HeistGold;
                 fallen.HeistGold = 0;
+                BuffSystem.Remove(fallen.Buffs, BuffId.Heist);
             }
 
             // `SwipePower.BeforeDeath` gives the stolen card back -- but only on DEATH.
@@ -5434,6 +5435,13 @@ public static class CombatEngine
             state: state
         );
         fatGremlin.HeistGold = stolenGold;
+        // `PowerCmd.Apply` returns early for an amount of 0, so the HeistPower only exists
+        // when the Merc took something -- the same test that marks the encounter below.
+        if (stolenGold > 0)
+        {
+            BuffSystem.Apply(fatGremlin.Buffs, BuffId.Heist, stolenGold);
+        }
+
         // SurprisePower.AfterDeath marks the encounter only when the total taken is above
         // zero, and the mark is what separates "escaped with nothing" (half gold) from
         // "escaped with the loot" (none).

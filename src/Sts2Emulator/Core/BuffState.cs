@@ -927,6 +927,29 @@ public enum BuffId
     /// it never fires and stays on the enemy; Artifact still eats it on the way in.
     /// </summary>
     TagTeam,
+
+    /// <summary>
+    /// <c>ThieveryPower</c>, a BUFF the Gremlin Merc carries from <c>AfterAddedToRoom</c> (one
+    /// instance per player, <c>PowerInstanceType.Instanced</c>). Its <c>Amount</c> is the steal
+    /// RATE: <c>Steal</c> takes <c>Min(Amount, Gold)</c>, and what it has taken so far is its
+    /// GoldVar, which the emulator keeps in <c>EnemyState.StolenGold</c>.
+    ///
+    /// The power is on the creature from the first state to its death, so it is in every power
+    /// list the game shows; the steal itself still reads the literal in
+    /// <c>EnemyAI.StealGremlinMercGold</c>, because a live snapshot cannot carry the rate (see
+    /// `sts2_gym/live/powers.py`).
+    /// </summary>
+    Thievery,
+
+    /// <summary>
+    /// <c>HeistPower</c>, a BUFF on the Fat Gremlin the Merc's death sends in
+    /// (<c>SurprisePower.AfterDeath</c>), <c>PowerInstanceType.Instanced</c>: its <c>Amount</c>
+    /// is the gold the Merc stole, handed back as a reward row when the Fat Gremlin dies. The
+    /// gold rides <c>EnemyState.HeistGold</c> (the reward reads that); this is the power the
+    /// game's list shows beside it. <c>PowerCmd.Apply</c> adds nothing for an amount of 0, so a
+    /// Merc that stole nothing leaves its Fat Gremlin without one.
+    /// </summary>
+    Heist,
 }
 
 /// <summary>
