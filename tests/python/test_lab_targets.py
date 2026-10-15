@@ -181,6 +181,20 @@ class InputTests(unittest.TestCase):
             known = lt.known_names({"cards": {"Inflame": 1}, "relics": {"Vajra": 2}})
             self.assertEqual({"card:INFLAME": 2}, lt.reach_entities(prep, eng, known))
 
+    def test_newest_reach_from_a_job_or_its_pointer(self):
+        with tempfile.TemporaryDirectory() as td:
+            lab = Path(td)
+            self.assertIsNone(lt.newest_reach(lab))
+            elsewhere = lab / "mut" / "prepared.json"
+            elsewhere.parent.mkdir()
+            elsewhere.write_text("{}", encoding="utf-8")
+            job = lab / "runs" / "20261015T0000-mutation"
+            job.mkdir(parents=True)
+            (job / "job.json").write_text(json.dumps({"outputs": {"reach": str(elsewhere)}}), encoding="utf-8")
+            self.assertIsNone(lt.newest_reach(lab))  # not finished yet
+            (job / "done.rc").write_text("0", encoding="utf-8")
+            self.assertEqual(elsewhere, lt.newest_reach(lab))
+
     def test_refset_cells(self):
         score = {"realistic_table": {"act3 boss": {"kept": 33, "identical_pct_of_kept": 15.2}, "act1 monster": {"kept": 0}}}
         self.assertEqual({(3, "boss"): 0.152}, lt.refset_cells(score))

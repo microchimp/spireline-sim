@@ -15,7 +15,7 @@ that grant it or the enemies seen holding it). gap multiplies one factor per rea
   uncovered  no recorded fight (the corpus: a card played, an enemy or power on the board, a set-up item), setup
              fight (jobs-setup coverage, the lab's own batches) or reference-set fight reaches it: x3; fewer than 3: x1.5
   reach      engine blocks naming it that no recorded fight runs (tools/fidelity/mutate.py prepare's coverage,
-             the newest prepared.json under LAB/runs or --reach): x1.5
+             the newest prepared.json under LAB/runs, or named by a job.json "outputs": {"reach": ...}, or --reach): x1.5
   refset     it sits in a low-accuracy cell of the newest reference-set score (act x room; for a held item the
              acts it is held in): x(2 - identical share)
   backlog    an open item of the newest backlog names it (title or evidence): x(1 + 0.5 per item, at most 3)
@@ -503,8 +503,18 @@ def newest_backlog(referee: Path) -> Path | None:
 
 
 def newest_reach(lab: Path) -> Path | None:
+    """The newest mutate.py prepared.json of a lab job: in the job's folder, or named by a finished job's job.json
+    ({"outputs": {"reach": PATH}}, absolute or relative to the job folder)."""
     runs = Path(lab) / "runs"
-    return newest(runs.glob("*/**/prepared.json")) if runs.is_dir() else None
+    if not runs.is_dir():
+        return None
+    found = list(runs.glob("*/**/prepared.json"))
+    for job in runs.iterdir():
+        if (job / "done.rc").exists():
+            v = ((read_json(job / "job.json", {}) or {}).get("outputs") or {}).get("reach")
+            if v:
+                found.append(Path(v) if Path(v).is_absolute() else job / v)
+    return newest(found)
 
 
 # ================================================================== the universe of ids and their meet counts
