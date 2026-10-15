@@ -456,6 +456,27 @@ class RunnerCase(unittest.TestCase):
         self.assertTrue((r.lab.root / "ran-three").exists())
         self.assertEqual((run.dir / "done.rc").read_text().strip(), "0")
 
+    def test_every_job_type_plans_without_a_crash_on_an_empty_lab(self):
+        r = self.runner()
+        r.state["last_presorted_sha"] = r.state["tree_sha"] = "abc"
+        for job in rn.JOB_TYPES:
+            self.assertIsInstance(r.default_params(job), dict)
+            r.unavailable(job, "abc")  # a reason or None, never an exception
+        for _ in range(len(rn.ROTATION) + 1):
+            r.choose("abc")
+
+    def test_mutation_prepares_from_the_biggest_raw_batch_of_the_newest_fights_job(self):
+        r = self.runner()
+        make_fights_job(r.lab.root, "20260101T0000-fights")
+        job = make_fights_job(r.lab.root, "20260102T0000-fights")
+        for suffix in (".out.json", ".emu.json", ".reanchor.json"):
+            shutil.copy(job / "fights" / ("x" + suffix), job / "fights" / ("y" + suffix))
+        (job / "fights" / "y.verdicts.json").write_text("[]", encoding="utf-8")
+        (job / "fights" / "y.out.json").write_text("z" * 99999, encoding="utf-8")
+        self.assertEqual(r.mutation_source(), "runs/20260102T0000-fights/fights/y")
+        (job / "pruned.json").write_text("[]", encoding="utf-8")  # a pruned job's raw files are stubs: not a source
+        self.assertEqual(r.mutation_source(), "runs/20260101T0000-fights/fights/x")
+
     def test_choose_resumes_a_job_on_the_same_main_and_closes_one_on_another(self):
         r = self.runner()
         run = r.new_run("fights", "abc")
@@ -551,6 +572,14 @@ class RunnerCase(unittest.TestCase):
         self.assertIn("stopped(user)", (r.lab.root / "status.txt").read_text())
         self.assertEqual(list((r.lab.root / "runs").iterdir()), [])
         self.assertTrue((r.lab.root / "state.json").exists())
+
+    def test_a_crash_in_a_pass_is_retried_and_three_in_a_row_end_the_runner(self):
+        r = self.runner("--idle-poll", "0.1")
+        r.setup = lambda: 0
+        r.main_sha = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        self.assertEqual(r.run(), 1)
+        self.assertIn("CRASH 3/3", (r.lab.root / "runner.log").read_text())
+        self.assertIn("crashed", (r.lab.root / "status.txt").read_text())
 
     def test_setup_refuses_the_main_checkout_and_the_reviewed_tree(self):
         a = rn.parse_args(["--lab", str(self.tmp / "lab"), "--tree", str(ROOT), "--fork", str(ROOT)])

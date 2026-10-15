@@ -279,6 +279,9 @@ class Runner:
         intr = ",".join(f"{k}:{v}" for k, v in sorted(c["interrupts"].items())) or "-"
         where = f"job={self.current[0]} step={self.current[1]}" if self.current else "job=-"
         main = (self.state.get("tree_sha") or "-")[:7]
+        rd = self.guards.readings
+        if rd.get("load") is not None:
+            extra = (extra + " " if extra else "") + f"other_cpu={rd['load'][0]}%/{rd['load'][1]}s"
         line = (f"{utc()} {state} {where} since={self.since} tree={main} jobs_done={sum(c['jobs_done'].values())} "
                 f"fights={c['fights']} interrupts={intr}" + (f" | {extra}" if extra else ""))
         try:
@@ -340,7 +343,7 @@ class Runner:
 
     def mutation_source(self) -> str | None:
         """The biggest batch of the newest finished fights job that still has its raw files (path under LAB, no suffix)."""
-        for d in reversed(self.lab.runs.glob("*-fights")) if self.lab.runs.is_dir() else []:
+        for d in sorted(self.lab.runs.glob("*-fights"), reverse=True) if self.lab.runs.is_dir() else []:
             if not (d / "done.rc").exists():
                 continue
             best = None
@@ -732,7 +735,10 @@ class Runner:
             self.root_job = None
         for sig in ("SIGINT", "SIGTERM", "SIGBREAK"):
             if hasattr(signal, sig):
-                signal.signal(getattr(signal, sig), self.on_signal)
+                try:
+                    signal.signal(getattr(signal, sig), self.on_signal)
+                except ValueError:  # not the main thread (a test)
+                    pass
         return 0
 
     def on_signal(self, signum: int, _frame: Any) -> None:
@@ -742,47 +748,64 @@ class Runner:
         rc = self.setup()
         if rc or self.a.dry_run:
             return rc
-        a = self.a
-        self.log(f"runner started (trial={a.trial}, once={a.once}, guards off: {a.no_guard or 'none'})")
-        try:
-            while True:
-                v = self.gate()
-                if v:
-                    return self.leave(v)
-                sha = self.main_sha()
-                job, run, why = self.choose(sha)
-                if not job:
-                    self.lab.save_state(self.state)
-                    self.status("idle", why)
-                    self.log(f"nothing to do: {why}")
-                    if a.once:
-                        return 0
-                    if self.sleep_idle():
-                        return self.leave(self.poll())
-                    continue
-                assert sha
-                if run is None:
-                    run = self.new_run(job, sha)
-                else:
-                    run.data["resumed"] += 1
-                    run.save()
-                self.since = utc()
-                self.log(f"job {run.name}: {why}")
-                v = self.execute(run)
-                if v:
-                    return self.leave(v)
-                if a.once:
-                    return 0
-        except Halted as e:
-            self.status("halted", str(e))
-            self.log(f"HALT: {e}")
-            return 0
-        except KeyboardInterrupt:
-            return self.leave(guards.Verdict("signal", "interrupted", leave=True))
+        self.log(f"runner started (trial={self.a.trial}, once={self.a.once}, guards off: {self.a.no_guard or 'none'})")
+        crashes = 0
+        while True:
+            try:
+                code = self.one_pass()
+            except Halted as e:
+                self.status("halted", str(e))
+                self.log(f"HALT: {e}")
+                return 0
+            except KeyboardInterrupt:
+                return self.leave(guards.Verdict("signal", "interrupted", leave=True))
+            except Exception:  # noqa: BLE001  (a bug in one pass must not end a night's work at once; three in a row end it)
+                crashes += 1
+                self.log(f"CRASH {crashes}/3 " + traceback.format_exc()[-1200:])
+                self.status("crashed", f"{crashes} in a row")
+                self.current = None
+                if crashes >= 3:
+                    return 1
+                if self.sleep_idle(min(self.a.idle_poll, 60.0)):
+                    return self.leave(self.poll())
+                continue
+            if code is not None:
+                return code
+            crashes = 0
 
-    def sleep_idle(self) -> bool:
+    def one_pass(self) -> int | None:
+        """Wait out any pause, pick a job, run it. An exit code when the runner should end, else None."""
+        a = self.a
+        v = self.gate()
+        if v:
+            return self.leave(v)
+        sha = self.main_sha()
+        job, run, why = self.choose(sha)
+        if not job:
+            self.lab.save_state(self.state)
+            self.status("idle", why)
+            self.log(f"nothing to do: {why}")
+            if a.once:
+                return 0
+            if self.sleep_idle():
+                return self.leave(self.poll())
+            return None
+        assert sha
+        if run is None:
+            run = self.new_run(job, sha)
+        else:
+            run.data["resumed"] += 1
+            run.save()
+        self.since = utc()
+        self.log(f"job {run.name}: {why}")
+        v = self.execute(run)
+        if v:
+            return self.leave(v)
+        return 0 if a.once else None
+
+    def sleep_idle(self, seconds: float | None = None) -> bool:
         """Sleep up to idle_poll seconds in short slices; True when a guard says leave."""
-        end = self.clock() + self.a.idle_poll
+        end = self.clock() + (self.a.idle_poll if seconds is None else seconds)
         while self.clock() < end:
             time.sleep(min(self.a.wait_poll, 5.0))
             v = self.poll()
