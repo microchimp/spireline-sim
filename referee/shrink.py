@@ -14,13 +14,15 @@ a fight that ends sooner or an error leaves the subset unresolved, which counts 
 3. A last pass tries dropping each remaining item once.
 
 Each round sends the open subsets of every case to the game at once (one serve.py call). A case stops
-at --cap fights (48), the whole run at the budget; a stopped case keeps the smallest subset that failed.
+at --cap fights (48), the whole run at the budget or at `deadline` (a time.time() after which no round starts);
+a stopped case keeps the smallest subset that failed.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Callable, Generator, Iterable
 
@@ -140,17 +142,19 @@ class Case:
                 "items": items, "of": len(self.items), "spec": {k: v for k, v in self.subset_spec(self.best).items() if k != "_expect"}}
 
 
-def shrink_all(cases: list[Case], run_round: Callable[[str, list], list], name: str, budget: int = 400) -> tuple[dict, dict]:
+def shrink_all(cases: list[Case], run_round: Callable[[str, list], list], name: str, budget: int = 400,
+               deadline: float | None = None) -> tuple[dict, dict]:
     """Shrinks every case, one game round for all of them at a time. run_round(round name, specs) gives one
     outcome per spec: True (still fails), False or None (unresolved)."""
-    spent, rnd = 0, 0
+    spent, rnd, late = 0, 0, False
     while True:
         batch = []
+        late = late or (deadline is not None and time.time() >= deadline)
         for c in cases:
             todo = c.pending
             if not todo:
                 continue
-            if c.spent + len(todo) > c.cap or spent + len(todo) > budget:
+            if late or c.spent + len(todo) > c.cap or spent + len(todo) > budget:
                 c.status = "capped" if c.status == "shrinking" else "unresolved"
                 continue
             batch.append((c, todo))
@@ -170,7 +174,8 @@ def shrink_all(cases: list[Case], run_round: Callable[[str, list], list], name: 
     done = [c for c in cases if c.status == "minimal"]
     summary = (f"{len(cases)} cases, {len(done)} minimal, {sum(c.status == 'capped' for c in cases)} capped, "
                f"{sum(c.status == 'flaky' for c in cases)} flaky; {spent} game fights in {rnd} rounds"
-               + (f", {sum(c.spent for c in done) / len(done):.1f} per minimal case" if done else ""))
+               + (f", {sum(c.spent for c in done) / len(done):.1f} per minimal case" if done else "")
+               + (", stopped at the time limit" if late and any(c.status in ("capped", "unresolved") for c in cases) else ""))
     return minimal, {"summary": summary, "lines": lines, "fights": spent, "rounds": rnd}
 
 

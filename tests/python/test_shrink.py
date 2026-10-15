@@ -145,5 +145,36 @@ class ShrinkAllTests(unittest.TestCase):
         self.assertEqual(["SLIMES_WEAK"], [it["id"] for it in sub["setup"]])
 
 
+
+class DeadlineTests(unittest.TestCase):
+    def test_no_round_starts_after_the_deadline(self):
+        cases = [shrink.Case(spec(40, "SEEDLATE01"), game(), 1, ".hand")]
+        log: list = []
+        _, rep = shrink.shrink_all(cases, fake_round({"SEEDLATE01": {"R1", "R30"}}, log), "t", deadline=0.0)  # long past
+        self.assertEqual([], log)
+        self.assertEqual("unresolved", cases[0].status)
+        self.assertIn("stopped at the time limit", rep["summary"])
+
+    def test_a_deadline_in_the_middle_caps_the_case_and_keeps_the_smallest_failing_subset(self):
+        import itertools
+        import unittest.mock as mock
+        cases = [shrink.Case(spec(40, "SEEDLATE02"), game(), 1, ".hand")]
+        clock = itertools.chain([0.0], itertools.repeat(1000.0))  # the first round starts in time, the next one does not
+        with mock.patch.object(shrink.time, "time", lambda: next(clock)):
+            minimal, rep = shrink.shrink_all(cases, fake_round({"SEEDLATE02": {"R1", "R30"}}, []), "t", deadline=500.0)
+        self.assertEqual("capped", cases[0].status)
+        self.assertIn("SEEDLATE02", minimal)
+        self.assertIn("stopped at the time limit", rep["summary"])
+
+    def test_no_deadline_changes_nothing(self):
+        cases = [shrink.Case(spec(40, "SEEDLATE03"), game(), 1, ".hand")]
+        minimal, rep = shrink.shrink_all(cases, fake_round({"SEEDLATE03": {"R1", "R30"}}, []), "t")
+        self.assertEqual("minimal", cases[0].status)
+        self.assertNotIn("time limit", rep["summary"])
+        cases = [shrink.Case(spec(40, "SEEDLATE04"), game(), 1, ".hand")]
+        shrink.shrink_all(cases, fake_round({"SEEDLATE04": {"R1", "R30"}}, []), "t", deadline=4e12)  # far away
+        self.assertEqual("minimal", cases[0].status)
+
+
 if __name__ == "__main__":
     unittest.main()

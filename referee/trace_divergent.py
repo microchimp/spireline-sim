@@ -85,7 +85,7 @@ def main() -> int:
     ap.add_argument("--packs", type=Path, help="context pack directory (default: <name>.packs beside the out file)")
     ap.add_argument("--max", type=int, default=10, help="fights to trace")
     ap.add_argument("--seed", action="append", default=[], help="trace only these seeds")
-    ap.add_argument("--servers", type=int, default=1, choices=(1, 2, 3))
+    ap.add_argument("--servers", type=int, default=1, choices=range(1, 9))
     ap.add_argument("--stall-s", type=int, default=120)
     ap.add_argument("--reuse", action="store_true", help="keep the traced game records of an identical earlier job; redo the emulator side")
     a = ap.parse_args()
