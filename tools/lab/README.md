@@ -73,7 +73,8 @@ LAB/runs/<UTC>-<job>/job.json done.rc logs/<command>.log|.rc pruned.json
 `job.json`: `{version, job, name, main_sha, created_utc, finished_utc, rc, resumed, note, params, steps:[{name, status
 (pending|running|done|failed|skipped), interrupted, started_utc, finished_utc, note, cmds:{<name>:{status, rc, secs, argv
 (symbolic), note}}}], outputs:{role:[path relative to the job folder]}}`. Roles: `codex_walk`, `codex_walk_err`,
-`refset_score`, `corpus_check`, `fights` (verdicts), `probes`, `mutation_reach`, `metamorphic`, `invariants`.
+`refset_score` (`refset/score.json`, a copy of the stored score), `corpus` (`corpus/results.json`, a copy of the
+corpus run's results), `fights` (verdicts), `probes`, `mutation_reach`, `metamorphic`, `invariants`.
 `done.rc`: 0 ok, 1 required step failed or every core command failed, 3 superseded.
 
 ## The Windows task

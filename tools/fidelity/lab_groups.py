@@ -515,13 +515,14 @@ def pool_size(kind: str, path: Path, found: int) -> int:
     return found
 
 
-def lab_sources(lab: Path) -> list[tuple[str, Path, str]]:
-    """(kind, path, when) for every output of a finished job under LAB/runs, recognised by its shape."""
+def lab_sources(lab: Path, jobs: tuple[Path, ...] = ()) -> list[tuple[str, Path, str]]:
+    """(kind, path, when) for every output of a finished job under LAB/runs, recognised by its shape, and of each
+    job in `jobs` though unfinished (the runner's own job, whose groups step runs before its done.rc is written)."""
     out = []
     runs = Path(lab) / "runs"
-    for job in sorted(runs.iterdir()) if runs.is_dir() else []:
-        if not job.is_dir() or not (job / "done.rc").exists():
-            continue
+    done = [j for j in (sorted(runs.iterdir()) if runs.is_dir() else []) if j.is_dir() and (j / "done.rc").exists()]
+    seen = {j.resolve() for j in done}
+    for job in done + [j for j in jobs if j.is_dir() and j.resolve() not in seen]:
         when = stamp_utc(job)
         for v in sorted(job.rglob("*.verdicts.json")):
             out.append(("batch", v.with_name(v.name.removesuffix(".verdicts.json")), when))
@@ -1025,6 +1026,8 @@ def main(argv=None) -> int:
     ap.add_argument("--backlog", type=Path, help="default: the newest referee/backlog/backlog-*.json")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--summary", type=Path, required=True)
+    ap.add_argument("--job", type=Path, action="append", default=[],
+                    help="a LAB/runs job read though it has no done.rc yet (the runner's job, from its own groups step)")
     ap.add_argument("--batch", type=Path, action="append", default=[], help="a setup batch outside the lab: <dir>/<name>")
     ap.add_argument("--corpus-results", type=Path, action="append", default=[])
     ap.add_argument("--codex-walk", type=Path, action="append", default=[])
@@ -1038,7 +1041,7 @@ def main(argv=None) -> int:
 
     lab = a.lab.resolve()
     symptoms = []
-    sources = lab_sources(lab)
+    sources = lab_sources(lab, tuple(a.job))
     sources += [("batch", p, stamp_utc(p.with_name(p.name + ".verdicts.json"))) for p in a.batch]
     sources += [("corpus", p, stamp_utc(p)) for p in a.corpus_results]
     sources += [("codex", p, stamp_utc(next(iter(p.glob("*.jsonl")), p))) for p in a.codex_walk]

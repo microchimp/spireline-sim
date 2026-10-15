@@ -315,6 +315,17 @@ class EndToEndTests(unittest.TestCase):
             syms = lg.corpus_symptoms(elsewhere, lab, "x")
             self.assertEqual([("play", ".hand", ["card:BASH"])], [(s["phase"], s["field"], s["implicated"]) for s in syms])
 
+    def test_an_unfinished_job_is_read_only_when_named(self):
+        with tempfile.TemporaryDirectory() as td:
+            lab = Path(td) / "lab"
+            job = lab / "runs" / "20261015T0200-fights"
+            write(job / "corpus" / "results.json", {"format": 2, "totals": {"fights": 1}, "fights": {}})
+            self.assertEqual([], lg.lab_sources(lab))
+            got = lg.lab_sources(lab, (job,))
+            self.assertEqual([("corpus", job / "corpus" / "results.json")], [(k, p) for k, p, _ in got])
+            (job / "done.rc").write_text("0", encoding="utf-8")
+            self.assertEqual(1, len(lg.lab_sources(lab, (job,))))  # finished and named: read once
+
     def test_a_walk_named_by_its_shard_files_is_read_as_its_folder_once(self):
         with tempfile.TemporaryDirectory() as td:
             job = Path(td) / "lab" / "runs" / "20261015T0200-presort"

@@ -234,7 +234,9 @@ def game_cmd() -> Cmd:
 def report_steps(c: Ctx) -> list[Step]:
     """Groups and kits (other branches' tools; skipped where the tree does not have them yet)."""
     bl = ["--backlog", "{backlog}"] if c.backlog else []
-    groups = Cmd("groups", ["{py}", "tools/fidelity/lab_groups.py", "--lab", "{lab}", *bl, "--out", "{lab}/groups.json", "--summary", "{lab}/summary.md"],
+    # This job has no done.rc while its groups step runs: name it, so its own fights and checks are grouped now.
+    own = ["--job", "{job}"] if source_has(c.tree / "tools/fidelity/lab_groups.py", '"--job"')[0] else []
+    groups = Cmd("groups", ["{py}", "tools/fidelity/lab_groups.py", "--lab", "{lab}", *bl, *own, "--out", "{lab}/groups.json", "--summary", "{lab}/summary.md"],
                  needs=["{tree}/tools/fidelity/lab_groups.py"])
     kits = Cmd("kits", ["{py}", "-m", "tools.fidelity.packet", "--top", "20", "--groups", "{lab}/groups.json", *bl,
                         "--out", "{backlog_dir}/packets"],

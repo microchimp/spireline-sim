@@ -383,6 +383,16 @@ class PlansTest(unittest.TestCase):
         kits = [cmd for s in pl.report_steps(c) for cmd in s.cmds if cmd.name == "kits"][0]
         self.assertEqual(kits.argv[kits.argv.index("--out") + 1], "{backlog_dir}/packets")
 
+    def test_groups_name_their_own_job_when_lab_groups_can_read_it(self):
+        c = self.ctx()
+        groups = lambda: [cmd for s in pl.report_steps(c) for cmd in s.cmds if cmd.name == "groups"][0].argv  # noqa: E731
+        (self.tree / "tools" / "fidelity").mkdir(parents=True, exist_ok=True)
+        (self.tree / "tools" / "fidelity" / "lab_groups.py").write_text('ap.add_argument("--batch")', encoding="utf-8")
+        self.assertNotIn("--job", groups())
+        (self.tree / "tools" / "fidelity" / "lab_groups.py").write_text('ap.add_argument("--job")', encoding="utf-8")
+        argv = groups()
+        self.assertEqual(argv[argv.index("--job") + 1], "{job}")
+
     def test_probe_ids_come_from_kits_that_miss_a_rule(self):
         bl = self.tmp / "bl"
         (bl / "packets").mkdir(parents=True)
