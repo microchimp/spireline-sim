@@ -776,6 +776,7 @@ SKIP_CALLS = {"Add", "AddRange", "Remove", "RemoveAt", "RemoveAll", "Contains", 
               "IndexOf", "TryGetValue", "Clear", "GetType", "ToString", "Equals", "GetHashCode", "Invoke", "Format", "Join",
               "Split", "Replace", "StartsWith", "EndsWith", "ConfigureAwait", "GetAwaiter", "GetResult", "WhenAll", "Delay",
               "FromResult", "Run", "FindOnTable", "CustomScaledWait", "Flash", "Preview", "GetPile"}
+UI = re.compile(r"Preview|Vfx|Sfx|Anim|Tween|Hover|Wait|Flash|Shake|Sound|Music|Node|Scene|Layout|Display|Tooltip")  # presentation, no rule
 _TEXT: dict = {}
 
 
@@ -800,7 +801,7 @@ def body_targets(decomp, path: Path, method: str) -> list:
     body = method_body(decomp.text(path), method)
     found = []
     for cls, mem in re.findall(r"(?<![\w.])([A-Z][A-Za-z0-9]+)\.([A-Z][A-Za-z0-9]+)\b", body):
-        if cls in SKIP_QUAL or cls == path.stem:
+        if cls in SKIP_QUAL or cls == path.stem or UI.search(cls + "." + mem):
             continue
         files = decomp.files.get(cls, [])
         if cls == "Rng" or any("Commands" in str(f) or "Hooks" in str(f) for f in files) or (
@@ -808,7 +809,7 @@ def body_targets(decomp, path: Path, method: str) -> list:
             found.append(f"{cls}.{mem}")
     members = {t.split(".")[1] for t in found}
     for name in re.findall(r"(?<=[a-z0-9_)\]])\.([A-Z][A-Za-z0-9]+)\s*(?:<[^>()]*>)?\s*\(", body):
-        if name not in SKIP_CALLS and name not in members and not name.startswith(("Assert", "Throw", "Log")):
+        if name not in SKIP_CALLS and name not in members and not name.startswith(("Assert", "Throw", "Log")) and not UI.search(name):
             found.append(name)
     return list(dict.fromkeys(found))
 
