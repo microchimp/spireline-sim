@@ -79,13 +79,17 @@ def tier_a(job: Path) -> int:
         if f.is_file() and not protected(f):
             if f.name.endswith(SCRATCH_FILE_PATTERNS) or (f.name.endswith(".in.json") and ".p" in f.name):
                 freed += _remove(f)
-            elif f.suffix == ".log" and f.stat().st_size > LOG_CUT:
-                before = f.stat().st_size
-                with open(f, "rb") as fh:
-                    fh.seek(-LOG_TAIL, os.SEEK_END)
-                    tail = fh.read()
-                f.write_bytes(b"[cut by the lab's disk pruning; tail follows]\n" + tail)
-                freed += before - f.stat().st_size
+                continue
+            try:  # a file another process holds or just removed is left as it is
+                if f.suffix == ".log" and f.stat().st_size > LOG_CUT:
+                    before = f.stat().st_size
+                    with open(f, "rb") as fh:
+                        fh.seek(-LOG_TAIL, os.SEEK_END)
+                        tail = fh.read()
+                    f.write_bytes(b"[cut by the lab's disk pruning; tail follows]\n" + tail)
+                    freed += before - f.stat().st_size
+            except OSError:
+                continue
     return freed
 
 
@@ -118,14 +122,21 @@ def tier_b(job: Path) -> int:
                 continue
             if not isinstance(res, list) or len(res) != len(verdicts):
                 continue  # not aligned with the verdicts: leave it alone
-            before = f.stat().st_size
             for i in drop:
                 if not (isinstance(res[i], dict) and res[i].get("pruned")):
                     res[i] = {"seed": (res[i] or {}).get("seed") if isinstance(res[i], dict) else None, "pruned": True, "steps": []}
             tmp = f.with_name(f.name + ".tmp")
-            tmp.write_text(json.dumps(doc), encoding="utf-8")
-            os.replace(tmp, f)
-            gained = before - f.stat().st_size
+            try:
+                before = f.stat().st_size
+                tmp.write_text(json.dumps(doc), encoding="utf-8")
+                os.replace(tmp, f)
+                gained = before - f.stat().st_size
+            except OSError:  # disk full, a lock, a vanished file: this file is left as it was, the rest go on
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                continue
             freed += max(0, gained)
             notes.append({"file": f.relative_to(job).as_posix(), "tier": "B", "stubbed": len(drop), "bytes_freed": gained})
     if notes:
@@ -156,7 +167,10 @@ def _note(job: Path, notes: list[dict]) -> None:
         old = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         old = []
-    p.write_text(json.dumps(old + notes, indent=1), encoding="utf-8")
+    try:
+        p.write_text(json.dumps(old + notes, indent=1), encoding="utf-8")
+    except OSError:
+        pass  # the note is a convenience; the pruning it describes has happened
 
 
 def prune(lab: Path, need: int, busy: set[str] | None = None, old_days: float = 7.0, now: float | None = None) -> int:

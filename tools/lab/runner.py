@@ -42,6 +42,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.dont_write_bytecode = True  # before the runner's own imports: no __pycache__ in the checkout it only reads
 
 from tools.lab import guards, plans, prune, winsys  # noqa: E402
 

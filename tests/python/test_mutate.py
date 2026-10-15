@@ -213,3 +213,30 @@ class SchemataTest(unittest.TestCase):
         self.assertEqual(spans("    bool b = x < y == z;"), "x < y")
         self.assertIsNone(spans("    if (x is > 3)"))  # a relational pattern has no left operand
         self.assertIsNone(spans("    var q = Foo<int>(x) < 3;"))  # a generic: give up rather than guess
+
+
+class ScratchCopyTest(unittest.TestCase):
+    """make_copy builds the tree a mutant is compiled in: EmuDump compiles the invariant sources in and links two data files."""
+
+    def test_the_copy_holds_everything_emudump_needs_and_no_build_output(self):
+        import shutil
+        import tempfile
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src, dst = tmp / "src", tmp / "dst"
+        files = {"src/Sts2Emulator/Core/A.cs": "a", "tools/emudump/Program.cs": "p",
+                 "src/Sts2Emulator.Tests/Support/Invariants/Metamorphic.cs": "m", "data/id_map.json": "{}",
+                 "tools/fidelity/power_aliases.json": "{}", "src/Sts2Emulator/obj/junk.cs": "x", "tools/emudump/bin/junk.dll": "x",
+                 "src/Sts2Emulator.Tests/Other.cs": "not copied"}
+        for rel, text in files.items():
+            (src / rel).parent.mkdir(parents=True, exist_ok=True)
+            (src / rel).write_text(text, encoding="utf-8")
+        mu.make_copy(src, dst)
+        got = sorted(p.relative_to(dst).as_posix() for p in dst.rglob("*") if p.is_file())
+        self.assertEqual(["data/id_map.json", "src/Sts2Emulator.Tests/Support/Invariants/Metamorphic.cs", "src/Sts2Emulator/Core/A.cs",
+                          "tools/emudump/Program.cs", "tools/fidelity/power_aliases.json"], got)
+        (dst / "src/Sts2Emulator/Core/A.cs").write_text("edited", encoding="utf-8")  # a mutant's edit is put back by the next copy
+        mu.make_copy(src, dst)
+        self.assertEqual("a", (dst / "src/Sts2Emulator/Core/A.cs").read_text(encoding="utf-8"))
+        (src / "tools/fidelity/power_aliases.json").unlink()  # a tree without an optional file still copies
+        mu.make_copy(src, tmp / "dst2")

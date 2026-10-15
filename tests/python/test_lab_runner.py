@@ -134,6 +134,41 @@ class GuardsTest(unittest.TestCase):
         g = self.guards(lab_gb=1e-6, prune=lambda need: 0)  # 1e-6 GB is about 1 KB
         self.assertEqual(g.poll().kind, "disk")
 
+    def test_control_files_are_read_whoever_wrote_them(self):
+        # PowerShell 5.1's `echo now > PAUSE` writes UTF-16 LE with a BOM, 7 writes UTF-8 with a BOM, an editor may leave NULs
+        g = self.guards(grace=77)
+        for raw in ("now\r\n".encode("utf-16"), b"\xef\xbb\xbfnow\r\n", b"n\x00o\x00w\x00\n\x00", b"now\x00\x00\x00", b"  Now  \n"):
+            (self.lab / "PAUSE").write_bytes(raw)
+            v = g.poll()
+            self.assertEqual((v.kind, v.grace), ("pause", 0.0), raw)
+        (self.lab / "PAUSE").write_bytes("later\r\n".encode("utf-16"))
+        self.assertEqual(77, g.poll().grace)
+        (self.lab / "PAUSE").write_bytes(b"\xff\xff\xff\x00")  # garbage is a pause with grace, not a crash
+        v = g.poll()
+        self.assertEqual(("pause", 77), (v.kind, v.grace))
+        (self.lab / "PAUSE").write_bytes(b"")
+        self.assertEqual(77, g.poll().grace)
+        (self.lab / "PAUSE").unlink()
+        (self.lab / "HALT").write_bytes("network seen\r\n".encode("utf-16"))
+        self.assertEqual("network seen", g.poll().detail)
+
+    def test_stay_pauses_on_input_and_halt_instead_of_leaving(self):
+        idle = [5.0]
+        g = self.guards(idle_fn=lambda: idle[0], stay=True)
+        v = g.poll()
+        self.assertEqual((v.kind, v.leave, v.grace), ("user", False, 0))
+        idle[0] = 500.0
+        self.assertTrue(g.poll().ok)
+        (self.lab / "HALT").write_text("network seen\n", encoding="utf-8")
+        v = g.poll()
+        self.assertEqual((v.kind, v.leave), ("halt", False))
+        (self.lab / "HALT").unlink()
+        self.assertTrue(g.poll().ok)
+        clock, advance = fake_clock()  # the trial's end still ends the runner
+        g = self.guards(deadline=10.0, clock=clock, stay=True)
+        advance(10)
+        self.assertTrue(g.poll().leave)
+
 
 class LoadMonitorTest(unittest.TestCase):
     def monitor(self, other: float, ours: float, window=120.0):
@@ -253,6 +288,44 @@ class PruneTest(unittest.TestCase):
         job = make_fights_job(self.lab, "20260101T0000-fights")
         pr.prune(self.lab, need=10**9, busy={job.name})
         self.assertTrue((job / "serve").exists())
+
+    def test_a_write_that_fails_leaves_the_file_as_it_was_and_the_rest_goes_on(self):
+        job = make_fights_job(self.lab, "20260101T0000-fights")
+        before = (job / "fights" / "x.out.json").read_bytes()
+
+        def locked(src, dst):
+            raise PermissionError("locked")
+
+        with unittest.mock.patch.object(pr.os, "replace", locked):
+            freed = pr.prune(self.lab, need=10**9)  # tier B cannot replace the raw files
+        self.assertGreater(freed, 0)  # the scratch (tier A) still went
+        self.assertEqual(before, (job / "fights" / "x.out.json").read_bytes())
+        self.assertEqual([], list((job / "fights").glob("*.tmp")))  # no half-written copy is left behind
+        self.assertFalse((job / "pruned.json").exists())
+
+    def test_a_failing_note_or_log_cut_does_not_stop_the_pruning(self):
+        job = make_fights_job(self.lab, "20260101T0000-fights")
+        log = job / "logs" / "big.log"
+        log.write_bytes(b"L" * 4000)
+        real_write_text, real_write_bytes = Path.write_text, Path.write_bytes
+
+        def no_note(p, *a, **kw):
+            if p.name == "pruned.json":
+                raise OSError("disk full")
+            return real_write_text(p, *a, **kw)
+
+        def no_cut(p, *a, **kw):
+            if p.suffix == ".log":
+                raise OSError("disk full")
+            return real_write_bytes(p, *a, **kw)
+
+        with unittest.mock.patch.object(pr, "LOG_CUT", 100), unittest.mock.patch.object(Path, "write_text", no_note), \
+                unittest.mock.patch.object(Path, "write_bytes", no_cut):
+            freed = pr.prune(self.lab, need=10**9)
+        self.assertGreater(freed, 0)
+        self.assertEqual(4000, log.stat().st_size)  # not cut, not damaged
+        res = json.loads((job / "fights" / "x.out.json").read_text(encoding="utf-8"))["results"]
+        self.assertTrue(res[0].get("pruned"))  # tier B went on without its note
 
     def test_tier_c_waits_for_age_and_for_groups(self):
         job = make_fights_job(self.lab, "20260101T0000-fights", days_old=1)

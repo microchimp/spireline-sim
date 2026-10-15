@@ -2,9 +2,11 @@
 
 ``Guards.poll()`` answers one question, "may the lab run right now?", as a ``Verdict``. In order:
 
-  halt    ``LAB/HALT`` exists (the runner wrote it after a safety check of the real game failed; the owner removes it).
+  halt    ``LAB/HALT`` exists (the runner wrote it after a safety check of the real game failed; the owner removes it;
+          with ``stay`` the runner waits for that instead of exiting).
   user    keyboard or mouse input in the last ``idle_s`` seconds (default 60): stop at once and leave (exit 0);
-          the Task Scheduler idle trigger starts the runner again at the next idle.
+          the Task Scheduler idle trigger starts the runner again at the next idle. With ``stay`` (the runner's
+          --always-on, for the logon task) it stops the children and waits instead: nothing would start it again.
   pause   ``LAB/PAUSE`` exists, or ``backlog/main.lock``: no new step starts; a running step gets ``grace`` seconds
           to reach a safe point (its end), then is stopped. ``PAUSE`` holding the word ``now`` stops at once.
   load    other processes used more than ``load_pct`` percent of the machine over the last ``load_window`` seconds.
@@ -116,8 +118,9 @@ class Guards:
                  grace: float = 90.0, deadline: float | None = None, clock: Callable[[], float] = time.monotonic,
                  idle_fn: Callable[[], float | None] = winsys.user_idle_seconds, load: LoadMonitor | None = None,
                  prune: Callable[[int], int] | None = None, free_fn: Callable[[Path], int] | None = None,
-                 parent_pid: int | None = None, disk_every: float = 60.0):
+                 parent_pid: int | None = None, disk_every: float = 60.0, stay: bool = False):
         self.lab, self.lock_file = lab, lock_file
+        self.stay = stay  # always-on: user input and HALT pause the lab instead of ending the runner
         self.disabled = disabled or set()
         self.idle_s, self.load_pct, self.lab_gb, self.free_gb, self.grace = idle_s, load_pct, lab_gb, free_gb, grace
         self.deadline, self.clock, self.idle_fn = deadline, clock, idle_fn
@@ -137,12 +140,12 @@ class Guards:
         if self.load is not None and self.on("load"):
             self.load.sample()  # always, so a long pause does not leave the window stale
         if self.on("halt") and (lab / "HALT").exists():
-            return Verdict("halt", _first_line(lab / "HALT"), leave=True)
+            return Verdict("halt", _first_line(lab / "HALT"), leave=not self.stay)
         if self.on("user"):
             idle = self.idle_fn()
             self.readings["idle_s"] = idle
             if idle is not None and idle < self.idle_s:
-                return Verdict("user", f"input {idle:.0f}s ago", leave=True)
+                return Verdict("user", f"input {idle:.0f}s ago", leave=not self.stay)
         if self.on("parent") and self.parent_pid and not winsys.parent_alive(self.parent_pid):
             return Verdict("parent", "the process that started the runner is gone", leave=True)
         if self.on("pause") and (lab / "PAUSE").exists():
@@ -180,8 +183,20 @@ class Guards:
         return self._disk_verdict
 
 
+def read_text_lenient(p: Path) -> str:
+    """A small control file as text, whoever wrote it: PowerShell's ``echo now > PAUSE`` writes UTF-16 with a BOM (5.1)
+    or UTF-8 with a BOM (7), and an editor may leave NULs. BOMs are dropped and NULs stripped; bad bytes become U+FFFD."""
+    with open(p, "rb") as fh:
+        raw = fh.read(4096)
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("utf-8-sig", errors="replace")
+    return text.replace("\x00", "").lstrip("﻿")
+
+
 def _first_line(p: Path) -> str:
     try:
-        return p.read_text(encoding="utf-8", errors="replace").strip().splitlines()[0][:200]
+        return read_text_lenient(p).strip().splitlines()[0][:200]
     except (OSError, IndexError):
         return ""

@@ -82,5 +82,28 @@ class ContextPackTest(unittest.TestCase):
             self.assertIn("FIRST DIFFERENCE here", body)
 
 
+
+class MissingListTest(unittest.TestCase):
+    def test_fmt_list_accepts_a_side_with_no_list(self):
+        got = cp.fmt_list(None, [["A", 0]], cp.fmt_card)
+        self.assertEqual("game 0: []", got[0])
+        self.assertEqual("emu  1: [A]", got[1])
+        self.assertIn("(game has no such list)", got)
+        got = cp.fmt_list([["A", 0]], None, cp.fmt_card)
+        self.assertEqual("(emu has no such list)", got[-1])
+        got = cp.fmt_list(None, None, cp.fmt_card)
+        self.assertEqual(["game 0: []", "emu  0: []", "(game has no such list)", "(emu has no such list)"], got)
+
+    def test_lists_that_are_there_read_as_before(self):
+        got = cp.fmt_list([["A", 0], ["B", 0], ["C", 1]], [["A", 0], ["D", 0], ["C", 1]], cp.fmt_card)
+        self.assertEqual(["game 3: [B]", "emu  3: [D] (same: first 1, last 1)"], got)
+
+    def test_the_other_helpers_take_none_too(self):
+        self.assertEqual("-", cp.fmt_powers(None))
+        self.assertEqual([("X", None, 2)], cp.power_diffs(None, [["X", 2]]))
+        self.assertEqual([], cp.pile_only({"hand": None}, {"hand": []}))
+        self.assertEqual([(0, "A", [("present", "no", "yes")])], cp.enemy_diffs({"enemies": None}, {"enemies": [{"name": "A"}]}))
+
+
 if __name__ == "__main__":
     unittest.main()

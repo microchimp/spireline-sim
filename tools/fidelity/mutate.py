@@ -396,9 +396,16 @@ def sample(cands: list, k: int, rng: random.Random) -> list:
 # -------------------------------------------------------------------------------------------- scratch copies
 
 
+COPIED_TREES = (ENGINE, "tools/emudump", "src/Sts2Emulator.Tests/Support/Invariants")  # EmuDump.csproj compiles the last one in
+COPIED_FILES = ("data/id_map.json", "tools/fidelity/power_aliases.json")  # and links these two
+
+
 def make_copy(src: Path, dst: Path) -> None:
-    """The engine, EmuDump and id_map in dst (sources only; dst keeps its own bin/obj between runs)."""
-    for rel in (ENGINE, "tools/emudump"):
+    """The engine, EmuDump, the invariant sources it compiles in and the data files it links, in dst (sources only;
+    dst keeps its own bin/obj between runs)."""
+    for rel in COPIED_TREES:
+        if not (src / rel).is_dir():
+            continue
         for p in (src / rel).rglob("*"):
             r = p.relative_to(src)
             if any(part in ("bin", "obj") for part in r.parts) or p.is_dir():
@@ -408,8 +415,10 @@ def make_copy(src: Path, dst: Path) -> None:
                 continue
             t.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, t)
-    (dst / "data").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src / "data/id_map.json", dst / "data/id_map.json")
+    for rel in COPIED_FILES:
+        if (src / rel).is_file():
+            (dst / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src / rel, dst / rel)
 
 
 def dotnet_env() -> dict:

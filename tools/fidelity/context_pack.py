@@ -78,7 +78,7 @@ def fmt_card(c) -> str:
 
 
 def fmt_powers(ps) -> str:
-    return ", ".join(f"{n}:{a}" for n, a in ps) or "-"
+    return ", ".join(f"{n}:{a}" for n, a in ps or []) or "-"
 
 
 def fmt_act(a) -> str:
@@ -91,7 +91,10 @@ def fmt_act(a) -> str:
 
 
 def fmt_list(x, y, fmt) -> list[str]:
-    """Game and emulator lists trimmed to the differing region (common prefix/suffix elided)."""
+    """Game and emulator lists trimmed to the differing region (common prefix/suffix elided). A side whose list is
+    missing (None: the field is absent from that side's state) is shown as absent and compared as empty."""
+    gone = [side for side, v in (("game", x), ("emu ", y)) if v is None]
+    x, y = list(x or []), list(y or [])
     p = 0
     while p < min(len(x), len(y)) and x[p] == y[p]:
         p += 1
@@ -103,13 +106,14 @@ def fmt_list(x, y, fmt) -> list[str]:
         txt = " ".join(fmt(c) for c in r[:12]) + (f" ...(+{len(r) - 12})" if len(r) > 12 else "")
         return f"[{txt}]"
     note = f" (same: first {p}, last {s})" if p or s else ""
-    return [f"game {len(x)}: {region(x)}", f"emu  {len(y)}: {region(y)}{note}"]
+    out = [f"game {len(x)}: {region(x)}", f"emu  {len(y)}: {region(y)}{note}"]
+    return out + [f"({side.strip()} has no such list)" for side in gone]
 
 
 def enemy_diffs(gv, ev) -> list[tuple]:
     """(index, name, [(field, game, emu)]) for enemies that differ, by position."""
     out = []
-    ge, ee = gv.get("enemies", []), ev.get("enemies", [])
+    ge, ee = gv.get("enemies") or [], ev.get("enemies") or []
     for i in range(max(len(ge), len(ee))):
         a, b = (ge[i] if i < len(ge) else None), (ee[i] if i < len(ee) else None)
         if a is None or b is None:
@@ -122,7 +126,7 @@ def enemy_diffs(gv, ev) -> list[tuple]:
 
 
 def power_diffs(pg, pe) -> list[tuple]:
-    a, b = dict(map(tuple, pg)), dict(map(tuple, pe))
+    a, b = dict(map(tuple, pg or [])), dict(map(tuple, pe or []))
     return [(n, a.get(n), b.get(n)) for n in sorted(set(a) | set(b)) if a.get(n) != b.get(n)]
 
 
@@ -130,8 +134,8 @@ def pile_only(gv, ev) -> list[tuple]:
     """(pile, card, game count, emu count) for cards whose count differs in a pile."""
     out = []
     for pile in PILES:
-        a = collections.Counter(fmt_card(c) for c in gv.get(pile, []))
-        b = collections.Counter(fmt_card(c) for c in ev.get(pile, []))
+        a = collections.Counter(fmt_card(c) for c in gv.get(pile) or [])
+        b = collections.Counter(fmt_card(c) for c in ev.get(pile) or [])
         out += [(pile, c, a[c], b[c]) for c in sorted(set(a) | set(b)) if a[c] != b[c]]
     return out
 
@@ -331,7 +335,7 @@ def run(game_path, emu_path, out: Path, max_groups=20, id_map_path=None, decompi
             same += 1
             continue
         i, act, d, gv, ev, prev = r
-        enemies = tuple(sorted({x["name"] for x in gv.get("enemies", [])}))
+        enemies = tuple(sorted({x["name"] for x in gv.get("enemies") or []}))
         groups[(top_fields(d, gv, ev), action_card(act), enemies)].append(
             {"seed": g.get("seed"), "step": i, "action": act, "diffs": d, "gv": gv, "ev": ev, "prev": prev})
     out.mkdir(parents=True, exist_ok=True)
