@@ -198,8 +198,8 @@ static class Setup
                     return (false, "unsupported: relic follow-up " + followUp);
                 }
 
-                string? gap = AnswerDeckSelection(e, choices);
-                return gap == null ? (true, null) : (false, "unsupported: " + gap);
+                string? gap = AnswerDeckSelection(e, choices, out var note);
+                return gap == null ? (true, note == null ? null : "note: " + note) : (false, "unsupported: " + gap);
             }
             case "potion":
             {
@@ -287,16 +287,33 @@ static class Setup
     }
 
     /// <summary>
-    /// A deck selection a relic's pickup opened, answered with the cards the game's selector took
-    /// (matched by card id among the cards the emulator lets the player pick). Returns a reason when
-    /// the two screens disagree: the emulator wants more picks than the game's screen required (it has
-    /// no way to stop early), or a picked card is not selectable. The run is then walked on with the
-    /// first selectable cards so the fight can still be replayed, and the item counts as a mirror gap.
+    /// A selection a relic's pickup opened, answered with the picks the game's selector made. The game's
+    /// selector is shown the eligible cards in the order CardSelectCmd lists them (deck order for upgrades,
+    /// transforms, enchantments and Dolly's Mirror; a removal sorts every Curse first, then deck order, see
+    /// <see cref="InGameOrder"/>) and takes the first n, so the game's pick is a position in that list. When
+    /// the emulator's screen lists the same cards in that order, the pick is the card at that position,
+    /// followed through the removals and transforms earlier picks made. When the lists differ (the emulator's
+    /// run already holds another deck than the game's) the pick is matched by card id, as it always was, and
+    /// the difference comes back in <paramref name="note"/>; that is no gap as long as the id names one kind
+    /// of card (the copies the emulator offers do not differ in upgrade or enchantment). The game closes a
+    /// screen that asked for zero to N cards with the picks it made, so an optional emulator screen is closed
+    /// with DONE once the game's picks run out, and one the game never showed is closed with DONE and a note.
+    /// Returns a reason when the two screens cannot be told apart (the emulator wants more picks than the
+    /// game's screen required, a pick is not selectable, or an id names different copies on lists that
+    /// differ); the run is then walked on with the first selectable cards so the fight can still be
+    /// replayed, and the item counts as a mirror gap.
     /// </summary>
-    internal static string? AnswerDeckSelection(RunEngine e, List<JsonObject> choices)
+    internal static string? AnswerDeckSelection(RunEngine e, List<JsonObject> choices) => AnswerDeckSelection(e, choices, out _);
+
+    /// <inheritdoc cref="AnswerDeckSelection(RunEngine, List{JsonObject})"/>
+    /// <param name="e">The run, in the selection's phase.</param>
+    /// <param name="choices">The game's card choices tagged with the item.</param>
+    /// <param name="note">What differed between the two screens without making the item a gap, or null.</param>
+    internal static string? AnswerDeckSelection(RunEngine e, List<JsonObject> choices, out string? note)
     {
         var s = e.State;
         string? gap = null;
+        note = null;
         var mask = new int[4096];
         // A grid of offered cards is indexed by the offer, any other selection by the deck.
         bool Grid() => s.PendingOfferCards.Length > 0;
@@ -315,21 +332,58 @@ static class Setup
             foreach (var p in c["picked"]!.AsArray()) want.Enqueue(Fight.CardIdBySnake(opts[(int)p!]));
         }
 
+        // One game screen over a deck selection: follow each pick as a position among the cards listed.
+        List<int>? at = null;      // the deck index each listed card has now (-1: taken)
+        Queue<int>? picked = null; // the listed positions the game took, in its order
+        bool differs = false;      // the two screens list other cards: the picks are matched by card id
+        if (choices.Count == 1 && s.Phase == RunPhase.TransformSelect && !Grid() && s.PendingSelectionKind != DeckSelection.None)
+        {
+            var listed = InGameOrder(s, Selectable());
+            var theirs = choices[0]["options"]!.AsArray().Select(x => Fight.CardIdBySnake((string)x!)).ToList();
+            var mine = listed.Select(IdAt).ToList();
+            if (mine.SequenceEqual(theirs))
+            {
+                at = listed.ToList();
+                picked = new Queue<int>(choices[0]["picked"]!.AsArray().Select(x => (int)x!));
+            }
+            else
+            {
+                differs = true;
+                int common = Math.Min(mine.Count, theirs.Count);
+                int pos = Enumerable.Range(0, common).Where(k => mine[k] != theirs[k]).DefaultIfEmpty(common).First();
+                string At(List<int> ids) => pos < ids.Count ? RunSnap.CardEntry(ids[pos]) : "nothing";
+                note = $"the emulator's selection lists {mine.Count} cards and the game's screen {theirs.Count}, first different at position {pos} ({At(mine)} against {At(theirs)}); the picks were matched by card id";
+            }
+        }
+
         int guard = 0;
         while (s.Phase == RunPhase.TransformSelect && guard++ < 64)
         {
             var ok = Selectable();
             if (ok.Length == 0) { gap ??= "selection with nothing selectable"; break; }
             int pick;
-            if (want.Count > 0)
+            int listedPos = -1;
+            bool optional = Grid() ? s.PendingOfferOptional : s.PendingSelectionOptional;
+            if (picked != null && picked.Count > 0)
+            {
+                listedPos = picked.Dequeue();
+                pick = listedPos < at!.Count ? at[listedPos] : -1;
+                if (!ok.Contains(pick)) { gap ??= $"the card at position {listedPos} the game picked is not selectable here"; pick = ok[0]; listedPos = -1; }
+                want.Dequeue();
+            }
+            else if (picked == null && want.Count > 0)
             {
                 int id = want.Dequeue();
-                pick = ok.Where(i => IdAt(i) == id).DefaultIfEmpty(-1).First();
+                var named = ok.Where(i => IdAt(i) == id).ToList();
+                pick = named.Count > 0 ? named[0] : -1;
                 if (pick < 0) { gap ??= $"card {id} the game picked is not selectable here"; pick = ok[0]; }
+                // The game's record names the card by id only: copies that differ (upgrade, enchantment) cannot be told apart.
+                else if (differs && named.Any(i => s.Deck[i] != s.Deck[pick])) gap ??= $"card {id} the game picked is ambiguous among the emulator's copies, and {note}";
             }
-            else if (Grid() && s.PendingOfferOptional)
+            else if (optional)
             {
-                pick = s.PendingOfferCards.Length;  // done: the game took no more
+                pick = Grid() ? s.PendingOfferCards.Length : s.Deck.Count;  // DONE: the game took no more
+                if (choices.Count == 0) note ??= "the emulator offered a selection the game did not; closed with DONE";
             }
             else
             {
@@ -337,12 +391,43 @@ static class Setup
                 pick = ok[0];
             }
 
+            bool removes = s.PendingSelectionKind is not (DeckSelection.Enchant or DeckSelection.Upgrade or DeckSelection.Duplicate);
             e.Step(pick, -1, out _, out _, out _);
+            if (at != null && listedPos >= 0)
+            {
+                // A removal or transform takes the card out of its place (a transform adds the new card at the end).
+                int taken = at[listedPos];
+                at[listedPos] = -1;
+                if (removes) for (int k = 0; k < at.Count; k++) if (at[k] > taken) at[k]--;
+            }
         }
 
         if (want.Count > 0) gap ??= $"the game picked {want.Count} more cards than the emulator's selection took";
         AnswerScreens(e);
+        if (gap != null) note = null;  // the item is a gap: its reason says it all
         return gap;
+    }
+
+    /// <summary>
+    /// The deck indices of the cards a selection offers, in the order the game's selector is shown them.
+    /// CardSelectCmd lists the eligible cards in deck order for every selection except a removal:
+    /// FromDeckForRemoval hands FromDeckGeneric a sorting order that puts every Curse first and the rest after
+    /// it in deck order (the sort is stable, so the curses keep their deck order too). The removal kinds are
+    /// Remove (Biiig Hug, Empty Cage, Precarious Shears, Precise Scissors, Preserved Fog), RemoveUpgradable
+    /// (Pael's Tooth) and RemoveTaggedBasic (Amalgamator); the last two offer no curse, but they go through
+    /// the same sort. Upgrade (FromDeckForUpgrade), the transforms (FromDeckForTransformation), Enchant
+    /// (FromDeckForEnchantment sorts its cards by deck index) and Duplicate (FromDeckGeneric, no sorting
+    /// order) list in deck order, which is the order <paramref name="byDeck"/> comes in.
+    /// </summary>
+    internal static int[] InGameOrder(RunState s, int[] byDeck)
+    {
+        if (s.PendingSelectionKind is not (DeckSelection.Remove or DeckSelection.RemoveUpgradable or DeckSelection.RemoveTaggedBasic))
+        {
+            return byDeck;
+        }
+
+        bool Curse(int i) => Sts2Emulator.GeneratedData.Cards.Get(s.Deck[i].DefId).Type == CardType.Curse;
+        return byDeck.Where(Curse).Concat(byDeck.Where(i => !Curse(i))).ToArray();
     }
 
     /// <summary>

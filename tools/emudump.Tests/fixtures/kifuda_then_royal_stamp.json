@@ -1,0 +1,192 @@
+{
+ "source": "referee record dense-a seed X106BTBSR0, trimmed to the map items (through the fight item)",
+ "seed": "X106BTBSR0",
+ "ascension": 10,
+ "neow_pick": 2,
+ "room": [
+  0,
+  1
+ ],
+ "deck_add": [],
+ "setup": [
+  {
+   "cmd": "card",
+   "id": "AGGRESSION",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "MINIATURE_TENT"
+  },
+  {
+   "cmd": "card",
+   "id": "RESTLESSNESS",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "STURDY_CLAMP"
+  },
+  {
+   "cmd": "card",
+   "id": "INFERNAL_BLADE",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "ORNAMENTAL_FAN"
+  },
+  {
+   "cmd": "relic",
+   "id": "KIFUDA"
+  },
+  {
+   "cmd": "card",
+   "id": "COLOSSUS",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "PEN_NIB"
+  },
+  {
+   "cmd": "relic",
+   "id": "ROYAL_STAMP"
+  },
+  {
+   "cmd": "fight",
+   "id": "SOUL_NEXUS_ELITE"
+  }
+ ],
+ "setup_log": [
+  {
+   "i": -1,
+   "cmd": "before",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 0,
+   "cmd": "card",
+   "id": "AGGRESSION",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 1,
+   "cmd": "relic",
+   "id": "MINIATURE_TENT",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 2,
+   "cmd": "card",
+   "id": "RESTLESSNESS",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 3,
+   "cmd": "relic",
+   "id": "STURDY_CLAMP",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 4,
+   "cmd": "card",
+   "id": "INFERNAL_BLADE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 5,
+   "cmd": "relic",
+   "id": "ORNAMENTAL_FAN",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 6,
+   "cmd": "relic",
+   "id": "KIFUDA",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 7,
+   "cmd": "card",
+   "id": "COLOSSUS",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 8,
+   "cmd": "relic",
+   "id": "PEN_NIB",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 9,
+   "cmd": "relic",
+   "id": "ROYAL_STAMP",
+   "ok": true,
+   "msg": ""
+  }
+ ],
+ "choices": [
+  {
+   "kind": "cards",
+   "step": -7,
+   "options": [
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "BASH",
+    "AGGRESSION",
+    "RESTLESSNESS",
+    "INFERNAL_BLADE"
+   ],
+   "min": 0,
+   "max": 3,
+   "picked": [
+    0
+   ]
+  },
+  {
+   "kind": "cards",
+   "step": -10,
+   "options": [
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "BASH",
+    "RESTLESSNESS",
+    "INFERNAL_BLADE",
+    "COLOSSUS"
+   ],
+   "min": 1,
+   "max": 1,
+   "picked": [
+    0
+   ]
+  }
+ ],
+ "fight": {
+  "id": "SOUL_NEXUS_ELITE",
+  "room_type": "Elite",
+  "act": "GLORY",
+  "kind": "elite",
+  "index": 2,
+  "current_act": "OVERGROWTH"
+ }
+}

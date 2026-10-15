@@ -1,0 +1,116 @@
+{
+ "source": "referee record dense-a seed PG2F997ZKH, trimmed to the map items (through the fight item)",
+ "seed": "PG2F997ZKH",
+ "ascension": 10,
+ "neow_pick": 0,
+ "room": [
+  0,
+  1
+ ],
+ "deck_add": [],
+ "setup": [
+  {
+   "cmd": "card",
+   "id": "DEFEND_IRONCLAD",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "SHOCKWAVE",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "LIZARD_TAIL"
+  },
+  {
+   "cmd": "relic",
+   "id": "PEN_NIB"
+  },
+  {
+   "cmd": "relic",
+   "id": "KIFUDA"
+  },
+  {
+   "cmd": "fight",
+   "id": "TWO_TAILED_RATS_NORMAL"
+  }
+ ],
+ "setup_log": [
+  {
+   "i": -1,
+   "cmd": "before",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 0,
+   "cmd": "card",
+   "id": "DEFEND_IRONCLAD",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 1,
+   "cmd": "card",
+   "id": "SHOCKWAVE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 2,
+   "cmd": "relic",
+   "id": "LIZARD_TAIL",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 3,
+   "cmd": "relic",
+   "id": "PEN_NIB",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 4,
+   "cmd": "relic",
+   "id": "KIFUDA",
+   "ok": true,
+   "msg": ""
+  }
+ ],
+ "choices": [
+  {
+   "kind": "cards",
+   "step": -5,
+   "options": [
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "BASH",
+    "UNMOVABLE",
+    "DEFEND_IRONCLAD",
+    "SHOCKWAVE"
+   ],
+   "min": 0,
+   "max": 3,
+   "picked": [
+    0
+   ]
+  }
+ ],
+ "fight": {
+  "id": "TWO_TAILED_RATS_NORMAL",
+  "room_type": "Monster",
+  "act": "UNDERDOCKS",
+  "kind": "normal",
+  "index": 9,
+  "current_act": "UNDERDOCKS"
+ }
+}

@@ -176,6 +176,7 @@ static class RefsetSetup
                 var held = s.Relics.Select(r => RelicEntry(r.DefId)).ToList();
                 var queue = new Queue<JsonObject>(choices);
                 string? gap = null;
+                var notes = new List<string>();  // where the game's screen and the emulator's listed other cards (no gap)
                 foreach (string id in want)
                 {
                     if (held.Remove(id)) continue;
@@ -185,7 +186,11 @@ static class RefsetSetup
                     {
                         s.Phase = RunPhase.TransformSelect;
                         var mine = queue.Count > 0 ? new List<JsonObject> { queue.Dequeue() } : new List<JsonObject>();
-                        gap ??= Setup.AnswerDeckSelection(e, mine);
+                        if (gap == null)
+                        {
+                            gap = Setup.AnswerDeckSelection(e, mine, out var pickNote);
+                            if (pickNote != null) notes.Add(id + ": " + pickNote);
+                        }
                     }
                     else if (followUp != RunFollowUp.None)
                     {
@@ -200,7 +205,8 @@ static class RefsetSetup
                     s.Relics.RemoveAt(i--);  // RelicCmd.Remove: no relic overrides AfterRemoved
                 }
 
-                return gap == null ? (true, DeckLine(s)) : (false, "unsupported: " + gap);
+                // The deck line stays the message's first part (refset_score.setup_deck reads up to the first " | " after it).
+                return gap == null ? (true, DeckLine(s) + (notes.Count > 0 ? " | note: " + string.Join("; ", notes) : "")) : (false, "unsupported: " + gap);
             }
             case "deck_set":
             {

@@ -12,6 +12,10 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
   <ItemGroup>
+    <!-- SetupPickTests: real referee records (lab batch dense-a), trimmed to the setup items. -->
+    <None Include="fixtures/*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- LifecycleTests' open findings (the known ones on main, each an open defect). -->
     <None Include="lifecycle-open.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

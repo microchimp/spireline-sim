@@ -1,0 +1,209 @@
+{
+ "source": "referee record dense-a seed J330GYS9Q5, trimmed to the map items (through the fight item)",
+ "seed": "J330GYS9Q5",
+ "ascension": 10,
+ "neow_pick": 2,
+ "room": [
+  2,
+  1
+ ],
+ "deck_add": [],
+ "setup": [
+  {
+   "cmd": "card",
+   "id": "PROWESS",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "STRATAGEM",
+   "upgraded": true
+  },
+  {
+   "cmd": "relic",
+   "id": "BELLOWS"
+  },
+  {
+   "cmd": "card",
+   "id": "SEEKER_STRIKE",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "PANACHE",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "BLUDGEON",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "THUNDERCLAP",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "GNARLED_HAMMER"
+  },
+  {
+   "cmd": "relic",
+   "id": "SPARKLING_ROUGE"
+  },
+  {
+   "cmd": "card",
+   "id": "ULTIMATE_DEFEND",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "REGAL_PILLOW"
+  },
+  {
+   "cmd": "relic",
+   "id": "PUNCH_DAGGER"
+  },
+  {
+   "cmd": "fight",
+   "id": "ENTOMANCER_ELITE"
+  }
+ ],
+ "setup_log": [
+  {
+   "i": -1,
+   "cmd": "before",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 0,
+   "cmd": "card",
+   "id": "PROWESS",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 1,
+   "cmd": "card",
+   "id": "STRATAGEM",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 2,
+   "cmd": "relic",
+   "id": "BELLOWS",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 3,
+   "cmd": "card",
+   "id": "SEEKER_STRIKE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 4,
+   "cmd": "card",
+   "id": "PANACHE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 5,
+   "cmd": "card",
+   "id": "BLUDGEON",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 6,
+   "cmd": "card",
+   "id": "THUNDERCLAP",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 7,
+   "cmd": "relic",
+   "id": "GNARLED_HAMMER",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 8,
+   "cmd": "relic",
+   "id": "SPARKLING_ROUGE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 9,
+   "cmd": "card",
+   "id": "ULTIMATE_DEFEND",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 10,
+   "cmd": "relic",
+   "id": "REGAL_PILLOW",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 11,
+   "cmd": "relic",
+   "id": "PUNCH_DAGGER",
+   "ok": true,
+   "msg": ""
+  }
+ ],
+ "choices": [
+  {
+   "kind": "cards",
+   "step": -8,
+   "options": [
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "BASH",
+    "SEEKER_STRIKE",
+    "BLUDGEON",
+    "THUNDERCLAP"
+   ],
+   "min": 0,
+   "max": 3,
+   "picked": [
+    0
+   ]
+  },
+  {
+   "kind": "cards",
+   "step": -12,
+   "options": [
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "BASH",
+    "SEEKER_STRIKE",
+    "BLUDGEON",
+    "THUNDERCLAP"
+   ],
+   "min": 1,
+   "max": 1,
+   "picked": [
+    0
+   ]
+  }
+ ],
+ "fight": {
+  "id": "ENTOMANCER_ELITE",
+  "room_type": "Elite",
+  "act": "HIVE",
+  "kind": "elite",
+  "index": 1,
+  "current_act": "OVERGROWTH"
+ }
+}

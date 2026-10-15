@@ -1,0 +1,318 @@
+{
+ "source": "referee record dense-b seed TP3RMTLS8Z, trimmed to the map items (through item 21 and the fight item)",
+ "seed": "TP3RMTLS8Z",
+ "ascension": 10,
+ "neow_pick": 2,
+ "room": [
+  0,
+  1
+ ],
+ "deck_add": [],
+ "setup": [
+  {
+   "cmd": "relic",
+   "id": "MEMBERSHIP_CARD"
+  },
+  {
+   "cmd": "relic",
+   "id": "BAG_OF_MARBLES"
+  },
+  {
+   "cmd": "relic",
+   "id": "UNCEASING_TOP"
+  },
+  {
+   "cmd": "relic",
+   "id": "SHURIKEN"
+  },
+  {
+   "cmd": "card",
+   "id": "TRUE_GRIT",
+   "upgraded": true
+  },
+  {
+   "cmd": "card",
+   "id": "PERFECTED_STRIKE",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "UNMOVABLE",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "PETRIFIED_TOAD"
+  },
+  {
+   "cmd": "card",
+   "id": "WHIRLWIND",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "KUSARIGAMA"
+  },
+  {
+   "cmd": "relic",
+   "id": "PENDULUM"
+  },
+  {
+   "cmd": "relic",
+   "id": "FROZEN_EGG"
+  },
+  {
+   "cmd": "card",
+   "id": "FINESSE",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "DRAGON_FRUIT"
+  },
+  {
+   "cmd": "card",
+   "id": "SALVO",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "LEES_WAFFLE"
+  },
+  {
+   "cmd": "relic",
+   "id": "STONE_CALENDAR"
+  },
+  {
+   "cmd": "card",
+   "id": "IRON_WAVE",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "THRASH",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "FORGOTTEN_RITUAL",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "MIND_BLAST",
+   "upgraded": true
+  },
+  {
+   "cmd": "relic",
+   "id": "ROYAL_STAMP"
+  },
+  {
+   "cmd": "fight",
+   "id": "CONSTRUCT_MENAGERIE_NORMAL"
+  }
+ ],
+ "setup_log": [
+  {
+   "i": -1,
+   "cmd": "before",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 0,
+   "cmd": "relic",
+   "id": "MEMBERSHIP_CARD",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 1,
+   "cmd": "relic",
+   "id": "BAG_OF_MARBLES",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 2,
+   "cmd": "relic",
+   "id": "UNCEASING_TOP",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 3,
+   "cmd": "relic",
+   "id": "SHURIKEN",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 4,
+   "cmd": "card",
+   "id": "TRUE_GRIT",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 5,
+   "cmd": "card",
+   "id": "PERFECTED_STRIKE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 6,
+   "cmd": "card",
+   "id": "UNMOVABLE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 7,
+   "cmd": "relic",
+   "id": "PETRIFIED_TOAD",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 8,
+   "cmd": "card",
+   "id": "WHIRLWIND",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 9,
+   "cmd": "relic",
+   "id": "KUSARIGAMA",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 10,
+   "cmd": "relic",
+   "id": "PENDULUM",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 11,
+   "cmd": "relic",
+   "id": "FROZEN_EGG",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 12,
+   "cmd": "card",
+   "id": "FINESSE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 13,
+   "cmd": "relic",
+   "id": "DRAGON_FRUIT",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 14,
+   "cmd": "card",
+   "id": "SALVO",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 15,
+   "cmd": "relic",
+   "id": "LEES_WAFFLE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 16,
+   "cmd": "relic",
+   "id": "STONE_CALENDAR",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 17,
+   "cmd": "card",
+   "id": "IRON_WAVE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 18,
+   "cmd": "card",
+   "id": "THRASH",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 19,
+   "cmd": "card",
+   "id": "FORGOTTEN_RITUAL",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 20,
+   "cmd": "card",
+   "id": "MIND_BLAST",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 21,
+   "cmd": "relic",
+   "id": "ROYAL_STAMP",
+   "ok": true,
+   "msg": ""
+  }
+ ],
+ "choices": [
+  {
+   "kind": "cards",
+   "step": -22,
+   "options": [
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "BASH",
+    "ARMAMENTS",
+    "TRUE_GRIT",
+    "PERFECTED_STRIKE",
+    "WHIRLWIND",
+    "FINESSE",
+    "SALVO",
+    "IRON_WAVE",
+    "THRASH",
+    "FORGOTTEN_RITUAL",
+    "MIND_BLAST"
+   ],
+   "min": 1,
+   "max": 1,
+   "picked": [
+    0
+   ]
+  }
+ ],
+ "fight": {
+  "id": "CONSTRUCT_MENAGERIE_NORMAL",
+  "room_type": "Monster",
+  "act": "GLORY",
+  "kind": "normal",
+  "index": 1,
+  "current_act": "OVERGROWTH"
+ }
+}

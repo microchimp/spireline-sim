@@ -157,6 +157,15 @@ damage or heal shortcuts are refused). Spec keys, all optional; without them the
 EmuDump mirrors every item at the same moment (`tools/emudump/Setup.cs`); an item it cannot build is logged `unsupported`
 (a mirror gap, not a divergence). `python -m tools.fidelity.setup_compare <out.json> <emu.json>` names the first item after which
 the run's RNG counters or the item's outcome differ.
+A relic whose pickup opens a deck selection is mirrored by the pick the game's selector logged for it (a `cards` choice tagged
+with the item's step): the game lists the eligible deck cards in deck order, except a removal (Biiig Hug, Empty Cage, Precarious
+Shears, Precise Scissors, Preserved Fog, Pael's Tooth), which lists its curses first and then deck order, and the selector takes
+the first n. The mirror takes the cards at those list positions (followed through the removals and transforms earlier picks
+made), and closes a zero-to-N screen (Kifuda, Gnarled Hammer, Claws) with DONE once the game's picks run out. When the
+emulator's screen lists other cards than the game's (an earlier item already left its deck elsewhere), the pick is matched by
+card id and the setup log's message says so (`note: the emulator's selection lists ...`), which is no gap; it is a gap when the
+emulator holds copies of that id that differ (upgrade, enchantment), or the id is not on its screen, or the screen wants more
+picks than the game's required. A screen the game never showed is closed with DONE and a note.
 
 `python referee/scenarios.py --name <n> --mode coverage|dense --fights 60 --start <k> [--shrink 8 --shrink-budget 200]` (game copy
 `D:\spireline\referee\game-setup`, 2 servers, outputs in `D:\spireline\referee\jobs-setup`) makes the specs from the game's tables,

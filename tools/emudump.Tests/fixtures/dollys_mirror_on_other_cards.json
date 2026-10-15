@@ -1,0 +1,202 @@
+{
+ "source": "referee record dense-b seed TBPSTE9AW5, trimmed to the map items (through item 11 and the fight item)",
+ "seed": "TBPSTE9AW5",
+ "ascension": 10,
+ "neow_pick": 2,
+ "room": [
+  0,
+  1
+ ],
+ "deck_add": [],
+ "setup": [
+  {
+   "cmd": "relic",
+   "id": "WHITE_STAR"
+  },
+  {
+   "cmd": "card",
+   "id": "EXPECT_A_FIGHT",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "THE_ABACUS"
+  },
+  {
+   "cmd": "card",
+   "id": "BASH",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "PLANISPHERE"
+  },
+  {
+   "cmd": "relic",
+   "id": "SHOVEL"
+  },
+  {
+   "cmd": "relic",
+   "id": "KUSARIGAMA"
+  },
+  {
+   "cmd": "relic",
+   "id": "ETERNAL_FEATHER"
+  },
+  {
+   "cmd": "card",
+   "id": "FLASH_OF_STEEL",
+   "upgraded": false
+  },
+  {
+   "cmd": "card",
+   "id": "DEMON_FORM",
+   "upgraded": false
+  },
+  {
+   "cmd": "relic",
+   "id": "REPTILE_TRINKET"
+  },
+  {
+   "cmd": "relic",
+   "id": "DOLLYS_MIRROR"
+  },
+  {
+   "cmd": "fight",
+   "id": "WATERFALL_GIANT_BOSS"
+  }
+ ],
+ "setup_log": [
+  {
+   "i": -1,
+   "cmd": "before",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 0,
+   "cmd": "relic",
+   "id": "WHITE_STAR",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 1,
+   "cmd": "card",
+   "id": "EXPECT_A_FIGHT",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 2,
+   "cmd": "relic",
+   "id": "THE_ABACUS",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 3,
+   "cmd": "card",
+   "id": "BASH",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 4,
+   "cmd": "relic",
+   "id": "PLANISPHERE",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 5,
+   "cmd": "relic",
+   "id": "SHOVEL",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 6,
+   "cmd": "relic",
+   "id": "KUSARIGAMA",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 7,
+   "cmd": "relic",
+   "id": "ETERNAL_FEATHER",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 8,
+   "cmd": "card",
+   "id": "FLASH_OF_STEEL",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 9,
+   "cmd": "card",
+   "id": "DEMON_FORM",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 10,
+   "cmd": "relic",
+   "id": "REPTILE_TRINKET",
+   "ok": true,
+   "msg": ""
+  },
+  {
+   "i": 11,
+   "cmd": "relic",
+   "id": "DOLLYS_MIRROR",
+   "ok": true,
+   "msg": ""
+  }
+ ],
+ "choices": [
+  {
+   "kind": "cards",
+   "step": -12,
+   "options": [
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "STRIKE_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "DEFEND_IRONCLAD",
+    "BASH",
+    "ASCENDERS_BANE",
+    "NEOWS_FURY",
+    "THUNDERCLAP",
+    "IRON_WAVE",
+    "BLUDGEON",
+    "SHAME",
+    "EXPECT_A_FIGHT",
+    "BASH",
+    "FLASH_OF_STEEL",
+    "DEMON_FORM"
+   ],
+   "min": 1,
+   "max": 1,
+   "picked": [
+    0
+   ]
+  }
+ ],
+ "fight": {
+  "id": "WATERFALL_GIANT_BOSS",
+  "room_type": "Boss",
+  "act": "UNDERDOCKS",
+  "kind": "boss",
+  "index": 2,
+  "current_act": "UNDERDOCKS"
+ }
+}
