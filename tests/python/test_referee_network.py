@@ -56,6 +56,42 @@ class ProcessTreeTests(unittest.TestCase):
         table = {7: (8, "a.exe"), 8: (7, "b.exe")}
         self.assertEqual(set(rr.process_trees([7], table)), {7, 8})
 
+    # 2026-10-16: Discord (running since 13 Oct) named a parent pid that a game server had been given since; it was
+    # counted as the game's child and halted the lab. A child older than its parent is not its child.
+    APP, APP_HELPER = 700, 800
+
+    def reused(self):
+        table = dict(TABLE)
+        table[self.APP] = (GAME, "Discord.exe")          # its real parent (an updater) had pid GAME, exited days ago
+        table[self.APP_HELPER] = (self.APP, "Discord.exe")
+        born = {GAME: 1000, CRASHPAD: 1001, GRANDCHILD: 1002, OTHER: 1000, OTHER_CHILD: 1003,
+                self.APP: 10, self.APP_HELPER: 11}
+        return table, born
+
+    def test_a_process_older_than_the_game_is_not_its_child(self):
+        table, born = self.reused()
+        owner = rr.process_trees([GAME], table, created=born.get)
+        self.assertNotIn(self.APP, owner)
+        self.assertNotIn(self.APP_HELPER, owner)
+        self.assertEqual(owner[CRASHPAD], (GAME, "crashpad_handler.exe"))  # real children are still found
+        self.assertEqual(owner[GRANDCHILD], (GAME, "WerFault.exe"))
+
+    def test_an_unreadable_time_keeps_the_child(self):
+        table, born = self.reused()
+        born[self.APP] = None  # no access: never weaker than before
+        self.assertIn(self.APP, rr.process_trees([GAME], table, created=born.get))
+
+    def test_without_times_nothing_changes(self):
+        table, _ = self.reused()
+        self.assertIn(self.APP, rr.process_trees([GAME], table))
+
+    def test_the_live_creation_time_reads_this_process(self):
+        import os
+        here = rr.creation_time(os.getpid())
+        self.assertIsNotNone(here)
+        self.assertGreater(here, 0)
+        self.assertIsNone(rr.creation_time(0xFFFFFFF0))  # no such process
+
 
 class NetstatTests(unittest.TestCase):
     def test_child_connections_count_for_the_game(self):

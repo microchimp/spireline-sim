@@ -73,22 +73,63 @@ def process_table() -> dict[int, tuple[int, str]]:
     return table
 
 
-def process_trees(roots, table: dict[int, tuple[int, str]]) -> dict[int, tuple[int, str]]:
+def creation_time(pid: int) -> int | None:
+    """A running process's creation time (FILETIME ticks), or None when it cannot be read (gone, or no access)."""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    h = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        t = [wintypes.FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+            return None
+        return (t[0].dwHighDateTime << 32) | t[0].dwLowDateTime
+    finally:
+        k32.CloseHandle(h)
+
+
+def process_trees(roots, table: dict[int, tuple[int, str]], created=None) -> dict[int, tuple[int, str]]:
     """Every root pid and all its descendants (the game's crashpad_handler, anything they start):
     pid -> (root pid, exe name). A root that has exited keeps its entry with name "". Windows keeps a
-    child's parent pid after the parent exits, so a lingering child is still found."""
+    child's parent pid after the parent exits, so a lingering child is still found.
+
+    Windows also reuses pids: a process whose parent exited long ago still names that parent's pid, and a game
+    process can be given the same number later (2026-10-16: Discord, running since 13 Oct, whose parent pid had
+    been reused by a game server, was counted as the game's child and halted the lab). A real child is never
+    older than its parent, so a "child" created before its parent is not one. When either time cannot be read
+    the child is kept, so the check never gets weaker for a process it cannot inspect. `created` (pid -> time) is
+    given with the live process table (creation_time); without it (a made-up table) no time is compared."""
     owner: dict[int, tuple[int, str]] = {int(r): (int(r), table.get(int(r), (0, ""))[1]) for r in roots}
     children: dict[int, list[int]] = {}
     for pid, (ppid, _name) in table.items():
         if pid != ppid:
             children.setdefault(ppid, []).append(pid)
+    born: dict[int, int | None] = {}
+
+    def when(pid: int) -> int | None:
+        if pid not in born:
+            born[pid] = created(pid) if created else None
+        return born[pid]
+
     for root in [int(r) for r in roots]:
         stack = [root]
         while stack:
-            for child in children.get(stack.pop(), []):
-                if child not in owner:  # also cuts a cycle made by a reused parent pid
-                    owner[child] = (root, table[child][1])
-                    stack.append(child)
+            parent = stack.pop()
+            for child in children.get(parent, []):
+                if child in owner:  # also cuts a cycle made by a reused parent pid
+                    continue
+                c, p = when(child), when(parent)
+                if c is not None and p is not None and c < p:
+                    continue  # older than its "parent": that parent pid was reused, so it is not a descendant
+                owner[child] = (root, table[child][1])
+                stack.append(child)
     return owner
 
 
@@ -110,7 +151,7 @@ def parse_netstat(out: str, owner: dict[int, tuple[int, str]]) -> dict[int, set[
 def connections_by_pid(pids) -> dict[int, set[str]]:
     """One `netstat -ano` call for any number of game pids: pid -> the TCP/UDP endpoints of the game
     process and of every process it started (crashpad_handler.exe, the crash reporter Sentry starts)."""
-    owner = process_trees(pids, process_table())
+    owner = process_trees(pids, process_table(), created=creation_time)
     out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, check=False,
                          creationflags=subprocess.CREATE_NO_WINDOW).stdout
     return parse_netstat(out, owner)
@@ -159,9 +200,10 @@ def wer_reports_by_pid(pids, table: dict[int, tuple[int, str]] | None = None,
                        read_command_lines=command_lines, cache: dict[int, str] | None = None) -> dict[int, set[str]]:
     """Every WerFault.exe that exists now and is about a game process: pid -> report lines. A WerFault is about
     a game process when it was started by one (it is in that process's tree) or its command line names one."""
-    table = process_table() if table is None else table
+    live = table is None
+    table = process_table() if live else table
     cache = _WER_COMMAND_CACHE if cache is None else cache
-    owner = process_trees(pids, table)
+    owner = process_trees(pids, table, created=creation_time if live else None)
     found: dict[int, set[str]] = {root: set() for root, _ in owner.values()}
     wer = {pid: ppid for pid, (ppid, name) in table.items() if name.lower() == WER_EXE}
     for gone in [w for w in cache if w not in wer]:
