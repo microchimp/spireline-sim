@@ -10,7 +10,7 @@ sts2.dll, no network, scratch profile, real profile untouched) playing a share o
 (EmuDump run), the comparison (tools/fidelity/run_compare2.py run) saved as <name>.summary.txt, and the same
 as data in <name>.runs.json (one record per run with its first divergence; tools/fidelity/lab_groups.py reads it).
 Seeds are drawn from --start (start 1 gives the seeds of referee/jobs/batch1). --jobs puts every output in that
-folder instead of jobs/runref.
+folder instead of jobs/runref (their scratch profiles too).
 
 A session that crashes or times out (a game process can exit 0xC0000005) is logged in the summary, and the
 batch goes on with what the other sessions played and what the crashed one wrote before it ended: the runs it
@@ -99,8 +99,11 @@ def main() -> int:
             job = jobs / f"{a.name}.p{p}.json"
             job.write_text(json.dumps({"out": str(jobs / f"{a.name}.p{p}.out.json"), "fast_reset": True,
                                        "no_preload": True, "fast_patches": True, "stall_s": 90, "runs": part}))
+            # With --jobs the sessions' scratch profiles (saves, game logs) live in the job folder too, where the lab's
+            # disk pruning finds them; without it run_referee puts them next to the game copy as it always did.
+            where = ["--scratch", str(jobs / "scratch" / f"{a.name}-p{p}")] if a.jobs else []
             procs.append(subprocess.Popen([PY, str(HERE / "run_referee.py"), "--game", a.game, "--job", str(job),
-                                           "--timeout", str(a.timeout), "--below-normal"],
+                                           "--timeout", str(a.timeout), "--below-normal", *where],
                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
             time.sleep(3)  # the first session installs the mod; the second then finds it in place
         reports = [_report(p) for p in procs]

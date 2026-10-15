@@ -5,7 +5,7 @@
         [--codex <runs-v0.107.1.jsonl.gz>] [--corpus DIR] [--refset-score FILE] [--reach FILE] [--codex-walk DIR]
         [--codex-max-runs N] [--rebuild-profile]
 
-Writes {main_sha, generated_utc, profile, totals, targets: [{kind, id, weight, reasons}]}, highest weight first,
+Writes {main_sha, generated_utc, profile, totals, targets: [{kind, id, weight, reasons[, backlog_items]}]}, highest weight first,
 kind one of card, relic, potion, enemy, encounter, event, power, act. No game, no emulator, no network.
 
 weight = meet x gap. meet is the share of real Ironclad A10 runs (Spire Codex, v0.107.1) that meet the id (a card

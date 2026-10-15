@@ -259,6 +259,30 @@ class PruneTest(unittest.TestCase):
         self.assertFalse((job / "fights" / "x.shrink.emu.json").exists())
         self.assertEqual(len(json.loads((job / "fights" / "x.out.json").read_text(encoding="utf-8"))["results"][1]["steps"]), 5)  # raw kept
 
+    def test_shrink_rounds_and_session_copies_are_scratch_and_the_records_of_the_lab_stay(self):
+        job = make_fights_job(self.lab, "20260101T0000-fights")
+        runs = self.lab / "runs" / "20260101T0100-runs" / "runs"
+        runs.mkdir(parents=True)
+        for rel in ("fights/x.shrink0.json", "fights/x.shrink12.out.json", "fights/x.shrink.json"):
+            (job / rel).write_bytes(b"s" * 300)
+        for n in ("r.p0.json", "r.p3.out.json", "r.out.json", "r.runs.json", "r.summary.txt"):
+            (runs / n).write_bytes(b"r" * 300)
+        (runs.parent / "done.rc").write_text("0\n", encoding="utf-8")
+        for n in ("yield.tsv", "mix.json", "coverage-random.json"):
+            (self.lab / n).write_text("keep", encoding="utf-8")
+        pr.prune(self.lab, need=10**9)
+        self.assertFalse((job / "fights" / "x.shrink0.json").exists())
+        self.assertFalse((job / "fights" / "x.shrink12.out.json").exists())
+        self.assertTrue((job / "fights" / "x.shrink.json").exists())  # the shrink record itself is what lab_groups reads
+        self.assertFalse((runs / "r.p0.json").exists())
+        self.assertFalse((runs / "r.p3.out.json").exists())
+        for n in ("r.runs.json", "r.summary.txt"):
+            self.assertTrue((runs / n).exists(), n)
+        for n in ("yield.tsv", "mix.json", "coverage-random.json"):
+            self.assertTrue((self.lab / n).exists(), n)
+        for n in ("yield.tsv", "mix.json", "x.verdicts.json", "r.runs.json", "x.shrink.json"):
+            self.assertTrue(pr.protected(Path(n)), n)
+
     def test_matched_fights_are_stubbed_in_place_and_stay_aligned(self):
         job = make_fights_job(self.lab, "20260101T0000-fights")
         pr.prune(self.lab, need=10**9)  # as much as it may
@@ -842,6 +866,27 @@ class RegisterTaskTest(unittest.TestCase):
                      "MultipleInstances=IgnoreNew", "runner.py"):
             self.assertIn(want, r.stdout)
         self.assertEqual(self.tasks(), before)
+
+
+
+    def test_logon_trigger_is_always_on_and_registers_nothing(self):
+        before = self.tasks()
+        script = ROOT / "tools" / "lab" / "register_task.ps1"
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Trigger", "Logon", "-WhatIf"],
+                           capture_output=True, text=True, timeout=120, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for want in ("Spireline fix lab", "Interactive, Limited", "no password stored", "at logon of", "(always on)", "--always-on", "RunOnlyIfIdle=False",
+                     "StopOnIdleEnd=False", "Priority=7", "ExecutionTimeLimit=PT0S", "MultipleInstances=IgnoreNew", "RestartCount=3",
+                     "RestartInterval=PT5M", "Nothing changed"):
+            self.assertIn(want, r.stdout)
+        self.assertNotIn("on idle", r.stdout)
+        self.assertEqual(self.tasks(), before)
+        idle = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-WhatIf"],
+                              capture_output=True, text=True, timeout=120, check=False)
+        self.assertNotIn("--always-on", idle.stdout)  # the idle mode stays the default and is unchanged
+        bad = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Trigger", "Weekly", "-WhatIf"],
+                             capture_output=True, text=True, timeout=120, check=False)
+        self.assertNotEqual(bad.returncode, 0)
 
 
 if __name__ == "__main__":

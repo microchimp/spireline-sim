@@ -2,16 +2,17 @@
 """The fix lab's runner: turns idle CPU into the information that makes backlog fixes cheap.
 
     python tools/lab/runner.py [--lab D:/spireline/referee/lab] [--tree D:/spireline/fork/wt-lab]
-        [--game D:/spireline/referee/game-lab] [--trial MINUTES] [--once presort|fights|probes|mutation|invariants]
-        [--dry-run] [--skip PREFIX,...] [--no-guard user,load,...]
+        [--game D:/spireline/referee/game-lab] [--trial MINUTES] [--once presort|fights|runs|probes|mutation|invariants]
+        [--dry-run] [--skip PREFIX,...] [--no-guard user,load,...] [--always-on]
 
 Started by the Windows scheduled task "Spireline fix lab" (tools/lab/register_task.ps1) from the fork's main
 checkout, which it only reads; every job runs with the --tree worktree (detached at the fork's LOCAL main, never
 fetched) as cwd. See tools/lab/README.md and referee/RUNBOOK.md "Fix lab".
 
 Jobs, by value: presort (when local main changed: move and rebuild the tree, codex walk, refset score, corpus
-check, then groups and kits), fights (aimed batches, shrink, first events, groups, kits), probes, mutation,
-invariants. A job is a folder LAB/runs/<UTC yyyymmddThhmm>-<job>/ with job.json (inputs, main sha, steps), logs/,
+check, then groups and kits), fights (one strategy of tools/lab/mix.py per job, chosen from LAB/mix.json: aimed
+batches, shrink, first events, groups, kits), runs (the whole-runs strategy), probes, mutation, invariants. Every
+finished job adds a row to LAB/yield.tsv (CPU minutes, fights, mismatches, unbuildable, groups, fix-ready groups). A job is a folder LAB/runs/<UTC yyyymmddThhmm>-<job>/ with job.json (inputs, main sha, steps), logs/,
 its outputs and done.rc (the exit code, written last). It is resumable: an interrupted job is resumed at its
 first unfinished step if main has not moved, else closed with done.rc 3.
 
@@ -44,9 +45,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True  # before the runner's own imports: no __pycache__ in the checkout it only reads
 
-from tools.lab import guards, plans, prune, winsys  # noqa: E402
+from tools.lab import guards, mix, plans, prune, winsys  # noqa: E402
 
-JOB_TYPES = ("presort", "fights", "probes", "mutation", "invariants")
+JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants")
 ROTATION = ("fights", "fights", "probes", "fights", "mutation", "fights", "invariants")  # after presort, by value
 DEFAULTS = {
     "lab": "D:/spireline/referee/lab", "tree": "D:/spireline/fork/wt-lab", "game": "D:/spireline/referee/game-lab",
@@ -108,14 +109,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--records", default=d["records"], help="the recorded fights the invariant checks read")
     ap.add_argument("--trial", type=float, default=None, metavar="MINUTES", help="work for this long, then stop and exit 0")
     ap.add_argument("--once", choices=JOB_TYPES, default=None, help="run one job of this type, then exit")
+    ap.add_argument("--always-on", action="store_true",
+                    help="for the logon task: keyboard and mouse input and LAB/HALT pause the lab instead of ending the runner")
     ap.add_argument("--dry-run", action="store_true", help="print the guards, the next job and its plan; change nothing")
     ap.add_argument("--skip", default="", help="comma-separated step or command name prefixes to skip (codex, refset, corpus, ...)")
     ap.add_argument("--no-guard", default="", help=f"comma-separated guards to switch off for a test: {','.join(guards.GUARD_NAMES)}")
     ap.add_argument("--exit-with-parent", action="store_true", help="exit when the process that started the runner is gone")
     ap.add_argument("--fights", type=int, default=300, help="fights in one fights job")
     ap.add_argument("--batch", type=int, default=50, help="fights per scenarios.py call (a safe point between calls)")
-    ap.add_argument("--servers", type=int, default=6, help="game servers per fights batch")
-    ap.add_argument("--shrink", type=int, default=8, help="diverging fights shrunk per batch")
+    ap.add_argument("--servers", type=int, default=8, help="game servers per fights batch")
+    ap.add_argument("--shrink", type=int, default=1000, help="diverging fights shrunk per batch (the default: every one)")
+    ap.add_argument("--shrink-cap", type=int, default=160, help="game fights one diverging fight's shrink may cost")
+    ap.add_argument("--shrink-budget", type=int, default=6000, help="game fights the shrinking of one job may cost in all")
+    ap.add_argument("--shrink-minutes", type=float, default=45.0, help="minutes after which a job starts no new shrink round")
+    ap.add_argument("--trace", type=int, default=1000, help="diverging fights traced per batch (the default: every one)")
+    ap.add_argument("--trace-minutes", type=float, default=20.0, help="minutes after which a job starts no new trace call")
+    ap.add_argument("--runs", type=int, default=40, help="whole runs in one whole-runs job")
+    ap.add_argument("--run-batch", type=int, default=10, help="whole runs per runs.py call (a safe point between calls)")
+    ap.add_argument("--run-procs", type=int, default=4, help="game sessions per runs.py call")
     ap.add_argument("--procs", type=int, default=8, help="processes for the corpus check")
     ap.add_argument("--mutants", type=int, default=150)
     ap.add_argument("--idle-seconds", type=float, default=60.0, help="user input within this many seconds stops the lab")
@@ -133,8 +144,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ---------------------------------------------------------------- lab folder, state, job records
 
 DEFAULT_STATE: dict[str, Any] = {
-    "version": 1, "last_presorted_sha": None, "tree_sha": None, "rotation": 0, "next_start": 1, "bad_shas": {}, "backoff": {},
-    "counters": {"jobs_started": {}, "jobs_done": {}, "fights": 0, "interrupts": {}, "active_seconds": 0},
+    "version": 1, "last_presorted_sha": None, "tree_sha": None, "rotation": 0, "next_start": 1, "next_run_start": 1000, "bad_shas": {},
+    "backoff": {}, "strategy_cpu": {},  # strategy -> CPU seconds its finished jobs spent (the mix schedules on it)
+    "counters": {"jobs_started": {}, "jobs_done": {}, "fights": 0, "runs": 0, "interrupts": {}, "active_seconds": 0},
 }
 
 
@@ -245,6 +257,7 @@ class Runner:
         self.state: dict[str, Any] = self.lab.load_state()
         self.stop_signal: str | None = None
         self.current: tuple[str, str] | None = None  # (job name, step name)
+        self.current_strategy: str | None = None
         self.since = utc()
         self._beat = 0.0
         disabled = {x for x in a.no_guard.split(",") if x}
@@ -255,7 +268,10 @@ class Runner:
         self.guards = guards.Guards(self.lab.root, lock, disabled=disabled, idle_s=a.idle_seconds, load_pct=a.load_pct,
                                     load_window=a.load_window, lab_gb=a.lab_gb, free_gb=a.free_gb, grace=a.grace, deadline=deadline,
                                     clock=clock, load=self.load, prune=self.prune_some,
-                                    parent_pid=os.getppid() if a.exit_with_parent else None)
+                                    parent_pid=os.getppid() if a.exit_with_parent else None, stay=a.always_on)
+        self.next_strategy: str | None = None  # the strategy choose() picked for the job new_run() makes next
+        self.last_mix_note = ""
+        self._mark = (0.0, 0.0)  # (cpu seconds, clock) at the last accounting of the running job
 
     # ---- plumbing
 
@@ -283,8 +299,10 @@ class Runner:
         rd = self.guards.readings
         if rd.get("load") is not None:
             extra = (extra + " " if extra else "") + f"other_cpu={rd['load'][0]}%/{rd['load'][1]}s"
+        if self.current and self.current_strategy:
+            where += f" strategy={self.current_strategy}"
         line = (f"{utc()} {state} {where} since={self.since} tree={main} jobs_done={sum(c['jobs_done'].values())} "
-                f"fights={c['fights']} interrupts={intr}" + (f" | {extra}" if extra else ""))
+                f"fights={c['fights']} runs={c.get('runs', 0)} interrupts={intr}" + (f" | {extra}" if extra else ""))
         try:
             atomic_write(self.lab.status_path, line + "\n")
         except OSError:
@@ -335,7 +353,12 @@ class Runner:
             return {"procs_refset": 4, "procs_corpus": a.procs}
         if job == "fights":
             n = max(1, math.ceil(a.fights / max(1, a.batch)))
-            return {"batches": n, "batch": a.batch, "start": st["next_start"], "servers": a.servers, "shrink": a.shrink}
+            return {"batches": n, "batch": a.batch, "start": st["next_start"], "servers": a.servers, "shrink": a.shrink,
+                    "shrink_cap": a.shrink_cap, "shrink_budget": a.shrink_budget, "shrink_minutes": a.shrink_minutes, "trace": a.trace,
+                    "trace_minutes": a.trace_minutes, "strategy": self.next_strategy}
+        if job == "runs":
+            return {"batches": max(1, math.ceil(a.runs / max(1, a.run_batch))), "run_batch": a.run_batch, "start": st["next_run_start"],
+                    "procs": a.run_procs, "strategy": "whole-runs"}
         if job == "probes":
             return {"probe_ids": plans.probe_ids(Path(a.backlog_dir))}
         if job == "mutation":
@@ -372,6 +395,7 @@ class Runner:
             age_h = (time.time() - (d / "job.json").stat().st_mtime) / 3600
             if sha is None or run.data.get("main_sha") != sha or age_h > RESUME_HOURS:
                 if not a.dry_run:
+                    self.record(run, 3)
                     run.finish(3, "superseded: main moved or the job was idle too long")
                 continue
             return run.job, run, f"resume {run.name}"
@@ -387,25 +411,60 @@ class Runner:
                 return "presort", None, f"main moved to {sha[:7]}"
             return "", None, f"--once {a.once} needs the tree presorted at {sha[:7]} first (--once presort)"
         if a.once:
+            if a.once == "fights":
+                picked, strategy = self.pick_fights(sha)
+                if not picked:
+                    return "", None, "no fights strategy is runnable"
+                self.next_strategy = strategy
+                return "fights", None, f"--once, {strategy}"
             why = self.unavailable(a.once, sha)
             if why is not None:
                 self.log(f"{a.once}: not runnable ({why})")
             return (a.once, None, "--once") if why is None else ("", None, why)
         for k in range(len(ROTATION)):
             job = ROTATION[(st["rotation"] + k) % len(ROTATION)]
-            why = self.unavailable(job, sha)
+            strategy = None
+            if job == "fights":  # the mix says which strategy this slot's job is (a whole run is its own job type)
+                job, strategy = self.pick_fights(sha)
+                if not job:
+                    continue
+                why = None
+            else:
+                why = self.unavailable(job, sha)
             if why is None:
                 st["rotation"] = (st["rotation"] + k + 1) % len(ROTATION)
-                return job, None, "rotation"
+                self.next_strategy = strategy if job == "fights" else None
+                return job, None, "rotation" + (f", {strategy}" if strategy else "")
             self.log(f"{job}: not runnable ({why})")
         return "", None, "no job is runnable"
 
-    def unavailable(self, job: str, sha: str) -> str | None:
-        until = self.state["backoff"].get(job, 0)
+    def pick_fights(self, sha: str) -> tuple[str, str | None]:
+        """(job type, strategy) for a fights slot: the available strategy furthest below its share of CPU time in LAB/mix.json;
+        ("", None) when none can run."""
+        weights, notes = mix.load_mix(self.lab.root, create=not self.a.dry_run)
+        note = "; ".join(notes)
+        if note != self.last_mix_note:
+            self.last_mix_note = note
+            if note:
+                self.log(note)
+        spent = self.state["strategy_cpu"]
+        chosen, skipped = mix.pick(weights, spent, lambda s: self.unavailable("runs" if s == "whole-runs" else "fights", sha, s))
+        for s, why in skipped.items():
+            self.log(f"{s}: not runnable ({why})")
+        if chosen is None:
+            return "", None
+        self.log(f"mix: {chosen} is next (share wanted/had: {mix.share_table(weights, spent)})")
+        return ("runs" if chosen == "whole-runs" else "fights"), chosen
+
+    def unavailable(self, job: str, sha: str, strategy: str | None = None) -> str | None:
+        until = self.state["backoff"].get(strategy or job, 0)  # a strategy that keeps failing backs off alone
         if time.time() < until:
             return f"backing off after repeated failures until {utc(until)}"
         try:
-            c = self.ctx(None, job, sha, self.default_params(job))
+            params = self.default_params(job)
+            if strategy:
+                params["strategy"] = strategy
+            c = self.ctx(None, job, sha, params)
             return plans.runnable(plans.plan(job, c), c)
         except plans.Unavailable as e:
             return str(e)
@@ -416,6 +475,9 @@ class Runner:
         params = self.default_params(job)
         if job == "fights":
             self.state["next_start"] += params["batches"]
+        elif job == "runs":
+            self.state["next_run_start"] += params["batches"]
+        self.next_strategy = None
         run = Run.create(self.lab, job, sha, params)
         n = self.state["counters"]["jobs_started"]
         n[job] = n.get(job, 0) + 1
@@ -439,8 +501,31 @@ class Runner:
             self.status(f"paused({v.kind})", v.detail)
             time.sleep(self.a.wait_poll)
 
+    def cpu_secs(self) -> float:
+        """CPU seconds of everything the runner has started (its Job Object); 0 where there is none (a test)."""
+        return self.root_job.cpu_time() / 1e7 if self.root_job else 0.0
+
+    def account(self, run: Run) -> None:
+        """Add the CPU and wall seconds since the last call to the job's record (cpu_secs, wall_secs in job.json)."""
+        cpu, now = self.cpu_secs(), self.clock()
+        c0, t0 = self._mark
+        run.data["cpu_secs"] = round(float(run.data.get("cpu_secs", 0)) + max(0.0, cpu - c0), 1)
+        run.data["wall_secs"] = round(float(run.data.get("wall_secs", 0)) + max(0.0, now - t0), 1)
+        self._mark = (cpu, now)
+
     def execute(self, run: Run) -> guards.Verdict | None:
         """Run the job's steps in order; a verdict that makes the runner leave comes back (the job stays open)."""
+        self.current_strategy = (run.data.get("params") or {}).get("strategy")
+        self._mark = (self.cpu_secs(), self.clock())
+        try:
+            return self._execute(run)
+        finally:
+            if not (run.dir / "done.rc").exists():  # stopped, not finished: what it used so far is kept for the next stretch
+                self.account(run)
+                run.save()
+            self.current_strategy = None
+
+    def _execute(self, run: Run) -> guards.Verdict | None:
         sha = run.data["main_sha"]
         ctx = self.ctx(run, run.job, sha, run.data["params"])
         steps = plans.plan(run.job, ctx)
@@ -492,20 +577,38 @@ class Runner:
                 b["retry_after"] = time.time() + min(6 * 3600, 1800 * 2 ** (b["fails"] - 1))
                 st["tree_sha"] = None  # the tree's sources moved but its build did not: nothing may run on it
         streak = st.setdefault("fail_streak", {})
+        key = (run.data.get("params") or {}).get("strategy") or run.job  # a strategy that keeps failing backs off alone
         if rc == 0:
-            streak[run.job] = 0
-            st["backoff"].pop(run.job, None)
+            streak[key] = 0
+            st["backoff"].pop(key, None)
         elif run.job != "presort":  # a presort has its own per-sha retry
-            streak[run.job] = streak.get(run.job, 0) + 1
-            if streak[run.job] >= 2:
-                st["backoff"][run.job] = time.time() + min(6 * 3600, 600 * 2 ** (streak[run.job] - 2))
+            streak[key] = streak.get(key, 0) + 1
+            if streak[key] >= 2:
+                st["backoff"][key] = time.time() + min(6 * 3600, 600 * 2 ** (streak[key] - 2))
         c["jobs_done"][run.job] = c["jobs_done"].get(run.job, 0) + (1 if rc == 0 else 0)
         c["active_seconds"] += int(self.clock() - getattr(self, "job_t0", self.clock()))
+        self.account(run)
+        self.record(run, rc)
         run.finish(rc)
         self.lab.save_state(st)
         self.log(f"job {run.name} finished rc={rc}")
         self.current = None
         self.status("idle")
+
+    def record(self, run: Run, rc: int) -> None:
+        """A finished (or closed) job's CPU goes to its strategy's account, and its row to LAB/yield.tsv. Never fails the job."""
+        try:
+            data = run.data
+            strategy = (data.get("params") or {}).get("strategy")
+            spent = float(data.get("cpu_secs") or 0) or float(data.get("wall_secs") or 0)
+            if strategy:
+                cpu = self.state.setdefault("strategy_cpu", {})
+                cpu[strategy] = round(float(cpu.get(strategy, 0.0)) + spent, 1)
+            groups_ran = any(r.get("name") == "groups" and r.get("status") == "done" for r in data.get("steps", []))
+            row = mix.yield_row(run.dir, dict(data, rc=rc), read_json(self.lab.root / "groups.json", None), groups_ran, utc())
+            mix.append_yield(self.lab.root, row)
+        except Exception:  # noqa: BLE001  (the record is a convenience; the job's own files are what matters)
+            self.log("yield not recorded: " + traceback.format_exc()[-400:])
 
     def run_step(self, run: Run, step: plans.Step, rec: dict[str, Any], ctx: plans.Ctx) -> guards.Verdict | None:
         while True:
@@ -757,7 +860,10 @@ class Runner:
             except Halted as e:
                 self.status("halted", str(e))
                 self.log(f"HALT: {e}")
-                return 0
+                if not self.a.always_on:
+                    return 0
+                self.current = None  # always on: nothing would start the runner again, so it waits at the gate for LAB/HALT to go
+                continue
             except KeyboardInterrupt:
                 return self.leave(guards.Verdict("signal", "interrupted", leave=True))
             except Exception:  # noqa: BLE001  (a bug in one pass must not end a night's work at once; three in a row end it)
@@ -844,6 +950,8 @@ class Runner:
               f"PAUSE {(self.lab.root / 'PAUSE').exists()}; main.lock {(Path(a.backlog_dir) / 'main.lock').exists()}; "
               f"HALT {(self.lab.root / 'HALT').exists()}; load {load}; lab {size:.2f} GB of {a.lab_gb:g}; drive free {free:.0f} GB (min {a.free_gb:g})")
         print(f"guard verdict now: {v}")
+        weights, notes = mix.load_mix(self.lab.root, create=False)
+        print("mix (wanted share / CPU share had): " + mix.share_table(weights, st["strategy_cpu"]) + ("; " + "; ".join(notes) if notes else ""))
         job, run, why = self.choose(sha)
         if not job:
             print(f"next job: none ({why})")

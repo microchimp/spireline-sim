@@ -3,7 +3,8 @@
 ``prune(lab, need, busy)`` frees at least `need` bytes (or everything it may) from finished jobs, oldest first,
 tier by tier, and returns the bytes freed. A job that is running (`busy`) is never touched.
 
-  tier A  scratch: serve/, chunks/, work/, scratch/ folders, shrink replays, split inputs, logs over 20 MB cut to their tail.
+  tier A  scratch: serve/, chunks/, work/, scratch/ folders, shrink replays (<name>.shrinkN.json, .shrinkN.out.json), a whole-runs
+          session's copy of its runs (<name>.pN.out.json), split inputs, logs over 20 MB cut to their tail.
   tier B  raw outputs of fights that MATCHED: in `<name>.out.json`, `.emu.json` and `.reanchor.json` the entry of a fight
           whose verdict is identical (and has no mirror gap) becomes the stub {"seed", "pruned": true, "steps": []}, so
           every list stays aligned with `<name>.verdicts.json`, which is never touched.
@@ -19,15 +20,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
 
 SCRATCH_DIRS = {"serve", "chunks", "work", "scratch", "wt"}
 SCRATCH_FILE_PATTERNS = (".shrink.emu.json",)
+# a shrink round's job and result files (<name>.shrink3.json, .shrink3.out.json) and a whole-runs session's copy of what
+# runs.py merged into <name>.out.json (<name>.p0.json, .p0.out.json)
+SCRATCH_RE = re.compile(r"\.shrink\d+(\.out)?\.json$|\.p\d+(\.out)?\.json$")
 KEEP_NAMES = {"groups.json", "summary.md", "targets.json", "state.json", "status.txt", "job.json", "done.rc", "pruned.json",
-              "coverage-setup.json"}
-KEEP_SUFFIXES = (".verdicts.json", ".summary.txt")
+              "coverage-setup.json", "yield.tsv", "mix.json", "coverage-random.json", "PAUSE", "HALT"}
+KEEP_SUFFIXES = (".verdicts.json", ".summary.txt", ".runs.json", ".shrink.json")
 RAW_SUFFIXES = (".out.json", ".emu.json", ".reanchor.json")
 LOG_CUT = 20 * 1024 * 1024
 LOG_TAIL = 256 * 1024
@@ -77,7 +82,7 @@ def tier_a(job: Path) -> int:
             freed += _remove(d)
     for f in list(job.rglob("*")):
         if f.is_file() and not protected(f):
-            if f.name.endswith(SCRATCH_FILE_PATTERNS) or (f.name.endswith(".in.json") and ".p" in f.name):
+            if f.name.endswith(SCRATCH_FILE_PATTERNS) or SCRATCH_RE.search(f.name) or (f.name.endswith(".in.json") and ".p" in f.name):
                 freed += _remove(f)
                 continue
             try:  # a file another process holds or just removed is left as it is

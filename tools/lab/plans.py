@@ -5,7 +5,8 @@ is written symbolically (``{tree}``, ``{lab}``, ``{job}`` ...); the symbolic for
 keep, so they hold no absolute path of the user's. A command whose tool is missing on the tree, whose input is
 absent, or that ``--skip`` names is skipped with a one-line reason, never an error.
 
-Jobs, in the runner's order of value (runner.ROTATION): presort, fights, probes, mutation, invariants.
+Jobs, in the runner's order of value (runner.ROTATION): presort, fights (one of the strategies of tools/lab/mix.py), runs
+(the whole-runs strategy), probes, mutation, invariants.
 """
 
 from __future__ import annotations
@@ -255,26 +256,50 @@ def _kits_ready(c: Ctx) -> str | None:
 # ---------------------------------------------------------------- fights
 
 def fights_mode(tree: Path) -> tuple[str, bool]:
-    """('targets' | 'coverage', whether scenarios.py takes --jobs), from the tree's sources."""
+    """('targets' | 'coverage', whether scenarios.py takes --jobs), from the tree's sources (jobs without a strategy)."""
     has_targets, has_jobs = source_has(tree / "referee/scenarios.py", '"targets"', '"--jobs"')
     targets_tool = (tree / "tools/fidelity/lab_targets.py").exists()
     return ("targets" if has_targets and targets_tool else "coverage"), has_jobs
 
 
 def _halt_on_unsafe(name: str) -> Callable[[Ctx], str | None]:
+    """scenarios.py puts the safety report on the first line of its summary, batch.py on its second."""
     def check(c: Ctx) -> str | None:
         f = c.job_dir / "fights" / f"{name}.summary.txt"
         try:
-            first = f.read_text(encoding="utf-8", errors="replace").splitlines()[0]
-        except (OSError, IndexError):
+            text = "\n".join(f.read_text(encoding="utf-8", errors="replace").splitlines()[:6])
+        except OSError:
             return f"no summary line for {name}"
-        net = re.search(r"network (\[.*?\]|None|\{.*?\})", first)
-        prof = re.search(r"real profile touched (\w+)", first)
+        net = re.search(r"network (\[.*?\]|None|\{.*?\})", text)
+        prof = re.search(r"real profile touched (\w+)", text)
+        if not net and not prof:
+            return f"no summary line for {name}"
         if net and net.group(1) not in ("[]", "None"):
             return f"HALT: the game opened network connections in {name}: {net.group(1)[:120]}"
         if prof and prof.group(1) == "True":
             return f"HALT: the real game profile was touched in {name}"
         return None
+    return check
+
+
+def _halt_on_unsafe_runs(name: str) -> Callable[[Ctx], str | None]:
+    """runs.py logs each session's report in its summary; a failed safety check or a report that does not show the
+    network and the real profile untouched halts the lab. A crashed session is only noted (its runs are kept)."""
+    def check(c: Ctx) -> str | None:
+        f = c.job_dir / "runs" / f"{name}.summary.txt"
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return f"no summary for {name}"
+        if "SAFETY CHECK FAILED" in text:
+            return f"HALT: a game session's safety check failed in {name}"
+        for net in re.findall(r"'network_connections': (\[.*?\]|None)", text):
+            if net != "[]":
+                return f"HALT: the game opened network connections in {name}: {net[:120]}"
+        if re.search(r"'real_profile_touched': True", text):
+            return f"HALT: the real game profile was touched in {name}"
+        failed = len(re.findall(r"^session \d+ FAILED", text, re.M))
+        return f"{failed} game session(s) crashed; the runs they wrote and the other sessions' runs were kept" if failed else None
     return check
 
 
@@ -292,29 +317,158 @@ def _cov_out(c: Ctx) -> str | None:
     return None
 
 
+# strategy -> (scenarios.py mode, extra arguments, tool needs)
+SCENARIO_STRATEGIES = {
+    "aimed-bugs": ("targets", ["--aim", "bugs"]),
+    "aimed-gaps": ("targets", ["--aim", "gaps"]),
+    "choice-edges": ("choices", ["--features", "{lab}/cache/model_features.json", "--decompiled", "{decompiled}"]),
+    "dense": ("dense", []),
+    "under-tested": ("coverage", []),
+}
+
+
+def tree_can(tree: Path) -> dict[str, bool]:
+    """What the tree's tools can do, read from their sources (a job type that cannot run is skipped with the reason)."""
+    sc = tree / "referee/scenarios.py"
+    aim, choices, analyze, budgets = source_has(sc, '"--aim"', '"choices"', '"analyze"', '"--shrink-cap"')
+    return {"aim": aim, "choices": choices, "analyze": analyze, "budgets": budgets,
+            "driver_edges": source_has(tree / "referee/driver/Combat.cs", "choice_edges")[0],
+            "batch": (tree / "referee/batch.py").exists(), "runs": source_has(tree / "referee/runs.py", '"--jobs"')[0],
+            "targets": (tree / "tools/fidelity/lab_targets.py").exists()}
+
+
+def strategy_unavailable(strategy: str, c: Ctx) -> str | None:
+    """Why a strategy cannot run on this tree now, or None. Checks the tools and the inputs, not the machine."""
+    can = tree_can(c.tree)
+    if not (c.tree / "referee/scenarios.py").exists() and strategy != "whole-runs":
+        return "referee/scenarios.py is missing on this tree"
+    if strategy in ("aimed-bugs", "aimed-gaps"):
+        if not can["aim"]:
+            return "scenarios.py on this tree has no --aim"
+        if not can["targets"]:
+            return "tools/fidelity/lab_targets.py is missing on this tree"
+        if not c.codex.exists() and not (c.lab / "targets.json").exists():
+            return "no Codex dataset and no targets.json to aim at"
+        if strategy == "aimed-bugs" and not c.backlog:
+            return "no backlog-*.json: aimed-bugs aims at what its open items name"
+    elif strategy == "choice-edges":
+        if not can["choices"]:
+            return "scenarios.py on this tree has no choices mode"
+        if not can["driver_edges"]:
+            return "the driver on this tree has no choice_edges"
+    elif strategy == "random":
+        if not can["batch"] or not can["analyze"]:
+            return "batch.py or scenarios.py --mode analyze is missing on this tree"
+    elif strategy == "whole-runs":
+        if not can["runs"]:
+            return "runs.py on this tree has no --jobs"
+    return None
+
+
+def _scenarios_cmd(c: Ctx, name: str, i: int, mode: str, extra: list[str]) -> Cmd:
+    """One scenarios.py call (a batch of aimed or setup fights, shrunk and traced) with the job's budgets."""
+    p = c.params
+    n = max(1, p["batches"])
+    per = lambda total, floor=1: str(max(floor, -(-int(total) // n)))  # noqa: E731  (a job's budget split over its batches)
+    args = ["--name", name, "--mode", mode, "--fights", str(p["batch"]), "--start", str(p["start"] + i), "--servers", str(p["servers"]),
+            "--game", "{game}", "--shrink", str(p["shrink"])]
+    if mode == "targets":
+        args += ["--targets", "{lab}/targets.json"]
+    can = tree_can(c.tree)["budgets"]
+    if can:  # budgets exist on this tree: every diverging fight is shrunk and traced, within the job's time
+        args += ["--shrink-cap", str(p.get("shrink_cap", 160)), "--shrink-budget", per(p.get("shrink_budget", 6000), 100),
+                 "--shrink-minutes", per(p.get("shrink_minutes", 45), 2), "--trace", str(p.get("trace", 1000)),
+                 "--trace-minutes", per(p.get("trace_minutes", 20), 1), "--trace-servers", str(min(8, p["servers"]))]
+    args += extra
+    has_jobs = fights_mode(c.tree)[1]
+    argv = ["{py}", "referee/scenarios.py", *args, "--jobs", "{job}/fights"] if has_jobs else ["{py}", "-c", SCENARIOS_SHIM, "{job}/fights", *args]
+    cmd = Cmd(f"scen-{i:02d}", argv, needs=["{tree}/referee/scenarios.py", "{tree}/" + EMUDUMP, "{tree}/" + DRIVER_DLL],
+              mkdirs=["{job}/fights"], cleanup=[f"{{job}}/fights/{name}.*", f"{{game_parent}}/serve/setup-{name}*"],
+              after_cleanup=[f"{{game_parent}}/serve/setup-{name}*"], post=_halt_on_unsafe(name), core=True,
+              counts={"fights": p["batch"]}, outputs={"fights": f"fights/{name}.verdicts.json"})
+    if mode in ("coverage", "dense", "choices"):  # these weigh by what the lab's setup fights have covered
+        cmd.pre, cmd.post = _cov_in, (lambda c, h=_halt_on_unsafe(name): _cov_out(c) or h(c))
+    return cmd
+
+
+def _random_cmds(c: Ctx, name: str, i: int) -> list[Cmd]:
+    """batch.py's random decks (its streaming pool), then scenarios.py --mode analyze: shrink, trace, verdicts."""
+    p = c.params
+    n = max(1, p["batches"])
+    per = lambda total, floor=1: str(max(floor, -(-int(total) // n)))  # noqa: E731
+    batch = Cmd(f"batch-{i:02d}", ["{py}", "referee/batch.py", "--name", name, "--fights", str(p["batch"]), "--start", str(p["start"] + i),
+                                   "--parallel", str(p["servers"]), "--game", "{game}", "--jobs", "{job}/fights",
+                                   "--coverage", "{lab}/coverage-random.json", "--timeout", "3600"],
+                needs=["{tree}/referee/batch.py", "{tree}/" + EMUDUMP, "{tree}/" + DRIVER_DLL], mkdirs=["{job}/fights"],
+                cleanup=[f"{{job}}/fights/{name}.*", f"{{game_parent}}/serve/{name}*"], after_cleanup=[f"{{game_parent}}/serve/{name}*"],
+                ok_rcs=(0, 1), post=_halt_on_unsafe(name), core=True, counts={"fights": p["batch"]})  # rc 1: stopped early, what was played stays
+    args = ["--name", name, "--mode", "analyze", "--jobs", "{job}/fights", "--servers", str(p["servers"]), "--game", "{game}",
+            "--shrink", str(p["shrink"]), "--shrink-cap", str(p.get("shrink_cap", 160)), "--shrink-budget", per(p.get("shrink_budget", 6000), 100),
+            "--shrink-minutes", per(p.get("shrink_minutes", 45), 2), "--trace", str(p.get("trace", 1000)),
+            "--trace-minutes", per(p.get("trace_minutes", 20), 1), "--trace-servers", str(min(8, p["servers"]))]
+    gone = [f"{{job}}/fights/{name}.verdicts.json", f"{{job}}/fights/{name}.shrink*", f"{{job}}/fights/{name}.packs", f"{{job}}/fights/{name}.trace.log"]
+    analyze = Cmd(f"analyze-{i:02d}", ["{py}", "referee/scenarios.py", *args],
+                  needs=["{tree}/referee/scenarios.py", "{tree}/" + EMUDUMP, "{tree}/" + DRIVER_DLL, f"{{job}}/fights/{name}.reanchor.json"],
+                  cleanup=gone, after_cleanup=[f"{{game_parent}}/serve/setup-{name}*"], core=True,
+                  outputs={"fights": f"fights/{name}.verdicts.json"})
+    return [batch, analyze]
+
+
 def plan_fights(c: Ctx) -> list[Step]:
     p = c.params
-    mode, has_jobs = fights_mode(c.tree)
-    base = ["--mode", mode] + (["--targets", "{lab}/targets.json"] if mode == "targets" else [])
+    strategy = p.get("strategy")
+    if strategy:
+        why = strategy_unavailable(strategy, c)
+        if why:
+            raise Unavailable(why)
+        if strategy not in SCENARIO_STRATEGIES and strategy != "random":
+            raise Unavailable(f"{strategy} is not a fights strategy")
+    mode, _ = fights_mode(c.tree)
     steps: list[Step] = [Step("game", [game_cmd()], mode="serial")]
-    if mode == "targets":
+    needs_targets = (strategy is None and mode == "targets") or (strategy in ("aimed-bugs", "aimed-gaps"))
+    if needs_targets:
         bl = ["--backlog", "{backlog}"] if c.backlog else []
         steps.append(Step("targets", [Cmd("targets", ["{py}", "tools/fidelity/lab_targets.py", "--lab", "{lab}", "--out", "{lab}/targets.json", *bl,
                                                       "--codex", "{codex}"], needs=["{tree}/tools/fidelity/lab_targets.py", "{codex}"])],
                           mode="serial"))
     for i in range(p["batches"]):
         name = f"lab{c.job_name.split('-')[0]}-b{i:02d}"
-        args = ["--name", name, *base, "--fights", str(p["batch"]), "--start", str(p["start"] + i), "--servers", str(p["servers"]),
-                "--game", "{game}", "--shrink", str(p["shrink"])]
-        argv = ["{py}", "referee/scenarios.py", *args, "--jobs", "{job}/fights"] if has_jobs else \
-            ["{py}", "-c", SCENARIOS_SHIM, "{job}/fights", *args]
-        cmd = Cmd(f"scen-{i:02d}", argv, needs=["{tree}/referee/scenarios.py", "{tree}/" + EMUDUMP, "{tree}/" + DRIVER_DLL],
-                  mkdirs=["{job}/fights"], cleanup=[f"{{job}}/fights/{name}.*", f"{{game_parent}}/serve/setup-{name}*"],
-                  after_cleanup=[f"{{game_parent}}/serve/setup-{name}*"], post=_halt_on_unsafe(name), core=True,
-                  counts={"fights": p["batch"]}, outputs={"fights": f"fights/{name}.verdicts.json"})
-        if mode == "coverage":
-            cmd.pre, cmd.post = _cov_in, (lambda c, h=_halt_on_unsafe(name): _cov_out(c) or h(c))
-        steps.append(Step(f"batch-{i:02d}", [cmd], mode="serial"))
+        if strategy == "random":
+            steps.append(Step(f"batch-{i:02d}", _random_cmds(c, name, i), mode="serial"))
+        elif strategy:
+            smode, extra = SCENARIO_STRATEGIES[strategy]
+            steps.append(Step(f"batch-{i:02d}", [_scenarios_cmd(c, name, i, smode, extra)], mode="serial"))
+        else:  # a job from before strategies: targets (else coverage) mode as it was
+            base = ["--mode", mode] + (["--targets", "{lab}/targets.json"] if mode == "targets" else [])
+            args = ["--name", name, *base, "--fights", str(p["batch"]), "--start", str(p["start"] + i), "--servers", str(p["servers"]),
+                    "--game", "{game}", "--shrink", str(p["shrink"])]
+            argv = ["{py}", "referee/scenarios.py", *args, "--jobs", "{job}/fights"] if fights_mode(c.tree)[1] else \
+                ["{py}", "-c", SCENARIOS_SHIM, "{job}/fights", *args]
+            cmd = Cmd(f"scen-{i:02d}", argv, needs=["{tree}/referee/scenarios.py", "{tree}/" + EMUDUMP, "{tree}/" + DRIVER_DLL],
+                      mkdirs=["{job}/fights"], cleanup=[f"{{job}}/fights/{name}.*", f"{{game_parent}}/serve/setup-{name}*"],
+                      after_cleanup=[f"{{game_parent}}/serve/setup-{name}*"], post=_halt_on_unsafe(name), core=True,
+                      counts={"fights": p["batch"]}, outputs={"fights": f"fights/{name}.verdicts.json"})
+            if mode == "coverage":
+                cmd.pre, cmd.post = _cov_in, (lambda c, h=_halt_on_unsafe(name): _cov_out(c) or h(c))
+            steps.append(Step(f"batch-{i:02d}", [cmd], mode="serial"))
+    return steps + report_steps(c)
+
+
+def plan_runs(c: Ctx) -> list[Step]:
+    """Whole seeded runs: the game plays them in a few sessions, the emulator replays and compares (runs.py)."""
+    p = c.params
+    why = strategy_unavailable("whole-runs", c)
+    if why:
+        raise Unavailable(why)
+    steps: list[Step] = [Step("game", [game_cmd()], mode="serial")]
+    for i in range(p["batches"]):
+        name = f"lab{c.job_name.split('-')[0]}-w{i:02d}"
+        cmd = Cmd(f"runs-{i:02d}", ["{py}", "referee/runs.py", "--name", name, "--runs", str(p["run_batch"]), "--start", str(p["start"] + i),
+                                    "--procs", str(p["procs"]), "--game", "{game}", "--jobs", "{job}/runs"],
+                  needs=["{tree}/referee/runs.py", "{tree}/" + EMUDUMP, "{tree}/" + DRIVER_DLL], mkdirs=["{job}/runs"],
+                  cleanup=[f"{{job}}/runs/{name}.*", f"{{job}}/runs/scratch/{name}-*"], ok_rcs=(0, 1, 3, 4),  # 3: a session crashed, 4: halted below
+                  post=_halt_on_unsafe_runs(name), core=True, counts={"runs": p["run_batch"]}, outputs={"runs": f"runs/{name}.runs.json"})
+        steps.append(Step(f"runs-{i:02d}", [cmd], mode="serial"))
     return steps + report_steps(c)
 
 
@@ -373,7 +527,8 @@ def plan_invariants(c: Ctx) -> list[Step]:
 
 
 PLANS: dict[str, Callable[[Ctx], list[Step]]] = {
-    "presort": plan_presort, "fights": plan_fights, "probes": plan_probes, "mutation": plan_mutation, "invariants": plan_invariants,
+    "presort": plan_presort, "fights": plan_fights, "runs": plan_runs, "probes": plan_probes, "mutation": plan_mutation,
+    "invariants": plan_invariants,
 }
 
 
