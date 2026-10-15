@@ -8,7 +8,8 @@
 Reads every finished job under LAB/runs (a folder with done.rc): aimed and setup batches (<name>.verdicts.json
 with their specs, <name>.shrink.json or the summary's shrink lines, <name>.packs/minimal and traces), and the
 presort outputs it finds there by shape (a corpus check's results.json, codex walk *.jsonl, a reference-set
-score, an invariants report, a mutation report). --batch and the other flags add sources from outside the lab.
+score, an invariants report, a mutation report) or that its job.json names under "outputs" (for those kept
+elsewhere, such as the corpus check's own run folder). --batch and the other flags add sources from outside.
 No game, no emulator, no network: only files already written.
 
 One symptom = one fight (or run) with its first wrong step. Its signature: the phase of that step (start,
@@ -44,7 +45,6 @@ import datetime
 import hashlib
 import json
 import math
-import os
 import re
 import sys
 from pathlib import Path
@@ -169,7 +169,7 @@ def model_features(decompiled: Path, cache: Path | None) -> dict:
     for o in ht.overrides(str(root)):
         if o.kind in GROUP_KINDS:
             feats[f"{kind_name.get(o.kind, o.kind)}:{snake(o.model.split('.')[-1])}"].add(f"hook:{o.hook}")
-    for key, c in classes.items():
+    for c in classes.values():
         kind = ht.kind_of(classes, c.base) if not c.abstract else None
         if kind not in GROUP_KINDS:
             continue
@@ -510,6 +510,28 @@ def lab_sources(lab: Path) -> list[tuple[str, Path, str]]:
                 first = next(iter(sorted(w.glob("*.jsonl")))).open(encoding="utf-8").readline()
                 if '"checks"' in first and '"status"' in first:
                     out.append(("codex", w, when))
+        out += job_outputs(job, when, {str(p) for _, p, _ in out})
+    return out
+
+
+OUTPUT_KINDS = {"batch": "batch", "corpus": "corpus", "corpus_results": "corpus", "codex": "codex", "codex_walk": "codex",
+                "refset": "refset", "refset_score": "refset", "invariants": "invariants", "mutation": "mutation"}
+
+
+def job_outputs(job: Path, when: str, have: set) -> list[tuple[str, Path, str]]:
+    """Outputs a job keeps outside its folder (a corpus check's results.json under the referee's corpus runs),
+    named in its job.json: {"outputs": {"corpus": PATH, "codex_walk": DIR, "refset_score": PATH, ...}}, a path
+    absolute or relative to the job folder, or a list of them."""
+    doc = read_json(job / "job.json", {}) or {}
+    out = []
+    for key, val in (doc.get("outputs") or {}).items():
+        kind = OUTPUT_KINDS.get(key)
+        for v in (val if isinstance(val, list) else [val]):
+            if not kind or not v:
+                continue
+            p = Path(v) if Path(v).is_absolute() else job / v
+            if str(p) not in have and (p.exists() or kind == "batch" and p.with_name(p.name + ".verdicts.json").exists()):
+                out.append((kind, p, when))
     return out
 
 
@@ -624,10 +646,10 @@ def group_symptoms(symptoms: list[dict], feats: Features) -> list[dict]:
                 dsu.union(u, best[0])
                 why[dsu.find(u)] |= best[3]
     comps = collections.defaultdict(list)
-    for j, k in enumerate(keys):
+    for j in range(len(keys)):
         comps[dsu.find(j)].append(j)
     groups = []
-    for root, js in comps.items():
+    for js in comps.values():
         members = [i for j in js for i in prelim[keys[j]]]
         ks = [keys[j] for j in js]
         reasons = set()
@@ -756,7 +778,7 @@ def match_backlog(groups: list[dict], items: list[dict], min_score: float = 2.5)
         groups[gi]["backlog_ids"] = keep
         for i in keep:
             by_item[i].append(gi)
-    for gi, g in enumerate(groups):
+    for g in groups:
         ids = g.setdefault("backlog_ids", [])
         if not ids:
             g["relation"] = "new"
@@ -894,7 +916,7 @@ def summary_md(doc: dict, symptoms: list[dict], limit: int = 4000) -> str:
     groups = doc["groups"]
     src = collections.Counter(s["source"] for s in symptoms)
     rel_ = collections.Counter(g["relation"] for g in groups)
-    head = [f"# Fix lab groups", "",
+    head = ["# Fix lab groups", "",
             f"main {doc['main_sha'][:10]}, {doc['generated_utc']}. {len(symptoms)} symptoms "
             f"({', '.join(f'{k} {v}' for k, v in sorted(src.items()))}) in {len(groups)} groups; "
             f"backlog: {rel_.get('confirms', 0)} confirm, {rel_.get('splits', 0)} split, {rel_.get('merges', 0)} merge, "

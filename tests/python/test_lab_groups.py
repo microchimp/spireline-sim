@@ -164,7 +164,6 @@ class EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             lab = Path(td) / "lab"
             job = lab / "runs" / "20261015T0100-fights"
-            pre = job / "b"
             specs = [{"seed": f"SEED{i:06d}", "setup": [{"cmd": "relic", "id": r}, {"cmd": "card", "id": "ANGER"},
                                                         {"cmd": "fight", "id": "SLIMES_WEAK"}]}
                      for i, r in enumerate(["EGG_A", "EGG_B", "BRASS_LANTERN", "EGG_A"])]
@@ -226,6 +225,20 @@ class EndToEndTests(unittest.TestCase):
             write(d / "o.json", {"something": 1})
             self.assertEqual(["corpus", "refset", "invariants", "mutation", None],
                              [lg.source_kind(d / n) for n in ("c.json", "r.json", "i.json", "m.json", "o.json")])
+
+    def test_job_json_names_outputs_kept_elsewhere(self):
+        with tempfile.TemporaryDirectory() as td:
+            lab, elsewhere = Path(td) / "lab", Path(td) / "corpus-run" / "results.json"
+            write(elsewhere, {"format": 2, "totals": {"fights": 2}, "fights": {"f1": {"fd": 3, "field": ".hand", "card": "BASH"}}})
+            job = lab / "runs" / "20261015T0200-presort"
+            write(job / "job.json", {"outputs": {"corpus": str(elsewhere), "codex_walk": "missing-dir"}})
+            (job / "done.rc").write_text("0", encoding="utf-8")
+            unfinished = lab / "runs" / "20261015T0300-presort"
+            write(unfinished / "job.json", {"outputs": {"corpus": str(elsewhere)}})
+            got = lg.lab_sources(lab)
+            self.assertEqual([("corpus", elsewhere, "2026-10-15T02:00:00Z")], got)
+            syms = lg.corpus_symptoms(elsewhere, lab, "x")
+            self.assertEqual([("play", ".hand", ["card:BASH"])], [(s["phase"], s["field"], s["implicated"]) for s in syms])
 
     def test_codex_walk_groups_by_component_field_class(self):
         with tempfile.TemporaryDirectory() as td:
