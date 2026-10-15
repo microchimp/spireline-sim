@@ -1,0 +1,104 @@
+{
+  "_doc": [
+    "Known gaps of the headless game host (the referee: full host and the stripped-down nodeless host) and of setups no real run has.",
+    "tools/fidelity/lab_groups.py marks a group host_suspect when its signature matches an entry, so a rule probe checks it before anyone fixes the emulator.",
+    "How it was built: by hand, from every referee/FINDINGS.md entry that names a driver or host gap, a full-host or nodeless artefact, a stall,",
+    "an idle timeout or a plausibility flag (grep -n -i 'driver gap|host|nodeless|artifact|stall|idle_timeout|plausib' referee/FINDINGS.md).",
+    "Each entry cites its finding by date and a phrase that must still be in FINDINGS.md (lab_groups checks it and says which entries went stale).",
+    "Entries for gaps since fixed are kept with status fixed: a match is then a regression suspect of the driver, still probe first.",
+    "match: entities are kind:ID keys (card, relic, potion, power, enemy, encounter); a group matches when it implicates one of them and,",
+    "when phases or fields are given, its first wrong step's phase and field are among them; errors and text match an example's error",
+    "or first-event text. Beyond the entries, lab_groups applies three generic rules: every example flagged cross_act, cross_character or",
+    "duplicate_relic (no real run holds the setup); the game's state standing still across the next plays (a stale snapshot, the night04",
+    "end_turn finding); and a trace re-run that does not reproduce the batch (a game-side flake)."
+  ],
+  "entries": [
+    {
+      "id": "turn-start-autoplay-stall",
+      "status": "fixed",
+      "host": "full",
+      "finding": {"date": "2026-10-13", "quote": "night04 end_turn, driver gap"},
+      "also": [{"date": "2026-10-14", "quote": "the driver's Idle settles before the game finishes its player turn start"}],
+      "match": {"entities": ["card:ROLLING_BOULDER", "power:ROLLING_BOULDER_POWER", "card:HELLRAISER", "power:HELLRAISER_POWER",
+                             "card:MAYHEM", "power:MAYHEM_POWER", "card:HAVOC"],
+                "phases": ["end_turn", "start"]},
+      "why": "the game stood still at a start-of-turn auto-play or Rolling Boulder's awaited VFX, so the game side was a stale snapshot (driver Idle fixed in bd68419; check the record is settled)"
+    },
+    {
+      "id": "unsettled-game-record",
+      "status": "open",
+      "host": "full",
+      "finding": {"date": "2026-10-14", "quote": "trace_diff flags such records"},
+      "match": {"text": ["GAME RECORD UNSETTLED"]},
+      "why": "the trace says the game's record was taken before its turn start finished"
+    },
+    {
+      "id": "full-host-transform-hand-card",
+      "status": "open",
+      "host": "full",
+      "finding": {"date": "2026-10-14", "quote": "a full-host artifact, not an emulator divergence"},
+      "match": {"entities": ["card:PRIMAL_FORCE", "card:ENTROPY", "power:ENTROPY_POWER"], "fields": [".hand"],
+                "errors": ["Couldn't get hand node"]},
+      "why": "on the full host CardCmd.Transform of a hand card throws in its UI block and skips the rest of the method; the full host cannot referee it"
+    },
+    {
+      "id": "nodeless-fallback-flags",
+      "status": "fixed",
+      "host": "nodeless",
+      "finding": {"date": "2026-10-14", "quote": "The flag settle never called `Nodeless.ThrowIfFallback`"},
+      "match": {"entities": ["power:ROLLING_BOULDER_POWER", "power:ENTROPY_POWER"], "errors": ["idle_timeout entering the room"]},
+      "why": "a nodeless attempt played on past a fallback model and left the turn flags set; later fights in that process timed out"
+    },
+    {
+      "id": "room-end-rewards-full-host-only",
+      "status": "fixed",
+      "host": "both",
+      "finding": {"date": "2026-10-14", "quote": "the 29 fights the two hosts recorded differently"},
+      "match": {"entities": ["relic:AMETHYST_AUBERGINE", "relic:WING_CHARM", "relic:TOXIC_EGG"], "fields": [".rng.Niche", ".relic_flashes"]},
+      "why": "the full host generates the room-end rewards (Niche draws, flashes) at the last step and the nodeless host did not"
+    },
+    {
+      "id": "idle-timeouts-after-plays",
+      "status": "open",
+      "host": "full",
+      "finding": {"date": "2026-10-14", "quote": "Driver gaps: 2 idle timeouts in 120 fights"},
+      "match": {"entities": ["card:THUNDERCLAP", "card:SLIMED", "card:ANOINTED"], "errors": ["idle_timeout"]},
+      "why": "setup fights timed out idle after these plays (driver), and a script-mode reproduction timed out under load"
+    },
+    {
+      "id": "hand-over-ten",
+      "status": "open",
+      "host": "full",
+      "finding": {"date": "2026-10-13", "quote": "Hand size 11 is greater than 11!"},
+      "match": {"entities": ["card:UNRELENTING"], "fields": [".hand"], "errors": ["Hand size 11"]},
+      "why": "the game's hand layout threw with a hand over the limit, then stalled; game edge case or driver, not settled"
+    },
+    {
+      "id": "renderer-and-boot-quirks",
+      "status": "open",
+      "host": "full",
+      "finding": {"date": "2026-10-13", "quote": "Parameter t is null"},
+      "also": [{"date": "2026-10-13", "quote": "Attempting to initialize the wrong RID"},
+               {"date": "2026-10-14", "quote": "Fatal error. 0xC000001D"}],
+      "match": {"errors": ["Parameter t is null", "wrong RID", "0xC000001D", "server produced no result"]},
+      "why": "dummy-renderer and boot crashes of the headless game: an engine quirk, not a rule"
+    },
+    {
+      "id": "punch-off-fast-mode",
+      "status": "open",
+      "host": "full",
+      "finding": {"date": "2026-10-14", "quote": "PunchOff's endless animation loop never yields in Instant fast mode"},
+      "match": {"entities": ["event:PUNCH_OFF"]},
+      "why": "the driver enters ? rooms in Fast mode because PunchOff never yields in Instant mode"
+    },
+    {
+      "id": "scroll-boxes-and-bones-screens",
+      "status": "fixed",
+      "host": "full",
+      "finding": {"date": "2026-10-14", "quote": "a reward that opens Scroll Boxes' choose-a-bundle screen while it is being taken"},
+      "match": {"entities": ["relic:SCROLL_BOXES", "relic:NEOWS_BONES"], "errors": ["idle_timeout", "stalled"]},
+      "why": "reward screens opened while a reward was taken stalled the driver (fixed: the reward waits answer open screens)"
+    }
+  ],
+  "plausibility_flags": ["cross_act", "cross_character", "duplicate_relic"]
+}
