@@ -549,17 +549,22 @@ OUTPUT_KINDS = {"batch": "batch", "corpus": "corpus", "corpus_results": "corpus"
 def job_outputs(job: Path, when: str, have: set) -> list[tuple[str, Path, str]]:
     """Outputs a job keeps outside its folder (a corpus check's results.json under the referee's corpus runs),
     named in its job.json: {"outputs": {"corpus": PATH, "codex_walk": DIR, "refset_score": PATH, ...}}, a path
-    absolute or relative to the job folder, or a list of them."""
+    absolute or relative to the job folder, or a list of them. A codex walk named by its shard files
+    (the runner's codex/s0.jsonl ...) is read as their folder, once."""
     doc = read_json(job / "job.json", {}) or {}
     out = []
+    have = set(have)
     for key, val in (doc.get("outputs") or {}).items():
         kind = OUTPUT_KINDS.get(key)
         for v in (val if isinstance(val, list) else [val]):
             if not kind or not v:
                 continue
             p = Path(v) if Path(v).is_absolute() else job / v
+            if kind == "codex" and p.suffix == ".jsonl":
+                p = p.parent
             if str(p) not in have and (p.exists() or kind == "batch" and p.with_name(p.name + ".verdicts.json").exists()):
                 out.append((kind, p, when))
+                have.add(str(p))
     return out
 
 

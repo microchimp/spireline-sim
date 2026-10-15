@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import subprocess
 from collections.abc import Callable
@@ -155,12 +156,14 @@ def plan_presort(c: Ctx) -> list[Step]:
                  stderr=f"{{job}}/codex/s{i}.err", needs=["{tree}/" + EMUDUMP, "{codex}", "{decompiled}"], mkdirs=["{job}/codex"],
                  cleanup=[f"{{job}}/codex/s{i}.*"], outputs={"codex_walk": f"codex/s{i}.jsonl", "codex_walk_err": f"codex/s{i}.err"},
                  core=True) for i in range(4)]
+    # Both keep their results outside the job (the refset's scores folder, the corpus's runs folder); a copy goes
+    # into the job folder under the roles lab_groups reads, so their symptoms reach the groups.
     refset = Cmd("refset", ["{py}", "-m", "tools.fidelity.refset_score", "--emu", "{tree}", "--procs", str(p["procs_refset"]),
                             "--label", "lab-{sha7}"], needs=["{tree}/tools/fidelity/refset_score.py", "{tree}/" + EMUDUMP],
-                 ok_rcs=(0, 1), outputs={"refset_score": "logs/refset.log"}, core=True)
+                 ok_rcs=(0, 1), outputs={"refset_score": "refset/score.json"}, core=True, post=_keep_refset)
     corpus = Cmd("corpus", ["{py}", "tools/fidelity/corpus.py", "check", "--no-scan", "--procs", str(p["procs_corpus"]), "--label", "lab-{sha7}"],
                  needs=["{tree}/tools/fidelity/corpus.py", "{tree}/" + EMUDUMP], ok_rcs=(0, 1),
-                 outputs={"corpus_check": "logs/corpus.log"}, core=True)
+                 outputs={"corpus": "corpus/results.json"}, core=True, post=_keep_corpus)
     return [
         Step("tree", [Cmd("worktree-add", ["git", "-C", "{fork}", "worktree", "add", "--detach", "{tree}", "{sha}"], cwd="{fork}",
                           when=lambda c: "tree exists" if (c.tree / ".git").exists() else None),
@@ -183,6 +186,46 @@ def plan_presort(c: Ctx) -> list[Step]:
     ]
 
 
+def _copy_in(src: Path | None, dst: Path, what: str) -> str | None:
+    if src is None or not src.is_file():
+        return f"no {what} to copy into the job folder"
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+    except OSError as e:
+        return f"{what} not copied into the job folder: {type(e).__name__}"
+    return None
+
+
+def _keep_refset(c: Ctx) -> str | None:
+    """refset_score ends its log with '  stored <score file>'."""
+    src = None
+    try:
+        for line in (c.job_dir / "logs" / "refset.log").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("  stored ") and line.rstrip().endswith(".json"):
+                src = Path(line[len("  stored "):].strip())
+    except OSError:
+        pass
+    return _copy_in(src, c.job_dir / "refset" / "score.json", "refset score")
+
+
+def corpus_root(tree: Path) -> Path | None:
+    """The corpus the tree's corpus.py uses: $SPIRELINE_CORPUS, else the default its source names."""
+    if os.environ.get("SPIRELINE_CORPUS"):
+        return Path(os.environ["SPIRELINE_CORPUS"])
+    try:
+        m = re.search(r'"SPIRELINE_CORPUS",\s*r?"([^"]+)"', (tree / "tools/fidelity/corpus.py").read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return Path(m.group(1)) if m else None
+
+
+def _keep_corpus(c: Ctx) -> str | None:
+    root = corpus_root(c.tree)
+    src = root / "runs" / f"lab-{c.sha[:7]}" / "results.json" if root else None
+    return _copy_in(src, c.job_dir / "corpus" / "results.json", "corpus results")
+
+
 def game_cmd() -> Cmd:
     return Cmd("game-copy", ["{py}", "{tree}/referee/linkcopy.py", "--src", "{game_src}", "--dst", "{game}"],
                needs=["{tree}/referee/linkcopy.py", "{game_src}"], when=lambda c: "game copy exists" if c.game.exists() else None)
@@ -193,7 +236,8 @@ def report_steps(c: Ctx) -> list[Step]:
     bl = ["--backlog", "{backlog}"] if c.backlog else []
     groups = Cmd("groups", ["{py}", "tools/fidelity/lab_groups.py", "--lab", "{lab}", *bl, "--out", "{lab}/groups.json", "--summary", "{lab}/summary.md"],
                  needs=["{tree}/tools/fidelity/lab_groups.py"])
-    kits = Cmd("kits", ["{py}", "-m", "tools.fidelity.packet", "--top", "20", "--groups", "{lab}/groups.json", *bl],
+    kits = Cmd("kits", ["{py}", "-m", "tools.fidelity.packet", "--top", "20", "--groups", "{lab}/groups.json", *bl,
+                        "--out", "{backlog_dir}/packets"],
                needs=["{tree}/tools/fidelity/packet.py", "{lab}/groups.json"], when=_kits_ready)
     return [Step("groups", [groups]), Step("kits", [kits])]
 

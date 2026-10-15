@@ -315,6 +315,17 @@ class EndToEndTests(unittest.TestCase):
             syms = lg.corpus_symptoms(elsewhere, lab, "x")
             self.assertEqual([("play", ".hand", ["card:BASH"])], [(s["phase"], s["field"], s["implicated"]) for s in syms])
 
+    def test_a_walk_named_by_its_shard_files_is_read_as_its_folder_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            job = Path(td) / "lab" / "runs" / "20261015T0200-presort"
+            for i in range(2):
+                (job / "codex").mkdir(parents=True, exist_ok=True)
+                (job / "codex" / f"s{i}.jsonl").write_text("{}\n", encoding="utf-8")
+            write(job / "job.json", {"outputs": {"codex_walk": ["codex/s0.jsonl", "codex/s1.jsonl"]}})
+            got = lg.job_outputs(job, "w", set())
+            self.assertEqual([("codex", job / "codex", "w")], got)
+            self.assertEqual([], lg.job_outputs(job, "w", {str(job / "codex")}))
+
     def test_codex_walk_groups_by_component_field_class(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td) / "walk"

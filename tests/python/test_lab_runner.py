@@ -18,6 +18,7 @@ import textwrap
 import threading
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -339,6 +340,48 @@ class PlansTest(unittest.TestCase):
             pl.plan_probes(self.ctx(probe_ids=[]))
         with self.assertRaises(pl.Unavailable):
             pl.plan_mutation(self.ctx(mutation_source=None))
+
+    def test_presort_outputs_use_the_roles_lab_groups_reads(self):
+        from tools.fidelity import lab_groups as lg
+        by = {cmd.name: cmd for s in pl.plan_presort(self.ctx()) for cmd in s.cmds}
+        self.assertEqual(by["refset"].outputs, {"refset_score": "refset/score.json"})
+        self.assertEqual(by["corpus"].outputs, {"corpus": "corpus/results.json"})
+        for name in ("refset", "corpus", "codex-s0"):
+            for role in by[name].outputs:
+                if not role.endswith("_err"):
+                    self.assertIn(role, lg.OUTPUT_KINDS, f"{name}: role {role} is not read by lab_groups")
+
+    def test_presort_copies_the_refset_score_and_corpus_results_into_the_job(self):
+        c = self.ctx()
+        score, corpus = self.tmp / "refset" / "all-lab-aaaaaaa.json", self.tmp / "corpus"
+        score.parent.mkdir(parents=True)
+        score.write_text('{"set": "x"}', encoding="utf-8")
+        (c.job_dir / "logs").mkdir(parents=True)
+        (c.job_dir / "logs" / "refset.log").write_text(f"table\n  stored {score}\n", encoding="utf-8")
+        self.assertIsNone(pl._keep_refset(c))
+        self.assertEqual((c.job_dir / "refset" / "score.json").read_text(encoding="utf-8"), '{"set": "x"}')
+        res = corpus / "runs" / "lab-aaaaaaa" / "results.json"
+        res.parent.mkdir(parents=True)
+        res.write_text('{"format": 2}', encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {"SPIRELINE_CORPUS": str(corpus)}):
+            self.assertIsNone(pl._keep_corpus(c))
+        self.assertEqual((c.job_dir / "corpus" / "results.json").read_text(encoding="utf-8"), '{"format": 2}')
+        (c.job_dir / "logs" / "refset.log").write_text("no score line\n", encoding="utf-8")
+        self.assertIn("no refset score", pl._keep_refset(c))  # a note, never a halt
+
+    def test_corpus_root_comes_from_the_trees_corpus_tool(self):
+        (self.tree / "tools" / "fidelity").mkdir(parents=True, exist_ok=True)
+        (self.tree / "tools" / "fidelity" / "corpus.py").write_text(
+            'DEFAULT_CORPUS = Path(os.environ.get("SPIRELINE_CORPUS", r"X:\\c\\corpus"))\n', encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SPIRELINE_CORPUS", None)
+            self.assertEqual(pl.corpus_root(self.tree), Path("X:\\c\\corpus"))
+
+    def test_kits_go_to_the_backlog_dirs_packets(self):
+        c = self.ctx()
+        c.backlog = self.tmp / "bl" / "backlog-c9.json"
+        kits = [cmd for s in pl.report_steps(c) for cmd in s.cmds if cmd.name == "kits"][0]
+        self.assertEqual(kits.argv[kits.argv.index("--out") + 1], "{backlog_dir}/packets")
 
     def test_probe_ids_come_from_kits_that_miss_a_rule(self):
         bl = self.tmp / "bl"
