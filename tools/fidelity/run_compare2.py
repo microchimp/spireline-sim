@@ -278,7 +278,10 @@ def component(decision: dict, diffs: list, fight: str | None = None) -> str:
     return f"{screen} -> {field_of(path)}"
 
 
-def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
+def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None, collect: list | None = None) -> int:
+    """Prints the comparison. With `collect`, one record per run is appended to it as well (--json): the seed, whether it was
+    recorded, its decisions and fights, and the first divergence (and the first one outside fights) with its component,
+    floor, the choice made and the first differing fields as [path, game, emulator]."""
     refs = json.load(open(ref_path, encoding="utf-8"))["results"]
     emus = json.load(open(emu_path, encoding="utf-8"))["results"]
     nm = None
@@ -299,12 +302,16 @@ def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
         if "decisions" not in ref:
             print(f"{seed}: no run recorded ({(ref.get('error') or '')[:200]})")
             totals["not recorded"] += 1
+            if collect is not None:
+                collect.append({"seed": seed, "recorded": False, "error": (ref.get("error") or "")[:200]})
             continue
         decisions = ref["decisions"]
         if emu.get("seed") not in (None, seed):
             # Results are paired by position: one of another run is never a match.
             print(f"{seed}: paired with the emulator's replay of {emu.get('seed')}")
             totals["mispaired"] += 1
+            if collect is not None:
+                collect.append({"seed": seed, "recorded": False, "error": f"paired with the replay of {emu.get('seed')}"})
             continue
         edec = emu.get("decisions") or []
         totals["decisions"] += len(decisions)
@@ -384,6 +391,15 @@ def run(ref_path: str, emu_path: str, verbose: bool, id_map: str | None) -> int:
                       + "; ".join(f"{p}: game {rs.short(g, 80)} emulator {rs.short(e, 80)}" for p, g, e in diffs[:2]))
         if run_unchecked:
             print("  not compared here: " + ", ".join(sorted(run_unchecked)))
+        if collect is not None:
+            rec = {"seed": seed, "recorded": True, "decisions": n, "fights": nf, "end": ref.get("end"), "floor": ref.get("floor"),
+                   "first": None, "outside": None}
+            for key, div in (("first", first), ("outside", outside if outside is not first else None)):
+                if div is not None:
+                    i, d, comp, diffs = div
+                    rec[key] = {"decision": i, "component": comp, "floor": d.get("floor"), "choice": rs.short(d.get("choice"), 70),
+                                "diffs": [[path, rs.short(gv, 120), rs.short(ev, 120)] for path, gv, ev in diffs[:4]]}
+            collect.append(rec)
     nruns = len(refs)
     if len(emus) < nruns:
         print(f"{nruns - len(emus)} runs have no emulator replay")
@@ -408,10 +424,16 @@ def main() -> int:
     ap.add_argument("emulator")
     ap.add_argument("-v", action="store_true")
     ap.add_argument("--id-map", default="data/id_map.json", help="for in-fight steps (fight_compare); '' to skip")
+    ap.add_argument("--json", default=None, help="run: also write one record per run (the first divergence, as data) to this file")
     a = ap.parse_args()
     if a.mode == "start":
         return start(a.referee, a.emulator)
-    return run(a.referee, a.emulator, a.v, a.id_map or None)
+    collect: list | None = [] if a.json else None
+    rc = run(a.referee, a.emulator, a.v, a.id_map or None, collect)
+    if a.json:
+        with open(a.json, "w", encoding="utf-8") as fh:
+            json.dump({"runs": collect}, fh, indent=1)
+    return rc
 
 
 if __name__ == "__main__":
