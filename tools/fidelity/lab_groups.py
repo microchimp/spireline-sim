@@ -79,6 +79,7 @@ MAX_EXAMPLES = 5
 GROUP_KINDS = ("card", "relic", "potion", "power", "monster")
 NUM = re.compile(r"[-+]?\d+")
 MIN_POOL = 300  # a rate from a small batch counts as if over this many fights
+JOB_REF = re.compile(r"^runs/([^/#]+)/")  # a symptom's ref names the lab job it came from
 
 
 def git_sha(tree: Path = ROOT) -> str:
@@ -299,9 +300,65 @@ def minimal_spec(prefix: Path, seed: str) -> dict | None:
     return runs[0] if runs else None
 
 
+SELECTION_GAP = re.compile(r"selection|selectable", re.I)  # the setup mirror's words for a card screen it answers differently
+
+
+def selection_gaps(v: dict) -> list[tuple[int, str]]:
+    """(setup item, message) for each item whose card screen the emulator's setup mirror could not answer as the game's
+    was answered: a count or eligibility difference (scenarios.judge keeps the mirror's message as mirror_gap_why)."""
+    return sorted((int(k), str(m)) for k, m in (v.get("mirror_gap_why") or {}).items() if SELECTION_GAP.search(str(m)))
+
+
+def derived_verdicts(prefix: Path) -> list | None:
+    """Verdicts for a batch.py batch, which writes none: scenarios.judge over its game, emulator and re-anchor records
+    (no game, no emulator is run; the records are the files batch.py wrote). None when they are not all there."""
+    try:
+        import scenarios  # noqa: PLC0415  (referee/scenarios.py)
+        from tools.fidelity.fight_compare import names  # noqa: PLC0415
+        load = lambda ext: read_json(prefix.with_name(prefix.name + ext))  # noqa: E731
+        specs, games, emus, rea = load(".json"), load(".out.json"), load(".emu.json"), load(".reanchor.json")
+        if not all(isinstance(d, dict) for d in (specs, games, emus, rea)):
+            return None
+        sizes = {len(specs.get("runs", [])), len(games.get("results", [])), len(emus.get("results", [])), len(rea.get("results", []))}
+        if len(sizes) != 1 or 0 in sizes:
+            return None
+        return scenarios.judge(specs["runs"], games["results"], emus["results"], rea,
+                               names(read_json(ROOT / "data" / "id_map.json", {}) or {}), scenarios.NoContent())
+    except Exception:  # noqa: BLE001  (a batch that cannot be judged contributes no symptoms, it does not stop the grouping)
+        return None
+
+
+def selection_symptom(prefix: Path, lab: Path, when: str, src: str, v: dict, spec: dict, aim: dict, gap: tuple[int, str],
+                      shared: bool) -> dict:
+    """A fight that matched but whose setup mirror could not answer a card screen as the game did (a relic that allows up
+    to N picks answered with none, a card the player holds but the emulator does not offer ...): not a divergence of the
+    fight, but the count or eligibility difference the choice-edge answers look for."""
+    seed, (at, msg) = v["seed"], gap
+    items = spec.get("setup", [])
+    item = items[at] if 0 <= at < len(items) else {}
+    kind, ident = item.get("cmd"), item.get("id")
+    enc = next((it.get("id") for it in items if it.get("cmd") == "fight"), None)
+    full = [k for k in (item_key(it) for it in items) if k]
+    own = not shared and (src != "aimed" or aim.get("seed_from") == "fresh")
+    what = [f"{kind}:{ident}"] if kind in ("relic", "card", "potion") and ident else ([f"encounter:{enc}"] if enc else [])
+    held = sorted({entity_of(k) for k in full if not k.startswith(("deck:", "act:"))} | ({f"encounter:{enc}"} if enc else set()))
+    return {"source": src, "ref": f"{rel(prefix, lab)}#{seed}", "seed": seed, "when": when,
+            "batch": [prefix.name] + ([prefix.parent.name] if prefix.parent.parent.name == "runs" else []), "seed_own": own,
+            "held": held, "step": at, "field": "setup.selection", "phase": "setup", "card": ident,
+            "game": clip(f"{kind} {ident}: a card screen the game answered"), "emu": clip(msg),
+            "first_event": clip(re.sub(r"\d+", "#", msg), 160), "event_text": clip(msg, 240), "hooks": [], "reproducible": None,
+            "stale": False, "flags": v.get("flags", []), "mirror_gap": True, "encounter": enc, "shrink": None,
+            "minimal_setup": None, "ingredients": None, "dropped": [], "implicated": what, "aim": aim.get("target")}
+
+
 def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None) -> list[dict]:
-    """The diverging fights of one setup or aimed batch (<prefix>.verdicts.json and its neighbours)."""
-    verdicts = read_json(prefix.with_name(prefix.name + ".verdicts.json"), []) or []
+    """The diverging fights of one setup or aimed batch (<prefix>.verdicts.json and its neighbours); a batch.py batch has
+    no verdicts file, so its verdicts are derived. A matching fight whose setup mirror could not answer a card screen
+    as the game did is a symptom too (selection_symptom)."""
+    verdicts = read_json(prefix.with_name(prefix.name + ".verdicts.json"))
+    if verdicts is None:
+        verdicts = derived_verdicts(prefix)
+    verdicts = verdicts or []
     specs = (read_json(prefix.with_name(prefix.name + ".json"), {}) or {}).get("runs", [])
     aim_list = (read_json(prefix.with_name(prefix.name + ".aims.json"), {}) or {}).get("aims", [])
     src = source or ("aimed" if aim_list or prefix.with_name(prefix.name + ".aims.json").exists() else "setup")
@@ -319,9 +376,15 @@ def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None
     games = None
     out = []
     for i, v in enumerate(verdicts):
-        if v.get("error") or v.get("identical") or "step" not in v:
+        if v.get("error"):
             continue
         seed = v["seed"]
+        if v.get("identical") or "step" not in v:
+            gaps = selection_gaps(v)
+            if gaps:
+                out.append(selection_symptom(prefix, lab, when, src, v, by_index(specs, i, seed, seed in dup) or {},
+                                             by_index(aim_list, i, seed, seed in dup) or {}, gaps[0], seed in dup))
+            continue
         spec = by_index(specs, i, seed, seed in dup) or {}
         aim = by_index(aim_list, i, seed, seed in dup) or {}
         case = {} if seed in dup_div else cases.get(seed) or {}
@@ -480,6 +543,27 @@ def mutation_symptoms(path: Path, lab: Path, when: str) -> list[dict]:
     return out
 
 
+def run_symptoms(path: Path, lab: Path, when: str) -> list[dict]:
+    """The whole runs of one runs.py batch that diverge: <name>.runs.json (run_compare2 --json), each run at its first
+    divergence. Grouped by where it is (component and field) like the codex walk's stops, which are whole runs too."""
+    out = []
+    for r in (read_json(path, {}) or {}).get("runs", []) or []:
+        first = r.get("first")
+        if not r.get("recorded") or not first:
+            continue
+        diffs = first.get("diffs") or [["", None, None]]
+        stem = NUM.sub("#", str(diffs[0][0]).split(": ")[-1]).strip()[:60]
+        ents = [snake(tok) if not tok.isupper() else tok for tok in stop_tokens({"expected": diffs[0][1], "emulator": diffs[0][2]})]
+        out.append({"source": "run", "ref": f"{rel(path, lab)}#{r.get('seed')}", "seed": r.get("seed"), "when": when,
+                    "step": first.get("decision"), "field": f"{first.get('component')}.{stem}", "phase": "run", "card": None,
+                    "game": clip(diffs[0][1]), "emu": clip(diffs[0][2]), "first_event": str(first.get("component")),
+                    "event_text": clip(f"floor {first.get('floor')}, choice {first.get('choice')}: {diffs[0][0]}", 240), "hooks": [],
+                    "reproducible": None, "stale": False, "flags": [], "mirror_gap": False, "encounter": None, "shrink": None,
+                    "minimal_setup": None, "ingredients": None, "dropped": [], "implicated": [], "walk_tokens": sorted(set(ents)),
+                    "aim": None})
+    return out
+
+
 def source_kind(p: Path) -> str | None:
     """Which presort output a JSON file is, by its opening keys: a corpus check's results.json, a reference-set
     score, an invariants report (tools/fidelity/invariants.py --json) or a mutation report (mutate.py report --json)."""
@@ -505,7 +589,10 @@ def source_kind(p: Path) -> str | None:
 def pool_size(kind: str, path: Path, found: int) -> int:
     """How many fights (or runs) a source judged, the denominator of its symptoms' rate."""
     if kind == "batch":
-        return len(read_json(path.with_name(path.name + ".verdicts.json"), []) or []) or found
+        return (len(read_json(path.with_name(path.name + ".verdicts.json"), []) or [])
+                or len((read_json(path.with_name(path.name + ".out.json"), {}) or {}).get("results", []))) or found
+    if kind == "run":
+        return len((read_json(path, {}) or {}).get("runs", [])) or found
     if kind == "corpus":
         return int(((read_json(path, {}) or {}).get("totals") or {}).get("fights") or found)
     if kind == "refset":
@@ -526,7 +613,14 @@ def lab_sources(lab: Path, jobs: tuple[Path, ...] = ()) -> list[tuple[str, Path,
         when = stamp_utc(job)
         for v in sorted(job.rglob("*.verdicts.json")):
             out.append(("batch", v.with_name(v.name.removesuffix(".verdicts.json")), when))
+        for r in sorted(job.rglob("*.reanchor.json")):  # a batch.py batch has records but no verdicts: they are derived
+            base = r.with_name(r.name.removesuffix(".reanchor.json"))
+            if not any(x.endswith(".packs") for x in r.parts) and not base.with_name(base.name + ".verdicts.json").exists()                     and all(base.with_name(base.name + e).exists() for e in (".json", ".out.json", ".emu.json")):
+                out.append(("batch", base, when))
         for p in sorted(job.rglob("*.json")):
+            if p.name.endswith(".runs.json") and not any(x.endswith(".packs") for x in p.parts):
+                out.append(("run", p, when))
+                continue
             if p.name.endswith((".verdicts.json", ".out.json", ".emu.json", ".reanchor.json", ".trace.json")) or any(
                     x.endswith(".packs") for x in p.parts):
                 continue
@@ -543,7 +637,7 @@ def lab_sources(lab: Path, jobs: tuple[Path, ...] = ()) -> list[tuple[str, Path,
     return out
 
 
-OUTPUT_KINDS = {"batch": "batch", "corpus": "corpus", "corpus_results": "corpus", "codex": "codex", "codex_walk": "codex",
+OUTPUT_KINDS = {"batch": "batch", "run": "run", "runs": "run", "corpus": "corpus", "corpus_results": "corpus", "codex": "codex", "codex_walk": "codex",
                 "refset": "refset", "refset_score": "refset", "invariants": "invariants", "mutation": "mutation"}
 
 
@@ -593,7 +687,7 @@ FIGHT_SOURCES = ("aimed", "setup", "corpus", "refset")
 def base_key(s: dict) -> tuple:
     """The preliminary signature of one symptom."""
     src = s["source"]
-    if src == "codex":
+    if src in ("codex", "run"):
         return ("run", s["field"], s.get("first_event"))
     if src == "invariants":
         return ("invariant", s["phase"], s["field"], s.get("first_event"))
@@ -961,7 +1055,7 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
             "examples": examples, "entities": sorted(e for e in ents if not e.startswith("?:")),
             "ingredient_effect": [{"item": k, "removal_vanishes": v} for k, v in sorted(effect.items(), key=lambda kv: (not kv[1], kv[0]))][:24],
             "host_suspect": host, "host_reason": host_reason, "impact_runs_est": int(est),
-            "sources": sorted({s["source"] for s in members}),
+            "sources": sorted({s["source"] for s in members}), "by_job": by_job(members),
             "_entities": ents, "_fields": {s.get("field") for s in members},
             "_seedrefs": {(s["seed"], tuple(s.get("batch") or ()), bool(s.get("seed_own", True))) for s in members if s.get("seed")},
         })
@@ -971,6 +1065,20 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
             g.pop(k, None)
     groups.sort(key=lambda g: (-g["impact_runs_est"], -g["count"], g["id"]))
     return groups
+
+
+def by_job(members: list[dict]) -> dict:
+    """{job folder: {"n": symptoms of it in the group, "ready": those a fixer can start from}}. Ready: the first
+    differing event is traced and the setup was fully mirrored (the group's host suspicion is judged on the group).
+    The runner's yield.tsv counts a job's groups, and the fix-ready ones, from this."""
+    out: dict = {}
+    for s in members:
+        m = JOB_REF.match(str(s.get("ref")))
+        if m:
+            j = out.setdefault(m.group(1), {"n": 0, "ready": 0})
+            j["n"] += 1
+            j["ready"] += 1 if s.get("first_event") and not s.get("mirror_gap") else 0
+    return out
 
 
 def title(key: dict, members: list[dict]) -> str:
@@ -1051,7 +1159,7 @@ def main(argv=None) -> int:
             sources.append(("refset", p, stamp_utc(p)))
     sources += [("invariants", p, stamp_utc(p)) for p in a.invariants]
     sources += [("mutation", p, stamp_utc(p)) for p in a.mutation]
-    read = {"batch": batch_symptoms, "corpus": corpus_symptoms, "refset": refset_symptoms, "codex": walk_symptoms,
+    read = {"batch": batch_symptoms, "run": run_symptoms, "corpus": corpus_symptoms, "refset": refset_symptoms, "codex": walk_symptoms,
             "invariants": invariant_symptoms, "mutation": mutation_symptoms}
     per_source, pools = collections.Counter(), {}
     for kind, path, when in sources:

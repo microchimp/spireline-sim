@@ -353,5 +353,116 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(["SHRINKER_WEAK", "NIBBITS_WEAK"][1], syms[0]["walk_tokens"][0])
 
 
+
+class StrategyInputsTests(unittest.TestCase):
+    """What the strategy mix feeds the groups: card-screen gaps of the setup mirror, batch.py batches, whole runs, per-job counts."""
+
+    def lab(self, td):
+        lab = Path(td) / "lab"
+        write(lab / "cache" / "model_features.json", {"stamp": None, "features": {}})
+        hosts = Path(td) / "hosts.json"
+        write(hosts, {"entries": []})
+        return lab, hosts
+
+    def groups(self, lab, td, hosts):
+        out, summ = lab / "groups.json", lab / "summary.md"
+        self.assertEqual(0, lg.main(["--lab", str(lab), "--out", str(out), "--summary", str(summ), "--decompiled", str(Path(td) / "none"),
+                                     "--host-gaps", str(hosts), "--backlog", str(Path(td) / "no-backlog.json")]))
+        return json.loads(out.read_text(encoding="utf-8"))
+
+    def test_a_card_screen_the_mirror_could_not_answer_is_a_symptom_of_a_matching_fight(self):
+        with tempfile.TemporaryDirectory() as td:
+            lab, hosts = self.lab(td)
+            job = lab / "runs" / "20261015T0100-fights"
+            specs = [{"seed": f"CHOICE{i:04d}", "choice_edges": "none",
+                      "setup": [{"cmd": "deck_set", "cards": []}, {"cmd": "relic", "id": "KIFUDA"}, {"cmd": "fight", "id": "SLIMES_WEAK"}]}
+                     for i in range(3)]
+            write(job / "fights" / "c.json", {"runs": specs})
+            msg = "unsupported: the emulator's selection wants more cards than the game's screen required"
+            verdicts = [{"seed": specs[0]["seed"], "identical": True, "mirror_gap": [1], "mirror_gap_why": {"1": msg}},
+                        {"seed": specs[1]["seed"], "identical": True, "mirror_gap": [1], "mirror_gap_why": {"1": "unsupported: relic in a fight"}},
+                        {"seed": specs[2]["seed"], "identical": True, "mirror_gap": []}]
+            write(job / "fights" / "c.verdicts.json", verdicts)
+            got = lg.batch_symptoms(job / "fights" / "c", lab, "w")
+            self.assertEqual(["CHOICE0000"], [s["seed"] for s in got])  # other gaps (a relic in a fight) are limits of the mirror
+            s = got[0]
+            self.assertEqual(("setup", "setup.selection", ["relic:KIFUDA"], True), (s["phase"], s["field"], s["implicated"], s["mirror_gap"]))
+            self.assertEqual(msg, s["first_event"])
+            (job / "done.rc").write_text("0", encoding="utf-8")
+            doc = self.groups(lab, td, hosts)
+            self.assertEqual(1, len(doc["groups"]))
+            g = doc["groups"][0]
+            self.assertIn("relic:KIFUDA", g["entities"])
+            self.assertEqual({"20261015T0100-fights": {"n": 1, "ready": 0}}, g["by_job"])  # a mirror gap is never fix-ready
+
+    def test_a_diverging_fight_with_a_gap_is_one_symptom_not_two(self):
+        with tempfile.TemporaryDirectory() as td:
+            lab, _ = self.lab(td)
+            job = lab / "runs" / "20261015T0100-fights"
+            write(job / "fights" / "c.json", {"runs": [{"seed": "CHOICE0000", "setup": [{"cmd": "relic", "id": "KIFUDA"}, {"cmd": "fight", "id": "X"}]}]})
+            write(job / "fights" / "c.verdicts.json", [{"seed": "CHOICE0000", "identical": False, "step": 2, "field": ".hand", "card": "BASH",
+                                                        "diff": [[".hand", "a", "b"]], "mirror_gap": [0], "mirror_gap_why": {"0": "unsupported: selection"}}])
+            got = lg.batch_symptoms(job / "fights" / "c", lab, "w")
+            self.assertEqual([".hand"], [s["field"] for s in got])
+
+    def test_a_batch_py_batch_without_verdicts_is_judged_from_its_records(self):
+        import unittest.mock as mock
+        import scenarios  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as td:
+            lab, hosts = self.lab(td)
+            job = lab / "runs" / "20261015T0200-fights"
+            specs = [{"seed": f"RANDOM{i:04d}", "deck_add": ["ANGER"]} for i in range(2)]
+            write(job / "fights" / "r.json", {"runs": specs})
+            write(job / "fights" / "r.out.json", {"results": [{"seed": s["seed"], "steps": [{}]} for s in specs]})
+            write(job / "fights" / "r.emu.json", {"results": [{}, {}]})
+            write(job / "fights" / "r.reanchor.json", {"results": [{}, {}]})
+            write(job / "fights" / "r.packs" / "traces" / "traced.reanchor.json", {"results": []})  # not a batch of its own
+            (job / "done.rc").write_text("0", encoding="utf-8")
+            verdicts = [{"seed": "RANDOM0000", "identical": True, "flags": []},
+                        {"seed": "RANDOM0001", "identical": False, "step": 4, "field": ".draw", "card": "ANGER", "diff": [[".draw", "x", "y"]], "flags": []}]
+            self.assertEqual([("batch", job / "fights" / "r", "2026-10-15T02:00:00Z")], lg.lab_sources(lab))
+            with mock.patch.object(scenarios, "judge", return_value=verdicts) as judge:
+                doc = self.groups(lab, td, hosts)
+            self.assertEqual(1, judge.call_count)
+            self.assertEqual(1, sum(g["count"] for g in doc["groups"]))
+            self.assertEqual(2, lg.pool_size("batch", job / "fights" / "r", 1))  # the denominator is the batch's fights
+            write(job / "fights" / "r.verdicts.json", verdicts)  # once verdicts exist they are what is read, once
+            self.assertEqual([("batch", job / "fights" / "r", "2026-10-15T02:00:00Z")], lg.lab_sources(lab))
+            self.assertIsNone(lg.derived_verdicts(job / "fights" / "missing"))
+            write(job / "fights" / "r.emu.json", {"results": [{}]})  # sizes that disagree: not judged
+            self.assertIsNone(lg.derived_verdicts(job / "fights" / "r"))
+
+    def test_whole_runs_are_symptoms_at_their_first_divergence(self):
+        with tempfile.TemporaryDirectory() as td:
+            lab, hosts = self.lab(td)
+            job = lab / "runs" / "20261015T0300-runs"
+            runs = [{"seed": "RUNSEED001", "recorded": True, "decisions": 90, "fights": 12, "end": "death", "floor": 17,
+                     "first": {"decision": 31, "component": "reward", "floor": 6, "choice": "[3]",
+                               "diffs": [["offer.cards", "[\"ANGER\", \"CLASH\"]", "[\"ANGER\", \"HAVOC\"]"]]}, "outside": None},
+                    {"seed": "RUNSEED002", "recorded": True, "decisions": 80, "fights": 11, "first": {"decision": 40, "component": "reward", "floor": 9,
+                     "choice": "[1]", "diffs": [["offer.cards", "[\"BASH\", \"CLASH\"]", "[\"BASH\", \"HAVOC\"]"]]}},
+                    {"seed": "RUNSEED003", "recorded": True, "decisions": 70, "fights": 9, "first": None, "outside": None},
+                    {"seed": "RUNSEED004", "recorded": False, "error": "no result (session ended)"}]
+            write(job / "runs" / "r.runs.json", {"runs": runs})
+            write(job / "runs" / "r.out.json", {"results": []})
+            (job / "done.rc").write_text("0", encoding="utf-8")
+            self.assertEqual([("run", job / "runs" / "r.runs.json", "2026-10-15T03:00:00Z")], lg.lab_sources(lab))
+            got = lg.run_symptoms(job / "runs" / "r.runs.json", lab, "w")
+            self.assertEqual(["RUNSEED001", "RUNSEED002"], [s["seed"] for s in got])  # clean and unrecorded runs are not symptoms
+            self.assertEqual(("run", "reward.offer.cards", 31), (got[0]["phase"], got[0]["field"], got[0]["step"]))
+            self.assertIn("HAVOC", [t.upper() for t in got[0]["walk_tokens"]])
+            doc = self.groups(lab, td, hosts)
+            self.assertEqual([2], [g["count"] for g in doc["groups"]])  # the same place, one group
+            self.assertEqual(2, doc["groups"][0]["impact_runs_est"])
+            self.assertEqual({"20261015T0300-runs": {"n": 2, "ready": 2}}, doc["groups"][0]["by_job"])
+            self.assertEqual(4, lg.pool_size("run", job / "runs" / "r.runs.json", 0))  # the runs played, clean ones included
+
+    def test_by_job_counts_the_symptoms_a_fixer_can_start_from(self):
+        mk = lambda ref, ev, gap: {"ref": ref, "first_event": ev, "mirror_gap": gap}  # noqa: E731
+        got = lg.by_job([mk("runs/J1/fights/b#S1", "hand +A", False), mk("runs/J1/fights/b#S2", None, False),
+                         mk("runs/J1/fights/b#S3", "hand +A", True), mk("runs/J2/fights/b#S1", "x", False), mk("corpus:F1", "x", False)])
+        self.assertEqual({"J1": {"n": 3, "ready": 1}, "J2": {"n": 1, "ready": 1}}, got)
+
+
 if __name__ == "__main__":
     unittest.main()
