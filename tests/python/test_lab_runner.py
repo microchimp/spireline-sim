@@ -545,7 +545,9 @@ class RunnerCase(unittest.TestCase):
         while not marker.exists() and time.time() < deadline:
             time.sleep(0.05)
         (r.lab.root / "PAUSE").write_text("", encoding="utf-8")
-        time.sleep(2.5)  # the running step ends inside its grace; the next step must not start
+        while marker.read_text() != "xdone" and time.time() < deadline:  # the running step ends inside its grace
+            time.sleep(0.05)
+        time.sleep(1.0)  # ... and the next step must not start
         self.assertEqual(marker.read_text(), "xdone")
         self.assertFalse((r.lab.root / "b").exists())
         self.assertFalse((run.dir / "done.rc").exists())
