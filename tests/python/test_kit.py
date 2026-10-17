@@ -278,6 +278,14 @@ SIBLING_DECOMPILE = {  # the decompile's layout, no game code: names only
     "MegaCrit.Sts2.Core.Models.Relics/SlingOfCourage.cs": (
         "public sealed class SlingOfCourage : AbstractModel\n{\n    public override Task AfterRoomEntered()\n    {\n"
         "        if (room.RoomType == RoomType.Elite) other.SetCost(0);\n        return Task.CompletedTask;\n    }\n}\n"),
+    # a system method (no model names it) and the two other game sites that call it
+    "MegaCrit.Sts2.Core.Factories/CardFactory.cs": (
+        "public static class CardFactory\n{\n    public static IEnumerable<CardModel> CreateForReward(Player player, int n)\n    {\n"
+        "        return RollForRarity(player);\n    }\n}\n"),
+    "MegaCrit.Sts2.Core.Rewards/CardReward.cs": (
+        "public class CardReward : Reward\n{\n    public override void Populate()\n    {\n        CardFactory.CreateForReward(p, 3);\n    }\n}\n"),
+    "MegaCrit.Sts2.Core.Models.Events/Library.cs": (
+        "public sealed class Library : EventModel\n{\n    private void Read()\n    {\n        CardFactory.CreateForReward(p, 20);\n    }\n}\n"),
 }
 
 
@@ -299,13 +307,64 @@ class SiblingTest(unittest.TestCase):
         self.assertEqual(kt.body_targets(self.decomp, p, "ModifyHandDraw"), ["RoomType.Elite", "PlayerCmd.GainEnergy", "SetCost"])
         self.assertIn("RoomType.Elite", kt.method_body(self.decomp.text(p), "ModifyHandDraw"))
 
-    def test_siblings_are_the_hook_then_the_names_other_models_share(self):
-        got = kt.sibling_targets([("BOOMING_CONCH", "named by the group")], ".draw", None, self.names, self.decomp, {"ModifyHandDraw"})
+    def pointers(self, implicated, field="", hook=None, system=None):
+        return kt.rule_pointers(implicated, field, hook, [], [], self.names, self.decomp, lambda p: p.name, system=system)
+
+    def test_siblings_are_the_pointed_hook_then_the_names_other_models_share(self):
+        ps = self.pointers([("relic:BOOMING_CONCH", "named by the group")], ".draw")  # the lab's kind:ID form
+        self.assertEqual([(p["what"], p["main"]) for p in ps], [("BoomingConch.ModifyHandDraw", True)])
+        got = kt.sibling_targets(ps, ".draw", None, self.decomp, {"ModifyHandDraw"})
         # PlayerCmd.GainEnergy has one use only (no sibling to list); RoomType.Elite and SetCost have two each
         self.assertEqual(got, ["ModifyHandDraw", "RoomType.Elite", "SetCost"])
         self.assertEqual(kt.site_count(self.decomp, "SetCost"), 2)
-        # the card played at the wrong step is not a suspect: its calls are not swept
-        self.assertEqual(kt.sibling_targets([("BOOMING_CONCH", "played at the wrong step")], ".draw", None, self.names, self.decomp, set()), [])
+        # the card played at the wrong step is not a suspect: its pointer is not where the siblings start
+        ps = self.pointers([("BOOMING_CONCH", "played at the wrong step")], ".draw")
+        self.assertEqual([p["main"] for p in ps], [False])
+        self.assertEqual(kt.sibling_targets(ps, ".draw", None, self.decomp, {"ModifyHandDraw"}), [])
+
+    def test_a_sweep_as_wide_as_the_whole_hook_is_no_sibling_list(self):
+        ps = self.pointers([("BOOMING_CONCH", "the shrink's culprit")], ".draw")
+        with mock.patch.object(kt, "SPECIFIC_MAX", 1):  # ModifyHandDraw has one override, RoomType.Elite and SetCost two sites
+            self.assertEqual(kt.sibling_targets(ps, ".draw", None, self.decomp, {"ModifyHandDraw"}), ["ModifyHandDraw"])
+            self.assertEqual(kt.sibling_targets(ps, ".draw", "ModifyHandDraw", self.decomp, set()), ["ModifyHandDraw"])
+        with mock.patch.object(kt, "SPECIFIC_MAX", 0):
+            self.assertEqual(kt.sibling_targets(ps, ".draw", "ModifyHandDraw", self.decomp, {"ModifyHandDraw"}), [])
+        self.assertTrue(pk.sibling_sweep({"n": 19}))
+        self.assertFalse(pk.sibling_sweep({"n": 64}))  # AfterCardPlayed's 64 overrides: the hook, not the mechanism
+        self.assertFalse(pk.sibling_sweep({"n": 0}))
+
+    def test_a_run_field_points_at_the_system_code_and_its_callers_are_the_siblings(self):
+        system = kt.system_rules("card_reward.cards")
+        self.assertEqual(system[0], ("CardFactory", "CreateForReward"))
+        ps = self.pointers([], "card_reward.cards", system=system)
+        self.assertEqual([p["what"] for p in ps], ["CardFactory.CreateForReward", "CardReward.Populate"])  # no CardRarityOdds here
+        self.assertEqual(ps[0]["where"], "CardFactory.cs:3")
+        self.assertIn("game system code that produces card_reward.cards", ps[0]["why"])
+        self.assertEqual(kt.sibling_targets(ps, "card_reward.cards", None, self.decomp, {"Populate"}), ["CardFactory.CreateForReward"])
+        self.assertEqual(kt.site_count(self.decomp, "CardFactory.CreateForReward"), 2)  # CardReward and the event
+
+    def test_system_rules_by_component_and_field(self):
+        self.assertEqual(kt.system_rules("deck_select.enchant"), [("CardSelectCmd", "FromDeckForEnchantment")])
+        self.assertEqual(kt.system_rules("card_offer.bundles"), [("CardSelectCmd", "FromChooseABundleScreen")])
+        self.assertEqual(kt.system_rules("shop.potions"), [("MerchantInventory", "PopulatePotionEntries")])
+        self.assertEqual(kt.system_rules("shop.gold spent"), [("MerchantInventory", "CreateForNormalMerchant")])
+        self.assertEqual(kt.system_rules("deck.cards (fight floor)")[0], ("CardPileCmd", "Add"))
+        self.assertEqual(kt.system_rules("map -> gold.gold")[0], ("PlayerCmd", "GainGold"))
+        self.assertEqual(kt.system_rules("outcome.max hp (fight floor)")[0], ("CreatureCmd", "GainMaxHp"))
+        self.assertEqual(kt.system_rules("map replay.replay")[0], ("StandardActMap", "GenerateMap"))
+        self.assertEqual(kt.system_rules("rewards_continued replay.replay")[0], ("RewardsSet", "GenerateRewardsFor"))
+        self.assertEqual(kt.system_rules("ancient offer.offer")[0], ("AncientEventModel", "GenerateInitialOptionsWrapper"))
+        for combat in (".hand", ".player.hp", "combat: in fight..enemies", "", "game"):
+            self.assertEqual(kt.system_rules(combat), [], combat)
+
+    def test_entity_keys_as_the_lab_writes_them(self):
+        self.assertEqual(kt.entity_key("card:HELLRAISER+"), ("card", "HELLRAISER"))
+        self.assertEqual(kt.entity_key("power:INTANGIBLE_POWER@player"), ("power", "INTANGIBLE_POWER"))
+        self.assertEqual(kt.entity_key("deck:set"), ("deck", ""))
+        self.assertEqual(kt.entity_key("TERROR_EEL_ELITE"), (None, "TERROR_EEL_ELITE"))
+        self.assertEqual([q.stem for q in kt.class_files("relic:BOOMING_CONCH", self.names, self.decomp)], ["BoomingConch"])
+        self.assertEqual(kt.class_files("card:BOOMING_CONCH", self.names, self.decomp), [])  # the kind is no relic: not its class
+        self.assertEqual(kt.class_files("deck:set", self.names, self.decomp), [])
 
 
 class PointerTest(unittest.TestCase):

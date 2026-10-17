@@ -2493,7 +2493,7 @@ def precompute_kits(items: list, cx: Context, out: Path) -> None:
                    "cmd_sweeps": list(sweep_targets(refs)), "errors": []}
         except Exception as e:  # noqa: BLE001
             cx.kits[iid] = {"item": it, "sha": sha, "groups": [], "more": 0, "hook_check": bool(hook_check), "probes": [], "probe_requests": [],
-                            "pointers": [], "cmd_sweeps": [], "errors": [f"the item's kit: {kit_error(e)}"]}
+                            "pointers": [], "targets": [], "cmd_sweeps": [], "errors": [f"the item's kit: {kit_error(e)}"]}
             continue
         tdir = out / iid / "kit-test"
         if tdir.is_dir():
@@ -2534,6 +2534,12 @@ def precompute_kits(items: list, cx: Context, out: Path) -> None:
             except Exception as ex:  # noqa: BLE001
                 e["sweeps"], e["hook_rows"] = [], []
                 kit["errors"].append(f"group {e['group'].get('id')}'s siblings: {kit_error(ex)}")
+        try:  # the item's own pointers (its evidence, its probes) have siblings too
+            kit["targets"] = kt.sibling_targets(kit["pointers"], "", None, cx.decomp, hook_names)
+            kit["sweeps"] = [s for s in (kit_sweep(t, cx, hook_names) for t in kit["targets"]) if s]
+        except Exception as ex:  # noqa: BLE001
+            kit["targets"], kit["sweeps"] = [], []
+            kit["errors"].append(f"the item's siblings: {kit_error(ex)}")
         try:
             kit["cmd_sweeps"] = [s for s in (kit_sweep(t, cx, hook_names) for t in kit["cmd_sweeps"]) if s]
         except Exception as ex:  # noqa: BLE001
@@ -2556,9 +2562,11 @@ def kit_group(it: dict, g: dict, how: str, cx: Context, index: kt.RecordIndex, h
     field = prim["now"][1][0][0] if prim else str((g.get("key") or {}).get("field") or (g["examples"] or [{}])[0].get("field") or "")
     hook = kt.event_hook(g, prim["ex"] if prim else (g["examples"] or [None])[0])
     impl = kit_implicated(g, prim)
+    parts = (g.get("key") or {}).get("parts") or []
+    system = kt.system_rules(field or (str(parts[0]) if parts else ""))
+    pointers = kt.rule_pointers(impl, field, hook, [], [], cx.names, cx.decomp, lambda p: rel_decomp(p, cx), system=system)
     e = {"group": g, "how": how, "reps": reps, "primary": prim, "test": None, "implicated": impl, "field": field,
-         "pointers": kt.rule_pointers(impl, field, hook, [], [], cx.names, cx.decomp, lambda p: rel_decomp(p, cx)),
-         "targets": kt.sibling_targets(impl, field, hook, cx.names, cx.decomp, hook_names), "hook_names": hook_names}
+         "pointers": pointers, "targets": kt.sibling_targets(pointers, field, hook, cx.decomp, hook_names), "hook_names": hook_names}
     if prim and cx.kit_cfg["verify"] and cx.emu.available:
         step, d, _ = prim["now"]
         cls = kt.cs_name("Kit", iid, prim["rec"].get("seed"), str(g["id"])[:8])
@@ -2594,6 +2602,11 @@ def _vals(d: list, n: int = 240) -> str:
     return f"{path}: game {clip(json.dumps(g), n)} | emulator {clip(json.dumps(e), n)}{more}"
 
 
+def sibling_sweep(s: dict) -> bool:
+    """A sweep that is a sibling list: built from a rule pointer (kit.sibling_targets) and specific to its mechanism."""
+    return kt.specific(s.get("n") or 0)
+
+
 def finish_kit(kit: dict, secs: dict) -> None:
     """Grade the kit (now that the packet's sections say what they found) and write its lines."""
     have = set()
@@ -2607,8 +2620,8 @@ def finish_kit(kit: dict, secs: dict) -> None:
         have.add("failing test")
     if any("." in p["what"] for e in G for p in e["pointers"]) or any("." in p["what"] for p in kit["pointers"]):
         have.add("rule pointer")
-    if any(s["n"] for e in G for s in e.get("sweeps", [])) or any(e.get("hook_rows") for e in G if e["targets"]):
-        have.add("sibling list")
+    if any(sibling_sweep(s) for e in G for s in e.get("sweeps", [])) or any(sibling_sweep(s) for s in kit.get("sweeps", [])):
+        have.add("sibling list")  # the generic sweeps of the item's hooks (kit["cmd_sweeps"]: AfterCardPlayed, 64 classes) are no sibling list
     if any(r["ex"].get("first_event") for e in G for r in e["reps"]) or secs["event"].status == "full":
         have.add("first differing event")
     if any(e["group"].get("ingredient_effect") for e in G):
@@ -2688,6 +2701,12 @@ def finish_kit(kit: dict, secs: dict) -> None:
             L.append("- siblings: no hook, command, stream or enum member found to sweep" + ("" if kit["hook_check"] else " (no hook table: --no-sweep or no decompile)"))
     if kit["pointers"]:
         L += ["", "- the item's own pointers (its evidence and probes):"] + [f"  - {p['what']} at {p['where']}: {p['why']}" for p in kit["pointers"]]
+    if kit.get("sweeps"):
+        L.append(f"- siblings of the item's pointers (every game site of {', '.join(kit.get('targets') or [])}; fix the mechanism, not one model):")
+        for s in kit["sweeps"]:
+            L += ["  " + x for x in kit_sweep_lines(s, set())]
+    if kit["cmd_sweeps"]:
+        L.append("- the item's hooks and commands, every use (context, not a sibling list):")
     for s in kit["cmd_sweeps"]:
         L += kit_sweep_lines(s, set())
     if kit["probes"]:

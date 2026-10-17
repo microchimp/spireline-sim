@@ -770,16 +770,38 @@ def method_line(text: str, method: str) -> int | None:
     return text.count("\n", 0, m.start()) + 1 if m else None
 
 
+ENTITY = re.compile(r"^(?:(?P<kind>[a-z_]+):)?(?P<key>[A-Za-z0-9_]+)\+?(?:@\w+)?$")
+
+
+def entity_key(raw: str) -> tuple:
+    """(kind or None, id) of an entity as the lab writes it: `relic:BELLOWS`, `card:HELLRAISER+` (upgraded),
+    `power:INTANGIBLE_POWER@player` (whose power), or a bare id. A setup item that is no model (`deck:set`) gives no id."""
+    m = ENTITY.match(str(raw).strip())
+    if not m:
+        return None, ""
+    kind, key = m.group("kind"), m.group("key")
+    return (kind, "") if kind in ("deck", "act", "move") else (kind, key)
+
+
 def class_files(key: str, names, decomp) -> list:
-    """Decompiled model class files of an entity key (a card, relic, power, potion, monster or encounter id)."""
+    """Decompiled model class files of an entity key (a card, relic, power, potion, monster or encounter id, bare or as the
+    lab writes it: entity_key)."""
     if not decomp.root:
         return []
+    want, key = entity_key(key)
+    if not key:
+        return []
     out = []
+    if key not in names.pascals and key.endswith("_POWER") and key[: -len("_POWER")] in names.pascals:
+        key = key[: -len("_POWER")]  # the lab writes INTANGIBLE_POWER, the id map INTANGIBLE
     for kind, pas in names.pascals.get(key, []):
         folder = FOLDERS.get(kind)
+        if want and want in FOLDERS and kind != want:
+            continue
         out += [q for q in decomp.files.get(pas, []) if not folder or f"Models.{folder}" in str(q)]
-    if not out:  # encounters and other models id_map does not list: by the Pascal form of the id
-        out += [q for q in decomp.files.get(pascal_of(key), []) if "Models" in str(q)]
+    if not out:  # encounters and other models id_map does not list: by the Pascal form of the id (in its kind's folder)
+        folder = FOLDERS.get(want or "")
+        out += [q for q in decomp.files.get(pascal_of(key), []) if (f"Models.{folder}" if folder else "Models") in str(q)]
     return list(dict.fromkeys(out))
 
 
@@ -796,39 +818,111 @@ def _pairs(implicated: list) -> list:
 MAIN = ("the shrink's culprit", "named by the group", "implicated")  # implicated entities whose own rule is the suspect
 
 
+# The game system code that produces a run-level field (the codex walker's component.field, tools/emudump/Codex/Walker.cs):
+# reward generation, shop stock, map generation, the event and encounter pools. A run group names no card or relic, so its
+# rule is here. Rows are (component, a word of the field or "", [(Class, Method)]); the first row that fits wins. Names only.
+SYSTEM_RULES = (
+    ("card_reward", "", (("CardFactory", "CreateForReward"), ("CardReward", "Populate"), ("CardRarityOdds", "Roll"))),
+    ("card_offer", "grid", (("CardSelectCmd", "FromSimpleGridForRewards"),)),
+    ("card_offer", "bundle", (("CardSelectCmd", "FromChooseABundleScreen"),)),
+    ("card_offer", "", (("CardSelectCmd", "FromChooseACardScreen"),)),
+    ("deck_select", "enchant", (("CardSelectCmd", "FromDeckForEnchantment"),)),
+    ("deck_select", "remov", (("CardSelectCmd", "FromDeckForRemoval"),)),
+    ("deck_select", "transform", (("CardSelectCmd", "FromDeckForTransformation"),)),
+    ("deck_select", "upgrade", (("CardSelectCmd", "FromDeckForUpgrade"),)),
+    ("deck_select", "", (("CardSelectCmd", "FromDeckGeneric"),)),
+    ("deck", "", (("CardPileCmd", "Add"), ("CardPileCmd", "RemoveFromDeck"), ("CardReward", "OnSelect"))),
+    ("relic_reward", "", (("RelicReward", "Populate"), ("RelicFactory", "PullNextRelicFromFront"), ("RelicGrabBag", "PullFromFront"))),
+    ("treasure", "", (("TreasureRoom", "DoNormalRewards"), ("RelicFactory", "PullNextRelicFromFront"))),
+    ("relics", "", (("RelicCmd", "Obtain"),)),
+    ("relic_props", "", (("RelicCmd", "Obtain"),)),
+    ("potion_reward", "", (("RewardsSet", "RollForPotionAndAddTo"), ("PotionRewardOdds", "Roll"),
+                           ("PotionFactory", "CreateRandomPotionOutOfCombat"))),
+    ("potions", "", (("PotionCmd", "TryToProcure"),)),
+    ("gold_reward", "", (("GoldReward", "Populate"),)),
+    ("rewards", "", (("RewardsSet", "GenerateRewardsFor"), ("RewardsCmd", "OfferForRoomEnd"))),
+    ("shop", "card", (("MerchantInventory", "PopulateCharacterCardEntries"), ("MerchantInventory", "PopulateColorlessCardEntries"),
+                      ("CardFactory", "CreateForMerchant"))),
+    ("shop", "relic", (("MerchantInventory", "PopulateRelicEntries"),)),
+    ("shop", "potion", (("MerchantInventory", "PopulatePotionEntries"),)),
+    ("shop", "", (("MerchantInventory", "CreateForNormalMerchant"),)),
+    ("map", "", (("StandardActMap", "GenerateMap"), ("StandardActMap", "AssignPointTypes"))),
+    ("unknown_room", "", (("UnknownMapPointOdds", "Roll"),)),
+    ("room", "", (("UnknownMapPointOdds", "Roll"), ("RunManager", "EnterMapCoordInternal"))),
+    ("event", "", (("ActModel", "PullNextEvent"), ("EventModel", "GenerateInitialOptionsWrapper"))),
+    ("event_option", "", (("EventModel", "GenerateInitialOptionsWrapper"),)),
+    ("encounter", "", (("ActModel", "PullNextEncounter"), ("ActModel", "GenerateRooms"))),
+    ("monsters", "", (("ActModel", "PullNextEncounter"),)),
+    ("ancient", "", (("AncientEventModel", "GenerateInitialOptionsWrapper"), ("ActModel", "GetUnlockedAncients"))),
+    ("rest", "", (("RestSiteOption", "Generate"),)),
+    ("odds", "card_rarity", (("CardRarityOdds", "Roll"),)),
+    ("odds", "potion", (("PotionRewardOdds", "Roll"),)),
+    ("outcome", "max hp", (("CreatureCmd", "GainMaxHp"), ("CreatureCmd", "LoseMaxHp"))),
+    ("outcome", "gold", (("PlayerCmd", "GainGold"), ("PlayerCmd", "LoseGold"))),
+    ("outcome", "hp", (("CreatureCmd", "Heal"), ("CreatureCmd", "Damage"))),
+    ("gold", "", (("PlayerCmd", "GainGold"), ("PlayerCmd", "LoseGold"))),
+    ("flow", "event", (("EventModel", "GenerateInitialOptionsWrapper"),)),
+    ("flow", "", (("RewardsSet", "Offer"), ("RunManager", "EnterMapCoordInternal"))),
+)
+SYSTEM_FIELD = re.compile(r"([a-z_]+)(?: [a-z_]+)?\.?(.*)$")
+
+
+def system_rules(field: str) -> list:
+    """[(Class, Method)] of the game system code behind a run-level field (`card_reward.cards`, `shop.potions`,
+    `map -> gold.gold`, `deck.cards (fight floor)`); [] for a combat field (`.hand`) or one no row covers."""
+    f = str(field or "").split("->")[-1].strip().lower()
+    m = SYSTEM_FIELD.match(f)
+    if not m or f.startswith((".", "combat")):
+        return []
+    comp, rest = re.sub(r"_continued$", "", m.group(1)), m.group(2)
+    for c, word, rules in SYSTEM_RULES:
+        if c == comp and (not word or word in rest):
+            return list(rules)
+    return []
+
+
 def rule_pointers(implicated: list, field: str, hook: str | None, calls: list, probe_classes: list, names, decomp,
-                  rel_decomp, limit: int = 8) -> list:
-    """[{where, what, why}] pointing at the decompiled classes and methods that hold the game's rule (names, paths, lines).
+                  rel_decomp, limit: int = 8, system: list | None = None) -> list:
+    """[{where, what, why, path, method, main}] pointing at the decompiled classes and methods that hold the game's rule
+    (names, paths, lines).
 
     implicated: entity keys, or (key, why) pairs, the shrink's culprits first; hook: the first differing event's hook, if
-    known; calls: [(Class, Method, path)] the item's evidence names; probe_classes: the matched probes' game classes.
+    known; calls: [(Class, Method, path)] the item's evidence names; probe_classes: the matched probes' game classes;
+    system: [(Class, Method)] the game system code behind a run-level field (system_rules). `main` marks the pointers whose
+    rule is the suspect (a culprit's, the evidence's, the system code's): the sibling list starts from them.
     """
     out, seen = [], set()
 
-    def add(path: Path, method: str | None, why: str):
+    def add(path: Path, method: str | None, why: str, main: bool = True):
         k = (str(path), method)
         if k in seen:
             return
         seen.add(k)
         ln = method_line(decomp.text(path), method) if method else None
-        out.append({"where": rel_decomp(path) + (f":{ln}" if ln else ""), "what": f"{path.stem}.{method}" if method else path.stem, "why": why})
+        out.append({"where": rel_decomp(path) + (f":{ln}" if ln else ""), "what": f"{path.stem}.{method}" if method else path.stem,
+                    "why": why, "path": str(path), "method": method, "main": main})
 
+    for cls, meth in system or []:
+        for p in decomp.files.get(cls, []):
+            if decomp.declared(p, meth):
+                add(p, meth, f"the game system code that produces {field}")
+                break
     for key, why in _pairs(implicated):
         n = 3 if why in MAIN else 1
         for p in class_files(key, names, decomp)[:2]:
-            ovs = decomp.overrides(p)
+            ovs = [m for m in decomp.overrides(p) if not UI.search(m)]
             if hook and hook in ovs:
-                add(p, hook, f"{key} ({why}) overrides the first differing event's hook")
+                add(p, hook, f"{key} ({why}) overrides the first differing event's hook", why in MAIN)
             ranked = sorted(ovs, key=lambda m: (-relevance(m, field), ovs.index(m)))
             for m in ranked[:n]:
-                add(p, m, f"{key} ({why}); it overrides {m}" + (" (fits the differing field)" if relevance(m, field) else ""))
+                add(p, m, f"{key} ({why}); it overrides {m}" + (" (fits the differing field)" if relevance(m, field) else ""), why in MAIN)
             if not ovs:
-                add(p, None, f"{key} ({why}); no overrides: its rule is in its data or a caller")
+                add(p, None, f"{key} ({why}); no overrides: its rule is in its data or a caller", False)
     if hook:
         for stem in ("Hook", "AbstractModel"):
             for p in decomp.files.get(stem, []):
                 if decomp.declared(p, hook):
-                    add(p, hook, "the first differing event's hook: its declaration and dispatch")
+                    add(p, hook, "the first differing event's hook: its declaration and dispatch", False)
     for _cls, meth, p in calls:
         add(Path(p), meth, "named by the item's evidence")
     for gc in probe_classes:
@@ -875,8 +969,8 @@ SKIP_CALLS = {"Add", "AddRange", "Remove", "RemoveAt", "RemoveAll", "Contains", 
               "Concat", "Distinct", "Except", "Intersect", "Cast", "OfType", "Reverse", "Sort", "Append", "Prepend", "Insert",
               "IndexOf", "TryGetValue", "Clear", "GetType", "ToString", "Equals", "GetHashCode", "Invoke", "Format", "Join",
               "Split", "Replace", "StartsWith", "EndsWith", "ConfigureAwait", "GetAwaiter", "GetResult", "WhenAll", "Delay",
-              "FromResult", "Run", "FindOnTable", "CustomScaledWait", "Flash", "Preview", "GetPile"}
-UI = re.compile(r"Preview|Vfx|Sfx|Anim|Tween|Hover|Wait|Flash|Shake|Sound|Music|Node|Scene|Layout|Display|Tooltip")  # presentation, no rule
+              "FromResult", "Run", "FindOnTable", "CustomScaledWait", "Flash", "Preview", "GetPile", "AsIndex", "FromIndex"}
+UI = re.compile(r"Preview|Vfx|Sfx|Anim|Tween|Hover|Wait|Flash|Shake|Sound|Music|Node|Scene|Layout|Display|Tooltip|Camera|Portrait|Background|Asset|Center|Delay")  # presentation, no rule
 _TEXT: dict = {}
 
 
@@ -914,24 +1008,40 @@ def body_targets(decomp, path: Path, method: str) -> list:
     return list(dict.fromkeys(found))
 
 
-def sibling_targets(implicated: list, field: str, hook: str | None, names, decomp, hook_names: set, limit: int = 3) -> list:
-    """What to sweep for sibling sites: the first event's hook, else the hook the implicated classes override that fits the
-    differing field best; then the names their relevant overrides run through (body_targets) that the fewest game sites
-    share (two at least: one is only itself), so the sweep lists the mechanism's users, not every caller of a common verb."""
-    hooks, calls = ([hook] if hook else []), []
-    for key, why in _pairs(implicated):
-        if why not in MAIN:
+SPECIFIC_MAX = 40  # a sweep with more sites is the whole hook or verb (AfterCardPlayed: 64 classes), not one mechanism's siblings
+
+
+def override_count(decomp, hook: str) -> int:
+    """How many game classes override a hook."""
+    return len(re.findall(r"\boverride\s+(?:async\s+)?[\w<>\[\],.? ]+?\s+" + re.escape(hook) + r"\s*\(", decompile_text(decomp)))
+
+
+def specific(n: int, least: int = 1) -> bool:
+    return least <= n <= SPECIFIC_MAX
+
+
+def sibling_targets(pointers: list, field: str, hook: str | None, decomp, hook_names: set, limit: int = 3) -> list:
+    """What to sweep for sibling sites, from the kit's rule pointers (rule_pointers' `main` ones, whose rule is the suspect):
+    the first event's hook, else the hook a pointed override implements that fits the differing field; the pointed game
+    method itself when it is no hook (its other callers: CardFactory.CreateForReward's); then the names the pointed methods
+    run through (body_targets) that the fewest game sites share (two at least: one is only itself). A target with more than
+    SPECIFIC_MAX sites is the whole hook or verb, not this mechanism's siblings, and is left out: every target is specific."""
+    hooks, own, calls = ([hook] if hook else []), [], []
+    for ptr in pointers:
+        meth, path = ptr.get("method"), ptr.get("path")
+        if not ptr.get("main") or not meth or not path:
             continue
-        for p in class_files(key, names, decomp)[:1]:
-            ovs = decomp.overrides(p)
-            ranked = sorted(ovs, key=lambda m: (-relevance(m, field), ovs.index(m)))
-            if not hook:
-                hooks += [m for m in ranked if m in hook_names and relevance(m, field) and m not in hooks]
-            for m in ranked[:2]:
-                calls += [t for t in body_targets(decomp, p, m) if t not in calls and t not in hook_names]
-    scored = sorted((n, i, t) for i, t in enumerate(calls) if (n := site_count(decomp, t)) >= 2)
-    hooks = list(dict.fromkeys(hooks))[:1]
-    return hooks + [t for _, _, t in scored][: limit - len(hooks)]
+        if meth in hook_names:
+            if not hook and relevance(meth, field):
+                hooks.append(meth)
+        else:
+            own.append(f"{Path(path).stem}.{meth}")
+        calls += [t for t in body_targets(decomp, Path(path), meth) if t not in calls and t not in hook_names]
+    hooks = [h for h in dict.fromkeys(hooks) if specific(override_count(decomp, h))][:1]
+    own = [t for t in dict.fromkeys(own) if specific(site_count(decomp, t))]
+    named = own + [o.split(".")[1] for o in own]  # a pointed method's own name, qualified or bare, is swept once
+    scored = sorted((n, i, t) for i, t in enumerate(calls) if t not in named and specific(n := site_count(decomp, t), 2))
+    return (hooks + own + [t for _, _, t in scored])[:limit]
 
 
 def hook_rows(check: dict | None, models: set, hooks: set, limit: int = 14) -> list:
