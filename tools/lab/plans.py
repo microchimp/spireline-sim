@@ -501,14 +501,15 @@ def plan_probes(c: Ctx) -> list[Step]:
 
 
 def probe_ids(backlog_dir: Path) -> list[str]:
-    """Probe ids the kits ask for: grades.json entries missing a rule that name `probes` (nothing else maps item to probe)."""
+    """Probe ids the kits ask for: the `probes` that tools/fidelity/packet.py writes into grades.json for a kit still
+    missing its probe answer (a catalog probe that matches the kit's item and has no verdict yet)."""
     try:
         grades = json.loads((backlog_dir / "packets" / "grades.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     out: list[str] = []
     for g in grades.values() if isinstance(grades, dict) else []:
-        if isinstance(g, dict) and any("rule" in str(m).lower() for m in g.get("missing", [])):
+        if isinstance(g, dict) and "probe answer" in [str(m) for m in g.get("missing", [])]:
             out += [str(x) for x in g.get("probes", []) if str(x) not in out]
     return out
 

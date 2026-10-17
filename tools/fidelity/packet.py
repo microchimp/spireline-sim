@@ -157,6 +157,7 @@ class Sources:
     findings: Path | None = None
     attempts: Path | None = None
     probes: Path | None = None  # folder of <name>.report.json
+    probes_more: tuple = ()  # more such folders: the lab's own probe jobs write theirs under lab/runs/<job>/probes
     trace_dirs: tuple = ()  # searched recursively for traced game records
     minimal_dirs: tuple = ()  # searched recursively for minimal/<seed>.json (referee/shrink.py)
     refset: Path | None = None  # referee/refset/<version>
@@ -179,6 +180,7 @@ class Sources:
         base = dict(referee=r, corpus=Path(os.environ.get("SPIRELINE_CORPUS", r / "corpus")),
                     ledger=r / "backlog" / "ledger.md", findings=ROOT / "referee" / "FINDINGS.md",
                     attempts=r / "backlog" / "fix-attempts.csv", probes=r / "probes",
+                    probes_more=tuple(sorted((r / "lab" / "runs").glob("*-probes/probes"))) if (r / "lab" / "runs").is_dir() else (),
                     trace_dirs=(r / "jobs-trace", r / "jobs-checksum"), minimal_dirs=(r / "jobs-setup",),
                     refset=r / "refset" / "v2", decompiled=r / "decompiled", emudump=emu,
                     codex_walk=r / "codex-walk", codex_data=r.parent / "data" / "spire-codex" / "runs-v0.107.1.jsonl.gz")
@@ -1123,11 +1125,10 @@ def load_probes(src: Sources) -> dict:
     """Every probe verdict on disk (newest report wins per probe id; each keeps its report's name, time and emulator
     commit), and the catalog's game_class by id.
     """
-    out = {"verdicts": [], "names": [], "path": None, "name": None, "classes": {}}
-    if not src.probes or not Path(src.probes).is_dir():
-        return out
+    out = {"verdicts": [], "names": [], "path": None, "name": None, "classes": {}, "catalog": []}
     seen = set()
-    reports = sorted(Path(src.probes).glob("*.report.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    dirs = [Path(d) for d in (src.probes, *src.probes_more) if d and Path(d).is_dir()]
+    reports = sorted((p for d in dirs for p in d.glob("*.report.json")), key=lambda p: p.stat().st_mtime, reverse=True)
     for p in reports:
         doc = read_json(p)
         if not doc or not doc.get("verdicts"):
@@ -1150,6 +1151,7 @@ def load_probes(src: Sources) -> dict:
             sys.modules["_packet_probe_catalog"] = mod
             spec.loader.exec_module(mod)
             out["classes"] = {p.id: p.game_class for p in mod.PROBES}
+            out["catalog"] = [{"id": p.id, "question": p.question, "ledger": list(p.ledger), "answer": ""} for p in mod.PROBES]
     return out
 
 
@@ -1177,8 +1179,21 @@ def probe_matches(item: dict, refs: Refs, probes: dict, names: Names, limit: int
     """Probes tied to the item: named by id (100), by its old ledger tag (60), or by sharing identifiers
     (4 each, a class or hook name) and model names (3 each) with the question and the game class.
     """
+    return _probe_scored(refs, probes, names, probes.get("verdicts", []), limit)
+
+
+def probe_requests(item: dict, refs: Refs, probes: dict, names: Names, limit: int = 3) -> list[str]:
+    """Ids of catalog probes that match the item by the same rule as probe_matches but have no verdict on disk yet:
+    the questions idle game time should answer for this item (grades.json "probes"; the lab's probes job runs them).
+    """
+    done = {v["id"] for v in probes.get("verdicts", [])}
+    pool = [c for c in probes.get("catalog", []) if c["id"] not in done]
+    return [v["id"] for _, v, _, _ in _probe_scored(refs, probes, names, pool, limit)]
+
+
+def _probe_scored(refs: Refs, probes: dict, names: Names, pool: list, limit: int) -> list:
     out = []
-    for v in probes.get("verdicts", []):
+    for v in pool:
         gc = probes.get("classes", {}).get(v["id"], "")
         text = f"{v.get('question', '')} {v.get('answer') or ''} {gc}"
         score, why = 0, []
@@ -2472,11 +2487,12 @@ def precompute_kits(items: list, cx: Context, out: Path) -> None:
             probes = probe_matches(it, refs, cx.probes, cx.names)
             kit = {"item": it, "sha": sha, "groups": [], "more": len(matches[kt.MAX_GROUPS:]), "hook_check": bool(hook_check),
                    "probes": [(v["id"], v.get("status"), gc) for _, v, gc, _ in probes],
+                   "probe_requests": probe_requests(it, refs, cx.probes, cx.names),
                    "pointers": kt.rule_pointers([], "", None, refs.game_calls, [gc for _, _, gc, _ in probes], cx.names, cx.decomp,
                                                 lambda p: rel_decomp(p, cx)),
                    "cmd_sweeps": list(sweep_targets(refs)), "errors": []}
         except Exception as e:  # noqa: BLE001
-            cx.kits[iid] = {"item": it, "sha": sha, "groups": [], "more": 0, "hook_check": bool(hook_check), "probes": [],
+            cx.kits[iid] = {"item": it, "sha": sha, "groups": [], "more": 0, "hook_check": bool(hook_check), "probes": [], "probe_requests": [],
                             "pointers": [], "cmd_sweeps": [], "errors": [f"the item's kit: {kit_error(e)}"]}
             continue
         tdir = out / iid / "kit-test"
@@ -2676,6 +2692,9 @@ def finish_kit(kit: dict, secs: dict) -> None:
         L += kit_sweep_lines(s, set())
     if kit["probes"]:
         L.append("- probe answers (section 6 has them in full): " + "; ".join(f"{pid} {st}" + (f" ({clip(gc, 60)})" if gc else "") for pid, st, gc in kit["probes"]))
+    if kit.get("probe_requests") and not kit["probes"]:
+        L.append("- probe answer pending: no probe has answered yet; the lab's probes job will run " + ", ".join(kit["probe_requests"])
+                 + " in the real game (grades.json lists them); rebuild the packet after it")
     if not G and not any(x.startswith("the item's kit:") for x in kit.get("errors", [])):
         L.append("- no lab group names this item or shares its implicated entities: nothing the lab measured is tied to it yet")
     kit["lines"] = L
@@ -2751,7 +2770,8 @@ def write_packets(items: list, cx: Context, out: Path, forced: dict | None = Non
         sha = git("rev-parse", "HEAD")
         grades = read_json(out / "grades.json", {}) or {}
         grades.update({pk_["item"]["id"]: {"grade": pk_["kit"]["grade"], "missing": pk_["kit"]["missing"], "main_sha": sha,
-                                           **({"errors": pk_["kit"]["errors"]} if pk_["kit"].get("errors") else {})}
+                                           **({"errors": pk_["kit"]["errors"]} if pk_["kit"].get("errors") else {}),
+                                           **({"probes": pk_["kit"]["probe_requests"]} if pk_["kit"].get("probe_requests") else {})}
                        for pk_ in results if "kit" in pk_})
         (out / "grades.json").write_text(json.dumps(grades, indent=1, sort_keys=True), encoding="utf-8")
     # the index lists every packet in the folder: a run of one item keeps the others' rows

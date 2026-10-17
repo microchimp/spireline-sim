@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -452,6 +453,26 @@ class PacketTest(unittest.TestCase):
             self.assertNotIn("unrelated about the Shuffle stream", text)
             self.assertIn("earlier fix attempt a1-HARDENED_SHELL", text)
             self.assertNotIn("a2-OTHER", text)  # one shared model name and no seed: not about this item
+
+    def test_unanswered_catalog_probes_are_requested_for_matching_items(self):
+        refs = types.SimpleNamespace(probe_ids=[], old_ids=["C1-F77"], idents={"ClarityPower", "ModifyHandDraw"}, game_calls=[], hooks=[], entities=[])
+        probes = {"verdicts": [{"id": "P91", "ledger": [], "question": "q"}], "classes": {"P20": "ClarityPower.ModifyHandDraw"},
+                  "catalog": [{"id": "P91", "question": "q", "ledger": [], "answer": ""},
+                              {"id": "P20", "question": "Does Clarity tick before the draw?", "ledger": [], "answer": ""},
+                              {"id": "P21", "question": "Unrelated", "ledger": ["C1-F77"], "answer": ""},
+                              {"id": "P22", "question": "Unrelated too", "ledger": [], "answer": ""}]}
+        got = pk.probe_requests({}, refs, probes, types.SimpleNamespace(pascal={}, keys={}, by_norm={}, **{k: {} for k in ("english", "common", "lone")}))
+        self.assertEqual(got, ["P21", "P20"])  # P91 has a verdict, P22 matches nothing; ledger tag (60) outranks two identifiers (8)
+
+    def test_probe_reports_of_the_labs_own_jobs_are_read(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / "job" / "probes"
+            d.mkdir(parents=True)
+            (d / "lab1.report.json").write_text(json.dumps({"name": "lab1", "verdicts": [{"id": "P20", "question": "q", "status": "AGREE"}]}),
+                                                encoding="utf-8")
+            out = pk.load_probes(pk.Sources.default(Path(t) / "none", probes_more=(d,)))
+            self.assertEqual([v["id"] for v in out["verdicts"]], ["P20"])
+            self.assertIn("P20", [c["id"] for c in out["catalog"]])
 
     def test_an_unprobed_rule_says_so(self):
         with tempfile.TemporaryDirectory() as t:

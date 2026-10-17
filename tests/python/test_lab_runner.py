@@ -490,13 +490,14 @@ class PlansTest(unittest.TestCase):
         argv = groups()
         self.assertEqual(argv[argv.index("--job") + 1], "{job}")
 
-    def test_probe_ids_come_from_kits_that_miss_a_rule(self):
+    def test_probe_ids_come_from_kits_that_miss_a_probe_answer(self):
         bl = self.tmp / "bl"
         (bl / "packets").mkdir(parents=True)
         (bl / "packets" / "grades.json").write_text(json.dumps({
-            "A": {"grade": "B", "missing": ["rule probe"], "probes": ["P01", "P02"]},
+            "A": {"grade": "B", "missing": ["probe answer"], "probes": ["P01", "P02"]},
             "B": {"grade": "A", "missing": [], "probes": ["P09"]},
-            "C": {"grade": "C", "missing": ["rule"], "probes": ["P02", "P03"]}}), encoding="utf-8")
+            "C": {"grade": "C", "missing": ["rule pointer", "probe answer"], "probes": ["P02", "P03"]},
+            "D": {"grade": "C", "missing": ["probe answer"]}}), encoding="utf-8")
         self.assertEqual(pl.probe_ids(bl), ["P01", "P02", "P03"])
 
     def test_the_safety_check_halts_on_a_connection_or_a_touched_profile(self):
