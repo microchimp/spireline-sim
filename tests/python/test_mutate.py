@@ -214,6 +214,16 @@ class SchemataTest(unittest.TestCase):
         self.assertIsNone(spans("    if (x is > 3)"))  # a relational pattern has no left operand
         self.assertIsNone(spans("    var q = Foo<int>(x) < 3;"))  # a generic: give up rather than guess
 
+    def test_memo_anchors_match_current_runengine(self):
+        """A move in RunEngine.cs must fail here, not in the lab's mutation job."""
+        from tools.fidelity import schemata as sc  # noqa: PLC0415
+
+        text = (mu.ROOT / mu.ENGINE / "Core/Run/RunEngine.cs").read_bytes().decode("utf-8").replace("\r\n", "\n")
+        out = sc.apply_memo_patches(text)
+        self.assertIn("private set; } = new();", out)
+        self.assertIn("MutCov.Recall(", out)
+        self.assertIn("MutCov.Remember(", out)
+
 
 class ScratchCopyTest(unittest.TestCase):
     """make_copy builds the tree a mutant is compiled in: EmuDump compiles the invariant sources in and links two data files."""

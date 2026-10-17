@@ -68,14 +68,25 @@ public static class MutCov
 }}
 """
 # RunEngine.Reset remembers its result per seed and hands back a copy (scratch copy only).
+# (name, regex matching once, replacement). Whitespace and the other Reset parameters may change; the memo is only
+# used for the default character and unlocks, which is all the mutation fights run.
 MEMO_PATCHES = [
-    ("    public RunState State { get; private init; } = new();", "    public RunState State { get; private set; } = new();"),
-    ("    public void Reset(string seed, int ascension = Ascension.DefaultLevel)\n    {",
-     "    public void Reset(string seed, int ascension = Ascension.DefaultLevel)\n    { if (global::Sts2Emulator.MutCov.Recall(seed,"
-     " ascension) is { } __memo) { State = __memo; return; }"),
-    ("        State.EventSequenceIndex = 1;\n    }\n",
-     "        State.EventSequenceIndex = 1; global::Sts2Emulator.MutCov.Remember(seed, ascension, State);\n    }\n"),
+    ("State setter", r"(public RunState State \{ get; )private (?:init|set)(; \} = new\(\);)", r"\1private set\2"),
+    ("Reset entry", r"(public void Reset\((?:[^()]|\([^()]*\))*\)\s*\{)",
+     r"\1 if (character == PlayerCharacter.Ironclad && unlocks is null && global::Sts2Emulator.MutCov.Recall(seed,"
+     r" ascension) is { } __memo) { State = __memo; return; }"),
+    ("Reset exit", r"(State\.EventSequenceIndex = 1;)(\s*\n\s*\}\n)",
+     r"\1 if (character == PlayerCharacter.Ironclad && unlocks is null) global::Sts2Emulator.MutCov.Remember(seed, ascension, State);\2"),
 ]
+
+
+def apply_memo_patches(text: str) -> str:
+    """Apply MEMO_PATCHES to RunEngine.cs text (LF); each anchor must match exactly once."""
+    for name, pat, rep in MEMO_PATCHES:
+        n = len(re.findall(pat, text))
+        assert n == 1, f"RunEngine.cs moved: memo anchor '{name}' matched {n} times (want 1); update MEMO_PATCHES in schemata.py"
+        text = re.sub(pat, rep, text)
+    return text
 KEYWORDS = ("return", "when", "case", "throw", "in", "else", "yield", "await")
 PATTERN_WORDS = re.compile(r"\b(is|and|or|not)\b")
 # What ends an operand of a relational (or, for == and !=, an equality) operator: anything of lower precedence.
@@ -254,9 +265,7 @@ def build_schemata(copy: Path, muts: list, log=print) -> tuple:
     text = eng.read_bytes().decode("utf-8")
     crlf = "\r\n" in text
     text = text.replace("\r\n", "\n")
-    for a, b in MEMO_PATCHES:
-        assert text.count(a) == 1, f"RunEngine.cs moved: {a[:60]}"
-        text = text.replace(a, b)
+    text = apply_memo_patches(text)
     (copy / mu.ENGINE / "Core/Run/RunEngine.cs").write_bytes((text.replace("\n", "\r\n") if crlf else text).encode("utf-8"))
     for attempt in range(25):
         nid, units, lines_of = 0, {}, {}
