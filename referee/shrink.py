@@ -4,7 +4,8 @@
 A fight whose first divergence is at step d, field f (tools/fidelity/reanchor_compare.group) is played
 again in the game in script mode: the recorded actions up to step d, matched by card id
 (referee/driver/Setup.cs "script"), with a subset of its setup items (the "fight" item always stays,
-deck_add entries count as items too). Each result is replayed in the emulator; the subset still fails
+deck_add entries count as items too, and so does each card, relic and potion of a player_load item, which
+is always loaded with the kept ones). Each result is replayed in the emulator; the subset still fails
 when the first divergence is again at step d in field f. A scripted action that is not legal any more,
 a fight that ends sooner or an error leaves the subset unresolved, which counts as not failing.
 
@@ -83,6 +84,20 @@ def _reduce(background: list, c: list) -> Generator[list[list], list, list]:
     return m1 + m2
 
 
+LOAD_PARTS = ("deck", "relics", "potions")
+
+
+def load_item(load: dict, key: str, j: int) -> dict:
+    """One card, relic or potion of a player_load item as the plain setup item it stands for (lab_groups' ingredient)."""
+    x = (load.get(key) or [])[j]
+    bare = lambda v: str(v or "?").split(".", 1)[-1]  # noqa: E731
+    if key == "deck":
+        return {"cmd": "card", "id": bare(x.get("id")), "upgraded": bool(x.get("current_upgrade_level")), "via": "player_load"}
+    if key == "relics":
+        return {"cmd": "relic", "id": bare(x.get("id")), "via": "player_load"}
+    return {"cmd": "potion", "id": bare(x), "via": "player_load"}
+
+
 class Case:
     """One diverging fight being shrunk."""
 
@@ -90,7 +105,12 @@ class Case:
         self.spec, self.step, self.field, self.cap = spec, step, field, cap
         self.seed = spec["seed"]
         self.script = [s["action"] for s in game["steps"][1:step + 1]]
-        self.items: Items = [("setup", i) for i, it in enumerate(spec.get("setup", [])) if it.get("cmd") != "fight"]
+        self.items: Items = []
+        for i, it in enumerate(spec.get("setup", [])):
+            if it.get("cmd") == "player_load":  # a run's holdings (run_repro.py): each card, relic and potion is an item
+                self.items += [("load", i, key, j) for key in LOAD_PARTS for j in range(len(it.get(key) or []))]
+            elif it.get("cmd") != "fight":
+                self.items.append(("setup", i))
         self.items += [("deck_add", j) for j in range(len(spec.get("deck_add", [])))]
         self.spent = 0
         self.status = "reproducing"
@@ -105,7 +125,13 @@ class Case:
     def subset_spec(self, keep: Items) -> dict:
         k = set(keep)
         s = {key: v for key, v in self.spec.items() if key not in ("setup", "deck_add", "trace_setup")}
-        s["setup"] = [it for i, it in enumerate(self.spec.get("setup", [])) if it.get("cmd") == "fight" or ("setup", i) in k]
+        s["setup"] = []
+        for i, it in enumerate(self.spec.get("setup", [])):
+            if it.get("cmd") == "player_load":  # always loaded (HP, gold, slots), with the kept cards, relics and potions
+                s["setup"].append({**it, **{key: [x for j, x in enumerate(it.get(key) or []) if ("load", i, key, j) in k]
+                                            for key in LOAD_PARTS}})
+            elif it.get("cmd") == "fight" or ("setup", i) in k:
+                s["setup"].append(it)
         if self.spec.get("deck_add"):
             s["deck_add"] = [x for j, x in enumerate(self.spec["deck_add"]) if ("deck_add", j) in k]
         s["script"] = self.script
@@ -137,7 +163,8 @@ class Case:
             self.status = "minimal"
 
     def result(self) -> dict:
-        items = [self.spec["setup"][i] if kind == "setup" else {"deck_add": self.spec["deck_add"][i]} for kind, i in self.best]
+        items = [load_item(self.spec["setup"][h[1]], h[2], h[3]) if h[0] == "load"
+                 else self.spec["setup"][h[1]] if h[0] == "setup" else {"deck_add": self.spec["deck_add"][h[1]]} for h in self.best]
         return {"seed": self.seed, "status": self.status, "fights": self.spent, "step": self.step, "field": self.field,
                 "items": items, "of": len(self.items), "spec": {k: v for k, v in self.subset_spec(self.best).items() if k != "_expect"}}
 

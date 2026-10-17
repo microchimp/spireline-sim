@@ -461,6 +461,7 @@ def plan_runs(c: Ctx) -> list[Step]:
     if why:
         raise Unavailable(why)
     steps: list[Step] = [Step("game", [game_cmd()], mode="serial")]
+    repro = all(source_has(c.tree / "referee/scenarios.py", '"--runs-from"')) and (c.tree / "referee/run_repro.py").exists()
     for i in range(p["batches"]):
         name = f"lab{c.job_name.split('-')[0]}-w{i:02d}"
         cmd = Cmd(f"runs-{i:02d}", ["{py}", "referee/runs.py", "--name", name, "--runs", str(p["run_batch"]), "--start", str(p["start"] + i),
@@ -469,7 +470,19 @@ def plan_runs(c: Ctx) -> list[Step]:
                   needs=["{tree}/referee/runs.py", "{tree}/" + EMUDUMP, "{tree}/" + DRIVER_DLL], mkdirs=["{job}/runs"],
                   cleanup=[f"{{job}}/runs/{name}.*", f"{{job}}/runs/scratch/{name}-*"], ok_rcs=(0, 1, 3, 4),  # 3: a session crashed, 4: halted below
                   post=_halt_on_unsafe_runs(name), core=True, counts={"runs": p["run_batch"]}, outputs={"runs": f"runs/{name}.runs.json"})
-        steps.append(Step(f"runs-{i:02d}", [cmd], mode="serial"))
+        cmds = [cmd]
+        if repro:  # each run whose first divergence is in a fight, played again as a setup fight from the save before it
+            rn = name + "-repro"
+            cmds.append(Cmd(f"repro-{i:02d}", ["{py}", "referee/scenarios.py", "--name", rn, "--mode", "runs",
+                                               "--runs-from", f"{{job}}/runs/{name}.runs.json", "--jobs", "{job}/runs",
+                                               "--servers", str(p.get("repro_servers", 4)), "--game", "{game}",
+                                               "--shrink", "1000", "--shrink-cap", str(p.get("repro_shrink_cap", 60)),
+                                               "--shrink-budget", str(p.get("repro_shrink_budget", 300)),
+                                               "--shrink-minutes", str(p.get("repro_shrink_minutes", 20)),
+                                               "--trace", "1000", "--trace-minutes", str(p.get("repro_trace_minutes", 5))],
+                            needs=["{tree}/referee/scenarios.py", "{tree}/referee/run_repro.py", f"{{job}}/runs/{name}.runs.json"],
+                            cleanup=[f"{{job}}/runs/{rn}.*"], after_cleanup=[f"{{game_parent}}/serve/setup-{rn}*"]))
+        steps.append(Step(f"runs-{i:02d}", cmds, mode="serial"))
     return steps + report_steps(c)
 
 

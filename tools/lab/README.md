@@ -84,6 +84,13 @@ backlog for aimed-bugs, ...) is passed over with the reason, and one that fails 
   removed after it. A job made before strategies existed (no `strategy` in its params) resumes as it was planned.
 - A `runs` job: `runs.py` batches; each session's report is checked for the network and the real profile (a failure
   halts the lab), a crashed session only gets a note. Its scratch profiles live in the job folder (`runs/scratch`).
+  After each batch, `repro-NN` (when the tree has `referee/run_repro.py`): `scenarios.py --mode runs` plays every run
+  whose first divergence is in a fight again as a setup fight from the run's save just before it (seed, Neow pick, act,
+  `player_load` of deck, relics, potions, HP, gold), then judges, shrinks (each loaded card, relic and potion is an
+  item) and traces it as a setup batch `runs/<name>-repro.*`, so the run's mismatch gets a minimal repro in the fight
+  groups; `<name>-repro.repro.json` says per run whether the fight diverged as the run did and what a setup cannot
+  restore (RNG stream positions, floor and map coordinate, potion slot positions, run history), and the run's symptom
+  names it (`repro`).
 - `probes`: `referee/probe.py run --only <ids>` for ids that `backlog/packets/grades.json` lists under `probes` for items
   missing a rule. Otherwise skipped (probes.py takes a list of ids, not a queue).
 - `mutation`: `mutate prepare/schemata/report` on the biggest raw batch of the newest fights job; `mutation.json` is the reach data.

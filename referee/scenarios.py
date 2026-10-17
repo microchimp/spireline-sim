@@ -9,6 +9,8 @@
         [--features LAB/cache/model_features.json] [...as above]
     python referee/scenarios.py --name <name> --mode analyze --jobs <dir holding batch.py's <name>.*> --game <copy>
         --shrink K --trace N
+    python referee/scenarios.py --name <name> --mode runs --runs-from <runs.py batch's <name>.runs.json> --jobs <dir>
+        --game <copy> --shrink K [--trace N]
 
 Run from the fork's root. Specs carry a "setup" list (referee/driver/Setup.cs) built from the game's
 own content tables (the export, see RUNBOOK "Table check"), limited to what EmuDump can mirror:
@@ -38,6 +40,11 @@ own content tables (the export, see RUNBOOK "Table check"), limited to what EmuD
   screen-opening card or two in the hand, and the driver's edge answers (spec "choice_edges": none, one, the most
   a screen takes, the last eligible card, the most unusual one; --edges, default one drawn per spec), so a
   difference in how many a screen takes, or which cards it offers, shows as a divergence.
+- runs (the fix lab): each whole run of a runs.py batch whose first divergence is in a fight, as a setup fight
+  that starts where that fight did (referee/run_repro.py: the run's seed, Neow pick and act, its holdings before
+  the fight through player_load, the encounter); judged, shrunk (each loaded card, relic and potion is an item)
+  and traced as usual. <name>.repro.json names each spec's run, whether the fight reproduced the run's
+  divergence (same, field, other, identical, error), the runs left out and the state a setup cannot put back.
 - analyze: no new fights. The finished batch.py batch <name> in --jobs (<name>.json, .out.json, .emu.json,
   .reanchor.json) is judged, shrunk, traced and given verdicts and packs like any other batch, so
   tools/fidelity/lab_groups.py reads it.
@@ -761,7 +768,7 @@ def load_batch(name: str) -> tuple[list, list, list, dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--name", required=True)
-    ap.add_argument("--mode", choices=("dense", "coverage", "targets", "choices", "analyze"), required=True)
+    ap.add_argument("--mode", choices=("dense", "coverage", "targets", "choices", "analyze", "runs"), required=True)
     ap.add_argument("--fights", type=int, default=60)
     ap.add_argument("--start", type=int, default=0, help="spec stream offset")
     ap.add_argument("--game", default=GAME)
@@ -780,12 +787,15 @@ def main() -> int:
     ap.add_argument("--decompiled", type=Path, default=Path(r"D:\spireline\referee\decompiled"),
                     help="choices mode: the decompile model_features is read from when --features is missing or stale")
     ap.add_argument("--jobs", type=Path, help="write every output here instead of jobs-setup")
+    ap.add_argument("--runs-from", type=Path, help="runs mode: a runs.py batch's <name>.runs.json (its <name>.out.json beside it)")
     ap.add_argument("--trace", type=int, default=None, help="trace up to N diverging fights (default: 40 in targets mode, else 0)")
     ap.add_argument("--trace-servers", type=int, default=None, help="game servers for the traced re-runs (at most 8; default: --servers, at most 3)")
     ap.add_argument("--trace-minutes", type=float, default=None, help="start no new trace call after this long")
     a = ap.parse_args()
     if a.mode == "targets" and not a.targets:
         ap.error("--mode targets needs --targets")
+    if a.mode == "runs" and not a.runs_from:
+        ap.error("--mode runs needs --runs-from")
     global JOBS  # noqa: PLW0603  (--jobs moves every output of this run)
     if a.jobs:
         JOBS = a.jobs.resolve()
@@ -797,7 +807,7 @@ def main() -> int:
     cov_path = JOBS / "coverage-setup.json"
     cov = json.loads(cov_path.read_text(encoding="utf-8")) if cov_path.exists() else {"items": {}}
     rng = random.Random(f"{a.mode}:{a.start}")
-    aims, act1_path = [], None
+    aims, act1_path, repro = [], None, None
     analysing = a.mode == "analyze"
     if analysing:
         specs, games, emus, rea = load_batch(a.name)
@@ -828,6 +838,17 @@ def main() -> int:
             print("no relic, card or potion that opens a card screen is reachable")
             return 1
         specs = [choice_spec(content, pools, cov, rng, a.start * 1000 + i, a.edges) for i in range(a.fights)]
+    elif a.mode == "runs":
+        import run_repro  # noqa: PLC0415  (referee/run_repro.py)
+        src = a.runs_from.resolve()
+        prefix = src.with_name(src.name.removesuffix(".runs.json"))
+        specs, skipped = run_repro.specs_from(*run_repro.load(prefix), limit=a.fights)
+        repro = {"from": prefix.name, "gaps": list(run_repro.STATE_GAPS), "skipped": skipped,
+                 "runs": [{"seed": x["seed"], **x["run_repro"]} for x in specs]}
+        (JOBS / f"{a.name}.repro.json").write_text(json.dumps(repro, indent=1), encoding="utf-8")
+        if not specs:
+            print(f"no run of {prefix.name} diverges first in a fight ({len(skipped)} left out)")
+            return 0
     else:
         make = dense_spec if a.mode == "dense" else coverage_spec
         specs = [make(content, cov, rng, a.start * 1000 + i) for i in range(a.fights)]
@@ -845,10 +866,16 @@ def main() -> int:
         rea = emudump("reanchor", games, JOBS / f"{a.name}.reanchor.json")
     minutes = (time.time() - t0) / 60
     verdicts = judge(specs, games, emus, rea, nm, content)
-    if not analysing:  # a batch.py batch keeps its own coverage
+    if not analysing and repro is None:  # a batch.py batch keeps its own coverage; run repros are no coverage draw
         update_coverage(cov, specs, verdicts)
         cov_path.write_text(json.dumps(cov, indent=1, sort_keys=True), encoding="utf-8")
     lines = summarise(verdicts, minutes, rep)
+    if repro is not None:
+        for r, spec, v in zip(repro["runs"], specs, verdicts):
+            r["repro"] = run_repro.matched(spec, v)
+        (JOBS / f"{a.name}.repro.json").write_text(json.dumps(repro, indent=1), encoding="utf-8")
+        lines.append("runs: " + ", ".join(f"{k} {n}" for k, n in sorted(collections.Counter(r["repro"] for r in repro["runs"]).items()))
+                     + f" of {len(specs)} run fights (the run's step and field: same, field only, other); {len(repro['skipped'])} runs left out")
     if a.mode == "targets":
         act1_seed_cache(act1_path, games)
         lines.append(f"targets: {len(specs)} fights in {minutes:.1f} min = {len(specs) / max(minutes, 1e-9):.1f} fights/min "

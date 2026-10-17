@@ -143,6 +143,17 @@ def item_key(it: dict) -> str | None:
     return f"{cmd}:{ident}" if cmd else None
 
 
+def item_keys(it: dict) -> list[str]:
+    """A setup item's ingredient keys: player_load (a run's holdings, referee/run_repro.py) is one key per card,
+    relic and potion it loads; any other item is item_key's one key (none for the fight)."""
+    if it.get("cmd") == "player_load":
+        bare = lambda x: str(x or "?").split(".", 1)[-1]  # noqa: E731
+        return ([f"card:{bare(c.get('id'))}" + ("+" if c.get("current_upgrade_level") else "") for c in it.get("deck") or []]
+                + [f"relic:{bare(r.get('id'))}" for r in it.get("relics") or []] + [f"potion:{bare(x)}" for x in it.get("potions") or []])
+    k = item_key(it)
+    return [k] if k else []
+
+
 def entity_of(key: str) -> str:
     """kind:ID without the upgrade mark or the power's side: the model the ingredient is."""
     k = key.split("@")[0]
@@ -338,7 +349,7 @@ def selection_symptom(prefix: Path, lab: Path, when: str, src: str, v: dict, spe
     item = items[at] if 0 <= at < len(items) else {}
     kind, ident = item.get("cmd"), item.get("id")
     enc = next((it.get("id") for it in items if it.get("cmd") == "fight"), None)
-    full = [k for k in (item_key(it) for it in items) if k]
+    full = [k for it in items for k in item_keys(it)]
     own = not shared and (src != "aimed" or aim.get("seed_from") == "fresh")
     what = [f"{kind}:{ident}"] if kind in ("relic", "card", "potion") and ident else ([f"encounter:{enc}"] if enc else [])
     held = sorted({entity_of(k) for k in full if not k.startswith(("deck:", "act:"))} | ({f"encounter:{enc}"} if enc else set()))
@@ -396,8 +407,8 @@ def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None
         if mini is None and case.get("status") in ("minimal", "capped"):
             mini = {"setup": case.get("items", [])}
         enc = next((it.get("id") for it in spec.get("setup", []) if it.get("cmd") == "fight"), None)
-        full = [k for k in (item_key(it) for it in spec.get("setup", [])) if k]
-        kept = [k for k in (item_key(it) for it in (mini or {}).get("setup", [])) if k] if mini else None
+        full = [k for it in spec.get("setup", []) for k in item_keys(it)]
+        kept = [k for it in (mini or {}).get("setup", []) for k in item_keys(it)] if mini else None
         if kept is not None and enc and not [k for k in kept if not k.startswith(("deck:", "act:"))]:
             kept.append(f"encounter:{enc}")  # the fight alone diverges: the encounter is the ingredient
         traced_alone = seed not in dup or (seed not in dup_div and (v.get("step", 0) > 0 or last.get(seed) == i))
@@ -547,8 +558,12 @@ def mutation_symptoms(path: Path, lab: Path, when: str) -> list[dict]:
 
 def run_symptoms(path: Path, lab: Path, when: str) -> list[dict]:
     """The whole runs of one runs.py batch that diverge: <name>.runs.json (run_compare2 --json), each run at its first
-    divergence. Grouped by where it is (component and field) like the codex walk's stops, which are whole runs too."""
+    divergence. Grouped by where it is (component and field) like the codex walk's stops, which are whole runs too.
+    A run whose fight was played again as a setup fight (scenarios.py --mode runs, <name>-repro beside it) names that
+    fight's symptom ("repro": its ref and whether it diverged as the run did); the setup batch is its own symptom."""
     out = []
+    rbase = path.with_name(path.name.removesuffix(".runs.json") + "-repro")
+    repros = {x.get("seed"): x for x in (read_json(rbase.with_name(rbase.name + ".repro.json"), {}) or {}).get("runs", []) or []}
     for r in (read_json(path, {}) or {}).get("runs", []) or []:
         first = r.get("first")
         if not r.get("recorded") or not first:
@@ -562,7 +577,9 @@ def run_symptoms(path: Path, lab: Path, when: str) -> list[dict]:
                     "event_text": clip(f"floor {first.get('floor')}, choice {first.get('choice')}: {diffs[0][0]}", 240), "hooks": [],
                     "reproducible": None, "stale": False, "flags": [], "mirror_gap": False, "encounter": None, "shrink": None,
                     "minimal_setup": None, "ingredients": None, "dropped": [], "implicated": [], "walk_tokens": sorted(set(ents)),
-                    "aim": None})
+                    "aim": None,
+                    "repro": ({"ref": f"{rel(rbase, lab)}#{r.get('seed')}", "match": repros[r.get("seed")].get("repro")}
+                              if r.get("seed") in repros else None)})
     return out
 
 

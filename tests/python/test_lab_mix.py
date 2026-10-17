@@ -189,8 +189,10 @@ def fake_tree(root: Path, **have) -> Path:
     """A tree whose tools carry (or lack) the markers the lab reads: scenarios.py options, the driver's key, batch.py, runs.py."""
     tree = root / "tree"
     scen = ['"targets"', '"--jobs"'] + (['"--aim"'] if have.get("aim", True) else []) + (['"choices"'] if have.get("choices", True) else []) \
-        + (['"analyze"'] if have.get("analyze", True) else []) + (['"--shrink-cap"'] if have.get("budgets", True) else [])
+        + (['"analyze"'] if have.get("analyze", True) else []) + (['"--shrink-cap"'] if have.get("budgets", True) else [])         + (['"--runs-from"'] if have.get("repro", False) else [])
     write(tree / "referee" / "scenarios.py", " ".join(scen))
+    if have.get("repro", False):
+        write(tree / "referee" / "run_repro.py", "")
     write(tree / "referee" / "driver" / "Combat.cs", "choice_edges" if have.get("edges", True) else "")
     write(tree / "tools" / "fidelity" / "lab_targets.py", "")
     if have.get("batch", True):
@@ -277,6 +279,17 @@ class StrategyPlanTest(unittest.TestCase):
         self.assertEqual((0, 1, 3, 4), cmd.ok_rcs)
         self.assertEqual("runs/lab20261015T0100-w00.runs.json", cmd.outputs["runs"])
         self.assertEqual("report", "report" if [s.name for s in steps][-2:] == ["groups", "kits"] else "")
+
+    def test_each_runs_batch_is_followed_by_its_run_repros_when_the_tree_has_them(self):
+        steps = pl.plan_runs(self.ctx("whole-runs", batches=2))
+        self.assertEqual([1, 1], [len(s.cmds) for s in steps if s.name.startswith("runs-")])  # an older tree: runs only
+        steps = pl.plan_runs(self.ctx("whole-runs", tree=fake_tree(self.tmp / "r", repro=True), batches=2))
+        runs, repro = next(s for s in steps if s.name == "runs-01").cmds
+        self.assertEqual("repro-01", repro.name)
+        self.assertEqual(("lab20261015T0100-w01-repro", "runs", "{job}/runs/lab20261015T0100-w01.runs.json", "{job}/runs"),
+                         tuple(self.opt(repro.argv, o) for o in ("--name", "--mode", "--runs-from", "--jobs")))
+        self.assertIn("{job}/runs/lab20261015T0100-w01-repro.*", repro.cleanup)
+        self.assertNotIn("{job}/runs/lab20261015T0100-w01-repro.*", runs.cleanup)
 
     def test_reasons_a_strategy_cannot_run(self):
         no = lambda strategy, tree=None, **kw: pl.strategy_unavailable(strategy, self.ctx(strategy, tree=tree, **kw))  # noqa: E731
