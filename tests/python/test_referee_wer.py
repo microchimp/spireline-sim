@@ -294,3 +294,32 @@ class CrashTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FullReplayRaceTest(unittest.TestCase):
+    """serve.Pool: a nodeless line routed to a full-host replay twice (its server died after writing it, so the
+    spec was re-queued and played again) left a duplicate replay id; once the first merged, _spec_for(fid)
+    raised KeyError in the dispatcher's feed."""
+
+    def test_a_duplicate_route_is_one_replay_and_feed_skips_a_merged_one(self):
+        with tempfile.TemporaryDirectory() as t:
+            p = serve.Pool(Path(t) / "game", Path(t) / "run", servers=1, spares=0, launch=None, echo=None,
+                           connections=lambda pids: {}, profile_state=lambda: [],
+                           check_build=lambda game: "fake-digest", kill=lambda s: None, wer_reports=lambda pids: {})
+            p.specs["000000"] = {"kind": "combat", "seed": "SEED000001"}
+            line = {"_id": "000000", "seed": "SEED000001", "_full": {"why": "fallback", "reason": "x"}}
+            fid = "000000" + serve.FULL_SUFFIX
+            p._route_full("000000", line)
+            p._route_full("000000", line)
+            self.assertEqual(list(p.fqueue), [fid])
+            p._merge_full(fid, {"_id": fid, "seed": "SEED000001", "steps": []})
+            p.fqueue.append(fid)  # a stale entry, as a re-queue after the merge would leave
+            p.queue.append("000000")
+            p._assign_lanes = lambda: None
+            s = serve.Server(0, False, Path(t) / "inbox0")
+            s.inbox.mkdir(parents=True)
+            s.proc = mock.Mock(poll=lambda: None)
+            p.servers.append(s)
+            p._feed()
+            self.assertEqual(list(s.inbox.glob("*.json")), [])
+            self.assertIn("000000", p.results)

@@ -560,6 +560,8 @@ class Pool:
                 if q is None:
                     return
                 rid = q.popleft()
+                if rid in self.results or (rid.endswith(FULL_SUFFIX) and rid not in self.fjobs):
+                    continue  # answered while it waited (a duplicate entry): _spec_for has no spec for a merged replay
                 tmp = s.inbox / f"{rid}.tmp"
                 tmp.write_text(json.dumps(self._spec_for(rid)), encoding="utf-8")
                 os.replace(tmp, s.inbox / f"{rid}.json")
@@ -586,6 +588,8 @@ class Pool:
         """A nodeless server left a full-host replay to the pool ("_full"): queue it, ahead of the lane's other work."""
         why = (line.get("_full") or {}).get("why", "fallback")
         fid = rid + FULL_SUFFIX
+        if fid in self.fjobs or rid in self.results:
+            return  # the same fight routed twice (a server died after writing its line): one replay is enough
         self.fjobs[fid] = {"rid": rid, "why": why, "reason": (line.get("_full") or {}).get("reason"), "line": line}
         self.full_replays[why] += 1
         self.fqueue.append(fid)
@@ -705,8 +709,10 @@ class Pool:
         for taken in sorted(s.inbox.glob(f"*.json.taken.{s.pid}")):
             rid = taken.name.split(".json.taken.")[0]
             replay = rid.endswith(FULL_SUFFIX)
-            if (rid in self.results) or (replay and rid not in self.fjobs):
-                taken.unlink()  # appended (or merged) before the process died; only the delete was lost
+            if (rid in self.results) or (replay and rid not in self.fjobs) or (not replay and rid + FULL_SUFFIX in self.fjobs):
+                # appended (or merged) before the process died; only the delete was lost. Or the nodeless line
+                # was routed to a full-host replay, which answers it: playing the spec again would route it twice.
+                taken.unlink()
                 continue
             self.attempts[rid] += 1
             if self.attempts[rid] == 1:
