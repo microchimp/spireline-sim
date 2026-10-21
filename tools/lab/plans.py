@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from tools.lab import hypotheses as hyp
 from tools.lab.winsys import NO_WINDOW
 
 TOKEN = re.compile(r"\{(\w+)\}")
@@ -64,7 +65,8 @@ class Ctx:
                 "sha7": self.sha[:7], "job": f(self.job_dir), "jobname": self.job_name,
                 "backlog": f(self.backlog) if self.backlog else "", "backlog_dir": f(self.backlog_dir),
                 "codex": f(self.codex), "decompiled": f(self.decompiled), "records": f(self.records),
-                "nuget": f(self.nuget), "vs_installer": VS_INSTALLER}
+                "nuget": f(self.nuget), "vs_installer": VS_INSTALLER,
+                "hypotheses": f(self.backlog_dir.parent / "hypotheses")}
 
     def expand(self, s: str) -> str:
         t = self.tokens()
@@ -317,6 +319,22 @@ def _cov_out(c: Ctx) -> str | None:
     return None
 
 
+def _hyp_in(c: Ctx) -> None:
+    setups, _ = hyp.load_setups(c.path("{hypotheses}"))
+    todo = hyp.pending(setups, hyp.read_results(c.lab))
+    dst = c.job_dir / "hyp-in" / "pending"
+    dst.mkdir(parents=True, exist_ok=True)
+    (dst / "pending.json").write_text(json.dumps([hyp.doc_of(s) for s in todo + [s for s in setups if not s.get("testable")]], indent=1), encoding="utf-8")
+
+
+def _hyp_out(c: Ctx, safety: str | None) -> str | None:
+    """Judge the verdicts into LAB/hypotheses.json unless the safety check halts the lab; its message is passed on."""
+    from tools.lab.mix import now_utc
+    if not (safety or "").startswith("HALT"):
+        hyp.collect(c.job_dir, c.job_dir / "hyp-in", c.lab, now_utc())
+    return safety
+
+
 # strategy -> (scenarios.py mode, extra arguments, tool needs)
 SCENARIO_STRATEGIES = {
     "aimed-bugs": ("targets", ["--aim", "bugs"]),
@@ -324,6 +342,7 @@ SCENARIO_STRATEGIES = {
     "choice-edges": ("choices", ["--features", "{lab}/cache/model_features.json", "--decompiled", "{decompiled}"]),
     "dense": ("dense", []),
     "under-tested": ("coverage", []),
+    "hypotheses": ("hypotheses", ["--hypotheses", "{job}/hyp-in", "--shrink", "0", "--trace", "0"]),
 }
 
 
@@ -362,6 +381,12 @@ def strategy_unavailable(strategy: str, c: Ctx) -> str | None:
     elif strategy == "whole-runs":
         if not can["runs"]:
             return "runs.py on this tree has no --jobs"
+    elif strategy == "hypotheses":
+        if not source_has(c.tree / "referee/scenarios.py", '"hypotheses"')[0]:
+            return "scenarios.py on this tree has no hypotheses mode"
+        setups, _ = hyp.load_setups(c.path("{hypotheses}"))
+        if not hyp.pending(setups, hyp.read_results(c.lab)):
+            return "no hypothesis setup is waiting (none in the folder, or all decided or out of attempts)"
     return None
 
 
@@ -388,6 +413,8 @@ def _scenarios_cmd(c: Ctx, name: str, i: int, mode: str, extra: list[str]) -> Cm
               counts={"fights": p["batch"]}, outputs={"fights": f"fights/{name}.verdicts.json"})
     if mode in ("coverage", "dense", "choices"):  # these weigh by what the lab's setup fights have covered
         cmd.pre, cmd.post = _cov_in, (lambda c, h=_halt_on_unsafe(name): _cov_out(c) or h(c))
+    if mode == "hypotheses":  # only the setups still waiting are played; the verdicts decide them
+        cmd.pre, cmd.post = _hyp_in, (lambda c, h=_halt_on_unsafe(name): _hyp_out(c, h(c)))
     return cmd
 
 

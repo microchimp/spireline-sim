@@ -38,7 +38,7 @@ class MixFileTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_the_default_mix_is_the_owners(self):
-        self.assertEqual({"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-runs": 10, "dense": 10, "under-tested": 10, "random": 5},
+        self.assertEqual({"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-runs": 10, "dense": 10, "under-tested": 10, "random": 5, "hypotheses": 5},
                          mix.DEFAULT_MIX)
         self.assertEqual(set(mix.STRATEGIES), set(mix.DEFAULT_MIX))
 
@@ -78,7 +78,7 @@ class PickTest(unittest.TestCase):
 
     def test_cpu_shares_follow_the_weights(self):
         weights = dict(mix.DEFAULT_MIX)
-        cost = {"aimed-bugs": 300, "aimed-gaps": 300, "choice-edges": 200, "whole-runs": 1800, "dense": 250, "under-tested": 250, "random": 120}
+        cost = {"aimed-bugs": 300, "aimed-gaps": 300, "choice-edges": 200, "whole-runs": 1800, "dense": 250, "under-tested": 250, "random": 120, "hypotheses": 100}
         spent: dict[str, float] = {}
         jobs = {s: 0 for s in weights}
         for _ in range(400):
@@ -188,7 +188,7 @@ class YieldTest(unittest.TestCase):
 def fake_tree(root: Path, **have) -> Path:
     """A tree whose tools carry (or lack) the markers the lab reads: scenarios.py options, the driver's key, batch.py, runs.py."""
     tree = root / "tree"
-    scen = ['"targets"', '"--jobs"'] + (['"--aim"'] if have.get("aim", True) else []) + (['"choices"'] if have.get("choices", True) else []) \
+    scen = ['"targets"', '"--jobs"', '"hypotheses"'] + (['"--aim"'] if have.get("aim", True) else []) + (['"choices"'] if have.get("choices", True) else []) \
         + (['"analyze"'] if have.get("analyze", True) else []) + (['"--shrink-cap"'] if have.get("budgets", True) else [])         + (['"--runs-from"'] if have.get("repro", False) else [])
     write(tree / "referee" / "scenarios.py", " ".join(scen))
     if have.get("repro", False):
@@ -308,6 +308,27 @@ class StrategyPlanTest(unittest.TestCase):
             pl.plan_fights(self.ctx("choice-edges", tree=fake_tree(self.tmp / "t8", edges=False)))
         with self.assertRaises(pl.Unavailable):
             pl.plan_runs(self.ctx("whole-runs", tree=fake_tree(self.tmp / "t9", runs=False)))
+
+    def test_hypotheses_plays_only_waiting_setups_without_shrinking_and_records_verdicts(self):
+        from tools.lab import hypotheses as hyp
+        c = self.ctx("hypotheses")
+        self.assertIn("no hypothesis setup is waiting", pl.strategy_unavailable("hypotheses", c))
+        good = {"id": "t-1", "claim": "c", "spec": {"setup": [{"cmd": "fight", "id": "NIBBITS_WEAK"}]}, "compare": {"fields": [".hand"]}}
+        write(self.tmp / "hypotheses" / "src" / "a.json", [good, {**good, "id": "t-2"}])
+        self.assertIsNone(pl.strategy_unavailable("hypotheses", c))
+        tree = fake_tree(self.tmp / "h1")
+        (tree / "referee" / "scenarios.py").write_text('"targets" "--jobs"')
+        self.assertIn("no hypotheses mode", pl.strategy_unavailable("hypotheses", self.ctx("hypotheses", tree=tree)))
+        hyp.write_results(c.lab, {"t-1": {"status": "refuted", "claim": "c", "source": "src", "utc": "U", "reason": "r", "attempts": 1}})
+        cmd = [s for s in pl.plan_fights(c) if s.name == "batch-00"][0].cmds[0]
+        self.assertEqual(("hypotheses", "{job}/hyp-in", "0", "0"), tuple(cmd.argv[len(cmd.argv) - 1 - cmd.argv[::-1].index(o) + 1] for o in ("--mode", "--hypotheses", "--shrink", "--trace")))
+        cmd.pre(c)
+        sent = json.loads((c.job_dir / "hyp-in" / "pending" / "pending.json").read_text())
+        self.assertEqual(["t-2"], [d["id"] for d in sent])
+        v = [{"seed": "S", "tag": "hyp:t-2", "identical": False, "field": ".hand", "step": 1}]
+        write(c.job_dir / "fights" / "n.verdicts.json", v)
+        cmd.post(c)
+        self.assertEqual({"t-1": "refuted", "t-2": "confirmed"}, {k: r["status"] for k, r in hyp.read_results(c.lab).items()})
 
     def test_a_job_from_before_strategies_plans_as_it_did(self):
         steps = pl.plan_fights(self.ctx(None))
@@ -505,7 +526,7 @@ class RunnerMixTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             r.main_sha = lambda: "abc"
             r.dry_run()
-        self.assertIn("mix (wanted share / CPU share had): aimed-bugs 30%/0%", out.getvalue())
+        self.assertIn("mix (wanted share / CPU share had): aimed-bugs 29%/0%", out.getvalue())
         self.assertFalse((r.lab.root / "mix.json").exists())
         self.assertFalse((r.lab.root / "yield.tsv").exists())
 
