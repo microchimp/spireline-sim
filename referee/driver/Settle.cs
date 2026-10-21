@@ -53,6 +53,23 @@ public static partial class Driver
     }
 
     /// <summary>
+    /// The combat's own turn flow is between the player's phases: the player's turn start is still being
+    /// set up (CombatManager.StartTurn: draw, AfterPlayerTurnStart, auto pre-play; the flag is cleared only
+    /// after the synchronizer reaches PlayPhase), or the player's end of turn has begun (ready to end,
+    /// EndingPlayerTurnPhaseOne/Two). The six-frame Idle shares this with the flag settle: without it a
+    /// record could land while a turn-start hook still ran, or in the gap between an end-turn action
+    /// finishing and the end-of-turn flow marking its phases (the "GAME RECORD UNSETTLED" records).
+    /// Reads a missing flag field (an older build) as false, so the frames rule still runs there.
+    /// </summary>
+    private static bool TurnFlowBusy(CombatManager cm, Player? me)
+    {
+        _inPlayerTurnSetupField ??= AccessTools.Field(typeof(CombatManager), "_inPlayerTurnSetup");
+        return cm.EndingPlayerTurnPhaseOne || cm.EndingPlayerTurnPhaseTwo
+            || (_inPlayerTurnSetupField != null && InPlayerTurnSetup(cm))
+            || (me != null && cm.IsPlayerReadyToEndTurn(me));
+    }
+
+    /// <summary>
     /// Once at job start: the flag settle and the frame trace read CombatManager._inPlayerTurnSetup. A game
     /// without it ends the job here (exit 1, one error line) instead of failing every fight.
     /// </summary>
@@ -118,10 +135,7 @@ public static partial class Driver
         return combat != null && pcs != null
             && InPlayPhase(combat)
             && combat.CurrentSide == CombatSide.Player
-            && !InPlayerTurnSetup(cm)
-            && !cm.IsPlayerReadyToEndTurn(me)
-            && !cm.EndingPlayerTurnPhaseOne
-            && !cm.EndingPlayerTurnPhaseTwo
+            && !TurnFlowBusy(cm, me)
             && !cm.PlayerActionsDisabled
             && !cm.IsPaused
             && !run.ActionExecutor.IsPaused;
@@ -279,6 +293,19 @@ public static partial class Driver
     /// <summary>Busy frames in a row after which a settle waits at stock frame pacing.</summary>
     private const int SlowPacingAfter = 20;
 
+    /// <summary>One line of the game's turn flags for an idle_timeout message: what the wait was stuck on.</summary>
+    internal static string WaitingOn(Player? me)
+    {
+        try
+        {
+            return TraceLine(me!, false, "");
+        }
+        catch (Exception ex)
+        {
+            return "state unavailable: " + ex.GetType().Name;
+        }
+    }
+
     private static string PlayableSig(Player me)
     {
         var hand = me.PlayerCombatState?.Hand.Cards;
@@ -301,6 +328,6 @@ public static partial class Driver
             + $"a={run.ActionExecutor.CurrentlyRunningAction?.GetType().Name} s={run.ActionQueueSynchronizer.CombatState} ph={pcs?.Phase} "
             + $"side={cm.DebugOnlyGetState()?.CurrentSide} rte={(cm.IsInProgress && cm.DebugOnlyGetState() != null && cm.IsPlayerReadyToEndTurn(me) ? 1 : 0)} "
             + $"e1={(cm.EndingPlayerTurnPhaseOne ? 1 : 0)} e2={(cm.EndingPlayerTurnPhaseTwo ? 1 : 0)} dis={(cm.PlayerActionsDisabled ? 1 : 0)} "
-            + $"setup={(InPlayerTurnSetup(cm) ? 1 : 0)} inp={(cm.IsInProgress ? 1 : 0)} end={(_combatEndedSeen ? 1 : 0)} sig={(uint)sig.GetHashCode():x8} ap={(run.ActionExecutor.IsPaused ? 1 : 0)} cp={(cm.IsPaused ? 1 : 0)}");
+            + $"setup={(_inPlayerTurnSetupField != null && InPlayerTurnSetup(cm) ? 1 : 0)} inp={(cm.IsInProgress ? 1 : 0)} end={(_combatEndedSeen ? 1 : 0)} sig={(uint)sig.GetHashCode():x8} ap={(run.ActionExecutor.IsPaused ? 1 : 0)} cp={(cm.IsPaused ? 1 : 0)}");
     }
 }

@@ -26,11 +26,11 @@
     },
     {
       "id": "unsettled-game-record",
-      "status": "open",
+      "status": "fixed (pending lab retest)",
       "host": "full",
       "finding": {"date": "2026-10-14", "quote": "trace_diff flags such records"},
       "match": {"text": ["GAME RECORD UNSETTLED"]},
-      "why": "the trace says the game's record was taken before its turn start finished"
+      "why": "the trace says the game's record was taken before its turn start finished (Idle now also waits on the turn flags: _inPlayerTurnSetup, EndingPlayerTurnPhaseOne/Two, ready-to-end; pending lab retest)"
     },
     {
       "id": "full-host-transform-hand-card",
@@ -59,11 +59,11 @@
     },
     {
       "id": "idle-timeouts-after-plays",
-      "status": "open",
+      "status": "fixed (pending lab retest)",
       "host": "full",
       "finding": {"date": "2026-10-14", "quote": "Driver gaps: 2 idle timeouts in 120 fights"},
       "match": {"entities": ["card:THUNDERCLAP", "card:SLIMED", "card:ANOINTED"], "errors": ["idle_timeout"]},
-      "why": "setup fights timed out idle after these plays (driver), and a script-mode reproduction timed out under load"
+      "why": "setup fights timed out idle after these plays (driver), and a script-mode reproduction timed out under load (no single awaited state found statically; Idle now shares the turn-flag waits and an idle_timeout error names the flags it waited on; pending lab retest)"
     },
     {
       "id": "hand-over-ten",
