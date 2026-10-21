@@ -134,8 +134,9 @@ class YieldTest(unittest.TestCase):
             {"id": "G2", "host_suspect": True, "by_job": {"J1": {"n": 1, "ready": 1}}},   # host-flagged: a group, not fix-ready
             {"id": "G3", "host_suspect": False, "by_job": {"J1": {"n": 4, "ready": 0}}},  # nothing traced
             {"id": "G5", "host_suspect": False, "by_job": {"J1": {"n": 2, "ready": 0, "gap": 2}}},  # a card screen the mirror missed
-            {"id": "G4", "host_suspect": False, "by_job": {"J2": {"n": 1, "ready": 1}}}]}
-        self.assertEqual((4, 1, 1), mix.job_groups(doc, "J1"))
+            {"id": "G4", "host_suspect": False, "by_job": {"J2": {"n": 1, "ready": 1}}},
+            {"id": "G6", "host_suspect": False, "stale": True, "by_job": {"J1": {"n": 1, "ready": 1}}}]}  # a retest matches now
+        self.assertEqual((5, 1, 1), mix.job_groups(doc, "J1"))
         self.assertEqual((2, 2, 0), mix.job_groups(doc, "J2"))
         self.assertEqual((0, 0, 0), mix.job_groups(doc, "J9"))
         self.assertEqual((0, 0, 0), mix.job_groups({"groups": []}, "J1"))

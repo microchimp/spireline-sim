@@ -1,15 +1,20 @@
 """The retest strategy: a group judged host-suspect only by gaps since fixed is played again on the current tree.
 
 tools/fidelity/lab_groups.py marks such a group ``retest`` and gives it ``retest.spec``: the fight spec of its smallest
-example (the shrunk setup, the example's seed). A retest job plays the specs of the groups with no verdict yet (the
-oldest first, at most LIMIT per job) and judges each fight against the game:
+example (the shrunk setup, the example's seed) and ``retest.fields``: the fields its symptoms differ in. A retest job
+plays the specs of the groups with no verdict yet (the oldest first, at most LIMIT per job) and judges each fight
+against the game:
 
-  diverges   the fight still differs from the game: the host gap was not the cause, the group is real
-  identical  the fight matches: the group came from the fixed gap and is stale
-  unclear    an error, a mirror gap or a divergence in another field; tried again until MAX_ATTEMPTS
+  diverges   the fight still first differs in one of the group's own fields: the host gap was not the cause, the
+             group is a real emulator divergence (lab_groups clears its host suspicion)
+  identical  the fight matches the game: the group came from the fixed gap; lab_groups marks it stale (impact 0,
+             not host-suspect, not counted ready)
+  unclear    an error, a mirror gap, or a first difference in a field that is not the group's (evidence of some
+             other divergence, not of this group's symptom); tried again until MAX_ATTEMPTS, then the group stays
+             host-suspect with its retest exhausted
 
-LAB/retests.json maps group id -> {verdict, utc, evidence, attempts, main_sha}. A diverges or identical verdict clears the
-group's host suspicion at the next regroup (the verdict stays with the id; a group whose id changes is judged anew).
+LAB/retests.json maps group id -> {verdict, utc, evidence, attempts, main_sha}. The verdict stays with the id; a group
+whose id changes is judged anew.
 """
 
 from __future__ import annotations
@@ -53,16 +58,27 @@ def pending(groups: list[dict], results: dict, limit: int = LIMIT) -> list[dict]
         rt = g.get("retest") or {}
         r = results.get(g["id"]) or {}
         if rt.get("spec") and r.get("verdict") not in DECIDED and r.get("attempts", 0) < MAX_ATTEMPTS:
-            out.append({"id": g["id"], "spec": rt["spec"], "first_seen_utc": g.get("first_seen_utc") or ""})
+            out.append({"id": g["id"], "spec": rt["spec"], "fields": list(rt.get("fields") or []),
+                        "first_seen_utc": g.get("first_seen_utc") or ""})
     out.sort(key=lambda x: (x["first_seen_utc"], x["id"]))
-    return [{"id": x["id"], "spec": x["spec"]} for x in out[:limit]]
+    return [{"id": x["id"], "spec": x["spec"], "fields": x["fields"]} for x in out[:limit]]
 
 
 def to_specs(items: list[dict]) -> list[dict]:
     return [{**it["spec"], "tag": TAG + it["id"]} for it in items]
 
 
-def classify(verdicts: list[dict]) -> tuple[str, str]:
+def same_field(a: str, b: str) -> bool:
+    """One field is the other, or a part of it (``.hand`` and ``.hand[2].cost``)."""
+    if not a or not b:
+        return False
+    short, long_ = sorted((a, b), key=len)
+    return long_ == short or (long_.startswith(short) and long_[len(short)] in ".[")
+
+
+def classify(verdicts: list[dict], fields: list[str] | tuple = ()) -> tuple[str, str]:
+    """The verdict of a group's retest fight. ``fields``: the fields the group's symptoms differ in; only a first
+    difference in one of them is evidence that the group's own symptom is still there."""
     if not verdicts:
         return "unclear", "no fight produced a verdict"
     v = verdicts[0]
@@ -72,7 +88,10 @@ def classify(verdicts: list[dict]) -> tuple[str, str]:
         return ("unclear", "identical, but the setup mirror had gaps") if v.get("mirror_gap") else ("identical", "the fight matches the game")
     if v.get("mirror_gap"):
         return "unclear", "the setup mirror had gaps"
-    return "diverges", f"the fight first differs in {v.get('field')} at step {v.get('step')}"
+    field = str(v.get("field") or "")
+    if not any(same_field(field, str(f or "")) for f in fields):
+        return "unclear", f"the fight first differs in {field or '?'} at step {v.get('step')}, not in the group's {', '.join(map(str, fields)) or '(no field)'}"
+    return "diverges", f"the fight still first differs in {field} at step {v.get('step')}"
 
 
 def judge_all(items: list[dict], verdicts: list[dict], evidence: str, utc: str, sha: str, prior: dict) -> dict:
@@ -84,7 +103,7 @@ def judge_all(items: list[dict], verdicts: list[dict], evidence: str, utc: str, 
     out = {}
     for it in items:
         if it["id"] in by_id:
-            verdict, reason = classify(by_id[it["id"]])
+            verdict, reason = classify(by_id[it["id"]], it.get("fields") or ())
             out[it["id"]] = {"verdict": verdict, "reason": reason, "utc": utc, "evidence": evidence, "main_sha": sha,
                              "attempts": (prior.get(it["id"]) or {}).get("attempts", 0) + 1}
     return out

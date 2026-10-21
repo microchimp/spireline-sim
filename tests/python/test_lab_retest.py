@@ -6,8 +6,9 @@ from pathlib import Path
 from tools.lab import mix, retest
 
 
-def group(gid, seen, spec=True):
-    return {"id": gid, "first_seen_utc": seen, "retest": {"state": "pending", "spec": {"seed": gid, "setup": [{"cmd": "fight", "id": "X"}]} if spec else None}}
+def group(gid, seen, spec=True, fields=(".hand",)):
+    return {"id": gid, "first_seen_utc": seen, "retest": {"state": "pending", "fields": list(fields),
+                                                         "spec": {"seed": gid, "setup": [{"cmd": "fight", "id": "X"}]} if spec else None}}
 
 
 class RetestTests(unittest.TestCase):
@@ -26,21 +27,28 @@ class RetestTests(unittest.TestCase):
         self.assertEqual("unclear", retest.classify([{"identical": True, "mirror_gap": True}])[0])
         self.assertEqual("unclear", retest.classify([{"error": "x"}])[0])
         self.assertEqual("unclear", retest.classify([])[0])
-        self.assertEqual("diverges", retest.classify([{"field": ".hand", "step": 3}])[0])
+        self.assertEqual("diverges", retest.classify([{"field": ".hand", "step": 3}], [".hand"])[0])
+        self.assertEqual("diverges", retest.classify([{"field": ".hand[2].cost", "step": 3}], [".hand"])[0])
+        # a first difference in a field that is not the group's is no evidence of the group's symptom
+        self.assertEqual("unclear", retest.classify([{"field": ".hand", "step": 3}], [".draw"])[0])
+        self.assertEqual("unclear", retest.classify([{"field": ".handsize", "step": 3}], [".hand"])[0])
+        self.assertEqual("unclear", retest.classify([{"field": ".hand", "step": 3}])[0])
 
     def test_collect_judges_each_verdicts_file_once_and_keeps_decided(self):
         with tempfile.TemporaryDirectory() as td:
             lab, job = Path(td) / "lab", Path(td) / "lab" / "runs" / "J1"
             (job / "retest-in").mkdir(parents=True)
             (job / "fights").mkdir()
-            items = retest.pending([group("G1", "a"), group("G2", "b")], {})
+            items = retest.pending([group("G1", "a"), group("G2", "b"), group("G3", "c", fields=[".draw"])], {})
             (job / "retest-in" / "pending.json").write_text(json.dumps(items), encoding="utf-8")
             (job / "fights" / "b.verdicts.json").write_text(json.dumps(
-                [{"tag": "retest:G1", "identical": True}, {"tag": "retest:G2", "field": ".hand", "step": 2}]), encoding="utf-8")
-            self.assertEqual(2, retest.collect(job, lab, "u1", "sha"))
+                [{"tag": "retest:G1", "identical": True}, {"tag": "retest:G2", "field": ".hand", "step": 2},
+                 {"tag": "retest:G3", "field": ".hand", "step": 2}]), encoding="utf-8")
+            self.assertEqual(3, retest.collect(job, lab, "u1", "sha"))
             self.assertEqual(0, retest.collect(job, lab, "u2", "sha"))  # once
             r = retest.read_results(lab)
             self.assertEqual(("identical", "diverges", 1), (r["G1"]["verdict"], r["G2"]["verdict"], r["G2"]["attempts"]))
+            self.assertEqual("unclear", r["G3"]["verdict"])  # G3's symptom is in .draw: a .hand difference does not decide it
             retest.write_results(lab, {"G1": {"verdict": "unclear", "attempts": 2}})
             self.assertEqual("identical", retest.read_results(lab)["G1"]["verdict"])
 

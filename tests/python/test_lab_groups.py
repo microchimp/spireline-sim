@@ -146,15 +146,21 @@ class RetestTests(unittest.TestCase):
         self.assertNotIn("retest", self.build([self.one("MAYHEM")])[0])
         self.assertNotIn("retest", self.build([self.one("HAVOC", flags=["cross_act"])])[0])
 
-    def test_a_verdict_clears_the_suspicion(self):
-        gid = self.build([self.one("HAVOC")])[0]["id"]
-        for verdict in ("diverges", "identical"):
-            g = self.build([self.one("HAVOC")], {gid: {"verdict": verdict, "reason": "r", "utc": "u", "attempts": 1}})[0]
-            self.assertFalse(g["host_suspect"])
-            self.assertEqual("decided", g["retest"]["state"])
-            self.assertIn(f"retested ({verdict})", g["host_reason"])
+    def test_a_diverges_verdict_makes_it_real_and_identical_makes_it_stale(self):
+        g0 = self.build([self.one("HAVOC")])[0]
+        gid = g0["id"]
+        self.assertEqual([".hand"], g0["retest"]["fields"])  # what the retest judges a divergence by
+        g = self.build([self.one("HAVOC")], {gid: {"verdict": "diverges", "reason": "r", "utc": "u", "attempts": 1}})[0]
+        self.assertEqual((False, "decided", None), (g["host_suspect"], g["retest"]["state"], g.get("stale")))
+        self.assertIn("retested (diverges)", g["host_reason"])
+        g = self.build([self.one("HAVOC")], {gid: {"verdict": "identical", "reason": "r", "utc": "u", "attempts": 1}})[0]
+        self.assertEqual((False, "stale", True, 0), (g["host_suspect"], g["retest"]["state"], g.get("stale"), g["impact_runs_est"]))
+        self.assertIn("retested (identical)", g["host_reason"])
         g = self.build([self.one("HAVOC")], {gid: {"verdict": "unclear", "reason": "r", "attempts": 1}})[0]
-        self.assertTrue(g["host_suspect"])  # an unclear verdict settles nothing
+        self.assertEqual((True, "pending"), (g["host_suspect"], g["retest"]["state"]))  # an unclear verdict settles nothing
+        g = self.build([self.one("HAVOC")], {gid: {"verdict": "unclear", "reason": "r", "attempts": 3}})[0]
+        self.assertEqual((True, "exhausted"), (g["host_suspect"], g["retest"]["state"]))
+        self.assertIn("unsettled", g["host_reason"])
 
 
 class HostAndBacklogTests(unittest.TestCase):

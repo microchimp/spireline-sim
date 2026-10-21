@@ -1068,14 +1068,24 @@ def union_runs(runs: int, parts: list[int]) -> int:
 
 
 def retest_of(members: list[dict], result: dict | None) -> dict:
-    """The retest mark of a group judged only by fixed host gaps: the spec of its smallest example, and the verdict so far."""
+    """The retest mark of a group judged only by fixed host gaps: the spec of its smallest example, the fields its
+    symptoms differ in (tools/lab/retest.py judges a divergence by them), and the verdict so far. State: pending,
+    decided (diverges: the symptom is still there), stale (identical: the fight matches now) or exhausted (unclear
+    MAX_ATTEMPTS times: stays a host suspect)."""
+    from tools.lab import retest as rt  # noqa: PLC0415
+
     mine = [s for s in members if s.get("retest_spec")]
-    out = {"state": "pending", "spec": mine[0]["retest_spec"] if mine else None, "ref": mine[0]["ref"] if mine else None}
+    out = {"state": "pending", "spec": mine[0]["retest_spec"] if mine else None, "ref": mine[0]["ref"] if mine else None,
+           "fields": sorted({str(s["field"]) for s in members if s.get("field")})}
     if result:
         out.update(verdict=result.get("verdict"), reason=result.get("reason"), utc=result.get("utc"), main_sha=result.get("main_sha"),
                    attempts=result.get("attempts"))
-        if result.get("verdict") in ("diverges", "identical"):
+        if result.get("verdict") == "diverges":
             out["state"] = "decided"
+        elif result.get("verdict") == "identical":
+            out["state"] = "stale"
+        elif (result.get("attempts") or 0) >= rt.MAX_ATTEMPTS:
+            out["state"] = "exhausted"
     return out
 
 
@@ -1114,11 +1124,17 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
         host_ents = {e for e in ents if not e.startswith("?:")}
         host, host_reason = hosts.judge(members, host_ents)
         retest = None
+        stale = False
         if host and hosts.retest_only(members, host_ents):
             retest = retest_of(members, retests.get(gid))
-            if retest["state"] == "decided":  # the retest on the current tree settled it: no longer a host suspect
+            if retest["state"] == "decided":  # still differs in its own field on the current tree: a real divergence
                 host_reason = f"retested ({retest['verdict']}): {retest['reason']}; was: {host_reason}"
                 host = False
+            elif retest["state"] == "stale":  # matches on the current tree: it came from the fixed gap, nothing to fix
+                host_reason = f"retested ({retest['verdict']}): {retest['reason']}; stale, was: {host_reason}"
+                host, stale = False, True
+            elif retest["state"] == "exhausted":
+                host_reason = f"retest unsettled after {retest.get('attempts')} tries ({retest.get('reason')}): {host_reason}"
             elif retest["spec"] is None:
                 retest = None  # no example to replay: stays a host suspect
             else:
@@ -1135,13 +1151,15 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
             if unshrunk:
                 parts.append(min(observed_runs(prof, unshrunk, pools), max(impact(prof, s.get("implicated") or []) for s in unshrunk)))
             est = union_runs(prof.runs, parts)
+        if stale:
+            est = 0
         whens = [s["when"] for s in members if s.get("when")]
         first = old_first.get(gid) or min([old_refs[s["ref"]] for s in members if old_refs.get(s["ref"])] + whens or [utc_now()])
         groups.append({
             "id": gid, "key": key, "title": title(key, members), "count": len(members), "first_seen_utc": first,
             "examples": examples, "entities": sorted(e for e in ents if not e.startswith("?:")),
             "ingredient_effect": [{"item": k, "removal_vanishes": v} for k, v in sorted(effect.items(), key=lambda kv: (not kv[1], kv[0]))][:24],
-            "host_suspect": host, "host_reason": host_reason, **({"retest": retest} if retest else {}), "impact_runs_est": int(est),
+            "host_suspect": host, "host_reason": host_reason, **({"retest": retest} if retest else {}), **({"stale": True} if stale else {}), "impact_runs_est": int(est),
             "sources": sorted({s["source"] for s in members}), "by_job": by_job(members),
             "_entities": ents, "_fields": {s.get("field") for s in members},
             "_seedrefs": {(s["seed"], tuple(s.get("batch") or ()), bool(s.get("seed_own", True))) for s in members if s.get("seed")},
@@ -1201,14 +1219,15 @@ def summary_md(doc: dict, symptoms: list[dict], limit: int = 4000) -> str:
             f"main {doc['main_sha'][:10]}, {doc['generated_utc']}. {len(symptoms)} symptoms "
             f"({', '.join(f'{k} {v}' for k, v in sorted(src.items()))}) in {len(groups)} groups; "
             f"backlog: {rel_.get('confirms', 0)} confirm, {rel_.get('splits', 0)} split, {rel_.get('merges', 0)} merge, "
-            f"{rel_.get('new', 0)} new; {sum(g['host_suspect'] for g in groups)} host-suspect.", "",
+            f"{rel_.get('new', 0)} new; {sum(g['host_suspect'] for g in groups)} host-suspect, "
+            f"{sum(bool(g.get('stale')) for g in groups)} stale (a retest matches the game now).", "",
             "Top 20 by impact (runs est, symptoms, backlog, smallest example):", ""]
     lines = []
     for n, g in enumerate(groups[:20], 1):
         ex = g["examples"][0]["ref"] if g["examples"] else ""
         bl = ",".join(g["backlog_ids"][:3]) or "-"
         lines.append(f"{n}. {g['id']} {g['title'][:110]} | ~{g['impact_runs_est']} runs, {g['count']} | {g['relation']} {bl}"
-                     f"{' | HOST?' if g['host_suspect'] else ''} | {ex[:70]}")
+                     f"{' | HOST?' if g['host_suspect'] else ''}{' | STALE' if g.get('stale') else ''} | {ex[:70]}")
     text = "\n".join(head)
     for line in lines:
         if len(text) + len(line) + 2 > limit:
@@ -1280,7 +1299,7 @@ def main(argv=None) -> int:
     a.summary.parent.mkdir(parents=True, exist_ok=True)
     a.summary.write_text(text, encoding="utf-8")
     rel_ = collections.Counter(g["relation"] for g in groups)
-    print(f"groups: {len(groups)} from {len(symptoms)} symptoms; {dict(rel_)}; host-suspect {sum(g['host_suspect'] for g in groups)}"
+    print(f"groups: {len(groups)} from {len(symptoms)} symptoms; {dict(rel_)}; host-suspect {sum(g['host_suspect'] for g in groups)}; stale {sum(bool(g.get('stale')) for g in groups)}"
           + (f"; stale host-gap entries {hosts.stale_entries}" if hosts.stale_entries else ""))
     return 0
 

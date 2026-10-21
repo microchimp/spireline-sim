@@ -174,7 +174,7 @@ def job_groups(groups_doc: object, job_name: str) -> tuple[int, int, int] | None
         mine = (g.get("by_job") or {}).get(job_name) if isinstance(g, dict) else None
         if mine:
             n += 1
-            ready += 1 if not g.get("host_suspect") and mine.get("ready", 0) > 0 else 0
+            ready += 1 if not g.get("host_suspect") and not g.get("stale") and mine.get("ready", 0) > 0 else 0
             screens += 1 if mine.get("gap", 0) > 0 else 0
     return n, ready, screens
 

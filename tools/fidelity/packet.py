@@ -2653,6 +2653,8 @@ def finish_kit(kit: dict, secs: dict) -> None:
         if e.get("error"):
             L.append(f"- this group's kit part failed: {e['error']}")
             continue
+        if g.get("stale"):
+            L.append(f"- STALE: {clip(g.get('host_reason') or 'a retest matches the game now', 240)} (likely nothing left to fix)")
         if g.get("host_suspect"):
             L.append(f"- HOST SUSPECT: {clip(g.get('host_reason') or 'no reason given', 240)} (the game host may be the cause, not the emulator)")
         L.append("- minimal repros (smallest first):")
