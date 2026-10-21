@@ -1805,6 +1805,12 @@ public static class RelicEffects
     /// </remarks>
     internal static void ApplyAfterSideTurnStart(CombatState state, Random? rng)
     {
+        // `Candelabra` (turn two) and `Chandelier` (turn three) are `AfterSideTurnStart` relics:
+        // they pay after the hand is drawn, not at the energy reset. `TurnNumber` is exact.
+        int turnNumber = state.Turn + 1;
+        ApplyStartOfPlayerTurnShared(state, turnNumber, rng);
+        ApplyStartOfPlayerTurnRares(state, turnNumber, rng);
+
         // `Brimstone.AfterSideTurnStart` with NO turn guard: 2 Strength to the player and
         // 1 to every LIVING opponent, every single turn. The enemy half is the point --
         // it is a Shop relic that arms the room as fast as it arms you.

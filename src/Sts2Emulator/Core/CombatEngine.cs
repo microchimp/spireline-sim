@@ -2356,8 +2356,6 @@ public static class CombatEngine
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Focus, -biasedCognition);
             }
 
-            Effects.RelicEffects.ApplyStartOfPlayerTurnShared(state, state.Turn + 1, rng);
-            Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, state.Turn + 1, rng);
             Effects.RelicEffects.RefreshBeltBuckle(state);
 
             int coolant = BuffSystem.Get(state.PlayerBuffs, BuffId.Coolant);
@@ -2384,41 +2382,46 @@ public static class CombatEngine
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Vigor, prepTime);
             }
 
-            // `RadiancePower.AfterEnergyReset`: `PlayerCmd.GainEnergy(1)` and DECREMENT, so the
-            // counter is TURNS and the energy is always one. Added to the bar the reset just
-            // filled rather than to the maximum -- a relic that raises max energy and this are
-            // not the same quantity, and only one of them survives a Void Form.
-            int radiance = BuffSystem.Get(state.PlayerBuffs, BuffId.Radiance);
-            if (radiance > 0)
+            // `Hook.AfterEnergyReset` for the powers: ONE pass over the player's powers in the
+            // order they were applied, not one block per power (the game walks the power list).
+            foreach (var power in state.PlayerBuffs.Select(buff => buff.Id).Distinct().ToList())
             {
-                // `PlayerCmd.GainEnergy`, which is what the power actually calls -- so a
-                // NoEnergyGain standing on the player zeroes it. Incrementing the energy field
-                // directly here built it where nothing could stop it, and the chokepoint guard
-                // in `BlockChokepointTests` is what caught it; its own comment records Seal of
-                // Gold making the identical mistake. (That guard counts TEXTUAL matches, so do
-                // not spell the raw increment out even in a comment -- this one used to.)
-                Effects.CardEffects.GainEnergy(state, 1);
-                // The DECREMENT is unconditional: the game awaits the gain and then decrements
-                // whatever the gain did, so a turn spent under NoEnergyGain still burns one.
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.Radiance, -1);
-            }
-
-            // `LightningRodPower.AfterEnergyReset` channels a Lightning orb and DECREMENTS,
-            // so an amount of 2 is two TURNS of orbs. Its own comment explains why it fires
-            // here rather than at side-turn start: an orb evoked to make room would otherwise
-            // have its Plasma energy wiped by the reset, or its Frost block cleared.
-            int lightningRod = BuffSystem.Get(state.PlayerBuffs, BuffId.LightningRod);
-            if (lightningRod > 0)
-            {
-                Effects.CardEffects.ChannelOrb(state, OrbType.Lightning, rng);
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.LightningRod, -1);
-            }
-
-            int nextTurnEnergy = BuffSystem.Get(state.PlayerBuffs, BuffId.NextTurnEnergy);
-            if (nextTurnEnergy > 0)
-            {
-                Effects.CardEffects.GainEnergy(state, nextTurnEnergy);
-                BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnEnergy);
+                switch (power)
+                {
+                    case BuffId.Radiance:
+                    {
+                        // `RadiancePower.AfterEnergyReset`: `PlayerCmd.GainEnergy(1)` and DECREMENT,
+                        // so the counter is TURNS and the energy is always one. A NoEnergyGain
+                        // standing on the player zeroes the gain, and the decrement still happens.
+                        // (The chokepoint guard in `BlockChokepointTests` counts TEXTUAL matches of
+                        // a raw energy increment, so do not spell one out here.)
+                        Effects.CardEffects.GainEnergy(state, 1);
+                        BuffSystem.Apply(state.PlayerBuffs, BuffId.Radiance, -1);
+                        break;
+                    }
+                    case BuffId.LightningRod:
+                        // `LightningRodPower.AfterEnergyReset` channels a Lightning orb and
+                        // DECREMENTS, so an amount of 2 is two TURNS of orbs.
+                        Effects.CardEffects.ChannelOrb(state, OrbType.Lightning, rng);
+                        BuffSystem.Apply(state.PlayerBuffs, BuffId.LightningRod, -1);
+                        break;
+                    case BuffId.NextTurnEnergy:
+                        Effects.CardEffects.GainEnergy(
+                            state,
+                            BuffSystem.Get(state.PlayerBuffs, BuffId.NextTurnEnergy)
+                        );
+                        BuffSystem.Remove(state.PlayerBuffs, BuffId.NextTurnEnergy);
+                        break;
+                    case BuffId.Genesis:
+                        // Stars every turn; does NOT remove itself.
+                        Effects.CardEffects.GainStars(state, BuffSystem.Get(state.PlayerBuffs, BuffId.Genesis));
+                        break;
+                    case BuffId.StarNextTurn:
+                        // The stars arrive at the reset and the power removes itself.
+                        Effects.CardEffects.GainStars(state, BuffSystem.Get(state.PlayerBuffs, BuffId.StarNextTurn));
+                        BuffSystem.Remove(state.PlayerBuffs, BuffId.StarNextTurn);
+                        break;
+                }
             }
 
             // DemonForm: gain Strength at start of player turn.
@@ -2533,23 +2536,6 @@ public static class CombatEngine
             if (BuffSystem.Get(state.PlayerBuffs, BuffId.Reflect) > 0)
             {
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Reflect, -1);
-            }
-
-            // `GenesisPower.AfterEnergyReset`: stars every turn, and this one does NOT remove
-            // itself.
-            int genesis = BuffSystem.Get(state.PlayerBuffs, BuffId.Genesis);
-            if (genesis > 0)
-            {
-                Effects.CardEffects.GainStars(state, genesis);
-            }
-
-            // `StarNextTurnPower.AfterEnergyReset`: the stars arrive at the turn's reset and the
-            // power removes itself, so Convergence pays out exactly once.
-            int starNextTurn = BuffSystem.Get(state.PlayerBuffs, BuffId.StarNextTurn);
-            if (starNextTurn > 0)
-            {
-                Effects.CardEffects.GainStars(state, starNextTurn);
-                BuffSystem.Remove(state.PlayerBuffs, BuffId.StarNextTurn);
             }
 
             // `ForegoneConclusionPower.BeforeHandDraw`: `ShuffleIfNecessary`, then that many cards
@@ -2910,7 +2896,6 @@ public static class CombatEngine
     /// </summary>
     private static void FirstTurnSide(CombatState state, Random rng)
     {
-        Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, 1, rng);
         Effects.RelicEffects.ApplyFirstTurnAfterSideTurnStart(state, rng);
         Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
         // `Hook.AfterSideTurnStart` is a gated dispatch: a turn-one kill (Festive Popper, Mercury
