@@ -262,7 +262,7 @@ class CatalogTests(unittest.TestCase):
         preds = {h.name: h.predict(pre, None) for h in p.hyps}
         self.assertEqual(preds, {"add-then-double": 24, "double-then-add": 21, "not-doubled": 12})
 
-    KITS = {"C5-F01": ["P21"], "C5-F03": ["P22", "P23", "P24"], "C5-F07": ["P25"], "C5-F09": ["P26"], "C5-H03": ["P27", "P28"]}
+    KITS = {"C5-F01": ["P21"], "C5-F03": ["P22", "P23", "P24"], "C5-F07": ["P25"], "C5-F09": ["P26"], "C5-H03": ["P27", "P28"], "C5-F06": ["P29"]}
 
     def test_each_kit_without_a_probe_has_catalog_probes_naming_it(self):
         for kit, ids in self.KITS.items():
@@ -289,7 +289,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(preds("P23"), {"sharp-applies": 23, "sharp-skipped": 20})
         self.assertEqual(preds("P24", hand=("SECOND_WIND",) + ("DEFEND_IRONCLAD",) * 4), {"nimble-each": 28, "nimble-skipped": 20})
         self.assertEqual(preds("P25"), {"elite": (3, 7), "not-elite": (2, 5)})
-        for pid in ("P26", "P27", "P28"):
+        for pid in ("P26", "P27", "P28", "P29"):
             vals = [str(v) for v in preds(pid).values()]
             self.assertEqual(len(vals), len(set(vals)), pid)
 

@@ -594,4 +594,20 @@ PROBES.append(Probe(
     game_class="MayhemPower.AfterAutoPrePlayPhaseEntered; CardPileCmd.AutoPlayFromDrawPile",
 ))
 
+PROBES.append(Probe(
+    "P29", ["C5-F06"], "When a Doomed Fabricator dies at the end of the enemy turn with bots it fabricated that turn, is the fight won at once (the bots are secondary enemies) or does it go on?",
+    [fight("FABRICATOR_NORMAL"), power("DOOM_POWER", 999, "enemy:0")],
+    [end_turn()],
+    lambda pre, post, ctx: None if post is None else post.outcome,
+    [Hyp("won", "the last primary enemy's death ends the fight; the bots (MinionPower) go with it", lambda pre, ctx: "won"),
+     Hyp("going", "the bots are living enemies: the fight goes on with them", lambda pre, ctx: "going")],
+    need=lambda pre, ctx: None if len(pre.enemies) == 1 else "not the Fabricator alone",
+    evidence=lambda tr: trace_digest(tr, keep=("DamageReceived", "CreatureDied", "PowerReceived"),
+                                     hooks=("BeforeSideTurnEnd", "AfterDiedToDoom"), limit=24),
+    game_class="DoomPower.BeforeSideTurnEnd; MinionPower; Fabricator.SpawnBot; CombatManager's end-of-combat check",
+    ends=True,
+    note="the item's post-fight HP gap is not tied to a rule yet; this asks how a fight with fabricated bots ends. The Battleworn Dummy half is "
+         "not a combat probe: the setup fight cannot set the dummy's setting and its Battle Friend only waits (its time limit escapes it)",
+))
+
 BY_ID = {p.id: p for p in PROBES}
