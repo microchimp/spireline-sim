@@ -88,13 +88,34 @@ class T(unittest.TestCase):
         h = rd.build(self.root)["codex"]["history"]
         self.assertEqual([(x["date"], x["identical"]) for x in h], [("2026-10-01", 4), ("2026-10-20", 1)])
 
+    def test_act_floors_are_rooms_plus_two(self):
+        # Overgrowth/Underdocks 15 rooms, Hive 14, Glory 13, each plus the ancient floor and the boss floor
+        self.assertEqual(rd.ACT_FLOORS, (17, 16, 15))
+        self.assertEqual(rd.ACT_ENDS, (17, 33, 48))
+        self.assertEqual([rd.act_of(f) for f in (1, 17, 18, 33, 34, 48, 49)], [1, 1, 2, 2, 3, 3, 3])
+
+    def test_stopped_run_diverges_at_the_floor_it_stopped_on(self):
+        # floors_walked of a stopped run is the floor it stopped on (the walker counts a floor before walking it): a stop at
+        # floor 1 means floor 1 did not match, so the share identical through floor 1 is below 100%
+        runs = [(False, 1)] + [(True, 10)] * 3
+        self.assertEqual(rd.survival_curve(runs)[1], (75.0, 4))
+        self.assertEqual(rd.survival_curve(runs)[10], (75.0, 3))
+        self.assertEqual(rd.survival_curve([(False, 0), (True, 3)])[0], (50.0, 2))
+        # every run stopped on floor 5 (as ancient-check stops do on floor 1): nothing is identical through that floor
+        self.assertEqual(rd.survival_curve([(False, 5)] * 4)[5], (0.0, 4))
+        self.assertEqual(rd.survival_curve([(False, 5)] * 4)[4], (100.0, 4))
+
     def test_survival_curve(self):
-        # stops after 5, 20 and 40 floors diverge at floors 6, 21 and 41; the complete 30-floor run leaves after floor 30
+        # stops on floors 5, 20 and 40 diverge there; the complete 30-floor run leaves after floor 30
         runs = [(True, 30), (False, 5), (False, 20), (False, 40)]
-        self.assertEqual(rd.survival(runs, 1), {17: [75.0, 3], 34: [50.0, 1], 41: [0.0, 1]})
+        self.assertEqual(rd.survival(runs, 1), {17: [75.0, 3], 33: [50.0, 1], 40: [0.0, 1]})
         self.assertEqual(rd.survival(runs, 2), {17: [75.0, 3], 30: [50.0, 2]})
         self.assertEqual(rd.survival(runs, 100), {})
         self.assertEqual(rd.survival([], 1), {})
+        self.assertEqual(rd.survival_curve(runs)[4], (100.0, 4))
+        self.assertEqual(rd.survival_curve(runs)[5], (75.0, 4))
+        self.assertEqual(rd.survival_curve(runs)[20], (50.0, 3))
+        self.assertEqual(rd.survival_curve(runs)[21], (50.0, 2))
 
     def test_survival_does_not_count_runs_that_ended_against_the_emulator(self):
         # 100 runs that end identically after 10 floors, nothing stops: every floor stays at 100%
@@ -103,7 +124,25 @@ class T(unittest.TestCase):
     def test_full_run_estimate_in_build(self):
         e = rd.build(self.root)["codex"]["full_run_estimate"]
         self.assertEqual([(x["floor"], x["identical_pct"], x["runs_followed"]) for x in e],
-                         [(17, 75.0, 3), (34, 50.0, 1), (41, 0.0, 1)])
+                         [(17, 75.0, 3), (33, 50.0, 1), (40, 0.0, 1)])
+
+    def test_full_run_rows_are_labelled_with_the_act_end(self):
+        runs = {str(i): ["complete", 48, ""] for i in range(120)} | {str(200 + i): ["mismatch", 33, "EMULATOR: x"] for i in range(60)}
+        p = self.root / "refset/v2/scores/all-new.json"
+        d = json.loads(p.read_text())
+        d["codex"].update(per_run=runs, runs=180, complete=120)
+        w(p, d)
+        text = rd.render(rd.build(self.root))
+        self.assertIn("full run to floor 17 (end of act 1)", text)
+        self.assertIn("full run to floor 33 (end of act 2)", text)
+        self.assertIn("full run to floor 48 (end of act 3)", text)
+        self.assertNotIn("floor 34", text)
+        sa = rd.build(self.root)["codex"]["stopped_by_act"]
+        self.assertEqual(sa, {"1": 0, "2": 60, "3": 0})
+
+    def test_trend_shows_shares_not_only_counts(self):
+        text = rd.render(rd.build(self.root))
+        self.assertIn("100.0% = 4/4 (10-01) -> 25.0% = 1/4 (10-20)", text)
 
     def test_subscores(self):
         r = rd.build(self.root)
@@ -125,14 +164,41 @@ class T(unittest.TestCase):
         self.assertEqual(h["bad_files"], 1)
         self.assertEqual(h["source"], "lab/hypotheses.json")
 
-    def test_hypotheses_without_verdicts_are_open_and_the_idle_mix_is_noted(self):
+    def test_hypotheses_without_verdicts_are_open(self):
         (self.root / "lab/hypotheses.json").unlink()
         r = rd.build(self.root)
         self.assertEqual((r["hypotheses"]["confirmed"], r["hypotheses"]["open"], r["hypotheses"]["not_testable"]), (0, 3, 1))
         self.assertIn("no verdicts file", r["hypotheses"]["source"])
-        self.assertIn("hypotheses_idle", r["notes"])
-        w(self.root / "lab/mix.json", {"hypotheses": 5})
-        self.assertNotIn("hypotheses_idle", rd.build(self.root)["notes"])
+
+    def test_idle_mix_note_follows_the_lab_modules_reading_of_mix_json(self):
+        (self.root / "lab/hypotheses.json").unlink()
+        mix = self.root / "lab/mix.json"
+
+        def idle() -> bool:
+            return "hypotheses_idle" in rd.build(self.root)["notes"]
+
+        # no mix.json: the lab runs its default mix, where hypotheses weighs 5; nothing is created by reading
+        self.assertFalse(idle())
+        self.assertEqual(rd.build(self.root)["hypotheses"]["lab_mix_weight"], 5.0)
+        self.assertFalse(mix.exists())
+        # a mix that omits hypotheses (or weighs it 0) leaves the setups unrun
+        w(mix, {"aimed-bugs": 5})
+        self.assertTrue(idle())
+        w(mix, {"aimed-bugs": 3, "hypotheses": 0})
+        self.assertTrue(idle())
+        w(mix, {"_note": "x", "hypotheses": 5})
+        self.assertFalse(idle())
+        # a mix the lab cannot use falls back to its default, which runs hypotheses: no idle note, a note on the mix instead
+        for bad in ("{not json", "[]", {"hypotheses": 0}, {"_note": "only notes"}, {"hypotheses": "5", "nope": 1}):
+            w(mix, bad)
+            r = rd.build(self.root)
+            self.assertFalse(idle(), bad)
+            self.assertEqual(r["hypotheses"]["lab_mix_weight"], 5.0, bad)
+            self.assertIn("default mix", r["notes"]["lab_mix"], bad)
+        # a verdict means a setup was run
+        w(mix, {"aimed-bugs": 5})
+        w(self.root / "lab/hypotheses.json", {"h1": {"status": "confirmed"}})
+        self.assertFalse(idle())
 
     def test_blockers(self):
         r = rd.build(self.root, top=2)

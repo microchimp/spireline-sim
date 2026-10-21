@@ -7,8 +7,9 @@ the end, from the newest refset score that has a codex walk. Sub-scores, each wi
   codex       runs identical to the end / runs walked (and / runs in the set), judged-runs match rate, the stops by
               class, and a full-run estimate: the chance a run still replays identically at the end of act 1, act 2 and
               the deepest floor with enough runs (Kaplan-Meier over the per-run floors: a run that ends in the game
-              before a floor is not counted against it). The headline alone favours short runs. Act ends are the
-              approximate floors 17 and 34.
+              before a floor is not counted against it; every stop class counts as a divergence, as in the headline). The
+              headline alone favours short runs. A stopped run diverged on the floor it stopped on. Act ends are
+              floors 17, 33 and 48 (ActModel rooms + 2 per act: 17, 16 and 15 floors).
   corpus      fights identical in the newest corpus baseline
   lab         open fix groups (not host-suspect, not stale) by estimated run exposure, and the host-suspect count
   data        differences between the game export and the emulator tables (newest audit/data-checks table-check text)
@@ -26,10 +27,17 @@ import statistics
 import sys
 import time
 from collections import Counter
+from itertools import accumulate
 from pathlib import Path
 
 DEFAULT_REFEREE = Path("D:/spireline/referee")
-ACT_ENDS = (17, 34)  # last floor of act 1 and act 2 (approximate)
+# Floors per act: ActModel.GetNumberOfFloors is rooms + 2 (the ancient floor and the boss). Overgrowth and Underdocks have 15
+# rooms (17 floors), Hive 14 (16), Glory 13 (15). The Codex walker counts floors across acts, the ancient floor being the first of
+# each act (a stop there is at floor 1 or 18). The data agree: complete runs peak at floors 17, 33 and 48-49 (a win can record
+# one floor more than the act 3 boss).
+ACT_FLOORS = (17, 16, 15)
+ACT_ENDS = tuple(accumulate(ACT_FLOORS))  # last floor of act 1, 2 and 3: (17, 33, 48)
+ACT_LABEL = {k: f"end of act {i}" for i, k in enumerate(ACT_ENDS, 1)}
 MIN_AT_RISK = 100  # the full-run estimate stops where fewer runs than this are still being followed
 IMPACT_BUCKETS = ((1000, ">=1000"), (100, "100-999"), (1, "1-99"), (0, "0"))
 
@@ -73,33 +81,41 @@ def _runs(per_run) -> list[tuple[bool, int]]:
     return out
 
 
-def survival(runs: list[tuple[bool, int]], min_at_risk: int | None = None) -> dict:
-    """Kaplan-Meier chance that a run still replays identically through floor k, given the game run lasts that long.
+def survival_curve(runs: list[tuple[bool, int]]) -> dict[int, tuple[float, int]]:
+    """Kaplan-Meier chance that a run still replays identically through floor k, given the game run lasts that long:
+    {floor: (pct, runs still followed at that floor)}, from floor 0 (a stop before the first floor) to the deepest floor seen.
 
-    A stopped run that matched s floors diverges at floor s+1 (an event). A complete run of L floors is followed to floor
-    L and then leaves (the game run ended; that says nothing about the emulator). Returns {floor: [pct, at_risk]} for the
-    act ends and for the deepest floor with at least `min_at_risk` runs still followed."""
+    The walker counts a floor before walking it, so floors_walked of a stopped run is the floor it stopped on (an event at
+    that floor: the run was followed there and diverged). A complete run of L floors is followed through floor L and then
+    leaves (the game run ended; that says nothing about the emulator). Every stop class (EMULATOR, WALKER, PROFILE, FIGHT)
+    is an event, as in the headline; the 'judged' figure leaves some of them out."""
     ev, cen = Counter(), Counter()
     for complete, f in runs:
-        if complete:
-            cen[f] += 1
-        else:
-            ev[f + 1] += 1
+        (cen if complete else ev)[f] += 1
     if not (ev or cen):
         return {}
-    min_at_risk = MIN_AT_RISK if min_at_risk is None else min_at_risk
     top = max(list(ev) + list(cen))
     s, curve = 1.0, {}
-    for k in range(1, top + 1):
+    for k in range(0, top + 1):
         at = sum(n for f, n in ev.items() if f >= k) + sum(n for f, n in cen.items() if f >= k)
         if at:
             s *= 1 - ev.get(k, 0) / at
         curve[k] = (round(100.0 * s, 1), at)
+    return curve
+
+
+def survival(runs: list[tuple[bool, int]], min_at_risk: int | None = None) -> dict:
+    """{floor: [pct, at_risk]} of survival_curve for the act ends and for the deepest floor with at least `min_at_risk`
+    runs still followed (the estimate is not shown where fewer are)."""
+    curve = survival_curve(runs)
+    if not curve:
+        return {}
+    min_at_risk = MIN_AT_RISK if min_at_risk is None else min_at_risk
     out = {}
     for k in ACT_ENDS:
         if k in curve and curve[k][1] >= min_at_risk:
             out[k] = list(curve[k])
-    deep = [k for k, (_, at) in curve.items() if at >= min_at_risk]
+    deep = [k for k, (_, at) in curve.items() if k >= 1 and at >= min_at_risk]
     if deep and max(deep) not in out:
         out[max(deep)] = list(curve[max(deep)])
     return dict(sorted(out.items()))
@@ -228,6 +244,7 @@ def data_score(root: Path):
 
 def hyp_score(root: Path):
     from tools.lab import hypotheses as hyp
+    from tools.lab import mix as labmix
 
     hdir, lab = root / "hypotheses", root / "lab"
     setups, problems = hyp.load_setups(hdir)
@@ -246,13 +263,13 @@ def hyp_score(root: Path):
             st["open"] += 1
     lp = lab / "hypotheses.json"
     files = list(hdir.glob("*/*.json"))
-    mix = _load(lab / "mix.json")
-    weight = mix.get("hypotheses") if isinstance(mix, dict) else None
+    weights, mix_notes = labmix.load_mix(lab, create=False)  # the lab's own reading, defaults included
+    weight = weights.get("hypotheses", 0.0)
     return {"source": _rel(lp, root) if lp.exists() else "hypotheses/*/*.json (no verdicts file yet)",
             "date": _day(lp) if lp.exists() else max(_day(p) for p in files),
             "total": len(setups), "confirmed": st["confirmed"], "refuted": st["refuted"],
             "not_testable": st["not_testable"], "open": st["open"], "bad_files": len(problems),
-            "lab_mix_weight": weight}, None
+            "lab_mix_weight": weight, "lab_mix_notes": mix_notes}, None
 
 
 def build(root: Path, top: int = 5) -> dict:
@@ -287,6 +304,8 @@ def build(root: Path, top: int = 5) -> dict:
     if len(set(commits.values())) > 1:
         notes["commits_differ"] = ", ".join(f"{k} {v[:8]}" for k, v in commits.items())
     y = out["hypotheses"]
+    if y and y["lab_mix_notes"]:
+        notes["lab_mix"] = "; ".join(y["lab_mix_notes"])[:200]
     if y and y["open"] and not y["lab_mix_weight"] and not (y["confirmed"] or y["refuted"]):
         notes["hypotheses_idle"] = "the lab mix gives the hypotheses strategy no weight, so no setup is being run"
     out["notes"] = notes
@@ -307,7 +326,8 @@ def render(r: dict) -> str:
                      + (f" ({c['identical_pct_of_set']}% of the {c['runs_in_set']} runs in the set)" if c.get("identical_pct_of_set") else ""), s, dt))
         rows.append(("codex judged match", f"{c['judged_matching_pct']}% of {c['judged']} (complete runs and EMULATOR stops only)", s, dt))
         for e in c.get("full_run_estimate") or []:
-            rows.append((f"full run to floor {e['floor']}", f"{e['identical_pct']}% still identical ({e['runs_followed']} runs followed)", s, dt))
+            lab = f" ({ACT_LABEL[e['floor']]})" if e["floor"] in ACT_LABEL else ""
+            rows.append((f"full run to floor {e['floor']}{lab}", f"{e['identical_pct']}% still identical ({e['runs_followed']} runs followed)", s, dt))
         if "first_divergence_floor_median" in c:
             sa = c["stopped_by_act"]
             rows.append(("codex stops", f"{c['stopped']} runs; first-divergence floor median {c['first_divergence_floor_median']}, "
@@ -319,7 +339,8 @@ def render(r: dict) -> str:
         if c.get("stops_by_class"):
             rows.append(("stops by class", ", ".join(f"{k} {v}" for k, v in sorted(c["stops_by_class"].items(), key=lambda kv: -kv[1])), s, dt))
         if c.get("history") and len(c["history"]) > 1:
-            rows.append(("codex trend", "identical runs " + " -> ".join(f"{x['identical']} ({x['date'][5:]})" for x in c["history"]), s, dt))
+            rows.append(("codex trend", "identical share (the run sets differ in size) " + " -> ".join(
+                f"{x['identical_pct']}% = {x['identical']}/{x['runs']} ({x['date'][5:]})" for x in c["history"]), s, dt))
     k = r["corpus"]
     if k:
         rows.append(("corpus identical", f"{k['identical']}/{k['fights']} fights = {k['identical_pct']}% ({k['steps_verified_pct']}% of steps verified)",
