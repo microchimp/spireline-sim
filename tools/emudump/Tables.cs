@@ -98,16 +98,28 @@ static class Tables
             string? err = null;
             try
             {
-                for (int idx = 0; idx < 12; idx++)
+                // Moves that hang on the last move, on health below half or on a one-off flag are only
+                // reached by varying those too (Frog Knight's 21 and 35 sit behind both).
+                int full = d.MinHpBelowToughEnemies > 0 ? d.MinHpBelowToughEnemies : d.MinHp;
+                foreach (int hp in new[] { full, Math.Max(1, full * 4 / 10), 1 })
                 {
-                    for (int seed = 1; seed <= 3; seed++)
+                    foreach (bool once in new[] { false, true })
                     {
-                        var e = new EnemyState { DefId = id, Hp = d.MinHpBelowToughEnemies > 0 ? d.MinHpBelowToughEnemies : d.MinHp, MoveIndex = idx };
-                        e.MaxHp = e.Hp;
-                        EnemyAI.ChooseIntents([e], idx + 1, new Random(seed), null, 0);
-                        var it = e.CurrentIntent;
-                        if ((it.Type == IntentType.Attack || it.CarriesDamage) && it.Magnitude > 0)
-                            moves.Add($"{it.Magnitude}x{it.Hits}");
+                        for (int last = -1; last < 12; last++)
+                        {
+                            for (int idx = 0; idx < 12; idx++)
+                            {
+                                for (int seed = 1; seed <= 3; seed++)
+                                {
+                                    var e = new EnemyState { DefId = id, Hp = hp, MoveIndex = idx, LastMove = last, OnceOnlyMoveUsed = once };
+                                    e.MaxHp = full;
+                                    EnemyAI.ChooseIntents([e], idx + 1, new Random(seed), null, 0);
+                                    var it = e.CurrentIntent;
+                                    if ((it.Type == IntentType.Attack || it.CarriesDamage) && it.Magnitude > 0)
+                                        moves.Add($"{it.Magnitude}x{it.Hits}");
+                                }
+                            }
+                        }
                     }
                 }
             }
