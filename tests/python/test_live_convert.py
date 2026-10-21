@@ -476,7 +476,11 @@ class PowersFixtureTests(unittest.TestCase):
         # `Strength += TemporaryStrength` (EnemyAI.cs:956-966), so 6 + 10 is stored as +16.
         self.assertEqual(
             merc["buffs"],
-            [buff("Strength", -16), buff("TemporaryStrength", 16)],
+            [
+                buff("Strength", -16),
+                buff("TemporaryStrength", 16),
+                buff("Thievery", 20),
+            ],
         )
 
     def test_intents_carry_base_per_hit_damage(self) -> None:
@@ -492,12 +496,12 @@ class PowersFixtureTests(unittest.TestCase):
             {"type": 4, "magnitude": 0, "hits": 1, "carries_damage": False},
         )
 
-    def test_heist_is_the_fat_gremlins_gold_not_a_buff(self) -> None:
+    def test_heist_is_a_buff_and_the_fat_gremlins_gold(self) -> None:
         fat = self.doc["enemies"][1]
         self.assertEqual(fat["def_id"], FAT_GREMLIN)
-        self.assertEqual(fat["buffs"], [])
-        # HeistPower.Amount is what the merc took; the emulator carries it in
-        # EnemyState.HeistGold (Enemy.cs:163, CombatEngine.cs:3098-3106).
+        self.assertEqual(fat["buffs"], [buff("Heist", 40)])
+        # HeistPower.Amount is what the merc took; the emulator lists the power and carries
+        # the gold in EnemyState.HeistGold (Enemy.cs:163, CombatEngine.cs:3098-3106).
         self.assertEqual(fat["ai"]["heist_gold"], 40)
 
     def test_thievery_takings_are_flagged(self) -> None:

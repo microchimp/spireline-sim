@@ -212,7 +212,7 @@ _TEMPORARY_BUFFS = frozenset(
     {"TemporaryStrength", "TemporaryDexterity", "TemporaryFocus"},
 )
 
-# Live powers the emulator carries as an `EnemyState` field instead of a buff.
+# Live powers the emulator carries as an `EnemyState` field as well as a buff.
 # `HeistPower.Amount` is the gold the Gremlin Merc took, handed back on the Fat Gremlin's
 # death; the emulator keeps it in `EnemyState.HeistGold` (Enemy.cs:163,
 # CombatEngine.cs:3098-3106, and see combat_sweep.py DECLARED_NO_QUANTITY).
@@ -537,15 +537,13 @@ def to_buffs(
                 f"expected an integer, got {amount!r}",
                 path=f"{where}.amount",
             )
-        if entry in AI_FIELD_POWERS:
-            continue
-        if entry == _THIEVERY:
-            if _stolen_gold(power, where) is None:
-                sink.append(
-                    f"{where}: {entry}: the gold stolen so far (EnemyState.StolenGold) is "
-                    "not in the live snapshot; the emulator starts it from zero",
-                )
-            continue
+        # Heist and Thievery are in the emulator's buff list too (BuffId.Heist,
+        # BuffId.Thievery); their field half rides `to_ai_fields`.
+        if entry == _THIEVERY and _stolen_gold(power, where) is None:
+            sink.append(
+                f"{where}: {entry}: the gold stolen so far (EnemyState.StolenGold) is "
+                "not in the live snapshot; the emulator starts it from zero",
+            )
         ordinal = buff_id(entry)
         if ordinal is None:
             sink.append(

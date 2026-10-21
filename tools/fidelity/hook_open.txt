@@ -92,7 +92,6 @@ missing MeatOnTheBone.BeforeCombatStart  # relic; RunRewardGenerator.GenerateCom
 missing PaelsLegion.BeforeCombatStart  # relic; RelicEffects.PaelsLegionDoublesBlock, RunNonCombatEffects.PaelOptions
 missing VitalSparkPower.BeforeCombatStart  # power; CombatEngine.ApplyAfterCardPlayedPowers, CombatFactory.ApplyIntrinsicEnemyPowers, EnemyAI.ExecuteIntent
 missing Crusher.BeforeDeath  # monster; CombatFactory.CreateKaiserCrab, EnemyAI.ApplyBuffIntent, EnemyAI.ExecuteIntent
-missing HeistPower.BeforeDeath  # power; named nowhere in Core
 missing Rocket.BeforeDeath  # monster; CombatFactory.CreateKaiserCrab, EnemyAI.ApplyBuffIntent, EnemyAI.SelectIntent
 missing SlumberingEssence.BeforeFlush  # enchantment; named nowhere in Core
 missing Bolas.BeforeHandDraw  # card; CardEffects.ApplyCore, CombatEngine.QueueAttackPlayLifecycleEffects
