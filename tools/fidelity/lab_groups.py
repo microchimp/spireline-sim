@@ -1058,6 +1058,15 @@ def observed_runs(prof: Profile, members: list[dict], pools: dict) -> int:
     return int(round(prof.runs * (1 - (1 - min(1.0, rate)) ** max(1.0, per_run))))
 
 
+def union_runs(runs: int, parts: list[int]) -> int:
+    """Runs reached by at least one of several variants, each reaching parts[i] of `runs`, taken as independent: a sum
+    over many variants would saturate at every run, the union does not."""
+    miss = 1.0
+    for n in parts:
+        miss *= 1.0 - min(1.0, max(0, n) / max(1, runs))
+    return int(round(runs * (1.0 - miss)))
+
+
 def retest_of(members: list[dict], result: dict | None) -> dict:
     """The retest mark of a group judged only by fixed host gaps: the spec of its smallest example, and the verdict so far."""
     mine = [s for s in members if s.get("retest_spec")]
@@ -1122,10 +1131,10 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
         elif not prof.doc.get("runs"):
             est = 0
         else:  # shrunk: real runs holding the ingredients together; unshrunk: how often the sources saw it
-            est = sum(impact(prof, list(v)) for v in variants)
+            parts = [impact(prof, list(v)) for v in variants]
             if unshrunk:
-                est += min(observed_runs(prof, unshrunk, pools), max(impact(prof, s.get("implicated") or []) for s in unshrunk))
-            est = min(prof.runs, est)
+                parts.append(min(observed_runs(prof, unshrunk, pools), max(impact(prof, s.get("implicated") or []) for s in unshrunk)))
+            est = union_runs(prof.runs, parts)
         whens = [s["when"] for s in members if s.get("when")]
         first = old_first.get(gid) or min([old_refs[s["ref"]] for s in members if old_refs.get(s["ref"])] + whens or [utc_now()])
         groups.append({

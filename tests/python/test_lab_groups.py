@@ -223,6 +223,13 @@ class HostAndBacklogTests(unittest.TestCase):
         self.assertEqual(12, lg.impact(prof, ["relic:BURNING_BLOOD", "card:AGGRESSION"]))
         self.assertEqual(100, lg.impact(prof, ["card:STRIKE_IRONCLAD"]))  # all common: they stay
 
+    def test_variants_are_a_union_not_a_sum(self):
+        self.assertEqual(0, lg.union_runs(100, []))
+        self.assertEqual(40, lg.union_runs(100, [40]))
+        self.assertEqual(64, lg.union_runs(100, [40, 40]))
+        self.assertEqual(554, lg.union_runs(1000, [20] * 40))  # forty variants of 2% each: a sum would say 800
+        self.assertEqual(100, lg.union_runs(100, [100, 5]))
+
     def test_impact_from_the_profile(self):
         prof = Profile({"runs": 100, "meet": {"relic": {"EGG_A": 40, "LANTERN": 10}, "card": {"AGGRESSION": 30}},
                         "acts": {"1": {"relics": {"LANTERN": 10}, "pairs": {"relic:EGG_A|relic:LANTERN": 5}}}})
