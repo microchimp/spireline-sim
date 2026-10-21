@@ -99,7 +99,7 @@ static class Tables
             try
             {
                 // Moves that hang on the last move, on health below half or on a one-off flag are only
-                // reached by varying those too (Frog Knight's 21 and 35 sit behind both).
+                // reached by varying those too (Frog Knight's 21 and 35 sit behind both); 1000.. is the Ceremonial Beast's second loop.
                 int full = d.MinHpBelowToughEnemies > 0 ? d.MinHpBelowToughEnemies : d.MinHp;
                 foreach (int hp in new[] { full, Math.Max(1, full * 4 / 10), 1 })
                 {
@@ -107,7 +107,7 @@ static class Tables
                     {
                         for (int last = -1; last < 12; last++)
                         {
-                            for (int idx = 0; idx < 12; idx++)
+                            foreach (int idx in Enumerable.Range(0, 12).Concat(Enumerable.Range(1000, 3)))
                             {
                                 for (int seed = 1; seed <= 3; seed++)
                                 {
