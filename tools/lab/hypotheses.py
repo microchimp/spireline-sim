@@ -183,22 +183,36 @@ def write_results(lab: Path, new: dict) -> dict:
     return cur
 
 
+JUDGED = "hyp-judged.json"  # in the job folder: the verdicts files already judged
+
+
 def collect(job_dir: Path, setups_dir: Path, lab: Path, utc: str) -> int:
-    """After a hypotheses job: judge its verdicts and update LAB/hypotheses.json. Returns the number of entries written."""
+    """After a hypotheses batch: judge the job's verdicts files not judged before and update LAB/hypotheses.json.
+
+    Each verdicts file is judged once (the job's JUDGED list), so collecting again adds no attempt; a file is its own
+    evidence. Returns the number of entries written."""
     setups, _ = load_setups(setups_dir)
-    verdicts: list[dict] = []
-    ev = ""
-    for vf in sorted(Path(job_dir).rglob("*.verdicts.json")):
+    job_dir = Path(job_dir)
+    try:
+        done = set(json.loads((job_dir / JUDGED).read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        done = set()
+    written = 0
+    for vf in sorted(job_dir.rglob("*.verdicts.json")):
+        rel = vf.relative_to(job_dir).as_posix()
+        if rel in done:
+            continue
         try:
             doc = json.loads(vf.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            continue
-        if isinstance(doc, list):
-            verdicts += [v for v in doc if isinstance(v, dict)]
-            ev = ev or f"runs/{Path(job_dir).name}/{vf.relative_to(job_dir).as_posix()}"
-    new = judge_all(setups, verdicts, ev, utc, read_results(lab))
-    write_results(lab, new)
-    return len(new)
+            continue  # unreadable now (being written?): judged on a later collect
+        verdicts = [v for v in doc if isinstance(v, dict)] if isinstance(doc, list) else []
+        new = judge_all(setups, verdicts, f"runs/{job_dir.name}/{rel}", utc, read_results(lab))
+        write_results(lab, new)
+        written += len(new)
+        done.add(rel)
+        (job_dir / JUDGED).write_text(json.dumps(sorted(done), indent=1) + "\n", encoding="utf-8")
+    return written
 
 
 def doc_of(setup: dict) -> dict:

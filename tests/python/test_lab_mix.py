@@ -330,6 +330,25 @@ class StrategyPlanTest(unittest.TestCase):
         cmd.post(c)
         self.assertEqual({"t-1": "refuted", "t-2": "confirmed"}, {k: r["status"] for k, r in hyp.read_results(c.lab).items()})
 
+    def test_hypotheses_is_one_batch_per_job_and_a_not_testable_setup_spends_one_attempt_per_job(self):
+        from tools.lab import hypotheses as hyp
+        good = {"id": "t-1", "claim": "c", "spec": {"setup": [{"cmd": "fight", "id": "NIBBITS_WEAK"}]}, "compare": {"fields": [".hand"]}, "seeds": 3}
+        write(self.tmp / "hypotheses" / "src" / "a.json", [good])
+        c = self.ctx("hypotheses", batches=6)
+        steps = [s for s in pl.plan_fights(c) if s.name.startswith("batch-")]
+        self.assertEqual(["batch-00"], [s.name for s in steps])
+        cmd = steps[0].cmds[0]
+        self.assertEqual({"fights": 3}, cmd.counts)
+        self.assertIn("fights/lab20261015T0100-b00.verdicts.json", cmd.outputs["fights"])
+        gap = [{"seed": "S", "tag": "hyp:t-1", "identical": True, "mirror_gap": 1}]
+        for _ in range(3):  # collecting the same job again (a re-run post, a later step) judges nothing twice
+            cmd.pre(c)
+            write(c.job_dir / "fights" / "lab20261015T0100-b00.verdicts.json", gap)
+            cmd.post(c)
+        r = hyp.read_results(c.lab)["t-1"]
+        self.assertEqual(("not testable", 1), (r["status"], r["attempts"]))
+        self.assertEqual(1, len(hyp.pending(hyp.load_setups(self.tmp / "hypotheses")[0], hyp.read_results(c.lab))))
+
     def test_a_job_from_before_strategies_plans_as_it_did(self):
         steps = pl.plan_fights(self.ctx(None))
         argv = self.argv(steps)

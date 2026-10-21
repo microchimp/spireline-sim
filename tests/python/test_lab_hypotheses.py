@@ -134,6 +134,20 @@ class ResultTest(unittest.TestCase):
         r = hyp.read_results(lab)["t-1"]
         self.assertEqual(("confirmed", "runs/J1/fights/n.verdicts.json"), (r["status"], r["evidence"]))
 
+    def test_collect_judges_each_verdicts_file_once(self):
+        setups, lab, job = self.tmp / "set", self.tmp / "lab", self.tmp / "lab" / "runs" / "J1"
+        write(setups / "x" / "a.json", GOOD)
+        write(job / "fights" / "b00.verdicts.json", [self.v(error="boom")])
+        hyp.collect(job, setups, lab, "U")
+        self.assertEqual(0, hyp.collect(job, setups, lab, "U"))
+        self.assertEqual(1, hyp.read_results(lab)["t-1"]["attempts"])
+        write(job / "fights" / "b01.verdicts.json", [self.v(identical=True)])
+        hyp.collect(job, setups, lab, "U")
+        r = hyp.read_results(lab)["t-1"]
+        self.assertEqual(("refuted", 2, "runs/J1/fights/b01.verdicts.json"), (r["status"], r["attempts"], r["evidence"]))
+        write(job / "fights" / "b02.verdicts.json", [])  # an empty batch (nothing testable) writes nothing
+        self.assertEqual(0, hyp.collect(job, setups, lab, "U"))
+
     def test_doc_of_round_trips_through_the_parser(self):
         again, why = hyp.parse_setup(hyp.doc_of(self.s), "x")
         self.assertIsNone(why)

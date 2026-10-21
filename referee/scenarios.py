@@ -849,6 +849,7 @@ def main() -> int:
         specs = hyp.to_specs(setups)
         if not specs:
             print("hypotheses: no testable setup in", a.hypotheses)
+            (JOBS / f"{a.name}.verdicts.json").write_text("[]", encoding="utf-8")  # the batch's output, empty: nothing to judge
             return 0
     elif a.mode == "runs":
         import run_repro  # noqa: PLC0415  (referee/run_repro.py)

@@ -390,10 +390,10 @@ def strategy_unavailable(strategy: str, c: Ctx) -> str | None:
     return None
 
 
-def _scenarios_cmd(c: Ctx, name: str, i: int, mode: str, extra: list[str]) -> Cmd:
+def _scenarios_cmd(c: Ctx, name: str, i: int, mode: str, extra: list[str], batches: int | None = None) -> Cmd:
     """One scenarios.py call (a batch of aimed or setup fights, shrunk and traced) with the job's budgets."""
     p = c.params
-    n = max(1, p["batches"])
+    n = max(1, p["batches"] if batches is None else batches)
     per = lambda total, floor=1: str(max(floor, -(-int(total) // n)))  # noqa: E731  (a job's budget split over its batches)
     args = ["--name", name, "--mode", mode, "--fights", str(p["batch"]), "--start", str(p["start"] + i), "--servers", str(p["servers"]),
             "--game", "{game}", "--shrink", str(p["shrink"])]
@@ -413,8 +413,10 @@ def _scenarios_cmd(c: Ctx, name: str, i: int, mode: str, extra: list[str]) -> Cm
               counts={"fights": p["batch"]}, outputs={"fights": f"fights/{name}.verdicts.json"})
     if mode in ("coverage", "dense", "choices"):  # these weigh by what the lab's setup fights have covered
         cmd.pre, cmd.post = _cov_in, (lambda c, h=_halt_on_unsafe(name): _cov_out(c) or h(c))
-    if mode == "hypotheses":  # only the setups still waiting are played; the verdicts decide them
+    if mode == "hypotheses":  # only the setups still waiting are played, in the job's one batch; the verdicts decide them
         cmd.pre, cmd.post = _hyp_in, (lambda c, h=_halt_on_unsafe(name): _hyp_out(c, h(c)))
+        setups, _ = hyp.load_setups(c.path("{hypotheses}"))
+        cmd.counts = {"fights": len(hyp.to_specs(hyp.pending(setups, hyp.read_results(c.lab))))}
     return cmd
 
 
@@ -458,13 +460,16 @@ def plan_fights(c: Ctx) -> list[Step]:
         steps.append(Step("targets", [Cmd("targets", ["{py}", "tools/fidelity/lab_targets.py", "--lab", "{lab}", "--out", "{lab}/targets.json", *bl,
                                                       "--codex", "{codex}"], needs=["{tree}/tools/fidelity/lab_targets.py", "{codex}"])],
                           mode="serial"))
-    for i in range(p["batches"]):
+    # hypotheses: one batch per job, so each waiting setup is played once and judged once (more batches would replay
+    # the not testable ones and spend their attempts inside one job)
+    nb = 1 if strategy == "hypotheses" else p["batches"]
+    for i in range(nb):
         name = f"lab{c.job_name.split('-')[0]}-b{i:02d}"
         if strategy == "random":
             steps.append(Step(f"batch-{i:02d}", _random_cmds(c, name, i), mode="serial"))
         elif strategy:
             smode, extra = SCENARIO_STRATEGIES[strategy]
-            steps.append(Step(f"batch-{i:02d}", [_scenarios_cmd(c, name, i, smode, extra)], mode="serial"))
+            steps.append(Step(f"batch-{i:02d}", [_scenarios_cmd(c, name, i, smode, extra, nb)], mode="serial"))
         else:  # a job from before strategies: targets (else coverage) mode as it was
             base = ["--mode", mode] + (["--targets", "{lab}/targets.json"] if mode == "targets" else [])
             args = ["--name", name, *base, "--fights", str(p["batch"]), "--start", str(p["start"] + i), "--servers", str(p["servers"]),
