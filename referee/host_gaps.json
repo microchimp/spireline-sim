@@ -30,7 +30,7 @@
       "host": "full",
       "finding": {"date": "2026-10-14", "quote": "trace_diff flags such records"},
       "match": {"text": ["GAME RECORD UNSETTLED"]},
-      "why": "the trace says the game's record was taken before its turn start finished (Idle now also waits on the turn flags: _inPlayerTurnSetup, EndingPlayerTurnPhaseOne/Two, ready-to-end; pending lab retest)"
+      "why": "the trace says the game's record was taken before its turn start finished (Idle now also waits on the turn flags: _inPlayerTurnSetup, EndingPlayerTurnPhaseOne/Two, ready-to-end, rule in referee/driver/IdleRule.cs, RefereeIdleRuleTests; pending lab retest)"
     },
     {
       "id": "full-host-transform-hand-card",

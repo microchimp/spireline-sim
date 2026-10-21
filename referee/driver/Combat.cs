@@ -356,13 +356,10 @@ public static partial class Driver
             var cm = CombatManager.Instance;
             var combat = cm.DebugOnlyGetState();
             var idleMe = combat == null ? null : MegaCrit.Sts2.Core.Context.LocalContext.GetMe(combat);
-            bool busy = RunManager.Instance.ActionExecutor.IsRunning
-                || !RunManager.Instance.ActionQueueSet.IsEmpty
-                || (cm.IsInProgress && (cm.PlayerActionsDisabled || combat?.CurrentSide != CombatSide.Player
-                    || !InPlayPhase(combat) || TurnFlowBusy(cm, idleMe)));
+            bool busy = IdleRule.Busy(ReadTurnFlags(cm, combat, idleMe));
             string sig = busy ? "busy" : Signature(combat);
             if (_stepTrace != null && _tracePlayer != null) TraceFrame(_tracePlayer, !busy, sig);
-            stable = !busy && sig == last ? stable + 1 : 0;
+            stable = IdleRule.NextStable(stable, busy, sig, last);
             Lean.QuietFrames = stable;
             last = sig;
         }

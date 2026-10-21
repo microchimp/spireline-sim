@@ -53,21 +53,33 @@ public static partial class Driver
     }
 
     /// <summary>
-    /// The combat's own turn flow is between the player's phases: the player's turn start is still being
-    /// set up (CombatManager.StartTurn: draw, AfterPlayerTurnStart, auto pre-play; the flag is cleared only
-    /// after the synchronizer reaches PlayPhase), or the player's end of turn has begun (ready to end,
-    /// EndingPlayerTurnPhaseOne/Two). The six-frame Idle shares this with the flag settle: without it a
-    /// record could land while a turn-start hook still ran, or in the gap between an end-turn action
-    /// finishing and the end-of-turn flow marking its phases (the "GAME RECORD UNSETTLED" records).
-    /// Reads a missing flag field (an older build) as false, so the frames rule still runs there.
+    /// The game's flags Idle and the flag settle read on one frame (the rule over them is IdleRule.cs, which
+    /// also notes how CombatManager sets them). The combat-only flags are read only while a combat is in
+    /// progress (false otherwise, where the rule ignores them). A missing _inPlayerTurnSetup field (an older
+    /// build) reads as false, so the frames rule still runs there; the synchronizer's PlayPhase, which
+    /// StartTurn sets just before clearing that flag, still holds Idle off the turn start.
     /// </summary>
-    private static bool TurnFlowBusy(CombatManager cm, Player? me)
+    private static TurnFlags ReadTurnFlags(CombatManager cm, CombatState? combat, Player? me)
     {
+        var run = RunManager.Instance;
+        bool inProgress = cm.IsInProgress;
         _inPlayerTurnSetupField ??= AccessTools.Field(typeof(CombatManager), "_inPlayerTurnSetup");
-        return cm.EndingPlayerTurnPhaseOne || cm.EndingPlayerTurnPhaseTwo
-            || (_inPlayerTurnSetupField != null && InPlayerTurnSetup(cm))
-            || (me != null && cm.IsPlayerReadyToEndTurn(me));
+        return new TurnFlags(
+            ExecutorRunning: run.ActionExecutor.IsRunning,
+            QueueEmpty: run.ActionQueueSet.IsEmpty,
+            CombatInProgress: inProgress,
+            PlayerActionsDisabled: inProgress && cm.PlayerActionsDisabled,
+            PlayerSide: inProgress && combat?.CurrentSide == CombatSide.Player,
+            InPlayPhase: inProgress && InPlayPhase(combat),
+            InPlayerTurnSetup: inProgress && _inPlayerTurnSetupField != null && InPlayerTurnSetup(cm),
+            ReadyToEndTurn: inProgress && me != null && cm.IsPlayerReadyToEndTurn(me),
+            EndingPhaseOne: inProgress && cm.EndingPlayerTurnPhaseOne,
+            EndingPhaseTwo: inProgress && cm.EndingPlayerTurnPhaseTwo);
     }
+
+    /// <summary>The turn start is still being set up or the end of turn has begun (IdleRule.TurnFlowBusy).</summary>
+    private static bool TurnFlowBusy(CombatManager cm, Player me) =>
+        IdleRule.TurnFlowBusy(ReadTurnFlags(cm, cm.DebugOnlyGetState(), me));
 
     /// <summary>
     /// Once at job start: the flag settle and the frame trace read CombatManager._inPlayerTurnSetup. A game

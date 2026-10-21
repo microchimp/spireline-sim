@@ -24,5 +24,7 @@
     <Compile Include="..\..\referee\driver\InboxClaim.cs" Link="Referee\InboxClaim.cs" />
     <!-- Which relic flashes the referee records has no game types either (RefereeFlashSourceTests). -->
     <Compile Include="..\..\referee\driver\FlashSource.cs" Link="Referee\FlashSource.cs" />
+    <!-- When the driver's Idle counts the game as settled, over the turn flags it reads (RefereeIdleRuleTests). -->
+    <Compile Include="..\..\referee\driver\IdleRule.cs" Link="Referee\IdleRule.cs" />
   </ItemGroup>
 </Project>
