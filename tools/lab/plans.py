@@ -339,9 +339,10 @@ def _hyp_out(c: Ctx, safety: str | None) -> str | None:
 SCENARIO_STRATEGIES = {
     "aimed-bugs": ("targets", ["--aim", "bugs"]),
     "aimed-gaps": ("targets", ["--aim", "gaps"]),
-    "choice-edges": ("choices", ["--features", "{lab}/cache/model_features.json", "--decompiled", "{decompiled}"]),
-    "dense": ("dense", []),
-    "under-tested": ("coverage", []),
+    "choice-edges": ("choices", ["--features", "{lab}/cache/model_features.json", "--decompiled", "{decompiled}",
+                      "--act1-seeds", "{lab}/cache/act1_seeds.json"]),
+    "dense": ("dense", ["--act1-seeds", "{lab}/cache/act1_seeds.json"]),
+    "under-tested": ("coverage", ["--act1-seeds", "{lab}/cache/act1_seeds.json"]),
     "hypotheses": ("hypotheses", ["--hypotheses", "{job}/hyp-in", "--shrink", "0", "--trace", "0"]),
 }
 

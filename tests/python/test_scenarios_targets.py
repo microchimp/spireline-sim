@@ -244,16 +244,16 @@ class ChoiceSpecTests(unittest.TestCase):
         for s in self.specs():
             cmds = [it["cmd"] for it in s["setup"]]
             f = cmds.index("fight")
-            self.assertEqual("deck_set", cmds[0])
-            self.assertTrue(all(c in ("card", "relic", "potion") for c in cmds[1:f]))
+            self.assertEqual("deck_set", cmds[1 if cmds[0] == "act" else 0])
+            self.assertTrue(all(c in ("card", "relic", "potion") for c in cmds[2 if cmds[0] == "act" else 1:f]))
             self.assertTrue(all(c == "card" for c in cmds[f + 1:]))  # screen-opening cards start in the hand
             for it in s["setup"][f + 1:]:
                 self.assertEqual("Hand", it["pile"])
                 self.assertIn(it["id"], self.pools.cards)
             self.assertIn(s["choice_edges"], scenarios.EDGE_NAMES)
-            self.assertTrue(set(s["setup"][0]["cards"][0]) == {"id", "upgraded"})
-            self.assertLessEqual(len(s["setup"][0]["cards"]), 11)  # small decks
-            self.assertGreaterEqual(len(s["setup"][0]["cards"]), 1)
+            self.assertTrue(set(next(it for it in s["setup"] if it["cmd"] == "deck_set")["cards"][0]) == {"id", "upgraded"})
+            self.assertLessEqual(len(next(it for it in s["setup"] if it["cmd"] == "deck_set")["cards"]), 11)  # small decks
+            self.assertGreaterEqual(len(next(it for it in s["setup"] if it["cmd"] == "deck_set")["cards"]), 1)
             self.assertTrue(any(it["cmd"] == "relic" and it["id"] in self.pools.relics for it in s["setup"]))
             self.assertEqual([], scenarios.spec_flags(s, self.content))
             self.assertEqual(f"choices:", s["tag"][:8])

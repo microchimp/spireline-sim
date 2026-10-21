@@ -68,7 +68,7 @@ class SpecTests(unittest.TestCase):
         cmds = [it["cmd"] for it in spec["setup"]]
         self.assertEqual(1, cmds.count("fight"))
         f = cmds.index("fight")
-        self.assertTrue(all(x in ("relic", "potion", "card") for x in cmds[:f]))
+        self.assertTrue(all(x in ("act", "relic", "potion", "card") for x in cmds[:f]))
         self.assertTrue(all(x == "power" for x in cmds[f + 1:]))
         self.assertTrue(spec["use_potions"])
 
@@ -77,7 +77,7 @@ class SpecTests(unittest.TestCase):
         for n in range(50):
             s = scenarios.coverage_spec(self.content, {"items": {}}, rng, n)
             self.order_ok(s)
-            self.assertIn(len(s["setup"]), range(2, 5))
+            self.assertIn(len([it for it in s["setup"] if it["cmd"] != "act"]), range(2, 5))
 
     def test_dense_specs(self):
         rng = random.Random(2)
@@ -95,6 +95,31 @@ class SpecTests(unittest.TestCase):
             ups += sum(it["upgraded"] for it in cards)
             total += len(cards)
         self.assertTrue(0.25 < ups / total < 0.45)
+
+    def test_setups_of_the_other_modes_hold_the_rooms_act(self):
+        """A room of act 2 or 3 comes with the act command and an act-1 room with a seed known to start in its variant,
+        so no coverage, dense or choice setup is a cross_act one (the lab's 674 groups of implausible setups)."""
+        seeds = {"KNOWNOVER1": "OVERGROWTH", "KNOWNUNDER": "UNDERDOCKS"}
+        names = {x[0]: x[1] for x in self.content.encounters}
+        rng = random.Random(5)
+        seen = set()
+        for n in range(120):
+            for s in (scenarios.coverage_spec(self.content, {"items": {}}, rng, n, seeds),
+                      scenarios.dense_spec(self.content, {"items": {}}, rng, n, seeds)):
+                enc = next(it["id"] for it in s["setup"] if it["cmd"] == "fight")
+                act = scenarios.ACT_NUMBER[names[enc]]
+                acts = [it["index"] for it in s["setup"] if it["cmd"] == "act"]
+                self.assertEqual([act] if act > 1 else [], acts)
+                if act == 1:
+                    self.assertEqual(names[enc], seeds.get(s["seed"]))
+                seen.add(act)
+        self.assertEqual({1, 2, 3}, seen)
+
+    def test_without_a_known_seed_only_later_acts_are_drawn(self):
+        rng = random.Random(6)
+        for n in range(60):
+            s = scenarios.coverage_spec(self.content, {"items": {}}, rng, n, {})
+            self.assertEqual(1, sum(it["cmd"] == "act" for it in s["setup"]))
 
     def test_flags(self):
         c = self.content

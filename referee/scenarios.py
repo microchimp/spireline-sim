@@ -215,8 +215,26 @@ def encounter_key(content: Content, cov: dict, rng: random.Random) -> tuple:
     return next(x for x in content.encounters if x[0] == name)
 
 
-def coverage_spec(content: Content, cov: dict, rng: random.Random, n: int) -> dict:
-    enc, act, kind = encounter_key(content, cov, rng)
+def placed_encounter(content: Content, cov: dict, rng: random.Random, act1_seeds: dict | None) -> tuple:
+    """(encounter, act name, kind, setup prefix, seed or None) of a room no real run holds the setup out of.
+
+    Only an act-1 room is met in the run's own act-1 variant, which the seed decides: such a room gets a seed known to
+    start in that variant (act1_seeds, seed -> variant), and when none is known an act 2 or 3 room is drawn instead.
+    An act 2 or 3 room gets the setup's `act` command, as a run that has reached that act."""
+    for _ in range(40):
+        enc, act, kind = encounter_key(content, cov, rng)
+        if ACT_NUMBER[act] > 1:
+            return enc, act, kind, [{"cmd": "act", "index": ACT_NUMBER[act]}], None
+        known = sorted(sd for sd, v in (act1_seeds or {}).items() if v == act)
+        if known:
+            return enc, act, kind, [], rng.choice(known)
+    later = [x for x in content.encounters if ACT_NUMBER[x[1]] > 1]
+    enc, act, kind = rng.choice(later)
+    return enc, act, kind, [{"cmd": "act", "index": ACT_NUMBER[act]}], None
+
+
+def coverage_spec(content: Content, cov: dict, rng: random.Random, n: int, act1_seeds: dict | None = None) -> dict:
+    enc, act, kind, prefix, seed = placed_encounter(content, cov, rng, act1_seeds)
     cats = {
         "relic": [f"relic:{r}" for r in content.relics],
         "potion": [f"potion:{p}" for p in content.potions],
@@ -240,12 +258,12 @@ def coverage_spec(content: Content, cov: dict, rng: random.Random, n: int) -> di
         else:
             power, side = ident.split("@")
             after.append(_power_item(rng, power, "player" if side == "player" else "enemy:0"))
-    setup = before + [{"cmd": "fight", "id": enc}] + after
-    return _spec(rng, n, setup, "coverage", act, kind)
+    setup = prefix + before + [{"cmd": "fight", "id": enc}] + after
+    return _seeded(_spec(rng, n, setup, "coverage", act, kind), seed)
 
 
-def dense_spec(content: Content, cov: dict, rng: random.Random, n: int) -> dict:
-    enc, act, kind = encounter_key(content, cov, rng)
+def dense_spec(content: Content, cov: dict, rng: random.Random, n: int, act1_seeds: dict | None = None) -> dict:
+    enc, act, kind, prefix, seed = placed_encounter(content, cov, rng, act1_seeds)
     relics = [k.split(":", 1)[1] for k in pick(cov, [f"relic:{r}" for r in content.relics], rng.randint(10, 20), rng)]
     cards = []
     for c in rng.sample(content.cards, rng.randint(10, 20)):
@@ -258,8 +276,8 @@ def dense_spec(content: Content, cov: dict, rng: random.Random, n: int) -> dict:
     after = [_power_item(rng, p, "player") for p in rng.sample(content.player_powers, rng.randint(0, 3))]
     for slot in range(2):
         after += [_power_item(rng, p, f"enemy:{slot}") for p in rng.sample(content.enemy_powers, rng.randint(0, 2))]
-    setup = mixed + potions + [{"cmd": "fight", "id": enc}] + after
-    return _spec(rng, n, setup, "dense", act, kind)
+    setup = prefix + mixed + potions + [{"cmd": "fight", "id": enc}] + after
+    return _seeded(_spec(rng, n, setup, "dense", act, kind), seed)
 
 
 # ---------------------------------------------------------------- choice edges (--mode choices)
@@ -291,12 +309,13 @@ class ChoicePools:
         self.potions = [p for p in content.potions if opens("potion", p)]
 
 
-def choice_spec(content: Content, pools: ChoicePools, cov: dict, rng: random.Random, n: int, edges: str = "random") -> dict:
+def choice_spec(content: Content, pools: ChoicePools, cov: dict, rng: random.Random, n: int, edges: str = "random",
+                act1_seeds: dict | None = None) -> dict:
     """A setup fight built to open card screens, answered with the driver's edge answers (spec "choice_edges": none,
     one, the most, the last eligible, the most unusual card). Small decks, so a screen may offer fewer cards than
     it allows; relics that open a screen on pickup land among the deck's cards; screen-opening cards also start in
     the hand, so they are played early; screen-opening potions fill the belt first."""
-    enc, act, kind = encounter_key(content, cov, rng)
+    enc, act, kind, prefix, seed = placed_encounter(content, cov, rng, act1_seeds)
     relics = rng.sample(pools.relics, min(rng.randint(1, 3), len(pools.relics)))
     plain = [r for r in content.relics if r not in pools.relics]
     relics += rng.sample(plain, min(rng.randint(0, 2), len(plain)))
@@ -313,9 +332,9 @@ def choice_spec(content: Content, pools: ChoicePools, cov: dict, rng: random.Ran
     belt = rng.sample(pools.potions, min(rng.randint(0, 2), len(pools.potions)))
     belt += rng.sample([p for p in content.potions if p not in belt], 1) if len(belt) < slots and rng.random() < 0.5 else []
     in_hand = [{"cmd": "card", "id": c, "pile": "Hand", "upgraded": c in content.upgradable and rng.random() < 0.35} for c in held]
-    setup = [{"cmd": "deck_set", "cards": deck}] + mixed + [{"cmd": "potion", "id": p} for p in belt[:slots]]
+    setup = prefix + [{"cmd": "deck_set", "cards": deck}] + mixed + [{"cmd": "potion", "id": p} for p in belt[:slots]]
     setup += [{"cmd": "fight", "id": enc}] + in_hand
-    spec = _spec(rng, n, setup, "choices", act, kind)
+    spec = _seeded(_spec(rng, n, setup, "choices", act, kind), seed)
     spec["choice_edges"] = rng.choice(EDGE_NAMES) if edges == "random" else edges
     return spec
 
@@ -469,7 +488,7 @@ class Aim:
         got = None
         if act == 1:
             known = sorted(s for s, v in self.act1_seeds.items() if v == act_name and s not in self.used)
-            if known and rng.random() < 0.8:
+            if known:  # a fresh seed starts in either act-1 variant: half the draws would be a cross_act setup
                 got = rng.choice(known)
                 self.borrowed.add(got)
         while got is None or got in self.used:
@@ -600,6 +619,12 @@ def _spec(rng: random.Random, n: int, setup: list, mode: str, act: str, kind: st
     return {"kind": "combat", "seed": _seed(rng), "character": "IRONCLAD", "ascension": 10, "neow": n % 3,
             "chooser_seed": 7000 + n, "max_actions": 150, "setup": setup, "use_potions": True,
             "tag": f"{mode}:{act}:{kind}"}
+
+
+def _seeded(spec: dict, seed: str | None) -> dict:
+    if seed:
+        spec["seed"] = seed
+    return spec
 
 
 def spec_flags(spec: dict, content: Content, game: dict | None = None) -> list[str]:
@@ -783,6 +808,7 @@ def main() -> int:
     ap.add_argument("--aim", choices=AIMS, default="all",
                     help="targets mode: all targets; bugs = only those an open backlog item names; gaps = starter items weigh 1/20")
     ap.add_argument("--edges", choices=EDGE_MODES, default="random", help="choices mode: the driver's choice_edges answers")
+    ap.add_argument("--act1-seeds", type=Path, help="choices, dense, coverage: the lab's cache/act1_seeds.json (seed -> its act-1 variant)")
     ap.add_argument("--features", type=Path, help="choices mode: lab_groups' model_features.json (which models open card screens)")
     ap.add_argument("--decompiled", type=Path, default=Path(r"D:\spireline\referee\decompiled"),
                     help="choices mode: the decompile model_features is read from when --features is missing or stale")
@@ -834,13 +860,14 @@ def main() -> int:
                                                               "profile_runs": aim.prof.runs, "aims": aims}, indent=1),
                                                   encoding="utf-8")
     elif a.mode == "choices":
+        known1 = act1_seed_cache(a.act1_seeds) if a.act1_seeds else {}
         from tools.fidelity.lab_groups import model_features  # noqa: PLC0415
         feats = model_features(a.decompiled, a.features) if a.features or a.decompiled.is_dir() else {}
         pools = ChoicePools(content, feats)
         if not (pools.relics or pools.cards or pools.potions):
             print("no relic, card or potion that opens a card screen is reachable")
             return 1
-        specs = [choice_spec(content, pools, cov, rng, a.start * 1000 + i, a.edges) for i in range(a.fights)]
+        specs = [choice_spec(content, pools, cov, rng, a.start * 1000 + i, a.edges, known1) for i in range(a.fights)]
     elif a.mode == "hypotheses":
         from tools.lab import hypotheses as hyp  # noqa: PLC0415
         setups, problems = hyp.load_setups(a.hypotheses)
@@ -864,7 +891,8 @@ def main() -> int:
             return 0
     else:
         make = dense_spec if a.mode == "dense" else coverage_spec
-        specs = [make(content, cov, rng, a.start * 1000 + i) for i in range(a.fights)]
+        known1 = act1_seed_cache(a.act1_seeds) if a.act1_seeds else {}
+        specs = [make(content, cov, rng, a.start * 1000 + i, known1) for i in range(a.fights)]
     if a.make_only:
         (JOBS / f"{a.name}.json").write_text(json.dumps({"runs": specs}), encoding="utf-8")
         print(f"wrote {JOBS / (a.name + '.json')}: {len(specs)} specs")
