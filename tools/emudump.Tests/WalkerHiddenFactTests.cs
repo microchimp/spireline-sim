@@ -163,6 +163,9 @@ public class WalkerHiddenFactTests
         return run;
     }
 
+    static JsonNode Fact(JsonObject result, string name) =>
+        Assert.Single(result["hidden_facts"]!.AsArray(), f => (string?)f!["fact"] == name)!;
+
     static JsonObject MercStats(JsonObject record, int floor) =>
         record["map_point_history"]![0]![floor - 1]!["player_stats"]![0]!.AsObject();
 
@@ -189,7 +192,7 @@ public class WalkerHiddenFactTests
     {
         var r = WalkerTests.Walk(World(stole: true, turns: 2).Record);
         Assert.Equal("complete", (string?)r["status"]);
-        var fact = Assert.Single(r["hidden_facts"]!.AsArray())!;
+        var fact = Fact(r, "heist");
         Assert.Equal(5, (int)fact["floor"]!);
         Assert.Equal("heist", (string?)fact["fact"]);
         Assert.Equal("yes", (string?)fact["settled"]);
@@ -210,7 +213,7 @@ public class WalkerHiddenFactTests
         Assert.Equal("card_reward", (string?)stop["component"]);
         Assert.Equal(Walker.FightDependent, (string?)stop["class"]);
         Assert.Contains("Gremlin Merc", (string?)stop["tainted_by"]);
-        Assert.Equal("open", (string?)Assert.Single(r["hidden_facts"]!.AsArray())!["settled"]);
+        Assert.Equal("open", (string?)Fact(r, "heist")["settled"]);
     }
 
     [Fact]
@@ -234,6 +237,32 @@ public class WalkerHiddenFactTests
         var r = WalkerTests.Walk(World(stole: false, turns: 1).Record);
         Assert.Equal("complete", (string?)r["status"]);
         Assert.Null(r["hidden_facts"]);
+    }
+
+    [Fact]
+    public void The_joiners_a_fight_created_are_a_hidden_fact_drawn_on_Niche()
+    {
+        // The Merc's death creates its two gremlins, each rolling its HP on Niche; the history
+        // lists them, which is the least the count can be. When the walk stops it settles the count
+        // like any hidden fact; with nothing later reading Niche every count fits and it stays open.
+        var run = World(stole: true, turns: 2);
+        var r = WalkerTests.Walk(run.Record);
+        Assert.Equal("complete", (string?)r["status"]);
+        var joined = Fact(r, "joined");
+        Assert.Equal(5, (int)joined["floor"]!);
+        Assert.Equal("open", (string?)joined["settled"]); // no later check reads Niche here: every count fits
+    }
+
+    [Fact]
+    public void A_fact_left_open_is_settled_again_once_the_facts_after_it_are_settled()
+    {
+        // The joiners count is met before the Heist and ties while the Heist is still at its
+        // default; it is visited again after the Heist is settled, and the walk completes either way.
+        var r = WalkerTests.Walk(World(stole: true, turns: 2).Record);
+        Assert.Equal("complete", (string?)r["status"]);
+        Assert.Equal("yes", (string?)Fact(r, "heist")["settled"]);
+        Assert.Equal("open", (string?)Fact(r, "joined")["settled"]);
+        Assert.Equal(5, (int)Fact(r, "joined")["floor"]!);
     }
 
     static void GiveLamp(RunState s) => s.Relics.Add(new RelicInstance(RelicEffects.LavaLamp));
