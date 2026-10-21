@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import functools
 import json
 import os
 import subprocess
@@ -781,6 +782,12 @@ def main() -> int:
     ap.add_argument("--no-patches", action="store_true",
                     help="play without the speed patches (driver/Patches.cs: fast_patches, silent, still_visuals)")
     ap.add_argument("--no-dotnet-tuning", action="store_true", help="start the games without run_referee.DOTNET_ENV")
+    ap.add_argument("--depth", type=int, default=1,
+                    help="specs kept waiting in each server's inbox (default 1); more hides the dispatcher's 0.25 s poll "
+                         "behind short fights")
+    ap.add_argument("--godot-arg", action="append", default=[],
+                    help="extra engine flag for every game's command line (speed spike, e.g. --godot-arg=--fixed-fps "
+                         "--godot-arg=60); none by default")
     ap.add_argument("--job-opt", action="append", default=[], metavar="KEY=JSON",
                     help="extra job key for every server, e.g. profile=true (driver/Lean.cs); repeatable")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
@@ -806,7 +813,8 @@ def main() -> int:
     run_dir = a.run_dir or game.parent / "serve" / time.strftime("%Y%m%d-%H%M%S")
     pool = Pool(game, run_dir, servers=a.servers, spares=a.spares, jopts=jopts, boot_timeout=a.boot_timeout,
                 max_restarts=a.max_restarts, net_interval=a.net_interval, below_normal=not a.normal_priority,
-                dotnet_tuning=not a.no_dotnet_tuning, full_lane=a.full_lane, route_full=not a.full_here)
+                dotnet_tuning=not a.no_dotnet_tuning, full_lane=a.full_lane, route_full=not a.full_here, depth=a.depth,
+                **({"launch": functools.partial(rr.launch, extra_args=a.godot_arg)} if a.godot_arg else {}))
     if not a.no_install:
         for attempt in range(30):  # a running game holds the mod DLL open; wait for it
             try:

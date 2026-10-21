@@ -328,6 +328,13 @@ A job with `"normal_settings": true` skips every speed change (Instant fast mode
 tutorials stay off and the settle rule is the job's. It is about 17x slower (r20v2: 24 min, against 83 s).
 `run_referee.py --windowed` launches without `--headless`, every safety check unchanged; use it only with the owner's own go.
 
+## Speed spike keys (branch `spike/fast-forward`, `driver/Spike.cs`; all off by default)
+
+Job keys `spike_prof` (cost.spike: driver ms and main-thread Mcyc per step phase), `time_scale`, `physics_ticks`,
+`max_physics_steps`, `branch_probe` K (times the run save and full combat state capture after step K); serve.py
+`--godot-arg` (e.g. `--godot-arg=--fixed-fps --godot-arg=60`) and `--depth`. Numbers and commands:
+`D:/spireline/referee/design/real-game-speed.md`; scripts in `referee/spike/`.
+
 ## Table check (content tables vs the game)
 
 `{"out": "D:/spireline/referee/exports/v0.107.1.json", "runs": [{"kind": "export"}]}` run through `run_referee.py` writes the game's pool orders, rarities, costs, act encounter and event lists and Neow's options (local only, never commit). Then `dotnet build` in `tools/emudump` and `python -m tools.fidelity.table_check` lists every difference with the emulator's tables.

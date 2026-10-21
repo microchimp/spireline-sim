@@ -267,6 +267,7 @@ public static partial class Driver
             }
 
             Lean.Configure(job, tree);  // frame-cost profiling (Lean.cs)
+            Spike.Configure(job);  // speed spike keys (Spike.cs); none set, nothing changes
 
             boot.Mark("patches");
             Nodeless.Configure(job);  // "nodeless": true (Nodeless.cs); off, nothing is installed

@@ -1,0 +1,29 @@
+e1_lab   --specs $SP/fights50.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true --job-opt health=true
+e2_nl    --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true
+e0_old   --specs $SP/fights50.json --servers 1 --depth 2 --old-settle --job-opt spike_prof=true --job-opt step_costs=true
+e3_nl_ts50   --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true --job-opt time_scale=50
+e4_nl_ffps   --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true --godot-arg=--fixed-fps --godot-arg=60
+e5_lab_ts50  --specs $SP/fights50.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true --job-opt time_scale=50
+e6_lab_ffps  --specs $SP/fights50.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true --godot-arg=--fixed-fps --godot-arg=60
+e7_nl_phys1  --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true --job-opt physics_ticks=1 --job-opt max_physics_steps=1
+e8_nl_d1     --specs $SP/fights50_nl.json --servers 1 --depth 1
+e8_nl_d2     --specs $SP/fights50_nl.json --servers 1 --depth 2
+e9_nl_branch --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt branch_probe=5
+e9_lab_branch --specs $SP/fights50.json --servers 1 --depth 2 --job-opt branch_probe=5
+e2b_nl    --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true
+e3b_nl_ts50   --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true --job-opt time_scale=50
+e4b_nl_ffps   --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt step_costs=true --godot-arg=--fixed-fps --godot-arg=60
+e10_nl_prof   --specs $SP/fights50_nl.json --servers 1 --depth 2 --job-opt profile=true
+e10_lab_prof  --specs $SP/fights50.json --servers 1 --depth 2 --job-opt profile=true
+s04_nl  --specs $SP/fights50_nl.json --repeat 4 --servers 4 --depth 2
+s08_nl  --specs $SP/fights50_nl.json --repeat 4 --servers 8 --depth 2
+s12_nl  --specs $SP/fights50_nl.json --repeat 4 --servers 12 --depth 2
+s16_nl  --specs $SP/fights50_nl.json --repeat 6 --servers 16 --depth 2
+s08_lab --specs $SP/fights50.json --repeat 4 --servers 8 --depth 2 --job-opt health=true
+s16_lab --specs $SP/fights50.json --repeat 4 --servers 16 --depth 2 --job-opt health=true
+r_old   --specs $SP/runs4.json --servers 4 --old-settle --job-opt spike_prof=true --job-opt health=true
+r_fast  --specs $SP/runs4.json --servers 4 --job-opt spike_prof=true --job-opt health=true
+t10_nl_ffps  --specs $SP/fights50_nl.json --repeat 10 --servers 10 --depth 2 --godot-arg=--fixed-fps --godot-arg=60
+t08_lab_ffps --specs $SP/fights50.json --repeat 6 --servers 8 --depth 2 --godot-arg=--fixed-fps --godot-arg=60 --job-opt health=true
+e11_lab_sound    --specs $SP/fights50.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt silent=false
+e11_lab_visuals  --specs $SP/fights50.json --servers 1 --depth 2 --job-opt spike_prof=true --job-opt still_visuals=false

@@ -162,9 +162,11 @@ public static partial class Driver
                 for (int f = 0; f < IdleProbe; f++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                 dump["idle_probe"] = new JsonObject { ["mcyc_per_frame"] = Math.Round((MainThreadMcycles() - m0) / IdleProbe, 2), ["ms_per_frame"] = Math.Round(w.Elapsed.TotalMilliseconds / IdleProbe, 2) };
             }
+            Spike.BeginFight();  // spike_prof (Spike.cs): off, nothing is timed
             for (int i = 0; inRoom && i < maxActions && CombatManager.Instance.IsInProgress; i++)
             {
                 Nodeless.ThrowIfFallback();  // a fallback model in the state just recorded: no further action nodeless
+                long spikeT = Spike.Now();
                 CurrentStep = i + 1;  // choices this action opens are logged against its step
                 var combat = CombatManager.Instance.DebugOnlyGetState()!;
                 var enemies = combat.Enemies.Where(e => e.IsAlive).ToList();
@@ -203,6 +205,8 @@ public static partial class Driver
                     (hi, ti) = heuristic ? ChooseHeuristic(options, hand, enemies, combat, player, rng) : options[rng.Next(options.Count)];
                 }
 
+                Spike.Add(Spike.Choose, spikeT);
+                spikeT = Spike.Now();
                 if (TraceFrames) _stepTrace = new JsonArray();
                 ulong sf0 = Engine.GetProcessFrames();
                 double sc0 = MainThreadMcycles();
@@ -231,7 +235,11 @@ public static partial class Driver
                     action["played"] = card.TryManualPlay(tgt);
                 }
 
-                if (!await SettleStep(state, player, i + 1))
+                Spike.Add(Spike.Act, spikeT);
+                spikeT = Spike.Now();
+                bool settled = await SettleStep(state, player, i + 1);
+                Spike.Add(Spike.Settle, spikeT);
+                if (!settled)
                 {
                     // The game never settled (a screen or loop the driver cannot answer). Keep what
                     // was recorded and end the fight here instead of letting the watchdog kill the copy.
@@ -243,8 +251,11 @@ public static partial class Driver
                     action["used"] = !ReferenceEquals(player.PotionSlots[potionSlot], potion);
                 }
 
+                spikeT = Spike.Now();
                 steps.Add(Step(action, state, player));
                 ChecksumTap.Attach(steps);
+                Spike.Add(Spike.Snapshot, spikeT);
+                Spike.Probe(state, i + 1, dump);  // branch_probe (Spike.cs): off unless the job names a step
                 if (StepCosts)
                 {
                     steps[^1]!["cost"] = new JsonObject { ["frames"] = (long)(Engine.GetProcessFrames() - sf0), ["mcyc"] = Math.Round(MainThreadMcycles() - sc0) };
@@ -266,6 +277,7 @@ public static partial class Driver
         timing["fight_end"] = phase.ElapsedMilliseconds;
         ChecksumTap.End(dump);
         var cost = Cost();
+        Spike.EndFight(cost);
         // Flashes raised by display code (Chooser.cs, FlashSource.cs): diagnostics, never compared.
         if (TakeDisplayFlashes() is { } shown) cost["display_flashes"] = shown;
         dump["cost"] = cost;

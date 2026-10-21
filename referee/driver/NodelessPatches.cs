@@ -220,7 +220,9 @@ public static class NodelessPatches
         Count++;
 
         // Diagnostics (driver code, read-only): the orphan-node count after each recorded step.
-        h.Patch(AccessTools.Method(typeof(Driver), "Snapshot"), postfix: new HarmonyMethod(typeof(NodelessPatches), nameof(SnapshotPostfix)));
+        // The state snapshot (RunState, Player), not Export.cs's Snapshot(CardModel): by name alone the lookup is ambiguous
+        // and every nodeless server died at boot (AmbiguousMatchException) once that overload existed.
+        h.Patch(AccessTools.Method(typeof(Driver), "Snapshot", new[] { typeof(RunState), typeof(Player) }), postfix: new HarmonyMethod(typeof(NodelessPatches), nameof(SnapshotPostfix)));
     }
 
     /// <summary>Room-end reward generations started by OnCombatWonNodeless in this process (diagnostics).</summary>
