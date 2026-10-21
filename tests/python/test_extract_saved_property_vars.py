@@ -34,5 +34,12 @@ class SavedPropertyVars(unittest.TestCase):
         self.assertEqual(table_value("GENETIC_ALGORITHM", "BaseBlock"), 1)
 
 
+class BranchingStackType(unittest.TestCase):
+    def test_monologue_is_none_as_applied(self):
+        self.assertEqual(ed.STACK_AT_DEFAULT["MonologuePower"], "None")
+        powers = (ROOT / "src" / "Sts2Emulator" / "Generated" / "Powers.g.cs").read_text(encoding="utf-8")
+        self.assertRegex(powers, r'Name: "MonologuePower", IsBuff: true, StackType: "None"')
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -129,7 +129,7 @@ internal static class Powers
         new PowerDef(Id: 121, Name: "MindRotPower", IsBuff: false, StackType: "Counter", TicksDown: false),
         new PowerDef(Id: 122, Name: "MinionPower", IsBuff: true, StackType: "Single", TicksDown: false),
         new PowerDef(Id: 123, Name: "MonarchsGazePower", IsBuff: true, StackType: "Counter", TicksDown: false),
-        new PowerDef(Id: 124, Name: "MonologuePower", IsBuff: true, StackType: "Counter", TicksDown: false),
+        new PowerDef(Id: 124, Name: "MonologuePower", IsBuff: true, StackType: "None", TicksDown: false),
         new PowerDef(Id: 125, Name: "NecroMasteryPower", IsBuff: true, StackType: "Counter", TicksDown: false),
         new PowerDef(Id: 126, Name: "NemesisPower", IsBuff: true, StackType: "Single", TicksDown: false),
         new PowerDef(Id: 127, Name: "NeurosurgePower", IsBuff: false, StackType: "Counter", TicksDown: false),

@@ -97,6 +97,9 @@ MULTI_ATTACK = re.compile(
 # Power type
 POWER_TYPE = re.compile(r"PowerType\.(Buff|Debuff)")
 POWER_STACK = re.compile(r"PowerStackType\.(\w+)")
+# Powers whose StackType getter branches on state: the first return in the file is not the
+# fresh power's. Monologue is Counter only once StrengthApplied is non-zero, None as applied.
+STACK_AT_DEFAULT = {"MonologuePower": "None"}
 
 # Innate attribution — the CanonicalKeywords property body vs the OnUpgrade body.
 _CANONICAL_KEYWORDS_BODY = re.compile(
@@ -589,6 +592,7 @@ def extract_powers() -> str:
         stack_m = POWER_STACK.search(text)
         is_buff = pt_m.group(1) == "Buff" if pt_m else True
         stack = stack_m.group(1) if stack_m else "Counter"
+        stack = STACK_AT_DEFAULT.get(name, stack)
         ticks = "TickDownDuration" in text
 
         entries.append(
