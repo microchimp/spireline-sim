@@ -158,11 +158,15 @@ def check_cards_static(game_cards: dict[str, dict], emu_cards: dict[str, dict]) 
             continue
         b, u = d["base"], d.get("upgraded")
         bv = parse_vars(b.get("vars"))
-        for var, ek, uk in (("Damage", "base_damage", "upgrade_damage"), ("Block", "base_block", "upgrade_block")):
-            check_field("card_static", f"base {var.lower()}", cid, _num(bv.get(var, 0)), e.get(ek))
+        # Osty cards (POKE, SNAP, BONE_SHARDS ...) carry their hit in an OstyDamage var, not Damage;
+        # the emulator's one damage number stands for either.
+        dvar = "Damage" if "Damage" in bv or "OstyDamage" not in bv else "OstyDamage"
+        for var, ek, uk in ((dvar, "base_damage", "upgrade_damage"), ("Block", "base_block", "upgrade_block")):
+            label = "damage" if ek == "base_damage" else var.lower()
+            check_field("card_static", f"base {label}", cid, _num(bv.get(var, 0)), e.get(ek))
             if u is not None and e.get("upgradable"):
                 uv = parse_vars(u.get("vars"))
-                check_field("card_static", f"upgrade {var.lower()} change", cid,
+                check_field("card_static", f"upgrade {label} change", cid,
                             _num(uv.get(var, 0)) - _num(bv.get(var, 0)), e.get(uk))
         check_field("card_static", "keywords", cid, _kw(b.get("keywords")), e.get("keywords"))
         if u is not None and e.get("upgradable"):

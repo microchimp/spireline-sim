@@ -44,6 +44,15 @@ class CardStatic(unittest.TestCase):
         self.assertIn("base damage A: game 7 vs emulator 6", tc.lines[0])
         self.assertIn("upgrade damage change A: game 5 vs emulator 3", tc.lines[1])
 
+    def test_osty_damage_var_counts_as_damage(self):
+        g = card()
+        g["detail"]["base"]["vars"] = "OstyDamage=6"
+        g["detail"]["upgraded"]["vars"] = "OstyDamage=9"
+        tc.check_cards_static({"POKE": g}, {"POKE": emu_card()})
+        self.assertEqual(tc.lines, [])
+        tc.check_cards_static({"POKE": g}, {"POKE": emu_card(base_damage=7)})
+        self.assertEqual(len(tc.lines), 1)
+
     def test_keywords_and_upgrade_cost(self):
         g = card(kw="Exhaust", up_kw="", cost=2, up_cost=1)
         tc.check_cards_static({"A": g}, {"A": emu_card(keywords=["Exhaust"], keywords_upgraded=["Exhaust"], upgrade_cost=0)})
