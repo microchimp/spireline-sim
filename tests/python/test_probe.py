@@ -211,16 +211,16 @@ class ViewTests(unittest.TestCase):
 
 
 class CatalogTests(unittest.TestCase):
-    MAP_ONLY = {"relic", "potion"}
+    MAP_ONLY = {"relic", "potion", "deck_set"}
     COMBAT_ONLY = {"power", "energy", "upgrade"}
-    KINDS = {"relic", "potion", "card", "fight", "power", "energy", "upgrade"}
+    KINDS = {"relic", "potion", "card", "fight", "power", "energy", "upgrade", "deck_set"}
 
     def test_at_least_ten_probes_with_unique_ids_and_ledger_items(self):
         ids = [p.id for p in probes.PROBES]
         self.assertGreaterEqual(len(ids), 10)
         self.assertEqual(len(ids), len(set(ids)))
         for p in probes.PROBES:
-            self.assertTrue(p.ledger and all(re.fullmatch(r"C1-[A-Z]\d{2}", x) for x in p.ledger), p.id)
+            self.assertTrue(p.ledger and all(re.fullmatch(r"C\d-[A-Z]\d{2}", x) for x in p.ledger), p.id)
             self.assertTrue(p.question.endswith("?"), p.id)
             self.assertTrue(p.game_class, p.id)
             names = [h.name for h in p.hyps]
@@ -261,6 +261,54 @@ class CatalogTests(unittest.TestCase):
         pre = probe.V.game(game_state(powers=[("STRENGTH_POWER", 3)], hand=("POMMEL_STRIKE",)))
         preds = {h.name: h.predict(pre, None) for h in p.hyps}
         self.assertEqual(preds, {"add-then-double": 24, "double-then-add": 21, "not-doubled": 12})
+
+    KITS = {"C5-F01": ["P21"], "C5-F03": ["P22", "P23", "P24"], "C5-F07": ["P25"], "C5-F09": ["P26"], "C5-H03": ["P27", "P28"]}
+
+    def test_each_kit_without_a_probe_has_catalog_probes_naming_it(self):
+        for kit, ids in self.KITS.items():
+            self.assertEqual([p.id for p in probes.PROBES if kit in p.ledger], ids, kit)
+            for i in ids:
+                self.assertTrue(probes.BY_ID[i].need, i)  # a scenario the game did not reach is "not reached", never a verdict
+
+    def test_deck_set_probes_list_the_deck_in_the_refset_shape(self):
+        for p in probes.PROBES:
+            for it in p.setup:
+                if it["cmd"] == "deck_set":
+                    self.assertTrue(it["cards"], p.id)
+                    for c in it["cards"]:
+                        self.assertEqual(set(c), {"id", "upgraded", "enchantment", "amount"}, p.id)
+                        self.assertTrue(c["id"].isupper() and c["enchantment"] == c["enchantment"].upper(), p.id)
+                        self.assertEqual(c["amount"] > 0, c["enchantment"] != "", p.id)
+
+    def test_new_probe_hypotheses_tell_the_rules_apart(self):
+        def preds(pid, **kw):
+            pre = probe.V.game(game_state(**kw))
+            return {h.name: h.predict(pre, None) for h in probes.BY_ID[pid].hyps}
+        self.assertEqual(preds("P21"), {"per-repetition": 6, "once": 3})
+        self.assertEqual(preds("P22", powers=[("STRENGTH_POWER", 2)]), {"own-damage-var": 11, "enchant-amount": 9})
+        self.assertEqual(preds("P23"), {"sharp-applies": 23, "sharp-skipped": 20})
+        self.assertEqual(preds("P24", hand=("SECOND_WIND",) + ("DEFEND_IRONCLAD",) * 4), {"nimble-each": 28, "nimble-skipped": 20})
+        self.assertEqual(preds("P25"), {"elite": (3, 7), "not-elite": (2, 5)})
+        for pid in ("P26", "P27", "P28"):
+            vals = [str(v) for v in preds(pid).values()]
+            self.assertEqual(len(vals), len(set(vals)), pid)
+
+    def test_bellows_measure_reads_the_upgrade_flags_of_the_hand(self):
+        p = probes.BY_ID["P26"]
+        pre = probe.V.game(game_state(hand=("ASCENDERS_BANE", "INJURY", "DEFEND_IRONCLAD")))
+        self.assertIsNone(p.need(pre, None))
+        raw = game_state(hand=("ASCENDERS_BANE", "INJURY"))
+        raw["hand"] = [["ASCENDERS_BANE", True], ["INJURY", False]]
+        self.assertEqual(p.measure(pre, probe.V.game(raw), None), [("ASCENDERS_BANE", True), ("INJURY", False)])
+        self.assertEqual(probe.V.game(raw).hand_up, [True, False])
+        self.assertEqual(probe.V.emu(emu_state(in_combat=False), NM).hand_up, [])
+
+    def test_strike_places_counts_every_pile(self):
+        raw = game_state(hand=("DEFEND_IRONCLAD",))
+        raw["discard"] = [["STRIKE_IRONCLAD", False]]
+        post = probe.V.game(raw)
+        self.assertEqual(probes._strike_places(None, post, None), [1, 0, 0, 0])
+        self.assertIsNone(probes._strike_places(None, None, None))
 
     def test_shuffle_step_finder(self):
         st = lambda n: {"rng": {"Shuffle": {"counter": n}}}  # noqa: E731

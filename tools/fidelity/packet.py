@@ -1176,10 +1176,10 @@ def refresh_probes(probes: dict, work: Path, emudump_ok: bool) -> dict:
 
 
 def probe_matches(item: dict, refs: Refs, probes: dict, names: Names, limit: int = 3) -> list:
-    """Probes tied to the item: named by id (100), by its old ledger tag (60), or by sharing identifiers
+    """Probes tied to the item: named by id (100), carrying the item's own id in their ledger (100), by its old ledger tag (60), or by sharing identifiers
     (4 each, a class or hook name) and model names (3 each) with the question and the game class.
     """
-    return _probe_scored(refs, probes, names, probes.get("verdicts", []), limit)
+    return _probe_scored(refs, probes, names, probes.get("verdicts", []), limit, item.get("id", ""))
 
 
 def probe_requests(item: dict, refs: Refs, probes: dict, names: Names, limit: int = 3) -> list[str]:
@@ -1188,10 +1188,10 @@ def probe_requests(item: dict, refs: Refs, probes: dict, names: Names, limit: in
     """
     done = {v["id"] for v in probes.get("verdicts", [])}
     pool = [c for c in probes.get("catalog", []) if c["id"] not in done]
-    return [v["id"] for _, v, _, _ in _probe_scored(refs, probes, names, pool, limit)]
+    return [v["id"] for _, v, _, _ in _probe_scored(refs, probes, names, pool, limit, item.get("id", ""))]
 
 
-def _probe_scored(refs: Refs, probes: dict, names: Names, pool: list, limit: int) -> list:
+def _probe_scored(refs: Refs, probes: dict, names: Names, pool: list, limit: int, item_id: str = "") -> list:
     out = []
     for v in pool:
         gc = probes.get("classes", {}).get(v["id"], "")
@@ -1199,6 +1199,8 @@ def _probe_scored(refs: Refs, probes: dict, names: Names, pool: list, limit: int
         score, why = 0, []
         if v["id"] in refs.probe_ids:
             score, why = score + 100, why + ["named in the item"]
+        if item_id and item_id in v.get("ledger", []):
+            score, why = score + 100, why + ["written for this item"]
         if set(v.get("ledger", [])) & set(refs.old_ids):
             score, why = score + 60, why + ["its ledger tag is in the item"]
         known = refs.idents | {m for _, m, _ in refs.game_calls} | {c for c, _, _ in refs.game_calls} | {h for h, _ in refs.hooks}

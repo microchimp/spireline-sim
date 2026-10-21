@@ -464,6 +464,15 @@ class PacketTest(unittest.TestCase):
         got = pk.probe_requests({}, refs, probes, types.SimpleNamespace(pascal={}, keys={}, by_norm={}, **{k: {} for k in ("english", "common", "lone")}))
         self.assertEqual(got, ["P21", "P20"])  # P91 has a verdict, P22 matches nothing; ledger tag (60) outranks two identifiers (8)
 
+    def test_a_probe_written_for_a_kit_is_requested_for_that_kit_by_its_id(self):
+        refs = types.SimpleNamespace(probe_ids=[], old_ids=[], idents=set(), game_calls=[], hooks=[], entities=[])
+        probes = {"verdicts": [], "classes": {},
+                  "catalog": [{"id": "P91", "question": "q", "ledger": ["C5-F09"], "answer": ""},
+                              {"id": "P92", "question": "q", "ledger": ["C5-F03"], "answer": ""}]}
+        names = types.SimpleNamespace(pascal={}, keys={}, by_norm={}, **{k: {} for k in ("english", "common", "lone")})
+        self.assertEqual(pk.probe_requests({"id": "C5-F09"}, refs, probes, names), ["P91"])
+        self.assertEqual(pk.probe_requests({"id": "C5-X99"}, refs, probes, names), [])
+
     def test_probe_reports_of_the_labs_own_jobs_are_read(self):
         with tempfile.TemporaryDirectory() as t:
             d = Path(t) / "job" / "probes"

@@ -70,7 +70,7 @@ class V:
             # The game's snapshot keeps the player after the fight ends too.
             "player": {"hp": p.get("hp"), "max_hp": p.get("max_hp"), "block": p.get("block"), "energy": p.get("energy"),
                        "powers": dict(fc.game_powers(p.get("powers", [])))},
-            "hand": [c[0] for c in raw.get("hand", [])], "draw": [c[0] for c in raw.get("draw", [])],
+            "hand": [c[0] for c in raw.get("hand", [])], "hand_up": [bool(c[1]) for c in raw.get("hand", [])], "draw": [c[0] for c in raw.get("draw", [])],
             "discard": [c[0] for c in raw.get("discard", [])], "exhaust": [c[0] for c in raw.get("exhaust", [])],
             "enemies": [{**e, "powers": dict(e["powers"])} for e in view.get("enemies", [])],
             "potions": raw.get("potions"),
@@ -88,14 +88,14 @@ class V:
         if not raw.get("in_combat") or "snapshot" not in raw:
             phase = raw.get("run_phase")
             outcome = None if phase in (None, "Over", "Combat") else ("lost" if phase == "Complete" else "won")
-            return V({"in_combat": False, "outcome": outcome, "player": None, "hand": [], "draw": [], "discard": [],
+            return V({"in_combat": False, "outcome": outcome, "player": None, "hand": [], "hand_up": [], "draw": [], "discard": [],
                       "exhaust": [], "enemies": [], "potions": None, "rng": {}})
         v = fc.emu_view(raw, nm)
         p = v["player"]
         return V({
             "in_combat": True, "outcome": "going",
             "player": {**p, "powers": dict(p["powers"])},
-            "hand": [c[0] for c in v["hand"]], "draw": [c[0] for c in v["draw"]],
+            "hand": [c[0] for c in v["hand"]], "hand_up": [bool(c[1]) for c in v["hand"]], "draw": [c[0] for c in v["draw"]],
             "discard": [c[0] for c in v["discard"]], "exhaust": [c[0] for c in v["exhaust"]],
             "enemies": [{**e, "powers": dict(e["powers"])} for e in v["enemies"]],
             "potions": v.get("potions"), "rng": dict(v.get("rng") or {}),

@@ -33,6 +33,15 @@ def card(cid: str, pile: str = "Hand", pos: str | None = None, upgraded: bool = 
     return it
 
 
+def deck_set(cards: list[dict]) -> dict:
+    """The deck exactly as listed, before the fight (RefsetSetup.cs deck_set: CreateCard, CardCmd.Upgrade, CardCmd.Enchant)."""
+    return {"cmd": "deck_set", "cards": cards}
+
+
+def dcard(cid: str, enchantment: str = "", amount: int = 0, n: int = 1, upgraded: bool = False) -> list[dict]:
+    return [{"id": cid, "upgraded": upgraded, "enchantment": enchantment, "amount": amount} for _ in range(n)]
+
+
 def power(pid: str, amount: int, target: str = "player") -> dict:
     return {"cmd": "power", "id": pid, "amount": amount, "target": target}
 
@@ -454,6 +463,135 @@ PROBES.append(Probe(
     evidence=lambda tr: trace_digest(tr, keep=("CardDrawn", "PowerReceived", "PowerRemoved"),
                                      hooks=("BeforeHandDraw", "AfterSideTurnStart"), limit=20),
     game_class="CombatManager.StartTurn; ClarityPower.ModifyHandDraw / AfterSideTurnStart",
+))
+
+# ------------------------------------------------------------------ fix-kit probes (round C5)
+# Each answers the first question of a fix kit that had no probe. The ledger holds the kit's own id, which
+# tools/fidelity/packet.py probe_requests matches. Decks are set whole (deck_set) so the opening hand is
+# known; the Ascender's Bane of the A10 deck goes with it unless a probe lists it.
+
+PROBES.append(Probe(
+    "P21", ["C5-F01"], "When Echo Form plays a card twice, does Rage's after-card-played block come once or once per repetition?",
+    [fight("NIBBITS_WEAK"), power("ECHO_FORM_POWER", 1), power("RAGE_POWER", 3), card("STRIKE_IRONCLAD")],
+    [play("STRIKE_IRONCLAD", 0)],
+    lambda pre, post, ctx: None if post is None else post.block - pre.block,
+    [Hyp("per-repetition", "BeforeCardPlayed..AfterCardPlayed run for each repetition: Rage pays 3 twice", lambda pre, ctx: 6),
+     Hyp("once", "a play count above one re-runs only the effect: Rage pays 3 once", lambda pre, ctx: 3)],
+    need=lambda pre, ctx: None if pre.power("ECHO_FORM") and pre.power("RAGE") and "STRIKE_IRONCLAD" in pre.hand else
+    "Echo Form, Rage or the Strike is missing",
+    evidence=lambda tr: trace_digest(tr, keep=("DamageReceived", "BlockGained", "PowerReceived"),
+                                     hooks=("BeforeCardPlayed", "AfterCardPlayed"), limit=20),
+    game_class="CardModel.OnPlayWrapper; Hook.ModifyCardPlayCount; EchoFormPower.ModifyCardPlayCount; RagePower.AfterCardPlayed",
+))
+
+PROBES.append(Probe(
+    "P22", ["C5-F03"], "Does Tezcatara's Ember add its own damage value (3) to a Strike, or its enchant amount (1)?",
+    [deck_set(dcard("STRIKE_IRONCLAD", "TEZCATARAS_EMBER", 1, n=5)), fight("NIBBITS_WEAK")],
+    [play("STRIKE_IRONCLAD", 0)],
+    dealt(0),
+    [Hyp("own-damage-var", "EnchantDamageAdditive returns the enchantment's DamageVar (3): 6 + 3 + Strength",
+         lambda pre, ctx: 9 + pre.power("STRENGTH")),
+     Hyp("enchant-amount", "the additive is the enchant amount (1): 6 + 1 + Strength", lambda pre, ctx: 7 + pre.power("STRENGTH"))],
+    need=lambda pre, ctx: None if "STRIKE_IRONCLAD" in pre.hand and pre.enemies else "no Strike in hand or no enemy",
+    evidence=lambda tr: trace_digest(tr, keep=("DamageReceived",)),
+    game_class="TezcatarasEmber.EnchantDamageAdditive; CardModel.EnchantDamageAdditive; Hook.ModifyDamage",
+    note="the enchantment is set on the deck's cards before the fight (CardCmd.Enchant); the emulator side reads the same deck",
+))
+
+PROBES.append(Probe(
+    "P23", ["C5-F03"], "Does Sharp's damage bonus apply to Hand of Greed (a hit made from the card's DamageVar)?",
+    [deck_set(dcard("HAND_OF_GREED", "SHARP", 3, n=5)), fight("NIBBITS_WEAK")],
+    [play("HAND_OF_GREED", 0)],
+    dealt(0),
+    [Hyp("sharp-applies", "EnchantDamageAdditive adds to the attack: 20 + 3 + Strength", lambda pre, ctx: 23 + pre.power("STRENGTH")),
+     Hyp("sharp-skipped", "the card's own number is used as is: 20 + Strength", lambda pre, ctx: 20 + pre.power("STRENGTH"))],
+    need=lambda pre, ctx: None if "HAND_OF_GREED" in pre.hand and pre.enemies else "no Hand of Greed in hand or no enemy",
+    evidence=lambda tr: trace_digest(tr, keep=("DamageReceived",)),
+    game_class="HandOfGreed.OnPlay; DamageCmd.Attack; Sharp.EnchantDamageAdditive; Hook.ModifyDamage",
+))
+
+PROBES.append(Probe(
+    "P24", ["C5-F03"], "Does Nimble's block bonus apply to each block Second Wind gains per exhausted card?",
+    [deck_set(dcard("SECOND_WIND", "NIMBLE", 2) + dcard("DEFEND_IRONCLAD", n=4)), fight("NIBBITS_WEAK")],
+    [play("SECOND_WIND")],
+    lambda pre, post, ctx: None if post is None else post.block - pre.block,
+    [Hyp("nimble-each", "every gain is 5 + 2 (+ Dexterity): the bonus applies per card",
+         lambda pre, ctx: (len(pre.hand) - 1) * (7 + pre.power("DEXTERITY"))),
+     Hyp("nimble-skipped", "every gain is the card's 5 (+ Dexterity)",
+         lambda pre, ctx: (len(pre.hand) - 1) * (5 + pre.power("DEXTERITY")))],
+    need=lambda pre, ctx: None if "SECOND_WIND" in pre.hand and len(pre.hand) > 1
+    and all(c in ("SECOND_WIND", "DEFEND_IRONCLAD") for c in pre.hand) else "Second Wind not in a hand of only Defends",
+    evidence=lambda tr: trace_digest(tr, keep=("BlockGained", "CardExhausted")),
+    game_class="SecondWind.OnPlay; CreatureCmd.GainBlock; Nimble.EnchantBlockAdditive; Hook.ModifyBlock",
+    note="Second Wind exhausts every other non-Attack card in hand; the hand is the deck (an Ascender's Bane left in it would count)",
+))
+
+PROBES.append(Probe(
+    "P25", ["C5-F07"], "In a Glory elite (Soul Nexus), is the room an elite room: does Booming Conch add its two cards and one energy on turn 1?",
+    [relic("BOOMING_CONCH"), fight("SOUL_NEXUS_ELITE"), card("STRIKE_IRONCLAD")],
+    [play("STRIKE_IRONCLAD", 0)],
+    lambda pre, post, ctx: None if post is None else (post.energy, len(post.hand)),
+    [Hyp("elite", "RoomType is Elite: 3 + 1 energy, 5 + 2 cards and the Strike made here; one energy and one card spent",
+         lambda pre, ctx: (3, 7)),
+     Hyp("not-elite", "the room is not an elite room: no Conch bonus", lambda pre, ctx: (2, 5))],
+    need=lambda pre, ctx: None if "STRIKE_IRONCLAD" in pre.hand and pre.enemies else "no Strike in hand or no enemy",
+    evidence=lambda tr: trace_digest(tr, keep=("CardDrawn", "EnergySpent", "PowerReceived"),
+                                     hooks=("ModifyHandDraw", "AfterSideTurnStart"), limit=20),
+    game_class="BoomingConch.ModifyHandDraw; BoomingConch.AfterSideTurnStart; AbstractRoom.RoomType; EncounterModel.RoomType",
+    note="the turn-1 draw happens before the step, so the bonus is read from the hand and energy left after the first play",
+))
+
+PROBES.append(Probe(
+    "P26", ["C5-F09"], "Does Bellows upgrade the cards that cannot be upgraded (Ascender's Bane, a curse)?",
+    [deck_set(dcard("ASCENDERS_BANE") + dcard("INJURY") + dcard("DEFEND_IRONCLAD", n=3)), relic("BELLOWS"), fight("NIBBITS_WEAK")],
+    [play("DEFEND_IRONCLAD")],
+    lambda pre, post, ctx: None if post is None else sorted(
+        (c, u) for c, u in zip(post.hand, post.hand_up, strict=False) if c in ("ASCENDERS_BANE", "INJURY")),
+    [Hyp("skipped", "CardCmd.Upgrade leaves cards that cannot be upgraded as they are",
+         lambda pre, ctx: [("ASCENDERS_BANE", False), ("INJURY", False)]),
+     Hyp("upgraded-flag", "every card in the opening hand shows as upgraded",
+         lambda pre, ctx: [("ASCENDERS_BANE", True), ("INJURY", True)])],
+    need=lambda pre, ctx: None if "ASCENDERS_BANE" in pre.hand and "INJURY" in pre.hand and "DEFEND_IRONCLAD" in pre.hand else
+    "Bane, Injury or a Defend not in the opening hand",
+    evidence=lambda tr: trace_digest(tr, keep=("CardGenerated",), hooks=("AfterPlayerTurnStart",)),
+    game_class="Bellows.AfterPlayerTurnStart; CardCmd.Upgrade; CardModel.IsUpgradable",
+))
+
+
+def _strike_places(pre, post, ctx):
+    """Where the Strike the setup put on top of the draw pile is after the step: discard, hand, exhaust, draw."""
+    if post is None:
+        return None
+    return [post.discard.count("STRIKE_IRONCLAD"), post.hand.count("STRIKE_IRONCLAD"), post.exhaust.count("STRIKE_IRONCLAD"),
+            post.draw.count("STRIKE_IRONCLAD")]
+
+
+PROBES.append(Probe(
+    "P27", ["C5-H03"], "With Hellraiser, where does a Strike drawn at the next turn's start end up once the game has auto-played it?",
+    [deck_set(dcard("DEFEND_IRONCLAD", n=10)), fight("NIBBITS_WEAK"), power("HELLRAISER_POWER", 1), card("STRIKE_IRONCLAD", "Draw", "top")],
+    [end_turn()],
+    _strike_places,
+    [Hyp("played-to-discard", "the drawn Strike is auto-played, then discarded", lambda pre, ctx: [1, 0, 0, 0]),
+     Hyp("played-exhausted", "the drawn Strike is auto-played, then exhausted", lambda pre, ctx: [0, 0, 1, 0]),
+     Hyp("kept-in-hand", "the drawn Strike stays in the hand", lambda pre, ctx: [0, 1, 0, 0])],
+    need=lambda pre, ctx: None if pre.draw[:1] == ["STRIKE_IRONCLAD"] and pre.power("HELLRAISER") else "no Strike on top or no Hellraiser",
+    evidence=lambda tr: trace_digest(tr, keep=("CardDrawn", "DamageReceived", "CardExhausted"), hooks=("AfterCardDrawnEarly",), limit=20),
+    game_class="HellraiserPower.AfterCardDrawnEarly; CardCmd.AutoPlay",
+    note="the deck is ten Defends, so the only Strike is the one the setup puts on top of the draw pile",
+))
+
+PROBES.append(Probe(
+    "P28", ["C5-H03"], "With Mayhem, where does the card auto-played from the draw pile at turn start end up?",
+    [deck_set(dcard("DEFEND_IRONCLAD", n=10)), fight("NIBBITS_WEAK"), power("MAYHEM_POWER", 1), card("STRIKE_IRONCLAD", "Draw", "top")],
+    [end_turn()],
+    _strike_places,
+    [Hyp("played-to-discard", "the top card is auto-played before the draw, then discarded", lambda pre, ctx: [1, 0, 0, 0]),
+     Hyp("played-exhausted", "it is auto-played, then exhausted", lambda pre, ctx: [0, 0, 1, 0]),
+     Hyp("drawn-instead", "it is not auto-played and is drawn", lambda pre, ctx: [0, 1, 0, 0])],
+    need=lambda pre, ctx: None if pre.draw[:1] == ["STRIKE_IRONCLAD"] and pre.power("MAYHEM") else "no Strike on top or no Mayhem",
+    evidence=lambda tr: trace_digest(tr, keep=("CardDrawn", "DamageReceived", "CardExhausted"),
+                                     hooks=("AfterAutoPrePlayPhaseEntered",), limit=20),
+    game_class="MayhemPower.AfterAutoPrePlayPhaseEntered; CardPileCmd.AutoPlayFromDrawPile",
 ))
 
 BY_ID = {p.id: p for p in PROBES}
