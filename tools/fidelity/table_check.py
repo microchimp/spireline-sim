@@ -116,6 +116,12 @@ def parse_event_pools(src: str) -> dict[str, list[str]]:
     return out
 
 
+# The export reads potions outside a fight. Foul Potion's TargetType getter answers
+# TargetedNoCreature there (thrown at a shop) and AllEnemies in combat; the emulator holds the
+# combat one. Maps the out-of-combat answer to the in-combat target.
+OUT_OF_COMBAT_TARGET = {"FOUL_POTION": {"TargetedNoCreature": "AllEnemies"}}
+
+
 def check_field(section: str, what: str, name: str, g, e) -> None:
     if g != e:
         report(section, f"{what} {name}: game {g!r} vs emulator {e!r}")
@@ -196,7 +202,8 @@ def check_simple_entities(game: dict, emu: dict) -> None:
             if e is None:
                 continue
             check_field("potion_static", "rarity", pid, g["rarity"], e["rarity"])
-            check_field("potion_static", "target", pid, g["target"], e["target"])
+            gt = OUT_OF_COMBAT_TARGET.get(pid, {}).get(g["target"], g["target"])
+            check_field("potion_static", "target", pid, gt, e["target"])
     if "powers" in game:
         compare_lists("power_static", "all powers", snake_ids(game["powers"]), snake_ids(emu["powers"]))
         for pid, g in game["powers"].items():

@@ -90,6 +90,15 @@ class OtherEntities(unittest.TestCase):
         tc.check_simple_entities(game, emu)
         self.assertEqual(tc.counts, {"relic_static": 2, "potion_static": 1, "power_static": 1})
 
+    def test_foul_potion_target_is_the_combat_one(self):
+        game = {"all_potions": {"FOUL_POTION": {"rarity": "Common", "target": "TargetedNoCreature"}}}
+        emu = {"all_potions": {"FOUL_POTION": {"rarity": "Common", "target": "AllEnemies"}}}
+        tc.check_simple_entities(game, emu)
+        self.assertEqual(tc.counts, {})
+        emu["all_potions"]["FOUL_POTION"]["target"] = "Self"
+        tc.check_simple_entities(game, emu)
+        self.assertEqual(tc.counts, {"potion_static": 1})
+
     def test_monsters(self):
         game = {"monsters": {
             "AXE_BOT": {"min_hp": "70", "max_hp": "78", "moves": [
