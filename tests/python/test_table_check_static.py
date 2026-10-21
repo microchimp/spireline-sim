@@ -99,6 +99,19 @@ class OtherEntities(unittest.TestCase):
         tc.check_simple_entities(game, emu)
         self.assertEqual(tc.counts, {"potion_static": 1})
 
+    def test_monster_numbers_the_export_cannot_see(self):
+        mv = lambda d: {"id": "M", "intents": [{"type": "Attack", "damage": d, "repeats": "1"}]}  # noqa: E731
+        game = {"monsters": {
+            "WATERFALLGIANT": {"min_hp": "1", "max_hp": "1", "moves": [mv("15")]},
+            "THEFORGOTTEN": {"min_hp": "1", "max_hp": "1", "moves": [mv("ERR InvalidOperationException")]},
+        }}
+        emu = {"monsters": {
+            "WATERFALLGIANT": {"min_hp": 1, "max_hp": 1, "attacks": ["15x1", "20x1", "25x1"]},
+            "THEFORGOTTEN": {"min_hp": 1, "max_hp": 1, "attacks": ["13x1"]},
+        }}
+        tc.check_simple_entities(game, emu)
+        self.assertEqual(tc.counts, {})
+
     def test_monsters(self):
         game = {"monsters": {
             "AXE_BOT": {"min_hp": "70", "max_hp": "78", "moves": [

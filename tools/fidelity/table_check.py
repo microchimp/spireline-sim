@@ -122,6 +122,11 @@ def parse_event_pools(src: str) -> dict[str, list[str]]:
 OUT_OF_COMBAT_TARGET = {"FOUL_POTION": {"TargetedNoCreature": "AllEnemies"}}
 
 
+# Attack numbers the game sets when the monster enters a room, so a bare model has none: the
+# Waterfall Giant's Pressure Gun starts at its base (20 at A0) and rises 5 per use.
+EXPORT_BLIND_ATTACKS = {"WATERFALLGIANT": ("20x1", "25x1")}
+
+
 def check_field(section: str, what: str, name: str, g, e) -> None:
     if g != e:
         report(section, f"{what} {name}: game {g!r} vs emulator {e!r}")
@@ -227,7 +232,10 @@ def check_simple_entities(game: dict, emu: dict) -> None:
                 continue
             gattacks = sorted({f"{_num(i['damage'])}x{_num(i.get('repeats', 1))}"
                                for mv in g["moves"] for i in mv["intents"] if i.get("damage") not in (None, "0")})
-            check_field("monster_static", "attack moves (damage x hits)", mid, gattacks, e["attacks"])
+            if any(a.startswith("ERR") for a in gattacks):
+                continue  # a damage that reads the creature's own powers (The Forgotten's Dread): no number from a bare model
+            check_field("monster_static", "attack moves (damage x hits)", mid, gattacks,
+                        [a for a in e["attacks"] if a not in EXPORT_BLIND_ATTACKS.get(mid, ())])
 
 
 def main() -> int:
