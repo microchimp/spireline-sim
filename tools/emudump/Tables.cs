@@ -46,6 +46,83 @@ static class Tables
         ("HIVE", RunConstants.ActHive), ("GLORY", RunConstants.ActGlory),
     ];
 
+    /// <summary>A card's keywords, in the game's names, as printed or after one upgrade.</summary>
+    static string[] Keywords(CardDef c, bool upgraded)
+    {
+        var k = new List<string>();
+        if (c.Exhaust && !(upgraded && c.ExhaustRemovedWhenUpgraded)) k.Add("Exhaust");
+        if (c.Ethereal && !(upgraded && c.EtherealRemovedWhenUpgraded)) k.Add("Ethereal");
+        if (c.Innate || (upgraded && c.InnateWhenUpgraded)) k.Add("Innate");
+        if (c.Unplayable) k.Add("Unplayable");
+        if (c.Retain || (upgraded && c.RetainWhenUpgraded)) k.Add("Retain");
+        if (c.Sly) k.Add("Sly");
+        if (c.Eternal) k.Add("Eternal");
+        k.Sort(StringComparer.Ordinal);
+        return k.ToArray();
+    }
+
+    /// <summary>Every power def, by the game's entry name: buff or debuff, stack type, ticks down.</summary>
+    static JsonObject PowerTable()
+    {
+        var o = new JsonObject();
+        for (int id = 1; id < 1000; id++)
+        {
+            try
+            {
+                var p = Powers.Get(id);
+                o[Snake(p.Name)] = new JsonObject
+                {
+                    ["is_buff"] = p.IsBuff, ["stack_type"] = p.StackType, ["ticks_down"] = p.TicksDown,
+                };
+            }
+            catch (ArgumentException) { }
+        }
+
+        return o;
+    }
+
+    /// <summary>
+    /// Every enemy def: HP band at A0 and the distinct damage moves ("damage x hits") that the
+    /// intent chooser yields over move indexes 0..11 and three seeds, at ascension 0. The emulator keeps
+    /// monster moves in code, not in a table, so this is read by running the chooser.
+    /// </summary>
+    static JsonObject MonsterTable()
+    {
+        var o = new JsonObject();
+        foreach (int id in Enumerable.Range(1, 300).Concat(Enumerable.Range(10000, 100)))
+        {
+            EnemyDef d;
+            try { d = Enemies.Get(id); }
+            catch (ArgumentException) { continue; }
+            var moves = new SortedSet<string>(StringComparer.Ordinal);
+            string? err = null;
+            try
+            {
+                for (int idx = 0; idx < 12; idx++)
+                {
+                    for (int seed = 1; seed <= 3; seed++)
+                    {
+                        var e = new EnemyState { DefId = id, Hp = d.MinHpBelowToughEnemies > 0 ? d.MinHpBelowToughEnemies : d.MinHp, MoveIndex = idx };
+                        e.MaxHp = e.Hp;
+                        EnemyAI.ChooseIntents([e], idx + 1, new Random(seed), null, 0);
+                        var it = e.CurrentIntent;
+                        if ((it.Type == IntentType.Attack || it.CarriesDamage) && it.Magnitude > 0)
+                            moves.Add($"{it.Magnitude}x{it.Hits}");
+                    }
+                }
+            }
+            catch (Exception ex) { err = ex.GetType().Name; }
+            o[Snake(d.Name)] = new JsonObject
+            {
+                ["min_hp"] = d.MinHpBelowToughEnemies > 0 ? d.MinHpBelowToughEnemies : d.MinHp,
+                ["max_hp"] = d.MaxHpBelowToughEnemies > 0 ? d.MaxHpBelowToughEnemies : d.MaxHp,
+                ["attacks"] = Arr(moves), ["error"] = err,
+            };
+        }
+
+        return o;
+    }
+
     public static JsonObject Dump()
     {
         var o = new JsonObject();
@@ -57,6 +134,9 @@ static class Tables
                 ["type"] = c.Type.ToString(), ["rarity"] = c.Rarity.ToString(), ["cost"] = c.Cost,
                 ["cost_x"] = c.HasEnergyCostX, ["star_cost"] = c.StarCost, ["target"] = c.Target.ToString(),
                 ["upgradable"] = c.Upgradable, ["multiplayer_only"] = c.MultiplayerOnly,
+                ["base_damage"] = c.BaseDamage, ["base_block"] = c.BaseBlock,
+                ["upgrade_damage"] = c.UpgradeDamage, ["upgrade_block"] = c.UpgradeBlock, ["upgrade_cost"] = c.UpgradeCost,
+                ["keywords"] = Arr(Keywords(c, false)), ["keywords_upgraded"] = Arr(Keywords(c, true)),
             };
         }
 
@@ -75,7 +155,11 @@ static class Tables
         var relics = new JsonObject();
         foreach (var r in Relics.All)
         {
-            relics[r.Entry] = new JsonObject { ["rarity"] = r.Rarity.ToString() };
+            relics[r.Entry] = new JsonObject
+            {
+                ["rarity"] = r.Rarity.ToString(), ["upon_pickup"] = r.HasUponPickupEffect,
+                ["allowed_in_shops"] = r.IsAllowedInShops,
+            };
         }
 
         o["relics"] = relics;
@@ -101,6 +185,20 @@ static class Tables
         }
 
         o["potions"] = potions;
+        var allPotions = new JsonObject();
+        for (int id = 1; id < 400; id++)
+        {
+            try
+            {
+                var p = Potions.Get(id);
+                allPotions[PotionEntry(id)] = new JsonObject { ["rarity"] = p.Rarity.ToString(), ["target"] = p.TargetType.ToString() };
+            }
+            catch (ArgumentException) { }
+        }
+
+        o["all_potions"] = allPotions;
+        o["powers"] = PowerTable();
+        o["monsters"] = MonsterTable();
         o["potion_pools"] = new JsonObject
         {
             ["IroncladPotionPool"] = Arr(PotionPools.Ironclad.ToArray().Select(PotionEntry)),

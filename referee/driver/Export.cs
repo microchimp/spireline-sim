@@ -10,6 +10,8 @@ using System.Text.Json.Nodes;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Events;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.MonsterMoves.Intents;
+using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Unlocks;
 
 namespace Spireline.Referee;
@@ -59,7 +61,82 @@ public static partial class Driver
         ["max_upgrade_level"] = Safe(() => c.MaxUpgradeLevel),
         ["keywords"] = Safe(() => string.Join(",", c.CanonicalKeywords.Select(k => k.ToString()))),
         ["multiplayer_constraint"] = Safe(() => c.MultiplayerConstraint),
+        ["detail"] = CardDetail(c),
     };
+
+    private static JsonObject Snapshot(CardModel m) => new()
+    {
+        ["vars"] = Safe(() => string.Join(";", m.DynamicVars.Select(kv => kv.Key + "=" + kv.Value.BaseValue))),
+        ["keywords"] = Safe(() => string.Join(",", m.Keywords.Select(k => k.ToString()).OrderBy(k => k, StringComparer.Ordinal))),
+        ["cost"] = Safe(() => typeof(CardEnergyCost).GetField("_base", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(m.EnergyCost)),
+        ["star_cost"] = Safe(() => m.CurrentStarCost),
+    };
+
+    /// <summary>A card's numbers (every dynamic var), keywords and costs, as printed and after one upgrade.</summary>
+    private static JsonObject CardDetail(CardModel c)
+    {
+        var o = new JsonObject();
+        try
+        {
+            CardModel m = c.ToMutable();
+            o["base"] = Snapshot(m);
+            if (m.MaxUpgradeLevel > 0)
+            {
+                m.UpgradeInternal();
+                m.FinalizeUpgradeInternal();
+                o["upgraded"] = Snapshot(m);
+            }
+        }
+        catch (Exception ex)
+        {
+            o["error"] = ex.GetType().Name + ": " + ex.Message;
+        }
+
+        return o;
+    }
+
+    private static JsonObject MonsterDetail(MonsterModel mm)
+    {
+        var o = new JsonObject
+        {
+            ["id"] = mm.Id.Entry,
+            ["min_hp"] = Safe(() => mm.MinInitialHp),
+            ["max_hp"] = Safe(() => mm.MaxInitialHp),
+        };
+        try
+        {
+            MonsterModel m = mm.ToMutable();
+            var gen = typeof(MonsterModel).GetMethod("GenerateMoveStateMachine",
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
+            var machine = (MonsterMoveStateMachine)gen.Invoke(m, null)!;
+            var moves = new JsonArray();
+            foreach (var st in machine.States.Values.OfType<MoveState>())
+            {
+                var intents = new JsonArray();
+                foreach (AbstractIntent it in st.Intents)
+                {
+                    var io = new JsonObject { ["type"] = Safe(() => it.IntentType) };
+                    if (it is AttackIntent at)
+                    {
+                        io["damage"] = Safe(() => at.DamageCalc?.Invoke());
+                        io["repeats"] = Safe(() => Math.Max(1, at.Repeats));
+                    }
+
+                    intents.Add(io);
+                }
+
+                moves.Add(new JsonObject { ["id"] = st.StateId, ["intents"] = intents });
+            }
+
+            o["moves"] = moves;
+        }
+        catch (Exception ex)
+        {
+            o["error"] = (ex.InnerException ?? ex).GetType().Name + ": " + (ex.InnerException ?? ex).Message;
+        }
+
+        return o;
+    }
 
     private static JsonObject Export()
     {
@@ -141,6 +218,70 @@ public static partial class Driver
                     }).ToArray()),
                     ["unlocked"] = Ids(p.GetUnlockedPotions(UnlockState.all)),
                 };
+            }
+
+            return o;
+        });
+        Section(root, "all_cards", () =>
+        {
+            var o = new JsonObject();
+            foreach (CardModel c in ModelDb.AllCards)
+            {
+                o[c.Id.Entry] = CardInfo(c);
+            }
+
+            return o;
+        });
+        Section(root, "all_relics", () =>
+        {
+            var o = new JsonObject();
+            foreach (RelicModel r in ModelDb.AllRelics)
+            {
+                o[r.Id.Entry] = new JsonObject
+                {
+                    ["rarity"] = Safe(() => r.Rarity),
+                    ["upon_pickup"] = Safe(() => r.HasUponPickupEffect),
+                    ["allowed_in_shops"] = Safe(() => r.IsAllowedInShops),
+                };
+            }
+
+            return o;
+        });
+        Section(root, "all_potions", () =>
+        {
+            var o = new JsonObject();
+            foreach (PotionModel p in ModelDb.AllPotions)
+            {
+                o[p.Id.Entry] = new JsonObject
+                {
+                    ["rarity"] = Safe(() => p.Rarity),
+                    ["usage"] = Safe(() => p.Usage),
+                    ["target"] = Safe(() => p.TargetType),
+                };
+            }
+
+            return o;
+        });
+        Section(root, "powers", () =>
+        {
+            var o = new JsonObject();
+            foreach (PowerModel p in ModelDb.AllPowers)
+            {
+                o[p.Id.Entry] = new JsonObject
+                {
+                    ["type"] = Safe(() => p.Type),
+                    ["stack_type"] = Safe(() => p.StackType),
+                };
+            }
+
+            return o;
+        });
+        Section(root, "monsters", () =>
+        {
+            var o = new JsonObject();
+            foreach (MonsterModel m in ModelDb.Monsters)
+            {
+                o[m.Id.Entry] = MonsterDetail(m);
             }
 
             return o;

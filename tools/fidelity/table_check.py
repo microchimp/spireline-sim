@@ -121,6 +121,104 @@ def check_field(section: str, what: str, name: str, g, e) -> None:
         report(section, f"{what} {name}: game {g!r} vs emulator {e!r}")
 
 
+def parse_vars(text) -> dict[str, str]:
+    """The export's "Name=value;Name=value" string of a card's dynamic vars."""
+    if not isinstance(text, str) or text.startswith("ERR"):
+        return {}
+    return dict(kv.split("=", 1) for kv in text.split(";") if "=" in kv)
+
+
+def _num(v):
+    """An export number as int; the export's own "ERR <exception>" marker is kept as text."""
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return v
+
+
+def _kw(text) -> list[str]:
+    return sorted(k for k in (text or "").split(",") if k and k != "None") if isinstance(text, str) else []
+
+
+def check_cards_static(game_cards: dict[str, dict], emu_cards: dict[str, dict]) -> None:
+    """Every card the game has: numbers (Damage, Block), what one upgrade changes, cost on upgrade,
+    keywords as printed and as upgraded, star cost. Other dynamic vars (Cards, Energy, powers' amounts)
+    live in the emulator's code, not in a table, so the export holds them but nothing here compares them."""
+    missing = [c for c in game_cards if c not in emu_cards]
+    if missing:
+        report("card_static", f"{len(missing)} game cards not in emulator: {', '.join(missing[:8])}"
+               + (" ..." if len(missing) > 8 else ""))
+    for cid, g in game_cards.items():
+        e = emu_cards.get(cid)
+        if e is None:
+            continue
+        d = g.get("detail") or {}
+        if "base" not in d:
+            report("card_static", f"{cid}: game detail unavailable ({d.get('error', 'missing')})")
+            continue
+        b, u = d["base"], d.get("upgraded")
+        bv = parse_vars(b.get("vars"))
+        for var, ek, uk in (("Damage", "base_damage", "upgrade_damage"), ("Block", "base_block", "upgrade_block")):
+            check_field("card_static", f"base {var.lower()}", cid, _num(bv.get(var, 0)), e.get(ek))
+            if u is not None and e.get("upgradable"):
+                uv = parse_vars(u.get("vars"))
+                check_field("card_static", f"upgrade {var.lower()} change", cid,
+                            _num(uv.get(var, 0)) - _num(bv.get(var, 0)), e.get(uk))
+        check_field("card_static", "keywords", cid, _kw(b.get("keywords")), e.get("keywords"))
+        if u is not None and e.get("upgradable"):
+            check_field("card_static", "keywords upgraded", cid, _kw(u.get("keywords")), e.get("keywords_upgraded"))
+            if g.get("cost_x") != "True":
+                check_field("card_static", "upgrade cost change", cid,
+                            _num(u.get("cost")) - _num(b.get("cost")), e.get("upgrade_cost"))
+            check_field("card_static", "star cost upgraded", cid, _num(u.get("star_cost")), e.get("star_cost"))
+
+
+def check_simple_entities(game: dict, emu: dict) -> None:
+    """Relics, potions, powers and monsters outside the pools: id sets and the fields both sides hold."""
+    snake_ids = lambda d: sorted(d)
+    if "all_relics" in game:
+        compare_lists("relic_static", "all relics", snake_ids(game["all_relics"]), snake_ids(emu["relics"]))
+        for rid, g in game["all_relics"].items():
+            e = emu["relics"].get(rid)
+            if e is None:
+                continue
+            check_field("relic_static", "rarity", rid, g["rarity"], e["rarity"])
+            check_field("relic_static", "upon_pickup", rid, g["upon_pickup"] == "True", e["upon_pickup"])
+            check_field("relic_static", "allowed_in_shops", rid, g["allowed_in_shops"] == "True", e["allowed_in_shops"])
+    if "all_potions" in game:
+        compare_lists("potion_static", "all potions", snake_ids(game["all_potions"]), snake_ids(emu["all_potions"]))
+        for pid, g in game["all_potions"].items():
+            e = emu["all_potions"].get(pid)
+            if e is None:
+                continue
+            check_field("potion_static", "rarity", pid, g["rarity"], e["rarity"])
+            check_field("potion_static", "target", pid, g["target"], e["target"])
+    if "powers" in game:
+        compare_lists("power_static", "all powers", snake_ids(game["powers"]), snake_ids(emu["powers"]))
+        for pid, g in game["powers"].items():
+            e = emu["powers"].get(pid)
+            if e is None:
+                continue
+            check_field("power_static", "type", pid, g["type"], "Buff" if e["is_buff"] else "Debuff")
+            check_field("power_static", "stack_type", pid, g["stack_type"], e["stack_type"])
+    if "monsters" in game:
+        gm = {k.replace("_", "").upper(): v for k, v in game["monsters"].items()}
+        em = {k.replace("_", "").upper(): v for k, v in emu["monsters"].items()}
+        compare_lists("monster_static", "all monsters", sorted(gm), sorted(em))
+        for mid, g in gm.items():
+            e = em.get(mid)
+            if e is None:
+                continue
+            check_field("monster_static", "min_hp (A0)", mid, _num(g["min_hp"]) if "min_hp" in g and not str(g["min_hp"]).startswith("ERR") else g.get("min_hp"), e["min_hp"])
+            check_field("monster_static", "max_hp (A0)", mid, _num(g["max_hp"]) if "max_hp" in g and not str(g["max_hp"]).startswith("ERR") else g.get("max_hp"), e["max_hp"])
+            if "moves" not in g:
+                report("monster_static", f"{mid}: game moves unavailable ({g.get('error')})")
+                continue
+            gattacks = sorted({f"{_num(i['damage'])}x{_num(i.get('repeats', 1))}"
+                               for mv in g["moves"] for i in mv["intents"] if i.get("damage") not in (None, "0")})
+            check_field("monster_static", "attack moves (damage x hits)", mid, gattacks, e["attacks"])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--game-export", type=Path, default=DEFAULT_EXPORT)
@@ -184,6 +282,10 @@ def main() -> int:
             if kind == "potion":
                 check_field("potion_fields", "target", rid, g["target"], e["target"])
 
+    # Static data of every entity.
+    check_cards_static(game.get("all_cards") or gcards, emu["cards"])
+    check_simple_entities(game, emu)
+
     # Acts: index grouping and the four encounter lists.
     if game["acts_by_index"] != emu["acts_by_index"]:
         report("acts", f"ActsByIndex: game {game['acts_by_index']} vs emulator {emu['acts_by_index']}")
@@ -210,7 +312,8 @@ def main() -> int:
     if skipped:
         print(f"  pools with no emulator table (not compared): {', '.join(skipped)}")
     for section in ("card_pools", "card_fields", "relic_pools", "relic_fields", "potion_pools", "potion_fields",
-                    "acts", "encounters", "events", "neow"):
+                    "acts", "encounters", "events", "neow",
+                    "card_static", "relic_static", "potion_static", "power_static", "monster_static"):
         print(f"{section}: {counts.get(section, 0)} difference(s)")
         for ln in lines:
             if ln.startswith(f"  [{section}]"):
