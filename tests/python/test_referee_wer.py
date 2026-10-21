@@ -108,6 +108,14 @@ class LaunchFlagsTest(unittest.TestCase):
             self.assertEqual(self.launch_recorded()["mode"], rr.GAME_ERROR_MODE | 0x0004)
             self.assertEqual(get_error_mode(), 0x0004)
 
+    def test_extra_args_go_last_on_the_command_line(self):
+        plain = self.launch_recorded()["args"]
+        self.assertEqual(plain[-2:], ["--force-steam", "off"])
+        self.assertEqual(self.launch_recorded(extra_args=[])["args"], plain)
+        with_fps = self.launch_recorded(extra_args=["--fixed-fps", "60"])["args"]
+        self.assertEqual(with_fps, plain + ["--fixed-fps", "60"])
+        self.assertEqual(self.launch_recorded(command=["x.exe", "-a"], extra_args=["-b"])["args"], ["x.exe", "-a", "-b"])
+
     @unittest.skipUnless(WINDOWS, "Windows error modes")
     def test_the_error_mode_is_put_back_when_the_spawn_fails(self):
         with default_error_mode(), mock.patch.object(rr.subprocess, "Popen", side_effect=OSError("no such file")):
@@ -214,7 +222,7 @@ class PoolWerTest(unittest.TestCase):
     """serve.Pool: a WerFault about a server is in the summary and the log; the network verdict is untouched."""
 
     def pool(self, tmp: Path, wer):
-        def fake_launch(game, scratch, job, below_normal=False, dotnet_tuning=True):
+        def fake_launch(game, scratch, job, below_normal=False, dotnet_tuning=True, extra_args=None):
             log = open(scratch / "game-stdout.log", "wb")
             return subprocess.Popen([PYTHON, str(FAKE), str(job)], stdout=log, stderr=subprocess.STDOUT), log
 

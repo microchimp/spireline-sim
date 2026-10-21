@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "referee"))
 
 import run_referee  # noqa: E402
+import runs  # noqa: E402
 import serve  # noqa: E402
 
 
@@ -51,6 +52,27 @@ class JobOptionsTest(unittest.TestCase):
         self.assertEqual((old["settle"], old["fast_tweens"]), ("frames", False))
         self.assertNotIn("sleep_usec", old)
         self.assertNotIn("settle_audit", old)
+
+
+class RunsJobTest(unittest.TestCase):
+    """runs.py's sessions play with serve.py's speed defaults (the speed spike: 4 act-1 runs, every decision and snapshot
+    equal to the stock settle's, 3.4x faster); only the stall limit is theirs."""
+
+    def test_sessions_get_serve_pys_defaults(self):
+        j = runs.session_job("o.json", [{"seed": "S"}])
+        self.assertEqual(j["out"], "o.json")
+        self.assertEqual(j["runs"], [{"seed": "S"}])
+        for key in ("fast_patches", "silent", "still_visuals", "fast_reset", "no_preload", "fast_tweens"):
+            self.assertIs(j[key], True, key)
+        self.assertEqual((j["settle"], j["sleep_usec"], j["settle_audit"], j["stall_s"]), ("flags", 0, 0.05, 90))
+        rest = {k: v for k, v in j.items() if k not in ("out", "runs", "stall_s")}
+        self.assertEqual(rest, {k: v for k, v in serve.job_options(None).items() if k != "stall_s"})
+
+    def test_old_settle_is_the_stock_settle_and_pacing(self):
+        j = runs.session_job("o.json", [], old_settle=True)
+        self.assertEqual((j["settle"], j["fast_tweens"], j["stall_s"]), ("frames", False, 90))
+        self.assertNotIn("sleep_usec", j)
+        self.assertNotIn("settle_audit", j)
 
 
 class ComparableTest(unittest.TestCase):

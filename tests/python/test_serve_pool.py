@@ -31,7 +31,7 @@ FAKE = Path(__file__).resolve().parent / "fixtures" / "fake_fight_server.py"
 PYTHON = getattr(sys, "_base_executable", sys.executable)
 
 
-def fake_launch(game, scratch, job, below_normal=False, dotnet_tuning=True):
+def fake_launch(game, scratch, job, below_normal=False, dotnet_tuning=True, extra_args=None):
     log = open(scratch / "game-stdout.log", "wb")
     proc = subprocess.Popen([PYTHON, str(FAKE), str(job)], stdout=log, stderr=subprocess.STDOUT)
     return proc, log
@@ -344,6 +344,55 @@ class PoolTest(unittest.TestCase):
         self.assertEqual(len((p.run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()), 5)
         self.assertIn("events", json.loads((p.run_dir / "summary.json").read_text(encoding="utf-8")))
         self.assertEqual(len(p.table()), 1 + len(p.servers))
+
+
+class EngineFlagsTest(unittest.TestCase):
+    """Every game gets the engine flags after its own command line: --fixed-fps 60 unless the caller says otherwise."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def start(self, **kw) -> tuple[serve.Pool, list]:
+        seen: list = []
+
+        def launch(game, scratch, job, below_normal=False, dotnet_tuning=True, **extra):
+            seen.append(extra)
+            return fake_launch(game, scratch, job, below_normal, dotnet_tuning)
+
+        p = serve.Pool(self.dir / "game", self.dir / "run", servers=2, spares=0, launch=launch, echo=None,
+                       connections=lambda pids: {int(x): set() for x in pids}, profile_state=lambda: [],
+                       check_build=lambda game: "fake-digest", kill=kill, **kw)
+        try:
+            p.start()
+        finally:
+            p.close(abandon=True)
+        return p, seen
+
+    def test_default_is_fixed_fps_60_for_every_server(self):
+        p, seen = self.start()
+        self.assertEqual(seen, [{"extra_args": ["--fixed-fps", "60"]}] * 2)
+        self.assertEqual(p.summary()["engine_flags"], ["--fixed-fps", "60"])
+
+    def test_no_flags_passes_nothing_to_the_launcher(self):
+        p, seen = self.start(engine_flags=())
+        self.assertEqual(seen, [{}] * 2)
+        self.assertEqual(p.summary()["engine_flags"], [])
+
+    def test_the_callers_flags_replace_the_default(self):
+        _, seen = self.start(engine_flags=serve.engine_args(30))
+        self.assertEqual(seen[0], {"extra_args": ["--fixed-fps", "30"]})
+
+    def test_engine_args(self):
+        self.assertEqual(serve.engine_args(), ("--fixed-fps", "60"))
+        self.assertEqual(serve.engine_args(0), ())
+        self.assertEqual(serve.engine_args(45), ("--fixed-fps", "45"))
+        self.assertEqual(serve.engine_args(old_settle=True), ())  # the stock pacing A/B keeps the engine's frame sync
+        self.assertEqual(serve.engine_args(30, old_settle=True), ("--fixed-fps", "30"))  # asked for by name
+        self.assertEqual(serve.FIXED_FPS, 60)
 
 
 if __name__ == "__main__":

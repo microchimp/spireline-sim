@@ -376,6 +376,19 @@ whole batch. Details and rules:
   server (e.g. `profile=true`, the per-fight frame-cost profile of `driver/Lean.cs`); the games start with
   `DOTNET_TieredPGO=0` unless `--no-dotnet-tuning`. `no_vfx` is not merged (it breaks Slumbering Beetle and Lagavulin
   Matriarch at combat start).
+- Engine frame rate: every game starts with `--fixed-fps 60` after its own command line (`serve.engine_args`; serve.py,
+  batch.py and so scenarios.py, the shrinker and the lab's fights; `--fixed-fps N` sets it, `--fixed-fps 0` and
+  `--old-settle` leave the engine's real-time frame sync). Frames advance as fast as the CPU allows; the speed spike
+  (`D:/spireline/referee/design/real-game-speed.md`) found the per-action game checksums and recorded steps equal on 50 of
+  50 fights (1,994 checksums, 6-10 repeats of each in other processes) and +15-24% fights per minute. Game-time timers
+  then advance 1/60 s per frame. The summary's `engine_flags` says what the games got. Not set for `runs.py`'s sessions
+  (proven on fights only).
+- `runs.py` plays its sessions with serve.py's defaults above (`runs.session_job`: flag settle, fast tweens, no padding,
+  5% settle audit, `silent`, `still_visuals`, 3.4x faster on 4 act-1 runs with every decision and snapshot equal to the
+  stock settle's); `runs.py --old-settle` plays the stock settle and pacing for an A/B.
+- Nodeless as the lab's default was considered and left off: the spike measured it on one lab batch of setup fights
+  (+20% fights per minute at 8 servers, +33% with `--fixed-fps` at 10, fallbacks included), but refset, trace, probes,
+  hypotheses, retests and whole runs need the full host, so the host type stays the specs file's choice.
 - `tools`: `python referee/linkcopy.py --src <game> --dst <game-name>` makes a private game copy out of hard links, so a
   session can install its own driver without waiting for the shared copy's `mods/*.dll` to unlock.
 - Run files: `<game>/../serve/<ts>/{inbox/s*,out/s*.jsonl,scratch/s*,results.json,results.jsonl,summary.json}` (a batch:

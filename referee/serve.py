@@ -25,6 +25,10 @@ still_visuals are on unless --no-patches; --job-opt KEY=JSON sets any job key, l
 The game processes start with run_referee.DOTNET_ENV (DOTNET_TieredPGO=0) unless --no-dotnet-tuning.
 --old-settle runs the old settle: settle "frames", stock tweens and stock frame pacing, no audit. job_options()
 holds these defaults, so batch.py's pool gets the same ones.
+Every game also starts with the engine flag --fixed-fps 60 (--fixed-fps N sets it, 0 leaves the engine's real-time
+frame sync; --old-settle implies 0): frames advance as fast as the CPU allows instead of waiting for Godot's frame
+sync. Same per-action game checksums and recorded steps as without it (50 of 50 fights, 1,994 checksums; the
+speed spike, referee/design/real-game-speed.md), +15-24% fights per minute. engine_args() holds it for the pool.
 Each server is one headless game on its own scratch
 profile (same safety checks as run_referee.py: known sts2.dll sha256, override.cfg, APPDATA in scratch,
 no network connections, real profile untouched). The dispatcher keeps one spec file waiting in each
@@ -196,6 +200,18 @@ def job_options(job_in, *, slow_reset: bool = False, preload: bool = False, no_p
     return jopts
 
 
+FIXED_FPS = 60  # the engine's fixed frame rate for the games (engine_args); the spike's hash-identical setting
+
+
+def engine_args(fixed_fps: int | None = None, *, old_settle: bool = False) -> tuple[str, ...]:
+    """Engine flags every game gets after its own command line. `--fixed-fps N` makes Godot advance frames as fast
+    as the CPU allows instead of waiting for its real-time frame sync (+15-24% fights per minute on the lab's
+    fights; per-action checksums and steps equal on 50 of 50 fights, referee/design/real-game-speed.md). None is
+    the default, FIXED_FPS (none with old_settle, the stock pacing A/B); 0 turns it off."""
+    n = (0 if old_settle else FIXED_FPS) if fixed_fps is None else int(fixed_fps)
+    return ("--fixed-fps", str(n)) if n > 0 else ()
+
+
 def _taskkill(s: Server) -> None:
     subprocess.run(["taskkill", "/PID", str(s.pid), "/T", "/F"], capture_output=True, check=False)
 
@@ -223,11 +239,13 @@ class Pool:
     def __init__(self, game: Path, run_dir: Path, *, servers: int = 4, spares: int = 1, jopts: dict | None = None,
                  boot_timeout: float = 180, max_restarts: int | None = None, net_interval: float = 1.0,
                  hold_timeout: float = 60, dotnet_tuning: bool = True, full_lane: int | None = None,
-                 route_full: bool | None = None,
+                 route_full: bool | None = None, engine_flags: tuple[str, ...] | list[str] | None = None,
                  below_normal: bool = True, depth: int = 1, echo=print, launch=rr.launch, connections=rr.connections_by_pid,
                  profile_state=rr.real_profile_state, check_build=rr.check_build, kill=_taskkill,
                  wer_reports=rr.wer_reports_by_pid):
         self.game = game
+        # Engine flags after the game's own command line (engine_args(): --fixed-fps 60 unless the caller says otherwise).
+        self.engine_flags = tuple(engine_args() if engine_flags is None else engine_flags)
         self.digest = check_build(game)
         self.n = max(1, servers)
         self.spares = spares
@@ -499,7 +517,7 @@ class Pool:
             "requeued": self.requeued, "stalled_results": stalls, "errors": errors,
             **({"full_lane": self.full_lane, "full_replays": dict(self.full_replays), "audit_diffs": self.audit_diffs}
                if self.route_full else {}),
-            "sts2_dll_sha256": self.digest,
+            "sts2_dll_sha256": self.digest, "engine_flags": list(self.engine_flags),
             "network_connections": sorted(self.seen_net), "wer_reports": sorted(self.seen_wer),
             "real_profile_touched": self.profile_touched, "run_dir": self.run_dir.name,
         }
@@ -646,8 +664,9 @@ class Pool:
         job.write_text(json.dumps({"out": str(self.outdir / f"{s.name}.jsonl").replace("\\", "/"),
                                    "inbox": str(s.inbox).replace("\\", "/"), **self.jopts}), encoding="utf-8")
         s.t_spawn = time.time()
+        extra = {"extra_args": list(self.engine_flags)} if self.engine_flags else {}  # an injected launcher may not take it
         s.proc, s.log = self._launch(self.game, scratch, job, below_normal=self.below_normal,
-                                     dotnet_tuning=self.dotnet_tuning)
+                                     dotnet_tuning=self.dotnet_tuning, **extra)
         s.pid = s.proc.pid
         if spare:  # never fed while it holds, so its inbox stays empty
             (s.inbox / f"hold.{s.pid}").write_text("", encoding="utf-8")
@@ -781,6 +800,9 @@ def main() -> int:
     ap.add_argument("--no-patches", action="store_true",
                     help="play without the speed patches (driver/Patches.cs: fast_patches, silent, still_visuals)")
     ap.add_argument("--no-dotnet-tuning", action="store_true", help="start the games without run_referee.DOTNET_ENV")
+    ap.add_argument("--fixed-fps", type=int, default=None, metavar="N",
+                    help=f"engine flag --fixed-fps N for every game (default {FIXED_FPS}: frames are not paced to real time, "
+                         "hash-identical, +15-24%% fights/min); 0 = off; --old-settle implies 0")
     ap.add_argument("--job-opt", action="append", default=[], metavar="KEY=JSON",
                     help="extra job key for every server, e.g. profile=true (driver/Lean.cs); repeatable")
     ap.add_argument("--verify-against", type=Path, default=None, help="runs-mode out file to compare every result with")
@@ -806,7 +828,8 @@ def main() -> int:
     run_dir = a.run_dir or game.parent / "serve" / time.strftime("%Y%m%d-%H%M%S")
     pool = Pool(game, run_dir, servers=a.servers, spares=a.spares, jopts=jopts, boot_timeout=a.boot_timeout,
                 max_restarts=a.max_restarts, net_interval=a.net_interval, below_normal=not a.normal_priority,
-                dotnet_tuning=not a.no_dotnet_tuning, full_lane=a.full_lane, route_full=not a.full_here)
+                dotnet_tuning=not a.no_dotnet_tuning, full_lane=a.full_lane, route_full=not a.full_here,
+                engine_flags=engine_args(a.fixed_fps, old_settle=a.old_settle))
     if not a.no_install:
         for attempt in range(30):  # a running game holds the mod DLL open; wait for it
             try:

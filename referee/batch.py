@@ -226,6 +226,9 @@ def main() -> int:
                     help="extra job key for every server, as serve.py's (e.g. nodeless=true); repeatable")
     ap.add_argument("--old-settle", action="store_true",
                     help="six-stable-frame settle, awaited tweens and stock frame pacing (before SPEED_PLAN steps 3-4)")
+    ap.add_argument("--fixed-fps", type=int, default=None, metavar="N",
+                    help=f"engine flag --fixed-fps N for every game (default {serve.FIXED_FPS}, hash-identical; 0 = off; "
+                         "--old-settle implies 0), as serve.py")
     ap.add_argument("--spares", type=int, default=1, choices=(0, 1), help="hot spares booted and held (as serve.py)")
     ap.add_argument("--full-lane", type=int, default=None,
                     help="nodeless servers (--job-opt nodeless=true): servers that take the full-host replays first "
@@ -278,6 +281,7 @@ def main() -> int:
                               job_opt=a.job_opt)
     pool = serve.Pool(GAME, run_dir, servers=n_servers, spares=a.spares, jopts=jopts, echo=None,
                       full_lane=a.full_lane, route_full=not a.full_here,
+                      engine_flags=serve.engine_args(a.fixed_fps, old_settle=a.old_settle),
                       max_restarts=a.max_restarts if a.max_restarts is not None else 3 * n_servers + 3 + a.fights // 50)
     serve.rr.install(GAME, ROOT / "referee" / "driver" / "bin" / "Release" / "net9.0")  # once, before any server starts
     chunk_dir = pool.run_dir / "chunks"

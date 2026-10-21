@@ -48,6 +48,10 @@ nothing to do with `--once`, or another runner holds this lab; 1: crash; 2: refu
 - `--servers 8` game servers per batch (the lab's CPU is free); `--shrink` and `--trace` are per batch and mean "every
   diverging fight"; a job's `--shrink-cap` (game fights one diverging fight may cost), `--shrink-budget` (game fights in
   all), `--shrink-minutes` and `--trace-minutes` are split over its batches, so one job cannot run for hours.
+- Game speed (the speed spike, `referee/design/real-game-speed.md`): the games the lab starts (scenarios.py, batch.py and
+  serve.py) run with `--fixed-fps 60` on top of the flag settle, fast tweens, `silent` and `still_visuals`, and `runs.py`
+  sessions with the same job defaults (3.4x faster than the stock settle on whole runs). Per-action game checksums and
+  every recorded step were equal on 50 of 50 fights. The host stays the full one (nodeless is the specs file's choice).
 
 ## Jobs
 

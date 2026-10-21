@@ -2,7 +2,7 @@
 """Whole-run referee batch: play N seeded runs in the game, replay them in the emulator, compare.
 
     python referee/runs.py --name <name> --runs 10 [--start 0] [--procs 2] [--game <game copy>]
-        [--buff 2000] [--stop-after-act 1] [--avoid Unknown,Shop] [--max-decisions 1500] [--jobs <dir>]
+        [--buff 2000] [--stop-after-act 1] [--avoid Unknown,Shop] [--max-decisions 1500] [--jobs <dir>] [--old-settle]
 
 From the fork's root. Each game process is one run_referee.py session (all its safety checks: known
 sts2.dll, no network, scratch profile, real profile untouched) playing a share of the runs
@@ -33,6 +33,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+sys.path.insert(0, str(HERE))
+import serve  # noqa: E402  (referee/serve.py: job_options, the speed defaults every referee pool shares)
+
 PY = sys.executable
 JOBS = Path("D:/spireline/referee/jobs/runref")
 SEED_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
@@ -42,6 +45,16 @@ EXIT_NOTHING, EXIT_CRASHED, EXIT_SAFETY = 2, 3, 4
 def seeds(n: int, start: int) -> list[str]:
     rng = random.Random(start)
     return ["".join(rng.choice(SEED_CHARS) for _ in range(10)) for _ in range(n)]
+
+
+def session_job(out: str, part: list[dict], *, old_settle: bool = False) -> dict:
+    """One session's job file: serve.py's speed defaults (serve.job_options: the game's turn-flag settle, awaited tweens
+    finished at once, no frame padding, a 5% settle audit, the speed patch sets with no sound and still visuals, fast
+    reset, no preload) with the run sessions' stall limit. The speed spike played 4 act-1 runs (1,048 decisions) with
+    these and with the old settle and got every decision and snapshot equal, in 56.6 s against 193 s (3.4x).
+    old_settle plays with the stock settle and pacing (the A/B). The engine's --fixed-fps is not set here: the spike
+    proved it on fights only."""
+    return {"out": out, **serve.job_options(None, old_settle=old_settle, stall_s=90), "runs": part}
 
 
 def merge_results(parts: list[list], n: int, procs: int, specs: list[dict]) -> list[dict]:
@@ -69,6 +82,8 @@ def main() -> int:
     ap.add_argument("--potions", action="store_true", help="drink potions in fights")
     ap.add_argument("--timeout", type=float, default=7200)
     ap.add_argument("--no-game", action="store_true", help="reuse jobs/<name>.out.json; replay and compare only")
+    ap.add_argument("--old-settle", action="store_true",
+                    help="play with the stock settle and frame pacing (before SPEED_PLAN steps 3-4), 3.4x slower: A/B only")
     ap.add_argument("--jobs", type=Path, default=None, help="write every output here instead of jobs/runref")
     a = ap.parse_args()
     jobs = a.jobs.resolve() if a.jobs else JOBS
@@ -97,8 +112,7 @@ def main() -> int:
         for p in range(min(a.procs, len(specs))):
             part = specs[p::a.procs]
             job = jobs / f"{a.name}.p{p}.json"
-            job.write_text(json.dumps({"out": str(jobs / f"{a.name}.p{p}.out.json"), "fast_reset": True,
-                                       "no_preload": True, "fast_patches": True, "stall_s": 90, "runs": part}))
+            job.write_text(json.dumps(session_job(str(jobs / f"{a.name}.p{p}.out.json"), part, old_settle=a.old_settle)))
             # With --jobs the sessions' scratch profiles (saves, game logs) live in the job folder too, where the lab's
             # disk pruning finds them; without it run_referee puts them next to the game copy as it always did.
             where = ["--scratch", str(jobs / "scratch" / f"{a.name}-p{p}")] if a.jobs else []
