@@ -89,6 +89,20 @@ class ImportTest(Base):
         c = self.run_import(job, budget=int(one * 2.5))  # full: nothing more
         self.assertEqual(c["match"], 0)
 
+    def test_fight_count_cap_counts_what_the_corpus_already_holds(self):
+        s = seeds(5)
+        self.assertEqual(self.run_import(self.job("j1", [recording(seed=x) for x in s[:2]], [MATCH] * 2))["match"], 2)
+        j2 = self.job("j2", [recording(seed=x) for x in s[2:]], [MATCH] * 3)
+        c = self.run_import(j2, max_fights=3)
+        self.assertEqual((c["match"], c["over_budget"]), (1, 2))
+        self.assertEqual(len(self.corpus.load_index()["fights"]), 3)
+        st: dict = {}  # a dry run over jobs counts the same way
+        j3 = self.job("j3", [recording(seed=x) for x in seeds(4, 10)], [MATCH] * 4)
+        j4 = self.job("j4", [recording(seed=x) for x in seeds(4, 20)], [MATCH] * 4)
+        c3 = self.run_import(j3, dry=True, max_fights=6, state=st)
+        c4 = self.run_import(j4, dry=True, max_fights=6, state=st)
+        self.assertEqual((c3["match"], c4["match"], c4["over_budget"]), (3, 0, 4))
+
     def test_dry_run_writes_nothing_and_counts_across_jobs(self):
         s = seeds(3)
         j1 = self.job("j1", [recording(seed=s[0]), recording(seed=s[1])], [MATCH, MATCH])

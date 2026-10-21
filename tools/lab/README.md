@@ -10,7 +10,8 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `plans.py` | the jobs as data: steps and symbolic commands (`{tree}`, `{lab}`, `{job}` ...), one plan per strategy |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
 | `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict` |
-| `prune.py` | what may be deleted, in what order, and what never |
+| `prune.py` | what may be deleted, in what order, and what never (recordings the corpus already holds go first) |
+| `corpus_import.py` | adds a job's exact and divergent fights to the regression corpus (last step of a fights job) |
 | `winsys.py` | ctypes: GetLastInputInfo, priority class, Job Objects, GetSystemTimes, mutex |
 | `register_task.ps1` | registers "Spireline fix lab" (`-Trigger Idle` or `Logon`, `-WhatIf`, `-Unregister`) |
 
@@ -37,8 +38,8 @@ nothing to do with `--once`, or another runner holds this lab; 1: crash; 2: refu
 - `--trial M`: work for M minutes, let a running step finish within `--grace` (at most 60 s), exit 0.
 - `--once J`: one job of type J (a `fights` needs the tree presorted at main first: `--once presort`), then exit.
 - `--skip`: prefixes of step or command names. Steps: `tree restore build driver native game checks corpus groups
-  kits targets batch-NN runs-NN probes mutation invariants`. Commands: `worktree-add checkout restore-* build-emudump
-  build-driver publish-native game-copy codex-s0..3 refset corpus groups kits targets scen-NN batch-NN analyze-NN runs-NN
+  kits corpus-import targets batch-NN runs-NN probes mutation invariants`. Commands: `worktree-add checkout restore-* build-emudump
+  build-driver publish-native game-copy codex-s0..3 refset corpus groups kits corpus-import targets scen-NN batch-NN analyze-NN runs-NN
   probes mut-prepare mut-schemata mut-report meta invariants`.
 - `--no-guard`: switch guards off for a trial on a busy PC. Never in the task.
 - `--always-on`: for the logon task. Keyboard or mouse input and `LAB/HALT` stop the children and make the runner wait

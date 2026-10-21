@@ -1,6 +1,6 @@
 """Import the lab's real-game fights into the regression corpus (tools/fidelity/corpus.py).
 
-    python tools/lab/corpus_import.py --lab <LAB> [--job <name>] [--corpus <dir>] [--budget-gb 20] [--no-diverge] [--dry-run] [--no-marker]
+    python tools/lab/corpus_import.py --lab <LAB> [--job <name>] [--corpus <dir>] [--budget-gb 2] [--max-fights 100000] [--no-diverge] [--dry-run] [--no-marker]
 
 A job's recordings are ``fights/<name>.out.json`` with ``<name>.verdicts.json`` beside it (one verdict per result,
 same order). From each:
@@ -13,7 +13,9 @@ same order). From each:
 
 Fights are kept once per setup (corpus.spec_id: seed, character, ascension, Neow pick, deck, room, setup ...):
 one already in the corpus, or earlier in this import, is skipped, matches before divergences. The corpus stores
-them gzip-compressed; ``--budget-gb`` caps the size of its fights folder (the estimate is the compressed size).
+them gzip-compressed; ``--budget-gb`` caps the size of its fights folder (the estimate is the compressed size) and
+``--max-fights`` the number of fights in the corpus (a full replay costs time, not disk: 100000 is about ten minutes
+of `corpus.py run` on 16 processes). A fight over either cap is not imported and its file is not marked covered.
 Shrink replays (``*.shrinkN.out.json``) and a whole-runs session's copies are not recordings of their own.
 
 After an import the job folder holds ``corpus-imported.json``: per out file, its size and mtime, the corpus path and
@@ -80,16 +82,17 @@ def recording_pairs(job: Path) -> list:
 
 
 def import_job(job: Path, corpus: cp.Corpus, budget: int | None = None, diverge: bool = True, dry: bool = False,
-               rand_cards: set | None = None, state: dict | None = None, mark: bool = True) -> dict:
+               rand_cards: set | None = None, state: dict | None = None, mark: bool = True,
+               max_fights: int | None = None) -> dict:
     """Import one job's fights; counts. With ``dry`` nothing is written (corpus or job folder); ``mark=False`` writes no marker.
 
-    ``state`` ({"have": spec ids, "used": bytes}) carries the dedupe set and the budget spent across a dry run's jobs.
+    ``state`` ({"have": spec ids, "used": bytes, "n": fights}) carries the dedupe set and the budgets spent across a dry run's jobs.
     """
     job = Path(job)
     state = state if state is not None else {}
     if "have" not in state:
         state["have"] = corpus.specs() if corpus.index_path.exists() else set()
-        state["used"] = 0
+        state["used"] = state["n"] = 0
     have = state["have"]
     cands, loaded = [], []
     counts = {"results": 0, "left_out": 0, "pruned": 0, "duplicate": 0, "over_budget": 0, "match": 0, "diverge": 0}
@@ -116,13 +119,14 @@ def import_job(job: Path, corpus: cp.Corpus, budget: int | None = None, diverge:
     chosen: dict = {}  # (file, kind) -> [results]
     used = 0
     base = corpus.size() + state["used"]
+    stored = (len(corpus.load_index()["fights"]) if corpus.index_path.exists() else 0) + state["n"]
     for _, f, k, rec, r in cands:
         sid = cp.spec_id(rec)
         if sid in have:
             counts["duplicate"] += 1
             continue
         n = gz_size(rec)
-        if budget is not None and base + used + n > budget:
+        if budget is not None and base + used + n > budget or max_fights is not None and stored + counts["match"] + counts["diverge"] >= max_fights:
             counts["over_budget"] += 1
             continue
         have.add(sid)
@@ -132,6 +136,7 @@ def import_job(job: Path, corpus: cp.Corpus, budget: int | None = None, diverge:
     counts["bytes"] = used
     if dry:
         state["used"] += used
+        state["n"] += counts["match"] + counts["diverge"]
         return counts
     with tempfile.TemporaryDirectory() as td:
         labels, files = {}, []
@@ -177,6 +182,7 @@ def main(argv=None) -> int:
     ap.add_argument("--job", help="a job folder name under <lab>/runs, or a path to one")
     ap.add_argument("--corpus", type=Path, default=cp.DEFAULT_CORPUS)
     ap.add_argument("--budget-gb", type=float, help="cap on the size of the corpus fights folder")
+    ap.add_argument("--max-fights", type=int, help="cap on the number of fights in the corpus")
     ap.add_argument("--no-diverge", action="store_true", help="matches only")
     ap.add_argument("--dry-run", action="store_true", help="count only; write nothing")
     ap.add_argument("--no-marker", action="store_true", help="import, but leave the jobs unmarked (a scratch corpus)")
@@ -190,12 +196,13 @@ def main(argv=None) -> int:
         jobs = [j for j in pr.finished_jobs(a.lab) if a.all or not (j / MARKER).exists()]
     else:
         ap.error("give --lab or --job")
+    jobs = [j for j in jobs if j.is_dir()]
     corpus = cp.Corpus(a.corpus)
     budget = None if a.budget_gb is None else int(a.budget_gb * GB)
     total: dict = {}
     state: dict = {}
     for j in jobs:
-        c = import_job(j, corpus, budget, not a.no_diverge, a.dry_run, state=state, mark=not a.no_marker)
+        c = import_job(j, corpus, budget, not a.no_diverge, a.dry_run, state=state, mark=not a.no_marker, max_fights=a.max_fights)
         print(f"{j.name}: {c}")
         for k, v in c.items():
             total[k] = total.get(k, 0) + v

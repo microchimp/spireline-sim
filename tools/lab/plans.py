@@ -520,7 +520,7 @@ def plan_fights(c: Ctx) -> list[Step]:
 
 def import_step() -> Step:
     """Add the job's exact and divergent fights to the corpus (after groups has read them; prune then drops the raw file)."""
-    imp = Cmd("corpus-import", ["{py}", "tools/lab/corpus_import.py", "--job", "{job}", "--budget-gb", "20"],
+    imp = Cmd("corpus-import", ["{py}", "tools/lab/corpus_import.py", "--job", "{job}", "--budget-gb", "2", "--max-fights", "100000"],
               needs=["{tree}/tools/lab/corpus_import.py"])
     return Step("corpus-import", [imp])
 
