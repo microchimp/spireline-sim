@@ -34,6 +34,21 @@ CARD_CTOR = re.compile(
 DAMAGE_VAR = re.compile(r"new (?:Osty)?DamageVar\((\d+(?:\.\d+)?)m?,")
 # BlockVar(5m, ...)
 BLOCK_VAR = re.compile(r"new BlockVar\((\d+(?:\.\d+)?)m?,")
+# A var built from a [SavedProperty] (TheScythe: DamageVar(CurrentDamage, ...), GeneticAlgorithm:
+# BlockVar(CurrentBlock, ...)): the printed number is the backing field's initial value.
+PROP_VAR = re.compile(r"new (?:Osty)?(Damage|Block)Var\(([A-Z]\w*),")
+
+
+def saved_property_var(text: str, kind: str) -> int:
+    """Printed value of a Damage/Block var whose argument is a property, else 0."""
+    for m in PROP_VAR.finditer(text):
+        if m.group(1) != kind:
+            continue
+        field = "_" + m.group(2)[0].lower() + m.group(2)[1:]
+        init = re.search(r"private int " + field + r" = (-?\d+);", text)
+        if init:
+            return int(init.group(1))
+    return 0
 # UpgradeValueBy on damage / block
 # 56 cards get cheaper when upgraded via base.EnergyCost.UpgradeBy(-1). That was a
 # hand-written list of five in CombatEngine, which is exactly the kind of thing that
@@ -312,8 +327,8 @@ def extract_cards() -> str:
 
         dmg_m = DAMAGE_VAR.search(text)
         blk_m = BLOCK_VAR.search(text)
-        base_dmg = decimal_to_int(dmg_m.group(1)) if dmg_m else 0
-        base_block = decimal_to_int(blk_m.group(1)) if blk_m else 0
+        base_dmg = decimal_to_int(dmg_m.group(1)) if dmg_m else saved_property_var(text, "Damage")
+        base_block = decimal_to_int(blk_m.group(1)) if blk_m else saved_property_var(text, "Block")
 
         upg_cost_m = UPGRADE_COST.search(text)
         upg_cost = int(upg_cost_m.group(1)) if upg_cost_m else 0
