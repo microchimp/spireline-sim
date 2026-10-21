@@ -584,319 +584,246 @@ public static class RelicEffects
         }
     }
 
-    public static void ApplyBeforeOpeningHand(CombatState state, Random rng)
+    /// <summary>
+    /// Runs the relics of <paramref name="hooks"/> in the order the player holds them, as the
+    /// game's hook dispatch does: one pass over the held relics, each relic's action at most once.
+    /// </summary>
+    private static void RunHookInHoldingOrder(CombatState state, Dictionary<int, Action> hooks)
     {
-        // `StoneCracker.AfterRoomEntered(CombatRoom)`, which runs before anything that waits
-        // for the combat to start: the draw pile has been dealt, and CardsVar(2) of its
-        // upgradable cards are upgraded. WHICH two is `StableShuffle(Rng.CombatCardSelection)`
-        // over the upgradable ones -- sorted by ModelId, then shuffled -- so it is a roll
-        // that does not depend on the pile's order. This took the first two in pile order
-        // and drew nothing from the stream.
-        if (HasRelic(state, StoneCracker))
+        foreach (int id in state.Relics.Select(relic => relic.DefId).ToList())
         {
-            var shuffled = CardEffects.StableShuffle(
-                state.DrawPile,
-                Enumerable
-                    .Range(0, state.DrawPile.Count)
-                    .Where(i => RunConstants.IsRunCardUpgradable(state.DrawPile[i])),
-                CardEffects.CardSelectionRngFor(state, rng)
-            );
-            foreach (int index in shuffled.Take(2))
+            if (hooks.TryGetValue(id, out var action))
             {
-                state.DrawPile[index] = state.DrawPile[index] with { Upgraded = true };
+                action();
             }
         }
+    }
 
-        // `SneckoEye.BeforeCombatStart` and `FakeSneckoEye.BeforeCombatStart` both apply
-        // ConfusedPower at 1. `PowerStackType.Single`, so holding both is still one.
-        //
-        // Applied HERE rather than in `ApplyCombatStart`, because the opening hand is
-        // dealt between the two and Confused has to be up before it: the game's
-        // `BeforeCombatStart` runs ahead of the first draw, so the opening hand is the
-        // first thing whose costs get re-rolled.
-        if (HasRelic(state, SneckoEye) || HasRelic(state, FakeSneckoEye))
+    /// <summary>
+    /// Everything the game does for turn one ahead of the opening draw, in its phase order:
+    /// `AfterRoomEntered`, `BeforeCombatStart`, `BeforeCombatStartLate`, the side's
+    /// `BeforeSideTurnStart`, then the energy reset with `AfterEnergyReset`. Each phase is one pass
+    /// over the held relics. The post-draw half (`AfterSideTurnStart`) is
+    /// <see cref="ApplyFirstTurnAfterSideTurnStart" />.
+    /// </summary>
+    public static void ApplyBeforeOpeningHand(CombatState state, Random rng)
+    {
+        // Phase 1, `AfterRoomEntered`. The powers they apply land in the player's power list in
+        // this order.
+        RunHookInHoldingOrder(state, new Dictionary<int, Action>
         {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Confused, 1);
-        }
+            // `StoneCracker`: CardsVar(2) of the upgradable cards, `StableShuffle` of
+            // `Rng.CombatCardSelection` over them, so the roll does not depend on pile order.
+            [StoneCracker] = () =>
+            {
+                var shuffled = CardEffects.StableShuffle(
+                    state.DrawPile,
+                    Enumerable
+                        .Range(0, state.DrawPile.Count)
+                        .Where(i => RunConstants.IsRunCardUpgradable(state.DrawPile[i])),
+                    CardEffects.CardSelectionRngFor(state, rng)
+                );
+                foreach (int index in shuffled.Take(2))
+                {
+                    state.DrawPile[index] = state.DrawPile[index] with { Upgraded = true };
+                }
+            },
+            // Elite rooms only: the relic's hook fires before the combat exists, so the room
+            // type is handed over rather than looked up.
+            [SlingOfCourage] = () =>
+            {
+                if (state.IsEliteRoom)
+                {
+                    GainPlayerStrength(state, 2);
+                }
+            },
+            // Strength equal to the lifts spent on the relic instance's counter.
+            [Girya] = () =>
+            {
+                int lifts = state.Relics.FirstOrDefault(relic => relic.DefId == Girya).Counter;
+                if (lifts > 0)
+                {
+                    GainPlayerStrength(state, lifts);
+                }
+            },
+            // Stars live on the PlayerCombatState: three at the top of every fight.
+            [DivineRight] = () => CardEffects.GainStars(state, 3),
+            // The counter IS the once-per-combat flag, cleared here and not at turn start.
+            [ThrowingAxe] = () => SetCounter(state, ThrowingAxe, 0),
+            // Strength 1 on every living opponent (a mid-combat summon is the game's
+            // AfterCreatureAddedToCombat, handled where enemies spawn).
+            [PhilosophersStone] = () => ApplyToLivingEnemies(state, BuffId.Strength),
+            [EmberTea] = () =>
+            {
+                if (SpendTeaCombat(state, EmberTea))
+                {
+                    GainPlayerStrength(state, 2);
+                }
+            },
+            [SwordOfJade] = () => GainPlayerStrength(state, 3),
+            [Vajra] = () => GainPlayerStrength(state, 1),
+            [OddlySmoothStone] = () => BuffSystem.Apply(state.PlayerBuffs, BuffId.Dexterity, 1),
+            [DataDisk] = () => BuffSystem.Apply(state.PlayerBuffs, BuffId.Focus, 1),
+            [Gorget] = () => BuffSystem.Apply(state.PlayerBuffs, BuffId.Plating, 4),
+            [BronzeScales] = () => BuffSystem.Apply(state.PlayerBuffs, BuffId.Thorns, 3),
+        });
 
-        // `TeaOfDiscourtesy.BeforeCombatStart`: two Dazed into the DRAW pile at random
-        // positions. One combat, and it is the price the Tea Master's free tea charges. Before
-        // turn one, so the opening hand can draw them; it ran after the opening hand was dealt.
-        if (SpendTeaCombat(state, TeaOfDiscourtesy))
+        // Phase 2, `BeforeCombatStart`.
+        RunHookInHoldingOrder(state, new Dictionary<int, Action>
         {
-            CardEffects.AddCardToDrawPileRandomly(
-                state,
-                ST.Dazed,
-                TeaOfDiscourtesyDazed,
-                state.ShuffleRng ?? rng
-            );
-        }
+            // BlockVar(10, Unpowered): Dexterity does not raise it. The fake is 4.
+            [Anchor] = () => CardEffects.GainUnpoweredBlock(state, 10, rng),
+            [FakeAnchor] = () => CardEffects.GainUnpoweredBlock(state, 4, rng),
+            // ConfusedPower at 1, `PowerStackType.Single`, so holding both is still one; up before
+            // the opening hand, whose costs are the first to be re-rolled.
+            [SneckoEye] = () => BuffSystem.Apply(state.PlayerBuffs, BuffId.Confused, 1),
+            [FakeSneckoEye] = () =>
+            {
+                if (!HasRelic(state, SneckoEye))
+                {
+                    BuffSystem.Apply(state.PlayerBuffs, BuffId.Confused, 1);
+                }
+            },
+            // Two Dazed into the DRAW pile at random positions, for one combat.
+            [TeaOfDiscourtesy] = () =>
+            {
+                if (SpendTeaCombat(state, TeaOfDiscourtesy))
+                {
+                    CardEffects.AddCardToDrawPileRandomly(
+                        state,
+                        ST.Dazed,
+                        TeaOfDiscourtesyDazed,
+                        state.ShuffleRng ?? rng
+                    );
+                }
+            },
+            [PhylacteryUnbound] = () => CardEffects.SummonOsty(state, 5),
+            [BoundPhylactery] = () => CardEffects.SummonOsty(state, 1),
+        });
+        RefreshBeltBuckle(state);
 
-        // `PowerCell.BeforeSideTurnStart` at TurnNumber <= 1: CardsVar(2) ZERO-COST cards out of
-        // the draw pile and into hand, `StableShuffle(CombatCardSelection)` then Take. The side's
-        // turn start comes before `SetupPlayerTurn`, so they are in hand before the opening draw,
-        // which then draws five more; it ran after the opening hand was dealt.
-        if (HasRelic(state, PowerCell))
+        // Phase 3, `BeforeCombatStartLate`: the first free potion slot, and nothing when the belt
+        // is full or Sozu's ShouldProcurePotion says no.
+        RunHookInHoldingOrder(state, new Dictionary<int, Action>
         {
-            CardEffects.MoveZeroCostDrawCardsToHandForPowerCell(state, 2, rng);
-        }
+            [PetrifiedToad] = () => PotionEffects.TryToProcure(state, PotionShapedRock),
+        });
+
+        // Phase 4, the side's `BeforeSideTurnStart`, turn one: the guards on `TurnNumber <= 1`
+        // make these combat-start openers.
+        RunHookInHoldingOrder(state, new Dictionary<int, Action>
+        {
+            [CrackedCore] = () => CardEffects.ChannelOrb(state, OrbType.Lightning, rng),
+            [BagOfMarbles] = () => ApplyToLivingEnemies(state, BuffId.Vulnerable),
+            [RedMask] = () => ApplyToLivingEnemies(state, BuffId.Weak),
+            [TwistedFunnel] = () => CardEffects.ApplyPoisonToAllEnemies(state, 4, rng),
+            // CardsVar(2) ZERO-COST cards out of the draw pile and into hand, ahead of the
+            // opening draw, which then draws five more.
+            [PowerCell] = () => CardEffects.MoveZeroCostDrawCardsToHandForPowerCell(state, 2, rng),
+        });
+
+        // Phase 5, the energy reset: ModifyMaxEnergy is read whenever the game asks for the
+        // maximum, so the bonus reaches MaxEnergy and the energy already handed out for turn one.
+        // Not through GainEnergy: it is the reset catching up, which NoEnergyGain does not touch.
+        int extraEnergy = state.Relics.Count(relic => MaxEnergyRelics.Contains(relic.DefId));
+        // `PumpkinCandle.ModifyMaxEnergy` only while lit: KindleCount rides the relic's Counter.
+        extraEnergy += state.Relics.Count(relic =>
+            relic.DefId == Run.RunConstants.RelicPumpkinCandle && relic.Counter > 0
+        );
+        state.MaxEnergy += extraEnergy;
+        state.Energy += extraEnergy;
+
+        // `AfterEnergyReset`: the first reset of the combat after a REST SITE. The armed state is a
+        // counter on the relic, set when the run rests. The fake is the same rule at 1 energy.
+        RunHookInHoldingOrder(state, new Dictionary<int, Action>
+        {
+            [VenerableTeaSet] = () =>
+            {
+                if (SpendRestSiteCharge(state, VenerableTeaSet))
+                {
+                    CardEffects.GainEnergy(state, 2);
+                }
+            },
+            [FakeVenerableTeaSet] = () =>
+            {
+                if (SpendRestSiteCharge(state, FakeVenerableTeaSet))
+                {
+                    CardEffects.GainEnergy(state, 1);
+                }
+            },
+        });
 
         // The turn-one `BeforeHandDraw` relics (Blessed Antler, Ninja Scroll, Toolbox and the
         // rest) are not here: they are turn one's visit to `ApplyBeforeHandDraw`, which the
         // turn start makes in the order the player holds them.
     }
 
+    private static void ApplyToLivingEnemies(CombatState state, BuffId buff)
+    {
+        foreach (var enemy in state.Enemies.Where(enemy => enemy.Hp > 0))
+        {
+            BuffSystem.Apply(enemy.Buffs, buff, 1);
+        }
+    }
+
+    /// <summary>
+    /// Turn one's `AfterSideTurnStart` relics with a `TurnNumber <= 1` guard, which the game runs
+    /// after the opening draw and `AfterPlayerTurnStart`: Bread, Divine Destiny, Infused Core,
+    /// Very Hot Cocoa, Fencing Manual, Runic Capacitor, Symbiotic Virus, Orange Dough, Big Hat,
+    /// Bone Tea, Booming Conch (its energy), Lantern and Akabeko.
+    /// </summary>
+    internal static void ApplyFirstTurnAfterSideTurnStart(CombatState state, Random rng)
+    {
+        RunHookInHoldingOrder(state, new Dictionary<int, Action>
+        {
+            // `PlayerCmd.LoseEnergy(2)` after the reset, clamped at zero: the price of its +1.
+            [Lantern] = () => CardEffects.GainEnergy(state, 1),
+            [Akabeko] = () => BuffSystem.Apply(state.PlayerBuffs, BuffId.Vigor, 8),
+            [Bread] = () => state.Energy = Math.Max(0, state.Energy - BreadTurnOneEnergyLoss),
+            [DivineDestiny] = () => CardEffects.GainStars(state, 6),
+            [InfusedCore] = () =>
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    CardEffects.ChannelOrb(state, OrbType.Lightning, rng);
+                }
+            },
+            [VeryHotCocoa] = () => CardEffects.GainEnergy(state, 4),
+            [FencingManual] = () => CardEffects.Forge(state, 10),
+            [RunicCapacitor] = () => state.OrbCapacity += 3,
+            [SymbioticVirus] = () => CardEffects.ChannelOrb(state, OrbType.Dark, rng),
+            [OrangeDough] = () => CardEffects.AddColorlessCardsToHand(state, 2, rng),
+            // Distinct ETHEREAL cards from the player's own pool; skipped when the pool has none.
+            [BigHat] = () => CardEffects.AddDistinctEtherealCardsToHand(state, 2, rng),
+            // UPGRADE EVERY CARD IN HAND, one combat only.
+            [BoneTea] = () =>
+            {
+                if (SpendTeaCombat(state, BoneTea))
+                {
+                    for (int i = 0; i < state.Hand.Count; i++)
+                    {
+                        state.Hand[i] = state.Hand[i] with { Upgraded = true };
+                    }
+                }
+            },
+            [BoomingConch] = () =>
+            {
+                if (state.IsEliteCombat)
+                {
+                    CardEffects.GainEnergy(state, 1);
+                }
+            },
+        });
+    }
+
+    /// <summary>
+    /// Both halves of turn one's combat start in one call (the pre-draw phases, then the
+    /// `AfterSideTurnStart` ones). The engine runs them apart, around the opening draw.
+    /// </summary>
     public static void ApplyCombatStart(CombatState state, Random rng)
     {
-        // ModifyMaxEnergy is read every time the game asks for max energy, so the bonus has
-        // to reach MaxEnergy (which each turn refills from) and the energy already handed
-        // out for turn one.
-        int extraEnergy = state.Relics.Count(relic => MaxEnergyRelics.Contains(relic.DefId));
-        // `PumpkinCandle.ModifyMaxEnergy` is the same EnergyVar(1), but only while the
-        // candle is lit: KindleCount rides the relic's Counter and burns down a point per
-        // fight, so this one relic can be in the list on one combat and out of it the next.
-        extraEnergy += state.Relics.Count(relic =>
-            relic.DefId == Run.RunConstants.RelicPumpkinCandle && relic.Counter > 0
-        );
-        state.MaxEnergy += extraEnergy;
-        // NOT through GainEnergy: this is part of turn one's RESET catching up with the
-        // new maximum, not a `PlayerCmd.GainEnergy`, and the reset is a different path
-        // that `NoEnergyGainPower` does not touch.
-        state.Energy += extraEnergy;
-
-        // `Girya.AfterRoomEntered(CombatRoom)` -- Strength equal to the lifts spent on it.
-        // Read off the relic INSTANCE's counter, which is why the run has to hand the
-        // counter to the combat rather than just the relic's id.
-        // `SlingOfCourage.AfterRoomEntered(RoomType.Elite)`: 2 Strength on the fight that
-        // room starts. The relic's hook fires before the combat exists, so the room TYPE
-        // has to be handed over rather than looked up.
-        if (state.IsEliteRoom && HasRelic(state, SlingOfCourage))
-        {
-            GainPlayerStrength(state, 2);
-        }
-
-        // The three Starter relics that open a combat with something. Every run of that
-        // character holds one, so these are the most-exercised relics in the game and
-        // were the last four with nothing behind them.
-        //
-        // `CrackedCore.BeforeSideTurnStart` guards on `TurnNumber <= 1`, so its Lightning
-        // is a combat-start channel and not a per-turn one.
-        if (HasRelic(state, CrackedCore))
-        {
-            CardEffects.ChannelOrb(state, OrbType.Lightning, rng);
-        }
-
-        // `DivineRight.AfterRoomEntered(CombatRoom)`: three Stars, and stars live on the
-        // PlayerCombatState -- so this is three at the top of every fight, not three that
-        // accumulate across the run.
-        if (HasRelic(state, DivineRight))
-        {
-            CardEffects.GainStars(state, 3);
-        }
-
-        // `Bread.AfterSideTurnStart` at `TurnNumber == 1`: `PlayerCmd.LoseEnergy(2)`, after
-        // turn one's reset, clamped at zero -- the price of its +1 on every later turn
-        // (`ModifyMaxEnergy` below). Only that half was here.
-        if (HasRelic(state, Bread))
-        {
-            state.Energy = Math.Max(0, state.Energy - BreadTurnOneEnergyLoss);
-        }
-
-        // `DivineDestiny.AfterSideTurnStart` at `TurnNumber <= 1`: StarsVar(6). Divine
-        // Right's mechanic at twice the size, and it is a STARTER -- every Regent run
-        // opens with it, so this was among the most-played relics doing nothing.
-        if (HasRelic(state, DivineDestiny))
-        {
-            CardEffects.GainStars(state, 6);
-        }
-
-        // `ThrowingAxe.AfterRoomEntered(CombatRoom)` sets `UsedThisCombat = false`. The
-        // counter IS that flag, and it has to be cleared HERE rather than at turn start:
-        // the axe is once per COMBAT, not once per turn, and relic counters travel into
-        // the fight from the run rather than starting fresh.
-        SetCounter(state, ThrowingAxe, 0);
-
-        // `InfusedCore.AfterSideTurnStart` at TurnNumber <= 1: three Lightning. A STARTER,
-        // and its OTHER half -- `ModifyOrbValue` +1 on the player's Lightning orbs -- is
-        // in `CardEffects`, which is exactly the split that made Blood Soaked Rose look
-        // finished when only one half was wired.
-        if (HasRelic(state, InfusedCore))
-        {
-            for (int i = 0; i < 3; i++)
-            {
-                CardEffects.ChannelOrb(state, OrbType.Lightning, rng);
-            }
-        }
-
-        // `PhylacteryUnbound.BeforeCombatStart`: SummonVar("StartOfCombat", 5). Bound
-        // Phylactery's shape at five HP instead of one, and a Starter rather than a Rare.
-        if (HasRelic(state, PhylacteryUnbound))
-        {
-            CardEffects.SummonOsty(state, 5);
-        }
-
-        // `BoundPhylactery.BeforeCombatStart` summons Osty at `SummonVar(1)` -- one HP,
-        // which is a body to soak one hit rather than a wall.
-        if (HasRelic(state, BoundPhylactery))
-        {
-            CardEffects.SummonOsty(state, 1);
-        }
-
-        RefreshBeltBuckle(state);
-
-        int girya = state.Relics.FirstOrDefault(relic => relic.DefId == Girya).Counter;
-        if (girya > 0)
-        {
-            GainPlayerStrength(state, girya);
-        }
-
-        if (HasRelic(state, PhilosophersStone))
-        {
-            // AfterRoomEntered applies StrengthPower(1m) to every living opponent. The game
-            // also catches enemies that join mid-combat (AfterCreatureAddedToCombat); a
-            // summoned enemy here does not get it.
-            foreach (var enemy in state.Enemies.Where(enemy => enemy.Hp > 0))
-            {
-                BuffSystem.Apply(enemy.Buffs, BuffId.Strength, 1);
-            }
-        }
-
-        // `PetrifiedToad.BeforeCombatStartLate` is `PotionCmd.TryToProcure<PotionShapedRock>`: the
-        // first free slot, and nothing when the belt is full or Sozu's ShouldProcurePotion says no.
-        // Writing the slot directly skipped that gate, so a Sozu owner still got the rock.
-        if (HasRelic(state, PetrifiedToad))
-        {
-            PotionEffects.TryToProcure(state, PotionShapedRock);
-        }
-
-        // Every relic below guards on `TurnNumber <= 1` inside `AfterSideTurnStart` or
-        // `BeforeSideTurnStart`, which is the combat-start shape Cracked Core already
-        // uses -- a once-per-fight opener wearing a per-turn hook.
-
-        // `VeryHotCocoa`: EnergyVar(4). An Ancient relic, so a whole extra turn's energy
-        // on turn one.
-        if (HasRelic(state, VeryHotCocoa))
-        {
-            CardEffects.GainEnergy(state, 4);
-        }
-
-        // `FencingManual`: ForgeVar(10) -- a Sovereign Blade at 10, the Regent's own
-        // mechanic handed out by a Common relic.
-        if (HasRelic(state, FencingManual))
-        {
-            CardEffects.Forge(state, 10);
-        }
-
-        // `RunicCapacitor`: RepeatVar(3), `OrbCmd.AddSlots`. Three orb slots for the whole
-        // fight, which for a Defect is more than doubling the ring.
-        if (HasRelic(state, RunicCapacitor))
-        {
-            state.OrbCapacity += 3;
-        }
-
-        // `SymbioticVirus`: `DynamicVar("Dark", 1m)` channelled as a DarkOrb.
-        if (HasRelic(state, SymbioticVirus))
-        {
-            CardEffects.ChannelOrb(state, OrbType.Dark, rng);
-        }
-
-        // `TwistedFunnel`: Poison 4 on every hittable enemy.
-        if (HasRelic(state, TwistedFunnel))
-        {
-            CardEffects.ApplyPoisonToAllEnemies(state, 4, rng);
-        }
-
-        // `OrangeDough`: CardsVar(2) DISTINCT colourless cards into hand, off
-        // `CombatCardGeneration` -- the same shuffle-then-take that every other
-        // `GetDistinctForCombat` caller uses.
-        if (HasRelic(state, OrangeDough))
-        {
-            CardEffects.AddColorlessCardsToHand(state, 2, rng);
-        }
-
-        // `BigHat`: CardsVar(2) distinct ETHEREAL cards from the player's OWN pool. Its
-        // filter is `c.Keywords.Contains(Ethereal)` over the character pool rather than
-        // the colourless one, and the whole block is skipped when the filter is empty --
-        // which for a character with no Ethereal cards is the difference between two
-        // cards and none.
-        if (HasRelic(state, BigHat))
-        {
-            CardEffects.AddDistinctEtherealCardsToHand(state, 2, rng);
-        }
-
-        // ── The three teas, and Sword of Jade ──────────────────────────────────
-        // Each tea counts DOWN the combats it has left, and the count is run state: the
-        // combat is handed the relic already charged (see CombatFactory.Reset), spends
-        // one here, and the run reads the remainder back at the end of the fight.
-
-        // `BoneTea.AfterSideTurnStart` at TurnNumber <= 1: UPGRADE EVERY CARD IN HAND.
-        // One combat only.
-        if (SpendTeaCombat(state, BoneTea))
-        {
-            for (int i = 0; i < state.Hand.Count; i++)
-            {
-                state.Hand[i] = state.Hand[i] with { Upgraded = true };
-            }
-        }
-
-        // `EmberTea.AfterRoomEntered(CombatRoom)`: Strength 2, for five combats.
-        if (SpendTeaCombat(state, EmberTea))
-        {
-            GainPlayerStrength(state, 2);
-        }
-
-        // `SwordOfJade.AfterRoomEntered(CombatRoom)`: Strength 3, every fight, forever.
-        // What Sword of Stone becomes after five elites.
-        if (HasRelic(state, SwordOfJade))
-        {
-            GainPlayerStrength(state, 3);
-        }
-
-        if (HasRelic(state, Anchor))
-        {
-            // BlockVar(10m, ValueProp.Unpowered) — Dexterity does not raise it.
-            CardEffects.GainUnpoweredBlock(state, 10, rng);
-        }
-
-        // The fakes are the real relics at a discount, and the discount is the point: 4
-        // block against Anchor's 10.
-        if (HasRelic(state, FakeAnchor))
-        {
-            CardEffects.GainUnpoweredBlock(state, 4, rng);
-        }
-
-        if (HasRelic(state, Vajra))
-        {
-            GainPlayerStrength(state, 1);
-        }
-
-        if (HasRelic(state, OddlySmoothStone))
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Dexterity, 1);
-        }
-
-        if (HasRelic(state, DataDisk))
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Focus, 1);
-        }
-
-        if (HasRelic(state, Gorget))
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Plating, 4);
-        }
-
-        if (HasRelic(state, BronzeScales))
-        {
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.Thorns, 3);
-        }
-
-        // Only the energy is the conch's combat-start effect. Its two CARDS are a
-        // `ModifyHandDraw`, and they ride `ExtraOpeningHandDraw` with Ring of the Snake's
-        // and Bag of Preparation's -- see the remark there.
-        if (HasRelic(state, BoomingConch) && state.IsEliteCombat)
-        {
-            CardEffects.GainEnergy(state, 1);
-        }
+        ApplyBeforeOpeningHand(state, rng);
+        ApplyFirstTurnAfterSideTurnStart(state, rng);
     }
 
     /// <summary>
@@ -957,51 +884,6 @@ public static class RelicEffects
         foreach (int relicId in PerTurnCounters)
         {
             SetCounter(state, relicId, 0);
-        }
-
-        if (turnNumber == 1)
-        {
-            if (HasRelic(state, Lantern))
-            {
-                CardEffects.GainEnergy(state, 1);
-            }
-
-            // `VenerableTeaSet.AfterEnergyReset` pays once, on the first energy reset of
-            // the combat after a REST SITE, and clears its own flag. The armed state is a
-            // counter on the relic, set when the run rests -- it used to be a synthetic
-            // `VenerableTeaSetActive` relic id that NOTHING IN THE RUN EVER ADDED, so the
-            // relic was inert for the whole run and its two tests drove the marker
-            // directly. Fake Venerable Tea Set is the same rule at 1 energy.
-            if (SpendRestSiteCharge(state, VenerableTeaSet))
-            {
-                CardEffects.GainEnergy(state, 2);
-            }
-
-            if (SpendRestSiteCharge(state, FakeVenerableTeaSet))
-            {
-                CardEffects.GainEnergy(state, 1);
-            }
-
-            if (HasRelic(state, Akabeko))
-            {
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.Vigor, 8);
-            }
-
-            if (HasRelic(state, BagOfMarbles))
-            {
-                foreach (var enemy in state.Enemies.Where(enemy => enemy.Hp > 0))
-                {
-                    BuffSystem.Apply(enemy.Buffs, BuffId.Vulnerable, 1);
-                }
-            }
-
-            if (HasRelic(state, RedMask))
-            {
-                foreach (var enemy in state.Enemies.Where(enemy => enemy.Hp > 0))
-                {
-                    BuffSystem.Apply(enemy.Buffs, BuffId.Weak, 1);
-                }
-            }
         }
 
         // Sai, Pael's Tears, Phylactery Unbound, Crossbow, Seal of Gold, Brimstone and the

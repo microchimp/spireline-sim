@@ -2902,14 +2902,16 @@ public static class CombatEngine
 
     /// <summary>
     /// Turn one's start past `SetupPlayerTurn`, and what the emulator deals with it: the
-    /// combat-start relics (`BeforeCombatStart`, `AfterRoomEntered`, which the game runs before the
-    /// turn starts at all) and the side's `AfterSideTurnStart` (Bone Tea, Lantern, Akabeko, ...,
-    /// Rampart). Run once, at the first screen that holds the turn, or after the setup.
+    /// turn-one `AfterSideTurnStart` relics (Bone Tea, Lantern, Akabeko, ...) and the side's Rampart.
+    /// The combat-start phases (`AfterRoomEntered`, `BeforeCombatStart`, the Late pass, the
+    /// side's `BeforeSideTurnStart`) are not here: they ran before the draw
+    /// (`RelicEffects.ApplyBeforeOpeningHand`).
+    /// Run once, at the first screen that holds the turn, or after the setup.
     /// </summary>
     private static void FirstTurnSide(CombatState state, Random rng)
     {
         Effects.RelicEffects.ApplyStartOfPlayerTurnRares(state, 1, rng);
-        Effects.RelicEffects.ApplyCombatStart(state, rng);
+        Effects.RelicEffects.ApplyFirstTurnAfterSideTurnStart(state, rng);
         Effects.RelicEffects.ApplyStartOfPlayerTurn(state, rng);
         // `Hook.AfterSideTurnStart` is a gated dispatch: a turn-one kill (Festive Popper, Mercury
         // Hourglass) shuts the relics' pass and Rampart (no flower tick).

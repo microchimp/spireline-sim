@@ -254,7 +254,7 @@ public class VenerableTeaSetTests
         teaSet.State.Relics[index] = teaSet.State.Relics[index] with { Counter = 1 };
         teaSet.State.Energy = plain.State.Energy;
 
-        RelicEffects.ApplyStartOfPlayerTurn(teaSet.State, new System.Random(0));
+        RelicEffects.ApplyBeforeOpeningHand(teaSet.State, new System.Random(0));
 
         Assert.Equal(plain.State.Energy + 2, teaSet.State.Energy);
         Assert.Equal(0, teaSet.State.Relics[index].Counter);
@@ -269,7 +269,7 @@ public class VenerableTeaSetTests
         fight.State.Relics[index] = fight.State.Relics[index] with { Counter = 1 };
         int before = fight.State.Energy;
 
-        RelicEffects.ApplyStartOfPlayerTurn(fight.State, new System.Random(0));
+        RelicEffects.ApplyBeforeOpeningHand(fight.State, new System.Random(0));
 
         Assert.Equal(before + 1, fight.State.Energy);
     }
