@@ -109,14 +109,25 @@ static class Tables
                         {
                             foreach (int idx in Enumerable.Range(0, 12).Concat(Enumerable.Range(1000, 3)))
                             {
-                                for (int seed = 1; seed <= 3; seed++)
+                                for (int seed = 1; seed <= 8; seed++)
                                 {
-                                    var e = new EnemyState { DefId = id, Hp = hp, MoveIndex = idx, LastMove = last, OnceOnlyMoveUsed = once };
-                                    e.MaxHp = full;
-                                    EnemyAI.ChooseIntents([e], idx + 1, new Random(seed), null, 0);
-                                    var it = e.CurrentIntent;
-                                    if ((it.Type == IntentType.Attack || it.CarriesDamage) && it.Magnitude > 0)
-                                        moves.Add($"{it.Magnitude}x{it.Hits}");
+                                    // A full board (Fabricator disintegrates) and the powers that pick a form
+                                    // (Test Subject's Adaptable and Painful Stabs) change what is chosen too.
+                                    for (int variant = 0; variant < 6; variant++)
+                                    {
+                                        var e = new EnemyState { DefId = id, Hp = hp, MoveIndex = idx, LastMove = last, OnceOnlyMoveUsed = once };
+                                        e.MaxHp = full;
+                                        if (variant / 2 == 1) BuffSystem.Apply(e.Buffs, BuffId.Adaptable, 1);
+                                        if (variant / 2 == 2) BuffSystem.Apply(e.Buffs, BuffId.PainfulStabs, 1);
+                                        if ((variant / 2 == 2 && idx > 2)) continue; // hit count grows with the index; the game exports the first
+                                        var board = new List<EnemyState> { e };
+                                        if (variant % 2 == 1)
+                                            for (int k = 0; k < 3; k++) board.Add(new EnemyState { DefId = id, Hp = 1, MaxHp = 1 });
+                                        EnemyAI.ChooseIntents(board, idx + 1, new Random(seed), null, 0);
+                                        var it = e.CurrentIntent;
+                                        if ((it.Type == IntentType.Attack || it.CarriesDamage) && it.Magnitude > 0)
+                                            moves.Add($"{it.Magnitude}x{it.Hits}");
+                                    }
                                 }
                             }
                         }
