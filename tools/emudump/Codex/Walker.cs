@@ -133,11 +133,11 @@ public sealed class Walker
         var best = WalkOnce(rec);
         int walks = 1;
         var settled = new List<(string Key, int Arity, int Default)>();
-        while (best.Met.FirstOrDefault(m => !settled.Any(s => s.Key == m.Key)) is { Key: not null } fact)
+        void Settle((string Key, int Arity, int Default) fact)
         {
-            settled.Add(fact);
             int bestWay = _facts.TryGetValue(fact.Key, out int walked) ? walked : fact.Default;
             bool tied = false;
+            _openFacts.Remove(fact.Key);
             for (int way = 0; way < fact.Arity; way++)
             {
                 if (way == bestWay)
@@ -166,6 +166,37 @@ public sealed class Walker
             }
         }
 
+        while (best.Met.FirstOrDefault(m => !settled.Any(s => s.Key == m.Key)) is { Key: not null } fact)
+        {
+            settled.Add(fact);
+            Settle(fact);
+        }
+
+        // Facts interact: one settled while an earlier-met fact was still at its default can tie
+        // for that reason alone (Gremlin gang: the joiners' count against the Merc's theft). A fact
+        // left open is settled again with all the later ones settled, until none changes.
+        for (int round = 0; round < 3 && settled.Where(s => _openFacts.Contains(s.Key)).ToList() is { Count: > 0 } open; round++)
+        {
+            string before = Ways();
+            best = WalkOnce(rec);
+            walks++;
+            foreach (var fact in open)
+            {
+                Settle(fact);
+            }
+
+            while (best.Met.FirstOrDefault(m => !settled.Any(s => s.Key == m.Key)) is { Key: not null } fresh)
+            {
+                settled.Add(fresh);
+                Settle(fresh);
+            }
+
+            if (before == Ways())
+            {
+                break;
+            }
+        }
+
         if (best.Ways != Ways())
         {
             // The walk kept was made with a fact open that is settled now: walked again, so the
@@ -184,7 +215,7 @@ public sealed class Walker
                 {
                     ["floor"] = int.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture),
                     ["fact"] = parts[1],
-                    ["settled"] = _openFacts.Contains(f.Key) ? "open" : f.Arity > 2 || parts[1] == CopyFact ? $"{way + 1} of {f.Arity}" : way == 1 ? "yes" : "no",
+                    ["settled"] = _openFacts.Contains(f.Key) ? "open" : parts[1] == JoinedFact ? $"{way} created" : f.Arity > 2 || parts[1] == CopyFact ? $"{way + 1} of {f.Arity}" : way == 1 ? "yes" : "no",
                 };
             }).ToArray());
             best.Result["walks"] = walks;
@@ -802,14 +833,47 @@ public sealed class Walker
             Source.Static, prefix ? null : "the history's monsters, as many as the emulator opens with");
         if (real.Count > emu.Count)
         {
-            // A creature joined mid-fight and its HP was rolled on Niche.
-            _taint.TryAdd("Niche", $"floor {_floor}: {string.Join(",", real.Skip(emu.Count))} joined the fight");
+            // A creature joined mid-fight and its HP was rolled on Niche (CreateCreature draws it
+            // once per creature). The history lists the joiners it saw, at least that many.
+            JoinedCreatures(real.Count - emu.Count, $"{string.Join(",", real.Skip(emu.Count))} joined the fight");
         }
         else if (emu.FirstOrDefault(Names.Spawners.Contains) is string spawner)
         {
             // The history adds a joining creature's id only if it is not listed yet, so a
             // second rat, a respawned Axebot or another Fabricator bot leaves no trace.
             _taint.TryAdd("Niche", $"floor {_floor}: {spawner} can add creatures the history does not list");
+        }
+    }
+
+    const string JoinedFact = "joined";
+    const int MaxJoined = 12;
+
+    /// <summary>
+    /// The number of creatures created in this floor's fight after its opening roster is a hidden
+    /// fact: each one rolled its HP on Niche, and the history only names the joiners it lists (a
+    /// second summon of a listed id leaves no trace). The walk draws that many Niche values (the
+    /// listed count unless an earlier walk settled it otherwise); while the count is open the
+    /// stream stays tainted from here, as it was before the count was a fact.
+    /// </summary>
+    void JoinedCreatures(int listed, string why)
+    {
+        var (count, open) = Hidden(JoinedFact, MaxJoined, Math.Min(listed, MaxJoined - 1));
+        var niche = S.ActiveCombat?.NicheHpRng;
+        for (int i = 0; i < count; i++)
+        {
+            if (niche is not null)
+            {
+                niche.Next();
+            }
+            else
+            {
+                S.Rng.Niche.NextInt();
+            }
+        }
+
+        if (open)
+        {
+            _taint.TryAdd("Niche", $"floor {_floor}: {why}");
         }
     }
 
