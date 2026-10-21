@@ -515,7 +515,14 @@ def plan_fights(c: Ctx) -> list[Step]:
             if mode == "coverage":
                 cmd.pre, cmd.post = _cov_in, (lambda c, h=_halt_on_unsafe(name): _cov_out(c) or h(c))
             steps.append(Step(f"batch-{i:02d}", [cmd], mode="serial"))
-    return steps + report_steps(c)
+    return steps + report_steps(c) + [import_step()]
+
+
+def import_step() -> Step:
+    """Add the job's exact and divergent fights to the corpus (after groups has read them; prune then drops the raw file)."""
+    imp = Cmd("corpus-import", ["{py}", "tools/lab/corpus_import.py", "--job", "{job}", "--budget-gb", "20"],
+              needs=["{tree}/tools/lab/corpus_import.py"])
+    return Step("corpus-import", [imp])
 
 
 def plan_runs(c: Ctx) -> list[Step]:

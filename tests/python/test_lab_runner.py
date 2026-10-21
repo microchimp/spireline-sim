@@ -380,6 +380,18 @@ class PlansTest(unittest.TestCase):
     def test_expand_keeps_unknown_braces(self):
         self.assertEqual(self.ctx().expand("{sha7}-{nope}"), "aaaaaaa-{nope}")
 
+    def test_a_fights_job_ends_with_the_corpus_import_after_groups(self):
+        c = self.ctx()
+        steps = pl.plan_fights(c)
+        self.assertEqual([s.name for s in steps][-3:], ["groups", "kits", "corpus-import"])
+        cmd = steps[-1].cmds[0]
+        self.assertEqual(cmd.argv[1:4], ["tools/lab/corpus_import.py", "--job", "{job}"])
+        self.assertFalse(cmd.core)  # an import that fails or is missing does not fail the fights
+        self.assertIn("missing on this tree", cmd.skip_reason(c))
+        (self.tree / "tools" / "lab").mkdir(parents=True, exist_ok=True)
+        (self.tree / "tools" / "lab" / "corpus_import.py").write_text("", encoding="utf-8")
+        self.assertIsNone(cmd.skip_reason(c))
+
     def test_fights_fall_back_to_coverage_with_the_jobs_shim_on_an_old_tree(self):
         (self.tree / "referee" / "scenarios.py").write_text('choices=("dense", "coverage")', encoding="utf-8")
         mode, has_jobs = pl.fights_mode(self.tree)

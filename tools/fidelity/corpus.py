@@ -32,6 +32,11 @@ game recordings.
   and flags. Before 732aacc the driver aimed RandomEnemy cards, the game refused the play and the
   recording did not say so, so a format 1-2 fight with such a play is flagged driver-artifact-risk
   (kept: the gate only needs it to behave the same from one emulator commit to the next).
+- ``tools/lab/corpus_import.py`` adds the lab's recordings the same way (one fight per setup, a size budget):
+  fights the emulator matched exactly plain, fights it diverged on tagged ``lab-diverged``. The tag is
+  provenance (what the emulator of the day did), not a promise: the baselines hold the verdicts and `check`
+  flags such a fight only when it gets worse. A stored record is the game's side only, so the corpus
+  replays unchanged on any emulator that reads the same recordings, a rebuilt one included.
 - A fight whose spec needs an EmuDump feature (enemy_hp_mult, a console setup) is replayed only by an
   EmuDump whose source has it; until then ``run`` skips it and says so.
 - ``run`` first picks up new or changed recordings (``--no-scan`` turns it off), then replays every
@@ -443,8 +448,11 @@ class Corpus:
             lk.unlink(missing_ok=True)
 
     def add_files(self, files: list, rand_cards: set | None = None, scan: bool = False, quiet: bool = False,
-                  jobs: Path = DEFAULT_JOBS) -> dict:
+                  jobs: Path = DEFAULT_JOBS, labels: dict | None = None) -> dict:
         """Add every usable fight of each referee out.json; returns counts.
+
+        ``labels`` maps str(file) to (source key, tag) for files that are not under the jobs folders (the lab's
+        import writes a filtered copy of a job's recordings and names the original as the source).
 
         ``scan`` skips files unchanged since the last scan and refreshes the summary of excluded folders.
         """
@@ -512,6 +520,9 @@ class Corpus:
                 f = Path(f)
                 key, ppath = locate(f, jobs)
                 name, action, tag, reason = policy_of(ppath) if ppath else ("(added)", "include", None, "")
+                if labels and str(f) in labels:
+                    key, tag = labels[str(f)]
+                    action = "include"
                 if action == "exclude":
                     counts["files_excluded"] += 1
                     if not scan and not quiet:
@@ -556,6 +567,14 @@ class Corpus:
             self.save_index(idx)
         counts["fights"] = len(by_id)
         return dict(counts)
+
+    def specs(self) -> set:
+        """The spec ids (seed, character, setup, ...) of every fight in the corpus."""
+        return {m["spec"] for m in self.load_index()["fights"]}
+
+    def size(self) -> int:
+        """Bytes of the stored fight records."""
+        return sum(f.stat().st_size for f in self.fights_dir.glob("*.json.gz")) if self.fights_dir.is_dir() else 0
 
     def scan(self, jobs: Path, quiet: bool = False) -> dict:
         return self.add_files(recordings(jobs), scan=True, quiet=quiet, jobs=jobs)

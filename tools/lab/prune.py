@@ -3,6 +3,9 @@
 ``prune(lab, need, busy)`` frees at least `need` bytes (or everything it may) from finished jobs, oldest first,
 tier by tier, and returns the bytes freed. A job that is running (`busy`) is never touched.
 
+  tier 0  recordings already in the corpus: an `<name>.out.json` that corpus_import.py marked fully covered (every fight
+          stored in the regression corpus, or its setup stored), unchanged since, and already read by groups.json.
+          Goes before anything else: the corpus holds it compressed.
   tier A  scratch: serve/, chunks/, work/, scratch/ folders, shrink replays (<name>.shrinkN.json, .shrinkN.out.json), a whole-runs
           session's copy of its runs (<name>.pN.out.json), split inputs, logs over 20 MB cut to their tail.
   tier B  raw outputs of fights that MATCHED: in `<name>.out.json`, `.emu.json` and `.reanchor.json` the entry of a fight
@@ -31,7 +34,7 @@ SCRATCH_FILE_PATTERNS = (".shrink.emu.json",)
 # runs.py merged into <name>.out.json (<name>.p0.json, .p0.out.json)
 SCRATCH_RE = re.compile(r"\.shrink\d+(\.out)?\.json$|\.p\d+(\.out)?\.json$")
 KEEP_NAMES = {"groups.json", "summary.md", "targets.json", "state.json", "status.txt", "job.json", "done.rc", "pruned.json",
-              "coverage-setup.json", "yield.tsv", "mix.json", "coverage-random.json", "PAUSE", "HALT"}
+              "corpus-imported.json", "coverage-setup.json", "yield.tsv", "mix.json", "coverage-random.json", "PAUSE", "HALT"}
 KEEP_SUFFIXES = (".verdicts.json", ".summary.txt", ".runs.json", ".shrink.json")
 RAW_SUFFIXES = (".out.json", ".emu.json", ".reanchor.json")
 LOG_CUT = 20 * 1024 * 1024
@@ -73,6 +76,50 @@ def _remove(p: Path) -> int:
     except OSError:
         return 0
     return n
+
+
+def corpus_specs(corpus: Path) -> set | None:
+    """The spec ids (setups) the corpus at `corpus` holds, or None when it has no readable index."""
+    try:
+        idx = json.loads((corpus / "index.json").read_text(encoding="utf-8"))
+        return {m["spec"] for m in idx["fights"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def tier_0(job: Path, groups_time: float | None, specs_of=corpus_specs) -> int:
+    """Delete the recordings the corpus import covers; `groups_time` is the mtime of groups.json (None: not yet read).
+
+    A file goes only when its marker entry says covered, its size and mtime are those the import saw, groups.json is
+    newer than it, and the corpus the marker names still holds every setup the entry lists (`specs_of(corpus path)`
+    gives the corpus's setups, or None for no corpus; it may cache across jobs).
+    """
+    try:
+        doc = json.loads((job / "corpus-imported.json").read_text(encoding="utf-8"))
+        files = doc["files"]
+        corpus = Path(doc["corpus"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+    have = specs_of(corpus) if groups_time is not None else None
+    if have is None:
+        return 0
+    freed, notes = 0, []
+    for rel, e in files.items():
+        f = job / rel
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        if not (isinstance(e, dict) and e.get("covered") and st.st_size == e.get("size") and st.st_mtime_ns == e.get("mtime_ns")
+                and groups_time > st.st_mtime and isinstance(e.get("specs"), list) and have.issuperset(e["specs"])):
+            continue
+        n = _remove(f)
+        if n:
+            freed += n
+            notes.append({"file": rel, "tier": "0", "bytes_freed": n})
+    if notes:
+        _note(job, notes)
+    return freed
 
 
 def tier_a(job: Path) -> int:
@@ -184,13 +231,24 @@ def prune(lab: Path, need: int, busy: set[str] | None = None, old_days: float = 
     now = time.time() if now is None else now
     jobs = [j for j in finished_jobs(lab) if j.name not in busy]
     freed = 0
+    groups = lab / "groups.json"
+    g_time = groups.stat().st_mtime if groups.exists() else None
+    seen: dict = {}  # corpus path -> its setups, read once per prune
+
+    def specs_of(p: Path):
+        if p not in seen:
+            seen[p] = corpus_specs(p)
+        return seen[p]
+
+    for j in jobs:
+        freed += tier_0(j, g_time, specs_of)
+        if freed >= need:
+            return freed
     for tier in (tier_a, tier_b):
         for j in jobs:
             freed += tier(j)
             if freed >= need:
                 return freed
-    groups = lab / "groups.json"
-    g_time = groups.stat().st_mtime if groups.exists() else None
     for j in jobs:
         done = (j / "done.rc").stat().st_mtime
         if g_time is not None and g_time > done and now - done > old_days * 86400:
