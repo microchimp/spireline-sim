@@ -207,7 +207,10 @@ public static partial class RunRewardGenerator
         // Elite each add a WHOLE extra CardReward of three. The room type is the gate, and
         // the Star's three come from the BOSS pool rather than the room's own -- which is
         // the part a "one more card reward" reading would lose.
-        state.ExtraCardRewardsOwed += Effects.RelicEffects.AddsExtraCardReward(
+        // The card reward is added by `Hook.ModifyRewards` and populated with the other
+        // additions, so it is rolled below where the hook additions are populated, not
+        // when an earlier offer is answered.
+        int extraCardRewards = Effects.RelicEffects.AddsExtraCardReward(
             state,
             state.LastResolvedRoomType
         )
@@ -328,6 +331,15 @@ public static partial class RunRewardGenerator
         // `Hook.ModifyRewards` runs on the populated list, and what it adds is populated
         // after it. Lava Rock's and Wongo's relics (and Black Star's) are such additions; the
         // flag counts one of them when the room has no relic of its own.
+        // Prayer Wheel's and White Star's whole extra CardReward is such an addition: its
+        // three are drawn now (every addition is populated as the set is offered) and wait
+        // on the screen as one more item. Rolled before the hook relics: the emulator does
+        // not interleave the hooks by relic order.
+        for (int i = 0; i < extraCardRewards; i++)
+        {
+            state.PendingCardOffers.Add(RollFullCardRewardOffer(state));
+        }
+
         int hookRelics = bonusRelicsOwed + (state.PendingRelicReward && !roomRelic ? 1 : 0);
         for (int i = 0; i < hookRelics; i++)
         {
@@ -1191,6 +1203,42 @@ public static partial class RunRewardGenerator
         }
 
         return [.. offers];
+    }
+
+    /// <summary>
+    /// A whole ordinary card reward, populated now and parked as an offer: the same draws and
+    /// hooks as <see cref="PopulateCardReward" /> (Silver Crucible, Lava Lamp, eggs, Lasting
+    /// Candy, Wing Charm, Driftwood), with the screen's own fields left as they were. The
+    /// game's `CardReward.Populate` runs when the set is offered, whichever item is shown.
+    /// </summary>
+    internal static CardOffer RollFullCardRewardOffer(RunState state)
+    {
+        int[] cards = (int[])state.RewardCards.Clone();
+        bool[] upgraded = (bool[])state.RewardUpgraded.Clone();
+        int enchantIndex = state.RewardEnchantIndex;
+        var enchantment = state.RewardEnchantment;
+        int candy = state.LastingCandyRewardCard;
+        bool candyUp = state.LastingCandyRewardUpgraded;
+        bool reroll = state.CardRewardRerollAvailable;
+
+        PopulateCardReward(state);
+        var offer = new CardOffer(
+            (int[])state.RewardCards.Clone(),
+            (bool[])state.RewardUpgraded.Clone(),
+            state.RewardEnchantIndex,
+            state.LastingCandyRewardCard,
+            state.LastingCandyRewardUpgraded,
+            state.CardRewardRerollAvailable
+        );
+
+        Array.Copy(cards, state.RewardCards, cards.Length);
+        Array.Copy(upgraded, state.RewardUpgraded, upgraded.Length);
+        state.RewardEnchantIndex = enchantIndex;
+        state.RewardEnchantment = enchantment;
+        state.LastingCandyRewardCard = candy;
+        state.LastingCandyRewardUpgraded = candyUp;
+        state.CardRewardRerollAvailable = reroll;
+        return offer;
     }
 
     /// <summary>

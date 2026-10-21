@@ -110,7 +110,6 @@ run-dump	RunState.Deck[].SlyForCombat	not in RunSnap.Export: run_compare2 cannot
 run-dump	RunState.Deck[].SlyThisTurn	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.Deck[].TinkerRider	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.Deck[].TinkerType	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
-run-dump	RunState.ExtraCardRewardsOwed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.FurCoatAct	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.FurCoatRooms	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.GoldenPathAct	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows

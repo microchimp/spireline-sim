@@ -1096,8 +1096,14 @@ public static class RunNonCombatEffects
             // `Orrery.AfterObtained` offers FIVE CardRewards at once -- a whole screen each,
             // not five cards on one. The count field Prayer Wheel added carries them.
             case Effects.RelicEffects.Orrery:
-                state.ExtraCardRewardsOwed += 5;
+                // All five are populated as the set is offered; the first is on the screen
+                // and the rest wait behind it.
                 RunRewardGenerator.PopulateCardReward(state);
+                for (int i = 0; i < 4; i++)
+                {
+                    state.PendingCardOffers.Add(RunRewardGenerator.RollFullCardRewardOffer(state));
+                }
+
                 return RunFollowUp.PreRolledCardReward;
 
             // `Cauldron.AfterObtained` offers five POTION rewards, through the same pending

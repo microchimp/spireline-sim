@@ -618,7 +618,7 @@ static class RunReplay
         s.PendingPotionRewards.Clear();
         s.PendingBonusRelicRewards.Clear();
         s.PendingRelicReward = false;
-        s.ExtraCardRewardsOwed = 0;
+        s.PendingCardOffers.Clear();
         foreach (var r in offer)
         {
             switch ((string?)r!["type"])

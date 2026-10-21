@@ -2154,14 +2154,12 @@ public sealed class RunEngine
         State.CardRewardRerollAvailable = false;
         Effects.RelicEffects.SpendSilkenTress(State);
 
-        // Prayer Wheel and White Star each add a WHOLE extra CardReward, so the screen
-        // comes back rather than the run moving on. Rolled here, when the previous offer
-        // is answered, because `CardReward.Populate()` draws its three when the screen is
-        // BUILT -- not when the relic added it.
-        if (State.ExtraCardRewardsOwed > 0)
+        // A standalone chain of offers (Orrery's five): they were all populated when the set
+        // was offered, so the next is only shown. On a rewards screen the player comes back
+        // to the screen instead and claims the next item from it.
+        if (!State.ReturnToRewardScreenAfterCardReward && State.PendingCardOffers.Count > 0)
         {
-            State.ExtraCardRewardsOwed--;
-            RunRewardGenerator.PopulateCardReward(State);
+            RunRewardGenerator.OfferFirstPendingCardOffer(State);
             return 0;
         }
 
@@ -2275,7 +2273,6 @@ public sealed class RunEngine
             RunRewardGenerator.ClearRewardScreen(State);
             State.PendingBonusRelicRewards.Clear();
             State.PendingOtherCharacterCardRewards = 0;
-            State.ExtraCardRewardsOwed = 0;
             return LeaveRewardScreen(out terminal);
         }
 

@@ -226,7 +226,9 @@ public class OrreryTests
         var followUp = RunNonCombatEffects.ApplyRelicPickup(state, RelicEffects.Orrery);
 
         Assert.Equal(RunFollowUp.PreRolledCardReward, followUp);
-        Assert.Equal(5, state.ExtraCardRewardsOwed);
+        // All five are populated as the set is offered: one on the screen, four waiting.
+        Assert.Equal(4, state.PendingCardOffers.Count);
+        Assert.NotEqual(0, state.RewardCards[0]);
     }
 }
 

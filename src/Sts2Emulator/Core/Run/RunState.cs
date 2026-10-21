@@ -148,7 +148,14 @@ public sealed record ActRooms(
 /// the offer is made), or -1.
 /// </para>
 /// </remarks>
-public readonly record struct CardOffer(int[] Cards, bool[] Upgraded, int EnchantIndex = -1)
+public readonly record struct CardOffer(
+    int[] Cards,
+    bool[] Upgraded,
+    int EnchantIndex = -1,
+    int LastingCandyCard = 0,
+    bool LastingCandyUpgraded = false,
+    bool Reroll = false
+)
 {
     /// <summary>An offer that rolled no upgrades (<c>NoUpgradeRoll</c>, or none landed).</summary>
     public static CardOffer Plain(int[] cards) => new(cards, new bool[cards.Length]);
@@ -164,6 +171,9 @@ public readonly record struct CardOffer(int[] Cards, bool[] Upgraded, int Enchan
         Array.Clear(state.RewardUpgraded);
         state.RewardEnchantIndex = EnchantIndex;
         state.RewardEnchantment = EnchantIndex >= 0 ? Enchantment.Swift : Enchantment.None;
+        state.LastingCandyRewardCard = LastingCandyCard;
+        state.LastingCandyRewardUpgraded = LastingCandyUpgraded;
+        state.CardRewardRerollAvailable = Reroll;
         for (int i = 0; i < state.RewardCards.Length && i < Cards.Length; i++)
         {
             state.RewardCards[i] = Cards[i];
@@ -249,20 +259,6 @@ public sealed class RunState
     /// </summary>
     public IEnumerable<int> UsablePotionSlots() =>
         PotionSlots.Take(Math.Min(MaxPotionSlots, PotionSlots.Length));
-
-    /// <summary>
-    /// Extra `CardReward`s owed by Prayer Wheel or White Star. Counted rather than
-    /// generated here because the reward SCREEN is a phase the run steps through, and the
-    /// emulator offers one card reward at a time.
-    /// </summary>
-    /// <remarks>
-    /// The count is honoured by the card-reward phase; what is NOT modelled is White
-    /// Star's pool switch — its three should come from the BOSS pool and come from the
-    /// room's own here. Recorded rather than guessed: the boss card pool is a separate
-    /// generator and wiring it through the reward phase is its own change.
-    /// </remarks>
-    public int ExtraCardRewardsOwed;
-
     /// <summary>
     /// `ForbiddenGrimoirePower.AfterCombatEnd`: card REMOVALS the finished fight owes the
     /// reward screen, one `CardRemovalReward` per point.

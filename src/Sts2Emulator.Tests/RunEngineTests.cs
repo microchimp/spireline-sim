@@ -977,6 +977,7 @@ public class RunEngineTests
         // Seed "0" now offers Kaleidoscope at index 0, which owes two card rewards; this
         // test is about what one card reward does, so answer them first.
         engine.State.PendingOtherCharacterCardRewards = 0;
+        engine.State.PendingCardOffers.Clear();
         engine.State.Phase = RunPhase.CardReward;
         engine.State.RewardCards = [13, 20, 50];
         engine.State.RewardUpgraded = [false, true, false];

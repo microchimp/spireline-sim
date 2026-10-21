@@ -561,7 +561,6 @@ public static class StateCloning
             CardRewardRerollAvailable = state.CardRewardRerollAvailable,
             LastingCandyRewardCard = state.LastingCandyRewardCard,
             LastingCandyRewardUpgraded = state.LastingCandyRewardUpgraded,
-            ExtraCardRewardsOwed = state.ExtraCardRewardsOwed,
             CardRemovalsOwed = state.CardRemovalsOwed,
             RoyaltiesGoldOwed = state.RoyaltiesGoldOwed,
             RestOptionsTaken = state.RestOptionsTaken,
@@ -671,7 +670,10 @@ public static class StateCloning
                 .. state.PendingCardOffers.Select(offer => new CardOffer(
                     (int[])offer.Cards.Clone(),
                     (bool[])offer.Upgraded.Clone(),
-                    offer.EnchantIndex
+                    offer.EnchantIndex,
+                    offer.LastingCandyCard,
+                    offer.LastingCandyUpgraded,
+                    offer.Reroll
                 )),
             ],
             PendingSelectionFollowUpCard = state.PendingSelectionFollowUpCard,
