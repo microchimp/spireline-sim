@@ -10,6 +10,7 @@ Strategies (what a fights-slot job spends the CPU on), with the default weights 
   under-tested  the least-covered cards, relics, potions and powers (--mode coverage)                            10
   random        batch.py's random decks, shrunk and traced by --mode analyze                                      5
   hypotheses    the real-game setup of every static audit finding (tools/lab/hypotheses.py), each decided once         5
+  retest        the smallest example of each group judged host-suspect only by a fixed host gap, on the current tree  3
 
 ``LAB/mix.json`` holds the weights, an object of strategy to number (a missing strategy weighs 0 and never runs; keys
 starting with "_" are notes). The owner edits it between jobs; it is read at every choice. The weights are shares of
@@ -42,8 +43,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-STRATEGIES = ("aimed-bugs", "aimed-gaps", "choice-edges", "whole-runs", "dense", "under-tested", "random", "hypotheses")
-DEFAULT_MIX = {"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-runs": 10, "dense": 10, "under-tested": 10, "random": 5, "hypotheses": 5}
+STRATEGIES = ("aimed-bugs", "aimed-gaps", "choice-edges", "whole-runs", "dense", "under-tested", "random", "hypotheses", "retest")
+DEFAULT_MIX = {"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-runs": 10, "dense": 10, "under-tested": 10, "random": 5, "hypotheses": 5, "retest": 3}
 YIELD_COLUMNS = ("utc", "job", "strategy", "main", "rc", "wall_min", "cpu_min", "fights", "mismatches", "unbuildable", "groups", "fix_ready",
                  "screen_groups")
 NOTE = "weights of the CPU time the fights slots spend, per strategy; 0 or absent: never. Read at every job."

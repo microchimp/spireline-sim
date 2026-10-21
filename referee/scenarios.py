@@ -793,7 +793,7 @@ def load_batch(name: str) -> tuple[list, list, list, dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--name", required=True)
-    ap.add_argument("--mode", choices=("dense", "coverage", "targets", "choices", "analyze", "runs", "hypotheses"), required=True)
+    ap.add_argument("--mode", choices=("dense", "coverage", "targets", "choices", "analyze", "runs", "hypotheses", "retest"), required=True)
     ap.add_argument("--fights", type=int, default=60)
     ap.add_argument("--start", type=int, default=0, help="spec stream offset")
     ap.add_argument("--game", default=GAME)
@@ -813,6 +813,7 @@ def main() -> int:
     ap.add_argument("--decompiled", type=Path, default=Path(r"D:\spireline\referee\decompiled"),
                     help="choices mode: the decompile model_features is read from when --features is missing or stale")
     ap.add_argument("--jobs", type=Path, help="write every output here instead of jobs-setup")
+    ap.add_argument("--retest", type=Path, help="retest mode: a folder with pending.json (tools/lab/retest.py); every group's spec is played")
     ap.add_argument("--hypotheses", type=Path, help="hypotheses mode: a folder of <source>/*.json setups (tools/lab/hypotheses.py); every one is played")
     ap.add_argument("--runs-from", type=Path, help="runs mode: a runs.py batch's <name>.runs.json (its <name>.out.json beside it)")
     ap.add_argument("--trace", type=int, default=None, help="trace up to N diverging fights (default: 40 in targets mode, else 0)")
@@ -821,6 +822,8 @@ def main() -> int:
     a = ap.parse_args()
     if a.mode == "targets" and not a.targets:
         ap.error("--mode targets needs --targets")
+    if a.mode == "retest" and not a.retest:
+        ap.error("--mode retest needs --retest")
     if a.mode == "hypotheses" and not a.hypotheses:
         ap.error("--mode hypotheses needs --hypotheses")
     if a.mode == "runs" and not a.runs_from:
@@ -868,6 +871,16 @@ def main() -> int:
             print("no relic, card or potion that opens a card screen is reachable")
             return 1
         specs = [choice_spec(content, pools, cov, rng, a.start * 1000 + i, a.edges, known1) for i in range(a.fights)]
+    elif a.mode == "retest":
+        from tools.lab import retest as rt  # noqa: PLC0415
+        try:
+            specs = rt.to_specs(json.loads((a.retest / "pending.json").read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            specs = []
+        if not specs:
+            print("retest: no group waits for a retest in", a.retest)
+            (JOBS / f"{a.name}.verdicts.json").write_text("[]", encoding="utf-8")
+            return 0
     elif a.mode == "hypotheses":
         from tools.lab import hypotheses as hyp  # noqa: PLC0415
         setups, problems = hyp.load_setups(a.hypotheses)
@@ -907,7 +920,7 @@ def main() -> int:
         rea = emudump("reanchor", games, JOBS / f"{a.name}.reanchor.json")
     minutes = (time.time() - t0) / 60
     verdicts = judge(specs, games, emus, rea, nm, content)
-    if not analysing and repro is None and a.mode != "hypotheses":  # a batch.py batch keeps its own coverage; run repros are no coverage draw
+    if not analysing and repro is None and a.mode not in ("hypotheses", "retest"):  # a batch.py batch keeps its own coverage; run repros are no coverage draw
         update_coverage(cov, specs, verdicts)
         cov_path.write_text(json.dumps(cov, indent=1, sort_keys=True), encoding="utf-8")
     lines = summarise(verdicts, minutes, rep)

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.lab import hypotheses as hyp
+from tools.lab import retest
 from tools.lab.winsys import NO_WINDOW
 
 TOKEN = re.compile(r"\{(\w+)\}")
@@ -327,6 +328,27 @@ def _hyp_in(c: Ctx) -> None:
     (dst / "pending.json").write_text(json.dumps([hyp.doc_of(s) for s in todo + [s for s in setups if not s.get("testable")]], indent=1), encoding="utf-8")
 
 
+def _groups_doc(c: Ctx) -> list:
+    try:
+        return json.loads((c.lab / "groups.json").read_text(encoding="utf-8")).get("groups", [])
+    except (OSError, ValueError):
+        return []
+
+
+def _retest_in(c: Ctx) -> None:
+    todo = retest.pending(_groups_doc(c), retest.read_results(c.lab))
+    dst = c.job_dir / "retest-in"
+    dst.mkdir(parents=True, exist_ok=True)
+    (dst / "pending.json").write_text(json.dumps(todo, indent=1), encoding="utf-8")
+
+
+def _retest_out(c: Ctx, safety: str | None) -> str | None:
+    from tools.lab.mix import now_utc
+    if not (safety or "").startswith("HALT"):
+        retest.collect(c.job_dir, c.lab, now_utc(), git_head(c.tree))
+    return safety
+
+
 def _hyp_out(c: Ctx, safety: str | None) -> str | None:
     """Judge the verdicts into LAB/hypotheses.json unless the safety check halts the lab; its message is passed on."""
     from tools.lab.mix import now_utc
@@ -344,6 +366,7 @@ SCENARIO_STRATEGIES = {
     "dense": ("dense", ["--act1-seeds", "{lab}/cache/act1_seeds.json"]),
     "under-tested": ("coverage", ["--act1-seeds", "{lab}/cache/act1_seeds.json"]),
     "hypotheses": ("hypotheses", ["--hypotheses", "{job}/hyp-in", "--shrink", "0", "--trace", "0"]),
+    "retest": ("retest", ["--retest", "{job}/retest-in", "--shrink", "0", "--trace", "0"]),
 }
 
 
@@ -382,6 +405,11 @@ def strategy_unavailable(strategy: str, c: Ctx) -> str | None:
     elif strategy == "whole-runs":
         if not can["runs"]:
             return "runs.py on this tree has no --jobs"
+    elif strategy == "retest":
+        if not source_has(c.tree / "referee/scenarios.py", '"retest"')[0]:
+            return "scenarios.py on this tree has no retest mode"
+        if not retest.pending(_groups_doc(c), retest.read_results(c.lab)):
+            return "no group waits for a retest (none marked in LAB/groups.json, or all decided)"
     elif strategy == "hypotheses":
         if not source_has(c.tree / "referee/scenarios.py", '"hypotheses"')[0]:
             return "scenarios.py on this tree has no hypotheses mode"
@@ -414,6 +442,9 @@ def _scenarios_cmd(c: Ctx, name: str, i: int, mode: str, extra: list[str], batch
               counts={"fights": p["batch"]}, outputs={"fights": f"fights/{name}.verdicts.json"})
     if mode in ("coverage", "dense", "choices"):  # these weigh by what the lab's setup fights have covered
         cmd.pre, cmd.post = _cov_in, (lambda c, h=_halt_on_unsafe(name): _cov_out(c) or h(c))
+    if mode == "retest":  # the groups waiting, one fight each; the verdicts clear or confirm the groups
+        cmd.pre, cmd.post = _retest_in, (lambda c, h=_halt_on_unsafe(name): _retest_out(c, h(c)))
+        cmd.counts = {"fights": len(retest.pending(_groups_doc(c), retest.read_results(c.lab)))}
     if mode == "hypotheses":  # only the setups still waiting are played, in the job's one batch; the verdicts decide them
         cmd.pre, cmd.post = _hyp_in, (lambda c, h=_halt_on_unsafe(name): _hyp_out(c, h(c)))
         setups, _ = hyp.load_setups(c.path("{hypotheses}"))
@@ -463,7 +494,7 @@ def plan_fights(c: Ctx) -> list[Step]:
                           mode="serial"))
     # hypotheses: one batch per job, so each waiting setup is played once and judged once (more batches would replay
     # the not testable ones and spend their attempts inside one job)
-    nb = 1 if strategy == "hypotheses" else p["batches"]
+    nb = 1 if strategy in ("hypotheses", "retest") else p["batches"]
     for i in range(nb):
         name = f"lab{c.job_name.split('-')[0]}-b{i:02d}"
         if strategy == "random":

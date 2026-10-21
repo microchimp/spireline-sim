@@ -38,7 +38,7 @@ class MixFileTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_the_default_mix_is_the_owners(self):
-        self.assertEqual({"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-runs": 10, "dense": 10, "under-tested": 10, "random": 5, "hypotheses": 5},
+        self.assertEqual({"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-runs": 10, "dense": 10, "under-tested": 10, "random": 5, "hypotheses": 5, "retest": 3},
                          mix.DEFAULT_MIX)
         self.assertEqual(set(mix.STRATEGIES), set(mix.DEFAULT_MIX))
 
@@ -78,7 +78,7 @@ class PickTest(unittest.TestCase):
 
     def test_cpu_shares_follow_the_weights(self):
         weights = dict(mix.DEFAULT_MIX)
-        cost = {"aimed-bugs": 300, "aimed-gaps": 300, "choice-edges": 200, "whole-runs": 1800, "dense": 250, "under-tested": 250, "random": 120, "hypotheses": 100}
+        cost = {"aimed-bugs": 300, "aimed-gaps": 300, "choice-edges": 200, "whole-runs": 1800, "dense": 250, "under-tested": 250, "random": 120, "hypotheses": 100, "retest": 100}
         spent: dict[str, float] = {}
         jobs = {s: 0 for s in weights}
         for _ in range(400):
@@ -87,7 +87,7 @@ class PickTest(unittest.TestCase):
             jobs[s] += 1
         total = sum(spent.values())
         for s, w in weights.items():
-            self.assertAlmostEqual(w / 100, spent[s] / total, delta=0.02, msg=s)
+            self.assertAlmostEqual(w / sum(mix.DEFAULT_MIX.values()), spent[s] / total, delta=0.02, msg=s)
         self.assertGreater(jobs["aimed-bugs"], jobs["whole-runs"])  # many short jobs of one, few long jobs of the other
 
     def test_an_unavailable_or_disabled_strategy_is_skipped_and_the_reason_kept(self):
@@ -188,7 +188,7 @@ class YieldTest(unittest.TestCase):
 def fake_tree(root: Path, **have) -> Path:
     """A tree whose tools carry (or lack) the markers the lab reads: scenarios.py options, the driver's key, batch.py, runs.py."""
     tree = root / "tree"
-    scen = ['"targets"', '"--jobs"', '"hypotheses"'] + (['"--aim"'] if have.get("aim", True) else []) + (['"choices"'] if have.get("choices", True) else []) \
+    scen = ['"targets"', '"--jobs"', '"hypotheses"', '"retest"'] + (['"--aim"'] if have.get("aim", True) else []) + (['"choices"'] if have.get("choices", True) else []) \
         + (['"analyze"'] if have.get("analyze", True) else []) + (['"--shrink-cap"'] if have.get("budgets", True) else [])         + (['"--runs-from"'] if have.get("repro", False) else [])
     write(tree / "referee" / "scenarios.py", " ".join(scen))
     if have.get("repro", False):
@@ -329,6 +329,25 @@ class StrategyPlanTest(unittest.TestCase):
         write(c.job_dir / "fights" / "n.verdicts.json", v)
         cmd.post(c)
         self.assertEqual({"t-1": "refuted", "t-2": "confirmed"}, {k: r["status"] for k, r in hyp.read_results(c.lab).items()})
+
+    def test_retest_plays_the_groups_waiting_and_records_verdicts(self):
+        from tools.lab import retest
+        c = self.ctx("retest")
+        self.assertIn("no group waits", pl.strategy_unavailable("retest", c))
+        spec = {"kind": "combat", "seed": "RETEST0001", "setup": [{"cmd": "fight", "id": "NIBBITS_WEAK"}]}
+        write(c.lab / "groups.json", {"groups": [{"id": "G1", "first_seen_utc": "a", "retest": {"state": "pending", "spec": spec}},
+                                                 {"id": "G2", "first_seen_utc": "b", "retest": {"state": "pending", "spec": spec}}]})
+        self.assertIsNone(pl.strategy_unavailable("retest", c))
+        retest.write_results(c.lab, {"G2": {"verdict": "identical", "attempts": 1}})
+        steps = [s for s in pl.plan_fights(self.ctx("retest", batches=6)) if s.name.startswith("batch-")]
+        self.assertEqual(1, len(steps))  # one batch: each group is played once per job
+        cmd = steps[0].cmds[0]
+        self.assertEqual({"fights": 1}, cmd.counts)
+        cmd.pre(c)
+        self.assertEqual(["G1"], [d["id"] for d in json.loads((c.job_dir / "retest-in" / "pending.json").read_text())])
+        write(c.job_dir / "fights" / "n.verdicts.json", [{"seed": "RETEST0001", "tag": "retest:G1", "identical": True}])
+        cmd.post(c)
+        self.assertEqual("identical", retest.read_results(c.lab)["G1"]["verdict"])
 
     def test_hypotheses_is_one_batch_per_job_and_a_not_testable_setup_spends_one_attempt_per_job(self):
         from tools.lab import hypotheses as hyp
@@ -545,7 +564,7 @@ class RunnerMixTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             r.main_sha = lambda: "abc"
             r.dry_run()
-        self.assertIn("mix (wanted share / CPU share had): aimed-bugs 29%/0%", out.getvalue())
+        self.assertIn("mix (wanted share / CPU share had): aimed-bugs 28%/0%", out.getvalue())
         self.assertFalse((r.lab.root / "mix.json").exists())
         self.assertFalse((r.lab.root / "yield.tsv").exists())
 

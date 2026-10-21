@@ -119,6 +119,44 @@ class GroupingTests(unittest.TestCase):
         self.assertTrue(lg.stable_id(a).startswith("G"))
 
 
+class RetestTests(unittest.TestCase):
+    HOSTS = {"entries": [{"id": "stall", "status": "fixed", "finding": {"date": "d", "quote": "q"}, "match": {"entities": ["card:HAVOC"]}, "why": "w"},
+                         {"id": "idle", "status": "open", "finding": {"date": "d", "quote": "q"}, "match": {"entities": ["card:MAYHEM"]}, "why": "w"}]}
+
+    def build(self, syms, retests=None):
+        feats = lg.Features(FEATS, {"CardCmd.AutoPlay": {}}, {"SLIMES_WEAK": ["SLIME"]})
+        return lg.build(syms, feats, Profile({"runs": 100, "meet": {}, "acts": {}}), lg.HostGaps(self.HOSTS, "q"), [], None, {}, retests)
+
+    def one(self, card, **kw):
+        spec = {"kind": "combat", "character": "IRONCLAD", "ascension": 10, "neow": 1, "chooser_seed": 7001, "max_actions": 150,
+                "use_potions": True, "setup": [{"cmd": "card", "id": card}], "tag": "x"}
+        return sym("RETEST0001", [f"card:{card}"], retest_spec=lg.retest_spec(spec, {"setup": [{"cmd": "fight", "id": "SLIMES_WEAK"}]}, "RETEST0001"),
+                   implicated=[f"card:{card}"], **kw)
+
+    def test_a_group_judged_only_by_a_fixed_gap_is_marked_for_retest(self):
+        g = self.build([self.one("HAVOC")])[0]
+        self.assertTrue(g["host_suspect"])
+        self.assertEqual("pending", g["retest"]["state"])
+        self.assertEqual({"cmd": "fight", "id": "SLIMES_WEAK"}, g["retest"]["spec"]["setup"][0])
+        self.assertEqual((1, 7001, "RETEST0001"), (g["retest"]["spec"]["neow"], g["retest"]["spec"]["chooser_seed"], g["retest"]["spec"]["seed"]))
+        self.assertNotIn("tag", g["retest"]["spec"])
+        self.assertIn("retest pending", g["host_reason"])
+
+    def test_an_open_gap_or_an_implausible_setup_is_no_retest(self):
+        self.assertNotIn("retest", self.build([self.one("MAYHEM")])[0])
+        self.assertNotIn("retest", self.build([self.one("HAVOC", flags=["cross_act"])])[0])
+
+    def test_a_verdict_clears_the_suspicion(self):
+        gid = self.build([self.one("HAVOC")])[0]["id"]
+        for verdict in ("diverges", "identical"):
+            g = self.build([self.one("HAVOC")], {gid: {"verdict": verdict, "reason": "r", "utc": "u", "attempts": 1}})[0]
+            self.assertFalse(g["host_suspect"])
+            self.assertEqual("decided", g["retest"]["state"])
+            self.assertIn(f"retested ({verdict})", g["host_reason"])
+        g = self.build([self.one("HAVOC")], {gid: {"verdict": "unclear", "reason": "r", "attempts": 1}})[0]
+        self.assertTrue(g["host_suspect"])  # an unclear verdict settles nothing
+
+
 class HostAndBacklogTests(unittest.TestCase):
     HOSTS = {"entries": [{"id": "boulder", "status": "open", "finding": {"date": "2026-10-13", "quote": "boulder stalls"},
                           "match": {"entities": ["card:ROLLING_BOULDER"], "phases": ["end_turn", "start"]}, "why": "stale"}]}
@@ -176,6 +214,14 @@ class HostAndBacklogTests(unittest.TestCase):
         self.assertEqual([[], ["I1"]], match("cov60 seedseed01 block lost"))
         self.assertEqual([["I1"], []], match("lab aimed60s seedseed01 block lost"))  # the borrowed copy, named
         self.assertEqual([["I1"], []], match("runs/20261015t0100-fights seedseed01"))
+
+    def test_impact_ignores_what_every_run_has(self):
+        prof = Profile({"runs": 100, "meet": {"card": {"STRIKE_IRONCLAD": 100, "DEFEND_IRONCLAD": 97, "AGGRESSION": 12},
+                                              "relic": {"BURNING_BLOOD": 100}},
+                        "acts": {"1": {"cards": {"STRIKE_IRONCLAD": 100, "AGGRESSION": 12}, "pairs": {"card:AGGRESSION|card:STRIKE_IRONCLAD": 12}}}})
+        self.assertEqual(12, lg.impact(prof, ["card:STRIKE_IRONCLAD", "card:DEFEND_IRONCLAD", "relic:BURNING_BLOOD", "card:AGGRESSION"]))
+        self.assertEqual(12, lg.impact(prof, ["relic:BURNING_BLOOD", "card:AGGRESSION"]))
+        self.assertEqual(100, lg.impact(prof, ["card:STRIKE_IRONCLAD"]))  # all common: they stay
 
     def test_impact_from_the_profile(self):
         prof = Profile({"runs": 100, "meet": {"relic": {"EGG_A": 40, "LANTERN": 10}, "card": {"AGGRESSION": 30}},

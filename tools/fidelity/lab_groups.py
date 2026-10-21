@@ -436,8 +436,19 @@ def batch_symptoms(prefix: Path, lab: Path, when: str, source: str | None = None
             "ingredients": sorted(set(kept)) if kept is not None else None,
             "dropped": sorted(set(full) - set(kept)) if kept is not None else [],
             "implicated": implicated(v.get("card"), enc, kept), "aim": aim.get("target"),
+            "retest_spec": retest_spec(spec, mini, seed) if seed not in dup else None,
         })
     return out
+
+
+def retest_spec(spec: dict, mini: dict | None, seed: str) -> dict | None:
+    """The fight spec a retest plays: the example's own spec with its setup cut to the shrunk one when there is one."""
+    setup = (mini or {}).get("setup") or spec.get("setup")
+    if not setup:
+        return None
+    base = {k: v for k, v in spec.items() if k not in ("setup", "tag", "script", "choice_edges")} or {
+        "kind": "combat", "character": "IRONCLAD", "ascension": 10, "neow": 0, "chooser_seed": 7000, "max_actions": 150, "use_potions": True}
+    return {**base, "seed": seed, "setup": setup}
 
 
 def by_index(rows: list, i: int, seed: str, shared: bool) -> dict | None:
@@ -860,6 +871,16 @@ class HostGaps:
                     self.stale_entries.append(e["id"])
 
     def judge(self, members: list[dict], entities: set) -> tuple[bool, str]:
+        reasons = self.reasons(members, entities)
+        return bool(reasons), "; ".join(r for r, _ in reasons)
+
+    def retest_only(self, members: list[dict], entities: set) -> bool:
+        """True when the only reasons are host gaps since fixed: a retest on the current tree can settle the group."""
+        reasons = self.reasons(members, entities)
+        return bool(reasons) and all(fixed for _, fixed in reasons)
+
+    def reasons(self, members: list[dict], entities: set) -> list[tuple[str, bool]]:
+        """[(reason, from a gap since fixed)] of every rule the group meets."""
         reasons = []
         phases = {s["phase"] for s in members}
         fields = {s["field"] for s in members}
@@ -875,18 +896,19 @@ class HostGaps:
                 continue
             if m.get("fields") and not any(f and any(f.startswith(x) for x in m["fields"]) for f in fields) and not hit_text:
                 continue
-            reasons.append(f"{e['id']} ({e.get('status', 'open')}; FINDINGS {e.get('finding', {}).get('date')}): {e.get('why', '')}")
+            reasons.append((f"{e['id']} ({e.get('status', 'open')}; FINDINGS {e.get('finding', {}).get('date')}): {e.get('why', '')}",
+                            e.get("status") == "fixed"))
         fight = [s for s in members if s["source"] in FIGHT_SOURCES]
         if fight and all(set(s.get("flags", [])) & self.flags for s in fight):
             fl = sorted({f for s in fight for f in s.get("flags", []) if f in self.flags})
-            reasons.append(f"every example's setup is implausible ({', '.join(fl)}): no real run holds it")
+            reasons.append((f"every example's setup is implausible ({', '.join(fl)}): no real run holds it", False))
         if any(s.get("stale") for s in members):
-            reasons.append("the game's state stands still across the next plays after the step (stale snapshot)")
+            reasons.append(("the game's state stands still across the next plays after the step (stale snapshot)", False))
         if any(s.get("reproducible") is False for s in members):
-            reasons.append("a trace re-run did not reproduce the batch before the step (game-side flake?)")
+            reasons.append(("a trace re-run did not reproduce the batch before the step (game-side flake?)", False))
         if any(s["source"] == "invariants" and s["phase"] == "game" for s in members):
-            reasons.append("an invariant fails on the game's own recording (recording or driver issue)")
-        return bool(reasons), "; ".join(reasons)
+            reasons.append(("an invariant fails on the game's own recording (recording or driver issue)", False))
+        return reasons
 
 
 def backlog_index(backlog: dict | None, id_map: dict) -> list[dict]:
@@ -986,6 +1008,18 @@ def match_backlog(groups: list[dict], items: list[dict], min_score: float = 2.5)
             g["relation"] = "confirms"
 
 
+COMMON_SHARE = 0.9  # an ingredient more than this share of runs meet says nothing about which runs a group reaches
+
+
+def common_dropped(prof: Profile, meets: list) -> list:
+    """The (runs, entity) pairs without those every run has (the starter deck and relic, anything held in over
+    COMMON_SHARE of runs): the estimate comes from the distinctive ingredients. All common: they stay."""
+    if not prof.doc.get("runs"):
+        return meets
+    rare = [(m, e) for m, e in meets if m <= COMMON_SHARE * prof.runs]
+    return rare or meets
+
+
 def impact(prof: Profile, entities: list[str]) -> int:
     """Runs that meet every entity: the rarest one's runs times how often each other is held with it."""
     if not entities:
@@ -1000,6 +1034,7 @@ def impact(prof: Profile, entities: list[str]) -> int:
         meets.append((prof.meet(kind, ident), e))
     if not meets:
         return 0
+    meets = common_dropped(prof, meets)
     meets.sort()
     m, rarest = meets[0]
     est = float(m)
@@ -1023,9 +1058,22 @@ def observed_runs(prof: Profile, members: list[dict], pools: dict) -> int:
     return int(round(prof.runs * (1 - (1 - min(1.0, rate)) ** max(1.0, per_run))))
 
 
+def retest_of(members: list[dict], result: dict | None) -> dict:
+    """The retest mark of a group judged only by fixed host gaps: the spec of its smallest example, and the verdict so far."""
+    mine = [s for s in members if s.get("retest_spec")]
+    out = {"state": "pending", "spec": mine[0]["retest_spec"] if mine else None, "ref": mine[0]["ref"] if mine else None}
+    if result:
+        out.update(verdict=result.get("verdict"), reason=result.get("reason"), utc=result.get("utc"), main_sha=result.get("main_sha"),
+                   attempts=result.get("attempts"))
+        if result.get("verdict") in ("diverges", "identical"):
+            out["state"] = "decided"
+    return out
+
+
 def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps, items: list[dict], old: dict | None,
-          pools: dict | None = None) -> list[dict]:
+          pools: dict | None = None, retests: dict | None = None) -> list[dict]:
     pools = pools or {}
+    retests = retests or {}
     raw = group_symptoms(symptoms, feats)
     old_first = {g["id"]: g.get("first_seen_utc") for g in (old or {}).get("groups", [])}
     old_refs = {e["ref"]: g.get("first_seen_utc") for g in (old or {}).get("groups", []) for e in g.get("examples", [])}
@@ -1054,7 +1102,18 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
                     effect.setdefault(k, True)
             for k in s.get("dropped") or []:
                 effect.setdefault(k, False)
-        host, host_reason = hosts.judge(members, {e for e in ents if not e.startswith("?:")})
+        host_ents = {e for e in ents if not e.startswith("?:")}
+        host, host_reason = hosts.judge(members, host_ents)
+        retest = None
+        if host and hosts.retest_only(members, host_ents):
+            retest = retest_of(members, retests.get(gid))
+            if retest["state"] == "decided":  # the retest on the current tree settled it: no longer a host suspect
+                host_reason = f"retested ({retest['verdict']}): {retest['reason']}; was: {host_reason}"
+                host = False
+            elif retest["spec"] is None:
+                retest = None  # no example to replay: stays a host suspect
+            else:
+                host_reason = "retest pending: " + host_reason
         shrunk = [s for s in members if s.get("ingredients") is not None]
         unshrunk = [s for s in members if s.get("ingredients") is None]
         variants = {tuple(s.get("implicated") or []) for s in shrunk}
@@ -1073,7 +1132,7 @@ def build(symptoms: list[dict], feats: Features, prof: Profile, hosts: HostGaps,
             "id": gid, "key": key, "title": title(key, members), "count": len(members), "first_seen_utc": first,
             "examples": examples, "entities": sorted(e for e in ents if not e.startswith("?:")),
             "ingredient_effect": [{"item": k, "removal_vanishes": v} for k, v in sorted(effect.items(), key=lambda kv: (not kv[1], kv[0]))][:24],
-            "host_suspect": host, "host_reason": host_reason, "impact_runs_est": int(est),
+            "host_suspect": host, "host_reason": host_reason, **({"retest": retest} if retest else {}), "impact_runs_est": int(est),
             "sources": sorted({s["source"] for s in members}), "by_job": by_job(members),
             "_entities": ents, "_fields": {s.get("field") for s in members},
             "_seedrefs": {(s["seed"], tuple(s.get("batch") or ()), bool(s.get("seed_own", True))) for s in members if s.get("seed")},
@@ -1201,7 +1260,7 @@ def main(argv=None) -> int:
     hosts = HostGaps(read_json(a.host_gaps), findings)
     backlog_path = a.backlog or newest_backlog(a.referee)
     items = backlog_index(read_json(backlog_path) if backlog_path else None, id_map)
-    groups = build(symptoms, feats, prof, hosts, items, read_json(a.out), pools)
+    groups = build(symptoms, feats, prof, hosts, items, read_json(a.out), pools, read_json(lab / "retests.json", {}) or {})
     doc = {"main_sha": git_sha(), "generated_utc": utc_now(),
            "inputs": {"sources": dict(per_source), "backlog": rel(backlog_path, lab) if backlog_path else None,
                       "backlog_open_items": len(items), "profile_runs": prof.doc.get("runs", 0),
