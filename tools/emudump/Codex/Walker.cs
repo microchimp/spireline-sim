@@ -804,6 +804,16 @@ public sealed class Walker
         }
     }
 
+    static bool IsSubsequence(List<string> part, List<string> whole)
+    {
+        int k = 0;
+        foreach (var x in whole)
+        {
+            if (k < part.Count && part[k] == x) k++;
+        }
+        return k == part.Count;
+    }
+
     void CompareEncounter(JsonElement room)
     {
         if (S.ActiveCombat is not { } fight)
@@ -828,10 +838,15 @@ public sealed class Walker
         _floorMonsters.AddRange(emu);
         // The history lists every creature the fight had, the ones that joined it as well; the
         // opening roster is the first of them, in order.
-        bool prefix = real.Count >= emu.Count && real.Take(emu.Count).SequenceEqual(emu);
-        Check("monsters", "opening roster", string.Join(",", real.Take(Math.Max(emu.Count, 1))), string.Join(",", emu),
+        // A creature the opening pre-play phase already killed (Whispering Earring's plays) has left
+        // the emulator's roster, though the history keeps it: the roster then matches in order
+        // with those left out.
+        int gone = fight.DepartedEnemyDefIds.Count;
+        bool prefix = real.Count >= emu.Count && (real.Take(emu.Count).SequenceEqual(emu)
+            || (gone > 0 && real.Count >= emu.Count + gone && IsSubsequence(emu, real.Take(emu.Count + gone).ToList())));
+        Check("monsters", "opening roster", gone > 0 && prefix ? string.Join(",", emu) : string.Join(",", real.Take(Math.Max(emu.Count, 1))), string.Join(",", emu),
             Source.Static, prefix ? null : "the history's monsters, as many as the emulator opens with");
-        if (real.Count > emu.Count)
+        if (real.Count > emu.Count + fight.DepartedEnemyDefIds.Count)
         {
             // A creature joined mid-fight and its HP was rolled on Niche (CreateCreature draws it
             // once per creature). The history lists the joiners it saw, at least that many.
