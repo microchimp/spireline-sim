@@ -878,11 +878,29 @@ public class LifecycleTests(ITestOutputHelper output)
     }
 
     /// <summary>Where a long run of the stages is (lifecycle-progress.txt next to the test assembly, emptied when the
-    /// stages start).</summary>
+    /// stages start). Diagnostics only, so best effort: the file is opened once and shared, and if another process
+    /// holds it (a scanner or indexer, or a second run in the same worktree) progress is skipped. It used to be
+    /// reopened for every line, and one sharing violation inside the stages' Lazy failed all nine tests that read it.</summary>
     static void Progress(string line)
     {
-        lock (FieldLock) File.AppendAllText(ProgressFile, line + Environment.NewLine);
+        lock (FieldLock)
+        {
+            if (_progressOff) return;
+            try
+            {
+                _progress ??= new StreamWriter(new FileStream(ProgressFile, FileMode.Create, FileAccess.Write,
+                    FileShare.ReadWrite | FileShare.Delete)) { AutoFlush = true };
+                _progress.WriteLine(line);
+            }
+            catch (IOException)
+            {
+                _progressOff = true;
+            }
+        }
     }
+
+    static StreamWriter? _progress;
+    static bool _progressOff;
 
     static readonly string ProgressFile = Path.Combine(AppContext.BaseDirectory, "lifecycle-progress.txt");
 
@@ -978,7 +996,7 @@ public class LifecycleTests(ITestOutputHelper output)
 
     static readonly Lazy<(Ledger Ledger, List<string> Timing)> All = new(() =>
     {
-        File.WriteAllText(ProgressFile, "");  // this run's progress only
+        Progress("stages start");  // opens the file afresh: this run's progress only
         var l = new Ledger();
         var t = new List<string>();
         Stage(l, "clone", CombatMembers, m => CloneCheck(m, Combat, s => ((CombatState)s).Clone()), t);
