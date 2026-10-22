@@ -1521,9 +1521,12 @@ class ParallelSearcherTests(unittest.TestCase):
 
         self.assertLessEqual(wall, 0.5 + POOL_OVERHEAD_S)
         self.assertLessEqual(result.elapsed_s, wall)
-        # Whether the sweep leaves time for UCT in 0.5 s depends on playout speed (on Windows
-        # it can fill the whole budget), so only ask that playouts ran.
-        self.assertGreater(result.sims, 0)
+        # On Windows the sweep can fill the whole 0.5 s budget before UCT starts, so there
+        # only ask that playouts ran.
+        if procutil.IS_WINDOWS:
+            self.assertGreater(result.sims, 0)
+        else:
+            self.assertGreater(result.uct_sims, 0)
 
     def test_search_needs_the_snapshot_loader(self):
         saved = native.__dict__.pop("load_combat_snapshot", None)
