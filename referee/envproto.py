@@ -188,7 +188,8 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
                         break
                 q.put({"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": n,
                        "ms": m.get("ms"), "mem_mb": m.get("mem_mb"), "dec": dec % 200, "t": time.time(), "s": time.time() - t0,
-                       "stale": m.get("stale"), "slowest_step": slow, "fight_errors": m.get("fight_errors")})
+                       "stale": m.get("stale"), "slowest_step": slow, "fight_errors": m.get("fight_errors"),
+                       "probe": m.get("probe")})
                 dec -= dec % 200
                 runs_here += 1
                 if recycle and runs_here >= recycle:
@@ -203,6 +204,35 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
         rc = env.close()
         restarts += 1
         q.put({"ev": "closed", "w": wid, "rc": rc, "t": time.time()})
+
+
+class _MemStatus(ctypes.Structure):
+    _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong), ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+
+_cpu_prev: tuple | None = None
+
+
+def sysstat() -> dict:
+    """System-wide physical memory load and CPU busy fraction since the last call (leak probe)."""
+    global _cpu_prev
+    k32 = ctypes.WinDLL("kernel32")
+    ms = _MemStatus()
+    ms.dwLength = ctypes.sizeof(ms)
+    k32.GlobalMemoryStatusEx(ctypes.byref(ms))
+    ft = [ctypes.c_ulonglong() for _ in range(3)]
+    k32.GetSystemTimes(*[ctypes.byref(x) for x in ft])
+    idle, kern, user = (x.value for x in ft)  # kernel time includes idle
+    busy = None
+    if _cpu_prev:
+        di, dk, du = idle - _cpu_prev[0], kern - _cpu_prev[1], user - _cpu_prev[2]
+        busy = round(100 * (1 - di / (dk + du)), 1) if dk + du else None
+    _cpu_prev = (idle, kern, user)
+    return {"mem_load_pct": ms.dwMemoryLoad, "avail_phys_mb": ms.ullAvailPhys >> 20, "avail_commit_mb": ms.ullAvailPageFile >> 20,
+            "cpu_busy_pct": busy}
 
 
 def bench(a) -> int:
@@ -222,6 +252,7 @@ def bench(a) -> int:
     pids: set[int] = set()
     seen: set[str] = set()
     last_net = 0.0
+    last_sys = 0.0
     evlog = open(out / "events.jsonl", "w", encoding="utf-8")
     while any(p.is_alive() for p in procs) or not q.empty():
         try:
@@ -233,6 +264,12 @@ def bench(a) -> int:
                 pids.add(e["pid"])
         except queue.Empty:
             pass
+        if time.time() - last_sys > 10:
+            last_sys = time.time()
+            e = {"ev": "sys", "t": last_sys, **sysstat()}
+            events.append(e)
+            evlog.write(json.dumps(e) + "\n")
+            evlog.flush()
         if pids and time.time() - last_net > 3:
             last_net = time.time()
             for pid, conns in rr.connections_by_pid(sorted(pids)).items():

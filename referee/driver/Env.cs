@@ -204,6 +204,48 @@ internal static class Env
         return o;
     }
 
+    /// <summary>Leak probe (env/leak-probe): Godot node counts, GC, memory and CPU of this process, and system memory load.</summary>
+    internal static JsonObject Probe(int runs)
+    {
+        var proc = System.Diagnostics.Process.GetCurrentProcess();
+        var gi = GC.GetGCMemoryInfo();
+        var p = new JsonObject
+        {
+            ["nodes"] = (long)Performance.GetMonitor(Performance.Monitor.ObjectNodeCount),
+            ["orphans"] = (long)Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount),
+            ["objects"] = (long)Performance.GetMonitor(Performance.Monitor.ObjectCount),
+            ["resources"] = (long)Performance.GetMonitor(Performance.Monitor.ObjectResourceCount),
+            ["godot_mb"] = (long)(Performance.GetMonitor(Performance.Monitor.MemoryStatic) / 1048576.0),
+            ["gc_heap_mb"] = GC.GetTotalMemory(false) >> 20, ["gc_commit_mb"] = gi.TotalCommittedBytes >> 20,
+            ["gc_frag_mb"] = gi.FragmentedBytes >> 20, ["gc0"] = GC.CollectionCount(0), ["gc1"] = GC.CollectionCount(1),
+            ["gc2"] = GC.CollectionCount(2), ["gc_pause_ms"] = (long)GC.GetTotalPauseDuration().TotalMilliseconds,
+            ["sys_load_pct"] = gi.TotalAvailableMemoryBytes > 0 ? 100 * gi.MemoryLoadBytes / gi.TotalAvailableMemoryBytes : -1,
+            ["high_load_pct"] = gi.TotalAvailableMemoryBytes > 0 ? 100 * gi.HighMemoryLoadThresholdBytes / gi.TotalAvailableMemoryBytes : -1,
+            ["ws_mb"] = proc.WorkingSet64 >> 20, ["cpu_ms"] = (long)proc.TotalProcessorTime.TotalMilliseconds,
+            ["handles"] = proc.HandleCount, ["threads"] = proc.Threads.Count,
+        };
+        if (Engine.GetMainLoop() is SceneTree tree)
+        {
+            var kinds = new Dictionary<string, int>();
+            int total = Walk(tree.Root, kinds);
+            p["tree_nodes"] = total; p["root_children"] = tree.Root.GetChildCount();
+            p["nrun"] = kinds.GetValueOrDefault("NRun"); p["nroom"] = kinds.GetValueOrDefault("NCombatRoom");
+            if (runs % 25 == 0)
+                p["top_types"] = new JsonArray(kinds.OrderByDescending(k => k.Value).Take(8).Select(k => (JsonNode)$"{k.Key}={k.Value}").ToArray());
+        }
+
+        return p;
+    }
+
+    private static int Walk(Node n, Dictionary<string, int> kinds)
+    {
+        string t = n.GetType().Name;
+        kinds[t] = kinds.GetValueOrDefault(t) + 1;
+        int c = 1;
+        for (int i = 0, k = n.GetChildCount(); i < k; i++) c += Walk(n.GetChild(i), kinds);
+        return c;
+    }
+
     private static int SafeCost(CardModel c)
     {
         try { return c.EnergyCost.GetResolved(); }
@@ -262,6 +304,7 @@ public static partial class Driver
                 ["t"] = "end", ["end"] = end, ["floor"] = result["floor"]?.DeepClone(), ["asked"] = Env.Asked,
                 ["decisions"] = (result["decisions"] as JsonArray)?.Count, ["ms"] = clock.ElapsedMilliseconds, ["runs"] = runs,
                 ["mem_mb"] = System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64 >> 20,
+                ["probe"] = Env.Probe(runs),
             };
             var errs = new JsonArray();
             foreach (var d in (result["decisions"] as JsonArray) ?? new JsonArray())
