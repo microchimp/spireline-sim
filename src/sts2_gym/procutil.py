@@ -56,9 +56,17 @@ if IS_WINDOWS:
         ]
 
 
-def priority_class() -> int:
-    """This process's Windows priority class (Windows only)."""
-    return int(_k32.GetPriorityClass(_k32.GetCurrentProcess()))
+def priority_class(pid: int | None = None) -> int:
+    """A process's Windows priority class, this process by default (Windows only)."""
+    if pid is None:
+        return int(_k32.GetPriorityClass(_k32.GetCurrentProcess()))
+    handle = _k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return 0
+    try:
+        return int(_k32.GetPriorityClass(handle))
+    finally:
+        _k32.CloseHandle(handle)
 
 
 def lower_priority(level: int = 10) -> None:
@@ -159,14 +167,14 @@ def child_processes(pid: int) -> list[tuple[int, str]]:
     return out
 
 
-def niceness() -> int:
-    """This process's niceness: `os.nice(0)`, or the Windows priority class mapped onto it.
+def niceness(pid: int | None = None) -> int:
+    """A process's niceness (this one by default): `os.nice(0)`/`getpriority`, or the Windows priority class mapped onto it.
 
     BelowNormal reads 10 and Idle 19 (what `lower_priority(10)` asks for), anything else 0.
     """
     if not IS_WINDOWS:
-        return os.nice(0)
-    cls = priority_class()
+        return os.nice(0) if pid is None else os.getpriority(os.PRIO_PROCESS, pid)
+    cls = priority_class(pid)
     if cls == IDLE_PRIORITY_CLASS:
         return 19
     return 10 if cls == BELOW_NORMAL_PRIORITY_CLASS else 0

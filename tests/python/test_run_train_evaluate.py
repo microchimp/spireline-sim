@@ -23,7 +23,7 @@ for _path in (ROOT, ROOT / "rl", ROOT / "src", TESTS):
 from rl.run_train import FEATURE_VERSION, evaluate, runner, selfplay  # noqa: E402
 from rl.run_train.engine import CombatBudget  # noqa: E402
 from rl.run_train.evaluate import EvalResult, SeedResult  # noqa: E402
-from sts2_gym import native  # noqa: E402
+from sts2_gym import native, procutil  # noqa: E402
 from sts2_gym.seeds import canonicalize  # noqa: E402
 
 A9 = 9
@@ -81,6 +81,10 @@ META = evaluate.EvalMeta(
     seeds_sha256="0" * 64,
     policy_sha256=None,
 )
+
+
+# An abort() exits 22 on Windows; POSIX reports the signal.
+ABORT_EXIT = 22 if procutil.IS_WINDOWS else -signal.SIGABRT
 
 
 class StatisticsTests(unittest.TestCase):
@@ -299,7 +303,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(by_seed[aborting].status, "aborted")
         detail = by_seed[aborting].detail
         assert detail is not None
-        self.assertEqual(detail["exit_code"], -signal.SIGABRT)
+        self.assertEqual(detail["exit_code"], ABORT_EXIT)
         self.assertIsNone(by_seed[aborting].floor)
         # The champion is re-scored from its stored per-seed results.
         comparison = evaluate.compare(challenger, EvalResult.load(stored))
