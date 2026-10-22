@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+"""The real game, headless, as a training environment (prototype; driver/Env.cs).
+
+    python referee/envproto.py smoke  --game <copy> --out <dir>                    one random run, printed
+    python referee/envproto.py bench  --game <copy> --out <dir> --procs 8 --seconds 600
+    python referee/envproto.py record --game <copy> --out <dir> --seeds S1 S2 S3   the normal driver (seeded chooser)
+    python referee/envproto.py replay --game <copy> --out <dir>                    its picks through the channel
+
+One game process per GameEnv, which plays whole runs back to back (reset() starts the next one, no restart).
+Each pending choice with two or more legal actions comes as {"kind", "obs", "actions"}; step(i) answers with the
+index into "actions". The channel is the game's own stdin and stdout pipes (no socket, no file). The referee's
+session checks hold: known sts2.dll, override.cfg, scratch APPDATA, the real profile untouched, and a netstat
+check every few seconds over every game process tree (the session fails on any connection).
+"""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import json
+import multiprocessing as mp
+import queue
+import random
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import run_referee as rr  # noqa: E402
+import serve  # noqa: E402
+
+PREFIX = "\x1eENV ".encode()
+BELOW_NORMAL = 0x4000
+
+
+class GameDied(Exception):
+    pass
+
+
+def below_normal_self() -> None:
+    """BelowNormal priority for this (Python) process, through the Windows priority classes."""
+    k32 = ctypes.WinDLL("kernel32")
+    k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
+
+
+class GameEnv:
+    """One headless game. reset(seed) -> first decision message; step(a) -> (message, done)."""
+
+    def __init__(self, game: Path, scratch: Path, *, fixed_fps: int = 60, install: bool = True, stall_s: int = 300,
+                 trace: bool = False, boot_timeout: float = 180, command: list[str] | None = None):
+        self.game = Path(game).resolve()
+        self.digest = rr.check_build(self.game)
+        if install:
+            rr.install(self.game, HERE / "driver" / "bin" / "Release" / "net9.0")
+        self.scratch = Path(scratch).resolve()
+        for d in ("appdata", "localappdata"):
+            (self.scratch / d).mkdir(parents=True, exist_ok=True)
+        rr.write_settings(self.scratch, boot_opts=True)
+        jopts = serve.job_options({}, stall_s=stall_s)
+        jopts.update(env=True, out=str(self.scratch / "out.json").replace("\\", "/"))
+        if trace:
+            jopts["env_trace"] = True
+        job = self.scratch / "job.json"
+        job.write_text(json.dumps(jopts), encoding="utf-8")
+        args = command or [str(self.game / "SlayTheSpire2.exe"), "--headless", "--force-steam", "off", *serve.engine_args(fixed_fps)]
+        self.proc = rr.popen_no_wer(args, cwd=self.game, env=rr.game_env(self.scratch, job), stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+        self.pid = self.proc.pid
+        self._q: queue.Queue = queue.Queue()
+        self._log = open(self.scratch / "game-stdout.log", "wb")
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+        self.t_boot = time.time()
+        m = self._recv(boot_timeout)
+        if m.get("t") != "ready":
+            raise GameDied(f"expected ready, got {m}")
+        self.boot_s = time.time() - self.t_boot
+        self.last: dict | None = None
+
+    def _reader(self) -> None:
+        for raw in iter(self.proc.stdout.readline, b""):
+            i = raw.find(PREFIX)
+            if i < 0:
+                self._log.write(raw)
+                continue
+            if i > 0:
+                self._log.write(raw[:i] + b"\n")
+            try:
+                self._q.put(json.loads(raw[i + len(PREFIX):]))
+            except ValueError as e:
+                self._q.put({"t": "garbled", "error": str(e)})
+        self._log.flush()
+        self._q.put(None)
+
+    def _send(self, o: dict) -> None:
+        try:
+            self.proc.stdin.write((json.dumps(o) + "\n").encode())
+            self.proc.stdin.flush()
+        except OSError as e:
+            raise GameDied(f"stdin: {e}")
+
+    def _recv(self, timeout: float = 120) -> dict:
+        try:
+            m = self._q.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError(f"no message in {timeout} s")
+        if m is None:
+            raise GameDied(f"game exited ({self.proc.poll()})")
+        return m
+
+    def reset(self, seed: str, spec: dict | None = None, hash: bool = False, record: Path | None = None,
+              timeout: float = 120) -> tuple[dict, bool]:
+        cmd = {"cmd": "reset", "spec": {"seed": seed, "potions": True, "stop_after_act": 3, "max_decisions": 3000,
+                                        **(spec or {})}, "hash": hash}
+        if record:
+            cmd["record"] = str(record).replace("\\", "/")
+        self._send(cmd)
+        return self._next(timeout)
+
+    def step(self, a: int, timeout: float = 120) -> tuple[dict, bool]:
+        self._send({"a": int(a)})
+        return self._next(timeout)
+
+    def _next(self, timeout: float) -> tuple[dict, bool]:
+        m = self._recv(timeout)
+        if m.get("t") == "bad_action":
+            raise ValueError(f"illegal action: {m}")
+        self.last = m
+        return m, m.get("t") == "end"
+
+    def close(self) -> int | None:
+        try:
+            self._send({"cmd": "quit"})
+            self.proc.wait(30)
+        except (GameDied, subprocess.TimeoutExpired, OSError):
+            subprocess.run(["taskkill", "/PID", str(self.pid), "/T", "/F"], capture_output=True, check=False)
+        self._thread.join(10)
+        if not self._thread.is_alive():
+            self._log.close()
+        return self.proc.poll()
+
+
+def random_agent(msg: dict, rng: random.Random) -> int:
+    return rng.randrange(len(msg["actions"]))
+
+
+# ---------------------------------------------------------------- bench: N games in a spawn pool
+
+
+def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout: float) -> None:
+    below_normal_self()
+    rng = random.Random(1000 + wid)
+    t_end = time.time() + seconds
+    k = 0
+    restarts = 0
+    while time.time() < t_end:
+        try:
+            env = GameEnv(Path(game), Path(out) / "scratch" / f"w{wid:02d}r{restarts}")
+        except Exception as e:  # boot failure
+            q.put({"ev": "crash", "w": wid, "where": "boot", "error": repr(e)[:300], "t": time.time()})
+            restarts += 1
+            continue
+        q.put({"ev": "ready", "w": wid, "pid": env.pid, "boot_s": round(env.boot_s, 1), "t": time.time()})
+        dec = 0
+        try:
+            while time.time() < t_end:
+                seed = f"E{wid:02d}X{k:05d}"
+                k += 1
+                t0 = time.time()
+                m, done = env.reset(seed, timeout=step_timeout)
+                n = 0
+                slow = (0.0, None)
+                while not done:
+                    ts, kind = time.time(), m.get("kind")
+                    m, done = env.step(random_agent(m, rng), timeout=step_timeout)
+                    if time.time() - ts > slow[0]:
+                        slow = (round(time.time() - ts, 2), kind)
+                    n += 1
+                    dec += 1
+                    if dec % 200 == 0:
+                        q.put({"ev": "tick", "w": wid, "dec": 200, "t": time.time()})
+                    if time.time() > t_end + 120:
+                        break
+                q.put({"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": n,
+                       "ms": m.get("ms"), "mem_mb": m.get("mem_mb"), "dec": dec % 200, "t": time.time(), "s": time.time() - t0,
+                       "stale": m.get("stale"), "slowest_step": slow, "fight_errors": m.get("fight_errors")})
+                dec -= dec % 200
+                if m.get("stale"):
+                    break  # the game retires itself (Env.cs); a fresh one follows
+        except TimeoutError as e:
+            q.put({"ev": "hang", "w": wid, "seed": seed, "error": str(e), "t": time.time()})
+        except (GameDied, ValueError) as e:
+            q.put({"ev": "crash", "w": wid, "seed": seed, "error": str(e)[:300], "t": time.time()})
+        rc = env.close()
+        restarts += 1
+        q.put({"ev": "closed", "w": wid, "rc": rc, "t": time.time()})
+
+
+def bench(a) -> int:
+    out = Path(a.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    game = Path(a.game).resolve()
+    rr.check_build(game)
+    rr.install(game, HERE / "driver" / "bin" / "Release" / "net9.0")
+    before = rr.real_profile_state()
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [ctx.Process(target=bench_worker, args=(w, str(game), str(out), a.seconds, q, a.step_timeout))
+             for w in range(a.procs)]
+    for p in procs:
+        p.start()
+    events = []
+    pids: set[int] = set()
+    seen: set[str] = set()
+    last_net = 0.0
+    evlog = open(out / "events.jsonl", "w", encoding="utf-8")
+    while any(p.is_alive() for p in procs) or not q.empty():
+        try:
+            e = q.get(timeout=1)
+            events.append(e)
+            evlog.write(json.dumps(e) + "\n")
+            evlog.flush()
+            if e["ev"] == "ready":
+                pids.add(e["pid"])
+        except queue.Empty:
+            pass
+        if pids and time.time() - last_net > 3:
+            last_net = time.time()
+            for pid, conns in rr.connections_by_pid(sorted(pids)).items():
+                if conns:
+                    seen |= conns
+                    print(f"NETWORK: pid {pid}: {sorted(conns)}", file=sys.stderr)
+    for p in procs:
+        p.join()
+    wer = set()
+    for pid, rep in rr.wer_reports_by_pid(sorted(pids)).items():
+        wer |= rep
+    s = summarize(events, a.procs)
+    s.update(network_connections=sorted(seen), wer_reports=sorted(wer), real_profile_touched=before != rr.real_profile_state())
+    (out / "summary.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
+    print(json.dumps(s, indent=1))
+    return 0 if not seen and not wer and not s["real_profile_touched"] else 1
+
+
+def summarize(events: list, procs: int) -> dict:
+    ready = [e for e in events if e["ev"] == "ready"]
+    if not ready:
+        return {"error": "no game became ready", "events": len(events)}
+    t_warm = max(e["t"] for e in ready[:procs]) + 30  # every game up, plus 30 s of JIT warm-up
+    dec_events = [e for e in events if e["ev"] in ("tick", "end")]
+    t_last = max(e["t"] for e in events)
+    dec = sum(e["dec"] for e in dec_events if e["t"] >= t_warm)
+    ends = [e for e in events if e["ev"] == "end"]
+    by_end: dict[str, int] = {}
+    for e in ends:
+        k = str(e["end"]).split(":")[0]
+        by_end[k] = by_end.get(k, 0) + 1
+    span = max(t_last - t_warm, 1e-9)
+    full_runs = [e for e in ends if e["t"] >= t_warm]
+    mem = [e["mem_mb"] for e in ends if e.get("mem_mb")]
+    first_mem: dict[int, int] = {}
+    last_mem: dict[int, int] = {}
+    for e in ends:
+        if e.get("mem_mb"):
+            first_mem.setdefault(e["w"], e["mem_mb"])
+            last_mem[e["w"]] = e["mem_mb"]
+    return {
+        "procs": procs, "window_s": round(span, 1), "decisions": dec, "decisions_per_s": round(dec / span, 1),
+        "decisions_per_s_per_proc": round(dec / span / procs, 2),
+        "runs_ended": len(ends), "runs_per_hour": round(len(full_runs) / span * 3600, 1), "ends": by_end,
+        "mean_asked_per_run": round(sum(e["asked"] for e in ends) / max(len(ends), 1), 1),
+        "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(len(ends), 1), 2),
+        "boot_s_mean": round(sum(e["boot_s"] for e in ready) / len(ready), 1), "boots": len(ready),
+        "crashes": [e for e in events if e["ev"] == "crash"], "hangs": [e for e in events if e["ev"] == "hang"],
+        "retired_stale": sum(1 for e in ends if e.get("stale")),
+        "mem_mb_max": max(mem) if mem else None, "mem_mb_mean": round(sum(mem) / len(mem)) if mem else None,
+        "mem_growth_mb_mean": round(sum(last_mem[w] - first_mem[w] for w in last_mem) / max(len(last_mem), 1)),
+    }
+
+
+# ---------------------------------------------------------------- fidelity: record (seeded chooser) and replay
+
+
+def record(a) -> int:
+    """Each seed in a fresh game with no channel: the normal driver's seeded choices, traced with state hashes."""
+    out = Path(a.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    game = Path(a.game).resolve()
+    rr.check_build(game)
+    rr.install(game, HERE / "driver" / "bin" / "Release" / "net9.0")
+    bad = 0
+    for seed in a.seeds:
+        scratch = out / "scratch" / f"rec-{seed}"
+        (scratch / "appdata").mkdir(parents=True, exist_ok=True)
+        (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
+        jopts = serve.job_options({}, stall_s=300)
+        spec = {"kind": "run", "seed": seed, "potions": True, "stop_after_act": 3, "max_decisions": 3000,
+                "buff_max_hp": a.buff}
+        jopts.update(env_trace=True, runs=[spec], out=str(out / f"rec-{seed}.json").replace("\\", "/"))
+        job = scratch / "job.json"
+        job.write_text(json.dumps(jopts), encoding="utf-8")
+        cmd = [sys.executable, str(HERE / "run_referee.py"), "--game", str(game), "--job", str(job), "--scratch", str(scratch),
+               "--no-install", "--below-normal", "--timeout", "900"]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        rep = json.loads(r.stdout[r.stdout.index("{"):]) if "{" in r.stdout else {}
+        ok = r.returncode == 0 and rep.get("network_connections") == [] and rep.get("real_profile_touched") is False
+        bad += not ok
+        res = json.loads((out / f"rec-{seed}.json").read_text(encoding="utf-8"))
+        run = res[0] if isinstance(res, list) else res.get("results", [res])[0]
+        print(seed, "ok" if ok else f"session FAILED {rep}", run.get("end"), "trace", len(run.get("env_trace", [])),
+              sorted({t[0] for t in run.get("env_trace", [])}))
+    return 1 if bad else 0
+
+
+def replay(a) -> int:
+    """The recorded runs' picks through the channel, back to back in one game, after warm-up runs of random play."""
+    out = Path(a.out).resolve()
+    recs = sorted(out.glob("rec-*.json"))
+    env = GameEnv(Path(a.game), out / "scratch" / "replay")
+    rng = random.Random(7)
+    seen: set[str] = set()
+    for i in range(a.warmup):  # the session's state after other runs must not change a run
+        m, done = env.reset(f"WARM{i}")
+        while not done:
+            m, done = env.step(random_agent(m, rng))
+    seen |= rr.connections(env.pid)
+    results = []
+    for rec in recs:
+        res = json.loads(rec.read_text(encoding="utf-8"))
+        run = res["results"][0] if "results" in res else res
+        trace = run["env_trace"]
+        m, done = env.reset(run["seed"] if "seed" in run else rec.stem[4:], hash=True, spec={"buff_max_hp": a.buff},
+                            record=out / f"replay-{rec.stem[4:]}.json")
+        same = 0
+        first = None
+        for j, (kind, n, idx, h) in enumerate(trace):
+            if done:
+                first = first or f"#{j}: the replay ended early ({m.get('end')})"
+                break
+            if m["kind"] != kind or len(m["actions"]) != n or m.get("h") != h:
+                first = first or f"#{j}: {kind}/{n}/{h} vs {m['kind']}/{len(m['actions'])}/{m.get('h')}"
+            else:
+                same += 1
+            m, done = env.step(idx)
+        if not done:
+            first = first or "the replay asked more decisions than recorded"
+        rep_run = json.loads((out / f"replay-{rec.stem[4:]}.json").read_text(encoding="utf-8")) if done else {}
+        dumps_equal = done and strip_timing(rep_run) == strip_timing(run)
+        results.append({"seed": rec.stem[4:], "decisions": len(trace), "hash_equal": same, "first_diff": first,
+                        "end": run.get("end"), "replay_end": m.get("end") if done else None, "dump_equal": dumps_equal})
+        print(json.dumps(results[-1]))
+    seen |= rr.connections(env.pid)
+    env.close()
+    ok = all(r["first_diff"] is None and r["dump_equal"] for r in results) and not seen
+    (out / "replay.json").write_text(json.dumps({"results": results, "network_connections": sorted(seen)}, indent=1),
+                                     encoding="utf-8")
+    print("replay", "OK" if ok else "DIFFERS", "network", sorted(seen))
+    return 0 if ok else 1
+
+
+def strip_timing(r: dict) -> dict:
+    """The run's record without what differs by design: timing, costs, the trace itself."""
+    return serve.drop_keys(r, {"timing_ms", "cost", "env_trace", "boot_ms", "settle_audit"})
+
+
+def smoke(a) -> int:
+    out = Path(a.out).resolve()
+    env = GameEnv(Path(a.game), out / "scratch" / "smoke")
+    print("boot", round(env.boot_s, 1), "s, pid", env.pid)
+    rng = random.Random(1)
+    kinds: dict[str, int] = {}
+    for r in range(a.runs):
+        t0 = time.time()
+        m, done = env.reset(f"SMOKE{r}")
+        n = 0
+        while not done:
+            kinds[m["kind"]] = kinds.get(m["kind"], 0) + 1
+            if n == 0 and r == 0:
+                print("first decision:", json.dumps(m)[:600])
+            m, done = env.step(random_agent(m, rng))
+            n += 1
+        print(f"run {r}: {m} in {time.time() - t0:.1f} s, {n / (time.time() - t0):.1f} decisions/s")
+    print("kinds", kinds, "network", rr.connections(env.pid))
+    print("exit", env.close())
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
+    ap.add_argument("mode", choices=["smoke", "bench", "record", "replay"])
+    ap.add_argument("--game", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--procs", type=int, default=1)
+    ap.add_argument("--seconds", type=float, default=300)
+    ap.add_argument("--runs", type=int, default=2)
+    ap.add_argument("--seeds", nargs="*", default=["FID1", "FID2", "FID3"])
+    ap.add_argument("--warmup", type=int, default=2)
+    ap.add_argument("--buff", type=int, default=0, help="record/replay: buff_max_hp, so random play reaches later floors")
+    ap.add_argument("--step-timeout", type=float, default=180)
+    a = ap.parse_args()
+    return {"smoke": smoke, "bench": bench, "record": record, "replay": replay}[a.mode](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

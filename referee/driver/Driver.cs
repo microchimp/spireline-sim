@@ -271,6 +271,7 @@ public static partial class Driver
             boot.Mark("patches");
             Nodeless.Configure(job);  // "nodeless": true (Nodeless.cs); off, nothing is installed
             _health = (bool?)job["health"] == true;
+            Env.Tracing = Env.Hashing = (bool?)job["env_trace"] == true;  // Env.cs: record each pick and its state hash
             boot.Mark("nodeless");
 
             // The game's own preloader switch: background asset sessions only warm a cache,
@@ -292,6 +293,13 @@ public static partial class Driver
 
             ArmWatchdog();
             bool fastReset = (bool?)job["fast_reset"] == true && !NormalSettings;
+            if ((bool?)job["env"] == true)
+            {
+                exitCode = await ServeEnv(job, fastReset);  // Env.cs: runs back to back for an agent on stdin/stdout
+                ((SceneTree)Engine.GetMainLoop()).Quit(exitCode);
+                return;
+            }
+
             if (job["inbox"] != null)
             {
                 exitCode = await ServeInbox(job, outPath, fastReset);
