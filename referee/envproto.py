@@ -151,7 +151,7 @@ def random_agent(msg: dict, rng: random.Random) -> int:
 # ---------------------------------------------------------------- bench: N games in a spawn pool
 
 
-def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout: float) -> None:
+def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout: float, recycle: int = 0) -> None:
     below_normal_self()
     rng = random.Random(1000 + wid)
     t_end = time.time() + seconds
@@ -166,6 +166,7 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
             continue
         q.put({"ev": "ready", "w": wid, "pid": env.pid, "boot_s": round(env.boot_s, 1), "t": time.time()})
         dec = 0
+        runs_here = 0
         try:
             while time.time() < t_end:
                 seed = f"E{wid:02d}X{k:05d}"
@@ -189,6 +190,10 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
                        "ms": m.get("ms"), "mem_mb": m.get("mem_mb"), "dec": dec % 200, "t": time.time(), "s": time.time() - t0,
                        "stale": m.get("stale"), "slowest_step": slow, "fight_errors": m.get("fight_errors")})
                 dec -= dec % 200
+                runs_here += 1
+                if recycle and runs_here >= recycle:
+                    q.put({"ev": "recycle", "w": wid, "t": time.time()})
+                    break  # a fresh game: the session slows down sharply once private memory nears ~1.6 GB
                 if m.get("stale"):
                     break  # the game retires itself (Env.cs); a fresh one follows
         except TimeoutError as e:
@@ -209,7 +214,7 @@ def bench(a) -> int:
     before = rr.real_profile_state()
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
-    procs = [ctx.Process(target=bench_worker, args=(w, str(game), str(out), a.seconds, q, a.step_timeout))
+    procs = [ctx.Process(target=bench_worker, args=(w, str(game), str(out), a.seconds, q, a.step_timeout, a.recycle))
              for w in range(a.procs)]
     for p in procs:
         p.start()
@@ -401,6 +406,7 @@ def main() -> int:
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--buff", type=int, default=0, help="record/replay: buff_max_hp, so random play reaches later floors")
     ap.add_argument("--step-timeout", type=float, default=180)
+    ap.add_argument("--recycle", type=int, default=0, help="bench: restart each game after this many runs (0: never)")
     a = ap.parse_args()
     return {"smoke": smoke, "bench": bench, "record": record, "replay": replay}[a.mode](a)
 
