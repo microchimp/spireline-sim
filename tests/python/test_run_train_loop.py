@@ -33,6 +33,7 @@ for _path in (ROOT, ROOT / "rl", ROOT / "src", TESTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from sts2_gym import procutil  # noqa: E402
 from rl.run_train import (  # noqa: E402
     FEATURE_VERSION,
     cli,
@@ -233,11 +234,7 @@ def wait_for(predicate, timeout: float = 60.0) -> None:
 
 
 def alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    return procutil.pid_alive(pid)  # os.kill(pid, 0) would terminate it on Windows
 
 
 class LoopTestCase(unittest.TestCase):
@@ -1038,7 +1035,7 @@ class ExportTests(LoopTestCase):
 
 class CommandLineTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=procutil.IS_WINDOWS)
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name) / "stage2"
 
@@ -1065,7 +1062,10 @@ class CommandLineTests(unittest.TestCase):
 
         def end_it() -> None:  # a zombie's group reads as EPERM on macOS
             with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pid, signal.SIGKILL)
+                if procutil.IS_WINDOWS:
+                    os.kill(pid, signal.SIGTERM)  # TerminateProcess; there are no process groups
+                else:
+                    os.killpg(pid, signal.SIGKILL)
 
         self.addCleanup(end_it)
         status = self.root / "status.json"
@@ -1082,22 +1082,20 @@ class CommandLineTests(unittest.TestCase):
             (True, pid, "generating", 0),
         )
         self.assertGreaterEqual(report["runs_this_generation"], 2)
-        workers = [
-            int(line)
-            for line in subprocess.run(
-                [
-                    "pgrep",
-                    "-P",
-                    str(pid),
-                    "-f",
-                    "spawn_main",
-                ],  # not the resource tracker
-                capture_output=True,
-                text=True,
-                check=False,
-            ).stdout.split()
+        workers = [  # not the resource tracker (POSIX shows the command line; Windows has none)
+            child
+            for child, command in procutil.child_processes(pid)
+            if "spawn_main" in command or procutil.IS_WINDOWS
         ]
         self.assertEqual(len(workers), 2)
+        if procutil.IS_WINDOWS:
+            # `stop` is os.kill(SIGTERM) = TerminateProcess here: no graceful flush, no
+            # loop.pid cleanup, no "stopped" status. What still holds is that the loop is gone
+            # and its workers follow it through the orphan watchdog.
+            self.cli("stop")
+            wait_for(lambda: not any(alive(worker) for worker in workers), timeout=15)
+            self.assertIsNone(cli.running_pid(self.root))
+            return
         code, _ = self.cli("stop")
         self.assertEqual(code, 0)
         self.assertFalse((self.root / "loop.pid").exists())

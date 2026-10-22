@@ -30,6 +30,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from sts2_gym import procutil
+
 from . import loop, selfplay
 from .engine import CombatBudget
 from .policy import STRATEGY_MODEL_DIR
@@ -170,18 +172,21 @@ def running_pid(root: Path) -> int | None:
         pid = int((root / loop.PID).read_text(encoding="utf-8").strip())
     except _NO_PID:
         return None
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return None
-    except PermissionError:
-        pass  # alive, under another user
-    return pid
+    return pid if procutil.pid_alive(pid) else None
 
 
 def _command_line(root: Path, command: str) -> str:
     where = "" if root == loop.DEFAULT_ROOT else f" --root {root}"
     return f"uv run python -m rl.run_train {command}{where}"
+
+
+def _started_pids(pid: int) -> set[int]:
+    """The pids the loop may write to `loop.pid` for the process `pid` that was started.
+
+    On Windows a venv's python.exe is a launcher that runs the real interpreter as its child,
+    and the loop records its own pid, the child's.
+    """
+    return {pid, *(c for c, _ in procutil.child_processes(pid))} if procutil.IS_WINDOWS else {pid}
 
 
 def _start(args: argparse.Namespace) -> int:
@@ -205,9 +210,8 @@ def _start(args: argparse.Namespace) -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    pid = child.pid
     deadline = time.monotonic() + _STARTUP_SECONDS
-    while running_pid(root) != pid:
+    while (pid := running_pid(root)) is None or pid not in _started_pids(child.pid):
         if child.poll() is not None or time.monotonic() > deadline:
             print(f"the loop did not start; see {root / loop.LOG}", file=sys.stderr)
             return 1

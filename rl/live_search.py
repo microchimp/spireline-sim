@@ -130,7 +130,7 @@ from combat_mcts import (
 )
 from combat_tokens import MAX_POTIONS, POTION_OFFSET
 
-from sts2_gym import names, native
+from sts2_gym import names, native, procutil
 from sts2_gym.live.potions import ENEMY_TARGETED_POTIONS
 
 DEATH_VALUE = -100.0
@@ -1636,7 +1636,7 @@ def _serve(
     its own search. So a bad document, a position with no move or a broken prior does not
     cost a restart. A worker that leaked a combat exits instead, to be started afresh.
     """
-    os.nice(nice)
+    procutil.lower_priority(nice)
     # Ctrl-C is the parent's to handle, and the parent stops the workers itself.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     if warmup is not None:

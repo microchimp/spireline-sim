@@ -21,6 +21,7 @@ ingredients (an estimate of exposure, not of stops). Missing inputs give a null 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import statistics
@@ -385,6 +386,11 @@ def main(argv=None) -> int:
     print(render(r))
     if a.json:
         a.json.parent.mkdir(parents=True, exist_ok=True)
+        if a.json.exists():  # `bench` is written by hand (rl/bench_emu.py), not derived: keep it
+            with contextlib.suppress(ValueError, OSError):
+                r.setdefault("bench", json.loads(a.json.read_text(encoding="utf-8")).get("bench"))
+            if r.get("bench") is None:
+                r.pop("bench", None)
         a.json.write_text(json.dumps(r, indent=1), encoding="utf-8")
     return 0
 

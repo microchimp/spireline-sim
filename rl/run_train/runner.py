@@ -51,6 +51,8 @@ from multiprocessing import connection
 from pathlib import Path
 from typing import Any, Self
 
+from sts2_gym import procutil
+
 from . import seeding, selfplay, shards, vocab
 from .engine import CombatBudget
 
@@ -248,7 +250,7 @@ def _exit_when_orphaned(parent: int) -> None:
     It runs on its own thread, so it fires while the main thread is stuck in a native
     step: ctypes releases the GIL around a foreign call.
     """
-    while os.getppid() == parent:
+    while procutil.parent_alive(parent):
         time.sleep(_ORPHAN_POLL_SECONDS)
     os._exit(1)
 
@@ -256,7 +258,7 @@ def _exit_when_orphaned(parent: int) -> None:
 def _worker_main(conn: connection.Connection, play: Play) -> None:
     """Take one task at a time from the pipe until told to stop or the parent is gone."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl-C is the parent's to handle
-    os.nice(max(0, WORKER_NICENESS - os.nice(0)))
+    procutil.lower_priority(WORKER_NICENESS)
     threading.Thread(
         target=_exit_when_orphaned,
         args=(os.getppid(),),

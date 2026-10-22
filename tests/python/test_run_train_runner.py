@@ -26,6 +26,7 @@ for _path in (ROOT, ROOT / "rl", ROOT / "src", TESTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from sts2_gym import procutil  # noqa: E402
 from rl.run_train import runner, selfplay, shards  # noqa: E402
 from rl.run_train.engine import CombatBudget  # noqa: E402
 
@@ -136,7 +137,7 @@ def quick_play(task, on_fight) -> dict:
     return {
         "seed": task.seed,
         "generation": task.generation,
-        "niceness": os.nice(0),
+        "niceness": procutil.niceness(),
         "outcome": {"final_floor": 5, "won": False, "truncated": False},
         "stats": {"seconds": 0.0},
     }
@@ -181,9 +182,15 @@ def generate_forever(out_dir: str, policy_spec: dict) -> None:
     runner.generate(4, 2, policy_spec, Path(out_dir), play=hang_forever_play)
 
 
+# Exit codes a dead worker shows: POSIX reports the signal; on Windows an abort() exits 22 and
+# Process.kill() (TerminateProcess) reads back as SIGTERM.
+ABORT_EXIT = 22 if procutil.IS_WINDOWS else -signal.SIGABRT
+KILL_EXIT = -signal.SIGTERM if procutil.IS_WINDOWS else -signal.SIGKILL
+
+
 def generate_niced(out_dir: str) -> None:
     """Run in a child process that is itself niced, as the generation loop is."""
-    os.nice(10)
+    procutil.lower_priority(10)
     runner.generate(2, 1, {"kind": "rules"}, Path(out_dir), play=quick_play)
 
 
@@ -309,7 +316,7 @@ class GenerateTests(RunnerTestCase):
             for path in shards.shard_paths(self.gen / "shards")
             for record in shards.read_shard(path)
         ]
-        parent = os.nice(0)
+        parent = procutil.niceness()
         self.assertTrue(all(r["niceness"] == max(10, parent) for r in records))
         # Each completed record is handed to the caller once, as it lands.
         self.assertEqual(
@@ -331,7 +338,7 @@ class GenerateTests(RunnerTestCase):
             for record in shards.read_shard(path)
         ]
         self.assertEqual(len(records), 2)
-        self.assertTrue(all(r["niceness"] == max(10, os.nice(0) + 10) for r in records))
+        self.assertTrue(all(r["niceness"] == max(10, procutil.niceness() + 10) for r in records))
 
     def test_a_policy_that_raises_once_is_retried_and_every_seed_lands_once(self):
         spec = {"kind": "rules", "markers": str(self.markers())}
@@ -388,7 +395,7 @@ class GenerateTests(RunnerTestCase):
         line = quarantine[0]
         self.assertEqual(
             (line["seed"], line["status"], line["reason"], line["exit_code"]),
-            (abort, "aborted", "crash", -signal.SIGABRT),
+            (abort, "aborted", "crash", ABORT_EXIT),
         )
         # The fight the worker last reported: the run's first, which it aborted after.
         first_fight = selfplay.play_run(abort, selfplay.RulesPlayer(), 3, A9)["fights"]
@@ -401,7 +408,7 @@ class GenerateTests(RunnerTestCase):
         self.assertEqual(len(retry), 1)
         self.assertEqual(
             (retry[0]["seed"], retry[0]["exit_code"], retry[0]["encounter"]),
-            (abort, -signal.SIGABRT, first_fight[0]["encounter"]),
+            (abort, ABORT_EXIT, first_fight[0]["encounter"]),
         )
         # The first failure is in retries.jsonl; the second is the quarantine line.
         self.assertEqual(shards.read_jsonl(self.gen / "retries.jsonl"), retry)
@@ -434,7 +441,7 @@ class GenerateTests(RunnerTestCase):
         quarantine = shards.read_jsonl(self.gen / "quarantine.jsonl")
         self.assertEqual(
             [(q["seed"], q["status"], q["reason"], q["exit_code"]) for q in quarantine],
-            [(hang, "aborted", "timeout", -signal.SIGKILL)],
+            [(hang, "aborted", "timeout", KILL_EXIT)],
         )
         retries = self.gen / "retries.jsonl"
         self.assertFalse(retries.exists() and shards.read_jsonl(retries))
@@ -568,8 +575,8 @@ class ResumeTests(RunnerTestCase):
             child.kill()
             child.join()
             for pid in worker_pids(Path(spec["markers"])):
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(pid, signal.SIGKILL)
+                with contextlib.suppress(OSError):  # gone already: EPERM/ESRCH, or access denied
+                    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
         self.addCleanup(end_everything)
         return child
@@ -588,13 +595,7 @@ class ResumeTests(RunnerTestCase):
         child.join()
 
         def all_gone() -> bool:
-            for pid in pids:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    continue
-                return False
-            return True
+            return not any(procutil.parent_alive(pid) for pid in pids)  # os.kill(pid, 0) kills on Windows
 
         wait_for(all_gone, timeout=15)
 
@@ -643,6 +644,11 @@ class ResumeTests(RunnerTestCase):
         )
         self.assert_every_seed_exactly_once(30)
 
+    @unittest.skipIf(
+        procutil.IS_WINDOWS,
+        "Windows has no catchable SIGTERM: Process.terminate() is TerminateProcess, so the "
+        "runner's graceful stop (flush, exit 3) cannot be triggered by a signal there",
+    )
     def test_sigterm_stops_dispatch_flushes_what_completed_and_ends_the_workers(self):
         markers = self.markers()
         spec = {"kind": "rules", "sleep": 0.1, "markers": str(markers)}

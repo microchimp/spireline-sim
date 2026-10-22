@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import numpy as np
+from sts2_gym import procutil
 
 from . import FEATURE_VERSION, deckfights, evaluate, models, runner, selfplay, shards, train, vocab
 from .evaluate import EvalResult
@@ -1054,7 +1055,7 @@ def run_detached(root: Path, export_dest: Path | None = None) -> int:
     config = read_config(root)
     if config is None:
         raise FileNotFoundError(f"{root / CONFIG} is missing: `start` writes it")
-    os.nice(max(0, runner.WORKER_NICENESS - os.nice(0)))
+    procutil.lower_priority(runner.WORKER_NICENESS)
     loop = Loop(root, config, export_dest=export_dest)
     shards.write_atomic(root / PID, f"{os.getpid()}\n".encode())
     previous = signal.signal(signal.SIGTERM, _stop)

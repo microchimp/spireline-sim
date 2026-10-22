@@ -6,7 +6,10 @@ played by a fake that returns chosen results, except in the one test of the real
 which generates, trains and evaluates at a few simulations on one encounter.
 """
 
+import contextlib
 import gzip
+import os
+import signal
 import dataclasses
 import json
 import subprocess
@@ -37,6 +40,7 @@ from combat_tokens import (  # noqa: E402
     VOCAB,
 )
 
+from sts2_gym import procutil  # noqa: E402
 from rl.prior_loop import cli, generate, loop, real_fights  # noqa: E402
 
 # The frozen set's own hash. Changing fight_set.json changes this; it must not change.
@@ -747,22 +751,32 @@ def hold_workers(kind: str, out: str) -> None:
 
 def spawned_children(pid: int) -> list[int]:
     """List the processes `pid` spawned through multiprocessing, its resource tracker aside."""
-    found = subprocess.run(
-        ["ps", "-A", "-o", "pid=,ppid=,command="],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    out = []
-    for line in found.stdout.splitlines():
-        child, parent, command = line.split(None, 2)
-        if int(parent) == pid and "spawn_main" in command:
-            out.append(int(child))
-    return out
+    return [
+        child
+        for child, command in procutil.child_processes(pid)
+        # POSIX shows the command line; Windows only the image, and the parent has no other child.
+        if "spawn_main" in command or procutil.IS_WINDOWS
+    ]
+
+
+def real_pid(popen: subprocess.Popen) -> int:
+    """The pid of the Python that runs the script `popen` started.
+
+    A Windows venv's python.exe is a launcher that starts the real interpreter as its child;
+    the loop is that child, and killing the launcher would leave it (and its workers) running.
+    """
+    if not (procutil.IS_WINDOWS and sys._base_executable != sys.executable):
+        return popen.pid
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        for child, _ in procutil.child_processes(popen.pid):
+            return child
+        time.sleep(0.05)
+    raise AssertionError("the launcher started no interpreter")
 
 
 def alive(pid: int) -> bool:
-    return subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode == 0
+    return procutil.parent_alive(pid)  # "pid is running" off POSIX's reparenting
 
 
 class OrphanTest(unittest.TestCase):
@@ -785,9 +799,10 @@ class OrphanTest(unittest.TestCase):
                     stderr=subprocess.DEVNULL,
                 )
                 workers: list[int] = []
+                loop_pid = real_pid(parent)
                 try:
                     deadline = time.monotonic() + 120
-                    while len(workers := spawned_children(parent.pid)) < 2:
+                    while len(workers := spawned_children(loop_pid)) < 2:
                         self.assertIsNone(parent.poll(), "the loop ended by itself")
                         self.assertLess(
                             time.monotonic(),
@@ -796,8 +811,15 @@ class OrphanTest(unittest.TestCase):
                         )
                         time.sleep(0.2)
                     time.sleep(2.0)  # into their first fight
-                    parent.terminate()
+                    if loop_pid == parent.pid:
+                        parent.terminate()
+                    else:
+                        os.kill(loop_pid, signal.SIGTERM)  # TerminateProcess: outright, as SIGTERM
                     parent.wait(timeout=30)
+                    deadline = time.monotonic() + 15
+                    while alive(loop_pid):
+                        self.assertLess(time.monotonic(), deadline, "the loop did not end")
+                        time.sleep(0.1)
                     deadline = time.monotonic() + 15
                     while any(alive(pid) for pid in workers):
                         self.assertLess(
@@ -807,11 +829,15 @@ class OrphanTest(unittest.TestCase):
                         )
                         time.sleep(0.2)
                 finally:
+                    if loop_pid != parent.pid and alive(loop_pid):
+                        with contextlib.suppress(OSError):
+                            os.kill(loop_pid, signal.SIGTERM)
                     if parent.poll() is None:
                         parent.kill()
                         parent.wait()
                     for pid in workers:
-                        subprocess.run(["kill", "-9", str(pid)], capture_output=True)
+                        with contextlib.suppress(OSError):
+                            os.kill(pid, signal.SIGTERM if procutil.IS_WINDOWS else signal.SIGKILL)
 
 
 class CliTest(unittest.TestCase):

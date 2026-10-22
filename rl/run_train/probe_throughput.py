@@ -73,7 +73,7 @@ import combat_mcts  # noqa: E402
 from run_train.engine import new_run_env  # noqa: E402
 from run_train.rules import card_scores, removal_score, upgrade_score  # noqa: E402
 from run_train.seeding import MAX_SIMS, RUN_STEP_CAP, run_streams  # noqa: E402
-from sts2_gym import names, native  # noqa: E402
+from sts2_gym import names, native, procutil  # noqa: E402
 from sts2_gym import run_constants as rc  # noqa: E402
 
 if TYPE_CHECKING:
@@ -967,7 +967,7 @@ def print_summary(summary: dict) -> None:
 def _worker(payload: tuple[list[str], str]) -> list[dict]:
     seeds, budget = payload
     sims, hard = parse_budget(budget)
-    os.nice(10)
+    procutil.lower_priority(10)
     return [asdict(play_run(seed, sims, elite_boss_sims=hard)) for seed in seeds]
 
 
@@ -1045,7 +1045,7 @@ def _fmt(row: dict) -> str:
 def _load_average() -> list[float]:
     try:
         return list(os.getloadavg())
-    except OSError:
+    except (OSError, AttributeError):  # Windows has no load average
         return []
 
 

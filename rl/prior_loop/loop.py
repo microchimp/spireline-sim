@@ -65,7 +65,7 @@ from combat_mcts import (  # noqa: E402
 )
 from combat_tokens import VOCAB, encode  # noqa: E402
 
-from sts2_gym import native  # noqa: E402
+from sts2_gym import native, procutil  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -204,9 +204,7 @@ def vocab_sha256(vocab: Any = VOCAB) -> str:
 
 def ensure_nice(level: int = 10) -> None:
     """Run at `level` at least (6.1); child processes inherit it."""
-    current = os.nice(0)
-    if current < level:
-        os.nice(level - current)
+    procutil.lower_priority(level)
 
 
 def _exit_when_orphaned(parent: int) -> None:
@@ -215,7 +213,7 @@ def _exit_when_orphaned(parent: int) -> None:
     It runs on a thread of its own, so it fires while the main thread is deep in a fight:
     ctypes releases the GIL around every native call.
     """
-    while os.getppid() == parent:
+    while procutil.parent_alive(parent):
         time.sleep(ORPHAN_POLL_SECONDS)
     os._exit(1)
 

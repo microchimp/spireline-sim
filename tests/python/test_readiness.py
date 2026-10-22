@@ -59,6 +59,22 @@ def fixture(root: Path) -> None:
     w(root / "lab/hypotheses.json", {"h1": {"status": "confirmed"}, "h3": {"status": "refuted"}})
 
 
+class BenchPreservedTest(unittest.TestCase):
+    def test_regenerating_the_json_keeps_a_bench_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "referee"
+            fixture(root)
+            out = Path(tmp) / "readiness.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                rd.main(["--referee", str(root), "--json", str(out)])
+                self.assertNotIn("bench", json.loads(out.read_text()))
+                doc = json.loads(out.read_text())
+                doc["bench"] = {"emu": {"date": "2026-10-22"}}
+                out.write_text(json.dumps(doc, indent=1))
+                rd.main(["--referee", str(root), "--json", str(out)])
+            self.assertEqual(json.loads(out.read_text())["bench"], {"emu": {"date": "2026-10-22"}})
+
+
 class T(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.TemporaryDirectory()

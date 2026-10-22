@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest import mock
 
+from sts2_gym import procutil
 from sts2_gym import run_constants as rc
 
 from . import selfplay, vocab
@@ -175,9 +176,7 @@ def _run_in_process(seed: str, args: argparse.Namespace) -> dict[str, Any]:
         capture_output=True,
         text=True,
         check=False,
-        preexec_fn=lambda: os.nice(
-            NICENESS,
-        ),
+        **procutil.popen_priority_kwargs(NICENESS),
     )
     if done.returncode != 0:
         tail = (done.stderr or "").strip().splitlines()[-1:] or [""]
