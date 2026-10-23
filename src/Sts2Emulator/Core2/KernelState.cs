@@ -333,9 +333,11 @@ public sealed class KernelState : HookRuntime
     /// <summary>
     /// game: CombatManager.StartTurn's player part, as <see cref="ITurnStartFlow" /> says: the setup to its pause,
     /// AfterSideTurnStart, the orb queue's turn start; the hook action is enqueued when the auto-pre-play phase assigns the
-    /// task; then CheckWinCondition (F10's behaviour); only then the executor runs the choice, the rest of the setup and
-    /// AfterAutoPrePlayPhaseEntered, followed by the boundary win check (F10). A combat a death before or during
-    /// AfterSideTurnStart or the orb start ended is over (CombatEnded cancels the pending choice): nothing after runs.
+    /// task; then, only when the setup paused, CheckWinCondition (F10's behaviour); only then the executor runs the choice,
+    /// the rest of the setup and AfterAutoPrePlayPhaseEntered, followed by the boundary win check (F10). A combat a death
+    /// before or during AfterSideTurnStart or the orb start ended is over when the setup paused (CombatEnded cancels the
+    /// pending choice): nothing after runs. A setup that did not pause runs AfterAutoPrePlayPhaseEntered first and makes
+    /// the one win check after it.
     /// </summary>
     public void TurnStart(ITurnStartFlow f)
     {
@@ -344,7 +346,9 @@ public sealed class KernelState : HookRuntime
         f.OrbStart(this);
         var q = Queue!;
         var rec = st.IsPaused ? q.Enqueue(new GameActionRec(GameActionKind.Hook, GameActionType.CombatPlayPhaseOnly)) : null;
-        if (WinCheck(f))
+        // A setup that did not pause has no hook action: CombatManager awaits the auto-pre-play phase first and checks the
+        // win once, after it. Only a paused setup is checked before the executor runs the choice.
+        if (rec is not null && WinCheck(f))
             return;
         Settle(st, s => f.ResumeSetup(this, s), flow: true, first: rec);
         f.AutoPrePlay(this);

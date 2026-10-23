@@ -369,6 +369,30 @@ public class ActionQueueTests
         Assert.Equal(0, off.WinChecks);
     }
 
+    [Fact]
+    public void ASetupThatDoesNotPauseChecksTheWinOnceAfterTheAutoPrePlayPhase()
+    {
+        // game: CombatManager.StartTurn awaits the auto-pre-play phase (AfterAutoPrePlayPhaseEntered) when the setup did not
+        // pause, then calls CheckWinCondition once: a death in AfterSideTurnStart does not end the combat before it.
+        var log = new List<string>();
+        var k = Relics<AfterPlayerTurnStartArgs>(log, "none", HookId.AfterPlayerTurnStart);
+        k.Answers = new Answers(log, 0);
+        k.TurnStart(new Flow(log) { DiesInSideStart = true });
+        Assert.Equal([$"run:{Name(3)}", $"run:{Name(1)}", $"run:{Name(2)}", "AfterSideTurnStart", "OrbQueue.AfterTurnStart",
+            "AfterAutoPrePlayPhaseEntered", "CheckWin"], log);
+        Assert.Empty(k.Queue!.All);
+        Assert.Equal(1, k.WinChecks);
+
+        // Without a death the same single check runs and the combat goes on.
+        log.Clear();
+        var alive = Relics<AfterPlayerTurnStartArgs>(log, "none", HookId.AfterPlayerTurnStart);
+        alive.Answers = new Answers(log, 0);
+        alive.TurnStart(new Flow(log));
+        Assert.Equal([$"run:{Name(3)}", $"run:{Name(1)}", $"run:{Name(2)}", "AfterSideTurnStart", "OrbQueue.AfterTurnStart",
+            "AfterAutoPrePlayPhaseEntered", "CheckWin"], log);
+        Assert.Equal(1, alive.WinChecks);
+    }
+
     private static (KernelState K, CombatState C) WithHookAction(List<string>? log)
     {
         var c = Combat();
