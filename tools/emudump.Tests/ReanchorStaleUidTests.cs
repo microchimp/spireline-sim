@@ -4,7 +4,6 @@
 // would give two cards of the rest of the fight the same uid.
 using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
-using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core2;
 using Xunit;
 
@@ -16,8 +15,8 @@ public class ReanchorStaleUidTests
     {
         var start = CombatFactory.NewCombat(21);
         var now = start.Clone();
-        CardEffects.AddGeneratedCardToHand(now, now.Hand.Count > 0 ? now.Hand[0].DefId : now.DrawPile[0].DefId);
-        CardEffects.AddGeneratedCardToHand(now, now.DrawPile[0].DefId);
+        now.Hand.Add(now.Fresh(new CardInstance(now.DrawPile[0].DefId, false)));
+        now.Hand.Add(now.Fresh(new CardInstance(now.DrawPile[1].DefId, false)));
         now.Hand[0] = now.Hand[0] with { CostForCombat = 0, BonusDamage = 3 };  // the kind of change "cards" undoes
         return (start, now);
     }
