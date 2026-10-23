@@ -71,7 +71,7 @@ def _judge(fid: str, g: dict, e: dict, nm: dict, rows: list, traced: bool, self_
     try:
         s = sc.compare_fight(g, e, rows)
         out.update(sc=s["first"], sc_paths=[p for p, _, _ in s["at"][:8]], sc_vals=[[p, x, y] for p, x, y in s["at"][:4]],
-                   census=s["census"], leaves=s["leaves"], allowed=s["allowed"])
+                   census=s["census"], waived=s["waived"], leaves=s["leaves"], allowed=s["allowed"])
     except Exception as ex:  # noqa: BLE001 - a comparer crash is a finding, reported per fight
         out["sc"], out["sc_error"] = -1, f"{type(ex).__name__}: {ex}"[:300]
     if e.get("error"):
@@ -84,7 +84,8 @@ def _part(args) -> list:
     C._below_normal()
     nm = fc.names(json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8")))
     rows = sc.load_rows()
-    src, dst, err = (Path(work) / f"cal-{ids[0]}{x}" for x in (".in.json", ".out.json", ".err.txt"))
+    tag = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in ids[0])
+    src, dst, err = (Path(work) / f"cal-{tag}{x}" for x in (".in.json", ".out.json", ".err.txt"))
     src.write_text(json.dumps({"results": games}), encoding="utf-8")
     flags = ["--compact", "--game-view"] + (["--netstate"] if traced else [])
     with dst.open("wb") as so, err.open("wb") as se:
@@ -99,6 +100,11 @@ def _part(args) -> list:
         with contextlib.suppress(OSError):
             f.unlink()
     return out
+
+
+def traced_fight_id(f: str, k: int) -> str:
+    """A fight id unique across traced files (they all share the name traced.out.json): the last three path parts and the index."""
+    return "/".join(Path(f).parts[-3:]) + f"#{k}"
 
 
 def table(results: list, key: str) -> dict:
@@ -146,7 +152,7 @@ def main() -> int:
         for f in a.files:
             for k, r in enumerate(json.loads(Path(f).read_text(encoding="utf-8"))["results"]):
                 if r.get("ascension") is not None and any("net" in s for s in r.get("steps", [])):
-                    fights.append((f"{Path(f).name}#{k}", r))
+                    fights.append((traced_fight_id(f, k), r))
         fights = fights[: a.limit or None]
         per = max(1, len(fights) // (a.procs * 2))
         for i in range(0, len(fights), per):

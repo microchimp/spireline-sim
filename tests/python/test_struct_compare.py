@@ -435,5 +435,22 @@ class IntentWildcard(unittest.TestCase):
                          ["snap.enemies[0].intents[0]"])  # the wildcard is the old engine's row
 
 
+class CalibrateIds(unittest.TestCase):
+    def test_traced_fight_ids_are_unique_across_files(self):
+        from tools.fidelity import struct_calibrate as cal  # noqa: PLC0415
+        a = cal.traced_fight_id("runs/x/fights/p1.packs/traces/traced.out.json", 3)
+        b = cal.traced_fight_id("runs/x/fights/p2.packs/traces/traced.out.json", 3)
+        self.assertNotEqual(a, b)  # the same file name and index in two runs were one id: the census gate lost fights
+        self.assertEqual(a, "p1.packs/traces/traced.out.json#3")
+
+    def test_judge_records_the_waived_paths_and_the_self_check(self):
+        from tools.fidelity import struct_calibrate as cal  # noqa: PLC0415
+        g, e = fight([snap()], [snap()], rec_nets=[net()], eng_nets=[net()])
+        out = cal._judge("f", g, e, None, ROWS, True, True)
+        self.assertIsNone(out["sc"])
+        self.assertIn("net.players[*].piles.Draw[*].cost", out["waived"])
+        self.assertNotIn("net.players[*].piles.Draw[*].cost", out["census"])
+
+
 if __name__ == "__main__":
     unittest.main()
