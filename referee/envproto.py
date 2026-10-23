@@ -31,6 +31,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import perfcounters  # noqa: E402
 import run_referee as rr  # noqa: E402
 import serve  # noqa: E402
 
@@ -218,8 +219,10 @@ class _MemStatus(ctypes.Structure):
 _cpu_prev: tuple | None = None
 
 
-def sysstat() -> dict:
-    """System-wide physical memory load and CPU busy fraction since the last call (leak probe)."""
+def sysstat(perf: perfcounters.PerfSampler | None = None, acct: perfcounters.ParentAcct | None = None,
+            qsize: int | None = None) -> dict:
+    """System-wide physical memory load and CPU busy fraction since the last call (leak probe), the typeperf
+    counters of the window (perfcounters.py) and the bench parent's own accounting for it."""
     global _cpu_prev
     k32 = ctypes.WinDLL("kernel32")
     ms = _MemStatus()
@@ -233,8 +236,13 @@ def sysstat() -> dict:
         di, dk, du = idle - _cpu_prev[0], kern - _cpu_prev[1], user - _cpu_prev[2]
         busy = round(100 * (1 - di / (dk + du)), 1) if dk + du else None
     _cpu_prev = (idle, kern, user)
-    return {"mem_load_pct": ms.dwMemoryLoad, "avail_phys_mb": ms.ullAvailPhys >> 20, "avail_commit_mb": ms.ullAvailPageFile >> 20,
-            "cpu_busy_pct": busy}
+    out = {"mem_load_pct": ms.dwMemoryLoad, "avail_phys_mb": ms.ullAvailPhys >> 20, "avail_commit_mb": ms.ullAvailPageFile >> 20,
+           "cpu_busy_pct": busy}
+    if perf is not None:
+        out.update(perf.drain())
+    if acct is not None:
+        out.update(acct.snap(qsize))
+    return out
 
 
 def bench(a) -> int:
@@ -256,28 +264,45 @@ def bench(a) -> int:
     last_net = 0.0
     last_sys = 0.0
     evlog = open(out / "events.jsonl", "w", encoding="utf-8")
+    perf = perfcounters.PerfSampler(pids)
+    perf.start()
+    acct = perfcounters.ParentAcct()
     while any(p.is_alive() for p in procs) or not q.empty():
+        t_a = time.perf_counter()
         try:
             e = q.get(timeout=1)
+        except queue.Empty:
+            e = None
+        t_b = time.perf_counter()
+        acct.wait += t_b - t_a
+        if e is not None:
             events.append(e)
             evlog.write(json.dumps(e) + "\n")
             evlog.flush()
+            acct.events += 1
             if e["ev"] == "ready":
                 pids.add(e["pid"])
-        except queue.Empty:
-            pass
         if time.time() - last_sys > 10:
             last_sys = time.time()
-            e = {"ev": "sys", "t": last_sys, **sysstat()}
+            perf.poll()
+            try:
+                qs = q.qsize()
+            except NotImplementedError:
+                qs = None
+            e = {"ev": "sys", "t": last_sys, **sysstat(perf, acct, qs)}
             events.append(e)
             evlog.write(json.dumps(e) + "\n")
             evlog.flush()
+        t_c = time.perf_counter()
+        acct.handle += t_c - t_b
         if pids and time.time() - last_net > 3:
             last_net = time.time()
             for pid, conns in rr.connections_by_pid(sorted(pids)).items():
                 if conns:
                     seen |= conns
                     print(f"NETWORK: pid {pid}: {sorted(conns)}", file=sys.stderr)
+            acct.net += time.perf_counter() - t_c
+    perf.stop()
     for p in procs:
         p.join()
     wer = set()
@@ -286,8 +311,55 @@ def bench(a) -> int:
     s = summarize(events, a.procs)
     s.update(network_connections=sorted(seen), wer_reports=sorted(wer), real_profile_touched=before != rr.real_profile_state())
     (out / "summary.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
-    print(json.dumps(s, indent=1))
+    print(json.dumps({k: v for k, v in s.items() if k != "per_minute"}, indent=1))
     return 0 if not seen and not wer and not s["real_profile_touched"] else 1
+
+
+def parent_summary(sysev: list) -> dict:
+    """The bench parent's accounting over the whole window: CPU seconds, time blocked on the result queue, time
+    handling results and in the netstat check, and the largest backlog seen."""
+    sums = {k: round(sum(e.get(f"parent_{k}_s") or 0.0 for e in sysev), 2) for k in ("cpu", "wait", "handle", "net", "window")}
+    win = sums.pop("window")
+    qs = [e["parent_qsize"] for e in sysev if e.get("parent_qsize") is not None]
+    return {"cpu_s": sums["cpu"], "wait_s": sums["wait"], "handle_s": sums["handle"], "net_s": sums["net"], "window_s": win,
+            "cpu_share": round(sums["cpu"] / win, 3) if win else None, "wait_share": round(sums["wait"] / win, 3) if win else None,
+            "qsize_max": max(qs) if qs else None}
+
+
+_SUMMED = ("parent_cpu_s", "parent_wait_s", "parent_handle_s", "parent_net_s", "parent_window_s", "parent_events")
+
+
+def per_minute(events: list) -> list:
+    """One row per minute of the window: asked decisions per second, runs ended, and the sys counters (mean of the
+    10 s windows in it; parent_* are sums; <field>_max is the largest 2 s sample seen)."""
+    if not events:
+        return []
+    t0 = min(e["t"] for e in events)
+    rows: dict[int, dict] = {}
+    for e in events:
+        m = int((e["t"] - t0) // 60)
+        r = rows.setdefault(m, {"dec": 0, "runs": 0, "sys": []})
+        if e["ev"] in ("tick", "end"):
+            r["dec"] += e["dec"]
+        if e["ev"] == "end":
+            r["runs"] += 1
+        if e["ev"] == "sys":
+            r["sys"].append(e)
+    out = []
+    for m in sorted(rows):
+        r = rows[m]
+        row = {"minute": m, "dec_per_s": round(r["dec"] / 60, 1), "runs": r["runs"], "sys_windows": len(r["sys"])}
+        keys = sorted({k for e in r["sys"] for k, v in e.items() if isinstance(v, (int, float)) and k not in ("t", "perf_samples")})
+        for k in keys:
+            vs = [e[k] for e in r["sys"] if isinstance(e.get(k), (int, float))]
+            if k in _SUMMED:
+                row[k] = round(sum(vs), 2)
+            elif k.endswith("_max"):
+                row[k] = round(max(vs), 2)
+            else:
+                row[k] = round(sum(vs) / len(vs), 2)
+        out.append(row)
+    return out
 
 
 def summarize(events: list, procs: int) -> dict:
@@ -312,7 +384,9 @@ def summarize(events: list, procs: int) -> dict:
         if e.get("mem_mb"):
             first_mem.setdefault(e["w"], e["mem_mb"])
             last_mem[e["w"]] = e["mem_mb"]
+    sysev = [e for e in events if e["ev"] == "sys"]
     return {
+        "parent": parent_summary(sysev), "per_minute": per_minute(events),
         "procs": procs, "window_s": round(span, 1), "decisions": dec, "decisions_per_s": round(dec / span, 1),
         "decisions_per_s_per_proc": round(dec / span / procs, 2),
         "runs_ended": len(ends), "runs_per_hour": round(len(full_runs) / span * 3600, 1), "ends": by_end,
