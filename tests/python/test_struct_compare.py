@@ -274,5 +274,16 @@ class Calibration(unittest.TestCase):
                                                "legacy_only": 1, "struct_only": 1, "neither": 1})
 
 
+class PowerFoldCount(unittest.TestCase):
+    def test_fold_counts_only_with_a_folded_subclass(self):
+        p = snap()["player"]
+        base = snap(player={**p, "powers": [["TEMPORARY_STRENGTH_POWER", 5]]})
+        r = first([base], [base])
+        self.assertIsNone(r["first"])
+        self.assertNotIn("power-folds", r["allowed"])  # only the base power: nothing folded
+        sub = snap(player={**p, "powers": [["SETUP_STRIKE_POWER", 5]]})
+        self.assertEqual(first([sub], [base])["allowed"].get("power-folds"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

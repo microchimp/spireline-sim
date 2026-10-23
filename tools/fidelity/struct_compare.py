@@ -126,7 +126,7 @@ def _fold(powers: list, folds: dict) -> tuple[list, bool]:
         if base is None:
             out.append([name, amount])
         else:
-            hit = True
+            hit = hit or name in member  # the base power alone folds nothing
             summed[base] = summed.get(base, 0) + amount
     return out + [[k, v] for k, v in summed.items() if v], hit
 
