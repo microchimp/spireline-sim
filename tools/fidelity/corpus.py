@@ -208,8 +208,11 @@ def needs_of(r: dict) -> list:
 
 
 def emudump_features(root: Path = ROOT) -> set:
-    """The spec options this EmuDump's source applies (FEATURES)."""
-    text = "".join(p.read_text(encoding="utf-8", errors="replace") for p in (root / "tools" / "emudump").glob("*.cs"))
+    """The spec options this EmuDump's source applies (FEATURES): every .cs file under tools/emudump, in folders too (Engines/Old
+    holds the old engine's side), build output (bin, obj) left out."""
+    src = root / "tools" / "emudump"
+    files = sorted(p for p in src.rglob("*.cs") if not {"bin", "obj"} & set(p.relative_to(src).parts))
+    text = "".join(p.read_text(encoding="utf-8", errors="replace") for p in files)
     return {f for f, marker in FEATURES.items() if marker in text}
 
 

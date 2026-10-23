@@ -167,7 +167,8 @@ public class ResampleLeakTests
         var laterActs = new HashSet<int>();
         foreach (var c in Clones(e))
         {
-            Assert.Equal(e.State.EventSequence[..cursor], c.State.EventSequence[..cursor]);
+            // Slot 0 is the Ancient room's and was never shown: it is dealt again. What the run met stays (nothing yet here; see ResampleLeakFollowupTests).
+            Assert.Equal(e.State.EventSequence[1..cursor], c.State.EventSequence[1..cursor]);
             Assert.Equal(cursor, c.State.EventSequenceIndex);
             // Same events, reordered: the pool is the generator's, not a new one.
             Assert.Equal(e.State.EventSequence.Order(), c.State.EventSequence.Order());

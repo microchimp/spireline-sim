@@ -338,6 +338,47 @@ class MappingTests(unittest.TestCase):
             self.assertIn(k, lockstep.MAPPED_KINDS)
 
 
+class LoneEndTurnTests(unittest.TestCase):
+    """B1 reward-phase group (G1162c5de18): the referee asks only with two or more legal actions, so a lone End Turn is
+    taken for it. A fight that turn ends (a power's end-of-turn damage, an enemy dying to its retaliation) reaches the
+    rewards screen with no combat question in between; the emulator side has to take the same lone End Turn before the
+    non-combat question is compared, or it still stands in the fight ("phase:0!=rewards")."""
+
+    COMBAT_LEGAL = 3  # the End Turn slot of a three-card hand
+
+    def _fight(self, legal):
+        screens = {"items": ("rewards", (_opt("reward.proceed", 9),)), "map": ("map", (_opt("map.node", 0, node=(1, 2)),))}
+        run = ItemsRun(gold=0)
+        run.cur, run.screens, run.stepped = "combat", screens, []
+        run.moves[("map", "map.node")] = "map"  # a lone path the lockstep may walk on its way to the screen asked about
+        e = stub_emu(run)
+
+        def step(handle, action, target, *bufs):
+            run.stepped.append(action)
+            run.cur = "items"  # the turn ends and the last enemy dies
+            return 0
+
+        e.native.run_action_mask = lambda h, n: [int(i in legal()) for i in range(n)] if run.cur == "combat" else [0] * n
+        e.native.run_step = step
+        return e, run
+
+    def test_a_lone_end_turn_that_wins_the_fight_is_taken_before_the_rewards_question(self):
+        e, run = self._fight(lambda: [self.COMBAT_LEGAL])
+        self.assertIsNone(e.sync("reward", ["take", "skip"], {"ctx": {"type": "card"}}))
+        self.assertEqual(run.stepped, [self.COMBAT_LEGAL])
+
+    def test_every_non_combat_screen_finishes_a_fight_the_referee_has_left(self):
+        for kind in ("reward", "card_reward", "treasure", "map", "rest"):
+            e, run = self._fight(lambda: [self.COMBAT_LEGAL])
+            e.sync(kind, [], {})
+            self.assertEqual(run.stepped, [self.COMBAT_LEGAL], kind)
+
+    def test_a_fight_with_a_choice_left_is_still_reported_as_a_difference(self):
+        e, run = self._fight(lambda: [0, self.COMBAT_LEGAL])  # a card and End Turn: the referee would have asked
+        self.assertEqual(e.sync("reward", ["take", "skip"], {"ctx": {"type": "card"}}), f"phase:{FakeRun.COMBAT}!=rewards")
+        self.assertEqual(run.stepped, [])
+
+
 def _ev(action, step=0, event=7):
     return _opt("event.option", action, event=(event, action, step))
 
@@ -470,6 +511,92 @@ class AgentSeedTests(unittest.TestCase):
         self.assertNotIn("seed.encode", rng_line)
         self.assertNotIn("self.seed", rng_line)
         self.assertEqual(list(inspect.signature(lockstep.agent_rng).parameters), ["entropy"])
+
+
+def enemy_stub(slots, ref_hps=None):
+    """An EmuLock in a fight whose observation buffer holds `slots` (hp, max hp) per enemy slot, six slots wide."""
+    e = stub_emu(SimpleNamespace(
+        phase=FakeRun.COMBAT, act_index=0,
+        view=lambda: SimpleNamespace(floor=3, hp=70, max_hp=80, gold=9, deck=[], relics=[], potions=[])))
+    buf = [0] * (4 + 6 * 8)
+    for k, (hp, mx) in enumerate(slots):
+        buf[4 + k * 8], buf[4 + k * 8 + 1] = hp, mx
+    e.ls = SimpleNamespace(_ENEMIES=4, _ENEMY=8, _living_targets=lambda o: [])
+    e.native = SimpleNamespace(MAX_ENEMIES=6)
+    e._obs = lambda: buf
+    return e
+
+
+def ref_enemies(*hps):
+    o = obs(combat=True)
+    o["hp"], o["floor"], o["gold"], o["max_hp"], o["deck"], o["relics"] = 70, 3, 9, 80, [], []
+    o["combat"]["hand"], o["combat"]["enemies"] = [], [{"hp": h} for h in hps]
+    return o
+
+
+class EnemyProjectionTests(unittest.TestCase):
+    """Both sides list the enemies they still hold, dead ones with their 0 HP, by the same rule. The emulator used to
+    list living enemies only while the referee listed all, so a corpse the game keeps was a diff whichever side held it."""
+
+    def enemy_diff(self, slots, *hps):
+        d = lockstep.structural_diff(lockstep.ref_view(ref_enemies(*hps)), enemy_stub(slots).view())
+        return [x for x in d if x[0] == ".combat.enemy_hp"]
+
+    def test_a_corpse_both_engines_hold_compares_equal(self):
+        self.assertEqual(self.enemy_diff([(0, 40), (12, 40)], 0, 12), [])
+
+    def test_a_corpse_only_the_referee_holds_is_a_diff(self):
+        d = self.enemy_diff([(12, 40)], 0, 12)
+        self.assertEqual([(x[1], x[2]) for x in d], [([0, 12], [12])])
+
+    def test_a_corpse_only_the_emulator_holds_is_a_diff(self):
+        d = self.enemy_diff([(0, 40), (12, 40)], 12)
+        self.assertEqual([(x[1], x[2]) for x in d], [([12], [0, 12])])
+
+    def test_empty_slots_are_not_enemies(self):
+        self.assertEqual(enemy_stub([(12, 40), (0, 0)]).view()["combat"]["enemy_hp"], [12])
+
+
+class RecordContextTests(unittest.TestCase):
+    """A divergence record says what the step before it was, and where in the run it happened."""
+
+    def combat_obs(self, rnd, hps):
+        o = obs(combat=True)
+        o["combat"]["round"] = rnd
+        o["combat"]["enemies"] = [{"name": n, "hp": h} for n, h in zip(("cultist", "jaw_worm"), hps)]
+        return o
+
+    def run_fight(self, last_hp):
+        m = {"t": "decide", "kind": "map", "obs": obs(), "actions": [[3, 1, "Monster"], [4, 1, "Elite"]], "h": "abc"}
+        a, b = self.combat_obs(2, (15, 40)), self.combat_obs(3, (15, last_hp))
+        play = {"t": "decide", "kind": "combat", "obs": a, "actions": [["play", 0, "STRIKE", 0], ["end"]], "h": "abc"}
+        nxt = {"t": "decide", "kind": "combat", "obs": b, "actions": [["play", 0, "STRIKE", 0], ["end"]], "h": "abc"}
+        emu = FakeEmu([view_of(m["obs"]), view_of(a), view_of(self.combat_obs(3, (15, 30)))])
+        ls = lockstep.Lockstep(emu, lambda msg_: 0)
+        for x in (m, play, nxt):
+            ls.decide(x)
+        return ls
+
+    def test_a_record_carries_the_acted_step_the_turn_the_encounter_and_the_room_type(self):
+        rec = self.run_fight(40).log.records[0]
+        self.assertEqual(rec["acted"], {"type": "end_turn", "kind": "combat", "label": ["end"]})
+        self.assertEqual((rec["turn"], rec["encounter"], rec["room_type"]), (3, "cultist+jaw_worm", "Elite"))
+
+    def test_the_first_decision_has_no_step_before_it_and_a_non_combat_record_has_no_turn(self):
+        o, b = obs(hp=80), obs(hp=70)
+        ls = lockstep.Lockstep(FakeEmu([view_of(b), view_of(o)]), lambda m_: 0)
+        ls.decide(msg("rest", o))
+        rec = ls.log.records[0]
+        self.assertEqual((rec["acted"], rec["turn"], rec["encounter"]), (None, None, None))
+        ls.decide(msg("card_reward", o))  # the lockstep is lost, the step is still tracked
+        self.assertEqual(ls.prev_act, {"type": "choice", "kind": "card_reward", "label": ["x"]})
+
+    def test_a_play_and_a_potion_are_told_apart_from_an_end_turn(self):
+        self.assertEqual(lockstep.act_type("combat", ["play", 0, "STRIKE", 0]), "play")
+        self.assertEqual(lockstep.act_type("combat", ["potion", 0, "FIRE", -1]), "potion")
+        self.assertEqual(lockstep.act_type("combat", ["end"]), "end_turn")
+        self.assertEqual(lockstep.act_type("select_cards_combat", ["card", 1]), "choice")
+        self.assertEqual(lockstep.act_type("map", [3, 1, "Monster"]), "choice")
 
 
 class OutcomeTests(unittest.TestCase):

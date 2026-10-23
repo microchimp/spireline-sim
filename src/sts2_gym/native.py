@@ -1485,7 +1485,23 @@ def run_info(handle: int) -> ctypes.Array:
     return buf
 
 
-def run_state_list(handle: int, list_id: int, capacity: int = 256) -> tuple[int, ...]:
+# Run-generation lists the player has not been shown: the act's normal and elite encounter
+# sequences and its event sequence (what is behind each map node, before the node is entered).
+# DESIGN.md 1.1 and 7.6 L4: no agent-visible readout, feature or prior reads them. They stay in
+# the engine, which resolves a node from them, and a generation test may ask for them.
+HIDDEN_RUN_LISTS = frozenset({11, 12, 13})
+
+
+def run_state_list(
+    handle: int, list_id: int, capacity: int = 256, *, hidden: bool = False
+) -> tuple[int, ...]:
+    """One of the run's state lists. The hidden generation lists (`HIDDEN_RUN_LISTS`) are refused
+    unless the caller passes `hidden=True`, which only a test of run generation does."""
+    if list_id in HIDDEN_RUN_LISTS and not hidden:
+        raise PermissionError(
+            f"run state list {list_id} holds what the player has not been shown "
+            "(encounters and events still to come); pass hidden=True only from a generation test"
+        )
     buf = (ctypes.c_int * capacity)()
     count = int(_lib.Sts2Run_GetStateList(handle, list_id, buf, capacity))
     if count < 0:

@@ -31,6 +31,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import perfcounters  # noqa: E402
 import run_referee as rr  # noqa: E402
 import serve  # noqa: E402
 
@@ -46,6 +47,26 @@ def below_normal_self() -> None:
     """BelowNormal priority for this (Python) process, through the Windows priority classes."""
     k32 = ctypes.WinDLL("kernel32")
     k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
+
+
+def reset_spec(seed: str, character: str = "IRONCLAD", spec: dict | None = None, extra_actions: bool = False) -> dict:
+    """The run spec a reset sends: the seed, the character (the game's character id; the driver's default is IRONCLAD) and
+    `extra_actions` (card-reward alternatives, "none" on a selection that allows 0, potion actions outside fights; the driver's
+    default is off, and it changes the sequence of asked decisions: play and bench turn it on, record/replay/smoke leave it off)."""
+    return {"seed": seed, "character": character, "extra_actions": bool(extra_actions), "potions": True, "stop_after_act": 3,
+            "max_decisions": 3000, **(spec or {})}
+
+
+def write_record_meta(out: Path, seed: str, character: str, extra_actions: bool) -> None:
+    """What a record was made with, for replay to use (a sidecar: replay globs rec-*.json)."""
+    (Path(out) / f"meta-{seed}.json").write_text(json.dumps({"character": character, "extra_actions": bool(extra_actions)}), encoding="utf-8")
+
+
+def read_record_meta(out: Path, seed: str, character: str = "IRONCLAD") -> dict:
+    """The stored character and extra_actions of a record; a record without a sidecar was made with the flag off."""
+    p = Path(out) / f"meta-{seed}.json"
+    m = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    return {"character": m.get("character", character), "extra_actions": bool(m.get("extra_actions", False))}
 
 
 class GameEnv:
@@ -115,9 +136,8 @@ class GameEnv:
         return m
 
     def reset(self, seed: str, spec: dict | None = None, hash: bool = False, record: Path | None = None,
-              timeout: float = 120) -> tuple[dict, bool]:
-        cmd = {"cmd": "reset", "spec": {"seed": seed, "potions": True, "stop_after_act": 3, "max_decisions": 3000,
-                                        **(spec or {})}, "hash": hash}
+              timeout: float = 120, character: str = "IRONCLAD", extra_actions: bool = False) -> tuple[dict, bool]:
+        cmd = {"cmd": "reset", "spec": reset_spec(seed, character, spec, extra_actions), "hash": hash}
         if record:
             cmd["record"] = str(record).replace("\\", "/")
         self._send(cmd)
@@ -150,16 +170,34 @@ def random_agent(msg: dict, rng: random.Random) -> int:
     return rng.randrange(len(msg["actions"]))
 
 
+def extras_of(m: dict) -> list[tuple[int, str]]:
+    """The actions of a decision that the driver offers beyond a screen's own options (lockstep.extra_kind, and a card
+    reward's skip): (index, "<kind>@<decision kind>"), e.g. (3, "potion_use@map")."""
+    import lockstep  # noqa: PLC0415
+
+    out = []
+    for i, a in enumerate(m.get("actions", [])):
+        k = lockstep.extra_kind(a) or ("card_skip" if a == "skip" and m.get("kind") == "card_reward" else None)
+        if k:
+            out.append((i, f"{k}@{m['kind']}"))
+    return out
+
+
+def held_potions(m: dict) -> int:
+    return sum(1 for p in (m.get("obs") or {}).get("potions", []) if p)
+
+
 # ---------------------------------------------------------------- bench: N games in a spawn pool
 
 
-def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout: float, recycle: int = 0) -> None:
+def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout: float, recycle: int = 0,
+                 character: str = "IRONCLAD", max_runs: int = 0) -> None:
     below_normal_self()
     rng = random.Random(1000 + wid)
     t_end = time.time() + seconds
     k = 0
     restarts = 0
-    while time.time() < t_end:
+    while time.time() < t_end and not (max_runs and k >= max_runs):
         try:
             env = GameEnv(Path(game), Path(out) / "scratch" / f"w{wid:02d}r{restarts}")
         except Exception as e:  # boot failure
@@ -170,16 +208,29 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
         dec = 0
         runs_here = 0
         try:
-            while time.time() < t_end:
+            while time.time() < t_end and not (max_runs and k >= max_runs):
                 seed = f"E{wid:02d}X{k:05d}"
                 k += 1
                 t0 = time.time()
-                m, done = env.reset(seed, timeout=step_timeout)
+                m, done = env.reset(seed, timeout=step_timeout, character=character, extra_actions=True)
                 n = 0
                 slow = (0.0, None)
+                offered: dict = {}
+                taken: dict = {}
+                effect: dict = {}
                 while not done:
                     ts, kind = time.time(), m.get("kind")
-                    m, done = env.step(random_agent(m, rng), timeout=step_timeout)
+                    pick = random_agent(m, rng)
+                    ex = extras_of(m)
+                    for i, key in ex:
+                        offered[key] = offered.get(key, 0) + 1
+                        if i == pick:
+                            taken[key] = taken.get(key, 0) + 1
+                    before = held_potions(m)
+                    took = next((key for i, key in ex if i == pick), None)
+                    m, done = env.step(pick, timeout=step_timeout)
+                    if took and took.startswith(("potion_", "card_alt")) and not done and held_potions(m) != before:
+                        effect[took] = effect.get(took, 0) + 1
                     if time.time() - ts > slow[0]:
                         slow = (round(time.time() - ts, 2), kind)
                     n += 1
@@ -188,10 +239,10 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
                         q.put({"ev": "tick", "w": wid, "dec": 200, "t": time.time()})
                     if time.time() > t_end + 120:
                         break
-                q.put({"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": n,
+                q.put({"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": n,
                        "ms": m.get("ms"), "mem_mb": m.get("mem_mb"), "dec": dec % 200, "t": time.time(), "s": time.time() - t0,
                        "stale": m.get("stale"), "slowest_step": slow, "fight_errors": m.get("fight_errors"),
-                       "probe": m.get("probe")})
+                       "probe": m.get("probe"), "alt_checked": m.get("alt_checked"), "alt_mismatch": m.get("alt_mismatch"), "extras": {"offered": offered, "taken": taken, "effect": effect}})
                 dec -= dec % 200
                 runs_here += 1
                 if recycle and runs_here >= recycle:
@@ -218,8 +269,10 @@ class _MemStatus(ctypes.Structure):
 _cpu_prev: tuple | None = None
 
 
-def sysstat() -> dict:
-    """System-wide physical memory load and CPU busy fraction since the last call (leak probe)."""
+def sysstat(perf: perfcounters.PerfSampler | None = None, acct: perfcounters.ParentAcct | None = None,
+            qsize: int | None = None) -> dict:
+    """System-wide physical memory load and CPU busy fraction since the last call (leak probe), the typeperf
+    counters of the window (perfcounters.py) and the bench parent's own accounting for it."""
     global _cpu_prev
     k32 = ctypes.WinDLL("kernel32")
     ms = _MemStatus()
@@ -233,8 +286,13 @@ def sysstat() -> dict:
         di, dk, du = idle - _cpu_prev[0], kern - _cpu_prev[1], user - _cpu_prev[2]
         busy = round(100 * (1 - di / (dk + du)), 1) if dk + du else None
     _cpu_prev = (idle, kern, user)
-    return {"mem_load_pct": ms.dwMemoryLoad, "avail_phys_mb": ms.ullAvailPhys >> 20, "avail_commit_mb": ms.ullAvailPageFile >> 20,
-            "cpu_busy_pct": busy}
+    out = {"mem_load_pct": ms.dwMemoryLoad, "avail_phys_mb": ms.ullAvailPhys >> 20, "avail_commit_mb": ms.ullAvailPageFile >> 20,
+           "cpu_busy_pct": busy}
+    if perf is not None:
+        out.update(perf.drain())
+    if acct is not None:
+        out.update(acct.snap(qsize))
+    return out
 
 
 def bench(a) -> int:
@@ -246,7 +304,8 @@ def bench(a) -> int:
     before = rr.real_profile_state()
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
-    procs = [ctx.Process(target=bench_worker, args=(w, str(game), str(out), a.seconds, q, a.step_timeout, a.recycle))
+    procs = [ctx.Process(target=bench_worker, args=(w, str(game), str(out), a.seconds, q, a.step_timeout, a.recycle, a.character,
+                                                  a.max_runs // a.procs + (1 if w < a.max_runs % a.procs else 0) if a.max_runs else 0))
              for w in range(a.procs)]
     for p in procs:
         p.start()
@@ -256,38 +315,102 @@ def bench(a) -> int:
     last_net = 0.0
     last_sys = 0.0
     evlog = open(out / "events.jsonl", "w", encoding="utf-8")
+    perf = perfcounters.PerfSampler(pids)
+    perf.start()
+    acct = perfcounters.ParentAcct()
     while any(p.is_alive() for p in procs) or not q.empty():
+        t_a = time.perf_counter()
         try:
             e = q.get(timeout=1)
+        except queue.Empty:
+            e = None
+        t_b = time.perf_counter()
+        acct.wait += t_b - t_a
+        if e is not None:
             events.append(e)
             evlog.write(json.dumps(e) + "\n")
             evlog.flush()
+            acct.events += 1
             if e["ev"] == "ready":
                 pids.add(e["pid"])
-        except queue.Empty:
-            pass
         if time.time() - last_sys > 10:
             last_sys = time.time()
-            e = {"ev": "sys", "t": last_sys, **sysstat()}
+            perf.poll()
+            try:
+                qs = q.qsize()
+            except NotImplementedError:
+                qs = None
+            e = {"ev": "sys", "t": last_sys, **sysstat(perf, acct, qs)}
             events.append(e)
             evlog.write(json.dumps(e) + "\n")
             evlog.flush()
+        t_c = time.perf_counter()
+        acct.handle += t_c - t_b
         if pids and time.time() - last_net > 3:
             last_net = time.time()
             for pid, conns in rr.connections_by_pid(sorted(pids)).items():
                 if conns:
                     seen |= conns
                     print(f"NETWORK: pid {pid}: {sorted(conns)}", file=sys.stderr)
+            acct.net += time.perf_counter() - t_c
+    perf.stop()
     for p in procs:
         p.join()
     wer = set()
     for pid, rep in rr.wer_reports_by_pid(sorted(pids)).items():
         wer |= rep
     s = summarize(events, a.procs)
-    s.update(network_connections=sorted(seen), wer_reports=sorted(wer), real_profile_touched=before != rr.real_profile_state())
+    s.update(character=a.character, network_connections=sorted(seen), wer_reports=sorted(wer), real_profile_touched=before != rr.real_profile_state())
     (out / "summary.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
-    print(json.dumps(s, indent=1))
+    print(json.dumps({k: v for k, v in s.items() if k != "per_minute"}, indent=1))
     return 0 if not seen and not wer and not s["real_profile_touched"] else 1
+
+
+def parent_summary(sysev: list) -> dict:
+    """The bench parent's accounting over the whole window: CPU seconds, time blocked on the result queue, time
+    handling results and in the netstat check, and the largest backlog seen."""
+    sums = {k: round(sum(e.get(f"parent_{k}_s") or 0.0 for e in sysev), 2) for k in ("cpu", "wait", "handle", "net", "window")}
+    win = sums.pop("window")
+    qs = [e["parent_qsize"] for e in sysev if e.get("parent_qsize") is not None]
+    return {"cpu_s": sums["cpu"], "wait_s": sums["wait"], "handle_s": sums["handle"], "net_s": sums["net"], "window_s": win,
+            "cpu_share": round(sums["cpu"] / win, 3) if win else None, "wait_share": round(sums["wait"] / win, 3) if win else None,
+            "qsize_max": max(qs) if qs else None}
+
+
+_SUMMED = ("parent_cpu_s", "parent_wait_s", "parent_handle_s", "parent_net_s", "parent_window_s", "parent_events")
+
+
+def per_minute(events: list) -> list:
+    """One row per minute of the window: asked decisions per second, runs ended, and the sys counters (mean of the
+    10 s windows in it; parent_* are sums; <field>_max is the largest 2 s sample seen)."""
+    if not events:
+        return []
+    t0 = min(e["t"] for e in events)
+    rows: dict[int, dict] = {}
+    for e in events:
+        m = int((e["t"] - t0) // 60)
+        r = rows.setdefault(m, {"dec": 0, "runs": 0, "sys": []})
+        if e["ev"] in ("tick", "end"):
+            r["dec"] += e["dec"]
+        if e["ev"] == "end":
+            r["runs"] += 1
+        if e["ev"] == "sys":
+            r["sys"].append(e)
+    out = []
+    for m in sorted(rows):
+        r = rows[m]
+        row = {"minute": m, "dec_per_s": round(r["dec"] / 60, 1), "runs": r["runs"], "sys_windows": len(r["sys"])}
+        keys = sorted({k for e in r["sys"] for k, v in e.items() if isinstance(v, (int, float)) and k not in ("t", "perf_samples")})
+        for k in keys:
+            vs = [e[k] for e in r["sys"] if isinstance(e.get(k), (int, float))]
+            if k in _SUMMED:
+                row[k] = round(sum(vs), 2)
+            elif k.endswith("_max"):
+                row[k] = round(max(vs), 2)
+            else:
+                row[k] = round(sum(vs) / len(vs), 2)
+        out.append(row)
+    return out
 
 
 def summarize(events: list, procs: int) -> dict:
@@ -312,7 +435,11 @@ def summarize(events: list, procs: int) -> dict:
         if e.get("mem_mb"):
             first_mem.setdefault(e["w"], e["mem_mb"])
             last_mem[e["w"]] = e["mem_mb"]
+    sysev = [e for e in events if e["ev"] == "sys"]
     return {
+        "parent": parent_summary(sysev), "per_minute": per_minute(events),
+        "alt_checks": {"checked": sum(e.get("alt_checked") or 0 for e in ends), "mismatch": sum(e.get("alt_mismatch") or 0 for e in ends)},
+        "extras": {k: _merge((e.get("extras") or {}).get(k, {}) for e in ends) for k in ("offered", "taken", "effect")},
         "procs": procs, "window_s": round(span, 1), "decisions": dec, "decisions_per_s": round(dec / span, 1),
         "decisions_per_s_per_proc": round(dec / span / procs, 2),
         "runs_ended": len(ends), "runs_per_hour": round(len(full_runs) / span * 3600, 1), "ends": by_end,
@@ -342,8 +469,7 @@ def record(a) -> int:
         (scratch / "appdata").mkdir(parents=True, exist_ok=True)
         (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
         jopts = serve.job_options({}, stall_s=300)
-        spec = {"kind": "run", "seed": seed, "potions": True, "stop_after_act": 3, "max_decisions": 3000,
-                "buff_max_hp": a.buff}
+        spec = {"kind": "run", **reset_spec(seed, a.character, extra_actions=a.extra_actions), "buff_max_hp": a.buff}
         jopts.update(env_trace=True, runs=[spec], out=str(out / f"rec-{seed}.json").replace("\\", "/"))
         job = scratch / "job.json"
         job.write_text(json.dumps(jopts), encoding="utf-8")
@@ -353,6 +479,7 @@ def record(a) -> int:
         rep = json.loads(r.stdout[r.stdout.index("{"):]) if "{" in r.stdout else {}
         ok = r.returncode == 0 and rep.get("network_connections") == [] and rep.get("real_profile_touched") is False
         bad += not ok
+        write_record_meta(out, seed, a.character, a.extra_actions)
         res = json.loads((out / f"rec-{seed}.json").read_text(encoding="utf-8"))
         run = res[0] if isinstance(res, list) else res.get("results", [res])[0]
         print(seed, "ok" if ok else f"session FAILED {rep}", run.get("end"), "trace", len(run.get("env_trace", [])),
@@ -377,8 +504,10 @@ def replay(a) -> int:
         res = json.loads(rec.read_text(encoding="utf-8"))
         run = res["results"][0] if "results" in res else res
         trace = run["env_trace"]
+        meta = read_record_meta(out, rec.stem[4:], a.character)  # the stored flag, not the command line's
         m, done = env.reset(run["seed"] if "seed" in run else rec.stem[4:], hash=True, spec={"buff_max_hp": a.buff},
-                            record=out / f"replay-{rec.stem[4:]}.json")
+                            record=out / f"replay-{rec.stem[4:]}.json", character=meta["character"],
+                            extra_actions=meta["extra_actions"])
         same = 0
         first = None
         for j, (kind, n, idx, h) in enumerate(trace):
@@ -394,7 +523,7 @@ def replay(a) -> int:
             first = first or "the replay asked more decisions than recorded"
         rep_run = json.loads((out / f"replay-{rec.stem[4:]}.json").read_text(encoding="utf-8")) if done else {}
         dumps_equal = done and strip_timing(rep_run) == strip_timing(run)
-        results.append({"seed": rec.stem[4:], "decisions": len(trace), "hash_equal": same, "first_diff": first,
+        results.append({"seed": rec.stem[4:], "extra_actions": meta["extra_actions"], "decisions": len(trace), "hash_equal": same, "first_diff": first,
                         "end": run.get("end"), "replay_end": m.get("end") if done else None, "dump_equal": dumps_equal})
         print(json.dumps(results[-1]))
     seen |= rr.connections(env.pid)
@@ -419,12 +548,15 @@ def smoke(a) -> int:
     kinds: dict[str, int] = {}
     for r in range(a.runs):
         t0 = time.time()
-        m, done = env.reset(f"SMOKE{r}")
+        m, done = env.reset(f"SMOKE{r}", character=a.character)
         n = 0
         while not done:
             kinds[m["kind"]] = kinds.get(m["kind"], 0) + 1
             if n == 0 and r == 0:
                 print("first decision:", json.dumps(m)[:600])
+                o = m.get("obs", {})  # what the character starts with: the deck size and the relics
+                print("start", json.dumps({"character": a.character, "deck": len(o.get("deck", [])), "relics": o.get("relics"),
+                                           "hp": o.get("max_hp")}))
             m, done = env.step(random_agent(m, rng))
             n += 1
         print(f"run {r}: {m} in {time.time() - t0:.1f} s, {n / (time.time() - t0):.1f} decisions/s")
@@ -434,7 +566,7 @@ def smoke(a) -> int:
 
 
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
-                agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0) -> None:
+                agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD") -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py)."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
@@ -453,9 +585,9 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                 continue
         t0 = time.time()
         try:
-            m, ls = lockstep.play_run(_Timed(env, step_timeout), seed, ascension=ascension, sims=sims,
-                                 agent_seed=[agent_seed, run_ix])
-            ev = {"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
+            m, ls = lockstep.play_run(_Timed(env, step_timeout, character), seed, ascension=ascension, sims=sims,
+                                 agent_seed=[agent_seed, run_ix], character=character)
+            ev = {"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
                   "agent_seed": ls.agent_seed, "assumed": len(ls.assumed)}
             if m.get("stale"):
@@ -485,10 +617,12 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
 class _Timed:
     """A GameEnv whose reset and step carry the play mode's step timeout."""
 
-    def __init__(self, env, timeout):
-        self.env, self.timeout = env, timeout
+    def __init__(self, env, timeout, character: str = "IRONCLAD"):
+        self.env, self.timeout, self.character = env, timeout, character
 
     def reset(self, *a, **k):
+        k.setdefault("character", self.character)
+        k.setdefault("extra_actions", True)  # play runs in lockstep with the extra actions on
         return self.env.reset(*a, timeout=self.timeout, **k)
 
     def step(self, a):
@@ -499,6 +633,9 @@ def play(a) -> int:
     """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator."""
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    import lockstep  # noqa: PLC0415
+
+    lockstep.require_character(a.character)  # the emulator side must be able to start it: exit before any game boots
     seeds = [f"A1S{i:04d}" for i in range(a.runs)]
     if a.seeds_file:  # a committed seed block (rl/gen0.py): the first --runs of it, in order
         doc = json.loads(Path(a.seeds_file).read_text(encoding="utf-8"))
@@ -509,7 +646,7 @@ def play(a) -> int:
     stop_at = time.time() + a.stop_after_h * 3600 if a.stop_after_h else 0.0
     live = open(out / "runs.jsonl", "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, list(range(a.runs))[w::a.procs], stop_at))
+                                       agent_seed, list(range(a.runs))[w::a.procs], stop_at, a.character))
              for w in range(a.procs)]
     t0 = time.time()
     for p in procs:
@@ -543,7 +680,7 @@ def play(a) -> int:
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
-    summary = {"agent_seed": agent_seed, "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+    summary = {"agent_seed": agent_seed, "character": a.character, "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / wall, 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -582,7 +719,7 @@ def _count(it) -> dict:
     return o
 
 
-def main() -> int:
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("mode", choices=["smoke", "bench", "record", "replay", "play"])
     ap.add_argument("--game", required=True)
@@ -600,9 +737,16 @@ def main() -> int:
                     help="simulations per combat decision, or a search config name (rl/search_configs.py)")
     ap.add_argument("--agent-seed", type=int, default=None, help="play: the agent's own seed (default: random, recorded); never derived from a game seed")
     ap.add_argument("--ascension", type=int, default=10)
+    ap.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     ap.add_argument("--step-timeout", type=float, default=180)
+    ap.add_argument("--extra-actions", action="store_true", help="record: record with the extra actions on (replay uses the stored flag)")
+    ap.add_argument("--max-runs", type=int, default=0, help="bench: stop after this many runs in all (0: run for --seconds)")
     ap.add_argument("--recycle", type=int, default=0, help="bench: restart each game after this many runs (0: never)")
-    a = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    a = parser().parse_args()
     return {"smoke": smoke, "bench": bench, "record": record, "replay": replay, "play": play}[a.mode](a)
 
 

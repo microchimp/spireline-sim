@@ -59,8 +59,10 @@ class Sts2RunEnv(gym.Env):
         max_episode_steps: int = RUN_MAX_EPISODE_STEPS,
         max_floors: int = 16,
         ascension: int = 0,
+        character: str = "IRONCLAD",
     ):
         super().__init__()
+        self._character = character  # the game's character id; the native run API starts Ironclad unless it exports run_reset_character
         self._seed = seed
         self._max_episode_steps = max_episode_steps
         self._max_floors = max_floors
@@ -89,12 +91,20 @@ class Sts2RunEnv(gym.Env):
         if self._run_handle is not None:
             native.run_destroy(self._run_handle)
         self._run_handle = native.run_create()
-        status = native.run_reset(
-            self._run_handle,
-            str(actual_seed),
-            self._run_obs_buf,
-            self._ascension,
-        )
+        if self._character != "IRONCLAD":
+            reset_as = getattr(native, "run_reset_character", None)
+            if reset_as is None:
+                raise NotImplementedError(
+                    f"the native run API has no character argument (Sts2Run_Reset): cannot start {self._character}",
+                )
+            status = reset_as(self._run_handle, str(actual_seed), self._run_obs_buf, self._ascension, self._character)
+        else:
+            status = native.run_reset(
+                self._run_handle,
+                str(actual_seed),
+                self._run_obs_buf,
+                self._ascension,
+            )
         if status != 0:
             raise RuntimeError(
                 f"Sts2Run_Reset failed with status {status} "

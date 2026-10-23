@@ -2260,12 +2260,20 @@ public static class RunMapGenerator
             int[] fresh = GenerateEventSequence(act.Act, rng, unlocks);
             if (index == current)
             {
+                // What the cursor has passed is not all on the screen. Slot 0 is the one the
+                // act's opening Ancient room used up, and the walk skips events that were
+                // disallowed when it came by; the player saw neither. Only the events the run
+                // actually met (VisitedEventIds) are kept, in their order; slot 0 and the rest
+                // are dealt afresh, and the cursor sits right after the kept ones.
                 int keep = Math.Min(state.EventSequenceIndex, act.Events.Length);
-                int[] prefix = act.Events[..keep];
+                int[] met = [.. act.Events[Math.Min(1, keep)..keep].Where(state.VisitedEventIds.Contains)];
+                int[] rest = [.. fresh.Where(e => !met.Contains(e))];
+                int opening = keep > 0 ? 1 : 0;
                 state.Acts[index] = act with
                 {
-                    Events = [.. prefix, .. fresh.Where(e => !prefix.Contains(e))],
+                    Events = [.. rest.Take(opening), .. met, .. rest.Skip(opening)],
                 };
+                state.EventSequenceIndex = opening + met.Length;
                 continue;
             }
 

@@ -168,7 +168,7 @@ def _init_worker() -> None:
 
 
 def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent_seed: int = AGENT_SEED,
-                 hook=None, agent=None, record: bool = False) -> dict:
+                 hook=None, agent=None, record: bool = False, character: str = "IRONCLAD") -> dict:
     """One whole run on the emulator under the agent: search_live in fights, the macro policy elsewhere.
 
     `sims` is a flat budget or a search config name (`search_configs`). `agent` is a `gen_loop.Agent` (none: generation 0,
@@ -199,7 +199,8 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
         from combat_tokens import encode  # noqa: PLC0415
 
         rec = gen_loop.RunRecorder(seed, agent.generation, rules.describe(), cfg.sims, cfg.c, ascension)
-    s = engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims))
+    s = engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims),
+                          **({} if character == "IRONCLAD" else {"character": character}))
     decisions = assumed = k = sims_spent = 0
     end = "?"
     try:
@@ -249,7 +250,8 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
         floor = int(s.info["floor"])
         row = {"seed": seed, "ix": ix, "win": end == "win", "floor": floor, "end": end, "decisions": decisions,
                "wall": round(time.perf_counter() - t0, 2), "ai_state_assumed": assumed, "crash": False,
-               "combat_decisions": k, "sims": sims_spent, "config": cfg.name, "generation": agent.generation}
+               "combat_decisions": k, "sims": sims_spent, "config": cfg.name, "generation": agent.generation,
+               "character": character}
         if rec is not None and end in ("win", "death"):
             row["_shard"] = {"record": rec.finish(s, k, won=end == "win"), "samples": rec.samples.arrays()}
         return row
@@ -257,17 +259,18 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
         s.close()
 
 
-def _run_safe(seed: str, ix: int, sims: int | str, ascension: int, agent=None, record: bool = False) -> dict:
+def _run_safe(seed: str, ix: int, sims: int | str, ascension: int, agent=None, record: bool = False,
+              character: str = "IRONCLAD") -> dict:
     t0 = time.perf_counter()
     try:
-        return play_emu_run(seed, ix, sims, ascension, agent=agent, record=record)
+        return play_emu_run(seed, ix, sims, ascension, agent=agent, record=record, character=character)
     except Exception as e:  # noqa: BLE001 -- an engine or agent defect is a crash of that run: a loss, reported
         return {"seed": seed, "ix": ix, "win": False, "floor": 0, "end": "crash", "decisions": 0, "wall": round(time.perf_counter() - t0, 2),
                 "ai_state_assumed": 0, "crash": True, "error": f"{type(e).__name__}: {e}"[:300]}
 
 
-def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascension: int = 10, block_min: float | None = None,
-              start_ix: int = 0, agent=None, record: bool = False) -> dict:
+def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascension: int = 10, character: str = "IRONCLAD",
+              block_min: float | None = None, start_ix: int = 0, agent=None, record: bool = False) -> dict:
     """Play the seeds on a spawn pool of `procs` single-emulator processes. With `block_min`, stop starting runs after that
     many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended to runs.jsonl.
     With `record`, the finished runs' records and combat samples go to `out/shards` (`gen_loop.ShardSink`), tagged with the
@@ -296,7 +299,8 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
         nxt = 0
         while nxt < len(seeds) or pending:
             while nxt < len(seeds) and len(pending) < procs and (deadline is None or time.time() < deadline):
-                pending.append(pool.apply_async(_run_safe, (seeds[nxt], start_ix + nxt, sims, ascension, agent, record)))
+                pending.append(pool.apply_async(_run_safe, (seeds[nxt], start_ix + nxt, sims, ascension, agent, record,
+                                                            character)))
                 nxt += 1
             if deadline is not None and time.time() >= deadline:
                 nxt = len(seeds)
@@ -316,13 +320,15 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
             time.sleep(0.5)
     wall = time.time() - t0
     shard_doc = sink.close() if sink is not None else None
-    summary = {"sims": sims, "procs": procs, "ascension": ascension, "agent_seed": AGENT_SEED, "wall_s": round(wall, 1),
+    summary = {"sims": sims, "procs": procs, "ascension": ascension, "character": character, "agent_seed": AGENT_SEED,
+               "wall_s": round(wall, 1),
                "config": cfg0.name if cfg0 else (sims if isinstance(sims, str) else f"flat-{sims}"), "agent": agent.describe(),
                **engine_block(rows), "decisions_per_s": round(sum(r["decisions"] for r in rows) / wall, 2) if wall else None}
     if shard_doc is not None:
         summary["shards"] = {"runs": shard_doc["runs"], "samples": shard_doc["samples"], "generation": shard_doc["generation"]}
     (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
-    (out / "result.json").write_text(json.dumps(result_json(rows, wall, agent.generation)), encoding="utf-8")
+    (out / "result.json").write_text(json.dumps({**result_json(rows, wall, agent.generation), "character": character}),
+                                     encoding="utf-8")
     return summary
 
 
@@ -435,12 +441,13 @@ def score_real(a: argparse.Namespace) -> int:
         env["SPIRELINE_GEN_DIR"] = str(a.gen_dir)  # search_configs adds the generation's prior to every search
     cmd = [sys.executable, str(ROOT / "referee" / "envproto.py"), "play", "--game", a.game, "--out", str(out), "--procs", str(a.procs),
            "--runs", str(a.runs), "--sims", a.config or str(a.sims), "--seeds-file", a.seeds_file, "--agent-seed", str(AGENT_SEED),
-           "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h)]
+           "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h), "--character", a.character]
     rc = subprocess.run(cmd, env=env, check=False).returncode
     rows = real_runs(out / "runs.jsonl") if (out / "runs.jsonl").exists() else []
     summ = json.loads((out / "summary.json").read_text(encoding="utf-8")) if (out / "summary.json").exists() else {}
     res = result_json(rows, float(summ.get("wall_s") or 0.0)) if rows else {"runs": 0}
     res["divergences"] = summ.get("diverged_decisions")
+    res["character"] = a.character
     (out / "result.json").write_text(json.dumps(res), encoding="utf-8")
     if a.emu_dir and rows:
         emu = [json.loads(x) for x in (Path(a.emu_dir) / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
@@ -451,7 +458,7 @@ def score_real(a: argparse.Namespace) -> int:
 # ------------------------------------------------------------------ command line
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("seeds")
@@ -466,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--config", help="a named search config (rl/search_configs.py), instead of --sims")
     e.add_argument("--procs", type=int, default=16)
     e.add_argument("--ascension", type=int, default=10)
+    e.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     e.add_argument("--block-min", type=float, default=None)
     e.add_argument("--out", required=True)
     e.add_argument("--lib", help="directory of the native library (STS2_LIB_PATH)")
@@ -512,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--sims", type=int, default=60)
     sc.add_argument("--config", help="a named search config (rl/search_configs.py), instead of --sims")
     sc.add_argument("--ascension", type=int, default=10)
+    sc.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     sc.add_argument("--stop-after-h", type=float, default=3.5)
     sc.add_argument("--lib")
     sc.add_argument("--emu-dir", help="the emulator baseline to pair with (its runs.jsonl)")
@@ -529,7 +538,16 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--emu", action="append", required=True, help="DIR:LABEL, e.g. out/emu60:60")
     r.add_argument("--real", required=True)
     r.add_argument("--out", required=True)
-    a = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    a = build_parser().parse_args(argv)
+    if a.cmd in ("score", "emu") and a.character != "IRONCLAD":
+        sys.path.insert(0, str(ROOT / "referee"))
+        import lockstep  # noqa: PLC0415
+
+        lockstep.require_character(a.character)  # exit at once, not as a crash row per run
     if a.cmd == "seeds":
         print(len(write_seed_file(a.name, a.n, a.out)), "seeds")
         return 0
@@ -554,8 +572,8 @@ def main(argv: list[str] | None = None) -> int:
         import gen_loop  # noqa: PLC0415
 
         agent = gen_loop.load_agent(a.gen_dir, a.agent_root) if (a.gen_dir or a.agent_root) else None
-        summ = run_block(seeds, a.config or a.sims, a.procs, Path(a.out), ascension=a.ascension, block_min=a.block_min,
-                         agent=agent, record=a.record)
+        summ = run_block(seeds, a.config or a.sims, a.procs, Path(a.out), ascension=a.ascension, character=a.character,
+                         block_min=a.block_min, agent=agent, record=a.record)
         if a.record and a.lab and a.shards_root:
             gen_loop.mark_ready(Path(a.lab), agent.generation if agent else 0, Path(a.shards_root), a.budget_runs,
                                 tsv=Path(a.agent_root) / "promotions.tsv" if a.agent_root else None)

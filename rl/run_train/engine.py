@@ -168,13 +168,14 @@ class CombatBudget:
         )
 
 
-def new_run_env(seed: str, ascension: int) -> Sts2RunEnv:
+def new_run_env(seed: str, ascension: int, character: str = "IRONCLAD") -> Sts2RunEnv:
     """Return a run env at `ascension` (run API 20), the level passed straight through.
 
     The run engine plays the game's 0-10 (`Ascension.MaxRunLevel`), A10's second boss on
     the last act included, and the env's `reset` raises for a level outside that range.
     """
-    return Sts2RunEnv(seed=seed, max_episode_steps=10**9, ascension=ascension)
+    return Sts2RunEnv(seed=seed, max_episode_steps=10**9, ascension=ascension,
+                      **({} if character == "IRONCLAD" else {"character": character}))
 
 
 # --------------------------------------------------------------------------------------
@@ -1005,13 +1006,15 @@ class RunSession:
         seed: str,
         ascension: int = 0,
         budget: CombatBudget | int = CombatBudget(120, 500),  # noqa: B008 -- frozen
+        character: str = "IRONCLAD",
     ):
         self.seed = seed
+        self.character = character
         self.ascension = ascension
         self.budget = CombatBudget.of(budget)
         self.stats = SessionStats()
         self.steps = 0
-        self.env = new_run_env(seed, ascension)
+        self.env = new_run_env(seed, ascension, character)
         self.env.reset()
         # What the engine does not export, kept per room visit (reset on every map move).
         self.visit = VisitTracker()
