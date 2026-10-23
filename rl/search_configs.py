@@ -14,6 +14,7 @@ is pure so it can be tested without native code. `position_of` reads them from a
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 KINDS = ("play", "target", "select")
@@ -78,8 +79,13 @@ class SearchConfig:
 
     def search_kwargs(self, pos: Position | None = None) -> dict:
         """Keyword arguments for `live_search.search_live` (add `seed`)."""
-        return {"max_sims": self.sims_for(pos), "min_child_sims": self.min_child_sims, "c": self.c,
-                "confirm_pairs": self.confirm_pairs, "time_budget_s": self.time_budget_s, "resample": True}
+        kw = {"max_sims": self.sims_for(pos), "min_child_sims": self.min_child_sims, "c": self.c,
+              "confirm_pairs": self.confirm_pairs, "time_budget_s": self.time_budget_s, "resample": True}
+        if os.environ.get("SPIRELINE_GEN_DIR"):  # score-real's lockstep player: the promoted generation's combat prior
+            import gen_loop  # noqa: PLC0415
+
+            kw.update(gen_loop.active_agent_extra())
+        return kw
 
 
 def flat(sims: int, name: str | None = None, **kw) -> SearchConfig:

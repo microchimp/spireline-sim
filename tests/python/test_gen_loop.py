@@ -1,0 +1,403 @@
+"""The generation loop (rl/gen_loop.py, rl/gen0.py train and promote): shards, training, the agent's prior, the E1 block,
+the promotion maths and the lab's train markers. Tests that need the native library skip without it."""
+
+import json
+import math
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[2]
+for _p in (ROOT / "rl", ROOT / "src", ROOT):
+    sys.path.insert(0, str(_p))
+os.environ.setdefault("STS2_LIB_PATH", str(ROOT / "out"))
+os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
+
+import gen0  # noqa: E402
+import gen_loop  # noqa: E402
+
+HAVE_NATIVE = (ROOT / "out" / "Sts2Emulator.dll").exists() or bool(os.environ.get("STS2_LIB_PATH") and (Path(os.environ["STS2_LIB_PATH"]) / "Sts2Emulator.dll").exists())
+
+
+class _Tok:
+    """A stand-in for combat_tokens.Tokens."""
+
+    def __init__(self, n: int, rng: np.random.Generator) -> None:
+        from combat_tokens import N_FEATURES, TYPE_BUFF, TYPE_ENEMY, TYPE_GLOBAL, TYPE_HAND, TYPE_RELIC
+
+        pool = np.array([TYPE_ENEMY, TYPE_BUFF, TYPE_RELIC])
+        # token 0 is the global token, tokens 1..4 are the four legal actions (hand cards), then the rest of the state
+        self.types = np.concatenate([[TYPE_GLOBAL], [TYPE_HAND] * 4, pool[rng.integers(0, len(pool), n - 5)]]).astype(np.int64)
+        self.ids = rng.integers(0, 4, n).astype(np.int64)
+        self.ids[0] = 0
+        self.owners = rng.integers(0, 2, n).astype(np.int64)
+        self.feats = (rng.normal(size=(n, N_FEATURES)) * 0.1).astype(np.float32)
+
+    def __len__(self) -> int:
+        return len(self.types)
+
+
+def fake_run_arrays(rng: np.random.Generator, n_fights: int = 3, per_fight: int = 4) -> dict:
+    s = gen_loop.CombatSamples()
+    for f in range(n_fights):
+        for _ in range(per_fight):
+            visits = np.zeros(32, np.float32)
+            legal = np.zeros(32, np.int8)
+            legal[:4] = 1
+            visits[:4] = rng.integers(1, 20, 4)
+            q = np.full(32, np.nan, np.float32)
+            q[:4] = rng.normal(size=4)
+            s.add(_Tok(int(rng.integers(8, 14)), rng), visits, q, legal, encounter=f, deck=10, relics=1, sims=30)
+        s.end_fight(end_hp=40 + f, max_hp=80)
+    return s.arrays()
+
+
+def fake_record(seed: str, generation: int) -> dict:
+    return {"seed": seed, "generation": generation}
+
+
+class ShardTests(unittest.TestCase):
+    def test_part_round_trip_and_generation_tag(self):
+        rng = np.random.default_rng(1)
+        runs = [("AAAAAAAAAA", fake_run_arrays(rng)), ("BBBBBBBBBB", None), ("CCCCCCCCCC", fake_run_arrays(rng, 2, 3))]
+        with tempfile.TemporaryDirectory() as d:
+            n = gen_loop.write_part(Path(d) / "p.npz", runs, generation=3)
+            back = gen_loop.read_part(Path(d) / "p.npz")
+        self.assertEqual(n, 12 + 6)
+        self.assertEqual(int(back["generation"][0]), 3)
+        self.assertEqual(back["seeds"].tolist(), ["AAAAAAAAAA", "BBBBBBBBBB", "CCCCCCCCCC"])
+        np.testing.assert_array_equal(back["visits"][:12], runs[0][1]["visits"])
+        np.testing.assert_array_equal(back["types"], np.concatenate([runs[0][1]["types"], runs[2][1]["types"]]))
+        # `fights` is the run's index in the part, so train_combat's split "by fight" is a split by run
+        self.assertEqual(sorted(set(back["fights"].tolist())), [0, 2])
+        self.assertEqual(int(back["lengths"].sum()), back["types"].size)
+        self.assertTrue(np.isnan(back["returns"]).all())
+
+    def test_sink_writes_manifest_tagged_with_the_generation_and_refuses_another(self):
+        rng = np.random.default_rng(2)
+        with tempfile.TemporaryDirectory() as d:
+            sink = gen_loop.ShardSink(Path(d), 2, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=2)
+            sink.add(fake_record("AAAAAAAAAA", 2), fake_run_arrays(rng))
+            sink.add(fake_record("BBBBBBBBBB", 2), fake_run_arrays(rng))
+            sink.add(fake_record("CCCCCCCCCC", 2), None)
+            with self.assertRaises(AssertionError):
+                sink.add(fake_record("DDDDDDDDDD", 1), None)
+            man = sink.close()
+            found = gen_loop.find_manifests(Path(d))
+            self.assertEqual(len(found), 1)
+            self.assertEqual(int(found[0][1]["generation"]), 2)
+            self.assertEqual(gen_loop.runs_in_generation(Path(d), 2), 3)
+            self.assertEqual(gen_loop.runs_in_generation(Path(d), 1), 0)
+            self.assertEqual(man["runs"], 3)
+            self.assertEqual(len(man["combat_parts"]), 2)
+            self.assertEqual(man["samples"], 24)
+            self.assertEqual(len(gen_loop.window_manifests(Path(d), 4)), 1)  # generations 2..4
+            self.assertEqual(len(gen_loop.window_manifests(Path(d), 5)), 0)  # 3..5 has no generation 2
+
+    def test_root_targets_share_merged_actions_and_sum_targets(self):
+        ch = [SimpleNamespace(action=1, merged_actions=[2], visits=10, value_mean=-4.0),
+              SimpleNamespace(action=5, merged_actions=[], visits=6, value_mean=-2.0),
+              SimpleNamespace(action=5, merged_actions=[], visits=2, value_mean=-10.0)]
+        v, q = gen_loop.root_targets(ch, 8)
+        self.assertEqual(v.tolist(), [0, 5, 5, 0, 0, 8, 0, 0])
+        self.assertAlmostEqual(float(q[1]), -4.0)
+        self.assertAlmostEqual(float(q[5]), (6 * -2.0 + 2 * -10.0) / 8)
+        self.assertTrue(np.isnan(q[0]))
+
+
+_FIXTURE: dict = {}
+
+
+def trained_candidate() -> tuple[Path, Path, Path]:
+    """Two generations of tiny synthetic shards, and generation 2's candidate trained from them (once per test run)."""
+    if not _FIXTURE:
+        import atexit
+
+        tmp = tempfile.TemporaryDirectory()
+        atexit.register(tmp.cleanup)
+        root = Path(tmp.name)
+        rng = np.random.default_rng(3)
+        for g in (0, 1):
+            sink = gen_loop.ShardSink(root / "runs" / f"job{g}", g, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=3)
+            for i in range(6):
+                sink.add(fake_record(f"S{g}{i:08d}"[:10], g), fake_run_arrays(rng, 3, 5))
+            sink.close()
+        cand = gen_loop.train_generation(1, root / "runs", root / "agent", device="cpu", epochs=2, max_fights=20, threads=2,
+                                         vrun=False)
+        _FIXTURE.update(runs=root / "runs", agents=root / "agent", cand=cand)
+    return _FIXTURE["runs"], _FIXTURE["agents"], _FIXTURE["cand"]
+
+
+class TrainTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.runs, cls.agents, cls.cand = trained_candidate()
+
+    def test_train_writes_checkpoints_and_train_json(self):
+        c = self.cand
+        self.assertEqual(c, self.agents / "gen2" / "candidate")
+        for name in ("combat_policy.pt", "combat_net.pt", "model.json", "agent.json", "train.json"):
+            self.assertTrue((c / name).is_file(), name)
+        t = json.loads((c / "train.json").read_text())
+        self.assertEqual(t["candidate_generation"], 2)
+        self.assertEqual(t["fights_kept"], 20)  # 12 runs x 3 fights = 36 available, capped
+        self.assertEqual(t["fights_available"], 36)
+        self.assertEqual(len(t["combat"]["curves"]), 2)
+        self.assertGreater(t["combat"]["cpu_min"], 0)
+        self.assertEqual(json.loads((c / "agent.json").read_text())["generation"], 2)
+
+    def test_onnx_is_written_and_read_back_or_the_reason_is_recorded(self):
+        c = self.cand
+        onnx = json.loads((c / "train.json").read_text())["onnx"]["combat_net"]
+        if onnx["ok"]:  # an environment with the onnx package: the file exists and was read back
+            self.assertTrue((c / "combat_net.onnx").is_file())
+            self.assertIn("checked_with", onnx)
+        else:  # offline without it (this PC): torch's exporter itself stops, and train.json says why
+            self.assertIn("onnx", onnx["reason"])
+            self.assertFalse((c / "combat_net.onnx").exists())
+
+    def test_onnx_reader_parses_a_model_proto(self):
+        def ld(no, payload):
+            return bytes([(no << 3) | 2, len(payload)]) + payload
+
+        node = ld(4, b"Gemm")
+        graph = ld(1, node) + ld(1, node) + ld(5, b"\x00") + ld(11, ld(1, b"x")) + ld(12, ld(1, b"y"))
+        model = bytes([(1 << 3) | 0, 8]) + ld(7, graph)
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "m.onnx").write_bytes(model)
+            info = gen_loop.onnx_structure(Path(d) / "m.onnx")
+        self.assertEqual((info["nodes"], info["ops"], info["inputs"], info["outputs"], info["initializers"], info["ir_version"]),
+                         (2, ["Gemm"], ["x"], ["y"], 1, 8))
+
+    def test_exported_prior_is_found_and_agent_carries_it(self):
+        import combat_prior
+
+        champ = combat_prior.find(self.cand)
+        self.assertIsNotNone(champ)
+        self.assertFalse(champ.probe)
+        agent = gen_loop.load_agent(self.cand)
+        self.assertEqual(agent.generation, 2)
+        extra = agent.search_extra()
+        self.assertIsInstance(extra["prior_fn"], combat_prior.LivePrior)
+        self.assertEqual(extra["prior_min_visits"], 3)
+        self.assertEqual(gen_loop.Agent().search_extra(), {})  # generation 0 has no prior
+
+    def test_window_keeps_three_generations(self):
+        data = gen_loop.build_training_set(gen_loop.window_manifests(self.runs, 1), max_fights=1000)
+        self.assertEqual(int(data["_fights_available"][0]), 36)
+        self.assertEqual(sorted(g for g, _ in data["_samples_by_generation"].tolist()), [0, 1])
+        self.assertEqual(len(set(data["fights"].tolist())), 12)  # 12 distinct run ids across both generations
+
+
+@unittest.skipUnless(HAVE_NATIVE, "needs the native library")
+class SearchUsesThePriorTests(unittest.TestCase):
+    def test_play_emu_run_hands_the_prior_to_the_search(self):
+        import live_search
+
+        cand = trained_candidate()[2]
+        agent = gen_loop.load_agent(cand)
+        seen = {}
+
+        class Stop(Exception):
+            pass
+
+        def fake(handle, **kw):
+            seen.update(kw)
+            raise Stop
+
+        with mock.patch.object(live_search, "search_live", fake):
+            row = gen0._run_safe("SJ9DHBJHPE", 0, "a3-v1", 10, agent)
+        self.assertEqual(row["end"], "crash")
+        self.assertIn("Stop", row["error"])
+        self.assertIsNotNone(seen.get("prior_fn"))
+        self.assertEqual(seen["prior_min_visits"], 3)
+        self.assertAlmostEqual(seen["c_puct"], 0.2)
+
+    def test_a_real_search_asks_the_prior(self):
+        import live_search
+        from run_train import engine
+
+        cand = trained_candidate()[2]
+        extra = gen_loop.load_agent(cand).search_extra()
+        real, calls = extra["prior_fn"], []
+
+        def counted(handle, legal):
+            calls.append(len(legal))
+            return real(handle, legal)
+
+        extra["prior_fn"] = counted
+        s = engine.RunSession("SJ9DHBJHPE", 10, engine.CombatBudget(30, 30))
+        try:
+            rules = gen_loop.Agent().macro_policy()
+            rng = np.random.default_rng(0)
+            while s.phase != engine.rc.PHASE_COMBAT or s.decision() is not None:
+                d = s.decision()
+                s.apply(d.options[rules.pick(s.view(), d, rng).index])
+            root = s.combat(fork_combat=True).combat_fork(None)
+            try:
+                res = live_search.search_live(root.handle, seed=1, max_sims=12, min_child_sims=1, c=0.2, confirm_pairs=0, **extra)
+            finally:
+                root.close() if hasattr(root, "close") else None
+        finally:
+            s.close()
+        self.assertGreater(len(calls), 0)
+        self.assertGreater(res.sims, 0)
+
+    def test_search_config_adds_the_prior_when_the_environment_names_a_generation(self):
+        import search_configs
+
+        cfg = search_configs.get("a3-v1")
+        self.assertNotIn("prior_fn", cfg.search_kwargs())
+        with mock.patch.dict(os.environ, {"SPIRELINE_GEN_DIR": str(trained_candidate()[2])}):
+            self.assertIn("prior_fn", cfg.search_kwargs())
+
+
+class E1BlockTests(unittest.TestCase):
+    def test_e1_file_follows_the_rule_and_overlaps_neither_e0_nor_a_stream(self):
+        f = ROOT / "referee" / "seeds" / "E1-2026-10-23.json"
+        seeds = gen0.load_seeds(f)
+        self.assertEqual(seeds, gen0.e_block("E1-2026-10-23", 2000))
+        self.assertEqual(len(seeds), 2000)
+        e0 = gen0.load_seeds(ROOT / "referee" / "seeds" / "E0-2026-10-23.json")
+        self.assertFalse(set(seeds) & set(e0))
+        for job in ("selfplay", "selfplay-1", "selfplay-2026", "SP-selfplay"):
+            self.assertFalse(set(seeds) & set(gen0.stream_seeds(job, 20000)), job)
+        gen_loop.check_disjoint(seeds, {"E0": e0})
+        with self.assertRaises(ValueError):
+            gen_loop.check_disjoint(seeds, {"copy of E1": seeds[:5]})
+
+    def test_known_seed_sets_read_the_other_blocks_and_the_lab_streams(self):
+        with tempfile.TemporaryDirectory() as d:
+            runs = Path(d) / "runs" / "selfplay-1"
+            runs.mkdir(parents=True)
+            (runs / "runs.jsonl").write_text(json.dumps({"seed": "ZZZZZZZZZZ"}) + "\n", encoding="utf-8")
+            sets = gen_loop.known_seed_sets(ROOT / "referee" / "seeds", Path(d) / "runs", "E1-2026-10-23")
+            self.assertIn("E0-2026-10-23", sets)
+            self.assertNotIn("E1-2026-10-23", sets)
+            self.assertEqual(sets["self-play runs"], ["ZZZZZZZZZZ"])
+
+
+class PromotionMathTests(unittest.TestCase):
+    def test_exact_mcnemar_one_sided(self):
+        self.assertAlmostEqual(gen_loop.mcnemar_exact_one_sided(10, 0), 2 ** -10)
+        self.assertAlmostEqual(gen_loop.mcnemar_exact_one_sided(7, 1), 9 / 256)
+        self.assertAlmostEqual(gen_loop.mcnemar_exact_one_sided(3, 3), 42 / 64)
+        self.assertEqual(gen_loop.mcnemar_exact_one_sided(0, 0), 1.0)
+        self.assertAlmostEqual(gen_loop.mcnemar_exact_one_sided(0, 5), 1.0)
+
+    def test_bootstrap_lower_bound(self):
+        r = gen_loop.cluster_bootstrap_lower([1.0] * 50, b=2000)
+        self.assertEqual(r["lower"], 1.0)
+        self.assertLess(r["p"], 0.01)
+        x = [1.0] * 90 + [0.0] * 10  # mean .9, se = sqrt(.9 * .1 / 100) = .03; the 1% quantile is about .9 - 2.326 * .03
+        r = gen_loop.cluster_bootstrap_lower(x, b=20000)
+        self.assertAlmostEqual(r["mean"], 0.9)
+        self.assertAlmostEqual(r["lower"], 0.9 - 2.326 * 0.03, delta=0.02)
+        sym = [1.0, -1.0] * 100
+        r = gen_loop.cluster_bootstrap_lower(sym, b=4000)
+        self.assertLess(r["lower"], 0)
+        self.assertGreater(r["p"], 0.3)
+        self.assertTrue(math.isnan(gen_loop.cluster_bootstrap_lower([])["mean"]))
+
+    def test_boss_kill_is_a_win_or_a_run_past_floor_17(self):
+        self.assertFalse(gen_loop.boss_kill({"win": False, "floor": 17}))
+        self.assertTrue(gen_loop.boss_kill({"win": False, "floor": 18}))
+        self.assertTrue(gen_loop.boss_kill({"win": True, "floor": 53}))
+
+    def test_decision_rule_and_the_ten_percent_wins_clause(self):
+        good_f = {"lower": 0.2}
+        bad_f = {"lower": -0.1}
+        good_b = {"p": 0.001, "b": 20, "c": 2}
+        bad_b = {"p": 0.2, "b": 8, "c": 5}
+        wins_ok = {"p": 0.004, "b": 15, "c": 1}
+        wins_bad = {"p": 0.3, "b": 5, "c": 4}
+        d = gen_loop.decide(good_f, good_b, wins_bad, 0.05, 0.02)  # neither arm at 10%: wins do not count
+        self.assertTrue(d["promote"])
+        self.assertFalse(d["wins_co_primary"])
+        d = gen_loop.decide(good_f, good_b, wins_bad, 0.12, 0.05)  # only one arm at 10%: still off
+        self.assertTrue(d["promote"])
+        d = gen_loop.decide(good_f, good_b, wins_bad, 0.12, 0.10)  # both arms at 10%: wins must pass
+        self.assertTrue(d["wins_co_primary"])
+        self.assertFalse(d["promote"])
+        self.assertTrue(gen_loop.decide(good_f, good_b, wins_ok, 0.2, 0.1)["promote"])
+        self.assertFalse(gen_loop.decide(bad_f, good_b, wins_ok, 0.2, 0.1)["promote"])
+        self.assertFalse(gen_loop.decide(good_f, bad_b, wins_ok, 0.0, 0.0)["promote"])
+        # a p below alpha with the baseline ahead is not a promotion
+        self.assertFalse(gen_loop.decide(good_f, {"p": 0.001, "b": 2, "c": 20}, wins_ok, 0.0, 0.0)["promote"])
+
+    def test_compare_arms_pairs_on_seed_and_decides(self):
+        rng = np.random.default_rng(4)
+        seeds = [f"S{i:09d}" for i in range(400)]
+        base = [{"seed": s, "floor": int(rng.integers(3, 17)), "win": False} for s in seeds]
+        cand = [{"seed": s, "floor": min(17, b["floor"] + int(rng.integers(0, 3))), "win": False} for s, b in zip(seeds, base)]
+        for r in cand[:60]:
+            r["floor"] = 18  # killed the boss
+        res = gen_loop.compare_arms(cand, base, boot=2000)
+        self.assertEqual(res["paired_seeds"], 400)
+        self.assertGreater(res["floor"]["lower"], 0)
+        self.assertEqual(res["boss_kill"]["c"], 0)
+        self.assertGreaterEqual(res["boss_kill"]["b"], 55)
+        self.assertTrue(res["decision"]["promote"])
+        self.assertFalse(res["decision"]["wins_co_primary"])
+        same = gen_loop.compare_arms(base, base, boot=500)
+        self.assertFalse(same["decision"]["promote"])
+        self.assertEqual(same["floor"]["mean"], 0.0)
+
+
+class LabMarkerTests(unittest.TestCase):
+    def _shards(self, root: Path, gen: int, runs: int):
+        sink = gen_loop.ShardSink(root / f"job-g{gen}-{runs}", gen, config="a3-v1", base_sims=30, ascension=10, agent={})
+        for i in range(runs):
+            sink.add(fake_record(f"R{gen}{i:08d}"[:10], gen), None)
+        sink.close()
+
+    def test_ready_markers_come_lowest_generation_first_and_skip_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = Path(d)
+            for n in ("ready-10", "ready-2", "done-1", "ready-x", "ready-3"):
+                (t / n).write_text("x")
+            self.assertEqual([g for g, _ in gen_loop.ready_markers(t)], [2, 3, 10])
+            self.assertEqual(gen_loop.ready_markers(t / "nope"), [])
+            from tools.lab import jobs
+
+            self.assertEqual(jobs.train_markers(Path(d).parent / "none"), [])
+
+    def test_marker_is_written_when_the_budget_is_spent_and_only_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            lab, runs = Path(d) / "lab", Path(d) / "runs"
+            self._shards(runs, 1, 3)
+            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5))
+            self.assertFalse((lab / "train" / "ready-1").exists())
+            self._shards(runs, 1, 2)
+            self._shards(runs, 0, 9)  # another generation's runs do not count
+            p = gen_loop.mark_ready(lab, 1, runs, budget=5)
+            self.assertEqual(p, lab / "train" / "ready-1")
+            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5))
+            (lab / "train" / "ready-1").rename(lab / "train" / "done-1")  # what the lab does after the job
+            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5))
+            from tools.lab import jobs
+
+            self.assertEqual(jobs.train_markers(lab), [])
+
+    def test_train_command_takes_the_marker_and_needs_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker_dir = Path(d) / "train"
+            rc = gen0.main(["train", "--marker-dir", str(marker_dir), "--shards-root", d, "--agent-root", d])
+            self.assertEqual(rc, 2)
+            marker_dir.mkdir()
+            (marker_dir / "ready-7").write_text("x")
+            with mock.patch.object(gen_loop, "train_generation", return_value=Path(d) / "gen8" / "candidate") as tg:
+                rc = gen0.main(["train", "--marker-dir", str(marker_dir), "--shards-root", d, "--agent-root", d])
+            self.assertEqual(rc, 0)
+            self.assertEqual(tg.call_args[0][0], 7)  # the marker's generation
+            self.assertTrue((marker_dir / "ready-7").exists())  # the lab consumes it when the command succeeds
+
+
+if __name__ == "__main__":
+    unittest.main()

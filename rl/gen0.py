@@ -168,26 +168,37 @@ def _init_worker() -> None:
 
 
 def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent_seed: int = AGENT_SEED,
-                 hook=None) -> dict:
-    """One whole run on the emulator under generation 0: search_live in fights, the rules policy elsewhere.
+                 hook=None, agent=None, record: bool = False) -> dict:
+    """One whole run on the emulator under the agent: search_live in fights, the macro policy elsewhere.
 
-    `sims` is a flat budget or a search config name (`search_configs`). `hook(k, root, session, position)` is called
-    at every combat decision k (before its search, on the oracle root it must only fork); a true return ends the run
-    there ("hooked"). The hook never touches the agent's random streams, so the run replays exactly.
+    `sims` is a flat budget or a search config name (`search_configs`). `agent` is a `gen_loop.Agent` (none: generation 0,
+    no prior, the rules policy). With a prior the search is PUCT over the prior's probabilities; the agent's random
+    streams are the same either way. `hook(k, root, session, position)` is called at every combat decision k (before its
+    search, on the oracle root it must only fork); a true return ends the run there ("hooked"). The hook never touches the
+    agent's random streams, so the run replays exactly. With `record`, a finished run also returns its RunRecord and its
+    combat samples under `_shard` (`gen_loop.RunRecorder`); recording only reads the position, so the run is unchanged.
     """
     import numpy as np  # noqa: PLC0415
 
     _setup()
+    import gen_loop  # noqa: PLC0415
     import live_search  # noqa: PLC0415
     import search_configs  # noqa: PLC0415
-    from run_train import engine, selfplay  # noqa: PLC0415
+    from run_train import engine  # noqa: PLC0415
     from sts2_gym import native  # noqa: PLC0415
 
     t0 = time.perf_counter()
     rng = np.random.default_rng([agent_seed, ix])
     explore = np.random.default_rng([agent_seed, ix, 1])
     cfg = search_configs.get(sims) if isinstance(sims, str) else search_configs.flat(int(sims))
-    rules = selfplay.RulesPlayer()
+    agent = agent or gen_loop.Agent()
+    extra = agent.search_extra()
+    rules = agent.macro_policy()
+    rec = None
+    if record:
+        from combat_tokens import encode  # noqa: PLC0415
+
+        rec = gen_loop.RunRecorder(seed, agent.generation, rules.describe(), cfg.sims, cfg.c, ascension)
     s = engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims))
     decisions = assumed = k = sims_spent = 0
     end = "?"
@@ -198,14 +209,21 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 end = "timeout"
                 break
             d = s.decision()
+            if rec is not None and rec.fight is not None and (d is not None or s.phase != engine.rc.PHASE_COMBAT):
+                rec.close_fight(s, won=d is not None or s.won)  # the fight ended: the run goes on, or it ended in a win/death
             if d is None and s.phase != engine.rc.PHASE_COMBAT:
                 end = "win" if s.won else "death"
                 break
             if d is not None:
                 view = s.view()
-                s.apply(d.options[rules.pick(view, d, explore).index])
+                pick = rules.pick(view, d, explore)
+                if rec is not None:
+                    rec.decision(view, d, pick)
+                s.apply(d.options[pick.index])
                 decisions += 1
                 continue
+            if rec is not None and rec.fight is None:
+                rec.open_fight(s, s.combat())
             root = s.combat(fork_combat=True).combat_fork(None)
             try:
                 pos = search_configs.position_of(root, s.info) if (cfg.schedule or hook) else None
@@ -213,8 +231,13 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                     end = "hooked"
                     break
                 k += 1
-                res = live_search.search_live(root.handle, seed=int(rng.integers(1 << 30)), **cfg.search_kwargs(pos))
+                tokens = encode(root.handle, root.obs, root.encounter_id, probe=False) if rec is not None else None
+                kw = cfg.search_kwargs(pos)
+                kw.update(extra)
+                res = live_search.search_live(root.handle, seed=int(rng.integers(1 << 30)), **kw)
                 sims_spent += res.sims
+                if rec is not None:
+                    rec.sample(root, res, tokens)
             finally:
                 native.destroy(root.handle) if not hasattr(root, "close") else root.close()
             assumed += bool(res.ai_state_assumed)
@@ -224,26 +247,43 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 raise RuntimeError(f"combat action refused (status {st})")
             decisions += 1
         floor = int(s.info["floor"])
-        return {"seed": seed, "ix": ix, "win": end == "win", "floor": floor, "end": end, "decisions": decisions,
-                "wall": round(time.perf_counter() - t0, 2), "ai_state_assumed": assumed, "crash": False,
-                "combat_decisions": k, "sims": sims_spent, "config": cfg.name}
+        row = {"seed": seed, "ix": ix, "win": end == "win", "floor": floor, "end": end, "decisions": decisions,
+               "wall": round(time.perf_counter() - t0, 2), "ai_state_assumed": assumed, "crash": False,
+               "combat_decisions": k, "sims": sims_spent, "config": cfg.name, "generation": agent.generation}
+        if rec is not None and end in ("win", "death"):
+            row["_shard"] = {"record": rec.finish(s, k, won=end == "win"), "samples": rec.samples.arrays()}
+        return row
     finally:
         s.close()
 
 
-def _run_safe(seed: str, ix: int, sims: int | str, ascension: int) -> dict:
+def _run_safe(seed: str, ix: int, sims: int | str, ascension: int, agent=None, record: bool = False) -> dict:
     t0 = time.perf_counter()
     try:
-        return play_emu_run(seed, ix, sims, ascension)
+        return play_emu_run(seed, ix, sims, ascension, agent=agent, record=record)
     except Exception as e:  # noqa: BLE001 -- an engine or agent defect is a crash of that run: a loss, reported
         return {"seed": seed, "ix": ix, "win": False, "floor": 0, "end": "crash", "decisions": 0, "wall": round(time.perf_counter() - t0, 2),
                 "ai_state_assumed": 0, "crash": True, "error": f"{type(e).__name__}: {e}"[:300]}
 
 
 def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascension: int = 10, block_min: float | None = None,
-              start_ix: int = 0) -> dict:
+              start_ix: int = 0, agent=None, record: bool = False) -> dict:
     """Play the seeds on a spawn pool of `procs` single-emulator processes. With `block_min`, stop starting runs after that
-    many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended to runs.jsonl."""
+    many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended to runs.jsonl.
+    With `record`, the finished runs' records and combat samples go to `out/shards` (`gen_loop.ShardSink`), tagged with the
+    agent's generation."""
+    _setup()
+    import gen_loop  # noqa: PLC0415
+
+    agent = agent or gen_loop.Agent()
+    cfg0 = None
+    sink = None
+    if record:
+        import search_configs  # noqa: PLC0415
+
+        cfg0 = search_configs.get(sims) if isinstance(sims, str) else search_configs.flat(int(sims))
+        sink = gen_loop.ShardSink(out, agent.generation, config=cfg0.name, base_sims=cfg0.sims, ascension=ascension,
+                                  agent=agent.describe())
     out.mkdir(parents=True, exist_ok=True)
     ctx = mp.get_context("spawn")
     rows: list[dict] = []
@@ -256,7 +296,7 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
         nxt = 0
         while nxt < len(seeds) or pending:
             while nxt < len(seeds) and len(pending) < procs and (deadline is None or time.time() < deadline):
-                pending.append(pool.apply_async(_run_safe, (seeds[nxt], start_ix + nxt, sims, ascension)))
+                pending.append(pool.apply_async(_run_safe, (seeds[nxt], start_ix + nxt, sims, ascension, agent, record)))
                 nxt += 1
             if deadline is not None and time.time() >= deadline:
                 nxt = len(seeds)
@@ -264,6 +304,9 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
             for p in pending:
                 if p.ready():
                     r = p.get()
+                    shard = r.pop("_shard", None)
+                    if sink is not None and shard is not None:
+                        sink.add(shard["record"], shard["samples"])
                     rows.append(r)
                     fh.write(json.dumps(r) + "\n")
                     fh.flush()
@@ -272,10 +315,14 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
             pending = still
             time.sleep(0.5)
     wall = time.time() - t0
+    shard_doc = sink.close() if sink is not None else None
     summary = {"sims": sims, "procs": procs, "ascension": ascension, "agent_seed": AGENT_SEED, "wall_s": round(wall, 1),
+               "config": cfg0.name if cfg0 else (sims if isinstance(sims, str) else f"flat-{sims}"), "agent": agent.describe(),
                **engine_block(rows), "decisions_per_s": round(sum(r["decisions"] for r in rows) / wall, 2) if wall else None}
+    if shard_doc is not None:
+        summary["shards"] = {"runs": shard_doc["runs"], "samples": shard_doc["samples"], "generation": shard_doc["generation"]}
     (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
-    (out / "result.json").write_text(json.dumps(result_json(rows, wall)), encoding="utf-8")
+    (out / "result.json").write_text(json.dumps(result_json(rows, wall, agent.generation)), encoding="utf-8")
     return summary
 
 
@@ -329,6 +376,47 @@ def bench_cmd(a: argparse.Namespace) -> int:
     return rc if res else (rc or 1)
 
 
+def train_cmd(a: argparse.Namespace) -> int:
+    """`train --gen N`, or with --marker-dir the lowest LAB/train/ready-<gen> marker (the lab consumes the marker when the
+    command succeeds). Writes AGENT/gen<N+1>/candidate; with --promote then plays the promotion block."""
+    _setup()
+    import gen_loop  # noqa: PLC0415
+
+    gen = a.gen
+    if a.marker_dir:
+        marks = gen_loop.ready_markers(Path(a.marker_dir))
+        if not marks:
+            print("no ready-<gen> marker", file=sys.stderr)
+            return 2
+        gen = marks[0][0]
+    if gen is None:
+        print("--gen or --marker-dir is needed", file=sys.stderr)
+        return 2
+    cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
+                                     max_fights=a.max_fights, threads=a.threads, vrun=not a.no_vrun)
+    print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": gen + 1}))
+    if a.promote:
+        if not (a.emu_python and a.seeds_file):
+            print("--promote needs --emu-python and --seeds-file", file=sys.stderr)
+            return 2
+        return gen_loop.run_promote_subprocess(a.emu_python, cand, None, Path(a.seeds_file), Path(a.agent_root), a.procs, a.lib,
+                                               Path(a.lab) if a.lab else None)
+    return 0
+
+
+def promote_cmd(a: argparse.Namespace) -> int:
+    if a.lib:
+        os.environ["STS2_LIB_PATH"] = a.lib
+    _setup()
+    import gen_loop  # noqa: PLC0415
+
+    doc = gen_loop.promote(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
+                           procs=a.procs, config=a.config, ascension=a.ascension, lab=Path(a.lab) if a.lab else None,
+                           lab_runs=Path(a.lab_runs) if a.lab_runs else None)
+    print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins")}, indent=1))
+    return 0
+
+
 def score_real(a: argparse.Namespace) -> int:
     """The real-game block: envproto `play` (lockstep on) over the seed block, then result.json with the yield keys."""
     import subprocess  # noqa: PLC0415
@@ -339,6 +427,8 @@ def score_real(a: argparse.Namespace) -> int:
     if a.lib:
         env["STS2_LIB_PATH"] = a.lib
     env.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
+    if getattr(a, "gen_dir", None):
+        env["SPIRELINE_GEN_DIR"] = str(a.gen_dir)  # search_configs adds the generation's prior to every search
     cmd = [sys.executable, str(ROOT / "referee" / "envproto.py"), "play", "--game", a.game, "--out", str(out), "--procs", str(a.procs),
            "--runs", str(a.runs), "--sims", a.config or str(a.sims), "--seeds-file", a.seeds_file, "--agent-seed", str(AGENT_SEED),
            "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h)]
@@ -375,6 +465,39 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--block-min", type=float, default=None)
     e.add_argument("--out", required=True)
     e.add_argument("--lib", help="directory of the native library (STS2_LIB_PATH)")
+    e.add_argument("--gen-dir", help="a generation directory (or a current.json) whose combat prior and macro policy play")
+    e.add_argument("--agent-root", help="the agent folder: its current.json names the promoted generation when --gen-dir is absent")
+    e.add_argument("--record", action="store_true", help="write the run records and combat samples to OUT/shards, tagged with the generation")
+    e.add_argument("--lab", help="the lab folder: write LAB/train/ready-<gen> once the generation's self-play budget is spent")
+    e.add_argument("--shards-root", help="where the lab's job directories (with shards) are, to count the budget")
+    e.add_argument("--budget-runs", type=int, default=2000)
+    t = sub.add_parser("train", help="train generation N's candidate from the last 3 generations' shards")
+    t.add_argument("--gen", type=int)
+    t.add_argument("--marker-dir", help="LAB/train: take the lowest ready-<gen> marker instead of --gen")
+    t.add_argument("--shards-root", required=True)
+    t.add_argument("--agent-root", required=True)
+    t.add_argument("--device", default=None, help="cuda or cpu (default: cuda when torch sees one)")
+    t.add_argument("--epochs", type=int, default=16)
+    t.add_argument("--max-fights", type=int, default=6400)
+    t.add_argument("--threads", type=int, default=6)
+    t.add_argument("--no-vrun", action="store_true")
+    t.add_argument("--promote", action="store_true", help="then run `promote` against the current champion in the emulator venv")
+    t.add_argument("--emu-python", help="the emulator venv's python for --promote")
+    t.add_argument("--seeds-file", help="the E-block for --promote")
+    t.add_argument("--procs", type=int, default=16)
+    t.add_argument("--lib")
+    t.add_argument("--lab")
+    pr = sub.add_parser("promote", help="play candidate and base on a fresh E-block and test the promotion rule")
+    pr.add_argument("--cand", required=True)
+    pr.add_argument("--base", help="the base generation directory (default: the champion in --agent-root, else generation 0)")
+    pr.add_argument("--seeds-file", default=str(ROOT / "referee" / "seeds" / "E1-2026-10-23.json"))
+    pr.add_argument("--agent-root", required=True)
+    pr.add_argument("--procs", type=int, default=16)
+    pr.add_argument("--config", default="a3-v1")
+    pr.add_argument("--ascension", type=int, default=10)
+    pr.add_argument("--lib")
+    pr.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
+    pr.add_argument("--lab-runs", help="the lab's runs folder, whose self-play seeds the E-block must not contain")
     sc = sub.add_parser("score")
     sc.add_argument("--game", required=True)
     sc.add_argument("--seeds-file", required=True)
@@ -386,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--stop-after-h", type=float, default=3.5)
     sc.add_argument("--lib")
     sc.add_argument("--emu-dir", help="the emulator baseline to pair with (its runs.jsonl)")
+    sc.add_argument("--gen-dir", help="play this generation's combat prior (SPIRELINE_GEN_DIR for the search configs)")
     sc.add_argument("--out", required=True)
     for name in ("bench-env", "bench-emu"):
         b = sub.add_parser(name)
@@ -407,6 +531,10 @@ def main(argv: list[str] | None = None) -> int:
         return bench_cmd(a)
     if a.cmd == "score":
         return score_real(a)
+    if a.cmd == "train":
+        return train_cmd(a)
+    if a.cmd == "promote":
+        return promote_cmd(a)
     if a.cmd == "emu":
         if a.lib:
             os.environ["STS2_LIB_PATH"] = a.lib
@@ -416,7 +544,14 @@ def main(argv: list[str] | None = None) -> int:
             seeds = load_seeds(a.seeds_file)
         if a.n:
             seeds = seeds[: a.n]
-        summ = run_block(seeds, a.config or a.sims, a.procs, Path(a.out), ascension=a.ascension, block_min=a.block_min)
+        _setup()
+        import gen_loop  # noqa: PLC0415
+
+        agent = gen_loop.load_agent(a.gen_dir, a.agent_root) if (a.gen_dir or a.agent_root) else None
+        summ = run_block(seeds, a.config or a.sims, a.procs, Path(a.out), ascension=a.ascension, block_min=a.block_min,
+                         agent=agent, record=a.record)
+        if a.record and a.lab and a.shards_root:
+            gen_loop.mark_ready(Path(a.lab), agent.generation if agent else 0, Path(a.shards_root), a.budget_runs)
         print(json.dumps(summ))
         return 0
     real = real_runs(Path(a.real) / "runs.jsonl")
