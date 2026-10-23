@@ -108,7 +108,7 @@ static class Fight
             if (idx < 0)
             {
                 log["error"] = $"{want} not among emulator candidates";
-                log["emu_candidates"] = new JsonArray(sel.Candidates.Select(c => (JsonNode)c.ModelId).ToArray());
+                log["emu_candidates"] = sel.Native?.DeepClone() ?? new JsonArray(sel.Candidates.Select(c => (JsonNode)c.ModelId).ToArray());
                 return log;
             }
 

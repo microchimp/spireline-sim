@@ -39,7 +39,8 @@ static class OldChoices
             cards.Add(new Candidate(OldIds.SnakeByCardId(ids[k]), upgraded));
         }
 
-        return new OpenScreen(sel.Kind.ToString(), cards, null, sel.Skippable, OldIds.SnakeByCardId(sel.SourceCardDefId));
+        return new OpenScreen(sel.Kind.ToString(), cards, null, sel.Skippable, OldIds.SnakeByCardId(sel.SourceCardDefId),
+            Native: new JsonArray(ids.Select(i => (JsonNode)i).ToArray()));
     }
 
     /// <summary>A bare combat and a step function as a screen source (Reanchor and RunReplay hold no <see cref="IEngine"/>).</summary>

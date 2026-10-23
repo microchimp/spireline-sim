@@ -17,8 +17,11 @@ public sealed record Candidate(string ModelId, bool Upgraded);
 /// A screen the engine is waiting on. <see cref="Kind"/> is the engine's name for the screen (a string,
 /// compared only for equality and shown in diagnostics). <see cref="MaxPicks"/> is null when the engine
 /// asks for one pick at a time and has no count. <see cref="SourceModelId"/> is the model that opened it.
+/// <see cref="Native"/> is the engine's own description of the candidates, for diagnostics only: adapters write
+/// it out as it is and never read it (old: its card def ids).
 /// </summary>
-public sealed record OpenScreen(string Kind, IReadOnlyList<Candidate> Candidates, int? MaxPicks, bool Skippable, string? SourceModelId);
+public sealed record OpenScreen(string Kind, IReadOnlyList<Candidate> Candidates, int? MaxPicks, bool Skippable, string? SourceModelId,
+    JsonNode? Native = null);
 
 /// <summary>Something that shows an open screen and answers it: an engine, or an adapter over a bare combat.</summary>
 public interface IScreenSource
