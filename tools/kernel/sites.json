@@ -483,6 +483,20 @@
    "file": "Core/Effects/CardEffects.cs",
    "line": 3896
   },
+  "CardEffects.FirstEnemy": {
+   "hooks": [
+    "ShouldAllowHitting"
+   ],
+   "generic": [],
+   "dispatchers": [
+    "ShouldAllowHitting"
+   ],
+   "families": [
+    "F08"
+   ],
+   "file": "Core/Effects/CardEffects.cs",
+   "line": 9344
+  },
   "CardEffects.Forge": {
    "hooks": [
     "AfterForge"
@@ -2351,6 +2365,20 @@
    "file": "Core/CombatEngine.cs",
    "line": 5254
   },
+  "CombatEngine.TurnPlayerTowardTarget": {
+   "hooks": [
+    "ShouldAllowHitting"
+   ],
+   "generic": [],
+   "dispatchers": [
+    "ShouldAllowHitting"
+   ],
+   "families": [
+    "F08"
+   ],
+   "file": "Core/CombatEngine.cs",
+   "line": 5182
+  },
   "CombatEngine.UsePotion": {
    "hooks": [
     "AfterPotionUsed",
@@ -3383,14 +3411,17 @@
   },
   "RelicEffects.BiteForFurCoat": {
    "hooks": [
-    "AfterCreatureAddedToCombat"
+    "AfterCreatureAddedToCombat",
+    "ShouldAllowHitting"
    ],
    "generic": [],
    "dispatchers": [
-    "AfterCreatureAddedToCombat"
+    "AfterCreatureAddedToCombat",
+    "ShouldAllowHitting"
    ],
    "families": [
-    "F01"
+    "F01",
+    "F08"
    ],
    "file": "Core/Effects/RelicEffects.cs",
    "line": 859
@@ -4321,7 +4352,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 2420
+   "line": 2439
   },
   "RunEngine.FinishCombat": {
    "hooks": [
@@ -4338,7 +4369,7 @@
     "F10"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 1447
+   "line": 1466
   },
   "RunEngine.GiryaLiftsLeft": {
    "hooks": [
@@ -4352,7 +4383,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 2726
+   "line": 2745
   },
   "RunEngine.RestHealAmount": {
    "hooks": [
@@ -4366,7 +4397,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 5763
+   "line": 5782
   },
   "RunEngine.RollUnknownMapPointNodeType": {
    "hooks": [
@@ -4382,7 +4413,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 360
+   "line": 379
   },
   "RunEngine.StepRest": {
    "hooks": [
@@ -4402,7 +4433,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 2747
+   "line": 2766
   },
   "RunEngine.WritePhaseActionMask": {
    "hooks": [
@@ -4416,7 +4447,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 520
+   "line": 539
   },
   "RunMapGenerator.AllowsFreeTravel": {
    "hooks": [
@@ -6055,9 +6086,12 @@
     "F08"
    ],
    "sites": [
+    "CardEffects.FirstEnemy",
     "CombatEngine.FirstHittableEnemy",
     "CombatEngine.IsPrimaryEnemy",
-    "EnemyAI.ShouldRemoveOnDeath"
+    "CombatEngine.TurnPlayerTowardTarget",
+    "EnemyAI.ShouldRemoveOnDeath",
+    "RelicEffects.BiteForFurCoat"
    ]
   },
   "ShouldAllowMerchantCardRemoval": {
@@ -6372,6 +6406,10 @@
    "F02",
    "F03"
   ],
+  "RelicEffects.BiteForFurCoat": [
+   "F01",
+   "F08"
+  ],
   "RelicEffects.FinishBlockDoublingCard": [
    "F06",
    "F09"
@@ -6454,6 +6492,7 @@
     "site RelicEffects.ApplyStartOfPlayerTurn",
     "site RelicEffects.ApplyStartOfPlayerTurnRares",
     "site RelicEffects.ApplyStartOfPlayerTurnShared",
+    "site RelicEffects.BiteForFurCoat",
     "site RelicEffects.FinishBlockDoublingCard",
     "site RelicEffects.FinishUnsettlingLampCard",
     "site RelicEffects.RefreshBeltBuckle",

@@ -12,16 +12,18 @@ name). The inventory maps each site to the hook virtuals it serves, the game dis
 A switch group is the smallest set of families such that no site, no dispatcher and no flow straddles two groups:
 families that share an old site switch together (a site serving two families cannot run one family's part while the
 kernel runs the other's, unless it is declared split below), a dispatcher's passes switch together, and each FLOW is
-one switch. A coarser group is always sound; a SPLITS entry (a site whose per-family parts are separate statements, read
-and recorded with the anchor of each part) is what makes groups finer. Identifiers only.
+one switch. A coarser group is always sound; a SPLITS record is what makes groups finer, and each kind is checked against
+the source it was read from (below). Identifiers only.
 """
 from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,9 +43,24 @@ FORMAT = 1
 # AfterSideTurnStart and the orb queue's turn start; TIER1_KERNEL.md sections 1 and 5).
 FLOWS = [{"families": ["F02", "F03", "F13"], "why": "turn-start flow: one pause timing (TIER1_KERNEL.md 1, 5)"}]
 
-# Sites read and found to serve their families in separate statements, so each family's part can be gated on its own
-# switch: site -> {family: the anchor text that starts its part}. Empty until a round reads them (K3 lists the bridges).
-SPLITS: dict[str, dict[str, str]] = {}
+# Sites read and found not to bind their families together. site -> a record of one of three kinds, each with a reason:
+#   split         the families' parts are separate statements of the site, so each part gates on its own switch:
+#                 {"kind": "split", "file": "Core/X.cs", "sha256": <file hash when read>, "reason": ...,
+#                  "parts": [{"family": "F06", "anchor": "text that starts the part"}, ...]}  (parts in source order)
+#   by_caller     the site is a shared helper that serves one family per caller; the gate sits at the callers:
+#                 {"kind": "by_caller", "file": ..., "sha256": ..., "reason": ...,
+#                  "callers": [{"family": "F06", "caller": "Class.Method", "anchor": "text of the call"}, ...]}
+#   false_listing a hook_dispatch.json entry that is not a dispatch there (the method names the hook, but does not run its
+#                 moment): {"kind": "false_listing", "hooks": ["HookName"], "reason": ...}; the hooks leave the site, and a
+#                 site with none left leaves the inventory.
+# A split's anchors must be present and unique in the file, in the order of its parts; a by_caller's anchors present; each
+# caller a method of the engine; the file's hash (text with \n line ends) the one recorded, so any edit of the file sends
+# the record back to be read again. Verified when build is given a source reader (check does, via fresh()).
+# Empty until a round reads the bridges (tools/kernel/sites.py groups lists them).
+SPLITS: dict[str, dict] = {}
+
+SPLIT_KINDS = ("split", "by_caller", "false_listing")
+PART_KINDS = ("split", "by_caller")  # the kinds under which a site no longer binds its families
 
 _SITE = re.compile(r"^[A-Z]\w*\.[A-Z]\w*(?:\[\w+\])?$")
 
@@ -61,8 +78,88 @@ def generic_sites(reason: str) -> list[str]:
     return out
 
 
+def source_hash(text: str) -> str:
+    """The hash a record keeps of its file: sha256 of the text with \\n line ends."""
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def engine_source(rel: str) -> str | None:
+    """The text of an engine file by the path the inventory names it with (relative to src/Sts2Emulator)."""
+    p = ht.ENGINE / rel
+    return p.read_text(encoding="utf-8") if p.is_file() else None
+
+
+def record_parts(rec: dict) -> list[tuple[str | None, str | None]]:
+    """(family, anchor) of each part of a split or by_caller record."""
+    if rec.get("kind") == "split":
+        return [(p.get("family"), p.get("anchor")) for p in rec.get("parts", [])]
+    return [(c.get("family"), c.get("anchor")) for c in rec.get("callers", [])]
+
+
+def check_record(site: str, rec: dict, listed: set[str], site_file: str | None,
+                 read: Callable[[str], str | None] | None, known: set[str] | None) -> list[str]:
+    """The problems of one SPLITS record. listed: the hooks hook_dispatch.json lists the site for (before false listings);
+    site_file: where the engine has the site; read: the source text of a file (None: no source check); known: the engine's
+    method names (None: not checked)."""
+    kind = rec.get("kind")
+    if kind not in SPLIT_KINDS:
+        return [f"{site}: unknown record kind {kind!r} (one of {', '.join(SPLIT_KINDS)})"]
+    out = []
+    if not str(rec.get("reason", "")).strip():
+        out.append(f"{site}: {kind} record has no reason")
+    if kind == "false_listing":
+        if not rec.get("hooks"):
+            out.append(f"false listing {site}: names no hook")
+        for h in rec.get("hooks", []):
+            if h not in listed:
+                out.append(f"false listing {site}: hook_dispatch.json does not list {site} for {h}")
+        return out
+    parts = record_parts(rec)
+    fams = [f for f, _ in parts]
+    if kind == "split" and len(parts) < 2:
+        out.append(f"split {site}: a split has at least two parts")
+    if len(set(fams)) != len(fams) or any(not f for f in fams):
+        out.append(f"{kind} {site}: a family is missing or named twice")
+    for fam, anchor in parts:
+        if not anchor:
+            out.append(f"{kind} {site}: no anchor for {fam}")
+    if kind == "by_caller":
+        for c in rec.get("callers", []):
+            if not c.get("caller"):
+                out.append(f"by_caller {site}: a caller of {c.get('family')} is not named")
+            elif known is not None and c["caller"] not in known:
+                out.append(f"STALE caller {c['caller']} of {site}: not a method of the engine")
+    if read is None:
+        return out
+    file = rec.get("file")
+    text = read(file) if file else None
+    if text is None:
+        return out + [f"{kind} {site}: file {file!r} cannot be read"]
+    text = text.replace("\r\n", "\n")
+    if kind == "split" and site_file and file != site_file:
+        out.append(f"split {site}: the record is for {file}, the site is in {site_file}")
+    if rec.get("sha256") != source_hash(text):
+        out.append(f"{kind} {site}: {file} changed since it was read (hash {source_hash(text)[:12]}, recorded "
+                   f"{str(rec.get('sha256'))[:12]}): read the parts again and record the new hash")
+    last = -1
+    for fam, anchor in parts:
+        if not anchor:
+            continue
+        n = text.count(anchor)
+        if n == 0:
+            out.append(f"{kind} {site}: anchor of {fam} is not in {file}: {anchor!r}")
+        elif kind == "split" and n > 1:
+            out.append(f"split {site}: anchor of {fam} is not unique in {file} ({n} places): {anchor!r}")
+        elif kind == "split":
+            at = text.index(anchor)
+            if at < last:
+                out.append(f"split {site}: anchor of {fam} comes before the part before it in {file}: {anchor!r}")
+            last = max(last, at)
+    return out
+
+
 def build(dispatch: dict, families: dict, hooks: dict, engine: ht.Engine | None,
-          flows: list = FLOWS, splits: dict = SPLITS) -> dict:
+          flows: list = FLOWS, splits: dict = SPLITS, read: Callable[[str], str | None] | None = None) -> dict:
     fam_of = families["hooks"]
     h2d = collections.defaultdict(list)
     for d, info in sorted(hooks["dispatchers"].items()):
@@ -84,13 +181,24 @@ def build(dispatch: dict, families: dict, hooks: dict, engine: ht.Engine | None,
         for model, reason in spec.get("generic", {}).items():
             for m in generic_sites(reason):
                 add(m, hook, model)
+    problems: list[str] = []
+    listed = {n: set(s["hooks"]) for n, s in sites.items()}
+    for name, rec in sorted(splits.items()):
+        if rec.get("kind") != "false_listing":
+            continue
+        if name not in sites:
+            problems.append(f"false listing {name}: not a site of the inventory")
+            continue
+        s = sites[name]
+        s["hooks"] = [h for h in s["hooks"] if h not in rec.get("hooks", [])]
+        if not s["hooks"]:
+            del sites[name]
     spans = ht.region_spans(engine, dispatch) if engine else {}
     where = {}
     if engine:
         for rel, ms in engine.methods.items():
             for m in ms:
                 where.setdefault(ht.qual(m), (rel, m.line))
-    problems: list[str] = []
     for name, s in sites.items():
         s["hooks"].sort()
         s["generic"].sort()
@@ -130,12 +238,19 @@ def build(dispatch: dict, families: dict, hooks: dict, engine: ht.Engine | None,
             joined[tuple(fs)].append(why)
 
     for name, s in sorted(sites.items()):
-        if name in splits:
-            missing = [f for f in s["families"] if f not in splits[name]]
+        rec = splits.get(name)
+        if rec and rec.get("kind") in PART_KINDS:
+            named = [f for f, _ in record_parts(rec)]
+            missing = [f for f in s["families"] if f not in named]
             if missing:
                 problems.append(f"split site {name} names no part for {missing}")
             continue
         join(s["families"], f"site {name}")
+    known = set(where) if engine else None
+    for name, rec in sorted(splits.items()):
+        if rec.get("kind") in PART_KINDS and name not in sites:
+            problems.append(f"{rec.get('kind')} {name}: not a site of the inventory")
+        problems += check_record(name, rec, listed.get(name, set()), sites.get(name, {}).get("file"), read, known)
     disp_fam = {}
     for d, info in sorted(hooks["dispatchers"].items()):
         fs = sorted({fam_of[p["hook"]] for p in info["passes"] if p["hook"] in fam_of})
@@ -188,7 +303,7 @@ def check_groups(inv: dict) -> list[str]:
         if len(gs) != 1:
             problems.append(f"dispatcher {d} ({info['families']}) is in {len(gs)} groups")
     for n, s in inv["sites"].items():
-        if n in inv.get("splits", {}):
+        if inv.get("splits", {}).get(n, {}).get("kind") in PART_KINDS:
             continue
         gs = {g for f in s["families"] for g in group_of.get(f, [])}
         if len(gs) > 1:
@@ -247,7 +362,7 @@ def hook_ids() -> list[str]:
 def fresh() -> tuple[dict, str]:
     dispatch, families, hooks = (ht.load_json(p) for p in (DISPATCH, FAMILIES, HOOKS))
     engine = ht.Engine.load(ht.ENGINE)
-    inv = build(dispatch, families, hooks, engine)
+    inv = build(dispatch, families, hooks, engine, read=engine_source)
     return inv, gen_cs(inv, families, hook_ids(), hooks)
 
 
@@ -282,7 +397,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    {w}")
         # What the bridges cost: the groups if every bridge site were read and split.
         dispatch, families, hooks = (ht.load_json(x) for x in (DISPATCH, FAMILIES, HOOKS))
-        every = {n: {f: "?" for f in fs} for n, fs in inv["bridges"].items()}
+        every = {n: {"kind": "split", "reason": "probe", "parts": [{"family": f, "anchor": "?"} for f in fs]}
+                 for n, fs in inv["bridges"].items()}
         finest = build(dispatch, families, hooks, None, splits=every)["groups"]
         print("with every bridge split: " + ", ".join(g["name"] for g in finest))
         for n, fs in inv["bridges"].items():
