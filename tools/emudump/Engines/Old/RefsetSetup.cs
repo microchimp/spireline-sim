@@ -3,10 +3,11 @@
 // in place before its fight, in its own act. An item it cannot build is "unsupported" (a mirror gap), as in
 // Setup.cs and Engines/Old/OldSetup.cs.
 using System.Text.Json.Nodes;
-using EmuDump.Engines.Old;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
+
+namespace EmuDump.Engines.Old;
 
 static class RefsetSetup
 {

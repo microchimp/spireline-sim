@@ -13,7 +13,6 @@ Live.cs
 Meta.cs
 MutHost.cs
 Program.cs
-RefsetSetup.cs
 RngLog.cs
 RunReplay.cs
 RunSnap.cs
