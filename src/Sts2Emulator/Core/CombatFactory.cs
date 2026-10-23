@@ -415,7 +415,7 @@ public static class CombatFactory
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Surrounded, Run.RunConstants.FacingRight);
         }
 
-        EnemyAI.ChooseIntents(state.Enemies, state.Turn, rng, state.AiRng, state.AscensionLevel);
+        EnemyAI.ChooseIntents(state.Enemies, state.Turn, rng, state.AiRng, state.AscensionLevel, state);
         EnemyAI.UpdateSecondaryIntents(state.Enemies);
 
         // Shuffle draw pile (skip if caller pre-shuffled it) and deal opening hand of 5.

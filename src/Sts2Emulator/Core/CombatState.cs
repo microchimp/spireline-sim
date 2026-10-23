@@ -324,6 +324,13 @@ public sealed class CombatState
     // Null falls back to the combat RNG (used in single-combat tests).
     public Random? AiRng;
 
+    /// <summary>
+    /// The last intent pass, as <c>EnemyAI.ChooseIntents</c> recorded it: what a resampled fork
+    /// rolls again (<see cref="IntentParticles" />). Null when no pass has run in this state's
+    /// history -- a fight loaded from a document -- and then a fork keeps the moves it has.
+    /// </summary>
+    public IntentRoll? LastIntentRoll;
+
     // Niche HP RNG — used ONLY for SetUniqueMonsterHpValue (CreateEnemy HP calls).
     // When non-null, CreateEnemy uses this instead of the main combat RNG for HP.
     // CountingRandom.CallCount tracks how many HP values were drawn (= enemy count).

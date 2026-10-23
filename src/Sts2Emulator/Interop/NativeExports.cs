@@ -121,6 +121,7 @@ public static class NativeExports
             if (resampleSeed is not null)
             {
                 State.ReshuffleUnknownDrawOrder(State.ShuffleRng ?? Rng);
+                IntentParticles.Resample(State, new Random(resampleSeed.Value));
             }
         }
 

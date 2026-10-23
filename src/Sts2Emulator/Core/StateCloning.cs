@@ -258,6 +258,8 @@ public static class StateCloning
             ? Carry(into.AiRng as CountingRandom, counting)
             : combat.AiRng;
         into.NicheHpRng = Carry(into.NicheHpRng, combat.NicheHpRng);
+        // Never changed once made, so the copy shares its contents.
+        into.LastIntentRoll = combat.LastIntentRoll is { } roll ? roll with { } : null;
         if (rngSeed is int seed)
         {
             into.ReseedStreams(seed);

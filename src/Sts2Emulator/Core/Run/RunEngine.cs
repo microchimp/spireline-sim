@@ -882,8 +882,9 @@ public sealed class RunEngine
 
     /// <summary>
     /// Point the in-combat streams at the resampled run's streams, reshuffle the region of
-    /// the draw pile the player has not seen, and move whatever the Crystal Sphere's fog is
-    /// still hiding.
+    /// the draw pile the player has not seen, roll the enemies' current moves again behind
+    /// the intents they show (<see cref="IntentParticles" />), redraw the fights not yet
+    /// entered, and move whatever the Crystal Sphere's fog is still hiding.
     /// </summary>
     /// <remarks>
     /// The combat streams keep their call counts: SyncAfterCombat hands those counts
@@ -893,6 +894,10 @@ public sealed class RunEngine
     private void ResampleHiddenState(Random rng)
     {
         State.CrystalSphere?.ResampleUnseenItems(rng);
+        RunMapGenerator.ResampleUnenteredEncounters(
+            State,
+            new GameRng(State.Rng.Seed, "resample_encounters")
+        );
 
         var combat = State.ActiveCombat;
         if (combat is null)
@@ -902,6 +907,7 @@ public sealed class RunEngine
 
         State.ActiveCombatRng = RestreamCombat(combat, State.ActiveCombatRng, State.Rng);
         ReshuffleUnknownDrawPile(combat, rng);
+        IntentParticles.Resample(combat, rng);
     }
 
     /// <summary>
@@ -936,6 +942,7 @@ public sealed class RunEngine
             var streams = new RunRngSet(ResampledSeedString(seed));
             combatRng = RestreamCombat(combat, combatRng, streams)!;
             ReshuffleUnknownDrawPile(combat, random);
+            IntentParticles.Resample(combat, random);
         }
 
         return (combat, combatRng);

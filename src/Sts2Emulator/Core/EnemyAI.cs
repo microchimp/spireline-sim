@@ -9,10 +9,23 @@ public static class EnemyAI
         int turn,
         Random rng,
         Random? aiRng = null,
-        int ascension = Ascension.DefaultLevel
+        int ascension = Ascension.DefaultLevel,
+        // The fight to record the pass on, for a resampled fork to roll it again
+        // (IntentParticles). Recording reads the roster and changes nothing.
+        CombatState? record = null
     )
     {
         var effectiveAiRng = aiRng ?? rng;
+        EnemyState[]? before = record is null ? null : [.. enemies.Select(e => e.Clone())];
+        ChooseIntentsUnrecorded(enemies, effectiveAiRng, ascension);
+        if (record is not null)
+        {
+            record.LastIntentRoll = new IntentRoll(before!, [.. enemies.Select(e => e.Clone())], ascension);
+        }
+    }
+
+    private static void ChooseIntentsUnrecorded(List<EnemyState> enemies, Random effectiveAiRng, int ascension)
+    {
         foreach (var enemy in enemies.Where(e => e.Hp > 0))
         {
             // A killed illusion announces the revive it is about to spend the turn on, and
