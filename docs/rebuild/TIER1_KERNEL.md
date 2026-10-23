@@ -43,6 +43,9 @@ Game code is described by class and method identifiers only. Revised after revie
       `none` (not tracked);
     - `when`: the argument flag that selects the pass at run time (ModifyDamage's ModifyDamageHookType, ModifyHpLost's
       HpLossHookPhase), or absent;
+    - `also`: for a `try-true` pass, the other parts of its condition beside the listener call, in our words
+      (`out-not-null`: the value the listener gave back must be present, ModifyCardBeingAddedToDeck); any other part
+      is an extractor error, so a new condition there is flagged;
   - `context`: `none` | `passed` (the caller's choice context, pushed and popped per listener) | `passed-unpushed`
     (passed without push: AfterAttack, AfterOrbEvoked, AfterPowerAmountChanged) | `caller-hook` (the caller's
     HookPlayerChoiceContext: AfterAutoPrePlayPhaseEntered, AfterAutoPostPlayPhaseEntered) | `per-listener` (each
@@ -54,19 +57,36 @@ Game code is described by class and method identifiers only. Revised after revie
     (ShouldPowerBeRemovedOnDeath));
   - `partner`: the receiving dispatcher of the changed set or the preventer, when the caller passes it on;
   - `args`: parameters in kernel types (hand-written: `CardHandle`, `CreatureRef`, `int`, `decimal`, `bool`, `Side`
-    ...). The extractor does not write these.
+    ...). The extractor does not write these. A `mutate` dispatcher needs a mutable argument (`MutableCardList` =
+    `IList<CardHandle>`, `KeywordSet`, or an `Opaque` game object); the generator rejects one without.
 - `tools/kernel/hooks_extract.py` extends `tools/fidelity/hook_table.dispatchers` to read every field above except
   `args` from the local decompile. `python -m tools.kernel.construct shape` diffs the checked-in descriptor against a
   fresh extraction both ways and checks that `Hooks.g.cs` equals a fresh generation. A dispatcher the extractor
   cannot classify is an error, never a default. Each mode has a broken case it catches.
 - `tools/kernel/gen_hooks.py` writes `src/Sts2Emulator/Core2/Hooks.g.cs` and `HookId.g.cs` (committed; generated from
   our descriptor, not from game text): one static method per dispatcher, a fast path when no switched-on listener is
-  registered for its passes, otherwise per pass a snapshot of listeners in game order and the loop of its op.
-- Named steps are hand-written in `Core2/Steps.cs`, one function each, cited `game: Hook.<Method>`.
+  registered for its passes, otherwise per pass the runtime's listener cursor (section 3) and the loop of its op.
+  Event dispatchers whose context awaits each listener's whole task (every context but `per-listener`) return a
+  `HookStatus` and have a `<Name>Resume` (section 5).
+- Named steps are hand-written in `Core2/Steps.cs`, one function each, cited `game: Hook.<Method>`. The steps that read
+  the dispatcher's arguments (`enchant-add`, `enchant-mul`, `owner-in-combat`, `preview-hittable`) are declared in
+  `Hooks.g.cs` as partial methods typed by that dispatcher's argument record (so EnchantAdd reads `CardSource` and
+  `Props`, PreviewHittable passes `a with { Target = enemy }` to the passes) and implemented per dispatcher in Steps.cs.
+- Built in K1 (v0.107.1): 147 dispatchers, 178 passes over 178 hook virtuals, 15 shapes by (ops, context, wait) and
+  22 counting changed criteria and steps. The extraction needed, beyond the list above: `changed: lowers` (fold-cap:
+  the listener lowered the value); `try` with `changed: none` (the energy and star cost TryModify passes ignore the
+  listener's answer); `negative-cost-passthrough` on ModifyStarCost too; a `when` on pre steps (ModifyDamage's enchant
+  steps); the post step `dispatch:<Dispatcher>` (ModifyGeneratedMap ends by running ModifyGeneratedMapLate); `partner`
+  as a list (ModifyHpLost feeds both AfterModifyingHpLost receivers). The runtime API Hooks.g.cs is written against is
+  `Core2/HookRuntime.cs`; a dispatcher with steps has its passes as `<Name>Passes`.
 
 ## 3. Listener order over the old state
 
-`Core2/Listeners.cs` builds one pass's snapshot as the game's `CombatState.IterateHookListeners` does:
+A pass reads its listeners through `HookCursor<THandler>` (`Core2/HookRuntime.cs`): `bool Next(out HookListener<T>)`
+over the snapshot taken at pass start, an optional late part built once the first is exhausted (run+combat), a
+visit-time membership check that skips an entry, and `Index`, the visited entry's position in the pass's order (both
+parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` builds the parts as the game's
+`CombatState.IterateHookListeners` does:
 1. creatures: allies (the player, then pets and Osty where the old engine models them) then enemies in roster order;
 2. per creature: its powers in application order; then, for every creature without a player (enemies, pets, Osty),
    its monster; for a player: relics in obtain order (melted skipped), potions by slot, orbs in queue order, then the
@@ -141,8 +161,15 @@ Game code is described by class and method identifiers only. Revised after revie
   drains exactly as the first run did, so the later listeners still run before the screen. Answers to kernel screens are
   keyed by (dispatcher, listener, resume site); answers to old screens keep their order. `HookChoiceReplay` gains the
   keyed lookup, and a step may mix both kinds.
-- `passed` and `passed-unpushed` contexts (a choice inside a card's own play or a potion) pause the action that owns
-  the context, as the game's player choice context does, and keep the old replay.
+- `none`, `passed`, `passed-unpushed` and `caller-hook` contexts: the game awaits each listener's whole task, so the
+  later listeners run only after the choice is answered. The dispatcher stops at the pause and returns a paused
+  `HookStatus` (its `PauseSite` with the pass and the listener's cursor `Index`, and the pass's cursor positioned
+  after the listener); a pushed context keeps the listener pushed while the choice is open. Once the listener's resume
+  record has run, `<Name>Resume(rt, a, status)` pops it and continues the same cursor, then the later passes (no
+  snapshot is taken again; membership is still checked at visit). A choice inside a card's own play or a potion
+  pauses the action that owns the context, as the game's player choice context does, and keeps the old replay; K4's
+  flow pause continues from (pass, index) the same way. Such a dispatcher has no wait point or post step (the
+  generator refuses one).
 - Tests from the game's `ActionExecutor`, `ActionQueueSet` and `HookPlayerChoiceContext`: the boundary win check and
   its two exempt kinds; canceled fronts skipped; a paused action yields to the next ready action; a resumed action's new
   id; type rules; `CombatEnded` cancelling unstarted hook actions; later listeners before the screen in BeforeTurnEnd,

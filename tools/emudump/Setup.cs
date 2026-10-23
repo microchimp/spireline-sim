@@ -6,6 +6,7 @@
 // with the game's). An item the emulator cannot build is logged "unsupported": a mirror gap, not an
 // emulator divergence. An item the game refused (ok false) is skipped, so both sides stay alike.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Rng;
@@ -210,7 +211,7 @@ static class Setup
             case "card":
             {
                 string pile = ((string?)item["pile"] ?? "Deck").ToLowerInvariant();
-                var card = new CardInstance(Fight.CardIdBySnake(id), Upgraded: (bool?)item["upgraded"] == true);
+                var card = new CardInstance(OldIds.CardIdBySnake(id), Upgraded: (bool?)item["upgraded"] == true);
                 if (c == null)
                 {
                     if (pile != "deck") return (false, "unsupported: card into " + pile + " on the map");
@@ -241,7 +242,7 @@ static class Setup
             case "power":
             {
                 if (c == null) return (false, "unsupported: power outside a fight");
-                var buff = Reanchor.BuffFor(id) ?? throw new KeyNotFoundException("no emulator buff for " + id);
+                var buff = OldAnchor.BuffFor(id) ?? throw new KeyNotFoundException("no emulator buff for " + id);
                 string target = (string?)item["target"] ?? "player";
                 int at = target == "player" ? -1 : target.StartsWith("enemy:") ? int.Parse(target[6..]) : throw new ArgumentException("target " + target);
                 bool ok = ConsoleSetup.ApplyPowerWithoutApplier(c, at, buff, (int?)item["amount"] ?? 1);
@@ -330,7 +331,7 @@ static class Setup
         foreach (var c in choices)
         {
             var opts = c["options"]!.AsArray().Select(x => (string)x!).ToList();
-            foreach (var p in c["picked"]!.AsArray()) want.Enqueue(Fight.CardIdBySnake(opts[(int)p!]));
+            foreach (var p in c["picked"]!.AsArray()) want.Enqueue(OldIds.CardIdBySnake(opts[(int)p!]));
         }
 
         // One game screen over a deck selection: follow each pick as a position among the cards listed.
@@ -340,7 +341,7 @@ static class Setup
         if (choices.Count == 1 && s.Phase == RunPhase.TransformSelect && !Grid() && s.PendingSelectionKind != DeckSelection.None)
         {
             var listed = InGameOrder(s, Selectable());
-            var theirs = choices[0]["options"]!.AsArray().Select(x => Fight.CardIdBySnake((string)x!)).ToList();
+            var theirs = choices[0]["options"]!.AsArray().Select(x => OldIds.CardIdBySnake((string)x!)).ToList();
             var mine = listed.Select(IdAt).ToList();
             if (mine.SequenceEqual(theirs))
             {

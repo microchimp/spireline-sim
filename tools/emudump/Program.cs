@@ -3,6 +3,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core.Rng;
 using Sts2Emulator.Core.Run;
 
@@ -36,7 +37,7 @@ if (args[0] == "codex")
 
 if (args[0] == "pools")
 {
-    Console.WriteLine(Fight.Pools().ToJsonString());
+    Console.WriteLine(OldEngine.Pools().ToJsonString());
     return;
 }
 
@@ -59,7 +60,7 @@ if (args[0] == "fight")
     if (args.Contains("--netstate"))
     {
         // The game's NetFullCombatState fields after each step (NetState.cs), for netstate_diff.
-        Fight.OnStep += (e, step) => step["net"] = new JsonArray(new JsonObject { ["ctx"] = "step", ["state"] = NetState.From(e) });
+        Fight.OnStep += (e, step) => step["net"] = new JsonArray(new JsonObject { ["ctx"] = "step", ["state"] = NetState.From(OldEngine.Of(e).Run) });
     }
 
     if (args.Any(a => a.StartsWith("--state-hash", StringComparison.Ordinal)))
@@ -68,8 +69,9 @@ if (args[0] == "fight")
         // included, not the dump's bytes), for tools/fidelity/corpus.py identity. --state-hash=fields
         // adds one short hash per field, so a difference names the field.
         bool fields = args.Contains("--state-hash=fields");
-        Fight.OnStep += (e, step) =>
+        Fight.OnStep += (engine, step) =>
         {
+            var e = OldEngine.Of(engine).Run;
             step["state_hash"] = StateWalk.RunHash(e);
             if (!fields) return;
             var o = new JsonObject();
@@ -88,7 +90,7 @@ if (args[0] == "fight")
         // Every draw of a combat stream during each step, [stream, index, caller] (RngLog.cs), for
         // tools/fidelity/rng_diff.py.
         RngLog.Install();
-        Fight.OnStep += (e, step) => step["rng_log"] = RngLog.Take(e);
+        Fight.OnStep += (e, step) => step["rng_log"] = RngLog.Take(OldEngine.Of(e).Run);
     }
 
     if (args.Contains("--card-uid-check"))

@@ -1,0 +1,2282 @@
+{
+  "format": 1,
+  "dispatchers": {
+    "AfterActEntered": {
+      "args": [],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterActEntered", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterAttack": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "command", "type": "AttackRef"}
+      ],
+      "context": "passed-unpushed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterAttack", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterAutoPostPlayPhaseEntered": {
+      "args": [
+        {"name": "playerChoiceContext", "type": "ChoiceCtx"},
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "caller-hook",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterAutoPostPlayPhaseEntered", "op": "event"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "netid-guard"}
+      ],
+      "wait_all": []
+    },
+    "AfterAutoPrePlayPhaseEntered": {
+      "args": [
+        {"name": "playerChoiceContext", "type": "ChoiceCtx"},
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "caller-hook",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterAutoPrePlayPhaseEnteredEarly", "op": "event"},
+        {"changed": "none", "hook": "AfterAutoPrePlayPhaseEntered", "op": "event"},
+        {"changed": "none", "hook": "AfterAutoPrePlayPhaseEnteredLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "netid-guard"}
+      ],
+      "wait_all": []
+    },
+    "AfterBlockBroken": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterBlockBroken", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterBlockCleared": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterBlockCleared", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterBlockGained": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"},
+        {"name": "amount", "type": "decimal"},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "cardSource", "type": "CardHandle?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterBlockGained", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCardChangedPiles": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "oldPile", "type": "PileKind"},
+        {"name": "clonedBy", "type": "ListenerRef?"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCardChangedPiles", "op": "event"},
+        {"changed": "none", "hook": "AfterCardChangedPilesLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCardDiscarded": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "card", "type": "CardHandle"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCardDiscarded", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCardDrawn": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "card", "type": "CardHandle"},
+        {"name": "fromHandDraw", "type": "bool"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCardDrawnEarly", "op": "event"},
+        {"changed": "none", "hook": "AfterCardDrawn", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCardEnteredCombat": {
+      "args": [
+        {"name": "card", "type": "CardHandle"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCardEnteredCombat", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCardExhausted": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "card", "type": "CardHandle"},
+        {"name": "causedByEthereal", "type": "bool"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCardExhausted", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCardGeneratedForCombat": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "creator", "type": "PlayerRef?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCardGeneratedForCombat", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCardPlayed": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "cardPlay", "type": "CardPlayRef"}
+      ],
+      "context": "passed",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCardPlayed", "op": "event"},
+        {"changed": "none", "hook": "AfterCardPlayedLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCombatEnd": {
+      "args": [
+        {"name": "room", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCombatEnd", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCombatVictory": {
+      "args": [
+        {"name": "room", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCombatVictoryEarly", "op": "event"},
+        {"changed": "none", "hook": "AfterCombatVictory", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCreatureAddedToCombat": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCreatureAddedToCombat", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterCurrentHpChanged": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"},
+        {"name": "delta", "type": "decimal"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterCurrentHpChanged", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterDamageGiven": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "dealer", "type": "CreatureRef?"},
+        {"name": "results", "type": "DamageResultRef"},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "target", "type": "CreatureRef"},
+        {"name": "cardSource", "type": "CardHandle?"}
+      ],
+      "context": "passed",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterDamageGiven", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterDamageReceived": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "target", "type": "CreatureRef"},
+        {"name": "result", "type": "DamageResultRef"},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "dealer", "type": "CreatureRef?"},
+        {"name": "cardSource", "type": "CardHandle?"}
+      ],
+      "context": "passed",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterDamageReceived", "op": "event"},
+        {"changed": "none", "hook": "AfterDamageReceivedLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterDeath": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"},
+        {"name": "wasRemovalPrevented", "type": "bool"},
+        {"name": "deathAnimLength", "type": "float"}
+      ],
+      "context": "per-listener",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterDeath", "op": "event"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "netid-guard"}
+      ],
+      "wait_all": []
+    },
+    "AfterDiedToDoom": {
+      "args": [
+        {"name": "creatures", "type": "CreatureList"}
+      ],
+      "context": "per-listener",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterDiedToDoom", "op": "event"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "netid-guard"}
+      ],
+      "wait_all": []
+    },
+    "AfterEnergyReset": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterEnergyReset", "op": "event"},
+        {"changed": "none", "hook": "AfterEnergyResetLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterEnergySpent": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "amount", "type": "int"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterEnergySpent", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterFlush": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "playerChoiceContext", "type": "ChoiceCtx"},
+        {"name": "flushedCards", "type": "CardList"},
+        {"name": "retainedCards", "type": "CardList"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterFlush", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterForge": {
+      "args": [
+        {"name": "amount", "type": "decimal"},
+        {"name": "forger", "type": "PlayerRef"},
+        {"name": "source", "type": "ListenerRef?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterForge", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterGoldGained": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterGoldGained", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterHandEmptied": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterHandEmptied", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterItemPurchased": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "itemPurchased", "type": "Opaque"},
+        {"name": "goldSpent", "type": "int"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterItemPurchased", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterMapGenerated": {
+      "args": [
+        {"name": "map", "type": "Opaque"},
+        {"name": "actIndex", "type": "int"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterMapGenerated", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingBlockAmount": {
+      "args": [
+        {"name": "modifiedBlock", "type": "decimal"},
+        {"name": "cardSource", "type": "CardHandle?"},
+        {"name": "cardPlay", "type": "CardPlayRef?"},
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingBlockAmount", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingCardPlayCount": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingCardPlayCount", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingCardRewardOptions": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingCardRewardOptions", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingDamageAmount": {
+      "args": [
+        {"name": "cardSource", "type": "CardHandle?"},
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingDamageAmount", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingEnergyGain": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingEnergyGain", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingGoldGained": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"},
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "amount", "type": "decimal"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingGoldGained", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingHandDraw": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingHandDraw", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingHpLostAfterOsty": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingHpLostAfterOsty", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingHpLostBeforeOsty": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingHpLostBeforeOsty", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingOrbPassiveTriggerCount": {
+      "args": [
+        {"name": "orb", "type": "OrbRef"},
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingOrbPassiveTriggerCount", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingPowerAmountGiven": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"},
+        {"name": "modifiedPower", "type": "PowerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingPowerAmountGiven", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingPowerAmountReceived": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"},
+        {"name": "modifiedPower", "type": "PowerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingPowerAmountReceived", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterModifyingRewards": {
+      "args": [
+        {"name": "modifiers", "type": "ListenerSet"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterModifyingRewards", "op": "filter-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterOrbChanneled": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "orb", "type": "OrbRef"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterOrbChanneled", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterOrbEvoked": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "orb", "type": "OrbRef"},
+        {"name": "targets", "type": "CreatureList"}
+      ],
+      "context": "passed-unpushed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterOrbEvoked", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterOstyRevived": {
+      "args": [
+        {"name": "osty", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterOstyRevived", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterPlayerTurnStart": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterPlayerTurnStartEarly", "op": "event"},
+        {"changed": "none", "hook": "AfterPlayerTurnStart", "op": "event"},
+        {"changed": "none", "hook": "AfterPlayerTurnStartLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterPotionDiscarded": {
+      "args": [
+        {"name": "potion", "type": "PotionRef"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterPotionDiscarded", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterPotionProcured": {
+      "args": [
+        {"name": "potion", "type": "PotionRef"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterPotionProcured", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterPotionUsed": {
+      "args": [
+        {"name": "potion", "type": "PotionRef"},
+        {"name": "target", "type": "CreatureRef?"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterPotionUsed", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterPowerAmountChanged": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "power", "type": "PowerRef"},
+        {"name": "amount", "type": "decimal"},
+        {"name": "applier", "type": "CreatureRef?"},
+        {"name": "cardSource", "type": "CardHandle?"}
+      ],
+      "context": "passed-unpushed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterPowerAmountChanged", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterPreventingBlockClear": {
+      "args": [
+        {"name": "preventer", "type": "ListenerRef"},
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterPreventingBlockClear", "op": "preventer-only"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterPreventingDeath": {
+      "args": [
+        {"name": "preventer", "type": "ListenerRef"},
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterPreventingDeath", "op": "preventer-only"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterPreventingDraw": {
+      "args": [
+        {"name": "modifier", "type": "ListenerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterPreventingDraw", "op": "preventer-only"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterRestSiteHeal": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "isMimicked", "type": "bool"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterRestSiteHeal", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterRestSiteSmith": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterRestSiteSmith", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterRewardTaken": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "reward", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterRewardTaken", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterRoomEntered": {
+      "args": [
+        {"name": "room", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterRoomEntered", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterShuffle": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "shuffler", "type": "PlayerRef"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterShuffle", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterSideTurnStart": {
+      "args": [
+        {"name": "side", "type": "Side"},
+        {"name": "participants", "type": "CreatureList"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterSideTurnStart", "op": "event"},
+        {"changed": "none", "hook": "AfterSideTurnStartLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterStarsGained": {
+      "args": [
+        {"name": "amount", "type": "int"},
+        {"name": "gainer", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterStarsGained", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterStarsSpent": {
+      "args": [
+        {"name": "amount", "type": "int"},
+        {"name": "spender", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterStarsSpent", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterSummon": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "summoner", "type": "PlayerRef"},
+        {"name": "amount", "type": "decimal"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterSummon", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterTakingExtraTurn": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterTakingExtraTurn", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "AfterTurnEnd": {
+      "args": [
+        {"name": "side", "type": "Side"},
+        {"name": "participants", "type": "CreatureList"}
+      ],
+      "context": "per-listener",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "AfterSideTurnEnd", "op": "event"},
+        {"changed": "none", "hook": "AfterSideTurnEndLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "netid-guard"}
+      ],
+      "wait_all": [0, 1]
+    },
+    "BeforeAttack": {
+      "args": [
+        {"name": "command", "type": "AttackRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeAttack", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeBlockGained": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"},
+        {"name": "amount", "type": "decimal"},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "cardSource", "type": "CardHandle?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeBlockGained", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeCardAutoPlayed": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "target", "type": "CreatureRef?"},
+        {"name": "type", "type": "AutoPlay"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeCardAutoPlayed", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeCardPlayed": {
+      "args": [
+        {"name": "cardPlay", "type": "CardPlayRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeCardPlayed", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeCardRemoved": {
+      "args": [
+        {"name": "card", "type": "CardHandle"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeCardRemoved", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeCombatStart": {
+      "args": [],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeCombatStart", "op": "event"},
+        {"changed": "none", "hook": "BeforeCombatStartLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeDamageReceived": {
+      "args": [
+        {"name": "choiceContext", "type": "ChoiceCtx"},
+        {"name": "target", "type": "CreatureRef"},
+        {"name": "amount", "type": "decimal"},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "dealer", "type": "CreatureRef?"},
+        {"name": "cardSource", "type": "CardHandle?"}
+      ],
+      "context": "passed",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeDamageReceived", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeDeath": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeDeath", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeFlush": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "per-listener",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeFlush", "op": "event"},
+        {"changed": "none", "hook": "BeforeFlushLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "netid-guard"}
+      ],
+      "wait_all": [1]
+    },
+    "BeforeHandDraw": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "playerChoiceContext", "type": "ChoiceCtx"}
+      ],
+      "context": "passed",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeHandDraw", "op": "event"},
+        {"changed": "none", "hook": "BeforeHandDrawLate", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforePotionUsed": {
+      "args": [
+        {"name": "potion", "type": "PotionRef"},
+        {"name": "target", "type": "CreatureRef?"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforePotionUsed", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforePowerAmountChanged": {
+      "args": [
+        {"name": "power", "type": "PowerRef"},
+        {"name": "amount", "type": "decimal"},
+        {"name": "target", "type": "CreatureRef"},
+        {"name": "applier", "type": "CreatureRef?"},
+        {"name": "cardSource", "type": "CardHandle?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforePowerAmountChanged", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeRoomEntered": {
+      "args": [
+        {"name": "room", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeRoomEntered", "op": "event"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "BeforeSideTurnStart": {
+      "args": [
+        {"name": "side", "type": "Side"},
+        {"name": "participants", "type": "CreatureList"}
+      ],
+      "context": "per-listener",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeSideTurnStart", "op": "event"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "netid-guard"}
+      ],
+      "wait_all": []
+    },
+    "BeforeTurnEnd": {
+      "args": [
+        {"name": "side", "type": "Side"},
+        {"name": "participants", "type": "CreatureList"}
+      ],
+      "context": "per-listener",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "BeforeSideTurnEndVeryEarly", "op": "event"},
+        {"changed": "none", "hook": "BeforeSideTurnEndEarly", "op": "event"},
+        {"changed": "none", "hook": "BeforeSideTurnEnd", "op": "event"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "netid-guard"}
+      ],
+      "wait_all": [2]
+    },
+    "ModifyAttackHitCount": {
+      "args": [
+        {"name": "attackCommand", "type": "AttackRef"},
+        {"name": "originalHitCount", "type": "int", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyAttackHitCount", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyBlock": {
+      "args": [
+        {"name": "target", "type": "CreatureRef"},
+        {"name": "block", "type": "decimal", "value": true},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "cardSource", "type": "CardHandle?"},
+        {"name": "cardPlay", "type": "CardPlayRef?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterModifyingBlockAmount"],
+      "passes": [
+        {"changed": "nonzero", "hook": "ModifyBlockAdditive", "op": "fold-add"},
+        {"changed": "not-one", "hook": "ModifyBlockMultiplicative", "op": "fold-mul"}
+      ],
+      "post": [
+        {"step": "clamp-min0"}
+      ],
+      "pre": [
+        {"step": "enchant-add"},
+        {"step": "enchant-mul"}
+      ],
+      "wait_all": []
+    },
+    "ModifyCardBeingAddedToDeck": {
+      "args": [
+        {"name": "card", "type": "CardHandle", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"also": ["out-not-null"], "changed": "try-true", "hook": "TryModifyCardBeingAddedToDeck", "op": "try"},
+        {"also": ["out-not-null"], "changed": "try-true", "hook": "TryModifyCardBeingAddedToDeckLate", "op": "try"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyCardPlayCount": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "playCount", "type": "int", "value": true},
+        {"name": "target", "type": "CreatureRef?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterModifyingCardPlayCount"],
+      "passes": [
+        {"changed": "ne", "hook": "ModifyCardPlayCount", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyCardPlayResultPileTypeAndPosition": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "isAutoPlay", "type": "bool"},
+        {"name": "resources", "type": "Opaque"},
+        {"name": "dest", "type": "PileDest", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "ne", "hook": "ModifyCardPlayResultPileTypeAndPosition", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyCardRewardAlternatives": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "cardReward", "type": "Opaque"},
+        {"name": "alternatives", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "try-true", "hook": "TryModifyCardRewardAlternatives", "op": "try"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyCardRewardCreationOptions": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "options", "type": "Opaque", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyCardRewardCreationOptions", "op": "fold-set"},
+        {"changed": "none", "hook": "ModifyCardRewardCreationOptionsLate", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyCardRewardUpgradeOdds": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "card", "type": "CardHandle"},
+        {"name": "originalOdds", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyCardRewardUpgradeOdds", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyDamage": {
+      "args": [
+        {"name": "target", "type": "CreatureRef?"},
+        {"name": "dealer", "type": "CreatureRef?"},
+        {"name": "damage", "type": "decimal", "value": true},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "cardSource", "type": "CardHandle?"},
+        {"name": "modifyDamageHookType", "type": "ModifyDamageHookType"},
+        {"name": "previewMode", "type": "PreviewMode"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": ["AfterModifyingDamageAmount"],
+      "passes": [
+        {"changed": "nonzero", "hook": "ModifyDamageAdditive", "op": "fold-add", "when": "ModifyDamageHookType.Additive"},
+        {"changed": "not-one", "hook": "ModifyDamageMultiplicative", "op": "fold-mul", "when": "ModifyDamageHookType.Multiplicative"},
+        {"changed": "lowers", "hook": "ModifyDamageCap", "op": "fold-cap", "when": "ModifyDamageHookType.Cap"}
+      ],
+      "post": [
+        {"step": "clamp-min0"}
+      ],
+      "pre": [
+        {"step": "enchant-add", "when": "ModifyDamageHookType.Additive"},
+        {"step": "enchant-mul", "when": "ModifyDamageHookType.Multiplicative"},
+        {"step": "preview-hittable"}
+      ],
+      "wait_all": []
+    },
+    "ModifyEnergyCostInCombat": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "originalCost", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "TryModifyEnergyCostInCombat", "op": "try"},
+        {"changed": "none", "hook": "TryModifyEnergyCostInCombatLate", "op": "try"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "negative-cost-passthrough"}
+      ],
+      "wait_all": []
+    },
+    "ModifyEnergyGain": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "originalAmount", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterModifyingEnergyGain"],
+      "passes": [
+        {"changed": "int-ne", "hook": "ModifyEnergyGain", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyExtraRestSiteHealText": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "extraText", "type": "Opaque", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyExtraRestSiteHealText", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyGeneratedMap": {
+      "args": [
+        {"name": "map", "type": "Opaque", "value": true},
+        {"name": "actIndex", "type": "int"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyGeneratedMap", "op": "fold-set"}
+      ],
+      "post": [
+        {"step": "dispatch:ModifyGeneratedMapLate"}
+      ],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyGeneratedMapLate": {
+      "args": [
+        {"name": "map", "type": "Opaque", "value": true},
+        {"name": "actIndex", "type": "int"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyGeneratedMapLate", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyGoldGained": {
+      "args": [
+        {"name": "amount", "type": "decimal", "value": true},
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": ["AfterModifyingGoldGained"],
+      "passes": [
+        {"changed": "int-ne", "hook": "ModifyGoldGained", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyHandDraw": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "originalCardCount", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterModifyingHandDraw"],
+      "passes": [
+        {"changed": "int-ne", "hook": "ModifyHandDraw", "op": "fold-set"},
+        {"changed": "int-ne", "hook": "ModifyHandDrawLate", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyHpLost": {
+      "args": [
+        {"name": "target", "type": "CreatureRef"},
+        {"name": "amount", "type": "decimal", "value": true},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "dealer", "type": "CreatureRef?"},
+        {"name": "cardSource", "type": "CardHandle?"},
+        {"name": "phases", "type": "HpLossHookPhase"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": ["AfterModifyingHpLostAfterOsty", "AfterModifyingHpLostBeforeOsty"],
+      "passes": [
+        {"changed": "trunc-ne", "hook": "ModifyHpLostBeforeOsty", "op": "fold-set", "when": "HpLossHookPhase.BeforeOsty"},
+        {"changed": "trunc-ne", "hook": "ModifyHpLostBeforeOstyLate", "op": "fold-set", "when": "HpLossHookPhase.BeforeOsty"},
+        {"changed": "trunc-ne", "hook": "ModifyHpLostAfterOsty", "op": "fold-set", "when": "HpLossHookPhase.AfterOsty"},
+        {"changed": "trunc-ne", "hook": "ModifyHpLostAfterOstyLate", "op": "fold-set", "when": "HpLossHookPhase.AfterOsty"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyKeywordsInCombat": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "keywords", "type": "KeywordSet"}
+      ],
+      "context": "none",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "TryModifyKeywordsInCombat", "op": "mutate"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyMaxEnergy": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "amount", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyMaxEnergy", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyMerchantCardCreationResults": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "cards", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyMerchantCardCreationResults", "op": "mutate"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyMerchantCardPool": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "options", "type": "Opaque", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyMerchantCardPool", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyMerchantCardRarity": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "rarity", "type": "Opaque", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyMerchantCardRarity", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyMerchantPrice": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "entry", "type": "Opaque"},
+        {"name": "result", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyMerchantPrice", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyNextEvent": {
+      "args": [
+        {"name": "currentEvent", "type": "Opaque", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyNextEvent", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyOddsIncreaseForUnrolledRoomType": {
+      "args": [
+        {"name": "roomType", "type": "Opaque"},
+        {"name": "oddsIncrease", "type": "float", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyOddsIncreaseForUnrolledRoomType", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyOrbPassiveTriggerCount": {
+      "args": [
+        {"name": "orb", "type": "OrbRef"},
+        {"name": "triggerCount", "type": "int", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterModifyingOrbPassiveTriggerCount"],
+      "passes": [
+        {"changed": "ne", "hook": "ModifyOrbPassiveTriggerCounts", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyOrbValue": {
+      "args": [
+        {"name": "orb", "type": "OrbRef"},
+        {"name": "amount", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyOrbValue", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyPowerAmountGiven": {
+      "args": [
+        {"name": "power", "type": "PowerRef"},
+        {"name": "giver", "type": "CreatureRef"},
+        {"name": "amount", "type": "decimal", "value": true},
+        {"name": "target", "type": "CreatureRef?"},
+        {"name": "cardSource", "type": "CardHandle?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterModifyingPowerAmountGiven"],
+      "passes": [
+        {"changed": "nonzero", "hook": "ModifyPowerAmountGivenAdditive", "op": "fold-add"},
+        {"changed": "not-one", "hook": "ModifyPowerAmountGivenMultiplicative", "op": "fold-mul"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyPowerAmountReceived": {
+      "args": [
+        {"name": "canonicalPower", "type": "PowerRef"},
+        {"name": "target", "type": "CreatureRef"},
+        {"name": "amount", "type": "decimal", "value": true},
+        {"name": "giver", "type": "CreatureRef?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterModifyingPowerAmountReceived"],
+      "passes": [
+        {"changed": "try-true", "hook": "TryModifyPowerAmountReceived", "op": "try"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyRestSiteHealAmount": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"},
+        {"name": "amount", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyRestSiteHealAmount", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyRestSiteHealRewards": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "rewards", "type": "Opaque"},
+        {"name": "isMimicked", "type": "bool"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "try-true", "hook": "TryModifyRestSiteHealRewards", "op": "try"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyRestSiteOptions": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "options", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "try-true", "hook": "TryModifyRestSiteOptions", "op": "try"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyRewards": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "rewards", "type": "Opaque"},
+        {"name": "room", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": ["AfterModifyingRewards"],
+      "passes": [
+        {"changed": "try-true", "hook": "TryModifyRewards", "op": "try"},
+        {"changed": "try-true", "hook": "TryModifyRewardsLate", "op": "try"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyShuffleOrder": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "cards", "type": "MutableCardList"},
+        {"name": "isInitialShuffle", "type": "bool"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyShuffleOrder", "op": "mutate"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyStarCost": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "originalCost", "type": "decimal", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "TryModifyStarCost", "op": "try"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "negative-cost-passthrough"}
+      ],
+      "wait_all": []
+    },
+    "ModifySummonAmount": {
+      "args": [
+        {"name": "summoner", "type": "PlayerRef"},
+        {"name": "amount", "type": "decimal", "value": true},
+        {"name": "source", "type": "ListenerRef?"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifySummonAmount", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyUnblockedDamageTarget": {
+      "args": [
+        {"name": "originalTarget", "type": "CreatureRef", "value": true},
+        {"name": "amount", "type": "decimal"},
+        {"name": "props", "type": "ValueProp"},
+        {"name": "dealer", "type": "CreatureRef?"}
+      ],
+      "context": "none",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyUnblockedDamageTarget", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyUnknownMapPointRoomTypes": {
+      "args": [
+        {"name": "roomTypes", "type": "Opaque", "value": true}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyUnknownMapPointRoomTypes", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ModifyXValue": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "originalValue", "type": "int", "value": true}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ModifyXValue", "op": "fold-set"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldAddToDeck": {
+      "args": [
+        {"name": "card", "type": "CardHandle"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldAddToDeck", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldAfflict": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "affliction", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldAfflict", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldAllowAncient": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "ancient", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldAllowAncient", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldAllowFreeTravel": {
+      "args": [],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldAllowFreeTravel", "op": "predicate-any"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldAllowHitting": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldAllowHitting", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldAllowMerchantCardRemoval": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldAllowMerchantCardRemoval", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldAllowSelectingMoreCardRewards": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "reward", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldAllowSelectingMoreCardRewards", "op": "predicate-any"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldAllowTargeting": {
+      "args": [
+        {"name": "target", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldAllowTargeting", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldClearBlock": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterPreventingBlockClear"],
+      "passes": [
+        {"changed": "none", "hook": "ShouldClearBlock", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldCreatureBeRemovedFromCombatAfterDeath": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldCreatureBeRemovedFromCombatAfterDeath", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldDie": {
+      "args": [
+        {"name": "creature", "type": "CreatureRef"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": ["AfterPreventingDeath"],
+      "passes": [
+        {"changed": "none", "hook": "ShouldDie", "op": "predicate-all"},
+        {"changed": "none", "hook": "ShouldDieLate", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldDisableRemainingRestSiteOptions": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldDisableRemainingRestSiteOptions", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldDraw": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "fromHandDraw", "type": "bool"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": ["AfterPreventingDraw"],
+      "passes": [
+        {"changed": "none", "hook": "ShouldDraw", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldEtherealTrigger": {
+      "args": [
+        {"name": "card", "type": "CardHandle"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldEtherealTrigger", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldFlush": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldFlush", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldForcePotionReward": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "roomType", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldForcePotionReward", "op": "predicate-any"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldGainStars": {
+      "args": [
+        {"name": "amount", "type": "decimal"},
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldGainStars", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldGenerateTreasure": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldGenerateTreasure", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldPayExcessEnergyCostWithStars": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldPayExcessEnergyCostWithStars", "op": "predicate-any"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldPlay": {
+      "args": [
+        {"name": "card", "type": "CardHandle"},
+        {"name": "autoPlayType", "type": "AutoPlay"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldPlay", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldPlayerResetEnergy": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldPlayerResetEnergy", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldPowerBeRemovedOnDeath": {
+      "args": [
+        {"name": "power", "type": "PowerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldPowerBeRemovedOnDeath", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [
+        {"step": "owner-in-combat"}
+      ],
+      "wait_all": []
+    },
+    "ShouldProceedToNextMapPoint": {
+      "args": [],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldProceedToNextMapPoint", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldProcurePotion": {
+      "args": [
+        {"name": "potion", "type": "PotionRef"},
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "run+combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldProcurePotion", "op": "predicate-all"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldRefillMerchantEntry": {
+      "args": [
+        {"name": "entry", "type": "Opaque"},
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldRefillMerchantEntry", "op": "predicate-any"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldStopCombatFromEnding": {
+      "args": [],
+      "context": "none",
+      "iterator": "combat-direct",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldStopCombatFromEnding", "op": "predicate-any"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "ShouldTakeExtraTurn": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"}
+      ],
+      "context": "none",
+      "iterator": "combat",
+      "partner": [],
+      "passes": [
+        {"changed": "none", "hook": "ShouldTakeExtraTurn", "op": "predicate-any"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    },
+    "TryModifyCardRewardOptions": {
+      "args": [
+        {"name": "player", "type": "PlayerRef"},
+        {"name": "cardRewardOptions", "type": "Opaque"},
+        {"name": "creationOptions", "type": "Opaque"}
+      ],
+      "context": "none",
+      "iterator": "run",
+      "partner": ["AfterModifyingCardRewardOptions"],
+      "passes": [
+        {"changed": "try-true", "hook": "TryModifyCardRewardOptions", "op": "try"},
+        {"changed": "try-true", "hook": "TryModifyCardRewardOptionsLate", "op": "try"}
+      ],
+      "post": [],
+      "pre": [],
+      "wait_all": []
+    }
+  }
+}

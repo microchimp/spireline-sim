@@ -4,6 +4,7 @@
 // only supplies realistic decks and encounters. Prints one JSON document.
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Tests.Invariants;
 
 static class Meta
@@ -60,7 +61,7 @@ static class Meta
                 fights++;
                 Func<Combat> fresh = () =>
                 {
-                    var e = Fight.EnterRoom(game, new JsonObject());
+                    var e = OldEngine.EnterRoom(game, new JsonObject());
                     var fork = e.ForkActiveCombat() ?? throw new InvalidOperationException($"no combat after entering the room ({e.State.Phase})");
                     return new Combat(fork.Combat, fork.Rng);
                 };

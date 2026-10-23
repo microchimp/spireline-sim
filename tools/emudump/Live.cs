@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core.Run;
 using Sts2Emulator.Tests.Invariants;
 
@@ -48,8 +49,9 @@ static class Live
                 var tracker = new StateInvariants.Tracker();
                 var broken = new HashSet<string>();
                 object? current = null;
-                Fight.AfterStep = (engine, step) =>
+                Fight.AfterStep = (iengine, step) =>
                 {
+                    var engine = OldEngine.Of(iengine).Run;
                     if (engine.State.Phase != RunPhase.Combat || engine.State.ActiveCombat is not { } combat)
                     {
                         return;

@@ -15,6 +15,7 @@
 // - A screen whose cards differ from the game's (an earlier item left the emulator's deck elsewhere) is
 //   matched by card id, as the mirror always did, and is a gap only when the id cannot tell the copies apart.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core.Run;
@@ -29,7 +30,7 @@ public class SetupPickTests
     static (RunEngine e, List<JsonObject> log) Replay(JsonObject record)
     {
         var outp = new JsonObject();
-        var e = Fight.EnterRoom(record, outp);
+        var e = OldEngine.EnterRoom(record, outp);
         return (e, outp["setup_log"]!.AsArray().Select(x => x!.AsObject()).ToList());
     }
 
@@ -73,7 +74,7 @@ public class SetupPickTests
         Assert.Equal(1, all.Count(c => c.Enchantment == Enchantment.Momentum));
         // Two different Strikes: the Hammer's card is out of the Dagger's list.
         Assert.All(all.Where(c => c.Enchantment is Enchantment.Sharp or Enchantment.Momentum),
-            c => Assert.Equal(Fight.CardIdBySnake("STRIKE_IRONCLAD"), c.DefId));
+            c => Assert.Equal(OldIds.CardIdBySnake("STRIKE_IRONCLAD"), c.DefId));
     }
 
     [Fact]
@@ -89,7 +90,7 @@ public class SetupPickTests
         Assert.Equal(1, all.Count(c => c.Enchantment == Enchantment.Adroit));
         var stamped = all.Where(c => c.Enchantment == Enchantment.RoyallyApproved).ToList();
         Assert.Single(stamped);
-        Assert.Equal(Fight.CardIdBySnake("STRIKE_IRONCLAD"), stamped[0].DefId);
+        Assert.Equal(OldIds.CardIdBySnake("STRIKE_IRONCLAD"), stamped[0].DefId);
     }
 
     // ---- Screens that list other cards than the game's (records from lab batch dense-b) --------------------
@@ -111,7 +112,7 @@ public class SetupPickTests
         var all = e.State.ActiveCombat!.Hand.Concat(e.State.ActiveCombat.DrawPile).Concat(e.State.ActiveCombat.DiscardPile).ToList();
         var stamped = all.Where(c => c.Enchantment == Enchantment.RoyallyApproved).ToList();
         Assert.Single(stamped);
-        Assert.Equal(Fight.CardIdBySnake("STRIKE_IRONCLAD"), stamped[0].DefId);
+        Assert.Equal(OldIds.CardIdBySnake("STRIKE_IRONCLAD"), stamped[0].DefId);
     }
 
     [Fact]
@@ -127,7 +128,7 @@ public class SetupPickTests
         AssertSupported(log);
         // The starter deck's five Strikes and the copy.
         var all = e.State.ActiveCombat!.Hand.Concat(e.State.ActiveCombat.DrawPile).Concat(e.State.ActiveCombat.DiscardPile).ToList();
-        Assert.Equal(6, all.Count(c => c.DefId == Fight.CardIdBySnake("STRIKE_IRONCLAD")));
+        Assert.Equal(6, all.Count(c => c.DefId == OldIds.CardIdBySnake("STRIKE_IRONCLAD")));
     }
 
     // ---- Every relic whose pickup opens a deck selection -------------------------------------------------
@@ -178,7 +179,7 @@ public class SetupPickTests
         e.State.Deck.Clear();
         foreach (string card in cards)
         {
-            RunNonCombatEffects.AddCardToDeck(e.State, new CardInstance(Fight.CardIdBySnake(card), Upgraded: false));
+            RunNonCombatEffects.AddCardToDeck(e.State, new CardInstance(OldIds.CardIdBySnake(card), Upgraded: false));
         }
 
         return e;
@@ -378,8 +379,8 @@ public class SetupPickTests
         // says only "BASH", and the lists differ, so which copy the game took cannot be told.
         var e = AtMapWithDeck("TAUNT", "STRIKE_IRONCLAD");
         var s = e.State;
-        RunNonCombatEffects.AddCardToDeck(s, new CardInstance(Fight.CardIdBySnake("BASH"), Upgraded: true));
-        RunNonCombatEffects.AddCardToDeck(s, new CardInstance(Fight.CardIdBySnake("BASH"), Upgraded: false));
+        RunNonCombatEffects.AddCardToDeck(s, new CardInstance(OldIds.CardIdBySnake("BASH"), Upgraded: true));
+        RunNonCombatEffects.AddCardToDeck(s, new CardInstance(OldIds.CardIdBySnake("BASH"), Upgraded: false));
         Assert.Equal(RunFollowUp.TransformSelect, RunNonCombatEffects.ApplyRelicPickup(s, RelicEffects.DollysMirror, SelectionReturn.Map));
         s.Phase = RunPhase.TransformSelect;
         var choice = Choice(1, 1, new[] { "BASH", "TAUNT" }, 0);
@@ -405,7 +406,7 @@ public class SetupPickTests
 
         Assert.Null(gap);
         Assert.NotNull(note);
-        Assert.Equal(3, s.Deck.Count(c => c.DefId == Fight.CardIdBySnake("BASH")));
+        Assert.Equal(3, s.Deck.Count(c => c.DefId == OldIds.CardIdBySnake("BASH")));
     }
 
     [Fact]
