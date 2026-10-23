@@ -57,12 +57,14 @@ public static partial class Driver
             var bundles = node.GetType().GetField("_bundles", Private)?.GetValue(node)
                 as IReadOnlyList<IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel>>;
             if (src == null || bundles == null || bundles.Count == 0 || src.Task.IsCompleted) continue;
+            int bi = Env.Decide("bundle", bundles.Count,
+                () => new JsonArray(bundles.Select(b => (JsonNode)new JsonArray(b.Select(c => (JsonNode)c.Id.Entry).ToArray())).ToArray()), () => 0);
             ScreenLog?.Add(new JsonObject
             {
-                ["kind"] = "bundle", ["step"] = CurrentStep, ["picked"] = 0,
+                ["kind"] = "bundle", ["step"] = CurrentStep, ["picked"] = bi,
                 ["options"] = new JsonArray(bundles.Select(b => (JsonNode)new JsonArray(b.Select(c => (JsonNode)c.Id.Entry).ToArray())).ToArray()),
             });
-            src.SetResult(new[] { bundles[0] });
+            src.SetResult(new[] { bundles[bi] });
         }
     }
 

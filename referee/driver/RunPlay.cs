@@ -107,7 +107,8 @@ public static partial class Driver
             if (CombatManager.Instance.IsInProgress) return _fight.GetSelectedCards(options, minSelect, maxSelect);
             var list = options.ToList();
             int n = Math.Min(list.Count, Math.Max(minSelect, Math.Min(1, maxSelect)));
-            var idx = Enumerable.Range(0, list.Count).OrderBy(_ => _run.Rng.Next()).Take(n).OrderBy(i => i).ToList();
+            var idx = Env.DecideMany("select_cards", list.Select(c => (JsonNode)CardJson(c)).ToList(), n,
+                () => Enumerable.Range(0, list.Count).OrderBy(_ => _run.Rng.Next()).Take(n).OrderBy(i => i).ToList());
             var deck = _run.State.Players[0].Deck.Cards.ToList();
             Log(new JsonObject
             {
@@ -123,7 +124,8 @@ public static partial class Driver
         public CardRewardSelection GetSelectedCardReward(IReadOnlyList<CardCreationResult> options, IReadOnlyList<CardRewardAlternative> alternatives)
         {
             if (CombatManager.Instance.IsInProgress) return _fight.GetSelectedCardReward(options, alternatives);
-            int pick = options.Count == 0 ? -1 : _run.Rng.Next(options.Count);
+            int pick = options.Count == 0 ? -1 : Env.Decide("card_reward", options.Count,
+                () => new JsonArray(options.Select(o => (JsonNode)CardJson(o.Card)).ToArray()), () => _run.Rng.Next(options.Count));
             Log(new JsonObject
             {
                 ["kind"] = "card_reward",
@@ -149,6 +151,10 @@ public static partial class Driver
         var player = state.Players[0];
         var log = new RunLog(state, (int?)spec["chooser_seed"] ?? 1);
         var selector = new RunSelector(log);
+        Env.Run = state;  // Env.cs: decision points ask the agent (or trace) only inside a run
+        Env.Trace = Env.Tracing ? new JsonArray() : null;
+        FirstChoiceSelector.PickHook = Env.Live || Env.Tracing ? FightPick : null;
+        FirstChoiceSelector.CardRewardHook = Env.Live || Env.Tracing ? FightCardReward : null;
         using var selection = CardSelectCmd.UseSelector(selector);
         ScreenLog = selector.FightLog;
         int maxDecisions = (int?)spec["max_decisions"] ?? 1500;
@@ -190,7 +196,9 @@ public static partial class Driver
                 if (options.Count == 0) { end = "no_map_options"; break; }
                 var preferred = options.Where(p => !avoid.Contains(p.PointType.ToString())).ToList();
                 var pickFrom = preferred.Count > 0 ? preferred : options;
-                var target = pickFrom[log.Rng.Next(pickFrom.Count)];
+                var target = options[Env.Decide("map", options.Count,
+                    () => new JsonArray(options.Select(p => (JsonNode)new JsonArray(p.coord.col, p.coord.row, p.PointType.ToString())).ToArray()),
+                    () => options.IndexOf(pickFrom[log.Rng.Next(pickFrom.Count)]))];
                 var md = log.Begin("map");
                 md["offer"] = new JsonArray(options.Select(p => (JsonNode)new JsonArray(p.coord.col, p.coord.row, p.PointType.ToString())).ToArray());
                 md["choice"] = new JsonArray(target.coord.col, target.coord.row);
@@ -241,12 +249,24 @@ public static partial class Driver
                 if (stop != null) { end = stop; break; }
             }
         }
+        catch (Env.Closed)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             end = "error";
             dump["error"] = ex.ToString();
         }
+        finally
+        {
+            Env.Run = null;
+            FirstChoiceSelector.PickHook = null;
+            FirstChoiceSelector.CardRewardHook = null;
+        }
 
+        if (Env.Trace != null) dump["env_trace"] = Env.Trace;
+        Env.Trace = null;
         dump["end"] = end;
         dump["floor"] = state.TotalFloor;
         dump["fight_selections"] = selector.FightLog;
@@ -307,7 +327,9 @@ public static partial class Driver
             var opts = ev.CurrentOptions.ToList();
             var enabled = Enumerable.Range(0, opts.Count).Where(i => !opts[i].IsLocked).ToList();
             if (enabled.Count == 0) return $"event_all_locked:{ev.Id.Entry}";
-            int pick = enabled[log.Rng.Next(enabled.Count)];
+            int pick = enabled[Env.Decide(screen, enabled.Count,
+                () => new JsonArray(enabled.Select(i => (JsonNode)(opts[i].Relic?.Id.Entry ?? opts[i].TextKey)).ToArray()),
+                () => log.Rng.Next(enabled.Count), () => ev.Id.Entry)];
             var d = log.Begin(screen);
             d["event"] = ev.Id.Entry;
             d["offer"] = new JsonArray(opts.Select(o => (JsonNode)new JsonArray(o.Relic?.Id.Entry ?? o.TextKey, o.IsLocked)).ToArray());
@@ -323,6 +345,9 @@ public static partial class Driver
                    && !CrystalSphereOpen())
             {
                 if (TopRewardsSet() != null) { log.End(); await TakeRewards(log, takeAll: screen is "neow" or "ancient"); continue; }
+                // A screen the option opens outside the selector hook (Scroll Boxes' bundles off Neow): answered here,
+                // or the option's task waits out the 60 s budget (2 of 54 random runs) before TakeRewards answers it.
+                AnswerOpenScreens();
                 Heartbeat();
                 await ((SceneTree)Engine.GetMainLoop()).ToSignal(Engine.GetMainLoop(), SceneTree.SignalName.ProcessFrame);
             }
@@ -355,8 +380,11 @@ public static partial class Driver
         {
             var entries = inv.RelicEntries.ToList();
             var cands = Enumerable.Range(0, entries.Count).Where(i => entries[i].IsStocked && entries[i].EnoughGold).ToList();
-            if (cands.Count == 0 || log.Rng.NextDouble() < 0.4) break;
-            int slot = cands[log.Rng.Next(cands.Count)];
+            int fi = Env.Decide("fake_merchant", cands.Count + 1,
+                () => new JsonArray(cands.Select(i => (JsonNode)new JsonArray("buy", entries[i].Model?.Id.Entry, entries[i].Cost)).Append(new JsonArray("leave")).ToArray()),
+                () => cands.Count == 0 || log.Rng.NextDouble() < 0.4 ? cands.Count : log.Rng.Next(cands.Count));
+            if (fi == cands.Count) break;
+            int slot = cands[fi];
             var d = log.Begin("fake_merchant");
             d["offer"] = Stock();
             d["choice"] = new JsonObject { ["buy"] = "relic", ["slot"] = slot };
@@ -408,7 +436,8 @@ public static partial class Driver
                 }
 
             if (cands.Count == 0) break;
-            var (tool, cx, cy) = cands[log.Rng.Next(cands.Count)];
+            var (tool, cx, cy) = cands[Env.Decide("crystal_sphere", cands.Count,
+                () => new JsonArray(cands.Select(c => (JsonNode)new JsonArray(c.tool, c.x, c.y)).ToArray()), () => log.Rng.Next(cands.Count))];
             var d = log.Begin("crystal_sphere");
             d["choice"] = new JsonObject { ["tool"] = tool, ["x"] = cx, ["y"] = cy };
             gt.GetMethod("SetTool")!.Invoke(game, new[] { Enum.Parse(toolType, tool) });
@@ -523,10 +552,17 @@ public static partial class Driver
             {
                 if (reward.SuccessfullySelected) continue;
                 if (!RewardsStack().Contains(top)) break;  // the set is complete: nothing left to select into it
-                bool take = takeAll || set.DisallowSkipping || reward is GoldReward or RelicReward or SpecialCardReward
-                    || (reward is PotionReward && player.PotionSlots.Any(p => p == null))
-                    || (reward is CardReward && log.Rng.NextDouble() >= 0.2);
-                if (reward is PotionReward && player.PotionSlots.All(p => p != null) && !set.DisallowSkipping) take = false;
+                // Gold and special cards are always taken; a card, potion or relic reward is the agent's take or skip
+                // (the seeded chooser: a card skipped one time in five, a potion taken while a slot is open, a relic
+                // always), unless the screen takes all or cannot be skipped.
+                bool canTake = !(reward is PotionReward && player.PotionSlots.All(p => p != null) && !set.DisallowSkipping);
+                bool take;
+                if (!canTake) take = false;
+                else if (takeAll || set.DisallowSkipping || reward is GoldReward or SpecialCardReward) take = true;
+                else if (reward is CardReward or PotionReward or RelicReward)
+                    take = Env.Decide("reward", 2, () => new JsonArray("take", "skip"),
+                        () => reward is CardReward && log.Rng.NextDouble() < 0.2 ? 1 : 0, () => RewardJson(reward)) == 0;
+                else take = false;
                 if (!take) continue;
                 var d = log.Begin("rewards");
                 if (depth > 0) d["depth"] = depth;
@@ -591,7 +627,8 @@ public static partial class Driver
         var source = screen.GetType().GetField("_completionSource", Private)?.GetValue(screen) as TaskCompletionSource<int?>;
         if (source == null || source.Task.IsCompleted) return;
         int n = cr.Cards.Count();
-        int pick = log.Rng.Next(n);
+        int pick = Env.Decide("card_reward", n, () => new JsonArray(cr.Cards.Select(c => (JsonNode)CardJson(c)).ToArray()),
+            () => log.Rng.Next(n));
         d["card"] = CardJson(cr.Cards.ElementAt(pick));
         source.SetResult(pick);
     }
@@ -603,7 +640,8 @@ public static partial class Driver
         var enabled = Enumerable.Range(0, opts.Count).Where(i => opts[i].IsEnabled).ToList();
         if (enabled.Count > 0)
         {
-            int pick = enabled[log.Rng.Next(enabled.Count)];
+            int pick = enabled[Env.Decide("rest", enabled.Count,
+                () => new JsonArray(enabled.Select(i => (JsonNode)opts[i].OptionId).ToArray()), () => log.Rng.Next(enabled.Count))];
             var d = log.Begin("rest");
             d["offer"] = new JsonArray(opts.Select(o => (JsonNode)new JsonArray(o.OptionId, o.IsEnabled)).ToArray());
             d["choice"] = opts[pick].OptionId;
@@ -639,7 +677,8 @@ public static partial class Driver
         if (relics == null) return "treasure_without_relic_picking";
         var r = log.Begin("treasure");
         r["offer"] = new JsonArray((relics ?? Array.Empty<RelicModel>()).Select(x => (JsonNode)x.Id.Entry).ToArray());
-        if (relics is { Count: > 0 } && log.Rng.NextDouble() >= 0.1)
+        if (relics is { Count: > 0 } && Env.Decide("treasure", 2, () => new JsonArray(new JsonArray("take", relics[0].Id.Entry), "skip"),
+                () => log.Rng.NextDouble() >= 0.1 ? 0 : 1) == 0)
         {
             // A relic holder's click (NTreasureRoomRelicCollection); the collection then awards it.
             r["choice"] = "take";
@@ -681,8 +720,11 @@ public static partial class Driver
                 for (int i = 0; i < potions.Count; i++) cands.Add(("potion", i, potions[i]));
             if (inv.CardRemovalEntry is { } removal) cands.Add(("remove", 0, removal));
             cands = cands.Where(c => c.entry.IsStocked && c.entry.EnoughGold).ToList();
-            if (cands.Count == 0 || log.Rng.NextDouble() < 0.35) break;
-            var (kind, slot, entry) = cands[log.Rng.Next(cands.Count)];
+            int si = Env.Decide("shop", cands.Count + 1,
+                () => new JsonArray(cands.Select(c => (JsonNode)new JsonArray(c.kind, c.slot, c.entry.Cost)).Append(new JsonArray("leave")).ToArray()),
+                () => cands.Count == 0 || log.Rng.NextDouble() < 0.35 ? cands.Count : log.Rng.Next(cands.Count), () => ShopJson(inv));
+            if (si == cands.Count) break;
+            var (kind, slot, entry) = cands[si];
             var d = log.Begin("shop");
             d["offer"] = ShopJson(inv);
             d["choice"] = new JsonObject { ["buy"] = kind, ["slot"] = slot };
@@ -790,10 +832,33 @@ public static partial class Driver
                             && x.p.Usage is MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly or MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime
                             && player.CanRemovePotions)
                 .ToList() : new();
-            if (usable.Count > 0 && rng.Next(8) == 0)
+            // One list of legal actions: end turn and plays (options), then each usable potion at each target.
+            var potionActs = new List<(PotionModel potion, int slot, int target)>();
+            foreach (var (pm, ps) in usable)
             {
-                var (potion, slot) = usable[rng.Next(usable.Count)];
-                Creature? at = potion!.TargetType == TargetType.AnyEnemy && enemies.Count > 0 ? enemies[rng.Next(enemies.Count)] : null;
+                if (pm!.TargetType == TargetType.AnyEnemy && enemies.Count > 0)
+                    for (int t = 0; t < enemies.Count; t++) potionActs.Add((pm, ps, t));
+                else potionActs.Add((pm, ps, -1));
+            }
+
+            int choice = Env.Decide("combat", options.Count + potionActs.Count, () => new JsonArray(options
+                    .Select(o => (JsonNode)(o.hand < 0 ? new JsonArray("end") : new JsonArray("play", o.hand, hand[o.hand].Id.Entry, o.target)))
+                    .Concat(potionActs.Select(x => (JsonNode)new JsonArray("potion", x.slot, x.potion.Id.Entry, x.target))).ToArray()),
+                () =>
+                {
+                    if (usable.Count > 0 && rng.Next(8) == 0)
+                    {
+                        var (p0, s0) = usable[rng.Next(usable.Count)];
+                        int t0 = p0!.TargetType == TargetType.AnyEnemy && enemies.Count > 0 ? rng.Next(enemies.Count) : -1;
+                        return options.Count + potionActs.FindIndex(x => x.slot == s0 && x.target == t0);
+                    }
+
+                    return rng.Next(options.Count);
+                });
+            if (choice >= options.Count)
+            {
+                var (potion, slot, pt) = potionActs[choice - options.Count];
+                Creature? at = pt >= 0 ? enemies[pt] : null;
                 var pa = new JsonObject
                 {
                     ["kind"] = "potion", ["slot"] = slot, ["potion"] = potion.Id.Entry,
@@ -811,7 +876,7 @@ public static partial class Driver
                 continue;
             }
 
-            var (hi, ti) = options[rng.Next(options.Count)];
+            var (hi, ti) = options[choice];
             JsonObject action;
             if (hi < 0)
             {

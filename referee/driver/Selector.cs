@@ -56,6 +56,12 @@ public sealed class FirstChoiceSelector : ICardSelector
     /// <summary>"ui" (default): turn-start screens are answered where the UI would show them; "instant": at once.</summary>
     internal static string PickTiming = "ui";
 
+    /// <summary>Set inside a whole run with an agent channel or a trace (Env.cs): which of the list to pick, ascending.</summary>
+    internal static Func<List<CardModel>, int, List<int>>? PickHook;
+
+    /// <summary>As PickHook, for a card reward offered inside a fight.</summary>
+    internal static Func<IReadOnlyList<CardCreationResult>, int>? CardRewardHook;
+
     public JsonArray Log { get; } = new();
 
     public FirstChoiceSelector() => CaptureChoiceContexts();
@@ -202,8 +208,8 @@ public sealed class FirstChoiceSelector : ICardSelector
     {
         string? edge = NextEdge();
         int n = Math.Min(list.Count, Math.Max(minSelect, Math.Min(1, maxSelect)));
-        var at = edge == null ? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
-        var picked = edge == null ? list.Take(n).ToList() : at.Select(i => list[i]).ToList();
+        var at = edge == null ? PickHook?.Invoke(list, n) ?? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
+        var picked = at.Select(i => list[i]).ToList();
         var entry = new JsonObject
         {
             ["kind"] = "cards",
@@ -229,6 +235,7 @@ public sealed class FirstChoiceSelector : ICardSelector
 
     public CardRewardSelection GetSelectedCardReward(IReadOnlyList<CardCreationResult> options, IReadOnlyList<CardRewardAlternative> alternatives)
     {
+        int pick = 0;
         // Nodeless there is no card reward screen, so this answers what Driver.AnswerCardRewardScreen
         // answers on the full host; log it the way that does (card 0, no step), so both hosts agree.
         Log.Add(Nodeless.Active
@@ -243,8 +250,8 @@ public sealed class FirstChoiceSelector : ICardSelector
                 ["kind"] = "card_reward",
                 ["step"] = Driver.CurrentStep,
                 ["options"] = new JsonArray(options.Select(o => (JsonNode)o.Card.Id.Entry).ToArray()),
-                ["picked"] = options.Count > 0 ? 0 : -1,
+                ["picked"] = options.Count > 0 ? (pick = CardRewardHook?.Invoke(options) ?? 0) : -1,
             });
-        return options.Count == 0 ? default : new CardRewardSelection { card = options[0].Card, alternative = null };
+        return options.Count == 0 ? default : new CardRewardSelection { card = options[pick].Card, alternative = null };
     }
 }
