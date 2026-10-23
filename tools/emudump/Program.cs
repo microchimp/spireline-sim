@@ -30,6 +30,12 @@ if (args[0] == "hookprobe")
     Environment.Exit(HookProbeMode.Run(args[1..]));
 }
 
+if (args[0] == "kernel-order")
+{
+    // EmuDump kernel-order <scenarios.json> <out.json>: the kernel's listener lists on the hook_order scenarios (Engines/Old/KernelOrder.cs).
+    Environment.Exit(KernelOrderMode.Run(args[1..]));
+}
+
 if (args[0] == "codex")
 {
     // EmuDump codex <runs.jsonl[.gz]> <out.jsonl> [...]: real run histories against the run engine.
