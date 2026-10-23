@@ -88,23 +88,55 @@ internal static class ListenerTrace
             postfix: new HarmonyMethod(typeof(ListenerTrace), nameof(RunPostfix)));
     }
 
+    // The postfixes run in the game's call path: any exception from our code is swallowed here, leaving __result
+    // exactly as the game returned it (its own enumerable, unwrapped) and recording nothing for that enumeration.
+    // The id is taken only after HookName succeeded, so a failed attempt does not move the numbering.
     private static void CombatPostfix(ref IEnumerable<AbstractModel> __result)
     {
         if (!Enabled || Trace.Events == null) return;
-        // Inside a run enumeration's advance: the combat part the run yields (logged by the run's wrapper, once).
-        if (_moving != null) __result = SnapChild(__result, _moving);
-        else __result = Wrap(__result, _nextId++, null, HookName());
+        try
+        {
+            IEnumerable<AbstractModel> wrapped;
+            // Inside a run enumeration's advance: the combat part the run yields (logged by the run's wrapper, once).
+            if (_moving != null) wrapped = SnapChild(__result, _moving);
+            else
+            {
+                string hook = HookName();
+                wrapped = Wrap(__result, _nextId++, null, hook);
+            }
+
+            __result = wrapped;
+        }
+        catch (Exception)
+        {
+            // Observation only: the game's enumerable stays as it is.
+        }
     }
 
     private static void RunPostfix(ref IEnumerable<AbstractModel> __result)
     {
         if (!Enabled || Trace.Events == null) return;
-        __result = Wrap(__result, _nextId++, new RunHolder(), HookName());
+        try
+        {
+            string hook = HookName();
+            __result = Wrap(__result, _nextId++, new RunHolder(), hook);
+        }
+        catch (Exception)
+        {
+            // Observation only: the game's enumerable stays as it is.
+        }
+    }
+
+    /// <summary>Appends a record; a failure to do so never reaches the game.</summary>
+    private static void Emit(JsonArray? rec)
+    {
+        try { if (rec != null) Trace.Events?.Add(rec); }
+        catch (Exception) { }
     }
 
     private static IEnumerable<AbstractModel> Wrap(IEnumerable<AbstractModel> inner, int id, RunHolder? run, string hook)
     {
-        Trace.Events?.Add(new JsonArray("LB", id, hook, run != null ? "run" : "combat"));
+        Emit(new JsonArray("LB", id, hook, run != null ? "run" : "combat"));
         try
         {
             using var e = inner.GetEnumerator();
@@ -120,13 +152,13 @@ internal static class ListenerTrace
                 finally { _moving = outer; }
                 if (!more) yield break;
                 AbstractModel m = e.Current;
-                Trace.Events?.Add(Describe(id, m, run?.Child, own));
+                Emit(DescribeSafe(id, m, run?.Child, own));
                 yield return m;
             }
         }
         finally
         {
-            Trace.Events?.Add(new JsonArray("LE", id));
+            Emit(new JsonArray("LE", id));
         }
     }
 
@@ -182,8 +214,23 @@ internal static class ListenerTrace
 
     // ── what is written per listener ───────────────────────────────────────────────────────
 
+    /// <summary>Describe, or null if even the fallback record cannot be built (then nothing is logged for that listener).</summary>
+    private static JsonArray? DescribeSafe(int id, AbstractModel m, Snap? first, Snap second)
+    {
+        try { return Describe(id, m, first, second); }
+        catch (Exception) { return null; }
+    }
+
+    /// <summary>The model's id entry; "?" for a model whose id cannot be read (the rest of its record is still made).</summary>
+    private static string IdOf(AbstractModel m)
+    {
+        try { return m.Id.Entry; }
+        catch (Exception) { return "?"; }
+    }
+
     private static JsonArray Describe(int id, AbstractModel m, Snap? first, Snap second)
     {
+        string entry = IdOf(m);
         string kind = "other";
         JsonNode? owner = null;
         JsonNode? index = null;
@@ -191,7 +238,7 @@ internal static class ListenerTrace
         {
             if (Kind(m) is string k && ((first != null && first.TryGetValue(m, out var hit)) || second.TryGetValue(m, out hit)))
             {
-                return new JsonArray("L", id, m.Id.Entry, k, hit.Owner?.DeepClone(), hit.Index?.DeepClone());
+                return new JsonArray("L", id, entry, k, hit.Owner?.DeepClone(), hit.Index?.DeepClone());
             }
 
             switch (m)
@@ -251,7 +298,7 @@ internal static class ListenerTrace
             kind += "!" + ex.GetType().Name;
         }
 
-        return new JsonArray("L", id, m.Id.Entry, kind, owner, index);
+        return new JsonArray("L", id, entry, kind, owner, index);
     }
 
     private static string? Kind(AbstractModel m) => m switch
