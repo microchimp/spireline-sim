@@ -58,10 +58,10 @@ class RankTest(unittest.TestCase):
     def test_order_weights_and_tags(self):
         divs = [rec(1, 40, HP), rec(2, 5, SAME_SIZE), rec(3, 5, SAME_SIZE, span=9), rec(5, 3, [[".combat.powers", 1, 2]])]
         g = self.doc(divs)["groups"]
-        by = {x["key"]["kinds"][0]: x for x in g}
+        by = {x["display"]["kinds"][0]: x for x in g}
         pile = by[".combat.hand"]
         self.assertEqual(1, pile["rank"])
-        self.assertEqual(["card:DEFEND_IRONCLAD", "card:STRIKE_IRONCLAD"], pile["key"]["entities"])
+        self.assertEqual(["card:DEFEND_IRONCLAD", "card:STRIKE_IRONCLAD"], pile["display"]["entities"])
         self.assertAlmostEqual(1.9 + 10 * 1.9, pile["weight"], places=3)
         self.assertEqual(12 - 1, pile["decisions_affected"])
         self.assertEqual(5, pile["first_floor"])
@@ -82,17 +82,17 @@ class RankTest(unittest.TestCase):
 
     def test_outcome_changing_proxy_and_confirmed(self):
         d = self.doc([rec(1, 50, RUN_HP, type="map"), rec(2, 50, HP)])
-        by = {g["key"]["type"]: g for g in d["groups"]}
-        self.assertEqual(1.0, by["map"]["outcome_changing_share"])  # carried state, no re-anchor: proxy
-        self.assertAlmostEqual(1.5, by["map"]["weight"])
-        self.assertEqual(0.0, by["combat"]["outcome_changing_share"])
+        by = {g["display"]["type"]: g for g in d["groups"]}
+        self.assertEqual((0, 1), (by["map"]["outcome_changing_confirmed"], by["map"]["outcome_changing_proxy"]))  # carried state: proxy
+        self.assertAlmostEqual(1.0, by["map"]["weight"])  # the proxy does not weigh
+        self.assertEqual((0, 0), (by["combat"]["outcome_changing_confirmed"], by["combat"]["outcome_changing_proxy"]))
         self.assertEqual((0, 1), (d["summary"]["outcome_confirmed"], d["summary"]["outcome_proxy"]))
         # a repaired (re-anchored) divergence is not outcome-changing by proxy
-        self.assertEqual(0.0, self.doc([rec(1, 50, RUN_HP, type="map", reanchored=True)])["groups"][0]["outcome_changing_share"])
+        self.assertEqual(0, self.doc([rec(1, 50, RUN_HP, type="map", reanchored=True)])["groups"][0]["outcome_changing_proxy"])
         # an emulator outcome, when recorded, decides
         same = self.doc([rec(1, 50, HP, emu_outcome={"class": "death", "floor": 9})])["groups"][0]
         diff = self.doc([rec(1, 50, HP, emu_outcome={"class": "win", "floor": 51})])["groups"][0]
-        self.assertEqual((0.0, 1.0), (same["outcome_changing_share"], diff["outcome_changing_share"]))
+        self.assertEqual((0, 1), (same["outcome_changing_confirmed"], diff["outcome_changing_confirmed"]))
         self.assertEqual(1, self.doc([rec(1, 50, HP, emu_outcome={"class": "win"})])["summary"]["outcome_confirmed"])
 
     def test_old_folders_without_span_outcome_or_assumed_flag(self):
@@ -108,7 +108,7 @@ class RankTest(unittest.TestCase):
         self.assertEqual(1, d["summary"]["groups"])
         self.assertEqual(1, d["summary"]["state_divergences"])
         self.assertAlmostEqual(0.001, d["summary"]["state_divergence_rate"])
-        self.assertEqual([], [g for g in d["groups"] if g["key"]["kinds"] == [".combat.enemy_hp"]])
+        self.assertEqual([], [g for g in d["groups"] if g["display"]["kinds"] == [".combat.enemy_hp"]])
 
     def test_gaps_are_counted_apart(self):
         d = self.doc([rec(1, 5, [], type="event", gap=True, reason="unmapped:event"), rec(2, 5, HP)])
@@ -116,10 +116,10 @@ class RankTest(unittest.TestCase):
         self.assertEqual({"unmapped:event": 1}, d["summary"]["gap_reasons"])
 
     def test_arch_share_and_rate(self):
-        # architectural: hp group at floor 50 = 1.0; single site: relics at floor 50 = 1.0 * 1.5 (proxy outcome)
+        # architectural: hp group at floor 50 = 1.0; single site: relics at floor 50 = 1.0 (a proxy does not weigh)
         d = self.doc([rec(1, 50, HP), rec(2, 50, [[".relics", ["A"], ["B"]]], type="treasure")], decisions=200)
         s = d["summary"]
-        self.assertAlmostEqual(1.0 / 2.5, s["arch_share"], places=3)
+        self.assertAlmostEqual(0.5, s["arch_share"], places=3)
         self.assertAlmostEqual(0.01, s["state_divergence_rate"])
 
     def test_cli_writes_the_files_and_a_missing_folder_is_empty(self):
@@ -129,6 +129,24 @@ class RankTest(unittest.TestCase):
         self.assertEqual(1, doc["summary"]["groups"])
         self.assertIn("| 1 |", (self.tmp / "out" / "top20.md").read_text())
         self.assertEqual(0, rank.rank(self.tmp / "nothing")["summary"]["groups"])
+
+    def test_confirmed_and_proxy_are_kept_apart_and_only_confirmed_weighs(self):
+        d = self.doc([rec(1, 50, RUN_HP, type="map"), rec(2, 50, HP, emu_outcome={"class": "win"})])
+        by = {g["display"]["type"]: g for g in d["groups"]}
+        self.assertEqual((0, 1, 1.0), (by["map"]["outcome_changing_confirmed"], by["map"]["outcome_changing_proxy"], by["map"]["weight"]))
+        self.assertEqual((1, 0, 1.5), (by["combat"]["outcome_changing_confirmed"], by["combat"]["outcome_changing_proxy"], by["combat"]["weight"]))
+        md = rank.top_md(d)
+        self.assertIn("outcome-changing confirmed", md)
+        self.assertIn("outcome-changing (proxy)", md)
+
+    def test_group_key_is_the_labs(self):
+        from tools.fidelity import lab_groups as lg
+        r = rec(1, 5, SAME_SIZE)
+        sym = {"source": "walk", "phase": "combat", "field": ".combat.hand", "first_event": None,
+               "ingredients": ["card:DEFEND_IRONCLAD", "card:STRIKE_IRONCLAD"], "implicated": []}
+        lab = lg.group_key({"keys": [lg.base_key(sym)], "mechanism": []})
+        self.assertEqual(lab, rank.group_key(r))
+        self.assertEqual(lg.stable_id(lab), self.doc([r])["groups"][0]["id"])
 
 
 class JobHookTest(Base):
