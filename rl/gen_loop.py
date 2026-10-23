@@ -846,6 +846,35 @@ def compare_arms(cand_rows: list[dict], base_rows: list[dict], alpha: float = AL
 # ------------------------------------------------------------------ the E-block and the promotion run
 
 
+TSV_COLUMNS = ("written", "cand_gen", "base_gen", "seed_block", "seeds", "d_floor", "floor_lower", "p_floor", "boss_cand",
+               "boss_base", "p_boss", "wins_cand", "wins_base", "decision", "cand_sha", "cand_dir")
+
+
+def read_promotions(tsv: Path | None) -> list[dict[str, str]]:
+    """The rows of promotions.tsv by column name (rows written before the sha column have none: ``""``)."""
+    if tsv is None or not Path(tsv).is_file():
+        return []
+    lines = [x for x in Path(tsv).read_text(encoding="utf-8").splitlines() if x.strip()]
+    head = lines[0].split("\t") if lines else []
+    return [dict(zip(head, x.split("\t"), strict=False)) for x in lines[1:]]
+
+
+def append_promotion(tsv: Path, values: dict[str, Any]) -> None:
+    """Add a row; a file with an older header is rewritten to the current columns first (old rows keep their values)."""
+    tsv = Path(tsv)
+    rows = read_promotions(tsv)
+    if not tsv.is_file() or tsv.read_text(encoding="utf-8").splitlines()[0].split("\t") != list(TSV_COLUMNS):
+        tsv.write_text("\t".join(TSV_COLUMNS) + "\n" + "".join("\t".join(r.get(c, "") for c in TSV_COLUMNS) + "\n" for r in rows),
+                       encoding="utf-8")
+    with tsv.open("a", encoding="utf-8") as fh:
+        fh.write("\t".join(str(values.get(c, "")) for c in TSV_COLUMNS) + "\n")
+
+
+def block_used_by_another(tsv: Path | None, block: str, cand_sha: str) -> bool:
+    """Whether `block` already judged a candidate other than `cand_sha` (a row without a sha counts as another one)."""
+    return any(r.get("seed_block") == block and r.get("cand_sha", "") != cand_sha for r in read_promotions(tsv))
+
+
 def check_disjoint(seeds: list[str], others: dict[str, list[str]]) -> None:
     """Raise if the block shares a seed with any of the named seed collections."""
     mine = set(seeds)
@@ -863,6 +892,10 @@ def known_seed_sets(seed_dir: Path, lab_runs: Path | list[Path] | None, e_name: 
     for f in sorted(Path(seed_dir).glob("*.json")):
         if f.stem != e_name:
             out[f.stem] = gen0.load_seeds(f)
+    for name in ("eval_seeds", "test_seeds"):  # run_train's held-out seeds (DESIGN 5.6)
+        f = ROOT / "rl" / "run_train" / f"{name}.json"
+        if f.is_file():
+            out[f"run_train {name}"] = gen0.load_seeds(f)
     sp: list[str] = []
     for d in ([lab_runs] if isinstance(lab_runs, (str, Path)) else list(lab_runs or [])):
         for f in Path(d).glob("*/runs.jsonl"):
@@ -900,27 +933,30 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     check_disjoint(seeds, known_seed_sets(Path(seeds_file).parent, lab_runs, name))
     cand_agent = load_agent(cand)
     base_agent = load_agent(base, agent_root=None if base else agent_root)
+    cand_sha = cand_agent.describe()["prior_sha256"] or "none"
+    tsv = Path(agent_root) / "promotions.tsv"
+    if block_used_by_another(tsv, name, cand_sha):  # a second look at one block is a look the alpha does not pay for
+        raise ValueError(f"E-block {name} already judged another candidate; make a fresh one (resolve_e_block)")
     arm = f"{name}-{config}"
     cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension)
     base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
     base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot)
+    if res["paired_seeds"] != len(seeds):  # a partial arm must not promote on fewer pairs than the block
+        raise ValueError(f"only {res['paired_seeds']} of {len(seeds)} seeds are paired in both arms")
     doc = {"written": utc_now(), "seed_block": name, "n_seeds": len(seeds), "config": config, "procs": procs,
            "alpha": ALPHA, "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
-           "decision_text": "promoted" if res["decision"]["promote"] else "rejected"}
+           "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha,
+           # DESIGN 5.3/5.4 ask for both; PLAN section 5 does not, so a promotion here is not the full DESIGN gate
+           "f7": "not run", "matched_wall_clock": False}
     write_json(Path(cand) / "promotion.json", doc)
     f, bk = doc["floor"], doc["boss_kill"]
-    line = "\t".join(str(x) for x in (doc["written"], cand_agent.generation, base_agent.generation, name, doc["n_seeds"],
-                                      f"{f['mean']:.4f}", f"{f['lower']:.4f}", f"{f['p']:.5f}", bk["cand"], bk["base"],
-                                      f"{bk['p']:.5f}", doc["cand"]["summary"]["wins"], doc["base"]["summary"]["wins"],
-                                      doc["decision_text"]))
-    tsv = Path(agent_root) / "promotions.tsv"
-    if not tsv.exists():
-        tsv.write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\td_floor\tfloor_lower\tp_floor\tboss_cand\tboss_base\t"
-                       "p_boss\twins_cand\twins_base\tdecision\n", encoding="utf-8")
-    with tsv.open("a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
+    append_promotion(tsv, {"written": doc["written"], "cand_gen": cand_agent.generation, "base_gen": base_agent.generation,
+                           "seed_block": name, "seeds": doc["n_seeds"], "d_floor": f"{f['mean']:.4f}", "floor_lower": f"{f['lower']:.4f}",
+                           "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
+                           "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
+                           "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name})
@@ -931,16 +967,23 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     return doc
 
 
-def resolve_e_block(template: str, k: int, n: int = 2000) -> Path:
+def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = None, cand_sha: str | None = None) -> Path:
     """The E-block for candidate generation `k`: `template` with {k} for the generation and {date} for today (UTC).
-    A file `E<k>-*.json` that already exists is used as it is (E1-2026-10-23 is committed); otherwise the block is
-    created by the seed rule, under a name no other generation has, so each promotion meets a fresh block."""
+    An existing `E<k>-*.json` that has not judged another candidate (per `promotions.tsv`) is used as it is
+    (E1-2026-10-23 is committed). If every such block did, a new `E<k>-<date>-r<n>` is created by the seed rule, so a
+    candidate is never judged on a block that already judged a different one."""
     import gen0  # noqa: PLC0415
 
     path = Path(template.format(k=k, date=datetime.now(UTC).strftime("%Y-%m-%d")))
     existing = sorted(path.parent.glob(f"E{k}-*.json"))
+    for p in existing:
+        if not block_used_by_another(tsv, p.stem, cand_sha or "none"):
+            return p
     if existing:
-        return existing[0]
+        j = 1
+        while (path.parent / f"{path.stem}-r{j}.json").exists():
+            j += 1
+        path = path.parent / f"{path.stem}-r{j}.json"
     gen0.write_seed_file(path.stem, n, path)
     return path
 

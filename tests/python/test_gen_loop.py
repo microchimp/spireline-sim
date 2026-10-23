@@ -467,5 +467,139 @@ class GenerationTagAtReadTests(unittest.TestCase):
                 gen_loop.build_training_set(gen_loop.window_manifests(Path(d), 2))
 
 
+def stub_candidate(root: Path, name: str, sha: str, generation: int = 5) -> Path:
+    """A candidate directory the agent loader accepts, with a policy sha; its prior is never loaded (rows are stubbed)."""
+    c = root / name
+    c.mkdir(parents=True)
+    (c / "model.json").write_text(json.dumps({"policy_sha256": sha}))
+    (c / "combat_policy.pt").write_bytes(b"x")
+    (c / "agent.json").write_text(json.dumps({"generation": generation, "macro": "rules"}))
+    return c
+
+
+def arm_rows_like(seeds, floor_of, kill_from=None):
+    return [{"seed": s, "floor": floor_of(i), "win": False, "end": "death", "decisions": 10, "wall": 1.0, "crash": False}
+            for i, s in enumerate(seeds)]
+
+
+class PromoteEndToEndTests(unittest.TestCase):
+    """`promote` with the arms stubbed: the tsv line, current.json and the marker only on a promotion, the refusal of a reused
+    block, the paired-count guard."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.seeds = [f"S{i:09d}" for i in range(300)]
+        self.seed_file = self.root / "seeds" / "Etest-1.json"
+        self.seed_file.parent.mkdir()
+        self.seed_file.write_text(json.dumps({"seeds": self.seeds}))
+        self.agents = self.root / "agent"
+        self.agents.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_promote(self, cand, better: bool, cand_rows_cut=None, lab=None):
+        base_rows = arm_rows_like(self.seeds, lambda i: 3 + i % 12)
+        cand_rows = arm_rows_like(self.seeds, (lambda i: 5 + i % 12) if better else (lambda i: 3 + i % 12))
+        if better:
+            for r in cand_rows[:80]:
+                r["floor"] = 18
+        if cand_rows_cut:
+            cand_rows = cand_rows[:cand_rows_cut]
+
+        def fake_run_arm(seeds, arm_dir, agent, config, procs, ascension=10):
+            return cand_rows if agent.prior_dir else base_rows
+
+        with mock.patch.object(gen_loop, "run_arm", fake_run_arm):
+            return gen_loop.promote(cand, None, self.seed_file, agent_root=self.agents, lab=lab, boot=500)
+
+    def test_a_promotion_writes_the_tsv_line_current_json_and_the_marker(self):
+        cand = stub_candidate(self.root, "gen5c", "sha-a")
+        lab = self.root / "lab"
+        doc = self.run_promote(cand, better=True, lab=lab)
+        self.assertEqual(doc["decision_text"], "promoted")
+        self.assertEqual((doc["f7"], doc["matched_wall_clock"], doc["cand_sha"]), ("not run", False, "sha-a"))
+        rows = gen_loop.read_promotions(self.agents / "promotions.tsv")
+        self.assertEqual([(r["seed_block"], r["decision"], r["cand_sha"], r["cand_dir"]) for r in rows],
+                         [("Etest-1", "promoted", "sha-a", "gen5c")])
+        cur = json.loads((self.agents / "current.json").read_text())
+        self.assertEqual((cur["generation"], Path(cur["dir"]).name), (5, "gen5c"))
+        self.assertTrue((lab / "score" / "pending").is_file())
+        self.assertTrue((cand / "promotion.json").is_file())
+
+    def test_a_rejection_leaves_current_json_and_the_marker_alone(self):
+        cand = stub_candidate(self.root, "gen5c", "sha-a")
+        lab = self.root / "lab"
+        doc = self.run_promote(cand, better=False, lab=lab)
+        self.assertEqual(doc["decision_text"], "rejected")
+        self.assertEqual(len(gen_loop.read_promotions(self.agents / "promotions.tsv")), 1)
+        self.assertFalse((self.agents / "current.json").exists())
+        self.assertFalse((lab / "score" / "pending").exists())
+
+    def test_a_block_that_judged_another_candidate_is_refused_and_the_same_one_may_resume(self):
+        self.run_promote(stub_candidate(self.root, "c1", "sha-a"), better=False)
+        with self.assertRaisesRegex(ValueError, "already judged another candidate"):
+            self.run_promote(stub_candidate(self.root, "c2", "sha-b"), better=False)
+        self.run_promote(self.root / "c1", better=False)  # the same sha: a resume, allowed
+        # an old tsv row (no sha column) counts as another candidate
+        old = self.agents / "promotions.tsv"
+        old.write_text("written\tcand_gen\tbase_gen\tseed_block\n2026\t1\t0\tEtest-1\n")
+        with self.assertRaisesRegex(ValueError, "already judged"):
+            self.run_promote(self.root / "c1", better=False)
+
+    def test_a_partial_arm_cannot_promote(self):
+        cand = stub_candidate(self.root, "gen5c", "sha-a")
+        with self.assertRaisesRegex(ValueError, "only 200 of 300 seeds are paired"):
+            self.run_promote(cand, better=True, cand_rows_cut=200)
+        self.assertFalse((self.agents / "current.json").exists())
+        self.assertFalse((self.agents / "promotions.tsv").exists())
+
+    def test_an_old_tsv_header_is_rewritten_with_the_new_columns(self):
+        t = self.agents / "promotions.tsv"
+        t.write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\td_floor\tfloor_lower\tp_floor\tboss_cand\tboss_base\tp_boss\t"
+                     "wins_cand\twins_base\tdecision\n2026\t1\t0\tE1-x\t2000\t0.1\t0.0\t0.5\t1\t2\t0.9\t0\t0\trejected\n")
+        gen_loop.append_promotion(t, {"seed_block": "E9", "cand_sha": "s"})
+        rows = gen_loop.read_promotions(t)
+        self.assertEqual([(r["seed_block"], r["cand_sha"]) for r in rows], [("E1-x", ""), ("E9", "s")])
+        self.assertEqual(rows[0]["decision"], "rejected")
+
+    def test_run_arm_reuses_a_finished_arm_of_the_same_agent_and_block(self):
+        agent = gen_loop.Agent()
+        arm = self.root / "arm"
+        arm.mkdir()
+        rows = arm_rows_like(self.seeds, lambda i: 4)
+        (arm / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        (arm / "summary.json").write_text(json.dumps({"config": "a3-v1", "agent": agent.describe()}))
+        with mock.patch.object(gen0, "run_block", side_effect=AssertionError("must not play again")):
+            self.assertEqual(len(gen_loop.run_arm(self.seeds, arm, agent, "a3-v1", 2)), 300)
+
+
+class FreshBlockTests(unittest.TestCase):
+    def test_resolve_e_block_gives_a_fresh_r_block_to_a_second_candidate(self):
+        with tempfile.TemporaryDirectory() as d:
+            tpl = str(Path(d) / "E{k}-{date}.json")
+            tsv = Path(d) / "promotions.tsv"
+            (Path(d) / "E1-2026-10-23.json").write_text(json.dumps({"seeds": ["A"]}))
+            self.assertEqual(gen_loop.resolve_e_block(tpl, 1, tsv=tsv, cand_sha="aaa").name, "E1-2026-10-23.json")  # unused
+            gen_loop.append_promotion(tsv, {"seed_block": "E1-2026-10-23", "cand_sha": "aaa", "decision": "rejected"})
+            self.assertEqual(gen_loop.resolve_e_block(tpl, 1, tsv=tsv, cand_sha="aaa").name, "E1-2026-10-23.json")  # same sha
+            r1 = gen_loop.resolve_e_block(tpl, 1, n=40, tsv=tsv, cand_sha="bbb")
+            self.assertRegex(r1.name, r"^E1-\d{4}-\d\d-\d\d-r1\.json$")
+            self.assertEqual(gen0.load_seeds(r1), gen0.e_block(r1.stem, 40))
+            self.assertFalse(set(gen0.load_seeds(r1)) & set(gen0.e_block("E1-2026-10-23", 2000)))
+            gen_loop.append_promotion(tsv, {"seed_block": r1.stem, "cand_sha": "bbb", "decision": "rejected"})
+            self.assertEqual(gen_loop.resolve_e_block(tpl, 1, n=40, tsv=tsv, cand_sha="bbb"), r1)
+            r2 = gen_loop.resolve_e_block(tpl, 1, n=40, tsv=tsv, cand_sha="ccc")
+            self.assertTrue(r2.name.endswith("-r2.json"))
+
+    def test_known_seed_sets_hold_runs_trains_reserved_seeds(self):
+        sets = gen_loop.known_seed_sets(ROOT / "referee" / "seeds", None, "E1-2026-10-23")
+        self.assertIn("run_train eval_seeds", sets)
+        self.assertIn("run_train test_seeds", sets)
+        e1 = set(gen0.load_seeds(ROOT / "referee" / "seeds" / "E1-2026-10-23.json"))
+        self.assertFalse(e1 & set(sets["run_train eval_seeds"]) | e1 & set(sets["run_train test_seeds"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -399,7 +399,9 @@ def train_cmd(a: argparse.Namespace) -> int:
         if not (a.emu_python and a.seeds_file):
             print("--promote needs --emu-python and --seeds-file", file=sys.stderr)
             return 2
-        seeds_file = gen_loop.resolve_e_block(a.seeds_file, gen + 1) if "{k}" in a.seeds_file else Path(a.seeds_file)
+        seeds_file = gen_loop.resolve_e_block(a.seeds_file, gen + 1, tsv=Path(a.agent_root) / "promotions.tsv",
+                                                cand_sha=json.loads((cand / "model.json").read_text())["policy_sha256"]) \
+            if "{k}" in a.seeds_file else Path(a.seeds_file)
         return gen_loop.run_promote_subprocess(a.emu_python, cand, None, seeds_file, Path(a.agent_root), a.procs, a.lib,
                                                Path(a.lab) if a.lab else None, Path(a.shards_root))
     return 0
