@@ -32,7 +32,7 @@ static class OldNetState
     static Dictionary<string, Dictionary<int, string>>? _names;
 
     /// <summary>Emulator def id to the game's id, per table of data/id_map.json.</summary>
-    static string Name(string table, int id)
+    internal static string Name(string table, int id)
     {
         _names ??= JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "id_map.json")))!.AsObject()
             .ToDictionary(t => t.Key, t => t.Value!.AsObject().ToDictionary(kv => (int)kv.Value!, kv => Snake(kv.Key)));
