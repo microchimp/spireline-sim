@@ -164,6 +164,20 @@ class FakeEmuDumpTests(unittest.TestCase):
             r = self.run_mode(mode, a, b)
             self.assertEqual((r["same"], r["differ"], r["problems"]), (3, [], []), mode)
 
+    def test_both_builds_run_with_rng_diffs_no_inlining_environment(self):
+        # One definition of the deterministic JIT settings, shared with rng_diff; the fake writes what it was given.
+        from tools.fidelity import rng_diff
+        self.assertIs(bp.NO_INLINING, rng_diff.NO_INLINING)
+        self.assertFalse(hasattr(bp, "DETERMINISTIC_JIT"))
+        keys = sorted(rng_diff.NO_INLINING)
+        self.assertEqual(keys, ["DOTNET_JITMinOpts", "DOTNET_TieredCompilation", "DOTNET_TieredPGO"])
+        show = fake(self.dir, "env", "fix = lambda out: [dict(o, env={k: __import__('os').environ.get(k) for k in %r}) for o in out]" % keys)
+        src = self.dir / "in.json"
+        src.write_text(json.dumps({"results": games("S1")}), encoding="utf-8")
+        raw, why = bp.run_side(show, "fight", ["--compact"], src, self.dir / "out.json", 60)
+        self.assertIsNone(why)
+        self.assertEqual(json.loads(raw)["results"][0]["env"], {k: rng_diff.NO_INLINING[k] for k in keys})
+
     def test_the_mode_decides_the_flags_the_build_gets(self):
         # The fake writes its flags into every result: a build that ignored them would not differ here.
         a = fake(self.dir, "a")
