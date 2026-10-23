@@ -356,7 +356,9 @@ class ShardSink:
         self.runs = self.samples = 0
 
     def add(self, record: dict, arrays: dict | None) -> None:
-        assert record["generation"] == self.generation, "a shard is tagged with the generation that played it"
+        if record["generation"] != self.generation:
+            raise ValueError(f"a shard is tagged with the generation that played it: {record['generation']} in a "
+                             f"generation {self.generation} block")
         self.writer.add(record)
         self.pending.append((record["seed"], arrays))
         self.runs += 1
@@ -412,9 +414,11 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     for d, m in manifests:
         for name in m.get("combat_parts", []):
             blob = read_part(d / name)
+            g = int(m["generation"])
+            if int(blob["generation"][0]) != g:  # the tag is checked where the data is read, not only where it is written
+                raise ValueError(f"{name} is tagged generation {int(blob['generation'][0])} but its manifest says {g}")
             if "lengths" not in blob:  # a part whose runs recorded no searched decision
                 continue
-            g = int(m["generation"])
             per_gen[g] = per_gen.get(g, 0) + int(blob["lengths"].size)
             ixs.append(blob["fight_ix"])
             sources.append((len(sources), d / name))

@@ -86,7 +86,7 @@ class ShardTests(unittest.TestCase):
             sink.add(fake_record("AAAAAAAAAA", 2), fake_run_arrays(rng))
             sink.add(fake_record("BBBBBBBBBB", 2), fake_run_arrays(rng))
             sink.add(fake_record("CCCCCCCCCC", 2), None)
-            with self.assertRaises(AssertionError):
+            with self.assertRaises(ValueError):  # a raise, not an assert: python -O keeps it
                 sink.add(fake_record("DDDDDDDDDD", 1), None)
             man = sink.close()
             found = gen_loop.find_manifests(Path(d))
@@ -448,6 +448,23 @@ class StaleEnvironmentTests(unittest.TestCase):
         self.assertIn("Stop", row["error"])
         self.assertNotIn("prior_fn", seen)
         self.assertNotIn("c_puct", seen)
+
+
+class GenerationTagAtReadTests(unittest.TestCase):
+    def test_a_part_whose_tag_disagrees_with_its_manifest_is_refused(self):
+        rng = np.random.default_rng(5)
+        with tempfile.TemporaryDirectory() as d:
+            sink = gen_loop.ShardSink(Path(d) / "job", 2, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=2)
+            sink.add(fake_record("AAAAAAAAAA", 2), fake_run_arrays(rng))
+            sink.close()
+            mans = gen_loop.window_manifests(Path(d), 2)
+            self.assertEqual(gen_loop.build_training_set(mans)["lengths"].size, 12)
+            part = Path(d) / "job" / "shards" / mans[0][1]["combat_parts"][0]
+            blob = gen_loop.read_part(part)
+            blob["generation"] = np.array([0], dtype=np.int64)  # a part from another generation under this manifest
+            np.savez_compressed(part, **blob)
+            with self.assertRaisesRegex(ValueError, "tagged generation 0"):
+                gen_loop.build_training_set(gen_loop.window_manifests(Path(d), 2))
 
 
 if __name__ == "__main__":
