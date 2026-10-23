@@ -150,7 +150,7 @@ public static partial class Driver
             if (script != null) maxActions = script.Count;
             bool usePotions = (bool?)spec["use_potions"] == true;
             // Trace mode, only for re-runs of fights that diverged (Trace.cs): off unless the spec asks.
-            if ((bool?)spec["trace"] == true) Trace.Begin(state, player);
+            if ((bool?)spec["trace"] == true) Trace.Begin(state, player, (bool?)spec["trace_listeners"] == true);
             steps.Add(Step(null, state, player));
             ChecksumTap.Attach(steps);
             if (IdleProbe > 0)

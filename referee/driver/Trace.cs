@@ -13,6 +13,8 @@
 //   ["H", hook, side?]                 each Hook.Before* / Hook.After* event hook called;
 //   ["R", stream, counter, caller]     each draw from a run or player Rng stream (Harmony postfix on Rng's
 //                                      Next* methods; counter after the draw; the first two callers);
+//   ["LB"|"L"|"LE", ...]              listener order, only when the spec also sets "trace_listeners": true
+//                                      (ListenerTrace.cs); that also adds the Modify*, Should* and Try* hooks to the "H" events;
 // and "hidden": per-card cost (CardEnergyCost with all modifiers), enchantment and affliction, relic
 // counters and fields, every power's amount and fields. No game code here: only calls into its API.
 
@@ -40,6 +42,8 @@ namespace Spireline.Referee;
 internal static class Trace
 {
     private static bool _patched;
+    private static bool _widened;  // the Modify*/Should*/Try* hook prefixes are installed (first fight with trace_listeners)
+    private static Harmony? _harmony;
     private static JsonArray? _events;  // the step being recorded; null when no traced fight runs
     private static Player? _player;
     private static CombatHistory? _history;
@@ -49,10 +53,21 @@ internal static class Trace
 
     internal static bool On => _events != null;
 
+    /// <summary>The step being recorded (null when no traced fight runs), for ListenerTrace's records.</summary>
+    internal static JsonArray? Events => _events;
+
     /// <summary>Starts tracing the fight that has just opened; events so far go to the first step.</summary>
-    internal static void Begin(RunState run, Player player)
+    internal static void Begin(RunState run, Player player, bool listeners = false)
     {
         Patch();
+        ListenerTrace.Enabled = listeners;
+        if (listeners)
+        {
+            Widen();
+            ListenerTrace.Install(_harmony!);
+            ListenerTrace.Reset();
+        }
+
         _player = player;
         Streams.Clear();
         foreach (var (set, prefix) in new (object, string)[] { (run.Rng, ""), (player.PlayerRng, "player.") })
@@ -84,6 +99,7 @@ internal static class Trace
         if (_history != null) _history.Changed -= OnHistoryChanged;
         RunManager.Instance.ActionExecutor.BeforeActionExecuted -= OnAction;
         _events = null;
+        ListenerTrace.Enabled = false;
         _history = null;
         _player = null;
         Streams.Clear();
@@ -96,7 +112,7 @@ internal static class Trace
     {
         if (_patched) return;
         _patched = true;
-        var h = new Harmony("spireline.referee.trace");
+        var h = _harmony = new Harmony("spireline.referee.trace");
         foreach (var m in typeof(Hook).GetMethods(BindingFlags.Public | BindingFlags.Static)
                      .Where(m => !m.IsGenericMethodDefinition && (m.Name.StartsWith("Before") || m.Name.StartsWith("After"))))
         {
@@ -115,9 +131,23 @@ internal static class Trace
         }
     }
 
+    /// <summary>With trace_listeners: the dispatchers (Modify*, Should*, Try*) log an "H" too, so each listener
+    /// enumeration follows its own dispatcher's event. Installed on the first fight that asks; inert otherwise.</summary>
+    private static void Widen()
+    {
+        if (_widened) return;
+        _widened = true;
+        foreach (var m in typeof(Hook).GetMethods(BindingFlags.Public | BindingFlags.Static)
+                     .Where(m => !m.IsGenericMethodDefinition && (m.Name.StartsWith("Modify") || m.Name.StartsWith("Should") || m.Name.StartsWith("Try"))))
+        {
+            _harmony!.Patch(m, prefix: new HarmonyMethod(typeof(Trace), nameof(HookPrefix)));
+        }
+    }
+
     private static void HookPrefix(MethodBase __originalMethod, object[] __args)
     {
         if (_events == null) return;
+        if (!ListenerTrace.Enabled && !__originalMethod.Name.StartsWith("Before") && !__originalMethod.Name.StartsWith("After")) return;
         var side = __args.OfType<CombatSide>().Cast<CombatSide?>().FirstOrDefault();
         string name = __originalMethod.Name;
         if (name == "BeforeTurnEnd" && side == CombatSide.Player) Mark("turn_end", null);
