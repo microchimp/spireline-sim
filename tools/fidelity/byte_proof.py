@@ -38,6 +38,7 @@ if str(ROOT) not in sys.path:  # pool workers import this module by path
     sys.path.insert(0, str(ROOT))
 
 from tools.fidelity import corpus as C  # noqa: E402
+from tools.fidelity.rng_diff import NO_INLINING  # noqa: E402
 
 # mode -> (EmuDump command, flags). The input file goes between the two.
 MODES: dict[str, tuple[str, list[str]]] = {
@@ -152,11 +153,11 @@ def command_for(emudump) -> list:
     return C.emudump_command(emudump)
 
 
-# Both builds run with tiered compilation off. The rng log and the trace name each draw's caller from the stack
+# Both builds run with rng_diff's NO_INLINING environment (tiered compilation off, JIT MinOpts, TieredPGO off): the one
+# definition of it, shared with rng_diff. The rng log and the trace name each draw's caller from the stack
 # (tools/emudump/RngLog.cs), and which engine frames tiered JIT has inlined by a given draw depends on timing: one
-# build against itself differed in 5 of 4,043 reanchor --trace fights and 14 rng-log fights. Fully optimised from
-# the first call, the same IL inlines the same way every run.
-DETERMINISTIC_JIT = {"DOTNET_TieredCompilation": "0"}
+# build against itself differed in 5 of 4,043 reanchor --trace fights and 14 rng-log fights. With no tiering and no
+# inlining, the same IL gives the same frames every run.
 
 
 def run_side(emudump: str, command: str, flags: list, src: Path, dst: Path, timeout: float) -> tuple[bytes | None, str | None]:
@@ -165,7 +166,7 @@ def run_side(emudump: str, command: str, flags: list, src: Path, dst: Path, time
         with dst.open("wb") as so:
             rc = subprocess.run([*command_for(emudump), command, str(src), *flags], stdout=so, stderr=subprocess.DEVNULL,
                                 check=False, creationflags=C.BELOW_NORMAL, timeout=timeout,
-                                env={**os.environ, **DETERMINISTIC_JIT}).returncode
+                                env={**os.environ, **NO_INLINING}).returncode
     except subprocess.TimeoutExpired:
         return None, f"timed out after {timeout:.0f} s"
     if rc != 0:
