@@ -1,7 +1,8 @@
 // The kernel over the old engine (docs/rebuild/TIER1_KERNEL.md sections 1 and 4): the HookRuntime Hooks.g.cs calls,
 // tying the listener cursor (Listeners.cs, K2), the handler table and the switches together, and the caller marks the
-// old engine's sites set. With no switch on the kernel holds no world, no table and no recorded action: every member
-// the old engine's sites call is a no-op that writes nothing, so an engine with this kernel attached is the old engine.
+// old engine's sites set. The kernel is two parts: Kernel here, shared and immutable (switches, handler table, ids), and
+// KernelState (KernelState.cs), one per combat, held by the CombatState (and the RunState) and copied with it. With no
+// switch on the kernel holds no world, no table and no recorded action, and a state with none is the old engine's.
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 
@@ -49,19 +50,17 @@ public readonly record struct RecordedHookAction(long Id, PauseSite Site, HookSt
 /// <summary>A wait_all point a dispatcher reached: the hook actions it started since <c>Mark</c> are pending.</summary>
 public readonly record struct WaitPoint(HookId Dispatcher, long Mark, int Pending);
 
-public sealed class Kernel : HookRuntime
+/// <summary>
+/// The part of the kernel every combat of an engine shares: the switches, the handler table and the model ids. Immutable
+/// once made (the table and the ids are built once, on first use, when a switch is on) and safe to share between
+/// threads; no combat's state lives here (that is <see cref="KernelState" />, held by the combat). An engine holds one
+/// and binds it to the states it makes (<see cref="Bind" />); a state with none is the old engine's.
+/// </summary>
+public sealed class Kernel
 {
-    [ThreadStatic] private static Kernel? _current;
     private readonly bool[] _on = new bool[256];
-    private readonly Func<OldModelIds>? _ids;
-    private readonly IReadOnlyList<Action<HandlerTable>> _models;
-    private HandlerTable? _table;
-    private OldWorld? _world;
-    private OldListeners? _listeners;
-    private readonly List<RecordedHookAction> _actions = [];
-    private readonly List<PauseSite> _stops = [];
-    private readonly List<WaitPoint> _waits = [];
-    private long _nextAction;
+    private readonly Lazy<OldModelIds> _ids;
+    private readonly Lazy<HandlerTable> _table;
 
     /// <param name="options">The switches on.</param>
     /// <param name="ids">The old model ids (read only when a switch is on).</param>
@@ -72,138 +71,86 @@ public sealed class Kernel : HookRuntime
         foreach (var s in options.Switches)
             _on[(int)s] = true;
         AnyOn = options.Switches.Count > 0;
-        _ids = ids;
-        _models = models?.ToList() ?? [];
+        var registrations = models?.ToList() ?? [];
+        _ids = new Lazy<OldModelIds>(() =>
+            ids?.Invoke() ?? throw new InvalidOperationException("a kernel with a switch on needs the old model ids"));
+        _table = new Lazy<HandlerTable>(() =>
+        {
+            var t = new HandlerTable(_ids.Value, On);
+            foreach (var register in registrations)
+                register(t);
+            return t;
+        });
     }
 
     public KernelOptions Options { get; }
 
-    /// <summary>Whether any switch is on. When false the kernel never builds its world or table.</summary>
+    /// <summary>Whether any switch is on. When false the kernel never builds its table and no state records anything.</summary>
     public bool AnyOn { get; }
 
     /// <summary>Whether the switch of <paramref name="family" />'s group is on.</summary>
     public bool On(Switch family) => _on[(int)family];
 
     /// <summary>The handler table, built with the first use when a switch is on; null with none on.</summary>
-    public HandlerTable? Handlers => AnyOn ? _table ??= BuildTable() : null;
+    public HandlerTable? Handlers => AnyOn ? _table.Value : null;
 
-    /// <summary>The old state the listeners are read from; null with no switch on.</summary>
-    public OldWorld? World => AnyOn ? _world ??= new OldWorld(null, null, Ids()) : null;
+    /// <summary>The old model ids; null with no switch on.</summary>
+    public OldModelIds? Ids => AnyOn ? _ids.Value : null;
 
-    /// <summary>The listener cursor of the passes; null with no switch on.</summary>
-    public OldListeners? Passes => AnyOn ? _listeners ??= new OldListeners(World!, Handlers!) : null;
-
-    public IReadOnlyList<RecordedHookAction> HookActions => _actions;
-
-    /// <summary>Pauses of dispatchers whose context awaits each listener (the dispatch stopped there).</summary>
-    public IReadOnlyList<PauseSite> Stops => _stops;
-
-    public IReadOnlyList<WaitPoint> Waits => _waits;
-
-    // ------------------------------------------------------------------------------------- attachment to the old engine
-
-    /// <summary>The kernel the old engine's sites on this thread reach (one engine per thread; EmuDump: per process).</summary>
-    public static Kernel? Current => _current;
-
-    /// <summary>Makes <paramref name="k" /> the current kernel until the scope ends (the previous one is restored).</summary>
-    public static IDisposable Enter(Kernel? k)
-    {
-        var prev = _current;
-        _current = k;
-        return new Scope(() => _current = prev);
-    }
-
-    /// <summary>Attaches <paramref name="k" /> to this thread with no scope (an engine's lifetime; null detaches).</summary>
-    public static void Attach(Kernel? k) => _current = k;
+    // ------------------------------------------------------------------------------------- attachment to the states
 
     /// <summary>
-    /// A site's gate: the current kernel bound to the combat the site runs on when <paramref name="family" />'s
-    /// switch is on, else null (the site runs its old code). <c>if (Kernel.If(Switch.F06, combat) is { } k) ... else old</c>.
+    /// A new per-combat state of this kernel, bound to <paramref name="combat" /> (and <paramref name="run" />) and held
+    /// by it (<see cref="CombatState.Kernel" />); with no combat, held by the run (<see cref="RunState.Kernel" />).
     /// </summary>
-    public static Kernel? If(Switch family, CombatState combat, RunState? run = null) =>
-        _current is { } k && k.On(family) ? k.At(combat, run) : null;
-
-    /// <summary>Binds the world to the combat (and run) a site runs on; returns this.</summary>
-    public Kernel At(CombatState? combat, RunState? run = null)
+    public KernelState Bind(CombatState? combat, RunState? run = null)
     {
-        if (World is { } w)
-        {
-            w.Combat = combat;
-            if (run is not null)
-                w.Run = run;
-        }
-
-        return this;
+        var k = new KernelState(this, combat, run);
+        if (combat is not null)
+            combat.Kernel = k;
+        else if (run is not null)
+            run.Kernel = k;
+        return k;
     }
+
+    /// <summary>What an engine attaches to the states it makes: <see cref="Bind" /> when a switch is on, else null (the
+    /// state stays the old engine's, with no object and no field written).</summary>
+    public KernelState? Attach(CombatState? combat, RunState? run = null) => AnyOn ? Bind(combat, run) : null;
+
+    /// <summary>
+    /// A site's gate: the combat's kernel state, bound to the combat (and run) the site runs on, when
+    /// <paramref name="family" />'s switch is on, else null (the site runs its old code; the old engine's combats hold
+    /// none). <c>if (Kernel.If(Switch.F06, combat) is { } k) Hooks.Y(k, ...) else old</c>.
+    /// </summary>
+    public static KernelState? If(Switch family, CombatState combat, RunState? run = null) =>
+        combat.Kernel is { } k && k.On(family) ? k.At(combat, run) : null;
+
+    /// <summary>The gate of a run-level site: the active combat's state while one is open (its marks), else the run's.</summary>
+    public static KernelState? If(Switch family, RunState run) =>
+        (run.ActiveCombat?.Kernel ?? run.Kernel) is { } k && k.On(family) ? k.At(run.ActiveCombat, run) : null;
 
     // ------------------------------------------------------------------------------------- caller marks (K2's OldWorld)
     // Scoped setters for the old engine's call sites (TIER1_KERNEL.md section 3, "K3 obligations, the marks"):
-    // `using (Kernel.Marks.Flying(card)) { ... }`. With no kernel or no switch on they return a shared no-op and write
-    // nothing.
+    // `using (Kernel.Marks.Flying(combat, card)) { ... }`. They set the mark on the combat's own kernel state. A combat
+    // with none (the old engine's) or with no switch on gets a shared no-op that writes nothing.
 
     public static class Marks
     {
-        public static IDisposable Flying(CardInstance card) => W() is { } w ? w.Flying(card) : Noop.Instance;
+        public static IDisposable Flying(CombatState combat, CardInstance card) =>
+            W(combat) is { } w ? w.Flying(card) : Noop.Instance;
 
-        public static IDisposable Setup() => W() is { } w ? w.Setup() : Noop.Instance;
+        public static IDisposable Setup(CombatState combat) => W(combat) is { } w ? w.Setup() : Noop.Instance;
 
-        public static IDisposable MarkDying(EnemyState enemy) => W() is { } w ? w.MarkDying(enemy) : Noop.Instance;
+        public static IDisposable MarkDying(CombatState combat, EnemyState enemy) =>
+            W(combat) is { } w ? w.MarkDying(enemy) : Noop.Instance;
 
-        public static IDisposable KeepPlayerHooks() => W() is { } w ? w.KeepPlayerHooks() : Noop.Instance;
+        public static IDisposable KeepPlayerHooks(CombatState combat) =>
+            W(combat) is { } w ? w.KeepPlayerHooks() : Noop.Instance;
 
-        public static IDisposable DeactivatePlayerHooks() =>
-            W() is { } w ? w.DeactivatePlayerHooks() : Noop.Instance;
+        public static IDisposable DeactivatePlayerHooks(CombatState combat) =>
+            W(combat) is { } w ? w.DeactivatePlayerHooks() : Noop.Instance;
 
-        private static OldWorld? W() => _current is { AnyOn: true } k ? k.World : null;
-    }
-
-    // ------------------------------------------------------------------------------------- HookRuntime
-
-    public override bool HasAny(HookId hook) => AnyOn && Handlers!.HasAny(hook);
-
-    public override HookCursor<THandler> Listeners<THandler>(HookIterator iterator, HookId hook) =>
-        AnyOn ? Passes!.Cursor<THandler>(iterator, hook) : HookCursor<THandler>.Empty();
-
-    public override ChoiceCtx NewHookContext(HookId dispatcher, ListenerRef who) => new(dispatcher, who);
-
-    /// <summary>
-    /// Per-listener contexts: the listener's choice becomes a recorded hook action (K4's queue runs it) and the dispatch
-    /// moves on. Every other context: the dispatch stops; the stop is recorded for the action that owns the context.
-    /// </summary>
-    public override void OnPaused(in PauseSite site, HookStep step)
-    {
-        if (site.Context == ContextMode.PerListener)
-            _actions.Add(new RecordedHookAction(++_nextAction, site, step));
-        else
-            _stops.Add(site);
-    }
-
-    public override long HookActionMark() => _nextAction;
-
-    /// <summary>K3 records the wait point and leaves the hook actions pending; K4's executor drains them here.</summary>
-    public override void WaitAll(HookId dispatcher, long mark) =>
-        _waits.Add(new WaitPoint(dispatcher, mark, _actions.Count(a => a.Id > mark)));
-
-    private HandlerTable BuildTable()
-    {
-        var t = new HandlerTable(Ids(), On);
-        foreach (var register in _models)
-            register(t);
-        return t;
-    }
-
-    private OldModelIds Ids() =>
-        _ids?.Invoke() ?? throw new InvalidOperationException("a kernel with a switch on needs the old model ids");
-
-    private sealed class Scope(Action undo) : IDisposable
-    {
-        private Action? _undo = undo;
-
-        public void Dispose()
-        {
-            _undo?.Invoke();
-            _undo = null;
-        }
+        private static OldWorld? W(CombatState combat) => combat.Kernel is { AnyOn: true } k ? k.World : null;
     }
 
     private sealed class Noop : IDisposable

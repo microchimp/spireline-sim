@@ -32,8 +32,12 @@ public class KernelTests
         [.. Every.Where(s => s is not (Switch.F02 or Switch.F03 or Switch.F13)).Select(s => new[] { s }),
             [Switch.F02, Switch.F03, Switch.F13]];
 
-    private static Kernel K(IEnumerable<Switch> on, Action<HandlerTable> models, IReadOnlyList<Switch[]>? groups = null) =>
+    private static Kernel Shared(IEnumerable<Switch> on, Action<HandlerTable> models, IReadOnlyList<Switch[]>? groups = null) =>
         new(new KernelOptions(on, groups), () => Ids, [models]);
+
+    // The kernel state of a fresh combat (what a core2 engine binds to each combat it starts).
+    private static KernelState K(IEnumerable<Switch> on, Action<HandlerTable> models, IReadOnlyList<Switch[]>? groups = null) =>
+        Shared(on, models, groups).Bind(Combat());
 
     private static CombatState Combat()
     {
@@ -103,17 +107,15 @@ public class KernelTests
         Assert.Null(k.World);
         Assert.False(ran);
         var s = Combat();
-        using (Kernel.Enter(k))
-        {
-            Assert.Null(Kernel.If(Switch.F06, s));
-            using (Kernel.Marks.Setup())
-            using (Kernel.Marks.Flying(new CardInstance(1, false)))
-                Assert.Null(k.World);
-        }
+        var bound = Shared([], _ => { }).Bind(s);
+        Assert.Null(Kernel.If(Switch.F06, s));
+        using (Kernel.Marks.Setup(s))
+        using (Kernel.Marks.Flying(s, new CardInstance(1, false)))
+            Assert.Null(bound.World);
+        Assert.Null(Kernel.If(Switch.F06, Combat()));
 
         Assert.Equal(HookStatus.Done, Hooks.AfterCardPlayed(k, new AfterCardPlayedArgs(new ChoiceCtx(), new CardPlayRef(1))));
         Assert.Empty(k.HookActions);
-        Assert.Null(Kernel.Current);
     }
 
     [Fact] // game: CombatState.IterateHookListeners through Hook.AfterCardPlayed (passed context, pushed per listener)
@@ -132,14 +134,12 @@ public class KernelTests
             t.Model(ListenerKind.Power, "StrengthPower").On(HookId.AfterCardPlayed, ev);
             t.Model(ListenerKind.Monster, Name("enemies", 16)).On(HookId.AfterCardPlayed, ev);
         });
-        var s = Combat();
+        var s = k.World!.Combat!;
         var ctx = new ChoiceCtx();
-        using (Kernel.Enter(k))
-        {
-            var kk = Kernel.If(Switch.F06, s)!;
-            Assert.Same(s, kk.World!.Combat);
-            Assert.Equal(HookStatus.Done, Hooks.AfterCardPlayed(kk, new AfterCardPlayedArgs(ctx, new CardPlayRef(7))));
-        }
+        var kk = Kernel.If(Switch.F06, s)!;
+        Assert.Same(k, kk);
+        Assert.Same(s, kk.World!.Combat);
+        Assert.Equal(HookStatus.Done, Hooks.AfterCardPlayed(kk, new AfterCardPlayedArgs(ctx, new CardPlayRef(7))));
 
         int str = Ids.Power(BuffId.Strength).ModelId;
         Assert.Equal(new ListenerRef[]
@@ -164,7 +164,6 @@ public class KernelTests
             t.Model(ListenerKind.Relic, Name("relics", 3)).On(HookId.ModifyHandDraw, same);
             t.Model(ListenerKind.Relic, Name("relics", 1)).On(HookId.ModifyHandDrawLate, plusOne);
         });
-        k.At(Combat());
         decimal v = Hooks.ModifyHandDraw(k, new ModifyHandDrawArgs(new PlayerRef(0), 5), out var changed);
         Assert.Equal(7.5m, v);
         Assert.Equal(new ListenerRef[] { new((int)ListenerKind.Relic, 2, 2), new((int)ListenerKind.Relic, 1, 1) }, changed);
@@ -186,7 +185,6 @@ public class KernelTests
         };
         var k = K([Switch.F06], t => t.Model(ListenerKind.Relic, Name("relics", 1))
             .On(HookId.ModifyHandDraw, draw).On(HookId.AfterCardPlayed, play), FineGroups);
-        k.At(Combat());
         Assert.True(k.On(Switch.F06));
         Assert.False(k.On(Switch.F03));
         Assert.Equal(1, k.Handlers!.Count);
@@ -195,11 +193,8 @@ public class KernelTests
         Assert.Empty(changed);
         Hooks.AfterCardPlayed(k, new AfterCardPlayedArgs(new ChoiceCtx(), new CardPlayRef(1)));
         Assert.Equal((0, 1), (draws, plays));
-        using (Kernel.Enter(k))
-        {
-            Assert.Null(Kernel.If(Switch.F03, k.World!.Combat!));
-            Assert.NotNull(Kernel.If(Switch.F06, k.World!.Combat!));
-        }
+        Assert.Null(Kernel.If(Switch.F03, k.World!.Combat!));
+        Assert.NotNull(Kernel.If(Switch.F06, k.World!.Combat!));
     }
 
     [Fact] // game: HookPlayerChoiceContext (per-listener: a hook action, the dispatch moves on) and a passed context (stops)
@@ -222,7 +217,6 @@ public class KernelTests
             foreach (int r in new[] { 1, 2, 3 })
                 t.Model(ListenerKind.Relic, Name("relics", r)).On(HookId.AfterSideTurnEnd, end).On(HookId.AfterCardPlayed, play);
         });
-        k.At(Combat());
         Hooks.AfterTurnEndPasses(k, new AfterTurnEndArgs(Side.Player, []));
         Assert.Equal(new[] { 3, 1, 2 }, order);
         var act = Assert.Single(k.HookActions);
@@ -244,29 +238,168 @@ public class KernelTests
         Assert.Empty(ctx.Models);
     }
 
-    [Fact] // TIER1_KERNEL.md section 3: the marks are scoped setters the old engine's sites open
-    public void MarksAreScopedSettersOnTheCurrentKernel()
+    [Fact] // TIER1_KERNEL.md section 3: the marks are scoped setters the old engine's sites open, on the combat's own state
+    public void MarksAreScopedSettersOnTheCombatsKernelState()
     {
-        var k = K(Every, _ => { });
         var s = Combat();
+        var k = Shared(Every, _ => { }).Bind(s);
         var card = new CardInstance(1, false);
-        using (Kernel.Enter(k))
+        using (Kernel.Marks.Setup(s))
         {
-            k.At(s);
-            using (Kernel.Marks.Setup())
-            {
-                Assert.True(k.World!.InSetup);
-                using (Kernel.Marks.Flying(card))
-                    Assert.Equal(card, k.World.InFlight);
-                Assert.Null(k.World.InFlight);
-            }
-
-            Assert.False(k.World.InSetup);
-            using (Kernel.Marks.DeactivatePlayerHooks())
-                Assert.False(OldState.PlayerActive(k.World));
-            Assert.True(OldState.PlayerActive(k.World));
+            Assert.True(k.World!.InSetup);
+            using (Kernel.Marks.Flying(s, card))
+                Assert.Equal(card, k.World.InFlight);
+            Assert.Null(k.World.InFlight);
         }
 
-        Assert.Null(Kernel.Current);
+        Assert.False(k.World.InSetup);
+        using (Kernel.Marks.DeactivatePlayerHooks(s))
+            Assert.False(OldState.PlayerActive(k.World));
+        Assert.True(OldState.PlayerActive(k.World));
+        var enemy = s.Enemies[0];
+        using (Kernel.Marks.MarkDying(s, enemy))
+            Assert.True(k.World.IsDying(enemy));
+        Assert.False(k.World.IsDying(enemy));
+        using (Kernel.Marks.KeepPlayerHooks(s))
+            Assert.Equal(PlayerHooks.Active, k.World.PlayerHooks);
+        Assert.Equal(PlayerHooks.Undeclared, k.World.PlayerHooks);
+        // A nested scope restores what it replaced, not the default; a scope disposed twice restores once.
+        using (Kernel.Marks.DeactivatePlayerHooks(s))
+        {
+            var inner = Kernel.Marks.KeepPlayerHooks(s);
+            Assert.Equal(PlayerHooks.Active, k.World.PlayerHooks);
+            inner.Dispose();
+            inner.Dispose();
+            Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
+        }
+
+        Assert.Equal(PlayerHooks.Undeclared, k.World.PlayerHooks);
+    }
+
+    // One handler set for the tests below: relic 3 asks the player at the end of the turn (a per-listener pause).
+    private static void PauseAtRelic3(HandlerTable t)
+    {
+        HookEvent<AfterTurnEndArgs> end = (ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? _) =>
+            self.ModelId == 3 ? HookStep.Paused("choose", new TestResume()) : HookStep.Done;
+        foreach (int r in new[] { 1, 2, 3 })
+            t.Model(ListenerKind.Relic, Name("relics", r)).On(HookId.AfterSideTurnEnd, end);
+    }
+
+    private static readonly AfterTurnEndArgs TurnEnd = new(Side.Player, []);
+
+    [Fact] // the kernel is no thread's: an old combat and a core2 combat on one thread share nothing
+    public void AnOldAndACore2CombatOnOneThreadShareNoKernelState()
+    {
+        var old = Combat();
+        var kernel = Shared(Every, PauseAtRelic3);
+        var a = Combat();
+        var b = Combat();
+        var ka = kernel.Bind(a);
+        var kb = kernel.Bind(b);
+        Assert.Null(old.Kernel);
+        Assert.Null(Kernel.If(Switch.F06, old));
+        Assert.Same(ka, Kernel.If(Switch.F06, a));
+        Assert.Same(kb, Kernel.If(Switch.F06, b));
+        using (Kernel.Marks.Setup(a))
+        using (Kernel.Marks.Setup(old))
+        {
+            Assert.True(ka.World!.InSetup);
+            Assert.False(kb.World!.InSetup);
+            Assert.Null(old.Kernel);
+        }
+
+        Hooks.AfterTurnEndPasses(ka, TurnEnd);
+        Assert.Single(ka.HookActions);
+        Assert.Empty(kb.HookActions);
+        Assert.Equal(2, ka.Waits.Count);
+        Assert.Empty(kb.Waits);
+        Assert.Same(ka.Shared, kb.Shared);
+        Assert.Same(ka.Handlers, kb.Handlers);
+        Assert.Null(old.Kernel);
+        Assert.Null(Kernel.If(Switch.F06, old));
+    }
+
+    [Fact] // a clone carries what its source recorded; a replay (HookChoiceReplay: Before.CopyTo(state)) records once
+    public void ACloneCarriesItsRecordedActionsAndMarksAndAReplayFromItDoesNotRecordTwice()
+    {
+        var s = Combat();
+        var k = Shared(Every, PauseAtRelic3).Bind(s);
+        var card = new CardInstance(1, false);
+        Hooks.AfterTurnEndPasses(k, TurnEnd);
+        Assert.Single(k.HookActions);
+        using var setup = Kernel.Marks.Setup(s);
+        using var flying = Kernel.Marks.Flying(s, card);
+        var before = s.Clone();
+        var c = before.Kernel!;
+        Assert.NotSame(k, c);
+        Assert.Same(k.Shared, c.Shared);
+        Assert.Same(before, c.World!.Combat);
+        Assert.Equal(k.HookActions.Select(x => (x.Id, x.Site.Index, x.Site.Who)), c.HookActions.Select(x => (x.Id, x.Site.Index, x.Site.Who)));
+        Assert.NotSame(k.HookActions[0].Site.Ctx, c.HookActions[0].Site.Ctx);
+        Assert.Equal(k.Waits, c.Waits);
+        Assert.True(c.World.InSetup);
+        Assert.Equal(card, c.World.InFlight);
+        // The clone's state is its own: a dispatch on it writes nothing into the source, and the source's marks end alone.
+        Hooks.AfterTurnEndPasses(c, TurnEnd);
+        Assert.Equal(2, c.HookActions.Count);
+        Assert.Single(k.HookActions);
+        flying.Dispose();
+        Assert.Null(k.World!.InFlight);
+        Assert.Equal(card, c.World.InFlight);
+
+        // The step runs on the live state and a screen opens: the engine restores the step's start into the same state
+        // and replays it. The recorded actions go back to the step's start, so the replay records them once.
+        var start = s.Clone();
+        Hooks.AfterTurnEndPasses(k, TurnEnd);
+        Assert.Equal(new long[] { 1, 2 }, k.HookActions.Select(x => x.Id));
+        start.CopyTo(s);
+        Assert.Same(k, s.Kernel);
+        Assert.Same(s, k.World.Combat);
+        Assert.Equal(new long[] { 1 }, k.HookActions.Select(x => x.Id));
+        Assert.Equal(2, k.Waits.Count);
+        Hooks.AfterTurnEndPasses(k, TurnEnd);
+        Assert.Equal(new long[] { 1, 2 }, k.HookActions.Select(x => x.Id));
+        Assert.Equal(4, k.Waits.Count);
+        // A source with no kernel state restores none (the copy is the source, field for field).
+        Combat().CopyTo(s);
+        Assert.Null(s.Kernel);
+    }
+
+    [Fact] // a dying enemy is matched into the copy's roster by index
+    public void ACopyMapsItsDyingEnemiesOntoItsOwnRoster()
+    {
+        var s = Combat();
+        var k = Shared(Every, _ => { }).Bind(s);
+        using (Kernel.Marks.MarkDying(s, s.Enemies[0]))
+        {
+            var copy = s.Clone();
+            Assert.True(copy.Kernel!.World!.IsDying(copy.Enemies[0]));
+            Assert.False(copy.Kernel.World.IsDying(s.Enemies[0]));
+        }
+
+        Assert.False(k.World!.IsDying(s.Enemies[0]));
+    }
+
+    [Fact] // with no switch on, a pause and a wait record nothing
+    public void WithNoSwitchOnPausesAndWaitsRecordNothing()
+    {
+        var s = Combat();
+        var k = Shared([], PauseAtRelic3).Bind(s);
+        var site = new PauseSite(HookId.Dispatch_AfterTurnEnd, HookId.AfterSideTurnEnd, 0, 0,
+            new ListenerRef((int)ListenerKind.Relic, 3, 0), ContextMode.PerListener, null);
+        k.OnPaused(site, HookStep.Paused("choose", new TestResume()));
+        k.OnPaused(site with { Context = ContextMode.Passed }, HookStep.Paused("choose", new TestResume()));
+        k.WaitAll(HookId.Dispatch_AfterTurnEnd, 0);
+        Hooks.AfterTurnEnd(k, TurnEnd);
+        // The fast path comes before the net-id guard (a stub until K4): no listener, so the guard is never reached.
+        Hooks.AfterTurnEnd(Shared(Every, _ => { }).Bind(Combat()), TurnEnd);
+        Assert.Throws<NotImplementedException>(() => Hooks.AfterTurnEnd(K(Every, PauseAtRelic3), TurnEnd));
+        Assert.Empty(k.HookActions);
+        Assert.Empty(k.Stops);
+        Assert.Empty(k.Waits);
+        Assert.Equal(0L, k.HookActionMark());
+        var copy = s.Clone();
+        Assert.Empty(copy.Kernel!.HookActions);
+        Assert.Null(copy.Kernel.World);
     }
 }

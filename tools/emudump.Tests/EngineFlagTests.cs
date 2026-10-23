@@ -2,6 +2,7 @@
 using EmuDump.Engines;
 using EmuDump.Engines.Core2;
 using EmuDump.Engines.Old;
+using Sts2Emulator.Core2;
 using Xunit;
 
 public class EngineFlagTests
@@ -38,8 +39,26 @@ public class EngineFlagTests
         Assert.False(e.Kernel.AnyOn);
         Assert.Empty(e.Kernel.Options.Switches);
         Assert.Null(e.Kernel.Handlers);
-        Assert.Null(e.Kernel.World);
+        Assert.Null(e.Run.State.Kernel);
         Assert.Same(e.Run, OldEngine.Of(e).Run);
         Assert.Equal("old", EngineFactory.Create("old").Name);
+    }
+
+    [Fact]
+    public void TheKernelIsBoundToTheStatesOfItsEngineAndNoOtherOnTheSameThread()
+    {
+        var on = new KernelOptions(Enum.GetValues<Sts2Emulator.Core2.Switch>().Where(s => s != Sts2Emulator.Core2.Switch.None));
+        var core2 = new Core2Engine(on);
+        core2.Run.Reset("KERNELSTATE", 0);
+        var old = new OldEngine();
+        old.Run.Reset("KERNELSTATE", 0);
+        Assert.NotNull(core2.Run.State.Kernel);
+        Assert.Same(core2.Kernel, core2.Run.State.Kernel!.Shared);
+        Assert.Null(old.Run.State.Kernel);
+        var copy = Sts2Emulator.Core.StateCloning.Clone(core2.Run.State);
+        Assert.NotNull(copy.Kernel);
+        Assert.NotSame(core2.Run.State.Kernel, copy.Kernel);
+        Assert.Null(Sts2Emulator.Core.StateCloning.Clone(old.Run.State).Kernel);
+        Assert.Null(((Core2Engine)EngineFactory.Create("core2")).Run.State.Kernel);
     }
 }

@@ -157,6 +157,9 @@ public class CombatSnapshotTests
         // pile, so `Write` folds it into the pile it is bound for.
         nameof(CombatState.HeldPlayedCard),
         nameof(CombatState.HeldPlayedCardExhausts),
+        // The kernel's per-combat state (Core2/KernelState.cs): bound by the engine that starts the combat, never
+        // part of a document, and [IdentityOnly].
+        nameof(CombatState.Kernel),
         // Captured afresh at the start of every play, before anything reads it.
         nameof(CombatState.StrangleBeforePlay),
         // Differential-testing introspection; nothing in play reads it.

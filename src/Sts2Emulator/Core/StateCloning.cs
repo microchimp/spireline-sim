@@ -344,6 +344,8 @@ public static class StateCloning
         into.TargetEnemyIndex = combat.TargetEnemyIndex;
         into.KnownTopCount = combat.KnownTopCount;
         into.KnownBottomCount = combat.KnownBottomCount;
+        // Last: the kernel's marks name enemies by roster index, so the roster is copied first.
+        into.Kernel = combat.Kernel?.CopyTo(into, null, into.Kernel);
     }
 
     /// <summary>
@@ -545,7 +547,7 @@ public static class StateCloning
             mapNodes[coord] = node.Clone();
         }
 
-        return new RunState
+        var cloned = new RunState
         {
             StringSeed = state.StringSeed,
             AscensionLevel = state.AscensionLevel,
@@ -701,6 +703,9 @@ public static class StateCloning
             UnknownMapPointShopOdds = state.UnknownMapPointShopOdds,
             LastResolvedRoomType = state.LastResolvedRoomType,
         };
+        cloned.Kernel = state.Kernel?.CopyTo(null, cloned, null);
+        cloned.ActiveCombat?.Kernel?.At(cloned.ActiveCombat, cloned);
+        return cloned;
     }
 
     /// <summary>

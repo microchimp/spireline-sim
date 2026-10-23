@@ -152,6 +152,14 @@ public sealed class CombatState
     [IdentityOnly]
     public int LastCardUid;
 
+    /// <summary>
+    /// The Tier 1 kernel's state for this combat (Core2/KernelState.cs, docs/rebuild/TIER1_KERNEL.md section 4): its
+    /// combat binding, caller marks and recorded hook actions. Null on the old engine, where nothing reads it. Copied by
+    /// Clone and CopyTo; [IdentityOnly], so no state walk, dump or snapshot holds it.
+    /// </summary>
+    [IdentityOnly]
+    public Sts2Emulator.Core2.KernelState? Kernel;
+
     // Cards
     public List<CardInstance> Hand = [];
     public List<CardInstance> DrawPile = [];

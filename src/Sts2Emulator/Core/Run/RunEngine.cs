@@ -7,6 +7,23 @@ public sealed class RunEngine
 {
     public RunState State { get; private set; } = new();
 
+    private Core2.Kernel? _kernel;
+
+    /// <summary>
+    /// The Tier 1 kernel's shared part (Core2/Kernel.cs), or null: the old engine. Set, it is bound to the run's state and
+    /// to every combat this engine starts (a state keeps its own KernelState, copied with it). With no switch on nothing
+    /// is bound.
+    /// </summary>
+    public Core2.Kernel? Kernel
+    {
+        get => _kernel;
+        set
+        {
+            _kernel = value;
+            State.Kernel = value?.Attach(null, State);
+        }
+    }
+
     /// <summary>Start a new run on this seed, standing at Neow.</summary>
     /// <param name="seed">The seed as typed; it is canonicalized before it is hashed.</param>
     /// <param name="ascension">
@@ -47,6 +64,7 @@ public sealed class RunEngine
         // leaves behind reaches the next. Clearing the old object field by field missed any
         // field added after the list was written.
         State = new RunState();
+        State.Kernel = _kernel?.Attach(null, State);
         State.AscensionLevel = ascension;
         // Set before anything is generated: the relic bag reads the character's pool.
         State.Character = character;
@@ -268,6 +286,7 @@ public sealed class RunEngine
         // creature it pins to 1hp must be pinned before an auto-played attack can reach it.
         CombatEngine.ResolvePrePlayPhase(combat, combatRng);
 
+        combat.Kernel = _kernel?.Attach(combat, State);
         State.ActiveCombat = combat;
         State.ActiveCombatRng = combatRng;
         State.LastPlayerWon = false;

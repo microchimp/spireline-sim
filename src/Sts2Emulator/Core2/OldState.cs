@@ -259,6 +259,39 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     public List<int> Modifiers { get; } = [];
     public List<int> Badges { get; } = [];
     public int? Scaling { get; set; }
+
+    /// <summary>
+    /// Makes this world's marks and supplied models those of <paramref name="from" /> (null: the defaults), bound to
+    /// <paramref name="combat" /> and <paramref name="run" />: a copy of the state this one is on. Dying enemies are
+    /// matched to the copy's roster by index (the old engine keeps a dying enemy in it). A scope opened on the other world
+    /// restores that world, never this one.
+    /// </summary>
+    internal void CopyFrom(OldWorld? from, CombatState? combat, RunState? run)
+    {
+        Combat = combat;
+        Run = run;
+        _dying.Clear();
+        Modifiers.Clear();
+        Badges.Clear();
+        InFlight = from?.InFlight;
+        InSetup = from?.InSetup ?? false;
+        PlayerHooks = from?.PlayerHooks ?? default;
+        Scaling = from?.Scaling;
+        if (from is null)
+            return;
+        var roster = from.Combat?.Enemies;
+        foreach (var dying in from._dying)
+        {
+            int at = -1;
+            for (int i = 0; roster is not null && i < roster.Count && at < 0; i++)
+                if (ReferenceEquals(roster[i], dying))
+                    at = i;
+            _dying.Add(at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : dying);
+        }
+
+        Modifiers.AddRange(from.Modifiers);
+        Badges.AddRange(from.Badges);
+    }
 }
 
 /// <summary>What the kill sequence declared of the player's hooks. Undeclared counts as active (the game deactivates a
