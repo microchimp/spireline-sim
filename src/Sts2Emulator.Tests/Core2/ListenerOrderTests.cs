@@ -104,6 +104,16 @@ public class ListenerOrderTests
         Assert.Equal(new[] { (2, 0), (1, 2) }, pots);
     }
 
+    [Fact] // game: CombatState.IterateHookListeners (orbs in queue order, whatever their types)
+    public void OrbsInQueueOrderNotByType()
+    {
+        var s = Combat();
+        s.Orbs = [new OrbState((OrbType)2), new OrbState((OrbType)0), new OrbState((OrbType)1)];
+        var orbs = OldListeners.Enumerate(new OldWorld(s, null, Ids), HookIterator.CombatDirect)
+            .Where(e => e.Kind == ListenerKind.Orb).Select(e => (e.Who.ModelId, e.Index)).ToList();
+        Assert.Equal(new[] { (2, 0), (0, 1), (1, 2) }, orbs);
+    }
+
     [Fact] // game: CombatState.IterateHookListeners (orbs, then AllPiles: Hand, Draw, Discard, Exhaust, Play)
     public void PilesInOrderWithAfflictionAndEnchantmentAfterEachCard()
     {

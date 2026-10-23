@@ -8,7 +8,7 @@ kernel-order`` list each scenario's listeners as the kernel enumerates them, and
 
 1. ``sorted``: the kernel's list, keyed by each entry's own kind, creature, index and pile, never goes down;
 2. ``pairs``: for every two of the scenario's listeners the kernel lists, the kernel's order is the order of their
-   game positions (hook_order.scenario's ``positions``).
+   game positions (hook_order.scenario's ``positions``; ``extra_positions`` for this tool's own scenarios).
 
 A scenario listener the kernel does not list is counted by reason (a power the BuffId rule leaves out or folds, a
 potion beyond the slots). Exit 1 on any disagreement or harness error.
@@ -48,15 +48,15 @@ def scenarios(decompiled: str) -> tuple[list[dict], dict]:
             positions[sc["name"]] = pos
     for sc in extras():
         out.append(sc)
-        positions[sc["name"]] = {}
+        positions[sc["name"]] = extra_positions(sc)
     return out, positions
 
 
 def extras() -> list[dict]:
     """Scenarios of this tool's own, for what hook_order.py's scenarios do not reach: several enemies (each with
     powers), an orb queue and the exhaust pile, with relics, potions, player powers and cards in every pile, in both
-    relic and potion orders. hook_order's game positions do not cover them, so only the order check applies (the
-    kernel's list never goes down by game_order_key) plus the listener counts the state implies (``expect``)."""
+    relic and potion orders. Their game positions come from their own spec (``extra_positions``), so both checks
+    apply, plus the listener counts the state implies (``expect``)."""
     base = {
         "relics": [1, 2, 3], "potions": [1, 2], "player_buffs": [["Strength", 1], ["Dexterity", 2]],
         "enemy_def": 16, "enemy_buffs": [["Weak", 1], ["Vulnerable", 1]],
@@ -67,6 +67,31 @@ def extras() -> list[dict]:
     return [dict(base, name="kernel-extra-forward"),
             dict(base, name="kernel-extra-reversed", relics=[3, 2, 1], potions=[2, 1], orbs=[2, 0, 1],
                  hand=[[11], [10]], exhaust=[[17], [16], [15]])]
+
+
+def extra_positions(sc: dict) -> dict:
+    """The game positions of one extras scenario's listeners, read off its own spec: relics in obtain order, potions
+    by slot, the player's powers in application order, each enemy's powers and monster in roster order (creature 1
+    on; no pets here), orbs in queue order, and each pile's cards by index. Keys as hook_order's ``_lkey``, with
+    ``enemyN`` for the Nth enemy of the roster."""
+    pos = {}
+    for i, d in enumerate(sc["relics"]):
+        pos[f"relic:{d}:player"] = {"kind": "relic", "creature": 0, "index": i}
+    for i, d in enumerate(sc["potions"]):
+        pos[f"potion:{d}:player"] = {"kind": "potion", "creature": 0, "index": i}
+    for i, (buff, _) in enumerate(sc["player_buffs"]):
+        pos[f"power:{buff}:player"] = {"kind": "power", "creature": 0, "index": i}
+    roster = [{"def": sc["enemy_def"], "buffs": sc["enemy_buffs"]}] + sc["enemies_extra"]
+    for n, enemy in enumerate(roster):
+        for i, (buff, _) in enumerate(enemy["buffs"]):
+            pos[f"power:{buff}:enemy{n}"] = {"kind": "power", "creature": n + 1, "index": i}
+        pos[f"monster:{enemy['def']}:enemy{n}"] = {"kind": "monster", "creature": n + 1, "index": 0}
+    for i, orb in enumerate(sc["orbs"]):
+        pos[f"orb:{orb}:player"] = {"kind": "orb", "creature": 0, "index": i}
+    for pile in ("hand", "draw", "discard", "exhaust"):
+        for i, card in enumerate(sc[pile]):
+            pos[f"card:{card[0]}:player"] = {"kind": "card", "creature": 0, "pile": pile, "index": i}
+    return pos
 
 
 def counts(ls: list[dict]) -> dict:
@@ -86,21 +111,26 @@ def key(e: dict) -> tuple:
 
 def find(lkey: str, listeners: list[dict], pos: dict, player_offset: int = 0) -> int | None:
     """The kernel list position of one scenario listener (``kind:emu:side``), or None. A player power is the one the
-    scenario put on (at or after ``player_offset``); an enemy power sits on the scenario's one enemy, whatever
-    creature number pets (Osty) give it."""
+    scenario put on (at or after ``player_offset``); an enemy power (side ``enemy``, or ``enemyN``) sits on the
+    scenario's Nth enemy (the one enemy for ``enemy``), whatever creature number pets (Osty) give it."""
     kind, emu, side = lkey.split(":")
     for i, e in enumerate(listeners):
         if kind == "power" and e["kind"] == "power" and e["buff"] == emu and (
-                e.get("enemy") == 0 if side == "enemy" else e["creature"] == 0 and e["index"] >= player_offset):
+                e.get("enemy") == int(side[5:] or 0) if side.startswith("enemy")
+                else e["creature"] == 0 and e["index"] >= player_offset):
+            return i
+        if kind == "monster" and e["kind"] == "monster" and str(e["model"]) == emu and e["creature"] == pos["creature"]:
+            return i
+        if kind == "orb" and e["kind"] == "orb" and str(e["model"]) == emu:
             return i
         if kind in ("relic", "potion") and e["kind"] == kind and str(e["model"]) == emu \
                 and (kind == "relic" or e["index"] == pos["index"]):
             return i
-        if kind == "card" and e["kind"] == "card" and str(e["model"]) == emu and e["pile"] == "hand" \
-                and e["index"] == pos["index"]:
+        if kind == "card" and e["kind"] == "card" and str(e["model"]) == emu \
+                and e["pile"] == pos.get("pile", "hand") and e["index"] == pos["index"]:
             return i
-        if kind == "enchantment" and e["kind"] == "enchantment" and e["enchantment"] == emu and e["pile"] == "hand" \
-                and e["index"] == pos["index"]:
+        if kind == "enchantment" and e["kind"] == "enchantment" and e["enchantment"] == emu \
+                and e["pile"] == pos.get("pile", "hand") and e["index"] == pos["index"]:
             return i
     return None
 
@@ -130,7 +160,7 @@ def judge(scs: list[dict], positions: dict, results: list[dict]) -> dict:
             i = find(lkey, ls, pos, res.get("player_offset", 0))
             if i is None:
                 kind, emu, side = lkey.split(":")
-                buffs = res["buffs"]["enemy" if side == "enemy" else "player"]
+                buffs = res["buffs"]["enemy" if side.startswith("enemy") else "player"]
                 why = ("power not a game power listener (engine-only, folded or a piece)" if kind == "power" and emu in buffs
                        else "not in the scenario's state" if kind != "power" else "buff not in the state")
                 out["missing"].setdefault(why, []).append(f"{name} {lkey}")
