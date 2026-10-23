@@ -94,9 +94,19 @@ def require_character(character: str, native=None) -> None:
 # ------------------------------------------------------------------ projection and hashes
 
 
+def emu_enemy_hp(obs, offset: int, slot: int, slots: int) -> list:
+    """The HP of every enemy the emulator's roster holds, from its observation buffer, in roster order. A slot holds an
+    enemy when its HP or max HP is above 0: a dead enemy the roster still holds (the game keeps one that dies in its
+    own move, or one a power keeps standing) lists at 0, like the referee's `combat.enemies`, and a slot past the end of
+    the roster (all zeros) lists nothing. Both sides list what they hold, so a corpse only one side holds is a diff."""
+    return [int(obs[offset + k * slot]) for k in range(slots)
+            if obs[offset + k * slot] > 0 or obs[offset + k * slot + 1] > 0]
+
+
 def project(view: dict) -> dict:
     """The agent-visible fields both sides share, canonical (multisets sorted). Run level, plus the hand and
-    the enemies' HP in a fight. Nothing here is a seed, a counter or the draw order."""
+    the enemies' HP in a fight (every enemy the side holds, dead ones at 0). Nothing here is a seed, a counter or the
+    draw order."""
     out = {k: view.get(k) for k in ("act", "floor", "hp", "max_hp", "gold")}
     for k in ("deck", "relics", "potions"):
         out[k] = sorted(json.dumps(x) for x in view.get(k, []) if x is not None)
@@ -415,8 +425,7 @@ class EmuLock:
                "potions": [self.slug["potions"].get(p, f"?{p}") for p in v.potions]}
         if self.s.phase == self.E.rc.PHASE_COMBAT:
             obs, ls = self._obs(), self.ls
-            hp = [int(obs[ls._ENEMIES + k * ls._ENEMY]) for k in range(self.native.MAX_ENEMIES)
-                  if obs[ls._ENEMIES + k * ls._ENEMY] > 0]
+            hp = emu_enemy_hp(obs, ls._ENEMIES, ls._ENEMY, self.native.MAX_ENEMIES)
             out["combat"] = {"hand": self._hand(), "enemy_hp": hp}
         return out
 

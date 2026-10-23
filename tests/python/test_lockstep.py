@@ -513,6 +513,50 @@ class AgentSeedTests(unittest.TestCase):
         self.assertEqual(list(inspect.signature(lockstep.agent_rng).parameters), ["entropy"])
 
 
+def enemy_stub(slots, ref_hps=None):
+    """An EmuLock in a fight whose observation buffer holds `slots` (hp, max hp) per enemy slot, six slots wide."""
+    e = stub_emu(SimpleNamespace(
+        phase=FakeRun.COMBAT, act_index=0,
+        view=lambda: SimpleNamespace(floor=3, hp=70, max_hp=80, gold=9, deck=[], relics=[], potions=[])))
+    buf = [0] * (4 + 6 * 8)
+    for k, (hp, mx) in enumerate(slots):
+        buf[4 + k * 8], buf[4 + k * 8 + 1] = hp, mx
+    e.ls = SimpleNamespace(_ENEMIES=4, _ENEMY=8, _living_targets=lambda o: [])
+    e.native = SimpleNamespace(MAX_ENEMIES=6)
+    e._obs = lambda: buf
+    return e
+
+
+def ref_enemies(*hps):
+    o = obs(combat=True)
+    o["hp"], o["floor"], o["gold"], o["max_hp"], o["deck"], o["relics"] = 70, 3, 9, 80, [], []
+    o["combat"]["hand"], o["combat"]["enemies"] = [], [{"hp": h} for h in hps]
+    return o
+
+
+class EnemyProjectionTests(unittest.TestCase):
+    """Both sides list the enemies they still hold, dead ones with their 0 HP, by the same rule. The emulator used to
+    list living enemies only while the referee listed all, so a corpse the game keeps was a diff whichever side held it."""
+
+    def enemy_diff(self, slots, *hps):
+        d = lockstep.structural_diff(lockstep.ref_view(ref_enemies(*hps)), enemy_stub(slots).view())
+        return [x for x in d if x[0] == ".combat.enemy_hp"]
+
+    def test_a_corpse_both_engines_hold_compares_equal(self):
+        self.assertEqual(self.enemy_diff([(0, 40), (12, 40)], 0, 12), [])
+
+    def test_a_corpse_only_the_referee_holds_is_a_diff(self):
+        d = self.enemy_diff([(12, 40)], 0, 12)
+        self.assertEqual([(x[1], x[2]) for x in d], [([0, 12], [12])])
+
+    def test_a_corpse_only_the_emulator_holds_is_a_diff(self):
+        d = self.enemy_diff([(0, 40), (12, 40)], 12)
+        self.assertEqual([(x[1], x[2]) for x in d], [([12], [0, 12])])
+
+    def test_empty_slots_are_not_enemies(self):
+        self.assertEqual(enemy_stub([(12, 40), (0, 0)]).view()["combat"]["enemy_hp"], [12])
+
+
 class OutcomeTests(unittest.TestCase):
     class Env:
         def __init__(self, stream, end):
