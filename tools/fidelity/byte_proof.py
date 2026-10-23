@@ -152,12 +152,20 @@ def command_for(emudump) -> list:
     return C.emudump_command(emudump)
 
 
+# Both builds run with tiered compilation off. The rng log and the trace name each draw's caller from the stack
+# (tools/emudump/RngLog.cs), and which engine frames tiered JIT has inlined by a given draw depends on timing: one
+# build against itself differed in 5 of 4,043 reanchor --trace fights and 14 rng-log fights. Fully optimised from
+# the first call, the same IL inlines the same way every run.
+DETERMINISTIC_JIT = {"DOTNET_TieredCompilation": "0"}
+
+
 def run_side(emudump: str, command: str, flags: list, src: Path, dst: Path, timeout: float) -> tuple[bytes | None, str | None]:
     """One EmuDump over one input file: its stdout, or None and why it failed."""
     try:
         with dst.open("wb") as so:
             rc = subprocess.run([*command_for(emudump), command, str(src), *flags], stdout=so, stderr=subprocess.DEVNULL,
-                                check=False, creationflags=C.BELOW_NORMAL, timeout=timeout).returncode
+                                check=False, creationflags=C.BELOW_NORMAL, timeout=timeout,
+                                env={**os.environ, **DETERMINISTIC_JIT}).returncode
     except subprocess.TimeoutExpired:
         return None, f"timed out after {timeout:.0f} s"
     if rc != 0:
