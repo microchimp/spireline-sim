@@ -4,8 +4,9 @@
 // (run engine, combat state, def-id ints, buff enums, RNG wrappers) appears in this folder, so a second
 // engine can plug into the same adapters (referee/design/rebuild-plan.md section 1, "Oracle path").
 // tools/emudump.Tests/EngineBoundaryTests.cs enforces the boundary.
-// Fight.cs and Reanchor.cs reach the engine through these members (the types Reanchor passes are in
-// ReanchorTypes.cs); later rounds add members for Setup, NetState, HookProbe and Trace.
+// Fight.cs, Reanchor.cs, Setup.cs (the setup items), RngLog.cs (the draw log), HookProbe.cs and Program.cs's
+// `fight --netstate`, `--state-hash` and `setupinfo` reach the engine through these members (the types Reanchor passes
+// are in ReanchorTypes.cs). Trace mode (`reanchor --trace`) is a part of ReanchorStep's record, not a member of its own.
 using System.Text.Json.Nodes;
 
 namespace EmuDump.Engine;
@@ -65,6 +66,33 @@ public sealed class FightSpec(JsonObject record)
     public (int Col, int Row) Room => ((int)Record["room"]![0]!, (int)Record["room"]![1]!);
 }
 
+/// <summary>
+/// What a setup item came to: <see cref="Ok"/> when the engine built it, with a note or the reason it did not in
+/// <see cref="Message"/> (null when there is nothing to say). A message that starts with "unsupported" marks a gap in the
+/// engine's mirror, not a divergence; Setup.cs logs it as one.
+/// </summary>
+public readonly record struct SetupResult(bool Ok, string? Message);
+
+/// <summary>
+/// One draw from a combat RNG stream: the game's name for the stream (Shuffle, CombatTargets, MonsterAi, ...), the stream's
+/// counter after the draw, and a label for the caller. The label is the engine's own text and means something only when
+/// two runs of one build, or two builds of one engine, are compared for equality; it is not a game term.
+/// </summary>
+public sealed class RngDraw(string stream, int index, string caller)
+{
+    public string Stream { get; } = stream;
+
+    public int Index { get; } = index;
+
+    public string Caller { get; } = caller;
+
+    /// <summary>
+    /// Set by whoever holds the draw (RngLog.cs writes it out and sets this to take its entry back); the engine calls it when a
+    /// screen's answer replays a step and the draws of the stopped run are drawn again, so the log holds each draw once.
+    /// </summary>
+    public Action? TakenBack { get; set; }
+}
+
 /// <summary>One simulation engine, driven in game terms.</summary>
 public interface IEngine : IScreenSource
 {
@@ -114,6 +142,105 @@ public interface IEngine : IScreenSource
     /// step left on a screen nobody answered, and writes what happened into <paramref name="record"/> (patched,
     /// anchor_error, moves, moves_unknown, hidden_pre, trace, hidden, choices, fallback_rng_calls, state,
     /// moves_carried, error), key by key as it goes, so a failure part-way leaves the keys written so far.
+    /// With <see cref="ReanchorMode.Trace"/>, <c>trace</c> is the step's events in the shape tools/fidelity/trace_diff.py reads
+    /// (["M", mark, subject, state] at the engine's marks, ["R", stream, counter, caller] per RNG draw), and <c>hidden_pre</c> and
+    /// <c>hidden</c> the state the game's snapshot does not show, before and after.
     /// </summary>
     ReanchorOutcome ReanchorStep(EngineBlock carry, ReanchorMode mode, ReanchorInput input, JsonObject record);
+
+    /// <summary>
+    /// The current combat in the shape of the game's NetFullCombatState (creatures, players with piles, potions,
+    /// relics, orbs and RNG counters, ids as the game writes them), as tools/fidelity/netstate_diff.py reads it, or
+    /// null when no combat is in progress. Fields the engine does not model are absent.
+    /// </summary>
+    JsonObject? GameState();
+
+    /// <summary>
+    /// The run's RNG streams' call counts under the game's names: <c>rng</c> (the run's streams) and <c>player_rng</c>
+    /// (the player's), as the game's snapshots write them. Setup.cs logs them with each setup item.
+    /// </summary>
+    JsonObject RngCounters();
+
+    // Setup items (Setup.cs): what the referee's setup did, redone in game terms. Each returns what it came to; an id
+    // the engine has no model for throws KeyNotFoundException, which Setup.cs logs as an unsupported item.
+
+    /// <summary>
+    /// Obtains the relic (RelicCmd.Obtain on the map) and answers the selection its pickup opens with the picks the
+    /// game made. <paramref name="cardChoices"/> are the game's own logged card choices for the item, as the record
+    /// holds them (kind, step, options, picked): raw JSON for now.
+    /// </summary>
+    SetupResult ObtainRelic(string relicId, IReadOnlyList<JsonObject> cardChoices);
+
+    /// <summary>PotionCmd.TryToProcure: the potion into the first free belt slot; not ok when there is none, or in a fight with Sozu.</summary>
+    SetupResult ProcurePotion(string potionId);
+
+    /// <summary>
+    /// Adds a card made at the setup. <paramref name="pile"/> is "deck" (on the map), or "hand", "discard" or "draw" (in a
+    /// fight); <paramref name="onTop"/> puts a card added to the draw pile on top instead of at the bottom.
+    /// </summary>
+    SetupResult AddCard(string cardId, bool upgraded, string pile, bool onTop);
+
+    /// <summary>Applies a power with no applier, in a fight, to the player (<paramref name="targetSlot"/> -1) or the enemy in that slot.</summary>
+    SetupResult ApplyPower(string powerId, int targetSlot, int amount);
+
+    /// <summary>The player gains energy, in a fight.</summary>
+    SetupResult GainEnergy(int amount);
+
+    /// <summary>Sets the player's max HP, then current HP (capped at max), on the map; null keeps the value held.</summary>
+    SetupResult SetHp(int? maxHp, int? currentHp);
+
+    /// <summary>
+    /// A reference-set item the members above do not cover (relics_set, deck_set, potions_set, player_load, act), as the
+    /// record holds it: raw JSON for now. Null when the item is none of those.
+    /// </summary>
+    SetupResult? RefsetItem(JsonObject item, IReadOnlyList<JsonObject> cardChoices);
+
+    /// <summary>
+    /// The fight item: walks onto map option <paramref name="mapOption"/> but meets the encounter at this place in the
+    /// game's act lists (act name, kind weak/normal/elite/boss, index). Returns the encounter's name for the setup log;
+    /// throws InvalidOperationException when the place names no encounter. <paramref name="gameId"/> is the game's
+    /// encounter id, for the messages.
+    /// </summary>
+    string EnterEncounter(int mapOption, string act, string kind, int index, string gameId);
+
+    /// <summary>
+    /// For the scenario generator (<c>EmuDump setupinfo</c>), independent of the run held: per game relic the follow-up
+    /// its pickup opens on the map (<c>relics</c>), and <see cref="PowerKeys"/>' <c>buff_keys</c> and <c>internal_keys</c>.
+    /// </summary>
+    JsonObject SetupInfo();
+
+    // The draw log (EmuDump fight --rng-log, RngLog.cs).
+
+    /// <summary>
+    /// Starts logging this engine's combat RNG draws, called once per engine before <see cref="StartFight"/>, and forgets the draws
+    /// logged so far. An old engine's hooks are the process's, so a second engine started while another is logging shares them.
+    /// </summary>
+    void StartRngLog();
+
+    /// <summary>The draws since the last call, in order, named by the streams of the combat held now.</summary>
+    IReadOnlyList<RngDraw> TakeRngLog();
+
+    // The full-state hash (EmuDump fight --state-hash, tools/fidelity/corpus.py identity).
+
+    /// <summary>
+    /// A hash of every field of the run's state (the combat's included), 16 hex digits, so it covers what Clone must copy and
+    /// not only what <see cref="DumpStep"/> prints. It names the engine's fields: a refactor that renames one changes it.
+    /// </summary>
+    string StateHash();
+
+    /// <summary>
+    /// One short hash per top-level field of the run's state, then of the combat's with its name prefixed "ActiveCombat.", in the
+    /// engine's order: a difference in <see cref="StateHash"/> is named by the fields that differ.
+    /// </summary>
+    IReadOnlyList<KeyValuePair<string, string>> StateFieldHashes();
+
+    // The listener-order probe (EmuDump hookprobe, HookProbe.cs).
+
+    /// <summary>
+    /// Runs the hook-order scenarios (raw JSON for now, in tools/fidelity/hook_order.py's shape: ids are the engine's own) on
+    /// synthetic combats, independent of the run held, and answers the probe log (<c>scenarios</c>: per scenario its name, the
+    /// ordered probe ids and the error, if any). Throws NotSupportedException, with the reason, when the engine is not
+    /// instrumented for it (tools/fidelity/hook_order.py builds the instrumented copy).
+    /// </summary>
+    JsonObject HookProbe(JsonObject scenarios);
 }

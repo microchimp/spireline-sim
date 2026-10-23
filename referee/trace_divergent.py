@@ -30,14 +30,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 EMU = ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"
-# keys a traced re-run adds to each step: trace mode (Trace.cs), enemy moves, and the game's checksums,
+# keys a traced re-run adds to each step: trace mode (tools/emudump/Engines/Old/OldTrace.cs), enemy moves, and the game's checksums,
 # which "trace": true also turns on (ChecksumTap.cs); cost and frame_trace are per-run instrumentation
 NEW_KEYS = {"trace", "hidden", "move", "intents", "checksums", "net", "cost", "frame_trace"}
 
 
 def emudump(mode: str, src: Path, dst: Path, *extra: str) -> dict:
+    env = None
+    if any(x in ("--rng-log", "--trace", "--trace-to") for x in extra):
+        # The caller labels of the draws are read off the stack, which JIT inlining changes: rng_diff's one definition of the environment.
+        sys.path.insert(0, str(ROOT))
+        from tools.fidelity.rng_diff import NO_INLINING  # noqa: PLC0415
+
+        env = {**os.environ, **NO_INLINING}
     with open(dst, "w", encoding="utf-8") as f:
-        subprocess.run(["dotnet", str(EMU), mode, str(src), *extra], stdout=f, check=True)
+        subprocess.run(["dotnet", str(EMU), mode, str(src), *extra], stdout=f, check=True, env=env)
     return json.loads(dst.read_text(encoding="utf-8"))
 
 

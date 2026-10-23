@@ -1,12 +1,13 @@
 // The emulator's mirror of the reference-set setup items (referee/driver/RefsetSetup.cs): the same
 // algorithm on the run state, so a real run's deck, relics (with their saved state), HP, gold and potions are
 // in place before its fight, in its own act. An item it cannot build is "unsupported" (a mirror gap), as in
-// Setup.cs.
+// Setup.cs and Engines/Old/OldSetup.cs.
 using System.Text.Json.Nodes;
-using EmuDump.Engines.Old;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
+
+namespace EmuDump.Engines.Old;
 
 static class RefsetSetup
 {
@@ -146,7 +147,7 @@ static class RefsetSetup
     {
         var s = e.State;
         string cmd = (string?)item["cmd"] ?? "";
-        if (cmd is not ("relics_set" or "deck_set" or "hp" or "potions_set" or "player_load" or "act")) return null;
+        if (cmd is not ("relics_set" or "deck_set" or "potions_set" or "player_load" or "act")) return null;
         if (s.ActiveCombat != null) return (false, cmd + ": map only");
         switch (cmd)
         {
@@ -181,7 +182,7 @@ static class RefsetSetup
                 foreach (string id in want)
                 {
                     if (held.Remove(id)) continue;
-                    int relic = Setup.RelicId(id) ?? throw new KeyNotFoundException("no emulator relic " + id);
+                    int relic = OldSetup.RelicId(id) ?? throw new KeyNotFoundException("no emulator relic " + id);
                     var followUp = RunNonCombatEffects.ApplyRelicPickup(s, relic, SelectionReturn.Map);
                     if (followUp == RunFollowUp.TransformSelect)
                     {
@@ -189,7 +190,7 @@ static class RefsetSetup
                         var mine = queue.Count > 0 ? new List<JsonObject> { queue.Dequeue() } : new List<JsonObject>();
                         if (gap == null)
                         {
-                            gap = Setup.AnswerDeckSelection(e, mine, out var pickNote);
+                            gap = OldSetup.AnswerDeckSelection(e, mine, out var pickNote);
                             if (pickNote != null) notes.Add(id + ": " + pickNote);
                         }
                     }
@@ -236,15 +237,6 @@ static class RefsetSetup
                 // As the referee: a deck the item could not build fails it.
                 return (residual == "", residual + DeckLine(s));
             }
-            case "hp":
-            {
-                int max = (int?)item["max"] ?? s.PlayerMaxHp;
-                int cur = Math.Min((int?)item["current"] ?? s.PlayerHp, max);
-                if (max < 1 || cur < 1) return (false, "hp below 1");
-                s.PlayerMaxHp = max;  // CreatureCmd.SetMaxHp, then SetCurrentHp
-                s.PlayerHp = cur;
-                return (true, null);
-            }
             default: // potions_set
             {
                 for (int i = 0; i < s.PotionSlots.Length; i++) s.PotionSlots[i] = 0;  // PotionCmd.Discard
@@ -252,7 +244,7 @@ static class RefsetSetup
                 foreach (var x in item["ids"] as JsonArray ?? new JsonArray())
                 {
                     string id = ((string?)x ?? "").ToUpperInvariant();
-                    int potion = Setup.PotionId(id) ?? throw new KeyNotFoundException("no emulator potion " + id);
+                    int potion = OldSetup.PotionId(id) ?? throw new KeyNotFoundException("no emulator potion " + id);
                     if (!RunRewardGenerator.AddPotion(s, potion)) refused.Add(id);
                 }
 

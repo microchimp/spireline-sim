@@ -477,7 +477,7 @@ python referee/trace_divergent.py <batch out.json> --game <your own game copy> [
 
 - It finds each diverging fight's step (first divergence of the plain replay, else the first primary re-anchored one), re-runs the spec through `serve.py` with `"trace": true` and `max_actions` = that step + 2, checks the re-run reproduces the batch up to the step, replays it with `EmuDump reanchor --trace-to`, and writes `<name>.packs/traces/<seed>.trace.txt` (+ `.json`, `index.md`, the traced records). `context_pack` folds each group's trace diff into its pack. `--reuse` redoes only the emulator side.
 - Game side (`driver/Trace.cs`, off unless the spec asks): per step the game's CombatHistory entries, each GameAction run, each `Hook.Before*/After*` called, each RNG draw (stream, counter, two callers) and marks with the visible state (play/played, turn_end, enemy_turn, move/moved, turn_start), plus hidden state (card costs with modifiers, enchantments, afflictions, relic counters and fields, power amounts and fields).
-- Emulator side (`EmuDump reanchor --trace`, `tools/emudump/Trace.cs`): the same marks from `Core/CombatTrace` probes, every draw of a combat stream with its caller, and the hidden state. The probes cost one null check in normal runs.
+- Emulator side (`EmuDump reanchor --trace`, `tools/emudump/Engines/Old/OldTrace.cs`): the same marks from `Core/CombatTrace` probes, every draw of a combat stream with its caller, and the hidden state. The probes cost one null check in normal runs.
 - `python -m tools.fidelity.trace_diff <traced out.json> <traced reanchor.json> [--seed S] [--step J]` aligns the marks, measures each side from its own start state, and prints the first segment whose changes differ (with the game's log, hooks and draws there), whether the re-anchored start already differed (a write-back gap), the first draw one side makes and the other does not (per stream), and hidden-state differences at the step start.
 
 ## The game's own checksums (per-action oracle)
@@ -599,7 +599,7 @@ dotnet tools/emudump/bin/Release/net9.0/EmuDump.dll meta <out.json> --relations 
 ## State lifecycle and the byte-safety of a refactor
 
 **State lifecycle** (`tools/emudump.Tests/LifecycleTests.cs`, `--filter Category=Lifecycle`, ~10 s). Every field of
-CombatState and RunState and what they hold, by reflection (`tools/emudump/StateWalk.cs`), is set and checked at each
+CombatState and RunState and what they hold, by reflection (`tools/emudump/Engines/Old/OldStateWalk.cs`), is set and checked at each
 stage: Clone and CopyTo (copied, not shared), CombatFactory.Reset on a reused combat and RunEngine.Reset (fresh), the
 dump and RunSnap.Export (shown), CombatSnapshot (loads back), Reanchor (written, or carried on purpose). Fine-by-design
 gaps sit in `Allowed` with the reason; known defects in `tools/emudump.Tests/lifecycle-open.txt`. A stage fails on a

@@ -3,128 +3,34 @@
 // stream's draw COUNT but moves a draw to another caller (or another step) is caught; a count-only
 // diff cannot see that.
 //
-// index is the stream's counter after the draw; caller is the first two engine frames above the
-// stream (as trace mode names them: "CardEffects.ShufflePile < CombatEngine.EndTurn"), with lambda and
-// local-function suffixes dropped so a new lambda elsewhere in a method does not rename its draws.
-// The JIT inlines small methods away from the stack, and how it inlines can change with any edit, so
-// rng_diff.py runs EmuDump with DOTNET_TieredCompilation=0 and DOTNET_JITMinOpts=1 (no inlining).
-//
-// A screen raised in the middle of a step stops the step, and its answer runs the step again from its
-// start (CombatEngine.Step, HookChoiceReplay), with the streams moved back to where the step found them.
-// The replay draws the stopped run's draws again, so at the replay's mark ("replay") every draw logged
-// past its stream's position now is dropped -- from this step's draws, and from a step already written
-// when the screen was answered a step later -- as trace mode drops the stopped run's events (Trace.cs):
-// the log holds each draw once, as the game made it.
-using System.Diagnostics;
+// The engine logs the draws (IEngine.StartRngLog, TakeRngLog: the game's stream name, the stream's counter after the
+// draw, a label for the caller); this file shapes each step's draws into arrays. A draw the engine takes back later
+// (a screen's answer replays a step and draws its draws again) is removed from the array it was written to, so the
+// log holds each draw once, as the game made it. The callers are named from the stack, which tiered JIT inlining
+// changes from run to run: run EmuDump with rng_diff.NO_INLINING when the labels matter.
 using System.Text.Json.Nodes;
-using Sts2Emulator.Core;
-using Sts2Emulator.Core.Run;
+using EmuDump.Engine;
 
 static class RngLog
 {
-    /// <summary>A draw: its stream, the stream's counter after it, its caller, and the step array it went to (null while pending).</summary>
-    sealed class Draw(CountingRandom stream, int index, string caller)
-    {
-        public readonly CountingRandom Stream = stream;
-        public readonly int Index = index;
-        public readonly string Caller = caller;
-        public JsonArray? WrittenIn;
-        public JsonNode? Node;
-    }
-
-    /// <summary>The fight's draws so far, in order, the written ones too: a replay takes back a stopped run's.</summary>
-    static readonly List<Draw> Logged = [];
-
-    /// <summary>Starts logging every draw of every CountingRandom in this process.</summary>
+    /// <summary>Logs every engine's draws and writes each step's into its record as "rng_log".</summary>
     public static void Install()
     {
-        CombatTrace.RngCall = r => Logged.Add(new Draw(r, r.CallCount, Caller()));
-        var marked = CombatTrace.Mark;
-        CombatTrace.Mark = (what, subject, state) =>
-        {
-            marked?.Invoke(what, subject, state);
-            if (what == "replay") DropRewound();
-        };
+        Fight.OnEngine += e => e.StartRngLog();  // a new fight starts a new log: what one that threw before its first step drew is not the next one's
+        Fight.OnStep += (e, step) => step["rng_log"] = Take(e);
     }
 
-    /// <summary>
-    /// The replay of a stopped step has moved its streams back to the step's start: a draw past its
-    /// stream's position is the stopped run's, which the replay draws again. Dropped, wherever it was written.
-    /// </summary>
-    static void DropRewound()
+    /// <summary>The draws since the last call as [stream, index, caller] arrays, each taken back when the engine drops its draw.</summary>
+    internal static JsonArray Take(IEngine e)
     {
-        for (int i = Logged.Count - 1; i >= 0; i--)
-        {
-            var d = Logged[i];
-            if (d.Index <= d.Stream.CallCount) continue;
-            d.WrittenIn?.Remove(d.Node);
-            Logged.RemoveAt(i);
-        }
-    }
-
-    /// <summary>The draws since the last call, named by the streams of <paramref name="e"/>'s combat.</summary>
-    public static JsonArray Take(RunEngine e)
-    {
-        var c = e.State.ActiveCombat;
         var arr = new JsonArray();
-        foreach (var d in Logged)
+        foreach (var d in e.TakeRngLog())
         {
-            if (d.WrittenIn != null) continue;
-            d.Node = new JsonArray(Name(d.Stream, c, e), d.Index, d.Caller);
-            arr.Add(d.Node);
-            d.WrittenIn = arr;
+            var node = new JsonArray(d.Stream, d.Index, d.Caller);
+            arr.Add(node);
+            d.TakenBack = () => arr.Remove(node);
         }
 
         return arr;
-    }
-
-    /// <summary>Forgets the fight's draws: a new fight, or one that threw before its first step.</summary>
-    public static void Clear() => Logged.Clear();
-
-    static string Name(CountingRandom r, CombatState? c, RunEngine e)
-    {
-        if (c != null)
-        {
-            if (ReferenceEquals(r, c.ShuffleRng)) return "Shuffle";
-            if (ReferenceEquals(r, c.TargetRng)) return "CombatTargets";
-            if (ReferenceEquals(r, c.AiRng)) return "MonsterAi";
-            if (ReferenceEquals(r, c.CardSelectionRng)) return "CombatCardSelection";
-            if (ReferenceEquals(r, c.CardGenerationRng)) return "CombatCardGeneration";
-            if (ReferenceEquals(r, c.EnergyCostRng)) return "CombatEnergyCosts";
-            if (ReferenceEquals(r, c.PotionGenerationRng)) return "CombatPotionGeneration";
-            if (ReferenceEquals(r, c.OrbGenerationRng)) return "CombatOrbGeneration";
-            if (ReferenceEquals(r, c.NicheHpRng)) return "Niche";
-        }
-
-        if (ReferenceEquals(r, e.State.ActiveCombatRng)) return "combat";  // the combat's own stream (trace mode's "fallback")
-        return $"other:{(uint)r.Seed:x8}";  // a stream the combat no longer holds (replaced during the step), by its seed
-    }
-
-    static string Caller()
-    {
-        var parts = new List<string>(2);
-        foreach (var f in new StackTrace(2, false).GetFrames())
-        {
-            var m = f.GetMethod();
-            var t = m?.DeclaringType;
-            if (m == null || t == null || t == typeof(CountingRandom) || t == typeof(RngLog) || t == typeof(CombatTrace)
-                || (t.Namespace ?? "").StartsWith("System", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            string mn = m.Name, tn = t.Name;
-            if (mn.StartsWith('<') && mn.IndexOf('>') > 1) mn = mn[1..mn.IndexOf('>')];  // a lambda or local function: its method
-            while (tn.StartsWith('<') && t.DeclaringType != null)
-            {
-                t = t.DeclaringType;
-                tn = t.Name;
-            }
-
-            parts.Add(tn + "." + mn);
-            if (parts.Count == 2) break;
-        }
-
-        return string.Join(" < ", parts);
     }
 }

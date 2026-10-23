@@ -1,4 +1,4 @@
-// The setup mirror (tools/emudump/Setup.cs) against a synthetic referee record: cards the referee's setup put
+// The setup mirror (tools/emudump/Setup.cs over tools/emudump/Engines/Old/OldSetup.cs) against a synthetic referee record: cards the referee's setup put
 // into a combat pile land where CardPileCmd.Add puts them (the end of the hand and the discard pile, the top or
 // the bottom of the draw pile), and a combat pile named before the fight is a mirror gap, never a silent skip.
 using System.Text.Json.Nodes;

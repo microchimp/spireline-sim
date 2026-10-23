@@ -1,9 +1,10 @@
-// EmuDump fight --rng-log (RngLog.cs) over a step stopped on a screen raised in the middle of it: the
+// EmuDump fight --rng-log (RngLog.cs over IEngine.StartRngLog and TakeRngLog, the old engine's OldRngLog.cs) over a step stopped on a screen raised in the middle of it: the
 // answer replays the step from its start with the streams moved back, and draws the stopped run's draws
-// again. The log holds each draw once, as trace mode holds the step once (Trace.cs); it held the stopped
+// again. The log holds each draw once, as trace mode holds the step once (OldTrace.cs); it held the stopped
 // run's and then the replay's, so rng_diff.py counted the replayed draws twice (CombatCardGeneration
 // 77 -> 154) and reported 387 fights where 101 differ.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core.Run;
@@ -26,15 +27,15 @@ public class RngLogTests
         var (rngCall, mark) = (CombatTrace.RngCall, CombatTrace.Mark);
         try
         {
-            RngLog.Clear();
-            RngLog.Install();
+            var engine = new OldEngine(e);
+            engine.StartRngLog();
             e.Step(c.Hand.Count, -1, out _, out _, out _);
             Assert.NotNull(e.State.ActiveCombat!.PendingSelection?.Replay);
-            var stopped = RngLog.Take(e);
+            var stopped = RngLog.Take(engine);
             Assert.NotEmpty(stopped);
             e.Step(0, -1, out _, out _, out _);
             Assert.Null(e.State.ActiveCombat!.PendingSelection);
-            var answered = RngLog.Take(e);
+            var answered = RngLog.Take(engine);
 
             // The stopped run's draws went with the replay: the step that stopped holds none of them,
             // and every stream's draws count up one at a time, none twice.
@@ -49,7 +50,6 @@ public class RngLogTests
         finally
         {
             (CombatTrace.RngCall, CombatTrace.Mark) = (rngCall, mark);
-            RngLog.Clear();
         }
     }
 }

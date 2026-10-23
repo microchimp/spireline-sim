@@ -5,7 +5,7 @@
 
 Both sides record, inside each step, the same marks (play / played a card, turn_end, enemy_turn, move /
 moved a monster, turn_start) with the visible state at each, and every draw from a combat RNG stream
-with its caller (referee/driver/Trace.cs, tools/emudump/Trace.cs). For the first step whose result
+with its caller (referee/driver/Trace.cs, tools/emudump/Engines/Old/OldTrace.cs). For the first step whose result
 differs (or --step), the marks are aligned by their sequence; the first aligned mark at which the two
 states differ closes the segment where the divergence happened. For that segment it prints what changed
 on each side (as events: HP, block, energy, powers, cards into and out of hand and the piles), the

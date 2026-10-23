@@ -33,10 +33,10 @@ public class ReanchorFinishTests
         state.DiscardPile = [new CardInstance(IC.StrikeIronclad, false), new CardInstance(IC.Bash, false)];
         state.Energy = 3;
         var rng = new CountingRandom(1);
-        EmuTrace.Begin(state);
+        OldTrace.Begin(state);
         CombatEngine.Step(state, 0, rng);
         CombatEngine.Step(state, 0, rng);
-        var marks = EmuTrace.End().Select(e => e!.AsArray()).Where(e => (string?)e[0] == "M").Select(e => (string?)e[1]).ToList();
+        var marks = OldTrace.End().Select(e => e!.AsArray()).Where(e => (string?)e[0] == "M").Select(e => (string?)e[1]).ToList();
 
         Assert.Equal("start", marks[0]);
         Assert.Equal(1, marks.Count(m => m == "play"));

@@ -7,6 +7,9 @@ namespace EmuDump.Engines.Old;
 /// <summary>The old engine's native dump of a fight step, built from the run engine's own data.</summary>
 static class OldDump
 {
+    /// <summary>Whether the fight being replayed records the setup extras (potions in each snapshot); set at the fight's start.</summary>
+    [ThreadStatic] internal static bool Extended;
+
     internal static JsonObject Dump(RunEngine e) =>
         DumpCombat(e.State.ActiveCombat, e.State.ActiveCombat != null && e.State.Phase == RunPhase.Combat, e.State.Phase.ToString(), e.State);
 
@@ -35,7 +38,7 @@ static class OldDump
         var se = snap["enemies"]!.AsArray();
         for (int i = 0; i < se.Count && i < c.Enemies.Count; i++) se[i]!["intent"] = IntentJson(c.Enemies[i]);
         o["snapshot"] = snap;
-        if (Setup.Extended) o["potions"] = Setup.Belt(c.PotionSlots, c.MaxPotionSlots);
+        if (Extended) o["potions"] = OldSetup.Belt(c.PotionSlots, c.MaxPotionSlots);
         o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());
         int N(CountingRandom? r) => r?.CallCount ?? -1;
         o["rng"] = new JsonObject
@@ -65,11 +68,11 @@ static class OldDump
         if (!won) return f;
 
         f["player"] = new JsonObject { ["hp"] = s.PlayerHp, ["max_hp"] = s.PlayerMaxHp, ["gold"] = s.Gold };
-        f["rng"] = Setup.RunRng(s);
-        if (Setup.Extended)
+        f["rng"] = OldSetup.RunRng(s);
+        if (Extended)
         {
-            f["potions"] = Setup.Belt(s.PotionSlots, s.MaxPotionSlots);
-            f["relics"] = new JsonArray(s.Relics.Select(r => (JsonNode)Setup.RelicEntry(r.DefId)).ToArray());
+            f["potions"] = OldSetup.Belt(s.PotionSlots, s.MaxPotionSlots);
+            f["relics"] = new JsonArray(s.Relics.Select(r => (JsonNode)OldSetup.RelicEntry(r.DefId)).ToArray());
             f["relic_counters"] = new JsonArray(s.Relics.Select(r => (JsonNode)r.Counter).ToArray());
         }
 

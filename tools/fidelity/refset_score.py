@@ -816,7 +816,7 @@ def main() -> int:
         print(f"no EmuDump build in {emu}: dotnet build -c Release in tools/emudump first", file=sys.stderr)
         return 2
     emu_info = git_commit(emu) | {"emudump_mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(dll.stat().st_mtime))}
-    if not (emu / "tools" / "emudump" / "RefsetSetup.cs").exists() and any(
+    if not any((emu / "tools" / "emudump" / p).exists() for p in ("RefsetSetup.cs", "Engines/Old/RefsetSetup.cs")) and any(
             it.get("cmd") == "player_load" for e in manifest["specs"] for it in e["spec"].get("setup", [])):
         # Without the mirror of the references' player_load (tools/emudump/RefsetSetup.cs) every realistic and
         # coverage fight would start from another state: numbers about the setup, not the emulator.

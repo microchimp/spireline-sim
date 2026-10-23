@@ -1,5 +1,5 @@
 // The setup mirror's replay of a pick the game made on a card selection a relic's pickup opened
-// (tools/emudump/Setup.cs AnswerDeckSelection). The fixtures are real referee records (lab batches
+// (tools/emudump/Engines/Old/OldSetup.cs AnswerDeckSelection). The fixtures are real referee records (lab batches
 // dense-a and dense-b), trimmed to the map items; the game's selector took the first card of each list it
 // was shown. CardSelectCmd lists the eligible deck cards in deck order, except a removal, which lists its
 // curses first (then deck order).
@@ -242,7 +242,7 @@ public class SetupPickTests
         var choice = TheGamesChoice(e, out var listed, out int n);
         Assert.True(n >= 1 && listed.Length > n, "the fixture deck must make the game ask");
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
 
         Assert.Null(gap);
         Assert.Null(note);  // the two screens listed the same cards
@@ -294,7 +294,7 @@ public class SetupPickTests
         // The game's list, as its selector logged it: the curse first, then the deck; it took the first two.
         var choice = Choice(2, 2, new[] { "DOUBT", "BASH", "SHRUG_IT_OFF", "TAUNT", "BLUDGEON", "HEADBUTT" }, 0, 1);
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject> { choice });
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject> { choice });
 
         Assert.Null(gap);
         Assert.Equal(new[] { "SHRUG_IT_OFF", "TAUNT", "BLUDGEON", "HEADBUTT" }, Names(s));
@@ -310,7 +310,7 @@ public class SetupPickTests
         Assert.Equal(1, s.PendingSelectionCount);
         var choice = Choice(1, 1, new[] { "DOUBT", "BASH", "SHRUG_IT_OFF", "TAUNT", "BLUDGEON", "HEADBUTT" }, 0);
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject> { choice });
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject> { choice });
 
         Assert.Null(gap);
         Assert.Equal(new[] { "BASH", "SHRUG_IT_OFF", "TAUNT", "BLUDGEON", "HEADBUTT" }, Names(s));
@@ -326,7 +326,7 @@ public class SetupPickTests
         s.Phase = RunPhase.TransformSelect;
         var choice = Choice(1, 1, new[] { "BASH", "SHRUG_IT_OFF", "DOUBT", "TAUNT" }, 2);  // the game's list is the deck's order
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
 
         Assert.Null(gap);
         Assert.Null(note);
@@ -345,7 +345,7 @@ public class SetupPickTests
         var choice = TheGamesChoice(e, out var listed, out _);
         choice["options"]!.AsArray().RemoveAt(5);  // the game's screen did not have a card the emulator's has; it took the first
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
 
         Assert.Null(gap);
         Assert.NotNull(note);
@@ -366,7 +366,7 @@ public class SetupPickTests
         var choice = TheGamesChoice(e, out _, out _);
         choice["options"]![0] = "ANGER";  // the game listed, and took, a card the emulator's deck does not have
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject> { choice });
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject> { choice });
 
         Assert.NotNull(gap);
         Assert.NotEqual(RunPhase.TransformSelect, s.Phase);  // the run still walks on, so the fight can be replayed
@@ -385,7 +385,7 @@ public class SetupPickTests
         s.Phase = RunPhase.TransformSelect;
         var choice = Choice(1, 1, new[] { "BASH", "TAUNT" }, 0);
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
 
         Assert.NotNull(gap);
         Assert.Contains("ambiguous", gap);
@@ -402,7 +402,7 @@ public class SetupPickTests
         s.Phase = RunPhase.TransformSelect;
         var choice = Choice(1, 1, new[] { "BASH", "TAUNT" }, 0);
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject> { choice }, out var note);
 
         Assert.Null(gap);
         Assert.NotNull(note);
@@ -417,7 +417,7 @@ public class SetupPickTests
         Assert.Equal(RunFollowUp.TransformSelect, RunNonCombatEffects.ApplyRelicPickup(s, RelicEffects.Kifuda, SelectionReturn.Map));
         s.Phase = RunPhase.TransformSelect;
 
-        string? gap = Setup.AnswerDeckSelection(e, new List<JsonObject>(), out var note);
+        string? gap = OldSetup.AnswerDeckSelection(e, new List<JsonObject>(), out var note);
 
         // The game took nothing and so does the emulator: the state is the game's, and the item is no gap.
         Assert.Null(gap);

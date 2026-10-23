@@ -6,7 +6,7 @@
     python -m tools.fidelity.rng_diff --logs <a.json> <b.json>   two `EmuDump fight --rng-log` outputs
 
 `EmuDump fight --rng-log` records every draw of every combat stream as [stream, index, caller] in the
-step it happened (tools/emudump/RngLog.cs; index is the stream's counter after the draw). Per fight and
+step it happened (tools/emudump/Engines/Old/OldRngLog.cs; index is the stream's counter after the draw). Per fight and
 stream the draws are compared in order by (step, caller, index). A fight differs when a draw moved (the
 same stream count, another caller, step or stream position: what a per-stream count diff cannot see) or
 one build makes a draw the other does not (count). The first difference per fight is printed with both

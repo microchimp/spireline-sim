@@ -13,7 +13,9 @@ its first line (and counted, so it shows).
 Exit 0 only when every fight of every mode is identical on both sides and no run failed.
 A mode is a row of MODES: the EmuDump command and its flags. The reanchor modes (`reanchor`, plus one per diagnostic flag:
 --scramble, --stale all, --perturb-moves, --trace) also compare what the output holds before its `results` array (the power
-keys). Later rounds add hookprobe, refset and codex.
+keys). hookprobe is no mode here: it runs only on the instrumented scratch build tools/fidelity/hook_order.py makes of a whole
+tree, so it is proved by running `python -m tools.fidelity.hook_table order --json` in the base tree and in the new one and comparing
+the outputs. Later rounds add refset and codex.
 
 The fights are batched as corpus.hash_part batches them (`balance`, two parts per process), one EmuDump
 process per part and side, in a spawn pool at BELOW_NORMAL priority.
@@ -155,7 +157,7 @@ def command_for(emudump) -> list:
 
 # Both builds run with rng_diff's NO_INLINING environment (tiered compilation off, JIT MinOpts, TieredPGO off): the one
 # definition of it, shared with rng_diff. The rng log and the trace name each draw's caller from the stack
-# (tools/emudump/RngLog.cs), and which engine frames tiered JIT has inlined by a given draw depends on timing: one
+# (tools/emudump/Engines/Old/OldRngLog.cs), and which engine frames tiered JIT has inlined by a given draw depends on timing: one
 # build against itself differed in 5 of 4,043 reanchor --trace fights and 14 rng-log fights. With no tiering and no
 # inlining, the same IL gives the same frames every run.
 
