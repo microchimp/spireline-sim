@@ -646,6 +646,10 @@ def play(a) -> int:
     import lockstep  # noqa: PLC0415
 
     lockstep.require_character(a.character)  # the emulator side must be able to start it: exit before any game boots
+    # The workers boot their games with install=False, so this tree's driver goes into the game copy once, here: a block must
+    # never play whatever driver an earlier bench or record left in a shared copy.
+    rr.check_build(Path(a.game).resolve())
+    rr.install(Path(a.game).resolve(), HERE / "driver" / "bin" / "Release" / "net9.0")
     seeds = [f"A1S{i:04d}" for i in range(a.runs)]
     if a.seeds_file:  # a committed seed block (rl/gen0.py): the first --runs of it, in order
         doc = json.loads(Path(a.seeds_file).read_text(encoding="utf-8"))

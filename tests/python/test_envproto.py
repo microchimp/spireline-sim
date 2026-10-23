@@ -80,5 +80,30 @@ class FullSelectSpecTest(unittest.TestCase):
             self.assertTrue(envproto.read_record_meta(Path(d), "S1")["full_select"])
             self.assertFalse(envproto.read_record_meta(Path(d), "S2")["full_select"])  # no sidecar: off
 
+
+class PlayInstallsItsDriverTest(unittest.TestCase):
+    def test_play_installs_this_trees_driver_before_any_game_boots(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        calls = []
+
+        class Stop(Exception):
+            pass
+
+        def no_spawn(_kind):
+            calls.append("spawn")
+            raise Stop
+
+        a = SimpleNamespace(out=tempfile.mkdtemp(), game="G", character="IRONCLAD", runs=1, seeds_file=None, agent_seed=1,
+                            stop_after_h=0, procs=1, sims=1, step_timeout=1, ascension=10)
+        with mock.patch.object(envproto.rr, "check_build", lambda g: calls.append("check")), \
+                mock.patch.object(envproto.rr, "install", lambda g, d: calls.append(("install", Path(d).parts[-4:]))), \
+                mock.patch.object(envproto.mp, "get_context", no_spawn):
+            with self.assertRaises(Stop):
+                envproto.play(a)
+        self.assertEqual(calls, ["check", ("install", ("driver", "bin", "Release", "net9.0")), "spawn"])
+
+
 if __name__ == "__main__":
     unittest.main()
