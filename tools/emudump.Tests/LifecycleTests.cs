@@ -24,6 +24,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
@@ -956,12 +957,12 @@ public class LifecycleTests(ITestOutputHelper output)
     static string? DumpCheck(Member m)
     {
         var s = Combat();
-        string before = Fight.DumpCombat(s, true, "Combat").ToJsonString();
+        string before = OldDump.DumpCombat(s, true, "Combat").ToJsonString();
         Stamp(s, m.Segs, 1);
         string after;
         try
         {
-            after = Fight.DumpCombat(s, true, "Combat").ToJsonString();
+            after = OldDump.DumpCombat(s, true, "Combat").ToJsonString();
         }
         catch (Exception ex)
         {

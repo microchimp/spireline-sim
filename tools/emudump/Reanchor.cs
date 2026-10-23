@@ -12,6 +12,7 @@
 // below). tools/fidelity/reanchor_compare.py judges the result and decides where a fight stops
 // being re-anchorable.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
@@ -114,7 +115,7 @@ static class Reanchor
         try
         {
             Sts2Emulator.Core.Run.RunEngine e;
-            using (Prof.Scope("enter_room")) e = Fight.EnterRoom(game, outp);
+            using (Prof.Scope("enter_room")) e = OldEngine.EnterRoom(game, outp);
             var combat = e.State.ActiveCombat ?? throw new InvalidOperationException($"no combat after entering the room; phase {e.State.Phase}");
             var rng = e.State.ActiveCombatRng!;
             var gsteps = game["steps"]!.AsArray();
@@ -219,7 +220,7 @@ static class Reanchor
         var chosen = new JsonArray();
         foreach (var choice in choices)
         {
-            chosen.Add(Fight.ApplyChoice(() => q, i =>
+            chosen.Add(OldChoices.Apply(() => q, i =>
             {
                 var r = CombatEngine.Step(q, i, qr);
                 terminal |= r.Terminal;
@@ -280,22 +281,22 @@ static class Reanchor
 
     /// <summary>
     /// The state after the step that ended the fight in both the game and the emulator. A won fight is put
-    /// through the run's own end of combat on the engine <see cref="Fight.EnterRoom" /> made (DebugResolveCombat:
+    /// through the run's own end of combat on the engine <see cref="OldEngine.EnterRoom" /> made (DebugResolveCombat:
     /// the sync back to the run and the after-combat hooks, Burning Blood's heal among them), so the hit points,
     /// potions, relics and RNG positions written are the run's, as the game's snapshot shows them. A lost fight
-    /// ends the run and is written as lost and nothing else (see Fight.Final).
+    /// ends the run and is written as lost and nothing else (see OldDump.Final).
     /// The run's own streams stand wherever the emulator's earlier steps left them, and the anchored combat's where
     /// the game's did (Anchor, PatchRng); the sync moves the run's to the combat's and a stream cannot go back, so
     /// the run's start from the seed and end where the combat did.
     /// </summary>
     static JsonObject EndState(RunEngine e, CombatState q, CountingRandom qr, bool won)
     {
-        if (!won) return DumpLite(q, false, Fight.Final(e.State, false));
+        if (!won) return DumpLite(q, false, OldDump.Final(e.State, false));
         e.State.ActiveCombat = q;
         e.State.ActiveCombatRng = qr;
         e.State.Rng = new Sts2Emulator.Core.Rng.RunRngSet(e.State.StringSeed);
         if (e.DebugResolveCombat() == -1) throw new InvalidOperationException($"no fight to finish; phase {e.State.Phase}");
-        return DumpLite(q, false, Fight.Final(e.State, true));
+        return DumpLite(q, false, OldDump.Final(e.State, true));
     }
 
     // ── enemy moves ─────────────────────────────────────────────────────────────────
@@ -745,7 +746,7 @@ static class Reanchor
     }
 
     static List<(int Id, bool Up)> Cards(JsonNode pile) =>
-        pile.AsArray().Select(c => (Fight.CardIdBySnake((string)c![0]!), (bool)c[1]!)).ToList();
+        pile.AsArray().Select(c => (OldIds.CardIdBySnake((string)c![0]!), (bool)c[1]!)).ToList();
 
     static string? PatchEnemies(CombatState q, JsonArray gen, JsonArray patched)
     {
@@ -843,7 +844,7 @@ static class Reanchor
             ["enemies"] = new JsonArray(c.Enemies.Select(en => (JsonNode)new JsonObject
             {
                 ["def_id"] = en.DefId, ["hp"] = en.Hp, ["max_hp"] = en.MaxHp, ["block"] = en.Block, ["buffs"] = Buffs(en.Buffs),
-                ["intent"] = Fight.IntentJson(en),
+                ["intent"] = OldDump.IntentJson(en),
             }).ToArray()),
         };
         o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());

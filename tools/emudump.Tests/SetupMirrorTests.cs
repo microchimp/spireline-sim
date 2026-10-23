@@ -2,6 +2,7 @@
 // into a combat pile land where CardPileCmd.Add puts them (the end of the hand and the discard pile, the top or
 // the bottom of the draw pile), and a combat pile named before the fight is a mirror gap, never a silent skip.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 using Xunit;
@@ -48,12 +49,12 @@ public class SetupMirrorTests
         var setup = new JsonArray(FightItem(), Card("HAVOC", "Hand"), Card("INFLAME", "Draw", "top"), Card("ANGER", "Draw"),
             Card("BASH", "Discard"));
         var outp = new JsonObject();
-        var c = Fight.EnterRoom(Record(setup), outp).State.ActiveCombat!;
+        var c = OldEngine.EnterRoom(Record(setup), outp).State.ActiveCombat!;
 
-        Assert.Equal(Fight.CardIdBySnake("HAVOC"), c.Hand[^1].DefId);
-        Assert.Equal(Fight.CardIdBySnake("INFLAME"), c.DrawPile[0].DefId);
-        Assert.Equal(Fight.CardIdBySnake("ANGER"), c.DrawPile[^1].DefId);
-        Assert.Equal(Fight.CardIdBySnake("BASH"), c.DiscardPile[^1].DefId);
+        Assert.Equal(OldIds.CardIdBySnake("HAVOC"), c.Hand[^1].DefId);
+        Assert.Equal(OldIds.CardIdBySnake("INFLAME"), c.DrawPile[0].DefId);
+        Assert.Equal(OldIds.CardIdBySnake("ANGER"), c.DrawPile[^1].DefId);
+        Assert.Equal(OldIds.CardIdBySnake("BASH"), c.DiscardPile[^1].DefId);
         // The player put them there, so both ends of the draw pile are known.
         Assert.True(c.KnownTopCount >= 1 && c.KnownBottomCount >= 1);
         var items = outp["setup_log"]!.AsArray().Where(x => (int)x!["i"]! >= 1).ToList();
@@ -66,7 +67,7 @@ public class SetupMirrorTests
     {
         var setup = new JsonArray(Card("HAVOC", "Hand"), FightItem());
         var outp = new JsonObject();
-        Fight.EnterRoom(Record(setup), outp);
+        OldEngine.EnterRoom(Record(setup), outp);
         var item = outp["setup_log"]!.AsArray().First(x => (int)x!["i"]! == 0)!;
         Assert.False((bool)item["ok"]!);
         Assert.True((bool?)item["unsupported"] == true);

@@ -3,6 +3,7 @@
 // than clearing the screen and leaving the step half done, and a format-1 recording's untagged
 // choices answer the screens they name.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Xunit;

@@ -1,81 +1,16 @@
-// Replays a fight the referee recorded (referee/driver/Combat.cs) in the emulator and dumps the
+// Replays a fight the referee recorded (referee/driver/Combat.cs) in an engine and dumps the
 // state after each action in the same shape. Usage: EmuDump fight <referee out.json> > emu.json
-using System.Text.Json;
+// The engine is reached only through IEngine (Engine/IEngine.cs): this file names no engine type.
 using System.Text.Json.Nodes;
-using Sts2Emulator.Core;
-using Sts2Emulator.Core.Run;
+using EmuDump.Engine;
+using EmuDump.Engines;
 
 static class Fight
 {
     /// <summary>Called with each step as it is recorded (EmuDump fight --netstate: NetState.cs).</summary>
-    internal static Action<RunEngine, JsonObject>? OnStep;
+    internal static Action<IEngine, JsonObject>? OnStep;
     /// <summary>Called with the engine after the opening (0) and after each replayed step; the live invariant checker sets it.</summary>
-    internal static Action<RunEngine, int>? AfterStep;
-
-    /// <summary>
-    /// The run up to the first combat, as the referee drove it: deck additions, the Neow pick,
-    /// card choices, the walk into the first room. Fills <c>seed</c> and <c>neow_options</c> of
-    /// <paramref name="outp"/> and returns the engine with the fight open.
-    /// </summary>
-    internal static RunEngine EnterRoom(JsonObject game, JsonObject outp)
-    {
-        var e = new RunEngine();
-        Setup.Extended = Setup.IsExtended(game);
-        var setupLog = new JsonArray();
-        if (Setup.Extended) outp["setup_log"] = setupLog;
-        int asc = (int)game["ascension"]!;
-        using (Prof.Scope("reset")) e.Reset((string)game["seed"]!, asc);
-        var s = e.State;
-        outp["seed"] = s.StringSeed;
-        outp["neow_options"] = new JsonArray(s.NeowOptions.Select(i => (JsonNode)i).ToArray());
-        // The referee's deck additions, appended the same way (before Neow).
-        foreach (var name in game["deck_add"]?.AsArray() ?? new JsonArray())
-        {
-            RunNonCombatEffects.AddCardToDeck(s, new CardInstance(CardIdBySnake((string)name!), Upgraded: false));
-        }
-
-        e.Step((int)game["neow_pick"]!, -1, out _, out _, out _);
-        int guard = 0;
-        while (s.Phase != RunPhase.Map && s.Phase != RunPhase.Combat && guard++ < 10)
-        {
-            e.Step(0, -1, out _, out _, out _);  // first offered card, as the referee's selector
-            if (s.Phase == RunPhase.BundleSelect)
-            {
-                e.Step(RunConstants.BundleConfirmAction, -1, out _, out _, out _);  // bundle 0 picked; confirm
-            }
-        }
-
-        Setup.MapItems(e, game, setupLog);  // the setup items before the fight, on the map after Neow
-        var room = game["room"]!.AsArray();
-        (int Col, int Row) want = ((int)room[0]!, (int)room[1]!);
-        int idx = Array.FindIndex(s.MapOptionCoords, c => c == want);
-        if (idx < 0) throw new InvalidOperationException($"room {want} not offered; phase {s.Phase}");
-        var fight = new JsonObject();
-        if (Setup.EnterFight(e, game, idx, fight))
-        {
-            outp["fight"] = fight;
-        }
-        else
-        {
-            e.Step(idx, -1, out _, out _, out _);
-        }
-
-        if (game["room_choices_from"] is JsonNode from)
-        {
-            // Choices the fight's start opened (Gambling Chip, Toolbox), answered as the game did.
-            var start = new JsonArray();
-            foreach (var choice in (game["choices"]?.AsArray() ?? new JsonArray()).Skip((int)from)
-                         .Where(c => (int?)c!["step"] == 0 && (string?)c["kind"] == "cards"))
-            {
-                start.Add(ApplyChoice(() => s.ActiveCombat, i => e.Step(i, -1, out _, out _, out _), choice!.AsObject()));
-            }
-
-            if (start.Count > 0) outp["start_choices"] = start;
-        }
-
-        Setup.CombatItems(e, game, setupLog);  // the setup items after the fight item, before step 0
-        return e;
-    }
+    internal static Action<IEngine, int>? AfterStep;
 
     public static JsonObject Replay(JsonObject game)
     {
@@ -84,10 +19,14 @@ static class Fight
         outp["steps"] = steps;
         try
         {
-            RunEngine e;
-            using (Prof.Scope("enter_room")) e = EnterRoom(game, outp);
-            var s = e.State;
-            steps.Add(new JsonObject { ["action"] = null, ["state"] = Dump(e) });
+            IEngine e;
+            using (Prof.Scope("enter_room"))
+            {
+                e = EngineFactory.Create();
+                e.StartFight(new FightSpec(game), outp);
+            }
+
+            steps.Add(new JsonObject { ["action"] = null, ["state"] = e.DumpStep() });
             OnStep?.Invoke(e, steps[^1]!.AsObject());
             AfterStep?.Invoke(e, 0);
             var gameChoices = (game["choices"]?.AsArray() ?? new JsonArray()).ToList();
@@ -97,25 +36,25 @@ static class Fight
             {
                 stepNo++;  // the referee tags a choice with the index of the step its action produced
                 var a = step!["action"]!.AsObject();
-                if (s.ActiveCombat == null) break;
+                if (!e.CombatOpen) break;
                 var engineSpan = Prof.Scope("step");
                 if ((string)a["kind"]! == "end_turn")
                 {
-                    e.Step(s.ActiveCombat.Hand.Count, -1, out _, out _, out _);
+                    e.EndTurn();
                 }
                 else if ((string)a["kind"]! == "potion")
                 {
                     // used=false: the game cancelled the use (the target was no longer valid).
                     if ((bool?)a["used"] != false)
                     {
-                        e.Step(s.ActiveCombat.Hand.Count + 1 + (int)a["slot"]!, (int)a["target_slot"]!, out _, out _, out _);
+                        e.UsePotion((int)a["slot"]!, (int)a["target_slot"]!);
                     }
                 }
                 else if ((bool?)a["played"] != false)
                 {
                     // played=false: the game refused the play (CanPlay held, the target did not), so
                     // nothing happened there and nothing is replayed here.
-                    e.Step((int)a["hand_index"]!, (int)a["target_slot"]!, out _, out _, out _);
+                    e.PlayCard((int)a["hand_index"]!, (int)a["target_slot"]!);
                 }
 
                 // The choices the game made for this action, applied as the same cards, then the
@@ -126,18 +65,18 @@ static class Fight
                 var chosen = new JsonArray();
                 foreach (var choice in gameChoices.Where(c => (int?)c!["step"] == stepNo && (string?)c["kind"] == "cards"))
                 {
-                    chosen.Add(ApplyChoice(() => s.ActiveCombat, i => e.Step(i, -1, out _, out _, out _), choice!.AsObject()));
+                    chosen.Add(ApplyChoice(e, choice!.AsObject()));
                 }
 
-                untagged?.AnswerOpen(() => s.ActiveCombat, i => e.Step(i, -1, out _, out _, out _), chosen);
+                untagged?.AnswerOpen(e, chosen);
 
-                if (s.ActiveCombat?.PendingSelection is { } extra)
+                if (e.Screen is { } extra)
                 {
-                    chosen.Add(new JsonObject { ["unexpected_selection"] = extra.Kind.ToString() });
+                    chosen.Add(new JsonObject { ["unexpected_selection"] = extra.Kind });
                 }
 
                 engineSpan.Dispose();
-                steps.Add(new JsonObject { ["action"] = a.DeepClone(), ["choices"] = chosen, ["state"] = Dump(e) });
+                steps.Add(new JsonObject { ["action"] = a.DeepClone(), ["choices"] = chosen, ["state"] = e.DumpStep() });
                 OnStep?.Invoke(e, steps[^1]!.AsObject());
                 AfterStep?.Invoke(e, stepNo);
             }
@@ -151,30 +90,35 @@ static class Fight
     }
 
     /// <summary>
-    /// One game choice: pick each card the game picked (matched by card id among the open
-    /// selection's candidates, in whichever pile they live), then decline the rest if the
-    /// game took fewer than the screen allows. The decline goes to that screen only: once its
-    /// picks are spent the next screen of the same action may already be open.
+    /// One game choice: pick each card the game picked (matched by model id among the open
+    /// screen's candidates), then decline the rest if the game took fewer than the screen allows.
+    /// The decline goes to that screen only: once its picks are spent the next screen of the same
+    /// action may already be open.
     /// </summary>
-    internal static JsonObject ApplyChoice(Func<CombatState?> active, Action<int> step, JsonObject choice)
+    internal static JsonObject ApplyChoice(IScreenSource src, JsonObject choice)
     {
         var options = choice["options"]!.AsArray().Select(x => (string)x!).ToList();
         var picked = choice["picked"]!.AsArray().Select(x => options[(int)x!]).ToList();
         var log = new JsonObject { ["game_options"] = choice["options"]!.DeepClone(), ["game_picked"] = choice["picked"]!.DeepClone() };
-        int? screen = active()?.PendingSelection?.SourceCardDefId;
+        var first = src.Screen;
         foreach (var want in picked)
         {
-            if (active()?.PendingSelection is not { } sel) { log["error"] = "no selection open for a pick"; return log; }
-            var ids = CandidateIds(active()!, sel);
-            int idx = ids.FindIndex(id => id == CardIdBySnake(want));
-            if (idx < 0) { log["error"] = $"{want} not among emulator candidates"; log["emu_candidates"] = new JsonArray(ids.Select(i => (JsonNode)i).ToArray()); return log; }
-            step(idx);
+            if (src.Screen is not { } sel) { log["error"] = "no selection open for a pick"; return log; }
+            int idx = sel.Candidates.ToList().FindIndex(c => c.ModelId == want);
+            if (idx < 0)
+            {
+                log["error"] = $"{want} not among emulator candidates";
+                log["emu_candidates"] = new JsonArray(sel.Candidates.Select(c => (JsonNode)c.ModelId).ToArray());
+                return log;
+            }
+
+            src.Pick(idx);
         }
 
         if (picked.Count < ((int?)choice["max"] ?? int.MaxValue)
-            && active()?.PendingSelection is { Skippable: true } rest && rest.SourceCardDefId == screen)
+            && first != null && src.Screen is { Skippable: true } rest && rest.SourceModelId == first.SourceModelId)
         {
-            step(rest.Candidates.Count);  // decline: one past the last candidate
+            src.Decline();
         }
 
         return log;
@@ -202,158 +146,24 @@ static class Fight
         }
 
         /// <summary>Answers every screen open now that an unused choice fits; returns the choices used, in order.</summary>
-        internal List<JsonObject> AnswerOpen(Func<CombatState?> active, Action<int> step, JsonArray log)
+        internal List<JsonObject> AnswerOpen(IScreenSource src, JsonArray log)
         {
             var used = new List<JsonObject>();
-            for (int guard = 0; guard < 16 && active() is { PendingSelection: { } sel } c; guard++)
+            for (int guard = 0; guard < 16 && src.Screen is { } sel; guard++)
             {
-                var have = CandidateIds(c, sel).Order().ToList();
-                int at = _left.FindIndex(ch => OptionIds(ch) is { } ids && ids.SequenceEqual(have));
+                var have = sel.Candidates.Select(c => c.ModelId).Order(StringComparer.Ordinal).ToList();
+                int at = _left.FindIndex(ch => OptionIds(ch).SequenceEqual(have));
                 if (at < 0) break;
                 var choice = _left[at];
                 _left.RemoveAt(at);
                 used.Add(choice);
-                log.Add(ApplyChoice(active, step, choice));
+                log.Add(ApplyChoice(src, choice));
             }
 
             return used;
         }
 
-        static List<int>? OptionIds(JsonObject choice)
-        {
-            var ids = new List<int>();
-            foreach (var o in choice["options"]!.AsArray())
-            {
-                if (!TryCardIdBySnake((string)o!, out int id)) return null;
-                ids.Add(id);
-            }
-
-            ids.Sort();
-            return ids;
-        }
-    }
-
-    /// <summary>Card def id of each candidate: generated options, else the pile whose cards match.</summary>
-    static List<int> CandidateIds(CombatState c, PendingCardSelection sel)
-    {
-        if (sel.GeneratedCandidates.Count > 0) return sel.Candidates.Select(i => sel.GeneratedCandidates[i]).ToList();
-        var pile = sel.Kind.ChoosesFromDrawPile() ? c.DrawPile
-            : sel.Kind.ToString().StartsWith("DiscardTo") ? c.DiscardPile
-            : c.Hand;
-        return sel.Candidates.Select(i => i < pile.Count ? pile[i].DefId : -1).ToList();
-    }
-
-    static Dictionary<string, int>? _bySnake;
-
-    static Dictionary<string, int> BySnake()
-    {
-        if (_bySnake == null)
-        {
-            var map = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "id_map.json")))!["cards"]!.AsObject();
-            _bySnake = map.ToDictionary(kv => System.Text.RegularExpressions.Regex.Replace(kv.Key,
-                "(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_").ToUpperInvariant(), kv => (int)kv.Value!);
-        }
-
-        return _bySnake;
-    }
-
-    /// <summary>Game card id (UPPER_SNAKE) to the emulator's def id, through data/id_map.json.</summary>
-    internal static int CardIdBySnake(string snake) => BySnake()[snake];
-
-    internal static bool TryCardIdBySnake(string snake, out int id) => BySnake().TryGetValue(snake, out id);
-
-    /// <summary>Card pools for the batch maker: <c>EmuDump pools</c>.</summary>
-    public static JsonObject Pools() => new()
-    {
-        ["ironclad"] = new JsonArray(Sts2Emulator.GeneratedData.CardPools.Ironclad.ToArray().Select(i => (JsonNode)i).ToArray()),
-        ["colorless"] = new JsonArray(Sts2Emulator.GeneratedData.CardPools.Colorless.ToArray().Select(i => (JsonNode)i).ToArray()),
-    };
-
-    internal static JsonObject Dump(RunEngine e) =>
-        DumpCombat(e.State.ActiveCombat, e.State.ActiveCombat != null && e.State.Phase == RunPhase.Combat, e.State.Phase.ToString(), e.State);
-
-    /// <summary>One step's state as `EmuDump fight` prints it (tools/emudump.Tests/LifecycleTests.cs reads it too).
-    /// <paramref name="run"/> gives a finished fight its <c>final</c> block.</summary>
-    internal static JsonObject DumpCombat(CombatState? c, bool inCombat, string phase, RunState? run = null)
-    {
-        var o = new JsonObject { ["in_combat"] = inCombat, ["run_phase"] = phase };
-        if (c == null) return o;
-        // A finished fight keeps its CombatState on the run (SyncAfterCombat copies out what the run keeps).
-        if (!inCombat && run != null) o["final"] = Final(run, run.LastPlayerWon);
-        byte[] written;
-        using (Prof.Scope("dump.snapshot_write")) written = Sts2Emulator.Interop.CombatSnapshot.WriteUnchecked(c);
-        using var parse = Prof.Scope("dump.parse_and_rest");
-        var snap = JsonNode.Parse(written)!;
-        // Buff ids are the emulator's BuffId enum, not id_map's power ids: name them here.
-        foreach (var holder in new[] { snap["player"]! }.Concat(snap["enemies"]!.AsArray().Select(x => x!)))
-        {
-            foreach (var b in holder["buffs"]!.AsArray())
-            {
-                b!["name"] = ((BuffId)(int)b["id"]!).ToString();
-            }
-        }
-
-        // The snapshot's intent lacks the move's second declared intent (it derives it on load).
-        var se = snap["enemies"]!.AsArray();
-        for (int i = 0; i < se.Count && i < c.Enemies.Count; i++) se[i]!["intent"] = IntentJson(c.Enemies[i]);
-        o["snapshot"] = snap;
-        if (Setup.Extended) o["potions"] = Setup.Belt(c.PotionSlots, c.MaxPotionSlots);
-        o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());
-        int N(CountingRandom? r) => r?.CallCount ?? -1;
-        o["rng"] = new JsonObject
-        {
-            ["Shuffle"] = N(c.ShuffleRng), ["CombatTargets"] = N(c.TargetRng), ["MonsterAi"] = N(c.AiRng as CountingRandom),
-            ["CombatCardSelection"] = N(c.CardSelectionRng), ["CombatCardGeneration"] = N(c.CardGenerationRng),
-            ["CombatEnergyCosts"] = N(c.EnergyCostRng), ["CombatPotionGeneration"] = N(c.PotionGenerationRng),
-            ["CombatOrbGeneration"] = N(c.OrbGenerationRng), ["Niche"] = N(c.NicheHpRng),
-        };
-        return o;
-    }
-
-    /// <summary>
-    /// What a fight leaves once it is over, written beside the dump of the step that ended it.
-    /// The game tears a WON fight down inside that step (Player.AfterCombatEnd: the player's powers, block and
-    /// piles go, the roster with the combat), so its snapshot then shows what the run holds: hit points
-    /// with the after-combat heals in, the potion belt, the relics and the RNG streams. The emulator's
-    /// run is that state (the CombatState it keeps is not torn down), so this writes the run's. A LOST
-    /// fight ends the run and writes only that: the game freezes the combat where the player died, the
-    /// emulator finishes the enemy phase, and what either left goes nowhere.
-    /// Gold and the relics' counters are written too; the game's snapshot has neither yet, and
-    /// tools/fidelity/fight_compare.py compares them once a record has them.
-    /// </summary>
-    internal static JsonObject Final(RunState s, bool won)
-    {
-        var f = new JsonObject { ["won"] = won };
-        if (!won) return f;
-
-        f["player"] = new JsonObject { ["hp"] = s.PlayerHp, ["max_hp"] = s.PlayerMaxHp, ["gold"] = s.Gold };
-        f["rng"] = Setup.RunRng(s);
-        if (Setup.Extended)
-        {
-            f["potions"] = Setup.Belt(s.PotionSlots, s.MaxPotionSlots);
-            f["relics"] = new JsonArray(s.Relics.Select(r => (JsonNode)Setup.RelicEntry(r.DefId)).ToArray());
-            f["relic_counters"] = new JsonArray(s.Relics.Select(r => (JsonNode)r.Counter).ToArray());
-        }
-
-        return f;
-    }
-
-    /// <summary>
-    /// The emulator's own move for one enemy: its announced intent (type is the IntentType enum, magnitude
-    /// the base damage per hit for an attack), the second intent its move declares, and the AI position
-    /// that chose it. tools/fidelity/fight_compare.py maps this and the game's MoveState intents to one
-    /// vocabulary; move_index/last_move only explain, they are not compared.
-    /// </summary>
-    internal static JsonObject IntentJson(EnemyState en)
-    {
-        static JsonObject One(Intent it) => new()
-        {
-            ["type"] = (int)it.Type, ["magnitude"] = it.Magnitude, ["hits"] = it.Hits, ["carries_damage"] = it.CarriesDamage,
-        };
-        var o = One(en.CurrentIntent);
-        o["secondary"] = en.SecondaryIntent is { } s ? One(s) : null;
-        o["move_index"] = en.MoveIndex;
-        o["last_move"] = en.LastMove;
-        return o;
+        static List<string> OptionIds(JsonObject choice) =>
+            choice["options"]!.AsArray().Select(o => (string)o!).Order(StringComparer.Ordinal).ToList();
     }
 }
