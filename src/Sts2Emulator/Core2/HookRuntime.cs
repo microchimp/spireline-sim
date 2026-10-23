@@ -120,7 +120,12 @@ public interface IPassCursor
 public readonly record struct HookStep(object? Request, HookResume? Resume)
 {
     public static HookStep Done => default;
-    public static HookStep Paused(object request, HookResume resume) => new(request, resume);
+    public static HookStep Paused(object request, HookResume resume)
+    {
+        HookPlain.Check(request, resume);
+        return new(request, resume);
+    }
+
     public bool IsPaused => Request is not null;
 }
 
