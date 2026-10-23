@@ -353,7 +353,12 @@ def _with_steps(s: Shape, shapes: dict[str, Shape]) -> list[str]:
     for st in s.d["pre"]:
         step = st["step"]
         if step == "netid-guard":
-            line = [f"if (!Steps.NetIdGuard(rt, {d}))", "{"] + ["    " + x for x in _identity(s, False)] + ["}"]
+            # The fast path comes first: with no listener registered for any pass the guard has nothing to guard
+            # (TIER1_KERNEL.md section 4), so a kernel with no switch on never reaches the step.
+            hooks = list(dict.fromkeys(p["hook"] for p in s.passes))
+            fast = " || ".join(f"rt.HasAny(HookId.{h})" for h in hooks)
+            line = ([f"if (!({fast}))", "{"] + ["    " + x for x in _identity(s, False)] + ["}"]
+                    + [f"if (!Steps.NetIdGuard(rt, {d}))", "{"] + ["    " + x for x in _identity(s, False)] + ["}"])
         elif step == "negative-cost-passthrough":
             line = [f"if (!Steps.NegativeCostPassthrough(rt, {d}, v))", "{"] + [
                 "    " + x for x in _identity(s, False)] + ["}"]

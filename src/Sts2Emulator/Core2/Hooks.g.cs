@@ -529,6 +529,10 @@ public static partial class Hooks
     /// <summary>game: Hook.AfterAutoPostPlayPhaseEntered. combat: AfterAutoPostPlayPhaseEntered event. context caller-hook; steps netid-guard.</summary>
     public static HookStatus AfterAutoPostPlayPhaseEntered(HookRuntime rt, in AfterAutoPostPlayPhaseEnteredArgs a)
     {
+        if (!(rt.HasAny(HookId.AfterAutoPostPlayPhaseEntered)))
+        {
+            return HookStatus.Done;
+        }
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_AfterAutoPostPlayPhaseEntered))
         {
             return HookStatus.Done;
@@ -575,6 +579,10 @@ public static partial class Hooks
     /// <summary>game: Hook.AfterAutoPrePlayPhaseEntered. combat: AfterAutoPrePlayPhaseEnteredEarly event; AfterAutoPrePlayPhaseEntered event; AfterAutoPrePlayPhaseEnteredLate event. context caller-hook; steps netid-guard.</summary>
     public static HookStatus AfterAutoPrePlayPhaseEntered(HookRuntime rt, in AfterAutoPrePlayPhaseEnteredArgs a)
     {
+        if (!(rt.HasAny(HookId.AfterAutoPrePlayPhaseEnteredEarly) || rt.HasAny(HookId.AfterAutoPrePlayPhaseEntered) || rt.HasAny(HookId.AfterAutoPrePlayPhaseEnteredLate)))
+        {
+            return HookStatus.Done;
+        }
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_AfterAutoPrePlayPhaseEntered))
         {
             return HookStatus.Done;
@@ -1385,6 +1393,10 @@ public static partial class Hooks
     /// <summary>game: Hook.AfterDeath. run+combat: AfterDeath event. context per-listener; steps netid-guard.</summary>
     public static void AfterDeath(HookRuntime rt, in AfterDeathArgs a)
     {
+        if (!(rt.HasAny(HookId.AfterDeath)))
+        {
+            return;
+        }
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_AfterDeath))
         {
             return;
@@ -1414,6 +1426,10 @@ public static partial class Hooks
     /// <summary>game: Hook.AfterDiedToDoom. combat-direct: AfterDiedToDoom event. context per-listener; steps netid-guard.</summary>
     public static void AfterDiedToDoom(HookRuntime rt, in AfterDiedToDoomArgs a)
     {
+        if (!(rt.HasAny(HookId.AfterDiedToDoom)))
+        {
+            return;
+        }
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_AfterDiedToDoom))
         {
             return;
@@ -3186,6 +3202,10 @@ public static partial class Hooks
     /// <summary>game: Hook.AfterTurnEnd. combat: AfterSideTurnEnd event; AfterSideTurnEndLate event. context per-listener; wait after [0, 1]; steps netid-guard.</summary>
     public static void AfterTurnEnd(HookRuntime rt, in AfterTurnEndArgs a)
     {
+        if (!(rt.HasAny(HookId.AfterSideTurnEnd) || rt.HasAny(HookId.AfterSideTurnEndLate)))
+        {
+            return;
+        }
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_AfterTurnEnd))
         {
             return;
@@ -3559,6 +3579,10 @@ public static partial class Hooks
     /// <summary>game: Hook.BeforeFlush. combat: BeforeFlush event; BeforeFlushLate event. context per-listener; wait after [1]; steps netid-guard.</summary>
     public static void BeforeFlush(HookRuntime rt, in BeforeFlushArgs a)
     {
+        if (!(rt.HasAny(HookId.BeforeFlush) || rt.HasAny(HookId.BeforeFlushLate)))
+        {
+            return;
+        }
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_BeforeFlush))
         {
             return;
@@ -3777,6 +3801,10 @@ public static partial class Hooks
     /// <summary>game: Hook.BeforeSideTurnStart. combat: BeforeSideTurnStart event. context per-listener; steps netid-guard.</summary>
     public static void BeforeSideTurnStart(HookRuntime rt, in BeforeSideTurnStartArgs a)
     {
+        if (!(rt.HasAny(HookId.BeforeSideTurnStart)))
+        {
+            return;
+        }
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_BeforeSideTurnStart))
         {
             return;
@@ -3806,6 +3834,10 @@ public static partial class Hooks
     /// <summary>game: Hook.BeforeTurnEnd. combat: BeforeSideTurnEndVeryEarly event; BeforeSideTurnEndEarly event; BeforeSideTurnEnd event. context per-listener; wait after [2]; steps netid-guard.</summary>
     public static void BeforeTurnEnd(HookRuntime rt, in BeforeTurnEndArgs a)
     {
+        if (!(rt.HasAny(HookId.BeforeSideTurnEndVeryEarly) || rt.HasAny(HookId.BeforeSideTurnEndEarly) || rt.HasAny(HookId.BeforeSideTurnEnd)))
+        {
+            return;
+        }
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_BeforeTurnEnd))
         {
             return;
