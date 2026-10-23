@@ -596,7 +596,8 @@ def main() -> int:
     ap.add_argument("--agent", choices=["play"], default="play", help="play: lockstep PLAY agent (mode play)")
     ap.add_argument("--stop-after-h", type=float, default=0.0, help="play: start no new run after this many hours (0: no limit)")
     ap.add_argument("--seeds-file", default=None, help="play: JSON seed block (default: A1S0000...)")
-    ap.add_argument("--sims", type=int, default=60)
+    ap.add_argument("--sims", type=lambda v: int(v) if v.isdigit() else v, default=60,
+                    help="simulations per combat decision, or a search config name (rl/search_configs.py)")
     ap.add_argument("--agent-seed", type=int, default=None, help="play: the agent's own seed (default: random, recorded); never derived from a game seed")
     ap.add_argument("--ascension", type=int, default=10)
     ap.add_argument("--step-timeout", type=float, default=180)

@@ -340,7 +340,7 @@ def score_real(a: argparse.Namespace) -> int:
         env["STS2_LIB_PATH"] = a.lib
     env.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
     cmd = [sys.executable, str(ROOT / "referee" / "envproto.py"), "play", "--game", a.game, "--out", str(out), "--procs", str(a.procs),
-           "--runs", str(a.runs), "--sims", str(a.sims), "--seeds-file", a.seeds_file, "--agent-seed", str(AGENT_SEED),
+           "--runs", str(a.runs), "--sims", a.config or str(a.sims), "--seeds-file", a.seeds_file, "--agent-seed", str(AGENT_SEED),
            "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h)]
     rc = subprocess.run(cmd, env=env, check=False).returncode
     rows = real_runs(out / "runs.jsonl") if (out / "runs.jsonl").exists() else []
@@ -381,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--runs", type=int, default=500)
     sc.add_argument("--procs", type=int, default=12)
     sc.add_argument("--sims", type=int, default=60)
+    sc.add_argument("--config", help="a named search config (rl/search_configs.py), instead of --sims")
     sc.add_argument("--ascension", type=int, default=10)
     sc.add_argument("--stop-after-h", type=float, default=3.5)
     sc.add_argument("--lib")

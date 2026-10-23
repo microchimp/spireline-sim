@@ -318,11 +318,15 @@ class EmuLock:
         leakprobes.native_env()
         from run_train import engine, features, selfplay, vocab  # noqa: PLC0415
         import live_search  # noqa: PLC0415
+        import search_configs  # noqa: PLC0415
         from sts2_gym import native  # noqa: PLC0415
 
+        # `sims`: a flat budget, or a search config name (rl/search_configs.py)
+        self.cfg = search_configs.get(sims) if isinstance(sims, str) else search_configs.flat(int(sims))
+        self.position_of = search_configs.position_of
         self.E, self.F, self.V, self.ls, self.native = engine, features, vocab, live_search, native
         self.seed, self.sims = seed, sims
-        self.s = engine.RunSession(seed, ascension, engine.CombatBudget(sims, sims))
+        self.s = engine.RunSession(seed, ascension, engine.CombatBudget(self.cfg.sims, self.cfg.sims))
         self.rules = selfplay.RulesPlayer()
         # the agent's RNG is seeded from the agent seed alone, never from the game seed (DESIGN 3.2)
         self.rng = agent_rng(agent_seed if agent_seed is not None else [fresh_agent_seed()])
@@ -678,8 +682,8 @@ class EmuLock:
         self.ai_state_assumed = False
         root = self.s.combat(fork_combat=True).combat_fork(None)
         try:
-            res = self.ls.search_live(root.handle, max_sims=self.sims, min_child_sims=2, confirm_pairs=0,
-                                      time_budget_s=120.0, seed=int(self.rng.integers(1 << 30)))
+            pos = self.position_of(root, self.s.info) if self.cfg.schedule else None
+            res = self.ls.search_live(root.handle, seed=int(self.rng.integers(1 << 30)), **self.cfg.search_kwargs(pos))
         finally:
             root.close() if hasattr(root, "close") else self.native.destroy(root.handle)
         self.ai_state_assumed = bool(res.ai_state_assumed)
