@@ -261,10 +261,11 @@ class MappingTests(unittest.TestCase):
         # 23 of the first smoke's 25 "state_diverged" losses (and 65 of the second's): the referee takes the potion
         # first; RunSession.decision() would open the card reward first, so the emulator lacked the potion at the
         # referee's next decision. The answer is now stepped on the items screen as it comes.
-        run = ItemsRun(potion=1, card=1)
+        run = ItemsRun(gold=1, potion=1, card=1)
         e = stub_emu(run)
         tk = ["take", "skip"]
         self.assertIsNone(e.sync("reward", tk, {"ctx": {"type": "potion"}}))
+        self.assertEqual(run.items["gold"], 0)  # the referee claimed the gold before asking (133 smoke-2 losses)
         self.assertIsNone(e.apply("reward", tk, 0))
         self.assertEqual((run.items["potion"], run.cur), (0, "items"))  # taken now, card reward not yet open
         self.assertIsNone(e.sync("reward", tk, {"ctx": {"type": "card"}}))
@@ -273,7 +274,7 @@ class MappingTests(unittest.TestCase):
         self.assertIsNone(e.sync("card_reward", [["ANGER", 0], "skip"], {}))
         self.assertIsNone(e.apply("card_reward", [["ANGER", 0], "skip"], 0))
         self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {}))
-        self.assertEqual(run.taken, ["step:0", "step:0", "card.take", "reward.proceed"])
+        self.assertEqual(run.taken, ["step:0", "step:0", "step:0", "card.take", "reward.proceed"])
 
     def test_skipped_items_leave_the_screen_and_a_lone_path_enters_the_fight(self):
         # The 14 "phase:5" losses: the referee left the rewards screen and took a lone map node without asking.

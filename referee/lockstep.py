@@ -314,12 +314,12 @@ class EmuLock:
         for _ in range(20):
             ph = self.s.phase
             if ph == rc.PHASE_RELIC_REWARD:
-                if not self.rq:
-                    return
                 gold, potion, relic, cards = self.native.run_state_list(self.s.handle, 6, 4)
                 if gold:
-                    self.s._step(0)  # gold is taken without asking on both sides
+                    self.s._step(0)  # gold is taken before any question on both sides
                     continue
+                if not self.rq:
+                    return
                 t, take = self.rq.pop(0)
                 present = [k for k, n in (("potion", potion), ("relic", relic), ("card", cards)) if n]
                 if take and t in present:
