@@ -364,6 +364,32 @@ class EventTests(unittest.TestCase):
         self.assertEqual((ls.stats["gaps"], ls.stats["ranked"], ls.lost), (0, 2, None))
 
 
+class TreasureTests(unittest.TestCase):
+    def test_the_chest_relic_the_emulator_already_holds_is_not_a_divergence(self):
+        # 6 of the 12 divergences of the first events-round run: the emulator holds the chest's relic at the question.
+        a = obs()
+        held = {**view_of(a), "relics": ["BURNING_BLOOD", "LANTERN"]}
+        m = {**msg("treasure", a), "actions": [["take", "LANTERN"], "skip"]}
+        ls = lockstep.Lockstep(FakeEmu([held]), lambda m: 0)
+        ls.decide(m)
+        self.assertEqual((ls.stats["diverged"], ls.stats["ranked"]), (0, 1))
+        other = {**msg("treasure", a), "actions": [["take", "ORICHALCUM"], "skip"]}  # a different relic is still a difference
+        ls = lockstep.Lockstep(FakeEmu([held]), lambda m: 0)
+        ls.decide(other)
+        self.assertEqual(ls.stats["diverged"], 1)
+
+
+class ReanchorReasonTests(unittest.TestCase):
+    def test_a_failed_reanchor_records_why(self):
+        a = obs()
+        emu = FakeEmu([view_of(obs(hp=10))], reanchor_ok=False)
+        emu.fail = "in_fight"
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        ls.decide(msg("map", a))
+        ls.decide(msg("map", a))
+        self.assertEqual(ls.stats["reanchor_fail_reasons"], {"room_entry:in_fight": 2})
+
+
 class LeakTests(unittest.TestCase):
     """DESIGN.md 7.6 on the emulator: what a resampled clone hides."""
 

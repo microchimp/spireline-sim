@@ -179,6 +179,10 @@ class Lockstep:
         reason = None if kind in MAPPED_KINDS else f"unmapped:{kind}"
         reason = reason or self.emu.sync(kind, labels, msg)
         r, e = ref_view(msg.get("obs", {})), self.emu.view()
+        if kind == "treasure":
+            # The emulator opens the chest and holds its relic when the referee is first asked whether to take it (the
+            # 6 of 12 treasure divergences of the events round); the question's own offer is the referee's side of that.
+            r["relics"] = r["relics"] + [x[1] for x in labels if isinstance(x, list) and len(x) > 1 and x[0] == "take"]
         return reason, ([] if reason else structural_diff(r, e)), r, e
 
     def _reanchor(self, plan: str, kind: str, labels: list, msg: dict) -> bool:
