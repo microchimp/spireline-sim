@@ -1512,6 +1512,21 @@ public static class NativeExports
         int* obsBuf
     ) => RunNativeExports.Sts2Run_ReanchorFight(handle, record, recordLen, msgBuf, msgLen, obsBuf);
 
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_ReanchorFightHidden")]
+    public static unsafe int Sts2Run_ReanchorFightHidden(
+        int handle,
+        byte* record,
+        int recordLen,
+        int flags,
+        byte* msgBuf,
+        int msgLen,
+        int* obsBuf
+    ) => RunNativeExports.Sts2Run_ReanchorFightHidden(handle, record, recordLen, flags, msgBuf, msgLen, obsBuf);
+
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_DebugSetStreams")]
+    public static unsafe int Sts2Run_DebugSetStreams(int handle, byte* json, int len) =>
+        RunNativeExports.Sts2Run_DebugSetStreams(handle, json, len);
+
     [UnmanagedCallersOnly(EntryPoint = "Sts2Run_PlayerWon")]
     public static int Sts2Run_PlayerWon(int handle) => RunNativeExports.Sts2Run_PlayerWon(handle);
 

@@ -101,6 +101,135 @@ class PotionOutsideFightTest(unittest.TestCase):
         self.assertEqual(e.rq, [])  # the reward queue the emulator mirrors is untouched
 
 
+
+class FakeScreen:
+    """The emulator's "up to N" fight screen (CombatEngine ResolveCardSelection, DiscardToHand): candidates, a decline one past
+    them, and a reopen after each pick until `amount` are spent."""
+
+    def __init__(self, cards, amount):
+        self.cards, self.amount, self.taken, self.declined = list(cards), amount, [], False
+        self.obs = [0] * 22
+        self._publish()
+
+    def _publish(self):
+        self.obs[0] = 1 if self.cards and self.amount > 0 and not self.declined else 0
+        self.obs[1] = len(self.cards) if self.obs[0] else 0
+        for i, (cid, up) in enumerate(self.cards[:10]):
+            self.obs[2 + 2 * i], self.obs[3 + 2 * i] = cid, up
+
+    @property
+    def is_open(self):
+        return bool(self.obs[0])
+
+    def mask(self, n):
+        count = self.obs[1] if self.is_open else 0
+        return ([True] * count + ([True] if self.is_open else []) + [False] * n)[:n]
+
+    def step(self, a):
+        if a == self.obs[1]:
+            self.declined = True
+        else:
+            self.taken.append(self.cards.pop(a))
+            self.amount -= 1
+        self._publish()
+        return 0
+
+
+def screen_emu(cards, amount):
+    """An EmuLock standing on a fake fight selection screen (no native library)."""
+    screen = FakeScreen(cards, amount)
+    e = emu([])
+    e.ls = NS(_SELECTION_KIND=0, _SELECTION_COUNT=1, _SELECTION=2, _CARD=2, _MAX_CANDIDATES=10,
+              _card_at=lambda obs, off: (obs[off], obs[off + 1]))
+    e._obs = lambda: screen.obs
+    e.native = NS(run_action_mask=lambda h, n: screen.mask(n), run_step=lambda h, a, t, *bufs: screen.step(a))
+    e.s = NS(handle=0, phase=1, env=NS(_run_obs_buf=screen.obs, _run_rew_buf=None, _run_terminal_buf=None, _run_truncated_buf=None))
+    e.E = NS(rc=NS(PHASE_COMBAT=1, PHASE_COMPLETE=9))
+    e._forced = lambda want: None
+    e._auto_combat = lambda: None
+    return e, screen
+
+
+PICK1 = [["STRIKE", 0], ["DEFEND", 0], ["ANGER", 0], "done"]  # a 0..2 screen over three cards, the first ask
+PICK2 = [["STRIKE", 0], ["ANGER", 0], "done"]  # the second ask, after DEFEND
+CTX1, CTX2 = {"ctx": {"pick": 1, "of": 2}}, {"ctx": {"pick": 2, "of": 2}}
+THREE = [(1, 0), (2, 0), (3, 0)]
+
+
+class FullSelectScreenTest(unittest.TestCase):
+    """A fight card screen taken with full_select: each pick and the "done" meet the emulator's screen, and both leave it together."""
+
+    def test_done_is_an_extra_action_that_has_an_emulator_option(self):
+        self.assertEqual(lockstep.extra_kind("done"), "done")
+        self.assertNotIn("done", lockstep.NO_EMULATOR_KINDS)
+
+    def test_two_picks_close_both_screens_without_a_done(self):
+        e, s = screen_emu(THREE, 2)
+        self.assertIsNone(e.sync("select_cards_combat", PICK1, CTX1))
+        self.assertIsNone(e.apply("select_cards_combat", PICK1, 1))  # DEFEND
+        self.assertIsNone(e.sync("select_cards_combat", PICK2, CTX2))
+        self.assertIsNone(e.apply("select_cards_combat", PICK2, 1))  # ANGER
+        self.assertEqual(s.taken, [(2, 0), (3, 0)])
+        self.assertIsNone(e.sync("combat", [["end"]], {}))  # the referee's next ask: the emulator's screen is closed too
+
+    def test_zero_picks_then_done_declines_the_screen(self):
+        e, s = screen_emu(THREE, 2)
+        self.assertIsNone(e.sync("select_cards_combat", PICK1, CTX1))
+        self.assertIsNone(e.apply("select_cards_combat", PICK1, 3))
+        self.assertEqual((s.taken, s.is_open), ([], False))
+        self.assertIsNone(e.sync("combat", [["end"]], {}))
+
+    def test_one_pick_then_done(self):
+        e, s = screen_emu(THREE, 2)
+        self.assertIsNone(e.apply("select_cards_combat", PICK1, 1))
+        self.assertIsNone(e.sync("select_cards_combat", PICK2, CTX2))
+        self.assertIsNone(e.apply("select_cards_combat", PICK2, 2))
+        self.assertEqual((s.taken, s.is_open), ([(2, 0)], False))
+        self.assertIsNone(e.sync("combat", [["end"]], {}))
+
+    def test_a_screen_the_emulator_keeps_open_is_a_difference(self):
+        e, s = screen_emu(THREE, 3)  # the emulator would take a third; the referee's screen ended after two
+        e.apply("select_cards_combat", PICK1, 1)
+        e.apply("select_cards_combat", PICK2, 1)
+        self.assertEqual(e.sync("combat", [["end"]], {}), "selection:left_open")
+
+    def test_a_screen_the_emulator_closes_early_is_a_difference(self):
+        e, s = screen_emu(THREE, 1)
+        e.apply("select_cards_combat", PICK1, 1)
+        self.assertEqual(e.sync("select_cards_combat", PICK2, CTX2), "selection:closed_early")
+
+    def test_other_cards_left_on_the_screen_are_a_difference(self):
+        e, s = screen_emu(THREE, 2)
+        e.apply("select_cards_combat", PICK1, 1)
+        other = [["STRIKE", 0], ["DEFEND", 0], "done"]
+        self.assertEqual(e.sync("select_cards_combat", other, CTX2), "selection:candidates_differ")
+
+    def test_a_done_the_emulator_cannot_take_is_refused(self):
+        e, s = screen_emu(THREE, 2)
+        s.obs[0] = 0  # no open screen: no decline
+        self.assertTrue(e.apply("select_cards_combat", PICK1, 3).startswith("unmapped_label"))
+
+    def test_views_are_compared_at_the_first_pick_only(self):
+        class Fake:
+            def sync(self, kind, labels, msg):
+                return None
+
+            def view(self):
+                return {"act": 0, "floor": 2, "hp": 50, "max_hp": 80, "gold": 0, "deck": [], "relics": [], "potions": [],
+                        "combat": {"hand": [["DEFEND", 0], ["STRIKE", 0]], "enemy_hp": [10]}}
+
+        obs = {"act": 0, "floor": 2, "hp": 50, "max_hp": 80, "gold": 0, "deck": [], "relics": [], "potions": [],
+               "combat": {"hand": [["DEFEND", 0]], "enemies": [{"hp": 10}]}}
+        ls = lockstep.Lockstep(Fake(), lockstep.referee_only_policy)
+        m1 = {"kind": "select_cards_combat", "actions": PICK1, "obs": obs, **CTX1}
+        m2 = {"kind": "select_cards_combat", "actions": PICK2, "obs": obs, **CTX2}
+        self.assertTrue(ls._equal("select_cards_combat", PICK1, m1)[1])  # the emulator's hand holds a card the referee's does not
+        self.assertEqual(ls._equal("select_cards_combat", PICK2, m2)[1], [])  # inside the screen the referee has not moved it yet
+
+    def test_the_fallback_takes_one_card_then_done(self):
+        self.assertEqual(lockstep.referee_only_policy({"kind": "select_cards_combat", "actions": PICK1, **CTX1}), 0)
+        self.assertEqual(lockstep.referee_only_policy({"kind": "select_cards_combat", "actions": PICK2, **CTX2}), 2)
+
 if __name__ == "__main__":
     unittest.main()
 

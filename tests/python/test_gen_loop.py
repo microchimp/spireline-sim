@@ -338,9 +338,22 @@ class PromotionMathTests(unittest.TestCase):
         self.assertFalse(d["promote"])
         self.assertTrue(gen_loop.decide(good_f, good_b, wins_ok, 0.2, 0.1)["promote"])
         self.assertFalse(gen_loop.decide(bad_f, good_b, wins_ok, 0.2, 0.1)["promote"])
-        self.assertFalse(gen_loop.decide(good_f, bad_b, wins_ok, 0.0, 0.0)["promote"])
-        # a p below alpha with the baseline ahead is not a promotion
-        self.assertFalse(gen_loop.decide(good_f, {"p": 0.001, "b": 2, "c": 20}, wins_ok, 0.0, 0.0)["promote"])
+        # D24: under 10% boss kills in either arm the boss kill is a not-worse guard, from 10% in both a co-primary
+        guard = gen_loop.decide(good_f, bad_b, wins_ok, 0.0, 0.0)
+        self.assertTrue(guard["promote"])
+        self.assertEqual(guard["boss_kill_mode"], "guard")
+        co = gen_loop.decide(good_f, bad_b, wins_ok, 0.0, 0.0, cand_boss_rate=0.2, base_boss_rate=0.15)
+        self.assertEqual(co["boss_kill_mode"], "co-primary")
+        self.assertFalse(co["promote"])
+        self.assertTrue(gen_loop.decide(good_f, good_b, wins_ok, 0.0, 0.0, cand_boss_rate=0.2, base_boss_rate=0.15)["promote"])
+        # the guard fails only when the candidate is significantly worse
+        self.assertFalse(gen_loop.decide(good_f, {"p": 0.999, "b": 2, "c": 20}, wins_ok, 0.0, 0.0)["promote"])
+        self.assertTrue(gen_loop.decide(good_f, {"p": 0.9, "b": 10, "c": 14}, wins_ok, 0.0, 0.0)["promote"])
+        # generation 1's numbers on E1-2026-10-23: 40 against 27 kills of 2,000, discordant 33 and 20
+        g1 = {"pairs": 2000, "cand": 40, "base": 27, "b": 33, "c": 20, "p": 0.0492}
+        d = gen_loop.decide(good_f, g1, wins_ok, 0.0, 0.0)
+        self.assertEqual((d["boss_kill_mode"], d["promote"]), ("guard", True))
+        self.assertGreater(d["boss_kill_p_worse"], 0.9)
 
     def test_compare_arms_pairs_on_seed_and_decides(self):
         rng = np.random.default_rng(4)
@@ -547,6 +560,28 @@ class PromoteEndToEndTests(unittest.TestCase):
         old.write_text("written\tcand_gen\tbase_gen\tseed_block\n2026\t1\t0\tEtest-1\n")
         with self.assertRaisesRegex(ValueError, "already judged"):
             self.run_promote(self.root / "c1", better=False)
+
+    def test_rejudge_applies_the_current_rule_to_the_cached_arms_without_playing(self):
+        cand = stub_candidate(self.root, "gen5c", "sha-a")
+        base_rows = arm_rows_like(self.seeds, lambda i: 3 + i % 12)
+        cand_rows = arm_rows_like(self.seeds, lambda i: 5 + i % 12)
+        for arm_dir, rows in ((cand / "arms" / "Etest-1-a3-v1", cand_rows), (self.agents / "gen0" / "arms" / "Etest-1-a3-v1", base_rows)):
+            arm_dir.mkdir(parents=True)
+            (arm_dir / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        (cand / "promotion.json").write_text(json.dumps({"decision_text": "rejected", "written": "2026-10-23T13:30:52Z"}))
+        lab = self.root / "lab"
+        with mock.patch.object(gen0, "run_block", side_effect=AssertionError("must not play again")):
+            doc = gen_loop.rejudge(cand, None, self.seed_file, agent_root=self.agents, note="D24", lab=lab, boot=500)
+        self.assertEqual((doc["decision_text"], doc["decision"]["rule"]), ("promoted", "D24"))
+        self.assertEqual(doc["rejudged"], {"note": "D24", "earlier_decision": "rejected"})
+        self.assertTrue((cand / "promotion-rejected-2026-10-23.json").is_file())
+        self.assertEqual(json.loads((self.agents / "current.json").read_text())["note"], "D24")
+        self.assertTrue((lab / "score" / "pending").is_file())
+        self.assertEqual([r["decision"] for r in gen_loop.read_promotions(self.agents / "promotions.tsv")], ["promoted"])
+        cut = arm_rows_like(self.seeds[:100], lambda i: 4)
+        (cand / "arms" / "Etest-1-a3-v1" / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in cut))
+        with self.assertRaisesRegex(ValueError, "only 100 of 300 seeds are paired"):
+            gen_loop.rejudge(cand, None, self.seed_file, agent_root=self.agents, note="D24", boot=500)
 
     def test_a_partial_arm_cannot_promote(self):
         cand = stub_candidate(self.root, "gen5c", "sha-a")

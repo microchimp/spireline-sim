@@ -274,8 +274,8 @@ def stub_emu(run, hand=None):
     e.s, e.rq, e.dec, e._msg = run, [], None, None
     e.fail, e.event_names = None, {7: "WELLSPRING", 8: "SLIPPERY_BRIDGE"}
     e.slug = {"cards": {5: "STRIKE_IRONCLAD", 6: "DEFEND_IRONCLAD", 7: "BASH", 8: "ANGER"}, "relics": {}, "potions": {}}
-    e.ls = SimpleNamespace(_living_targets=lambda o: [0, 1])
-    e._obs = lambda: None
+    e.ls = SimpleNamespace(_living_targets=lambda o: [0, 1], _SELECTION_KIND=0)
+    e._obs = lambda: [0]
     e._hand = lambda: hand or []
     return e
 
