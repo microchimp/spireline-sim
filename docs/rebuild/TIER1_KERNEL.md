@@ -119,6 +119,35 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
   run+combat deck-first with the combat list built after; a power removed mid-pass still called; a creature removed
   mid-pass not called; a deactivated player's listeners skipped from that entry on; a listener added mid-pass not
   called; the guard read once; agreement with `hook_table.game_order_key` on the `hook_order` scenarios.
+- Built in K2 (`Core2/OldState.cs`, `Listeners.cs`, `NotModelled.cs`), choices settled:
+  - `ListenerRef` = (`ListenerKind`, model id, instance). Model ids are data/id_map.json's values (cards, relics,
+    potions, monsters: the old def ids; powers: id_map's "powers" numbering); orbs and enchantments the old enums,
+    afflictions `GameAffliction`. Instance: a power `creature << 8 | k` (its k-th instance on that creature), a
+    monster its creature, a relic its obtain index, a potion its slot, an orb its queue position, a combat card and its
+    affliction and enchantment the K2b uid, a run deck card `-(deck index + 1)`.
+  - BuffId to game power (`OldModelIds`): Stunned is engine-only; a fold target of power_aliases.json (TemporaryStrength,
+    TemporaryDexterity, TemporaryFocus, BlockNextTurn) is Folded and NotModelled; else the name (UPPER_SNAKE without
+    _POWER) through "emu_rename" (plus ShivDamage = AccuracyPower, missing from that file and kept in OldModelIds so its
+    other readers are unchanged), a game power if id_map has it; else a piece of the longest game power whose name
+    prefixes it (visited once, at its first entry); else engine-only.
+  - Creatures: the player 0, Osty 1 while `OstyMaxHp > 0` (its monster; it has no powers in the old state:
+    NotModelled), then enemies in roster order. An enemy is in the combat while the roster holds it and it is alive,
+    or the caller marks it dying (`OldWorld.Dying`, inside the kill), or a power vetoes its removal
+    (`EnemyAI.ShouldRemoveOnDeath`). The player is active for hooks while `!IsAboutToLose`.
+  - The Play pile: `OldWorld.InFlight` (kernel play sites set it for a play's length); else `HeldPlayedCard` while a
+    selection is pending and its uid is in no pile. The field can outlive its play (only ReleaseHeldPlayedCard clears
+    it, and a snapshot never restores it): a held card whose uid is filed is stale; one whose result pile ends with a
+    card of equal value under another uid is NotModelled (stale or twin).
+  - NotModelled also: afflictions other than Bound, cards in `AutoPlayQueue` (members by uid, not listed), a run deck
+    with no `RunState`. Orbs have no identity: an orb is a member while one of its type is held. Melted relics are
+    gone from the old list and skipped by the game, so the order is the same. Modifiers, badges and scaling: the old
+    state has none; the caller supplies them on `OldWorld`.
+  - The handler table enters as `IHandlerSource` (`Find(hook, kind, model)`, `AnyOf(hook, kind)`); a gap is reported
+    for a pass (`OldListeners.Report`, `LastPass`) only when a handler could stand for it. Each part's build runs
+    `CardUidInvariant.Normalise`.
+  - Agreement with `game_order_key` (`python -m tools.kernel.listener_order`, EmuDump `kernel-order` on the
+    hook_order scenarios): 16 scenarios, 2,136 listeners, the list sorted by the key with 0 disagreements, 118,088
+    scenario pairs with 0 disagreements; the 12 scenario listeners not listed are all folded powers.
 
 ## 4. Handlers, the handler table and the dispatch
 
