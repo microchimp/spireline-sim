@@ -379,6 +379,35 @@ class TreasureTests(unittest.TestCase):
         self.assertEqual(ls.stats["diverged"], 1)
 
 
+class FloorRun(FakeRun):
+    """Every map node leads to a fight, whose resolution and rewards lead back to the next map; floor counts the rooms."""
+
+    def __init__(self):
+        opts = (_opt("map.node", 0, node=(1, 2)), _opt("map.node", 1, node=(3, 2)))
+        super().__init__("map", {"map": ("map", opts)}, {})
+        self.floor = 3
+
+    def view(self):
+        return SimpleNamespace(floor=self.floor)
+
+    def apply(self, o):
+        self.taken.append(o.kind)
+        self.floor += 1  # a room entered and left
+
+
+class ReanchorWalkTests(unittest.TestCase):
+    def test_room_entry_walks_a_suspended_emulator_up_to_the_referees_floor(self):
+        run = FloorRun()
+        e = stub_emu(run)
+        e.rules, e.rng = SimpleNamespace(pick=lambda v, d, r: SimpleNamespace(index=0)), None
+        e.native = SimpleNamespace(run_debug_resolve_combat=lambda *a: True)
+        e._set_player = lambda obs: True
+        self.assertTrue(e.reanchor("room_entry", {"obs": {"floor": 6}}))
+        self.assertEqual(run.floor, 6)  # was 3: three maps walked
+        self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": 9}}) is False and e.fail == "map_options:2")
+        self.assertEqual(run.floor, 8)  # to the map before the fight's room (floor 9 - 1)
+
+
 class ReanchorReasonTests(unittest.TestCase):
     def test_a_failed_reanchor_records_why(self):
         a = obs()

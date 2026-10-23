@@ -197,7 +197,7 @@ class Lockstep:
             ok = not reason and not d
         self.stats["reanchors" if ok else "reanchor_failed"] += 1
         if not ok:  # why: the emulator side's own reason, else the views that still differ after it
-            why = getattr(self.emu, "fail", None) or (reason or "diff:" + ",".join(str(x[0]) for x in d[:4]))
+            why = getattr(self.emu, "fail", None) or (reason or "diff:" + ",".join(f"{x[0]}{x[1]}/{x[2]}" if x[0] in (".floor", ".act") else str(x[0]) for x in d[:4]))
             fails = self.stats.setdefault("reanchor_fail_reasons", {})
             fails[f"{plan}:{why}"[:80]] = fails.get(f"{plan}:{why}"[:80], 0) + 1
         by = self.stats.setdefault("reanchor_by_plan", {})
@@ -446,12 +446,14 @@ class EmuLock:
         return None
 
     # -- re-anchoring (the run replay's hooks)
-    def _to_map(self) -> bool:
+    def _to_map(self, floor: int | None = None) -> bool:
         """Walk the emulator to its map screen: a fight it is still in is resolved, every other screen is left the
-        cheapest way (proceed, skip, leave) or by the rules policy."""
+        cheapest way (proceed, skip, leave) or by the rules policy. With `floor`, on past maps below that floor too: a
+        suspended emulator stands still while the referee goes on, and the floor is not a holding that can be set (13 of
+        the 52 failed re-anchors of the events-round smoke were the emulator 1-3 floors behind)."""
         rc, env = self.E.rc, self.s.env
         self.rq.clear()
-        for _ in range(300):
+        for _ in range(600):
             ph = self.s.phase
             if ph == rc.PHASE_COMPLETE:
                 return False
@@ -463,7 +465,10 @@ class EmuLock:
             if d is None:
                 continue
             if d.type == "map":
-                return True
+                if floor is None or self.s.view().floor >= floor:
+                    return True
+                self.s.apply(d.options[self.rules.pick(self.s.view(), d, self.rng).index])
+                continue
             o = next((o for o in d.options if o.kind in ("reward.proceed", "card.skip", "shop.leave", "rest.leave")),
                      None) or d.options[self.rules.pick(self.s.view(), d, self.rng).index]
             self.s.apply(o)
@@ -485,7 +490,7 @@ class EmuLock:
         self.fail = None
         obs = msg.get("obs", {})
         if plan == "room_entry":
-            if not self._to_map():
+            if not self._to_map(obs.get("floor")):
                 self.fail = "to_map"
             elif not self._set_player(obs):
                 self.fail = "set_player:unknown_id"
@@ -497,7 +502,7 @@ class EmuLock:
             # cannot be re-anchored from Python (that needs tools/emudump Reanchor inside the native library).
             if self.s.phase == self.E.rc.PHASE_COMBAT:
                 self.fail = "in_fight"
-            elif not self._to_map():
+            elif not self._to_map(None if obs.get("floor") is None else obs["floor"] - 1):
                 self.fail = "to_map"
             elif not self._set_player(obs):
                 self.fail = "set_player:unknown_id"
