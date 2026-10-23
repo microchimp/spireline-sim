@@ -94,9 +94,19 @@ def require_character(character: str, native=None) -> None:
 # ------------------------------------------------------------------ projection and hashes
 
 
+def emu_enemy_hp(obs, offset: int, slot: int, slots: int) -> list:
+    """The HP of every enemy the emulator's roster holds, from its observation buffer, in roster order. A slot holds an
+    enemy when its HP or max HP is above 0: a dead enemy the roster still holds (the game keeps one that dies in its
+    own move, or one a power keeps standing) lists at 0, like the referee's `combat.enemies`, and a slot past the end of
+    the roster (all zeros) lists nothing. Both sides list what they hold, so a corpse only one side holds is a diff."""
+    return [int(obs[offset + k * slot]) for k in range(slots)
+            if obs[offset + k * slot] > 0 or obs[offset + k * slot + 1] > 0]
+
+
 def project(view: dict) -> dict:
     """The agent-visible fields both sides share, canonical (multisets sorted). Run level, plus the hand and
-    the enemies' HP in a fight. Nothing here is a seed, a counter or the draw order."""
+    the enemies' HP in a fight (every enemy the side holds, dead ones at 0). Nothing here is a seed, a counter or the
+    draw order."""
     out = {k: view.get(k) for k in ("act", "floor", "hp", "max_hp", "gold")}
     for k in ("deck", "relics", "potions"):
         out[k] = sorted(json.dumps(x) for x in view.get(k, []) if x is not None)
@@ -162,6 +172,14 @@ def ref_view(obs: dict) -> dict:
 # ------------------------------------------------------------------ divergence log and re-anchor plan
 
 
+def act_type(kind: str, label: Any) -> str:
+    """What a chosen action was: a card play, an end turn, a potion (in a fight or out of one), else a choice on a
+    screen (a map node, a reward, a card selection, an event option)."""
+    if kind == "combat" and isinstance(label, list) and label:
+        return {"play": "play", "end": "end_turn", "potion": "potion"}.get(label[0], "choice")
+    return "potion" if extra_kind(label) in ("potion_use", "potion_discard") else "choice"
+
+
 def reanchor_plan(kind: str, prev_kind: str | None) -> str | None:
     """Where a re-anchor can happen: the first decision of a fight (fight start) or a map choice (room entry).
     Mid-fight and mid-screen divergences wait for the next boundary."""
@@ -209,6 +227,14 @@ class Lockstep:
         self.n = 0
         self.assumed: set[int] = set()  # decisions whose search saw enemy moves it could not re-roll
         self.prev_kind: str | None = None
+        # Where the run is, for every record: the step before (what was acted), the room type of the last map node
+        # taken, and the fight's roster. The referee's message carries no encounter id, so a fight is named by the
+        # enemies it began with.
+        self.prev_act: dict | None = None
+        self.room_type: str | None = None
+        self.roster: str | None = None
+        self.round: int | None = None
+        self.ctx: dict = {}
         self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
                       "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
 
@@ -216,6 +242,7 @@ class Lockstep:
         kind, labels = msg["kind"], msg["actions"]
         i, self.n = self.n, self.n + 1
         self.stats["decisions"] += 1
+        self._track(kind, msg)
         ranked = False
         if self.emu is not None:
             ranked = self._check(i, kind, labels, msg) if self.lost is None else self._resume(i, kind, labels, msg)
@@ -243,7 +270,24 @@ class Lockstep:
             sp["first"] = i if sp["first"] is None else sp["first"]
             sp["last"], sp["count"] = i, sp["count"] + 1
         self.prev_kind = kind
+        if isinstance(choice, int) and 0 <= choice < len(labels):
+            self.prev_act = {"type": act_type(kind, labels[choice]), "kind": kind, "label": labels[choice]}
+            if kind == "map" and isinstance(labels[choice], list) and len(labels[choice]) > 2:
+                self.room_type = labels[choice][2]
         return choice
+
+    def _track(self, kind: str, msg: dict) -> None:
+        """The context every record of this decision carries (set before the decision's own step is taken)."""
+        c = (msg.get("obs") or {}).get("combat")
+        if not c or kind not in COMBAT_KINDS:
+            self.roster, self.round = None, None
+        else:
+            rnd = c.get("round") if isinstance(c.get("round"), int) else None
+            if self.prev_kind not in COMBAT_KINDS or (rnd is not None and self.round is not None and rnd < self.round):
+                names = sorted(str(e.get("name")) for e in c.get("enemies") or [] if isinstance(e, dict))
+                self.roster = "+".join(names) or None  # a new fight: the enemies it began with
+            self.round = rnd
+        self.ctx = {"acted": self.prev_act, "turn": self.round, "encounter": self.roster, "room_type": self.room_type}
 
     def finish(self, outcome: dict) -> None:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
@@ -261,11 +305,11 @@ class Lockstep:
             self.stats["gaps"] += 1
             obs = (msg or {}).get("obs", {})
             rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=True,
-                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False)
+                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False, **self.ctx)
         if rec is None:  # a loss with no record of its own (a search failure): one, so its span has a home
             obs = (msg or {}).get("obs", {})
             rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=False,
-                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False)
+                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False, **self.ctx)
         rec["not_ranked_span"] = {"first": None, "last": None, "count": 0}  # decisions scored, not ranked, after it
         self.open = rec
 
@@ -315,7 +359,7 @@ class Lockstep:
         self.stats["gaps" if gap else "diverged"] += 1
         rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind,
                            ref_hash=view_hash(r), emu_hash=view_hash(e), referee_state_hash=msg.get("h"),
-                           reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True)
+                           reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True, **self.ctx)
         plan = reanchor_plan(kind, self.prev_kind)
         rec["reanchor_plan"] = plan
         rec["reanchored"] = bool(plan) and not gap and self._reanchor(plan, kind, labels, msg)
@@ -415,8 +459,7 @@ class EmuLock:
                "potions": [self.slug["potions"].get(p, f"?{p}") for p in v.potions]}
         if self.s.phase == self.E.rc.PHASE_COMBAT:
             obs, ls = self._obs(), self.ls
-            hp = [int(obs[ls._ENEMIES + k * ls._ENEMY]) for k in range(self.native.MAX_ENEMIES)
-                  if obs[ls._ENEMIES + k * ls._ENEMY] > 0]
+            hp = emu_enemy_hp(obs, ls._ENEMIES, ls._ENEMY, self.native.MAX_ENEMIES)
             out["combat"] = {"hand": self._hand(), "enemy_hp": hp}
         return out
 
@@ -592,6 +635,21 @@ class EmuLock:
                                          max_potion_slots=len(belt))
         return True
 
+    def _anchor_fight(self, obs: dict) -> bool:
+        """Put the fight the emulator stands in on the referee's record of it (obs["combat"], as the agent is shown it:
+        the draw pile as a sorted list, no streams). The native call writes it over a copy of the fight and keeps the
+        emulator's own streams and, where its cards are the record's, its draw order, so a search that follows still
+        resamples the hidden state from the emulator's clone (resample_hidden=True)."""
+        record = obs.get("combat")
+        if not record:
+            self.fail = "no_record"
+            return False
+        status, why = self.native.run_reanchor_fight(self.s.handle, record, self.s.env._run_obs_buf)
+        if status < 0:
+            self.fail = f"anchor:{why}"[:60]
+            return False
+        return True
+
     def reanchor(self, plan: str, msg: dict) -> bool:
         self.fail = None
         obs = msg.get("obs", {})
@@ -604,11 +662,14 @@ class EmuLock:
                 self.fail = "no_decision"
             return self.fail is None
         if plan == "fight_start":
-            # The referee entered this fight without a map decision (a lone path). A fight the emulator is already in
-            # cannot be re-anchored from Python (that needs tools/emudump Reanchor inside the native library).
-            if self.s.phase == self.E.rc.PHASE_COMBAT:
-                self.fail = "in_fight"
-            elif not self._to_map(None if obs.get("floor") is None else obs["floor"] - 1):
+            # The referee entered this fight without a map decision (a lone path), or the emulator's own fight differs
+            # from it. A fight the emulator stands in at the referee's floor is put on the referee's record of it
+            # (Sts2Run_ReanchorFight); one at an earlier floor is a fight the suspended emulator never left, which is
+            # resolved and walked past as at a room entry, and the fight it then enters is put on the record too.
+            floor = obs.get("floor")
+            if self.s.phase == self.E.rc.PHASE_COMBAT and (floor is None or self.s.view().floor >= floor):
+                return self._anchor_fight(obs)
+            if not self._to_map(None if floor is None else floor - 1):
                 self.fail = "to_map"
             elif not self._set_player(obs):
                 self.fail = "set_player:unknown_id"
@@ -621,6 +682,8 @@ class EmuLock:
                     self._auto_combat()
                     if self.s.phase != self.E.rc.PHASE_COMBAT:
                         self.fail = "not_in_fight"
+                    else:
+                        return self._anchor_fight(obs)
             return self.fail is None
         self.fail = "no_plan"
         return False
