@@ -57,6 +57,11 @@ internal static class Env
     /// record and replay leave them off unless the record stored the flag on.</summary>
     internal static bool Extras;
 
+    /// <summary>Reset spec "full_select" (default false): a combat card screen offers its real minSelect..maxSelect. The agent picks cards
+    /// one at a time, with a "done" action once minSelect is met, up to maxSelect (see Selector.cs). It changes the sequence of asked
+    /// decisions, so the seeded chooser and old records leave it off; a record made with it on stores the flag.</summary>
+    internal static bool FullSelect;
+
     /// <summary>Card reward screens checked against the screen's own alternatives list, and how many differed.</summary>
     internal static int AltChecked, AltMismatch;
 
@@ -140,16 +145,27 @@ internal static class Env
     /// seeded fallback's ascending indices map to picks at index[k] - k of the remaining list.
     /// </summary>
     internal static List<int> DecideMany(string kind, IReadOnlyList<JsonNode> labels, int count, Func<List<int>> fallback,
-        bool allowNone = false)
+        bool allowNone = false, int minSelect = 0, int maxSelect = -1)
     {
         if (Run == null || !(Live || Tracing)) return fallback();
+        // With full_select (a screen that gave its max): up to min(items, max) picks, and "done" as the last action of every pick
+        // from minSelect on; without it, exactly `count` picks and "none" on the first of a screen that allows 0.
+        bool full = FullSelect && maxSelect >= 0;
+        int cap = full ? Math.Min(labels.Count, maxSelect) : count;
         if (!Live)
         {
             var idx = fallback();
             for (int k = 0; k < idx.Count; k++)
             {
-                int rem = labels.Count - k + (allowNone && k == 0 ? 1 : 0);  // the extra "none" action of a screen that allows 0
+                int rem = labels.Count - k + (full ? (k >= minSelect ? 1 : 0) : (allowNone && k == 0 ? 1 : 0));  // the extra "done"/"none" action
                 if (rem > 1) Trace?.Add(new JsonArray(kind, rem, idx[k] - k, Hashing ? Hash() : null));
+            }
+
+            if (full && idx.Count < cap && idx.Count >= minSelect)
+            {
+                // The seeded chooser stops after its picks: "done" (the last action) is its answer to the next ask.
+                int rem = labels.Count - idx.Count + 1;
+                Trace?.Add(new JsonArray(kind, rem, rem - 1, Hashing ? Hash() : null));
             }
 
             return idx;
@@ -157,22 +173,22 @@ internal static class Env
 
         var left = Enumerable.Range(0, labels.Count).ToList();
         var picked = new List<int>();
-        for (int k = 0; k < count && left.Count > 0; k++)
+        for (int k = 0; k < cap && left.Count > 0; k++)
         {
             var now = left.ToList();
-            bool none = allowNone && k == 0;  // the screen allows choosing 0 cards: "none" is the last action of the first pick
+            bool none = full ? k >= minSelect : allowNone && k == 0;  // "done" (full) or "none" (the screen allows choosing 0 cards) is the last action
             int a = Decide(kind, now.Count + (none ? 1 : 0), () =>
                 {
                     var arr = new JsonArray(now.Select(i => labels[i].DeepClone()).ToArray());
-                    if (none) arr.Add("none");
+                    if (none) arr.Add(full ? "done" : "none");
                     return arr;
-                }, () => 0, () => new JsonObject { ["pick"] = k + 1, ["of"] = count });
+                }, () => 0, () => new JsonObject { ["pick"] = k + 1, ["of"] = cap });
             if (a >= now.Count) break;
             picked.Add(now[a]);
             left.Remove(now[a]);
         }
 
-        picked.Sort();
+        if (!full) picked.Sort();  // full: the cards go back in the order picked, the order the emulator's screen takes them
         return picked;
     }
 
@@ -391,9 +407,9 @@ public static partial class Driver
 public static partial class Driver
 {
     /// <summary>FirstChoiceSelector.PickHook inside a run: the first n (the seeded chooser) or the agent's picks.</summary>
-    private static List<int> FightPick(List<CardModel> list, int n, bool allowNone) =>
+    private static List<int> FightPick(List<CardModel> list, int n, bool allowNone, int minSelect, int maxSelect) =>
         Env.DecideMany("select_cards_combat", list.Select(c => (JsonNode)new JsonArray(c.Id.Entry, c.IsUpgraded ? 1 : 0)).ToList(), n,
-            () => Enumerable.Range(0, n).ToList(), allowNone);
+            () => Enumerable.Range(0, n).ToList(), allowNone, minSelect, maxSelect);
 
     private static int FightCardReward(IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options) =>
         Env.Decide("card_reward_combat", options.Count,
