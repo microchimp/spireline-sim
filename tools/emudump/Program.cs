@@ -31,7 +31,7 @@ if (args[0] == "hookprobe")
 
 if (args[0] == "kernel-order")
 {
-    // EmuDump kernel-order <scenarios.json> <out.json>: the kernel's listener lists on the hook_order scenarios (KernelOrder.cs).
+    // EmuDump kernel-order <scenarios.json> <out.json>: the kernel's listener lists on the hook_order scenarios (Engines/Old/KernelOrder.cs).
     Environment.Exit(KernelOrderMode.Run(args[1..]));
 }
 

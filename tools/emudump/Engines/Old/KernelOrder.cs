@@ -6,6 +6,9 @@ using System.Text.Json.Nodes;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core2;
 
+namespace EmuDump.Engines.Old;
+
+/// <summary>Under Engines/Old: it builds old-engine state, so it lives with the old engine's binding.</summary>
 internal static class KernelOrderMode
 {
     public static int Run(string[] args)
