@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json.Nodes;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 
@@ -23,7 +24,9 @@ public static class RunNativeExports
     // v22: Sts2Run_ForkCombat hands the run's fight to a combat handle, faithful or as the
     // fight of Sts2Run_Clone's resampled copy (rl/run_train/DESIGN.md 6.5).
     // v23: Sts2Run_AiStateAssumed (DESIGN.md 1.1's ai_state_assumed for the run's fight).
-    public const int RUN_NATIVE_API_VERSION = 23;
+    // v24: Sts2Run_SetAnchorTables and Sts2Run_ReanchorFight put the fight a run stands in on the
+    // referee's record of it (referee/lockstep.py, the re-anchor at a fight's start).
+    public const int RUN_NATIVE_API_VERSION = 24;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -537,6 +540,135 @@ public static class RunNativeExports
         );
         run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
         return 0;
+    }
+
+    /// <summary>The id tables <see cref="Sts2Run_ReanchorFight" /> reads a record through.</summary>
+    private static FightAnchor.Tables? _anchorTables;
+
+    /// <summary>
+    /// Hand over, once per process, the game's id tables the fight loader reads a record through:
+    /// UTF-8 JSON <c>{"id_map": data/id_map.json, "aliases": tools/fidelity/power_aliases.json}</c>.
+    /// The library reads no file, so the caller does. Returns 0, or -1 when the text is not those two objects.
+    /// </summary>
+    public static unsafe int Sts2Run_SetAnchorTables(byte* json, int len)
+    {
+        try
+        {
+            var doc = JsonNode.Parse(new ReadOnlySpan<byte>(json, len))!.AsObject();
+            _anchorTables = new FightAnchor.Tables(doc["id_map"]!.AsObject(), doc["aliases"]!.AsObject());
+            return 0;
+        }
+        catch (Exception)
+        {
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Put the fight the run stands in on the record of the game's fight: UTF-8 JSON of the referee's
+    /// combat snapshot as an agent sees it (hand, draw pile as a sorted list, discard, exhaust, living
+    /// enemies with their powers and intents, player hit points, block, energy and powers, round; no
+    /// streams). Written over a copy of the fight and swapped in only when the whole record could be
+    /// loaded, so a refused record leaves the run as it was. The combat's own streams, draw order (where
+    /// its cards are the record's) and relic and enemy hidden state stay: the record cannot say them.
+    /// <paramref name="msgBuf" /> receives a NUL-terminated UTF-8 message: what was set on success, the
+    /// reason on a refusal.
+    /// </summary>
+    /// <returns>
+    /// The number of fields that were set (0 or more); -1 no fight in progress or no such run; -2 the
+    /// record is not a JSON object; -3 no tables were handed over; -4 the record names something the
+    /// emulator has no id for or an enemy it has no counterpart of; -5 another failure.
+    /// </returns>
+    public static unsafe int Sts2Run_ReanchorFight(
+        int handle,
+        byte* record,
+        int recordLen,
+        byte* msgBuf,
+        int msgLen,
+        int* obsBuf
+    )
+    {
+        string message;
+        int status;
+        if (!TryGet(handle, out var run))
+        {
+            message = "no_run";
+            status = -1;
+        }
+        else if (record == null || recordLen < 0)
+        {
+            // Checked before the span is built: a bad length comes back as a status, never as a throw across the boundary.
+            message = "no record";
+            status = -2;
+        }
+        else
+        {
+            status = ReanchorFight(run, new ReadOnlySpan<byte>(record, recordLen), out message);
+            if (status >= 0 && obsBuf != null)
+            {
+                run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
+            }
+        }
+
+        if (msgLen > 0)
+        {
+            var bytes = Encoding.UTF8.GetBytes(message);
+            int n = Math.Min(bytes.Length, msgLen - 1);
+            new ReadOnlySpan<byte>(bytes, 0, n).CopyTo(new Span<byte>(msgBuf, n));
+            msgBuf[n] = 0;
+        }
+
+        return status;
+    }
+
+    /// <summary><see cref="Sts2Run_ReanchorFight" /> on a run, with the record as bytes.</summary>
+    internal static int ReanchorFight(RunEngine run, ReadOnlySpan<byte> record, out string message)
+    {
+        if (_anchorTables is not { } tables)
+        {
+            message = "no_tables";
+            return -3;
+        }
+
+        if (run.State.Phase != RunPhase.Combat || run.State.ActiveCombat is not { } live)
+        {
+            message = "no_fight";
+            return -1;
+        }
+
+        JsonObject game;
+        try
+        {
+            game = JsonNode.Parse(record)!.AsObject();
+        }
+        catch (Exception)
+        {
+            message = "bad_record";
+            return -2;
+        }
+
+        try
+        {
+            var q = live.Clone();
+            var patched = new List<string>();
+            string? problem = FightAnchor.Anchor(tables, q, game, patched, FightAnchor.Source.Observation);
+            if (problem != null)
+            {
+                message = problem;
+                return -4;
+            }
+
+            // The enemies' next moves come from the record's intents; with no later turns known, the nearest position that announces them.
+            var (moves, unknown) = FightAnchor.AnchorMoves(q, game, patched, _ => []);
+            run.State.ActiveCombat = q;
+            message = $"moves={moves}" + (unknown == null ? "" : ":" + string.Join(",", unknown)) + ";patched=" + string.Join(",", patched);
+            return patched.Count;
+        }
+        catch (Exception ex)
+        {
+            message = ex.GetType().Name + ": " + ex.Message;
+            return -5;
+        }
     }
 
     public static int Sts2Run_PlayerWon(int handle)

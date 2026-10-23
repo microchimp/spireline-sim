@@ -485,6 +485,93 @@ class ReanchorReasonTests(unittest.TestCase):
         self.assertEqual(ls.stats["reanchor_fail_reasons"], {"room_entry:in_fight": 2})
 
 
+class CombatRun(FakeRun):
+    """A fight the emulator stands in, on a given floor."""
+
+    def __init__(self, floor):
+        super().__init__("combat", {}, {})
+        self.floor = floor
+
+    def view(self):
+        return SimpleNamespace(floor=self.floor)
+
+
+class FightStartAnchorTests(unittest.TestCase):
+    """A1b: a fight the emulator already stands in is put on the referee's record of it by the native export (it was
+    reported as fight_start:in_fight, 33 of the 35 re-anchor failures of the events smoke)."""
+
+    def emu(self, floor, answer):
+        e = stub_emu(CombatRun(floor))
+        calls = []
+        e.native.run_reanchor_fight = lambda handle, record, buf: (calls.append(record), answer)[1]
+        e.native.run_debug_resolve_combat = lambda *a: True
+        return e, calls
+
+    def test_the_fight_at_the_referees_floor_is_put_on_the_record(self):
+        e, calls = self.emu(4, (3, "moves=same;patched=hand,player.energy"))
+        record = {"hand": [["BASH", False]], "enemies": []}
+        self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": 4, "combat": record}}))
+        self.assertEqual(calls, [record])
+        self.assertIsNone(e.fail)
+
+    def test_a_refused_record_names_the_reason(self):
+        e, calls = self.emu(4, (-4, "the game has JAW_WORM where the emulator has none to pair with it"))
+        self.assertFalse(e.reanchor("fight_start", {"obs": {"floor": 4, "combat": {"hand": []}}}))
+        self.assertEqual(e.fail, "anchor:the game has JAW_WORM where the emulator has none to pair with it"[:60])  # kept short for the summary
+        self.assertFalse(e.reanchor("fight_start", {"obs": {"floor": 4}}))
+        self.assertEqual(e.fail, "no_record")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_fight_at_an_earlier_floor_is_left_not_anchored(self):
+        e, calls = self.emu(3, (0, "moves=same;patched="))
+        e.rules, e.rng = SimpleNamespace(pick=lambda v, d, r: SimpleNamespace(index=0)), None
+        self.assertFalse(e.reanchor("fight_start", {"obs": {"floor": 5, "combat": {"hand": []}}}))
+        self.assertEqual(calls, [])  # it is another fight: walked past (here the fake never leaves it), not put on this record
+
+
+@unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")
+class FightStartAnchorNativeTests(unittest.TestCase):
+    """A real EmuLock in its own fight, put on a record whose hand and top card differ from it."""
+
+    def test_an_emulock_re_anchors_the_fight_it_is_already_in(self):
+        import ctypes  # noqa: PLC0415
+        import json  # noqa: PLC0415
+        import re  # noqa: PLC0415
+
+        e = lockstep.EmuLock("QS2GYXRKWN", sims=2)
+        self.addCleanup(e.close)
+        for _ in range(60):
+            if e.s.phase == e.E.rc.PHASE_COMBAT:
+                break
+            d = e.s.decision()
+            e.s.apply(d.options[e.rules.pick(e.s.view(), d, e.rng).index])
+        self.assertEqual(e.s.phase, e.E.rc.PHASE_COMBAT)
+        native = e.native
+        id_map = json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8"))
+        enemy = {v: re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", k).upper() for k, v in id_map["enemies"].items()}
+        h = native.run_fork_combat(e.s.handle, False, 0, (ctypes.c_int * native.RUN_OBS_SIZE)())
+        try:
+            piles = {p: native.get_pile(h, p) for p in ("hand", "draw", "discard", "exhaust")}
+            roster = native.get_enemies(h)
+        finally:
+            native.destroy(h)
+        hand, draw = list(piles["hand"]), list(piles["draw"])
+        hand[0], draw[0] = draw[0], hand[0]
+
+        def pile(cards):
+            return [[e.slug["cards"][c], bool(up)] for c, up in cards]
+
+        view = e.s.view()
+        record = {"in_combat": True, "round": 1,
+                  "player": {"hp": view.hp, "max_hp": view.max_hp, "block": 0, "energy": 3, "powers": []},
+                  "hand": pile(hand), "draw": sorted(pile(draw)), "discard": pile(piles["discard"]), "exhaust": [],
+                  "enemies": [{"name": enemy[d], "hp": hp, "max_hp": hp, "block": 0, "powers": []} for d, _s, hp in roster]}
+        self.assertNotEqual(e._hand(), [[c[0], int(c[1])] for c in pile(hand)])
+        self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": view.floor, "combat": record}}), e.fail)
+        self.assertEqual(e._hand(), [[c[0], int(c[1])] for c in pile(hand)])
+        self.assertIsNone(e.fail)
+
+
 class AgentSeedTests(unittest.TestCase):
     def test_resample_seed_stream_follows_the_agent_seed_only(self):
         def stream(entropy):

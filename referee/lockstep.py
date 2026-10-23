@@ -635,6 +635,21 @@ class EmuLock:
                                          max_potion_slots=len(belt))
         return True
 
+    def _anchor_fight(self, obs: dict) -> bool:
+        """Put the fight the emulator stands in on the referee's record of it (obs["combat"], as the agent is shown it:
+        the draw pile as a sorted list, no streams). The native call writes it over a copy of the fight and keeps the
+        emulator's own streams and, where its cards are the record's, its draw order, so a search that follows still
+        resamples the hidden state from the emulator's clone (resample_hidden=True)."""
+        record = obs.get("combat")
+        if not record:
+            self.fail = "no_record"
+            return False
+        status, why = self.native.run_reanchor_fight(self.s.handle, record, self.s.env._run_obs_buf)
+        if status < 0:
+            self.fail = f"anchor:{why}"[:60]
+            return False
+        return True
+
     def reanchor(self, plan: str, msg: dict) -> bool:
         self.fail = None
         obs = msg.get("obs", {})
@@ -647,11 +662,14 @@ class EmuLock:
                 self.fail = "no_decision"
             return self.fail is None
         if plan == "fight_start":
-            # The referee entered this fight without a map decision (a lone path). A fight the emulator is already in
-            # cannot be re-anchored from Python (that needs tools/emudump Reanchor inside the native library).
-            if self.s.phase == self.E.rc.PHASE_COMBAT:
-                self.fail = "in_fight"
-            elif not self._to_map(None if obs.get("floor") is None else obs["floor"] - 1):
+            # The referee entered this fight without a map decision (a lone path), or the emulator's own fight differs
+            # from it. A fight the emulator stands in at the referee's floor is put on the referee's record of it
+            # (Sts2Run_ReanchorFight); one at an earlier floor is a fight the suspended emulator never left, which is
+            # resolved and walked past as at a room entry, and the fight it then enters is put on the record too.
+            floor = obs.get("floor")
+            if self.s.phase == self.E.rc.PHASE_COMBAT and (floor is None or self.s.view().floor >= floor):
+                return self._anchor_fight(obs)
+            if not self._to_map(None if floor is None else floor - 1):
                 self.fail = "to_map"
             elif not self._set_player(obs):
                 self.fail = "set_player:unknown_id"
@@ -664,6 +682,8 @@ class EmuLock:
                     self._auto_combat()
                     if self.s.phase != self.E.rc.PHASE_COMBAT:
                         self.fail = "not_in_fight"
+                    else:
+                        return self._anchor_fight(obs)
             return self.fail is None
         self.fail = "no_plan"
         return False

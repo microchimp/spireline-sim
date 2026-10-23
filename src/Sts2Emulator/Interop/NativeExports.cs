@@ -1498,6 +1498,20 @@ public static class NativeExports
             obsBuf
         );
 
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_SetAnchorTables")]
+    public static unsafe int Sts2Run_SetAnchorTables(byte* json, int len) =>
+        RunNativeExports.Sts2Run_SetAnchorTables(json, len);
+
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_ReanchorFight")]
+    public static unsafe int Sts2Run_ReanchorFight(
+        int handle,
+        byte* record,
+        int recordLen,
+        byte* msgBuf,
+        int msgLen,
+        int* obsBuf
+    ) => RunNativeExports.Sts2Run_ReanchorFight(handle, record, recordLen, msgBuf, msgLen, obsBuf);
+
     [UnmanagedCallersOnly(EntryPoint = "Sts2Run_PlayerWon")]
     public static int Sts2Run_PlayerWon(int handle) => RunNativeExports.Sts2Run_PlayerWon(handle);
 

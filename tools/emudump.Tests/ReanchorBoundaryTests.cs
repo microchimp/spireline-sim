@@ -1,8 +1,9 @@
-// Engines/Old/OldAnchor.cs is the old engine's loader of a game snapshot into its combat, and round A1b moves it into the
-// engine DLL behind a native export. It must therefore depend on nothing of EmuDump: no file read, no other EmuDump class,
-// and only the engine's own namespace besides System. This reads its source (comments and string literals aside) and fails
+// src/Sts2Emulator/Core/FightAnchor.cs is the old engine's loader of a game snapshot into its combat. Round A1b moved it
+// from tools/emudump into the engine DLL, behind the native export Sts2Run_ReanchorFight; Engines/Old/OldAnchor.cs is now a
+// thin call into it. The loader must depend on nothing of EmuDump: no file read, no other EmuDump class, and only the
+// engine's own namespace besides System. This reads its source (comments and string literals aside) and fails
 // on any name it must not use. The other EmuDump classes are not listed by hand: they are every top-level type declared in
-// tools/emudump outside OldAnchor.cs (found by scanning, as EngineBoundaryTests does, so a new class is covered), and any
+// tools/emudump outside the loader (found by scanning, as EngineBoundaryTests does, so a new class is covered), and any
 // name qualified with `EmuDump.`. A nested type is not one (a `Key` inside some class is only a word). The adapter side
 // (Reanchor.cs names no engine) is EngineBoundaryTests' job.
 using System.Text.RegularExpressions;
@@ -10,7 +11,9 @@ using Xunit;
 
 public class ReanchorBoundaryTests
 {
-    const string LoaderPath = "Engines/Old/OldAnchor.cs";
+    const string LoaderPath = "../../src/Sts2Emulator/Core/FightAnchor.cs";  // relative to tools/emudump
+
+    const string ToolsWrapperPath = "Engines/Old/OldAnchor.cs";
 
     static readonly string[] AllowedUsings = ["System.Text.Json.Nodes", "System.Text.RegularExpressions", "Sts2Emulator.Core"];
 
@@ -51,15 +54,35 @@ public class ReanchorBoundaryTests
         return problems;
     }
 
-    static Dictionary<string, string> RealFiles() => EngineBoundaryTests.Sources(EngineBoundaryTests.EmuDumpDir());
+    static Dictionary<string, string> RealFiles()
+    {
+        string dir = EngineBoundaryTests.EmuDumpDir();
+        var files = EngineBoundaryTests.Sources(dir);
+        files[LoaderPath] = File.ReadAllText(Path.GetFullPath(Path.Combine(dir, LoaderPath)));
+        return files;
+    }
 
     static readonly Lazy<IReadOnlySet<string>> RealToolTypes = new(() => ToolTypes(RealFiles()));
 
     [Fact]
-    public void OldAnchorDependsOnTheEngineAndTheJsonItIsGivenOnly()
+    public void TheDllLoaderDependsOnTheEngineAndTheJsonItIsGivenOnly()
     {
         var files = RealFiles();
         Assert.Empty(Problems(files[LoaderPath], ToolTypes(files)));
+    }
+
+    [Fact]
+    public void OldAnchorIsAThinCallIntoTheDllNotASecondCopy()
+    {
+        // One copy of the loader: the tools' file holds no loading step of its own, and every member it has calls FightAnchor.
+        var code = EngineBoundaryTests.Code(RealFiles()[ToolsWrapperPath], keepStrings: false);
+        Assert.Contains("FightAnchor.", code);
+        foreach (var step in new[] { "PatchPiles", "PatchEnemies", "PatchRng", "PatchPotions", "SetMove", "BuffTable", "Regex" })
+        {
+            Assert.DoesNotContain(step, code);
+        }
+
+        Assert.True(code.Count(ch => ch == (char)10) < 90, "OldAnchor.cs grew past a thin adapter");
     }
 
     [Fact]
@@ -74,7 +97,8 @@ public class ReanchorBoundaryTests
 
         // Not the loader's own names (its nested Tables is its own; the tools' Tables.Dump is checked by itself), nor a nested
         // name that is only a word in other files.
-        Assert.DoesNotContain("OldAnchor", RealToolTypes.Value);
+        Assert.Contains("OldAnchor", RealToolTypes.Value);  // the thin adapter is a tools class; the DLL's loader may not name it
+        Assert.DoesNotContain("FightAnchor", RealToolTypes.Value);
         Assert.DoesNotContain("Tables", RealToolTypes.Value);
         Assert.DoesNotContain("Key", RealToolTypes.Value);
     }
