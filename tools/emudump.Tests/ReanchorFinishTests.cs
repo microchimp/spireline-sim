@@ -3,6 +3,7 @@
 // than clearing the screen and leaving the step half done, and a format-1 recording's untagged
 // choices answer the screens they name.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Xunit;
@@ -51,7 +52,7 @@ public class ReanchorFinishTests
         var (state, rng) = StoppedOnHeadbutt();
         Assert.Equal(0, state.CardPlaysThisTurn);
 
-        Assert.False(Reanchor.Finish(state, rng));
+        Assert.False(OldReanchor.Finish(state, rng));
 
         Assert.Null(state.PendingSelection);
         Assert.Equal(1, state.CardPlaysThisTurn);

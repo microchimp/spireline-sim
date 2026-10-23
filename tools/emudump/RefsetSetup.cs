@@ -3,6 +3,7 @@
 // in place before its fight, in its own act. An item it cannot build is "unsupported" (a mirror gap), as in
 // Setup.cs.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
@@ -220,7 +221,7 @@ static class RefsetSetup
                     foreach (var k in missing)
                     {
                         int at = s.Deck.Count;
-                        RunNonCombatEffects.AddCardToDeck(s, new CardInstance(Fight.CardIdBySnake(k.Id), Upgraded: k.Upgraded));
+                        RunNonCombatEffects.AddCardToDeck(s, new CardInstance(OldIds.CardIdBySnake(k.Id), Upgraded: k.Upgraded));
                         if (k.Enchantment == "") continue;
                         if (!Enum.TryParse<Enchantment>(k.Enchantment.Replace("_", ""), true, out var ench))
                             return (false, "unsupported: enchantment " + k.Enchantment);

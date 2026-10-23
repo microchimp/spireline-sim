@@ -4,6 +4,7 @@
 // won fight (hit points with the after-combat heals in, gold, RNG positions and, for the records that
 // have them, the belt, the relics and their counters) and the hit points of a lost one.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 using Xunit;
@@ -29,7 +30,7 @@ public class EndOfFightDumpTests
     public void AFightInProgressWritesNoFinalState()
     {
         Setup.Extended = false;
-        var d = Fight.Dump(InAFight());
+        var d = OldDump.Dump(InAFight());
 
         Assert.True((bool)d["in_combat"]!);
         Assert.Null(d["final"]);
@@ -44,7 +45,7 @@ public class EndOfFightDumpTests
         e.State.ActiveCombat!.PlayerHp = 50;  // Burning Blood heals six of the thirty missing
         Assert.NotEqual(-1, e.DebugResolveCombat());
 
-        var d = Fight.Dump(e);
+        var d = OldDump.Dump(e);
 
         Assert.False((bool)d["in_combat"]!);
         var final = d["final"]!.AsObject();
@@ -65,7 +66,7 @@ public class EndOfFightDumpTests
         var e = InAFight();
         e.DebugResolveCombat();
 
-        var final = Fight.Dump(e)["final"]!.AsObject();
+        var final = OldDump.Dump(e)["final"]!.AsObject();
 
         Assert.Null(final["potions"]);
         Assert.Null(final["relics"]);
@@ -81,7 +82,7 @@ public class EndOfFightDumpTests
         e.State.Phase = RunPhase.Map;  // the fight is over (the engine's own game-over phase is not the point)
         e.State.LastPlayerWon = false;
 
-        var final = Fight.Dump(e)["final"]!.AsObject();
+        var final = OldDump.Dump(e)["final"]!.AsObject();
 
         Assert.False((bool)final["won"]!);
         Assert.Null(final["player"]);
