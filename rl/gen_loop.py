@@ -689,15 +689,19 @@ def export_all(out: Path, probe_tokens=None) -> dict[str, Any]:
 
 
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
-                     max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True) -> Path:
+                     max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
+                     seed_dir: Path | None = None, retrain: int = 0) -> Path:
     """Train generation `gen`'s candidate (the next generation's) from the last GEN_WINDOW generations' shards."""
     from run_train import shards as rs  # noqa: PLC0415
 
-    cand = Path(agent_root) / f"gen{gen + 1}" / "candidate"
-    cand.mkdir(parents=True, exist_ok=True)
     mans = window_manifests(shards_root, gen)
     if not mans:
         raise ValueError(f"no shards of generations {max(0, gen - GEN_WINDOW + 1)}..{gen} under {Path(shards_root).name}")
+    window_seeds = [str(x) for d, m in mans for name in m.get("combat_parts", []) for x in read_part(d / name)["seeds"]]
+    check_disjoint(window_seeds, known_seed_sets(seed_dir or ROOT / "referee" / "seeds", None, ""))  # no benchmark seed trains
+    # a retrain after a rejection keeps the rejected candidate (and its promotion.json) where it is
+    cand = Path(agent_root) / f"gen{gen + 1}" / ("candidate" if retrain == 0 else f"candidate-r{retrain}")
+    cand.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     data = build_training_set(mans, max_fights=max_fights, seed=gen)
     doc: dict[str, Any] = {

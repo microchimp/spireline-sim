@@ -601,5 +601,31 @@ class FreshBlockTests(unittest.TestCase):
         self.assertFalse(e1 & set(sets["run_train eval_seeds"]) | e1 & set(sets["run_train test_seeds"]))
 
 
+class TrainingSeedGuardTests(unittest.TestCase):
+    def test_training_refuses_a_window_that_holds_a_benchmark_seed(self):
+        e0 = gen0.load_seeds(ROOT / "referee" / "seeds" / "E0-2026-10-23.json")[0]
+        rng = np.random.default_rng(6)
+        with tempfile.TemporaryDirectory() as d:
+            sink = gen_loop.ShardSink(Path(d) / "runs" / "job", 0, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=2)
+            sink.add(fake_record(e0, 0), fake_run_arrays(rng))
+            sink.close()
+            with self.assertRaisesRegex(ValueError, "also in E0-2026-10-23"):
+                gen_loop.train_generation(0, Path(d) / "runs", Path(d) / "agent", device="cpu", epochs=1, vrun=False, export=False)
+            self.assertFalse((Path(d) / "agent" / "gen1").exists())  # nothing was created or trained
+
+    def test_a_reserved_run_train_seed_is_refused_too(self):
+        reserved = gen0.load_seeds(ROOT / "rl" / "run_train" / "eval_seeds.json")[0]
+        rng = np.random.default_rng(7)
+        with tempfile.TemporaryDirectory() as d:
+            sink = gen_loop.ShardSink(Path(d) / "runs" / "job", 0, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=2)
+            sink.add(fake_record(reserved, 0), fake_run_arrays(rng))
+            sink.close()
+            with self.assertRaisesRegex(ValueError, "run_train eval_seeds"):
+                gen_loop.train_generation(0, Path(d) / "runs", Path(d) / "agent", device="cpu", epochs=1, vrun=False, export=False)
+
+    def test_the_fixture_windows_pass_the_guard(self):
+        self.assertTrue(trained_candidate()[2].is_dir())  # its seeds are S...: no benchmark block holds them
+
+
 if __name__ == "__main__":
     unittest.main()
