@@ -410,6 +410,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
+    if a.cmd in ("score", "emu") and a.character != "IRONCLAD":
+        sys.path.insert(0, str(ROOT / "referee"))
+        import lockstep  # noqa: PLC0415
+
+        lockstep.require_character(a.character)  # exit at once, not as a crash row per run
     if a.cmd == "seeds":
         print(len(write_seed_file(a.name, a.n, a.out)), "seeds")
         return 0

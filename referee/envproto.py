@@ -633,6 +633,9 @@ def play(a) -> int:
     """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator."""
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    import lockstep  # noqa: PLC0415
+
+    lockstep.require_character(a.character)  # the emulator side must be able to start it: exit before any game boots
     seeds = [f"A1S{i:04d}" for i in range(a.runs)]
     if a.seeds_file:  # a committed seed block (rl/gen0.py): the first --runs of it, in order
         doc = json.loads(Path(a.seeds_file).read_text(encoding="utf-8"))

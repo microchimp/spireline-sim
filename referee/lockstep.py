@@ -67,6 +67,30 @@ def extra_kind(label: Any) -> str | None:
     return None
 
 
+def character_supported(character: str, native=None) -> str | None:
+    """None when the emulator can start `character`; else why not. The native run API starts Ironclad unless the library
+    binding has run_reset_character (Sts2Run_Reset takes no character)."""
+    if character == "IRONCLAD":
+        return None
+    if native is None:
+        _paths()
+        import leakprobes  # noqa: PLC0415
+
+        leakprobes.native_env()
+        from sts2_gym import native  # noqa: PLC0415
+    if hasattr(native, "run_reset_character"):
+        return None
+    return (f"--character {character}: the native emulator library has no run_reset_character (Sts2Run_Reset takes no character), "
+            f"so the emulator side cannot start {character}. Use IRONCLAD, or add the native export first.")
+
+
+def require_character(character: str, native=None) -> None:
+    """Exit at once (before any worker starts) when the emulator cannot start `character`."""
+    why = character_supported(character, native)
+    if why:
+        raise SystemExit(why)
+
+
 # ------------------------------------------------------------------ projection and hashes
 
 
