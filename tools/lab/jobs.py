@@ -175,3 +175,33 @@ def finish(kind: str, lab: Path, job_dir: Path, params: dict[str, Any]) -> str |
     except OSError as e:
         return f"{kind}: could not update its markers ({type(e).__name__})"
     return None
+
+
+# ---------------------------------------------------------------- score-real: the ranking step
+
+def records_dir(job_dir: Path) -> Path | None:
+    """Where the score-real command left its lockstep records: result.json `out` (a path, absolute or in the job folder), else the
+    job folder or the first folder under it that holds divergences.jsonl."""
+    job_dir = Path(job_dir)
+    out = read_result(job_dir).get("out")
+    cands = ([job_dir / str(out)] if out else []) + [job_dir]
+    cands += sorted(p.parent for p in job_dir.rglob("divergences.jsonl"))
+    return next((c for c in cands if (c / "divergences.jsonl").is_file()), None)
+
+
+def rank_score_real(job_dir: Path) -> str | None:
+    """The analysis step of score-real: ranked.json and top20.md into the job folder, and divergences, groups, arch_share into
+    result.json (the yield columns). A problem string or None; no records is not a problem (the command may have run nothing)."""
+    from tools.lab import rank  # noqa: PLC0415
+    job_dir = Path(job_dir)
+    src = records_dir(job_dir)
+    if src is None:
+        return None
+    try:
+        s = rank.write(src, job_dir)["summary"]
+        res = read_result(job_dir)
+        res.update(divergences=s["state_divergences"], groups=s["groups"], arch_share=s["arch_share"])
+        _atomic(job_dir / "result.json", json.dumps(res, indent=1))
+    except (OSError, ValueError, KeyError) as e:
+        return f"score-real: ranking failed ({type(e).__name__})"
+    return None

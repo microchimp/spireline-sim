@@ -50,7 +50,7 @@ DEFAULT_MIX = {"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-ru
 # Added for the agent-era job kinds (tools/lab/jobs.py); they sit after the old columns, so an old file is padded with NA
 # and an old reader that takes the columns it knows by name or position keeps working. A job fills the ones its kind has.
 AGENT_COLUMNS = ("runs", "decisions", "decisions_s", "generation", "promoted", "loss", "wins", "mean_floor", "crashes", "divergences",
-                 "dec_s", "mem_mb_per_run", "steps_s", "clones_s", "sims_s")
+                 "dec_s", "mem_mb_per_run", "steps_s", "clones_s", "sims_s", "arch_share")
 YIELD_COLUMNS = ("utc", "job", "strategy", "main", "rc", "wall_min", "cpu_min", "fights", "mismatches", "unbuildable", "groups", "fix_ready",
                  "screen_groups", *AGENT_COLUMNS)
 NOTE = "weights of the CPU time the fights slots spend, per strategy; 0 or absent: never. Read at every job."
@@ -201,6 +201,8 @@ def yield_row(job_dir: Path, data: dict, groups_doc: object, groups_ran: bool, u
     if kind in jobs.NEW_KINDS:  # no fights, no groups: the columns of the command's result.json instead
         res = jobs.read_result(job_dir)
         na = dict.fromkeys(("fights", "mismatches", "unbuildable", "groups", "fix_ready", "screen_groups"), "NA")
+        if kind == "score-real" and res.get("groups") is not None:
+            na["groups"] = _cell(res["groups"])
         agent = {c: _cell(res.get(c)) for c in AGENT_COLUMNS}
         if kind == "train" and agent["generation"] == "NA" and params.get("generation"):
             agent["generation"] = params["generation"]
