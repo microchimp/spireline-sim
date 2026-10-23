@@ -79,5 +79,69 @@ class LeakTests(unittest.TestCase):
         self.assertGreaterEqual(min(share), 0.5, f"decision distribution moves with the hidden order: {dist}")
 
 
+@unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")
+class AiStateAssumedTests(unittest.TestCase):
+    """DESIGN.md 1.1: a fork that keeps the true hidden enemy moves says so, and the search reports it."""
+
+    def _opening(self):
+        from sts2_gym.env import ENCOUNTER_IDS  # noqa: PLC0415
+
+        import combat_mcts  # noqa: PLC0415
+
+        return combat_mcts.Combat.opening(0, ENCOUNTER_IDS["cultists"], 10, 1)
+
+    def _imported(self):
+        """The same fight loaded from its document: no intent pass was recorded in it."""
+        import combat_mcts  # noqa: PLC0415
+        from sts2_gym import native  # noqa: PLC0415
+
+        live = self._opening()
+        try:
+            return combat_mcts.Combat(native.load_combat_snapshot(native.get_state_json(live.handle), 1))
+        finally:
+            live.close()
+
+    def test_a_successful_resample_leaves_the_flag_clear(self):
+        root = self._opening()
+        try:
+            fork = root.fork(5)
+            try:
+                self.assertFalse(fork.ai_state_assumed)
+            finally:
+                fork.close()
+        finally:
+            root.close()
+
+    def test_an_imported_fight_cannot_be_resampled_and_its_forks_stay_flagged(self):
+        root = self._imported()
+        try:
+            self.assertFalse(root.fork(None).ai_state_assumed)
+            fork = root.fork(5)
+            again = fork.fork(6)
+            plain = fork.fork(None)
+            try:
+                self.assertTrue(fork.ai_state_assumed)
+                self.assertTrue(again.ai_state_assumed)
+                self.assertTrue(plain.ai_state_assumed)
+            finally:
+                for w in (fork, again, plain):
+                    w.close()
+        finally:
+            root.close()
+
+    def test_the_search_result_records_it(self):
+        import live_search  # noqa: PLC0415
+
+        for make, expected in ((self._opening, False), (self._imported, True)):
+            root = make()
+            try:
+                result = live_search.search_live(
+                    root.handle, max_sims=20, min_child_sims=2, confirm_pairs=0, time_budget_s=600.0, seed=1
+                )
+            finally:
+                root.close()
+            self.assertEqual(result.ai_state_assumed, expected)
+
+
 if __name__ == "__main__":
     unittest.main()

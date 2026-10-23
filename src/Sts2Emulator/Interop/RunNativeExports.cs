@@ -22,7 +22,8 @@ public static class RunNativeExports
     // (shop cards shown upgraded) and 23 (an offer grid's upgrades).
     // v22: Sts2Run_ForkCombat hands the run's fight to a combat handle, faithful or as the
     // fight of Sts2Run_Clone's resampled copy (rl/run_train/DESIGN.md 6.5).
-    public const int RUN_NATIVE_API_VERSION = 22;
+    // v23: Sts2Run_AiStateAssumed (DESIGN.md 1.1's ai_state_assumed for the run's fight).
+    public const int RUN_NATIVE_API_VERSION = 23;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -541,6 +542,11 @@ public static class RunNativeExports
     public static int Sts2Run_PlayerWon(int handle)
     {
         return TryGet(handle, out var run) && run.State.LastPlayerWon ? 1 : 0;
+    }
+
+    public static int Sts2Run_AiStateAssumed(int handle)
+    {
+        return TryGet(handle, out var run) && run.State.ActiveCombat?.AiStateAssumed == true ? 1 : 0;
     }
 
     public static int Sts2Run_EncounterId(int handle)

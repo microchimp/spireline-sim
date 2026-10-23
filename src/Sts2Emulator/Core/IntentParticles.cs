@@ -30,6 +30,19 @@ public static class IntentParticles
     /// <returns>True when a consistent roll replaced them.</returns>
     public static bool Resample(CombatState combat, Random rng)
     {
+        if (ResampleCore(combat, rng))
+        {
+            return true;
+        }
+
+        // The fork keeps the true hidden moves: say so (DESIGN.md 1.1), for good -- a clone of
+        // this fork, resampled or not, still stands on them.
+        combat.AiStateAssumed = true;
+        return false;
+    }
+
+    private static bool ResampleCore(CombatState combat, Random rng)
+    {
         var roll = combat.LastIntentRoll;
         var live = combat.Enemies;
         if (roll is null || live.Count != roll.After.Length)

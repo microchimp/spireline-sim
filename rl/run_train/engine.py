@@ -245,6 +245,7 @@ class RunCombat:
             child.obs,
         )
         child.done = self.done
+        child.ai_state_assumed = native.run_ai_state_assumed(child.handle)
         child.encounter_id = self.encounter_id
         child.node_type = self.node_type
         child.sims = self.sims
@@ -274,6 +275,7 @@ class RunCombat:
             child.obs,
         )
         child.done = self.done
+        child.ai_state_assumed = native.ai_state_assumed(child.handle)
         child.encounter_id = self.encounter_id
         return child
 

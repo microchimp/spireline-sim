@@ -331,6 +331,13 @@ public sealed class CombatState
     /// </summary>
     public IntentRoll? LastIntentRoll;
 
+    /// <summary>
+    /// True when this fight is a fork that kept the true hidden AI state because
+    /// <see cref="IntentParticles.Resample" /> could not roll it again (DESIGN.md 1.1's
+    /// <c>ai_state_assumed</c>). Never cleared; clones carry it.
+    /// </summary>
+    public bool AiStateAssumed;
+
     // Niche HP RNG — used ONLY for SetUniqueMonsterHpValue (CreateEnemy HP calls).
     // When non-null, CreateEnemy uses this instead of the main combat RNG for HP.
     // CountingRandom.CallCount tracks how many HP values were drawn (= enemy count).

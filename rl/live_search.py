@@ -274,6 +274,9 @@ class SearchResult:
     select_mapping_failures: int = 0
     # The line ends at a move that changed the draw pile's size rather than at End Turn.
     line_truncated_at_draw: bool = False
+    # Some resampled fork kept the true hidden enemy moves because they could not be rolled
+    # again (a loaded or imported fight, or none matched; DESIGN.md 1.1): the search saw them.
+    ai_state_assumed: bool = False
 
 
 class _Move(NamedTuple):
@@ -894,6 +897,12 @@ def _step_into(world: Combat, node: _Node, action: int, target: int) -> None:
         node.draws = True
 
 
+def _note_assumed(root: Combat, world: Combat) -> None:
+    """Carry a fork's `ai_state_assumed` up to the root the search reports it from."""
+    if getattr(world, "ai_state_assumed", False):
+        root.ai_state_assumed = True
+
+
 def _simulate(
     root: Combat,
     child: _RootMove,
@@ -913,6 +922,7 @@ def _simulate(
     """
     rng = np.random.default_rng(seed)
     world = root.fork(None if _ORACLE else seed)
+    _note_assumed(root, world)
     try:
         action = _action_in(world, child.key, subtree.action)
         if action is None:
@@ -958,6 +968,7 @@ def _playout(
     """
     rng = np.random.default_rng(seed)
     world = root.fork(None if _ORACLE else seed)
+    _note_assumed(root, world)
     try:
         action = _action_in(world, child.key, child.node.action)
         if action is None:
@@ -1386,6 +1397,7 @@ class _Search:
             uct_sims=self.uct_sims,
             select_mapping_failures=self.failures,
             line_truncated_at_draw=line_truncated,
+            ai_state_assumed=bool(getattr(self.root, "ai_state_assumed", False)),
         )
 
 
@@ -1537,6 +1549,7 @@ def merge_stats(results: list[SearchResult]) -> SearchResult:
         uct_sims=sum(result.uct_sims for result in results),
         select_mapping_failures=sum(r.select_mapping_failures for r in results),
         line_truncated_at_draw=line_truncated,
+        ai_state_assumed=any(result.ai_state_assumed for result in results),
     )
 
 

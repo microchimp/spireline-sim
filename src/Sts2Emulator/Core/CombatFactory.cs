@@ -388,6 +388,8 @@ public static class CombatFactory
         // Preserve an AiRng the caller set (the direct combat env wires
         // GameRng(seed,"monster_ai") there); only override when one is passed in.
         state.AiRng = aiRng ?? state.AiRng;
+        // A fresh fight is no fork that kept the true AI state, whatever the handle held before.
+        state.AiStateAssumed = false;
 
         state.DrawPile = deck.ToArray().ToList();
 
