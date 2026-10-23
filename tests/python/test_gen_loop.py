@@ -683,5 +683,35 @@ class RetrainAfterRejectionTests(unittest.TestCase):
         self.assertEqual(json.loads((again / "agent.json").read_text())["generation"], 2)
 
 
+@unittest.skipUnless(HAVE_NATIVE, "needs the native library")
+class RecorderTests(unittest.TestCase):
+    def test_a_forced_move_is_counted_but_not_recorded(self):
+        rec = gen_loop.RunRecorder("AAAAAAAAAA", 0, {}, 30, 0.2, 10)
+        rec.fight = {"decisions": 0}
+        one = SimpleNamespace(action=0, merged_actions=[], visits=0, value_mean=0.0)
+        rec.sample(None, SimpleNamespace(children=[one], sims=0), None)
+        self.assertEqual((len(rec.samples.rows), rec.fight["decisions"]), (0, 1))
+
+    def test_validation_is_by_run_the_fights_column_groups_each_runs_samples(self):
+        rng = np.random.default_rng(8)
+        sizes = [(3, 2), (2, 4), (1, 5)]  # (fights, decisions per fight) of three runs: 6, 8 and 5 samples
+        with tempfile.TemporaryDirectory() as d:
+            sink = gen_loop.ShardSink(Path(d) / "job", 0, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=2)
+            for i, (nf, nd) in enumerate(sizes):
+                sink.add(fake_record(f"Q{i:09d}", 0), fake_run_arrays(rng, nf, nd))
+            sink.close()  # two parts: runs 0-1 and run 2, so run ids repeat across parts before the merge
+            data = gen_loop.build_training_set(gen_loop.window_manifests(Path(d), 0), max_fights=1000)
+        ids, counts = np.unique(data["fights"], return_counts=True)
+        self.assertEqual(sorted(counts.tolist()), [5, 6, 8])  # one id per run, whatever the part it was in
+        self.assertEqual(len(ids), 3)
+        # train_combat splits on the unique values of this column, so no run is on both sides of the split
+        rng2 = np.random.default_rng(0)
+        held = set(ids[rng2.permutation(len(ids))][int(0.85 * len(ids)):].tolist())
+        in_val = np.isin(data["fights"], list(held))
+        for run_id in ids:
+            rows = data["fights"] == run_id
+            self.assertTrue(in_val[rows].all() or not in_val[rows].any())
+
+
 if __name__ == "__main__":
     unittest.main()
