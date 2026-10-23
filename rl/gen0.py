@@ -382,18 +382,19 @@ def train_cmd(a: argparse.Namespace) -> int:
     _setup()
     import gen_loop  # noqa: PLC0415
 
-    gen = a.gen
+    gen, retrain = a.gen, 0
     if a.marker_dir:
         marks = gen_loop.ready_markers(Path(a.marker_dir))
         if not marks:
             print("no ready-<gen> marker", file=sys.stderr)
             return 2
-        gen = marks[0][0]
+        gen, retrain = marks[0][0], gen_loop.marker_parts(marks[0][1])[1]
     if gen is None:
         print("--gen or --marker-dir is needed", file=sys.stderr)
         return 2
     cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
-                                     max_fights=a.max_fights, threads=a.threads, vrun=not a.no_vrun)
+                                     max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
+                                     retrain=retrain)  # a retrain draws on the larger window
     print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": gen + 1}))
     if a.promote:
         if not (a.emu_python and a.seeds_file):
@@ -556,7 +557,8 @@ def main(argv: list[str] | None = None) -> int:
         summ = run_block(seeds, a.config or a.sims, a.procs, Path(a.out), ascension=a.ascension, block_min=a.block_min,
                          agent=agent, record=a.record)
         if a.record and a.lab and a.shards_root:
-            gen_loop.mark_ready(Path(a.lab), agent.generation if agent else 0, Path(a.shards_root), a.budget_runs)
+            gen_loop.mark_ready(Path(a.lab), agent.generation if agent else 0, Path(a.shards_root), a.budget_runs,
+                                tsv=Path(a.agent_root) / "promotions.tsv" if a.agent_root else None)
         print(json.dumps(summ))
         return 0
     real = real_runs(Path(a.real) / "runs.jsonl")

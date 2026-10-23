@@ -743,26 +743,42 @@ def shutil_rmtree(p: Path) -> None:
 # ------------------------------------------------------------------ lab markers
 
 
+_MARKER = re.compile(r"(ready|done)-(\d+)(?:-r(\d+))?")
+
+
+def marker_parts(path: Path | str) -> tuple[int, int] | None:
+    """(generation, retrain index) of `ready-<gen>` (index 0) or `ready-<gen>-r<n>`; None for anything else."""
+    m = _MARKER.fullmatch(Path(path).name)
+    return (int(m[2]), int(m[3] or 0)) if m and m[1] == "ready" else None
+
+
 def ready_markers(train_dir: Path) -> list[tuple[int, Path]]:
-    """`LAB/train/ready-<gen>` markers, lowest generation first."""
-    out = []
+    """`LAB/train/ready-<gen>[-r<n>]` markers, lowest generation (then retrain index) first."""
     d = Path(train_dir)
-    for p in d.glob("ready-*") if d.is_dir() else []:
-        m = re.fullmatch(r"ready-(\d+)", p.name)
-        if m:
-            out.append((int(m.group(1)), p))
-    return sorted(out)
+    found = [(marker_parts(p), p) for p in (d.glob("ready-*") if d.is_dir() else [])]
+    return [(k[0], p) for k, p in sorted(((k, p) for k, p in found if k), key=lambda x: x[0])]
 
 
-def mark_ready(lab: Path, gen: int, shards_root: Path, budget: int = BUDGET_RUNS) -> Path | None:
-    """Write `LAB/train/ready-<gen>` once the generation's self-play budget is spent; never twice (ready- or done-)."""
+def rejections(tsv: Path | None, cand_gen: int) -> int:
+    """How many candidates of generation `cand_gen` were rejected so far."""
+    return sum(1 for r in read_promotions(tsv) if r.get("cand_gen") == str(cand_gen) and r.get("decision") == "rejected")
+
+
+def mark_ready(lab: Path, gen: int, shards_root: Path, budget: int = BUDGET_RUNS, tsv: Path | None = None) -> Path | None:
+    """Write `LAB/train/ready-<gen>` once the generation's self-play budget is spent, never twice (ready- or done-).
+
+    After a rejection the generation gets another budget: once its candidate was rejected (a rejected row for generation
+    gen + 1 in `promotions.tsv`) and the generation's runs reach (markers so far + 1) x budget, `ready-<gen>-r<n>` follows, and
+    `train` retrains on the larger window. A promotion moves self-play to the next generation, so no further marker appears.
+    """
     d = Path(lab) / "train"
-    if (d / f"ready-{gen}").exists() or (d / f"done-{gen}").exists():
+    issued = sum(1 for p in (d.glob("*") if d.is_dir() else []) if (m := _MARKER.fullmatch(p.name)) and int(m[2]) == gen)
+    if issued and rejections(tsv, gen + 1) < issued:
         return None
-    if runs_in_generation(shards_root, gen) < budget:
+    if runs_in_generation(shards_root, gen) < budget * (issued + 1):
         return None
     d.mkdir(parents=True, exist_ok=True)
-    p = d / f"ready-{gen}"
+    p = d / (f"ready-{gen}" if issued == 0 else f"ready-{gen}-r{issued}")
     p.write_text(utc_now() + "\n", encoding="utf-8")
     return p
 

@@ -627,5 +627,61 @@ class TrainingSeedGuardTests(unittest.TestCase):
         self.assertTrue(trained_candidate()[2].is_dir())  # its seeds are S...: no benchmark block holds them
 
 
+class RetrainAfterRejectionTests(unittest.TestCase):
+    def _runs(self, root: Path, gen: int, n: int, tag: str):
+        sink = gen_loop.ShardSink(root / f"job-{tag}", gen, config="a3-v1", base_sims=30, ascension=10, agent={})
+        for i in range(n):
+            sink.add(fake_record(f"R{gen}{tag}{i:05d}"[:10], gen), None)
+        sink.close()
+
+    def test_a_rejection_buys_the_generation_another_budget_and_a_promotion_does_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            lab, runs, tsv = Path(d) / "lab", Path(d) / "runs", Path(d) / "promotions.tsv"
+            self._runs(runs, 1, 5, "a")
+            self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv), lab / "train" / "ready-1")
+            (lab / "train" / "ready-1").rename(lab / "train" / "done-1")  # what the lab does after the job
+            self._runs(runs, 1, 5, "b")  # self-play went on at generation 1 while the candidate was judged
+            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv))  # no verdict yet
+            gen_loop.append_promotion(tsv, {"cand_gen": 2, "decision": "promoted", "seed_block": "E1", "cand_sha": "a"})
+            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv))  # promoted: nothing to retrain
+            gen_loop.append_promotion(tsv, {"cand_gen": 2, "decision": "rejected", "seed_block": "E1", "cand_sha": "b"})
+            self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv), lab / "train" / "ready-1-r1")
+            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv))  # once
+            (lab / "train" / "ready-1-r1").rename(lab / "train" / "done-1-r1")
+            self._runs(runs, 1, 4, "c")  # 14 runs: short of the third budget of 5
+            gen_loop.append_promotion(tsv, {"cand_gen": 2, "decision": "rejected", "seed_block": "E1-r1", "cand_sha": "c"})
+            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv))
+            self._runs(runs, 1, 1, "d")
+            self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv), lab / "train" / "ready-1-r2")
+            self.assertEqual([g for g, _ in gen_loop.ready_markers(lab / "train")], [1])
+            self.assertEqual(gen_loop.marker_parts(lab / "train" / "ready-1-r2"), (1, 2))
+
+    def test_markers_are_ordered_by_generation_then_retrain_index(self):
+        with tempfile.TemporaryDirectory() as d:
+            for n in ("ready-12", "ready-4-r1", "ready-4", "done-4", "ready-4-x"):
+                (Path(d) / n).write_text("x")
+            self.assertEqual([p.name for _, p in gen_loop.ready_markers(Path(d))], ["ready-4", "ready-4-r1", "ready-12"])
+
+    def test_the_train_command_retrains_into_its_own_directory_with_the_larger_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker_dir = Path(d) / "train"
+            marker_dir.mkdir()
+            (marker_dir / "ready-7-r1").write_text("x")
+            with mock.patch.object(gen_loop, "train_generation", return_value=Path(d) / "gen8" / "candidate-r1") as tg:
+                rc = gen0.main(["train", "--marker-dir", str(marker_dir), "--shards-root", d, "--agent-root", d])
+            self.assertEqual(rc, 0)
+            self.assertEqual(tg.call_args[0][0], 7)
+            self.assertEqual((tg.call_args[1]["retrain"], tg.call_args[1]["max_fights"]), (1, 12800))
+
+    def test_a_retrain_keeps_the_rejected_candidate(self):
+        runs, agents, first = trained_candidate()
+        again = gen_loop.train_generation(1, runs, agents, device="cpu", epochs=1, max_fights=10, threads=2, vrun=False, export=False,
+                                          retrain=1)
+        self.assertEqual(again, agents / "gen2" / "candidate-r1")
+        self.assertTrue((again / "combat_policy.pt").is_file())
+        self.assertTrue((first / "combat_policy.pt").is_file())  # the first candidate is untouched
+        self.assertEqual(json.loads((again / "agent.json").read_text())["generation"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

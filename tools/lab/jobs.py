@@ -6,7 +6,7 @@ Each kind is data: a default command, a limit, whether it is on, and the input t
   {"selfplay": {"enabled": true, "cmd": ["{python}", "rl/run_train/cli.py", "..."], "share": 0.5, "timeout_min": 60}}
 
 The shipped defaults change nothing for a lab that has no jobs.json: selfplay and the benches are off, and train and
-score-real are on but only ever ready when their marker file exists (LAB/train/ready-<gen>, LAB/score/pending).
+score-real are on but only ever ready when their marker file exists (LAB/train/ready-<gen> or ready-<gen>-r<n> for a retrain after a rejection, LAB/score/pending).
 
 Priority ladder (lower number first; what the runner's choose() does with it is in runner.py):
 
@@ -79,8 +79,9 @@ def _age_h(p: Path) -> float | None:
 
 
 def gen_key(name: str) -> tuple[int, str]:
-    m = re.search(r"(\d+)$", name)
-    return (int(m.group(1)) if m else 1 << 30, name)
+    """Marker order: by generation, then retrain index (``ready-4`` < ``ready-4-r1`` < ``ready-12``)."""
+    m = re.search(r"-(\d+)(?:-r(\d+))?$", name)
+    return (int(m.group(1)) * 1000 + int(m.group(2) or 0) if m else 1 << 30, name)
 
 
 def train_markers(lab: Path) -> list[Path]:
