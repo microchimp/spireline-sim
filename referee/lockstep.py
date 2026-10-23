@@ -172,6 +172,14 @@ def ref_view(obs: dict) -> dict:
 # ------------------------------------------------------------------ divergence log and re-anchor plan
 
 
+def act_type(kind: str, label: Any) -> str:
+    """What a chosen action was: a card play, an end turn, a potion (in a fight or out of one), else a choice on a
+    screen (a map node, a reward, a card selection, an event option)."""
+    if kind == "combat" and isinstance(label, list) and label:
+        return {"play": "play", "end": "end_turn", "potion": "potion"}.get(label[0], "choice")
+    return "potion" if extra_kind(label) in ("potion_use", "potion_discard") else "choice"
+
+
 def reanchor_plan(kind: str, prev_kind: str | None) -> str | None:
     """Where a re-anchor can happen: the first decision of a fight (fight start) or a map choice (room entry).
     Mid-fight and mid-screen divergences wait for the next boundary."""
@@ -219,6 +227,14 @@ class Lockstep:
         self.n = 0
         self.assumed: set[int] = set()  # decisions whose search saw enemy moves it could not re-roll
         self.prev_kind: str | None = None
+        # Where the run is, for every record: the step before (what was acted), the room type of the last map node
+        # taken, and the fight's roster. The referee's message carries no encounter id, so a fight is named by the
+        # enemies it began with.
+        self.prev_act: dict | None = None
+        self.room_type: str | None = None
+        self.roster: str | None = None
+        self.round: int | None = None
+        self.ctx: dict = {}
         self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
                       "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
 
@@ -226,6 +242,7 @@ class Lockstep:
         kind, labels = msg["kind"], msg["actions"]
         i, self.n = self.n, self.n + 1
         self.stats["decisions"] += 1
+        self._track(kind, msg)
         ranked = False
         if self.emu is not None:
             ranked = self._check(i, kind, labels, msg) if self.lost is None else self._resume(i, kind, labels, msg)
@@ -253,7 +270,24 @@ class Lockstep:
             sp["first"] = i if sp["first"] is None else sp["first"]
             sp["last"], sp["count"] = i, sp["count"] + 1
         self.prev_kind = kind
+        if isinstance(choice, int) and 0 <= choice < len(labels):
+            self.prev_act = {"type": act_type(kind, labels[choice]), "kind": kind, "label": labels[choice]}
+            if kind == "map" and isinstance(labels[choice], list) and len(labels[choice]) > 2:
+                self.room_type = labels[choice][2]
         return choice
+
+    def _track(self, kind: str, msg: dict) -> None:
+        """The context every record of this decision carries (set before the decision's own step is taken)."""
+        c = (msg.get("obs") or {}).get("combat")
+        if not c or kind not in COMBAT_KINDS:
+            self.roster, self.round = None, None
+        else:
+            rnd = c.get("round") if isinstance(c.get("round"), int) else None
+            if self.prev_kind not in COMBAT_KINDS or (rnd is not None and self.round is not None and rnd < self.round):
+                names = sorted(str(e.get("name")) for e in c.get("enemies") or [] if isinstance(e, dict))
+                self.roster = "+".join(names) or None  # a new fight: the enemies it began with
+            self.round = rnd
+        self.ctx = {"acted": self.prev_act, "turn": self.round, "encounter": self.roster, "room_type": self.room_type}
 
     def finish(self, outcome: dict) -> None:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
@@ -271,11 +305,11 @@ class Lockstep:
             self.stats["gaps"] += 1
             obs = (msg or {}).get("obs", {})
             rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=True,
-                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False)
+                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False, **self.ctx)
         if rec is None:  # a loss with no record of its own (a search failure): one, so its span has a home
             obs = (msg or {}).get("obs", {})
             rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=False,
-                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False)
+                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False, **self.ctx)
         rec["not_ranked_span"] = {"first": None, "last": None, "count": 0}  # decisions scored, not ranked, after it
         self.open = rec
 
@@ -325,7 +359,7 @@ class Lockstep:
         self.stats["gaps" if gap else "diverged"] += 1
         rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind,
                            ref_hash=view_hash(r), emu_hash=view_hash(e), referee_state_hash=msg.get("h"),
-                           reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True)
+                           reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True, **self.ctx)
         plan = reanchor_plan(kind, self.prev_kind)
         rec["reanchor_plan"] = plan
         rec["reanchored"] = bool(plan) and not gap and self._reanchor(plan, kind, labels, msg)

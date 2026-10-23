@@ -557,6 +557,48 @@ class EnemyProjectionTests(unittest.TestCase):
         self.assertEqual(enemy_stub([(12, 40), (0, 0)]).view()["combat"]["enemy_hp"], [12])
 
 
+class RecordContextTests(unittest.TestCase):
+    """A divergence record says what the step before it was, and where in the run it happened."""
+
+    def combat_obs(self, rnd, hps):
+        o = obs(combat=True)
+        o["combat"]["round"] = rnd
+        o["combat"]["enemies"] = [{"name": n, "hp": h} for n, h in zip(("cultist", "jaw_worm"), hps)]
+        return o
+
+    def run_fight(self, last_hp):
+        m = {"t": "decide", "kind": "map", "obs": obs(), "actions": [[3, 1, "Monster"], [4, 1, "Elite"]], "h": "abc"}
+        a, b = self.combat_obs(2, (15, 40)), self.combat_obs(3, (15, last_hp))
+        play = {"t": "decide", "kind": "combat", "obs": a, "actions": [["play", 0, "STRIKE", 0], ["end"]], "h": "abc"}
+        nxt = {"t": "decide", "kind": "combat", "obs": b, "actions": [["play", 0, "STRIKE", 0], ["end"]], "h": "abc"}
+        emu = FakeEmu([view_of(m["obs"]), view_of(a), view_of(self.combat_obs(3, (15, 30)))])
+        ls = lockstep.Lockstep(emu, lambda msg_: 0)
+        for x in (m, play, nxt):
+            ls.decide(x)
+        return ls
+
+    def test_a_record_carries_the_acted_step_the_turn_the_encounter_and_the_room_type(self):
+        rec = self.run_fight(40).log.records[0]
+        self.assertEqual(rec["acted"], {"type": "end_turn", "kind": "combat", "label": ["end"]})
+        self.assertEqual((rec["turn"], rec["encounter"], rec["room_type"]), (3, "cultist+jaw_worm", "Elite"))
+
+    def test_the_first_decision_has_no_step_before_it_and_a_non_combat_record_has_no_turn(self):
+        o, b = obs(hp=80), obs(hp=70)
+        ls = lockstep.Lockstep(FakeEmu([view_of(b), view_of(o)]), lambda m_: 0)
+        ls.decide(msg("rest", o))
+        rec = ls.log.records[0]
+        self.assertEqual((rec["acted"], rec["turn"], rec["encounter"]), (None, None, None))
+        ls.decide(msg("card_reward", o))  # the lockstep is lost, the step is still tracked
+        self.assertEqual(ls.prev_act, {"type": "choice", "kind": "card_reward", "label": ["x"]})
+
+    def test_a_play_and_a_potion_are_told_apart_from_an_end_turn(self):
+        self.assertEqual(lockstep.act_type("combat", ["play", 0, "STRIKE", 0]), "play")
+        self.assertEqual(lockstep.act_type("combat", ["potion", 0, "FIRE", -1]), "potion")
+        self.assertEqual(lockstep.act_type("combat", ["end"]), "end_turn")
+        self.assertEqual(lockstep.act_type("select_cards_combat", ["card", 1]), "choice")
+        self.assertEqual(lockstep.act_type("map", [3, 1, "Monster"]), "choice")
+
+
 class OutcomeTests(unittest.TestCase):
     class Env:
         def __init__(self, stream, end):
