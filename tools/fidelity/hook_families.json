@@ -266,7 +266,6 @@
  "why": {
   "AfterActEntered": "act change on the run's map",
   "AfterAddToDeckPrevented": "deck-add outcome",
-  "AfterForge": "forging changes a card held in a pile, nearest to the card-pile hooks",
   "AfterModifyingGoldGained": "second half of the gold-gain pair in the run rewards",
   "AfterOstyRevived": "a summon changes life state, handled beside the death hooks",
   "AfterRestSiteSmith": "rest-site action",

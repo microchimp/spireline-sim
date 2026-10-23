@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -125,6 +126,16 @@ class Eligibility(unittest.TestCase):
         self.assertEqual(got, [False, True])
 
 
+class UnknownRelics(unittest.TestCase):
+    def test_an_item_with_unknown_relics_is_not_approved(self):
+        it = {"families": [], "models": [], "relics_known": False}
+        self.assertFalse(mf.eligible(it, []))
+        self.assertTrue(mf.eligible(it, [], allow_unknown_relics=True))
+        self.assertTrue(mf.eligible(dict(it, relics_known=True), []))
+        self.assertTrue(mf.eligible({"families": []}, []))                  # no flag: judged on its models
+        self.assertFalse(mf.eligible(dict(it, families=["F01"]), ["F02"], allow_unknown_relics=True))
+
+
 class Readers(unittest.TestCase):
     def test_corpus_models_covers_piles_creatures_actions_and_mid_fight_cards(self):
         models, known = mf.corpus_models(rec(relics=["RA", None], extra_card="CREATED"))
@@ -141,6 +152,22 @@ class Readers(unittest.TestCase):
         self.assertEqual(mf.starter_relics(recs), {"HERO": "START"})
         self.assertEqual(mf.neow_relic(rec()), "RB")
         self.assertIsNone(mf.neow_relic({"neow_options": [], "neow_pick": 3}))
+
+    def test_corpus_models_reads_the_setup_commands(self):
+        setup = [{"cmd": "relic", "id": "RS"}, {"cmd": "power", "id": "PS", "amount": 2, "target": "enemy:0"},
+                 {"cmd": "card", "id": "CS", "upgraded": True}, {"cmd": "potion", "id": "PO"},
+                 {"cmd": "fight", "id": "ENC"}, {"cmd": "energy", "amount": 1}, {"cmd": "relic"}, "junk"]
+        models, known = mf.corpus_models(dict(rec(), setup=setup))
+        self.assertEqual(models, {"card:PLAIN", "card:CS", "monster:MOB", "power:PC_POWER", "power:PC", "power:PS",
+                                  "relic:RS", "potion:PO"})
+        self.assertFalse(known)                       # a setup relic is not the relic list
+
+    def test_agent_models_decodes_json_quoted_relic_and_potion_ids(self):
+        diff = [[".relics", ['"BURNING_BLOOD"'], []], [".potions", ['"SPEED_POTION"', None], []],
+                [".combat.hand", ['["PLAIN", 0]'], []]]
+        run = json.loads(json.dumps({"divergences": [{"diff": diff}]}))     # on disk the value is "\"SPEED_POTION\""
+        self.assertEqual(mf.agent_models(run), {"relic:BURNING_BLOOD", "potion:SPEED_POTION", "card:PLAIN"})
+        self.assertEqual(mf._diff_ids(['"A"', "B", '"not json', None]), ["A", "B", '"not json'])
 
     def test_agent_models_from_diverging_diffs(self):
         run = {"divergences": [
@@ -201,6 +228,16 @@ class Aggregation(unittest.TestCase):
         self.assertEqual((d["eligible_now"]["corpus_fights"], d["eligible_now"]["agent_runs"]), (2, 2))
         d = self.build(["F01", "F02", "F03"])
         self.assertEqual(d["eligible_now"]["corpus_fights"], 4)
+
+    def test_both_eligible_counts(self):
+        d = self.build()["eligible_now"]
+        self.assertEqual((d["corpus_fights"], d["corpus_fights_known_relics"]), (1, 1))
+        full = self.build(["F01", "F02", "F03"])
+        d = full["eligible_now"]
+        self.assertEqual((d["corpus_fights"], d["corpus_fights_known_relics"]), (4, 3))      # f3 lists no relics
+        self.assertEqual((d["lab_fights"], d["lab_fights_known_relics"]), (1, 1))
+        self.assertEqual([x["relics_known"] for x in full["lab_fights"]], [True])
+        self.assertIn("with the relic list known", mf.render_md(full))
 
     def test_greedy_orders_models_by_fights_unlocked(self):
         order = self.build()["greedy_models"]
@@ -295,6 +332,25 @@ def serial_lab_reference(lab, spec_id):
             models, known = mf.corpus_models(r)
             items.append({"id": sid, "models": sorted(models), "relics_known": known})
     return items, files
+
+
+class CodexChildPriority(unittest.TestCase):
+    def test_the_codex_child_runs_isolated_at_below_normal(self):
+        from tools.fidelity import corpus as cp
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            src, out = Path(d) / "runs.jsonl.gz", Path(d) / "out"
+            src.write_bytes(b"")
+
+            def fake_run(cmd, **kw):
+                calls.append((cmd, kw))
+                (out / mf.CODEX_COUNTS).write_text(json.dumps({"runs": 1, "by_model": {"card:A": 1}}), encoding="utf-8")
+
+            with mock.patch.object(mf, "CODEX", src), mock.patch.object(mf.subprocess, "run", fake_run):
+                got = mf.codex_counts(out, True)
+        self.assertEqual(got, {"runs": 1, "by_model": {"card:A": 1}})
+        self.assertIn("-I", calls[0][0])
+        self.assertEqual(calls[0][1]["creationflags"], cp.BELOW_NORMAL)
 
 
 class LabPool(unittest.TestCase):

@@ -23,7 +23,8 @@ by role, not by path.
 
 `eligible(item, migrated_families)` is the rule the shadow comparison uses: an item is eligible when every model it
 touches has all its COMBAT-hook families migrated. A model with no combat hook never blocks an item. Run hooks (the
-run families F15 and F16, and hooks the game dispatches only outside combat) are not part of a fight's eligibility.
+run families F15 and F16, and hooks the game dispatches only outside combat) are not part of a fight's eligibility. An item whose relic list is unknown (`relics_known: false`) is not approved
+unless the caller asks (`allow_unknown_relics=True`); the manifest reports both counts.
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ CODEX_READER = HERE / "manifest_codex.py"
 FORMAT = 1
 UNASSIGNED = "UNASSIGNED"
 PILES = ("hand", "draw", "discard", "exhaust")
+SETUP_KINDS = ("relic", "power", "card", "potion")        # the setup commands that name a model (cmd == kind)
 CODEX_COUNTS = "codex-counts.json"
 
 
@@ -127,7 +129,8 @@ def _id(x):
 
 def corpus_models(rec: dict) -> tuple[set, bool]:
     """(model keys a recorded fight touches, whether its steps list relics). Cards created mid-fight appear in
-    some step's piles, so the union over the steps covers them."""
+    some step's piles, so the union over the steps covers them. The record's ``setup`` commands (relic, power, card
+    and potion, by ``id``) name models too; they do not make the relic list known."""
     out: set = set()
     relics_known = False
 
@@ -136,6 +139,9 @@ def corpus_models(rec: dict) -> tuple[set, bool]:
         if v:
             out.add(f"{kind}:{v}")
 
+    for cmd in rec.get("setup") or []:
+        if isinstance(cmd, dict) and cmd.get("cmd") in SETUP_KINDS:
+            add(cmd["cmd"], cmd.get("id"))
     for step in rec.get("steps") or []:
         st = step.get("state") if isinstance(step, dict) else None
         if not isinstance(st, dict):
@@ -188,7 +194,7 @@ def neow_relic(rec: dict):
 def _diff_ids(vals) -> list:
     out = []
     for v in vals if isinstance(vals, list) else []:
-        if isinstance(v, str) and v.startswith("["):
+        if isinstance(v, str) and v[:1] in ('[', '"'):     # a card cell as a JSON list, a relic or potion id JSON-quoted
             try:
                 v = json.loads(v)
             except ValueError:
@@ -304,12 +310,18 @@ def item_families(models, cat: dict) -> list:
     return sorted(need)
 
 
-def eligible(item: dict, migrated, model_families: dict | None = None) -> bool:
+def eligible(item: dict, migrated, model_families: dict | None = None, allow_unknown_relics: bool = False) -> bool:
     """Every model the item touches has all its combat-hook families migrated.
 
     ``item`` carries ``families`` (the union of its models' combat families, as the manifest stores it), or
     ``models`` with ``model_families`` (model key -> its combat families) to work them out.
+
+    An item with ``relics_known: false`` is never eligible: relics won in earlier rooms are missing from its model
+    set and could carry a combat hook of a family not yet migrated. ``allow_unknown_relics=True`` judges the
+    models it does list (the count the manifest reports as "eligible", before the relics condition).
     """
+    if item.get("relics_known") is False and not allow_unknown_relics:
+        return False
     if "families" in item:
         need = set(item["families"])
     else:
@@ -404,7 +416,9 @@ def codex_counts(out: Path, rescan: bool) -> dict | None:
         if not CODEX.is_file():
             return None
         Path(out).mkdir(parents=True, exist_ok=True)
-        subprocess.run([sys.executable, "-I", str(CODEX_READER), str(CODEX), str(cache)], check=True)
+        from tools.fidelity.corpus import BELOW_NORMAL  # noqa: PLC0415  (the helper every replay child uses)
+        subprocess.run([sys.executable, "-I", str(CODEX_READER), str(CODEX), str(cache)], check=True,
+                       creationflags=BELOW_NORMAL)
     doc = json.loads(cache.read_text(encoding="utf-8"))
     return {"runs": int(doc.get("runs", 0)), "by_model": {k: int(v) for k, v in doc.get("by_model", {}).items()}}
 
@@ -473,10 +487,10 @@ def assemble(fam_doc: dict, cat: dict, corpus_items: list, agent_items: list, la
                     "cumulative_share_pct": share(g["cumulative"], n_fights)}
                    for g in greedy_cover([it["families"] for it in corpus_items], 20)]
     stages.mark("cover")
-    eligible_now = {"migrated": sorted(migrated),
-                    "corpus_fights": sum(1 for it in corpus_items if eligible(it, migrated)),
-                    "agent_runs": sum(1 for it in agent_items if eligible(it, migrated)),
-                    "lab_fights": sum(1 for it in lab_items if eligible(it, migrated))}
+    eligible_now = {"migrated": sorted(migrated)}
+    for src, items in (("corpus_fights", corpus_items), ("agent_runs", agent_items), ("lab_fights", lab_items)):
+        eligible_now[src] = sum(1 for it in items if eligible(it, migrated, allow_unknown_relics=True))
+        eligible_now[f"{src}_known_relics"] = sum(1 for it in items if eligible(it, migrated))
     return {
         "format": FORMAT, "built": datetime.date.today().isoformat(),
         "counts": {"models": len(models), "models_reached_by_any": len(reached_any),
@@ -490,7 +504,8 @@ def assemble(fam_doc: dict, cat: dict, corpus_items: list, agent_items: list, la
         "eligible_now": eligible_now,
         "greedy_models": greedy_models, "greedy_families": greedy_fams,
         "models": models, "corpus_fights": corpus_items, "agent_runs": agent_items,
-        "lab_fights": [{"id": it["id"], "families": it["families"], "models": it["models"]} for it in lab_items],
+        "lab_fights": [{"id": it["id"], "families": it["families"], "models": it["models"],
+                        "relics_known": it.get("relics_known")} for it in lab_items],
         "notes": notes or []}
 
 
@@ -517,8 +532,11 @@ def render_md(m: dict) -> str:
         L.append(f"| {i} | {g['family']} | {g['unlocks']} | {g['cumulative']} | {g['cumulative_share_pct']} |")
     L += ["", "## Unassigned hooks", ""] + [f"- {h}: {w}" for h, w in m["unassigned_hooks"].items()] + [""]
     L += ["## Eligible now", "", f"Migrated families: {m['eligible_now']['migrated'] or 'none'}. "
-          f"Corpus fights {m['eligible_now']['corpus_fights']}, agent runs {m['eligible_now']['agent_runs']}, "
-          f"lab fights {m['eligible_now']['lab_fights']}.", "",
+          f"Eligible by the models listed: corpus fights {m['eligible_now']['corpus_fights']}, agent runs "
+          f"{m['eligible_now']['agent_runs']}, lab fights {m['eligible_now']['lab_fights']}. Of those, with the relic list "
+          f"known (the only ones `eligible` approves): corpus fights {m['eligible_now']['corpus_fights_known_relics']}, "
+          f"agent runs {m['eligible_now']['agent_runs_known_relics']} (runs carry no `relics_known`; their model sets are "
+          f"partial), lab fights {m['eligible_now']['lab_fights_known_relics']}.", "",
           "## Greedy model cover (models with combat hooks, by corpus fights unlocked)", "",
           "| rank | model | families | unlocks | cumulative fights |", "|---|---|---|---|---|"]
     for i, g in enumerate(m["greedy_models"][:40], 1):
@@ -592,11 +610,14 @@ def cmd_status(a) -> int:
     m = json.loads(f.read_text(encoding="utf-8"))
     migrated = migrated_families()
     n = len(m["corpus_fights"])
-    e = sum(1 for it in m["corpus_fights"] if eligible(it, migrated))
-    ea = sum(1 for it in m["agent_runs"] if eligible(it, migrated))
+    e = sum(1 for it in m["corpus_fights"] if eligible(it, migrated, allow_unknown_relics=True))
+    ek = sum(1 for it in m["corpus_fights"] if eligible(it, migrated))
+    ea = sum(1 for it in m["agent_runs"] if eligible(it, migrated, allow_unknown_relics=True))
+    eak = sum(1 for it in m["agent_runs"] if eligible(it, migrated))
     print(f"manifest built {m['built']}: {m['counts']['models']} models, {m['counts']['models_reached_by_any']} reached")
     print(f"migrated families: {migrated or 'none'}")
     print(f"eligible corpus fights {e}/{n} ({share(e, n)}%), agent runs {ea}/{len(m['agent_runs'])}")
+    print(f"eligible with known relics: corpus fights {ek}/{n} ({share(ek, n)}%), agent runs {eak}/{len(m['agent_runs'])}")
     for fid, v in m["families"].items():
         print(f"  {fid} {v['name']:<28} fights {v['corpus_fight_share_pct']:>6}%  decisions {v['agent_decision_share_pct']:>6}%"
               f"{'  migrated' if fid in migrated else ''}")
