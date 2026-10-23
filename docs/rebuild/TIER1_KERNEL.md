@@ -321,8 +321,12 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
     ready; the turn's end runs outside any action). `IActionHost` runs a player action's body. With a switch on,
     `RunEngine.Step` sends a combat step through `QueueStep`: a fresh action is enqueued and drained, its body the old
     step (`StepInner`); an answer to an old screen resumes the gathering action (new id) and its body replays; a
-    replay's restore of the kernel state keeps the resumed id (`Carry`). The old step still checks the win inside
-    itself, so the host's boundary check is empty until F10 moves it.
+    replay's restore of the kernel state keeps the resumed id (`Carry`); the restore also replaces the queue object, so
+    `Drain` reads `KernelState.Queue` again at every action and never holds one across a body. A canceled action does
+    nothing, as in the game: the queue ran no body for it, and the old step is not run in its place (the step returns
+    -1, nothing changed); the same for an executor that is paused (the action waits) and for an answer to a kernel
+    screen (the hook action's resume record ran). The old step still checks the win inside itself, so the host's
+    boundary check is empty until F10 moves it.
   - **Plain-data pauses.** `HookStatus` keeps `PassSnapshot` (the pass's listeners per part built, and the paused
     index), never the cursor; `<Name>Resume` calls `rt.Reopen` (generated), which rebuilds the cursor from one fresh
     listing (handlers and membership) in the snapshot's order: a listener gone is skipped, one added is not visited.
@@ -337,21 +341,39 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
     dispatcher, listener, `HookResume.ResumeSite`, occurrence; left out of the state walk, the core2 writer's) while old
     screens keep their order; the replay defers
     and drains as the first run did. (3) The turn start: `KernelState.TurnStart(ITurnStartFlow)` runs the setup to its
-    pause, AfterSideTurnStart, the orb queue's turn start, then enqueues the flow's hook action (CombatPlayPhaseOnly),
-    the answer, the rest of the setup (`ResumeSetup`), AfterAutoPrePlayPhaseEntered.
-  - **Entry gate.** `RunEngine.BindActiveCombat` binds a combat built outside the engine (OldReanchor's end state, the
-    native run's anchor); OldHookProbe binds its scenario combats to the engine's kernel and `EmuDump kernel-order`
+    pause, AfterSideTurnStart, the orb queue's turn start, then enqueues the flow's hook action (CombatPlayPhaseOnly) and
+    checks the win condition (`ITurnStartFlow.CheckWin`, F10's behaviour, as CombatManager's StartTurn does before the
+    executor is unpaused); only then the answer, the rest of the setup (`ResumeSetup`), AfterAutoPrePlayPhaseEntered and
+    the boundary win check. A death before or during AfterSideTurnStart or the orb start that ends the combat calls
+    `CombatEnded`, which cancels the pending choice: the choice, the rest of the setup and AfterAutoPrePlayPhaseEntered do
+    not run. Test: `ADeathInAfterSideTurnStartEndsTheCombatAndCancelsTheTurnStartsChoice`.
+  - **Entry gate.** `RunEngine.BindActiveCombat` and `BindCombat` bind a combat built outside the engine (the native
+    run's anchor; OldReanchor binds the combat it anchors, right after the anchor); `RunEngine.StepCombat` is the gate of
+    a combat stepped on its own: with no switch it is `CombatEngine.Step`, with one the combat must carry its KernelState
+    (it throws otherwise) and the step goes through the queue as a run's combat step does (the action's body the combat
+    engine's step). OldReanchor's every step (the action, the answers to its screens, the finish of a stopped step) goes
+    through it, so with a switch on (`reanchor --engine core2`) it steps only bound combats and no step skips the queue
+    (`ReanchorKernelGateTests`); OldHookProbe binds its scenario combats to the engine's kernel and `EmuDump kernel-order`
     takes `--engine`; the native run API refuses a switched-on kernel; `RunEngine.Step` throws when a switch is on and
     the combat about to be stepped has no KernelState. A test plays a whole run with a test switch on beside the old
     engine: the same masks, results and HP at every step, a KernelState on every combat step.
   - **G2891c25e0d** (a dead enemy at a mid-fight card selection): the game removes it inside
     `CreatureCmd.KillWithoutCheckingWinCondition` (AfterDeath, a per-listener dispatch that does not wait, then
     `CombatManager.RemoveCreature` and `CombatState.RemoveCreature`), so before any selection that follows in the same
-    action and before an AfterDeath listener's own screen (its hook action runs after the action). The old engine
+    action and before an AfterDeath listener's own screen (its hook action runs after the action). The removal has two
+    conditions, and the kill-site fix must keep both: it needs `ShouldCreatureBeRemovedFromCombatAfterDeath` to say so
+    (the creature's model answers it), and `CombatState.RemoveCreature` is skipped while the monster `IsPerformingMove`
+    (the move's own end removes it). The old engine
     answers and sweeps deaths after the card's effects (`HandleEnemyDeaths` after `CardEffects.Apply`,
     `AnswerDeathsSince` at the play's end), so a selection raised inside the effects stops the step with the corpse
     still in the roster. Test: `ADeadEnemyLeavesTheCombatBeforeAHookActionsScreenOpens`. The fix belongs to the kill
     site's switch (the `MarkDying` mark and a removal inside the kill).
+  - **Plain data in a pause.** `HookStep.Request` (`object?`) and the `HookResume` records are shared by reference when
+    a state is copied (`CopyTo`), so neither holds a live object: `Core2/HookPlain.cs` rejects the game's state types
+    (`CombatState`, `EnemyState`, `CardInstance`, `RunState`, the runtime, `ChoiceCtx`, delegates), any reference type that
+    is not a record, and collections of them; allowed are primitives, strings, enums, structs and records of the same
+    (a member typed `object` or an interface is judged by its value). `HookStep.Paused` checks it in a debug build
+    (`HookPlainTests` in every build).
   - A first family switch still needs: its bridges read into `SPLITS` (all 16 families are one group today); its old
     sites gated with `Kernel.If`, the marks placed, and `IKernelScreen` requests for its screens; F10 moving the win
     check to the host and calling `CombatEnded` at the game's point; the core2 writer (K5) writing the queue and the two
