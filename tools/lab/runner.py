@@ -46,9 +46,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True  # before the runner's own imports: no __pycache__ in the checkout it only reads
 
-from tools.lab import guards, mix, plans, prune, winsys  # noqa: E402
+from tools.lab import guards, jobs, mix, plans, prune, winsys  # noqa: E402
 
-JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants")
+JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants", *jobs.NEW_KINDS)
 ROTATION = ("fights", "fights", "probes", "fights", "mutation", "fights", "invariants")  # after presort, by value
 DEFAULTS = {
     "lab": "D:/spireline/referee/lab", "tree": "D:/spireline/fork/wt-lab", "game": "D:/spireline/referee/game-lab",
@@ -372,6 +372,8 @@ class Runner:
         if job == "runs":
             return {"batches": max(1, math.ceil(a.runs / max(1, a.run_batch))), "run_batch": a.run_batch, "start": st["next_run_start"],
                     "procs": a.run_procs, "stop_after_act": a.run_stop_act, "strategy": "whole-runs"}
+        if job in jobs.NEW_KINDS:
+            return jobs.params_for(job, self.lab.root, jobs.load_config(self.lab.root)[job])
         if job == "probes":
             return {"probe_ids": plans.probe_ids(Path(a.backlog_dir))}
         if job == "mutation":
@@ -434,6 +436,10 @@ class Runner:
             if why is not None:
                 self.log(f"{a.once}: not runnable ({why})")
             return (a.once, None, "--once") if why is None else ("", None, why)
+        job = self.ladder_top(sha)
+        if job:
+            self.next_strategy = None
+            return job, None, f"ladder: {job} (priority {jobs.PRIORITY[job]})"
         for k in range(len(ROTATION)):
             job = ROTATION[(st["rotation"] + k) % len(ROTATION)]
             strategy = None
@@ -449,7 +455,38 @@ class Runner:
                 self.next_strategy = strategy if job == "fights" else None
                 return job, None, "rotation" + (f", {strategy}" if strategy else "")
             self.log(f"{job}: not runnable ({why})")
+        if self.kind_ready("selfplay", sha):  # the filler: nothing above it could run
+            self.next_strategy = None
+            return "selfplay", None, "ladder: selfplay (filler, nothing else ready)"
         return "", None, "no job is runnable"
+
+    def kind_ready(self, kind: str, sha: str) -> bool:
+        why = self.unavailable(kind, sha)
+        if why is not None:
+            self.log(f"{kind}: not runnable ({why})")
+        return why is None
+
+    def ladder_top(self, sha: str) -> str:
+        """The agent-era kinds that outrank the fights rotation (docs/PLAN.md section 7), highest priority first: score-real (2),
+        train (3), selfplay when its configured share of the CPU time is not yet spent (6, `share` in LAB/jobs.json), the
+        benches (7, nightly, the lab otherwise idle: a running job was resumed before this point and a ready score-real or
+        train came first). Presort (1) is decided before, aimed fights (4), runs and rank (5) and the rest (7) by the rotation and the
+        mix. A kind that is off or not ready is passed over quietly (its reason is only logged when it was due)."""
+        cfg = jobs.load_config(self.lab.root)
+        for kind in ("score-real", "train"):
+            if jobs.unready(kind, self.lab.root, cfg[kind]) is None and self.kind_ready(kind, sha):
+                return kind
+        share = float(cfg["selfplay"].get("share") or 0)
+        if share > 0 and cfg["selfplay"].get("enabled"):
+            spent = self.state.get("strategy_cpu", {})
+            total = sum(float(v) for v in spent.values()) or 0.0
+            if float(spent.get("selfplay", 0.0)) < share * total or total == 0.0:
+                if self.kind_ready("selfplay", sha):
+                    return "selfplay"
+        for kind in jobs.BENCHES:
+            if jobs.unready(kind, self.lab.root, cfg[kind]) is None and self.kind_ready(kind, sha):
+                return kind
+        return ""
 
     def pick_fights(self, sha: str) -> tuple[str, str | None]:
         """(job type, strategy) for a fights slot: the available strategy furthest below its share of CPU time in LAB/mix.json;
@@ -473,6 +510,12 @@ class Runner:
         until = self.state["backoff"].get(strategy or job, 0)  # a strategy that keeps failing backs off alone
         if time.time() < until:
             return f"backing off after repeated failures until {utc(until)}"
+        if job in jobs.NEW_KINDS:  # the input and the switch first (plans never refuse a job that is resumed)
+            why = jobs.unready(job, self.lab.root, jobs.load_config(self.lab.root)[job])
+            if why is not None:
+                return why
+        elif job in ("fights", "runs") and jobs.score_active(self.lab.root):
+            return "a score-real window is open (LAB/score/active)"
         try:
             params = self.default_params(job)
             if strategy:

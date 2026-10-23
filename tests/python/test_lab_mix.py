@@ -168,7 +168,7 @@ class YieldTest(unittest.TestCase):
     def test_an_older_file_with_fewer_columns_is_widened_and_a_foreign_one_is_kept_aside(self):
         lab = self.tmp / "lab"
         lab.mkdir()
-        old_cols = mix.YIELD_COLUMNS[:-1]
+        old_cols = mix.YIELD_COLUMNS[: mix.YIELD_COLUMNS.index("screen_groups")]  # the file before screen_groups (and the agent columns)
         (lab / "yield.tsv").write_text("\t".join(old_cols) + "\n" + "\t".join(str(i) for i in range(len(old_cols))) + "\n", encoding="utf-8")
         mix.append_yield(lab, {c: "x" for c in mix.YIELD_COLUMNS})
         rows = mix.read_yield(lab)
