@@ -15,8 +15,8 @@ _LIB_NAMES = {
     "darwin": "Sts2Emulator.dylib",
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
-_REQUIRED_NATIVE_API_VERSION = 35
-_REQUIRED_RUN_NATIVE_API_VERSION = 22
+_REQUIRED_NATIVE_API_VERSION = 36
+_REQUIRED_RUN_NATIVE_API_VERSION = 23
 
 
 def _repo_root() -> Path:
@@ -629,6 +629,10 @@ _lib.Sts2Run_DebugSetPlayer.argtypes = [
 _lib.Sts2Run_GetPhase.restype = ctypes.c_int
 _lib.Sts2Run_GetPhase.argtypes = [ctypes.c_int]
 
+_lib.Sts2_AiStateAssumed.restype = ctypes.c_int
+_lib.Sts2_AiStateAssumed.argtypes = [ctypes.c_int]
+_lib.Sts2Run_AiStateAssumed.restype = ctypes.c_int
+_lib.Sts2Run_AiStateAssumed.argtypes = [ctypes.c_int]
 _lib.Sts2Run_PlayerWon.restype = ctypes.c_int
 _lib.Sts2Run_PlayerWon.argtypes = [ctypes.c_int]
 
@@ -1493,6 +1497,16 @@ def run_state_list(handle: int, list_id: int, capacity: int = 256) -> tuple[int,
 
 def run_phase(handle: int) -> int:
     return int(_lib.Sts2Run_GetPhase(handle))
+
+
+def ai_state_assumed(handle: int) -> bool:
+    """True when this combat fork kept the true hidden AI state (DESIGN.md 1.1)."""
+    return bool(_lib.Sts2_AiStateAssumed(handle))
+
+
+def run_ai_state_assumed(handle: int) -> bool:
+    """True when the run's fight is a fork that kept the true hidden AI state."""
+    return bool(_lib.Sts2Run_AiStateAssumed(handle))
 
 
 def run_player_won(handle: int) -> bool:

@@ -213,6 +213,10 @@ def sample_extra_cards(seed: int, low: int, high: int, character: str) -> list[i
 class Combat:
     """One native combat handle, forkable through `Sts2_Clone`."""
 
+    # True on a resampled fork that kept the true hidden AI state (DESIGN.md 1.1's
+    # `ai_state_assumed`), and on a search root once any of its forks did.
+    ai_state_assumed = False
+
     def __init__(self, handle: int):
         if handle < 0:
             raise RuntimeError("combat handle pool is full")
@@ -296,6 +300,7 @@ class Combat:
             child.obs,
         )
         child.done = self.done
+        child.ai_state_assumed = native.ai_state_assumed(child.handle)
         return child
 
     def legal(self) -> list[int]:

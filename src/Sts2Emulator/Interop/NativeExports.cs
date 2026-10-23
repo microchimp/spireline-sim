@@ -83,7 +83,9 @@ public static class NativeExports
     //      loaded step's replay is held to it. A library from before refuses the field, and refused
     //      to write or load a valid document whenever the loader's order put I Am Invincible on
     //      top where it had not played, or Foregone Conclusion had picked it.
-    public const int NATIVE_API_VERSION = 35;
+    // v36: Sts2_AiStateAssumed and Sts2Run_AiStateAssumed say whether a resampled fork kept the
+    //      true hidden AI state (DESIGN.md 1.1's ai_state_assumed).
+    public const int NATIVE_API_VERSION = 36;
 
     /// <summary>
     /// The plain resets' deck: the start of a run at the default level, from the one
@@ -121,6 +123,7 @@ public static class NativeExports
             if (resampleSeed is not null)
             {
                 State.ReshuffleUnknownDrawOrder(State.ShuffleRng ?? Rng);
+                IntentParticles.Resample(State, new Random(resampleSeed.Value));
             }
         }
 
@@ -1157,6 +1160,14 @@ public static class NativeExports
         var combat = _pool[handle]!;
         return StepOrRefuse(combat, action, targetEnemyIdx, obsBuf, rewardOut);
     }
+
+    [UnmanagedCallersOnly(EntryPoint = "Sts2_AiStateAssumed")]
+    public static int Sts2_AiStateAssumed(int handle) =>
+        _pool[handle]!.State.AiStateAssumed ? 1 : 0;
+
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_AiStateAssumed")]
+    public static int Sts2Run_AiStateAssumed(int handle) =>
+        RunNativeExports.Sts2Run_AiStateAssumed(handle);
 
     [UnmanagedCallersOnly(EntryPoint = "Sts2_PlayerWon")]
     public static int Sts2_PlayerWon(int handle)

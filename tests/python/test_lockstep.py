@@ -93,6 +93,31 @@ class DivergenceTests(unittest.TestCase):
         self.assertIsNone(rec["reanchor_plan"])  # a card reward is neither a fight start nor a room entry
         self.assertIsNotNone(ls.lost)
 
+    def test_a_search_that_assumed_enemy_moves_marks_its_decision_record(self):
+        class AssumingEmu(FakeEmu):
+            ai_state_assumed = True
+
+        a, b = obs(hp=80), obs(hp=70)
+        ls, _ = self.run_stream([msg("rest", a), msg("card_reward", obs(hp=80, floor=2))],
+                                AssumingEmu([view_of(a), view_of(b)]))
+        ls.finish({})
+        rec = ls.log.records[0]
+        self.assertEqual(rec["decision"], 1)
+        self.assertIs(rec["ai_state_assumed"], False)  # decision 1 was never searched: it diverged first
+        self.assertEqual(ls.assumed, {0})
+
+    def test_a_record_of_a_searched_decision_says_whether_the_ai_state_was_assumed(self):
+        class AssumingEmu(FakeEmu):
+            ai_state_assumed = True
+
+            def choose(self, kind, labels, msg):
+                raise RuntimeError("x")  # the search fails after it assumed: the loss record is of that decision
+
+        a = obs()
+        ls, _ = self.run_stream([msg("rest", a)], AssumingEmu([view_of(a)]))
+        ls.finish({})
+        self.assertEqual(ls.log.records[0]["ai_state_assumed"], True)
+
     def test_later_decisions_after_the_loss_are_scored_not_ranked(self):
         a = obs()
         ls, picks = self.run_stream([msg("map", a), msg("rest", a), msg("rest", a)], FakeEmu([view_of(obs(hp=1))]))
@@ -417,66 +442,6 @@ class ReanchorReasonTests(unittest.TestCase):
         ls.decide(msg("map", a))
         ls.decide(msg("map", a))
         self.assertEqual(ls.stats["reanchor_fail_reasons"], {"room_entry:in_fight": 2})
-
-
-class LeakTests(unittest.TestCase):
-    """DESIGN.md 7.6 on the emulator: what a resampled clone hides."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.fights = [leakprobes.play_to(seed, lambda s, d: d is None and s.phase == 0) for seed in ("LK1", "LK2", "LK3", "LK4")]
-
-    @classmethod
-    def tearDownClass(cls):
-        for s in cls.fights:
-            s.close()
-
-    @unittest.expectedFailure  # KNOWN LEAK (A1 finding): the clone keeps the act's materialised encounter sequence
-    def test_L2_resampled_clones_entering_one_monster_node_differ_in_encounter(self):
-        s = leakprobes.play_to("L2A", lambda s, d: d is not None and d.type == "map")
-        try:
-            ids = leakprobes.encounter_spread(s, 200)
-        finally:
-            s.close()
-        self.assertGreater(len(ids), 1, f"every resampled clone enters encounter {ids}: the encounter is not hidden")
-
-    def test_L3_resampled_clones_differ_in_reward_contents(self):
-        cards = leakprobes.reward_spread(self.fights[0], 200)
-        self.assertGreater(len(cards), 1, "every resampled clone offers the same card reward")
-
-    @unittest.expectedFailure  # KNOWN LEAK (A1 finding): the clone does not re-roll an enemy's chosen current move
-    def test_L8_resampled_forks_vary_some_current_move(self):
-        spreads = leakprobes.move_spread(self.fights[0], 200)
-        varied = {k: v for k, v in spreads.items() if len({m[0] for m in v}) > 1}
-        self.assertTrue(varied, f"no enemy's current move varies across 200 resampled forks: {spreads}")
-
-    def test_clairvoyance_resampling_on_and_off_are_not_value_equivalent(self):
-        diffs = []
-        for s in self.fights:
-            on = leakprobes.root_search(s, resample=True)
-            off = leakprobes.root_search(s, resample=False)
-            v_on = {(c.action, c.target): c.value_mean for c in on.children}
-            v_off = {(c.action, c.target): c.value_mean for c in off.children}
-            diffs.append(max(abs(v_on[k] - v_off[k]) for k in v_on.keys() & v_off.keys()))
-        self.assertGreater(max(diffs), 0.5, f"values equal with and without resampling: {diffs}")
-
-    def test_clairvoyance_choice_does_not_depend_on_the_hidden_draw_order(self):
-        s = self.fights[1]
-        dist = []
-        for root_seed in (None, 11, 12, 13):
-            picks = []
-            for search_seed in (1, 2, 3, 4):
-                r = leakprobes.root_search(s, resample=True, seed=search_seed, root_seed=root_seed)
-                picks.append((r.best.action, r.best.target))
-            dist.append(sorted(picks))
-        modal = [max(set(d), key=d.count) for d in dist]
-        share = [d.count(m) / len(d) for d, m in zip(dist, modal)]
-        self.assertEqual(len(set(modal)), 1, f"modal choice moves with the hidden order: {dist}")
-        self.assertGreaterEqual(min(share), 0.5, f"decision distribution moves with the hidden order: {dist}")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class AgentSeedTests(unittest.TestCase):

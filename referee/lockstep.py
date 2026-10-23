@@ -159,6 +159,7 @@ class Lockstep:
         self.log = DivergenceLog()
         self.lost: str | None = None if emu is not None else "no_emulator"
         self.n = 0
+        self.assumed: set[int] = set()  # decisions whose search saw enemy moves it could not re-roll
         self.prev_kind: str | None = None
         self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
                       "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
@@ -176,6 +177,8 @@ class Lockstep:
                 choice = self.emu.choose(kind, labels, msg)
             except Exception as e:  # noqa: BLE001 -- a search failure suspends the lockstep, not the run
                 self._lose(i, f"choose_error:{type(e).__name__}:{e}"[:200], kind=kind, msg=msg)
+        if ranked and getattr(self.emu, "ai_state_assumed", False):
+            self.assumed.add(i)
         if choice is None:
             choice = self.fallback(msg)
         if self.lost is None and self.emu is not None:
@@ -198,6 +201,7 @@ class Lockstep:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
         for r in self.log.records:
             r["run"], r["agent_seed"], r["outcome"] = self.seed, self.agent_seed, outcome
+            r["ai_state_assumed"] = r["decision"] in self.assumed
 
     def _lose(self, i: int, reason: str, kind: str | None = None, msg: dict | None = None,
               rec: dict | None = None) -> None:
@@ -671,12 +675,14 @@ class EmuLock:
         return None
 
     def _choose_combat(self, kind: str, labels: list, msg: dict) -> int | None:
+        self.ai_state_assumed = False
         root = self.s.combat(fork_combat=True).combat_fork(None)
         try:
             res = self.ls.search_live(root.handle, max_sims=self.sims, min_child_sims=2, confirm_pairs=0,
                                       time_budget_s=120.0, seed=int(self.rng.integers(1 << 30)))
         finally:
             root.close() if hasattr(root, "close") else self.native.destroy(root.handle)
+        self.ai_state_assumed = bool(res.ai_state_assumed)
         if kind != "combat":
             return next((i for i, lab in enumerate(labels) if self._select_action(lab) == res.best.action), None)
         want = self._key(res.best.action, res.best.target)

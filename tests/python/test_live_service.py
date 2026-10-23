@@ -92,6 +92,7 @@ ANALYSIS_FIELDS = {
     "elapsed_s",
     "budget_exhausted",
     "select_mapping_failures",
+    "ai_state_assumed",
 }
 HEALTH_FIELDS = {
     "service_version",

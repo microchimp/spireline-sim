@@ -2174,7 +2174,195 @@ public static class RunMapGenerator
             (a, b) => a.Col != b.Col ? a.Col.CompareTo(b.Col) : a.Row.CompareTo(b.Row)
         );
 
+    /// <summary>
+    /// Redraw every fight the run has not entered yet, for a resampled clone: the rest of the
+    /// current act's normal and elite sequences and the whole of every later act's. Nothing
+    /// the player has seen moves -- the fights already entered stay where they are, and the
+    /// bosses, which the map shows, are kept.
+    /// </summary>
+    /// <remarks>
+    /// The draw is the generator's own (<see cref="GrabWithoutRepeatingTags" /> off the same
+    /// pools, a bag that refills when empty, no repeated tag), continued from the state the
+    /// fights already entered leave it in: those are taken out of the bag the way the draw
+    /// took them, so what follows is distributed as the generator would deal it given what
+    /// the player has been through. The map's offered encounters are rewritten to match,
+    /// because entering a node reads them.
+    /// </remarks>
+    internal static void ResampleUnenteredEncounters(RunState state, GameRng rng)
+    {
+        for (int index = state.CurrentActIndex; index < state.Acts.Count; index++)
+        {
+            var act = state.Acts[index];
+            bool current = index == state.CurrentActIndex;
+            var (weakCount, _) = RunConstants.ActRoomCounts(act.Act);
+            int[] normals = ContinueEncounterSequence(
+                act.NormalEncounters,
+                current ? state.NormalEncountersVisited : 0,
+                [(weakCount, WeakPoolFor(act.Act)), (int.MaxValue, NormalPoolFor(act.Act))],
+                rng
+            );
+            int[] elites = ContinueEncounterSequence(
+                act.EliteEncounters,
+                current ? state.EliteEncountersVisited : 0,
+                [(int.MaxValue, ElitePoolFor(act.Act))],
+                rng
+            );
+            state.Acts[index] = act with { NormalEncounters = normals, EliteEncounters = elites };
+        }
+
+        AssignFightEncounterIds(state);
+        for (int i = 0; i < state.MapOptionCoords.Length; i++)
+        {
+            if (state.MapOptionCoords[i] is null)
+            {
+                continue;
+            }
+
+            state.MapChoices[i] = state.MapNodeTypes[i] switch
+            {
+                RunConstants.NodeNormal => state.NormalEncounterSequence[
+                    state.NormalEncountersVisited % state.NormalEncounterSequence.Length
+                ],
+                RunConstants.NodeElite => state.EliteEncounterSequence[
+                    state.EliteEncountersVisited % state.EliteEncounterSequence.Length
+                ],
+                _ => state.MapChoices[i],
+            };
+        }
+    }
+
+    /// <summary>
+    /// Redeal the rest of what the run generator dealt at the start and the player has not been
+    /// shown (DESIGN.md 1.1, 3.2 and 7.6 L3): the current act's events from the cursor on, and for
+    /// every later act its events, its boss (and the second boss of A10's last act), and the
+    /// Ancient it opens on. Each comes from the generator's own pool and constraint (a shuffle of
+    /// the event pool, a pick off the boss pool with the discovery override, a pick off the act's
+    /// ancients plus the shared subset it was dealt), run off <paramref name="rng" /> instead of the
+    /// UpFront stream. The current act's boss, its Ancient and every event the cursor has passed
+    /// are on the screen or behind it and stay.
+    /// </summary>
+    internal static void ResampleUnseenActContents(RunState state, GameRng rng)
+    {
+        var unlocks = state.Unlocks;
+        int current = state.CurrentActIndex;
+        var seenAncients = state.Acts.Take(current + 1).Select(a => a.Ancient).ToHashSet();
+        var shared = SharedAncientPool
+            .Where(ancient =>
+                (ancient != RunConstants.AncientDarv
+                    || unlocks.IsEpochRevealed(UnlockState.Epochs.Darv))
+                && !seenAncients.Contains(ancient)
+            )
+            .ToList();
+
+        for (int index = current; index < state.Acts.Count; index++)
+        {
+            var act = state.Acts[index];
+            int[] fresh = GenerateEventSequence(act.Act, rng, unlocks);
+            if (index == current)
+            {
+                int keep = Math.Min(state.EventSequenceIndex, act.Events.Length);
+                int[] prefix = act.Events[..keep];
+                state.Acts[index] = act with
+                {
+                    Events = [.. prefix, .. fresh.Where(e => !prefix.Contains(e))],
+                };
+                continue;
+            }
+
+            int[] bossPool = BossPoolFor(act.Act);
+            int boss = bossPool[(int)(rng.NextDouble() * bossPool.Length)];
+            foreach (int undiscovered in RunConstants.BossDiscoveryOrder(act.Act))
+            {
+                if (!unlocks.HasSeenEncounter(undiscovered))
+                {
+                    boss = undiscovered;
+                    break;
+                }
+            }
+
+            int second = 0;
+            if (act.SecondBossEncounterId != 0)
+            {
+                second = rng.NextItem([.. bossPool.Where(b => b != boss)]);
+            }
+
+            int take = rng.NextInt(shared.Count + 1);
+            string[] subset = [.. shared.Take(take)];
+            shared = [.. shared.Skip(take)];
+            string[] ancients =
+            [
+                .. RunConstants.AncientsFor(act.Act).Where(a => IsAncientUnlocked(a, unlocks)),
+                .. subset,
+            ];
+            state.Acts[index] = act with
+            {
+                Events = fresh,
+                BossEncounterId = boss,
+                SecondBossEncounterId = second,
+                Ancient = ancients[(int)(rng.NextDouble() * ancients.Length)],
+            };
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="sequence" /> with its first <paramref name="seen" /> entries kept and the
+    /// rest dealt afresh. <paramref name="phases" /> are the generator's pools in order, each
+    /// for the number of slots it fills (the weak pool first, then the normal one).
+    /// </summary>
+    private static int[] ContinueEncounterSequence(
+        int[] sequence,
+        int seen,
+        (int Count, int[] Pool)[] phases,
+        GameRng rng
+    )
+    {
+        if (seen >= sequence.Length)
+        {
+            return sequence;
+        }
+
+        var result = new int[sequence.Length];
+        int? last = null;
+        int slot = 0;
+        foreach (var (count, pool) in phases)
+        {
+            var bag = new List<int>();
+            for (int k = 0; k < count && slot < sequence.Length; k++, slot++)
+            {
+                if (bag.Count == 0)
+                {
+                    bag = [.. pool];
+                }
+
+                int enc;
+                if (slot < seen)
+                {
+                    enc = sequence[slot];
+                    bag.Remove(enc);
+                }
+                else
+                {
+                    enc = GrabWithoutRepeatingTags(bag, last, rng);
+                }
+
+                result[slot] = enc;
+                last = enc;
+            }
+        }
+
+        return result;
+    }
+
     private static void AssignEncounterIds(RunState state)
+    {
+        AssignFightEncounterIds(state);
+        foreach (var node in state.MapNodes.Values.Where(n => n.NodeType == RunConstants.NodeBoss))
+        {
+            node.EncounterId = state.BossEncounterId;
+        }
+    }
+
+    private static void AssignFightEncounterIds(RunState state)
     {
         foreach (
             var group in state
@@ -2201,10 +2389,6 @@ public static class RunMapGenerator
             {
                 node.EncounterId = state.EliteEncounterSequence[Math.Max(0, index)];
             }
-        }
-        foreach (var node in state.MapNodes.Values.Where(n => n.NodeType == RunConstants.NodeBoss))
-        {
-            node.EncounterId = state.BossEncounterId;
         }
     }
 

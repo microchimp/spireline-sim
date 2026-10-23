@@ -2249,7 +2249,8 @@ public static class CombatEngine
                 state.Turn,
                 rng,
                 state.AiRng,
-                state.AscensionLevel
+                state.AscensionLevel,
+                state
             );
         }
 

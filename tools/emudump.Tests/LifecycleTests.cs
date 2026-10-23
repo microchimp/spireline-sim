@@ -68,6 +68,8 @@ public class LifecycleTests(ITestOutputHelper output)
     const string Counter = "a per-turn or per-combat counter or flag the game's snapshot does not show, carried (Reanchor.cs header)";
     const string TurnStartHeld = "a turn start stopped at a relic's screen: where it goes on, carried with the open selection it waits on (PendingSelection*)";
     const string StepLocal = "in-step bookkeeping, idle when a step has returned with the fight going on (Transient_fields_are_idle_after_every_step), carried";
+    const string IntentRoll = "the last intent pass (IntentParticles), what a resampled fork rolls the current moves again from: never changed once made, so Clone and CopyTo share its contents; no game state or document has it, so a dump, a load and a re-anchor leave it, and a fork whose moves no longer match the pass keeps them (ResampleLeakTests)";
+    const string Assumed = "ai_state_assumed (DESIGN.md 1.1): set only on a fork whose resample kept the true hidden AI state (IntentParticles.Resample), carried by Clone and CopyTo; no game state or document has it, so a dump, a load and a re-anchor leave it, and a reset clears it (ResampleLeakTests)";
     const string SharedStop = "a stopped step's record (HookChoiceReplay) is never changed once made, so Clone and CopyTo share it by design: a replay copies Before and RngBefore into the combat, PutBack copies the streams and the whole copy out, and CardInstance is a value type (StoppedStepLifecycleTests.CloneAndCopyToShareTheStoppedStep)";
     const string CheckedStop = "a stopped step loads only when its replay from the document's public start reaches its screen the way the step went (CombatEngine.CheckStoppedStep, run by Read and so by Write), and a stamped record is no real stop, so Write refuses it; real stops round-trip whole in StoppedStepDocumentTests (ALoadedStopWritesBackTheSameDocument, TheRecordComesBackFromTheDocument). The agent's document writes the public part only: no stream, no answering copy's hidden state, the start's unseen cards a multiset, the cards taken and the screens reached as the player saw them; the save document adds the true world (WriteSave; StoppedStepLifecycleTests)";
 
@@ -80,6 +82,7 @@ public class LifecycleTests(ITestOutputHelper output)
     {
         ["clone"] = new()
         {
+            ["CombatState.LastIntentRoll*"] = IntentRoll,
             ["RunState.Rng"] = SeedDerived,
             ["RunState.Rng.Seed"] = SeedDerived,
             ["RunState.Rng.StringSeed"] = SeedDerived,
@@ -89,6 +92,7 @@ public class LifecycleTests(ITestOutputHelper output)
         },
         ["copyto"] = new()
         {
+            ["CombatState.LastIntentRoll*"] = IntentRoll,
             ["CombatState.PendingSelection.Replay*"] = SharedStop,
         },
         ["reset"] = new()
@@ -100,6 +104,8 @@ public class LifecycleTests(ITestOutputHelper output)
         },
         ["dump"] = new()
         {
+            ["CombatState.LastIntentRoll*"] = IntentRoll,
+            ["CombatState.AiStateAssumed"] = Assumed,
             ["CombatState.Unlocks"] = Profile,
             ["CombatState.TargetEnemyIndex"] = StepArgument,
             ["CombatState.AutoPlaying"] = Idle,
@@ -114,6 +120,8 @@ public class LifecycleTests(ITestOutputHelper output)
         },
         ["load"] = new()
         {
+            ["CombatState.LastIntentRoll*"] = IntentRoll,
+            ["CombatState.AiStateAssumed"] = Assumed,
             ["CombatState.Unlocks"] = Profile,
             ["CombatState.ShuffleRng"] = NoRng,
             ["CombatState.TargetRng"] = NoRng,
@@ -142,6 +150,8 @@ public class LifecycleTests(ITestOutputHelper output)
         },
         ["reanchor"] = new()
         {
+            ["CombatState.LastIntentRoll*"] = IntentRoll,
+            ["CombatState.AiStateAssumed"] = Assumed,
             ["CombatState.AscensionLevel"] = Setup,
             ["CombatState.Character"] = Setup,
             ["CombatState.Unlocks"] = Profile,

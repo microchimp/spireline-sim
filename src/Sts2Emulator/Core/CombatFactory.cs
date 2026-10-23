@@ -388,6 +388,8 @@ public static class CombatFactory
         // Preserve an AiRng the caller set (the direct combat env wires
         // GameRng(seed,"monster_ai") there); only override when one is passed in.
         state.AiRng = aiRng ?? state.AiRng;
+        // A fresh fight is no fork that kept the true AI state, whatever the handle held before.
+        state.AiStateAssumed = false;
 
         state.DrawPile = deck.ToArray().ToList();
 
@@ -415,7 +417,7 @@ public static class CombatFactory
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Surrounded, Run.RunConstants.FacingRight);
         }
 
-        EnemyAI.ChooseIntents(state.Enemies, state.Turn, rng, state.AiRng, state.AscensionLevel);
+        EnemyAI.ChooseIntents(state.Enemies, state.Turn, rng, state.AiRng, state.AscensionLevel, state);
         EnemyAI.UpdateSecondaryIntents(state.Enemies);
 
         // Shuffle draw pile (skip if caller pre-shuffled it) and deal opening hand of 5.

@@ -675,6 +675,9 @@ def _analysis(
         "elapsed_s": result.elapsed_s,
         "budget_exhausted": result.budget_exhausted,
         "select_mapping_failures": unmapped,
+        # A resampled fork kept the true hidden enemy moves (DESIGN.md 1.1): the search
+        # was not blind to them.
+        "ai_state_assumed": bool(result.ai_state_assumed),
     }
 
 

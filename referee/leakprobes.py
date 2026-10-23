@@ -93,7 +93,10 @@ def reward_spread(session, n: int = 200) -> set:
 
 
 def move_spread(session, n: int = 200) -> dict:
-    """L8: per enemy, the distinct (current move index, intent type, magnitude) over n resampled forks of the fight."""
+    """L8: per enemy, the distinct (current move, displayed intent) over n resampled forks of the fight.
+
+    The current move is what the intent pass writes (`move_index`, `last_move`, `last_branch`): `move_index`
+    alone counts the moves taken, which the player has watched, so it does not change behind an intent."""
     from sts2_gym import native  # noqa: PLC0415
 
     root = session.combat(fork_combat=True).combat_fork(None)
@@ -101,9 +104,12 @@ def move_spread(session, n: int = 200) -> dict:
     try:
         for k in range(n):
             w = root.fork(3000 + k)
-            for e in native.get_state_json(w.handle)["enemies"]:
-                out.setdefault((e["def_id"], e["slot"]), set()).add(
-                    (e["ai"]["move_index"], e["intent"]["type"], e["intent"]["magnitude"]))
+            for i, e in enumerate(native.get_state_json(w.handle)["enemies"]):
+                ai, intent = e["ai"], e["intent"]
+                shown = (intent["type"], intent["carries_damage"]) + (  # 0 is Attack
+                    (intent["magnitude"], intent["hits"]) if intent["type"] == 0 or intent["carries_damage"] else ())
+                out.setdefault((i, e["def_id"]), set()).add(
+                    ((ai["move_index"], ai["last_move"], ai["last_branch"]), shown))
             native.destroy(w.handle)
     finally:
         native.destroy(root.handle)

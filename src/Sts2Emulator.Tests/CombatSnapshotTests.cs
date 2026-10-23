@@ -163,6 +163,11 @@ public class CombatSnapshotTests
         nameof(CombatState.ExecutedThisEnemyTurn),
         // Always true while the player is to act; the loader sets it.
         nameof(CombatState.PlayerTurn),
+        // The last intent pass, for a resampled fork to roll again; a document carries the
+        // intents themselves, and a fork of a loaded fight keeps them.
+        nameof(CombatState.LastIntentRoll),
+        // Only a fork carries it: a fork that kept the true hidden AI state (ai_state_assumed).
+        nameof(CombatState.AiStateAssumed),
     ];
 
     /// <summary>The streams, which a load seeds from its own seed rather than reading.</summary>
