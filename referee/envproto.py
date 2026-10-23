@@ -434,13 +434,15 @@ def smoke(a) -> int:
 
 
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
-                agent_seed: int = 0, run_ids: list | None = None) -> None:
+                agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0) -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py)."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
     env = None
     restarts = 0
     for n_seed, seed in enumerate(seeds):
+        if stop_at and time.time() > stop_at:  # the block's time limit: no new run; a worker's seeds go in order, so the
+            break  # runs done are a prefix of each worker's share and stay paired with the emulator's
         run_ix = run_ids[n_seed] if run_ids else n_seed
         if env is None:
             try:
@@ -455,7 +457,7 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                                  agent_seed=[agent_seed, run_ix])
             ev = {"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
-                  "agent_seed": ls.agent_seed}
+                  "agent_seed": ls.agent_seed, "assumed": len(ls.assumed)}
             if m.get("stale"):
                 q.put(ev)
                 q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
@@ -498,11 +500,16 @@ def play(a) -> int:
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     seeds = [f"A1S{i:04d}" for i in range(a.runs)]
+    if a.seeds_file:  # a committed seed block (rl/gen0.py): the first --runs of it, in order
+        doc = json.loads(Path(a.seeds_file).read_text(encoding="utf-8"))
+        seeds = (doc["seeds"] if isinstance(doc, dict) else doc)[: a.runs]
     agent_seed = a.agent_seed if a.agent_seed is not None else int.from_bytes(os.urandom(6), "big")  # not a game seed
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
+    stop_at = time.time() + a.stop_after_h * 3600 if a.stop_after_h else 0.0
+    live = open(out / "runs.jsonl", "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, list(range(a.runs))[w::a.procs]))
+                                       agent_seed, list(range(a.runs))[w::a.procs], stop_at))
              for w in range(a.procs)]
     t0 = time.time()
     for p in procs:
@@ -521,10 +528,13 @@ def play(a) -> int:
             nets |= set(e["conns"])
         else:
             events.append(e)
+            live.write(json.dumps(e) + chr(10))
+            live.flush()
             print(json.dumps({k: v for k, v in e.items() if k != "divergences"})[:300], flush=True)
     for p in procs:
         p.join(30)
     wall = time.time() - t0
+    live.close()
     (out / "runs.jsonl").write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
     ends = [e for e in events if e["ev"] == "end"]
     dec = sum(e["stats"]["decisions"] for e in ends)
@@ -533,7 +543,7 @@ def play(a) -> int:
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
-    summary = {"agent_seed": agent_seed, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+    summary = {"agent_seed": agent_seed, "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / wall, 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -584,6 +594,8 @@ def main() -> int:
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--buff", type=int, default=0, help="record/replay: buff_max_hp, so random play reaches later floors")
     ap.add_argument("--agent", choices=["play"], default="play", help="play: lockstep PLAY agent (mode play)")
+    ap.add_argument("--stop-after-h", type=float, default=0.0, help="play: start no new run after this many hours (0: no limit)")
+    ap.add_argument("--seeds-file", default=None, help="play: JSON seed block (default: A1S0000...)")
     ap.add_argument("--sims", type=int, default=60)
     ap.add_argument("--agent-seed", type=int, default=None, help="play: the agent's own seed (default: random, recorded); never derived from a game seed")
     ap.add_argument("--ascension", type=int, default=10)
