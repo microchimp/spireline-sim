@@ -335,7 +335,7 @@ static class OldReanchor
 
     static readonly string[] Observed = ["PlayerHp", "PlayerMaxHp", "PlayerBlock", "Energy", "Turn"];
 
-    static void GoStale(CombatState q, CombatState start, IReadOnlySet<string> groups)
+    internal static void GoStale(CombatState q, CombatState start, IReadOnlySet<string> groups)
     {
         bool all = groups.Contains("all");
         if (all || groups.Contains("enemy"))
