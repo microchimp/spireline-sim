@@ -16,7 +16,7 @@ _LIB_NAMES = {
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
 _REQUIRED_NATIVE_API_VERSION = 36
-_REQUIRED_RUN_NATIVE_API_VERSION = 23
+_REQUIRED_RUN_NATIVE_API_VERSION = 24
 
 
 def _repo_root() -> Path:
@@ -622,6 +622,18 @@ _lib.Sts2Run_DebugSetPlayer.argtypes = [
     ctypes.c_int,
     ctypes.POINTER(ctypes.c_int),
     ctypes.c_int,
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_int),
+]
+
+_lib.Sts2Run_SetAnchorTables.restype = ctypes.c_int
+_lib.Sts2Run_SetAnchorTables.argtypes = [ctypes.c_char_p, ctypes.c_int]
+_lib.Sts2Run_ReanchorFight.restype = ctypes.c_int
+_lib.Sts2Run_ReanchorFight.argtypes = [
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.c_int,
+    ctypes.c_char_p,
     ctypes.c_int,
     ctypes.POINTER(ctypes.c_int),
 ]
@@ -1681,6 +1693,52 @@ def run_debug_set_player(
     )
     if status != 0:
         raise RuntimeError("Sts2Run_DebugSetPlayer failed")
+
+
+_anchor_tables_set = False
+
+
+def run_set_anchor_tables(id_map: dict | None = None, aliases: dict | None = None) -> None:
+    """Hand the library the game's id tables its fight loader reads a record through (it reads no file).
+
+    Once per process is enough; `run_reanchor_fight` does it on first use. By default the tables are the
+    repo's ``data/id_map.json`` and ``tools/fidelity/power_aliases.json``.
+
+    Raises:
+        RuntimeError: if the library refuses the tables.
+
+    """
+    global _anchor_tables_set  # noqa: PLW0603
+    root = _repo_root()
+    if id_map is None:
+        id_map = json.loads((root / "data" / "id_map.json").read_text(encoding="utf-8"))
+    if aliases is None:
+        aliases = json.loads((root / "tools" / "fidelity" / "power_aliases.json").read_text(encoding="utf-8"))
+    text = json.dumps({"id_map": id_map, "aliases": aliases}).encode("utf-8")
+    if _lib.Sts2Run_SetAnchorTables(text, len(text)) != 0:
+        raise RuntimeError("Sts2Run_SetAnchorTables failed")
+    _anchor_tables_set = True
+
+
+def run_reanchor_fight(handle: int, record: dict | str | bytes, obs_buf: ctypes.Array) -> tuple[int, str]:
+    """Put the fight the run stands in on the referee's record of it (a combat snapshot as an agent sees it).
+
+    The record is written over a copy of the fight and swapped in only when all of it could be loaded, so a
+    refused record leaves the run as it was. The combat's own streams and, where its cards are the record's, its
+    draw order stay (the record carries neither). Returns ``(status, message)``: ``status`` is the number of
+    fields set (0 or more, the message names them and how the enemies' next moves were set), or negative:
+    -1 no fight (or no such run), -2 the record is not a JSON object, -3 no tables handed over, -4 the record
+    names something the emulator has no id for, or an enemy it has no counterpart of (the message says which),
+    -5 another failure. ``obs_buf`` is refreshed on success.
+    """
+    if not _anchor_tables_set:
+        run_set_anchor_tables()
+    if isinstance(record, dict):
+        record = json.dumps(record)
+    data = record.encode("utf-8") if isinstance(record, str) else bytes(record)
+    message = ctypes.create_string_buffer(512)
+    status = _lib.Sts2Run_ReanchorFight(handle, data, len(data), message, len(message), obs_buf)
+    return status, message.value.decode("utf-8", "replace")
 
 
 def run_destroy(handle: int) -> None:
