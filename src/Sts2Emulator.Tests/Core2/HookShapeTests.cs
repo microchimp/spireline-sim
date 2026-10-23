@@ -202,7 +202,9 @@ public class HookShapeTests
         Assert.Equal((1, 1, C), (s.Site!.Value.Pass, s.Site.Value.Index, s.Site.Value.Who));
         Assert.Equal(new[] { "A", "paused A", "B", "D", "C", "paused C" }, rt.Log);
         Assert.Equal(new[] { C }, ctx.Models);
-        Assert.Equal(2, rt.Snapshots); // pass 0's snapshot was not taken again
+        // K4: the pause keeps pass 0's snapshot as plain data and the resume rebuilds its cursor from one fresh listing
+        // (handlers and membership); the order is still the pass-start snapshot's.
+        Assert.Equal(3, rt.Snapshots);
 
         Assert.Equal(HookStatus.Done, Hooks.AfterCardDrawnResume(rt, args, s));
         Assert.Empty(ctx.Models);

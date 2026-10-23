@@ -86,8 +86,35 @@ public enum HookIterator : byte { Combat, CombatDirect, RunCombat, Run }
 
 public enum ContextMode : byte { None, Passed, PassedUnpushed, CallerHook, PerListener }
 
-/// <summary>The typed continuation of a handler that stopped at a choice; one record type per resume site (K4).</summary>
-public abstract record HookResume;
+/// <summary>
+/// The typed continuation of a handler that stopped at a choice; one record type per resume site (K4). Plain data: it
+/// holds what the rest of the body needs (handles, amounts), never a live object, so a copy of the state holding it can
+/// share it. <see cref="Continue" /> runs the rest of the body with the player's answer (the candidate index, or the
+/// candidate count for a decline); it may pause again at a later choice of the same body.
+/// </summary>
+public abstract record HookResume
+{
+    /// <summary>The resume site's name, part of a keyed answer's key (HookChoiceReplay); the record type by default.</summary>
+    public virtual string ResumeSite => GetType().Name;
+
+    /// <summary>The rest of the handler's body, given the answer.</summary>
+    public virtual HookStep Continue(HookRuntime rt, int answer) =>
+        throw new NotSupportedException($"{ResumeSite} has no continuation");
+}
+
+/// <summary>
+/// A pass's listener snapshot as plain data (K4): the listeners of its first part, of its late part when that was built,
+/// and the visit index of the entry that paused. A paused dispatch keeps this, never the live cursor, so a copy of the
+/// state mid-pause carries no closure over the source's state; <see cref="HookRuntime.Reopen{THandler}" /> rebuilds the
+/// cursor over the state it resumes on.
+/// </summary>
+public sealed record PassSnapshot(ListenerRef[] First, ListenerRef[]? Late, int Index);
+
+/// <summary>A cursor that can say where it stands as plain data.</summary>
+public interface IPassCursor
+{
+    PassSnapshot Snapshot();
+}
 
 /// <summary>What an event handler returns: done, or paused at a choice with the request and its resume record.</summary>
 public readonly record struct HookStep(object? Request, HookResume? Resume)
@@ -111,16 +138,19 @@ public readonly record struct PauseSite(HookId Dispatcher, HookId Hook, int Pass
 /// later listeners run only through the dispatcher's <c>Resume</c> method, called once the paused listener's resume
 /// record has run to completion.
 /// </summary>
-public readonly record struct HookStatus(PauseSite? Site, HookStep Step, object? Cursor)
+public readonly record struct HookStatus(PauseSite? Site, HookStep Step, PassSnapshot? Snapshot)
 {
     public static HookStatus Done => default;
-    public static HookStatus Paused(in PauseSite site, HookStep step, object cursor) => new(site, step, cursor);
+
+    /// <summary>A pause at <paramref name="site" />; the pass's cursor is kept as its plain-data snapshot.</summary>
+    public static HookStatus Paused(in PauseSite site, HookStep step, IPassCursor cursor) => new(site, step, cursor.Snapshot());
+
     public bool IsPaused => Site is not null;
 
     /// <summary>The pause site, checked to be a pause of <paramref name="dispatcher"/> (a Resume call's guard).</summary>
     public PauseSite At(HookId dispatcher)
     {
-        if (Site is not { } s || s.Dispatcher != dispatcher || Cursor is null)
+        if (Site is not { } s || s.Dispatcher != dispatcher || Snapshot is null)
             throw new InvalidOperationException($"{dispatcher} resumed from {(Site is { } x ? x.Dispatcher : "no pause")}");
         return s;
     }
@@ -168,6 +198,17 @@ public abstract class HookRuntime
     public abstract HookCursor<THandler> Listeners<THandler>(HookIterator iterator, HookId hook)
         where THandler : Delegate;
 
+    /// <summary>
+    /// The cursor of a paused pass, rebuilt over the state the dispatch resumes on (K4): the listeners of the pass's
+    /// snapshot in its order, each taken from a fresh listing of the same hook (a listener the fresh listing lacks has
+    /// left the combat and is skipped; one it adds was added mid-pass and is not visited), positioned after the paused
+    /// entry. A late part not yet built is built when the first part ends, as in the first visit.
+    /// </summary>
+    public virtual HookCursor<THandler> Reopen<THandler>(HookIterator iterator, HookId hook, in HookStatus paused)
+        where THandler : Delegate =>
+        HookCursor<THandler>.Reopen(Listeners<THandler>(iterator, hook),
+            paused.Snapshot ?? throw new InvalidOperationException($"{hook}: no paused pass to reopen"));
+
     /// <summary>A per-listener hook choice context (the game's HookPlayerChoiceContext).</summary>
     public abstract ChoiceCtx NewHookContext(HookId dispatcher, ListenerRef who);
 
@@ -204,19 +245,88 @@ public abstract class HookRuntime
 /// entry that has left the combat, or whose owner is no longer active for hooks, is skipped). A listener added
 /// mid-pass is in neither part, so it is not visited.
 /// </summary>
-public sealed class HookCursor<THandler> where THandler : Delegate
+public sealed class HookCursor<THandler> : IPassCursor where THandler : Delegate
 {
     private IReadOnlyList<HookListener<THandler>> _part;
     private Func<IReadOnlyList<HookListener<THandler>>>? _late;
     private readonly Func<ListenerRef, bool>? _member;
+    private readonly IReadOnlyList<HookListener<THandler>> _first;
+    private IReadOnlyList<HookListener<THandler>>? _second;
     private int _at = -1, _base;
 
     public HookCursor(IReadOnlyList<HookListener<THandler>> first,
         Func<IReadOnlyList<HookListener<THandler>>>? late = null, Func<ListenerRef, bool>? member = null)
     {
         _part = first;
+        _first = first;
         _late = late;
         _member = member;
+    }
+
+    /// <summary>Where this cursor stands, as plain data (the listeners of each part built so far and the index).</summary>
+    public PassSnapshot Snapshot() =>
+        new(_first.Select(e => e.Who).ToArray(), _second?.Select(e => e.Who).ToArray(), Index);
+
+    /// <summary>
+    /// <paramref name="snap" />'s pass over <paramref name="fresh" />, an unvisited cursor of the same hook over the
+    /// state now: the snapshot's listeners in its order with the fresh handlers and membership, positioned after the
+    /// paused entry (see <see cref="HookRuntime.Reopen{THandler}" />).
+    /// </summary>
+    public static HookCursor<THandler> Reopen(HookCursor<THandler> fresh, PassSnapshot snap)
+    {
+        if (fresh._at != -1)
+            throw new InvalidOperationException("reopen needs an unvisited cursor");
+        var gone = new HashSet<ListenerRef>();
+        var first = Map(snap.First, fresh._first, gone);
+        IReadOnlyList<HookListener<THandler>>? second = null;
+        var late = fresh._late;
+        if (snap.Late is { } built)
+        {
+            second = Map(built, late?.Invoke() ?? [], gone);
+            late = null;
+        }
+
+        var member = fresh._member;
+        var c = new HookCursor<THandler>(first, second is null ? late : () => second,
+            who => !gone.Contains(who) && (member is null || member(who)));
+        c.Index = snap.Index;
+        if (snap.Index < first.Count)
+        {
+            c._at = snap.Index;
+        }
+        else
+        {
+            c._second = second!;
+            c._part = second!;
+            c._late = null;
+            c._base = first.Count;
+            c._at = snap.Index - first.Count;
+        }
+
+        return c;
+    }
+
+    private static List<HookListener<THandler>> Map(ListenerRef[] refs, IReadOnlyList<HookListener<THandler>> now,
+        HashSet<ListenerRef> gone)
+    {
+        var by = new Dictionary<ListenerRef, HookListener<THandler>>();
+        foreach (var e in now)
+            by.TryAdd(e.Who, e);
+        var list = new List<HookListener<THandler>>(refs.Length);
+        foreach (var r in refs)
+        {
+            if (by.TryGetValue(r, out var e))
+            {
+                list.Add(e);
+            }
+            else
+            {
+                gone.Add(r);
+                list.Add(new HookListener<THandler>(r, null!));
+            }
+        }
+
+        return list;
     }
 
     /// <summary>A cursor over no listeners.</summary>
@@ -240,7 +350,7 @@ public sealed class HookCursor<THandler> where THandler : Delegate
                     return false;
                 }
                 _base += _part.Count;
-                _part = _late();
+                _part = _second = _late();
                 _late = null;
                 _at = -1;
                 continue;

@@ -458,7 +458,7 @@ public static partial class Hooks
     public static HookStatus AfterActEnteredResume(HookRuntime rt, in AfterActEnteredArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterActEntered);
-        return AfterActEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterActEnteredArgs>>)paused.Cursor!);
+        return AfterActEnteredFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterActEnteredArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterActEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -497,7 +497,7 @@ public static partial class Hooks
     public static HookStatus AfterAttackResume(HookRuntime rt, in AfterAttackArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterAttack);
-        return AfterAttackFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterAttackArgs>>)paused.Cursor!);
+        return AfterAttackFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterAttackArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterAttack from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -545,7 +545,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterAutoPostPlayPhaseEntered);
         a.PlayerChoiceContext.PopModel(at.Who);
-        return AfterAutoPostPlayPhaseEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterAutoPostPlayPhaseEnteredArgs>>)paused.Cursor!);
+        return AfterAutoPostPlayPhaseEnteredFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterAutoPostPlayPhaseEnteredArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterAutoPostPlayPhaseEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -595,7 +595,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterAutoPrePlayPhaseEntered);
         a.PlayerChoiceContext.PopModel(at.Who);
-        return AfterAutoPrePlayPhaseEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>)paused.Cursor!);
+        return AfterAutoPrePlayPhaseEnteredFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterAutoPrePlayPhaseEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -672,7 +672,7 @@ public static partial class Hooks
     public static HookStatus AfterBlockBrokenResume(HookRuntime rt, in AfterBlockBrokenArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterBlockBroken);
-        return AfterBlockBrokenFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterBlockBrokenArgs>>)paused.Cursor!);
+        return AfterBlockBrokenFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterBlockBrokenArgs>>(HookIterator.CombatDirect, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterBlockBroken from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -711,7 +711,7 @@ public static partial class Hooks
     public static HookStatus AfterBlockClearedResume(HookRuntime rt, in AfterBlockClearedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterBlockCleared);
-        return AfterBlockClearedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterBlockClearedArgs>>)paused.Cursor!);
+        return AfterBlockClearedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterBlockClearedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterBlockCleared from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -750,7 +750,7 @@ public static partial class Hooks
     public static HookStatus AfterBlockGainedResume(HookRuntime rt, in AfterBlockGainedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterBlockGained);
-        return AfterBlockGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterBlockGainedArgs>>)paused.Cursor!);
+        return AfterBlockGainedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterBlockGainedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterBlockGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -789,7 +789,7 @@ public static partial class Hooks
     public static HookStatus AfterCardChangedPilesResume(HookRuntime rt, in AfterCardChangedPilesArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterCardChangedPiles);
-        return AfterCardChangedPilesFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardChangedPilesArgs>>)paused.Cursor!);
+        return AfterCardChangedPilesFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCardChangedPilesArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCardChangedPiles from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -845,7 +845,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterCardDiscarded);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterCardDiscardedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardDiscardedArgs>>)paused.Cursor!);
+        return AfterCardDiscardedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCardDiscardedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCardDiscarded from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -887,7 +887,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterCardDrawn);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterCardDrawnFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardDrawnArgs>>)paused.Cursor!);
+        return AfterCardDrawnFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCardDrawnArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCardDrawn from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -946,7 +946,7 @@ public static partial class Hooks
     public static HookStatus AfterCardEnteredCombatResume(HookRuntime rt, in AfterCardEnteredCombatArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterCardEnteredCombat);
-        return AfterCardEnteredCombatFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardEnteredCombatArgs>>)paused.Cursor!);
+        return AfterCardEnteredCombatFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCardEnteredCombatArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCardEnteredCombat from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -986,7 +986,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterCardExhausted);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterCardExhaustedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardExhaustedArgs>>)paused.Cursor!);
+        return AfterCardExhaustedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCardExhaustedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCardExhausted from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1027,7 +1027,7 @@ public static partial class Hooks
     public static HookStatus AfterCardGeneratedForCombatResume(HookRuntime rt, in AfterCardGeneratedForCombatArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterCardGeneratedForCombat);
-        return AfterCardGeneratedForCombatFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardGeneratedForCombatArgs>>)paused.Cursor!);
+        return AfterCardGeneratedForCombatFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCardGeneratedForCombatArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCardGeneratedForCombat from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1067,7 +1067,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterCardPlayed);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterCardPlayedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardPlayedArgs>>)paused.Cursor!);
+        return AfterCardPlayedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCardPlayedArgs>>(HookIterator.CombatDirect, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCardPlayed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1126,7 +1126,7 @@ public static partial class Hooks
     public static HookStatus AfterCombatEndResume(HookRuntime rt, in AfterCombatEndArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterCombatEnd);
-        return AfterCombatEndFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCombatEndArgs>>)paused.Cursor!);
+        return AfterCombatEndFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCombatEndArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCombatEnd from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1165,7 +1165,7 @@ public static partial class Hooks
     public static HookStatus AfterCombatVictoryResume(HookRuntime rt, in AfterCombatVictoryArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterCombatVictory);
-        return AfterCombatVictoryFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCombatVictoryArgs>>)paused.Cursor!);
+        return AfterCombatVictoryFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCombatVictoryArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCombatVictory from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1220,7 +1220,7 @@ public static partial class Hooks
     public static HookStatus AfterCreatureAddedToCombatResume(HookRuntime rt, in AfterCreatureAddedToCombatArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterCreatureAddedToCombat);
-        return AfterCreatureAddedToCombatFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCreatureAddedToCombatArgs>>)paused.Cursor!);
+        return AfterCreatureAddedToCombatFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCreatureAddedToCombatArgs>>(HookIterator.CombatDirect, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCreatureAddedToCombat from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1259,7 +1259,7 @@ public static partial class Hooks
     public static HookStatus AfterCurrentHpChangedResume(HookRuntime rt, in AfterCurrentHpChangedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterCurrentHpChanged);
-        return AfterCurrentHpChangedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCurrentHpChangedArgs>>)paused.Cursor!);
+        return AfterCurrentHpChangedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterCurrentHpChangedArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterCurrentHpChanged from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1299,7 +1299,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterDamageGiven);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterDamageGivenFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterDamageGivenArgs>>)paused.Cursor!);
+        return AfterDamageGivenFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterDamageGivenArgs>>(HookIterator.CombatDirect, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterDamageGiven from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1341,7 +1341,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterDamageReceived);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterDamageReceivedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterDamageReceivedArgs>>)paused.Cursor!);
+        return AfterDamageReceivedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterDamageReceivedArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterDamageReceived from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1466,7 +1466,7 @@ public static partial class Hooks
     public static HookStatus AfterEnergyResetResume(HookRuntime rt, in AfterEnergyResetArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterEnergyReset);
-        return AfterEnergyResetFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterEnergyResetArgs>>)paused.Cursor!);
+        return AfterEnergyResetFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterEnergyResetArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterEnergyReset from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1521,7 +1521,7 @@ public static partial class Hooks
     public static HookStatus AfterEnergySpentResume(HookRuntime rt, in AfterEnergySpentArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterEnergySpent);
-        return AfterEnergySpentFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterEnergySpentArgs>>)paused.Cursor!);
+        return AfterEnergySpentFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterEnergySpentArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterEnergySpent from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1561,7 +1561,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterFlush);
         a.PlayerChoiceContext.PopModel(at.Who);
-        return AfterFlushFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterFlushArgs>>)paused.Cursor!);
+        return AfterFlushFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterFlushArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterFlush from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1602,7 +1602,7 @@ public static partial class Hooks
     public static HookStatus AfterForgeResume(HookRuntime rt, in AfterForgeArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterForge);
-        return AfterForgeFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterForgeArgs>>)paused.Cursor!);
+        return AfterForgeFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterForgeArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterForge from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1641,7 +1641,7 @@ public static partial class Hooks
     public static HookStatus AfterGoldGainedResume(HookRuntime rt, in AfterGoldGainedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterGoldGained);
-        return AfterGoldGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterGoldGainedArgs>>)paused.Cursor!);
+        return AfterGoldGainedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterGoldGainedArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterGoldGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1681,7 +1681,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterHandEmptied);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterHandEmptiedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterHandEmptiedArgs>>)paused.Cursor!);
+        return AfterHandEmptiedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterHandEmptiedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterHandEmptied from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1722,7 +1722,7 @@ public static partial class Hooks
     public static HookStatus AfterItemPurchasedResume(HookRuntime rt, in AfterItemPurchasedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterItemPurchased);
-        return AfterItemPurchasedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterItemPurchasedArgs>>)paused.Cursor!);
+        return AfterItemPurchasedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterItemPurchasedArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterItemPurchased from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1761,7 +1761,7 @@ public static partial class Hooks
     public static HookStatus AfterMapGeneratedResume(HookRuntime rt, in AfterMapGeneratedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterMapGenerated);
-        return AfterMapGeneratedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterMapGeneratedArgs>>)paused.Cursor!);
+        return AfterMapGeneratedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterMapGeneratedArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterMapGenerated from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1800,7 +1800,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingBlockAmountResume(HookRuntime rt, in AfterModifyingBlockAmountArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingBlockAmount);
-        return AfterModifyingBlockAmountFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingBlockAmountArgs>>)paused.Cursor!);
+        return AfterModifyingBlockAmountFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingBlockAmountArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingBlockAmount from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1840,7 +1840,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingCardPlayCountResume(HookRuntime rt, in AfterModifyingCardPlayCountArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingCardPlayCount);
-        return AfterModifyingCardPlayCountFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingCardPlayCountArgs>>)paused.Cursor!);
+        return AfterModifyingCardPlayCountFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingCardPlayCountArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingCardPlayCount from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1880,7 +1880,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingCardRewardOptionsResume(HookRuntime rt, in AfterModifyingCardRewardOptionsArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingCardRewardOptions);
-        return AfterModifyingCardRewardOptionsFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingCardRewardOptionsArgs>>)paused.Cursor!);
+        return AfterModifyingCardRewardOptionsFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingCardRewardOptionsArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingCardRewardOptions from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1920,7 +1920,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingDamageAmountResume(HookRuntime rt, in AfterModifyingDamageAmountArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingDamageAmount);
-        return AfterModifyingDamageAmountFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingDamageAmountArgs>>)paused.Cursor!);
+        return AfterModifyingDamageAmountFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingDamageAmountArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingDamageAmount from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -1960,7 +1960,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingEnergyGainResume(HookRuntime rt, in AfterModifyingEnergyGainArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingEnergyGain);
-        return AfterModifyingEnergyGainFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingEnergyGainArgs>>)paused.Cursor!);
+        return AfterModifyingEnergyGainFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingEnergyGainArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingEnergyGain from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2000,7 +2000,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingGoldGainedResume(HookRuntime rt, in AfterModifyingGoldGainedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingGoldGained);
-        return AfterModifyingGoldGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingGoldGainedArgs>>)paused.Cursor!);
+        return AfterModifyingGoldGainedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingGoldGainedArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingGoldGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2040,7 +2040,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingHandDrawResume(HookRuntime rt, in AfterModifyingHandDrawArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingHandDraw);
-        return AfterModifyingHandDrawFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingHandDrawArgs>>)paused.Cursor!);
+        return AfterModifyingHandDrawFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingHandDrawArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingHandDraw from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2080,7 +2080,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingHpLostAfterOstyResume(HookRuntime rt, in AfterModifyingHpLostAfterOstyArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingHpLostAfterOsty);
-        return AfterModifyingHpLostAfterOstyFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingHpLostAfterOstyArgs>>)paused.Cursor!);
+        return AfterModifyingHpLostAfterOstyFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingHpLostAfterOstyArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingHpLostAfterOsty from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2120,7 +2120,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingHpLostBeforeOstyResume(HookRuntime rt, in AfterModifyingHpLostBeforeOstyArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingHpLostBeforeOsty);
-        return AfterModifyingHpLostBeforeOstyFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingHpLostBeforeOstyArgs>>)paused.Cursor!);
+        return AfterModifyingHpLostBeforeOstyFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingHpLostBeforeOstyArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingHpLostBeforeOsty from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2160,7 +2160,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingOrbPassiveTriggerCountResume(HookRuntime rt, in AfterModifyingOrbPassiveTriggerCountArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingOrbPassiveTriggerCount);
-        return AfterModifyingOrbPassiveTriggerCountFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingOrbPassiveTriggerCountArgs>>)paused.Cursor!);
+        return AfterModifyingOrbPassiveTriggerCountFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingOrbPassiveTriggerCountArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingOrbPassiveTriggerCount from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2200,7 +2200,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingPowerAmountGivenResume(HookRuntime rt, in AfterModifyingPowerAmountGivenArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingPowerAmountGiven);
-        return AfterModifyingPowerAmountGivenFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingPowerAmountGivenArgs>>)paused.Cursor!);
+        return AfterModifyingPowerAmountGivenFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingPowerAmountGivenArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingPowerAmountGiven from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2240,7 +2240,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingPowerAmountReceivedResume(HookRuntime rt, in AfterModifyingPowerAmountReceivedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingPowerAmountReceived);
-        return AfterModifyingPowerAmountReceivedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingPowerAmountReceivedArgs>>)paused.Cursor!);
+        return AfterModifyingPowerAmountReceivedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingPowerAmountReceivedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingPowerAmountReceived from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2280,7 +2280,7 @@ public static partial class Hooks
     public static HookStatus AfterModifyingRewardsResume(HookRuntime rt, in AfterModifyingRewardsArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterModifyingRewards);
-        return AfterModifyingRewardsFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingRewardsArgs>>)paused.Cursor!);
+        return AfterModifyingRewardsFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterModifyingRewardsArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterModifyingRewards from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2321,7 +2321,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterOrbChanneled);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterOrbChanneledFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterOrbChanneledArgs>>)paused.Cursor!);
+        return AfterOrbChanneledFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterOrbChanneledArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterOrbChanneled from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2362,7 +2362,7 @@ public static partial class Hooks
     public static HookStatus AfterOrbEvokedResume(HookRuntime rt, in AfterOrbEvokedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterOrbEvoked);
-        return AfterOrbEvokedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterOrbEvokedArgs>>)paused.Cursor!);
+        return AfterOrbEvokedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterOrbEvokedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterOrbEvoked from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2401,7 +2401,7 @@ public static partial class Hooks
     public static HookStatus AfterOstyRevivedResume(HookRuntime rt, in AfterOstyRevivedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterOstyRevived);
-        return AfterOstyRevivedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterOstyRevivedArgs>>)paused.Cursor!);
+        return AfterOstyRevivedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterOstyRevivedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterOstyRevived from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2441,7 +2441,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterPlayerTurnStart);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterPlayerTurnStartFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPlayerTurnStartArgs>>)paused.Cursor!);
+        return AfterPlayerTurnStartFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterPlayerTurnStartArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterPlayerTurnStart from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2518,7 +2518,7 @@ public static partial class Hooks
     public static HookStatus AfterPotionDiscardedResume(HookRuntime rt, in AfterPotionDiscardedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterPotionDiscarded);
-        return AfterPotionDiscardedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPotionDiscardedArgs>>)paused.Cursor!);
+        return AfterPotionDiscardedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterPotionDiscardedArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterPotionDiscarded from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2557,7 +2557,7 @@ public static partial class Hooks
     public static HookStatus AfterPotionProcuredResume(HookRuntime rt, in AfterPotionProcuredArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterPotionProcured);
-        return AfterPotionProcuredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPotionProcuredArgs>>)paused.Cursor!);
+        return AfterPotionProcuredFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterPotionProcuredArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterPotionProcured from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2596,7 +2596,7 @@ public static partial class Hooks
     public static HookStatus AfterPotionUsedResume(HookRuntime rt, in AfterPotionUsedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterPotionUsed);
-        return AfterPotionUsedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPotionUsedArgs>>)paused.Cursor!);
+        return AfterPotionUsedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterPotionUsedArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterPotionUsed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2635,7 +2635,7 @@ public static partial class Hooks
     public static HookStatus AfterPowerAmountChangedResume(HookRuntime rt, in AfterPowerAmountChangedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterPowerAmountChanged);
-        return AfterPowerAmountChangedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPowerAmountChangedArgs>>)paused.Cursor!);
+        return AfterPowerAmountChangedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterPowerAmountChangedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterPowerAmountChanged from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2674,7 +2674,7 @@ public static partial class Hooks
     public static HookStatus AfterPreventingBlockClearResume(HookRuntime rt, in AfterPreventingBlockClearArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterPreventingBlockClear);
-        return AfterPreventingBlockClearFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPreventingBlockClearArgs>>)paused.Cursor!);
+        return AfterPreventingBlockClearFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterPreventingBlockClearArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterPreventingBlockClear from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2715,7 +2715,7 @@ public static partial class Hooks
     public static HookStatus AfterPreventingDeathResume(HookRuntime rt, in AfterPreventingDeathArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterPreventingDeath);
-        return AfterPreventingDeathFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPreventingDeathArgs>>)paused.Cursor!);
+        return AfterPreventingDeathFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterPreventingDeathArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterPreventingDeath from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2756,7 +2756,7 @@ public static partial class Hooks
     public static HookStatus AfterPreventingDrawResume(HookRuntime rt, in AfterPreventingDrawArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterPreventingDraw);
-        return AfterPreventingDrawFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPreventingDrawArgs>>)paused.Cursor!);
+        return AfterPreventingDrawFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterPreventingDrawArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterPreventingDraw from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2797,7 +2797,7 @@ public static partial class Hooks
     public static HookStatus AfterRestSiteHealResume(HookRuntime rt, in AfterRestSiteHealArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterRestSiteHeal);
-        return AfterRestSiteHealFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterRestSiteHealArgs>>)paused.Cursor!);
+        return AfterRestSiteHealFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterRestSiteHealArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterRestSiteHeal from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2836,7 +2836,7 @@ public static partial class Hooks
     public static HookStatus AfterRestSiteSmithResume(HookRuntime rt, in AfterRestSiteSmithArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterRestSiteSmith);
-        return AfterRestSiteSmithFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterRestSiteSmithArgs>>)paused.Cursor!);
+        return AfterRestSiteSmithFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterRestSiteSmithArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterRestSiteSmith from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2875,7 +2875,7 @@ public static partial class Hooks
     public static HookStatus AfterRewardTakenResume(HookRuntime rt, in AfterRewardTakenArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterRewardTaken);
-        return AfterRewardTakenFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterRewardTakenArgs>>)paused.Cursor!);
+        return AfterRewardTakenFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterRewardTakenArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterRewardTaken from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2914,7 +2914,7 @@ public static partial class Hooks
     public static HookStatus AfterRoomEnteredResume(HookRuntime rt, in AfterRoomEnteredArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterRoomEntered);
-        return AfterRoomEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterRoomEnteredArgs>>)paused.Cursor!);
+        return AfterRoomEnteredFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterRoomEnteredArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterRoomEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2954,7 +2954,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterShuffle);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterShuffleFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterShuffleArgs>>)paused.Cursor!);
+        return AfterShuffleFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterShuffleArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterShuffle from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -2995,7 +2995,7 @@ public static partial class Hooks
     public static HookStatus AfterSideTurnStartResume(HookRuntime rt, in AfterSideTurnStartArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterSideTurnStart);
-        return AfterSideTurnStartFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterSideTurnStartArgs>>)paused.Cursor!);
+        return AfterSideTurnStartFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterSideTurnStartArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterSideTurnStart from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3050,7 +3050,7 @@ public static partial class Hooks
     public static HookStatus AfterStarsGainedResume(HookRuntime rt, in AfterStarsGainedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterStarsGained);
-        return AfterStarsGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterStarsGainedArgs>>)paused.Cursor!);
+        return AfterStarsGainedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterStarsGainedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterStarsGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3089,7 +3089,7 @@ public static partial class Hooks
     public static HookStatus AfterStarsSpentResume(HookRuntime rt, in AfterStarsSpentArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterStarsSpent);
-        return AfterStarsSpentFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterStarsSpentArgs>>)paused.Cursor!);
+        return AfterStarsSpentFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterStarsSpentArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterStarsSpent from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3129,7 +3129,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_AfterSummon);
         a.ChoiceContext.PopModel(at.Who);
-        return AfterSummonFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterSummonArgs>>)paused.Cursor!);
+        return AfterSummonFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterSummonArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterSummon from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3170,7 +3170,7 @@ public static partial class Hooks
     public static HookStatus AfterTakingExtraTurnResume(HookRuntime rt, in AfterTakingExtraTurnArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_AfterTakingExtraTurn);
-        return AfterTakingExtraTurnFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterTakingExtraTurnArgs>>)paused.Cursor!);
+        return AfterTakingExtraTurnFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<AfterTakingExtraTurnArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.AfterTakingExtraTurn from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3255,7 +3255,7 @@ public static partial class Hooks
     public static HookStatus BeforeAttackResume(HookRuntime rt, in BeforeAttackArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforeAttack);
-        return BeforeAttackFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeAttackArgs>>)paused.Cursor!);
+        return BeforeAttackFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeAttackArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeAttack from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3294,7 +3294,7 @@ public static partial class Hooks
     public static HookStatus BeforeBlockGainedResume(HookRuntime rt, in BeforeBlockGainedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforeBlockGained);
-        return BeforeBlockGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeBlockGainedArgs>>)paused.Cursor!);
+        return BeforeBlockGainedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeBlockGainedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeBlockGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3333,7 +3333,7 @@ public static partial class Hooks
     public static HookStatus BeforeCardAutoPlayedResume(HookRuntime rt, in BeforeCardAutoPlayedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforeCardAutoPlayed);
-        return BeforeCardAutoPlayedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeCardAutoPlayedArgs>>)paused.Cursor!);
+        return BeforeCardAutoPlayedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeCardAutoPlayedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeCardAutoPlayed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3372,7 +3372,7 @@ public static partial class Hooks
     public static HookStatus BeforeCardPlayedResume(HookRuntime rt, in BeforeCardPlayedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforeCardPlayed);
-        return BeforeCardPlayedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeCardPlayedArgs>>)paused.Cursor!);
+        return BeforeCardPlayedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeCardPlayedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeCardPlayed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3411,7 +3411,7 @@ public static partial class Hooks
     public static HookStatus BeforeCardRemovedResume(HookRuntime rt, in BeforeCardRemovedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforeCardRemoved);
-        return BeforeCardRemovedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeCardRemovedArgs>>)paused.Cursor!);
+        return BeforeCardRemovedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeCardRemovedArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeCardRemoved from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3450,7 +3450,7 @@ public static partial class Hooks
     public static HookStatus BeforeCombatStartResume(HookRuntime rt, in BeforeCombatStartArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforeCombatStart);
-        return BeforeCombatStartFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeCombatStartArgs>>)paused.Cursor!);
+        return BeforeCombatStartFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeCombatStartArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeCombatStart from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3506,7 +3506,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_BeforeDamageReceived);
         a.ChoiceContext.PopModel(at.Who);
-        return BeforeDamageReceivedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeDamageReceivedArgs>>)paused.Cursor!);
+        return BeforeDamageReceivedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeDamageReceivedArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeDamageReceived from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3547,7 +3547,7 @@ public static partial class Hooks
     public static HookStatus BeforeDeathResume(HookRuntime rt, in BeforeDeathArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforeDeath);
-        return BeforeDeathFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeDeathArgs>>)paused.Cursor!);
+        return BeforeDeathFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeDeathArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeDeath from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3632,7 +3632,7 @@ public static partial class Hooks
     {
         var at = paused.At(HookId.Dispatch_BeforeHandDraw);
         a.PlayerChoiceContext.PopModel(at.Who);
-        return BeforeHandDrawFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeHandDrawArgs>>)paused.Cursor!);
+        return BeforeHandDrawFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeHandDrawArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeHandDraw from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3691,7 +3691,7 @@ public static partial class Hooks
     public static HookStatus BeforePotionUsedResume(HookRuntime rt, in BeforePotionUsedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforePotionUsed);
-        return BeforePotionUsedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforePotionUsedArgs>>)paused.Cursor!);
+        return BeforePotionUsedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforePotionUsedArgs>>(HookIterator.RunCombat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforePotionUsed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3730,7 +3730,7 @@ public static partial class Hooks
     public static HookStatus BeforePowerAmountChangedResume(HookRuntime rt, in BeforePowerAmountChangedArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforePowerAmountChanged);
-        return BeforePowerAmountChangedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforePowerAmountChangedArgs>>)paused.Cursor!);
+        return BeforePowerAmountChangedFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforePowerAmountChangedArgs>>(HookIterator.Combat, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforePowerAmountChanged from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
@@ -3769,7 +3769,7 @@ public static partial class Hooks
     public static HookStatus BeforeRoomEnteredResume(HookRuntime rt, in BeforeRoomEnteredArgs a, in HookStatus paused)
     {
         var at = paused.At(HookId.Dispatch_BeforeRoomEntered);
-        return BeforeRoomEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeRoomEnteredArgs>>)paused.Cursor!);
+        return BeforeRoomEnteredFrom(rt, in a, at.Pass, rt.Reopen<HookEvent<BeforeRoomEnteredArgs>>(HookIterator.Run, at.Hook, in paused));
     }
 
     /// <summary>The passes of Hook.BeforeRoomEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>

@@ -456,7 +456,8 @@ def render(desc: dict) -> dict[str, str]:
             cur = f"HookCursor<HookEvent<{n}Args>>"
             resume = ([f"var at = paused.At({disp_id(n)});"]
                       + ([f"{s.arg('ChoiceCtx')}.PopModel(at.Who);"] if s.d["context"] in PUSH else [])
-                      + [f"return {n}From(rt, in a, at.Pass, ({cur})paused.Cursor!);"])
+                      + [f"return {n}From(rt, in a, at.Pass, rt.Reopen<HookEvent<{n}Args>>(HookIterator."
+                         f"{ITER[s.d['iterator']]}, at.Hook, in paused));"])
             methods += _indent(_with_steps(s, shapes) if s.split else [_call_passes(s)], 4) + [
                 "}", "",
                 f"/// <summary>Continues Hook.{n} from a pause it returned, once the paused listener's resume record "
