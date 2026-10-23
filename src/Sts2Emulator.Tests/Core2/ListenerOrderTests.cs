@@ -12,7 +12,7 @@ namespace Sts2Emulator.Tests.Core2;
 /// </summary>
 public class ListenerOrderTests
 {
-    private static readonly OldModelIds Ids = LoadIds();
+    internal static readonly OldModelIds Ids = LoadIds();
     private const HookId H = HookId.AfterCardPlayed;
 
     private static OldModelIds LoadIds()
@@ -115,7 +115,8 @@ public class ListenerOrderTests
         s.DrawPile = [Card(s, 12)];
         s.DiscardPile = [Card(s, 13, enchant: 2, bound: true)];
         s.ExhaustPile = [Card(s, 14)];
-        var w = new OldWorld(s, null, Ids) { InFlight = Card(s, 15) };
+        var w = new OldWorld(s, null, Ids);
+        using var flying = w.Flying(Card(s, 15));
         Assert.Equal(new[]
         {
             "Relic:1@0", "Potion:2@0", "Orb:1@0", "Orb:2@0",
@@ -217,8 +218,12 @@ public class ListenerOrderTests
         a.Hp = 0;
         s.Enemies = [a];
         var w = new OldWorld(s, null, Ids);
-        w.Dying.Add(a);
-        Assert.Contains("Monster:16@1", Order(w));
+        using (w.MarkDying(a))
+        {
+            Assert.Contains("Monster:16@1", Order(w));
+        }
+
+        Assert.DoesNotContain("Monster:16@1", Order(w)); // the kill's mark ended: removed
     }
 
     [Fact] // game: CombatState.Contains (IsActiveForHooks read when each entry is visited)
@@ -228,14 +233,17 @@ public class ListenerOrderTests
         var s = Combat(e);
         s.Relics = [new RelicInstance(1), new RelicInstance(2)];
         s.Hand = [Card(s, 10)];
-        var cur = new OldListeners(new OldWorld(s, null, Ids), EveryListener.Instance).Cursor<Action>(HookIterator.CombatDirect, H);
+        var w = new OldWorld(s, null, Ids);
+        var cur = new OldListeners(w, EveryListener.Instance).Cursor<Action>(HookIterator.CombatDirect, H);
+        IDisposable? down = null;
         var seen = Visit(cur, n =>
         {
             if (n == 1)
             {
-                s.PlayerHp = 0; // no Fairy in a Bottle, no Lizard Tail: the death is final
+                down = w.DeactivatePlayerHooks(); // CreatureCmd.Kill's DeactivateHooks, after the death passes
             }
         });
+        down?.Dispose();
         Assert.Equal(new ListenerRef[]
         {
             Relic(1, 0), new((int)ListenerKind.Power, P(BuffId.Weak), OldState.PowerInstance(1, 0)),
@@ -304,8 +312,10 @@ public class ListenerOrderTests
         Assert.True(CombatEngine.IsOverOrEnding(s));
         Assert.Empty(Visit(lis.Cursor<Action>(HookIterator.Combat, H)));
         Assert.Equal(2, Visit(lis.Cursor<Action>(HookIterator.CombatDirect, H)).Count);
-        w.InSetup = true;
-        Assert.Equal(2, Visit(lis.Cursor<Action>(HookIterator.Combat, H)).Count);
+        using (w.Setup())
+        {
+            Assert.Equal(2, Visit(lis.Cursor<Action>(HookIterator.Combat, H)).Count);
+        }
     }
 
     [Fact] // game: CombatState.IterateHookListeners (the Play pile holds the card while its OnPlay runs)
@@ -372,6 +382,182 @@ public class ListenerOrderTests
         Visit(all.Cursor<Action>(HookIterator.RunCombat, H)); // no run state: the deck is unknown
         Assert.Contains(reported, n => n.Gap.Why == NotModelledKind.DeckWithoutRun && n.Pass == 1);
         Assert.Contains(reported, n => n.Gap.Why == NotModelledKind.FoldedPower);
+    }
+
+    [Fact] // game: CreatureCmd.Kill (death prevention and AfterDeath run before DeactivateHooks)
+    public void ThePlayersOwnDeathPassVisitsItsListenersAndAnUndeclaredOneIsNotModelled()
+    {
+        var s = Combat(Enemy(16, BuffId.Weak));
+        s.PlayerHp = 0; // down with no Fairy in a Bottle and no Lizard Tail: the death is final
+        s.PlayerBuffs = [new BuffState(BuffId.Strength, 1)];
+        s.Relics = [new RelicInstance(1)];
+        s.Hand = [Card(s, 10)];
+        Assert.True(CombatEngine.IsAboutToLose(s));
+        var w = new OldWorld(s, null, Ids);
+        var lis = new OldListeners(w, EveryListener.Instance);
+        var reported = new List<NotModelled>();
+        lis.Report = reported.Add;
+        var strength = new ListenerRef((int)ListenerKind.Power, P(BuffId.Strength), OldState.PowerInstance(0, 0));
+        var weak = new ListenerRef((int)ListenerKind.Power, P(BuffId.Weak), OldState.PowerInstance(1, 0));
+        var card = new ListenerRef((int)ListenerKind.Card, 10, s.Hand[0].Uid);
+        var monster = new ListenerRef((int)ListenerKind.Monster, 16, 1);
+
+        using (w.KeepPlayerHooks()) // the kill's own passes: the player's hooks are still on, at 0 HP
+        {
+            Assert.Equal(new[] { strength, Relic(1, 0), card, weak, monster },
+                Visit(lis.Cursor<Action>(HookIterator.CombatDirect, H)));
+            Assert.DoesNotContain(reported, n => n.Gap.Why == NotModelledKind.PlayerHooksUndeclared);
+        }
+
+        using (w.DeactivatePlayerHooks()) // after DeactivateHooks
+        {
+            Assert.Equal(new[] { weak, monster }, Visit(lis.Cursor<Action>(HookIterator.CombatDirect, H)));
+            Assert.DoesNotContain(reported, n => n.Gap.Why == NotModelledKind.PlayerHooksUndeclared);
+        }
+
+        // Nothing declared with the player down: inside the kill or after it, the state cannot say.
+        Visit(lis.Cursor<Action>(HookIterator.CombatDirect, H));
+        Assert.Contains(reported, n => n.Gap.Why == NotModelledKind.PlayerHooksUndeclared && n.Gap.Kind == ListenerKind.Relic);
+        Assert.Contains(reported, n => n.Gap.Why == NotModelledKind.PlayerHooksUndeclared && n.Gap.Kind == ListenerKind.Power);
+        s.PlayerHp = 50; // alive: nothing to declare
+        reported.Clear();
+        Visit(lis.Cursor<Action>(HookIterator.CombatDirect, H));
+        Assert.DoesNotContain(reported, n => n.Gap.Why == NotModelledKind.PlayerHooksUndeclared);
+    }
+
+    [Fact] // game: Hook.IterateCombatHookListeners (the guard's IsStarting exemption) with the setup mark missing
+    public void AGuardSetBeforeTurnOneWithoutTheSetupMarkIsNotModelled()
+    {
+        var e = Enemy(16);
+        var s = Combat(e);
+        s.Relics = [new RelicInstance(1)];
+        e.Hp = 0; // nothing left to fight yet (the roster is still being filled): the guard is set
+        var w = new OldWorld(s, null, Ids);
+        var lis = new OldListeners(w, EveryListener.Instance);
+        var reported = new List<NotModelled>();
+        lis.Report = reported.Add;
+        Assert.Empty(Visit(lis.Cursor<Action>(HookIterator.Combat, H)));
+        Assert.Contains(reported, n => n.Gap.Why == NotModelledKind.SetupUndeclared);
+
+        reported.Clear();
+        using (w.Setup())
+        {
+            Assert.Equal(new[] { Relic(1, 0) }, Visit(lis.Cursor<Action>(HookIterator.Combat, H)));
+        }
+
+        Assert.DoesNotContain(reported, n => n.Gap.Why == NotModelledKind.SetupUndeclared);
+        s.Turn = 1; // a combat that really is over: the guard's empty pass is the game's
+        Assert.Empty(Visit(lis.Cursor<Action>(HookIterator.Combat, H)));
+        Assert.DoesNotContain(reported, n => n.Gap.Why == NotModelledKind.SetupUndeclared);
+    }
+
+    [Fact] // the marks' scoped setters: the previous value is back when the scope ends, nesting included
+    public void ScopedMarksRestoreTheirPreviousValue()
+    {
+        var s = Combat();
+        var w = new OldWorld(s, null, Ids);
+        var a = Card(s, 10);
+        var b = Card(s, 11);
+        var enemy = s.Enemies[0];
+        using (w.Flying(a))
+        {
+            using (w.Flying(b))
+            {
+                Assert.Equal(b, w.InFlight);
+            }
+
+            Assert.Equal(a, w.InFlight);
+        }
+
+        Assert.Null(w.InFlight);
+        using (w.Setup())
+        {
+            w.Setup().Dispose();
+            Assert.True(w.InSetup);
+        }
+
+        Assert.False(w.InSetup);
+        using (w.MarkDying(enemy))
+        {
+            w.MarkDying(enemy).Dispose();
+            Assert.True(w.IsDying(enemy));
+        }
+
+        Assert.False(w.IsDying(enemy));
+        using (w.KeepPlayerHooks())
+        {
+            using (w.DeactivatePlayerHooks())
+            {
+                Assert.Equal(PlayerHooks.Deactivated, w.PlayerHooks);
+            }
+
+            Assert.Equal(PlayerHooks.Active, w.PlayerHooks);
+        }
+
+        Assert.Equal(PlayerHooks.Undeclared, w.PlayerHooks);
+    }
+
+    private static List<NotModelled> OrbPass(Action<CombatState>? change)
+    {
+        var s = Combat();
+        s.Relics = [new RelicInstance(1)];
+        s.Orbs = [new OrbState(OrbType.Lightning), new OrbState(OrbType.Lightning)];
+        var lis = new OldListeners(new OldWorld(s, null, Ids), EveryListener.Instance);
+        var reported = new List<NotModelled>();
+        lis.Report = reported.Add;
+        Visit(lis.Cursor<Action>(HookIterator.CombatDirect, H), n =>
+        {
+            if (n == 1)
+            {
+                change?.Invoke(s); // after the relic, before the orbs
+            }
+        });
+        return reported;
+    }
+
+    [Fact] // orbs have no identity in the old state: any change to the queue after the snapshot is NotModelled
+    public void AnOrbQueueChangedMidPassIsNotModelled()
+    {
+        static bool Orbs(List<NotModelled> r) => r.Exists(n => n.Gap.Why == NotModelledKind.OrbsChangedMidPass);
+
+        Assert.False(Orbs(OrbPass(null)));
+        Assert.True(Orbs(OrbPass(s => s.Orbs.RemoveAt(0)))); // an evoke
+        Assert.True(Orbs(OrbPass(s => { s.Orbs.RemoveAt(0); s.Orbs.Add(new OrbState(OrbType.Lightning)); }))); // equal in type
+        Assert.True(Orbs(OrbPass(s => s.Orbs.Add(new OrbState(OrbType.Frost)))));
+        Assert.True(Orbs(OrbPass(s => s.Orbs[1] = s.Orbs[1] with { PassiveValue = 3 })));
+        Assert.True(Orbs(OrbPass(s => s.Orbs = [new OrbState(OrbType.Lightning), new OrbState(OrbType.Lightning)])));
+        Assert.Single(OrbPass(s => s.Orbs.RemoveAt(0)), n => n.Gap.Why == NotModelledKind.OrbsChangedMidPass);
+    }
+
+    private static List<NotModelled> DeckPass(Action<RunState>? change)
+    {
+        var s = Combat();
+        var run = new RunState();
+        run.Deck = [new CardInstance(20, false), new CardInstance(21, false), new CardInstance(22, false)];
+        var lis = new OldListeners(new OldWorld(s, run, Ids), EveryListener.Instance);
+        var reported = new List<NotModelled>();
+        lis.Report = reported.Add;
+        Visit(lis.Cursor<Action>(HookIterator.RunCombat, H), n =>
+        {
+            if (n == 1)
+            {
+                change?.Invoke(run); // after the first deck card, before the later ones
+            }
+        });
+        return reported;
+    }
+
+    [Fact] // deck cards are matched by index: any change to the deck after the snapshot is NotModelled
+    public void ARunDeckChangedMidPassIsNotModelled()
+    {
+        static bool Deck(List<NotModelled> r) => r.Exists(n => n.Gap.Why == NotModelledKind.DeckChangedMidPass);
+
+        Assert.False(Deck(DeckPass(null)));
+        Assert.True(Deck(DeckPass(r => r.Deck.RemoveAt(0)))); // later entries shift
+        Assert.True(Deck(DeckPass(r => r.Deck.RemoveAt(1))));
+        Assert.True(Deck(DeckPass(r => r.Deck[1] = new CardInstance(21, true))));
+        Assert.True(Deck(DeckPass(r => r.Deck = [new CardInstance(20, false)])));
+        Assert.Single(DeckPass(r => r.Deck.RemoveAt(0)), n => n.Gap.Why == NotModelledKind.DeckChangedMidPass);
     }
 
     private sealed class OnlyKind(ListenerKind kind) : IHandlerSource

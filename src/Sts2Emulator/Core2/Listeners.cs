@@ -96,12 +96,22 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
         int pass = ++Passes;
         _last.Clear();
         var entries = new Dictionary<ListenerRef, OldListener>();
+        var view = new PassView { Gap = g => Flush([g]) };
         var combat = World.Combat;
         Func<IReadOnlyList<HookListener<T>>>? late = null;
         IReadOnlyList<HookListener<T>> first;
         switch (iterator)
         {
             case HookIterator.Combat when combat is not null && !World.InSetup && CombatEngine.IsOverOrEnding(combat):
+                if (combat.Turn == 0)
+                {
+                    // The guard is set before the first turn: the combat may be starting with its setup not declared
+                    // (OldWorld.Setup), which the game exempts. The empty pass is not trusted.
+                    Flush(Enum.GetValues<ListenerKind>()
+                        .Select(k => new OldGap(NotModelledKind.SetupUndeclared, k, -1, 0, "guard set before turn 1"))
+                        .ToList());
+                }
+
                 return HookCursor<T>.Empty();
             case HookIterator.Combat:
             case HookIterator.CombatDirect:
@@ -117,7 +127,7 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
         }
 
         return new HookCursor<T>(first, late,
-            who => entries.TryGetValue(who, out var e) && OldState.IsMember(World, e));
+            who => entries.TryGetValue(who, out var e) && OldState.IsMember(World, e, view));
 
         List<HookListener<T>> Build(Action<List<OldListener>, List<OldGap>> part)
         {
@@ -132,6 +142,7 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
             var gaps = new List<OldGap>();
             part(raw, gaps);
             var list = new List<HookListener<T>>(raw.Count);
+            bool orbs = false, deck = false;
             foreach (var e in raw)
             {
                 switch (Handlers.Find(hook, e.Kind, e.Who.ModelId))
@@ -145,6 +156,8 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
                         }
 
                         list.Add(new HookListener<T>(e.Who, fn));
+                        orbs |= e.Kind == ListenerKind.Orb;
+                        deck |= e.Pile == OldPile.Deck;
                         break;
                     case var other:
                         throw new InvalidOperationException(
@@ -152,6 +165,25 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
                 }
             }
 
+            // The snapshot's change probes: orbs and deck cards have no identity, so any later change is reported.
+            if (orbs && World.Combat is { } cs)
+            {
+                view.Orbs = new ChangeProbe<OrbState>(cs.Orbs);
+            }
+
+            if (deck && World.Run is { } rs)
+            {
+                view.Deck = new ChangeProbe<CardInstance>(rs.Deck);
+            }
+
+            Flush(gaps);
+            return list;
+        }
+
+        // Reports the gaps a handler could stand for. A gap seen at a visit can belong to a pass that is no longer the
+        // latest (a handler ran another pass): Report always gets it, LastPass only while the pass is the latest.
+        void Flush(List<OldGap> gaps)
+        {
             foreach (var gap in gaps)
             {
                 bool needed = gap.ModelId != 0
@@ -160,12 +192,14 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
                 if (needed)
                 {
                     var nm = new NotModelled(pass, hook, gap);
-                    _last.Add(nm);
+                    if (pass == Passes)
+                    {
+                        _last.Add(nm);
+                    }
+
                     Report?.Invoke(nm);
                 }
             }
-
-            return list;
         }
     }
 

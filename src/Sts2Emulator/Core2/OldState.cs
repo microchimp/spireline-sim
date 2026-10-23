@@ -17,8 +17,13 @@ public enum PowerMapKind : byte
     Piece,
     /// <summary>Several game powers summed into one buff (power_aliases.json "folds"): NotModelled.</summary>
     Folded,
-    /// <summary>Engine bookkeeping that is no game power (a stun, a marker): never a listener.</summary>
+    /// <summary>Engine bookkeeping that is no game power (a stun, a counter, a marker): never a listener. Only the BuffIds
+    /// <c>OldModelIds</c> names in its bookkeeping list are this; no rule falls through to it.</summary>
     EngineOnly,
+
+    /// <summary>A BuffId no rule maps to a game power and the bookkeeping list does not name: it may stand for a game
+    /// power listener the mapping has not identified, so a pass with any power handler reports NotModelled.</summary>
+    NotModelled,
 }
 
 /// <summary>A BuffId's game power: the kind of mapping, the power's id in data/id_map.json "powers" (0 when none) and
@@ -29,12 +34,20 @@ public readonly record struct PowerMapping(PowerMapKind Kind, int ModelId, strin
 /// The model ids the kernel keys listeners by: the values of data/id_map.json. For cards, relics, potions and monsters
 /// those are the old engine's def ids; powers have their own numbering there, mapped from BuffId by the rule of
 /// tools/emudump OldAnchor (UPPER_SNAKE name without _POWER; "emu_rename" first; a fold target is Folded; a buff whose
-/// name starts with a game power's name and "_" is a piece of that power; anything else, and a stun, is engine-only).
+/// name starts with a game power's name and "_" is a piece of that power; a BuffId named in the bookkeeping list is
+/// engine-only; anything else is NotModelled, never silently engine-only). A fold target or member of power_aliases.json
+/// is Folded.
 /// Orbs and enchantments use the old enums, afflictions <see cref="GameAffliction" />.
 /// </summary>
 public sealed class OldModelIds
 {
-    private static readonly HashSet<BuffId> NotPowers = [BuffId.Stunned];
+    // The BuffIds that are engine bookkeeping with no game power of their own (no class of that name in the game's
+    // powers; the comments of BuffState.cs say what each counts). A BuffId is engine-only only by being named here.
+    private static readonly HashSet<BuffId> Bookkeeping =
+    [
+        BuffId.Stunned, BuffId.SummonCooldown, BuffId.TerrorQueued, BuffId.BackupCount, BuffId.Reviving,
+        BuffId.FranticEscapePlayedCountUnused,
+    ];
 
     // A game power the engine keeps under another buff that power_aliases.json "emu_rename" does not list yet:
     // AccuracyPower is the ShivDamage buff (sts2_gym.live.powers BUFF_ALIASES). Kept here, not in that file, so
@@ -61,16 +74,18 @@ public sealed class OldModelIds
         }
 
         var foldTargets = aliases["folds"]!.AsObject().Select(kv => kv.Key).ToHashSet();
+        var foldMembers = aliases["folds"]!.AsObject().SelectMany(kv => kv.Value!.AsArray().Select(x => (string)x!))
+            .ToHashSet();
         OstyModelId = (int)idMap["enemies"]!["Osty"]!;
         foreach (var id in Enum.GetValues<BuffId>())
         {
             string key = PowerKey(id.ToString());
             PowerMapping m;
-            if (NotPowers.Contains(id))
+            if (Bookkeeping.Contains(id))
             {
                 m = new(PowerMapKind.EngineOnly, 0, key);
             }
-            else if (foldTargets.Contains(key))
+            else if (foldTargets.Contains(key) || foldMembers.Contains(key))
             {
                 m = new(PowerMapKind.Folded, game.GetValueOrDefault(key), key);
             }
@@ -85,7 +100,7 @@ public sealed class OldModelIds
             }
             else
             {
-                m = new(PowerMapKind.EngineOnly, 0, key);
+                m = new(PowerMapKind.NotModelled, 0, key);
             }
 
             _powers[id] = m;
@@ -100,7 +115,7 @@ public sealed class OldModelIds
     /// <summary>Osty's monster id (data/id_map.json "enemies").</summary>
     public int OstyModelId { get; }
 
-    public PowerMapping Power(BuffId id) => _powers.TryGetValue(id, out var m) ? m : new(PowerMapKind.EngineOnly, 0, "");
+    public PowerMapping Power(BuffId id) => _powers.TryGetValue(id, out var m) ? m : new(PowerMapKind.NotModelled, 0, "");
 
     /// <summary>The game's power class name of a power model id, or null.</summary>
     public string? PowerName(int modelId) => _powerNames.GetValueOrDefault(modelId);
@@ -122,21 +137,93 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     public RunState? Run { get; set; } = run;
     public OldModelIds Ids { get; } = ids;
 
-    /// <summary>The card being played: the game's Play pile, set by the kernel's play sites for the length of a play
-    /// (the old engine holds the card in a local while its effects run).</summary>
-    public CardInstance? InFlight { get; set; }
+    private readonly HashSet<EnemyState> _dying = new(ReferenceEqualityComparer.Instance);
 
-    /// <summary>Combat setup (the game's IsStarting): the guarded iterator's exemption.</summary>
-    public bool InSetup { get; set; }
+    // The marks below are what only the kernel's own sites know. Each has a scoped setter (a K3 obligation: the site
+    // that opens the window sets it, with a test); a mark nobody sets leaves the default, which drops or adds
+    // listeners silently unless the state shows the mark is missing (Listeners.cs reports those as NotModelled).
 
-    /// <summary>Enemies dead but not yet removed (inside CreatureCmd.Kill, before the removal): still in the combat.</summary>
-    public HashSet<EnemyState> Dying { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>The card being played: the game's Play pile, set by <see cref="Flying" /> for the length of a play (the
+    /// old engine holds the card in a local while its effects run). Not detectable when missing.</summary>
+    public CardInstance? InFlight { get; private set; }
+
+    /// <summary>Combat setup (the game's IsStarting): the guarded iterator's exemption, set by <see cref="Setup" />.
+    /// Detectable when missing: a guarded pass whose guard is set before turn 1 reports NotModelled.</summary>
+    public bool InSetup { get; private set; }
+
+    /// <summary>The player's hooks as the kill sequence declared them (see <see cref="Core2.PlayerHooks" />). Detectable
+    /// when missing: the player down with no declaration reports NotModelled.</summary>
+    public PlayerHooks PlayerHooks { get; private set; }
+
+    /// <summary>Enemies dead but not yet removed (inside CreatureCmd.Kill, before the removal): still in the combat. Set
+    /// by <see cref="MarkDying" />. Not detectable when missing: a dead enemy left in the roster looks the same after
+    /// its removal.</summary>
+    public bool IsDying(EnemyState enemy) => _dying.Contains(enemy);
+
+    /// <summary>Marks <paramref name="card" /> as the Play pile's card until the scope is disposed.</summary>
+    public IDisposable Flying(CardInstance card)
+    {
+        var before = InFlight;
+        InFlight = card;
+        return new Scope(() => InFlight = before);
+    }
+
+    /// <summary>Marks the combat as starting (IsStarting) until the scope is disposed.</summary>
+    public IDisposable Setup()
+    {
+        bool before = InSetup;
+        InSetup = true;
+        return new Scope(() => InSetup = before);
+    }
+
+    /// <summary>Marks <paramref name="enemy" /> as dead but not yet removed until the scope is disposed.</summary>
+    public IDisposable MarkDying(EnemyState enemy)
+    {
+        bool added = _dying.Add(enemy);
+        return new Scope(() =>
+        {
+            if (added)
+            {
+                _dying.Remove(enemy);
+            }
+        });
+    }
+
+    /// <summary>Declares the player's hooks deactivated (CreatureCmd.Kill's DeactivateHooks has run) until the scope is
+    /// disposed.</summary>
+    public IDisposable DeactivatePlayerHooks() => SetHooks(PlayerHooks.Deactivated);
+
+    /// <summary>Declares the player's hooks still active until the scope is disposed: the death passes of the player's
+    /// own kill (death prevention, AfterDeath) run before DeactivateHooks, with the player at 0 HP.</summary>
+    public IDisposable KeepPlayerHooks() => SetHooks(PlayerHooks.Active);
+
+    private Scope SetHooks(PlayerHooks to)
+    {
+        var before = PlayerHooks;
+        PlayerHooks = to;
+        return new Scope(() => PlayerHooks = before);
+    }
+
+    private sealed class Scope(Action undo) : IDisposable
+    {
+        private Action? _undo = undo;
+
+        public void Dispose()
+        {
+            _undo?.Invoke();
+            _undo = null;
+        }
+    }
 
     /// <summary>The combat's modifiers, badges and multiplayer scaling model by model id (the old state has none).</summary>
     public List<int> Modifiers { get; } = [];
     public List<int> Badges { get; } = [];
     public int? Scaling { get; set; }
 }
+
+/// <summary>What the kill sequence declared of the player's hooks. Undeclared counts as active (the game deactivates a
+/// creature's hooks only after its death-prevention hooks and AfterDeath), but with the player down it is reported.</summary>
+public enum PlayerHooks : byte { Undeclared, Active, Deactivated }
 
 /// <summary>Where a card listener sits: the game's piles in their order, and the run deck.</summary>
 public enum OldPile : sbyte { None = -1, Hand, Draw, Discard, Exhaust, Play, Deck }
@@ -172,6 +259,7 @@ public static class OldState
     {
         var s = w.Combat ?? throw new InvalidOperationException("no combat");
         int c = 0;
+        PlayerGaps(w, gaps);
         Powers(w, s.PlayerBuffs, c, null, into, gaps);
         if (PlayerActive(w))
         {
@@ -227,6 +315,7 @@ public static class OldState
             return;
         }
 
+        PlayerGaps(w, gaps);
         if (!PlayerActive(w))
         {
             return;
@@ -277,6 +366,12 @@ public static class OldState
             if (m.Kind == PowerMapKind.Folded)
             {
                 gaps.Add(new(NotModelledKind.FoldedPower, ListenerKind.Power, creature, 0, m.GameKey));
+                continue;
+            }
+
+            if (m.Kind == PowerMapKind.NotModelled)
+            {
+                gaps.Add(new(NotModelledKind.UnclassifiedPower, ListenerKind.Power, creature, 0, m.GameKey));
                 continue;
             }
 
@@ -418,7 +513,7 @@ public static class OldState
     /// from its owner is still a member); a relic, potion, card, orb, affliction or enchantment while it is still held
     /// and the player is active; a monster while its creature is in the combat; modifiers, badges and scaling always.
     /// </summary>
-    public static bool IsMember(OldWorld w, in OldListener e)
+    public static bool IsMember(OldWorld w, in OldListener e, PassView? view = null)
     {
         var s = w.Combat;
         var who = e.Who;
@@ -426,28 +521,43 @@ public static class OldState
         {
             case ListenerKind.Power:
             case ListenerKind.Monster:
-                return CreatureInCombat(w, e) && (e.Kind == ListenerKind.Monster || e.Creature != 0 || PlayerActive(w));
+                return CreatureInCombat(w, e) && (e.Kind == ListenerKind.Monster || e.Creature != 0
+                                                  || ActiveAt(w, e, view));
             case ListenerKind.Relic:
-                return PlayerActive(w) && (s?.Relics ?? w.Run?.Relics)?.Exists(r => r.DefId == who.ModelId) == true;
+                return ActiveAt(w, e, view) && (s?.Relics ?? w.Run?.Relics)?.Exists(r => r.DefId == who.ModelId) == true;
             case ListenerKind.Potion:
             {
                 var slots = s?.PotionSlots ?? w.Run?.PotionSlots;
-                return PlayerActive(w) && slots is not null && e.Index < slots.Length && slots[e.Index] == who.ModelId;
+                return ActiveAt(w, e, view) && slots is not null && e.Index < slots.Length && slots[e.Index] == who.ModelId;
             }
             case ListenerKind.Orb:
-                // Orbs have no identity in the old state: an orb is a member while one of its type is still held.
-                return PlayerActive(w) && s is not null && s.Orbs.Exists(o => (int)o.Type == who.ModelId);
+                // Orbs have no identity in the old state: an orb is a member while one of its type is still held, which
+                // is a guess once the queue has changed (an evoke leaves a wrong member, the index names another orb).
+                // The pass reports NotModelled at the first orb visited after any change to the list.
+                if (view?.Orbs is { } orbs && orbs.Changed(s?.Orbs))
+                {
+                    view.Note(new(NotModelledKind.OrbsChangedMidPass, ListenerKind.Orb, 0, who.ModelId, "orb queue"));
+                }
+
+                return ActiveAt(w, e, view) && s is not null && s.Orbs.Exists(o => (int)o.Type == who.ModelId);
             case ListenerKind.Card:
             case ListenerKind.Affliction:
             case ListenerKind.Enchantment:
             {
-                if (!PlayerActive(w))
+                if (!ActiveAt(w, e, view))
                 {
                     return false;
                 }
 
                 if (e.Pile == OldPile.Deck)
                 {
+                    // Deck cards are matched by index: a removal shifts the later entries. The pass reports NotModelled at
+                    // the first deck entry visited after any change to the deck list.
+                    if (view?.Deck is { } deckProbe && deckProbe.Changed(w.Run?.Deck))
+                    {
+                        view.Note(new(NotModelledKind.DeckChangedMidPass, e.Kind, 0, who.ModelId, "run deck"));
+                    }
+
                     int i = -who.Instance - 1;
                     if (w.Run?.Deck is not { } deck || i >= deck.Count)
                     {
@@ -476,8 +586,45 @@ public static class OldState
         }
     }
 
-    /// <summary>The player's IsActiveForHooks over the old state: false once its death is final (IsAboutToLose).</summary>
-    public static bool PlayerActive(OldWorld w) => w.Combat is not { } s || !CombatEngine.IsAboutToLose(s);
+    /// <summary>
+    /// The player's IsActiveForHooks over the old state: a caller mark, active unless the kill sequence declared its
+    /// hooks deactivated. The game deactivates a creature's hooks (CreatureCmd.Kill) only after the death-prevention
+    /// hooks and AfterDeath, so the player's own death passes still visit its listeners at 0 HP.
+    /// </summary>
+    public static bool PlayerActive(OldWorld w) => w.PlayerHooks != PlayerHooks.Deactivated;
+
+    /// <summary>The player is down (death final: IsAboutToLose) and the caller declared nothing about its hooks, so
+    /// whether the pass is inside the player's kill (active) or after it (deactivated) is unknown.</summary>
+    public static bool PlayerActivityUndeclared(OldWorld w) =>
+        w.PlayerHooks == PlayerHooks.Undeclared && w.Combat is { } s && CombatEngine.IsAboutToLose(s);
+
+    private static readonly ListenerKind[] PlayerKinds =
+    [
+        ListenerKind.Power, ListenerKind.Relic, ListenerKind.Potion, ListenerKind.Orb, ListenerKind.Card,
+        ListenerKind.Affliction, ListenerKind.Enchantment,
+    ];
+
+    private static void PlayerGaps(OldWorld w, List<OldGap> gaps)
+    {
+        if (PlayerActivityUndeclared(w))
+        {
+            foreach (var kind in PlayerKinds)
+            {
+                gaps.Add(new(NotModelledKind.PlayerHooksUndeclared, kind, 0, 0, "player down, hooks not declared"));
+            }
+        }
+    }
+
+    private static bool ActiveAt(OldWorld w, in OldListener e, PassView? view)
+    {
+        if (view is not null && PlayerActivityUndeclared(w))
+        {
+            view.Note(new(NotModelledKind.PlayerHooksUndeclared, e.Kind, e.Creature, e.Who.ModelId,
+                "player down, hooks not declared"));
+        }
+
+        return PlayerActive(w);
+    }
 
     /// <summary>
     /// An enemy is in the combat while the roster holds it and it is alive, marked dying, or kept after death
@@ -486,7 +633,7 @@ public static class OldState
     /// </summary>
     public static bool EnemyInCombat(OldWorld w, EnemyState enemy) =>
         w.Combat is { } s && s.Enemies.Exists(x => ReferenceEquals(x, enemy))
-                          && (enemy.Hp > 0 || w.Dying.Contains(enemy) || !EnemyAI.ShouldRemoveOnDeath(enemy));
+                          && (enemy.Hp > 0 || w.IsDying(enemy) || !EnemyAI.ShouldRemoveOnDeath(enemy));
 
     private static bool CreatureInCombat(OldWorld w, in OldListener e) =>
         e.Enemy is { } enemy ? EnemyInCombat(w, enemy)
@@ -520,5 +667,56 @@ public static class OldState
         }
 
         return null;
+    }
+}
+
+/// <summary>
+/// What one pass keeps for its visit-time checks (Listeners.cs creates it at the pass's start): a change probe over the
+/// orb queue and the run deck when the pass lists them, and the sink for the gaps only a visit can see. A gap is
+/// noted once per pass and kind.
+/// </summary>
+public sealed class PassView
+{
+    private readonly HashSet<NotModelledKind> _noted = [];
+
+    internal ChangeProbe<OrbState>? Orbs { get; set; }
+    internal ChangeProbe<CardInstance>? Deck { get; set; }
+    internal Action<OldGap>? Gap { get; set; }
+
+    internal void Note(OldGap gap)
+    {
+        if (_noted.Add(gap.Why))
+        {
+            Gap?.Invoke(gap);
+        }
+    }
+}
+
+/// <summary>
+/// Whether a list has been changed since the probe was made, by any mutation (add, remove, set, clear) or by being
+/// replaced: a List enumerator taken at the start throws when the list's version has moved, which is public API and
+/// survives NativeAOT. Orbs and run deck cards have no identity in the old state, so a change in the middle of a pass
+/// leaves their entries unmatchable and the pass NotModelled.
+/// </summary>
+internal sealed class ChangeProbe<T>(List<T> list)
+{
+    private List<T>.Enumerator _probe = list.GetEnumerator();
+
+    public bool Changed(List<T>? current)
+    {
+        if (!ReferenceEquals(current, list))
+        {
+            return true;
+        }
+
+        try
+        {
+            _probe.MoveNext();
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
     }
 }
