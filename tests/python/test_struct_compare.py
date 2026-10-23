@@ -271,7 +271,7 @@ class Calibration(unittest.TestCase):
         rs = [{"fc": 3, "sc": 3}, {"fc": 3, "sc": 1}, {"fc": 1, "sc": 3}, {"fc": 2, "sc": None}, {"fc": None, "sc": 0},
               {"fc": None, "sc": None}]
         self.assertEqual(cal.table(rs, "fc"), {"both_same_step": 1, "both_struct_earlier": 1, "both_struct_later": 1,
-                                               "legacy_only": 1, "struct_only": 1, "neither": 1})
+                                               "legacy_only": 1, "struct_only": 1, "neither": 1, "struct_crash": 0})
 
 
 class PowerFoldCount(unittest.TestCase):
@@ -326,6 +326,28 @@ class Waived(unittest.TestCase):
         self.assertEqual(sc.census_gate(b, a), {})
         self.assertEqual((sc.waived_total(a), sc.waived_total(b)), (0, len(b["f"]["waived"])))
         self.assertGreater(sc.waived_total(b), 0)
+
+
+class CalibrateRound(unittest.TestCase):
+    def test_a_crash_has_its_own_cell(self):
+        from tools.fidelity import struct_calibrate as cal  # noqa: PLC0415
+        rs = [{"fc": 3, "sc": -1}, {"fc": None, "sc": -1}, {"fc": None, "sc": 2}, {"fc": None, "sc": None}]
+        self.assertEqual(cal.table(rs, "fc"), {"both_same_step": 0, "both_struct_earlier": 0, "both_struct_later": 0, "legacy_only": 0,
+                                               "struct_only": 1, "neither": 1, "struct_crash": 2})
+
+    def test_self_record_is_identical_and_not_limited_by_checksums(self):
+        from tools.fidelity import struct_calibrate as cal  # noqa: PLC0415
+        g, e = fight([snap(), snap()], [snap(), snap()], rec_nets=[net(), net()], eng_nets=[net(), net()])
+        g["steps"][0]["checksums"] = [["x", "PlayCardAction"]]
+        g["steps"][1].update(action={"kind": "play", "played": True}, checksums=[["x", "Other"]])  # a late step in the record
+        rec = cal.self_record(g, e)
+        self.assertEqual(len(rec["steps"]), 2)
+        self.assertIsNone(sc.compare_fight(rec, e, ROWS)["first"])
+        bad = copy.deepcopy(e)  # broken: the engine output differs from the view that stands as the record
+        bad["steps"][1]["game_view"]["net"]["players"][0]["energy"] = 0
+        self.assertEqual(paths(sc.compare_fight(rec, bad, ROWS)), ["net.players[0].energy"])  # the late step is judged too
+        bad["steps"][1]["game_view"]["snapshot"]["player"]["hp"] = 1
+        self.assertIn("snap.player.hp", paths(sc.compare_fight(rec, bad, ROWS)))
 
 
 if __name__ == "__main__":
