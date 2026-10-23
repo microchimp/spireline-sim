@@ -91,6 +91,21 @@ if (args[0] == "fight")
         Fight.OnStep += (e, step) => step["rng_log"] = RngLog.Take(e);
     }
 
+    if (args.Contains("--card-uid-check"))
+    {
+        // The card uid invariant after each step (Core2/CardUidInvariant.cs): the cards Normalise had to
+        // renumber, as "<breach>:<card>", only on a step where it acted. No other field changes.
+        Fight.OnStep += (e, step) =>
+        {
+            if (e.State.ActiveCombat is not { } c) return;
+            var log = new List<(Sts2Emulator.Core2.CardUidInvariant.Breach Kind, Sts2Emulator.Core.CardInstance Card)>();
+            if (Sts2Emulator.Core2.CardUidInvariant.Normalise(c, log) == 0) return;
+            step["card_uid_fixed"] = new JsonArray(log
+                .Select(x => (JsonNode)$"{x.Kind}:{Sts2Emulator.GeneratedData.Cards.Get(x.Card.DefId).Name}")
+                .ToArray());
+        };
+    }
+
     JsonArray refs;
     using (Prof.Scope("read_input")) refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
     // A fight the game never ran (an error placeholder) has nothing to replay.
