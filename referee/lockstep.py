@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 COMBAT_KINDS = ("combat", "select_cards_combat", "card_reward_combat")
 # Referee decision kinds the emulator side can replay and answer. Others end the lockstep (reason unmapped:<kind>).
-MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward") + COMBAT_KINDS
+MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "select_cards") + COMBAT_KINDS
 
 
 def _paths() -> None:
@@ -73,7 +73,7 @@ def structural_diff(ref: dict, emu: dict) -> list:
 def ref_view(obs: dict) -> dict:
     """The referee's `obs` (driver/Env.cs Obs) as a view. Card entries are [entry, upgraded, ...]."""
     v = {"act": obs.get("act"), "floor": obs.get("floor"), "hp": obs.get("hp"), "max_hp": obs.get("max_hp"),
-         "gold": obs.get("gold"), "deck": [list(c[:2]) for c in obs.get("deck", [])],
+         "gold": obs.get("gold"), "deck": [[c[0], int(c[1])] for c in obs.get("deck", [])],
          "relics": list(obs.get("relics", [])), "potions": [p for p in obs.get("potions", []) if p]}
     c = obs.get("combat")
     if c:
@@ -81,7 +81,7 @@ def ref_view(obs: dict) -> dict:
         for e in c.get("enemies", []) or []:
             if isinstance(e, dict):
                 hp.append(e.get("hp", e.get("current_hp")))
-        v["combat"] = {"hand": [list(h[:2]) for h in c.get("hand", [])], "enemy_hp": hp}
+        v["combat"] = {"hand": [[h[0], int(h[1])] for h in c.get("hand", [])], "enemy_hp": hp}
     return v
 
 
@@ -238,12 +238,36 @@ class EmuLock:
 
     def sync(self, kind: str, labels: list) -> str | None:
         if kind in COMBAT_KINDS:
+            self._auto_combat()
             return None if self.s.phase == self.E.rc.PHASE_COMBAT else f"phase:{self.s.phase}"
         self.dec = self.s.decision()
         want = {"neow": "neow", "ancient": "neow", "map": "map", "card_reward": "card_reward", "rest": "rest",
-                "reward": "rewards"}[kind]
+                "reward": "rewards", "select_cards": "card_select"}[kind]
         got = None if self.dec is None else self.dec.type
-        return None if got == want else f"screen:{got}!={want}"
+        # The emulator opens a card reward without asking; the referee asks take/skip first, then the cards.
+        ok = got == want or (kind == "reward" and got == "card_reward")
+        return None if ok else f"screen:{got}!={want}"
+
+    def _auto_combat(self) -> None:
+        """The referee asks only when two or more actions are legal (Env.Decide), so a lone End Turn is taken for it."""
+        env = self.s.env
+        for _ in range(40):
+            if self.s.phase != self.E.rc.PHASE_COMBAT:
+                return
+            legal = [i for i in range(32) if self.native.run_action_mask(self.s.handle, 32)[i]]
+            if len(legal) != 1:
+                return
+            self.native.run_step(self.s.handle, legal[0], -1, env._run_obs_buf, env._run_rew_buf, env._run_terminal_buf,
+                                 env._run_truncated_buf)
+
+    def _select_action(self, label: list) -> int | None:
+        """The emulator's candidate index for a referee selection label [entry, upgraded]."""
+        obs, ls = self.s.env._run_obs_buf, self.ls
+        for a in range(min(obs[ls._SELECTION_COUNT], 32)):
+            c = ls._card_at(obs, ls._SELECTION + a * ls._CARD)
+            if [self.slug["cards"].get(c[0], "?"), int(c[1])] == [label[0], int(label[1])]:
+                return a
+        return None
 
     def reanchor(self, plan: str, msg: dict) -> bool:
         return False  # no Python entry to the C# Reanchor (tools/emudump) yet: reported, not faked
@@ -268,6 +292,11 @@ class EmuLock:
                                                               "LIFT": "lift", "DIG": "dig", "HATCH": "hatch",
                                                               "COOK": "cook", "KINDLE": "kindle"}.get(lab, "?"):
                     hit = j
+                elif kind == "select_cards":
+                    deck = (self.dec.view or self.s.view()).deck
+                    card = o.card if o.card is not None else (deck[o.deck_index] if o.deck_index is not None else None)
+                    if card is not None and self._card(card) == [lab[0], int(lab[1])] and j not in out and hit is None:
+                        hit = j
                 elif kind == "reward":
                     if lab == "take" and o.kind in ("reward.potion", "reward.relic"):
                         hit = j
@@ -279,6 +308,8 @@ class EmuLock:
     def choose(self, kind: str, labels: list, msg: dict) -> int | None:
         if kind in COMBAT_KINDS:
             return self._choose_combat(kind, labels, msg)
+        if kind == "reward" and self.dec.type == "card_reward":
+            return next((i for i, lab in enumerate(labels) if lab == "take"), None)
         pair = self._pair(kind, labels)
         pick = self.rules.pick(self.s.view(), self.dec, self.rng).index
         for ref_i, emu_j in enumerate(pair):
@@ -289,7 +320,12 @@ class EmuLock:
     def apply(self, kind: str, labels: list, idx: int) -> str | None:
         if kind in COMBAT_KINDS:
             return self._apply_combat(kind, labels, idx)
-        j = self._pair(kind, labels)[idx]
+        if kind == "reward" and self.dec.type == "card_reward":
+            if labels[idx] == "take":
+                return None  # the card pick follows as the referee's card_reward decision
+            j = next((k for k, o in enumerate(self.dec.options) if o.kind == "card.skip"), None)
+        else:
+            j = self._pair(kind, labels)[idx]
         if j is None:
             return f"no_emulator_option:{kind}:{labels[idx]}"
         o = self.dec.options[j]
@@ -318,8 +354,8 @@ class EmuLock:
         return None
 
     def _choose_combat(self, kind: str, labels: list, msg: dict) -> int | None:
-        if kind != "combat":
-            return None  # selections: the referee's pick is replayed, the agent has no emulator answer yet
+        if kind == "card_reward_combat":
+            return None
         root = self.s.combat(fork_combat=True).combat_fork(None)
         try:
             res = self.ls.search_live(root.handle, max_sims=self.sims, min_child_sims=2, confirm_pairs=0,
@@ -328,15 +364,15 @@ class EmuLock:
             root.close() if hasattr(root, "close") else self.native.destroy(root.handle)
         want = (res.best.action, res.best.target)
         for i, lab in enumerate(labels):
-            if self._action_of(lab) == want:
+            if (kind == "combat" and self._action_of(lab) == want) or (kind != "combat" and self._select_action(lab) == want[0]):
                 return i
         return None
 
     def _apply_combat(self, kind: str, labels: list, idx: int) -> str | None:
-        if kind != "combat":
+        if kind == "card_reward_combat":
             return f"unmapped_apply:{kind}"
-        a = self._action_of(labels[idx])
-        if a is None:
+        a = self._action_of(labels[idx]) if kind == "combat" else (self._select_action(labels[idx]), -1)
+        if a is None or a[0] is None:
             return f"unmapped_label:{labels[idx][:1]}"
         env = self.s.env
         st = self.native.run_step(self.s.handle, a[0], a[1], env._run_obs_buf, env._run_rew_buf,

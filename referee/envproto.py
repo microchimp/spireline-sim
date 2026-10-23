@@ -464,6 +464,8 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
         except Exception as e:  # noqa: BLE001 -- an agent/emulator bug is a crash of that run, reported
             ev = {"ev": "crash", "w": wid, "seed": seed, "where": "agent", "error": f"{type(e).__name__}: {e}"[:300],
                   "s": round(time.time() - t0, 1)}
+            env.close()  # the game is mid-run; a fresh one for the next seed
+            env, restarts = None, restarts + 1
         q.put(ev)
     if env is not None:
         q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
