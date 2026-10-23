@@ -95,6 +95,26 @@ internal static class KernelOrderMode
         ];
         playerOffset = state.PlayerBuffs.Count;
         state.PlayerBuffs.AddRange(Buffs(sc["player_buffs"]));
+        // Extra enemies, an orb queue (OrbType numbers) and an exhaust pile, for tools/kernel/listener_order.py's own scenarios.
+        foreach (var extra in sc["enemies_extra"]?.AsArray() ?? [])
+        {
+            state.Enemies.Add(new EnemyState
+            {
+                DefId = extra!["def"]!.GetValue<int>(), Hp = enemyHp, MaxHp = enemyHp, Buffs = Buffs(extra["buffs"]),
+                CurrentIntent = new Intent(IntentType.Attack, 6),
+            });
+        }
+
+        if (sc["orbs"] is JsonArray orbs)
+        {
+            state.Orbs = orbs.Select(n => new OrbState((OrbType)n!.GetValue<int>())).ToList();
+        }
+
+        if (sc["exhaust"] is JsonArray exhaust)
+        {
+            state.ExhaustPile = exhaust.Select(n => state.Fresh(Card(n!))).ToList();
+        }
+
         if (sc["hand"] is JsonArray hand)
         {
             state.Hand = hand.Select(n => state.Fresh(Card(n!))).ToList();

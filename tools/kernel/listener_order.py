@@ -46,7 +46,34 @@ def scenarios(decompiled: str) -> tuple[list[dict], dict]:
             sc, pos = ho.scenario(engine, trig, ls, rev)
             out.append(sc)
             positions[sc["name"]] = pos
+    for sc in extras():
+        out.append(sc)
+        positions[sc["name"]] = {}
     return out, positions
+
+
+def extras() -> list[dict]:
+    """Scenarios of this tool's own, for what hook_order.py's scenarios do not reach: several enemies (each with
+    powers), an orb queue and the exhaust pile, with relics, potions, player powers and cards in every pile, in both
+    relic and potion orders. hook_order's game positions do not cover them, so only the order check applies (the
+    kernel's list never goes down by game_order_key) plus the listener counts the state implies (``expect``)."""
+    base = {
+        "relics": [1, 2, 3], "potions": [1, 2], "player_buffs": [["Strength", 1], ["Dexterity", 2]],
+        "enemy_def": 16, "enemy_buffs": [["Weak", 1], ["Vulnerable", 1]],
+        "enemies_extra": [{"def": 17, "buffs": [["Strength", 2]]}, {"def": 18, "buffs": [["Frail", 1], ["Weak", 1]]}],
+        "orbs": [1, 0, 2], "hand": [[10], [11]], "draw": [[12]], "discard": [[13], [14]], "exhaust": [[15], [16], [17]],
+        "expect": {"orb": 3, "monster": 3, "card_exhaust": 3, "card_hand": 2, "creatures": 4},
+    }
+    return [dict(base, name="kernel-extra-forward"),
+            dict(base, name="kernel-extra-reversed", relics=[3, 2, 1], potions=[2, 1], orbs=[2, 0, 1],
+                 hand=[[11], [10]], exhaust=[[17], [16], [15]])]
+
+
+def counts(ls: list[dict]) -> dict:
+    return {"orb": sum(e["kind"] == "orb" for e in ls), "monster": sum(e["kind"] == "monster" for e in ls),
+            "card_exhaust": sum(e["kind"] == "card" and e.get("pile") == "exhaust" for e in ls),
+            "card_hand": sum(e["kind"] == "card" and e.get("pile") == "hand" for e in ls),
+            "creatures": len({e["creature"] for e in ls if e["kind"] in ("power", "monster")} | {0})}
 
 
 def key(e: dict) -> tuple:
@@ -80,7 +107,8 @@ def find(lkey: str, listeners: list[dict], pos: dict, player_offset: int = 0) ->
 
 def judge(scs: list[dict], positions: dict, results: list[dict]) -> dict:
     out = {"scenarios": 0, "listeners": 0, "sorted_disagreements": 0, "pairs": 0, "pair_disagreements": 0,
-           "missing": {}, "errors": {}, "examples": []}
+           "missing": {}, "errors": {}, "examples": [], "expect_failures": []}
+    expect = {sc["name"]: sc.get("expect") for sc in scs}
     for res in results:
         name = res["name"]
         if res.get("error"):
@@ -89,6 +117,10 @@ def judge(scs: list[dict], positions: dict, results: list[dict]) -> dict:
         out["scenarios"] += 1
         ls = res["listeners"]
         out["listeners"] += len(ls)
+        for what, want in (expect.get(name) or {}).items():
+            got = counts(ls)[what]
+            if got != want:
+                out["expect_failures"].append(f"{name}: {what} listed {got}, the state has {want}")
         for a, b in zip(ls, ls[1:]):
             if key(b) < key(a):
                 out["sorted_disagreements"] += 1
@@ -138,16 +170,17 @@ def main(argv: list[str] | None = None) -> int:
     out = judge(scs, positions, results)
     print(f"kernel listener order: {out['scenarios']} scenarios, {out['listeners']} listeners listed; "
           f"sorted by game_order_key: {out['sorted_disagreements']} disagreements; "
-          f"{out['pairs']} scenario pairs: {out['pair_disagreements']} disagreements")
+          f"{out['pairs']} scenario pairs: {out['pair_disagreements']} disagreements; "
+          f"{len(out['expect_failures'])} listener-count failures")
     for why, xs in out["missing"].items():
         print(f"  not listed ({why}): {len(xs)}, e.g. {'; '.join(xs[:4])}")
     for name, err in out["errors"].items():
         print(f"  {name}: error {err}")
-    for ex in out["examples"][:20]:
+    for ex in out["examples"][:20] + out["expect_failures"][:20]:
         print("  " + ex)
     if a.json:
         Path(a.json).write_text(json.dumps(out, indent=1), encoding="utf-8")
-    bad = out["sorted_disagreements"] or out["pair_disagreements"] or out["errors"]
+    bad = out["sorted_disagreements"] or out["pair_disagreements"] or out["errors"] or out["expect_failures"]
     return 1 if bad else 0
 
 
