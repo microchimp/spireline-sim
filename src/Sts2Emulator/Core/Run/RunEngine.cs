@@ -898,6 +898,10 @@ public sealed class RunEngine
             State,
             new GameRng(State.Rng.Seed, "resample_encounters")
         );
+        RunMapGenerator.ResampleUnseenActContents(
+            State,
+            new GameRng(State.Rng.Seed, "resample_acts")
+        );
 
         var combat = State.ActiveCombat;
         if (combat is null)

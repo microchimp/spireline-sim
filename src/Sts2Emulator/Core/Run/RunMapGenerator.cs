@@ -2232,6 +2232,79 @@ public static class RunMapGenerator
     }
 
     /// <summary>
+    /// Redeal the rest of what the run generator dealt at the start and the player has not been
+    /// shown (DESIGN.md 1.1, 3.2 and 7.6 L3): the current act's events from the cursor on, and for
+    /// every later act its events, its boss (and the second boss of A10's last act), and the
+    /// Ancient it opens on. Each comes from the generator's own pool and constraint (a shuffle of
+    /// the event pool, a pick off the boss pool with the discovery override, a pick off the act's
+    /// ancients plus the shared subset it was dealt), run off <paramref name="rng" /> instead of the
+    /// UpFront stream. The current act's boss, its Ancient and every event the cursor has passed
+    /// are on the screen or behind it and stay.
+    /// </summary>
+    internal static void ResampleUnseenActContents(RunState state, GameRng rng)
+    {
+        var unlocks = state.Unlocks;
+        int current = state.CurrentActIndex;
+        var seenAncients = state.Acts.Take(current + 1).Select(a => a.Ancient).ToHashSet();
+        var shared = SharedAncientPool
+            .Where(ancient =>
+                (ancient != RunConstants.AncientDarv
+                    || unlocks.IsEpochRevealed(UnlockState.Epochs.Darv))
+                && !seenAncients.Contains(ancient)
+            )
+            .ToList();
+
+        for (int index = current; index < state.Acts.Count; index++)
+        {
+            var act = state.Acts[index];
+            int[] fresh = GenerateEventSequence(act.Act, rng, unlocks);
+            if (index == current)
+            {
+                int keep = Math.Min(state.EventSequenceIndex, act.Events.Length);
+                int[] prefix = act.Events[..keep];
+                state.Acts[index] = act with
+                {
+                    Events = [.. prefix, .. fresh.Where(e => !prefix.Contains(e))],
+                };
+                continue;
+            }
+
+            int[] bossPool = BossPoolFor(act.Act);
+            int boss = bossPool[(int)(rng.NextDouble() * bossPool.Length)];
+            foreach (int undiscovered in RunConstants.BossDiscoveryOrder(act.Act))
+            {
+                if (!unlocks.HasSeenEncounter(undiscovered))
+                {
+                    boss = undiscovered;
+                    break;
+                }
+            }
+
+            int second = 0;
+            if (act.SecondBossEncounterId != 0)
+            {
+                second = rng.NextItem([.. bossPool.Where(b => b != boss)]);
+            }
+
+            int take = rng.NextInt(shared.Count + 1);
+            string[] subset = [.. shared.Take(take)];
+            shared = [.. shared.Skip(take)];
+            string[] ancients =
+            [
+                .. RunConstants.AncientsFor(act.Act).Where(a => IsAncientUnlocked(a, unlocks)),
+                .. subset,
+            ];
+            state.Acts[index] = act with
+            {
+                Events = fresh,
+                BossEncounterId = boss,
+                SecondBossEncounterId = second,
+                Ancient = ancients[(int)(rng.NextDouble() * ancients.Length)],
+            };
+        }
+    }
+
+    /// <summary>
     /// <paramref name="sequence" /> with its first <paramref name="seen" /> entries kept and the
     /// rest dealt afresh. <paramref name="phases" /> are the generator's pools in order, each
     /// for the number of slots it fills (the weak pool first, then the normal one).
