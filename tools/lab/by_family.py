@@ -18,8 +18,8 @@ SHAPE of the diff (which fields, sizes, order, direction), not the hook that ran
   reason  the record's own reason names the moment (the referee is at the rewards screen while the emulator is in combat)
   type    only the decision type and field name place it (run layer)
 A divergence no rule places stays in the `unassigned` bucket, never a guess. Rules are tried in order; the first match wins.
-The alt column is the other reading of a boundary (the draw is F03 in the dispatch file's hook list for ModifyHandDraw, F11 for
-CardPileCmd); the top-five share is reported under both.
+READINGS lists the other readings of a boundary (the draw as F03, a listed corpse as an F10 death hook); the top-five share is
+reported under the primary reading and under each of them.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ RULES = [
     ("R01", "phase_mismatch", "F10", "death and victory", "reason", "the referee is at the rewards screen while the emulator is still in combat: the combat-end win check at the action boundary (design 2: victory is not checked there); cause unverified"),
     ("R02", "screen_mismatch", "F16", "run flow", "reason", "the run layer shows another screen or event page (rest, map, event): flow, not a combat hook"),
     ("R03", "reward_hp", "F10", "death and victory", "diff", "hp differs at the reward screen: what runs at the victory (AfterCombatVictory heals) differs"),
-    ("R04", "enemy_count", "F10", "death and victory", "diff", "a dead (0 hp) enemy is listed on one side only: death removal (ShouldCreatureBeRemovedFromCombatAfterDeath / AfterDeath); reading C if the referee lists corpses at the sampling moment"),
+    ("R04", "enemy_count", UNASSIGNED, "", "none", "an enemy with 0 hp is listed on the referee side only: the emulator's lockstep view keeps hp above 0 only, the referee's keeps every enemy the game lists (referee/lockstep.py), so this is a comparer asymmetry unless the corpse matters to play; reading C puts it in F10 (AfterDeath, removal after death)"),
     ("R05", "sentinel_hp", UNASSIGNED, "", "none", "an enemy hp stand-in value (999999999 against 32768) is a representation difference of the encounter, not a hook; needs the encounter"),
     ("R06", "hp_only", "F08", "damage and block pipeline", "diff", "only enemy hp and player hp differ: a damage amount (modifier folds, rounding) or an hp change"),
     ("R07", "block_only", "F09", "damage and block pipeline", "diff", "only block differs: the block gain passes"),
@@ -73,7 +73,7 @@ RULES = [
 # Other readings of a boundary: rule id -> the family it would join. Each is reported beside the primary top-five share.
 READINGS = {
     "B: the draw is F03": ({"R10": "F03", "R11": "F03"}, "the dispatch file lists ModifyHandDraw / BeforeHandDraw under F03 (player turn start) and the draw, shuffle and pile moves under F11 (card piles); a hand drawn at turn start can be read either way"),
-    "C: a listed corpse is the comparer's": ({"R04": UNASSIGNED}, "if the referee lists a dead enemy at the sampling moment that the emulator already removed, R04 is a snapshot timing difference, not a death hook"),
+    "C: a listed corpse is a death hook": ({"R04": "F10"}, "if the game keeps a dead enemy in its roster (ShouldCreatureBeRemovedFromCombatAfterDeath refuses) and the emulator removes it, R04 is a death-removal difference in F10; as it stands the comparer's asymmetry alone produces the diff"),
 }
 RULE_IDS = {r[0]: r for r in RULES}
 # unassigned sub-reasons shown in the report are the rule ids above (R05, R11, R12, R17)

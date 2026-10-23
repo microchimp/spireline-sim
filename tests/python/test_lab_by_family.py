@@ -61,7 +61,7 @@ class RuleTableTest(unittest.TestCase):
         self.check(rec(1, 3, [], type="reward", reason="phase:0!=rewards"), "R01", "F10", "reason")
         self.check(rec(1, 3, [], type="rest", reason="screen:map!=rest"), "R02", "F16", "reason")
         self.check(rec(1, 3, RUN_HP, type="reward"), "R03", "F10", "diff")
-        self.check(rec(1, 3, CORPSE), "R04", "F10", "diff")
+        self.check(rec(1, 3, CORPSE), "R04", bf.UNASSIGNED, "none")
         self.check(rec(1, 3, [[".combat.enemy_hp", [999999999], [32768]]]), "R05", bf.UNASSIGNED)
         self.check(rec(1, 3, HP), "R06", "F08", "diff")
         self.check(rec(1, 3, RUN_HP), "R06", "F08")
@@ -146,10 +146,11 @@ class TableTest(unittest.TestCase):
         gs = [group("Ga", 50.0, "architectural", "combat", SAME_SIZE), group("Gb", 40.0, "architectural", "combat", CORPSE),
               group("Gc", 10.0, "architectural", "combat", HP)]
         s = bf.table(bf.parts_from_ranked({"groups": gs}), gs)["summary"]
-        self.assertEqual((1.0, ["F11", "F10", "F08"]), (s["top5_arch"]["share_of_arch"], s["top5_arch"]["families"]))
-        c = s["readings"]["C: a listed corpse is the comparer's"]
-        self.assertEqual(0.6, c["share_of_arch"])
-        self.assertTrue(c["verdict"].startswith("between"))
+        self.assertEqual((0.6, ["F11", "F08"]), (s["top5_arch"]["share_of_arch"], s["top5_arch"]["families"]))
+        self.assertTrue(s["verdict"].startswith("between"))
+        c = s["readings"]["C: a listed corpse is a death hook"]
+        self.assertEqual((1.0, ["F11", "F10", "F08"]), (c["share_of_arch"], c["families"]))
+        self.assertTrue(c["verdict"].startswith("Tier 1"))
 
     def test_empty_input(self):
         t = bf.build(None, rank.rank(Path(tempfile.gettempdir()) / "no-such-score-real-dir"))
@@ -174,7 +175,7 @@ class RecordsTest(unittest.TestCase):
         t = bf.build(f, doc)
         mixed = [g for g in t["groups"] if g["mixed"]]
         self.assertEqual(1, len(mixed))
-        self.assertEqual(["F08", "F10"], mixed[0]["families"])
+        self.assertEqual(["F08", bf.UNASSIGNED], mixed[0]["families"])
         self.assertEqual("divergences", t["summary"]["basis"])
         self.assertEqual(0.0, t["summary"]["weight_check_max_abs_error"])
         self.assertEqual(round(doc["summary"]["total_weight"], 3), t["summary"]["total_weight"])
