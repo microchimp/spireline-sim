@@ -7,7 +7,8 @@ Each fight is replayed once (`EmuDump fight --compact --game-view`, plus --netst
 fight_compare.first_difference, netstate_diff.diff_fight (traced) and struct_compare.compare_fight on the same output.
 The contingency table per legacy comparer counts fights flagged by both (at the same step, struct earlier, struct later),
 by the legacy comparer only, by struct_compare only, and by neither. A fight the legacy comparer flags that struct_compare
-does not flag at that step or earlier is a calibration failure to explain. Writes nothing into the repo; the output holds
+does not flag at that step or earlier is a calibration failure to explain. --gate-against <earlier output> runs the census
+gate: it fails when a fight was compared on fewer fields (schema paths) here than in the earlier output (engine B against A). Writes nothing into the repo; the output holds
 fight ids, seeds, steps and field paths only.
 """
 
@@ -49,7 +50,7 @@ def _judge(fid: str, g: dict, e: dict, nm: dict, rows: list, traced: bool) -> di
     try:
         s = sc.compare_fight(g, e, rows)
         out.update(sc=s["first"], sc_paths=[p for p, _, _ in s["at"][:8]], sc_vals=[[p, x, y] for p, x, y in s["at"][:4]],
-                   census=len(s["census"]), leaves=s["leaves"], allowed=s["allowed"])
+                   census=s["census"], leaves=s["leaves"], allowed=s["allowed"])
     except Exception as ex:  # noqa: BLE001 - a comparer crash is a finding, reported per fight
         out["sc"], out["sc_error"] = -1, f"{type(ex).__name__}: {ex}"[:300]
     if e.get("error"):
@@ -104,6 +105,7 @@ def main() -> int:
     ap.add_argument("--corpus", type=Path, default=C.DEFAULT_CORPUS)
     ap.add_argument("--procs", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--gate-against", type=Path, help="an earlier output (engine A): fail any fight compared on fewer fields here")
     a = ap.parse_args()
     work = a.work or a.out.parent
     work.mkdir(parents=True, exist_ok=True)
@@ -139,6 +141,13 @@ def main() -> int:
            "tables": tables, "allowed_fired": allowed, "sc_errors": sum("sc_error" in r for r in results), "results": results}
     a.out.write_text(json.dumps(doc), encoding="utf-8")
     print(json.dumps({k: v for k, v in doc.items() if k != "results"}, indent=1))
+    if a.gate_against:
+        base = {r["id"]: r for r in json.loads(a.gate_against.read_text(encoding="utf-8"))["results"] if "census" in r}
+        bad = sc.census_gate(base, {r["id"]: r for r in results if "census" in r})
+        for fid, missing in list(bad.items())[:20]:
+            print(f"census gate: {fid}: not compared on {', '.join(missing[:6])}")
+        print(f"census gate: {len(bad)} of {len(base)} fights compared on fewer fields than {a.gate_against.name}")
+        return 1 if bad else 0
     return 0
 
 
