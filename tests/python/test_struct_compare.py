@@ -420,5 +420,20 @@ class EngineScope(unittest.TestCase):
         self.assertIsNone(first([mapped], [snap(enemies=[{**e0, "intents": [["Debuff"]]}])])["first"])  # a mapped kind still folds
 
 
+class IntentWildcard(unittest.TestCase):
+    def test_unknown_stands_for_any_unmapped_kind_only(self):
+        e0 = snap()["enemies"][0]
+
+        def it(*intents):
+            return snap(enemies=[{**e0, "intents": [list(i) for i in intents]}])
+        self.assertIsNone(first([it(["Sleep"])], [it(["Unknown"])])["first"])  # the old engine cannot say Sleep
+        self.assertIsNone(first([it(["Escape"])], [it(["Unknown"])])["first"])
+        self.assertEqual(paths(first([it(["Summon"])], [it(["Escape"])])), ["snap.enemies[0].intents[0]"])
+        for mapped in (["Attack", 6, 1], ["Buff"]):  # a mapped kind is never hidden behind Unknown
+            self.assertEqual(paths(first([it(mapped)], [it(["Unknown"])])), ["snap.enemies[0].intents[0]"])
+        self.assertEqual(paths(sc.compare_fight(*fight([it(["Sleep"])], [it(["Unknown"])]), ROWS, engine="core2")),
+                         ["snap.enemies[0].intents[0]"])  # the wildcard is the old engine's row
+
+
 if __name__ == "__main__":
     unittest.main()

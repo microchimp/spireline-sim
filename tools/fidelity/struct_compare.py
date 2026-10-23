@@ -242,6 +242,16 @@ def _coarse(intents: list, classes: dict):
     return (kind, attack)
 
 
+def _coarse_same(rec: list, eng: list, row: dict) -> bool:
+    """intent-vocabulary: the same first-intent class and the same first damage intent. A kind outside the class map keeps its
+    own name (Summon is not Escape). The row's wildcard is the engine's own kind for what its vocabulary cannot say; it stands
+    for any unmapped kind of the record, never for a mapped one."""
+    (rk, ra), (ek, ea) = _coarse(rec, row["classes"]), _coarse(eng, row["classes"])
+    if ra != ea:
+        return False
+    return rk == ek or (ek == row.get("wildcard") and rk not in set(row["classes"].values()) | {"NONE"})
+
+
 def _intents(flat: dict, base: str) -> list:
     n = flat.get(f"{base}.intents#len", 0)
     return [flat.get(f"{base}.intents[{j}]") for j in range(n)]
@@ -302,7 +312,7 @@ def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict,
             elif k == "intent_coarse" and ".intents" in p:
                 base = p[:p.index(".intents")]
                 if base not in coarse_ok:
-                    coarse_ok[base] = _coarse(_intents(g, base), r["classes"]) == _coarse(_intents(e, base), r["classes"])
+                    coarse_ok[base] = _coarse_same(_intents(g, base), _intents(e, base), r)
                 why = r["id"] if coarse_ok[base] else None
             elif k == "settle" and any(p == m or p.startswith(m + c) for m in moved_paths for c in ".[{#"):
                 why = r["id"]
