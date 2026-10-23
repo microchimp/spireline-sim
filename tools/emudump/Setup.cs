@@ -241,7 +241,7 @@ static class Setup
             case "power":
             {
                 if (c == null) return (false, "unsupported: power outside a fight");
-                var buff = Reanchor.BuffFor(id) ?? throw new KeyNotFoundException("no emulator buff for " + id);
+                var buff = OldAnchor.BuffFor(id) ?? throw new KeyNotFoundException("no emulator buff for " + id);
                 string target = (string?)item["target"] ?? "player";
                 int at = target == "player" ? -1 : target.StartsWith("enemy:") ? int.Parse(target[6..]) : throw new ArgumentException("target " + target);
                 bool ok = ConsoleSetup.ApplyPowerWithoutApplier(c, at, buff, (int?)item["amount"] ?? 1);

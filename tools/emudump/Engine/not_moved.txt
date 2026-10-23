@@ -14,7 +14,6 @@ Meta.cs
 MutHost.cs
 NetState.cs
 Program.cs
-Reanchor.cs
 RefsetSetup.cs
 RngLog.cs
 RunReplay.cs

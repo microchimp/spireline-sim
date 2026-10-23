@@ -10,7 +10,7 @@
 //   dump       the state EmuDump fight prints per step changes when it changes (CombatSnapshot plus the
 //              draw order and stream counters); for the run, RunSnap.Export (EmuDump run).
 //   load       CombatSnapshot.Read gives back what CombatSnapshot.Write was given.
-//   reanchor   Reanchor.Anchor, writing the game's recorded state over the emulator's, writes it, or it
+//   reanchor   OldAnchor.Anchor, writing the game's recorded state over the emulator's, writes it, or it
 //              is hidden state carried from the emulator's previous step on purpose.
 //
 // A field a stage does not handle is a finding unless the stage's allow-list below names it with the
@@ -60,7 +60,7 @@ public class LifecycleTests(ITestOutputHelper output)
     // own state after its previous step, carried on purpose. MustWrite below is what it must write.
     const string Setup = "the fight's fixed setup (character, ascension, encounter, room): the same on both sides all fight";
     const string Identity = "the creature's identity: the write-back pairs the game's creatures with the emulator's by it";
-    const string AiState = "enemy AI state, carried; the next move is put on the game's by Reanchor.AnchorMoves where the record has intents";
+    const string AiState = "enemy AI state, carried; the next move is put on the game's by OldAnchor.AnchorMoves where the record has intents";
     const string EnemyHidden = "an enemy's hidden state the game's snapshot does not show, carried";
     const string CardHidden = "a card's hidden modifiers (cost changes, enchantment, bonuses, keywords for the turn), carried with the card: PatchPiles keeps each card's identity";
     const string BuffData = "a power's hidden per-instance Data, carried: PatchBuffs keeps each instance's Data";
@@ -1000,7 +1000,7 @@ public class LifecycleTests(ITestOutputHelper output)
         var game = GameView(s);
         string clean = Read(s, m.Segs);
         Stamp(s, m.Segs, 1);
-        string? problem = Reanchor.Anchor(s, game, new JsonArray());
+        string? problem = OldAnchor.Anchor(OldReanchor.Tables, s, game, new JsonArray());
         if (problem != null) return "the write-back refused the state: " + problem;
         return Read(s, m.Segs) != clean ? "carried from the emulator's previous step, not written from the game's state" : null;
     }
