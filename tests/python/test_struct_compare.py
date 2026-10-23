@@ -1,0 +1,269 @@
+"""tools/fidelity/struct_compare.py: structural diffs, the allowed rows, the field census and its gate, and a broken case
+for each (a change that must be flagged is flagged)."""
+
+from __future__ import annotations
+
+import copy
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tools.fidelity import struct_compare as sc  # noqa: E402
+
+ROWS = sc.load_rows()
+
+
+def snap(**kw) -> dict:
+    s = {
+        "in_combat": True, "round": 1,
+        "player": {"hp": 70, "max_hp": 80, "block": 0, "energy": 3, "powers": [["STRENGTH_POWER", 2], ["FRAIL_POWER", 1]]},
+        "hand": [["STRIKE_IRONCLAD", False], ["BASH", False]], "draw": [["DEFEND_IRONCLAD", False]], "discard": [], "exhaust": [],
+        "enemies": [{"name": "CORPSE_SLUG", "hp": 20, "max_hp": 28, "block": 0, "powers": [], "intents": [["Attack", 6, 1]]}],
+        "rng": {"Shuffle": {"counter": 3}, "MonsterAi": {"counter": 1}},
+    }
+    s.update(kw)
+    return s
+
+
+def net(**kw) -> dict:
+    n = {
+        "creatures": [{"monster": None, "player": 1, "hp": 70, "max_hp": 80, "block": 0,
+                       "powers": [["STRENGTH_POWER", 2], ["FRAIL_POWER", 1]]},
+                      {"monster": "CORPSE_SLUG", "player": None, "hp": 20, "max_hp": 28, "block": 0, "powers": []}],
+        "players": [{"id": 1, "energy": 3, "piles": {"Hand": [{"id": "STRIKE_IRONCLAD", "upgrades": 0}, {"id": "BASH", "upgrades": 0}],
+                                                      "Draw": [{"id": "DEFEND_IRONCLAD"}], "Discard": [], "Exhaust": [], "Play": []},
+                     "relics": [{"id": "BURNING_BLOOD"}]}],
+        "rng": {"counters": {"Shuffle": 3, "MonsterAi": 1}},
+    }
+    n.update(kw)
+    return n
+
+
+def fight(rec_states: list, eng_states: list, rec_nets=None, eng_nets=None) -> tuple[dict, dict]:
+    g = {"seed": "S", "steps": []}
+    e = {"seed": "S", "steps": []}
+    for k, st in enumerate(rec_states):
+        step = {"action": None if k == 0 else {"kind": "end_turn"}, "state": st}
+        if rec_nets is not None and rec_nets[k] is not None:
+            step["net"] = [{"ctx": "c", "state": rec_nets[k]}]
+        g["steps"].append(step)
+    for k, st in enumerate(eng_states):
+        e["steps"].append({"state": {}, "game_view": {"snapshot": st, "net": None if eng_nets is None else eng_nets[k],
+                                                      "private": {}}})
+    return g, e
+
+
+def first(rec, eng, **kw) -> dict:
+    return sc.compare_fight(*fight(rec, eng, **kw), ROWS)
+
+
+def paths(r: dict) -> list:
+    return [p for p, _, _ in r["at"]]
+
+
+class Structural(unittest.TestCase):
+    def test_identical(self):
+        r = first([snap()], [snap()])
+        self.assertIsNone(r["first"])
+        for p in ("snap.player.hp", "snap.player.powers{*}", "snap.hand[*]", "snap.hand#len", "snap.enemies[*].intents[*]",
+                  "snap.rng.Shuffle.counter"):
+            self.assertIn(p, r["census"])
+
+    def test_scalar_diff(self):
+        r = first([snap(), snap()], [snap(), snap(player={**snap()["player"], "hp": 69})])
+        self.assertEqual(r["first"], 1)
+        self.assertEqual(r["at"], [("snap.player.hp", 70, 69)])
+
+    def test_power_order_is_no_diff(self):
+        p = snap()["player"]
+        r = first([snap()], [snap(player={**p, "powers": list(reversed(p["powers"]))})])
+        self.assertIsNone(r["first"])
+
+    def test_power_missing_or_extra_is_a_diff(self):
+        p = snap()["player"]
+        r = first([snap()], [snap(player={**p, "powers": [["STRENGTH_POWER", 2]]})])
+        self.assertEqual(paths(r), ["snap.player.powers{FRAIL_POWER}"])
+        r = first([snap()], [snap(player={**p, "powers": p["powers"] + [["VULNERABLE_POWER", 1]]})])
+        self.assertEqual(paths(r), ["snap.player.powers{VULNERABLE_POWER}"])
+
+    def test_extra_card_is_len_and_entry(self):
+        r = first([snap()], [snap(hand=snap()["hand"] + [["BASH", True]])])
+        self.assertEqual(paths(r), ["snap.hand#len", "snap.hand[2]"])
+
+    def test_record_only_field_is_a_diff_unless_unmodelled(self):
+        rec = snap(rng={"Shuffle": {"counter": 3, "seed": 9}, "MonsterAi": {"counter": 1, "seed": 4}})
+        r = first([rec], [snap()])
+        self.assertIsNone(r["first"])
+        self.assertIn("snap.rng.Shuffle.seed", r["unmodelled"])
+        broken = snap(extra_field=5)
+        r = first([broken], [snap()])
+        self.assertEqual(paths(r), ["snap.extra_field"])
+
+    def test_engine_only_field_is_unjudged(self):
+        r = first([snap()], [snap(potions=[None, None])])
+        self.assertIsNone(r["first"])
+        self.assertIn("snap.potions#len", r["unjudged"])
+
+    def test_length_and_error(self):
+        r = first([snap(), snap()], [snap()])
+        self.assertEqual((r["first"], paths(r)), (1, ["(length)"]))
+        g, e = fight([snap(), snap()], [snap()])
+        e["error"] = "boom"
+        self.assertEqual(paths(sc.compare_fight(g, e, ROWS)), ["(error)"])
+
+    def test_engine_without_game_view_raises(self):
+        g, e = fight([snap()], [snap()])
+        del e["steps"][0]["game_view"]
+        with self.assertRaises(ValueError):
+            sc.compare_fight(g, e, ROWS)
+
+
+class AllowedRows(unittest.TestCase):
+    def test_rows_need_reason_and_known_kind(self):
+        for bad in ({"id": "x", "kind": "ignore", "patterns": ["a"], "legacy": "y"},
+                    {"id": "x", "kind": "nope", "reason": "r", "legacy": "y"}):
+            with tempfile.TemporaryDirectory() as d:
+                f = Path(d) / "a.json"
+                f.write_text(json.dumps({"rows": [bad]}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    sc.load_rows(f)
+
+    def test_every_row_has_reason_and_legacy(self):
+        for r in ROWS:
+            self.assertTrue(r["reason"] and r["legacy"], r["id"])
+
+    def test_power_fold(self):
+        p = snap()["player"]
+        rec = snap(player={**p, "powers": [["SETUP_STRIKE_POWER", 2], ["FLEX_POTION_POWER", 3]]})
+        eng = snap(player={**p, "powers": [["TEMPORARY_STRENGTH_POWER", 5]]})
+        r = first([rec], [eng])
+        self.assertIsNone(r["first"])
+        self.assertIn("power-folds", r["allowed"])
+        broken = snap(player={**p, "powers": [["TEMPORARY_STRENGTH_POWER", 4]]})
+        self.assertEqual(paths(first([rec], [broken])), ["snap.player.powers{TEMPORARY_STRENGTH_POWER}"])
+
+    def test_intent_vocabulary(self):
+        e0 = snap()["enemies"][0]
+        rec = snap(enemies=[{**e0, "intents": [["DebuffStrong"], ["Buff"], ["Defend"]]}])
+        eng = snap(enemies=[{**e0, "intents": [["Debuff"], ["Buff"]]}])
+        r = first([rec], [eng])
+        self.assertIsNone(r["first"])
+        self.assertIn("intent-vocabulary", r["allowed"])
+        rec = snap(enemies=[{**e0, "intents": [["Attack", 6, 2]]}])
+        broken = snap(enemies=[{**e0, "intents": [["Attack", 7, 2]]}])
+        self.assertEqual(paths(first([rec], [broken])), ["snap.enemies[0].intents[0]"])
+
+    def test_dead_enemy_dropped(self):
+        e0 = snap()["enemies"][0]
+        rec = snap(enemies=[{**e0, "hp": 0}, e0])
+        r = first([rec], [snap()])
+        self.assertIsNone(r["first"])
+        broken = snap(enemies=[{**e0, "hp": 1}, e0])
+        self.assertIn("snap.enemies#len", paths(first([broken], [snap()])))
+
+    def test_lost_fight_compares_hp_only(self):
+        rec = snap(in_combat=False, player={**snap()["player"], "hp": 0}, hand=[])
+        eng = snap(in_combat=False, player={**snap()["player"], "hp": 0, "block": 9})
+        r = first([rec], [eng])
+        self.assertIsNone(r["first"])
+        broken = snap(in_combat=False, player={**snap()["player"], "hp": 3})
+        self.assertEqual(paths(first([rec], [broken])), ["snap.player.hp"])
+
+    def test_after_fight_energy_only_out_of_combat(self):
+        p = {k: v for k, v in snap()["player"].items() if k != "energy"}
+        r = first([snap(in_combat=False)], [snap(in_combat=False, player=p)])
+        self.assertIsNone(r["first"])
+        self.assertEqual(paths(first([snap()], [snap(player=p)])), ["snap.player.energy"])
+
+    def test_move_id_unmodelled(self):
+        e0 = snap()["enemies"][0]
+        r = first([snap(enemies=[{**e0, "move": "GOOP_MOVE"}])], [snap()])
+        self.assertIsNone(r["first"])
+        self.assertIn("snap.enemies[*].move", r["unmodelled"])
+
+
+class NetShape(unittest.TestCase):
+    def run_net(self, rec_net, eng_net, rec_snap=None):
+        rs = rec_snap or snap()
+        return sc.compare_fight(*fight([rs], [rs], rec_nets=[rec_net], eng_nets=[eng_net]), ROWS)
+
+    def test_identical_and_census(self):
+        r = self.run_net(net(), net())
+        self.assertIsNone(r["first"])
+        self.assertIn("net.players[*].piles.Hand[*].id", r["census"])
+        self.assertIn("net.players[*].piles.Hand[*].cost", r["census"])
+
+    def test_card_defaults_compare_absent_cost(self):
+        eng = net()
+        eng["players"][0]["piles"]["Hand"][0]["cost"] = 0
+        self.assertEqual(paths(self.run_net(net(), eng)), ["net.players[0].piles.Hand[0].cost"])
+
+    def test_keywords_are_a_set(self):
+        rec, eng = net(), net()
+        rec["players"][0]["piles"]["Hand"][0]["keywords"] = ["Ethereal", "Exhaust"]
+        eng["players"][0]["piles"]["Hand"][0]["keywords"] = ["Exhaust", "Ethereal"]
+        self.assertIsNone(self.run_net(rec, eng)["first"])
+        eng["players"][0]["piles"]["Hand"][0]["keywords"] = ["Exhaust"]
+        self.assertEqual(paths(self.run_net(rec, eng)), ["net.players[0].piles.Hand[0].keywords"])
+
+    def test_upgrades_both_positive(self):
+        rec, eng = net(), net()
+        rec["players"][0]["piles"]["Hand"][0]["upgrades"] = 2
+        eng["players"][0]["piles"]["Hand"][0]["upgrades"] = 1
+        upgraded = snap(hand=[["STRIKE_IRONCLAD", True], ["BASH", False]])  # the record's snapshot agrees with its net state
+        self.assertIsNone(self.run_net(rec, eng, upgraded)["first"])
+        eng["players"][0]["piles"]["Hand"][0]["upgrades"] = 0
+        self.assertEqual(paths(self.run_net(rec, eng, upgraded)), ["net.players[0].piles.Hand[0].upgrades"])
+
+    def test_props_floor_unmodelled(self):
+        rec = net()
+        rec["players"][0]["relics"][0].update(props={"Counter": 1}, floor=1)
+        r = self.run_net(rec, net())
+        self.assertIsNone(r["first"])
+        self.assertIn("net.players[*].relics[*].props.Counter", r["unmodelled"])
+
+    def test_settle_after_last_checksum(self):
+        # The record's snapshot shows the hand moved after the step's last checkpoint (BASH played by the game later):
+        # the net hand is judged by the snapshot comparison, which agrees.
+        rec_snap = snap(hand=[["STRIKE_IRONCLAD", False]])
+        eng = net()
+        eng["players"][0]["piles"]["Hand"] = [{"id": "STRIKE_IRONCLAD", "upgrades": 0}]
+        r = self.run_net(net(), eng, rec_snap)
+        self.assertIsNone(r["first"])
+        self.assertIn("after-last-checksum", r["allowed"])
+        # Broken: the record did not move, so the same engine hand is a difference.
+        r = self.run_net(net(), eng, snap())
+        self.assertIn("net.players[0].piles.Hand#len", paths(r))
+
+    def test_missing_engine_net_in_combat(self):
+        self.assertEqual(paths(self.run_net(net(), None)), ["net"])
+
+    def test_late_steps_stop_the_net_shape(self):
+        g, e = fight([snap(), snap()], [snap(), snap()], rec_nets=[net(), net()], eng_nets=[net(), net()])
+        g["steps"][1]["net"][0]["state"]["players"][0]["gold"] = 99  # a field only the record has, not unmodelled: a diff
+        g["steps"][0]["checksums"] = [["x", "PlayCardAction"]]
+        g["steps"][1].update(action={"kind": "play", "played": True}, checksums=[["x", "Other"]])
+        self.assertIsNone(sc.compare_fight(g, e, ROWS)["first"])
+        g["steps"][1]["checksums"] = [["x", "PlayCardAction"]]
+        self.assertEqual(paths(sc.compare_fight(g, e, ROWS)), ["net.players[0].gold"])
+
+
+class CensusGate(unittest.TestCase):
+    def test_gate(self):
+        seeded = snap(rng={"Shuffle": {"counter": 3, "seed": 9}, "MonsterAi": {"counter": 1, "seed": 4}})
+        a = {"f1": sc.compare_fight(*fight([seeded], [seeded]), ROWS)}
+        self.assertEqual(sc.census_gate(a, copy.deepcopy(a)), {})
+        b = {"f1": sc.compare_fight(*fight([seeded], [snap()]), ROWS)}
+        self.assertIsNone(b["f1"]["first"])  # B writes no seeds: unmodelled, no difference...
+        self.assertEqual(sc.census_gate(a, b), {"f1": ["snap.rng.MonsterAi.seed", "snap.rng.Shuffle.seed"]})  # ...but fewer fields
+        self.assertEqual(sc.census_gate(a, {}), {"f1": ["(no result)"]})
+        self.assertEqual(sc.census_gate(b, a), {})
+
+
+if __name__ == "__main__":
+    unittest.main()
