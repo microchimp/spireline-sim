@@ -100,16 +100,19 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
   combat and, for a player-owned power, while that player is active for hooks (a power removed from its owner
   mid-pass is still called, with the state it had); a relic, potion, card, orb, affliction or enchantment while it has
   not been removed from the combat's state and its owner is active for hooks; a monster while its creature is in the
-  combat. Activity is read at the entry's turn (CreatureCmd deactivates hooks mid-pass). A listener added mid-pass is
-  not visited.
+  combat. Activity is read at the entry's turn (CreatureCmd deactivates hooks mid-pass): the old state cannot tell the
+  player's activity (the game deactivates a creature's hooks only after its death-prevention hooks and AfterDeath, so
+  the player's own death passes still visit its listeners at 0 HP), so it is a caller mark (`KeepPlayerHooks`,
+  `DeactivatePlayerHooks`; default active). A listener added mid-pass is not visited.
 - **Card identity first** (K2b, under the byte-identity gate): a per-combat card uid on `CardInstance`, left out of
   equality, the snapshot writer and the state walk; assigned when a card enters the combat (deck clone at combat
   start, generated or copied cards as created: a copy gets a new uid, a `with` change keeps it). A `CardHandle` is that
   uid, opaque to handlers, so Tier 2's card arena can replace it. An invariant (no two cards share a uid; every card in a
   pile has one) runs on the corpus and the fuzzer. Until K2b lands, no switch with card listeners turns on.
 - Old-state mapping (`Core2/OldState.cs`, the only kernel file that knows the old representation): powers through
-  `BuffId` to the game's power model (`tools/fidelity/power_aliases.json`), engine-only bookkeeping buffs left out, one
-  game power split over several `BuffId`s visited once at its first entry; relics, potions, orbs, piles as the old
+  `BuffId` to the game's power model (`tools/fidelity/power_aliases.json`), the named engine-only bookkeeping buffs left
+  out, a buff no rule classifies NotModelled, one game power split over several `BuffId`s visited once at its first
+  entry; relics, potions, orbs, piles as the old
   lists hold them; the old engine has no Play pile, so the card in flight is its one entry for the length of its play.
   What the old state cannot represent (folded power instances, melted relics) is listed in `Core2/NotModelled.cs`; a
   pass that would need it reports NotModelled, never a guess.
@@ -125,29 +128,54 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
     afflictions `GameAffliction`. Instance: a power `creature << 8 | k` (its k-th instance on that creature), a
     monster its creature, a relic its obtain index, a potion its slot, an orb its queue position, a combat card and its
     affliction and enchantment the K2b uid, a run deck card `-(deck index + 1)`.
-  - BuffId to game power (`OldModelIds`): Stunned is engine-only; a fold target of power_aliases.json (TemporaryStrength,
-    TemporaryDexterity, TemporaryFocus, BlockNextTurn) is Folded and NotModelled; else the name (UPPER_SNAKE without
-    _POWER) through "emu_rename" (plus ShivDamage = AccuracyPower, missing from that file and kept in OldModelIds so its
-    other readers are unchanged), a game power if id_map has it; else a piece of the longest game power whose name
-    prefixes it (visited once, at its first entry); else engine-only.
+  - BuffId to game power (`OldModelIds`), in this order: engine-only only by an explicit list (Stunned, SummonCooldown,
+    TerrorQueued, BackupCount, Reviving, FranticEscapePlayedCountUnused); a fold target or member of power_aliases.json
+    (TemporaryStrength, TemporaryDexterity, TemporaryFocus, BlockNextTurn, and SetupStrikePower, a
+    TemporaryStrengthPower subclass) is Folded and NotModelled; else the name (UPPER_SNAKE without _POWER) through
+    "emu_rename" (plus ShivDamage = AccuracyPower, missing from that file and kept in OldModelIds so its other readers
+    are unchanged), a game power if id_map has it; else a piece of the longest game power whose name prefixes it
+    (visited once, at its first entry); else NotModelled, never engine-only (Burn, Metallicize, ClawDamage and
+    WitherIntensity today: the game's power list has no class of that name, so a listener may be missing).
+    `BuffClassTests` pins the class of every BuffId; a new BuffId or a changed alias or fold fails it until classified.
   - Creatures: the player 0, Osty 1 while `OstyMaxHp > 0` (its monster; it has no powers in the old state:
     NotModelled), then enemies in roster order. An enemy is in the combat while the roster holds it and it is alive,
-    or the caller marks it dying (`OldWorld.Dying`, inside the kill), or a power vetoes its removal
-    (`EnemyAI.ShouldRemoveOnDeath`). The player is active for hooks while `!IsAboutToLose`.
-  - The Play pile: `OldWorld.InFlight` (kernel play sites set it for a play's length); else `HeldPlayedCard` while a
+    or the caller marks it dying (`OldWorld.MarkDying`, inside the kill), or a power vetoes its removal
+    (`EnemyAI.ShouldRemoveOnDeath`). The player is active for hooks unless the caller declared them deactivated
+    (`OldWorld.PlayerHooks`; not derived from `IsAboutToLose`, which turns true at 0 HP, before the game deactivates).
+  - The Play pile: `OldWorld.Flying` (kernel play sites set it for a play's length); else `HeldPlayedCard` while a
     selection is pending and its uid is in no pile. The field can outlive its play (only ReleaseHeldPlayedCard clears
     it, and a snapshot never restores it): a held card whose uid is filed is stale; one whose result pile ends with a
     card of equal value under another uid is NotModelled (stale or twin).
   - NotModelled also: afflictions other than Bound, cards in `AutoPlayQueue` (members by uid, not listed), a run deck
-    with no `RunState`. Orbs have no identity: an orb is a member while one of its type is held. Melted relics are
+    with no `RunState`. Orbs have no identity (matched by type and queue position) and deck cards are matched by
+    index, so a pass that lists orbs or deck cards remembers the list at its start and reports NotModelled
+    (`OrbsChangedMidPass`, `DeckChangedMidPass`) at the first such entry visited after any change to it: an evoke, a
+    channel, a removal, a replaced list (a `List` enumerator taken at the snapshot detects every mutation, public API,
+    AOT-safe). Melted relics are
     gone from the old list and skipped by the game, so the order is the same. Modifiers, badges and scaling: the old
     state has none; the caller supplies them on `OldWorld`.
+  - **K3 obligations, the marks** (`OldWorld`; each a scoped setter, `using (w.X(..))`, restoring the previous value on
+    exit; the site that opens the window sets it, with a test that a pass inside the window differs from one outside).
+    A mark nobody sets leaves a default that silently drops or adds listeners unless the state shows it is missing:
+    - `Flying(card)`: every play site, for the play's length. Missing: the card in flight is in no pile and no pass
+      visits it. Not detectable (the old engine holds the card in a local); only the held-card case is.
+    - `Setup()`: combat setup (IsStarting). Missing: a guarded pass in setup returns empty. Detected when the guard is
+      set before turn 1 (NotModelled `SetupUndeclared`; a combat that ends before its first turn is reported too, the
+      safe side); a setup pass with the guard clear is right either way.
+    - `MarkDying(enemy)`: inside CreatureCmd.Kill, before the removal. Missing: the dying enemy's powers and monster
+      are dropped from the death passes. Not detectable (the old engine keeps a dead enemy in the roster, so the state
+      looks the same after the removal): the kill site's test is the only guard.
+    - `KeepPlayerHooks()` over the player's own kill passes (death prevention, AfterDeath) and
+      `DeactivatePlayerHooks()` from DeactivateHooks to the end of the combat. Missing with the player down
+      (`IsAboutToLose`): NotModelled `PlayerHooksUndeclared`, at pass start and at any visit.
   - The handler table enters as `IHandlerSource` (`Find(hook, kind, model)`, `AnyOf(hook, kind)`); a gap is reported
     for a pass (`OldListeners.Report`, `LastPass`) only when a handler could stand for it. Each part's build runs
     `CardUidInvariant.Normalise`.
   - Agreement with `game_order_key` (`python -m tools.kernel.listener_order`, EmuDump `kernel-order` on the
-    hook_order scenarios): 16 scenarios, 2,136 listeners, the list sorted by the key with 0 disagreements, 118,088
-    scenario pairs with 0 disagreements; the 12 scenario listeners not listed are all folded powers.
+    hook_order scenarios plus two of the tool's own: three enemies with powers, an orb queue and the exhaust pile, in both
+    relic and potion orders, with the listener counts the state implies): 18 scenarios, 2,190 listeners, the list
+    sorted by the key with 0 disagreements, 118,088 scenario pairs with 0 disagreements, 0 listener-count failures; the
+    12 hook_order listeners not listed are all folded powers.
 
 ## 4. Handlers, the handler table and the dispatch
 
