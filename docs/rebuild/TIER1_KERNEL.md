@@ -63,6 +63,13 @@ Game code is described by class and method identifiers only. Revised after revie
   our descriptor, not from game text): one static method per dispatcher, a fast path when no switched-on listener is
   registered for its passes, otherwise per pass a snapshot of listeners in game order and the loop of its op.
 - Named steps are hand-written in `Core2/Steps.cs`, one function each, cited `game: Hook.<Method>`.
+- Built in K1 (v0.107.1): 147 dispatchers, 178 passes over 178 hook virtuals, 15 shapes by (ops, context, wait) and
+  22 counting changed criteria and steps. The extraction needed, beyond the list above: `changed: lowers` (fold-cap:
+  the listener lowered the value); `try` with `changed: none` (the energy and star cost TryModify passes ignore the
+  listener's answer); `negative-cost-passthrough` on ModifyStarCost too; a `when` on pre steps (ModifyDamage's enchant
+  steps); the post step `dispatch:<Dispatcher>` (ModifyGeneratedMap ends by running ModifyGeneratedMapLate); `partner`
+  as a list (ModifyHpLost feeds both AfterModifyingHpLost receivers). The runtime API Hooks.g.cs is written against is
+  `Core2/HookRuntime.cs`; a dispatcher with steps has its passes as `<Name>Passes`.
 
 ## 3. Listener order over the old state
 
