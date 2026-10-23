@@ -1284,8 +1284,8 @@
       "iterator": "run",
       "partner": [],
       "passes": [
-        {"changed": "try-true", "hook": "TryModifyCardBeingAddedToDeck", "op": "try"},
-        {"changed": "try-true", "hook": "TryModifyCardBeingAddedToDeckLate", "op": "try"}
+        {"also": ["out-not-null"], "changed": "try-true", "hook": "TryModifyCardBeingAddedToDeck", "op": "try"},
+        {"also": ["out-not-null"], "changed": "try-true", "hook": "TryModifyCardBeingAddedToDeckLate", "op": "try"}
       ],
       "post": [],
       "pre": [],

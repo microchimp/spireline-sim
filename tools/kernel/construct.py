@@ -3,7 +3,7 @@
     python -m tools.kernel.construct shape [--decompiled DIR]
 
 ``shape``: tools/kernel/hooks.json against a fresh extraction from the local decompile, both ways (a dispatcher,
-iterator, pass, op, changed criterion, run-time flag, context, wait point, named step or partner on one side only
+iterator, pass, op, changed criterion, other part of a try condition, run-time flag, context, wait point, named step or partner on one side only
 fails, printed per dispatcher), and the generated Core2/HookId.g.cs and Hooks.g.cs against a fresh generation from
 hooks.json. Exit 0 only when both hold.
 
@@ -20,7 +20,7 @@ from tools.fidelity import hook_table as ht
 from tools.kernel import gen_hooks, hooks_extract as hx
 
 FIELDS = ("iterator", "context", "wait_all", "pre", "post", "partner")
-PASS_FIELDS = ("hook", "op", "changed", "when")
+PASS_FIELDS = ("hook", "op", "changed", "when", "also")
 
 
 def _fmt(v) -> str:

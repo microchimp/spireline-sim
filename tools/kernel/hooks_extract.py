@@ -4,7 +4,7 @@
 
 Reads the local decompile (``MegaCrit.Sts2.Core.Hooks/Hook.cs`` and, for ``partner``, the callers of the
 receiving dispatchers) and returns, per dispatcher, every field of docs/rebuild/TIER1_KERNEL.md section 2 except
-``args``: ``iterator``, ``passes`` (hook virtual, ``op``, ``changed``, ``when``), ``context``, ``wait_all``,
+``args``: ``iterator``, ``passes`` (hook virtual, ``op``, ``changed``, ``when``, ``also``), ``context``, ``wait_all``,
 ``pre`` / ``post`` named steps and ``partner``. It extends ``tools.fidelity.hook_table.dispatchers`` (the pass
 list, which it cross-checks) with the per-pass classification.
 
@@ -43,6 +43,9 @@ PRE_STEPS = ("netid-guard", "negative-cost-passthrough", "owner-in-combat", "enc
              "preview-hittable")
 POST_STEPS = ("clamp-min0",)          # plus "dispatch:<Dispatcher>" (a tail call into another dispatcher)
 EVENT_OPS = ("event", "filter-set", "preventer-only")
+# The other parts of a try pass's condition, beside the listener call ("also"): out-not-null = the value the
+# listener gave back through its out parameter must be present. Any other part is an ExtractError.
+ALSO = ("out-not-null",)
 
 
 class ExtractError(Exception):
@@ -161,30 +164,62 @@ def _iterator(source: str, name: str) -> str:
     raise ExtractError(f"{name}: unknown listener iterator {s!r}")
 
 
-def _changed(name: str, op: str, block: str, var: str, hook: str) -> str:
+def _conjuncts(cond: str) -> list[str]:
+    """A condition split at its top-level ``&&`` (parts stripped); one part when there is none."""
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(cond):
+        ch = cond[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and cond.startswith("&&", i):
+            parts.append(cond[start:i].strip())
+            start = i + 2
+            i += 1
+        i += 1
+    return parts + [cond[start:].strip()]
+
+
+def _try_parts(name: str, cond: str, var: str, hook: str) -> list[str]:
+    """The parts of a try condition beside the listener call, in our words (``ALSO``); the call must come first."""
+    parts = _conjuncts(cond)
+    call = parts[0]
+    if not re.fullmatch(rf"{var}\.{hook}\(.*\)", call) or any(f"{var}.{hook}(" in x for x in parts[1:]) or any(
+            "||" in x for x in parts):
+        raise ExtractError(f"{name}: {hook}: try condition is not the listener call followed by known parts")
+    outs = set(re.findall(r"\bout (?:[\w.<>?]+ )?(\w+)", call))
+    also = []
+    for x in parts[1:]:
+        m = re.fullmatch(r"(\w+) != null", x)
+        if m and m.group(1) in outs:
+            also.append("out-not-null")
+        else:
+            raise ExtractError(f"{name}: {hook}: unknown part of the try condition {x!r}")
+    return also
+
+
+def _changed(name: str, op: str, block: str, var: str, hook: str) -> tuple[str, list[str]]:
+    """The pass's changed criterion and, for try-true, the other parts of its condition (``ALSO``)."""
     adds = [m.start() for m in re.finditer(rf"\.Add\({var}\)", block)]
     if not adds:
-        return "none"
+        return "none", []
     guards = [(s, cond.strip()) for _, cond, s, e in _ifs(block) if s < adds[0] < e]
     if not guards:
         raise ExtractError(f"{name}: {hook}: changed set added to without a condition")
     cond = max(guards)[1]
     if f"{var}.{hook}(" in cond:
-        return "try-true"
+        return "try-true", _try_parts(name, cond, var, hook)
     if re.fullmatch(r"\w+", cond) and re.search(rf"\b{cond} = {var}\.{hook}\(", block):
-        return "try-true"
-    if re.fullmatch(r"\w+ != 0m", cond):
-        return "nonzero"
-    if re.fullmatch(r"\w+ != 1m", cond):
-        return "not-one"
-    if re.fullmatch(r"\(int\)\w+ != \(int\)\w+", cond):
-        return "int-ne"
-    if re.fullmatch(r"decimal\.Truncate\(\w+\) != decimal\.Truncate\(\w+\)", cond):
-        return "trunc-ne"
-    if re.fullmatch(r"\w+ != \w+(?: \|\| \w+ != \w+)*", cond):
-        return "ne"
+        return "try-true", []
+    for criterion, pattern in (("nonzero", r"\w+ != 0m"), ("not-one", r"\w+ != 1m"),
+                               ("int-ne", r"\(int\)\w+ != \(int\)\w+"),
+                               ("trunc-ne", r"decimal\.Truncate\(\w+\) != decimal\.Truncate\(\w+\)"),
+                               ("ne", r"\w+ != \w+(?: \|\| \w+ != \w+)*")):
+        if re.fullmatch(pattern, cond):
+            return criterion, []
     if op == "fold-cap" and re.fullmatch(r"\w+ > \w+", cond):
-        return "lowers"
+        return "lowers", []
     raise ExtractError(f"{name}: {hook}: unknown changed criterion {cond!r}")
 
 
@@ -273,12 +308,15 @@ def _passes_in(name: str, header: str, body: str, hooks: set[str]) -> list[dict]
         op = kind or _op(name, block, var, hook)
         p = m.end() - 1
         call_args = body[p:_close(body, p, "(", ")") + 1]
-        rec = {"hook": hook, "op": op, "changed": _changed(name, op, block, var, hook),
+        changed, also = _changed(name, op, block, var, hook)
+        rec = {"hook": hook, "op": op, "changed": changed,
                "iterator": _iterator(source, name),
                "context": _context(name, header, block, var, hook, call_args) if op in EVENT_OPS else None}
         when = _enclosing_when(body, start, name)
         if when:
             rec["when"] = when
+        if also:
+            rec["also"] = also
         out.append({"pos": start, "end": e, "rec": rec})
     return out
 
