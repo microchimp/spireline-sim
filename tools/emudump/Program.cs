@@ -64,6 +64,12 @@ if (args[0] == "fight")
         Fight.OnStep += (e, step) => step["net"] = new JsonArray(new JsonObject { ["ctx"] = "step", ["state"] = e.GameState() });
     }
 
+    if (args.Contains("--game-view"))
+    {
+        // The step in the game's shapes with the game's names (IEngine.GameView), for tools/fidelity/struct_compare.py.
+        Fight.OnStep += (e, step) => step["game_view"] = e.GameView();
+    }
+
     if (args.Any(a => a.StartsWith("--state-hash", StringComparison.Ordinal)))
     {
         // The full-state hash after each step (IEngine.StateHash: every field of the run's state, the combat's

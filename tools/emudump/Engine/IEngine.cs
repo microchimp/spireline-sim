@@ -156,6 +156,17 @@ public interface IEngine : IScreenSource
     JsonObject? GameState();
 
     /// <summary>
+    /// The current step in the game's own shapes with the game's names only (card, enemy, potion and relic ModelIds, game power
+    /// ids such as STRENGTH_POWER, the game's pile and RNG stream names), for tools/fidelity/struct_compare.py:
+    /// <c>snapshot</c> in the shape of the referee's per-step snapshot (referee/driver/Combat.cs Snapshot: in_combat, round,
+    /// player, hand, draw in order, discard, exhaust, the living enemies with their intents, rng counters, potions, relics; once a
+    /// won fight is over, what the run holds), <c>net</c> in the shape of the game's NetFullCombatState (null outside a fight), and
+    /// <c>private</c>, the engine's own block for what the game's schema has no field for, which no comparer reads. A field the
+    /// engine does not model is absent, never guessed. `EmuDump fight --game-view` writes it per step.
+    /// </summary>
+    JsonObject GameView();
+
+    /// <summary>
     /// The run's RNG streams' call counts under the game's names: <c>rng</c> (the run's streams) and <c>player_rng</c>
     /// (the player's), as the game's snapshots write them. Setup.cs logs them with each setup item.
     /// </summary>

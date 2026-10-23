@@ -49,6 +49,8 @@ public sealed class OldEngine : IEngine
 
     public JsonObject? GameState() => OldNetState.From(Run);
 
+    public JsonObject GameView() => OldGameView.View(Run);
+
     public JsonObject RngCounters() => OldSetup.Counters(Run.State);
 
     public SetupResult ObtainRelic(string relicId, IReadOnlyList<JsonObject> cardChoices) => OldSetup.Relic(Run, relicId, cardChoices.ToList());
