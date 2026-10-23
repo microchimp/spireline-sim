@@ -271,5 +271,105 @@ class CodexAggregatesOnly(unittest.TestCase):
         self.assertEqual(m["counts"]["codex_runs"], 2)
 
 
+def lab_rec(seed, **kw):
+    return dict(rec(**kw), seed=seed, ascension=10, room="r1")
+
+
+def serial_lab_reference(lab, spec_id):
+    """The one-process reader as it was before the pool: files in sorted path order, first spec wins."""
+    import glob
+    items, seen, files = [], set(), 0
+    for f in sorted(glob.glob(str(Path(lab) / "runs" / "*" / "fights" / "*.out.json"))):
+        try:
+            doc = json.loads(Path(f).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        files += 1
+        for r in (doc.get("results") if isinstance(doc, dict) else doc) or []:
+            if not isinstance(r, dict) or not r.get("steps") or r.get("error"):
+                continue
+            sid = spec_id(r)
+            if sid in seen:
+                continue
+            seen.add(sid)
+            models, known = mf.corpus_models(r)
+            items.append({"id": sid, "models": sorted(models), "relics_known": known})
+    return items, files
+
+
+class LabPool(unittest.TestCase):
+    def tree(self, d):
+        runs = Path(d) / "runs"
+        docs = {
+            "A": {"01.out.json": {"results": [lab_rec("s1", relics=["RA"]), lab_rec("s2")]},
+                  "02.out.json": [lab_rec("s1", relics=["RB"]), dict(lab_rec("s3"), error="boom"), "junk"]},
+            "A-b": {"01.out.json": {"results": [lab_rec("s3", extra_card="CREATED"), lab_rec("s2", relics=["RB"])]}},
+            "B": {"01.out.json": {"results": [lab_rec("s4", extra_card="OTHER"), lab_rec("s1")]}},
+        }
+        for run, files in docs.items():
+            (runs / run / "fights").mkdir(parents=True)
+            for name, doc in files.items():
+                (runs / run / "fights" / name).write_text(json.dumps(doc), encoding="utf-8")
+        (runs / "B" / "fights" / "03.out.json").write_text("{not json", encoding="utf-8")
+        (runs / "C").mkdir()
+
+    def test_pooled_read_equals_serial_with_a_duplicate_spec(self):
+        from tools.fidelity import corpus as cp
+        with tempfile.TemporaryDirectory() as d:
+            self.tree(d)
+            ref = serial_lab_reference(d, cp.spec_id)
+            self.assertEqual(mf.read_lab_fights(Path(d), cp.spec_id, 1), ref)
+            self.assertEqual(mf.read_lab_fights(Path(d), cp.spec_id, 2), ref)
+        items, files = ref
+        self.assertEqual(files, 4)  # the unparsable file is not counted
+        self.assertEqual(len(items), 4)  # s1 (first copy kept), s2, s3 (the error copy skipped), s4
+        self.assertTrue(next(it for it in items if "relic:RA" in it["models"])["relics_known"])
+
+
+class GreedyCover(unittest.TestCase):
+    @staticmethod
+    def reference(needs, limit):
+        """The rescanning version: every round recomputes every thing's key from the live items."""
+        from fractions import Fraction
+        need = [set(n) for n in needs]
+        remaining = {i: len(n) for i, n in enumerate(need) if n}
+        by = {}
+        for i in remaining:
+            for t in need[i]:
+                by.setdefault(t, set()).add(i)
+        done, order = sum(1 for n in need if not n), []
+        while by and len(order) < limit:
+            best, best_key = None, None
+            for t in sorted(by):
+                live = [i for i in by[t] if remaining[i] > 0]
+                key = (sum(1 for i in live if remaining[i] == 1), sum(Fraction(1, remaining[i]) for i in live), len(live))
+                if best_key is None or key > best_key:
+                    best, best_key = t, key
+            if best_key[2] == 0:
+                break
+            newly = 0
+            for i in by.pop(best):
+                if remaining[i] > 0:
+                    remaining[i] -= 1
+                    newly += remaining[i] == 0
+            done += newly
+            order.append({"thing": best, "unlocks": newly, "cumulative": done})
+        return order
+
+    def test_incremental_equals_rescanning_on_random_inputs(self):
+        import random
+        rng = random.Random(7)
+        for _ in range(60):
+            things = [f"t{i:02d}" for i in range(rng.randint(1, 14))]
+            needs = [set(rng.sample(things, rng.randint(0, min(4, len(things))))) for _ in range(rng.randint(0, 80))]
+            for limit in (3, 100):
+                self.assertEqual(mf.greedy_cover(needs, limit), self.reference(needs, limit))
+
+    def test_small_example(self):
+        order = mf.greedy_cover([{"a"}, {"a"}, {"a", "b"}, {"b", "c"}, set()], 10)
+        self.assertEqual([(g["thing"], g["unlocks"], g["cumulative"]) for g in order],
+                         [("a", 2, 3), ("b", 1, 4), ("c", 1, 5)])
+
+
 if __name__ == "__main__":
     unittest.main()

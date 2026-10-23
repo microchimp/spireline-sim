@@ -37,6 +37,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+from fractions import Fraction
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -228,15 +230,16 @@ def read_agent_runs(real: Path) -> list:
     return runs
 
 
-def read_lab_fights(lab: Path, spec_id) -> tuple[list, int]:
-    """(one item per setup of the lab recordings still on disk, number of files read)."""
-    items, seen, files = [], set(), 0
-    for f in sorted(glob.glob(str(Path(lab) / "runs" / "*" / "fights" / "*.out.json"))):
+def _lab_group(files: list, spec_id) -> tuple[list, int]:
+    """One run folder's recordings, in the given (sorted) order: ([(spec id, sorted models, relics known)] with each
+    spec once, number of files read). A spec another folder holds too is dropped by the caller, in folder order."""
+    items, seen, nfiles = [], set(), 0
+    for f in files:
         try:
             doc = json.loads(Path(f).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        files += 1
+        nfiles += 1
         for r in (doc.get("results") if isinstance(doc, dict) else doc) or []:
             if not isinstance(r, dict) or not r.get("steps") or r.get("error"):
                 continue
@@ -245,7 +248,49 @@ def read_lab_fights(lab: Path, spec_id) -> tuple[list, int]:
                 continue
             seen.add(sid)
             models, known = corpus_models(r)
-            items.append({"id": sid, "models": sorted(models), "relics_known": known})
+            items.append((sid, sorted(models), known))
+    return items, nfiles
+
+
+def _lab_task(args) -> tuple[list, int]:
+    return _lab_group(*args)
+
+
+def lab_groups(lab: Path) -> list:
+    """The lab's recording files in sorted path order, grouped by run folder (a folder's files are contiguous in
+    that order, so the groups in order concatenate to the sorted list)."""
+    groups: list = []
+    for f in sorted(glob.glob(str(Path(lab) / "runs" / "*" / "fights" / "*.out.json"))):
+        folder = os.path.dirname(os.path.dirname(f))
+        if groups and groups[-1][0] == folder:
+            groups[-1][1].append(f)
+        else:
+            groups.append((folder, [f]))
+    return [g[1] for g in groups]
+
+
+def read_lab_fights(lab: Path, spec_id, procs: int = 1) -> tuple[list, int]:
+    """(one item per setup of the lab recordings still on disk, number of files read). With ``procs`` > 1 the run
+    folders are read in a spawn pool (``spec_id`` must then be a module-level function); the parent dedupes by spec
+    id in folder order, so the result equals the serial one."""
+    tasks = [(g, spec_id) for g in lab_groups(lab)]
+    if procs > 1 and len(tasks) > 1:
+        from concurrent.futures import ProcessPoolExecutor  # noqa: PLC0415
+        from multiprocessing import get_context  # noqa: PLC0415
+
+        from tools.fidelity.corpus import _below_normal  # noqa: PLC0415
+        with ProcessPoolExecutor(max_workers=min(procs, len(tasks)), mp_context=get_context("spawn"),
+                                 initializer=_below_normal) as ex:
+            results = list(ex.map(_lab_task, tasks, chunksize=1))
+    else:
+        results = map(_lab_task, tasks)
+    items, seen, files = [], set(), 0
+    for group_items, n in results:
+        files += n
+        for sid, models, known in group_items:
+            if sid not in seen:
+                seen.add(sid)
+                items.append({"id": sid, "models": models, "relics_known": known})
     return items, files
 
 
@@ -278,7 +323,10 @@ def greedy_cover(needs: list, limit: int = 100) -> list:
     """Order the things to port (models or families) by the items they unlock. ``needs``: per item, the set of
     things it needs ported. Each round picks the thing that completes the most items (ties: the larger share of
     the progress of items it is part of, then the more items, then the name); returns
-    [{"thing", "unlocks", "cumulative"}] where cumulative counts the items that need nothing too."""
+    [{"thing", "unlocks", "cumulative"}] where cumulative counts the items that need nothing too.
+
+    Incremental: per thing, a count of its live items by how many things each still needs; a round rescans only
+    the things whose items changed. The share of progress is summed exactly (fractions)."""
     need = [set(n) for n in needs]
     remaining = {i: len(n) for i, n in enumerate(need) if n}
     free = sum(1 for n in need if not n)
@@ -286,26 +334,61 @@ def greedy_cover(needs: list, limit: int = 100) -> list:
     for i in remaining:
         for t in need[i]:
             by[t].add(i)
+    by = dict(by)
+    live: dict = {t: collections.Counter(remaining[i] for i in idxs) for t, idxs in by.items()}
+    keys: dict = {}
+
+    def key_of(t):
+        c = live[t]
+        return (c.get(1, 0), sum(Fraction(n, r) for r, n in c.items()), sum(c.values()))
+
+    dirty = set(by)
     done, order = free, []
     while by and len(order) < limit:
+        for t in dirty:
+            keys[t] = key_of(t)
+        dirty.clear()
         best, best_key = None, None
         for t in sorted(by):
-            live = [i for i in by[t] if remaining[i] > 0]
-            key = (sum(1 for i in live if remaining[i] == 1), sum(1 / remaining[i] for i in live), len(live))
-            if best_key is None or key > best_key:
-                best, best_key = t, key
+            if best_key is None or keys[t] > best_key:
+                best, best_key = t, keys[t]
         if best_key[2] == 0:
             break
         idxs = by.pop(best)
+        del live[best]
         newly = 0
         for i in idxs:
-            if remaining[i] > 0:
-                remaining[i] -= 1
-                if remaining[i] == 0:
+            r = remaining[i]
+            if r > 0:
+                remaining[i] = r - 1
+                for t in need[i]:
+                    if t in by:
+                        live[t][r] -= 1
+                        if live[t][r] == 0:
+                            del live[t][r]
+                        if r > 1:
+                            live[t][r - 1] += 1
+                        dirty.add(t)
+                if r == 1:
                     newly += 1
         done += newly
         order.append({"thing": best, "unlocks": newly, "cumulative": done})
     return order
+
+
+class Stages:
+    """Wall time per build stage, one line each on stderr."""
+
+    def __init__(self, enabled: bool = True):
+        self.enabled, self.t = enabled, time.perf_counter()
+        self.times: dict = {}
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.times[name] = round(now - self.t, 2)
+        if self.enabled:
+            print(f"manifest: {name:<8} {now - self.t:8.1f} s", file=sys.stderr, flush=True)
+        self.t = now
 
 
 def share(n: int, total: int) -> float:
@@ -327,8 +410,9 @@ def codex_counts(out: Path, rescan: bool) -> dict | None:
 
 
 def assemble(fam_doc: dict, cat: dict, corpus_items: list, agent_items: list, lab_items: list, codex: dict | None,
-             migrated: list, notes: list | None = None) -> dict:
+             migrated: list, notes: list | None = None, stages: Stages | None = None) -> dict:
     """The manifest document from already-read inputs (the part the tests exercise)."""
+    stages = stages or Stages(False)
     for it in corpus_items + agent_items + lab_items:
         it["families"] = item_families(it["models"], cat)
     models = {k: dict(v, corpus_fights=0, agent_runs=0, lab_fights=0, codex_runs=0) for k, v in cat.items()}
@@ -379,6 +463,7 @@ def assemble(fam_doc: dict, cat: dict, corpus_items: list, agent_items: list, la
             "corpus_fights": fights, "corpus_fight_share_pct": share(fights, n_fights),
             "agent_runs": len(runs), "agent_decision_share_pct": share(sum(a["decisions"] for a in runs), n_dec),
             "alone_unlocks_fights": sum(1 for it in corpus_items if set(it["families"]) <= {fid})}
+    stages.mark("join")
     greedy_models = greedy_cover([[m for m in it["models"] if models.get(m, {}).get("combat_hooks")]
                                   for it in corpus_items], 100)
     for g in greedy_models:
@@ -387,6 +472,7 @@ def assemble(fam_doc: dict, cat: dict, corpus_items: list, agent_items: list, la
     greedy_fams = [{"family": g["thing"], "unlocks": g["unlocks"], "cumulative": g["cumulative"],
                     "cumulative_share_pct": share(g["cumulative"], n_fights)}
                    for g in greedy_cover([it["families"] for it in corpus_items], 20)]
+    stages.mark("cover")
     eligible_now = {"migrated": sorted(migrated),
                     "corpus_fights": sum(1 for it in corpus_items if eligible(it, migrated)),
                     "agent_runs": sum(1 for it in agent_items if eligible(it, migrated)),
@@ -450,8 +536,10 @@ def cmd_build(a) -> int:
     from tools.fidelity import hook_table as ht
 
     out = Path(a.out)
+    stages = Stages()
     fam_doc = load_families()
     cat = catalog(ht.DEFAULT_DECOMPILED, fam_doc)
+    stages.mark("catalog")
     corpus = cp.Corpus(cp.DEFAULT_CORPUS)
     idx = corpus.load_index()
     recs = [(m, corpus.read(m["id"])) for m in idx["fights"]]
@@ -464,27 +552,32 @@ def cmd_build(a) -> int:
             s, n = starters.get(rec.get("character")), neow_relic(rec)
             models.update(f"relic:{x}" for x in (s, n) if x)
         corpus_items.append({"id": meta["id"], "models": sorted(models), "relics_known": known})
+    stages.mark("corpus")
     unknown = sum(1 for it in corpus_items if not it["relics_known"])
     notes.append(f"{unknown} of {len(corpus_items)} corpus fights do not list relics in their steps; their model set holds the "
                  "character's starter relic and the Neow pick when it is a relic, so relics won in earlier rooms are missing "
                  "(`relics_known` is false on them).")
     agent_items = read_agent_runs(AGENT_REAL)
+    stages.mark("agent")
     notes.append("Agent runs: the lockstep records keep only the entities of diverging decisions, so a run's model set "
                  "is a lower bound (every agent run is `partial`); decision shares use the runs' recorded decision counts.")
-    lab_items, files = read_lab_fights(LAB, cp.spec_id)
+    lab_items, files = read_lab_fights(LAB, cp.spec_id, a.procs)
+    stages.mark("lab")
     notes.append(f"Lab fights: {len(lab_items)} setups from {files} recording files still on disk under the lab's runs "
                  "(the lab prunes a recording once the corpus holds it).")
     codex = None if a.no_codex else codex_counts(out, a.codex_rescan)
+    stages.mark("codex")
     notes.append("Codex: counts per model only, over the runs the Codex walk replays (Ironclad, ascension 10); "
                  + ("not read in this build." if codex is None else f"{codex['runs']} runs matched.")
                  + " The walk's own outputs hold no model lists, so the dataset is read directly.")
     notes.append("Encounters, enchantments and afflictions are not recorded in the corpus steps (cards are [id, upgraded]); "
                  "monsters stand for the encounter. Models without any hook override never block an item, so card, "
                  "monster and power effects themselves are the per-model ports of rebuild-plan phase P2, not part of eligibility.")
-    m = assemble(fam_doc, cat, corpus_items, agent_items, lab_items, codex, migrated_families(), notes)
+    m = assemble(fam_doc, cat, corpus_items, agent_items, lab_items, codex, migrated_families(), notes, stages)
     out.mkdir(parents=True, exist_ok=True)
     (out / "manifest.json").write_text(json.dumps(m, indent=0), encoding="utf-8")
     (out / "manifest.md").write_text(render_md(m), encoding="utf-8")
+    stages.mark("write")
     print(f"manifest: {m['counts']['models']} models ({m['counts']['models_reached_by_any']} reached), "
           f"{m['counts']['corpus_fights']} corpus fights, {m['counts']['agent_runs']} agent runs, "
           f"{m['counts']['lab_fights']} lab fights, codex {m['counts']['codex_runs']}")
@@ -527,6 +620,7 @@ def main(argv=None) -> int:
         if name == "build":
             p.add_argument("--no-codex", action="store_true")
             p.add_argument("--codex-rescan", action="store_true")
+            p.add_argument("--procs", type=int, default=12, help="processes reading the lab's run folders")
         p.set_defaults(fn=fn)
     a = ap.parse_args(argv)
     return a.fn(a)
