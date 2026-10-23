@@ -265,5 +265,14 @@ class CensusGate(unittest.TestCase):
         self.assertEqual(sc.census_gate(b, a), {})
 
 
+class Calibration(unittest.TestCase):
+    def test_contingency_table(self):
+        from tools.fidelity import struct_calibrate as cal  # noqa: PLC0415
+        rs = [{"fc": 3, "sc": 3}, {"fc": 3, "sc": 1}, {"fc": 1, "sc": 3}, {"fc": 2, "sc": None}, {"fc": None, "sc": 0},
+              {"fc": None, "sc": None}]
+        self.assertEqual(cal.table(rs, "fc"), {"both_same_step": 1, "both_struct_earlier": 1, "both_struct_later": 1,
+                                               "legacy_only": 1, "struct_only": 1, "neither": 1})
+
+
 if __name__ == "__main__":
     unittest.main()
