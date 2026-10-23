@@ -272,6 +272,17 @@ class E1BlockTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gen_loop.check_disjoint(seeds, {"copy of E1": seeds[:5]})
 
+    def test_resolve_e_block_reuses_a_committed_block_and_creates_a_fresh_one_per_generation(self):
+        with tempfile.TemporaryDirectory() as d:
+            tpl = str(Path(d) / "E{k}-{date}.json")
+            (Path(d) / "E1-2026-10-23.json").write_text(json.dumps({"seeds": ["A"]}))
+            self.assertEqual(gen_loop.resolve_e_block(tpl, 1).name, "E1-2026-10-23.json")
+            p2 = gen_loop.resolve_e_block(tpl, 2, n=30)
+            self.assertTrue(p2.name.startswith("E2-"))
+            self.assertEqual(gen0.load_seeds(p2), gen0.e_block(p2.stem, 30))
+            self.assertEqual(gen_loop.resolve_e_block(tpl, 2, n=30), p2)
+            self.assertFalse(set(gen0.load_seeds(p2)) & set(gen0.e_block("E1-2026-10-23", 2000)))
+
     def test_known_seed_sets_read_the_other_blocks_and_the_lab_streams(self):
         with tempfile.TemporaryDirectory() as d:
             runs = Path(d) / "runs" / "selfplay-1"

@@ -851,7 +851,7 @@ def check_disjoint(seeds: list[str], others: dict[str, list[str]]) -> None:
             raise ValueError(f"{len(both)} seeds also in {name}")
 
 
-def known_seed_sets(seed_dir: Path, lab_runs: Path | None, e_name: str) -> dict[str, list[str]]:
+def known_seed_sets(seed_dir: Path, lab_runs: Path | list[Path] | None, e_name: str) -> dict[str, list[str]]:
     """Every committed seed block except this one, and the seeds the lab's self-play blocks actually played."""
     import gen0  # noqa: PLC0415
 
@@ -859,11 +859,12 @@ def known_seed_sets(seed_dir: Path, lab_runs: Path | None, e_name: str) -> dict[
     for f in sorted(Path(seed_dir).glob("*.json")):
         if f.stem != e_name:
             out[f.stem] = gen0.load_seeds(f)
-    if lab_runs and Path(lab_runs).is_dir():
-        sp: list[str] = []
-        for f in Path(lab_runs).glob("*/runs.jsonl"):
+    sp: list[str] = []
+    for d in ([lab_runs] if isinstance(lab_runs, (str, Path)) else list(lab_runs or [])):
+        for f in Path(d).glob("*/runs.jsonl"):
             with contextlib.suppress(OSError, ValueError):
                 sp += [json.loads(x)["seed"] for x in f.read_text(encoding="utf-8").splitlines() if x.strip()]
+    if lab_runs:
         out["self-play runs"] = sp
     return out
 
@@ -884,7 +885,7 @@ def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: i
 
 
 def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, procs: int = 16, config: str = "a3-v1",
-            ascension: int = 10, lab: Path | None = None, lab_runs: Path | None = None, boot: int = BOOT_B) -> dict[str, Any]:
+            ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision."""
     import gen0  # noqa: PLC0415
 
@@ -924,6 +925,20 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(utc_now() + "\n", encoding="utf-8")
     return doc
+
+
+def resolve_e_block(template: str, k: int, n: int = 2000) -> Path:
+    """The E-block for candidate generation `k`: `template` with {k} for the generation and {date} for today (UTC).
+    A file `E<k>-*.json` that already exists is used as it is (E1-2026-10-23 is committed); otherwise the block is
+    created by the seed rule, under a name no other generation has, so each promotion meets a fresh block."""
+    import gen0  # noqa: PLC0415
+
+    path = Path(template.format(k=k, date=datetime.now(UTC).strftime("%Y-%m-%d")))
+    existing = sorted(path.parent.glob(f"E{k}-*.json"))
+    if existing:
+        return existing[0]
+    gen0.write_seed_file(path.stem, n, path)
+    return path
 
 
 def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds_file: Path, agent_root: Path, procs: int,

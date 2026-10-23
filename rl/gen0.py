@@ -399,7 +399,8 @@ def train_cmd(a: argparse.Namespace) -> int:
         if not (a.emu_python and a.seeds_file):
             print("--promote needs --emu-python and --seeds-file", file=sys.stderr)
             return 2
-        return gen_loop.run_promote_subprocess(a.emu_python, cand, None, Path(a.seeds_file), Path(a.agent_root), a.procs, a.lib,
+        seeds_file = gen_loop.resolve_e_block(a.seeds_file, gen + 1) if "{k}" in a.seeds_file else Path(a.seeds_file)
+        return gen_loop.run_promote_subprocess(a.emu_python, cand, None, seeds_file, Path(a.agent_root), a.procs, a.lib,
                                                Path(a.lab) if a.lab else None)
     return 0
 
@@ -412,7 +413,7 @@ def promote_cmd(a: argparse.Namespace) -> int:
 
     doc = gen_loop.promote(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            procs=a.procs, config=a.config, ascension=a.ascension, lab=Path(a.lab) if a.lab else None,
-                           lab_runs=Path(a.lab_runs) if a.lab_runs else None)
+                           lab_runs=[Path(x) for x in a.lab_runs] if a.lab_runs else None)
     print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins")}, indent=1))
     return 0
 
@@ -483,7 +484,8 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--no-vrun", action="store_true")
     t.add_argument("--promote", action="store_true", help="then run `promote` against the current champion in the emulator venv")
     t.add_argument("--emu-python", help="the emulator venv's python for --promote")
-    t.add_argument("--seeds-file", help="the E-block for --promote")
+    t.add_argument("--seeds-file", help="the E-block for --promote; with {k} (and {date}) the block of the candidate's "
+                   "generation, created if it does not exist, e.g. referee/seeds/E{k}-{date}.json")
     t.add_argument("--procs", type=int, default=16)
     t.add_argument("--lib")
     t.add_argument("--lab")
@@ -497,7 +499,8 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--ascension", type=int, default=10)
     pr.add_argument("--lib")
     pr.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
-    pr.add_argument("--lab-runs", help="the lab's runs folder, whose self-play seeds the E-block must not contain")
+    pr.add_argument("--lab-runs", action="append", help="a folder of self-play job directories (the lab's runs folder): "
+                    "the E-block must not contain their seeds; repeatable")
     sc = sub.add_parser("score")
     sc.add_argument("--game", required=True)
     sc.add_argument("--seeds-file", required=True)
