@@ -141,6 +141,7 @@ static class OldSetup
         // In a fight, the referee's CardPileCmd.Add of a card made in the combat's scope: the hand and the
         // discard pile take it at the end, the draw pile at the bottom or, with "pos": "top", on top (the
         // next card drawn). No hook runs for it here; a card that reacts to entering a pile is a mirror gap.
+        card = c.Fresh(card);  // a card made in the combat's scope enters it with a fresh uid
         switch (pile)
         {
             case "hand":

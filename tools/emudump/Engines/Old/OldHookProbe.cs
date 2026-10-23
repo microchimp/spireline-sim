@@ -135,17 +135,17 @@ internal static class OldHookProbe
         state.PlayerBuffs.AddRange(Buffs(sc["player_buffs"]));
         if (sc["hand"] is JsonArray hand)
         {
-            state.Hand = hand.Select(n => Card(n!)).ToList();
+            state.Hand = hand.Select(n => state.Fresh(Card(n!))).ToList();
         }
 
         if (sc["draw"] is JsonArray draw)
         {
-            state.DrawPile = draw.Select(n => Card(n!)).ToList();
+            state.DrawPile = draw.Select(n => state.Fresh(Card(n!))).ToList();
         }
 
         if (sc["discard"] is JsonArray discard)
         {
-            state.DiscardPile = discard.Select(n => Card(n!)).ToList();
+            state.DiscardPile = discard.Select(n => state.Fresh(Card(n!))).ToList();
         }
 
         int i = 0;
@@ -158,7 +158,7 @@ internal static class OldHookProbe
             StepResult result;
             if (what == "play")
             {
-                state.Hand.Insert(0, Card(act["card"]!));
+                state.Hand.Insert(0, state.Fresh(Card(act["card"]!)));
                 result = CombatEngine.Step(state, 0, rng, act["target"]?.GetValue<int>() ?? 0);
             }
             else if (what == "end")

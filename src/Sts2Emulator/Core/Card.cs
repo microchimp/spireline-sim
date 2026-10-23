@@ -382,7 +382,21 @@ public readonly record struct CardInstance(
     // its own block every time it is played, and the growth rides on the CARD -- the same
     // shape as Rampage's BonusDamage, and for the same reason: two copies grow apart.
     int BonusBlock = 0
-);
+)
+{
+    // The card's per-combat uid (docs/rebuild/CARD_UID.md), for the Tier 1 kernel's CardHandle. A
+    // CardUidSlot equals every other slot and hashes to 0, so equality and hashing ignore it; the
+    // property is internal, so ToString/PrintMembers and every serializer of public members leave it
+    // out; [IdentityOnly] keeps it out of the full-state walk. A `with` change keeps it.
+    [IdentityOnly]
+    private readonly CardUidSlot _uid;
+
+    internal int Uid
+    {
+        get => _uid.Value;
+        init => _uid = new CardUidSlot(value);
+    }
+}
 
 public static class CardInstanceExtensions
 {

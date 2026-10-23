@@ -263,6 +263,9 @@ static class OldAnchor
             q.KnownBottomCount = Math.Clamp(q.KnownBottomCount, 0, q.DrawPile.Count - q.KnownTopCount);
             patched.Add("draw");
         }
+
+        // A card matched in the old piles keeps its uid; one the game holds and the emulator did not gets a fresh one.
+        Sts2Emulator.Core.CardUids.NumberNew(q);
     }
 
     static List<(int Id, bool Up)> Cards(Tables t, JsonNode pile) =>
