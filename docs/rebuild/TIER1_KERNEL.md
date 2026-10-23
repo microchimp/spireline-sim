@@ -334,7 +334,8 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
     (2) Inside old code that cannot resume (a drain at a wait point, a `none`/`passed`/`passed-unpushed`/`caller-hook`
     pause through `KernelState.Settle`): the answer is the step's keyed answer, or the step stops with the screen open
     (`PendingSelection.HookKey`, `HookChoicePending`) and its answer is stored keyed (`HookChoiceReplay.Keyed`, key =
-    dispatcher, listener, `HookResume.ResumeSite`, occurrence) while old screens keep their order; the replay defers
+    dispatcher, listener, `HookResume.ResumeSite`, occurrence; left out of the state walk, the core2 writer's) while old
+    screens keep their order; the replay defers
     and drains as the first run did. (3) The turn start: `KernelState.TurnStart(ITurnStartFlow)` runs the setup to its
     pause, AfterSideTurnStart, the orb queue's turn start, then enqueues the flow's hook action (CombatPlayPhaseOnly),
     the answer, the rest of the setup (`ResumeSetup`), AfterAutoPrePlayPhaseEntered.

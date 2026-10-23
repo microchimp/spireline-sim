@@ -94,7 +94,10 @@ public sealed class HookChoiceReplay
     /// The answers to kernel screens (Core2, TIER1_KERNEL.md section 5), keyed by (dispatcher, listener, resume site,
     /// occurrence) rather than by order: a kernel screen raised inside old code takes its answer where the replay reaches
     /// it, whatever old screens come before or after it. Empty with no switch on.
+    /// Left out of the state walk (empty with no switch on, so the old engine's state hash is unchanged); the core2
+    /// writer (K5) carries it.
     /// </summary>
+    [field: IdentityOnly]
     public IReadOnlyList<Sts2Emulator.Core2.KeyedAnswer> Keyed { get; init; } = new List<Sts2Emulator.Core2.KeyedAnswer>();
     /// <summary>
     /// Whether <see cref="Before" /> is the step's start as the agent's document gave it (public,
