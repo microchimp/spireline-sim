@@ -43,6 +43,54 @@ def _paths() -> None:
             sys.path.insert(0, str(p))
 
 
+# Referee actions beyond a screen's own options (driver/Env.cs, RunPlay.cs), and what each maps to on the emulator side:
+#   "none"                   a card selection that allows 0: the emulator's select.offer_done where it has one
+#   "skip"                   a card reward's Skip: card.skip
+#   "alt:<id>"               any other card-reward alternative (reroll, a relic's): no emulator option
+#   ["use_potion", s, id]    a potion used outside a fight: no emulator option
+#   ["discard_potion", s, id] a potion discarded outside a fight: no emulator option
+# An action with no emulator option is applied as `no_emulator_option:...`, which suspends the lockstep like any other loss.
+NEW_ACTION_KINDS = ("none", "card_alt", "potion_use", "potion_discard")
+NO_EMULATOR_KINDS = ("card_alt", "potion_use", "potion_discard")
+
+
+def extra_kind(label: Any) -> str | None:
+    """Which of the extra referee actions a label is (see above), else None."""
+    if label == "none":
+        return "none"
+    if isinstance(label, str) and label.startswith("alt:"):
+        return "card_alt"
+    if isinstance(label, list) and label and label[0] == "use_potion":
+        return "potion_use"
+    if isinstance(label, list) and label and label[0] == "discard_potion":
+        return "potion_discard"
+    return None
+
+
+def character_supported(character: str, native=None) -> str | None:
+    """None when the emulator can start `character`; else why not. The native run API starts Ironclad unless the library
+    binding has run_reset_character (Sts2Run_Reset takes no character)."""
+    if character == "IRONCLAD":
+        return None
+    if native is None:
+        _paths()
+        import leakprobes  # noqa: PLC0415
+
+        leakprobes.native_env()
+        from sts2_gym import native  # noqa: PLC0415
+    if hasattr(native, "run_reset_character"):
+        return None
+    return (f"--character {character}: the native emulator library has no run_reset_character (Sts2Run_Reset takes no character), "
+            f"so the emulator side cannot start {character}. Use IRONCLAD, or add the native export first.")
+
+
+def require_character(character: str, native=None) -> None:
+    """Exit at once (before any worker starts) when the emulator cannot start `character`."""
+    why = character_supported(character, native)
+    if why:
+        raise SystemExit(why)
+
+
 # ------------------------------------------------------------------ projection and hashes
 
 
@@ -312,7 +360,7 @@ class EmuLock:
     SCREEN = {"neow": "neow", "ancient": "neow", "map": "map", "card_reward": "card_reward", "rest": "rest",
               "select_cards": "card_select", "shop": "shop", "bundle": "bundle", "event": "event"}
 
-    def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None):
+    def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None, character: str = "IRONCLAD"):
         import leakprobes  # noqa: PLC0415 -- the native library's location
 
         leakprobes.native_env()
@@ -326,7 +374,8 @@ class EmuLock:
         self.position_of = search_configs.position_of
         self.E, self.F, self.V, self.ls, self.native = engine, features, vocab, live_search, native
         self.seed, self.sims = seed, sims
-        self.s = engine.RunSession(seed, ascension, engine.CombatBudget(self.cfg.sims, self.cfg.sims))
+        self.s = engine.RunSession(seed, ascension, engine.CombatBudget(self.cfg.sims, self.cfg.sims),
+                                   **({} if character == "IRONCLAD" else {"character": character}))
         self.rules = selfplay.RulesPlayer()
         # the agent's RNG is seeded from the agent seed alone, never from the game seed (DESIGN 3.2)
         self.rng = agent_rng(agent_seed if agent_seed is not None else [fresh_agent_seed()])
@@ -433,6 +482,10 @@ class EmuLock:
 
     def sync(self, kind: str, labels: list, msg: dict | None = None) -> str | None:
         self._msg = msg
+        if kind not in COMBAT_KINDS and self.s.phase == self.E.rc.PHASE_COMBAT:
+            # The referee left its fight with no question: a lone End Turn that ends the fight (a power's end-of-turn
+            # damage, a retaliation on the enemy's turn) is taken for it, so the emulator stands where the referee does.
+            self._auto_combat()
         if kind in COMBAT_KINDS:
             self._forced("combat")
             self._auto_combat()
@@ -488,7 +541,9 @@ class EmuLock:
                                  env._run_truncated_buf)
 
     def _select_action(self, label: list) -> int | None:
-        """The emulator's candidate index for a referee selection label [entry, upgraded]."""
+        """The emulator's candidate index for a referee selection label [entry, upgraded]; None for "none"."""
+        if not (isinstance(label, list) and len(label) > 1):
+            return None  # the "none" action of a screen that allows 0 cards: the emulator's fight selection has no such action
         obs, ls = self._obs(), self.ls
         for a in range(min(obs[ls._SELECTION_COUNT], 32)):
             c = ls._card_at(obs, ls._SELECTION + a * ls._CARD)
@@ -572,6 +627,14 @@ class EmuLock:
 
     # -- non-combat pairing: referee label index -> emulator option index
     def _pair(self, kind: str, labels: list) -> list[int | None]:
+        if any(extra_kind(lab) in NO_EMULATOR_KINDS for lab in labels):
+            # Actions the emulator has no option for are paired as None; the screen's own labels pair as before.
+            core = [i for i, lab in enumerate(labels) if extra_kind(lab) not in NO_EMULATOR_KINDS]
+            sub = self._pair(kind, [labels[i] for i in core])
+            out: list[int | None] = [None] * len(labels)
+            for i, j in zip(core, sub):
+                out[i] = j
+            return out
         opts = self.dec.options
         if kind == "event":
             # The labels are the enabled options' TextKeys (or relic ids) in page order, the emulator's options its legal
@@ -596,6 +659,9 @@ class EmuLock:
                         hit = j
                 elif kind == "rest" and o.kind == "rest." + self.REST.get(lab, "?"):
                     hit = j
+                elif kind == "select_cards" and lab == "none":
+                    if o.kind == "select.offer_done":
+                        hit = j
                 elif kind == "select_cards":
                     deck = (self.dec.view or self.s.view()).deck
                     card = o.card if o.card is not None else (deck[o.deck_index] if o.deck_index is not None else None)
@@ -628,6 +694,8 @@ class EmuLock:
     def apply(self, kind: str, labels: list, idx: int) -> str | None:
         if kind in COMBAT_KINDS:
             return self._apply_combat(kind, labels, idx)
+        if extra_kind(labels[idx]) in NO_EMULATOR_KINDS:
+            return f"no_emulator_option:{kind}:{json.dumps(labels[idx])[:60]}"
         if kind == "reward":
             ctx = (self._msg or {}).get("ctx") or {}
             self.rq.append([ctx.get("type", "card"), labels[idx] == "take"])
@@ -724,13 +792,13 @@ def referee_only_policy(msg: dict) -> int:
 
 
 def play_run(env, seed: str, *, ascension: int = 10, sims: int = 60, emu_factory=None, max_decisions: int = 4000,
-             agent_seed=None):
+             agent_seed=None, character: str = "IRONCLAD"):
     """One run on a GameEnv under the PLAY agent. Returns (end message, Lockstep)."""
     agent_seed = list(agent_seed) if agent_seed is not None else [fresh_agent_seed(), 0]
-    emu = (emu_factory or (lambda s: EmuLock(s, ascension, sims, agent_seed)))(seed)
+    emu = (emu_factory or (lambda s: EmuLock(s, ascension, sims, agent_seed, character)))(seed)
     ls = Lockstep(emu, referee_only_policy, seed, sims, agent_seed)
     try:
-        m, done = env.reset(seed, hash=True)
+        m, done = env.reset(seed, hash=True, **({} if character == "IRONCLAD" else {"character": character}))
         n = 0
         while not done and n < max_decisions:
             m, done = env.step(ls.decide(m))

@@ -57,7 +57,7 @@ public sealed class FirstChoiceSelector : ICardSelector
     internal static string PickTiming = "ui";
 
     /// <summary>Set inside a whole run with an agent channel or a trace (Env.cs): which of the list to pick, ascending.</summary>
-    internal static Func<List<CardModel>, int, List<int>>? PickHook;
+    internal static Func<List<CardModel>, int, bool, List<int>>? PickHook;  // (options, n, the screen allows choosing 0)
 
     /// <summary>As PickHook, for a card reward offered inside a fight.</summary>
     internal static Func<IReadOnlyList<CardCreationResult>, int>? CardRewardHook;
@@ -208,7 +208,7 @@ public sealed class FirstChoiceSelector : ICardSelector
     {
         string? edge = NextEdge();
         int n = Math.Min(list.Count, Math.Max(minSelect, Math.Min(1, maxSelect)));
-        var at = edge == null ? PickHook?.Invoke(list, n) ?? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
+        var at = edge == null ? PickHook?.Invoke(list, n, Env.Extras && minSelect <= 0 && n > 0) ?? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
         var picked = at.Select(i => list[i]).ToList();
         var entry = new JsonObject
         {

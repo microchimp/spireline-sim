@@ -28,9 +28,15 @@ public static class IntentParticles
 
     /// <summary>Roll the current moves again off <paramref name="rng" />.</summary>
     /// <returns>True when a consistent roll replaced them.</returns>
-    public static bool Resample(CombatState combat, Random rng)
+    public static bool Resample(CombatState combat, Random rng) => Resample(combat, rng, null);
+
+    /// <summary>
+    /// <paramref name="pass" /> stands in for <see cref="EnemyAI.ChooseIntents" /> (roster, stream):
+    /// tests run a table of their own through the sampler. Null is the game's own pass.
+    /// </summary>
+    internal static bool Resample(CombatState combat, Random rng, Action<List<EnemyState>, Random>? pass)
     {
-        if (ResampleCore(combat, rng))
+        if (ResampleCore(combat, rng, pass))
         {
             return true;
         }
@@ -41,7 +47,11 @@ public static class IntentParticles
         return false;
     }
 
-    private static bool ResampleCore(CombatState combat, Random rng)
+    private static bool ResampleCore(
+        CombatState combat,
+        Random rng,
+        Action<List<EnemyState>, Random>? pass
+    )
     {
         var roll = combat.LastIntentRoll;
         var live = combat.Enemies;
@@ -62,7 +72,15 @@ public static class IntentParticles
         {
             var particle = roll.Before.Select(e => e.Clone()).ToList();
             var stream = new Random(rng.Next());
-            EnemyAI.ChooseIntents(particle, 0, stream, stream, roll.Ascension);
+            if (pass is null)
+            {
+                EnemyAI.ChooseIntents(particle, 0, stream, stream, roll.Ascension);
+            }
+            else
+            {
+                pass(particle, stream);
+            }
+
             if (!Enumerable.Range(0, live.Count).All(i => ShowsTheSame(particle[i], roll.After[i])))
             {
                 continue;

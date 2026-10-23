@@ -52,6 +52,14 @@ internal static class Env
     internal static JsonArray? Trace;
     internal static int Asked;
 
+    /// <summary>Reset spec "extra_actions" (default false): the extra actions (card-reward alternatives, "none" on a selection that
+    /// allows 0, potion use and discard outside fights) are offered. They change the sequence of asked decisions, so the seeded chooser,
+    /// record and replay leave them off unless the record stored the flag on.</summary>
+    internal static bool Extras;
+
+    /// <summary>Card reward screens checked against the screen's own alternatives list, and how many differed.</summary>
+    internal static int AltChecked, AltMismatch;
+
     private static Stream? _out;
     private static TextReader? _in;
 
@@ -131,14 +139,19 @@ internal static class Env
     /// Choose `count` of `labels.Count` items as `count` single picks from what is left (ascending indices). The
     /// seeded fallback's ascending indices map to picks at index[k] - k of the remaining list.
     /// </summary>
-    internal static List<int> DecideMany(string kind, IReadOnlyList<JsonNode> labels, int count, Func<List<int>> fallback)
+    internal static List<int> DecideMany(string kind, IReadOnlyList<JsonNode> labels, int count, Func<List<int>> fallback,
+        bool allowNone = false)
     {
         if (Run == null || !(Live || Tracing)) return fallback();
         if (!Live)
         {
             var idx = fallback();
             for (int k = 0; k < idx.Count; k++)
-                if (labels.Count - k > 1) Trace?.Add(new JsonArray(kind, labels.Count - k, idx[k] - k, Hashing ? Hash() : null));
+            {
+                int rem = labels.Count - k + (allowNone && k == 0 ? 1 : 0);  // the extra "none" action of a screen that allows 0
+                if (rem > 1) Trace?.Add(new JsonArray(kind, rem, idx[k] - k, Hashing ? Hash() : null));
+            }
+
             return idx;
         }
 
@@ -147,14 +160,70 @@ internal static class Env
         for (int k = 0; k < count && left.Count > 0; k++)
         {
             var now = left.ToList();
-            int a = Decide(kind, now.Count, () => new JsonArray(now.Select(i => labels[i].DeepClone()).ToArray()), () => 0,
-                () => new JsonObject { ["pick"] = k + 1, ["of"] = count });
+            bool none = allowNone && k == 0;  // the screen allows choosing 0 cards: "none" is the last action of the first pick
+            int a = Decide(kind, now.Count + (none ? 1 : 0), () =>
+                {
+                    var arr = new JsonArray(now.Select(i => labels[i].DeepClone()).ToArray());
+                    if (none) arr.Add("none");
+                    return arr;
+                }, () => 0, () => new JsonObject { ["pick"] = k + 1, ["of"] = count });
+            if (a >= now.Count) break;
             picked.Add(now[a]);
             left.Remove(now[a]);
         }
 
         picked.Sort();
         return picked;
+    }
+
+    /// <summary>The potion actions offered with the current decision outside a fight: (use|discard, slot, potion).</summary>
+    internal static List<(string act, int slot, PotionModel potion)> PotionActs = new();
+
+    /// <summary>
+    /// The potions the player can use (AnyTime ones) or discard outside a fight, as the potion popup allows. Offered only on
+    /// a decision that is asked anyway (two or more actions), so the sequence of asked decisions is the same with or without.
+    /// </summary>
+    private static List<(string act, int slot, PotionModel potion)> OutsideFightPotionActs(Player player)
+    {
+        var acts = new List<(string act, int slot, PotionModel potion)>();
+        for (int s = 0; s < player.PotionSlots.Count; s++)
+        {
+            var p = player.PotionSlots[s];
+            if (p == null || p.IsQueued) continue;
+            bool usable;
+            try
+            {
+                usable = p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime && p.PassesCustomUsabilityCheck
+                         && player.CanRemovePotions && player.Creature.IsAlive;
+            }
+            catch (Exception)
+            {
+                usable = false;
+            }
+
+            if (usable) acts.Add(("use", s, p));
+            acts.Add(("discard", s, p));
+        }
+
+        return acts;
+    }
+
+    /// <summary>
+    /// Decide() with the outside-fight potion actions appended after the screen's own (["use_potion", slot, id] and
+    /// ["discard_potion", slot, id]). An index at or past n is one of them: Driver.DecideP carries it out and asks again.
+    /// </summary>
+    internal static int DecideWithPotions(string kind, int n, Func<JsonArray> actions, Func<int> fallback, Func<JsonNode?>? ctx = null)
+    {
+        if (Run == null || !Extras || !(Live || Tracing) || n <= 1 || CombatManager.Instance.IsInProgress) return Decide(kind, n, actions, fallback, ctx);
+        PotionActs = OutsideFightPotionActs(Run.Players[0]);
+        var acts = PotionActs;
+        if (acts.Count == 0) return Decide(kind, n, actions, fallback, ctx);
+        return Decide(kind, n + acts.Count, () =>
+        {
+            var arr = actions();
+            foreach (var (act, slot, potion) in acts) arr.Add(new JsonArray(act == "use" ? "use_potion" : "discard_potion", slot, potion.Id.Entry));
+            return arr;
+        }, fallback, ctx);
     }
 
     /// <summary>The full state behind a decision: the run's save and, in a fight, the step snapshot.</summary>
@@ -304,7 +373,7 @@ public static partial class Driver
                 ["t"] = "end", ["end"] = end, ["floor"] = result["floor"]?.DeepClone(), ["asked"] = Env.Asked,
                 ["decisions"] = (result["decisions"] as JsonArray)?.Count, ["ms"] = clock.ElapsedMilliseconds, ["runs"] = runs,
                 ["mem_mb"] = System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64 >> 20,
-                ["probe"] = Env.Probe(runs),
+                ["probe"] = Env.Probe(runs), ["alt_checked"] = Env.AltChecked, ["alt_mismatch"] = Env.AltMismatch,
             };
             var errs = new JsonArray();
             foreach (var d in (result["decisions"] as JsonArray) ?? new JsonArray())
@@ -322,9 +391,9 @@ public static partial class Driver
 public static partial class Driver
 {
     /// <summary>FirstChoiceSelector.PickHook inside a run: the first n (the seeded chooser) or the agent's picks.</summary>
-    private static List<int> FightPick(List<CardModel> list, int n) =>
+    private static List<int> FightPick(List<CardModel> list, int n, bool allowNone) =>
         Env.DecideMany("select_cards_combat", list.Select(c => (JsonNode)new JsonArray(c.Id.Entry, c.IsUpgraded ? 1 : 0)).ToList(), n,
-            () => Enumerable.Range(0, n).ToList());
+            () => Enumerable.Range(0, n).ToList(), allowNone);
 
     private static int FightCardReward(IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options) =>
         Env.Decide("card_reward_combat", options.Count,
