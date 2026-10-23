@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json.Nodes;
 using Sts2Emulator.Core;
+using Sts2Emulator.Core.Rng;
 using Sts2Emulator.Core.Run;
 
 namespace Sts2Emulator.Interop;
@@ -26,7 +27,10 @@ public static class RunNativeExports
     // v23: Sts2Run_AiStateAssumed (DESIGN.md 1.1's ai_state_assumed for the run's fight).
     // v24: Sts2Run_SetAnchorTables and Sts2Run_ReanchorFight put the fight a run stands in on the
     // referee's record of it (referee/lockstep.py, the re-anchor at a fight's start).
-    public const int RUN_NATIVE_API_VERSION = 24;
+    // v25: Sts2Run_ReanchorFightHidden puts the fight on a record that carries the game's streams and the draw pile in
+    // order (its flags say which), and Sts2Run_DebugSetStreams puts the run's streams on the game's counters (the
+    // lockstep's re-anchor at a fight start and at a room entry; referee/lockstep.py).
+    public const int RUN_NATIVE_API_VERSION = 25;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -586,6 +590,40 @@ public static class RunNativeExports
         byte* msgBuf,
         int msgLen,
         int* obsBuf
+    ) => ReanchorFightWith(handle, record, recordLen, 0, msgBuf, msgLen, obsBuf);
+
+    /// <summary>The flag of <see cref="Sts2Run_ReanchorFightHidden" />: the record's "rng" holds the game's streams.</summary>
+    public const int AnchorStreams = 1;
+
+    /// <summary>The flag of <see cref="Sts2Run_ReanchorFightHidden" />: the record's draw pile is in the game's order.</summary>
+    public const int AnchorDrawOrder = 2;
+
+    /// <summary>
+    /// <see cref="Sts2Run_ReanchorFight" /> with the game's hidden state. <paramref name="flags" />:
+    /// <see cref="AnchorStreams" /> (the record's "rng" is the game's run streams, <c>{name: {seed, counter}}</c>: the
+    /// combat's streams are put on them, and so are the run's own, which the end of the fight reads) and
+    /// <see cref="AnchorDrawOrder" /> (the record's "draw" is the draw pile top first, as the game holds it, not the
+    /// sorted list an agent is shown). Flags 0 is the call above. Only the lockstep's emulator side may call this
+    /// (the record is the referee's hidden state), never a search.
+    /// </summary>
+    public static unsafe int Sts2Run_ReanchorFightHidden(
+        int handle,
+        byte* record,
+        int recordLen,
+        int flags,
+        byte* msgBuf,
+        int msgLen,
+        int* obsBuf
+    ) => ReanchorFightWith(handle, record, recordLen, flags, msgBuf, msgLen, obsBuf);
+
+    private static unsafe int ReanchorFightWith(
+        int handle,
+        byte* record,
+        int recordLen,
+        int flags,
+        byte* msgBuf,
+        int msgLen,
+        int* obsBuf
     )
     {
         string message;
@@ -603,7 +641,7 @@ public static class RunNativeExports
         }
         else
         {
-            status = ReanchorFight(run, new ReadOnlySpan<byte>(record, recordLen), out message);
+            status = ReanchorFight(run, new ReadOnlySpan<byte>(record, recordLen), flags, out message);
             if (status >= 0 && obsBuf != null)
             {
                 run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
@@ -622,7 +660,115 @@ public static class RunNativeExports
     }
 
     /// <summary><see cref="Sts2Run_ReanchorFight" /> on a run, with the record as bytes.</summary>
-    internal static int ReanchorFight(RunEngine run, ReadOnlySpan<byte> record, out string message)
+    internal static int ReanchorFight(RunEngine run, ReadOnlySpan<byte> record, out string message) =>
+        ReanchorFight(run, record, 0, out message);
+
+    /// <summary>The run's stream a game stream name stands for (the property names of the game's RunRngSet and PlayerRngSet).</summary>
+    private static GameRng? StreamNamed(RunEngine run, string name) => name switch
+    {
+        "UpFront" => run.State.Rng.UpFront,
+        "Shuffle" => run.State.Rng.Shuffle,
+        "UnknownMapPoint" => run.State.Rng.UnknownMapPoint,
+        "CombatCardGeneration" => run.State.Rng.CombatCardGeneration,
+        "CombatPotionGeneration" => run.State.Rng.CombatPotionGeneration,
+        "CombatCardSelection" => run.State.Rng.CombatCardSelection,
+        "CombatEnergyCosts" => run.State.Rng.CombatEnergyCosts,
+        "CombatTargets" => run.State.Rng.CombatTargets,
+        "MonsterAi" => run.State.Rng.MonsterAi,
+        "Niche" => run.State.Rng.Niche,
+        "CombatOrbGeneration" or "CombatOrbs" => run.State.Rng.CombatOrbs,
+        "TreasureRoomRelics" => run.State.Rng.TreasureRoomRelics,
+        "Rewards" => run.State.PlayerRng.Rewards,
+        "Shops" => run.State.PlayerRng.Shops,
+        "Transformations" => run.State.PlayerRng.Transformations,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Why <paramref name="streams" /> cannot be applied, or null. Every entry that names a stream of the run must hold a
+    /// seed and a non-negative counter, so a bad payload is refused before anything moves (all or nothing).
+    /// </summary>
+    internal static string? CheckStreams(RunEngine run, JsonObject streams)
+    {
+        foreach (var kv in streams)
+        {
+            if (StreamNamed(run, kv.Key) is null)
+            {
+                continue;
+            }
+
+            if (kv.Value is not JsonObject g
+                || g["seed"] is not JsonValue seed || !seed.TryGetValue<long>(out _)
+                || g["counter"] is not JsonValue counter || !counter.TryGetValue<int>(out int n) || n < 0)
+            {
+                return $"bad stream {kv.Key}: needs a seed and a counter of 0 or more";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Puts the run's streams on the game's: for each <c>{name: {seed, counter}}</c> whose stream here has that seed,
+    /// the stream is moved to that counter (backwards too). A name the run has no stream for, or one with another seed
+    /// (not the same stream), is left alone. Returns how many streams moved.
+    /// </summary>
+    internal static int SetStreams(RunEngine run, JsonObject streams)
+    {
+        if (CheckStreams(run, streams) is { } problem)
+        {
+            throw new ArgumentException(problem);
+        }
+
+        int moved = 0;
+        foreach (var kv in streams)
+        {
+            if (kv.Value is not JsonObject g || StreamNamed(run, kv.Key) is not { } stream)
+            {
+                continue;
+            }
+
+            int seed = unchecked((int)(uint)(long)g["seed"]!);
+            int counter = (int)g["counter"]!;
+            if (stream.RawSeed != seed || stream.CallCount == counter)
+            {
+                continue;
+            }
+
+            stream.SeekTo(counter);
+            moved++;
+        }
+
+        return moved;
+    }
+
+    /// <summary>
+    /// Put the run's streams on the game's -- <see cref="SetStreams" />. UTF-8 JSON <c>{name: {seed, counter}}</c>, as the
+    /// referee driver reports a stream set. Returns how many streams moved, -1 no such run, -2 the text is not that object.
+    /// </summary>
+    public static unsafe int Sts2Run_DebugSetStreams(int handle, byte* json, int len)
+    {
+        if (!TryGet(handle, out var run))
+        {
+            return -1;
+        }
+
+        if (json == null || len < 0)
+        {
+            return -2;
+        }
+
+        try
+        {
+            return SetStreams(run, JsonNode.Parse(new ReadOnlySpan<byte>(json, len))!.AsObject());
+        }
+        catch (Exception)
+        {
+            return -2;
+        }
+    }
+
+    internal static int ReanchorFight(RunEngine run, ReadOnlySpan<byte> record, int flags, out string message)
     {
         if (_anchorTables is not { } tables)
         {
@@ -651,7 +797,8 @@ public static class RunNativeExports
         {
             var q = live.Clone();
             var patched = new List<string>();
-            string? problem = FightAnchor.Anchor(tables, q, game, patched, FightAnchor.Source.Observation);
+            string? problem = FightAnchor.Anchor(tables, q, game, patched,
+                new FightAnchor.Source((flags & AnchorStreams) != 0, (flags & AnchorDrawOrder) != 0));
             if (problem != null)
             {
                 message = problem;
@@ -660,7 +807,24 @@ public static class RunNativeExports
 
             // The enemies' next moves come from the record's intents; with no later turns known, the nearest position that announces them.
             var (moves, unknown) = FightAnchor.AnchorMoves(q, game, patched, _ => []);
+            if ((flags & AnchorStreams) != 0 && game["rng"] is JsonObject record_rng && CheckStreams(run, record_rng) is { } bad)
+            {
+                message = bad;  // refused before the swap: the run is as it was
+                return -2;
+            }
+
             run.State.ActiveCombat = q;
+            if ((flags & AnchorStreams) != 0 && game["rng"] is JsonObject streams)
+            {
+                // The run's own streams stand where the fight began; the end of the fight moves them on to the combat's
+                // (forward only), so they go to the game's position too.
+                int moved = SetStreams(run, streams);
+                if (moved > 0)
+                {
+                    patched.Add($"run.streams={moved}");
+                }
+            }
+
             message = $"moves={moves}" + (unknown == null ? "" : ":" + string.Join(",", unknown)) + ";patched=" + string.Join(",", patched);
             return patched.Count;
         }

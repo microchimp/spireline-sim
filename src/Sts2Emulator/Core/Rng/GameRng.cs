@@ -11,7 +11,7 @@ namespace Sts2Emulator.Core.Rng;
 /// </summary>
 public sealed class GameRng
 {
-    private readonly MegaRandom _rng;
+    private MegaRandom _rng;
 
     public int RawSeed { get; }
 
@@ -179,6 +179,27 @@ public sealed class GameRng
     {
         items.Sort(comparer);
         Shuffle(items);
+    }
+
+    /// <summary>
+    /// Puts this stream at exactly <paramref name="callCount" /> draws from its seed: forward by drawing, backward
+    /// by starting again from the seed (<see cref="AdvanceToCallCount" /> cannot rewind). A re-anchor sets a run's
+    /// stream to where the game's stands, which may be behind this one.
+    /// </summary>
+    public void SeekTo(int callCount)
+    {
+        if (callCount < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(callCount), "A stream's position cannot be negative.");
+        }
+
+        if (callCount < CallCount)
+        {
+            _rng = new MegaRandom(unchecked((uint)RawSeed));
+            CallCount = 0;
+        }
+
+        AdvanceToCallCount(callCount);
     }
 
     /// <summary>The game's <c>Rng.FastForwardCounter</c>.</summary>

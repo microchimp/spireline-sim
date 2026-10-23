@@ -16,7 +16,7 @@ _LIB_NAMES = {
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
 _REQUIRED_NATIVE_API_VERSION = 36
-_REQUIRED_RUN_NATIVE_API_VERSION = 24
+_REQUIRED_RUN_NATIVE_API_VERSION = 25
 
 
 def _repo_root() -> Path:
@@ -637,6 +637,18 @@ _lib.Sts2Run_ReanchorFight.argtypes = [
     ctypes.c_int,
     ctypes.POINTER(ctypes.c_int),
 ]
+_lib.Sts2Run_ReanchorFightHidden.restype = ctypes.c_int
+_lib.Sts2Run_ReanchorFightHidden.argtypes = [
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_int),
+]
+_lib.Sts2Run_DebugSetStreams.restype = ctypes.c_int
+_lib.Sts2Run_DebugSetStreams.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
 
 _lib.Sts2Run_GetPhase.restype = ctypes.c_int
 _lib.Sts2Run_GetPhase.argtypes = [ctypes.c_int]
@@ -1739,6 +1751,43 @@ def run_reanchor_fight(handle: int, record: dict | str | bytes, obs_buf: ctypes.
     message = ctypes.create_string_buffer(512)
     status = _lib.Sts2Run_ReanchorFight(handle, data, len(data), message, len(message), obs_buf)
     return status, message.value.decode("utf-8", "replace")
+
+
+ANCHOR_STREAMS = 1
+ANCHOR_DRAW_ORDER = 2
+
+
+def run_reanchor_fight_hidden(
+    handle: int, record: dict | str | bytes, obs_buf: ctypes.Array, flags: int = ANCHOR_STREAMS | ANCHOR_DRAW_ORDER
+) -> tuple[int, str]:
+    """`run_reanchor_fight` with the game's hidden state: the record carries ``"rng"`` (the game's run streams,
+    ``{name: {"seed", "counter"}}``) and ``"draw"`` (the draw pile top first, in the game's order), and ``flags`` says
+    which of the two the library reads (ANCHOR_STREAMS, ANCHOR_DRAW_ORDER). The combat's streams and the run's own
+    are put on the game's counters; the draw pile is the game's order. Same status codes as `run_reanchor_fight`.
+
+    For the lockstep's emulator side only: the record is the referee's hidden state and must never reach a search or
+    an agent's observation. A search forks the position with ``resample_hidden=True``, which redraws all of it.
+    """
+    if not _anchor_tables_set:
+        run_set_anchor_tables()
+    if isinstance(record, dict):
+        record = json.dumps(record)
+    data = record.encode("utf-8") if isinstance(record, str) else bytes(record)
+    message = ctypes.create_string_buffer(512)
+    status = _lib.Sts2Run_ReanchorFightHidden(handle, data, len(data), int(flags), message, len(message), obs_buf)
+    return status, message.value.decode("utf-8", "replace")
+
+
+def run_debug_set_streams(handle: int, streams: dict | str | bytes) -> int:
+    """Put the run's streams on the game's counters: ``{name: {"seed", "counter"}}`` as the referee driver reports a
+    stream set (the run's streams and the player's). A stream with another seed, or a name the run lacks, is left
+    alone; one ahead of the game's counter is moved back. Returns how many streams moved, or -1 no such run, -2 the
+    text is not that object. Lockstep emulator side only (see `run_reanchor_fight_hidden`).
+    """
+    if isinstance(streams, dict):
+        streams = json.dumps(streams)
+    data = streams.encode("utf-8") if isinstance(streams, str) else bytes(streams)
+    return int(_lib.Sts2Run_DebugSetStreams(handle, data, len(data)))
 
 
 def run_destroy(handle: int) -> None:

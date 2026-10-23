@@ -43,9 +43,9 @@ class ExtraActionsFlag(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             envproto.write_record_meta(Path(d), "FID1", "SILENT", True)
             envproto.write_record_meta(Path(d), "FID2", "IRONCLAD", False)
-            self.assertEqual(envproto.read_record_meta(Path(d), "FID1"), {"character": "SILENT", "extra_actions": True})
+            self.assertEqual(envproto.read_record_meta(Path(d), "FID1"), {"character": "SILENT", "extra_actions": True, "full_select": False})
             self.assertEqual(envproto.read_record_meta(Path(d), "FID2")["extra_actions"], False)
-            self.assertEqual(envproto.read_record_meta(Path(d), "OLD"), {"character": "IRONCLAD", "extra_actions": False})  # no sidecar: off
+            self.assertEqual(envproto.read_record_meta(Path(d), "OLD"), {"character": "IRONCLAD", "extra_actions": False, "full_select": False})  # no sidecar: off
             self.assertEqual(list(Path(d).glob("rec-*.json")), [])  # the sidecar is not mistaken for a record
 
 

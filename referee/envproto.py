@@ -49,24 +49,32 @@ def below_normal_self() -> None:
     k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
 
 
-def reset_spec(seed: str, character: str = "IRONCLAD", spec: dict | None = None, extra_actions: bool = False) -> dict:
+def reset_spec(seed: str, character: str = "IRONCLAD", spec: dict | None = None, extra_actions: bool = False,
+               full_select: bool = False) -> dict:
     """The run spec a reset sends: the seed, the character (the game's character id; the driver's default is IRONCLAD) and
     `extra_actions` (card-reward alternatives, "none" on a selection that allows 0, potion actions outside fights; the driver's
-    default is off, and it changes the sequence of asked decisions: play and bench turn it on, record/replay/smoke leave it off)."""
-    return {"seed": seed, "character": character, "extra_actions": bool(extra_actions), "potions": True, "stop_after_act": 3,
-            "max_decisions": 3000, **(spec or {})}
+    default is off, and it changes the sequence of asked decisions: play and bench turn it on, record/replay/smoke leave it off)
+    and `full_select` (a fight card screen offers its real min..max: picks one at a time and a "done" action; off by default so
+    old records replay, on in play; the key is present only when on)."""
+    out = {"seed": seed, "character": character, "extra_actions": bool(extra_actions), "potions": True, "stop_after_act": 3,
+           "max_decisions": 3000, **(spec or {})}
+    if full_select:
+        out["full_select"] = True
+    return out
 
 
-def write_record_meta(out: Path, seed: str, character: str, extra_actions: bool) -> None:
+def write_record_meta(out: Path, seed: str, character: str, extra_actions: bool, full_select: bool = False) -> None:
     """What a record was made with, for replay to use (a sidecar: replay globs rec-*.json)."""
-    (Path(out) / f"meta-{seed}.json").write_text(json.dumps({"character": character, "extra_actions": bool(extra_actions)}), encoding="utf-8")
+    (Path(out) / f"meta-{seed}.json").write_text(json.dumps({"character": character, "extra_actions": bool(extra_actions),
+                                                                      "full_select": bool(full_select)}), encoding="utf-8")
 
 
 def read_record_meta(out: Path, seed: str, character: str = "IRONCLAD") -> dict:
-    """The stored character and extra_actions of a record; a record without a sidecar was made with the flag off."""
+    """The stored character, extra_actions and full_select of a record; a record without a sidecar (or a key) was made with the flag off."""
     p = Path(out) / f"meta-{seed}.json"
     m = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-    return {"character": m.get("character", character), "extra_actions": bool(m.get("extra_actions", False))}
+    return {"character": m.get("character", character), "extra_actions": bool(m.get("extra_actions", False)),
+            "full_select": bool(m.get("full_select", False))}
 
 
 class GameEnv:
@@ -136,8 +144,9 @@ class GameEnv:
         return m
 
     def reset(self, seed: str, spec: dict | None = None, hash: bool = False, record: Path | None = None,
-              timeout: float = 120, character: str = "IRONCLAD", extra_actions: bool = False) -> tuple[dict, bool]:
-        cmd = {"cmd": "reset", "spec": reset_spec(seed, character, spec, extra_actions), "hash": hash}
+              timeout: float = 120, character: str = "IRONCLAD", extra_actions: bool = False,
+              full_select: bool = False) -> tuple[dict, bool]:
+        cmd = {"cmd": "reset", "spec": reset_spec(seed, character, spec, extra_actions, full_select), "hash": hash}
         if record:
             cmd["record"] = str(record).replace("\\", "/")
         self._send(cmd)
@@ -469,7 +478,7 @@ def record(a) -> int:
         (scratch / "appdata").mkdir(parents=True, exist_ok=True)
         (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
         jopts = serve.job_options({}, stall_s=300)
-        spec = {"kind": "run", **reset_spec(seed, a.character, extra_actions=a.extra_actions), "buff_max_hp": a.buff}
+        spec = {"kind": "run", **reset_spec(seed, a.character, extra_actions=a.extra_actions, full_select=a.full_select), "buff_max_hp": a.buff}
         jopts.update(env_trace=True, runs=[spec], out=str(out / f"rec-{seed}.json").replace("\\", "/"))
         job = scratch / "job.json"
         job.write_text(json.dumps(jopts), encoding="utf-8")
@@ -479,7 +488,7 @@ def record(a) -> int:
         rep = json.loads(r.stdout[r.stdout.index("{"):]) if "{" in r.stdout else {}
         ok = r.returncode == 0 and rep.get("network_connections") == [] and rep.get("real_profile_touched") is False
         bad += not ok
-        write_record_meta(out, seed, a.character, a.extra_actions)
+        write_record_meta(out, seed, a.character, a.extra_actions, a.full_select)
         res = json.loads((out / f"rec-{seed}.json").read_text(encoding="utf-8"))
         run = res[0] if isinstance(res, list) else res.get("results", [res])[0]
         print(seed, "ok" if ok else f"session FAILED {rep}", run.get("end"), "trace", len(run.get("env_trace", [])),
@@ -507,7 +516,7 @@ def replay(a) -> int:
         meta = read_record_meta(out, rec.stem[4:], a.character)  # the stored flag, not the command line's
         m, done = env.reset(run["seed"] if "seed" in run else rec.stem[4:], hash=True, spec={"buff_max_hp": a.buff},
                             record=out / f"replay-{rec.stem[4:]}.json", character=meta["character"],
-                            extra_actions=meta["extra_actions"])
+                            extra_actions=meta["extra_actions"], full_select=meta["full_select"])
         same = 0
         first = None
         for j, (kind, n, idx, h) in enumerate(trace):
@@ -523,7 +532,7 @@ def replay(a) -> int:
             first = first or "the replay asked more decisions than recorded"
         rep_run = json.loads((out / f"replay-{rec.stem[4:]}.json").read_text(encoding="utf-8")) if done else {}
         dumps_equal = done and strip_timing(rep_run) == strip_timing(run)
-        results.append({"seed": rec.stem[4:], "extra_actions": meta["extra_actions"], "decisions": len(trace), "hash_equal": same, "first_diff": first,
+        results.append({"seed": rec.stem[4:], "extra_actions": meta["extra_actions"], "full_select": meta["full_select"], "decisions": len(trace), "hash_equal": same, "first_diff": first,
                         "end": run.get("end"), "replay_end": m.get("end") if done else None, "dump_equal": dumps_equal})
         print(json.dumps(results[-1]))
     seen |= rr.connections(env.pid)
@@ -623,6 +632,7 @@ class _Timed:
     def reset(self, *a, **k):
         k.setdefault("character", self.character)
         k.setdefault("extra_actions", True)  # play runs in lockstep with the extra actions on
+        k.setdefault("full_select", True)  # and with fight card screens at their real min..max (driver/Selector.cs)
         return self.env.reset(*a, timeout=self.timeout, **k)
 
     def step(self, a):
@@ -636,6 +646,10 @@ def play(a) -> int:
     import lockstep  # noqa: PLC0415
 
     lockstep.require_character(a.character)  # the emulator side must be able to start it: exit before any game boots
+    # The workers boot their games with install=False, so this tree's driver goes into the game copy once, here: a block must
+    # never play whatever driver an earlier bench or record left in a shared copy.
+    rr.check_build(Path(a.game).resolve())
+    rr.install(Path(a.game).resolve(), HERE / "driver" / "bin" / "Release" / "net9.0")
     seeds = [f"A1S{i:04d}" for i in range(a.runs)]
     if a.seeds_file:  # a committed seed block (rl/gen0.py): the first --runs of it, in order
         doc = json.loads(Path(a.seeds_file).read_text(encoding="utf-8"))
@@ -740,6 +754,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     ap.add_argument("--step-timeout", type=float, default=180)
     ap.add_argument("--extra-actions", action="store_true", help="record: record with the extra actions on (replay uses the stored flag)")
+    ap.add_argument("--full-select", action="store_true", help="record: record with fight card screens at their real min..max (replay uses the stored flag)")
     ap.add_argument("--max-runs", type=int, default=0, help="bench: stop after this many runs in all (0: run for --seconds)")
     ap.add_argument("--recycle", type=int, default=0, help="bench: restart each game after this many runs (0: never)")
     return ap

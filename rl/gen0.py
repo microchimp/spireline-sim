@@ -427,6 +427,16 @@ def promote_cmd(a: argparse.Namespace) -> int:
     return 0
 
 
+def rejudge_cmd(a: argparse.Namespace) -> int:
+    _setup()
+    import gen_loop  # noqa: PLC0415
+
+    doc = gen_loop.rejudge(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
+                           config=a.config, note=a.note, lab=Path(a.lab) if a.lab else None)
+    print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins", "decision")}, indent=1))
+    return 0
+
+
 def score_real(a: argparse.Namespace) -> int:
     """The real-game block: envproto `play` (lockstep on) over the seed block, then result.json with the yield keys."""
     import subprocess  # noqa: PLC0415
@@ -512,6 +522,14 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
     pr.add_argument("--lab-runs", action="append", help="a folder of self-play job directories (the lab's runs folder): "
                     "the E-block must not contain their seeds; repeatable")
+    rj = sub.add_parser("rejudge", help="apply the current promotion rule to a candidate's finished arms on its own block")
+    rj.add_argument("--cand", required=True)
+    rj.add_argument("--base")
+    rj.add_argument("--seeds-file", required=True)
+    rj.add_argument("--agent-root", required=True)
+    rj.add_argument("--config", default="a3-v1")
+    rj.add_argument("--note", required=True, help="why the block is judged again (the decision that changed the rule)")
+    rj.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
     sc = sub.add_parser("score")
     sc.add_argument("--game", required=True)
     sc.add_argument("--seeds-file", required=True)
@@ -559,6 +577,8 @@ def main(argv: list[str] | None = None) -> int:
         return train_cmd(a)
     if a.cmd == "promote":
         return promote_cmd(a)
+    if a.cmd == "rejudge":
+        return rejudge_cmd(a)
     if a.cmd == "emu":
         if a.lib:
             os.environ["STS2_LIB_PATH"] = a.lib
