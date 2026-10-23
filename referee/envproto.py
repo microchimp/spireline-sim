@@ -242,7 +242,7 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
                 q.put({"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": n,
                        "ms": m.get("ms"), "mem_mb": m.get("mem_mb"), "dec": dec % 200, "t": time.time(), "s": time.time() - t0,
                        "stale": m.get("stale"), "slowest_step": slow, "fight_errors": m.get("fight_errors"),
-                       "probe": m.get("probe"), "extras": {"offered": offered, "taken": taken, "effect": effect}})
+                       "probe": m.get("probe"), "alt_checked": m.get("alt_checked"), "alt_mismatch": m.get("alt_mismatch"), "extras": {"offered": offered, "taken": taken, "effect": effect}})
                 dec -= dec % 200
                 runs_here += 1
                 if recycle and runs_here >= recycle:
@@ -438,6 +438,7 @@ def summarize(events: list, procs: int) -> dict:
     sysev = [e for e in events if e["ev"] == "sys"]
     return {
         "parent": parent_summary(sysev), "per_minute": per_minute(events),
+        "alt_checks": {"checked": sum(e.get("alt_checked") or 0 for e in ends), "mismatch": sum(e.get("alt_mismatch") or 0 for e in ends)},
         "extras": {k: _merge((e.get("extras") or {}).get(k, {}) for e in ends) for k in ("offered", "taken", "effect")},
         "procs": procs, "window_s": round(span, 1), "decisions": dec, "decisions_per_s": round(dec / span, 1),
         "decisions_per_s_per_proc": round(dec / span / procs, 2),

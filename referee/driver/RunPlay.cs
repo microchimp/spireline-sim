@@ -642,7 +642,17 @@ public static partial class Driver
         var source = screen.GetType().GetField("_completionSource", Private)?.GetValue(screen) as TaskCompletionSource<int?>;
         if (source == null || source.Task.IsCompleted) return;
         int n = cr.Cards.Count();
-        IReadOnlyList<CardRewardAlternative> alts = Env.Extras ? CardRewardAlternative.Generate(cr) : Array.Empty<CardRewardAlternative>();
+        IReadOnlyList<CardRewardAlternative> alts = Array.Empty<CardRewardAlternative>();
+        if (Env.Extras && (Env.Live || Env.Tracing))
+        {
+            // The screen's own list gives the answer's index after the cards; Generate is the cross-check (order and ids), counted.
+            var own = screen.GetType().GetField("_extraOptions", Private)?.GetValue(screen) as IReadOnlyList<CardRewardAlternative>;
+            var generated = CardRewardAlternative.Generate(cr);
+            Env.AltChecked++;
+            if (own == null || !own.Select(x => x.OptionId).SequenceEqual(generated.Select(x => x.OptionId))) Env.AltMismatch++;
+            alts = own ?? generated;
+        }
+
         int pick = Env.Decide("card_reward", n + alts.Count, () => CardRewardActions(cr.Cards.Select(x => x).ToList(), alts),
             () => log.Rng.Next(n));
         if (pick < n) d["card"] = CardJson(cr.Cards.ElementAt(pick));
