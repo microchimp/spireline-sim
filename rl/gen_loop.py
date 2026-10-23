@@ -942,7 +942,7 @@ def resolve_e_block(template: str, k: int, n: int = 2000) -> Path:
 
 
 def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds_file: Path, agent_root: Path, procs: int,
-                           lib: str | None, lab: Path | None) -> int:
+                           lib: str | None, lab: Path | None, lab_runs: Path | None = None) -> int:
     """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv."""
     cmd = [emu_python, str(ROOT / "rl" / "gen0.py"), "promote", "--cand", str(cand), "--seeds-file", str(seeds_file),
            "--agent-root", str(agent_root), "--procs", str(procs)]
@@ -952,6 +952,8 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--lib", lib]
     if lab:
         cmd += ["--lab", str(lab)]
+    if lab_runs:
+        cmd += ["--lab-runs", str(lab_runs)]  # the E-block must not hold a seed the self-play streams played
     return subprocess.run(cmd, check=False).returncode
 
 

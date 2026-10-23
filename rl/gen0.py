@@ -401,7 +401,7 @@ def train_cmd(a: argparse.Namespace) -> int:
             return 2
         seeds_file = gen_loop.resolve_e_block(a.seeds_file, gen + 1) if "{k}" in a.seeds_file else Path(a.seeds_file)
         return gen_loop.run_promote_subprocess(a.emu_python, cand, None, seeds_file, Path(a.agent_root), a.procs, a.lib,
-                                               Path(a.lab) if a.lab else None)
+                                               Path(a.lab) if a.lab else None, Path(a.shards_root))
     return 0
 
 
