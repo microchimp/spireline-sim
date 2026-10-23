@@ -68,7 +68,8 @@ def wilson(k: int, n: int, z: float = Z) -> tuple[float, float]:
     d = 1 + z * z / n
     c = (p + z * z / (2 * n)) / d
     h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
-    return (max(0.0, c - h), min(1.0, c + h))
+    # the endpoints are exact at k = 0 and k = n; the formula leaves rounding dust there
+    return (0.0 if k == 0 else max(0.0, c - h), 1.0 if k == n else min(1.0, c + h))
 
 
 def mean_ci(xs: list[float], z: float = Z) -> dict:
@@ -269,6 +270,51 @@ def stream_seeds(job: str, n: int = 100000) -> list[str]:
     return e_block(f"SP-{job}", n)
 
 
+def env_bench_result(summary: dict) -> dict:
+    """envproto bench's summary.json as the yield keys: the whole-machine and per-process decision rate, memory per run."""
+    return {"runs": summary.get("runs_ended"), "decisions": summary.get("decisions"), "decisions_s": summary.get("decisions_per_s"),
+            "dec_s": summary.get("decisions_per_s_per_proc"), "mem_mb_per_run": summary.get("mem_mb_mean"),
+            "mean_floor": summary.get("mean_floor"),
+            "crashes": len(summary.get("crashes") or []) + len(summary.get("hangs") or [])}
+
+
+def emu_bench_result(doc: dict) -> dict:
+    """bench_emu's JSON (the last worker count) as the yield keys: totals per second."""
+    row = (doc.get("runs") or [{}])[-1]
+    tot = lambda k: (row.get(k) or {}).get("total")  # noqa: E731
+    return {"steps_s": tot("steps_per_s"), "clones_s": tot("clones_per_s"), "sims_s": tot("sims_per_s")}
+
+
+def bench_cmd(a: argparse.Namespace) -> int:
+    """bench-env / bench-emu as one command that exits 0 and leaves {out}/result.json."""
+    import subprocess  # noqa: PLC0415
+
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    if a.lib:
+        env["STS2_LIB_PATH"] = a.lib
+    env.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
+    if a.cmd == "bench-env":
+        cmd = [sys.executable, str(ROOT / "referee" / "envproto.py"), "bench", "--game", a.game, "--out", str(out), "--procs", str(a.procs),
+               "--seconds", str(a.seconds), "--recycle", str(a.recycle)]
+        rc = subprocess.run(cmd, env=env, check=False).returncode
+        summ = out / "summary.json"
+        res = env_bench_result(json.loads(summ.read_text(encoding="utf-8"))) if summ.exists() else {}
+    else:
+        cmd = [sys.executable, str(ROOT / "rl" / "bench_emu.py"), "--n", str(a.procs), "--seconds", str(a.seconds)]
+        p = subprocess.run(cmd, env=env, check=False, capture_output=True, text=True)
+        rc = p.returncode
+        try:
+            doc = json.loads(p.stdout)
+        except ValueError:
+            doc = {}
+        (out / "bench.json").write_text(p.stdout, encoding="utf-8")
+        res = emu_bench_result(doc) if doc else {}
+    (out / "result.json").write_text(json.dumps(res), encoding="utf-8")
+    return rc if res else (rc or 1)
+
+
 def score_real(a: argparse.Namespace) -> int:
     """The real-game block: envproto `play` (lockstep on) over the seed block, then result.json with the yield keys."""
     import subprocess  # noqa: PLC0415
@@ -325,6 +371,14 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--lib")
     sc.add_argument("--emu-dir", help="the emulator baseline to pair with (its runs.jsonl)")
     sc.add_argument("--out", required=True)
+    for name in ("bench-env", "bench-emu"):
+        b = sub.add_parser(name)
+        b.add_argument("--game", default="")
+        b.add_argument("--procs", type=int, default=16)
+        b.add_argument("--seconds", type=float, default=60.0)
+        b.add_argument("--recycle", type=int, default=0)
+        b.add_argument("--lib")
+        b.add_argument("--out", required=True)
     r = sub.add_parser("report")
     r.add_argument("--emu", action="append", required=True, help="DIR:LABEL, e.g. out/emu60:60")
     r.add_argument("--real", required=True)
@@ -333,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "seeds":
         print(len(write_seed_file(a.name, a.n, a.out)), "seeds")
         return 0
+    if a.cmd in ("bench-env", "bench-emu"):
+        return bench_cmd(a)
     if a.cmd == "score":
         return score_real(a)
     if a.cmd == "emu":

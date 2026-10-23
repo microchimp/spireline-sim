@@ -47,6 +47,8 @@ class MathTests(unittest.TestCase):
         self.assertAlmostEqual(lo, 0.2366, places=3)
         self.assertAlmostEqual(hi, 0.7634, places=3)
         self.assertEqual(gen0.wilson(0, 0), (0.0, 1.0))
+        self.assertEqual(gen0.wilson(0, 500)[0], 0.0)  # exactly 0, not 4e-19
+        self.assertEqual(gen0.wilson(500, 500)[1], 1.0)
 
     def test_paired_uses_only_shared_seeds_and_differences(self):
         a = {"x": 10.0, "y": 12.0, "z": 5.0}
@@ -98,6 +100,21 @@ class ResultTests(unittest.TestCase):
         self.assertEqual([r["crash"] for r in rows], [False, False, True])
         self.assertEqual(rows[2]["floor"], 0)
         self.assertEqual(rows[0]["ai_state_assumed"], 2)
+
+
+class BenchResultTests(unittest.TestCase):
+    def test_env_bench_summary_maps_to_yield_keys(self):
+        r = gen0.env_bench_result({"runs_ended": 40, "decisions": 9000, "decisions_per_s": 108.5, "decisions_per_s_per_proc": 9.04,
+                                   "mem_mb_mean": 900, "crashes": [{"ev": "crash"}], "hangs": []})
+        self.assertTrue(set(r) <= set(mix.AGENT_COLUMNS))
+        self.assertEqual((r["decisions_s"], r["dec_s"], r["mem_mb_per_run"], r["crashes"]), (108.5, 9.04, 900, 1))
+
+    def test_emu_bench_takes_the_last_worker_count(self):
+        doc = {"runs": [{"workers": 1, "steps_per_s": {"total": 5}}, {"workers": 16, "steps_per_s": {"total": 80.0},
+                                                                    "clones_per_s": {"total": 1.5}, "sims_per_s": {"total": 9000.0}}]}
+        r = gen0.emu_bench_result(doc)
+        self.assertEqual(r, {"steps_s": 80.0, "clones_s": 1.5, "sims_s": 9000.0})
+        self.assertTrue(set(r) <= set(mix.AGENT_COLUMNS))
 
 
 if __name__ == "__main__":
