@@ -221,8 +221,8 @@ public static class CardEffects
                 // `CreateClone()` is `CardScope.CloneCard(this)` -- the whole card, not a
                 // fresh one off the id. A `new CardInstance(def.Id, upgraded)` drops the
                 // enchantment, so an Inky or Momentum Anger used to copy itself back into
-                // the deck stripped of the thing that made it worth copying.
-                state.DiscardPile.Add(card with { FreeThisTurn = false, RetainThisTurn = false });
+                // the deck stripped of the thing that made it worth copying. A clone is a new card: a fresh uid.
+                state.DiscardPile.Add(state.Fresh(card) with { FreeThisTurn = false, RetainThisTurn = false });
                 break;
 
             // ── Colourless cards that were falling through to the approximation ──
@@ -589,7 +589,7 @@ public static class CardEffects
                     var handCard = state.Hand[i];
                     if (GeneratedData.Cards.Get(handCard.DefId).Type == CardType.Attack)
                     {
-                        state.Hand[i] = new CardInstance(IC.GiantRock, upgraded);
+                        state.Hand[i] = new CardInstance(IC.GiantRock, upgraded) { Uid = state.NewCardUid() };
                         NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                     }
                 }
@@ -630,7 +630,7 @@ public static class CardEffects
                         // `Stoke`: GetForCombat over `Owner.Character.CardPool`.
                         var pool = OwnerCharacterGenerationPool(state);
                         int defId = pool[CardGenerationRng(state, rng).Next(pool.Count)];
-                        state.Hand.Add(new CardInstance(defId, upgraded));
+                        state.Hand.Add(new CardInstance(defId, upgraded) { Uid = state.NewCardUid() });
                     }
                 }
                 break;
@@ -1167,7 +1167,7 @@ public static class CardEffects
                     )
                 )
                 {
-                    AddToHandOrDiscard(state, new CardInstance(id, false));
+                    AddToHandOrDiscard(state, new CardInstance(id, false) { Uid = state.NewCardUid() });
                     NoteGeneratedCard(state);
                 }
 
@@ -1705,7 +1705,7 @@ public static class CardEffects
                     def.Id,
                     2,
                     rng,
-                    [.. Enumerable.Repeat(new CardInstance(SI.Shiv, upgraded), 2)]
+                    [state.Fresh(new CardInstance(SI.Shiv, upgraded)), state.Fresh(new CardInstance(SI.Shiv, upgraded))]
                 );
                 break;
 
@@ -2050,7 +2050,7 @@ public static class CardEffects
                 DiscardFirstCardsFromHand(state, count, rng: rng);
                 for (int i = 0; i < count && state.Hand.Count < MaxCardsInHand; i++)
                 {
-                    state.Hand.Add(new CardInstance(SI.Shiv, upgraded, FreeThisTurn: true));
+                    state.Hand.Add(new CardInstance(SI.Shiv, upgraded, FreeThisTurn: true) { Uid = state.NewCardUid() });
                 }
                 break;
             }
@@ -2571,10 +2571,10 @@ public static class CardEffects
             return;
         }
 
-        state.Hand[handIndex] = new CardInstance(
+        state.Hand[handIndex] = state.Fresh(new CardInstance(
             options[CardSelectionRng(state, rng).Next(options.Length)],
             false
-        );
+        ));
         NoteGeneratedCard(state);
     }
 
@@ -2590,7 +2590,7 @@ public static class CardEffects
         int idx = selectionRng.Next(state.Hand.Count);
         var pool = OwnerCharacterGenerationPool(state);
         int defId = pool[selectionRng.Next(pool.Count)];
-        state.Hand[idx] = new CardInstance(defId, false);
+        state.Hand[idx] = new CardInstance(defId, false) { Uid = state.NewCardUid() };
         return true;
     }
 
@@ -3118,7 +3118,7 @@ public static class CardEffects
                 return;
             }
 
-            state.Hand.Add(new CardInstance(id, upgraded));
+            state.Hand.Add(new CardInstance(id, upgraded) { Uid = state.NewCardUid() });
             NoteGeneratedCard(state);
         }
     }
@@ -3279,7 +3279,7 @@ public static class CardEffects
                 return;
             }
 
-            state.Hand.Add(new CardInstance(id, false));
+            state.Hand.Add(new CardInstance(id, false) { Uid = state.NewCardUid() });
             NoteGeneratedCard(state);
         }
     }
@@ -3342,7 +3342,7 @@ public static class CardEffects
                 return;
             }
 
-            state.Hand.Add(new CardInstance(id, false));
+            state.Hand.Add(new CardInstance(id, false) { Uid = state.NewCardUid() });
             NoteGeneratedCard(state);
         }
     }
@@ -3391,7 +3391,7 @@ public static class CardEffects
                 return;
             }
 
-            state.Hand.Add(new CardInstance(id, false) { FreeThisTurn = true });
+            state.Hand.Add(new CardInstance(id, false) { Uid = state.NewCardUid(), FreeThisTurn = true });
             NoteGeneratedCard(state);
         }
     }
@@ -4127,7 +4127,7 @@ public static class CardEffects
         {
             state.DiscardPile.Insert(
                 placementRng.Next(state.DiscardPile.Count + 1),
-                new CardInstance(cardId, false)
+                new CardInstance(cardId, false) { Uid = state.NewCardUid() }
             );
         }
     }
@@ -4149,7 +4149,7 @@ public static class CardEffects
             // A shuffle-in, not a placement: the player does not see where it went.
             state.InsertIntoDrawPile(
                 placementRng.Next(state.DrawPile.Count + 1),
-                new CardInstance(cardId, false)
+                new CardInstance(cardId, false) { Uid = state.NewCardUid() }
             );
         }
     }
@@ -4344,7 +4344,7 @@ public static class CardEffects
                         int defId in ShuffleTake(state, OwnerCharacterGenerationPool(state), 1, rng)
                     )
                     {
-                        state.Hand.Add(new CardInstance(defId, false, FreeThisTurn: true));
+                        state.Hand.Add(new CardInstance(defId, false, FreeThisTurn: true) { Uid = state.NewCardUid() });
                     }
                 }
 
@@ -4605,7 +4605,7 @@ public static class CardEffects
         for (int i = 0; i < count && state.Hand.Count < MaxCardsInHand; i++)
         {
             int id = pool[(rng as Random ?? new Random(0)).Next(pool.Length)];
-            state.Hand.Add(new CardInstance(id, upgraded));
+            state.Hand.Add(new CardInstance(id, upgraded) { Uid = state.NewCardUid() });
         }
     }
 
@@ -6105,7 +6105,7 @@ public static class CardEffects
     {
         foreach (int id in ShuffleTake(state, OwnerCharacterGenerationPool(state), 1, rng))
         {
-            AddToHandOrDiscard(state, new CardInstance(id, false, FreeThisTurn: true));
+            AddToHandOrDiscard(state, new CardInstance(id, false, FreeThisTurn: true) { Uid = state.NewCardUid() });
             NoteGeneratedCard(state);
         }
     }
@@ -6127,7 +6127,7 @@ public static class CardEffects
         {
             foreach (int id in DistinctPoolCards(state, CardType.Power, 1, rng))
             {
-                AddToHandOrDiscard(state, new CardInstance(id, false, FreeThisTurn: freeThisTurn));
+                AddToHandOrDiscard(state, new CardInstance(id, false, FreeThisTurn: freeThisTurn) { Uid = state.NewCardUid() });
                 NoteGeneratedCard(state);
             }
         }
@@ -6190,7 +6190,7 @@ public static class CardEffects
                 DealDamage(state, Dmg(state, def, upgraded, card));
                 if (def.Name == "AdaptiveStrike")
                 {
-                    state.DiscardPile.Add(new CardInstance(def.Id, upgraded, CostForCombat: 0));
+                    state.DiscardPile.Add(new CardInstance(def.Id, upgraded, CostForCombat: 0) { Uid = state.NewCardUid() });
                 }
                 else if (def.Name == "MomentumStrike")
                 {
@@ -6846,7 +6846,7 @@ public static class CardEffects
                 // SOUL instead, so the pile counts matched and the card did not: a deck
                 // that should fill with free 7-block skills filled with draw-one cantrips.
                 GainBlock(state, Blk(def, upgraded, card), rng);
-                state.DiscardPile.Add(new CardInstance(def.Id, card.Upgraded));
+                state.DiscardPile.Add(new CardInstance(def.Id, card.Upgraded) { Uid = state.NewCardUid() });
                 return true;
             case "Afterlife":
                 SummonOsty(state, upgraded ? 9 : 6);
@@ -8841,7 +8841,7 @@ public static class CardEffects
                 break;
             case "Overclock":
                 DrawCards(state, upgraded ? 3 : 2, rng);
-                state.DiscardPile.Add(new CardInstance(10011, false));
+                state.DiscardPile.Add(new CardInstance(10011, false) { Uid = state.NewCardUid() });
                 break;
             case "Outmaneuver":
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.NextTurnEnergy, upgraded ? 3 : 2);
@@ -9533,7 +9533,7 @@ public static class CardEffects
         {
             if (GeneratedData.Cards.Get(state.Hand[i].DefId).Type == CardType.Status)
             {
-                state.Hand[i] = new CardInstance(209, upgraded);
+                state.Hand[i] = new CardInstance(209, upgraded) { Uid = state.NewCardUid() };
                 NoteGeneratedCard(state); // `CardCmd.Transform` in combat
             }
         }
@@ -9589,7 +9589,7 @@ public static class CardEffects
 
     private static void AddGeneratedStatusToDiscard(CombatState state, int statusId, Random rng)
     {
-        state.DiscardPile.Add(new CardInstance(statusId, false));
+        state.DiscardPile.Add(new CardInstance(statusId, false) { Uid = state.NewCardUid() });
         NoteGeneratedCard(state);
         PrimeRocketPunches(state);
         int smokestack = BuffSystem.Get(state.PlayerBuffs, BuffId.Smokestack);
@@ -9833,7 +9833,7 @@ public static class CardEffects
     /// </summary>
     internal static void AddGeneratedCardToHand(CombatState state, int defId)
     {
-        AddToHandOrDiscard(state, new CardInstance(defId, false));
+        AddToHandOrDiscard(state, new CardInstance(defId, false) { Uid = state.NewCardUid() });
         NoteGeneratedCard(state);
     }
 
@@ -9958,7 +9958,7 @@ public static class CardEffects
         var stream = state.CardGenerationRng ?? rng;
         AddToHandOrDiscard(
             state,
-            new CardInstance(pool[stream.Next(pool.Count)], false) { EtherealForCombat = true }
+            new CardInstance(pool[stream.Next(pool.Count)], false) { EtherealForCombat = true, Uid = state.NewCardUid() }
         );
     }
 
@@ -9966,13 +9966,13 @@ public static class CardEffects
     {
         if (state.Hand.Count < MaxCardsInHand)
         {
-            state.Hand.Add(new CardInstance(446, false));
+            state.Hand.Add(new CardInstance(446, false) { Uid = state.NewCardUid() });
         }
     }
 
     private static void AddSoulToDiscard(CombatState state, bool retain = false)
     {
-        state.DiscardPile.Add(new CardInstance(446, false, Retain: retain));
+        state.DiscardPile.Add(new CardInstance(446, false, Retain: retain) { Uid = state.NewCardUid() });
     }
 
     /// <summary>
@@ -9989,7 +9989,7 @@ public static class CardEffects
         {
             state.InsertIntoDrawPile(
                 placementRng.Next(state.DrawPile.Count + 1),
-                new CardInstance(446, upgraded)
+                new CardInstance(446, upgraded) { Uid = state.NewCardUid() }
             );
             NoteGeneratedCard(state);
         }
@@ -10016,7 +10016,7 @@ public static class CardEffects
 
         for (int i = 0; i < count && state.Hand.Count < MaxCardsInHand; i++)
         {
-            state.Hand.Add(new CardInstance(cards[rng.Next(cards.Length)], false));
+            state.Hand.Add(state.Fresh(new CardInstance(cards[rng.Next(cards.Length)], false)));
         }
     }
 
@@ -10239,7 +10239,7 @@ public static class CardEffects
             (options[i], options[j]) = (options[j], options[i]);
         }
 
-        state.Hand.Add(new CardInstance(options[0], false, FreeThisTurn: true));
+        state.Hand.Add(new CardInstance(options[0], false, FreeThisTurn: true) { Uid = state.NewCardUid() });
     }
 
     /// <summary>
@@ -10907,7 +10907,7 @@ public static class CardEffects
 
             var attackPool = OwnerCharacterGenerationPool(state, CardType.Attack);
             int defId = attackPool[CardGenerationRng(state, rng).Next(attackPool.Count)];
-            state.Hand.Add(new CardInstance(defId, false));
+            state.Hand.Add(new CardInstance(defId, false) { Uid = state.NewCardUid() });
         }
     }
 
@@ -11030,6 +11030,9 @@ public static class CardEffects
                     Enchantment: enchantment,
                     EnchantAmount: enchantAmount
                 )
+                {
+                    Uid = state.NewCardUid(),
+                }
             );
             NoteGeneratedCard(state);
         }
@@ -11171,7 +11174,7 @@ public static class CardEffects
                 return;
             }
 
-            state.Hand.Add(new CardInstance(id, false, FreeThisTurn: freeThisTurn));
+            state.Hand.Add(new CardInstance(id, false, FreeThisTurn: freeThisTurn) { Uid = state.NewCardUid() });
             NoteGeneratedCard(state);
         }
     }
@@ -11202,7 +11205,7 @@ public static class CardEffects
         {
             state.InsertIntoDrawPile(
                 placementRng.Next(state.DrawPile.Count + 1),
-                new CardInstance(id, false, CostForCombat: 0)
+                new CardInstance(id, false, CostForCombat: 0) { Uid = state.NewCardUid() }
             );
             NoteGeneratedCard(state);
         }
@@ -11226,7 +11229,7 @@ public static class CardEffects
         int defId = _generatedClassPool[
             CardGenerationRng(state, rng).Next(_generatedClassPool.Length)
         ];
-        state.Hand.Add(new CardInstance(defId, false, FreeThisTurn: freeThisTurn));
+        state.Hand.Add(new CardInstance(defId, false, FreeThisTurn: freeThisTurn) { Uid = state.NewCardUid() });
     }
 
     /// <summary>
@@ -11273,7 +11276,7 @@ public static class CardEffects
         var card = state.Hand[0];
         for (int i = 0; i < count && state.Hand.Count < MaxCardsInHand; i++)
         {
-            state.Hand.Add(card with { FreeThisTurn = true });
+            state.Hand.Add(state.Fresh(card) with { FreeThisTurn = true });
         }
     }
 

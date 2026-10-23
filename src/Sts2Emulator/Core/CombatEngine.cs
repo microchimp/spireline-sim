@@ -956,7 +956,7 @@ public static class CombatEngine
                 int juggling = BuffSystem.Get(state.PlayerBuffs, BuffId.Juggling);
                 for (int i = 0; i < juggling; i++)
                 {
-                    state.Hand.Add(new CardInstance(card.DefId, card.Upgraded));
+                    state.Hand.Add(new CardInstance(card.DefId, card.Upgraded) { Uid = state.NewCardUid() });
                 }
             }
 
@@ -3876,7 +3876,7 @@ public static class CombatEngine
                 {
                     // In place: `CardCmd.TransformTo` replaces the card where it sits, so
                     // the pile order the rest of the turn draws from is unchanged.
-                    state.DrawPile[index] = new CardInstance(446, false); // Soul
+                    state.DrawPile[index] = new CardInstance(446, false) { Uid = state.NewCardUid() }; // Soul
                     Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
@@ -4132,7 +4132,7 @@ public static class CombatEngine
                 {
                     Effects.CardEffects.AddToHandOrDiscard(
                         state,
-                        selection.GeneratedRetained
+                        state.Fresh(selection.GeneratedRetained
                             ? new CardInstance(
                                 selection.GeneratedCandidates[index],
                                 selection.GeneratedUpgraded
@@ -4144,7 +4144,7 @@ public static class CombatEngine
                                 selection.GeneratedCandidates[index],
                                 selection.GeneratedUpgraded,
                                 FreeThisTurn: true
-                            )
+                            ))
                     );
                 }
 
@@ -4155,7 +4155,7 @@ public static class CombatEngine
                 {
                     // `CardCmd.Transform(chosen, new MinionStrike)` -- in place, and the new
                     // card is upgraded when the transforming card was.
-                    state.Hand[index] = new CardInstance(310, selection.GeneratedUpgraded);
+                    state.Hand[index] = new CardInstance(310, selection.GeneratedUpgraded) { Uid = state.NewCardUid() };
                     Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
@@ -4164,7 +4164,7 @@ public static class CombatEngine
             case CardSelectionKind.TransformHandToMinionSacrifice:
                 if (index < state.Hand.Count)
                 {
-                    state.Hand[index] = new CardInstance(309, selection.GeneratedUpgraded);
+                    state.Hand[index] = new CardInstance(309, selection.GeneratedUpgraded) { Uid = state.NewCardUid() };
                     Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
@@ -4201,7 +4201,7 @@ public static class CombatEngine
             case CardSelectionKind.TransformDrawToMinionDiveBomb:
                 if (index < state.DrawPile.Count)
                 {
-                    state.DrawPile[index] = new CardInstance(308, selection.GeneratedUpgraded);
+                    state.DrawPile[index] = new CardInstance(308, selection.GeneratedUpgraded) { Uid = state.NewCardUid() };
                     Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
@@ -5607,15 +5607,19 @@ public static class CombatEngine
     {
         foreach (var card in state.ReturnToHandBeforeDraw)
         {
-            RemoveFirstMatchingCard(state.DiscardPile, card);
+            int uid = RemoveFirstMatchingCard(state.DiscardPile, card);
             int drawn = state.DrawPile.FindIndex(pileCard => pileCard.DefId == card.DefId && pileCard.Upgraded == card.Upgraded);
             if (drawn >= 0)
             {
-                state.RemoveFromDrawPileAt(drawn);
+                int fromDraw = state.RemoveFromDrawPileAt(drawn).UidOf();
+                uid = uid != 0 ? uid : fromDraw;
             }
 
-            RemoveFirstMatchingCard(state.ExhaustPile, card);
-            state.Hand.Add(card with { FreeThisTurn = false });
+            int exhausted = RemoveFirstMatchingCard(state.ExhaustPile, card);
+            // The card that comes back is the one taken out of the piles: it keeps that card's uid. When no
+            // pile held it (it was drawn back already), the hand gains a card it did not have: a new one.
+            uid = uid != 0 ? uid : exhausted != 0 ? exhausted : state.NewCardUid();
+            state.Hand.Add(card.WithUid(uid) with { FreeThisTurn = false });
         }
         state.ReturnToHandBeforeDraw.Clear();
     }
@@ -5635,7 +5639,7 @@ public static class CombatEngine
                 break;
             }
 
-            state.Hand.Add(copy);
+            state.Hand.Add(state.Fresh(copy));
         }
 
         state.CopiesToHandBeforeDraw.Clear();
@@ -5822,15 +5826,20 @@ public static class CombatEngine
             );
     }
 
-    private static void RemoveFirstMatchingCard(List<CardInstance> pile, CardInstance card)
+    /// <returns>The removed card's uid, or 0 when none matched.</returns>
+    private static int RemoveFirstMatchingCard(List<CardInstance> pile, CardInstance card)
     {
         int index = pile.FindIndex(pileCard =>
             pileCard.DefId == card.DefId && pileCard.Upgraded == card.Upgraded
         );
         if (index >= 0)
         {
+            int uid = pile[index].UidOf();
             pile.RemoveAt(index);
+            return uid;
         }
+
+        return 0;
     }
 
 
@@ -6015,7 +6024,7 @@ public static class CombatEngine
                 // player created.
                 Effects.CardEffects.AddToHandOrDiscard(
                     state,
-                    new CardInstance(Effects.ST.Wither, false)
+                    new CardInstance(Effects.ST.Wither, false) { Uid = state.NewCardUid() }
                 );
                 BuffSystem.Apply(
                     enemy.Buffs,

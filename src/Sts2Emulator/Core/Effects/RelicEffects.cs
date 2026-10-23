@@ -481,7 +481,7 @@ public static class RelicEffects
         }
 
         state.MusicBoxUsedThisTurn = true;
-        state.Hand.Add(card with { EtherealForCombat = true });
+        state.Hand.Add(state.Fresh(card) with { EtherealForCombat = true });
     }
 
     /// <summary>
@@ -2986,7 +2986,7 @@ public static class RelicEffects
         state.BurningSticksUsed = true;
         if (state.Hand.Count < CardEffects.MaxCardsInHand)
         {
-            state.Hand.Add(card with { FreeThisTurn = false });
+            state.Hand.Add(state.Fresh(card) with { FreeThisTurn = false });
         }
     }
 

@@ -4952,7 +4952,7 @@ public static class EnemyAI
     {
         for (int i = 0; i < count; i++)
         {
-            state.DiscardPile.Add(new CardInstance(cardId, false));
+            state.DiscardPile.Add(new CardInstance(cardId, false) { Uid = state.NewCardUid() });
         }
     }
 
@@ -4960,7 +4960,7 @@ public static class EnemyAI
     {
         for (int i = 0; i < count; i++)
         {
-            state.Hand.Add(new CardInstance(cardId, false));
+            state.Hand.Add(new CardInstance(cardId, false) { Uid = state.NewCardUid() });
         }
     }
 

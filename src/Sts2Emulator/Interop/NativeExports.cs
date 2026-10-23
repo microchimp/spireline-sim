@@ -883,7 +883,7 @@ public static class NativeExports
     {
         var combat = _pool[handle]!;
         // CardPilePosition.Top, which for the hand is index 0.
-        combat.State.Hand.Insert(0, new CardInstance(cardId, upgraded != 0));
+        combat.State.Hand.Insert(0, combat.State.Fresh(new CardInstance(cardId, upgraded != 0)));
         WriteObs(combat.State, obsBuf);
     }
 
