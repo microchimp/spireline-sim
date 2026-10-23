@@ -1250,10 +1250,41 @@ public sealed class RunEngine
     /// </summary>
     public void BindActiveCombat()
     {
-        if (_kernel is { AnyOn: true } && State.ActiveCombat is { Kernel: null } c)
+        if (State.ActiveCombat is { } c)
         {
-            _kernel.Bind(c, State);
+            BindCombat(c);
         }
+    }
+
+    /// <summary>
+    /// <see cref="BindActiveCombat" /> for a combat that is not the run's active one (a re-anchored fight is built and
+    /// stepped on its own): binds the kernel's state when a switch is on and the combat holds none.
+    /// </summary>
+    public void BindCombat(Sts2Emulator.Core.CombatState combat)
+    {
+        if (_kernel is { AnyOn: true } && combat.Kernel is null)
+        {
+            _kernel.Bind(combat, State);
+        }
+    }
+
+    /// <summary>
+    /// The entry gate of a combat stepped on its own, outside <see cref="State" />'s active combat (EmuDump's re-anchor
+    /// steps the fight it anchored, one clone per step). With no switch on it is <see cref="CombatEngine.Step" />. With one
+    /// on, the combat must carry its KernelState (throws otherwise, as <see cref="Step" /> does) and the step goes through
+    /// the queue as a run's combat step does: the action is enqueued and drained, its body the combat engine's step.
+    /// </summary>
+    public StepResult StepCombat(Sts2Emulator.Core.CombatState combat, int action, Random rng, int targetEnemyIndex = -1)
+    {
+        if (_kernel is not { AnyOn: true })
+        {
+            return Sts2Emulator.Core.CombatEngine.Step(combat, action, rng, targetEnemyIndex);
+        }
+
+        var k = combat.Kernel ?? throw new InvalidOperationException(
+            "kernel guard: a switch is on and the combat about to be stepped has no KernelState (bind it where the combat was built)");
+        var host = RunQueue(combat, k, new QueueHost(this, combat, rng), action, targetEnemyIndex);
+        return host.Result ?? StepResult.Invalid;
     }
 
     /// <summary>
@@ -1265,8 +1296,17 @@ public sealed class RunEngine
     private int QueueStep(Sts2Emulator.Core.CombatState combat, Core2.KernelState k, int action, int target,
         out float reward, out bool terminal, out bool truncated)
     {
+        var host = RunQueue(combat, k, new QueueHost(this, combat, null), action, target);
+        reward = host.Reward;
+        terminal = host.Terminal;
+        truncated = host.Truncated;
+        return host.Status;
+    }
+
+    private QueueHost RunQueue(Sts2Emulator.Core.CombatState combat, Core2.KernelState k, QueueHost host, int action, int target)
+    {
         var q = k.Queue!;
-        var host = new QueueHost(this, combat);
+        Core2.GameActionRec? fresh = null;
         if (combat.PendingSelection is { KernelAction: > 0 } screen)
         {
             combat.PendingSelection = null;
@@ -1289,40 +1329,53 @@ public sealed class RunEngine
             var kind = action < combat.Hand.Count ? Core2.GameActionKind.PlayCard
                 : action == combat.Hand.Count ? Core2.GameActionKind.EndTurn
                 : Core2.GameActionKind.UsePotion;
-            q.Enqueue(new Core2.GameActionRec(kind, Core2.GameActionRec.TypeOf(kind)) { Action = action, Target = target });
+            fresh = q.Enqueue(new Core2.GameActionRec(kind, Core2.GameActionRec.TypeOf(kind)) { Action = action, Target = target });
         }
 
         Core2.ActionExecutor.Drain(k, host);
-        if (!host.Ran)
+        // game: a canceled action does nothing. When the queue ran no body (the action was canceled: its queue cancels play
+        // cards or player-driven actions, or the combat is over; or the executor is paused and the action waits; or the step
+        // was the answer to a kernel screen and the hook action's resume record ran) the old step does not run in its place.
+        // A canceled action is refused: status -1, nothing changed.
+        if (!host.Ran && fresh is { State: Core2.GameActionState.Canceled })
         {
-            // The queue ran nothing (a canceled action): the old step's own guards answer it.
-            host.Body(action, target);
+            host.Status = -1;
         }
 
         if (!host.InProgress)
         {
-            q.CombatEnded();
+            k.Queue!.CombatEnded();  // not `q`: a replayed step restored the kernel state and its queue (see ActionExecutor.Drain)
         }
 
-        reward = host.Reward;
-        terminal = host.Terminal;
-        truncated = host.Truncated;
-        return host.Status;
+        return host;
     }
 
-    /// <summary>The executor's host for one step: a player action's body is <see cref="StepInner" />.</summary>
-    private sealed class QueueHost(RunEngine engine, Sts2Emulator.Core.CombatState combat) : Core2.IActionHost
+    /// <summary>
+    /// The executor's host for one step: a player action's body is <see cref="StepInner" />, or, for a combat stepped on
+    /// its own (<see cref="StepCombat" />), the combat engine's step on the caller's stream.
+    /// </summary>
+    private sealed class QueueHost(RunEngine engine, Sts2Emulator.Core.CombatState combat, Random? bare) : Core2.IActionHost
     {
         public bool Ran;
         public int Status;
         public float Reward;
         public bool Terminal;
         public bool Truncated;
+        public StepResult? Result;
 
         public void Body(int action, int target)
         {
             Ran = true;
-            Status = engine.StepInner(action, target, out Reward, out Terminal, out Truncated);
+            if (bare is not null)
+            {
+                var r = Sts2Emulator.Core.CombatEngine.Step(combat, action, bare, target);
+                Result = r;
+                (Reward, Terminal) = (r.Reward, r.Terminal);
+            }
+            else
+            {
+                Status = engine.StepInner(action, target, out Reward, out Terminal, out Truncated);
+            }
         }
 
         public bool Run(Core2.KernelState k, Core2.GameActionRec a)
@@ -1341,7 +1394,8 @@ public sealed class RunEngine
         }
 
         public bool InProgress =>
-            ReferenceEquals(engine.State.ActiveCombat, combat) && !Sts2Emulator.Core.CombatEngine.IsOverOrEnding(combat);
+            (bare is not null || ReferenceEquals(engine.State.ActiveCombat, combat))
+            && !Sts2Emulator.Core.CombatEngine.IsOverOrEnding(combat);
 
         // The old step checks the win condition inside itself; the boundary's check reads it (F10 moves it here).
         public void CheckWin(Core2.KernelState k)

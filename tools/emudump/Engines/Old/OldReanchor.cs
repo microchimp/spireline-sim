@@ -60,6 +60,7 @@ static class OldReanchor
         rec["patched"] = patched;
         string? problem;
         using (Prof.Scope("anchor")) problem = OldAnchor.Anchor(Tables, q, prior, patched);
+        engine.Run.BindCombat(q);  // core2: the anchored combat is stepped through the entry gate and must carry its KernelState
         if (problem != null)
         {
             rec["anchor_error"] = problem;  // this step cannot be tried, so neither can the rest
@@ -93,7 +94,7 @@ static class OldReanchor
             JsonArray chosen;
             try
             {
-                using (Prof.Scope("apply")) (terminal, won, chosen) = Apply(q, qr, a, stepChoices, input.AnswerOpen);
+                using (Prof.Scope("apply")) (terminal, won, chosen) = Apply(engine.Run, q, qr, a, stepChoices, input.AnswerOpen);
             }
             finally
             {
@@ -108,13 +109,13 @@ static class OldReanchor
             // after it, so the fight is finished the way the run finishes it (SyncAfterCombat, the
             // after-combat relics). Where the game goes on, the step differs in in_combat, as it always did.
             using (Prof.Scope("dumplite")) rec["state"] = terminal && !gameGoesOn ? EndState(engine.Run, q, qr, won) : DumpLite(q, !terminal);
-            if (!terminal && q.PendingSelection != null) terminal = Finish(q, qr);
+            if (!terminal && q.PendingSelection != null) terminal = Finish(engine.Run, q, qr);
             if (terminal && !gameGoesOn) return new ReanchorOutcome(carry, Stop: true);
             // The engine ended a fight the game continues: carry on from the state before the action.
             var next = terminal ? new OldCarry(pre, preRng, carry.Start) : new OldCarry(q, qr, carry.Start);
             if (!terminal)
             {
-                using (Prof.Scope("carry_moves")) CarryGameMoves(q, pre, preRng, a, stepChoices, gsteps[j]!["state"]!.AsObject(), rec);
+                using (Prof.Scope("carry_moves")) CarryGameMoves(engine.Run, q, pre, preRng, a, stepChoices, gsteps[j]!["state"]!.AsObject(), rec);
             }
 
             return new ReanchorOutcome(next, Stop: false);
@@ -133,15 +134,15 @@ static class OldReanchor
     /// those used; the ones this step used are added to <paramref name="choices" />, so a redo of the
     /// step in <see cref="CarryGameMoves" /> answers the same).
     /// </summary>
-    static (bool Terminal, bool Won, JsonArray Chosen) Apply(CombatState q, CountingRandom qr, JsonObject a, List<JsonNode?> choices,
+    static (bool Terminal, bool Won, JsonArray Chosen) Apply(RunEngine e, CombatState q, CountingRandom qr, JsonObject a, List<JsonNode?> choices,
         Func<IScreenSource, JsonArray, List<JsonObject>>? answerOpen = null)
     {
-        var first = StepOnce(q, qr, a);
+        var first = StepOnce(e, q, qr, a);
         bool terminal = first.Terminal, won = first.Terminal && first.PlayerWon;
         var chosen = new JsonArray();
         void Answer(int i)
         {
-            var r = CombatEngine.Step(q, i, qr);
+            var r = e.StepCombat(q, i, qr);
             terminal |= r.Terminal;
             won |= r.Terminal && r.PlayerWon;
         }
@@ -172,12 +173,12 @@ static class OldReanchor
     /// auto-play still queued: hidden state the anchor does not patch), so the engine's own answer
     /// -- decline when it may, else the first candidate -- finishes it. True when that ended the fight.
     /// </summary>
-    internal static bool Finish(CombatState q, CountingRandom qr)
+    internal static bool Finish(RunEngine e, CombatState q, CountingRandom qr)
     {
         bool terminal = false;
         for (int guard = 0; guard < 64 && !terminal && q.PendingSelection is { } open; guard++)
         {
-            terminal |= CombatEngine.Step(q, open.Skippable ? open.Candidates.Count : 0, qr).Terminal;
+            terminal |= e.StepCombat(q, open.Skippable ? open.Candidates.Count : 0, qr).Terminal;
         }
 
         q.PendingSelection = null;
@@ -185,16 +186,16 @@ static class OldReanchor
     }
 
     /// <summary>Applies the game's action (end turn or a card play); the step's result, Terminal when the fight ended.</summary>
-    static StepResult StepOnce(CombatState q, CountingRandom qr, JsonObject a)
+    static StepResult StepOnce(RunEngine e, CombatState q, CountingRandom qr, JsonObject a)
     {
-        if ((string)a["kind"]! == "end_turn") return CombatEngine.Step(q, q.Hand.Count, qr);
+        if ((string)a["kind"]! == "end_turn") return e.StepCombat(q, q.Hand.Count, qr);
         if ((string)a["kind"]! == "potion")
         {
             if ((bool?)a["used"] == false) return new StepResult(Terminal: false, PlayerWon: false, Reward: 0f);  // the game cancelled the use
-            return CombatEngine.Step(q, q.Hand.Count + 1 + (int)a["slot"]!, qr, (int)a["target_slot"]!);
+            return e.StepCombat(q, q.Hand.Count + 1 + (int)a["slot"]!, qr, (int)a["target_slot"]!);
         }
         // target_slot indexes the game's living enemies, and the anchor made the engine's roster the same list.
-        return CombatEngine.Step(q, (int)a["hand_index"]!, qr, (int)a["target_slot"]!);
+        return e.StepCombat(q, (int)a["hand_index"]!, qr, (int)a["target_slot"]!);
     }
 
     /// <summary>
@@ -225,7 +226,7 @@ static class OldReanchor
     /// game's move, gives its AI memory to the state the next step starts from. The step's own verdict
     /// is unchanged: it is judged on what the engine did.
     /// </summary>
-    static void CarryGameMoves(CombatState q, CombatState pre, CountingRandom preRng, JsonObject a, List<JsonNode?> choices,
+    static void CarryGameMoves(RunEngine e, CombatState q, CombatState pre, CountingRandom preRng, JsonObject a, List<JsonNode?> choices,
         JsonObject g, JsonObject rec)
     {
         var gen = g["enemies"]!.AsArray();
@@ -245,7 +246,7 @@ static class OldReanchor
             t.AiRng = new CountingRandom(unchecked(seed * (int)0x9E3779B1));
             try
             {
-                if (Apply(t, tr, a, choices).Terminal || (t.PendingSelection != null && Finish(t, tr)) || Shown(t) != shown) continue;
+                if (Apply(e, t, tr, a, choices).Terminal || (t.PendingSelection != null && Finish(e, t, tr)) || Shown(t) != shown) continue;
             }
             catch (Exception)
             {

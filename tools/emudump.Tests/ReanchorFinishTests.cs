@@ -52,7 +52,7 @@ public class ReanchorFinishTests
         var (state, rng) = StoppedOnHeadbutt();
         Assert.Equal(0, state.CardPlaysThisTurn);
 
-        Assert.False(OldReanchor.Finish(state, rng));
+        Assert.False(OldReanchor.Finish(new Sts2Emulator.Core.Run.RunEngine(), state, rng));
 
         Assert.Null(state.PendingSelection);
         Assert.Equal(1, state.CardPlaysThisTurn);

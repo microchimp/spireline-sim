@@ -280,9 +280,12 @@ public sealed class KernelState : HookRuntime
     /// inside old code: the choice is answered (keyed, or the step stops and replays), the listener's resume record runs
     /// (it may ask again), then <paramref name="resume" /> (the dispatcher's Resume and what follows it in the caller)
     /// continues; until the dispatch completes. With <paramref name="flow" /> the choice is the turn start's: its hook
-    /// action (type CombatPlayPhaseOnly) is enqueued when the auto-pre-play phase assigns the task, and runs the choice.
+    /// action (type CombatPlayPhaseOnly) is enqueued when the auto-pre-play phase assigns the task, and runs the choice;
+    /// <paramref name="first" /> is that action when the caller enqueued it already (TurnStart, which checks the win
+    /// condition between the enqueue and the answer).
     /// </summary>
-    public HookStatus Settle(in HookStatus paused, Func<HookStatus, HookStatus> resume, bool flow = false)
+    public HookStatus Settle(in HookStatus paused, Func<HookStatus, HookStatus> resume, bool flow = false,
+        GameActionRec? first = null)
     {
         var st = paused;
         var q = Queue!;
@@ -290,7 +293,8 @@ public sealed class KernelState : HookRuntime
         {
             var site = st.Site!.Value;
             var step = st.Step;
-            var rec = flow ? q.Enqueue(new GameActionRec(GameActionKind.Hook, GameActionType.CombatPlayPhaseOnly)) : null;
+            var rec = first ?? (flow ? q.Enqueue(new GameActionRec(GameActionKind.Hook, GameActionType.CombatPlayPhaseOnly)) : null);
+            first = null;
             if (rec is { State: GameActionState.WaitingForExecution })
             {
                 q.Start(rec);
@@ -326,13 +330,37 @@ public sealed class KernelState : HookRuntime
         return st;
     }
 
-    /// <summary>game: CombatManager.StartTurn's player part, as <see cref="ITurnStartFlow" /> says.</summary>
+    /// <summary>
+    /// game: CombatManager.StartTurn's player part, as <see cref="ITurnStartFlow" /> says: the setup to its pause,
+    /// AfterSideTurnStart, the orb queue's turn start; the hook action is enqueued when the auto-pre-play phase assigns the
+    /// task; then CheckWinCondition (F10's behaviour); only then the executor runs the choice, the rest of the setup and
+    /// AfterAutoPrePlayPhaseEntered, followed by the boundary win check (F10). A combat a death before or during
+    /// AfterSideTurnStart or the orb start ended is over (CombatEnded cancels the pending choice): nothing after runs.
+    /// </summary>
     public void TurnStart(ITurnStartFlow f)
     {
         var st = f.Setup(this);
         f.SideStart(this);
         f.OrbStart(this);
-        st = Settle(st, s => f.ResumeSetup(this, s), flow: true);
+        var q = Queue!;
+        var rec = st.IsPaused ? q.Enqueue(new GameActionRec(GameActionKind.Hook, GameActionType.CombatPlayPhaseOnly)) : null;
+        if (WinCheck(f))
+            return;
+        Settle(st, s => f.ResumeSetup(this, s), flow: true, first: rec);
         f.AutoPrePlay(this);
+        WinCheck(f);
+    }
+
+    /// <summary>game: CombatManager.CheckWinCondition at the turn start's two points, only with F10 on; true when it ended
+    /// the combat, which cancels the combat's actions that have not started (ActionQueueSet.CombatEnded).</summary>
+    private bool WinCheck(ITurnStartFlow f)
+    {
+        if (!On(Switch.F10))
+            return false;
+        WinChecks++;
+        if (!f.CheckWin(this))
+            return false;
+        Queue!.CombatEnded();
+        return true;
     }
 }

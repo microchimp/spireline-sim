@@ -203,7 +203,10 @@ public class ActionQueueTests
 
     // ------------------------------------------------------------------------------------- pauses
 
-    private static KernelState Relics<TArgs>(List<string> log, string pauses, params HookId[] hooks) where TArgs : struct
+    private static KernelState Relics<TArgs>(List<string> log, string pauses, params HookId[] hooks) where TArgs : struct =>
+        Relics<TArgs>(true, log, pauses, hooks);
+
+    private static KernelState Relics<TArgs>(bool f10, List<string> log, string pauses, params HookId[] hooks) where TArgs : struct
     {
         HookEvent<TArgs> ev = (ListenerRef self, in TArgs _, ChoiceCtx? _) =>
         {
@@ -219,7 +222,7 @@ public class ActionQueueTests
                 foreach (var h in hooks)
                     m.On(h, ev);
             }
-        });
+        }, f10: f10);
     }
 
     private static readonly Dictionary<int, string> RelicNames = LoadRelicNames();
@@ -293,17 +296,31 @@ public class ActionQueueTests
 
     private sealed class Flow(List<string> log) : ITurnStartFlow
     {
+        /// <summary>A death during AfterSideTurnStart that ends the combat (the flow's win check then says so).</summary>
+        public bool DiesInSideStart;
+        private bool _over;
+
         private readonly AfterPlayerTurnStartArgs _a = new(new ChoiceCtx(), new PlayerRef(0));
 
         public HookStatus Setup(KernelState k) => Hooks.AfterPlayerTurnStart(k, _a);
 
         public HookStatus ResumeSetup(KernelState k, in HookStatus paused) => Hooks.AfterPlayerTurnStartResume(k, _a, paused);
 
-        public void SideStart(KernelState k) => log.Add("AfterSideTurnStart");
+        public void SideStart(KernelState k)
+        {
+            log.Add("AfterSideTurnStart");
+            _over = DiesInSideStart;
+        }
 
         public void OrbStart(KernelState k) => log.Add("OrbQueue.AfterTurnStart");
 
         public void AutoPrePlay(KernelState k) => log.Add("AfterAutoPrePlayPhaseEntered");
+
+        public bool CheckWin(KernelState k)
+        {
+            log.Add("CheckWin");
+            return _over;
+        }
     }
 
     [Fact]
@@ -316,11 +333,40 @@ public class ActionQueueTests
         var k = Relics<AfterPlayerTurnStartArgs>(log, Name(1), HookId.AfterPlayerTurnStart);
         k.Answers = new Answers(log, 0);
         k.TurnStart(new Flow(log));
-        Assert.Equal([$"run:{Name(3)}", $"run:{Name(1)}", "AfterSideTurnStart", "OrbQueue.AfterTurnStart", "screen:1",
-            $"resume:{Name(1)}=0", $"run:{Name(2)}", "AfterAutoPrePlayPhaseEntered"], log);
+        // The win condition is checked once the hook action is enqueued, before the executor runs it, and after the
+        // phase's last hook (the boundary check of the hook action).
+        Assert.Equal([$"run:{Name(3)}", $"run:{Name(1)}", "AfterSideTurnStart", "OrbQueue.AfterTurnStart", "CheckWin", "screen:1",
+            $"resume:{Name(1)}=0", $"run:{Name(2)}", "AfterAutoPrePlayPhaseEntered", "CheckWin"], log);
         var hook = Assert.Single(k.Queue!.All);
         Assert.Equal((GameActionType.CombatPlayPhaseOnly, GameActionState.Finished), (hook.Type, hook.State));
         Assert.Single(k.Stops);
+        Assert.Equal(2, k.WinChecks);
+    }
+
+    [Fact]
+    public void ADeathInAfterSideTurnStartEndsTheCombatAndCancelsTheTurnStartsChoice()
+    {
+        // game: CombatManager.StartTurn: the hook action is enqueued, CheckWinCondition runs, and only then the executor is
+        // unpaused; a death in AfterSideTurnStart (or before it, or in the orb queue's turn start) ends the combat there and
+        // CombatEnded cancels the pending hook action: the choice, the rest of the setup and AfterAutoPrePlayPhaseEntered
+        // never run.
+        var log = new List<string>();
+        var k = Relics<AfterPlayerTurnStartArgs>(log, Name(1), HookId.AfterPlayerTurnStart);
+        k.Answers = new Answers(log, 0);
+        k.TurnStart(new Flow(log) { DiesInSideStart = true });
+        Assert.Equal([$"run:{Name(3)}", $"run:{Name(1)}", "AfterSideTurnStart", "OrbQueue.AfterTurnStart", "CheckWin"], log);
+        Assert.Equal(GameActionState.Canceled, Assert.Single(k.Queue!.All).State);
+        Assert.Equal(1, k.WinChecks);
+        Assert.Null(k.World!.Combat!.PendingSelection);
+
+        // Off F10's switch the turn start makes no win check of the kernel's: the flow goes on to the choice.
+        log.Clear();
+        var off = Relics<AfterPlayerTurnStartArgs>(false, log, Name(1), HookId.AfterPlayerTurnStart);
+        off.Answers = new Answers(log, 0);
+        off.TurnStart(new Flow(log) { DiesInSideStart = true });
+        Assert.Equal([$"run:{Name(3)}", $"run:{Name(1)}", "AfterSideTurnStart", "OrbQueue.AfterTurnStart", "screen:1",
+            $"resume:{Name(1)}=0", $"run:{Name(2)}", "AfterAutoPrePlayPhaseEntered"], log);
+        Assert.Equal(0, off.WinChecks);
     }
 
     private static (KernelState K, CombatState C) WithHookAction(List<string>? log)
@@ -376,6 +422,9 @@ public class ActionQueueTests
         // becomes a hook action and the loop moves on), then CombatManager.RemoveCreature and CombatState.RemoveCreature,
         // all inside the action that killed; HookPlayerChoiceContext.SignalPlayerChoiceBegun awaits the hook action's
         // ExecutionStartedTask, so the screen opens only when the executor reaches it, after that action finished.
+        // The removal has two conditions in the game, and the kill-site fix must keep both: it happens only when
+        // ShouldCreatureBeRemovedFromCombatAfterDeath says so (the model's own answer), and CombatState.RemoveCreature is
+        // skipped while the monster IsPerformingMove. This test's enemy is removable and not mid-move.
         var log = new List<string>();
         var c = Combat();
         var k = K(combat: c);
@@ -455,5 +504,47 @@ public class ActionQueueTests
         Assert.Throws<InvalidOperationException>(() => guarded.Step(Array.IndexOf(mask, 1), -1, out _, out _, out _));
         guarded.BindActiveCombat();
         Assert.NotNull(guarded.State.ActiveCombat!.Kernel);
+    }
+
+    private static RunEngine InCombat(Kernel kernel)
+    {
+        var e = new RunEngine { Kernel = kernel };
+        e.Reset("PRB00058", ascension: 8);
+        var mask = new int[RunConstants.MaxActions];
+        for (int step = 0; e.State.Phase != RunPhase.Combat && step < 200; step++)
+        {
+            e.WriteActionMask(mask);
+            e.Step(Array.IndexOf(mask, 1), -1, out _, out _, out _);
+        }
+
+        Assert.Equal(RunPhase.Combat, e.State.Phase);
+        return e;
+    }
+
+    private static (int, int, int, int, int) Shape(CombatState c) =>
+        (c.Hand.Count, c.DiscardPile.Count, c.DrawPile.Count, c.Energy, c.CardPlaysThisTurn);
+
+    [Fact]
+    public void ACanceledActionDoesNothing()
+    {
+        // game: ActionQueueSet.Enqueue cancels an action its queue refuses (one cancelling player-driven actions), and
+        // ActionExecutor never runs a canceled action's body. The old step does not run in its place: the action is
+        // refused (status -1) and nothing changes.
+        var kernel = new Kernel(new KernelOptions([Switch.F10], TestGroups), () => Ids, []);
+        var mask = new int[RunConstants.MaxActions];
+        var control = InCombat(kernel);
+        var e = InCombat(kernel);
+        var before = Shape(e.State.ActiveCombat!);
+        Assert.Equal(before, Shape(control.State.ActiveCombat!));
+        control.WriteActionMask(mask);
+        int action = Array.IndexOf(mask, 1);
+        Assert.Equal(0, control.Step(action, 0, out _, out _, out _));
+        Assert.NotEqual(before, Shape(control.State.ActiveCombat!));
+
+        e.State.ActiveCombat!.Kernel!.Queue!.StartCancellingPlayerDriven();
+        int status = e.Step(action, 0, out float reward, out bool terminal, out _);
+        Assert.Equal((-1, 0f, false), (status, reward, terminal));
+        Assert.Equal(before, Shape(e.State.ActiveCombat!));
+        Assert.Equal(GameActionState.Canceled, e.State.ActiveCombat.Kernel!.Queue!.All[^1].State);
     }
 }

@@ -49,8 +49,9 @@ public static class ActionExecutor
 {
     public static void Drain(KernelState k, IActionHost host)
     {
-        var q = k.Queue!;
-        while (!k.ExecutorPaused && q.GetReadyAction() is { } a)
+        // The queue is read again at every action: a replayed step restores the combat's kernel state (and with it the queue
+        // object) to the step's start, so a queue held across a body is a stale one.
+        while (!k.ExecutorPaused && k.Queue!.GetReadyAction() is { } a)
         {
             Execute(k, host, a);
             if (host.InProgress && k.On(Switch.F10) && a.Kind is not (GameActionKind.EndTurn or GameActionKind.ReadyToBeginEnemyTurn))
@@ -101,7 +102,8 @@ public static class ActionExecutor
 /// draw, AfterPlayerTurnStart) runs until it completes or pauses at a choice, WITHOUT a task assigned to its context
 /// (WaitForPauseOrCompletionWithoutAssigningTask), so AfterSideTurnStart and the orb queue's turn start run next; the
 /// auto-pre-play phase then assigns the setup's task to the context, which enqueues its hook action (type
-/// CombatPlayPhaseOnly): the choice, the rest of the setup, then AfterAutoPrePlayPhaseEntered.
+/// CombatPlayPhaseOnly); the win condition is checked, the executor unpaused, and it runs the choice, the rest of the
+/// setup, then AfterAutoPrePlayPhaseEntered and the boundary win check.
 /// </summary>
 public interface ITurnStartFlow
 {
@@ -120,4 +122,8 @@ public interface ITurnStartFlow
 
     /// <summary>RunAutoPrePlayPhase's Hook.AfterAutoPrePlayPhaseEntered.</summary>
     void AutoPrePlay(KernelState k);
+
+    /// <summary>game: CombatManager.CheckWinCondition; true when it ended the combat. Called only with F10 on, after the
+    /// choice's hook action is enqueued (before the executor is unpaused) and after AfterAutoPrePlayPhaseEntered.</summary>
+    bool CheckWin(KernelState k);
 }
