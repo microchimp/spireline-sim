@@ -400,7 +400,7 @@ static class OldReanchor
             }).ToArray()),
         };
         o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());
-        if (Setup.Extended) o["potions"] = Setup.Belt(c.PotionSlots, c.MaxPotionSlots);
+        if (OldDump.Extended) o["potions"] = OldSetup.Belt(c.PotionSlots, c.MaxPotionSlots);
         int N(CountingRandom? r) => r?.CallCount ?? -1;
         o["rng"] = new JsonObject
         {

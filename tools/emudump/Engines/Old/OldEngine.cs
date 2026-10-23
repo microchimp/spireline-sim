@@ -10,7 +10,7 @@ namespace EmuDump.Engines.Old;
 
 public sealed class OldEngine : IEngine
 {
-    OldEngine(RunEngine run) => Run = run;
+    internal OldEngine(RunEngine run) => Run = run;
 
     public OldEngine() : this(new RunEngine())
     {
@@ -47,6 +47,27 @@ public sealed class OldEngine : IEngine
 
     public JsonObject? GameState() => OldNetState.From(Run);
 
+    public JsonObject RngCounters() => OldSetup.Counters(Run.State);
+
+    public SetupResult ObtainRelic(string relicId, IReadOnlyList<JsonObject> cardChoices) => OldSetup.Relic(Run, relicId, cardChoices.ToList());
+
+    public SetupResult ProcurePotion(string potionId) => OldSetup.Potion(Run, potionId);
+
+    public SetupResult AddCard(string cardId, bool upgraded, string pile, bool onTop) => OldSetup.Card(Run, cardId, upgraded, pile, onTop);
+
+    public SetupResult ApplyPower(string powerId, int targetSlot, int amount) => OldSetup.Power(Run, powerId, targetSlot, amount);
+
+    public SetupResult GainEnergy(int amount) => OldSetup.Energy(Run, amount);
+
+    public SetupResult SetHp(int? maxHp, int? currentHp) => OldSetup.Hp(Run, maxHp, currentHp);
+
+    public SetupResult? RefsetItem(JsonObject item, IReadOnlyList<JsonObject> cardChoices) => OldSetup.Refset(Run, item, cardChoices.ToList());
+
+    public string EnterEncounter(int mapOption, string act, string kind, int index, string gameId) =>
+        OldSetup.EnterEncounter(Run, mapOption, act, kind, index, gameId);
+
+    public JsonObject SetupInfo() => OldSetup.Info(PowerKeys());
+
     public ReanchorOpening ReanchorOpen() => OldReanchor.Open(this);
 
     public ReanchorOutcome ReanchorStep(EngineBlock carry, ReanchorMode mode, ReanchorInput input, JsonObject record) =>
@@ -63,9 +84,9 @@ public sealed class OldEngine : IEngine
     {
         var e = Run;
         var game = spec.Record;
-        Setup.Extended = Setup.IsExtended(game);
+        OldDump.Extended = Setup.IsExtended(game);
         var setupLog = new JsonArray();
-        if (Setup.Extended) report["setup_log"] = setupLog;
+        if (OldDump.Extended) report["setup_log"] = setupLog;
         using (Prof.Scope("reset")) e.Reset(spec.Seed, spec.Ascension);
         var s = e.State;
         report["seed"] = s.StringSeed;
@@ -87,12 +108,12 @@ public sealed class OldEngine : IEngine
             }
         }
 
-        Setup.MapItems(e, game, setupLog);  // the setup items before the fight, on the map after Neow
+        Setup.MapItems(this, game, setupLog);  // the setup items before the fight, on the map after Neow
         var want = spec.Room;
         int idx = Array.FindIndex(s.MapOptionCoords, c => c == want);
         if (idx < 0) throw new InvalidOperationException($"room {want} not offered; phase {s.Phase}");
         var fight = new JsonObject();
-        if (Setup.EnterFight(e, game, idx, fight))
+        if (Setup.EnterFight(this, game, idx, fight))
         {
             report["fight"] = fight;
         }
@@ -114,7 +135,7 @@ public sealed class OldEngine : IEngine
             if (start.Count > 0) report["start_choices"] = start;
         }
 
-        Setup.CombatItems(e, game, setupLog);  // the setup items after the fight item, before step 0
+        Setup.CombatItems(this, game, setupLog);  // the setup items after the fight item, before step 0
     }
 
     /// <summary>The run up to the first combat, on a fresh engine; for the callers that hold the run engine itself.</summary>

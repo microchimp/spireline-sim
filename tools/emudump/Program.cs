@@ -3,6 +3,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using EmuDump.Engines;
 using EmuDump.Engines.Old;
 using Sts2Emulator.Core.Rng;
 using Sts2Emulator.Core.Run;
@@ -44,7 +45,7 @@ if (args[0] == "pools")
 if (args[0] == "setupinfo")
 {
     // What the setup mirror can build, for referee/scenarios.py: each relic's pickup follow-up.
-    Console.WriteLine(Setup.Info().ToJsonString());
+    Console.WriteLine(EngineFactory.Create().SetupInfo().ToJsonString());
     return;
 }
 
