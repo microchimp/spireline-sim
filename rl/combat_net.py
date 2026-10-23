@@ -223,7 +223,7 @@ class CombatNet(nn.Module):
         action_types = types[:, 1 : 1 + policy.shape[1]]
         is_action = torch.zeros_like(action_types, dtype=torch.bool)
         for action_type in ACTION_TYPES:
-            is_action |= action_types == action_type
+            is_action = is_action | (action_types == action_type)  # not in place: the ONNX export has no __ior__
         policy = policy.masked_fill(~is_action, float("-inf"))
         if policy.shape[1] < MAX_ACTIONS:
             pad = policy.new_full(

@@ -102,6 +102,19 @@ class LadderTest(Base):
         jb._atomic(self.lab_dir / "bench-emu" / "last-ok", "now\n")
         self.assertEqual("fights", r.choose("abc")[0])  # the rotation, with the mix's own weights
 
+    def test_a_retrain_marker_sorts_after_its_generation_and_before_the_next(self):
+        self.config()
+        self.nothing_else()
+        r = self.runner()
+        self.marker("train/ready-12")
+        self.marker("train/ready-4-r1")
+        self.marker("train/ready-4")
+        self.assertEqual("4", r.default_params("train")["generation"])
+        (self.lab_dir / "train" / "ready-4").unlink()
+        self.assertEqual("4-r1", r.default_params("train")["generation"])
+        (self.lab_dir / "train" / "ready-4-r1").unlink()
+        self.assertEqual("12", r.default_params("train")["generation"])
+
     def test_train_only_when_its_marker_exists(self):
         self.config()
         self.nothing_else()
