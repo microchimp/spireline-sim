@@ -52,6 +52,7 @@ internal static class ListenerTrace
     private static int _nextId;
     private static int _runMoving;  // > 0 while a wrapped run enumeration advances (the combat one it nests is not wrapped)
     private static HashSet<string>? _publicHooks;
+    private static readonly System.Text.RegularExpressions.Regex PatchedHook = new(@"\.Hooks\.Hook\.(\w+)_Patch\d+$");
 
     /// <summary>Starts a fight's enumeration ids at 0.</summary>
     internal static void Reset() => _nextId = 0;
@@ -105,18 +106,35 @@ internal static class ListenerTrace
     // ── which Hook method asked ────────────────────────────────────────────────────────────
 
     /// <summary>The innermost public Hook method on the stack (async ones by their state machine's name), else the
-    /// innermost Hook-hosted helper, else "?".</summary>
+    /// innermost Hook-hosted helper, else "?" and the first game frame (the dispatch is not a Hook method's).</summary>
     private static string HookName()
     {
         _publicHooks ??= new HashSet<string>(typeof(Hook).GetMethods(BindingFlags.Public | BindingFlags.Static).Select(m => m.Name));
         string? helper = null;
+        string? caller = null;  // the first game frame, for an enumeration no Hook method asked for
         foreach (var f in new StackTrace(1, false).GetFrames())
         {
             var m = f.GetMethod();
             var t = m?.DeclaringType;
-            if (m == null || t == null) continue;
+            if (m == null) continue;
+            if (caller == null && t != null && !ReferenceEquals(t, typeof(ListenerTrace)) && t != typeof(CombatState) && t != typeof(RunState)
+                && !(t.Namespace ?? "").StartsWith("System") && !(t.Namespace ?? "").StartsWith("HarmonyLib") && !(t.Namespace ?? "").StartsWith("MonoMod"))
+            {
+                string tn = t.Name, mn = m.Name;
+                if (tn.StartsWith('<') && t.DeclaringType != null) { mn = tn[1..Math.Max(1, tn.IndexOf('>'))]; tn = t.DeclaringType.Name; }
+                caller = tn + "." + mn;
+            }
+
             string name;
-            if (t == typeof(Hook)) name = m.Name;
+            if (t == null)
+            {
+                // A Hook method that Harmony has patched (the trace's own H prefixes) runs as a dynamic method:
+                // "<Type>.<Method>_Patch<n>", no declaring type.
+                var dm = PatchedHook.Match(m.Name);
+                if (!dm.Success) continue;
+                name = dm.Groups[1].Value;
+            }
+            else if (t == typeof(Hook)) name = m.Name;
             else if (t.DeclaringType == typeof(Hook) && t.Name.StartsWith('<')) name = t.Name[1..Math.Max(1, t.Name.IndexOf('>'))];
             else continue;
             if (name.StartsWith("Iterate")) continue;
@@ -124,7 +142,7 @@ internal static class ListenerTrace
             helper ??= name;
         }
 
-        return helper ?? "?";
+        return helper ?? "?" + caller;
     }
 
     // ── what is written per listener ───────────────────────────────────────────────────────
