@@ -345,7 +345,7 @@ public readonly record struct ModifyRestSiteOptionsArgs(PlayerRef Player, Opaque
 public readonly record struct ModifyRewardsArgs(PlayerRef Player, Opaque Rewards, Opaque Room);
 
 /// <summary>Arguments of Hook.ModifyShuffleOrder.</summary>
-public readonly record struct ModifyShuffleOrderArgs(PlayerRef Player, IReadOnlyList<CardHandle> Cards, bool IsInitialShuffle);
+public readonly record struct ModifyShuffleOrderArgs(PlayerRef Player, IList<CardHandle> Cards, bool IsInitialShuffle);
 
 /// <summary>Arguments of Hook.ModifyStarCost.</summary>
 public readonly record struct ModifyStarCostArgs(CardHandle Card, decimal OriginalCost);
@@ -449,499 +449,937 @@ public readonly record struct TryModifyCardRewardOptionsArgs(PlayerRef Player, O
 public static partial class Hooks
 {
     /// <summary>game: Hook.AfterActEntered. run: AfterActEntered event.</summary>
-    public static void AfterActEntered(HookRuntime rt, in AfterActEnteredArgs a)
+    public static HookStatus AfterActEntered(HookRuntime rt, in AfterActEnteredArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterActEntered)))
+        return AfterActEnteredFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterActEntered from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterActEnteredResume(HookRuntime rt, in AfterActEnteredArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterActEntered);
+        return AfterActEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterActEnteredArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterActEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterActEnteredFrom(HookRuntime rt, in AfterActEnteredArgs a, int from, HookCursor<HookEvent<AfterActEnteredArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterActEntered)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterActEntered (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterActEnteredArgs>>(HookIterator.Run, HookId.AfterActEntered);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterActEnteredArgs>>(HookIterator.Run, HookId.AfterActEntered);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterActEntered, HookId.AfterActEntered, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterActEntered, HookId.AfterActEntered, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterAttack. combat: AfterAttack event. context passed-unpushed.</summary>
-    public static void AfterAttack(HookRuntime rt, in AfterAttackArgs a)
+    public static HookStatus AfterAttack(HookRuntime rt, in AfterAttackArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterAttack)))
+        return AfterAttackFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterAttack from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterAttackResume(HookRuntime rt, in AfterAttackArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterAttack);
+        return AfterAttackFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterAttackArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterAttack from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterAttackFrom(HookRuntime rt, in AfterAttackArgs a, int from, HookCursor<HookEvent<AfterAttackArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterAttack)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterAttack (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterAttackArgs>>(HookIterator.Combat, HookId.AfterAttack);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterAttackArgs>>(HookIterator.Combat, HookId.AfterAttack);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterAttack, HookId.AfterAttack, 0, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterAttack, HookId.AfterAttack, 0, l.Index, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterAutoPostPlayPhaseEntered. combat: AfterAutoPostPlayPhaseEntered event. context caller-hook; steps netid-guard.</summary>
-    public static void AfterAutoPostPlayPhaseEntered(HookRuntime rt, in AfterAutoPostPlayPhaseEnteredArgs a)
+    public static HookStatus AfterAutoPostPlayPhaseEntered(HookRuntime rt, in AfterAutoPostPlayPhaseEnteredArgs a)
     {
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_AfterAutoPostPlayPhaseEntered))
         {
-            return;
+            return HookStatus.Done;
         }
-        AfterAutoPostPlayPhaseEnteredPasses(rt, in a);
+        return AfterAutoPostPlayPhaseEnteredFrom(rt, in a, 0, null);
     }
 
-    /// <summary>The passes of Hook.AfterAutoPostPlayPhaseEntered.</summary>
-    public static void AfterAutoPostPlayPhaseEnteredPasses(HookRuntime rt, in AfterAutoPostPlayPhaseEnteredArgs a)
+    /// <summary>Continues Hook.AfterAutoPostPlayPhaseEntered from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterAutoPostPlayPhaseEnteredResume(HookRuntime rt, in AfterAutoPostPlayPhaseEnteredArgs a, in HookStatus paused)
     {
-        if (!(rt.HasAny(HookId.AfterAutoPostPlayPhaseEntered)))
+        var at = paused.At(HookId.Dispatch_AfterAutoPostPlayPhaseEntered);
+        a.PlayerChoiceContext.PopModel(at.Who);
+        return AfterAutoPostPlayPhaseEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterAutoPostPlayPhaseEnteredArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterAutoPostPlayPhaseEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterAutoPostPlayPhaseEnteredFrom(HookRuntime rt, in AfterAutoPostPlayPhaseEnteredArgs a, int from, HookCursor<HookEvent<AfterAutoPostPlayPhaseEnteredArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterAutoPostPlayPhaseEntered)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterAutoPostPlayPhaseEntered (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterAutoPostPlayPhaseEnteredArgs>>(HookIterator.Combat, HookId.AfterAutoPostPlayPhaseEntered);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterAutoPostPlayPhaseEnteredArgs>>(HookIterator.Combat, HookId.AfterAutoPostPlayPhaseEntered);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.PlayerChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterAutoPostPlayPhaseEntered, HookId.AfterAutoPostPlayPhaseEntered, 0, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterAutoPostPlayPhaseEntered, HookId.AfterAutoPostPlayPhaseEntered, 0, l.Index, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.PlayerChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterAutoPrePlayPhaseEntered. combat: AfterAutoPrePlayPhaseEnteredEarly event; AfterAutoPrePlayPhaseEntered event; AfterAutoPrePlayPhaseEnteredLate event. context caller-hook; steps netid-guard.</summary>
-    public static void AfterAutoPrePlayPhaseEntered(HookRuntime rt, in AfterAutoPrePlayPhaseEnteredArgs a)
+    public static HookStatus AfterAutoPrePlayPhaseEntered(HookRuntime rt, in AfterAutoPrePlayPhaseEnteredArgs a)
     {
         if (!Steps.NetIdGuard(rt, HookId.Dispatch_AfterAutoPrePlayPhaseEntered))
         {
-            return;
+            return HookStatus.Done;
         }
-        AfterAutoPrePlayPhaseEnteredPasses(rt, in a);
+        return AfterAutoPrePlayPhaseEnteredFrom(rt, in a, 0, null);
     }
 
-    /// <summary>The passes of Hook.AfterAutoPrePlayPhaseEntered.</summary>
-    public static void AfterAutoPrePlayPhaseEnteredPasses(HookRuntime rt, in AfterAutoPrePlayPhaseEnteredArgs a)
+    /// <summary>Continues Hook.AfterAutoPrePlayPhaseEntered from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterAutoPrePlayPhaseEnteredResume(HookRuntime rt, in AfterAutoPrePlayPhaseEnteredArgs a, in HookStatus paused)
     {
-        if (!(rt.HasAny(HookId.AfterAutoPrePlayPhaseEnteredEarly) || rt.HasAny(HookId.AfterAutoPrePlayPhaseEntered) || rt.HasAny(HookId.AfterAutoPrePlayPhaseEnteredLate)))
+        var at = paused.At(HookId.Dispatch_AfterAutoPrePlayPhaseEntered);
+        a.PlayerChoiceContext.PopModel(at.Who);
+        return AfterAutoPrePlayPhaseEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterAutoPrePlayPhaseEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterAutoPrePlayPhaseEnteredFrom(HookRuntime rt, in AfterAutoPrePlayPhaseEnteredArgs a, int from, HookCursor<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterAutoPrePlayPhaseEnteredEarly) || rt.HasAny(HookId.AfterAutoPrePlayPhaseEntered) || rt.HasAny(HookId.AfterAutoPrePlayPhaseEnteredLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterAutoPrePlayPhaseEnteredEarly (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>(HookIterator.Combat, HookId.AfterAutoPrePlayPhaseEnteredEarly);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>(HookIterator.Combat, HookId.AfterAutoPrePlayPhaseEnteredEarly);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.PlayerChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEnteredEarly, 0, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEnteredEarly, 0, l.Index, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.PlayerChoiceContext.PopModel(e.Who);
             }
         }
         // pass 1: AfterAutoPrePlayPhaseEntered (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>(HookIterator.Combat, HookId.AfterAutoPrePlayPhaseEntered);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>(HookIterator.Combat, HookId.AfterAutoPrePlayPhaseEntered);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.PlayerChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEntered, 1, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEntered, 1, l.Index, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.PlayerChoiceContext.PopModel(e.Who);
             }
         }
         // pass 2: AfterAutoPrePlayPhaseEnteredLate (event)
+        if (from <= 2)
         {
-            var l = rt.Listeners<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>(HookIterator.Combat, HookId.AfterAutoPrePlayPhaseEnteredLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterAutoPrePlayPhaseEnteredArgs>>(HookIterator.Combat, HookId.AfterAutoPrePlayPhaseEnteredLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.PlayerChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEnteredLate, 2, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEnteredLate, 2, l.Index, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.PlayerChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterBlockBroken. combat-direct: AfterBlockBroken event.</summary>
-    public static void AfterBlockBroken(HookRuntime rt, in AfterBlockBrokenArgs a)
+    public static HookStatus AfterBlockBroken(HookRuntime rt, in AfterBlockBrokenArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterBlockBroken)))
+        return AfterBlockBrokenFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterBlockBroken from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterBlockBrokenResume(HookRuntime rt, in AfterBlockBrokenArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterBlockBroken);
+        return AfterBlockBrokenFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterBlockBrokenArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterBlockBroken from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterBlockBrokenFrom(HookRuntime rt, in AfterBlockBrokenArgs a, int from, HookCursor<HookEvent<AfterBlockBrokenArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterBlockBroken)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterBlockBroken (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterBlockBrokenArgs>>(HookIterator.CombatDirect, HookId.AfterBlockBroken);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterBlockBrokenArgs>>(HookIterator.CombatDirect, HookId.AfterBlockBroken);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterBlockBroken, HookId.AfterBlockBroken, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterBlockBroken, HookId.AfterBlockBroken, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterBlockCleared. combat: AfterBlockCleared event.</summary>
-    public static void AfterBlockCleared(HookRuntime rt, in AfterBlockClearedArgs a)
+    public static HookStatus AfterBlockCleared(HookRuntime rt, in AfterBlockClearedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterBlockCleared)))
+        return AfterBlockClearedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterBlockCleared from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterBlockClearedResume(HookRuntime rt, in AfterBlockClearedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterBlockCleared);
+        return AfterBlockClearedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterBlockClearedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterBlockCleared from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterBlockClearedFrom(HookRuntime rt, in AfterBlockClearedArgs a, int from, HookCursor<HookEvent<AfterBlockClearedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterBlockCleared)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterBlockCleared (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterBlockClearedArgs>>(HookIterator.Combat, HookId.AfterBlockCleared);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterBlockClearedArgs>>(HookIterator.Combat, HookId.AfterBlockCleared);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterBlockCleared, HookId.AfterBlockCleared, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterBlockCleared, HookId.AfterBlockCleared, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterBlockGained. combat: AfterBlockGained event.</summary>
-    public static void AfterBlockGained(HookRuntime rt, in AfterBlockGainedArgs a)
+    public static HookStatus AfterBlockGained(HookRuntime rt, in AfterBlockGainedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterBlockGained)))
+        return AfterBlockGainedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterBlockGained from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterBlockGainedResume(HookRuntime rt, in AfterBlockGainedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterBlockGained);
+        return AfterBlockGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterBlockGainedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterBlockGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterBlockGainedFrom(HookRuntime rt, in AfterBlockGainedArgs a, int from, HookCursor<HookEvent<AfterBlockGainedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterBlockGained)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterBlockGained (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterBlockGainedArgs>>(HookIterator.Combat, HookId.AfterBlockGained);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterBlockGainedArgs>>(HookIterator.Combat, HookId.AfterBlockGained);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterBlockGained, HookId.AfterBlockGained, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterBlockGained, HookId.AfterBlockGained, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCardChangedPiles. run+combat: AfterCardChangedPiles event; AfterCardChangedPilesLate event.</summary>
-    public static void AfterCardChangedPiles(HookRuntime rt, in AfterCardChangedPilesArgs a)
+    public static HookStatus AfterCardChangedPiles(HookRuntime rt, in AfterCardChangedPilesArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCardChangedPiles) || rt.HasAny(HookId.AfterCardChangedPilesLate)))
+        return AfterCardChangedPilesFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCardChangedPiles from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCardChangedPilesResume(HookRuntime rt, in AfterCardChangedPilesArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCardChangedPiles);
+        return AfterCardChangedPilesFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardChangedPilesArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCardChangedPiles from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCardChangedPilesFrom(HookRuntime rt, in AfterCardChangedPilesArgs a, int from, HookCursor<HookEvent<AfterCardChangedPilesArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCardChangedPiles) || rt.HasAny(HookId.AfterCardChangedPilesLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCardChangedPiles (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCardChangedPilesArgs>>(HookIterator.RunCombat, HookId.AfterCardChangedPiles);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardChangedPilesArgs>>(HookIterator.RunCombat, HookId.AfterCardChangedPiles);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardChangedPiles, HookId.AfterCardChangedPiles, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardChangedPiles, HookId.AfterCardChangedPiles, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
         // pass 1: AfterCardChangedPilesLate (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterCardChangedPilesArgs>>(HookIterator.RunCombat, HookId.AfterCardChangedPilesLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardChangedPilesArgs>>(HookIterator.RunCombat, HookId.AfterCardChangedPilesLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardChangedPiles, HookId.AfterCardChangedPilesLate, 1, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardChangedPiles, HookId.AfterCardChangedPilesLate, 1, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCardDiscarded. combat: AfterCardDiscarded event. context passed.</summary>
-    public static void AfterCardDiscarded(HookRuntime rt, in AfterCardDiscardedArgs a)
+    public static HookStatus AfterCardDiscarded(HookRuntime rt, in AfterCardDiscardedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCardDiscarded)))
+        return AfterCardDiscardedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCardDiscarded from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCardDiscardedResume(HookRuntime rt, in AfterCardDiscardedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCardDiscarded);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterCardDiscardedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardDiscardedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCardDiscarded from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCardDiscardedFrom(HookRuntime rt, in AfterCardDiscardedArgs a, int from, HookCursor<HookEvent<AfterCardDiscardedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCardDiscarded)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCardDiscarded (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCardDiscardedArgs>>(HookIterator.Combat, HookId.AfterCardDiscarded);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardDiscardedArgs>>(HookIterator.Combat, HookId.AfterCardDiscarded);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardDiscarded, HookId.AfterCardDiscarded, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardDiscarded, HookId.AfterCardDiscarded, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCardDrawn. combat: AfterCardDrawnEarly event; AfterCardDrawn event. context passed.</summary>
-    public static void AfterCardDrawn(HookRuntime rt, in AfterCardDrawnArgs a)
+    public static HookStatus AfterCardDrawn(HookRuntime rt, in AfterCardDrawnArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCardDrawnEarly) || rt.HasAny(HookId.AfterCardDrawn)))
+        return AfterCardDrawnFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCardDrawn from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCardDrawnResume(HookRuntime rt, in AfterCardDrawnArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCardDrawn);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterCardDrawnFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardDrawnArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCardDrawn from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCardDrawnFrom(HookRuntime rt, in AfterCardDrawnArgs a, int from, HookCursor<HookEvent<AfterCardDrawnArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCardDrawnEarly) || rt.HasAny(HookId.AfterCardDrawn)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCardDrawnEarly (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCardDrawnArgs>>(HookIterator.Combat, HookId.AfterCardDrawnEarly);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardDrawnArgs>>(HookIterator.Combat, HookId.AfterCardDrawnEarly);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardDrawn, HookId.AfterCardDrawnEarly, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardDrawn, HookId.AfterCardDrawnEarly, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
         // pass 1: AfterCardDrawn (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterCardDrawnArgs>>(HookIterator.Combat, HookId.AfterCardDrawn);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardDrawnArgs>>(HookIterator.Combat, HookId.AfterCardDrawn);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardDrawn, HookId.AfterCardDrawn, 1, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardDrawn, HookId.AfterCardDrawn, 1, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCardEnteredCombat. combat: AfterCardEnteredCombat event.</summary>
-    public static void AfterCardEnteredCombat(HookRuntime rt, in AfterCardEnteredCombatArgs a)
+    public static HookStatus AfterCardEnteredCombat(HookRuntime rt, in AfterCardEnteredCombatArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCardEnteredCombat)))
+        return AfterCardEnteredCombatFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCardEnteredCombat from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCardEnteredCombatResume(HookRuntime rt, in AfterCardEnteredCombatArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCardEnteredCombat);
+        return AfterCardEnteredCombatFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardEnteredCombatArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCardEnteredCombat from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCardEnteredCombatFrom(HookRuntime rt, in AfterCardEnteredCombatArgs a, int from, HookCursor<HookEvent<AfterCardEnteredCombatArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCardEnteredCombat)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCardEnteredCombat (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCardEnteredCombatArgs>>(HookIterator.Combat, HookId.AfterCardEnteredCombat);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardEnteredCombatArgs>>(HookIterator.Combat, HookId.AfterCardEnteredCombat);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardEnteredCombat, HookId.AfterCardEnteredCombat, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardEnteredCombat, HookId.AfterCardEnteredCombat, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCardExhausted. combat: AfterCardExhausted event. context passed.</summary>
-    public static void AfterCardExhausted(HookRuntime rt, in AfterCardExhaustedArgs a)
+    public static HookStatus AfterCardExhausted(HookRuntime rt, in AfterCardExhaustedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCardExhausted)))
+        return AfterCardExhaustedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCardExhausted from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCardExhaustedResume(HookRuntime rt, in AfterCardExhaustedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCardExhausted);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterCardExhaustedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardExhaustedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCardExhausted from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCardExhaustedFrom(HookRuntime rt, in AfterCardExhaustedArgs a, int from, HookCursor<HookEvent<AfterCardExhaustedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCardExhausted)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCardExhausted (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCardExhaustedArgs>>(HookIterator.Combat, HookId.AfterCardExhausted);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardExhaustedArgs>>(HookIterator.Combat, HookId.AfterCardExhausted);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardExhausted, HookId.AfterCardExhausted, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardExhausted, HookId.AfterCardExhausted, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCardGeneratedForCombat. combat: AfterCardGeneratedForCombat event.</summary>
-    public static void AfterCardGeneratedForCombat(HookRuntime rt, in AfterCardGeneratedForCombatArgs a)
+    public static HookStatus AfterCardGeneratedForCombat(HookRuntime rt, in AfterCardGeneratedForCombatArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCardGeneratedForCombat)))
+        return AfterCardGeneratedForCombatFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCardGeneratedForCombat from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCardGeneratedForCombatResume(HookRuntime rt, in AfterCardGeneratedForCombatArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCardGeneratedForCombat);
+        return AfterCardGeneratedForCombatFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardGeneratedForCombatArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCardGeneratedForCombat from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCardGeneratedForCombatFrom(HookRuntime rt, in AfterCardGeneratedForCombatArgs a, int from, HookCursor<HookEvent<AfterCardGeneratedForCombatArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCardGeneratedForCombat)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCardGeneratedForCombat (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCardGeneratedForCombatArgs>>(HookIterator.Combat, HookId.AfterCardGeneratedForCombat);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardGeneratedForCombatArgs>>(HookIterator.Combat, HookId.AfterCardGeneratedForCombat);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardGeneratedForCombat, HookId.AfterCardGeneratedForCombat, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardGeneratedForCombat, HookId.AfterCardGeneratedForCombat, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCardPlayed. combat-direct: AfterCardPlayed event; AfterCardPlayedLate event. context passed.</summary>
-    public static void AfterCardPlayed(HookRuntime rt, in AfterCardPlayedArgs a)
+    public static HookStatus AfterCardPlayed(HookRuntime rt, in AfterCardPlayedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCardPlayed) || rt.HasAny(HookId.AfterCardPlayedLate)))
+        return AfterCardPlayedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCardPlayed from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCardPlayedResume(HookRuntime rt, in AfterCardPlayedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCardPlayed);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterCardPlayedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCardPlayedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCardPlayed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCardPlayedFrom(HookRuntime rt, in AfterCardPlayedArgs a, int from, HookCursor<HookEvent<AfterCardPlayedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCardPlayed) || rt.HasAny(HookId.AfterCardPlayedLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCardPlayed (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCardPlayedArgs>>(HookIterator.CombatDirect, HookId.AfterCardPlayed);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardPlayedArgs>>(HookIterator.CombatDirect, HookId.AfterCardPlayed);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardPlayed, HookId.AfterCardPlayed, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardPlayed, HookId.AfterCardPlayed, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
         // pass 1: AfterCardPlayedLate (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterCardPlayedArgs>>(HookIterator.CombatDirect, HookId.AfterCardPlayedLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCardPlayedArgs>>(HookIterator.CombatDirect, HookId.AfterCardPlayedLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCardPlayed, HookId.AfterCardPlayedLate, 1, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCardPlayed, HookId.AfterCardPlayedLate, 1, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCombatEnd. run+combat: AfterCombatEnd event.</summary>
-    public static void AfterCombatEnd(HookRuntime rt, in AfterCombatEndArgs a)
+    public static HookStatus AfterCombatEnd(HookRuntime rt, in AfterCombatEndArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCombatEnd)))
+        return AfterCombatEndFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCombatEnd from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCombatEndResume(HookRuntime rt, in AfterCombatEndArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCombatEnd);
+        return AfterCombatEndFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCombatEndArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCombatEnd from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCombatEndFrom(HookRuntime rt, in AfterCombatEndArgs a, int from, HookCursor<HookEvent<AfterCombatEndArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCombatEnd)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCombatEnd (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCombatEndArgs>>(HookIterator.RunCombat, HookId.AfterCombatEnd);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCombatEndArgs>>(HookIterator.RunCombat, HookId.AfterCombatEnd);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCombatEnd, HookId.AfterCombatEnd, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCombatEnd, HookId.AfterCombatEnd, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCombatVictory. run+combat: AfterCombatVictoryEarly event; AfterCombatVictory event.</summary>
-    public static void AfterCombatVictory(HookRuntime rt, in AfterCombatVictoryArgs a)
+    public static HookStatus AfterCombatVictory(HookRuntime rt, in AfterCombatVictoryArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCombatVictoryEarly) || rt.HasAny(HookId.AfterCombatVictory)))
+        return AfterCombatVictoryFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCombatVictory from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCombatVictoryResume(HookRuntime rt, in AfterCombatVictoryArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCombatVictory);
+        return AfterCombatVictoryFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCombatVictoryArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCombatVictory from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCombatVictoryFrom(HookRuntime rt, in AfterCombatVictoryArgs a, int from, HookCursor<HookEvent<AfterCombatVictoryArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCombatVictoryEarly) || rt.HasAny(HookId.AfterCombatVictory)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCombatVictoryEarly (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCombatVictoryArgs>>(HookIterator.RunCombat, HookId.AfterCombatVictoryEarly);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCombatVictoryArgs>>(HookIterator.RunCombat, HookId.AfterCombatVictoryEarly);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCombatVictory, HookId.AfterCombatVictoryEarly, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCombatVictory, HookId.AfterCombatVictoryEarly, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
         // pass 1: AfterCombatVictory (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterCombatVictoryArgs>>(HookIterator.RunCombat, HookId.AfterCombatVictory);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCombatVictoryArgs>>(HookIterator.RunCombat, HookId.AfterCombatVictory);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCombatVictory, HookId.AfterCombatVictory, 1, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCombatVictory, HookId.AfterCombatVictory, 1, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCreatureAddedToCombat. combat-direct: AfterCreatureAddedToCombat event.</summary>
-    public static void AfterCreatureAddedToCombat(HookRuntime rt, in AfterCreatureAddedToCombatArgs a)
+    public static HookStatus AfterCreatureAddedToCombat(HookRuntime rt, in AfterCreatureAddedToCombatArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCreatureAddedToCombat)))
+        return AfterCreatureAddedToCombatFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCreatureAddedToCombat from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCreatureAddedToCombatResume(HookRuntime rt, in AfterCreatureAddedToCombatArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCreatureAddedToCombat);
+        return AfterCreatureAddedToCombatFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCreatureAddedToCombatArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCreatureAddedToCombat from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCreatureAddedToCombatFrom(HookRuntime rt, in AfterCreatureAddedToCombatArgs a, int from, HookCursor<HookEvent<AfterCreatureAddedToCombatArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCreatureAddedToCombat)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCreatureAddedToCombat (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCreatureAddedToCombatArgs>>(HookIterator.CombatDirect, HookId.AfterCreatureAddedToCombat);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCreatureAddedToCombatArgs>>(HookIterator.CombatDirect, HookId.AfterCreatureAddedToCombat);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCreatureAddedToCombat, HookId.AfterCreatureAddedToCombat, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCreatureAddedToCombat, HookId.AfterCreatureAddedToCombat, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterCurrentHpChanged. run+combat: AfterCurrentHpChanged event.</summary>
-    public static void AfterCurrentHpChanged(HookRuntime rt, in AfterCurrentHpChangedArgs a)
+    public static HookStatus AfterCurrentHpChanged(HookRuntime rt, in AfterCurrentHpChangedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterCurrentHpChanged)))
+        return AfterCurrentHpChangedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterCurrentHpChanged from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterCurrentHpChangedResume(HookRuntime rt, in AfterCurrentHpChangedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterCurrentHpChanged);
+        return AfterCurrentHpChangedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterCurrentHpChangedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterCurrentHpChanged from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterCurrentHpChangedFrom(HookRuntime rt, in AfterCurrentHpChangedArgs a, int from, HookCursor<HookEvent<AfterCurrentHpChangedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterCurrentHpChanged)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterCurrentHpChanged (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterCurrentHpChangedArgs>>(HookIterator.RunCombat, HookId.AfterCurrentHpChanged);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterCurrentHpChangedArgs>>(HookIterator.RunCombat, HookId.AfterCurrentHpChanged);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterCurrentHpChanged, HookId.AfterCurrentHpChanged, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterCurrentHpChanged, HookId.AfterCurrentHpChanged, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterDamageGiven. combat-direct: AfterDamageGiven event. context passed.</summary>
-    public static void AfterDamageGiven(HookRuntime rt, in AfterDamageGivenArgs a)
+    public static HookStatus AfterDamageGiven(HookRuntime rt, in AfterDamageGivenArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterDamageGiven)))
+        return AfterDamageGivenFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterDamageGiven from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterDamageGivenResume(HookRuntime rt, in AfterDamageGivenArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterDamageGiven);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterDamageGivenFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterDamageGivenArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterDamageGiven from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterDamageGivenFrom(HookRuntime rt, in AfterDamageGivenArgs a, int from, HookCursor<HookEvent<AfterDamageGivenArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterDamageGiven)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterDamageGiven (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterDamageGivenArgs>>(HookIterator.CombatDirect, HookId.AfterDamageGiven);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterDamageGivenArgs>>(HookIterator.CombatDirect, HookId.AfterDamageGiven);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDamageGiven, HookId.AfterDamageGiven, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterDamageGiven, HookId.AfterDamageGiven, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterDamageReceived. run+combat: AfterDamageReceived event; AfterDamageReceivedLate event. context passed.</summary>
-    public static void AfterDamageReceived(HookRuntime rt, in AfterDamageReceivedArgs a)
+    public static HookStatus AfterDamageReceived(HookRuntime rt, in AfterDamageReceivedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterDamageReceived) || rt.HasAny(HookId.AfterDamageReceivedLate)))
+        return AfterDamageReceivedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterDamageReceived from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterDamageReceivedResume(HookRuntime rt, in AfterDamageReceivedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterDamageReceived);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterDamageReceivedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterDamageReceivedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterDamageReceived from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterDamageReceivedFrom(HookRuntime rt, in AfterDamageReceivedArgs a, int from, HookCursor<HookEvent<AfterDamageReceivedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterDamageReceived) || rt.HasAny(HookId.AfterDamageReceivedLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterDamageReceived (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterDamageReceivedArgs>>(HookIterator.RunCombat, HookId.AfterDamageReceived);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterDamageReceivedArgs>>(HookIterator.RunCombat, HookId.AfterDamageReceived);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDamageReceived, HookId.AfterDamageReceived, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterDamageReceived, HookId.AfterDamageReceived, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
         // pass 1: AfterDamageReceivedLate (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterDamageReceivedArgs>>(HookIterator.RunCombat, HookId.AfterDamageReceivedLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterDamageReceivedArgs>>(HookIterator.RunCombat, HookId.AfterDamageReceivedLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDamageReceived, HookId.AfterDamageReceivedLate, 1, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterDamageReceived, HookId.AfterDamageReceivedLate, 1, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterDeath. run+combat: AfterDeath event. context per-listener; steps netid-guard.</summary>
@@ -964,12 +1402,11 @@ public static partial class Hooks
         // pass 0: AfterDeath (event)
         {
             var l = rt.Listeners<HookEvent<AfterDeathArgs>>(HookIterator.RunCombat, HookId.AfterDeath);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_AfterDeath, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDeath, HookId.AfterDeath, 0, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDeath, HookId.AfterDeath, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
     }
@@ -994,887 +1431,1756 @@ public static partial class Hooks
         // pass 0: AfterDiedToDoom (event)
         {
             var l = rt.Listeners<HookEvent<AfterDiedToDoomArgs>>(HookIterator.CombatDirect, HookId.AfterDiedToDoom);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_AfterDiedToDoom, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDiedToDoom, HookId.AfterDiedToDoom, 0, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDiedToDoom, HookId.AfterDiedToDoom, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
     }
 
     /// <summary>game: Hook.AfterEnergyReset. combat: AfterEnergyReset event; AfterEnergyResetLate event.</summary>
-    public static void AfterEnergyReset(HookRuntime rt, in AfterEnergyResetArgs a)
+    public static HookStatus AfterEnergyReset(HookRuntime rt, in AfterEnergyResetArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterEnergyReset) || rt.HasAny(HookId.AfterEnergyResetLate)))
+        return AfterEnergyResetFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterEnergyReset from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterEnergyResetResume(HookRuntime rt, in AfterEnergyResetArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterEnergyReset);
+        return AfterEnergyResetFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterEnergyResetArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterEnergyReset from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterEnergyResetFrom(HookRuntime rt, in AfterEnergyResetArgs a, int from, HookCursor<HookEvent<AfterEnergyResetArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterEnergyReset) || rt.HasAny(HookId.AfterEnergyResetLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterEnergyReset (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterEnergyResetArgs>>(HookIterator.Combat, HookId.AfterEnergyReset);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterEnergyResetArgs>>(HookIterator.Combat, HookId.AfterEnergyReset);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterEnergyReset, HookId.AfterEnergyReset, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterEnergyReset, HookId.AfterEnergyReset, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
         // pass 1: AfterEnergyResetLate (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterEnergyResetArgs>>(HookIterator.Combat, HookId.AfterEnergyResetLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterEnergyResetArgs>>(HookIterator.Combat, HookId.AfterEnergyResetLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterEnergyReset, HookId.AfterEnergyResetLate, 1, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterEnergyReset, HookId.AfterEnergyResetLate, 1, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterEnergySpent. combat: AfterEnergySpent event.</summary>
-    public static void AfterEnergySpent(HookRuntime rt, in AfterEnergySpentArgs a)
+    public static HookStatus AfterEnergySpent(HookRuntime rt, in AfterEnergySpentArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterEnergySpent)))
+        return AfterEnergySpentFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterEnergySpent from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterEnergySpentResume(HookRuntime rt, in AfterEnergySpentArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterEnergySpent);
+        return AfterEnergySpentFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterEnergySpentArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterEnergySpent from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterEnergySpentFrom(HookRuntime rt, in AfterEnergySpentArgs a, int from, HookCursor<HookEvent<AfterEnergySpentArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterEnergySpent)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterEnergySpent (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterEnergySpentArgs>>(HookIterator.Combat, HookId.AfterEnergySpent);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterEnergySpentArgs>>(HookIterator.Combat, HookId.AfterEnergySpent);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterEnergySpent, HookId.AfterEnergySpent, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterEnergySpent, HookId.AfterEnergySpent, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterFlush. combat: AfterFlush event. context passed.</summary>
-    public static void AfterFlush(HookRuntime rt, in AfterFlushArgs a)
+    public static HookStatus AfterFlush(HookRuntime rt, in AfterFlushArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterFlush)))
+        return AfterFlushFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterFlush from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterFlushResume(HookRuntime rt, in AfterFlushArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterFlush);
+        a.PlayerChoiceContext.PopModel(at.Who);
+        return AfterFlushFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterFlushArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterFlush from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterFlushFrom(HookRuntime rt, in AfterFlushArgs a, int from, HookCursor<HookEvent<AfterFlushArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterFlush)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterFlush (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterFlushArgs>>(HookIterator.Combat, HookId.AfterFlush);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterFlushArgs>>(HookIterator.Combat, HookId.AfterFlush);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.PlayerChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterFlush, HookId.AfterFlush, 0, e.Who, ContextMode.Passed, a.PlayerChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterFlush, HookId.AfterFlush, 0, l.Index, e.Who, ContextMode.Passed, a.PlayerChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.PlayerChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterForge. combat: AfterForge event.</summary>
-    public static void AfterForge(HookRuntime rt, in AfterForgeArgs a)
+    public static HookStatus AfterForge(HookRuntime rt, in AfterForgeArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterForge)))
+        return AfterForgeFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterForge from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterForgeResume(HookRuntime rt, in AfterForgeArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterForge);
+        return AfterForgeFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterForgeArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterForge from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterForgeFrom(HookRuntime rt, in AfterForgeArgs a, int from, HookCursor<HookEvent<AfterForgeArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterForge)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterForge (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterForgeArgs>>(HookIterator.Combat, HookId.AfterForge);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterForgeArgs>>(HookIterator.Combat, HookId.AfterForge);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterForge, HookId.AfterForge, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterForge, HookId.AfterForge, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterGoldGained. run: AfterGoldGained event.</summary>
-    public static void AfterGoldGained(HookRuntime rt, in AfterGoldGainedArgs a)
+    public static HookStatus AfterGoldGained(HookRuntime rt, in AfterGoldGainedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterGoldGained)))
+        return AfterGoldGainedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterGoldGained from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterGoldGainedResume(HookRuntime rt, in AfterGoldGainedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterGoldGained);
+        return AfterGoldGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterGoldGainedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterGoldGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterGoldGainedFrom(HookRuntime rt, in AfterGoldGainedArgs a, int from, HookCursor<HookEvent<AfterGoldGainedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterGoldGained)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterGoldGained (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterGoldGainedArgs>>(HookIterator.Run, HookId.AfterGoldGained);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterGoldGainedArgs>>(HookIterator.Run, HookId.AfterGoldGained);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterGoldGained, HookId.AfterGoldGained, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterGoldGained, HookId.AfterGoldGained, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterHandEmptied. combat: AfterHandEmptied event. context passed.</summary>
-    public static void AfterHandEmptied(HookRuntime rt, in AfterHandEmptiedArgs a)
+    public static HookStatus AfterHandEmptied(HookRuntime rt, in AfterHandEmptiedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterHandEmptied)))
+        return AfterHandEmptiedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterHandEmptied from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterHandEmptiedResume(HookRuntime rt, in AfterHandEmptiedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterHandEmptied);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterHandEmptiedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterHandEmptiedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterHandEmptied from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterHandEmptiedFrom(HookRuntime rt, in AfterHandEmptiedArgs a, int from, HookCursor<HookEvent<AfterHandEmptiedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterHandEmptied)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterHandEmptied (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterHandEmptiedArgs>>(HookIterator.Combat, HookId.AfterHandEmptied);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterHandEmptiedArgs>>(HookIterator.Combat, HookId.AfterHandEmptied);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterHandEmptied, HookId.AfterHandEmptied, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterHandEmptied, HookId.AfterHandEmptied, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterItemPurchased. run: AfterItemPurchased event.</summary>
-    public static void AfterItemPurchased(HookRuntime rt, in AfterItemPurchasedArgs a)
+    public static HookStatus AfterItemPurchased(HookRuntime rt, in AfterItemPurchasedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterItemPurchased)))
+        return AfterItemPurchasedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterItemPurchased from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterItemPurchasedResume(HookRuntime rt, in AfterItemPurchasedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterItemPurchased);
+        return AfterItemPurchasedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterItemPurchasedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterItemPurchased from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterItemPurchasedFrom(HookRuntime rt, in AfterItemPurchasedArgs a, int from, HookCursor<HookEvent<AfterItemPurchasedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterItemPurchased)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterItemPurchased (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterItemPurchasedArgs>>(HookIterator.Run, HookId.AfterItemPurchased);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterItemPurchasedArgs>>(HookIterator.Run, HookId.AfterItemPurchased);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterItemPurchased, HookId.AfterItemPurchased, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterItemPurchased, HookId.AfterItemPurchased, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterMapGenerated. run: AfterMapGenerated event.</summary>
-    public static void AfterMapGenerated(HookRuntime rt, in AfterMapGeneratedArgs a)
+    public static HookStatus AfterMapGenerated(HookRuntime rt, in AfterMapGeneratedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterMapGenerated)))
+        return AfterMapGeneratedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterMapGenerated from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterMapGeneratedResume(HookRuntime rt, in AfterMapGeneratedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterMapGenerated);
+        return AfterMapGeneratedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterMapGeneratedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterMapGenerated from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterMapGeneratedFrom(HookRuntime rt, in AfterMapGeneratedArgs a, int from, HookCursor<HookEvent<AfterMapGeneratedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterMapGenerated)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterMapGenerated (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterMapGeneratedArgs>>(HookIterator.Run, HookId.AfterMapGenerated);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterMapGeneratedArgs>>(HookIterator.Run, HookId.AfterMapGenerated);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterMapGenerated, HookId.AfterMapGenerated, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterMapGenerated, HookId.AfterMapGenerated, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingBlockAmount. combat: AfterModifyingBlockAmount filter-set.</summary>
-    public static void AfterModifyingBlockAmount(HookRuntime rt, in AfterModifyingBlockAmountArgs a)
+    public static HookStatus AfterModifyingBlockAmount(HookRuntime rt, in AfterModifyingBlockAmountArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingBlockAmount)))
+        return AfterModifyingBlockAmountFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingBlockAmount from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingBlockAmountResume(HookRuntime rt, in AfterModifyingBlockAmountArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingBlockAmount);
+        return AfterModifyingBlockAmountFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingBlockAmountArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingBlockAmount from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingBlockAmountFrom(HookRuntime rt, in AfterModifyingBlockAmountArgs a, int from, HookCursor<HookEvent<AfterModifyingBlockAmountArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingBlockAmount)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingBlockAmount (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingBlockAmountArgs>>(HookIterator.Combat, HookId.AfterModifyingBlockAmount);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingBlockAmountArgs>>(HookIterator.Combat, HookId.AfterModifyingBlockAmount);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingBlockAmount, HookId.AfterModifyingBlockAmount, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingBlockAmount, HookId.AfterModifyingBlockAmount, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingCardPlayCount. combat: AfterModifyingCardPlayCount filter-set.</summary>
-    public static void AfterModifyingCardPlayCount(HookRuntime rt, in AfterModifyingCardPlayCountArgs a)
+    public static HookStatus AfterModifyingCardPlayCount(HookRuntime rt, in AfterModifyingCardPlayCountArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingCardPlayCount)))
+        return AfterModifyingCardPlayCountFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingCardPlayCount from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingCardPlayCountResume(HookRuntime rt, in AfterModifyingCardPlayCountArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingCardPlayCount);
+        return AfterModifyingCardPlayCountFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingCardPlayCountArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingCardPlayCount from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingCardPlayCountFrom(HookRuntime rt, in AfterModifyingCardPlayCountArgs a, int from, HookCursor<HookEvent<AfterModifyingCardPlayCountArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingCardPlayCount)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingCardPlayCount (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingCardPlayCountArgs>>(HookIterator.Combat, HookId.AfterModifyingCardPlayCount);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingCardPlayCountArgs>>(HookIterator.Combat, HookId.AfterModifyingCardPlayCount);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingCardPlayCount, HookId.AfterModifyingCardPlayCount, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingCardPlayCount, HookId.AfterModifyingCardPlayCount, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingCardRewardOptions. run: AfterModifyingCardRewardOptions filter-set.</summary>
-    public static void AfterModifyingCardRewardOptions(HookRuntime rt, in AfterModifyingCardRewardOptionsArgs a)
+    public static HookStatus AfterModifyingCardRewardOptions(HookRuntime rt, in AfterModifyingCardRewardOptionsArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingCardRewardOptions)))
+        return AfterModifyingCardRewardOptionsFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingCardRewardOptions from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingCardRewardOptionsResume(HookRuntime rt, in AfterModifyingCardRewardOptionsArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingCardRewardOptions);
+        return AfterModifyingCardRewardOptionsFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingCardRewardOptionsArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingCardRewardOptions from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingCardRewardOptionsFrom(HookRuntime rt, in AfterModifyingCardRewardOptionsArgs a, int from, HookCursor<HookEvent<AfterModifyingCardRewardOptionsArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingCardRewardOptions)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingCardRewardOptions (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingCardRewardOptionsArgs>>(HookIterator.Run, HookId.AfterModifyingCardRewardOptions);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingCardRewardOptionsArgs>>(HookIterator.Run, HookId.AfterModifyingCardRewardOptions);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingCardRewardOptions, HookId.AfterModifyingCardRewardOptions, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingCardRewardOptions, HookId.AfterModifyingCardRewardOptions, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingDamageAmount. run+combat: AfterModifyingDamageAmount filter-set.</summary>
-    public static void AfterModifyingDamageAmount(HookRuntime rt, in AfterModifyingDamageAmountArgs a)
+    public static HookStatus AfterModifyingDamageAmount(HookRuntime rt, in AfterModifyingDamageAmountArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingDamageAmount)))
+        return AfterModifyingDamageAmountFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingDamageAmount from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingDamageAmountResume(HookRuntime rt, in AfterModifyingDamageAmountArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingDamageAmount);
+        return AfterModifyingDamageAmountFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingDamageAmountArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingDamageAmount from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingDamageAmountFrom(HookRuntime rt, in AfterModifyingDamageAmountArgs a, int from, HookCursor<HookEvent<AfterModifyingDamageAmountArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingDamageAmount)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingDamageAmount (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingDamageAmountArgs>>(HookIterator.RunCombat, HookId.AfterModifyingDamageAmount);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingDamageAmountArgs>>(HookIterator.RunCombat, HookId.AfterModifyingDamageAmount);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingDamageAmount, HookId.AfterModifyingDamageAmount, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingDamageAmount, HookId.AfterModifyingDamageAmount, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingEnergyGain. combat: AfterModifyingEnergyGain filter-set.</summary>
-    public static void AfterModifyingEnergyGain(HookRuntime rt, in AfterModifyingEnergyGainArgs a)
+    public static HookStatus AfterModifyingEnergyGain(HookRuntime rt, in AfterModifyingEnergyGainArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingEnergyGain)))
+        return AfterModifyingEnergyGainFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingEnergyGain from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingEnergyGainResume(HookRuntime rt, in AfterModifyingEnergyGainArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingEnergyGain);
+        return AfterModifyingEnergyGainFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingEnergyGainArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingEnergyGain from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingEnergyGainFrom(HookRuntime rt, in AfterModifyingEnergyGainArgs a, int from, HookCursor<HookEvent<AfterModifyingEnergyGainArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingEnergyGain)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingEnergyGain (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingEnergyGainArgs>>(HookIterator.Combat, HookId.AfterModifyingEnergyGain);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingEnergyGainArgs>>(HookIterator.Combat, HookId.AfterModifyingEnergyGain);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingEnergyGain, HookId.AfterModifyingEnergyGain, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingEnergyGain, HookId.AfterModifyingEnergyGain, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingGoldGained. run+combat: AfterModifyingGoldGained filter-set.</summary>
-    public static void AfterModifyingGoldGained(HookRuntime rt, in AfterModifyingGoldGainedArgs a)
+    public static HookStatus AfterModifyingGoldGained(HookRuntime rt, in AfterModifyingGoldGainedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingGoldGained)))
+        return AfterModifyingGoldGainedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingGoldGained from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingGoldGainedResume(HookRuntime rt, in AfterModifyingGoldGainedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingGoldGained);
+        return AfterModifyingGoldGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingGoldGainedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingGoldGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingGoldGainedFrom(HookRuntime rt, in AfterModifyingGoldGainedArgs a, int from, HookCursor<HookEvent<AfterModifyingGoldGainedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingGoldGained)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingGoldGained (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingGoldGainedArgs>>(HookIterator.RunCombat, HookId.AfterModifyingGoldGained);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingGoldGainedArgs>>(HookIterator.RunCombat, HookId.AfterModifyingGoldGained);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingGoldGained, HookId.AfterModifyingGoldGained, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingGoldGained, HookId.AfterModifyingGoldGained, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingHandDraw. combat: AfterModifyingHandDraw filter-set.</summary>
-    public static void AfterModifyingHandDraw(HookRuntime rt, in AfterModifyingHandDrawArgs a)
+    public static HookStatus AfterModifyingHandDraw(HookRuntime rt, in AfterModifyingHandDrawArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingHandDraw)))
+        return AfterModifyingHandDrawFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingHandDraw from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingHandDrawResume(HookRuntime rt, in AfterModifyingHandDrawArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingHandDraw);
+        return AfterModifyingHandDrawFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingHandDrawArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingHandDraw from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingHandDrawFrom(HookRuntime rt, in AfterModifyingHandDrawArgs a, int from, HookCursor<HookEvent<AfterModifyingHandDrawArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingHandDraw)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingHandDraw (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingHandDrawArgs>>(HookIterator.Combat, HookId.AfterModifyingHandDraw);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingHandDrawArgs>>(HookIterator.Combat, HookId.AfterModifyingHandDraw);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingHandDraw, HookId.AfterModifyingHandDraw, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingHandDraw, HookId.AfterModifyingHandDraw, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingHpLostAfterOsty. run+combat: AfterModifyingHpLostAfterOsty filter-set.</summary>
-    public static void AfterModifyingHpLostAfterOsty(HookRuntime rt, in AfterModifyingHpLostAfterOstyArgs a)
+    public static HookStatus AfterModifyingHpLostAfterOsty(HookRuntime rt, in AfterModifyingHpLostAfterOstyArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingHpLostAfterOsty)))
+        return AfterModifyingHpLostAfterOstyFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingHpLostAfterOsty from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingHpLostAfterOstyResume(HookRuntime rt, in AfterModifyingHpLostAfterOstyArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingHpLostAfterOsty);
+        return AfterModifyingHpLostAfterOstyFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingHpLostAfterOstyArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingHpLostAfterOsty from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingHpLostAfterOstyFrom(HookRuntime rt, in AfterModifyingHpLostAfterOstyArgs a, int from, HookCursor<HookEvent<AfterModifyingHpLostAfterOstyArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingHpLostAfterOsty)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingHpLostAfterOsty (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingHpLostAfterOstyArgs>>(HookIterator.RunCombat, HookId.AfterModifyingHpLostAfterOsty);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingHpLostAfterOstyArgs>>(HookIterator.RunCombat, HookId.AfterModifyingHpLostAfterOsty);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingHpLostAfterOsty, HookId.AfterModifyingHpLostAfterOsty, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingHpLostAfterOsty, HookId.AfterModifyingHpLostAfterOsty, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingHpLostBeforeOsty. run+combat: AfterModifyingHpLostBeforeOsty filter-set.</summary>
-    public static void AfterModifyingHpLostBeforeOsty(HookRuntime rt, in AfterModifyingHpLostBeforeOstyArgs a)
+    public static HookStatus AfterModifyingHpLostBeforeOsty(HookRuntime rt, in AfterModifyingHpLostBeforeOstyArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingHpLostBeforeOsty)))
+        return AfterModifyingHpLostBeforeOstyFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingHpLostBeforeOsty from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingHpLostBeforeOstyResume(HookRuntime rt, in AfterModifyingHpLostBeforeOstyArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingHpLostBeforeOsty);
+        return AfterModifyingHpLostBeforeOstyFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingHpLostBeforeOstyArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingHpLostBeforeOsty from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingHpLostBeforeOstyFrom(HookRuntime rt, in AfterModifyingHpLostBeforeOstyArgs a, int from, HookCursor<HookEvent<AfterModifyingHpLostBeforeOstyArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingHpLostBeforeOsty)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingHpLostBeforeOsty (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingHpLostBeforeOstyArgs>>(HookIterator.RunCombat, HookId.AfterModifyingHpLostBeforeOsty);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingHpLostBeforeOstyArgs>>(HookIterator.RunCombat, HookId.AfterModifyingHpLostBeforeOsty);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingHpLostBeforeOsty, HookId.AfterModifyingHpLostBeforeOsty, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingHpLostBeforeOsty, HookId.AfterModifyingHpLostBeforeOsty, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingOrbPassiveTriggerCount. combat: AfterModifyingOrbPassiveTriggerCount filter-set.</summary>
-    public static void AfterModifyingOrbPassiveTriggerCount(HookRuntime rt, in AfterModifyingOrbPassiveTriggerCountArgs a)
+    public static HookStatus AfterModifyingOrbPassiveTriggerCount(HookRuntime rt, in AfterModifyingOrbPassiveTriggerCountArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingOrbPassiveTriggerCount)))
+        return AfterModifyingOrbPassiveTriggerCountFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingOrbPassiveTriggerCount from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingOrbPassiveTriggerCountResume(HookRuntime rt, in AfterModifyingOrbPassiveTriggerCountArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingOrbPassiveTriggerCount);
+        return AfterModifyingOrbPassiveTriggerCountFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingOrbPassiveTriggerCountArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingOrbPassiveTriggerCount from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingOrbPassiveTriggerCountFrom(HookRuntime rt, in AfterModifyingOrbPassiveTriggerCountArgs a, int from, HookCursor<HookEvent<AfterModifyingOrbPassiveTriggerCountArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingOrbPassiveTriggerCount)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingOrbPassiveTriggerCount (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingOrbPassiveTriggerCountArgs>>(HookIterator.Combat, HookId.AfterModifyingOrbPassiveTriggerCount);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingOrbPassiveTriggerCountArgs>>(HookIterator.Combat, HookId.AfterModifyingOrbPassiveTriggerCount);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingOrbPassiveTriggerCount, HookId.AfterModifyingOrbPassiveTriggerCount, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingOrbPassiveTriggerCount, HookId.AfterModifyingOrbPassiveTriggerCount, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingPowerAmountGiven. combat: AfterModifyingPowerAmountGiven filter-set.</summary>
-    public static void AfterModifyingPowerAmountGiven(HookRuntime rt, in AfterModifyingPowerAmountGivenArgs a)
+    public static HookStatus AfterModifyingPowerAmountGiven(HookRuntime rt, in AfterModifyingPowerAmountGivenArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingPowerAmountGiven)))
+        return AfterModifyingPowerAmountGivenFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingPowerAmountGiven from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingPowerAmountGivenResume(HookRuntime rt, in AfterModifyingPowerAmountGivenArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingPowerAmountGiven);
+        return AfterModifyingPowerAmountGivenFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingPowerAmountGivenArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingPowerAmountGiven from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingPowerAmountGivenFrom(HookRuntime rt, in AfterModifyingPowerAmountGivenArgs a, int from, HookCursor<HookEvent<AfterModifyingPowerAmountGivenArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingPowerAmountGiven)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingPowerAmountGiven (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingPowerAmountGivenArgs>>(HookIterator.Combat, HookId.AfterModifyingPowerAmountGiven);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingPowerAmountGivenArgs>>(HookIterator.Combat, HookId.AfterModifyingPowerAmountGiven);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingPowerAmountGiven, HookId.AfterModifyingPowerAmountGiven, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingPowerAmountGiven, HookId.AfterModifyingPowerAmountGiven, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingPowerAmountReceived. combat: AfterModifyingPowerAmountReceived filter-set.</summary>
-    public static void AfterModifyingPowerAmountReceived(HookRuntime rt, in AfterModifyingPowerAmountReceivedArgs a)
+    public static HookStatus AfterModifyingPowerAmountReceived(HookRuntime rt, in AfterModifyingPowerAmountReceivedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingPowerAmountReceived)))
+        return AfterModifyingPowerAmountReceivedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingPowerAmountReceived from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingPowerAmountReceivedResume(HookRuntime rt, in AfterModifyingPowerAmountReceivedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingPowerAmountReceived);
+        return AfterModifyingPowerAmountReceivedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingPowerAmountReceivedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingPowerAmountReceived from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingPowerAmountReceivedFrom(HookRuntime rt, in AfterModifyingPowerAmountReceivedArgs a, int from, HookCursor<HookEvent<AfterModifyingPowerAmountReceivedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingPowerAmountReceived)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingPowerAmountReceived (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingPowerAmountReceivedArgs>>(HookIterator.Combat, HookId.AfterModifyingPowerAmountReceived);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingPowerAmountReceivedArgs>>(HookIterator.Combat, HookId.AfterModifyingPowerAmountReceived);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingPowerAmountReceived, HookId.AfterModifyingPowerAmountReceived, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingPowerAmountReceived, HookId.AfterModifyingPowerAmountReceived, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterModifyingRewards. run: AfterModifyingRewards filter-set.</summary>
-    public static void AfterModifyingRewards(HookRuntime rt, in AfterModifyingRewardsArgs a)
+    public static HookStatus AfterModifyingRewards(HookRuntime rt, in AfterModifyingRewardsArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterModifyingRewards)))
+        return AfterModifyingRewardsFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterModifyingRewards from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterModifyingRewardsResume(HookRuntime rt, in AfterModifyingRewardsArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterModifyingRewards);
+        return AfterModifyingRewardsFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterModifyingRewardsArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterModifyingRewards from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterModifyingRewardsFrom(HookRuntime rt, in AfterModifyingRewardsArgs a, int from, HookCursor<HookEvent<AfterModifyingRewardsArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterModifyingRewards)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterModifyingRewards (filter-set)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterModifyingRewardsArgs>>(HookIterator.Run, HookId.AfterModifyingRewards);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterModifyingRewardsArgs>>(HookIterator.Run, HookId.AfterModifyingRewards);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterModifyingRewards, HookId.AfterModifyingRewards, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterModifyingRewards, HookId.AfterModifyingRewards, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterOrbChanneled. combat: AfterOrbChanneled event. context passed.</summary>
-    public static void AfterOrbChanneled(HookRuntime rt, in AfterOrbChanneledArgs a)
+    public static HookStatus AfterOrbChanneled(HookRuntime rt, in AfterOrbChanneledArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterOrbChanneled)))
+        return AfterOrbChanneledFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterOrbChanneled from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterOrbChanneledResume(HookRuntime rt, in AfterOrbChanneledArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterOrbChanneled);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterOrbChanneledFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterOrbChanneledArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterOrbChanneled from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterOrbChanneledFrom(HookRuntime rt, in AfterOrbChanneledArgs a, int from, HookCursor<HookEvent<AfterOrbChanneledArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterOrbChanneled)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterOrbChanneled (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterOrbChanneledArgs>>(HookIterator.Combat, HookId.AfterOrbChanneled);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterOrbChanneledArgs>>(HookIterator.Combat, HookId.AfterOrbChanneled);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterOrbChanneled, HookId.AfterOrbChanneled, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterOrbChanneled, HookId.AfterOrbChanneled, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterOrbEvoked. combat: AfterOrbEvoked event. context passed-unpushed.</summary>
-    public static void AfterOrbEvoked(HookRuntime rt, in AfterOrbEvokedArgs a)
+    public static HookStatus AfterOrbEvoked(HookRuntime rt, in AfterOrbEvokedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterOrbEvoked)))
+        return AfterOrbEvokedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterOrbEvoked from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterOrbEvokedResume(HookRuntime rt, in AfterOrbEvokedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterOrbEvoked);
+        return AfterOrbEvokedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterOrbEvokedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterOrbEvoked from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterOrbEvokedFrom(HookRuntime rt, in AfterOrbEvokedArgs a, int from, HookCursor<HookEvent<AfterOrbEvokedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterOrbEvoked)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterOrbEvoked (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterOrbEvokedArgs>>(HookIterator.Combat, HookId.AfterOrbEvoked);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterOrbEvokedArgs>>(HookIterator.Combat, HookId.AfterOrbEvoked);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterOrbEvoked, HookId.AfterOrbEvoked, 0, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterOrbEvoked, HookId.AfterOrbEvoked, 0, l.Index, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterOstyRevived. combat: AfterOstyRevived event.</summary>
-    public static void AfterOstyRevived(HookRuntime rt, in AfterOstyRevivedArgs a)
+    public static HookStatus AfterOstyRevived(HookRuntime rt, in AfterOstyRevivedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterOstyRevived)))
+        return AfterOstyRevivedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterOstyRevived from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterOstyRevivedResume(HookRuntime rt, in AfterOstyRevivedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterOstyRevived);
+        return AfterOstyRevivedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterOstyRevivedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterOstyRevived from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterOstyRevivedFrom(HookRuntime rt, in AfterOstyRevivedArgs a, int from, HookCursor<HookEvent<AfterOstyRevivedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterOstyRevived)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterOstyRevived (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterOstyRevivedArgs>>(HookIterator.Combat, HookId.AfterOstyRevived);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterOstyRevivedArgs>>(HookIterator.Combat, HookId.AfterOstyRevived);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterOstyRevived, HookId.AfterOstyRevived, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterOstyRevived, HookId.AfterOstyRevived, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterPlayerTurnStart. combat: AfterPlayerTurnStartEarly event; AfterPlayerTurnStart event; AfterPlayerTurnStartLate event. context passed.</summary>
-    public static void AfterPlayerTurnStart(HookRuntime rt, in AfterPlayerTurnStartArgs a)
+    public static HookStatus AfterPlayerTurnStart(HookRuntime rt, in AfterPlayerTurnStartArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterPlayerTurnStartEarly) || rt.HasAny(HookId.AfterPlayerTurnStart) || rt.HasAny(HookId.AfterPlayerTurnStartLate)))
+        return AfterPlayerTurnStartFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterPlayerTurnStart from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterPlayerTurnStartResume(HookRuntime rt, in AfterPlayerTurnStartArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterPlayerTurnStart);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterPlayerTurnStartFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPlayerTurnStartArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterPlayerTurnStart from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterPlayerTurnStartFrom(HookRuntime rt, in AfterPlayerTurnStartArgs a, int from, HookCursor<HookEvent<AfterPlayerTurnStartArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterPlayerTurnStartEarly) || rt.HasAny(HookId.AfterPlayerTurnStart) || rt.HasAny(HookId.AfterPlayerTurnStartLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterPlayerTurnStartEarly (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterPlayerTurnStartArgs>>(HookIterator.Combat, HookId.AfterPlayerTurnStartEarly);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPlayerTurnStartArgs>>(HookIterator.Combat, HookId.AfterPlayerTurnStartEarly);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStartEarly, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStartEarly, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
         // pass 1: AfterPlayerTurnStart (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterPlayerTurnStartArgs>>(HookIterator.Combat, HookId.AfterPlayerTurnStart);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPlayerTurnStartArgs>>(HookIterator.Combat, HookId.AfterPlayerTurnStart);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStart, 1, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStart, 1, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
         // pass 2: AfterPlayerTurnStartLate (event)
+        if (from <= 2)
         {
-            var l = rt.Listeners<HookEvent<AfterPlayerTurnStartArgs>>(HookIterator.Combat, HookId.AfterPlayerTurnStartLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPlayerTurnStartArgs>>(HookIterator.Combat, HookId.AfterPlayerTurnStartLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStartLate, 2, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStartLate, 2, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterPotionDiscarded. run+combat: AfterPotionDiscarded event.</summary>
-    public static void AfterPotionDiscarded(HookRuntime rt, in AfterPotionDiscardedArgs a)
+    public static HookStatus AfterPotionDiscarded(HookRuntime rt, in AfterPotionDiscardedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterPotionDiscarded)))
+        return AfterPotionDiscardedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterPotionDiscarded from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterPotionDiscardedResume(HookRuntime rt, in AfterPotionDiscardedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterPotionDiscarded);
+        return AfterPotionDiscardedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPotionDiscardedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterPotionDiscarded from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterPotionDiscardedFrom(HookRuntime rt, in AfterPotionDiscardedArgs a, int from, HookCursor<HookEvent<AfterPotionDiscardedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterPotionDiscarded)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterPotionDiscarded (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterPotionDiscardedArgs>>(HookIterator.RunCombat, HookId.AfterPotionDiscarded);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPotionDiscardedArgs>>(HookIterator.RunCombat, HookId.AfterPotionDiscarded);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPotionDiscarded, HookId.AfterPotionDiscarded, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPotionDiscarded, HookId.AfterPotionDiscarded, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterPotionProcured. run+combat: AfterPotionProcured event.</summary>
-    public static void AfterPotionProcured(HookRuntime rt, in AfterPotionProcuredArgs a)
+    public static HookStatus AfterPotionProcured(HookRuntime rt, in AfterPotionProcuredArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterPotionProcured)))
+        return AfterPotionProcuredFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterPotionProcured from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterPotionProcuredResume(HookRuntime rt, in AfterPotionProcuredArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterPotionProcured);
+        return AfterPotionProcuredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPotionProcuredArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterPotionProcured from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterPotionProcuredFrom(HookRuntime rt, in AfterPotionProcuredArgs a, int from, HookCursor<HookEvent<AfterPotionProcuredArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterPotionProcured)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterPotionProcured (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterPotionProcuredArgs>>(HookIterator.RunCombat, HookId.AfterPotionProcured);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPotionProcuredArgs>>(HookIterator.RunCombat, HookId.AfterPotionProcured);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPotionProcured, HookId.AfterPotionProcured, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPotionProcured, HookId.AfterPotionProcured, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterPotionUsed. run+combat: AfterPotionUsed event.</summary>
-    public static void AfterPotionUsed(HookRuntime rt, in AfterPotionUsedArgs a)
+    public static HookStatus AfterPotionUsed(HookRuntime rt, in AfterPotionUsedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterPotionUsed)))
+        return AfterPotionUsedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterPotionUsed from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterPotionUsedResume(HookRuntime rt, in AfterPotionUsedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterPotionUsed);
+        return AfterPotionUsedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPotionUsedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterPotionUsed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterPotionUsedFrom(HookRuntime rt, in AfterPotionUsedArgs a, int from, HookCursor<HookEvent<AfterPotionUsedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterPotionUsed)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterPotionUsed (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterPotionUsedArgs>>(HookIterator.RunCombat, HookId.AfterPotionUsed);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPotionUsedArgs>>(HookIterator.RunCombat, HookId.AfterPotionUsed);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPotionUsed, HookId.AfterPotionUsed, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPotionUsed, HookId.AfterPotionUsed, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterPowerAmountChanged. combat: AfterPowerAmountChanged event. context passed-unpushed.</summary>
-    public static void AfterPowerAmountChanged(HookRuntime rt, in AfterPowerAmountChangedArgs a)
+    public static HookStatus AfterPowerAmountChanged(HookRuntime rt, in AfterPowerAmountChangedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterPowerAmountChanged)))
+        return AfterPowerAmountChangedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterPowerAmountChanged from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterPowerAmountChangedResume(HookRuntime rt, in AfterPowerAmountChangedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterPowerAmountChanged);
+        return AfterPowerAmountChangedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPowerAmountChangedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterPowerAmountChanged from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterPowerAmountChangedFrom(HookRuntime rt, in AfterPowerAmountChangedArgs a, int from, HookCursor<HookEvent<AfterPowerAmountChangedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterPowerAmountChanged)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterPowerAmountChanged (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterPowerAmountChangedArgs>>(HookIterator.Combat, HookId.AfterPowerAmountChanged);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPowerAmountChangedArgs>>(HookIterator.Combat, HookId.AfterPowerAmountChanged);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPowerAmountChanged, HookId.AfterPowerAmountChanged, 0, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPowerAmountChanged, HookId.AfterPowerAmountChanged, 0, l.Index, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterPreventingBlockClear. combat: AfterPreventingBlockClear preventer-only.</summary>
-    public static void AfterPreventingBlockClear(HookRuntime rt, in AfterPreventingBlockClearArgs a)
+    public static HookStatus AfterPreventingBlockClear(HookRuntime rt, in AfterPreventingBlockClearArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterPreventingBlockClear)))
+        return AfterPreventingBlockClearFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterPreventingBlockClear from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterPreventingBlockClearResume(HookRuntime rt, in AfterPreventingBlockClearArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterPreventingBlockClear);
+        return AfterPreventingBlockClearFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPreventingBlockClearArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterPreventingBlockClear from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterPreventingBlockClearFrom(HookRuntime rt, in AfterPreventingBlockClearArgs a, int from, HookCursor<HookEvent<AfterPreventingBlockClearArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterPreventingBlockClear)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterPreventingBlockClear (preventer-only)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterPreventingBlockClearArgs>>(HookIterator.Combat, HookId.AfterPreventingBlockClear);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPreventingBlockClearArgs>>(HookIterator.Combat, HookId.AfterPreventingBlockClear);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Who != a.Preventer) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPreventingBlockClear, HookId.AfterPreventingBlockClear, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPreventingBlockClear, HookId.AfterPreventingBlockClear, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 break;
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterPreventingDeath. run+combat: AfterPreventingDeath preventer-only.</summary>
-    public static void AfterPreventingDeath(HookRuntime rt, in AfterPreventingDeathArgs a)
+    public static HookStatus AfterPreventingDeath(HookRuntime rt, in AfterPreventingDeathArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterPreventingDeath)))
+        return AfterPreventingDeathFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterPreventingDeath from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterPreventingDeathResume(HookRuntime rt, in AfterPreventingDeathArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterPreventingDeath);
+        return AfterPreventingDeathFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPreventingDeathArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterPreventingDeath from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterPreventingDeathFrom(HookRuntime rt, in AfterPreventingDeathArgs a, int from, HookCursor<HookEvent<AfterPreventingDeathArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterPreventingDeath)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterPreventingDeath (preventer-only)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterPreventingDeathArgs>>(HookIterator.RunCombat, HookId.AfterPreventingDeath);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPreventingDeathArgs>>(HookIterator.RunCombat, HookId.AfterPreventingDeath);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Who != a.Preventer) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPreventingDeath, HookId.AfterPreventingDeath, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPreventingDeath, HookId.AfterPreventingDeath, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 break;
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterPreventingDraw. combat: AfterPreventingDraw preventer-only.</summary>
-    public static void AfterPreventingDraw(HookRuntime rt, in AfterPreventingDrawArgs a)
+    public static HookStatus AfterPreventingDraw(HookRuntime rt, in AfterPreventingDrawArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterPreventingDraw)))
+        return AfterPreventingDrawFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterPreventingDraw from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterPreventingDrawResume(HookRuntime rt, in AfterPreventingDrawArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterPreventingDraw);
+        return AfterPreventingDrawFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterPreventingDrawArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterPreventingDraw from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterPreventingDrawFrom(HookRuntime rt, in AfterPreventingDrawArgs a, int from, HookCursor<HookEvent<AfterPreventingDrawArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterPreventingDraw)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterPreventingDraw (preventer-only)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterPreventingDrawArgs>>(HookIterator.Combat, HookId.AfterPreventingDraw);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterPreventingDrawArgs>>(HookIterator.Combat, HookId.AfterPreventingDraw);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Who != a.Modifier) continue;
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterPreventingDraw, HookId.AfterPreventingDraw, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterPreventingDraw, HookId.AfterPreventingDraw, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 break;
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterRestSiteHeal. run: AfterRestSiteHeal event.</summary>
-    public static void AfterRestSiteHeal(HookRuntime rt, in AfterRestSiteHealArgs a)
+    public static HookStatus AfterRestSiteHeal(HookRuntime rt, in AfterRestSiteHealArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterRestSiteHeal)))
+        return AfterRestSiteHealFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterRestSiteHeal from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterRestSiteHealResume(HookRuntime rt, in AfterRestSiteHealArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterRestSiteHeal);
+        return AfterRestSiteHealFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterRestSiteHealArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterRestSiteHeal from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterRestSiteHealFrom(HookRuntime rt, in AfterRestSiteHealArgs a, int from, HookCursor<HookEvent<AfterRestSiteHealArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterRestSiteHeal)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterRestSiteHeal (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterRestSiteHealArgs>>(HookIterator.Run, HookId.AfterRestSiteHeal);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterRestSiteHealArgs>>(HookIterator.Run, HookId.AfterRestSiteHeal);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterRestSiteHeal, HookId.AfterRestSiteHeal, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterRestSiteHeal, HookId.AfterRestSiteHeal, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterRestSiteSmith. run: AfterRestSiteSmith event.</summary>
-    public static void AfterRestSiteSmith(HookRuntime rt, in AfterRestSiteSmithArgs a)
+    public static HookStatus AfterRestSiteSmith(HookRuntime rt, in AfterRestSiteSmithArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterRestSiteSmith)))
+        return AfterRestSiteSmithFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterRestSiteSmith from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterRestSiteSmithResume(HookRuntime rt, in AfterRestSiteSmithArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterRestSiteSmith);
+        return AfterRestSiteSmithFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterRestSiteSmithArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterRestSiteSmith from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterRestSiteSmithFrom(HookRuntime rt, in AfterRestSiteSmithArgs a, int from, HookCursor<HookEvent<AfterRestSiteSmithArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterRestSiteSmith)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterRestSiteSmith (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterRestSiteSmithArgs>>(HookIterator.Run, HookId.AfterRestSiteSmith);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterRestSiteSmithArgs>>(HookIterator.Run, HookId.AfterRestSiteSmith);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterRestSiteSmith, HookId.AfterRestSiteSmith, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterRestSiteSmith, HookId.AfterRestSiteSmith, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterRewardTaken. run: AfterRewardTaken event.</summary>
-    public static void AfterRewardTaken(HookRuntime rt, in AfterRewardTakenArgs a)
+    public static HookStatus AfterRewardTaken(HookRuntime rt, in AfterRewardTakenArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterRewardTaken)))
+        return AfterRewardTakenFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterRewardTaken from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterRewardTakenResume(HookRuntime rt, in AfterRewardTakenArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterRewardTaken);
+        return AfterRewardTakenFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterRewardTakenArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterRewardTaken from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterRewardTakenFrom(HookRuntime rt, in AfterRewardTakenArgs a, int from, HookCursor<HookEvent<AfterRewardTakenArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterRewardTaken)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterRewardTaken (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterRewardTakenArgs>>(HookIterator.Run, HookId.AfterRewardTaken);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterRewardTakenArgs>>(HookIterator.Run, HookId.AfterRewardTaken);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterRewardTaken, HookId.AfterRewardTaken, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterRewardTaken, HookId.AfterRewardTaken, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterRoomEntered. run: AfterRoomEntered event.</summary>
-    public static void AfterRoomEntered(HookRuntime rt, in AfterRoomEnteredArgs a)
+    public static HookStatus AfterRoomEntered(HookRuntime rt, in AfterRoomEnteredArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterRoomEntered)))
+        return AfterRoomEnteredFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterRoomEntered from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterRoomEnteredResume(HookRuntime rt, in AfterRoomEnteredArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterRoomEntered);
+        return AfterRoomEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterRoomEnteredArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterRoomEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterRoomEnteredFrom(HookRuntime rt, in AfterRoomEnteredArgs a, int from, HookCursor<HookEvent<AfterRoomEnteredArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterRoomEntered)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterRoomEntered (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterRoomEnteredArgs>>(HookIterator.Run, HookId.AfterRoomEntered);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterRoomEnteredArgs>>(HookIterator.Run, HookId.AfterRoomEntered);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterRoomEntered, HookId.AfterRoomEntered, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterRoomEntered, HookId.AfterRoomEntered, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterShuffle. combat: AfterShuffle event. context passed.</summary>
-    public static void AfterShuffle(HookRuntime rt, in AfterShuffleArgs a)
+    public static HookStatus AfterShuffle(HookRuntime rt, in AfterShuffleArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterShuffle)))
+        return AfterShuffleFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterShuffle from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterShuffleResume(HookRuntime rt, in AfterShuffleArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterShuffle);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterShuffleFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterShuffleArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterShuffle from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterShuffleFrom(HookRuntime rt, in AfterShuffleArgs a, int from, HookCursor<HookEvent<AfterShuffleArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterShuffle)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterShuffle (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterShuffleArgs>>(HookIterator.Combat, HookId.AfterShuffle);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterShuffleArgs>>(HookIterator.Combat, HookId.AfterShuffle);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterShuffle, HookId.AfterShuffle, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterShuffle, HookId.AfterShuffle, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterSideTurnStart. combat: AfterSideTurnStart event; AfterSideTurnStartLate event.</summary>
-    public static void AfterSideTurnStart(HookRuntime rt, in AfterSideTurnStartArgs a)
+    public static HookStatus AfterSideTurnStart(HookRuntime rt, in AfterSideTurnStartArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterSideTurnStart) || rt.HasAny(HookId.AfterSideTurnStartLate)))
+        return AfterSideTurnStartFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterSideTurnStart from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterSideTurnStartResume(HookRuntime rt, in AfterSideTurnStartArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterSideTurnStart);
+        return AfterSideTurnStartFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterSideTurnStartArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterSideTurnStart from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterSideTurnStartFrom(HookRuntime rt, in AfterSideTurnStartArgs a, int from, HookCursor<HookEvent<AfterSideTurnStartArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterSideTurnStart) || rt.HasAny(HookId.AfterSideTurnStartLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterSideTurnStart (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterSideTurnStartArgs>>(HookIterator.Combat, HookId.AfterSideTurnStart);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterSideTurnStartArgs>>(HookIterator.Combat, HookId.AfterSideTurnStart);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterSideTurnStart, HookId.AfterSideTurnStart, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterSideTurnStart, HookId.AfterSideTurnStart, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
         // pass 1: AfterSideTurnStartLate (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<AfterSideTurnStartArgs>>(HookIterator.Combat, HookId.AfterSideTurnStartLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterSideTurnStartArgs>>(HookIterator.Combat, HookId.AfterSideTurnStartLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterSideTurnStart, HookId.AfterSideTurnStartLate, 1, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterSideTurnStart, HookId.AfterSideTurnStartLate, 1, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterStarsGained. combat: AfterStarsGained event.</summary>
-    public static void AfterStarsGained(HookRuntime rt, in AfterStarsGainedArgs a)
+    public static HookStatus AfterStarsGained(HookRuntime rt, in AfterStarsGainedArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterStarsGained)))
+        return AfterStarsGainedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterStarsGained from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterStarsGainedResume(HookRuntime rt, in AfterStarsGainedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterStarsGained);
+        return AfterStarsGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterStarsGainedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterStarsGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterStarsGainedFrom(HookRuntime rt, in AfterStarsGainedArgs a, int from, HookCursor<HookEvent<AfterStarsGainedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterStarsGained)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterStarsGained (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterStarsGainedArgs>>(HookIterator.Combat, HookId.AfterStarsGained);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterStarsGainedArgs>>(HookIterator.Combat, HookId.AfterStarsGained);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterStarsGained, HookId.AfterStarsGained, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterStarsGained, HookId.AfterStarsGained, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterStarsSpent. combat: AfterStarsSpent event.</summary>
-    public static void AfterStarsSpent(HookRuntime rt, in AfterStarsSpentArgs a)
+    public static HookStatus AfterStarsSpent(HookRuntime rt, in AfterStarsSpentArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterStarsSpent)))
+        return AfterStarsSpentFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterStarsSpent from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterStarsSpentResume(HookRuntime rt, in AfterStarsSpentArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterStarsSpent);
+        return AfterStarsSpentFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterStarsSpentArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterStarsSpent from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterStarsSpentFrom(HookRuntime rt, in AfterStarsSpentArgs a, int from, HookCursor<HookEvent<AfterStarsSpentArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterStarsSpent)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterStarsSpent (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterStarsSpentArgs>>(HookIterator.Combat, HookId.AfterStarsSpent);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterStarsSpentArgs>>(HookIterator.Combat, HookId.AfterStarsSpent);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterStarsSpent, HookId.AfterStarsSpent, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterStarsSpent, HookId.AfterStarsSpent, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterSummon. combat: AfterSummon event. context passed.</summary>
-    public static void AfterSummon(HookRuntime rt, in AfterSummonArgs a)
+    public static HookStatus AfterSummon(HookRuntime rt, in AfterSummonArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterSummon)))
+        return AfterSummonFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterSummon from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterSummonResume(HookRuntime rt, in AfterSummonArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterSummon);
+        a.ChoiceContext.PopModel(at.Who);
+        return AfterSummonFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterSummonArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterSummon from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterSummonFrom(HookRuntime rt, in AfterSummonArgs a, int from, HookCursor<HookEvent<AfterSummonArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterSummon)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterSummon (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterSummonArgs>>(HookIterator.Combat, HookId.AfterSummon);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterSummonArgs>>(HookIterator.Combat, HookId.AfterSummon);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterSummon, HookId.AfterSummon, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterSummon, HookId.AfterSummon, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterTakingExtraTurn. combat: AfterTakingExtraTurn event.</summary>
-    public static void AfterTakingExtraTurn(HookRuntime rt, in AfterTakingExtraTurnArgs a)
+    public static HookStatus AfterTakingExtraTurn(HookRuntime rt, in AfterTakingExtraTurnArgs a)
     {
-        if (!(rt.HasAny(HookId.AfterTakingExtraTurn)))
+        return AfterTakingExtraTurnFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.AfterTakingExtraTurn from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus AfterTakingExtraTurnResume(HookRuntime rt, in AfterTakingExtraTurnArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_AfterTakingExtraTurn);
+        return AfterTakingExtraTurnFrom(rt, in a, at.Pass, (HookCursor<HookEvent<AfterTakingExtraTurnArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.AfterTakingExtraTurn from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus AfterTakingExtraTurnFrom(HookRuntime rt, in AfterTakingExtraTurnArgs a, int from, HookCursor<HookEvent<AfterTakingExtraTurnArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.AfterTakingExtraTurn)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: AfterTakingExtraTurn (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<AfterTakingExtraTurnArgs>>(HookIterator.Combat, HookId.AfterTakingExtraTurn);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<AfterTakingExtraTurnArgs>>(HookIterator.Combat, HookId.AfterTakingExtraTurn);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterTakingExtraTurn, HookId.AfterTakingExtraTurn, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_AfterTakingExtraTurn, HookId.AfterTakingExtraTurn, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.AfterTurnEnd. combat: AfterSideTurnEnd event; AfterSideTurnEndLate event. context per-listener; wait after [0, 1]; steps netid-guard.</summary>
@@ -1898,191 +3204,356 @@ public static partial class Hooks
         // pass 0: AfterSideTurnEnd (event)
         {
             var l = rt.Listeners<HookEvent<AfterTurnEndArgs>>(HookIterator.Combat, HookId.AfterSideTurnEnd);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_AfterTurnEnd, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterTurnEnd, HookId.AfterSideTurnEnd, 0, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterTurnEnd, HookId.AfterSideTurnEnd, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
         rt.WaitAll(HookId.Dispatch_AfterTurnEnd, mark);
         // pass 1: AfterSideTurnEndLate (event)
         {
             var l = rt.Listeners<HookEvent<AfterTurnEndArgs>>(HookIterator.Combat, HookId.AfterSideTurnEndLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_AfterTurnEnd, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterTurnEnd, HookId.AfterSideTurnEndLate, 1, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterTurnEnd, HookId.AfterSideTurnEndLate, 1, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
         rt.WaitAll(HookId.Dispatch_AfterTurnEnd, mark);
     }
 
     /// <summary>game: Hook.BeforeAttack. combat: BeforeAttack event.</summary>
-    public static void BeforeAttack(HookRuntime rt, in BeforeAttackArgs a)
+    public static HookStatus BeforeAttack(HookRuntime rt, in BeforeAttackArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeAttack)))
+        return BeforeAttackFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeAttack from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeAttackResume(HookRuntime rt, in BeforeAttackArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeAttack);
+        return BeforeAttackFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeAttackArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeAttack from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeAttackFrom(HookRuntime rt, in BeforeAttackArgs a, int from, HookCursor<HookEvent<BeforeAttackArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeAttack)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeAttack (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeAttackArgs>>(HookIterator.Combat, HookId.BeforeAttack);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeAttackArgs>>(HookIterator.Combat, HookId.BeforeAttack);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeAttack, HookId.BeforeAttack, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeAttack, HookId.BeforeAttack, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeBlockGained. combat: BeforeBlockGained event.</summary>
-    public static void BeforeBlockGained(HookRuntime rt, in BeforeBlockGainedArgs a)
+    public static HookStatus BeforeBlockGained(HookRuntime rt, in BeforeBlockGainedArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeBlockGained)))
+        return BeforeBlockGainedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeBlockGained from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeBlockGainedResume(HookRuntime rt, in BeforeBlockGainedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeBlockGained);
+        return BeforeBlockGainedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeBlockGainedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeBlockGained from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeBlockGainedFrom(HookRuntime rt, in BeforeBlockGainedArgs a, int from, HookCursor<HookEvent<BeforeBlockGainedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeBlockGained)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeBlockGained (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeBlockGainedArgs>>(HookIterator.Combat, HookId.BeforeBlockGained);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeBlockGainedArgs>>(HookIterator.Combat, HookId.BeforeBlockGained);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeBlockGained, HookId.BeforeBlockGained, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeBlockGained, HookId.BeforeBlockGained, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeCardAutoPlayed. combat: BeforeCardAutoPlayed event.</summary>
-    public static void BeforeCardAutoPlayed(HookRuntime rt, in BeforeCardAutoPlayedArgs a)
+    public static HookStatus BeforeCardAutoPlayed(HookRuntime rt, in BeforeCardAutoPlayedArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeCardAutoPlayed)))
+        return BeforeCardAutoPlayedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeCardAutoPlayed from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeCardAutoPlayedResume(HookRuntime rt, in BeforeCardAutoPlayedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeCardAutoPlayed);
+        return BeforeCardAutoPlayedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeCardAutoPlayedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeCardAutoPlayed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeCardAutoPlayedFrom(HookRuntime rt, in BeforeCardAutoPlayedArgs a, int from, HookCursor<HookEvent<BeforeCardAutoPlayedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeCardAutoPlayed)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeCardAutoPlayed (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeCardAutoPlayedArgs>>(HookIterator.Combat, HookId.BeforeCardAutoPlayed);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeCardAutoPlayedArgs>>(HookIterator.Combat, HookId.BeforeCardAutoPlayed);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeCardAutoPlayed, HookId.BeforeCardAutoPlayed, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeCardAutoPlayed, HookId.BeforeCardAutoPlayed, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeCardPlayed. combat: BeforeCardPlayed event.</summary>
-    public static void BeforeCardPlayed(HookRuntime rt, in BeforeCardPlayedArgs a)
+    public static HookStatus BeforeCardPlayed(HookRuntime rt, in BeforeCardPlayedArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeCardPlayed)))
+        return BeforeCardPlayedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeCardPlayed from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeCardPlayedResume(HookRuntime rt, in BeforeCardPlayedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeCardPlayed);
+        return BeforeCardPlayedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeCardPlayedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeCardPlayed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeCardPlayedFrom(HookRuntime rt, in BeforeCardPlayedArgs a, int from, HookCursor<HookEvent<BeforeCardPlayedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeCardPlayed)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeCardPlayed (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeCardPlayedArgs>>(HookIterator.Combat, HookId.BeforeCardPlayed);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeCardPlayedArgs>>(HookIterator.Combat, HookId.BeforeCardPlayed);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeCardPlayed, HookId.BeforeCardPlayed, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeCardPlayed, HookId.BeforeCardPlayed, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeCardRemoved. run: BeforeCardRemoved event.</summary>
-    public static void BeforeCardRemoved(HookRuntime rt, in BeforeCardRemovedArgs a)
+    public static HookStatus BeforeCardRemoved(HookRuntime rt, in BeforeCardRemovedArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeCardRemoved)))
+        return BeforeCardRemovedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeCardRemoved from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeCardRemovedResume(HookRuntime rt, in BeforeCardRemovedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeCardRemoved);
+        return BeforeCardRemovedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeCardRemovedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeCardRemoved from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeCardRemovedFrom(HookRuntime rt, in BeforeCardRemovedArgs a, int from, HookCursor<HookEvent<BeforeCardRemovedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeCardRemoved)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeCardRemoved (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeCardRemovedArgs>>(HookIterator.Run, HookId.BeforeCardRemoved);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeCardRemovedArgs>>(HookIterator.Run, HookId.BeforeCardRemoved);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeCardRemoved, HookId.BeforeCardRemoved, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeCardRemoved, HookId.BeforeCardRemoved, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeCombatStart. run+combat: BeforeCombatStart event; BeforeCombatStartLate event.</summary>
-    public static void BeforeCombatStart(HookRuntime rt, in BeforeCombatStartArgs a)
+    public static HookStatus BeforeCombatStart(HookRuntime rt, in BeforeCombatStartArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeCombatStart) || rt.HasAny(HookId.BeforeCombatStartLate)))
+        return BeforeCombatStartFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeCombatStart from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeCombatStartResume(HookRuntime rt, in BeforeCombatStartArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeCombatStart);
+        return BeforeCombatStartFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeCombatStartArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeCombatStart from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeCombatStartFrom(HookRuntime rt, in BeforeCombatStartArgs a, int from, HookCursor<HookEvent<BeforeCombatStartArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeCombatStart) || rt.HasAny(HookId.BeforeCombatStartLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeCombatStart (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeCombatStartArgs>>(HookIterator.RunCombat, HookId.BeforeCombatStart);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeCombatStartArgs>>(HookIterator.RunCombat, HookId.BeforeCombatStart);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeCombatStart, HookId.BeforeCombatStart, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeCombatStart, HookId.BeforeCombatStart, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
         // pass 1: BeforeCombatStartLate (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<BeforeCombatStartArgs>>(HookIterator.RunCombat, HookId.BeforeCombatStartLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeCombatStartArgs>>(HookIterator.RunCombat, HookId.BeforeCombatStartLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeCombatStart, HookId.BeforeCombatStartLate, 1, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeCombatStart, HookId.BeforeCombatStartLate, 1, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeDamageReceived. run+combat: BeforeDamageReceived event. context passed.</summary>
-    public static void BeforeDamageReceived(HookRuntime rt, in BeforeDamageReceivedArgs a)
+    public static HookStatus BeforeDamageReceived(HookRuntime rt, in BeforeDamageReceivedArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeDamageReceived)))
+        return BeforeDamageReceivedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeDamageReceived from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeDamageReceivedResume(HookRuntime rt, in BeforeDamageReceivedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeDamageReceived);
+        a.ChoiceContext.PopModel(at.Who);
+        return BeforeDamageReceivedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeDamageReceivedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeDamageReceived from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeDamageReceivedFrom(HookRuntime rt, in BeforeDamageReceivedArgs a, int from, HookCursor<HookEvent<BeforeDamageReceivedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeDamageReceived)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeDamageReceived (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeDamageReceivedArgs>>(HookIterator.RunCombat, HookId.BeforeDamageReceived);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeDamageReceivedArgs>>(HookIterator.RunCombat, HookId.BeforeDamageReceived);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.ChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.ChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeDamageReceived, HookId.BeforeDamageReceived, 0, e.Who, ContextMode.Passed, a.ChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeDamageReceived, HookId.BeforeDamageReceived, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.ChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeDeath. run+combat: BeforeDeath event.</summary>
-    public static void BeforeDeath(HookRuntime rt, in BeforeDeathArgs a)
+    public static HookStatus BeforeDeath(HookRuntime rt, in BeforeDeathArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeDeath)))
+        return BeforeDeathFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeDeath from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeDeathResume(HookRuntime rt, in BeforeDeathArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeDeath);
+        return BeforeDeathFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeDeathArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeDeath from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeDeathFrom(HookRuntime rt, in BeforeDeathArgs a, int from, HookCursor<HookEvent<BeforeDeathArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeDeath)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeDeath (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeDeathArgs>>(HookIterator.RunCombat, HookId.BeforeDeath);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeDeathArgs>>(HookIterator.RunCombat, HookId.BeforeDeath);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeDeath, HookId.BeforeDeath, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeDeath, HookId.BeforeDeath, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeFlush. combat: BeforeFlush event; BeforeFlushLate event. context per-listener; wait after [1]; steps netid-guard.</summary>
@@ -2106,116 +3577,201 @@ public static partial class Hooks
         // pass 0: BeforeFlush (event)
         {
             var l = rt.Listeners<HookEvent<BeforeFlushArgs>>(HookIterator.Combat, HookId.BeforeFlush);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeFlush, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeFlush, HookId.BeforeFlush, 0, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeFlush, HookId.BeforeFlush, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
         // pass 1: BeforeFlushLate (event)
         {
             var l = rt.Listeners<HookEvent<BeforeFlushArgs>>(HookIterator.Combat, HookId.BeforeFlushLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeFlush, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeFlush, HookId.BeforeFlushLate, 1, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeFlush, HookId.BeforeFlushLate, 1, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
         rt.WaitAll(HookId.Dispatch_BeforeFlush, mark);
     }
 
     /// <summary>game: Hook.BeforeHandDraw. combat: BeforeHandDraw event; BeforeHandDrawLate event. context passed.</summary>
-    public static void BeforeHandDraw(HookRuntime rt, in BeforeHandDrawArgs a)
+    public static HookStatus BeforeHandDraw(HookRuntime rt, in BeforeHandDrawArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeHandDraw) || rt.HasAny(HookId.BeforeHandDrawLate)))
+        return BeforeHandDrawFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeHandDraw from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeHandDrawResume(HookRuntime rt, in BeforeHandDrawArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeHandDraw);
+        a.PlayerChoiceContext.PopModel(at.Who);
+        return BeforeHandDrawFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeHandDrawArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeHandDraw from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeHandDrawFrom(HookRuntime rt, in BeforeHandDrawArgs a, int from, HookCursor<HookEvent<BeforeHandDrawArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeHandDraw) || rt.HasAny(HookId.BeforeHandDrawLate)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeHandDraw (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeHandDrawArgs>>(HookIterator.Combat, HookId.BeforeHandDraw);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeHandDrawArgs>>(HookIterator.Combat, HookId.BeforeHandDraw);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.PlayerChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeHandDraw, HookId.BeforeHandDraw, 0, e.Who, ContextMode.Passed, a.PlayerChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeHandDraw, HookId.BeforeHandDraw, 0, l.Index, e.Who, ContextMode.Passed, a.PlayerChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.PlayerChoiceContext.PopModel(e.Who);
             }
         }
         // pass 1: BeforeHandDrawLate (event)
+        if (from <= 1)
         {
-            var l = rt.Listeners<HookEvent<BeforeHandDrawArgs>>(HookIterator.Combat, HookId.BeforeHandDrawLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeHandDrawArgs>>(HookIterator.Combat, HookId.BeforeHandDrawLate);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 a.PlayerChoiceContext.PushModel(e.Who);
                 var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeHandDraw, HookId.BeforeHandDrawLate, 1, e.Who, ContextMode.Passed, a.PlayerChoiceContext), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeHandDraw, HookId.BeforeHandDrawLate, 1, l.Index, e.Who, ContextMode.Passed, a.PlayerChoiceContext);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
                 a.PlayerChoiceContext.PopModel(e.Who);
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforePotionUsed. run+combat: BeforePotionUsed event.</summary>
-    public static void BeforePotionUsed(HookRuntime rt, in BeforePotionUsedArgs a)
+    public static HookStatus BeforePotionUsed(HookRuntime rt, in BeforePotionUsedArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforePotionUsed)))
+        return BeforePotionUsedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforePotionUsed from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforePotionUsedResume(HookRuntime rt, in BeforePotionUsedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforePotionUsed);
+        return BeforePotionUsedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforePotionUsedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforePotionUsed from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforePotionUsedFrom(HookRuntime rt, in BeforePotionUsedArgs a, int from, HookCursor<HookEvent<BeforePotionUsedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforePotionUsed)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforePotionUsed (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforePotionUsedArgs>>(HookIterator.RunCombat, HookId.BeforePotionUsed);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforePotionUsedArgs>>(HookIterator.RunCombat, HookId.BeforePotionUsed);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforePotionUsed, HookId.BeforePotionUsed, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforePotionUsed, HookId.BeforePotionUsed, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforePowerAmountChanged. combat: BeforePowerAmountChanged event.</summary>
-    public static void BeforePowerAmountChanged(HookRuntime rt, in BeforePowerAmountChangedArgs a)
+    public static HookStatus BeforePowerAmountChanged(HookRuntime rt, in BeforePowerAmountChangedArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforePowerAmountChanged)))
+        return BeforePowerAmountChangedFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforePowerAmountChanged from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforePowerAmountChangedResume(HookRuntime rt, in BeforePowerAmountChangedArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforePowerAmountChanged);
+        return BeforePowerAmountChangedFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforePowerAmountChangedArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforePowerAmountChanged from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforePowerAmountChangedFrom(HookRuntime rt, in BeforePowerAmountChangedArgs a, int from, HookCursor<HookEvent<BeforePowerAmountChangedArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforePowerAmountChanged)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforePowerAmountChanged (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforePowerAmountChangedArgs>>(HookIterator.Combat, HookId.BeforePowerAmountChanged);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforePowerAmountChangedArgs>>(HookIterator.Combat, HookId.BeforePowerAmountChanged);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforePowerAmountChanged, HookId.BeforePowerAmountChanged, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforePowerAmountChanged, HookId.BeforePowerAmountChanged, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeRoomEntered. run: BeforeRoomEntered event.</summary>
-    public static void BeforeRoomEntered(HookRuntime rt, in BeforeRoomEnteredArgs a)
+    public static HookStatus BeforeRoomEntered(HookRuntime rt, in BeforeRoomEnteredArgs a)
     {
-        if (!(rt.HasAny(HookId.BeforeRoomEntered)))
+        return BeforeRoomEnteredFrom(rt, in a, 0, null);
+    }
+
+    /// <summary>Continues Hook.BeforeRoomEntered from a pause it returned, once the paused listener's resume record has run to completion.</summary>
+    public static HookStatus BeforeRoomEnteredResume(HookRuntime rt, in BeforeRoomEnteredArgs a, in HookStatus paused)
+    {
+        var at = paused.At(HookId.Dispatch_BeforeRoomEntered);
+        return BeforeRoomEnteredFrom(rt, in a, at.Pass, (HookCursor<HookEvent<BeforeRoomEnteredArgs>>)paused.Cursor!);
+    }
+
+    /// <summary>The passes of Hook.BeforeRoomEntered from pass <c>from</c> (its cursor <c>cur</c> when resuming).</summary>
+    private static HookStatus BeforeRoomEnteredFrom(HookRuntime rt, in BeforeRoomEnteredArgs a, int from, HookCursor<HookEvent<BeforeRoomEnteredArgs>>? cur)
+    {
+        if (cur is null && !(rt.HasAny(HookId.BeforeRoomEntered)))
         {
-            return;
+            return HookStatus.Done;
         }
         // pass 0: BeforeRoomEntered (event)
+        if (from <= 0)
         {
-            var l = rt.Listeners<HookEvent<BeforeRoomEnteredArgs>>(HookIterator.Run, HookId.BeforeRoomEntered);
-            for (int j = 0; j < l.Count; j++)
+            var l = cur ?? rt.Listeners<HookEvent<BeforeRoomEnteredArgs>>(HookIterator.Run, HookId.BeforeRoomEntered);
+            cur = null;
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var step = e.Fn(e.Who, in a, null);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeRoomEntered, HookId.BeforeRoomEntered, 0, e.Who, ContextMode.None, null), step);
+                if (step.IsPaused)
+                {
+                    var site = new PauseSite(HookId.Dispatch_BeforeRoomEntered, HookId.BeforeRoomEntered, 0, l.Index, e.Who, ContextMode.None, null);
+                    rt.OnPaused(in site, step);
+                    return HookStatus.Paused(in site, step, l);
+                }
             }
         }
+        return HookStatus.Done;
     }
 
     /// <summary>game: Hook.BeforeSideTurnStart. combat: BeforeSideTurnStart event. context per-listener; steps netid-guard.</summary>
@@ -2238,12 +3794,11 @@ public static partial class Hooks
         // pass 0: BeforeSideTurnStart (event)
         {
             var l = rt.Listeners<HookEvent<BeforeSideTurnStartArgs>>(HookIterator.Combat, HookId.BeforeSideTurnStart);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeSideTurnStart, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeSideTurnStart, HookId.BeforeSideTurnStart, 0, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeSideTurnStart, HookId.BeforeSideTurnStart, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
     }
@@ -2269,34 +3824,31 @@ public static partial class Hooks
         // pass 0: BeforeSideTurnEndVeryEarly (event)
         {
             var l = rt.Listeners<HookEvent<BeforeTurnEndArgs>>(HookIterator.Combat, HookId.BeforeSideTurnEndVeryEarly);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeTurnEnd, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEndVeryEarly, 0, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEndVeryEarly, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
         // pass 1: BeforeSideTurnEndEarly (event)
         {
             var l = rt.Listeners<HookEvent<BeforeTurnEndArgs>>(HookIterator.Combat, HookId.BeforeSideTurnEndEarly);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeTurnEnd, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEndEarly, 1, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEndEarly, 1, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
         // pass 2: BeforeSideTurnEnd (event)
         {
             var l = rt.Listeners<HookEvent<BeforeTurnEndArgs>>(HookIterator.Combat, HookId.BeforeSideTurnEnd);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeTurnEnd, e.Who);
                 var step = e.Fn(e.Who, in a, ctx);
-                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEnd, 2, e.Who, ContextMode.PerListener, ctx), step);
+                if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEnd, 2, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
         rt.WaitAll(HookId.Dispatch_BeforeTurnEnd, mark);
@@ -2313,9 +3865,8 @@ public static partial class Hooks
         // pass 0: ModifyAttackHitCount (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyAttackHitCountArgs, int>>(HookIterator.Combat, HookId.ModifyAttackHitCount);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2345,9 +3896,8 @@ public static partial class Hooks
         // pass 0: ModifyBlockAdditive (fold-add, changed nonzero)
         {
             var l = rt.Listeners<HookFold<ModifyBlockArgs, decimal>>(HookIterator.Combat, HookId.ModifyBlockAdditive);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 decimal d = e.Fn(e.Who, in a, v);
                 v += d;
                 if (d != 0m) (ch ??= new()).Add(e.Who);
@@ -2356,9 +3906,8 @@ public static partial class Hooks
         // pass 1: ModifyBlockMultiplicative (fold-mul, changed not-one)
         {
             var l = rt.Listeners<HookFold<ModifyBlockArgs, decimal>>(HookIterator.Combat, HookId.ModifyBlockMultiplicative);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 decimal f = e.Fn(e.Who, in a, v);
                 v *= f;
                 if (f != 1m) (ch ??= new()).Add(e.Who);
@@ -2368,7 +3917,7 @@ public static partial class Hooks
         return v;
     }
 
-    /// <summary>game: Hook.ModifyCardBeingAddedToDeck. run: TryModifyCardBeingAddedToDeck try/try-true; TryModifyCardBeingAddedToDeckLate try/try-true.</summary>
+    /// <summary>game: Hook.ModifyCardBeingAddedToDeck. run: TryModifyCardBeingAddedToDeck try/try-true also out-not-null; TryModifyCardBeingAddedToDeckLate try/try-true also out-not-null.</summary>
     public static CardHandle ModifyCardBeingAddedToDeck(HookRuntime rt, in ModifyCardBeingAddedToDeckArgs a, out IReadOnlyList<ListenerRef> changed)
     {
         CardHandle v = a.Card;
@@ -2380,26 +3929,24 @@ public static partial class Hooks
         List<ListenerRef>? ch = null;
         // pass 0: TryModifyCardBeingAddedToDeck (try, changed try-true)
         {
-            var l = rt.Listeners<HookTry<ModifyCardBeingAddedToDeckArgs, CardHandle>>(HookIterator.Run, HookId.TryModifyCardBeingAddedToDeck);
-            for (int j = 0; j < l.Count; j++)
+            var l = rt.Listeners<HookTryOrNull<ModifyCardBeingAddedToDeckArgs, CardHandle>>(HookIterator.Run, HookId.TryModifyCardBeingAddedToDeck);
+            while (l.Next(out var e))
             {
-                var e = l[j];
-                if (e.Fn(e.Who, in a, v, out var next))
+                if (e.Fn(e.Who, in a, v, out var next) && next is { } got)
                 {
-                    v = next;
+                    v = got;
                     (ch ??= new()).Add(e.Who);
                 }
             }
         }
         // pass 1: TryModifyCardBeingAddedToDeckLate (try, changed try-true)
         {
-            var l = rt.Listeners<HookTry<ModifyCardBeingAddedToDeckArgs, CardHandle>>(HookIterator.Run, HookId.TryModifyCardBeingAddedToDeckLate);
-            for (int j = 0; j < l.Count; j++)
+            var l = rt.Listeners<HookTryOrNull<ModifyCardBeingAddedToDeckArgs, CardHandle>>(HookIterator.Run, HookId.TryModifyCardBeingAddedToDeckLate);
+            while (l.Next(out var e))
             {
-                var e = l[j];
-                if (e.Fn(e.Who, in a, v, out var next))
+                if (e.Fn(e.Who, in a, v, out var next) && next is { } got)
                 {
-                    v = next;
+                    v = got;
                     (ch ??= new()).Add(e.Who);
                 }
             }
@@ -2421,9 +3968,8 @@ public static partial class Hooks
         // pass 0: ModifyCardPlayCount (fold-set, changed ne)
         {
             var l = rt.Listeners<HookFold<ModifyCardPlayCountArgs, int>>(HookIterator.Combat, HookId.ModifyCardPlayCount);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 int prev = v;
                 v = e.Fn(e.Who, in a, v);
                 if (prev != v) (ch ??= new()).Add(e.Who);
@@ -2446,9 +3992,8 @@ public static partial class Hooks
         // pass 0: ModifyCardPlayResultPileTypeAndPosition (fold-set, changed ne)
         {
             var l = rt.Listeners<HookFold<ModifyCardPlayResultPileTypeAndPositionArgs, PileDest>>(HookIterator.Combat, HookId.ModifyCardPlayResultPileTypeAndPosition);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 PileDest prev = v;
                 v = e.Fn(e.Who, in a, v);
                 if (prev != v) (ch ??= new()).Add(e.Who);
@@ -2469,9 +4014,8 @@ public static partial class Hooks
         // pass 0: TryModifyCardRewardAlternatives (try, changed try-true)
         {
             var l = rt.Listeners<HookTryInPlace<ModifyCardRewardAlternativesArgs>>(HookIterator.Run, HookId.TryModifyCardRewardAlternatives);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
@@ -2489,18 +4033,16 @@ public static partial class Hooks
         // pass 0: ModifyCardRewardCreationOptions (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyCardRewardCreationOptionsArgs, Opaque>>(HookIterator.Run, HookId.ModifyCardRewardCreationOptions);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
         // pass 1: ModifyCardRewardCreationOptionsLate (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyCardRewardCreationOptionsArgs, Opaque>>(HookIterator.Run, HookId.ModifyCardRewardCreationOptionsLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2518,9 +4060,8 @@ public static partial class Hooks
         // pass 0: ModifyCardRewardUpgradeOdds (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyCardRewardUpgradeOddsArgs, decimal>>(HookIterator.Run, HookId.ModifyCardRewardUpgradeOdds);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2559,9 +4100,8 @@ public static partial class Hooks
             // pass 0: ModifyDamageAdditive (fold-add, changed nonzero)
             {
                 var l = rt.Listeners<HookFold<ModifyDamageArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyDamageAdditive);
-                for (int j = 0; j < l.Count; j++)
+                while (l.Next(out var e))
                 {
-                    var e = l[j];
                     decimal d = e.Fn(e.Who, in a, v);
                     v += d;
                     if (d != 0m) (ch ??= new()).Add(e.Who);
@@ -2573,9 +4113,8 @@ public static partial class Hooks
             // pass 1: ModifyDamageMultiplicative (fold-mul, changed not-one)
             {
                 var l = rt.Listeners<HookFold<ModifyDamageArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyDamageMultiplicative);
-                for (int j = 0; j < l.Count; j++)
+                while (l.Next(out var e))
                 {
-                    var e = l[j];
                     decimal f = e.Fn(e.Who, in a, v);
                     v *= f;
                     if (f != 1m) (ch ??= new()).Add(e.Who);
@@ -2588,9 +4127,8 @@ public static partial class Hooks
             {
                 var l = rt.Listeners<HookCap<ModifyDamageArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyDamageCap);
                 decimal cap = decimal.MaxValue;
-                for (int j = 0; j < l.Count; j++)
+                while (l.Next(out var e))
                 {
-                    var e = l[j];
                     decimal c = e.Fn(e.Who, in a);
                     if (c < cap)
                     {
@@ -2630,18 +4168,16 @@ public static partial class Hooks
         // pass 0: TryModifyEnergyCostInCombat (try)
         {
             var l = rt.Listeners<HookTry<ModifyEnergyCostInCombatArgs, decimal>>(HookIterator.Combat, HookId.TryModifyEnergyCostInCombat);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 e.Fn(e.Who, in a, v, out v);
             }
         }
         // pass 1: TryModifyEnergyCostInCombatLate (try)
         {
             var l = rt.Listeners<HookTry<ModifyEnergyCostInCombatArgs, decimal>>(HookIterator.Combat, HookId.TryModifyEnergyCostInCombatLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 e.Fn(e.Who, in a, v, out v);
             }
         }
@@ -2661,9 +4197,8 @@ public static partial class Hooks
         // pass 0: ModifyEnergyGain (fold-set, changed int-ne)
         {
             var l = rt.Listeners<HookFold<ModifyEnergyGainArgs, decimal>>(HookIterator.Combat, HookId.ModifyEnergyGain);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 decimal prev = v;
                 v = e.Fn(e.Who, in a, v);
                 if ((int)prev != (int)v) (ch ??= new()).Add(e.Who);
@@ -2684,9 +4219,8 @@ public static partial class Hooks
         // pass 0: ModifyExtraRestSiteHealText (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyExtraRestSiteHealTextArgs, Opaque>>(HookIterator.Run, HookId.ModifyExtraRestSiteHealText);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2712,9 +4246,8 @@ public static partial class Hooks
         // pass 0: ModifyGeneratedMap (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyGeneratedMapArgs, Opaque>>(HookIterator.Run, HookId.ModifyGeneratedMap);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2732,9 +4265,8 @@ public static partial class Hooks
         // pass 0: ModifyGeneratedMapLate (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyGeneratedMapLateArgs, Opaque>>(HookIterator.Run, HookId.ModifyGeneratedMapLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2754,9 +4286,8 @@ public static partial class Hooks
         // pass 0: ModifyGoldGained (fold-set, changed int-ne)
         {
             var l = rt.Listeners<HookFold<ModifyGoldGainedArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyGoldGained);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 decimal prev = v;
                 v = e.Fn(e.Who, in a, v);
                 if ((int)prev != (int)v) (ch ??= new()).Add(e.Who);
@@ -2779,9 +4310,8 @@ public static partial class Hooks
         // pass 0: ModifyHandDraw (fold-set, changed int-ne)
         {
             var l = rt.Listeners<HookFold<ModifyHandDrawArgs, decimal>>(HookIterator.Combat, HookId.ModifyHandDraw);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 decimal prev = v;
                 v = e.Fn(e.Who, in a, v);
                 if ((int)prev != (int)v) (ch ??= new()).Add(e.Who);
@@ -2790,9 +4320,8 @@ public static partial class Hooks
         // pass 1: ModifyHandDrawLate (fold-set, changed int-ne)
         {
             var l = rt.Listeners<HookFold<ModifyHandDrawArgs, decimal>>(HookIterator.Combat, HookId.ModifyHandDrawLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 decimal prev = v;
                 v = e.Fn(e.Who, in a, v);
                 if ((int)prev != (int)v) (ch ??= new()).Add(e.Who);
@@ -2817,9 +4346,8 @@ public static partial class Hooks
             // pass 0: ModifyHpLostBeforeOsty (fold-set, changed trunc-ne)
             {
                 var l = rt.Listeners<HookFold<ModifyHpLostArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyHpLostBeforeOsty);
-                for (int j = 0; j < l.Count; j++)
+                while (l.Next(out var e))
                 {
-                    var e = l[j];
                     decimal prev = v;
                     v = e.Fn(e.Who, in a, v);
                     if (decimal.Truncate(prev) != decimal.Truncate(v)) (ch ??= new()).Add(e.Who);
@@ -2831,9 +4359,8 @@ public static partial class Hooks
             // pass 1: ModifyHpLostBeforeOstyLate (fold-set, changed trunc-ne)
             {
                 var l = rt.Listeners<HookFold<ModifyHpLostArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyHpLostBeforeOstyLate);
-                for (int j = 0; j < l.Count; j++)
+                while (l.Next(out var e))
                 {
-                    var e = l[j];
                     decimal prev = v;
                     v = e.Fn(e.Who, in a, v);
                     if (decimal.Truncate(prev) != decimal.Truncate(v)) (ch ??= new()).Add(e.Who);
@@ -2845,9 +4372,8 @@ public static partial class Hooks
             // pass 2: ModifyHpLostAfterOsty (fold-set, changed trunc-ne)
             {
                 var l = rt.Listeners<HookFold<ModifyHpLostArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyHpLostAfterOsty);
-                for (int j = 0; j < l.Count; j++)
+                while (l.Next(out var e))
                 {
-                    var e = l[j];
                     decimal prev = v;
                     v = e.Fn(e.Who, in a, v);
                     if (decimal.Truncate(prev) != decimal.Truncate(v)) (ch ??= new()).Add(e.Who);
@@ -2859,9 +4385,8 @@ public static partial class Hooks
             // pass 3: ModifyHpLostAfterOstyLate (fold-set, changed trunc-ne)
             {
                 var l = rt.Listeners<HookFold<ModifyHpLostArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyHpLostAfterOstyLate);
-                for (int j = 0; j < l.Count; j++)
+                while (l.Next(out var e))
                 {
-                    var e = l[j];
                     decimal prev = v;
                     v = e.Fn(e.Who, in a, v);
                     if (decimal.Truncate(prev) != decimal.Truncate(v)) (ch ??= new()).Add(e.Who);
@@ -2882,9 +4407,8 @@ public static partial class Hooks
         // pass 0: TryModifyKeywordsInCombat (mutate)
         {
             var l = rt.Listeners<HookMutate<ModifyKeywordsInCombatArgs>>(HookIterator.CombatDirect, HookId.TryModifyKeywordsInCombat);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 e.Fn(e.Who, in a);
             }
         }
@@ -2901,9 +4425,8 @@ public static partial class Hooks
         // pass 0: ModifyMaxEnergy (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyMaxEnergyArgs, decimal>>(HookIterator.Combat, HookId.ModifyMaxEnergy);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2920,9 +4443,8 @@ public static partial class Hooks
         // pass 0: ModifyMerchantCardCreationResults (mutate)
         {
             var l = rt.Listeners<HookMutate<ModifyMerchantCardCreationResultsArgs>>(HookIterator.Run, HookId.ModifyMerchantCardCreationResults);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 e.Fn(e.Who, in a);
             }
         }
@@ -2939,9 +4461,8 @@ public static partial class Hooks
         // pass 0: ModifyMerchantCardPool (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyMerchantCardPoolArgs, Opaque>>(HookIterator.Run, HookId.ModifyMerchantCardPool);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2959,9 +4480,8 @@ public static partial class Hooks
         // pass 0: ModifyMerchantCardRarity (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyMerchantCardRarityArgs, Opaque>>(HookIterator.Run, HookId.ModifyMerchantCardRarity);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2979,9 +4499,8 @@ public static partial class Hooks
         // pass 0: ModifyMerchantPrice (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyMerchantPriceArgs, decimal>>(HookIterator.Run, HookId.ModifyMerchantPrice);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -2999,9 +4518,8 @@ public static partial class Hooks
         // pass 0: ModifyNextEvent (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyNextEventArgs, Opaque>>(HookIterator.Run, HookId.ModifyNextEvent);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -3019,9 +4537,8 @@ public static partial class Hooks
         // pass 0: ModifyOddsIncreaseForUnrolledRoomType (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyOddsIncreaseForUnrolledRoomTypeArgs, float>>(HookIterator.Run, HookId.ModifyOddsIncreaseForUnrolledRoomType);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -3041,9 +4558,8 @@ public static partial class Hooks
         // pass 0: ModifyOrbPassiveTriggerCounts (fold-set, changed ne)
         {
             var l = rt.Listeners<HookFold<ModifyOrbPassiveTriggerCountArgs, int>>(HookIterator.Combat, HookId.ModifyOrbPassiveTriggerCounts);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 int prev = v;
                 v = e.Fn(e.Who, in a, v);
                 if (prev != v) (ch ??= new()).Add(e.Who);
@@ -3064,9 +4580,8 @@ public static partial class Hooks
         // pass 0: ModifyOrbValue (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyOrbValueArgs, decimal>>(HookIterator.Combat, HookId.ModifyOrbValue);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -3086,9 +4601,8 @@ public static partial class Hooks
         // pass 0: ModifyPowerAmountGivenAdditive (fold-add, changed nonzero)
         {
             var l = rt.Listeners<HookFold<ModifyPowerAmountGivenArgs, decimal>>(HookIterator.Combat, HookId.ModifyPowerAmountGivenAdditive);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 decimal d = e.Fn(e.Who, in a, v);
                 v += d;
                 if (d != 0m) (ch ??= new()).Add(e.Who);
@@ -3097,9 +4611,8 @@ public static partial class Hooks
         // pass 1: ModifyPowerAmountGivenMultiplicative (fold-mul, changed not-one)
         {
             var l = rt.Listeners<HookFold<ModifyPowerAmountGivenArgs, decimal>>(HookIterator.Combat, HookId.ModifyPowerAmountGivenMultiplicative);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 decimal f = e.Fn(e.Who, in a, v);
                 v *= f;
                 if (f != 1m) (ch ??= new()).Add(e.Who);
@@ -3122,9 +4635,8 @@ public static partial class Hooks
         // pass 0: TryModifyPowerAmountReceived (try, changed try-true)
         {
             var l = rt.Listeners<HookTry<ModifyPowerAmountReceivedArgs, decimal>>(HookIterator.Combat, HookId.TryModifyPowerAmountReceived);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a, v, out var next))
                 {
                     v = next;
@@ -3147,9 +4659,8 @@ public static partial class Hooks
         // pass 0: ModifyRestSiteHealAmount (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyRestSiteHealAmountArgs, decimal>>(HookIterator.Run, HookId.ModifyRestSiteHealAmount);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -3167,9 +4678,8 @@ public static partial class Hooks
         // pass 0: TryModifyRestSiteHealRewards (try, changed try-true)
         {
             var l = rt.Listeners<HookTryInPlace<ModifyRestSiteHealRewardsArgs>>(HookIterator.Run, HookId.TryModifyRestSiteHealRewards);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
@@ -3187,9 +4697,8 @@ public static partial class Hooks
         // pass 0: TryModifyRestSiteOptions (try, changed try-true)
         {
             var l = rt.Listeners<HookTryInPlace<ModifyRestSiteOptionsArgs>>(HookIterator.Run, HookId.TryModifyRestSiteOptions);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
@@ -3207,18 +4716,16 @@ public static partial class Hooks
         // pass 0: TryModifyRewards (try, changed try-true)
         {
             var l = rt.Listeners<HookTryInPlace<ModifyRewardsArgs>>(HookIterator.Run, HookId.TryModifyRewards);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         // pass 1: TryModifyRewardsLate (try, changed try-true)
         {
             var l = rt.Listeners<HookTryInPlace<ModifyRewardsArgs>>(HookIterator.Run, HookId.TryModifyRewardsLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
@@ -3235,9 +4742,8 @@ public static partial class Hooks
         // pass 0: ModifyShuffleOrder (mutate)
         {
             var l = rt.Listeners<HookMutate<ModifyShuffleOrderArgs>>(HookIterator.Combat, HookId.ModifyShuffleOrder);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 e.Fn(e.Who, in a);
             }
         }
@@ -3265,9 +4771,8 @@ public static partial class Hooks
         // pass 0: TryModifyStarCost (try)
         {
             var l = rt.Listeners<HookTry<ModifyStarCostArgs, decimal>>(HookIterator.Combat, HookId.TryModifyStarCost);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 e.Fn(e.Who, in a, v, out v);
             }
         }
@@ -3285,9 +4790,8 @@ public static partial class Hooks
         // pass 0: ModifySummonAmount (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifySummonAmountArgs, decimal>>(HookIterator.Combat, HookId.ModifySummonAmount);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -3305,9 +4809,8 @@ public static partial class Hooks
         // pass 0: ModifyUnblockedDamageTarget (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyUnblockedDamageTargetArgs, CreatureRef>>(HookIterator.CombatDirect, HookId.ModifyUnblockedDamageTarget);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -3325,9 +4828,8 @@ public static partial class Hooks
         // pass 0: ModifyUnknownMapPointRoomTypes (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyUnknownMapPointRoomTypesArgs, Opaque>>(HookIterator.Run, HookId.ModifyUnknownMapPointRoomTypes);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -3345,9 +4847,8 @@ public static partial class Hooks
         // pass 0: ModifyXValue (fold-set)
         {
             var l = rt.Listeners<HookFold<ModifyXValueArgs, int>>(HookIterator.Combat, HookId.ModifyXValue);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 v = e.Fn(e.Who, in a, v);
             }
         }
@@ -3365,9 +4866,8 @@ public static partial class Hooks
         // pass 0: ShouldAddToDeck (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldAddToDeckArgs>>(HookIterator.Run, HookId.ShouldAddToDeck);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3390,9 +4890,8 @@ public static partial class Hooks
         // pass 0: ShouldAfflict (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldAfflictArgs>>(HookIterator.Combat, HookId.ShouldAfflict);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3415,9 +4914,8 @@ public static partial class Hooks
         // pass 0: ShouldAllowAncient (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldAllowAncientArgs>>(HookIterator.Run, HookId.ShouldAllowAncient);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3440,9 +4938,8 @@ public static partial class Hooks
         // pass 0: ShouldAllowFreeTravel (predicate-any)
         {
             var l = rt.Listeners<HookPredicate<ShouldAllowFreeTravelArgs>>(HookIterator.Run, HookId.ShouldAllowFreeTravel);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a))
                 {
                     first = e.Who;
@@ -3465,9 +4962,8 @@ public static partial class Hooks
         // pass 0: ShouldAllowHitting (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldAllowHittingArgs>>(HookIterator.Combat, HookId.ShouldAllowHitting);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3490,9 +4986,8 @@ public static partial class Hooks
         // pass 0: ShouldAllowMerchantCardRemoval (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldAllowMerchantCardRemovalArgs>>(HookIterator.Run, HookId.ShouldAllowMerchantCardRemoval);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3515,9 +5010,8 @@ public static partial class Hooks
         // pass 0: ShouldAllowSelectingMoreCardRewards (predicate-any)
         {
             var l = rt.Listeners<HookPredicate<ShouldAllowSelectingMoreCardRewardsArgs>>(HookIterator.Run, HookId.ShouldAllowSelectingMoreCardRewards);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a))
                 {
                     first = e.Who;
@@ -3540,9 +5034,8 @@ public static partial class Hooks
         // pass 0: ShouldAllowTargeting (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldAllowTargetingArgs>>(HookIterator.Combat, HookId.ShouldAllowTargeting);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3565,9 +5058,8 @@ public static partial class Hooks
         // pass 0: ShouldClearBlock (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldClearBlockArgs>>(HookIterator.Combat, HookId.ShouldClearBlock);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3590,9 +5082,8 @@ public static partial class Hooks
         // pass 0: ShouldCreatureBeRemovedFromCombatAfterDeath (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldCreatureBeRemovedFromCombatAfterDeathArgs>>(HookIterator.CombatDirect, HookId.ShouldCreatureBeRemovedFromCombatAfterDeath);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3615,9 +5106,8 @@ public static partial class Hooks
         // pass 0: ShouldDie (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldDieArgs>>(HookIterator.RunCombat, HookId.ShouldDie);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3628,9 +5118,8 @@ public static partial class Hooks
         // pass 1: ShouldDieLate (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldDieArgs>>(HookIterator.RunCombat, HookId.ShouldDieLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3653,9 +5142,8 @@ public static partial class Hooks
         // pass 0: ShouldDisableRemainingRestSiteOptions (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldDisableRemainingRestSiteOptionsArgs>>(HookIterator.Run, HookId.ShouldDisableRemainingRestSiteOptions);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3678,9 +5166,8 @@ public static partial class Hooks
         // pass 0: ShouldDraw (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldDrawArgs>>(HookIterator.Combat, HookId.ShouldDraw);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3703,9 +5190,8 @@ public static partial class Hooks
         // pass 0: ShouldEtherealTrigger (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldEtherealTriggerArgs>>(HookIterator.Combat, HookId.ShouldEtherealTrigger);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3728,9 +5214,8 @@ public static partial class Hooks
         // pass 0: ShouldFlush (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldFlushArgs>>(HookIterator.Combat, HookId.ShouldFlush);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3753,9 +5238,8 @@ public static partial class Hooks
         // pass 0: ShouldForcePotionReward (predicate-any)
         {
             var l = rt.Listeners<HookPredicate<ShouldForcePotionRewardArgs>>(HookIterator.Run, HookId.ShouldForcePotionReward);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a))
                 {
                     first = e.Who;
@@ -3778,9 +5262,8 @@ public static partial class Hooks
         // pass 0: ShouldGainStars (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldGainStarsArgs>>(HookIterator.Combat, HookId.ShouldGainStars);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3803,9 +5286,8 @@ public static partial class Hooks
         // pass 0: ShouldGenerateTreasure (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldGenerateTreasureArgs>>(HookIterator.Run, HookId.ShouldGenerateTreasure);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3828,9 +5310,8 @@ public static partial class Hooks
         // pass 0: ShouldPayExcessEnergyCostWithStars (predicate-any)
         {
             var l = rt.Listeners<HookPredicate<ShouldPayExcessEnergyCostWithStarsArgs>>(HookIterator.Combat, HookId.ShouldPayExcessEnergyCostWithStars);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a))
                 {
                     first = e.Who;
@@ -3853,9 +5334,8 @@ public static partial class Hooks
         // pass 0: ShouldPlay (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldPlayArgs>>(HookIterator.Combat, HookId.ShouldPlay);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3878,9 +5358,8 @@ public static partial class Hooks
         // pass 0: ShouldPlayerResetEnergy (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldPlayerResetEnergyArgs>>(HookIterator.Combat, HookId.ShouldPlayerResetEnergy);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3914,9 +5393,8 @@ public static partial class Hooks
         // pass 0: ShouldPowerBeRemovedOnDeath (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldPowerBeRemovedOnDeathArgs>>(HookIterator.CombatDirect, HookId.ShouldPowerBeRemovedOnDeath);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3939,9 +5417,8 @@ public static partial class Hooks
         // pass 0: ShouldProceedToNextMapPoint (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldProceedToNextMapPointArgs>>(HookIterator.Run, HookId.ShouldProceedToNextMapPoint);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3964,9 +5441,8 @@ public static partial class Hooks
         // pass 0: ShouldProcurePotion (predicate-all)
         {
             var l = rt.Listeners<HookPredicate<ShouldProcurePotionArgs>>(HookIterator.RunCombat, HookId.ShouldProcurePotion);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (!e.Fn(e.Who, in a))
                 {
                     preventer = e.Who;
@@ -3989,9 +5465,8 @@ public static partial class Hooks
         // pass 0: ShouldRefillMerchantEntry (predicate-any)
         {
             var l = rt.Listeners<HookPredicate<ShouldRefillMerchantEntryArgs>>(HookIterator.Run, HookId.ShouldRefillMerchantEntry);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a))
                 {
                     first = e.Who;
@@ -4014,9 +5489,8 @@ public static partial class Hooks
         // pass 0: ShouldStopCombatFromEnding (predicate-any)
         {
             var l = rt.Listeners<HookPredicate<ShouldStopCombatFromEndingArgs>>(HookIterator.CombatDirect, HookId.ShouldStopCombatFromEnding);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a))
                 {
                     first = e.Who;
@@ -4039,9 +5513,8 @@ public static partial class Hooks
         // pass 0: ShouldTakeExtraTurn (predicate-any)
         {
             var l = rt.Listeners<HookPredicate<ShouldTakeExtraTurnArgs>>(HookIterator.Combat, HookId.ShouldTakeExtraTurn);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a))
                 {
                     first = e.Who;
@@ -4064,21 +5537,36 @@ public static partial class Hooks
         // pass 0: TryModifyCardRewardOptions (try, changed try-true)
         {
             var l = rt.Listeners<HookTryInPlace<TryModifyCardRewardOptionsArgs>>(HookIterator.Run, HookId.TryModifyCardRewardOptions);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         // pass 1: TryModifyCardRewardOptionsLate (try, changed try-true)
         {
             var l = rt.Listeners<HookTryInPlace<TryModifyCardRewardOptionsArgs>>(HookIterator.Run, HookId.TryModifyCardRewardOptionsLate);
-            for (int j = 0; j < l.Count; j++)
+            while (l.Next(out var e))
             {
-                var e = l[j];
                 if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         return HookRuntime.Changed(ch);
     }
+}
+
+/// <summary>The named steps that read a dispatcher's arguments, typed by its argument record; Core2/Steps.cs implements each.</summary>
+public static partial class Steps
+{
+    /// <summary>enchant-add of Hook.ModifyBlock.</summary>
+    public static partial decimal EnchantAdd(HookRuntime rt, HookId dispatcher, in ModifyBlockArgs a, decimal value);
+    /// <summary>enchant-mul of Hook.ModifyBlock.</summary>
+    public static partial decimal EnchantMul(HookRuntime rt, HookId dispatcher, in ModifyBlockArgs a, decimal value);
+    /// <summary>enchant-add of Hook.ModifyDamage.</summary>
+    public static partial decimal EnchantAdd(HookRuntime rt, HookId dispatcher, in ModifyDamageArgs a, decimal value);
+    /// <summary>enchant-mul of Hook.ModifyDamage.</summary>
+    public static partial decimal EnchantMul(HookRuntime rt, HookId dispatcher, in ModifyDamageArgs a, decimal value);
+    /// <summary>preview-hittable of Hook.ModifyDamage.</summary>
+    public static partial bool PreviewHittable(HookRuntime rt, HookId dispatcher, in ModifyDamageArgs a, decimal value, HookPasses<ModifyDamageArgs> passes, out decimal result, out IReadOnlyList<ListenerRef> changed);
+    /// <summary>owner-in-combat of Hook.ShouldPowerBeRemovedOnDeath.</summary>
+    public static partial bool OwnerInCombat(HookRuntime rt, HookId dispatcher, in ShouldPowerBeRemovedOnDeathArgs a);
 }

@@ -93,13 +93,40 @@ public static class Hook
 """
 
 
-def fixture(hook_text: str) -> str:
+def fixture(hook_text: str, abstract_text: str = ABSTRACT) -> str:
     d = Path(tempfile.mkdtemp(prefix="kernel-shape-"))
     (d / ht.MODELS_NS).mkdir(parents=True)
-    (d / ht.MODELS_NS / "AbstractModel.cs").write_text(textwrap.dedent(ABSTRACT), encoding="utf-8")
+    (d / ht.MODELS_NS / "AbstractModel.cs").write_text(textwrap.dedent(abstract_text), encoding="utf-8")
     (d / hx.HOOK_FILE).parent.mkdir(parents=True)
     (d / hx.HOOK_FILE).write_text(textwrap.dedent(hook_text), encoding="utf-8")
     return str(d)
+
+
+# A made-up try dispatcher whose condition has a part beside the listener call (the out value must be present).
+TRY_ABSTRACT = (ABSTRACT.rstrip().rstrip("}") + "\tpublic virtual bool TryModifyOther(int n, out string next)\n"
+                "\t{\n\t\tnext = null;\n\t\treturn false;\n\t}\n}\n")
+TRY_HOOK = "\n".join([
+    "\tpublic static int ModifyOther(IRunState runState, int n, out IEnumerable<AbstractModel> modifiers)",
+    "\t{",
+    "\t\tList<AbstractModel> list = new List<AbstractModel>();",
+    "\t\tforeach (AbstractModel item in runState.IterateHookListeners(null))",
+    "\t\t{",
+    "\t\t\tif (item.TryModifyOther(n, out string next) && next != null)",
+    "\t\t\t{",
+    "\t\t\t\tn = next.Length;",
+    "\t\t\t\tlist.Add(item);",
+    "\t\t\t}",
+    "\t\t}",
+    "\t\tmodifiers = list;",
+    "\t\treturn n;",
+    "\t}",
+    "", ""])
+
+
+def try_fixture(tail: str) -> str:
+    """The fixture plus ModifyOther, its condition's part after the call replaced by ``tail``."""
+    method = TRY_HOOK.replace(" && next != null", tail)
+    return fixture(HOOK.replace("\tprivate static IEnumerable", method + "\tprivate static IEnumerable"), TRY_ABSTRACT)
 
 
 class Extractor(unittest.TestCase):
@@ -126,6 +153,20 @@ class Extractor(unittest.TestCase):
         with self.assertRaises(hx.ExtractError) as cm:
             hx.extract(fixture(bad))
         self.assertIn("ShouldThing", str(cm.exception))
+
+    def test_try_condition_parts_are_recorded(self):
+        got = hx.extract(try_fixture(" && next != null"))["dispatchers"]["ModifyOther"]["passes"]
+        self.assertEqual(got, [{"hook": "TryModifyOther", "op": "try", "changed": "try-true",
+                                "also": ["out-not-null"]}])
+        plain = hx.extract(try_fixture(""))["dispatchers"]["ModifyOther"]["passes"]
+        self.assertEqual(plain, [{"hook": "TryModifyOther", "op": "try", "changed": "try-true"}])
+
+    def test_new_part_of_a_try_condition_is_an_error(self):
+        for tail in (" && next != null && n > 0", " && n > 0", " || n > 0", " && n != null"):
+            with self.subTest(tail):
+                with self.assertRaises(hx.ExtractError) as cm:
+                    hx.extract(try_fixture(tail))
+                self.assertIn("ModifyOther", str(cm.exception))
 
     def test_unknown_iterator_is_an_error(self):
         bad = HOOK.replace("runState.IterateHookListeners(null)", "runState.SomeOtherListeners()")
@@ -158,6 +199,8 @@ BREAKS = {
     "pre step": (lambda d: _step(d, "ModifyBlock", "pre", [{"step": "enchant-add"}]), "ModifyBlock", "pre"),
     "post step": (lambda d: _step(d, "ModifyDamage", "post", []), "ModifyDamage", "post"),
     "partner": (lambda d: _step(d, "ShouldDie", "partner", []), "ShouldDie", "partner"),
+    "try condition part": (lambda d: d["dispatchers"]["ModifyCardBeingAddedToDeck"]["passes"][0].pop("also"),
+                           "ModifyCardBeingAddedToDeck", "pass 0 also"),
 }
 
 
@@ -221,6 +264,34 @@ class Generator(unittest.TestCase):
         d = _desc()
         d["dispatchers"]["AfterAttack"]["args"][0]["type"] = "AttackCommand"
         self.assertTrue(construct.generated(d)[0].startswith("generator: AfterAttack"))
+
+    def test_mutate_dispatcher_without_a_mutable_argument_is_an_error(self):
+        d = _desc()
+        for a in d["dispatchers"]["ModifyShuffleOrder"]["args"]:
+            if a["name"] == "cards":
+                a["type"] = "CardList"
+        problems = construct.generated(d)
+        self.assertTrue(problems[0].startswith("generator: ModifyShuffleOrder: mutate dispatcher without a mutable "
+                                               "argument"), problems)
+
+    def test_stopping_dispatcher_cannot_have_a_wait_point(self):
+        d = _desc()
+        d["dispatchers"]["AfterCardDrawn"]["wait_all"] = [0]
+        self.assertIn("stops at a pause", construct.generated(d)[0])
+
+    def test_condition_part_needs_a_tracked_try_over_a_value(self):
+        d = _desc()
+        d["dispatchers"]["ModifyHandDraw"]["passes"][0]["also"] = ["out-not-null"]
+        self.assertTrue(construct.generated(d)[0].startswith("generator: ModifyHandDraw"))
+        d = _desc()
+        d["dispatchers"]["ModifyCardBeingAddedToDeck"]["passes"][0]["also"] = ["out-is-odd"]
+        self.assertIn("unknown condition part", construct.generated(d)[0])
+
+    def test_stopping_and_per_listener_dispatchers_are_generated_apart(self):
+        text = gen_hooks.render(_desc())[gen_hooks.HOOKS]
+        self.assertIn("public static HookStatus AfterCardDrawnResume(", text)
+        self.assertNotIn("AfterTurnEndResume(", text)
+        self.assertIn("public static void AfterTurnEndPasses(", text)
 
 
 @unittest.skipUnless(os.path.isfile(os.path.join(ht.DEFAULT_DECOMPILED, str(hx.HOOK_FILE))), "no local decompile")

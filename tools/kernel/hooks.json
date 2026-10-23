@@ -1785,7 +1785,7 @@
     "ModifyShuffleOrder": {
       "args": [
         {"name": "player", "type": "PlayerRef"},
-        {"name": "cards", "type": "CardList"},
+        {"name": "cards", "type": "MutableCardList"},
         {"name": "isInitialShuffle", "type": "bool"}
       ],
       "context": "none",

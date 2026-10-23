@@ -89,9 +89,34 @@ public readonly record struct HookStep(object? Request, HookResume? Resume)
     public bool IsPaused => Request is not null;
 }
 
-/// <summary>Where a pause happened: the dispatcher, the hook virtual and pass, the listener and its context.</summary>
-public readonly record struct PauseSite(HookId Dispatcher, HookId Hook, int Pass, ListenerRef Who, ContextMode Context,
-    ChoiceCtx? Ctx);
+/// <summary>
+/// Where a pause happened: the dispatcher, the hook virtual, the pass and the listener's index in that pass's visit
+/// order (<see cref="HookCursor{THandler}.Index"/>), the listener and its context. (Pass, Index) is where a dispatch
+/// stopped by the pause continues (K4's flow pause and resume).
+/// </summary>
+public readonly record struct PauseSite(HookId Dispatcher, HookId Hook, int Pass, int Index, ListenerRef Who,
+    ContextMode Context, ChoiceCtx? Ctx);
+
+/// <summary>
+/// What an event dispatcher whose context awaits each listener's whole task returns (every context but
+/// per-listener): done, or stopped at the listener that paused, with the pass's cursor positioned after it. The
+/// later listeners run only through the dispatcher's <c>Resume</c> method, called once the paused listener's resume
+/// record has run to completion.
+/// </summary>
+public readonly record struct HookStatus(PauseSite? Site, HookStep Step, object? Cursor)
+{
+    public static HookStatus Done => default;
+    public static HookStatus Paused(in PauseSite site, HookStep step, object cursor) => new(site, step, cursor);
+    public bool IsPaused => Site is not null;
+
+    /// <summary>The pause site, checked to be a pause of <paramref name="dispatcher"/> (a Resume call's guard).</summary>
+    public PauseSite At(HookId dispatcher)
+    {
+        if (Site is not { } s || s.Dispatcher != dispatcher || Cursor is null)
+            throw new InvalidOperationException($"{dispatcher} resumed from {(Site is { } x ? x.Dispatcher : "no pause")}");
+        return s;
+    }
+}
 
 /// <summary>One entry of a pass's listener snapshot: the listener and its handler for the pass's hook.</summary>
 public readonly record struct HookListener<THandler>(ListenerRef Who, THandler Fn) where THandler : Delegate;
@@ -105,9 +130,14 @@ public delegate TValue HookCap<TArgs, TValue>(ListenerRef self, in TArgs a) wher
 /// <summary>try: whether the listener changed the value, and the value.</summary>
 public delegate bool HookTry<TArgs, TValue>(ListenerRef self, in TArgs a, TValue current, out TValue next)
     where TArgs : struct;
+/// <summary>try whose condition also needs the listener's new value to be present ("also": out-not-null): a true
+/// answer with no value changes nothing.</summary>
+public delegate bool HookTryOrNull<TArgs, TValue>(ListenerRef self, in TArgs a, TValue current, out TValue? next)
+    where TArgs : struct where TValue : struct;
 /// <summary>try without a value: the listener changes its arguments in place and says whether it did.</summary>
 public delegate bool HookTryInPlace<TArgs>(ListenerRef self, in TArgs a) where TArgs : struct;
 public delegate bool HookPredicate<TArgs>(ListenerRef self, in TArgs a) where TArgs : struct;
+/// <summary>mutate: the listener changes a mutable argument in place (a list it may reorder, a set, a game object).</summary>
 public delegate void HookMutate<TArgs>(ListenerRef self, in TArgs a) where TArgs : struct;
 
 /// <summary>A dispatcher's passes as one call, for a step that runs them more than once (preview-hittable).</summary>
@@ -123,19 +153,20 @@ public abstract class HookRuntime
     public abstract bool HasAny(HookId hook);
 
     /// <summary>
-    /// The pass's listener snapshot, in game order, of the listeners with a handler for <paramref name="hook"/>, taken
-    /// at pass start (the combat iterator's guard read once; run+combat builds its combat part after the deck part).
-    /// Membership at visit time is the snapshot's business: an entry that has left the combat is not yielded.
+    /// The pass's listeners with a handler for <paramref name="hook"/>, as a cursor in game order (section 3): a
+    /// snapshot taken at pass start (the combat iterator's guard read once), run+combat building its combat part only
+    /// when the deck part ends, and each entry checked for membership when it is visited.
     /// </summary>
-    public abstract IReadOnlyList<HookListener<THandler>> Listeners<THandler>(HookIterator iterator, HookId hook)
+    public abstract HookCursor<THandler> Listeners<THandler>(HookIterator iterator, HookId hook)
         where THandler : Delegate;
 
     /// <summary>A per-listener hook choice context (the game's HookPlayerChoiceContext).</summary>
     public abstract ChoiceCtx NewHookContext(HookId dispatcher, ListenerRef who);
 
     /// <summary>
-    /// A handler paused at a choice. Per-listener contexts: record a hook action and return, the dispatch moves on.
-    /// Passed contexts: pause the action that owns the context (old replay where the caller cannot resume).
+    /// A handler paused at a choice. Per-listener contexts: record a hook action; the dispatch moves on to the next
+    /// listener. Every other context: the dispatch stops after this call and returns a paused
+    /// <see cref="HookStatus"/>; pause the action that owns the context (old replay where the caller cannot resume).
     /// </summary>
     public abstract void OnPaused(in PauseSite site, HookStep step);
 
@@ -156,4 +187,62 @@ public abstract class HookRuntime
     /// <summary>The changed set a pass collected (an empty one when nothing changed).</summary>
     public static IReadOnlyList<ListenerRef> Changed(List<ListenerRef>? changed) =>
         changed is null ? Array.Empty<ListenerRef>() : changed;
+}
+
+/// <summary>
+/// One pass's listeners, visited in game order (TIER1_KERNEL.md section 3). The first part is the snapshot taken at
+/// pass start; <c>late</c>, when given, builds the second part once the first is exhausted (run+combat: the run's deck
+/// part, then the combat's list built when the deck part ends); <c>member</c> is the visit-time membership check (an
+/// entry that has left the combat, or whose owner is no longer active for hooks, is skipped). A listener added
+/// mid-pass is in neither part, so it is not visited.
+/// </summary>
+public sealed class HookCursor<THandler> where THandler : Delegate
+{
+    private IReadOnlyList<HookListener<THandler>> _part;
+    private Func<IReadOnlyList<HookListener<THandler>>>? _late;
+    private readonly Func<ListenerRef, bool>? _member;
+    private int _at = -1, _base;
+
+    public HookCursor(IReadOnlyList<HookListener<THandler>> first,
+        Func<IReadOnlyList<HookListener<THandler>>>? late = null, Func<ListenerRef, bool>? member = null)
+    {
+        _part = first;
+        _late = late;
+        _member = member;
+    }
+
+    /// <summary>A cursor over no listeners.</summary>
+    public static HookCursor<THandler> Empty() => new(Array.Empty<HookListener<THandler>>());
+
+    /// <summary>The position of the entry <see cref="Next"/> last returned, in the pass's visit order (both parts,
+    /// skipped entries counted); -1 before the first.</summary>
+    public int Index { get; private set; } = -1;
+
+    /// <summary>The next listener that is a member when visited; false at the end of the pass.</summary>
+    public bool Next(out HookListener<THandler> listener)
+    {
+        while (true)
+        {
+            if (++_at >= _part.Count)
+            {
+                if (_late is null)
+                {
+                    _at = _part.Count;
+                    listener = default;
+                    return false;
+                }
+                _base += _part.Count;
+                _part = _late();
+                _late = null;
+                _at = -1;
+                continue;
+            }
+            var e = _part[_at];
+            if (_member is not null && !_member(e.Who))
+                continue;
+            Index = _base + _at;
+            listener = e;
+            return true;
+        }
+    }
 }

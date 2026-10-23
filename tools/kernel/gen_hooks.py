@@ -4,9 +4,16 @@
 
 One ``HookId`` member per hook virtual a dispatcher calls and one per dispatcher (``Dispatch_<Name>``); one
 argument record and one static method per dispatcher, written against ``Core2/HookRuntime.cs``: a zero-listener
-fast path, then per pass the runtime's listener snapshot for (iterator, hook) and the loop of the pass's op. Named
-steps call ``Core2/Steps.cs``; a dispatcher with steps gets its passes as ``<Name>Passes``. Generated from our
-descriptor only (identifiers and structure), never from game text. ``--check`` exits 1 when a file is stale.
+fast path, then per pass the runtime's listener cursor for (iterator, hook) and the loop of the pass's op. Named
+steps call ``Core2/Steps.cs``; a dispatcher with steps gets its passes as ``<Name>Passes``; the steps that read the
+dispatcher's arguments are declared here as partial methods typed by its argument record and implemented there.
+
+Pauses by context: a ``per-listener`` dispatcher records the pause and moves on; every other event dispatcher awaits
+each listener's whole task in the game, so it stops at the pause and returns a paused ``HookStatus`` (pass, listener
+index, cursor), and ``<Name>Resume`` continues from there once the listener's resume record has run.
+
+Generated from our descriptor only (identifiers and structure), never from game text. ``--check`` exits 1 when a
+file is stale.
 """
 
 from __future__ import annotations
@@ -37,7 +44,18 @@ KERNEL_TYPES = {
     "ListenerRef": "ListenerRef", "ChoiceCtx": "ChoiceCtx", "int": "int", "decimal": "decimal", "bool": "bool",
     "float": "float",
     "ListenerSet": "IReadOnlyList<ListenerRef>", "CreatureList": "IReadOnlyList<CreatureRef>",
-    "CardList": "IReadOnlyList<CardHandle>", "KeywordSet": "ISet<int>",
+    "CardList": "IReadOnlyList<CardHandle>", "MutableCardList": "IList<CardHandle>", "KeywordSet": "ISet<int>",
+}
+# Kernel types a mutate handler can change in place (Opaque: a game-only object, by reference).
+MUTABLE = {"MutableCardList", "KeywordSet", "Opaque"}
+PUSH = ("passed", "caller-hook")
+# Named steps that read the dispatcher's arguments: return type, Steps method, parameters after the argument record.
+TYPED_STEPS = {
+    "owner-in-combat": ("bool", "OwnerInCombat", ""),
+    "enchant-add": ("decimal", "EnchantAdd", ", decimal value"),
+    "enchant-mul": ("decimal", "EnchantMul", ", decimal value"),
+    "preview-hittable": ("bool", "PreviewHittable", ", decimal value, HookPasses<{a}> passes, out decimal result, "
+                                                    "out IReadOnlyList<ListenerRef> changed"),
 }
 ITER = {"combat": "Combat", "combat-direct": "CombatDirect", "run+combat": "RunCombat", "run": "Run"}
 CTX = {"none": "None", "passed": "Passed", "passed-unpushed": "PassedUnpushed", "caller-hook": "CallerHook",
@@ -110,9 +128,26 @@ class Shape:
                 raise GenError(f"{name}: arithmetic fold over {self.vtype}")
         else:
             raise GenError(f"{name}: ops {sorted(ops)} do not make one dispatcher shape")
+        if self.family == "mutate" and not any(a["type"].rstrip("?") in MUTABLE for a in self.args):
+            raise GenError(f"{name}: mutate dispatcher without a mutable argument (one of {', '.join(sorted(MUTABLE))})")
+        for p in self.passes:
+            also = p.get("also", [])
+            if also and (p["op"] != "try" or not self.value or p["changed"] == "none"):
+                raise GenError(f"{name}: {p['hook']}: condition parts on a pass that is not a tracked try over a value")
+            for x in also:
+                if x not in hx.ALSO:
+                    raise GenError(f"{name}: {p['hook']}: unknown condition part {x!r}")
+            if also and self.vtype.endswith("?"):
+                raise GenError(f"{name}: {p['hook']}: out-not-null over a nullable value")
         self.tracks = any(p["changed"] != "none" for p in self.passes)
         self.steps = d["pre"] + d["post"]
         self.split = bool(self.steps)
+        # Every event context but per-listener awaits each listener's whole task: the dispatch stops at a pause.
+        self.stops = self.family == "event" and d["context"] != "per-listener"
+        if self.stops and (d["wait_all"] or d["post"]):
+            raise GenError(f"{name}: a dispatcher that stops at a pause cannot have wait points or post steps")
+        if self.stops and d["context"] in PUSH and any(p["op"] != "event" for p in self.passes):
+            raise GenError(f"{name}: a pushed context over a pass that does not push")
 
     def arg(self, type_: str) -> str:
         found = [a for a in self.args if a["type"].rstrip("?") == type_]
@@ -127,8 +162,8 @@ class Shape:
 
 # ------------------------------------------------------------------------------------------- method bodies
 
-def _handler(s: Shape, op: str) -> str:
-    args = f"{s.name}Args"
+def _handler(s: Shape, p: dict) -> str:
+    op, args = p["op"], f"{s.name}Args"
     if op in EVENT_OPS:
         return f"HookEvent<{args}>"
     if op in ("fold-add", "fold-mul", "fold-set"):
@@ -136,7 +171,11 @@ def _handler(s: Shape, op: str) -> str:
     if op == "fold-cap":
         return f"HookCap<{args}, {s.vtype}>"
     if op == "try":
-        return f"HookTry<{args}, {s.vtype}>" if s.value else f"HookTryInPlace<{args}>"
+        if not s.value:
+            return f"HookTryInPlace<{args}>"
+        if "out-not-null" in p.get("also", []):
+            return f"HookTryOrNull<{args}, {s.vtype}>"
+        return f"HookTry<{args}, {s.vtype}>"
     if op.startswith("predicate"):
         return f"HookPredicate<{args}>"
     return f"HookMutate<{args}>"
@@ -152,12 +191,17 @@ def _event_body(s: Shape, i: int, p: dict, ctx_mode: str) -> list[str]:
         ctx = "ctx"
     else:
         ctx = "null"
-    push = ctx_mode in ("passed", "caller-hook")
+    push = ctx_mode in PUSH
     if push:
         out.append(f"{ctx}.PushModel(e.Who);")
     out.append(f"var step = e.Fn(e.Who, in a, {ctx});")
-    out.append(f"if (step.IsPaused) rt.OnPaused(new PauseSite({disp_id(s.name)}, {hook}, {i}, e.Who, "
-               f"ContextMode.{CTX[ctx_mode]}, {ctx}), step);")
+    site = f"new PauseSite({disp_id(s.name)}, {hook}, {i}, l.Index, e.Who, ContextMode.{CTX[ctx_mode]}, {ctx})"
+    if s.stops:
+        # The game awaits the listener's task: the later listeners wait for the answer (pushed until Resume).
+        out += ["if (step.IsPaused)", "{", f"    var site = {site};", "    rt.OnPaused(in site, step);",
+                "    return HookStatus.Paused(in site, step, l);", "}"]
+    else:
+        out.append(f"if (step.IsPaused) rt.OnPaused({site}, step);")
     if push:
         out.append(f"{ctx}.PopModel(e.Who);")
     return out
@@ -193,6 +237,9 @@ def _pass_body(s: Shape, i: int, p: dict) -> list[str]:
             return [f"if (e.Fn(e.Who, in a)) {ADD}"]
         if changed == "none":
             return ["e.Fn(e.Who, in a, v, out v);"]
+        if "out-not-null" in p.get("also", []):
+            return ["if (e.Fn(e.Who, in a, v, out var next) && next is { } got)", "{", "    v = got;", f"    {ADD}",
+                    "}"]
         return ["if (e.Fn(e.Who, in a, v, out var next))", "{", "    v = next;", f"    {ADD}", "}"]
     if op == "predicate-all":
         return ["if (!e.Fn(e.Who, in a))", "{", "    preventer = e.Who;", "    return false;", "}"]
@@ -213,7 +260,7 @@ def _identity(s: Shape, in_passes: bool) -> list[str]:
         return ["preventer = null;", "return true;"]
     if s.family == "predicate-any":
         return ["first = null;", "return false;"]
-    return ["return;"]
+    return ["return HookStatus.Done;"] if s.stops else ["return;"]
 
 
 def _signature(s: Shape, passes: bool) -> str:
@@ -234,7 +281,7 @@ def _signature(s: Shape, passes: bool) -> str:
         ret = "bool"
         params.append("out ListenerRef? first")
     else:
-        ret = "void"
+        ret = "HookStatus" if s.stops else "void"
     return f"public static {ret} {name}({', '.join(params)})"
 
 
@@ -244,7 +291,8 @@ def _passes(s: Shape) -> list[str]:
     out = []
     if s.family == "value" and not s.split:
         out.append(f"{s.vtype} v = a.{pascal(s.value['name'])};")
-    out += [f"if (!({any_}))", "{"] + ["    " + x for x in _identity(s, True)] + ["}"]
+    guard = f"cur is null && !({any_})" if s.stops else f"!({any_})"
+    out += [f"if ({guard})", "{"] + ["    " + x for x in _identity(s, True)] + ["}"]
     if s.tracks or s.family == "try-in-place":
         out.append("List<ListenerRef>? ch = null;")
     waits = set(s.d["wait_all"])
@@ -252,11 +300,16 @@ def _passes(s: Shape) -> list[str]:
         out.append("long mark = rt.HookActionMark();")
     it = ITER[s.d["iterator"]]
     for i, p in enumerate(s.passes):
+        get = f"rt.Listeners<{_handler(s, p)}>(HookIterator.{it}, HookId.{p['hook']})"
         body = [f"// pass {i}: {p['hook']} ({p['op']}" + (f", changed {p['changed']}" if p["changed"] != "none" else "")
-                + ")", "{", f"    var l = rt.Listeners<{_handler(s, p['op'])}>(HookIterator.{it}, HookId.{p['hook']});"]
+                + ")"]
+        if s.stops:
+            body += [f"if (from <= {i})", "{", f"    var l = cur ?? {get};", "    cur = null;"]
+        else:
+            body += ["{", f"    var l = {get};"]
         if p["op"] == "fold-cap":
             body.append(f"    {s.vtype} cap = {s.vtype}.MaxValue;")
-        body += ["    for (int j = 0; j < l.Count; j++)", "    {", "        var e = l[j];"]
+        body += ["    while (l.Next(out var e))", "    {"]
         body += ["        " + x for x in _pass_body(s, i, p)]
         body += ["    }", "}"]
         if "when" in p:
@@ -272,6 +325,8 @@ def _passes(s: Shape) -> list[str]:
         out += ["preventer = null;", "return true;"]
     elif s.family == "predicate-any":
         out += ["first = null;", "return false;"]
+    elif s.stops:
+        out.append("return HookStatus.Done;")
     return out
 
 
@@ -284,6 +339,8 @@ def _call_passes(s: Shape) -> str:
         return f"return {s.name}Passes(rt, in a, out first);"
     if s.family == "try-in-place":
         return f"return {s.name}Passes(rt, in a);"
+    if s.stops:
+        return f"return {s.name}From(rt, in a, 0, null);"
     return f"{s.name}Passes(rt, in a);"
 
 
@@ -347,6 +404,7 @@ def _with_steps(s: Shape, shapes: dict[str, Shape]) -> list[str]:
 
 def _summary(s: Shape) -> str:
     passes = "; ".join(f"{p['hook']} {p['op']}" + (f"/{p['changed']}" if p["changed"] != "none" else "")
+                       + (f" also {','.join(p['also'])}" if p.get("also") else "")
                        + (f" when {p['when']}" if "when" in p else "") for p in s.passes)
     extra = []
     if s.d["context"] != "none":
@@ -380,8 +438,32 @@ def render(desc: dict) -> dict[str, str]:
         body += [f"/// <summary>Arguments of Hook.{n}.</summary>",
                  f"public readonly record struct {n}Args({fields});", ""]
     methods: list[str] = []
+    decls: list[str] = []
     for n, s in shapes.items():
+        for st in s.steps:
+            if st["step"] in TYPED_STEPS:
+                ret, fn, rest = TYPED_STEPS[st["step"]]
+                decls += [f"/// <summary>{st['step']} of Hook.{n}.</summary>",
+                          f"public static partial {ret} {fn}(HookRuntime rt, HookId dispatcher, in {n}Args a"
+                          f"{rest.format(a=n + 'Args')});"]
         methods += [f"/// <summary>{_summary(s)}</summary>", _signature(s, False), "{"]
+        if s.stops:
+            cur = f"HookCursor<HookEvent<{n}Args>>"
+            resume = ([f"var at = paused.At({disp_id(n)});"]
+                      + ([f"{s.arg('ChoiceCtx')}.PopModel(at.Who);"] if s.d["context"] in PUSH else [])
+                      + [f"return {n}From(rt, in a, at.Pass, ({cur})paused.Cursor!);"])
+            methods += _indent(_with_steps(s, shapes) if s.split else [_call_passes(s)], 4) + [
+                "}", "",
+                f"/// <summary>Continues Hook.{n} from a pause it returned, once the paused listener's resume record "
+                "has run to completion.</summary>",
+                f"public static HookStatus {n}Resume(HookRuntime rt, in {n}Args a, in HookStatus paused)", "{"] + \
+                _indent(resume, 4) + ["}", "",
+                                      f"/// <summary>The passes of Hook.{n} from pass <c>from</c> (its cursor "
+                                      "<c>cur</c> when resuming).</summary>",
+                                      f"private static HookStatus {n}From(HookRuntime rt, in {n}Args a, int from, "
+                                      f"{cur}? cur)", "{"]
+            methods += _indent(_passes(s), 4) + ["}", ""]
+            continue
         if s.split:
             methods += _indent(_with_steps(s, shapes), 4) + ["}", "",
                                                               f"/// <summary>The passes of Hook.{n}.</summary>",
@@ -389,7 +471,10 @@ def render(desc: dict) -> dict[str, str]:
         methods += _indent(_passes(s), 4) + ["}", ""]
     hooks = (HEADER + "#nullable enable\nnamespace Sts2Emulator.Core2;\n\n" + "\n".join(body) +
              "/// <summary>One method per dispatcher of the game's Hook class.</summary>\n"
-             "public static partial class Hooks\n{\n" + "\n".join(_indent(methods[:-1], 4)) + "\n}\n")
+             "public static partial class Hooks\n{\n" + "\n".join(_indent(methods[:-1], 4)) + "\n}\n\n"
+             "/// <summary>The named steps that read a dispatcher's arguments, typed by its argument record; "
+             "Core2/Steps.cs implements each.</summary>\n"
+             "public static partial class Steps\n{\n" + "\n".join(_indent(decls, 4)) + "\n}\n")
     return {HOOK_ID: hook_id, HOOKS: hooks}
 
 

@@ -5,8 +5,9 @@ namespace Sts2Emulator.Tests.Core2;
 
 /// <summary>
 /// The generated dispatchers (Core2/Hooks.g.cs, from tools/kernel/hooks.json) against a fake runtime that returns
-/// scripted listeners: each pass op's loop, its changed set, the run-time pass flags, pauses and wait points, the
-/// zero-listener fast path, and a named step that is not implemented yet saying so.
+/// scripted listeners: each pass op's loop, its changed set, the run-time pass flags, pauses by context (a stopping
+/// context stops the dispatch until resumed, per-listener moves on) and wait points, the listener cursor, mutate and
+/// try-or-null handlers, the zero-listener fast path, and a named step that is not implemented yet saying so.
 /// </summary>
 public class HookShapeTests
 {
@@ -15,6 +16,8 @@ public class HookShapeTests
         private readonly Dictionary<HookId, List<(ListenerRef Who, Delegate Fn)>> _handlers = new();
         public readonly List<string> Log = new();
         public readonly List<PauseSite> Pauses = new();
+        /// <summary>Listeners that have left the combat: skipped when visited.</summary>
+        public readonly HashSet<ListenerRef> Gone = new();
         public int Snapshots;
         private long _actions;
 
@@ -28,12 +31,13 @@ public class HookShapeTests
 
         public override bool HasAny(HookId hook) => _handlers.ContainsKey(hook);
 
-        public override IReadOnlyList<HookListener<THandler>> Listeners<THandler>(HookIterator iterator, HookId hook)
+        public override HookCursor<THandler> Listeners<THandler>(HookIterator iterator, HookId hook)
         {
             Snapshots++;
             if (!_handlers.TryGetValue(hook, out var list))
-                return Array.Empty<HookListener<THandler>>();
-            return list.Select(x => new HookListener<THandler>(x.Who, (THandler)x.Fn)).ToList();
+                return HookCursor<THandler>.Empty();
+            return new HookCursor<THandler>(list.Select(x => new HookListener<THandler>(x.Who, (THandler)x.Fn)).ToList(),
+                member: who => !Gone.Contains(who));
         }
 
         public override ChoiceCtx NewHookContext(HookId dispatcher, ListenerRef who) => new(dispatcher, who);
@@ -166,32 +170,67 @@ public class HookShapeTests
     }
 
     [Fact]
-    public void EventPassThatPauses_RecordsThePauseAndContinuesWithTheNextListener()
+    public void PassedContextPause_StopsTheDispatchUntilResumedFromPassAndIndex()
+    {
+        var rt = new FakeRuntime();
+        var ctx = new ChoiceCtx();
+        var pausing = new HashSet<ListenerRef> { A, C };
+        HookEvent<AfterCardDrawnArgs> Run() => (ListenerRef self, in AfterCardDrawnArgs a, ChoiceCtx? c) =>
+        {
+            Assert.Same(ctx, c);
+            Assert.Equal(self, c!.Models[^1]); // pushed for the listener's turn
+            rt.Log.Add(Name(self));
+            return pausing.Remove(self) ? HookStep.Paused("choose a card", new PickResume(1)) : HookStep.Done;
+        };
+        rt.On(HookId.AfterCardDrawnEarly, A, Run())
+          .On(HookId.AfterCardDrawnEarly, B, Run())
+          .On(HookId.AfterCardDrawn, D, Run())
+          .On(HookId.AfterCardDrawn, C, Run());
+        var args = new AfterCardDrawnArgs(ctx, new CardHandle(5), true);
+
+        // The game awaits A's whole task: B and the later pass wait for the answer.
+        HookStatus s = Hooks.AfterCardDrawn(rt, args);
+        Assert.True(s.IsPaused);
+        Assert.Equal(new[] { "A", "paused A" }, rt.Log);
+        Assert.Equal(new PauseSite(HookId.Dispatch_AfterCardDrawn, HookId.AfterCardDrawnEarly, 0, 0, A,
+            ContextMode.Passed, ctx), s.Site);
+        Assert.Equal(new[] { A }, ctx.Models); // A stays pushed while its choice is open
+
+        // Answered: the rest of pass 0 from its pass-start cursor, then pass 1 until C pauses at index 1.
+        s = Hooks.AfterCardDrawnResume(rt, args, s);
+        Assert.True(s.IsPaused);
+        Assert.Equal((1, 1, C), (s.Site!.Value.Pass, s.Site.Value.Index, s.Site.Value.Who));
+        Assert.Equal(new[] { "A", "paused A", "B", "D", "C", "paused C" }, rt.Log);
+        Assert.Equal(new[] { C }, ctx.Models);
+        Assert.Equal(2, rt.Snapshots); // pass 0's snapshot was not taken again
+
+        Assert.Equal(HookStatus.Done, Hooks.AfterCardDrawnResume(rt, args, s));
+        Assert.Empty(ctx.Models);
+        Assert.Throws<InvalidOperationException>(() => Hooks.AfterCardDrawnResume(rt, args, HookStatus.Done));
+    }
+
+    [Fact]
+    public void PassedContextResume_ChecksMembershipWhenTheLaterListenersAreVisited()
     {
         var rt = new FakeRuntime();
         var ctx = new ChoiceCtx();
         HookEvent<AfterCardDrawnArgs> Run(bool pause) => (ListenerRef self, in AfterCardDrawnArgs a, ChoiceCtx? c) =>
         {
-            Assert.Same(ctx, c);
-            Assert.Equal(self, c!.Models[^1]); // pushed for the listener's turn
             rt.Log.Add(Name(self));
-            return pause ? HookStep.Paused("choose a card", new PickResume(1)) : HookStep.Done;
+            return pause ? HookStep.Paused("choose", new PickResume(1)) : HookStep.Done;
         };
-        rt.On(HookId.AfterCardDrawnEarly, A, Run(true))
-          .On(HookId.AfterCardDrawnEarly, B, Run(false))
-          .On(HookId.AfterCardDrawn, C, Run(false));
+        rt.On(HookId.AfterCardDrawnEarly, A, Run(true)).On(HookId.AfterCardDrawnEarly, B, Run(false))
+          .On(HookId.AfterCardDrawnEarly, C, Run(false));
+        var args = new AfterCardDrawnArgs(ctx, new CardHandle(5), true);
 
-        Hooks.AfterCardDrawn(rt, new AfterCardDrawnArgs(ctx, new CardHandle(5), true));
-
-        Assert.Equal(new[] { "A", "paused A", "B", "C" }, rt.Log);
-        var site = Assert.Single(rt.Pauses);
-        Assert.Equal(new PauseSite(HookId.Dispatch_AfterCardDrawn, HookId.AfterCardDrawnEarly, 0, A,
-            ContextMode.Passed, ctx), site);
-        Assert.Empty(ctx.Models); // popped after each listener
+        var s = Hooks.AfterCardDrawn(rt, args);
+        rt.Gone.Add(B); // B left the combat while A's choice was open
+        Assert.Equal(HookStatus.Done, Hooks.AfterCardDrawnResume(rt, args, s));
+        Assert.Equal(new[] { "A", "paused A", "C" }, rt.Log);
     }
 
     [Fact]
-    public void PerListenerPass_RecordsAHookActionAndDrainsAtTheWaitPoints()
+    public void PerListenerPause_RecordsAHookActionAndMovesOnToTheNextListener()
     {
         var rt = new FakeRuntime();
         HookEvent<AfterTurnEndArgs> Run(bool pause) => (ListenerRef self, in AfterTurnEndArgs a, ChoiceCtx? c) =>
@@ -200,19 +239,83 @@ public class HookShapeTests
             rt.Log.Add(Name(self));
             return pause ? HookStep.Paused("choose", new PickResume(2)) : HookStep.Done;
         };
-        rt.On(HookId.AfterSideTurnEnd, A, Run(true))
-          .On(HookId.AfterSideTurnEnd, B, Run(false))
+        rt.On(HookId.AfterSideTurnEnd, A, Run(false))
+          .On(HookId.AfterSideTurnEnd, B, Run(true))
+          .On(HookId.AfterSideTurnEnd, D, Run(false))
           .On(HookId.AfterSideTurnEndLate, C, Run(false));
 
         Hooks.AfterTurnEndPasses(rt, new AfterTurnEndArgs(Side.Player, Array.Empty<CreatureRef>()));
 
         Assert.Equal(new[]
         {
-            "A", "paused A", "B", "wait Dispatch_AfterTurnEnd from 0", "C", "wait Dispatch_AfterTurnEnd from 0",
+            "A", "B", "paused B", "D", "wait Dispatch_AfterTurnEnd from 0", "C", "wait Dispatch_AfterTurnEnd from 0",
         }, rt.Log);
         var site = Assert.Single(rt.Pauses);
-        Assert.Equal(ContextMode.PerListener, site.Context);
+        Assert.Equal((ContextMode.PerListener, 0, 1), (site.Context, site.Pass, site.Index));
         Assert.Equal(HookId.Dispatch_AfterTurnEnd, site.Ctx!.Dispatcher);
+    }
+
+    [Fact]
+    public void Cursor_BuildsTheLatePartWhenTheFirstEndsAndSkipsNonMembersAtVisit()
+    {
+        HookListener<Action> L(ListenerRef who) => new(who, () => { });
+        var gone = new HashSet<ListenerRef>();
+        int built = 0;
+        var cursor = new HookCursor<Action>(new[] { L(A), L(B) },
+            late: () => { built++; gone.Add(D); return new[] { L(C), L(D), L(A) }; },
+            member: who => !gone.Contains(who));
+        var seen = new List<(ListenerRef, int)>();
+
+        Assert.True(cursor.Next(out var e));
+        seen.Add((e.Who, cursor.Index));
+        gone.Add(B); // removed mid-pass, before its visit
+        Assert.Equal(0, built);
+        while (cursor.Next(out e))
+            seen.Add((e.Who, cursor.Index));
+
+        Assert.Equal(1, built); // the deck part ended, then the combat part was built, once
+        Assert.Equal(new[] { (A, 0), (C, 2), (A, 4) }, seen);
+        Assert.False(cursor.Next(out _));
+        Assert.False(HookCursor<Action>.Empty().Next(out _));
+    }
+
+    [Fact]
+    public void Mutate_HandlerReordersTheCardsInPlace()
+    {
+        var rt = new FakeRuntime();
+        rt.On(HookId.ModifyShuffleOrder, A, (HookMutate<ModifyShuffleOrderArgs>)(
+            (ListenerRef self, in ModifyShuffleOrderArgs a) =>
+            {
+                var top = a.Cards[a.Cards.Count - 1];
+                a.Cards.RemoveAt(a.Cards.Count - 1);
+                a.Cards.Insert(0, top);
+            }));
+        var cards = new List<CardHandle> { new(1), new(2), new(3) };
+
+        Hooks.ModifyShuffleOrder(rt, new ModifyShuffleOrderArgs(new PlayerRef(0), cards, false));
+
+        Assert.Equal(new CardHandle[] { new(3), new(1), new(2) }, cards);
+    }
+
+    [Fact]
+    public void TryWithOutNotNull_ATrueAnswerWithoutACardChangesNothing()
+    {
+        var rt = new FakeRuntime();
+        HookTryOrNull<ModifyCardBeingAddedToDeckArgs, CardHandle> Gives(bool answer, CardHandle? card) =>
+            (ListenerRef self, in ModifyCardBeingAddedToDeckArgs a, CardHandle current, out CardHandle? next) =>
+            {
+                next = card;
+                return answer;
+            };
+        rt.On(HookId.TryModifyCardBeingAddedToDeck, A, Gives(true, null))
+          .On(HookId.TryModifyCardBeingAddedToDeck, B, Gives(true, new CardHandle(9)))
+          .On(HookId.TryModifyCardBeingAddedToDeckLate, C, Gives(false, new CardHandle(4)));
+
+        var v = Hooks.ModifyCardBeingAddedToDeck(rt, new ModifyCardBeingAddedToDeckArgs(new CardHandle(1)),
+            out var changed);
+
+        Assert.Equal(new CardHandle(9), v);
+        Assert.Equal(new[] { B }, changed);
     }
 
     [Fact]
@@ -223,5 +326,10 @@ public class HookShapeTests
             Hooks.ModifyDamage(rt, DamageArgs(10m, ModifyDamageHookType.None), out _));
         Assert.Contains("preview-hittable", e.Message);
         Assert.Contains("Hook.ModifyDamage", e.Message);
+
+        e = Assert.Throws<NotImplementedException>(() => Hooks.ModifyBlock(rt,
+            new ModifyBlockArgs(new CreatureRef(0), 5m, new ValueProp(0), new CardHandle(2), null), out _));
+        Assert.Contains("enchant-add", e.Message); // typed by ModifyBlockArgs
+        Assert.Contains("Hook.ModifyBlock", e.Message);
     }
 }
