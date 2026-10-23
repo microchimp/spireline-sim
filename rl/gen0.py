@@ -167,21 +167,29 @@ def _init_worker() -> None:
     procutil.lower_priority()  # BelowNormal on Windows
 
 
-def play_emu_run(seed: str, ix: int, sims: int, ascension: int = 10, agent_seed: int = AGENT_SEED) -> dict:
-    """One whole run on the emulator under generation 0: search_live in fights, the rules policy elsewhere."""
+def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent_seed: int = AGENT_SEED,
+                 hook=None) -> dict:
+    """One whole run on the emulator under generation 0: search_live in fights, the rules policy elsewhere.
+
+    `sims` is a flat budget or a search config name (`search_configs`). `hook(k, root, session, position)` is called
+    at every combat decision k (before its search, on the oracle root it must only fork); a true return ends the run
+    there ("hooked"). The hook never touches the agent's random streams, so the run replays exactly.
+    """
     import numpy as np  # noqa: PLC0415
 
     _setup()
     import live_search  # noqa: PLC0415
+    import search_configs  # noqa: PLC0415
     from run_train import engine, selfplay  # noqa: PLC0415
     from sts2_gym import native  # noqa: PLC0415
 
     t0 = time.perf_counter()
     rng = np.random.default_rng([agent_seed, ix])
     explore = np.random.default_rng([agent_seed, ix, 1])
+    cfg = search_configs.get(sims) if isinstance(sims, str) else search_configs.flat(int(sims))
     rules = selfplay.RulesPlayer()
-    s = engine.RunSession(seed, ascension, engine.CombatBudget(sims, sims))
-    decisions = assumed = 0
+    s = engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims))
+    decisions = assumed = k = sims_spent = 0
     end = "?"
     try:
         env = s.env
@@ -200,8 +208,13 @@ def play_emu_run(seed: str, ix: int, sims: int, ascension: int = 10, agent_seed:
                 continue
             root = s.combat(fork_combat=True).combat_fork(None)
             try:
-                res = live_search.search_live(root.handle, max_sims=sims, min_child_sims=2, confirm_pairs=0,
-                                              time_budget_s=120.0, seed=int(rng.integers(1 << 30)))
+                pos = search_configs.position_of(root, s.info) if (cfg.schedule or hook) else None
+                if hook is not None and hook(k, root, s, pos):
+                    end = "hooked"
+                    break
+                k += 1
+                res = live_search.search_live(root.handle, seed=int(rng.integers(1 << 30)), **cfg.search_kwargs(pos))
+                sims_spent += res.sims
             finally:
                 native.destroy(root.handle) if not hasattr(root, "close") else root.close()
             assumed += bool(res.ai_state_assumed)
@@ -212,12 +225,13 @@ def play_emu_run(seed: str, ix: int, sims: int, ascension: int = 10, agent_seed:
             decisions += 1
         floor = int(s.info["floor"])
         return {"seed": seed, "ix": ix, "win": end == "win", "floor": floor, "end": end, "decisions": decisions,
-                "wall": round(time.perf_counter() - t0, 2), "ai_state_assumed": assumed, "crash": False}
+                "wall": round(time.perf_counter() - t0, 2), "ai_state_assumed": assumed, "crash": False,
+                "combat_decisions": k, "sims": sims_spent, "config": cfg.name}
     finally:
         s.close()
 
 
-def _run_safe(seed: str, ix: int, sims: int, ascension: int) -> dict:
+def _run_safe(seed: str, ix: int, sims: int | str, ascension: int) -> dict:
     t0 = time.perf_counter()
     try:
         return play_emu_run(seed, ix, sims, ascension)
@@ -226,7 +240,7 @@ def _run_safe(seed: str, ix: int, sims: int, ascension: int) -> dict:
                 "ai_state_assumed": 0, "crash": True, "error": f"{type(e).__name__}: {e}"[:300]}
 
 
-def run_block(seeds: list[str], sims: int, procs: int, out: Path, *, ascension: int = 10, block_min: float | None = None,
+def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascension: int = 10, block_min: float | None = None,
               start_ix: int = 0) -> dict:
     """Play the seeds on a spawn pool of `procs` single-emulator processes. With `block_min`, stop starting runs after that
     many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended to runs.jsonl."""
@@ -355,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--stream", help="self-play: seeds from the stream of this job name instead of a file")
     e.add_argument("--n", type=int, default=0)
     e.add_argument("--sims", type=int, default=60)
+    e.add_argument("--config", help="a named search config (rl/search_configs.py), instead of --sims")
     e.add_argument("--procs", type=int, default=16)
     e.add_argument("--ascension", type=int, default=10)
     e.add_argument("--block-min", type=float, default=None)
@@ -400,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
             seeds = load_seeds(a.seeds_file)
         if a.n:
             seeds = seeds[: a.n]
-        summ = run_block(seeds, a.sims, a.procs, Path(a.out), ascension=a.ascension, block_min=a.block_min)
+        summ = run_block(seeds, a.config or a.sims, a.procs, Path(a.out), ascension=a.ascension, block_min=a.block_min)
         print(json.dumps(summ))
         return 0
     real = real_runs(Path(a.real) / "runs.jsonl")
