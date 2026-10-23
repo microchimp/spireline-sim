@@ -49,6 +49,11 @@ def below_normal_self() -> None:
     k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
 
 
+def reset_spec(seed: str, character: str = "IRONCLAD", spec: dict | None = None) -> dict:
+    """The run spec a reset sends: the seed, the character (the game's character id; the driver's default is IRONCLAD)."""
+    return {"seed": seed, "character": character, "potions": True, "stop_after_act": 3, "max_decisions": 3000, **(spec or {})}
+
+
 class GameEnv:
     """One headless game. reset(seed) -> first decision message; step(a) -> (message, done)."""
 
@@ -116,9 +121,8 @@ class GameEnv:
         return m
 
     def reset(self, seed: str, spec: dict | None = None, hash: bool = False, record: Path | None = None,
-              timeout: float = 120) -> tuple[dict, bool]:
-        cmd = {"cmd": "reset", "spec": {"seed": seed, "potions": True, "stop_after_act": 3, "max_decisions": 3000,
-                                        **(spec or {})}, "hash": hash}
+              timeout: float = 120, character: str = "IRONCLAD") -> tuple[dict, bool]:
+        cmd = {"cmd": "reset", "spec": reset_spec(seed, character, spec), "hash": hash}
         if record:
             cmd["record"] = str(record).replace("\\", "/")
         self._send(cmd)
@@ -151,16 +155,34 @@ def random_agent(msg: dict, rng: random.Random) -> int:
     return rng.randrange(len(msg["actions"]))
 
 
+def extras_of(m: dict) -> list[tuple[int, str]]:
+    """The actions of a decision that the driver offers beyond a screen's own options (lockstep.extra_kind, and a card
+    reward's skip): (index, "<kind>@<decision kind>"), e.g. (3, "potion_use@map")."""
+    import lockstep  # noqa: PLC0415
+
+    out = []
+    for i, a in enumerate(m.get("actions", [])):
+        k = lockstep.extra_kind(a) or ("card_skip" if a == "skip" and m.get("kind") == "card_reward" else None)
+        if k:
+            out.append((i, f"{k}@{m['kind']}"))
+    return out
+
+
+def held_potions(m: dict) -> int:
+    return sum(1 for p in (m.get("obs") or {}).get("potions", []) if p)
+
+
 # ---------------------------------------------------------------- bench: N games in a spawn pool
 
 
-def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout: float, recycle: int = 0) -> None:
+def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout: float, recycle: int = 0,
+                 character: str = "IRONCLAD", max_runs: int = 0) -> None:
     below_normal_self()
     rng = random.Random(1000 + wid)
     t_end = time.time() + seconds
     k = 0
     restarts = 0
-    while time.time() < t_end:
+    while time.time() < t_end and not (max_runs and k >= max_runs):
         try:
             env = GameEnv(Path(game), Path(out) / "scratch" / f"w{wid:02d}r{restarts}")
         except Exception as e:  # boot failure
@@ -171,16 +193,29 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
         dec = 0
         runs_here = 0
         try:
-            while time.time() < t_end:
+            while time.time() < t_end and not (max_runs and k >= max_runs):
                 seed = f"E{wid:02d}X{k:05d}"
                 k += 1
                 t0 = time.time()
-                m, done = env.reset(seed, timeout=step_timeout)
+                m, done = env.reset(seed, timeout=step_timeout, character=character)
                 n = 0
                 slow = (0.0, None)
+                offered: dict = {}
+                taken: dict = {}
+                effect: dict = {}
                 while not done:
                     ts, kind = time.time(), m.get("kind")
-                    m, done = env.step(random_agent(m, rng), timeout=step_timeout)
+                    pick = random_agent(m, rng)
+                    ex = extras_of(m)
+                    for i, key in ex:
+                        offered[key] = offered.get(key, 0) + 1
+                        if i == pick:
+                            taken[key] = taken.get(key, 0) + 1
+                    before = held_potions(m)
+                    took = next((key for i, key in ex if i == pick), None)
+                    m, done = env.step(pick, timeout=step_timeout)
+                    if took and took.startswith(("potion_", "card_alt")) and not done and held_potions(m) != before:
+                        effect[took] = effect.get(took, 0) + 1
                     if time.time() - ts > slow[0]:
                         slow = (round(time.time() - ts, 2), kind)
                     n += 1
@@ -189,10 +224,10 @@ def bench_worker(wid: int, game: str, out: str, seconds: float, q, step_timeout:
                         q.put({"ev": "tick", "w": wid, "dec": 200, "t": time.time()})
                     if time.time() > t_end + 120:
                         break
-                q.put({"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": n,
+                q.put({"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": n,
                        "ms": m.get("ms"), "mem_mb": m.get("mem_mb"), "dec": dec % 200, "t": time.time(), "s": time.time() - t0,
                        "stale": m.get("stale"), "slowest_step": slow, "fight_errors": m.get("fight_errors"),
-                       "probe": m.get("probe")})
+                       "probe": m.get("probe"), "extras": {"offered": offered, "taken": taken, "effect": effect}})
                 dec -= dec % 200
                 runs_here += 1
                 if recycle and runs_here >= recycle:
@@ -254,7 +289,8 @@ def bench(a) -> int:
     before = rr.real_profile_state()
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
-    procs = [ctx.Process(target=bench_worker, args=(w, str(game), str(out), a.seconds, q, a.step_timeout, a.recycle))
+    procs = [ctx.Process(target=bench_worker, args=(w, str(game), str(out), a.seconds, q, a.step_timeout, a.recycle, a.character,
+                                                  a.max_runs // a.procs + (1 if w < a.max_runs % a.procs else 0) if a.max_runs else 0))
              for w in range(a.procs)]
     for p in procs:
         p.start()
@@ -309,7 +345,7 @@ def bench(a) -> int:
     for pid, rep in rr.wer_reports_by_pid(sorted(pids)).items():
         wer |= rep
     s = summarize(events, a.procs)
-    s.update(network_connections=sorted(seen), wer_reports=sorted(wer), real_profile_touched=before != rr.real_profile_state())
+    s.update(character=a.character, network_connections=sorted(seen), wer_reports=sorted(wer), real_profile_touched=before != rr.real_profile_state())
     (out / "summary.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
     print(json.dumps({k: v for k, v in s.items() if k != "per_minute"}, indent=1))
     return 0 if not seen and not wer and not s["real_profile_touched"] else 1
@@ -387,6 +423,7 @@ def summarize(events: list, procs: int) -> dict:
     sysev = [e for e in events if e["ev"] == "sys"]
     return {
         "parent": parent_summary(sysev), "per_minute": per_minute(events),
+        "extras": {k: _merge((e.get("extras") or {}).get(k, {}) for e in ends) for k in ("offered", "taken", "effect")},
         "procs": procs, "window_s": round(span, 1), "decisions": dec, "decisions_per_s": round(dec / span, 1),
         "decisions_per_s_per_proc": round(dec / span / procs, 2),
         "runs_ended": len(ends), "runs_per_hour": round(len(full_runs) / span * 3600, 1), "ends": by_end,
@@ -416,8 +453,7 @@ def record(a) -> int:
         (scratch / "appdata").mkdir(parents=True, exist_ok=True)
         (scratch / "localappdata").mkdir(parents=True, exist_ok=True)
         jopts = serve.job_options({}, stall_s=300)
-        spec = {"kind": "run", "seed": seed, "potions": True, "stop_after_act": 3, "max_decisions": 3000,
-                "buff_max_hp": a.buff}
+        spec = {"kind": "run", **reset_spec(seed, a.character), "buff_max_hp": a.buff}
         jopts.update(env_trace=True, runs=[spec], out=str(out / f"rec-{seed}.json").replace("\\", "/"))
         job = scratch / "job.json"
         job.write_text(json.dumps(jopts), encoding="utf-8")
@@ -452,7 +488,7 @@ def replay(a) -> int:
         run = res["results"][0] if "results" in res else res
         trace = run["env_trace"]
         m, done = env.reset(run["seed"] if "seed" in run else rec.stem[4:], hash=True, spec={"buff_max_hp": a.buff},
-                            record=out / f"replay-{rec.stem[4:]}.json")
+                            record=out / f"replay-{rec.stem[4:]}.json", character=a.character)
         same = 0
         first = None
         for j, (kind, n, idx, h) in enumerate(trace):
@@ -493,12 +529,15 @@ def smoke(a) -> int:
     kinds: dict[str, int] = {}
     for r in range(a.runs):
         t0 = time.time()
-        m, done = env.reset(f"SMOKE{r}")
+        m, done = env.reset(f"SMOKE{r}", character=a.character)
         n = 0
         while not done:
             kinds[m["kind"]] = kinds.get(m["kind"], 0) + 1
             if n == 0 and r == 0:
                 print("first decision:", json.dumps(m)[:600])
+                o = m.get("obs", {})  # what the character starts with: the deck size and the relics
+                print("start", json.dumps({"character": a.character, "deck": len(o.get("deck", [])), "relics": o.get("relics"),
+                                           "hp": o.get("max_hp")}))
             m, done = env.step(random_agent(m, rng))
             n += 1
         print(f"run {r}: {m} in {time.time() - t0:.1f} s, {n / (time.time() - t0):.1f} decisions/s")
@@ -508,7 +547,7 @@ def smoke(a) -> int:
 
 
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
-                agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0) -> None:
+                agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD") -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py)."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
@@ -527,9 +566,9 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                 continue
         t0 = time.time()
         try:
-            m, ls = lockstep.play_run(_Timed(env, step_timeout), seed, ascension=ascension, sims=sims,
-                                 agent_seed=[agent_seed, run_ix])
-            ev = {"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
+            m, ls = lockstep.play_run(_Timed(env, step_timeout, character), seed, ascension=ascension, sims=sims,
+                                 agent_seed=[agent_seed, run_ix], character=character)
+            ev = {"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
                   "agent_seed": ls.agent_seed, "assumed": len(ls.assumed)}
             if m.get("stale"):
@@ -559,10 +598,11 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
 class _Timed:
     """A GameEnv whose reset and step carry the play mode's step timeout."""
 
-    def __init__(self, env, timeout):
-        self.env, self.timeout = env, timeout
+    def __init__(self, env, timeout, character: str = "IRONCLAD"):
+        self.env, self.timeout, self.character = env, timeout, character
 
     def reset(self, *a, **k):
+        k.setdefault("character", self.character)
         return self.env.reset(*a, timeout=self.timeout, **k)
 
     def step(self, a):
@@ -583,7 +623,7 @@ def play(a) -> int:
     stop_at = time.time() + a.stop_after_h * 3600 if a.stop_after_h else 0.0
     live = open(out / "runs.jsonl", "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, list(range(a.runs))[w::a.procs], stop_at))
+                                       agent_seed, list(range(a.runs))[w::a.procs], stop_at, a.character))
              for w in range(a.procs)]
     t0 = time.time()
     for p in procs:
@@ -617,7 +657,7 @@ def play(a) -> int:
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
-    summary = {"agent_seed": agent_seed, "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+    summary = {"agent_seed": agent_seed, "character": a.character, "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / wall, 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -656,7 +696,7 @@ def _count(it) -> dict:
     return o
 
 
-def main() -> int:
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("mode", choices=["smoke", "bench", "record", "replay", "play"])
     ap.add_argument("--game", required=True)
@@ -674,9 +714,15 @@ def main() -> int:
                     help="simulations per combat decision, or a search config name (rl/search_configs.py)")
     ap.add_argument("--agent-seed", type=int, default=None, help="play: the agent's own seed (default: random, recorded); never derived from a game seed")
     ap.add_argument("--ascension", type=int, default=10)
+    ap.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     ap.add_argument("--step-timeout", type=float, default=180)
+    ap.add_argument("--max-runs", type=int, default=0, help="bench: stop after this many runs in all (0: run for --seconds)")
     ap.add_argument("--recycle", type=int, default=0, help="bench: restart each game after this many runs (0: never)")
-    a = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    a = parser().parse_args()
     return {"smoke": smoke, "bench": bench, "record": record, "replay": replay, "play": play}[a.mode](a)
 
 
