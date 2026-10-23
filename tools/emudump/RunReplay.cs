@@ -10,6 +10,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 
@@ -405,7 +406,7 @@ static class RunReplay
             // A SpecialCardReward row (a Thieving Hopper's stolen card, the Lantern Key): the
             // rows sit after the card items, one each.
             var sc = d["choice"]!["card"]!.AsArray();
-            int want = Fight.CardIdBySnake((string)sc[0]!);
+            int want = OldIds.CardIdBySnake((string)sc[0]!);
             bool up = (int)sc[1]! != 0;
             int at = s.RewardSpecialCards.FindIndex(c => c.DefId == want && c.Upgraded == up);
             if (at < 0)
@@ -500,14 +501,8 @@ static class RunReplay
         }
     }
 
-    static MethodInfo? _fightDump;
-
-    /// <summary>Fight.Dump: the per-step state in the shape fight_compare reads.</summary>
-    static JsonObject FightDump(RunEngine e)
-    {
-        _fightDump ??= typeof(Fight).GetMethod("Dump", BindingFlags.NonPublic | BindingFlags.Static);
-        return (JsonObject)_fightDump!.Invoke(null, new object[] { e })!;
-    }
+    /// <summary>The per-step state in the shape fight_compare reads (OldDump.Dump).</summary>
+    static JsonObject FightDump(RunEngine e) => OldDump.Dump(e);
 
     /// <summary>The fight's recorded actions, replayed as Fight.Replay replays a fight spec.</summary>
     static void Combat(ref RunEngine e, JsonObject d, JsonObject od, bool fights)
@@ -557,7 +552,7 @@ static class RunReplay
             var chosen = new JsonArray();
             var engine = e;
             foreach (var choice in gameChoices.Where(c => (int?)c!["step"] == stepNo && (string?)c["kind"] == "cards"))
-                chosen.Add(Fight.ApplyChoice(() => s.ActiveCombat, i => engine.Step(i, -1, out _, out _, out _), choice!.AsObject()));
+                chosen.Add(OldChoices.Apply(() => s.ActiveCombat, i => engine.Step(i, -1, out _, out _, out _), choice!.AsObject()));
             if (fights) steps.Add(new JsonObject { ["action"] = a.DeepClone(), ["choices"] = chosen, ["state"] = FightDump(e) });
         }
 
@@ -635,7 +630,7 @@ static class RunReplay
                     if (s.RelicReward == 0) s.RelicReward = rel; else s.PendingBonusRelicRewards.Add(rel);
                     break;
                 case "card":
-                    var cards = r["cards"]!.AsArray().Select(c => Fight.CardIdBySnake(Bare((string?)c![0]))).ToArray();
+                    var cards = r["cards"]!.AsArray().Select(c => OldIds.CardIdBySnake(Bare((string?)c![0]))).ToArray();
                     var upg = r["cards"]!.AsArray().Select(c => (int)c![1]! != 0).ToArray();
                     if (!s.RewardCardPending) { new CardOffer(cards, upg).ShowOn(s); s.RewardCardPending = true; }
                     else s.PendingCardOffers.Add(new CardOffer(cards, upg));
@@ -687,7 +682,7 @@ static class RunReplay
         if (gold != s.Gold) anchored.Add("gold");
         int[]? cards = null;
         var deck = p["deck"]!.AsArray().Select(c => (
-            Id: Fight.CardIdBySnake(Bare((string?)c!["id"])),
+            Id: OldIds.CardIdBySnake(Bare((string?)c!["id"])),
             Up: ((int?)c["current_upgrade_level"] ?? 0) > 0,
             Ench: c["enchantment"] is { } en ? Enum.Parse<Enchantment>(Pascal(Bare((string?)en["id"]))) : Enchantment.None,
             Amt: c["enchantment"] is { } en2 ? (int?)en2["amount"] ?? 0 : 0)).ToList();
