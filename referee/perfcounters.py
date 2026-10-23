@@ -42,7 +42,7 @@ def _num(x: str) -> float | None:
 
 
 def typeperf_path() -> str:
-    """typeperf by its full path under %SystemRoot%\System32, never found through the python directory or the current one."""
+    """typeperf by its full path under %SystemRoot%/System32, never found through the python directory or the current one."""
     return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "typeperf.exe")
 
 
