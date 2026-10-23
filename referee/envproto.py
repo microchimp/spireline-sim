@@ -20,6 +20,7 @@ import argparse
 import ctypes
 import json
 import multiprocessing as mp
+import os
 import queue
 import random
 import subprocess
@@ -432,13 +433,15 @@ def smoke(a) -> int:
     return 0
 
 
-def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int) -> None:
+def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
+                agent_seed: int = 0, run_ids: list | None = None) -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py)."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
     env = None
     restarts = 0
-    for seed in seeds:
+    for n_seed, seed in enumerate(seeds):
+        run_ix = run_ids[n_seed] if run_ids else n_seed
         if env is None:
             try:
                 env = GameEnv(Path(game), Path(out) / "scratch" / f"p{wid:02d}r{restarts}", install=False)
@@ -448,9 +451,11 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                 continue
         t0 = time.time()
         try:
-            m, ls = lockstep.play_run(_Timed(env, step_timeout), seed, ascension=ascension, sims=sims)
+            m, ls = lockstep.play_run(_Timed(env, step_timeout), seed, ascension=ascension, sims=sims,
+                                 agent_seed=[agent_seed, run_ix])
             ev = {"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
-                  "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records}
+                  "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
+                  "agent_seed": ls.agent_seed}
             if m.get("stale"):
                 q.put(ev)
                 q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
@@ -458,12 +463,14 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                 env, restarts = None, restarts + 1
                 continue
         except (TimeoutError, GameDied, ValueError) as e:
-            ev = {"ev": "crash", "w": wid, "seed": seed, "error": f"{type(e).__name__}: {e}"[:300], "s": round(time.time() - t0, 1)}
+            ev = {"ev": "crash", "w": wid, "seed": seed, "error": f"{type(e).__name__}: {e}"[:300], "s": round(time.time() - t0, 1), "agent_seed": [agent_seed, run_ix],
+                  "divergences": getattr(getattr(e, "lockstep", None), "log", None) and e.lockstep.log.records or []}
             env.close()
             env, restarts = None, restarts + 1
         except Exception as e:  # noqa: BLE001 -- an agent/emulator bug is a crash of that run, reported
             ev = {"ev": "crash", "w": wid, "seed": seed, "where": "agent", "error": f"{type(e).__name__}: {e}"[:300],
-                  "s": round(time.time() - t0, 1)}
+                  "s": round(time.time() - t0, 1), "agent_seed": [agent_seed, run_ix],
+                  "divergences": getattr(getattr(e, "lockstep", None), "log", None) and e.lockstep.log.records or []}
             env.close()  # the game is mid-run; a fresh one for the next seed
             env, restarts = None, restarts + 1
         q.put(ev)
@@ -491,9 +498,11 @@ def play(a) -> int:
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     seeds = [f"A1S{i:04d}" for i in range(a.runs)]
+    agent_seed = a.agent_seed if a.agent_seed is not None else int.from_bytes(os.urandom(6), "big")  # not a game seed
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
-    procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension))
+    procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
+                                       agent_seed, list(range(a.runs))[w::a.procs]))
              for w in range(a.procs)]
     t0 = time.time()
     for p in procs:
@@ -520,11 +529,11 @@ def play(a) -> int:
     ends = [e for e in events if e["ev"] == "end"]
     dec = sum(e["stats"]["decisions"] for e in ends)
     rank = sum(e["stats"]["ranked"] for e in ends)
-    divs = [dict(d, seed=e["seed"]) for e in ends for d in e["divergences"]]
+    divs = [dict(d, seed=e["seed"]) for e in events if e["ev"] in ("end", "crash") for d in e.get("divergences", [])]
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
-    summary = {"runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+    summary = {"agent_seed": agent_seed, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / wall, 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -576,6 +585,7 @@ def main() -> int:
     ap.add_argument("--buff", type=int, default=0, help="record/replay: buff_max_hp, so random play reaches later floors")
     ap.add_argument("--agent", choices=["play"], default="play", help="play: lockstep PLAY agent (mode play)")
     ap.add_argument("--sims", type=int, default=60)
+    ap.add_argument("--agent-seed", type=int, default=None, help="play: the agent's own seed (default: random, recorded); never derived from a game seed")
     ap.add_argument("--ascension", type=int, default=10)
     ap.add_argument("--step-timeout", type=float, default=180)
     ap.add_argument("--recycle", type=int, default=0, help="bench: restart each game after this many runs (0: never)")

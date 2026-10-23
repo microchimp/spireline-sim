@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +57,27 @@ def project(view: dict) -> dict:
         out["combat"] = {"hand": sorted(json.dumps(x) for x in c.get("hand", [])),
                          "enemy_hp": [h for h in c.get("enemy_hp", [])]}
     return out
+
+
+def agent_rng(entropy):
+    """The agent's own RNG: every search's resample seeds come from it. `entropy` is the agent seed (a list of ints,
+    e.g. [base agent seed, run index]); nothing of the referee's game seed may enter here (DESIGN 3.2: the hidden
+    parts never come from the game's seed)."""
+    import numpy  # noqa: PLC0415
+    return numpy.random.default_rng(list(entropy))
+
+
+def fresh_agent_seed() -> int:
+    """A base agent seed unrelated to any game seed; the run record keeps it so a run can be replayed."""
+    return int.from_bytes(os.urandom(6), "big")
+
+
+def run_outcome(m: dict, done: bool) -> dict:
+    """The run's outcome from the referee's end message: class win/death/crash/truncated, the end string, final floor."""
+    end = m.get("end")
+    cls = "truncated" if not done else "win" if str(end).lower() in ("win", "victory", "won") else \
+        "crash" if str(end).lower() == "crash" else "death"
+    return {"class": cls, "end": end, "floor": m.get("floor")}
 
 
 def view_hash(view: dict) -> str:
@@ -129,8 +151,11 @@ class Lockstep:
     re-anchored from the referee's record and, once its view equals the referee's again, the lockstep resumes there.
     """
 
-    def __init__(self, emu: EmuSide | None, fallback, seed: str = "", sims: int = 60):
+    def __init__(self, emu: EmuSide | None, fallback, seed: str = "", sims: int = 60,
+                 agent_seed=None):
         self.emu, self.fallback, self.seed, self.sims = emu, fallback, seed, sims
+        self.agent_seed = agent_seed
+        self.open: dict | None = None  # the record of the loss now in force; its not-ranked span grows each decision
         self.log = DivergenceLog()
         self.lost: str | None = None if emu is not None else "no_emulator"
         self.n = 0
@@ -150,7 +175,7 @@ class Lockstep:
             try:
                 choice = self.emu.choose(kind, labels, msg)
             except Exception as e:  # noqa: BLE001 -- a search failure suspends the lockstep, not the run
-                self._lose(i, f"choose_error:{type(e).__name__}:{e}"[:200])
+                self._lose(i, f"choose_error:{type(e).__name__}:{e}"[:200], kind=kind, msg=msg)
         if choice is None:
             choice = self.fallback(msg)
         if self.lost is None and self.emu is not None:
@@ -160,11 +185,22 @@ class Lockstep:
                 err = f"{type(e).__name__}:{e}"[:200]
             if err:
                 self._lose(i, f"apply:{err}", kind=kind, msg=msg)
-        self.stats["ranked" if ranked and self.lost is None else "not_ranked"] += 1
+        scored = ranked and self.lost is None
+        self.stats["ranked" if scored else "not_ranked"] += 1
+        if not scored and self.open is not None:
+            sp = self.open["not_ranked_span"]
+            sp["first"] = i if sp["first"] is None else sp["first"]
+            sp["last"], sp["count"] = i, sp["count"] + 1
         self.prev_kind = kind
         return choice
 
-    def _lose(self, i: int, reason: str, kind: str | None = None, msg: dict | None = None) -> None:
+    def finish(self, outcome: dict) -> None:
+        """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
+        for r in self.log.records:
+            r["run"], r["agent_seed"], r["outcome"] = self.seed, self.agent_seed, outcome
+
+    def _lose(self, i: int, reason: str, kind: str | None = None, msg: dict | None = None,
+              rec: dict | None = None) -> None:
         self.lost = reason
         key = reason.split(":")[0] + (":" + reason.split(":")[1] if reason.startswith(("unmapped", "apply")) else "")
         self.stats["losses"][key] = self.stats["losses"].get(key, 0) + 1
@@ -172,8 +208,14 @@ class Lockstep:
         if kind is not None and reason.startswith("apply:"):  # an unmirrorable step is logged like a structure gap
             self.stats["gaps"] += 1
             obs = (msg or {}).get("obs", {})
-            self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=True,
-                         diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False)
+            rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=True,
+                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False)
+        if rec is None:  # a loss with no record of its own (a search failure): one, so its span has a home
+            obs = (msg or {}).get("obs", {})
+            rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=False,
+                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False)
+        rec["not_ranked_span"] = {"first": None, "last": None, "count": 0}  # decisions scored, not ranked, after it
+        self.open = rec
 
     def _equal(self, kind: str, labels: list, msg: dict) -> tuple[str | None, list, dict, dict]:
         reason = None if kind in MAPPED_KINDS else f"unmapped:{kind}"
@@ -208,7 +250,7 @@ class Lockstep:
         plan = reanchor_plan(kind, self.prev_kind)
         if plan is None or kind not in MAPPED_KINDS or not self._reanchor(plan, kind, labels, msg):
             return False
-        self.lost = None
+        self.lost, self.open = None, None
         self.stats["resumed"] += 1
         return True
 
@@ -227,7 +269,7 @@ class Lockstep:
         rec["reanchored"] = bool(plan) and not gap and self._reanchor(plan, kind, labels, msg)
         if rec["reanchored"]:
             return True
-        self._lose(i, reason or "state_diverged")
+        self._lose(i, reason or "state_diverged", rec=rec)
         return False
 
 
@@ -266,7 +308,7 @@ class EmuLock:
     SCREEN = {"neow": "neow", "ancient": "neow", "map": "map", "card_reward": "card_reward", "rest": "rest",
               "select_cards": "card_select", "shop": "shop", "bundle": "bundle", "event": "event"}
 
-    def __init__(self, seed: str, ascension: int = 10, sims: int = 60):
+    def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None):
         import leakprobes  # noqa: PLC0415 -- the native library's location
 
         leakprobes.native_env()
@@ -278,7 +320,8 @@ class EmuLock:
         self.seed, self.sims = seed, sims
         self.s = engine.RunSession(seed, ascension, engine.CombatBudget(sims, sims))
         self.rules = selfplay.RulesPlayer()
-        self.rng = __import__("numpy").random.default_rng(int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16))
+        # the agent's RNG is seeded from the agent seed alone, never from the game seed (DESIGN 3.2)
+        self.rng = agent_rng(agent_seed if agent_seed is not None else [fresh_agent_seed()])
         self.slug = {k: {v: self.V.game_slug(n) for n, v in m.items()} for k, m in self._id_map().items()}
         self.ids = {k: {v: i for i, v in m.items()} for k, m in self.slug.items()}
         self.dec = None
@@ -670,17 +713,24 @@ def referee_only_policy(msg: dict) -> int:
     return 0
 
 
-def play_run(env, seed: str, *, ascension: int = 10, sims: int = 60, emu_factory=None, max_decisions: int = 4000):
+def play_run(env, seed: str, *, ascension: int = 10, sims: int = 60, emu_factory=None, max_decisions: int = 4000,
+             agent_seed=None):
     """One run on a GameEnv under the PLAY agent. Returns (end message, Lockstep)."""
-    emu = (emu_factory or (lambda s: EmuLock(s, ascension, sims)))(seed)
-    ls = Lockstep(emu, referee_only_policy, seed, sims)
+    agent_seed = list(agent_seed) if agent_seed is not None else [fresh_agent_seed(), 0]
+    emu = (emu_factory or (lambda s: EmuLock(s, ascension, sims, agent_seed)))(seed)
+    ls = Lockstep(emu, referee_only_policy, seed, sims, agent_seed)
     try:
         m, done = env.reset(seed, hash=True)
         n = 0
         while not done and n < max_decisions:
             m, done = env.step(ls.decide(m))
             n += 1
+        ls.finish(run_outcome(m, done))
         return m, ls
+    except BaseException as e:
+        ls.finish(run_outcome({"end": "crash", "floor": None}, True))
+        e.lockstep = ls  # the worker's crash record keeps the divergences so far
+        raise
     finally:
         if emu is not None and hasattr(emu, "close"):
             emu.close()

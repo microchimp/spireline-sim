@@ -477,3 +477,83 @@ class LeakTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentSeedTests(unittest.TestCase):
+    def test_resample_seed_stream_follows_the_agent_seed_only(self):
+        def stream(entropy):
+            r = lockstep.agent_rng(entropy)
+            return [int(r.integers(1 << 30)) for _ in range(6)]
+        self.assertEqual(stream([1, 0]), stream([1, 0]))
+        self.assertNotEqual(stream([1, 0]), stream([2, 0]))
+        self.assertNotEqual(stream([1, 0]), stream([1, 1]))
+
+    def test_the_referee_seed_never_reaches_the_rng_constructor(self):
+        import inspect
+        from unittest import mock
+        sentinel = "SENTINEL-REFEREE-SEED"
+        seen = []
+        import numpy
+        real = numpy.random.default_rng
+        with mock.patch.object(numpy.random, "default_rng", lambda *a, **k: (seen.append((a, k)), real(*a, **k))[1]):
+            lockstep.agent_rng([7, 3])
+        self.assertNotIn(sentinel, repr(seen))
+        # EmuLock builds its RNG from the agent seed alone: neither the sha256 of the game seed nor the seed itself
+        src = inspect.getsource(lockstep.EmuLock.__init__)
+        rng_line = next(ln for ln in src.splitlines() if "self.rng" in ln)
+        self.assertIn("agent_rng(", rng_line)
+        self.assertNotIn("seed.encode", rng_line)
+        self.assertNotIn("self.seed", rng_line)
+        self.assertEqual(list(inspect.signature(lockstep.agent_rng).parameters), ["entropy"])
+
+
+class OutcomeTests(unittest.TestCase):
+    class Env:
+        def __init__(self, stream, end):
+            self.stream, self.end, self.i = stream, end, 0
+
+        def reset(self, seed, hash=False):
+            return self.stream[0], False
+
+        def step(self, a):
+            self.i += 1
+            if self.i < len(self.stream):
+                return self.stream[self.i], False
+            return self.end, True
+
+    def _play(self, stream, emu, end):
+        return lockstep.play_run(self.Env(stream, end), "SEEDX", emu_factory=lambda s: emu, agent_seed=[5, 0])
+
+    def test_a_run_that_loses_lockstep_then_ends_has_outcome_and_span_in_its_records(self):
+        a = obs()
+        stream = [msg("rest", a), msg("rest", a), msg("rest", a), msg("rest", a)]
+        emu = FakeEmu([view_of(obs(hp=1))])
+        m, ls = self._play(stream, emu, {"t": "end", "end": "death", "floor": 7})
+        recs = ls.log.records
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["outcome"], {"class": "death", "end": "death", "floor": 7})
+        self.assertEqual(recs[0]["not_ranked_span"], {"first": 0, "last": 3, "count": 4})
+        self.assertEqual(recs[0]["run"], "SEEDX")
+        self.assertEqual(recs[0]["agent_seed"], [5, 0])
+
+    def test_span_closes_at_resume_and_truncated_run_is_classed(self):
+        a = obs()
+        stream = [msg("rest", a), msg("rest", a), msg("map", a), msg("map", a)]
+        emu = FakeEmu([view_of(obs(hp=1))], reanchor_ok=True)
+        m, ls = self._play(stream, emu, {"t": "end", "end": "win", "floor": 50})
+        self.assertEqual(ls.log.records[0]["not_ranked_span"], {"first": 0, "last": 1, "count": 2})
+        self.assertEqual(ls.log.records[0]["outcome"]["class"], "win")
+        self.assertEqual(lockstep.run_outcome({"floor": 3}, False)["class"], "truncated")
+
+    def test_a_crash_keeps_the_records_on_the_exception(self):
+        a = obs()
+
+        class Boom(self.Env):
+            def step(self, x):
+                raise ValueError("x")
+        with self.assertRaises(ValueError) as cx:
+            lockstep.play_run(Boom([msg("rest", a)], None), "S", emu_factory=lambda s: FakeEmu([view_of(obs(hp=1))]),
+                              agent_seed=[1, 1])
+        rec = cx.exception.lockstep.log.records[0]
+        self.assertEqual(rec["outcome"]["class"], "crash")
+        self.assertEqual(rec["not_ranked_span"]["count"], 1)
