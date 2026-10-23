@@ -825,14 +825,27 @@ def paired_binary(cand: dict[str, bool], base: dict[str, bool]) -> dict[str, Any
             "p": mcnemar_exact_one_sided(b, c)}
 
 
-def decide(floor: dict, boss: dict, wins: dict, cand_win_rate: float, base_win_rate: float, alpha: float = ALPHA) -> dict[str, Any]:
-    """Promote only if every co-primary passes: the paired floor's lower bound above 0, the Act-1 boss-kill McNemar below
-    alpha with the candidate ahead, and, once both arms win at least 10% of runs, the wins McNemar likewise."""
-    checks = {"floor": bool(floor["lower"] > 0), "boss_kill": bool(boss["p"] < alpha and boss["b"] > boss["c"])}
+def decide(floor: dict, boss: dict, wins: dict, cand_win_rate: float, base_win_rate: float, alpha: float = ALPHA,
+           cand_boss_rate: float | None = None, base_boss_rate: float | None = None) -> dict[str, Any]:
+    """The promotion rule (DECISIONS D24): the paired floor's lower bound above 0 (primary). The Act-1 boss kill is a
+    not-worse guard while either arm kills the boss in under 10% of runs (it fails only when the exact McNemar says the
+    candidate is worse at alpha) and a co-primary once both reach 10% (McNemar below alpha with the candidate ahead).
+    Wins join as a co-primary once both arms win at least 10% of runs. Boss rates default to the counts in `boss`."""
+    pairs = boss.get("pairs") or 0
+    cbr = cand_boss_rate if cand_boss_rate is not None else (boss["cand"] / pairs if pairs and "cand" in boss else 0.0)
+    bbr = base_boss_rate if base_boss_rate is not None else (boss["base"] / pairs if pairs and "base" in boss else 0.0)
+    boss_co_primary = cbr >= WIN_GATE and bbr >= WIN_GATE
+    p_worse = mcnemar_exact_one_sided(boss["c"], boss["b"])
+    if boss_co_primary:
+        boss_ok = boss["p"] < alpha and boss["b"] > boss["c"]
+    else:
+        boss_ok = not (p_worse < alpha and boss["c"] > boss["b"])
+    checks = {"floor": bool(floor["lower"] > 0), "boss_kill": bool(boss_ok)}
     wins_active = cand_win_rate >= WIN_GATE and base_win_rate >= WIN_GATE
     if wins_active:
         checks["wins"] = bool(wins["p"] < alpha and wins["b"] > wins["c"])
-    return {"checks": checks, "wins_co_primary": wins_active, "promote": all(checks.values()), "alpha": alpha}
+    return {"checks": checks, "wins_co_primary": wins_active, "boss_kill_mode": "co-primary" if boss_co_primary else "guard",
+            "boss_kill_p_worse": p_worse, "promote": all(checks.values()), "alpha": alpha, "rule": "D24"}
 
 
 def arm_rows(arm_dir: Path) -> list[dict]:
@@ -980,6 +993,52 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name})
+        if lab is not None:
+            p = Path(lab) / "score" / "pending"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(utc_now() + "\n", encoding="utf-8")
+    return doc
+
+
+def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, config: str = "a3-v1", note: str,
+            lab: Path | None = None, boot: int = BOOT_B) -> dict[str, Any]:
+    """Apply the current rule to a candidate's finished arms on its own block, without playing again: for an owner
+    decision that changes the rule after a block was judged (D24). Both cached arms must cover the whole block. The
+    earlier promotion.json is kept beside the new one; the tsv gets a second row for the same candidate and block."""
+    import gen0  # noqa: PLC0415
+
+    seeds = gen0.load_seeds(seeds_file)
+    name = Path(seeds_file).stem
+    cand_agent = load_agent(cand)
+    base_agent = load_agent(base, agent_root=None if base else agent_root)
+    arm = f"{name}-{config}"
+    base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
+    cand_rows, base_rows = arm_rows(Path(cand) / "arms" / arm), arm_rows(base_dir / "arms" / arm)
+    res = compare_arms(cand_rows, base_rows, ALPHA, boot)
+    if res["paired_seeds"] != len(seeds):
+        raise ValueError(f"only {res['paired_seeds']} of {len(seeds)} seeds are paired in both cached arms")
+    old = Path(cand) / "promotion.json"
+    before = json.loads(old.read_text(encoding="utf-8")) if old.is_file() else None
+    if before is not None:
+        old.rename(Path(cand) / f"promotion-{before.get('decision_text', 'earlier')}-{str(before.get('written', 'x'))[:10]}.json")
+    cand_sha = cand_agent.describe()["prior_sha256"] or "none"
+    doc = {"written": utc_now(), "seed_block": name, "n_seeds": len(seeds), "config": config, "alpha": ALPHA,
+           "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
+           "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
+           "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha,
+           "rejudged": {"note": note, "earlier_decision": (before or {}).get("decision_text")},
+           "f7": "not run", "matched_wall_clock": False}
+    write_json(Path(cand) / "promotion.json", doc)
+    f, bk = doc["floor"], doc["boss_kill"]
+    append_promotion(Path(agent_root) / "promotions.tsv",
+                     {"written": doc["written"], "cand_gen": cand_agent.generation, "base_gen": base_agent.generation,
+                      "seed_block": name, "seeds": doc["n_seeds"], "d_floor": f"{f['mean']:.4f}", "floor_lower": f"{f['lower']:.4f}",
+                      "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
+                      "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
+                      "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name})
+    if res["decision"]["promote"]:
+        write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
+                                                        "promoted": doc["written"], "seed_block": name, "note": note})
         if lab is not None:
             p = Path(lab) / "score" / "pending"
             p.parent.mkdir(parents=True, exist_ok=True)
