@@ -104,6 +104,7 @@ static class Fight
         foreach (var want in picked)
         {
             if (src.Screen is not { } sel) { log["error"] = "no selection open for a pick"; return log; }
+            if (sel.Candidates.Count > 0) src.RequireModel(want);  // an id the engine does not know ends the replay with its exception
             int idx = sel.Candidates.ToList().FindIndex(c => c.ModelId == want);
             if (idx < 0)
             {

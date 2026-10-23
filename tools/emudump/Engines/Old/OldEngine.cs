@@ -35,6 +35,8 @@ public sealed class OldEngine : IEngine
 
     public void Decline() => Step(Combat!.PendingSelection!.Candidates.Count, -1);
 
+    public void RequireModel(string modelId) => OldIds.CardIdBySnake(modelId);
+
     public void PlayCard(int handIndex, int targetSlot) => Step(handIndex, targetSlot);
 
     public void UsePotion(int slot, int targetSlot) => Step(Combat!.Hand.Count + 1 + slot, targetSlot);
