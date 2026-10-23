@@ -8,6 +8,7 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 |---|---|
 | `runner.py` | CLI, lab folder, job records, the main loop, supervising child processes |
 | `plans.py` | the jobs as data: steps and symbolic commands (`{tree}`, `{lab}`, `{job}` ...), one plan per strategy |
+| `jobs.py` | the agent-era job kinds (selfplay, train, score-real, bench-env, bench-emu): defaults, `LAB/jobs.json`, markers |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
 | `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict` |
 | `prune.py` | what may be deleted, in what order, and what never (recordings the corpus already holds go first) |
@@ -119,6 +120,28 @@ setup mirror could not answer as the game was answered (what `choice-edges` look
 treated as exactly N, a card the game picked that the emulator does not offer); they are never fix-ready by that
 definition (the setup has a mirror gap), so this column is how that strategy's findings are counted. `NA` where the job's
 groups step did not finish. The rows of the other job types carry the job type as strategy. The runner keeps each strategy's CPU seconds in `state.json` (`strategy_cpu`).
+
+## Agent-era job kinds and the priority ladder (`jobs.py`)
+
+Five more job types, one command each, configured as data (defaults in `jobs.DEFAULTS`, overridden per kind in an optional
+`LAB/jobs.json`: `enabled`, `cmd` (symbolic, `{python}` `{tree}` `{lab}` `{job}` expand), `cwd`, `timeout_min`, `needs`, and per
+kind `share`, `weekly`, `weekly_days`, `every_h`, `procs`). Priority ladder, each tick the highest ready job whose guards pass:
+presort (1), `score-real` (2), `train` (3), aimed fights (4), runs/rank (5), `selfplay` (6), the rest and the nightly benches (7).
+The fights rotation and `mix.json` still decide within tiers 4, 5 and 7; the new kinds are chosen before it (score-real, train,
+selfplay while under its `share` of the CPU time, due benches) or after it (selfplay as the filler when nothing else can run).
+
+| kind | priority | ready when | default | writes |
+|---|---|---|---|---|
+| `selfplay` | 6 | `enabled` (filler; `share` > 0 puts it ahead of the rotation until that share of CPU is spent) | off; placeholder command | yield: runs, decisions, decisions_s, generation |
+| `train` | 3 | `LAB/train/ready-<gen>` exists (oldest first; renamed `done-<gen>` on success); 60 min cap | on, marker-gated | yield: generation, promoted, loss |
+| `score-real` | 2 | `LAB/score/pending` exists, or `weekly` and 7 days since `LAB/score/last-ok`; 240 min cap | on, marker-gated; weekly off | yield: runs, wins, mean_floor, crashes, decisions_s, divergences. `LAB/score/active` exists while it runs; fights and runs jobs are not started then (a marker older than 5 h is ignored) |
+| `bench-env` | 7 | `enabled` and `every_h` (20) since `LAB/bench-env/last-ok` | off | yield: dec_s, crashes, mem_mb_per_run; readiness.json `bench.env` (next to LAB) |
+| `bench-emu` | 7 | same; needs `{tree}/rl/bench_emu.py` | off | yield: steps_s, clones_s, sims_s; readiness.json `bench.emu` |
+
+A command reports through `{job}/result.json` (an object; keys named like the yield columns). All guards (PAUSE, HALT, main.lock,
+user input, load, disk, parent) apply to these kinds as to every job, between steps and while the command runs. The runner is
+sequential, so a job never runs beside another; `train` therefore does not overlap `selfplay` here. New `yield.tsv` columns come after
+`screen_groups`; an older file is widened with NA, and old rows keep their values.
 
 ## Lab folder
 

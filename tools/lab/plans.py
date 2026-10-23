@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.lab import hypotheses as hyp
+from tools.lab import jobs as jobkinds
 from tools.lab import retest
 from tools.lab.winsys import NO_WINDOW
 
@@ -66,7 +67,7 @@ class Ctx:
                 "sha7": self.sha[:7], "job": f(self.job_dir), "jobname": self.job_name,
                 "backlog": f(self.backlog) if self.backlog else "", "backlog_dir": f(self.backlog_dir),
                 "codex": f(self.codex), "decompiled": f(self.decompiled), "records": f(self.records),
-                "nuget": f(self.nuget), "vs_installer": VS_INSTALLER,
+                "nuget": f(self.nuget), "python": self.py, "vs_installer": VS_INSTALLER,
                 "hypotheses": f(self.backlog_dir.parent / "hypotheses")}
 
     def expand(self, s: str) -> str:
@@ -612,9 +613,31 @@ def plan_invariants(c: Ctx) -> list[Step]:
     ], mode="serial"), *report_steps(c)]
 
 
+# ---------------------------------------------------------------- the agent-era kinds (tools/lab/jobs.py)
+
+def _open_score_window(c: Ctx) -> None:
+    (c.lab / "score").mkdir(parents=True, exist_ok=True)
+    (c.lab / "score" / "active").write_text("1\n")
+
+
+def plan_kind(kind: str, c: Ctx) -> list[Step]:
+    """One command: the kind's configured command (params `cmd`, `cwd`, `timeout_min`, `needs`), core and required. Whether the
+    kind is ready to run (marker, schedule, switch) is decided before the job is made (runner.unavailable), not here, so a
+    job that is resumed after a stop is never refused. The command may write {job}/result.json (see jobs.py)."""
+    p = c.params
+    cmd = Cmd(kind, list(p["cmd"]), cwd=p.get("cwd", "{tree}"), needs=list(p.get("needs") or []), core=True,
+              timeout=float(p.get("timeout_min", 60)) * 60, outputs={"result": "result.json"},
+              post=lambda cx, k=kind: jobkinds.finish(k, cx.lab, cx.job_dir, cx.params))
+    if kind == "score-real":  # the window marker keeps other fights runners off the game while it is open
+        cmd.pre = _open_score_window
+        cmd.after_cleanup = ["{lab}/score/active"]
+    return [Step(kind, [cmd], mode="serial", required=True)]
+
+
 PLANS: dict[str, Callable[[Ctx], list[Step]]] = {
     "presort": plan_presort, "fights": plan_fights, "runs": plan_runs, "probes": plan_probes, "mutation": plan_mutation,
     "invariants": plan_invariants,
+    **{k: (lambda c, k=k: plan_kind(k, c)) for k in jobkinds.NEW_KINDS},
 }
 
 

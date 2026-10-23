@@ -43,10 +43,16 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from tools.lab import jobs
+
 STRATEGIES = ("aimed-bugs", "aimed-gaps", "choice-edges", "whole-runs", "dense", "under-tested", "random", "hypotheses", "retest")
 DEFAULT_MIX = {"aimed-bugs": 30, "aimed-gaps": 25, "choice-edges": 10, "whole-runs": 10, "dense": 10, "under-tested": 10, "random": 5, "hypotheses": 5, "retest": 3}
+# Added for the agent-era job kinds (tools/lab/jobs.py); they sit after the old columns, so an old file is padded with NA
+# and an old reader that takes the columns it knows by name or position keeps working. A job fills the ones its kind has.
+AGENT_COLUMNS = ("runs", "decisions", "decisions_s", "generation", "promoted", "loss", "wins", "mean_floor", "crashes", "divergences",
+                 "dec_s", "mem_mb_per_run", "steps_s", "clones_s", "sims_s")
 YIELD_COLUMNS = ("utc", "job", "strategy", "main", "rc", "wall_min", "cpu_min", "fights", "mismatches", "unbuildable", "groups", "fix_ready",
-                 "screen_groups")
+                 "screen_groups", *AGENT_COLUMNS)
 NOTE = "weights of the CPU time the fights slots spend, per strategy; 0 or absent: never. Read at every job."
 
 
@@ -179,15 +185,35 @@ def job_groups(groups_doc: object, job_name: str) -> tuple[int, int, int] | None
     return n, ready, screens
 
 
+def _cell(v: object) -> str:
+    """One yield.tsv cell: NA for a missing value, no tabs or newlines inside."""
+    if v is None:
+        return "NA"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return " ".join(str(v).split())
+
+
 def yield_row(job_dir: Path, data: dict, groups_doc: object, groups_ran: bool, utc: str) -> dict[str, object]:
     """The yield.tsv row of a finished job (job.json's `data`)."""
+    params = data.get("params") or {}
+    kind = data.get("job", "")
+    if kind in jobs.NEW_KINDS:  # no fights, no groups: the columns of the command's result.json instead
+        res = jobs.read_result(job_dir)
+        na = dict.fromkeys(("fights", "mismatches", "unbuildable", "groups", "fix_ready", "screen_groups"), "NA")
+        agent = {c: _cell(res.get(c)) for c in AGENT_COLUMNS}
+        if kind == "train" and agent["generation"] == "NA" and params.get("generation"):
+            agent["generation"] = params["generation"]
+        return {"utc": utc, "job": data.get("name", ""), "strategy": kind, "main": str(data.get("main_sha", ""))[:7],
+                "rc": data.get("rc", ""), "wall_min": round(float(data.get("wall_secs", 0)) / 60, 1),
+                "cpu_min": round(float(data.get("cpu_secs", 0)) / 60, 1), **na, **agent}
     counts = job_counts(job_dir)
     g = job_groups(groups_doc, data.get("name", "")) if groups_ran else None
-    params = data.get("params") or {}
     return {"utc": utc, "job": data.get("name", ""), "strategy": params.get("strategy") or data.get("job", ""),
             "main": str(data.get("main_sha", ""))[:7], "rc": data.get("rc", ""),
             "wall_min": round(float(data.get("wall_secs", 0)) / 60, 1), "cpu_min": round(float(data.get("cpu_secs", 0)) / 60, 1),
-            **counts, "groups": g[0] if g else "NA", "fix_ready": g[1] if g else "NA", "screen_groups": g[2] if g else "NA"}
+            **counts, "groups": g[0] if g else "NA", "fix_ready": g[1] if g else "NA", "screen_groups": g[2] if g else "NA",
+            **dict.fromkeys(AGENT_COLUMNS, "NA")}
 
 
 def append_yield(lab: Path, row: dict[str, object]) -> None:
