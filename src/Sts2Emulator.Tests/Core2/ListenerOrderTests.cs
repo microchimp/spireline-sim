@@ -128,6 +128,22 @@ public class ListenerOrderTests
         Assert.Equal(s.Hand[0].Uid, hand.Who.Instance);
     }
 
+    [Fact] // game: CombatState.IterateHookListeners (the player's powers, then its relics, potions, orbs and cards)
+    public void ThePlayersPowersComeBeforeItsRelicsPotionsOrbsAndCards()
+    {
+        var s = Combat();
+        s.PlayerBuffs = [new BuffState(BuffId.Strength, 1), new BuffState(BuffId.Dexterity, 1)];
+        s.Relics = [new RelicInstance(1)];
+        s.PotionSlots[0] = 2;
+        s.Orbs = [new OrbState((OrbType)1)];
+        s.Hand = [Card(s, 10)];
+        Assert.Equal(new[]
+        {
+            $"Power:{P(BuffId.Strength)}@0", $"Power:{P(BuffId.Dexterity)}@0", "Relic:1@0", "Potion:2@0", "Orb:1@0",
+            "Card:10@0/Hand0", "Monster:16@1",
+        }, Order(new OldWorld(s, null, Ids)));
+    }
+
     [Fact] // game: CombatState.IterateHookListeners (Modifiers, BadgeModels, MultiplayerScalingModel after the creatures)
     public void ModifiersBadgesAndScalingLast()
     {
