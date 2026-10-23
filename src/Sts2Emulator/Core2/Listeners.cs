@@ -166,16 +166,7 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
             }
 
             // The snapshot's change probes: orbs and deck cards have no identity, so any later change is reported.
-            if (orbs && World.Combat is { } cs)
-            {
-                view.Orbs = new ChangeProbe<OrbState>(cs.Orbs);
-            }
-
-            if (deck && World.Run is { } rs)
-            {
-                view.Deck = new ChangeProbe<CardInstance>(rs.Deck);
-            }
-
+            view.Snapshot(World, orbs, deck);
             Flush(gaps);
             return list;
         }

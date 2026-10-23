@@ -683,6 +683,21 @@ public sealed class PassView
     internal ChangeProbe<CardInstance>? Deck { get; set; }
     internal Action<OldGap>? Gap { get; set; }
 
+    /// <summary>Starts the change probes for the lists this part of the pass lists (OldState is the one file that
+    /// names the old representation).</summary>
+    internal void Snapshot(OldWorld w, bool orbs, bool deck)
+    {
+        if (orbs && w.Combat is { } c)
+        {
+            Orbs = new ChangeProbe<OrbState>(c.Orbs);
+        }
+
+        if (deck && w.Run is { } r)
+        {
+            Deck = new ChangeProbe<CardInstance>(r.Deck);
+        }
+    }
+
     internal void Note(OldGap gap)
     {
         if (_noted.Add(gap.Why))
