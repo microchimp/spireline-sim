@@ -366,7 +366,7 @@ static class OldReanchor
         {
             // [IdentityOnly] fields (the card uid counter) are identity, not state the game could have drifted from.
             foreach (var f in typeof(CombatState).GetFields().Where(f => !f.IsStatic && !Observed.Contains(f.Name)
-                         && !f.IsDefined(typeof(IdentityOnlyAttribute))
+                         && !f.IsDefined(typeof(IdentityOnlyAttribute), false)
                          && (f.FieldType == typeof(int) || f.FieldType == typeof(bool))))
             {
                 f.SetValue(q, f.GetValue(start));

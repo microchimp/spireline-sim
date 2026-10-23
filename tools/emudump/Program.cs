@@ -99,7 +99,7 @@ if (args[0] == "fight")
         // renumber, as "<breach>:<card>", only on a step where it acted. No other field changes.
         Fight.OnStep += (e, step) =>
         {
-            if (e.State.ActiveCombat is not { } c) return;
+            if (OldEngine.Of(e).Run.State.ActiveCombat is not { } c) return;
             var log = new List<(Sts2Emulator.Core2.CardUidInvariant.Breach Kind, Sts2Emulator.Core.CardInstance Card)>();
             if (Sts2Emulator.Core2.CardUidInvariant.Normalise(c, log) == 0) return;
             step["card_uid_fixed"] = new JsonArray(log
