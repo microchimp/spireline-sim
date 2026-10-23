@@ -524,7 +524,7 @@ def play(a) -> int:
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
-    summary = {"runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] == "win"),
+    summary = {"runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / wall, 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -533,11 +533,25 @@ def play(a) -> int:
                "reanchors": sum(e["stats"]["reanchors"] for e in ends), "reanchor_failed": sum(e["stats"]["reanchor_failed"] for e in ends),
                "first_loss_by_reason": _count(e["stats"]["first_loss"]["reason"].split(":")[0] + ":" + (e["stats"]["first_loss"]["reason"].split(":")[1:2] or [""])[0] for e in ends if e["stats"]["first_loss"]),
                "first_divergences_by_type": {k: v[:5] for k, v in first.items()},
+               "gaps": sum(e["stats"].get("gaps", 0) for e in ends), "resumed": sum(e["stats"].get("resumed", 0) for e in ends),
+               "losses_by_reason": _merge(e["stats"].get("losses", {}) for e in ends),
+               "divergences_by_type": _count(f"{d['type']}:{'gap' if d.get('gap') else 'state'}:{(d.get('reason') or ','.join(x[0] for x in d['diff'][:3]))[:40]}" for d in divs),
+               "run_s_total": round(sum(e["s"] for e in ends), 1),
+               "decisions_per_s_per_proc": round(dec / max(1e-9, sum(e["s"] for e in ends)), 2),
+               "ranked_decisions_per_s_per_proc": round(rank / max(1e-9, sum(e["s"] for e in ends)), 3),
                "network_connections": sorted(nets), "errors": [e for e in events if e["ev"] == "crash"][:10]}
     (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     (out / "divergences.jsonl").write_text("\n".join(json.dumps(d) for d in divs), encoding="utf-8")
     print(json.dumps(summary, indent=1))
     return 1 if nets else 0
+
+
+def _merge(dicts) -> dict:
+    o: dict = {}
+    for d in dicts:
+        for k, v in d.items():
+            o[k] = o.get(k, 0) + v
+    return o
 
 
 def _count(it) -> dict:
