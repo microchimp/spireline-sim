@@ -338,6 +338,47 @@ class MappingTests(unittest.TestCase):
             self.assertIn(k, lockstep.MAPPED_KINDS)
 
 
+class LoneEndTurnTests(unittest.TestCase):
+    """B1 reward-phase group (G1162c5de18): the referee asks only with two or more legal actions, so a lone End Turn is
+    taken for it. A fight that turn ends (a power's end-of-turn damage, an enemy dying to its retaliation) reaches the
+    rewards screen with no combat question in between; the emulator side has to take the same lone End Turn before the
+    non-combat question is compared, or it still stands in the fight ("phase:0!=rewards")."""
+
+    COMBAT_LEGAL = 3  # the End Turn slot of a three-card hand
+
+    def _fight(self, legal):
+        screens = {"items": ("rewards", (_opt("reward.proceed", 9),)), "map": ("map", (_opt("map.node", 0, node=(1, 2)),))}
+        run = ItemsRun(gold=0)
+        run.cur, run.screens, run.stepped = "combat", screens, []
+        run.moves[("map", "map.node")] = "map"  # a lone path the lockstep may walk on its way to the screen asked about
+        e = stub_emu(run)
+
+        def step(handle, action, target, *bufs):
+            run.stepped.append(action)
+            run.cur = "items"  # the turn ends and the last enemy dies
+            return 0
+
+        e.native.run_action_mask = lambda h, n: [int(i in legal()) for i in range(n)] if run.cur == "combat" else [0] * n
+        e.native.run_step = step
+        return e, run
+
+    def test_a_lone_end_turn_that_wins_the_fight_is_taken_before_the_rewards_question(self):
+        e, run = self._fight(lambda: [self.COMBAT_LEGAL])
+        self.assertIsNone(e.sync("reward", ["take", "skip"], {"ctx": {"type": "card"}}))
+        self.assertEqual(run.stepped, [self.COMBAT_LEGAL])
+
+    def test_every_non_combat_screen_finishes_a_fight_the_referee_has_left(self):
+        for kind in ("reward", "card_reward", "treasure", "map", "rest"):
+            e, run = self._fight(lambda: [self.COMBAT_LEGAL])
+            e.sync(kind, [], {})
+            self.assertEqual(run.stepped, [self.COMBAT_LEGAL], kind)
+
+    def test_a_fight_with_a_choice_left_is_still_reported_as_a_difference(self):
+        e, run = self._fight(lambda: [0, self.COMBAT_LEGAL])  # a card and End Turn: the referee would have asked
+        self.assertEqual(e.sync("reward", ["take", "skip"], {"ctx": {"type": "card"}}), f"phase:{FakeRun.COMBAT}!=rewards")
+        self.assertEqual(run.stepped, [])
+
+
 def _ev(action, step=0, event=7):
     return _opt("event.option", action, event=(event, action, step))
 

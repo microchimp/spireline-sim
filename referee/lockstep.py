@@ -482,6 +482,10 @@ class EmuLock:
 
     def sync(self, kind: str, labels: list, msg: dict | None = None) -> str | None:
         self._msg = msg
+        if kind not in COMBAT_KINDS and self.s.phase == self.E.rc.PHASE_COMBAT:
+            # The referee left its fight with no question: a lone End Turn that ends the fight (a power's end-of-turn
+            # damage, a retaliation on the enemy's turn) is taken for it, so the emulator stands where the referee does.
+            self._auto_combat()
         if kind in COMBAT_KINDS:
             self._forced("combat")
             self._auto_combat()
