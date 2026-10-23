@@ -35,6 +35,13 @@ public interface IScreenSource
 
     /// <summary>Declines the open screen (legal only when <see cref="OpenScreen.Skippable"/>).</summary>
     void Decline();
+
+    /// <summary>
+    /// Throws when the engine has no model with this id (a card its id map lacks), with the engine's own exception: a
+    /// choice naming one ends the replay with that error, as the recorded verdict E of such a fight has always been.
+    /// Called before a pick is matched against a screen that has candidates; returns when the id is known.
+    /// </summary>
+    void RequireModel(string modelId);
 }
 
 /// <summary>

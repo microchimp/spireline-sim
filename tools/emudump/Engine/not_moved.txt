@@ -1,6 +1,8 @@
 # Files outside Engines/Old/ that still name Sts2Emulator: consumers not yet moved onto IEngine.
-# EngineBoundaryTests: a file outside Engines/Old/ that names Sts2Emulator and is not listed here fails;
-# a listed file that no longer names it fails too, so this list only shrinks. Fight.cs and Engine/ are never listed.
+# EngineBoundaryTests: a file outside Engines/Old/ that names Sts2Emulator and is not listed here fails; a listed
+# file that no longer names it fails too, so a consumer comes off this list when it moves. The list only shrinks: the
+# test holds the 20 files it began with as a ceiling, and an entry outside them fails (the ceiling is changed in the
+# test, in review, not here). Fight.cs, Reanchor.cs and Engine/ are never listed.
 # Paths are relative to tools/emudump, one per line.
 Codex/Driver.cs
 Codex/Names.cs

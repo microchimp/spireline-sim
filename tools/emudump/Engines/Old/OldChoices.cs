@@ -52,6 +52,8 @@ static class OldChoices
 
         // One past the last candidate (PendingCardSelection.Skippable).
         public void Decline() => step(active()!.PendingSelection!.Candidates.Count);
+
+        public void RequireModel(string modelId) => OldIds.CardIdBySnake(modelId);
     }
 
     /// <summary>A bare combat and a step function as a screen source.</summary>
