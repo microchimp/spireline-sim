@@ -29,9 +29,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 COMBAT_KINDS = ("combat", "select_cards_combat", "card_reward_combat")
 # Referee decision kinds the emulator side mirrors. Any other kind suspends the lockstep (reason unmapped:<kind>) until
-# the next re-anchor point; so does an event, whose options the emulator cannot name.
+# the next re-anchor point.
 MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "select_cards", "treasure", "shop",
-                "bundle") + COMBAT_KINDS
+                "bundle", "event") + COMBAT_KINDS
 # Reasons that are a gap in this adapter's mapping, not a difference of the emulator's: reported apart.
 GAP_PREFIXES = ("unmapped", "apply:", "choose_error")
 
@@ -187,10 +187,15 @@ class Lockstep:
             ok = self.emu.reanchor(plan, msg)
         except Exception:  # noqa: BLE001 -- a failed re-anchor waits for the next point
             ok = False
+        reason, d = None, []
         if ok:
             reason, d, _, _ = self._equal(kind, labels, msg)
             ok = not reason and not d
         self.stats["reanchors" if ok else "reanchor_failed"] += 1
+        if not ok:  # why: the emulator side's own reason, else the views that still differ after it
+            why = getattr(self.emu, "fail", None) or (reason or "diff:" + ",".join(str(x[0]) for x in d[:4]))
+            fails = self.stats.setdefault("reanchor_fail_reasons", {})
+            fails[f"{plan}:{why}"[:80]] = fails.get(f"{plan}:{why}"[:80], 0) + 1
         by = self.stats.setdefault("reanchor_by_plan", {})
         by[f"{plan}:{'ok' if ok else 'failed'}"] = by.get(f"{plan}:{'ok' if ok else 'failed'}", 0) + 1
         return ok
@@ -229,6 +234,20 @@ def _room(obs: dict) -> str:
 # ------------------------------------------------------------------ the emulator side
 
 
+def _event_names() -> dict[int, str]:
+    """The emulator's event ids as the game's ModelId.Entry (the constant's own name: EventSunkenTreasury ->
+    SUNKEN_TREASURY), read off RunConstants. Empty when the source is not there."""
+    import re  # noqa: PLC0415
+
+    path = ROOT / "src" / "Sts2Emulator" / "Core" / "Run" / "RunConstants.cs"
+    if not path.is_file():
+        return {}
+    out: dict[int, str] = {}
+    for name, value in re.findall(r"public const int Event(\w+)\s*=\s*(-?\d+);", path.read_text(encoding="utf-8")):
+        out.setdefault(int(value), re.sub(r"(?<!^)(?=[A-Z])", "_", name).upper())
+    return out
+
+
 class EmuLock:
     """The real emulator side: a RunSession from the referee's seed, the rules policy, IS-MCTS in fights.
 
@@ -241,7 +260,7 @@ class EmuLock:
     REST = {"HEAL": "heal", "SMITH": "smith", "CLONE": "clone", "LIFT": "lift", "DIG": "dig", "HATCH": "hatch",
             "COOK": "cook", "KINDLE": "kindle"}
     SCREEN = {"neow": "neow", "ancient": "neow", "map": "map", "card_reward": "card_reward", "rest": "rest",
-              "select_cards": "card_select", "shop": "shop", "bundle": "bundle"}
+              "select_cards": "card_select", "shop": "shop", "bundle": "bundle", "event": "event"}
 
     def __init__(self, seed: str, ascension: int = 10, sims: int = 60):
         import leakprobes  # noqa: PLC0415 -- the native library's location
@@ -261,6 +280,8 @@ class EmuLock:
         self.dec = None
         self.rq: list = []  # the referee's reward answers not yet mirrored: [type, take]
         self._msg: dict | None = None
+        self.fail: str | None = None  # why the last reanchor() returned False
+        self.event_names = _event_names()
 
     @staticmethod
     def _id_map() -> dict:
@@ -373,8 +394,31 @@ class EmuLock:
                 self._forced("map")
             return None
         self._forced(self.SCREEN[kind])
+        if kind == "event":
+            return self._sync_event(msg)
         got = None if self.dec is None else self.dec.type
         return None if got == self.SCREEN[kind] else f"screen:{got}!={self.SCREEN[kind]}"
+
+    def _sync_event(self, msg: dict | None) -> str | None:
+        """Reach the event page the referee is asking about. The referee asks only with two or more enabled options, so
+        a page where the emulator has a single option is one the referee passed without asking."""
+        for _ in range(12):
+            self._flush_rewards()
+            d = self._decision()
+            if d is None or d.type != "event" or len(d.options) != 1:
+                break
+            self.s.apply(d.options[0])
+            self._forced("event")
+        got = None if self.dec is None else self.dec.type
+        if got != "event":
+            return f"screen:{got}!=event"
+        ctx = (msg or {}).get("ctx")
+        ref = ctx if isinstance(ctx, str) else None
+        ev = self.dec.options[0].event
+        emu = self.event_names.get(int(ev[0])) if ev is not None and ev[0] is not None else None
+        if ref and emu and ref != emu:
+            return f"event:{ref}!={emu}"  # a different event: the emulator's room is not the referee's
+        return None
 
     def _auto_combat(self) -> None:
         """The referee asks only when two or more actions are legal (Env.Decide), so a lone End Turn is taken for it."""
@@ -434,25 +478,47 @@ class EmuLock:
         return True
 
     def reanchor(self, plan: str, msg: dict) -> bool:
+        self.fail = None
         obs = msg.get("obs", {})
         if plan == "room_entry":
-            return self._to_map() and self._set_player(obs) and self._decision() is not None
+            if not self._to_map():
+                self.fail = "to_map"
+            elif not self._set_player(obs):
+                self.fail = "set_player:unknown_id"
+            elif self._decision() is None:
+                self.fail = "no_decision"
+            return self.fail is None
         if plan == "fight_start":
             # The referee entered this fight without a map decision (a lone path). A fight the emulator is already in
             # cannot be re-anchored from Python (that needs tools/emudump Reanchor inside the native library).
-            if self.s.phase == self.E.rc.PHASE_COMBAT or not self._to_map() or not self._set_player(obs):
-                return False
-            d = self._decision()
-            if d is None or len(d.options) != 1:
-                return False
-            self.s.apply(d.options[0])
-            self._auto_combat()
-            return self.s.phase == self.E.rc.PHASE_COMBAT
+            if self.s.phase == self.E.rc.PHASE_COMBAT:
+                self.fail = "in_fight"
+            elif not self._to_map():
+                self.fail = "to_map"
+            elif not self._set_player(obs):
+                self.fail = "set_player:unknown_id"
+            else:
+                d = self._decision()
+                if d is None or len(d.options) != 1:
+                    self.fail = f"map_options:{None if d is None else len(d.options)}"
+                else:
+                    self.s.apply(d.options[0])
+                    self._auto_combat()
+                    if self.s.phase != self.E.rc.PHASE_COMBAT:
+                        self.fail = "not_in_fight"
+            return self.fail is None
+        self.fail = "no_plan"
         return False
 
     # -- non-combat pairing: referee label index -> emulator option index
     def _pair(self, kind: str, labels: list) -> list[int | None]:
         opts = self.dec.options
+        if kind == "event":
+            # The labels are the enabled options' TextKeys (or relic ids) in page order, the emulator's options its legal
+            # actions in action order: paired by position, and only when the counts agree (a locked option the two sides
+            # count differently is a gap, not a guess).
+            order = sorted(range(len(opts)), key=lambda j: opts[j].action)
+            return list(order) if len(order) == len(labels) else [None] * len(labels)
         out: list[int | None] = []
         for lab in labels:
             hit = None

@@ -535,6 +535,8 @@ def play(a) -> int:
                "first_divergences_by_type": {k: v[:5] for k, v in first.items()},
                "gaps": sum(e["stats"].get("gaps", 0) for e in ends), "resumed": sum(e["stats"].get("resumed", 0) for e in ends),
                "losses_by_reason": _merge(e["stats"].get("losses", {}) for e in ends),
+               "reanchor_fail_reasons": _merge(e["stats"].get("reanchor_fail_reasons", {}) for e in ends),
+               "reanchor_by_plan": _merge(e["stats"].get("reanchor_by_plan", {}) for e in ends),
                "divergences_by_type": _count(f"{d['type']}:{'gap' if d.get('gap') else 'state'}:{(d.get('reason') or ','.join(x[0] for x in d['diff'][:3]))[:40]}" for d in divs),
                "run_s_total": round(sum(e["s"] for e in ends), 1),
                "decisions_per_s_per_proc": round(dec / max(1e-9, sum(e["s"] for e in ends)), 2),

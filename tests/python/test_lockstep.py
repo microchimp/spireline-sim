@@ -127,8 +127,8 @@ class DivergenceTests(unittest.TestCase):
 
     def test_unmapped_kind_and_structure_mismatch_end_the_lockstep_with_a_reason(self):
         a = obs()
-        ls, _ = self.run_stream([msg("event", a)], FakeEmu([view_of(a)]))
-        self.assertEqual(ls.stats["first_loss"]["reason"], "unmapped:event")  # shop is mapped since the A1 amend
+        ls, _ = self.run_stream([msg("minigame", a)], FakeEmu([view_of(a)]))
+        self.assertEqual(ls.stats["first_loss"]["reason"], "unmapped:minigame")  # event, shop are mapped
         ls, _ = self.run_stream([msg("map", a)], FakeEmu([view_of(a)], sync_reason="screen:rest!=map"))
         self.assertEqual(ls.log.records[0]["reason"], "screen:rest!=map")
 
@@ -175,7 +175,7 @@ class ResumeTests(unittest.TestCase):
         a = obs()
         emu = FakeEmu([view_of(a)], reanchor_ok=True)
         ls = lockstep.Lockstep(emu, lambda m: 0)
-        for m in (msg("event", a), msg("event", a), msg("map", a)):
+        for m in (msg("minigame", a), msg("minigame", a), msg("map", a)):
             ls.decide(m)
         self.assertTrue(ls.log.records[0]["gap"])  # a mapping gap, not an emulator divergence
         self.assertEqual((ls.stats["gaps"], ls.stats["diverged"], ls.stats["resumed"]), (1, 0, 1))
@@ -247,6 +247,7 @@ def stub_emu(run, hand=None):
     e.native = SimpleNamespace(run_action_mask=lambda h, n: [1, 1] + [0] * (n - 2),
                                run_state_list=lambda h, k, n: [getattr(run, "items", {}).get(x, 0) for x in ("gold", "potion", "relic", "card")])
     e.s, e.rq, e.dec, e._msg = run, [], None, None
+    e.fail, e.event_names = None, {7: "WELLSPRING", 8: "SLIPPERY_BRIDGE"}
     e.slug = {"cards": {5: "STRIKE_IRONCLAD", 6: "DEFEND_IRONCLAD", 7: "BASH", 8: "ANGER"}, "relics": {}, "potions": {}}
     e.ls = SimpleNamespace(_living_targets=lambda o: [0, 1])
     e._obs = lambda: None
@@ -310,6 +311,57 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(e.apply("treasure", [["take", "R"], "skip"], 1), "treasure_skip")
         for k in ("treasure", "shop", "bundle", "card_reward_combat"):
             self.assertIn(k, lockstep.MAPPED_KINDS)
+
+
+def _ev(action, step=0, event=7):
+    return _opt("event.option", action, event=(event, action, step))
+
+
+class EventTests(unittest.TestCase):
+    """Round A1 events: the emulator follows the referee through an event (34 of 50 first losses before)."""
+
+    def _run(self):
+        screens = {"p1": ("event", (_ev(0), _ev(1), _ev(2))),
+                   "lone": ("event", (_ev(0, 1),)),
+                   "p2": ("event", (_ev(0, 2), _ev(1, 2))),
+                   "map": ("map", (_opt("map.node", 0, node=(1, 2)), _opt("map.node", 1, node=(3, 2))))}
+        return FakeRun("p1", screens, {("p1", "event.option"): "lone", ("lone", "event.option"): "p2",
+                                        ("p2", "event.option"): "map"})
+
+    def test_event_is_a_mapped_kind_and_pairs_the_referee_option_by_position(self):
+        self.assertIn("event", lockstep.MAPPED_KINDS)
+        run = self._run()
+        e = stub_emu(run)
+        labels = ["WELLSPRING.pages.INITIAL.options.A", "WELLSPRING.pages.INITIAL.options.B", "RELIC_X"]
+        self.assertIsNone(e.sync("event", labels, {"ctx": "WELLSPRING"}))
+        self.assertEqual(e._pair("event", labels), [0, 1, 2])
+        self.assertIsNone(e.apply("event", labels, 1))
+        self.assertEqual(run.taken, ["event.option"])
+
+    def test_a_page_with_one_option_is_passed_as_the_referee_passes_it(self):
+        run = self._run()
+        e = stub_emu(run)
+        labels = ["a", "b", "c"]
+        e.sync("event", labels, {"ctx": "WELLSPRING"})
+        e.apply("event", labels, 0)
+        self.assertIsNone(e.sync("event", ["x", "y"], {"ctx": "WELLSPRING"}))  # the lone page was stepped
+        self.assertEqual(run.taken, ["event.option", "event.option"])
+        self.assertEqual(run.cur, "lone" if False else "p2")
+
+    def test_a_different_event_or_option_count_is_a_gap_not_a_guess(self):
+        e = stub_emu(self._run())
+        self.assertEqual(e.sync("event", ["a", "b", "c"], {"ctx": "SLIPPERY_BRIDGE"}), "event:SLIPPERY_BRIDGE!=WELLSPRING")
+        e.dec = SimpleNamespace(type="event", options=(_ev(0), _ev(1), _ev(2)), view=None)
+        self.assertEqual(e._pair("event", ["a", "b"]), [None, None])
+        self.assertTrue(e.apply("event", ["a", "b"], 0).startswith("no_emulator_option:event"))
+
+    def test_event_then_fight_then_rewards_resume_through_the_lockstep(self):
+        a = obs()
+        emu = FakeEmu([view_of(a)])
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in (msg("event", a), msg("map", a)):
+            ls.decide(m)
+        self.assertEqual((ls.stats["gaps"], ls.stats["ranked"], ls.lost), (0, 2, None))
 
 
 class LeakTests(unittest.TestCase):
