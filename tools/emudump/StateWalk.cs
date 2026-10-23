@@ -45,8 +45,9 @@ static class StateWalk
             var all = new List<FieldInfo>();
             for (var x = t; x != null && x != typeof(object) && x != typeof(ValueType); x = x.BaseType)
             {
+                // [IdentityOnly]: the kernel's card uids and their counter, read by no output (CardUid.cs).
                 all.AddRange(x.GetFields(Inst | BindingFlags.DeclaredOnly)
-                    .Where(f => !typeof(Delegate).IsAssignableFrom(f.FieldType)));
+                    .Where(f => !typeof(Delegate).IsAssignableFrom(f.FieldType) && !f.IsDefined(typeof(IdentityOnlyAttribute))));
             }
 
             var fields = all.OrderBy(Name, StringComparer.Ordinal).ToArray();

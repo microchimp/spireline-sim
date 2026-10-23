@@ -145,6 +145,13 @@ public sealed class CombatState
     /// </summary>
     public bool MercGoldWasStolen;
 
+    /// <summary>
+    /// The last per-combat card uid handed out (CardUids, docs/rebuild/CARD_UID.md). Copied by Clone, so
+    /// a clone's new cards continue the sequence; left out of the state walk with the uids themselves.
+    /// </summary>
+    [IdentityOnly]
+    public int LastCardUid;
+
     // Cards
     public List<CardInstance> Hand = [];
     public List<CardInstance> DrawPile = [];

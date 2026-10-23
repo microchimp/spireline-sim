@@ -26,6 +26,13 @@ public static class DeepState
 {
     private static readonly Dictionary<Type, FieldInfo[]> FieldCache = new();
 
+    /// <summary>
+    /// A <c>skip</c> entry that leaves out every [IdentityOnly] field (card uids and their counter): for a
+    /// relation whose two sides differ only in which of two equal cards was used. Paths start with '.', so
+    /// it is never a path prefix.
+    /// </summary>
+    public const string CardIdentity = "[card identity]";
+
     /// <summary>The state as sorted "path=value" lines.</summary>
     public static List<string> Lines(object? root, params string[] skip)
     {
@@ -117,6 +124,8 @@ public static class DeepState
         public StringBuilder Path { get; } = new();
 
         public Dictionary<object, string> Seen { get; } = new(ReferenceEqualityComparer.Instance);
+
+        public bool NoIdentity { get; } = Array.IndexOf(skip, CardIdentity) >= 0;
 
         /// <summary>Whether the current path is under a skipped prefix (compared without making a string).</summary>
         public bool Skipped()
@@ -228,6 +237,11 @@ public static class DeepState
 
         foreach (var f in FieldsOf(type))
         {
+            if (w.NoIdentity && f.IsDefined(typeof(Sts2Emulator.Core.IdentityOnlyAttribute)))
+            {
+                continue;
+            }
+
             string name = f.Name;
             if (name.StartsWith('<') && name.EndsWith(">k__BackingField", StringComparison.Ordinal))
             {

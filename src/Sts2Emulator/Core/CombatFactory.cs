@@ -392,6 +392,8 @@ public static class CombatFactory
         state.AiStateAssumed = false;
 
         state.DrawPile = deck.ToArray().ToList();
+        // Every card cloned from the deck enters the combat with a fresh uid (CARD_UID.md).
+        CardUids.NumberAll(state);
 
         var encounter = encounterId.HasValue
             ? (ActOneEncounter)encounterId.Value

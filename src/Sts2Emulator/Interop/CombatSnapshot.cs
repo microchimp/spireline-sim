@@ -518,6 +518,8 @@ public static class CombatSnapshot
         ReadCounters(root.OptionalChild("counters", CounterFields), state);
         ReadPendingSelection(root, state, unordered);
         ReadStoppedStep(root, state, seed);
+        // A combat read from a document: its cards enter it here (CARD_UID.md).
+        CardUids.NumberAll(state);
         return state;
     }
 

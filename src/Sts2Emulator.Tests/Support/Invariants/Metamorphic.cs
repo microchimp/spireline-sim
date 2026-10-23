@@ -326,7 +326,8 @@ public static class Metamorphic
             x.Step(new Move(i, target));
             y.Step(new Move(j, target));
             rep.Count("twins");
-            var rest = DeepState.Diff(x.Whole, y.Whole, DiffLimit, ".Item1.Hand[");
+            // The twins are equal cards with their own uids: which one was played is card identity, not state.
+            var rest = DeepState.Diff(x.Whole, y.Whole, DiffLimit, ".Item1.Hand[", DeepState.CardIdentity);
             if (rest.Count > 0)
             {
                 rep.Fail("twins", 1, card, rest);
@@ -341,7 +342,7 @@ public static class Metamorphic
     }
 
     private static List<string> SortedHand(Combat c) =>
-        c.State.Hand.Select(card => string.Join("|", DeepState.Lines(card))).OrderBy(s => s, StringComparer.Ordinal).ToList();
+        c.State.Hand.Select(card => string.Join("|", DeepState.Lines(card, DeepState.CardIdentity))).OrderBy(s => s, StringComparer.Ordinal).ToList();
 
     /// <summary>
     /// Two enemies of one kind made identical: hitting the first or hitting the second gives the same

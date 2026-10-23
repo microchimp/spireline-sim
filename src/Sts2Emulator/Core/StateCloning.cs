@@ -211,6 +211,7 @@ public static class StateCloning
         into.PaelsLegionCooldown = combat.PaelsLegionCooldown;
         into.PaelsLegionCard = combat.PaelsLegionCard;
         into.MercGoldWasStolen = combat.MercGoldWasStolen;
+        into.LastCardUid = combat.LastCardUid;
         into.Hand = Refill(into.Hand, combat.Hand, inPlace);
         into.DrawPile = Refill(into.DrawPile, combat.DrawPile, inPlace);
         into.DiscardPile = Refill(into.DiscardPile, combat.DiscardPile, inPlace);
