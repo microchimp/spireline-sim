@@ -4,8 +4,9 @@
 // (run engine, combat state, def-id ints, buff enums, RNG wrappers) appears in this folder, so a second
 // engine can plug into the same adapters (referee/design/rebuild-plan.md section 1, "Oracle path").
 // tools/emudump.Tests/EngineBoundaryTests.cs enforces the boundary.
-// Fight.cs, Reanchor.cs and Program.cs's `fight --netstate` reach the engine through these members (the types Reanchor passes are in
-// ReanchorTypes.cs); later rounds add members for Setup, HookProbe and Trace.
+// Fight.cs, Reanchor.cs, Setup.cs (the setup items) and Program.cs's `fight --netstate` and `setupinfo` reach the
+// engine through these members (the types Reanchor passes are in ReanchorTypes.cs); later rounds add members for
+// HookProbe and Trace.
 using System.Text.Json.Nodes;
 
 namespace EmuDump.Engine;
