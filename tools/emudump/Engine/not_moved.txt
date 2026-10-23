@@ -1,0 +1,25 @@
+# Files outside Engines/Old/ that still name Sts2Emulator: consumers not yet moved onto IEngine.
+# EngineBoundaryTests: a file outside Engines/Old/ that names Sts2Emulator and is not listed here fails;
+# a listed file that no longer names it fails too, so this list only shrinks. Fight.cs and Engine/ are never listed.
+# Paths are relative to tools/emudump, one per line.
+Codex/Driver.cs
+Codex/Names.cs
+Codex/ProfileFit.cs
+Codex/Streams.cs
+Codex/Walker.cs
+Digest.cs
+HookProbe.cs
+Live.cs
+Meta.cs
+MutHost.cs
+NetState.cs
+Program.cs
+Reanchor.cs
+RefsetSetup.cs
+RngLog.cs
+RunReplay.cs
+RunSnap.cs
+Setup.cs
+StateWalk.cs
+Tables.cs
+Trace.cs
