@@ -68,5 +68,17 @@ class EnvProtoTest(unittest.TestCase):
         self.assertEqual(s["mem_growth_mb_mean"], 50)
 
 
+
+class FullSelectSpecTest(unittest.TestCase):
+    def test_reset_spec_carries_the_flag_only_when_on(self):
+        self.assertNotIn("full_select", envproto.reset_spec("S1"))  # old records and specs are unchanged
+        self.assertIs(envproto.reset_spec("S1", full_select=True)["full_select"], True)
+
+    def test_record_meta_stores_the_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            envproto.write_record_meta(Path(d), "S1", "IRONCLAD", False, True)
+            self.assertTrue(envproto.read_record_meta(Path(d), "S1")["full_select"])
+            self.assertFalse(envproto.read_record_meta(Path(d), "S2")["full_select"])  # no sidecar: off
+
 if __name__ == "__main__":
     unittest.main()
