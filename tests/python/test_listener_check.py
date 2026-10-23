@@ -155,7 +155,7 @@ class ListenerCheck(unittest.TestCase):
         hooks, names = lc.load_families()
         self.assertEqual(len(names), 16)
         for dispatcher, fam in {"AfterCardDrawn": "F11", "ModifyDamage": "F08", "ModifyEnergyCostInCombat": "F07", "ShouldPlay": "F06",
-                                "ModifyBlock": "F09", "ModifyHpLost": "F08", "AfterActEntered": "F16", "ModifyMaxEnergy": "F03"}.items():
+                                "ModifyBlock": "F09", "ModifyHpLost": "F08", "BeforeTurnEnd": "F05", "AfterTurnEnd": "F05", "AfterActEntered": "F16", "ModifyMaxEnergy": "F03"}.items():
             self.assertEqual(lc.family_of(dispatcher, hooks), fam, dispatcher)
         self.assertEqual(lc.family_of("NoSuchHook", hooks), "-")
         self.assertEqual(lc.family_of(None, hooks), "-")

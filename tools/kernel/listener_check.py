@@ -41,6 +41,8 @@ from tools.fidelity import hook_table as ht  # noqa: E402
 FAMILIES_JSON = Path(__file__).resolve().parents[1] / "fidelity" / "hook_families.json"
 # Direct IterateHookListeners callers in the game that are not Hook methods, and the family their hooks sit in.
 CALLER_FAMILY = {"CardCostHelper.": "F07"}
+# Hook dispatchers whose names differ from the model hooks they front (hook_families.json is keyed by model hook).
+DISPATCHER_ALIAS = {"BeforeTurnEnd": "BeforeSideTurnEnd", "AfterTurnEnd": "AfterSideTurnEnd"}
 ENEMY_BASE = 1000
 CREATURE_KINDS = ("power", "monster", "relic", "potion", "orb", "card", "affliction", "enchantment")
 
@@ -142,6 +144,7 @@ def family_of(hook, hooks: dict[str, str]) -> str:
             if caller.startswith(prefix):
                 return fam
         return "-"
+    hook = DISPATCHER_ALIAS.get(hook, hook)
     if hook in hooks:
         return hooks[hook]
     fams = {hooks[k] for k in hooks if k == "Try" + hook or k.startswith(hook)}

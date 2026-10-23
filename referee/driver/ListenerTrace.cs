@@ -22,9 +22,11 @@
 // Enumerations nest (a listener's work dispatches another hook), so enum_id (counted per traced fight)
 // tells them apart. A run enumeration that includes a combat's (RunState.IterateHookListeners(combat))
 // logs the combat part itself; the nested combat iterator is left unwrapped so no listener is logged twice.
-// The metadata is read when the listener is yielded, so work done by earlier listeners of the same
-// dispatch is visible in it. No game code here: only calls into the game's API, and nothing is written
-// except the trace output.
+// The game builds an enumeration's listener list when it is first advanced, and a listener's work can then
+// move cards or powers; so the metadata is the state at that moment (a snapshot taken just before the first
+// advance; for the combat part of a run enumeration, just before that part is built), not at the yield. A
+// listener missing from the snapshot (made during the dispatch) is described from the live state. No game
+// code here: only calls into the game's API, and nothing is written except the trace output.
 
 using System;
 using System.Collections.Generic;
@@ -50,12 +52,31 @@ internal static class ListenerTrace
 
     private static bool _patched;
     private static int _nextId;
-    private static int _runMoving;  // > 0 while a wrapped run enumeration advances (the combat one it nests is not wrapped)
+    private static RunHolder? _moving;  // the wrapped run enumeration that is advancing (its nested combat enumeration reports to it)
+    private static RunState? _run;
     private static HashSet<string>? _publicHooks;
     private static readonly System.Text.RegularExpressions.Regex PatchedHook = new(@"\.Hooks\.Hook\.(\w+)_Patch\d+$");
 
     /// <summary>Starts a fight's enumeration ids at 0.</summary>
-    internal static void Reset() => _nextId = 0;
+    internal static void Reset(RunState run)
+    {
+        _nextId = 0;
+        _run = run;
+        _moving = null;
+    }
+
+    /// <summary>Where each listener stood, owner and index, when an enumeration's list was built.</summary>
+    private sealed class Snap : Dictionary<object, (JsonNode? Owner, JsonNode? Index)>
+    {
+        public Snap() : base(ReferenceEqualityComparer.Instance) { }
+    }
+
+    /// <summary>A run enumeration's own snapshot and the one its nested combat enumeration took when it was built.</summary>
+    private sealed class RunHolder
+    {
+        public Snap? Own;
+        public Snap? Child;
+    }
 
     internal static void Install(Harmony h)
     {
@@ -69,31 +90,37 @@ internal static class ListenerTrace
 
     private static void CombatPostfix(ref IEnumerable<AbstractModel> __result)
     {
-        if (!Enabled || Trace.Events == null || _runMoving > 0) return;
-        __result = Wrap(__result, _nextId++, false, HookName());
+        if (!Enabled || Trace.Events == null) return;
+        // Inside a run enumeration's advance: the combat part the run yields (logged by the run's wrapper, once).
+        if (_moving != null) __result = SnapChild(__result, _moving);
+        else __result = Wrap(__result, _nextId++, null, HookName());
     }
 
     private static void RunPostfix(ref IEnumerable<AbstractModel> __result)
     {
         if (!Enabled || Trace.Events == null) return;
-        __result = Wrap(__result, _nextId++, true, HookName());
+        __result = Wrap(__result, _nextId++, new RunHolder(), HookName());
     }
 
-    private static IEnumerable<AbstractModel> Wrap(IEnumerable<AbstractModel> inner, int id, bool run, string hook)
+    private static IEnumerable<AbstractModel> Wrap(IEnumerable<AbstractModel> inner, int id, RunHolder? run, string hook)
     {
-        Trace.Events?.Add(new JsonArray("LB", id, hook, run ? "run" : "combat"));
+        Trace.Events?.Add(new JsonArray("LB", id, hook, run != null ? "run" : "combat"));
         try
         {
             using var e = inner.GetEnumerator();
+            // The game builds its list in the first MoveNext: take the state it will read.
+            Snap own = Take();
+            if (run != null) run.Own = own;
             while (true)
             {
                 bool more;
-                if (run) _runMoving++;
+                var outer = _moving;
+                if (run != null) _moving = run;
                 try { more = e.MoveNext(); }
-                finally { if (run) _runMoving--; }
+                finally { _moving = outer; }
                 if (!more) yield break;
                 AbstractModel m = e.Current;
-                Trace.Events?.Add(Describe(id, m));
+                Trace.Events?.Add(Describe(id, m, run?.Child, own));
                 yield return m;
             }
         }
@@ -101,6 +128,14 @@ internal static class ListenerTrace
         {
             Trace.Events?.Add(new JsonArray("LE", id));
         }
+    }
+
+    /// <summary>The combat enumeration a run enumeration nests: the same items, and a snapshot of the state its list is built from.</summary>
+    private static IEnumerable<AbstractModel> SnapChild(IEnumerable<AbstractModel> inner, RunHolder run)
+    {
+        using var e = inner.GetEnumerator();
+        run.Child = Take();
+        while (e.MoveNext()) yield return e.Current;
     }
 
     // ── which Hook method asked ────────────────────────────────────────────────────────────
@@ -147,13 +182,18 @@ internal static class ListenerTrace
 
     // ── what is written per listener ───────────────────────────────────────────────────────
 
-    private static JsonArray Describe(int id, AbstractModel m)
+    private static JsonArray Describe(int id, AbstractModel m, Snap? first, Snap second)
     {
         string kind = "other";
         JsonNode? owner = null;
         JsonNode? index = null;
         try
         {
+            if (Kind(m) is string k && ((first != null && first.TryGetValue(m, out var hit)) || second.TryGetValue(m, out hit)))
+            {
+                return new JsonArray("L", id, m.Id.Entry, k, hit.Owner?.DeepClone(), hit.Index?.DeepClone());
+            }
+
             switch (m)
             {
                 case PowerModel p:
@@ -214,6 +254,78 @@ internal static class ListenerTrace
         return new JsonArray("L", id, m.Id.Entry, kind, owner, index);
     }
 
+    private static string? Kind(AbstractModel m) => m switch
+    {
+        PowerModel => "power", MonsterModel => "monster", RelicModel => "relic", PotionModel => "potion", OrbModel => "orb",
+        CardModel => "card", AfflictionModel => "affliction", EnchantmentModel => "enchantment", _ => null,
+    };
+
+    /// <summary>The owner and index of every model the iterators list, as of now (the same lookups Describe makes live).</summary>
+    private static Snap Take()
+    {
+        var s = new Snap();
+        try
+        {
+            var combat = CombatManager.Instance.DebugOnlyGetState();
+            var creatures = new List<Creature>();
+            if (combat != null)
+            {
+                creatures.AddRange(combat.Allies);
+                creatures.AddRange(combat.Enemies);
+            }
+
+            foreach (var c in creatures)
+            {
+                var owner = Owner(c, null);
+                for (int i = 0; i < c.Powers.Count; i++) s[c.Powers[i]] = (owner, i);
+                if (c.Monster != null) s[c.Monster] = (owner, 0);
+                if (c.Player != null) TakePlayer(s, c.Player);
+            }
+
+            if (_run != null)
+            {
+                foreach (var p in _run.Players)
+                {
+                    if (combat == null || !creatures.Contains(p.Creature)) TakePlayer(s, p);
+                    for (int i = 0; i < p.Deck.Cards.Count; i++) TakeCard(s, p, p.Deck.Cards[i], "deck", i);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // A partial snapshot: what is missing is described live (Describe), the game is not disturbed.
+        }
+
+        return s;
+    }
+
+    private static void TakePlayer(Snap s, Player p)
+    {
+        var owner = Owner(p.Creature, p);
+        for (int i = 0; i < p.Relics.Count; i++) s[p.Relics[i]] = (owner, i);
+        for (int i = 0; i < p.PotionSlots.Count; i++)
+        {
+            if (p.PotionSlots[i] != null) s[p.PotionSlots[i]!] = (owner, i);
+        }
+
+        var pcs = p.PlayerCombatState;
+        if (pcs == null) return;
+        for (int i = 0; i < pcs.OrbQueue.Orbs.Count; i++) s[pcs.OrbQueue.Orbs[i]] = (owner, i);
+        foreach (var pile in pcs.AllPiles)
+        {
+            string name = pile.Type.ToString().ToLowerInvariant();
+            for (int i = 0; i < pile.Cards.Count; i++) TakeCard(s, p, pile.Cards[i], name, i);
+        }
+    }
+
+    private static void TakeCard(Snap s, Player p, CardModel c, string pile, int pos)
+    {
+        var owner = Owner(p.Creature, p);
+        s[c] = (owner, new JsonArray(pile, pos));
+        if (c.Affliction != null) s[c.Affliction] = (owner, new JsonArray(pile, pos));
+        if (c.Enchantment != null) s[c.Enchantment] = (owner, new JsonArray(pile, pos));
+    }
+
     private static JsonNode? Owner(Creature? c, Player? p)
     {
         var combat = CombatManager.Instance.DebugOnlyGetState();
@@ -229,7 +341,7 @@ internal static class ListenerTrace
         return null;
     }
 
-    private static int Slot<T>(IReadOnlyList<T>? list, object item) where T : class
+    private static int Slot<T>(IReadOnlyList<T>? list, object item) where T : class?
     {
         if (list == null) return -1;
         for (int i = 0; i < list.Count; i++)
@@ -240,7 +352,7 @@ internal static class ListenerTrace
         return -1;
     }
 
-    private static JsonNode? Index<T>(IReadOnlyList<T>? list, object item) where T : class => Slot(list, item);
+    private static JsonNode? Index<T>(IReadOnlyList<T>? list, object item) where T : class? => Slot(list, item);
 
     /// <summary>[pile, position]: the deck, else the combat piles.</summary>
     private static JsonNode? Place(CardModel c)

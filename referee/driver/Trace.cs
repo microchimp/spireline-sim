@@ -65,7 +65,7 @@ internal static class Trace
         {
             Widen();
             ListenerTrace.Install(_harmony!);
-            ListenerTrace.Reset();
+            ListenerTrace.Reset(run);
         }
 
         _player = player;
