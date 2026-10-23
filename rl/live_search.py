@@ -142,6 +142,9 @@ _LOG = logging.getLogger(__name__)
 # search seed, so the root's moves depend on the position alone and searches run with
 # different seeds (one per process) enumerate the same (action, target) keys.
 _PROBE_SEED = 1
+# Control for the clairvoyance test (DESIGN.md 7.6, L+): playouts fork WITHOUT resampling, so every
+# simulation sees the true draw order and enemy rolls. Never set outside tests; search_live(resample=False).
+_ORACLE = False
 
 # Every seed a simulation plays is drawn from [0, 2**31 - 1), the range a clone seed takes.
 _SEED_SPACE = 2**31 - 1
@@ -909,7 +912,7 @@ def _simulate(
     world's candidates no longer show.
     """
     rng = np.random.default_rng(seed)
-    world = root.fork(seed)
+    world = root.fork(None if _ORACLE else seed)
     try:
         action = _action_in(world, child.key, subtree.action)
         if action is None:
@@ -954,7 +957,7 @@ def _playout(
     choice that this world's candidates no longer show.
     """
     rng = np.random.default_rng(seed)
-    world = root.fork(seed)
+    world = root.fork(None if _ORACLE else seed)
     try:
         action = _action_in(world, child.key, child.node.action)
         if action is None:
@@ -1399,6 +1402,7 @@ def search_live(
     c_puct: float = 0.2,
     confirm_pairs: int = 50,
     prior_min_visits: int = 0,
+    resample: bool = True,
     _lane: tuple[int, int] = (0, 1),
 ) -> SearchResult:
     """Search the combat on `handle` and grade every root move.
@@ -1426,6 +1430,19 @@ def search_live(
         ValueError: If the position has no legal move.
 
     """
+    global _ORACLE  # noqa: PLW0603 -- see _ORACLE
+    saved, _ORACLE = _ORACLE, not resample
+    try:
+        return _search_live(
+            handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
+            confirm_pairs, prior_min_visits, _lane,
+        )
+    finally:
+        _ORACLE = saved
+
+
+def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
+                 confirm_pairs, prior_min_visits, _lane) -> SearchResult:
     search = _Search(
         handle,
         time_budget_s=time_budget_s,
@@ -1450,6 +1467,7 @@ _SEARCH_SETTINGS = frozenset(inspect.signature(search_live).parameters) - {
     "handle",
     "time_budget_s",
     "_lane",
+    "resample",
 }
 
 
