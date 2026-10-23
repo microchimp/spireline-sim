@@ -208,7 +208,7 @@ public sealed class FirstChoiceSelector : ICardSelector
     {
         string? edge = NextEdge();
         int n = Math.Min(list.Count, Math.Max(minSelect, Math.Min(1, maxSelect)));
-        var at = edge == null ? PickHook?.Invoke(list, n, minSelect <= 0 && n > 0) ?? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
+        var at = edge == null ? PickHook?.Invoke(list, n, Env.Extras && minSelect <= 0 && n > 0) ?? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
         var picked = at.Select(i => list[i]).ToList();
         var entry = new JsonObject
         {

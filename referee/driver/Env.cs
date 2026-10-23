@@ -52,6 +52,14 @@ internal static class Env
     internal static JsonArray? Trace;
     internal static int Asked;
 
+    /// <summary>Reset spec "extra_actions" (default false): the extra actions (card-reward alternatives, "none" on a selection that
+    /// allows 0, potion use and discard outside fights) are offered. They change the sequence of asked decisions, so the seeded chooser,
+    /// record and replay leave them off unless the record stored the flag on.</summary>
+    internal static bool Extras;
+
+    /// <summary>Card reward screens checked against the screen's own alternatives list, and how many differed.</summary>
+    internal static int AltChecked, AltMismatch;
+
     private static Stream? _out;
     private static TextReader? _in;
 
@@ -206,7 +214,7 @@ internal static class Env
     /// </summary>
     internal static int DecideWithPotions(string kind, int n, Func<JsonArray> actions, Func<int> fallback, Func<JsonNode?>? ctx = null)
     {
-        if (Run == null || !Live || n <= 1 || CombatManager.Instance.IsInProgress) return Decide(kind, n, actions, fallback, ctx);
+        if (Run == null || !Extras || !(Live || Tracing) || n <= 1 || CombatManager.Instance.IsInProgress) return Decide(kind, n, actions, fallback, ctx);
         PotionActs = OutsideFightPotionActs(Run.Players[0]);
         var acts = PotionActs;
         if (acts.Count == 0) return Decide(kind, n, actions, fallback, ctx);
@@ -365,7 +373,7 @@ public static partial class Driver
                 ["t"] = "end", ["end"] = end, ["floor"] = result["floor"]?.DeepClone(), ["asked"] = Env.Asked,
                 ["decisions"] = (result["decisions"] as JsonArray)?.Count, ["ms"] = clock.ElapsedMilliseconds, ["runs"] = runs,
                 ["mem_mb"] = System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64 >> 20,
-                ["probe"] = Env.Probe(runs),
+                ["probe"] = Env.Probe(runs), ["alt_checked"] = Env.AltChecked, ["alt_mismatch"] = Env.AltMismatch,
             };
             var errs = new JsonArray();
             foreach (var d in (result["decisions"] as JsonArray) ?? new JsonArray())

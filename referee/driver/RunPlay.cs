@@ -109,7 +109,7 @@ public static partial class Driver
             int n = Math.Min(list.Count, Math.Max(minSelect, Math.Min(1, maxSelect)));
             var idx = Env.DecideMany("select_cards", list.Select(c => (JsonNode)CardJson(c)).ToList(), n,
                 () => Enumerable.Range(0, list.Count).OrderBy(_ => _run.Rng.Next()).Take(n).OrderBy(i => i).ToList(),
-                allowNone: minSelect <= 0 && n > 0);
+                allowNone: Env.Extras && minSelect <= 0 && n > 0);
             var deck = _run.State.Players[0].Deck.Cards.ToList();
             Log(new JsonObject
             {
@@ -125,9 +125,10 @@ public static partial class Driver
         public CardRewardSelection GetSelectedCardReward(IReadOnlyList<CardCreationResult> options, IReadOnlyList<CardRewardAlternative> alternatives)
         {
             if (CombatManager.Instance.IsInProgress) return _fight.GetSelectedCardReward(options, alternatives);
-            // The screen's alternatives (Skip, Reroll, a relic's own) follow the cards as actions of their own.
-            int pick = options.Count == 0 ? -1 : Env.Decide("card_reward", options.Count + alternatives.Count,
-                () => CardRewardActions(options.Select(o => o.Card).ToList(), alternatives), () => _run.Rng.Next(options.Count));
+            // With extra_actions the screen's alternatives (Skip, Reroll, a relic's own) follow the cards as actions of their own.
+            var alts = Env.Extras ? alternatives : Array.Empty<CardRewardAlternative>();
+            int pick = options.Count == 0 ? -1 : Env.Decide("card_reward", options.Count + alts.Count,
+                () => CardRewardActions(options.Select(o => o.Card).ToList(), alts), () => _run.Rng.Next(options.Count));
             Log(new JsonObject
             {
                 ["kind"] = "card_reward",
@@ -164,6 +165,8 @@ public static partial class Driver
         var log = new RunLog(state, (int?)spec["chooser_seed"] ?? 1);
         var selector = new RunSelector(log);
         Env.Run = state;  // Env.cs: decision points ask the agent (or trace) only inside a run
+        Env.Extras = (bool?)spec["extra_actions"] == true;
+        Env.AltChecked = Env.AltMismatch = 0;
         Env.Trace = Env.Tracing ? new JsonArray() : null;
         FirstChoiceSelector.PickHook = Env.Live || Env.Tracing ? FightPick : null;
         FirstChoiceSelector.CardRewardHook = Env.Live || Env.Tracing ? FightCardReward : null;
@@ -639,7 +642,7 @@ public static partial class Driver
         var source = screen.GetType().GetField("_completionSource", Private)?.GetValue(screen) as TaskCompletionSource<int?>;
         if (source == null || source.Task.IsCompleted) return;
         int n = cr.Cards.Count();
-        var alts = CardRewardAlternative.Generate(cr);  // the screen's own list: its index after the cards is the answer
+        IReadOnlyList<CardRewardAlternative> alts = Env.Extras ? CardRewardAlternative.Generate(cr) : Array.Empty<CardRewardAlternative>();
         int pick = Env.Decide("card_reward", n + alts.Count, () => CardRewardActions(cr.Cards.Select(x => x).ToList(), alts),
             () => log.Rng.Next(n));
         if (pick < n) d["card"] = CardJson(cr.Cards.ElementAt(pick));
