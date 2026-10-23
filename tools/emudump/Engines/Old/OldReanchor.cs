@@ -85,8 +85,8 @@ static class OldReanchor
         {
             if (mode.Trace)
             {
-                rec["hidden_pre"] = EmuTrace.Hidden(q);
-                EmuTrace.Begin(q);
+                rec["hidden_pre"] = OldTrace.Hidden(q);
+                OldTrace.Begin(q);
             }
 
             bool terminal, won;
@@ -97,10 +97,10 @@ static class OldReanchor
             }
             finally
             {
-                if (mode.Trace) rec["trace"] = EmuTrace.End();
+                if (mode.Trace) rec["trace"] = OldTrace.End();
             }
 
-            if (mode.Trace) rec["hidden"] = EmuTrace.Hidden(q);
+            if (mode.Trace) rec["hidden"] = OldTrace.Hidden(q);
             rec["choices"] = chosen;
             rec["fallback_rng_calls"] = qr.CallCount - preRng.CallCount;
             bool gameGoesOn = j + 1 < gsteps.Count && (gsteps[j]!["state"]!["in_combat"]?.GetValue<bool>() ?? false);

@@ -1,6 +1,6 @@
 // The state lifecycle, generated from the state itself. Every field of CombatState and RunState, and of
 // the creatures, cards, buffs, orbs, relics and screens they hold, is found by reflection
-// (tools/emudump/StateWalk.cs) and checked at each stage that copies, clears, prints or overwrites it:
+// (tools/emudump/Engines/Old/OldStateWalk.cs) and checked at each stage that copies, clears, prints or overwrites it:
 //
 //   clone      StateCloning.Clone / CopyTo copies it and does not share it: the field is set to a new
 //              value, the state cloned, the field changed again, and the clone must still hold the first value.
@@ -378,9 +378,9 @@ public class LifecycleTests(ITestOutputHelper output)
         var list = new List<Member>();
         void Walk(Type t, string prefix, List<string> segs, HashSet<Type> stack)
         {
-            foreach (var f in StateWalk.Fields(t))
+            foreach (var f in OldStateWalk.Fields(t))
             {
-                string name = StateWalk.Name(f);
+                string name = OldStateWalk.Name(f);
                 var ft = f.FieldType;
                 var path = prefix + "." + name;
                 list.Add(new Member(path, [.. segs, name], ft));
@@ -398,12 +398,12 @@ public class LifecycleTests(ITestOutputHelper output)
     static (Type? Holder, bool Collection) Holder(Type t)
     {
         var u = Nullable.GetUnderlyingType(t) ?? t;
-        if (StateWalk.IsEngineType(u)) return (u, false);
-        var el = StateWalk.ElementType(u);
+        if (OldStateWalk.IsEngineType(u)) return (u, false);
+        var el = OldStateWalk.ElementType(u);
         if (el != null)
         {
             var eu = Nullable.GetUnderlyingType(el) ?? el;
-            if (StateWalk.IsEngineType(eu)) return (eu, true);
+            if (OldStateWalk.IsEngineType(eu)) return (eu, true);
         }
 
         return (null, false);
@@ -414,7 +414,7 @@ public class LifecycleTests(ITestOutputHelper output)
     const BindingFlags Inst = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
     static FieldInfo Field(Type t, string name) =>
-        StateWalk.Fields(t).First(f => StateWalk.Name(f) == name);
+        OldStateWalk.Fields(t).First(f => OldStateWalk.Name(f) == name);
 
     /// <summary>
     /// A new holder or element of <paramref name="t"/>: a copy of one the built run already has (so ids
@@ -427,15 +427,15 @@ public class LifecycleTests(ITestOutputHelper output)
         if (t.IsArray) return Array.CreateInstance(t.GetElementType()!, 0);
         if (t == typeof(PendingCardSelection)) return OpenSelection();
         if (t == typeof(HookChoiceReplay)) return StoppedStep();
-        if (StateWalk.IsEngineType(t) && Prototype(t) is { } proto) return DeepCopy(proto)!;
-        if (t.IsInterface && StateWalk.ElementType(t) is { } el) return Activator.CreateInstance(typeof(List<>).MakeGenericType(el))!;
-        if (t.IsValueType && !StateWalk.IsEngineType(t)) return Activator.CreateInstance(t)!;
+        if (OldStateWalk.IsEngineType(t) && Prototype(t) is { } proto) return DeepCopy(proto)!;
+        if (t.IsInterface && OldStateWalk.ElementType(t) is { } el) return Activator.CreateInstance(typeof(List<>).MakeGenericType(el))!;
+        if (t.IsValueType && !OldStateWalk.IsEngineType(t)) return Activator.CreateInstance(t)!;
         var o = t.IsValueType ? Activator.CreateInstance(t)!  // boxed: a record struct's collections are filled in the box
             : t.GetConstructor(Inst, Type.EmptyTypes) != null ? Activator.CreateInstance(t, nonPublic: true)! : RuntimeHelpers.GetUninitializedObject(t);
-        foreach (var f in StateWalk.Fields(t))
+        foreach (var f in OldStateWalk.Fields(t))
         {
-            if (f.GetValue(o) == null && f.FieldType != typeof(string) && !StateWalk.IsStream(f.FieldType)
-                && (f.FieldType.IsArray || StateWalk.ElementType(f.FieldType) != null))
+            if (f.GetValue(o) == null && f.FieldType != typeof(string) && !OldStateWalk.IsStream(f.FieldType)
+                && (f.FieldType.IsArray || OldStateWalk.ElementType(f.FieldType) != null))
             {
                 f.SetValue(o, Create(f.FieldType));
             }
@@ -456,7 +456,7 @@ public class LifecycleTests(ITestOutputHelper output)
             var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
             void Look(object? v)
             {
-                if (found != null || v == null || v is string || StateWalk.IsStream(v.GetType())) return;
+                if (found != null || v == null || v is string || OldStateWalk.IsStream(v.GetType())) return;
                 if (!v.GetType().IsValueType && !seen.Add(v)) return;
                 if (v.GetType() == t)
                 {
@@ -472,9 +472,9 @@ public class LifecycleTests(ITestOutputHelper output)
                 {
                     foreach (var x in seq) Look(x);
                 }
-                else if (StateWalk.IsEngineType(v.GetType()))
+                else if (OldStateWalk.IsEngineType(v.GetType()))
                 {
-                    foreach (var f in StateWalk.Fields(v.GetType())) Look(f.GetValue(v));
+                    foreach (var f in OldStateWalk.Fields(v.GetType())) Look(f.GetValue(v));
                 }
             }
 
@@ -512,16 +512,16 @@ public class LifecycleTests(ITestOutputHelper output)
             return copy;
         }
 
-        if (StateWalk.ElementType(t) != null && t.GetMethod("Add") is { } add)
+        if (OldStateWalk.ElementType(t) != null && t.GetMethod("Add") is { } add)
         {
             var copy = Activator.CreateInstance(t)!;
             foreach (var x in (IEnumerable)v) add.Invoke(copy, [DeepCopy(x)]);
             return copy;
         }
 
-        if (!StateWalk.IsEngineType(t)) return v;
+        if (!OldStateWalk.IsEngineType(t)) return v;
         var o = MemberwiseCloneOf(v);
-        foreach (var f in StateWalk.Fields(t)) f.SetValue(o, DeepCopy(f.GetValue(o)));
+        foreach (var f in OldStateWalk.Fields(t)) f.SetValue(o, DeepCopy(f.GetValue(o)));
         return o;
     }
 
@@ -622,10 +622,10 @@ public class LifecycleTests(ITestOutputHelper output)
             return a;
         }
 
-        if (StateWalk.ElementType(t) is { } el && cur is not string)
+        if (OldStateWalk.ElementType(t) is { } el && cur is not string)
         {
             var coll = cur ?? Create(t);
-            bool holderElement = StateWalk.IsEngineType(Nullable.GetUnderlyingType(el) ?? el);
+            bool holderElement = OldStateWalk.IsEngineType(Nullable.GetUnderlyingType(el) ?? el);
             if (coll is IDictionary { Count: > 0 } full)
             {
                 // A dictionary's keys are usually a fixed set (rarities, coordinates): its first value changes.
@@ -678,13 +678,13 @@ public class LifecycleTests(ITestOutputHelper output)
             return boxed;
         }
 
-        if (StateWalk.IsEngineType(t))
+        if (OldStateWalk.IsEngineType(t))
         {
             // A holder as a whole (a screen, a bag): a fresh one, every leaf of it set.
             var o = cur ?? Create(t);
-            foreach (var f in StateWalk.Fields(t))
+            foreach (var f in OldStateWalk.Fields(t))
             {
-                if (!StateWalk.IsEngineType(f.FieldType)) f.SetValue(o, NewValue(f.FieldType, f.GetValue(o), salt));
+                if (!OldStateWalk.IsEngineType(f.FieldType)) f.SetValue(o, NewValue(f.FieldType, f.GetValue(o), salt));
             }
 
             return o;
@@ -709,7 +709,7 @@ public class LifecycleTests(ITestOutputHelper output)
         if (into)
         {
             var coll = cur ?? Create(f.FieldType);
-            var et = StateWalk.ElementType(coll.GetType()) ?? StateWalk.ElementType(f.FieldType)!;
+            var et = OldStateWalk.ElementType(coll.GetType()) ?? OldStateWalk.ElementType(f.FieldType)!;
             var item = FirstOf(coll) ?? Create(et);
             coll = SetFirst(coll, Stamp(item, segs, salt, i + 1), et);
             f.SetValue(container, coll);
@@ -731,10 +731,10 @@ public class LifecycleTests(ITestOutputHelper output)
         if (container == null) return Absent;
         string seg = segs[i];
         bool into = seg.EndsWith("[]");
-        var f = StateWalk.Fields(container.GetType()).FirstOrDefault(x => StateWalk.Name(x) == (into ? seg[..^2] : seg));
+        var f = OldStateWalk.Fields(container.GetType()).FirstOrDefault(x => OldStateWalk.Name(x) == (into ? seg[..^2] : seg));
         if (f == null) return Absent;
         var v = f.GetValue(container);
-        if (i == segs.Length - 1) return StateWalk.Canon(v);
+        if (i == segs.Length - 1) return OldStateWalk.Canon(v);
         if (into) v = v == null ? null : FirstOf(v);
         return Read(v, segs, i + 1);
     }
@@ -843,9 +843,9 @@ public class LifecycleTests(ITestOutputHelper output)
     static List<string> Differences(object a, object b)
     {
         var out_ = new List<string>();
-        foreach (var f in StateWalk.Fields(a.GetType()))
+        foreach (var f in OldStateWalk.Fields(a.GetType()))
         {
-            if (StateWalk.Canon(f.GetValue(a)) != StateWalk.Canon(f.GetValue(b))) out_.Add(StateWalk.Name(f));
+            if (OldStateWalk.Canon(f.GetValue(a)) != OldStateWalk.Canon(f.GetValue(b))) out_.Add(OldStateWalk.Name(f));
         }
 
         return out_;
@@ -944,14 +944,14 @@ public class LifecycleTests(ITestOutputHelper output)
         return d.Count > 0 ? "survives CombatFactory.Reset (then differs: " + string.Join(",", d.Take(4)) + ")" : null;
     }
 
-    static readonly Lazy<string> FreshRun = new(() => StateWalk.Canon(FreshEngine()));
+    static readonly Lazy<string> FreshRun = new(() => OldStateWalk.Canon(FreshEngine()));
 
     static string? RunResetCheck(Member m)
     {
         var e = RunInCombat();
         Stamp(e.State, m.Segs, 1);
         e.Reset("LIFECYCLE2");
-        return StateWalk.Canon(e) != FreshRun.Value ? "survives RunEngine.Reset" : null;
+        return OldStateWalk.Canon(e) != FreshRun.Value ? "survives RunEngine.Reset" : null;
     }
 
     static string? DumpCheck(Member m)
@@ -1015,7 +1015,7 @@ public class LifecycleTests(ITestOutputHelper output)
         Stage(l, "clone", RunMembers, m => CloneCheck(m, () => RunInCombat().State, s => ((RunState)s).Clone()), t);
         Stage(l, "reset", CombatMembers, ResetCheck, t);
         Stage(l, "run-reset", RunMembers, RunResetCheck, t);
-        if (StateWalk.Canon(FreshEngine()) != FreshRun.Value)
+        if (OldStateWalk.Canon(FreshEngine()) != FreshRun.Value)
         {
             l.Findings.Add("run-reset (a field initializer shares an object between runs: a fresh engine changed while other runs' states were changed)");
         }
@@ -1296,7 +1296,7 @@ public class LifecycleTests(ITestOutputHelper output)
     {
         try
         {
-            return StateWalk.Canon(f.GetValue(null));
+            return OldStateWalk.Canon(f.GetValue(null));
         }
         catch (Exception ex)
         {
@@ -1312,7 +1312,7 @@ public class LifecycleTests(ITestOutputHelper output)
     }
 
     static string Multiset(IEnumerable<CardInstance> pile) =>
-        string.Join("|", pile.Select(c => StateWalk.Canon(c)).OrderBy(x => x, StringComparer.Ordinal));
+        string.Join("|", pile.Select(c => OldStateWalk.Canon(c)).OrderBy(x => x, StringComparer.Ordinal));
 
     // ============================================================================ the game's view
 

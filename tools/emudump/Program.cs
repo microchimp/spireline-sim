@@ -66,22 +66,16 @@ if (args[0] == "fight")
 
     if (args.Any(a => a.StartsWith("--state-hash", StringComparison.Ordinal)))
     {
-        // The full-state hash after each step (StateWalk.cs: every RunState field, the combat's
+        // The full-state hash after each step (IEngine.StateHash: every field of the run's state, the combat's
         // included, not the dump's bytes), for tools/fidelity/corpus.py identity. --state-hash=fields
         // adds one short hash per field, so a difference names the field.
         bool fields = args.Contains("--state-hash=fields");
-        Fight.OnStep += (engine, step) =>
+        Fight.OnStep += (e, step) =>
         {
-            var e = OldEngine.Of(engine).Run;
-            step["state_hash"] = StateWalk.RunHash(e);
+            step["state_hash"] = e.StateHash();
             if (!fields) return;
             var o = new JsonObject();
-            foreach (var (k, v) in StateWalk.FieldHashes(e.State)) o[k] = v;
-            if (e.State.ActiveCombat is { } c)
-            {
-                foreach (var (k, v) in StateWalk.FieldHashes(c)) o["ActiveCombat." + k] = v;
-            }
-
+            foreach (var (k, v) in e.StateFieldHashes()) o[k] = v;
             step["state_fields"] = o;
         };
     }
@@ -91,19 +85,14 @@ if (args[0] == "fight")
         // Every draw of a combat stream during each step, [stream, index, caller] (RngLog.cs), for
         // tools/fidelity/rng_diff.py.
         RngLog.Install();
-        Fight.OnStep += (e, step) => step["rng_log"] = RngLog.Take(OldEngine.Of(e).Run);
     }
 
     JsonArray refs;
     using (Prof.Scope("read_input")) refs = JsonNode.Parse(File.ReadAllText(args[1]))!["results"]!.AsArray();
     // A fight the game never ran (an error placeholder) has nothing to replay.
-    var fights = new JsonArray(refs.Select(r =>
-    {
-        RngLog.Clear();  // what a fight that threw before its first step drew is not the next one's
-        return (JsonNode)(r!["ascension"] == null
-            ? new JsonObject { ["seed"] = r["seed"]?.DeepClone(), ["error"] = "no game result to replay", ["steps"] = new JsonArray() }
-            : Fight.Replay(r.AsObject()));
-    }).ToArray());
+    var fights = new JsonArray(refs.Select(r => (JsonNode)(r!["ascension"] == null
+        ? new JsonObject { ["seed"] = r["seed"]?.DeepClone(), ["error"] = "no game result to replay", ["steps"] = new JsonArray() }
+        : Fight.Replay(r.AsObject()))).ToArray());
     string text;
     using (Prof.Scope("serialize")) text = new JsonObject { ["results"] = fights }.ToJsonString(new JsonSerializerOptions { WriteIndented = !args.Contains("--compact") });
     using (Prof.Scope("write")) StdOut.WriteLine(text);

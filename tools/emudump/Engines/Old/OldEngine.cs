@@ -70,6 +70,25 @@ public sealed class OldEngine : IEngine
 
     public JsonObject SetupInfo() => OldSetup.Info(PowerKeys());
 
+    public void StartRngLog() => OldRngLog.Start();
+
+    public IReadOnlyList<RngDraw> TakeRngLog() => OldRngLog.Take(Run);
+
+    public string StateHash() => OldStateWalk.RunHash(Run);
+
+    public IReadOnlyList<KeyValuePair<string, string>> StateFieldHashes()
+    {
+        var all = OldStateWalk.FieldHashes(Run.State).ToList();
+        if (Run.State.ActiveCombat is { } c)
+        {
+            all.AddRange(OldStateWalk.FieldHashes(c).Select(kv => KeyValuePair.Create("ActiveCombat." + kv.Key, kv.Value)));
+        }
+
+        return all;
+    }
+
+    public JsonObject HookProbe(JsonObject scenarios) => OldHookProbe.Run(scenarios);
+
     public ReanchorOpening ReanchorOpen() => OldReanchor.Open(this);
 
     public ReanchorOutcome ReanchorStep(EngineBlock carry, ReanchorMode mode, ReanchorInput input, JsonObject record) =>

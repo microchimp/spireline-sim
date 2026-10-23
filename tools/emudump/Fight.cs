@@ -7,6 +7,8 @@ using EmuDump.Engines;
 
 static class Fight
 {
+    /// <summary>Called with each fight's engine once it is made, before the fight starts (EmuDump fight --rng-log starts the draw log here).</summary>
+    internal static Action<IEngine>? OnEngine;
     /// <summary>Called with each step as it is recorded (EmuDump fight --netstate: IEngine.GameState).</summary>
     internal static Action<IEngine, JsonObject>? OnStep;
     /// <summary>Called with the engine after the opening (0) and after each replayed step; the live invariant checker sets it.</summary>
@@ -23,6 +25,7 @@ static class Fight
             using (Prof.Scope("enter_room"))
             {
                 e = EngineFactory.Create();
+                OnEngine?.Invoke(e);
                 e.StartFight(new FightSpec(game), outp);
             }
 

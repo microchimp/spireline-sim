@@ -10,14 +10,10 @@ Codex/ProfileFit.cs
 Codex/Streams.cs
 Codex/Walker.cs
 Digest.cs
-HookProbe.cs
 Live.cs
 Meta.cs
 MutHost.cs
 Program.cs
-RngLog.cs
 RunReplay.cs
 RunSnap.cs
-StateWalk.cs
 Tables.cs
-Trace.cs
