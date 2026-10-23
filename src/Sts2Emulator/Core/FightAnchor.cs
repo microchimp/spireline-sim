@@ -281,6 +281,9 @@ public static class FightAnchor
             q.KnownBottomCount = Math.Clamp(q.KnownBottomCount, 0, q.DrawPile.Count - q.KnownTopCount);
             patched.Add("draw");
         }
+
+        // A card matched in the old piles keeps its uid; one the game holds and the engine did not gets a fresh one.
+        CardUids.NumberNew(q);
     }
 
     static List<(int Id, bool Up)> Cards(Tables t, JsonNode pile) =>

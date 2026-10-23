@@ -29,7 +29,7 @@ public class EndOfFightDumpTests
     [Fact]
     public void AFightInProgressWritesNoFinalState()
     {
-        Setup.Extended = false;
+        OldDump.Extended = false;
         var d = OldDump.Dump(InAFight());
 
         Assert.True((bool)d["in_combat"]!);
@@ -40,7 +40,7 @@ public class EndOfFightDumpTests
     [Fact]
     public void AWonFightWritesWhatTheRunHoldsWithTheAfterCombatHealIn()
     {
-        Setup.Extended = true;
+        OldDump.Extended = true;
         var e = InAFight();
         e.State.ActiveCombat!.PlayerHp = 50;  // Burning Blood heals six of the thirty missing
         Assert.NotEqual(-1, e.DebugResolveCombat());
@@ -62,7 +62,7 @@ public class EndOfFightDumpTests
     [Fact]
     public void ARecordWithoutTheSetupExtrasGetsNoBeltAndNoRelics()
     {
-        Setup.Extended = false;
+        OldDump.Extended = false;
         var e = InAFight();
         e.DebugResolveCombat();
 
@@ -76,7 +76,7 @@ public class EndOfFightDumpTests
     [Fact]
     public void ALostFightWritesThatAndNothingTheRunKeeps()
     {
-        Setup.Extended = true;
+        OldDump.Extended = true;
         var e = InAFight();
         e.State.ActiveCombat!.PlayerHp = -4;  // an overkill: the game stops at 0
         e.State.Phase = RunPhase.Map;  // the fight is over (the engine's own game-over phase is not the point)

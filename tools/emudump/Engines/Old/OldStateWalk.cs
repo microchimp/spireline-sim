@@ -1,4 +1,4 @@
-// Every field of the emulator's state, found by reflection. One walk serves two gates:
+// The old engine's side of the full-state hash (IEngine.StateHash, StateFieldHashes). Every field of the emulator's state, found by reflection. One walk serves two gates:
 // - tools/emudump.Tests/LifecycleTests.cs enumerates these fields and checks each one is handled by
 //   Clone/CopyTo, Reset, the snapshot and Reanchor's write-back (or allow-listed with a reason);
 // - the full-state hash (EmuDump fight --state-hash, tools/fidelity/corpus.py identity) is a hash of
@@ -17,7 +17,9 @@ using Sts2Emulator.Core;
 using Sts2Emulator.Core.Rng;
 using Sts2Emulator.Core.Run;
 
-static class StateWalk
+namespace EmuDump.Engines.Old;
+
+static class OldStateWalk
 {
     const BindingFlags Inst = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
     static readonly Assembly Engine = typeof(CombatState).Assembly;
@@ -45,8 +47,9 @@ static class StateWalk
             var all = new List<FieldInfo>();
             for (var x = t; x != null && x != typeof(object) && x != typeof(ValueType); x = x.BaseType)
             {
+                // [IdentityOnly]: the kernel's card uids and their counter, read by no output (CardUid.cs).
                 all.AddRange(x.GetFields(Inst | BindingFlags.DeclaredOnly)
-                    .Where(f => !typeof(Delegate).IsAssignableFrom(f.FieldType)));
+                    .Where(f => !typeof(Delegate).IsAssignableFrom(f.FieldType) && !f.IsDefined(typeof(IdentityOnlyAttribute))));
             }
 
             var fields = all.OrderBy(Name, StringComparer.Ordinal).ToArray();

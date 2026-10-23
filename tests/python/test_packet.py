@@ -147,6 +147,31 @@ def mini(hp, shell):
     return {"player": [70, 0, 2], "powers": [], "enemies": [["SKULKING_COLONY", hp, 0, [["HardenedShell", shell]]]], "hand": [], "n": [0, 0, 0]}
 
 
+class EmuEnvironmentTests(unittest.TestCase):
+    """The runs whose output carries a caller label per RNG draw use rng_diff's one NO_INLINING environment; the others keep the process's."""
+
+    def env_of(self, mode, *extra):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(kw.get("env"))
+            return types.SimpleNamespace(stdout=json.dumps({"results": [{"steps": []}]}).encode(), stderr=b"", returncode=0)
+
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(pk.subprocess, "run", fake_run):
+            pk.Emu(Path("EmuDump.dll"), Path(t)).run(mode, [{"seed": "S"}], *extra)
+        return calls[0]
+
+    def test_the_labelled_modes_run_without_inlining(self):
+        from tools.fidelity.rng_diff import NO_INLINING
+        for mode, extra in (("fight", ("--rng-log",)), ("reanchor", ("--trace",)), ("reanchor", ("--trace-to", "5"))):
+            env = self.env_of(mode, *extra)
+            self.assertEqual(NO_INLINING, {k: env[k] for k in NO_INLINING}, extra)
+
+    def test_the_other_modes_keep_the_process_environment(self):
+        for mode, extra in (("fight", ()), ("fight", ("--netstate",)), ("reanchor", ())):
+            self.assertIsNone(self.env_of(mode, *extra), extra)
+
+
 class FakeEmu:
     """Answers EmuDump's modes from the recordings it is given; counts its calls."""
 

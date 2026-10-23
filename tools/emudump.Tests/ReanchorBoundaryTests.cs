@@ -88,7 +88,7 @@ public class ReanchorBoundaryTests
     [Fact]
     public void TheOtherClassesAreFoundByScanningTheToolsNotListedByHand()
     {
-        foreach (var type in new[] { "Digest", "Live", "Meta", "MutHost", "RngLog", "RunReplay", "RunSnap", "StateWalk", "Names", "Streams",
+        foreach (var type in new[] { "Digest", "Live", "Meta", "MutHost", "RngLog", "RunReplay", "RunSnap", "OldStateWalk", "OldRngLog", "OldTrace", "OldHookProbe", "Names", "Streams",
                      "Walker", "Driver", "ProfileFit", "Setup", "Fight", "Prof", "Reanchor", "IEngine", "EngineBlock",
                      "OldIds", "OldDump", "OldChoices", "OldReanchor", "OldEngine", "OldCarry", "EngineFactory" })
         {
@@ -116,7 +116,7 @@ public class ReanchorBoundaryTests
     [InlineData("static class A { void W(Walker w, ProfileFit f, MutHost h) { } }", "names Walker")]
     [InlineData("static class A { void W(Walker w, ProfileFit f, MutHost h) { } }", "names ProfileFit")]
     [InlineData("static class A { void W(Walker w, ProfileFit f, MutHost h) { } }", "names MutHost")]
-    [InlineData("static class A { object M() => Meta.Load(); Live l; RunSnap s; StateWalk w; }", "names Live")]
+    [InlineData("static class A { object M() => Meta.Load(); Live l; RunSnap s; OldStateWalk w; }", "names Live")]
     [InlineData("static class A { object M() => EmuDump.Engine.ReanchorMode.Scramble; }", "names EmuDump.")]
     [InlineData("static class A { void E(EmuDump.Engine.IEngine e) { } }", "names EmuDump.")]
     [InlineData("static class A { void E(Engine.IEngine e) { } }", "names IEngine")]

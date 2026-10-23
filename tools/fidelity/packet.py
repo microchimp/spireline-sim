@@ -83,9 +83,13 @@ from tools.fidelity.corpus import (  # noqa: E402
     judge_fight,
     judge_reanchor,
 )
+from tools.fidelity.rng_diff import NO_INLINING  # noqa: E402
 
 DEFAULT_REFEREE = Path(os.environ.get("SPIRELINE_REFEREE", r"D:\spireline\referee"))
 BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+# EmuDump flags whose output carries a caller label for each RNG draw (tools/emudump/Engines/Old/OldRngLog.cs, OldTrace.cs). The
+# label is read off the stack, which tiered JIT inlining changes from run to run, so these runs use rng_diff.NO_INLINING.
+LABELLED_FLAGS = ("--rng-log", "--trace", "--trace-to")
 STATUS = ("full", "partial", "missing", "n/a")
 SECTIONS = (  # key, title (the numbering of the module doc)
     ("case", "Smallest failing case"),
@@ -391,8 +395,9 @@ class Emu:
         src = self.work / f"in-{len(self.calls)}.json"
         src.write_text(json.dumps({"results": fights}), encoding="utf-8")
         self.calls.append((mode, extra))
+        env = {**os.environ, **NO_INLINING} if any(x in LABELLED_FLAGS for x in extra) else None
         proc = subprocess.run([*emudump_command(self.dll), mode, str(src), *extra], capture_output=True, check=False,
-                              creationflags=BELOW_NORMAL, timeout=self.timeout)
+                              creationflags=BELOW_NORMAL, timeout=self.timeout, env=env)
         src.unlink(missing_ok=True)
         try:
             doc = json.loads(proc.stdout.decode("utf-8"))

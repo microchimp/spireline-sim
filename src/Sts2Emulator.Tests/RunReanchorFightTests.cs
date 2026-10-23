@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
+using Sts2Emulator.Core2;
 using Sts2Emulator.Interop;
 using Xunit;
 
@@ -139,6 +140,40 @@ public class RunReanchorFightTests
         {
             RunApi.Destroy(a);
             RunApi.Destroy(b);
+        }
+    }
+
+    [Fact]
+    public void ACardTheRecordHoldsAndTheFightDidNotGetsAFreshUidAndTheOthersKeepTheirs()
+    {
+        SetTables();
+        int run = RunApi.InCombat();
+        try
+        {
+            var combat = Fight(run);
+            var before = CardUids.LiveCards(combat).ToDictionary(c => c.UidOf(), c => c.DefId);
+            var held = CardUids.LiveCards(combat).Select(c => c.DefId).ToHashSet();
+            var tables = new FightAnchor.Tables(Tables.Value.IdMap, Tables.Value.Aliases);
+            var (newName, newId) = tables.Cards.OrderBy(kv => kv.Value).First(kv => !held.Contains(kv.Value));
+            var record = JsonNode.Parse(Record(combat))!.AsObject();
+            record["hand"]!.AsArray().Add(new JsonArray(newName, false));
+
+            var (status, message) = Reanchor(run, record.ToJsonString());
+
+            Assert.True(status > 0, $"status {status}: {message}");
+            combat = Fight(run);
+            var added = combat.Hand.Single(c => c.DefId == newId);
+            Assert.NotEqual(0, added.UidOf());
+            Assert.DoesNotContain(added.UidOf(), before.Keys);
+            Assert.True(CardUidInvariant.Holds(combat));
+            foreach (var c in CardUids.LiveCards(combat).Where(c => c.DefId != newId))
+            {
+                Assert.True(before.TryGetValue(c.UidOf(), out var def) && def == c.DefId, "a card the fight held keeps its uid");
+            }
+        }
+        finally
+        {
+            RunApi.Destroy(run);
         }
     }
 

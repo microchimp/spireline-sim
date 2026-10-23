@@ -1,4 +1,4 @@
-// The referee's setup fights (EmuDump fight, Setup.EnterFight): the game records the encounter it
+// The referee's setup fights (EmuDump fight, Setup.EnterFight and OldSetup.EnterEncounter): the game records the encounter it
 // entered by its place in the act's lists (act, kind, index), and EmuDump deals the id at that place
 // in the emulator's copy of the list. A weak encounter and its normal twin are two places, so they
 // are two ids and two rosters with no flag beside them: the entry used to pass "kind == weak" to
@@ -6,6 +6,7 @@
 // shared id (ActModel.GenerateRooms deals the weak and normal encounters from two lists).
 using System.Text.Json.Nodes;
 using EmuDump.Codex;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 using Xunit;
@@ -38,7 +39,7 @@ public class SetupFightTests
         };
         var log = new JsonObject();
 
-        Assert.True(Setup.EnterFight(e, game, option, log));
+        Assert.True(Setup.EnterFight(new OldEngine(e), game, option, log));
 
         var fight = e.State.ActiveCombat!;
         Assert.Equal(entry, Names.EncounterName(fight.EncounterId));

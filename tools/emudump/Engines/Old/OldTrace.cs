@@ -1,6 +1,7 @@
-// Trace mode (EmuDump reanchor --trace): what the emulator did inside each step, in the shape the
+// Trace mode (EmuDump reanchor --trace), the old engine's side: what the emulator did inside each step, in the shape the
 // referee's trace mode records for the game (referee/driver/Trace.cs), so tools/fidelity/trace_diff.py
-// can align the two and name the first event that differs.
+// can align the two and name the first event that differs. OldReanchor.Step writes the result into the step's record
+// (IEngine.ReanchorStep: trace, hidden_pre, hidden); nothing else reads it.
 //
 // Per step: "trace", an ordered list of
 //   ["M", mark, subject, mini-state]   at the engine's CombatTrace marks (play/played, turn_end,
@@ -14,7 +15,9 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Sts2Emulator.Core;
 
-static class EmuTrace
+namespace EmuDump.Engines.Old;
+
+static class OldTrace
 {
     static JsonArray? _events;
     static CombatState? _q;
@@ -103,7 +106,7 @@ static class EmuTrace
         {
             var m = f.GetMethod();
             var t = m?.DeclaringType;
-            if (m == null || t == null || t == typeof(CountingRandom) || t == typeof(EmuTrace) || t == typeof(CombatTrace)
+            if (m == null || t == null || t == typeof(CountingRandom) || t == typeof(OldTrace) || t == typeof(CombatTrace)
                 || (t.Namespace ?? "").StartsWith("System", StringComparison.Ordinal))
             {
                 continue;

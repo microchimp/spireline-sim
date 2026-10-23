@@ -671,7 +671,7 @@ static class RunReplay
     /// The holdings half of <see cref="Anchor" />: HP, gold, deck, relics, potions and slots from a save's
     /// player (the game's save shape), then Toy Box's wax, the relics' saved properties RunSnap.RelicProps
     /// compares, Mad Science's type and rider and Guilty's combats. The reference set's player_load item
-    /// (RefsetSetup.cs) puts a real run's holdings in place with it.
+    /// (Engines/Old/RefsetSetup.cs) puts a real run's holdings in place with it.
     /// </summary>
     internal static void AnchorHoldings(RunEngine e, JsonObject p, JsonArray anchored)
     {

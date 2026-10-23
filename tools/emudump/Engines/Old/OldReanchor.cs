@@ -85,8 +85,8 @@ static class OldReanchor
         {
             if (mode.Trace)
             {
-                rec["hidden_pre"] = EmuTrace.Hidden(q);
-                EmuTrace.Begin(q);
+                rec["hidden_pre"] = OldTrace.Hidden(q);
+                OldTrace.Begin(q);
             }
 
             bool terminal, won;
@@ -97,10 +97,10 @@ static class OldReanchor
             }
             finally
             {
-                if (mode.Trace) rec["trace"] = EmuTrace.End();
+                if (mode.Trace) rec["trace"] = OldTrace.End();
             }
 
-            if (mode.Trace) rec["hidden"] = EmuTrace.Hidden(q);
+            if (mode.Trace) rec["hidden"] = OldTrace.Hidden(q);
             rec["choices"] = chosen;
             rec["fallback_rng_calls"] = qr.CallCount - preRng.CallCount;
             bool gameGoesOn = j + 1 < gsteps.Count && (gsteps[j]!["state"]!["in_combat"]?.GetValue<bool>() ?? false);
@@ -335,7 +335,7 @@ static class OldReanchor
 
     static readonly string[] Observed = ["PlayerHp", "PlayerMaxHp", "PlayerBlock", "Energy", "Turn"];
 
-    static void GoStale(CombatState q, CombatState start, IReadOnlySet<string> groups)
+    internal static void GoStale(CombatState q, CombatState start, IReadOnlySet<string> groups)
     {
         bool all = groups.Contains("all");
         if (all || groups.Contains("enemy"))
@@ -355,7 +355,8 @@ static class OldReanchor
         if (all || groups.Contains("cards"))
         {
             // Every copy back to a plain card: cost changes, bonus damage, enchantments and the like are gone.
-            CardInstance Plain(CardInstance c) => new(c.DefId, c.Upgraded);
+            // The uid is the card's identity, not a property the game's snapshot could have lost: kept.
+            CardInstance Plain(CardInstance c) => new CardInstance(c.DefId, c.Upgraded).WithUid(c.UidOf());
             q.Hand = q.Hand.Select(Plain).ToList(); q.DrawPile = q.DrawPile.Select(Plain).ToList();
             q.DiscardPile = q.DiscardPile.Select(Plain).ToList(); q.ExhaustPile = q.ExhaustPile.Select(Plain).ToList();
         }
@@ -363,7 +364,9 @@ static class OldReanchor
         if (all || groups.Contains("relics")) q.Relics = start.Relics.ToList();
         if (all || groups.Contains("counters"))
         {
+            // [IdentityOnly] fields (the card uid counter) are identity, not state the game could have drifted from.
             foreach (var f in typeof(CombatState).GetFields().Where(f => !f.IsStatic && !Observed.Contains(f.Name)
+                         && !f.IsDefined(typeof(IdentityOnlyAttribute), false)
                          && (f.FieldType == typeof(int) || f.FieldType == typeof(bool))))
             {
                 f.SetValue(q, f.GetValue(start));
@@ -400,7 +403,7 @@ static class OldReanchor
             }).ToArray()),
         };
         o["draw_order"] = new JsonArray(c.DrawPile.Select(x => (JsonNode)new JsonArray(x.DefId, x.Upgraded)).ToArray());
-        if (Setup.Extended) o["potions"] = Setup.Belt(c.PotionSlots, c.MaxPotionSlots);
+        if (OldDump.Extended) o["potions"] = OldSetup.Belt(c.PotionSlots, c.MaxPotionSlots);
         int N(CountingRandom? r) => r?.CallCount ?? -1;
         o["rng"] = new JsonObject
         {

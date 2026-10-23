@@ -1,4 +1,4 @@
-// The emulator's combat state in the shape of the game's NetFullCombatState, as the referee's
+// The old engine's combat state (IEngine.GameState) in the shape of the game's NetFullCombatState, as the referee's
 // ChecksumTap writes it with "trace": true (referee/driver/ChecksumTap.cs), so that
 // tools/fidelity/netstate_diff.py can compare the two field by field.
 //
@@ -25,7 +25,9 @@ using Sts2Emulator.Core;
 using Sts2Emulator.Core.Rng;
 using Sts2Emulator.Core.Run;
 
-static class NetState
+namespace EmuDump.Engines.Old;
+
+static class OldNetState
 {
     static Dictionary<string, Dictionary<int, string>>? _names;
 
