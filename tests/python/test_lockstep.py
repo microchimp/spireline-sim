@@ -194,7 +194,7 @@ def _card(i, up=False):
 class FakeRun:
     """A RunSession whose screens follow a table: screens[name] = (type, options); moves[(name, kind)] = next name."""
 
-    COMBAT, DONE = 1, 2
+    COMBAT, DONE, ITEMS, CARDS = 1, 2, 5, 6
     handle, env = 0, SimpleNamespace(_run_obs_buf=None, _run_rew_buf=None, _run_terminal_buf=None, _run_truncated_buf=None)
 
     def __init__(self, start, screens, moves):
@@ -202,7 +202,8 @@ class FakeRun:
 
     @property
     def phase(self):
-        return {"combat": self.COMBAT, "done": self.DONE}.get(self.cur, 7)
+        return {"combat": self.COMBAT, "done": self.DONE, "cards": self.CARDS}.get(
+            self.cur, self.ITEMS if self.screens.get(self.cur, ("",))[0] == "rewards" else 7)
 
     def decision(self):
         t, opts = self.screens[self.cur]
@@ -213,13 +214,40 @@ class FakeRun:
         self.cur = self.moves[(self.cur, o.kind)]
 
 
+class ItemsRun(FakeRun):
+    """The engine's rewards screen: raw item steps (gold, potion, relic, cards); decision() opens cards first."""
+
+    def __init__(self, **items):
+        opts = (_opt("reward.proceed", 9),)
+        screens = {"cards": ("card_reward", (_opt("card.take", 0, card=_card(8)), _opt("card.skip", 1))),
+                   "items": ("rewards", opts), "map": ("map", (_opt("map.node", 0, node=(1, 2)), _opt("map.node", 1, node=(3, 2))))}
+        super().__init__("items", screens, {("cards", "card.take"): "items", ("cards", "card.skip"): "items",
+                                           ("items", "reward.proceed"): "map"})
+        self.items = {"gold": 0, "potion": 0, "relic": 0, "card": 0, **items}
+
+    def decision(self):
+        if self.cur == "items" and self.items["card"]:
+            self.items["card"], self.cur = 0, "cards"  # RunSession's auto step
+        return super().decision()
+
+    def _step(self, action):
+        self.taken.append(f"step:{action}")
+        present = [k for k in ("gold", "potion", "relic", "card") if self.items[k]]
+        k = present[action]
+        self.items[k] = 0
+        if k == "card":
+            self.cur = "cards"
+
+
 def stub_emu(run, hand=None):
     """An EmuLock without the native library: its mapping logic over a FakeRun."""
     e = lockstep.EmuLock.__new__(lockstep.EmuLock)
-    e.E = SimpleNamespace(rc=SimpleNamespace(PHASE_COMBAT=FakeRun.COMBAT, PHASE_COMPLETE=FakeRun.DONE))
+    e.E = SimpleNamespace(rc=SimpleNamespace(PHASE_COMBAT=FakeRun.COMBAT, PHASE_COMPLETE=FakeRun.DONE,
+                                             PHASE_RELIC_REWARD=FakeRun.ITEMS, PHASE_CARD_REWARD=FakeRun.CARDS))
+    e.native = SimpleNamespace(run_action_mask=lambda h, n: [1, 1] + [0] * (n - 2),
+                               run_state_list=lambda h, k, n: [getattr(run, "items", {}).get(x, 0) for x in ("gold", "potion", "relic", "card")])
     e.s, e.rq, e.dec, e._msg = run, [], None, None
     e.slug = {"cards": {5: "STRIKE_IRONCLAD", 6: "DEFEND_IRONCLAD", 7: "BASH", 8: "ANGER"}, "relics": {}, "potions": {}}
-    e.native = SimpleNamespace(run_action_mask=lambda h, n: [1, 1] + [0] * (n - 2))
     e.ls = SimpleNamespace(_living_targets=lambda o: [0, 1])
     e._obs = lambda: None
     e._hand = lambda: hand or []
@@ -229,26 +257,23 @@ def stub_emu(run, hand=None):
 class MappingTests(unittest.TestCase):
     """The decisions the A1 smoke lost lockstep at, on a scripted emulator (no native library needed)."""
 
-    def test_floor2_potion_take_waits_for_the_items_screen_after_the_card_reward(self):
-        # 23 of the smoke's 25 "state_diverged" losses: the referee's potion take was mirrored as the card reward's
-        # take (the emulator opens the card reward first), so the emulator never took the potion.
-        screens = {"cards": ("card_reward", (_opt("card.take", 0, card=_card(8)), _opt("card.skip", 1))),
-                   "items": ("rewards", (_opt("reward.potion", 1), _opt("reward.proceed", 9))),
-                   "left": ("rewards", (_opt("reward.proceed", 9),)),
-                   "map": ("map", (_opt("map.node", 0, node=(1, 2)), _opt("map.node", 1, node=(3, 2))))}
-        moves = {("cards", "card.take"): "items", ("items", "reward.potion"): "left", ("left", "reward.proceed"): "map",
-                 ("items", "reward.proceed"): "map", ("cards", "card.skip"): "items"}
-        run = FakeRun("cards", screens, moves)
+    def test_floor2_potion_take_is_mirrored_before_the_card_reward_opens(self):
+        # 23 of the first smoke's 25 "state_diverged" losses (and 65 of the second's): the referee takes the potion
+        # first; RunSession.decision() would open the card reward first, so the emulator lacked the potion at the
+        # referee's next decision. The answer is now stepped on the items screen as it comes.
+        run = ItemsRun(potion=1, card=1)
         e = stub_emu(run)
         tk = ["take", "skip"]
-        steps = [("reward", tk, {"ctx": {"type": "potion", "id": "FIRE_POTION"}}, 0),
-                 ("reward", tk, {"ctx": {"type": "card"}}, 0),
-                 ("card_reward", [["ANGER", 0], "skip"], {}, 0)]
-        for kind, labels, m, idx in steps:
-            self.assertIsNone(e.sync(kind, labels, m))
-            self.assertIsNone(e.apply(kind, labels, idx))
+        self.assertIsNone(e.sync("reward", tk, {"ctx": {"type": "potion"}}))
+        self.assertIsNone(e.apply("reward", tk, 0))
+        self.assertEqual((run.items["potion"], run.cur), (0, "items"))  # taken now, card reward not yet open
+        self.assertIsNone(e.sync("reward", tk, {"ctx": {"type": "card"}}))
+        self.assertIsNone(e.apply("reward", tk, 0))
+        self.assertEqual(run.cur, "cards")
+        self.assertIsNone(e.sync("card_reward", [["ANGER", 0], "skip"], {}))
+        self.assertIsNone(e.apply("card_reward", [["ANGER", 0], "skip"], 0))
         self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {}))
-        self.assertEqual(run.taken, ["card.take", "reward.potion", "reward.proceed"])
+        self.assertEqual(run.taken, ["step:0", "step:0", "card.take", "reward.proceed"])
 
     def test_skipped_items_leave_the_screen_and_a_lone_path_enters_the_fight(self):
         # The 14 "phase:5" losses: the referee left the rewards screen and took a lone map node without asking.

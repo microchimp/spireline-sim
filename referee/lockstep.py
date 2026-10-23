@@ -191,6 +191,8 @@ class Lockstep:
             reason, d, _, _ = self._equal(kind, labels, msg)
             ok = not reason and not d
         self.stats["reanchors" if ok else "reanchor_failed"] += 1
+        by = self.stats.setdefault("reanchor_by_plan", {})
+        by[f"{plan}:{'ok' if ok else 'failed'}"] = by.get(f"{plan}:{'ok' if ok else 'failed'}", 0) + 1
         return ok
 
     def _resume(self, i: int, kind: str, labels: list, msg: dict) -> bool:
@@ -305,29 +307,34 @@ class EmuLock:
 
     # -- reaching the referee's screen: what the referee does without asking, the emulator does here
     def _flush_rewards(self) -> None:
-        """Mirror the referee's queued reward answers. The emulator opens a card reward before it offers the potion and
-        relic items (engine._rewards); the referee asks item by item, so a potion or relic answer waits for its screen."""
+        """Mirror the referee's reward answers in its order, as it gives them. RunSession.decision() opens a card reward
+        before it offers the potion and relic items, so on the items screen the answer is stepped on the engine's own
+        item index (engine._rewards' layout: gold, potion, relic, cards) without going through decision()."""
+        rc = self.E.rc
         for _ in range(20):
-            d = self._decision()
-            if d is None:
-                return
-            if d.type == "card_reward":
-                k = next((k for k, q in enumerate(self.rq) if q[0] == "card"), None)
-                if k is None:
+            ph = self.s.phase
+            if ph == rc.PHASE_RELIC_REWARD:
+                if not self.rq:
                     return
-                _, take = self.rq.pop(k)
-                if take:
-                    return  # the referee's card_reward decision follows
-                self._take("card.skip")
+                gold, potion, relic, cards = self.native.run_state_list(self.s.handle, 6, 4)
+                if gold:
+                    self.s._step(0)  # gold is taken without asking on both sides
+                    continue
+                t, take = self.rq.pop(0)
+                present = [k for k, n in (("potion", potion), ("relic", relic), ("card", cards)) if n]
+                if take and t in present:
+                    self.s._step(present.index(t))
                 continue
-            if d.type != "rewards":
+            if ph != rc.PHASE_CARD_REWARD:
                 return
-            k = next((k for k, q in enumerate(self.rq) if q[0] in ("potion", "relic")), None)
+            k = next((k for k, q in enumerate(self.rq) if q[0] == "card"), None)
             if k is None:
                 return
-            t, take = self.rq.pop(k)
+            _, take = self.rq.pop(k)
             if take:
-                self._take("reward." + t)
+                return  # the referee's card_reward decision follows
+            self._decision()
+            self._take("card.skip")
 
     def _forced(self, want: str | None) -> None:
         """Steps the referee took without a decision: leaving a rewards screen it has answered (gold, skipped items),
@@ -356,10 +363,14 @@ class EmuLock:
             return None if self.s.phase == self.E.rc.PHASE_COMBAT else f"phase:{self.s.phase}"
         if kind == "reward":
             self._flush_rewards()
-            got = None if self.dec is None else self.dec.type
-            return None if got in ("rewards", "card_reward") else f"screen:{got}!=rewards"
+            ph = self.s.phase
+            return None if ph in (self.E.rc.PHASE_RELIC_REWARD, self.E.rc.PHASE_CARD_REWARD) else f"phase:{ph}!=rewards"
         if kind == "treasure":  # the emulator takes the chest's relic itself (engine._treasure)
             self._forced("map")
+            want = ((msg or {}).get("obs") or {}).get("floor")
+            if want is not None and self.s.floor < want and self.dec is not None and len(self.dec.options) == 1:
+                self.s.apply(self.dec.options[0])  # the referee walked a lone path into the chest room
+                self._forced("map")
             return None
         self._forced(self.SCREEN[kind])
         got = None if self.dec is None else self.dec.type
