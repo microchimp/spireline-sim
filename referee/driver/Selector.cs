@@ -22,6 +22,11 @@
 // pause), then SignalPlayerChoiceEnded. Job key "pick_timing": "ui" (default) or "instant" (the
 // old answer at once, for comparison).
 //
+// Full selects. Spec key "full_select" (absent: off, and every output is as it always was) gives a combat card screen its
+// real range: the agent picks cards one at a time up to the screen's max, with a "done" action once the min is met, as an
+// "up to N" screen (Neow's Fury, Gambling Chip) lets a player. Off, the answer is exactly one card (or the min). Env.DecideMany
+// does the asking; the cards go back to the game in the order they were picked.
+//
 // Edge answers. Spec key "choice_edges" (absent: off, and every output is as it always was) makes the
 // answers probe the counts and the eligibility of a screen rather than take its first card: "none" (the
 // fewest the screen allows), "one", "max" (the most it takes), "last" (one card, the last eligible) and
@@ -57,7 +62,7 @@ public sealed class FirstChoiceSelector : ICardSelector
     internal static string PickTiming = "ui";
 
     /// <summary>Set inside a whole run with an agent channel or a trace (Env.cs): which of the list to pick, ascending.</summary>
-    internal static Func<List<CardModel>, int, bool, List<int>>? PickHook;  // (options, n, the screen allows choosing 0)
+    internal static Func<List<CardModel>, int, bool, int, int, List<int>>? PickHook;  // (options, n, the screen allows choosing 0, its min, its max)
 
     /// <summary>As PickHook, for a card reward offered inside a fight.</summary>
     internal static Func<IReadOnlyList<CardCreationResult>, int>? CardRewardHook;
@@ -208,7 +213,7 @@ public sealed class FirstChoiceSelector : ICardSelector
     {
         string? edge = NextEdge();
         int n = Math.Min(list.Count, Math.Max(minSelect, Math.Min(1, maxSelect)));
-        var at = edge == null ? PickHook?.Invoke(list, n, Env.Extras && minSelect <= 0 && n > 0) ?? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
+        var at = edge == null ? PickHook?.Invoke(list, n, Env.Extras && minSelect <= 0 && n > 0, minSelect, maxSelect) ?? Enumerable.Range(0, n).ToList() : EdgeIndices(edge, list, minSelect, maxSelect);
         var picked = at.Select(i => list[i]).ToList();
         var entry = new JsonObject
         {

@@ -168,6 +168,7 @@ public static partial class Driver
         Env.Extras = (bool?)spec["extra_actions"] == true;
         Env.AnchorState = (bool?)spec["anchor_state"] == true;  // Env.cs: the lockstep emulator side's hidden state
         Env.AnchorPrevKind = null;
+        Env.FullSelect = (bool?)spec["full_select"] == true;
         Env.AltChecked = Env.AltMismatch = 0;
         Env.Trace = Env.Tracing ? new JsonArray() : null;
         FirstChoiceSelector.PickHook = Env.Live || Env.Tracing ? FightPick : null;
