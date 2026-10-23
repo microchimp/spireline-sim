@@ -2,6 +2,7 @@ using System.Text.Json;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core2;
+using Sts2Emulator.Interop;
 using Xunit;
 
 namespace Sts2Emulator.Tests.Core2;
@@ -167,5 +168,110 @@ public class CardUidTests
         Assert.Equal(CardUidInvariant.Breach.AboveCounter, CardUidInvariant.Check(state).Kind);
         Assert.Equal(1, CardUidInvariant.Normalise(state));
         Assert.Equal(state.LastCardUid, state.HeldPlayedCard!.Value.UidOf());
+    }
+
+    private static int Named(string name) => GeneratedData.Cards.FindId(name)!.Value;
+
+    [Fact]
+    public void ADualWieldCloneGetsANewUidAndThePickKeepsItsOwn()
+    {
+        var fight = Numbered(Fight
+            .Hand(Card(Named("DualWield")), Card(IC.Bash), Card(IC.StrikeIronclad))
+            .Enemy(hp: 300)
+            .Energy(9));
+        int bash = fight.State.Hand[1].UidOf();
+        int before = fight.State.LastCardUid;
+
+        fight.Play(0);
+        fight.Choose(fight.State.PendingSelection!.Candidates.IndexOf(fight.State.Hand.FindIndex(c => c.DefId == IC.Bash)));
+
+        var bashes = fight.State.Hand.Where(c => c.DefId == IC.Bash).Select(c => c.UidOf()).ToList();
+        Assert.Equal(2, bashes.Count);
+        Assert.Contains(bash, bashes);
+        Assert.Contains(before + 1, bashes);
+        Assert.True(CardUidInvariant.Holds(fight.State));
+    }
+
+    [Fact]
+    public void AColorlessCloneGetsANewUidAndThePickKeepsItsOwn()
+    {
+        int colorless = GeneratedData.CardPools.Colorless[0];
+        var fight = Numbered(Fight
+            .Hand(Card(243), Card(colorless), Card(GeneratedData.CardPools.Colorless[1]))  // Heirloom Hammer
+            .Enemy(hp: 500)
+            .Energy(9));
+        int picked = fight.State.Hand[1].UidOf();
+        int before = fight.State.LastCardUid;
+
+        fight.Play(0, 0);
+        Assert.Equal(CardSelectionKind.CloneColorlessInHand, fight.Pending!.Kind);
+        fight.Choose(0);
+
+        var copies = fight.State.Hand.Where(c => c.DefId == colorless).Select(c => c.UidOf()).ToList();
+        Assert.Equal(2, copies.Count);
+        Assert.Contains(picked, copies);
+        Assert.Contains(before + 1, copies);
+        Assert.True(CardUidInvariant.Holds(fight.State));
+    }
+
+    private static Fight HiddenDaggersAsked() => Numbered(Fight
+        .Hand(Card(SI.HiddenDaggers), Card(SI.StrikeSilent), Card(SI.DefendSilent), Card(SI.Neutralize))
+        .Energy(1)
+        .Enemy(hp: 40));
+
+    [Fact]
+    public void ASelectionTailsCardsTakeTheirUidsOnArrivalNotAtCreation()
+    {
+        var fight = HiddenDaggersAsked();
+        int before = fight.State.LastCardUid;
+
+        fight.Play();
+
+        // Templates while the screen is open: no uid, none handed out, and the invariant (which does not count them) holds.
+        Assert.Equal(2, fight.State.PendingSelection!.AfterSelectionToHand.Count);
+        Assert.All(fight.State.PendingSelection.AfterSelectionToHand, c => Assert.Equal(0, c.UidOf()));
+        Assert.Equal(before, fight.State.LastCardUid);
+        Assert.True(CardUidInvariant.Holds(fight.State));
+
+        fight.Choose(0);
+        fight.Choose(0);
+
+        Assert.Equal([before + 1, before + 2], fight.State.Hand.Where(c => c.DefId == SI.Shiv).Select(c => c.UidOf()));
+        Assert.Equal(before + 2, fight.State.LastCardUid);
+        Assert.True(CardUidInvariant.Holds(fight.State));
+    }
+
+    [Fact]
+    public void ASelectionTailReadFromASnapshotGetsUidsOnArrivalToo()
+    {
+        var fight = HiddenDaggersAsked();
+        fight.Play();
+        var read = CombatSnapshot.Read(CombatSnapshot.Write(fight.State), seed: 1, out _);
+        Assert.NotNull(read.PendingSelection);
+        Assert.All(read.PendingSelection!.AfterSelectionToHand, c => Assert.Equal(0, c.UidOf()));  // NumberAll skips templates
+        int before = read.LastCardUid;
+
+        var rng = new System.Random(0);
+        CombatEngine.Step(read, 0, rng);
+        CombatEngine.Step(read, 0, rng);
+
+        var shivs = read.Hand.Where(c => c.DefId == SI.Shiv).Select(c => c.UidOf()).ToList();
+        Assert.Equal([before + 1, before + 2], shivs);
+        Assert.All(shivs, uid => Assert.Equal(1, Uids(read).Count(u => u == uid)));
+    }
+
+    [Fact]
+    public void ATailCardThatLandsInTheDiscardPileGetsItsUidThere()
+    {
+        var state = CombatFactory.NewCombat(2);
+        state.Hand.Clear();
+        while (state.Hand.Count < CardEffects.MaxCardsInHand) state.Hand.Add(Card(IC.StrikeIronclad));
+        CardUids.NumberAll(state);
+        int before = state.LastCardUid;
+
+        CardEffects.AddCardsToHand(state, [Card(SI.Shiv), Card(SI.Shiv)]);
+
+        Assert.Equal([before + 1, before + 2], state.DiscardPile.TakeLast(2).Select(c => c.UidOf()));
+        Assert.True(CardUidInvariant.Holds(state));
     }
 }

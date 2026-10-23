@@ -33,15 +33,19 @@ will be that uid.
 Live slots, in walk order (`CardUids.LivePiles`/`LiveCards`): Hand, Draw, Discard, Exhaust, AutoPlayQueue, then
 HeldPlayedCard. Not live: `LastAttackOrSkill*` (memory of a card), `Stolen*` (out of the combat),
 `ReturnToHandBeforeDraw` (a note of a card that stays in its pile until it returns), `CopiesToHandBeforeDraw` and a
-selection's `AfterSelectionToHand` (templates of cards not yet created; their uid is handed out on arrival).
+selection's `AfterSelectionToHand` (templates of cards not yet created: Hidden Daggers' Shivs). A template has uid 0 and
+takes its uid when it arrives: Nightmare's copies as they are handed over, a selection tail in
+`CardEffects.AddCardsToHand` (one fresh uid per card, whether it lands in the hand or the full hand's discard pile). So a
+tail read from a document (`CombatSnapshot.ReadCombat`, whose `NumberAll` skips templates) is numbered on arrival like one
+the engine made.
 
 ## Creation-site audit
 
 | File | Sites | What they do |
 | --- | --- | --- |
 | `Core/CombatFactory.cs` | 1 | `Reset`: deck clone into the draw pile, `NumberAll`. Every `Reset`/`NewCombat` overload ends there. |
-| `Core/Effects/CardEffects.cs` | 37 | 35 `new CardInstance` sites (generated cards into hand, discard or draw; Shivs; status cards; cards transformed in place in the hand), fresh each, two Hidden Daggers Shivs fresh one by one (was one value repeated); 2 copies: Anger's clone into the discard, the repeated copies of the first hand card. |
-| `Core/CombatEngine.cs` | 9 | 7 `new CardInstance` sites (Juggling's copies into the hand, a selection screen's generated pick, Soul, the cards a screen transforms, Wither); Nightmare's queued clones fresh as they are handed over; Bolas's return keeps the uid of the card taken out of the piles (`RemoveFirstMatchingCard` now returns it), and a return no pile gave up a card for is a new card. |
+| `Core/Effects/CardEffects.cs` | 36 | 33 `new CardInstance` sites (generated cards into hand, discard or draw; Shivs; status cards; cards transformed in place in the hand), fresh each; `AddCardsToHand`, where a selection tail's templates (Hidden Daggers' two Shivs, which were one value repeated) take a uid each on arrival; 2 copies: Anger's clone into the discard, the repeated copies of the first hand card. |
+| `Core/CombatEngine.cs` | 11 | 7 `new CardInstance` sites (Juggling's copies into the hand, a selection screen's generated pick, Soul, the cards a screen transforms, Wither); 2 copies a screen makes with `state.Fresh(original) with {...}` (Clone Colorless in hand, Dual Wield: a bare `original with {...}` is a second card with the first one's uid); Nightmare's queued clones fresh as they are handed over; Bolas's return keeps the uid of the card taken out of the piles (`RemoveFirstMatchingCard` now returns it), and a return no pile gave up a card for is a new card. |
 | `Core/EnemyAI.cs` | 2 | Status cards an enemy puts into the discard or the hand. |
 | `Core/Effects/RelicEffects.cs` | 2 | Copies: Music Box's Ethereal copy, Burning Sticks' copy. (Jeweled Mask moves a card: keeps.) |
 | `Core/Effects/PotionEffects.cs` | 0 | Only moves (the hand into the draw pile). |
@@ -49,7 +53,12 @@ selection's `AfterSelectionToHand` (templates of cards not yet created; their ui
 | `Core/StateCloning.cs` | 1 | `CopyTo` copies the counter; pile values carry their uids. |
 | `Interop/CombatSnapshot.cs` | 1 | `ReadCombat` numbers the read combat. The writer is unchanged. |
 | `Interop/NativeExports.cs` | 1 | The add-card-to-hand export: fresh. Deck arrays go through `Reset`; `Sts2_CanEnchant`'s temporary card needs none. |
-| `tools/emudump` | 4 | Setup items into a combat pile: fresh; reanchor write-back: `NumberNew`; HookProbe's built piles and inserted card: fresh. (`Fight`, `RefsetSetup` and the Codex walker build the run deck only.) |
+| `tools/emudump` | 4 (+ the stale perturbation) | Setup items into a combat pile: fresh; reanchor write-back: `NumberNew`; HookProbe's built piles and inserted card: fresh. (`Fight`, `RefsetSetup` and the Codex walker build the run deck only.) |
+
+`EmuDump reanchor --stale` (`OldReanchor.GoStale`, under `Engines/Old`) rebuilds every pile card as a plain card and copies the
+combat's int/bool counters from its start. It keeps each card's uid and skips `[IdentityOnly]` fields, so the uid counter is
+not moved back and later cards do not repeat a uid. `--card-uid-check` is a `fight` option only; `reanchor` has no such
+check, so the stale case is pinned by `tools/emudump.Tests/ReanchorStaleUidTests.cs`.
 
 ## Safety net and invariant
 

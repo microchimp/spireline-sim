@@ -1705,7 +1705,7 @@ public static class CardEffects
                     def.Id,
                     2,
                     rng,
-                    [state.Fresh(new CardInstance(SI.Shiv, upgraded)), state.Fresh(new CardInstance(SI.Shiv, upgraded))]
+                    [new CardInstance(SI.Shiv, upgraded), new CardInstance(SI.Shiv, upgraded)]
                 );
                 break;
 
@@ -4919,10 +4919,16 @@ public static class CardEffects
         state.Hand.Add(card);
     }
 
+    /// <summary>
+    /// Files the cards a selection's tail was holding, as they are created: each is a template until it
+    /// arrives here (a Hidden Daggers Shiv is made after the discard), and takes its card uid on arrival, one
+    /// per card, whether it lands in the hand or, with the hand full, in the discard pile.
+    /// </summary>
     internal static void AddCardsToHand(CombatState state, List<CardInstance> cards)
     {
-        foreach (var card in cards)
+        foreach (var template in cards)
         {
+            var card = state.Fresh(template);
             if (state.Hand.Count >= MaxCardsInHand)
             {
                 state.DiscardPile.Add(card);

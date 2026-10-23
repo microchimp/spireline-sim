@@ -4027,7 +4027,7 @@ public static class CombatEngine
                 {
                     var original = state.Hand[index];
                     state.Hand.Add(
-                        original with
+                        state.Fresh(original) with
                         {
                             FreeThisTurn = false,
                             FreeUntilPlayed = false,
@@ -4055,7 +4055,7 @@ public static class CombatEngine
                         }
 
                         state.Hand.Add(
-                            chosen with
+                            state.Fresh(chosen) with
                             {
                                 FreeThisTurn = false,
                                 FreeUntilPlayed = false,
