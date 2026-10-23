@@ -89,7 +89,7 @@ public class OldEngine : IEngine
         return all;
     }
 
-    public JsonObject HookProbe(JsonObject scenarios) => OldHookProbe.Run(scenarios);
+    public JsonObject HookProbe(JsonObject scenarios) => OldHookProbe.Run(scenarios, Run.Kernel);
 
     public ReanchorOpening ReanchorOpen() => OldReanchor.Open(this);
 

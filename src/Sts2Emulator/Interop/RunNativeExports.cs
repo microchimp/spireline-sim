@@ -173,6 +173,12 @@ public static class RunNativeExports
             return -1;
         }
 
+        if (run.Kernel is { AnyOn: true })
+        {
+            // The native API carries no kernel state yet (TIER1_KERNEL.md section 5): a switched-on kernel is refused.
+            return -1;
+        }
+
         int status = run.Step(
             action,
             targetEnemyIndex,
@@ -661,6 +667,7 @@ public static class RunNativeExports
             // The enemies' next moves come from the record's intents; with no later turns known, the nearest position that announces them.
             var (moves, unknown) = FightAnchor.AnchorMoves(q, game, patched, _ => []);
             run.State.ActiveCombat = q;
+            run.BindActiveCombat();
             message = $"moves={moves}" + (unknown == null ? "" : ":" + string.Join(",", unknown)) + ";patched=" + string.Join(",", patched);
             return patched.Count;
         }

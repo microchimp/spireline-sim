@@ -211,6 +211,7 @@ static class OldReanchor
     {
         if (!won) return DumpLite(q, false, OldDump.Final(e.State, false));
         e.State.ActiveCombat = q;
+        e.BindActiveCombat();
         e.State.ActiveCombatRng = qr;
         e.State.Rng = new Sts2Emulator.Core.Rng.RunRngSet(e.State.StringSeed);
         if (e.DebugResolveCombat() == -1) throw new InvalidOperationException($"no fight to finish; phase {e.State.Phase}");

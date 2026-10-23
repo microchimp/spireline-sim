@@ -11,8 +11,18 @@ namespace EmuDump.Engines.Old;
 /// <summary>Under Engines/Old: it builds old-engine state, so it lives with the old engine's binding.</summary>
 internal static class KernelOrderMode
 {
+    /// <summary>The kernel of <c>--engine</c>'s engine, bound to each scenario's combat (none for old, or no switch on).</summary>
+    private static Kernel? _bound;
+
     public static int Run(string[] args)
     {
+        int ei = Array.IndexOf(args, "--engine");
+        if (ei >= 0 && ei + 1 < args.Length)
+        {
+            _bound = (EmuDump.Engines.EngineFactory.Create(args[ei + 1]) as OldEngine)?.Run.Kernel;
+            args = [.. args[..ei], .. args[(ei + 2)..]];
+        }
+
         if (args.Length < 2)
         {
             Console.Error.WriteLine("usage: EmuDump kernel-order <scenarios.json> <out.json>");
@@ -79,6 +89,7 @@ internal static class KernelOrderMode
     {
         var rng = new Random(0);
         var state = new CombatState { NicheHpRng = new CountingRandom(0) };
+        _bound?.Attach(state);
         var deck = (sc["deck"]?.AsArray() ?? []).Select(n => Card(n!)).ToArray();
         int[] relics = sc["relics"]?.AsArray().Select(x => x!.GetValue<int>()).ToArray() ?? [];
         int[] potions = sc["potions"]?.AsArray().Select(x => x!.GetValue<int>()).ToArray() ?? [];

@@ -27,7 +27,7 @@ internal static class OldHookProbe
     };
 
     /// <summary>The scenarios run, as the output document; throws NotSupportedException (with the reason) when the engine is not instrumented.</summary>
-    public static JsonObject Run(JsonObject spec)
+    public static JsonObject Run(JsonObject spec, Sts2Emulator.Core2.Kernel? kernel = null)
     {
         var probe = typeof(CombatState).Assembly.GetType("Sts2Emulator.HookProbe");
         if (probe is null)
@@ -61,7 +61,7 @@ internal static class OldHookProbe
                 on.SetValue(null, true);
                 try
                 {
-                    RunScenario(sc!, Mark);
+                    RunScenario(sc!, Mark, kernel);
                 }
                 catch (Exception e)
                 {
@@ -103,10 +103,12 @@ internal static class OldHookProbe
         node?.AsArray().Select(b => new BuffState(Enum.Parse<BuffId>(b![0]!.GetValue<string>()), b[1]!.GetValue<int>())).ToList()
         ?? [];
 
-    private static void RunScenario(JsonNode sc, Action<int> mark)
+    private static void RunScenario(JsonNode sc, Action<int> mark, Sts2Emulator.Core2.Kernel? kernel)
     {
         var rng = new Random(0);
         var state = new CombatState { NicheHpRng = new CountingRandom(0) };
+        // The core2 engine's kernel state, bound to the combat built here (no-op with no switch on).
+        kernel?.Attach(state);
         var deck = (sc["deck"]?.AsArray() ?? []).Select(n => Card(n!)).ToArray();
         int[] relics = sc["relics"]?.AsArray().Select(x => x!.GetValue<int>()).ToArray() ?? [];
         int[] potions = sc["potions"]?.AsArray().Select(x => x!.GetValue<int>()).ToArray() ?? [];

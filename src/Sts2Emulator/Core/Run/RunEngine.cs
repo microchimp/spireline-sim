@@ -1187,7 +1187,19 @@ public sealed class RunEngine
         out bool truncated
     )
     {
-        int status = StepInner(action, targetEnemyIndex, out reward, out terminal, out truncated);
+        int status;
+        if (_kernel is { AnyOn: true } && State.Phase == RunPhase.Combat && State.ActiveCombat is { } fight)
+        {
+            // The kernel's entry gate (TIER1_KERNEL.md section 5): with a switch on, every combat stepped carries its
+            // KernelState, bound where the combat was built; a combat without one would run its sites old, silently.
+            var k = fight.Kernel ?? throw new InvalidOperationException(
+                "kernel guard: a switch is on and the combat about to be stepped has no KernelState (bind it where the combat was built)");
+            status = QueueStep(fight, k, action, targetEnemyIndex, out reward, out terminal, out truncated);
+        }
+        else
+        {
+            status = StepInner(action, targetEnemyIndex, out reward, out terminal, out truncated);
+        }
 
         // A run ends the moment the player runs out of HP, wherever that happens. Combat
         // had its own path; nothing outside combat did, so an event that took the last of
@@ -1230,6 +1242,111 @@ public sealed class RunEngine
         State.MapNodeTypes[option] = nodeType;
         State.MapChoices[option] = encounterId;
         return Step(option, -1, out _, out _, out _);
+    }
+
+    /// <summary>
+    /// Binds the kernel's state to the active combat when a switch is on and the combat holds none: a combat built
+    /// outside this engine (a snapshot restore, a re-anchor) before it is stepped. A no-op on the old engine.
+    /// </summary>
+    public void BindActiveCombat()
+    {
+        if (_kernel is { AnyOn: true } && State.ActiveCombat is { Kernel: null } c)
+        {
+            _kernel.Bind(c, State);
+        }
+    }
+
+    /// <summary>
+    /// A combat step through the kernel's queue (TIER1_KERNEL.md section 5; only with a switch on): a player action is
+    /// enqueued and the executor drains the queue, the action's body being the old engine's step. An answer to an old
+    /// screen resumes the action gathering it (a new id; its body replays the step); an answer to a kernel screen between
+    /// actions runs that hook action's resume record.
+    /// </summary>
+    private int QueueStep(Sts2Emulator.Core.CombatState combat, Core2.KernelState k, int action, int target,
+        out float reward, out bool terminal, out bool truncated)
+    {
+        var q = k.Queue!;
+        var host = new QueueHost(this, combat);
+        if (combat.PendingSelection is { KernelAction: > 0 } screen)
+        {
+            combat.PendingSelection = null;
+            k.Answer(screen.KernelAction, action);
+        }
+        else if (combat.PendingSelection is not null)
+        {
+            if (q.Front(0, Core2.GameActionState.GatheringPlayerChoice) is { Kind: not Core2.GameActionKind.Hook } gathering)
+            {
+                q.Resume(gathering.Id!.Value, action);
+            }
+            else
+            {
+                // A screen outside any action (the turn's end, the combat's start): its answer is the old step's.
+                host.Body(action, target);
+            }
+        }
+        else
+        {
+            var kind = action < combat.Hand.Count ? Core2.GameActionKind.PlayCard
+                : action == combat.Hand.Count ? Core2.GameActionKind.EndTurn
+                : Core2.GameActionKind.UsePotion;
+            q.Enqueue(new Core2.GameActionRec(kind, Core2.GameActionRec.TypeOf(kind)) { Action = action, Target = target });
+        }
+
+        Core2.ActionExecutor.Drain(k, host);
+        if (!host.Ran)
+        {
+            // The queue ran nothing (a canceled action): the old step's own guards answer it.
+            host.Body(action, target);
+        }
+
+        if (!host.InProgress)
+        {
+            q.CombatEnded();
+        }
+
+        reward = host.Reward;
+        terminal = host.Terminal;
+        truncated = host.Truncated;
+        return host.Status;
+    }
+
+    /// <summary>The executor's host for one step: a player action's body is <see cref="StepInner" />.</summary>
+    private sealed class QueueHost(RunEngine engine, Sts2Emulator.Core.CombatState combat) : Core2.IActionHost
+    {
+        public bool Ran;
+        public int Status;
+        public float Reward;
+        public bool Terminal;
+        public bool Truncated;
+
+        public void Body(int action, int target)
+        {
+            Ran = true;
+            Status = engine.StepInner(action, target, out Reward, out Terminal, out Truncated);
+        }
+
+        public bool Run(Core2.KernelState k, Core2.GameActionRec a)
+        {
+            if (a.Answer is { } answer)
+            {
+                a.Answer = null;
+                Body(answer, -1);
+            }
+            else
+            {
+                Body(a.Action, a.Target);
+            }
+
+            return combat.PendingSelection is { Replay: not null, KernelAction: 0 };
+        }
+
+        public bool InProgress =>
+            ReferenceEquals(engine.State.ActiveCombat, combat) && !Sts2Emulator.Core.CombatEngine.IsOverOrEnding(combat);
+
+        // The old step checks the win condition inside itself; the boundary's check reads it (F10 moves it here).
+        public void CheckWin(Core2.KernelState k)
+        {
+        }
     }
 
     private int StepInner(
