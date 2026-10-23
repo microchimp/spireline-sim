@@ -15,8 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def native_env() -> None:
     """Point at the fork's native build and allow it to be older than a fresh checkout's sources."""
-    lib = ROOT.parent / "sts2" / "out"
-    if "STS2_LIB_PATH" not in os.environ and (lib / "Sts2Emulator.dll").exists():
+    # this tree's own build first (out/), else the fork's main working copy's
+    lib = next((d for d in (ROOT / "out", ROOT.parent / "sts2" / "out") if (d / "Sts2Emulator.dll").exists()), None)
+    if "STS2_LIB_PATH" not in os.environ and lib is not None:
         os.environ["STS2_LIB_PATH"] = str(lib)
     os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
     for p in (ROOT / "rl", ROOT / "src", ROOT):

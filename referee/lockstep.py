@@ -28,8 +28,12 @@ from typing import Any, Protocol
 ROOT = Path(__file__).resolve().parents[1]
 
 COMBAT_KINDS = ("combat", "select_cards_combat", "card_reward_combat")
-# Referee decision kinds the emulator side can replay and answer. Others end the lockstep (reason unmapped:<kind>).
-MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "select_cards") + COMBAT_KINDS
+# Referee decision kinds the emulator side mirrors. Any other kind suspends the lockstep (reason unmapped:<kind>) until
+# the next re-anchor point; so does an event, whose options the emulator cannot name.
+MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "select_cards", "treasure", "shop",
+                "bundle") + COMBAT_KINDS
+# Reasons that are a gap in this adapter's mapping, not a difference of the emulator's: reported apart.
+GAP_PREFIXES = ("unmapped", "apply:", "choose_error")
 
 
 def _paths() -> None:
@@ -110,7 +114,7 @@ class DivergenceLog:
 class EmuSide(Protocol):
     """What the loop needs of the emulator side (EmuLock, or a fake in the tests)."""
 
-    def sync(self, kind: str, labels: list) -> str | None: ...        # a reason when the structure disagrees
+    def sync(self, kind: str, labels: list, msg: dict) -> str | None: ...  # a reason when the structure disagrees
     def view(self) -> dict: ...
     def choose(self, kind: str, labels: list, msg: dict) -> int | None: ...
     def apply(self, kind: str, labels: list, idx: int) -> str | None: ...
@@ -118,7 +122,12 @@ class EmuSide(Protocol):
 
 
 class Lockstep:
-    """The per-run state machine. `decide(msg)` answers one referee decision with an action index."""
+    """The per-run state machine. `decide(msg)` answers one referee decision with an action index.
+
+    A difference (hash, structure, or a decision the adapter cannot mirror) suspends the lockstep: the decisions after
+    it are scored but not ranked, and at every later re-anchor point (fight start, room entry) the emulator is
+    re-anchored from the referee's record and, once its view equals the referee's again, the lockstep resumes there.
+    """
 
     def __init__(self, emu: EmuSide | None, fallback, seed: str = "", sims: int = 60):
         self.emu, self.fallback, self.seed, self.sims = emu, fallback, seed, sims
@@ -126,57 +135,87 @@ class Lockstep:
         self.lost: str | None = None if emu is not None else "no_emulator"
         self.n = 0
         self.prev_kind: str | None = None
-        self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "reanchors": 0,
-                      "reanchor_failed": 0, "first_loss": None}
+        self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
+                      "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
 
     def decide(self, msg: dict) -> int:
-        kind, labels, obs = msg["kind"], msg["actions"], msg.get("obs", {})
+        kind, labels = msg["kind"], msg["actions"]
         i, self.n = self.n, self.n + 1
         self.stats["decisions"] += 1
-        ranked = self.lost is None
-        if ranked:
-            ranked = self._check(i, kind, labels, msg)
+        ranked = False
+        if self.emu is not None:
+            ranked = self._check(i, kind, labels, msg) if self.lost is None else self._resume(i, kind, labels, msg)
         choice = None
-        if self.lost is None:
+        if ranked:
             try:
                 choice = self.emu.choose(kind, labels, msg)
-            except Exception as e:  # noqa: BLE001 -- a search failure ends the lockstep, not the run
-                self._lose(i, f"choose_error:{type(e).__name__}:{e}")
+            except Exception as e:  # noqa: BLE001 -- a search failure suspends the lockstep, not the run
+                self._lose(i, f"choose_error:{type(e).__name__}:{e}"[:200])
         if choice is None:
             choice = self.fallback(msg)
-        if self.lost is None:
-            err = self.emu.apply(kind, labels, choice)
+        if self.lost is None and self.emu is not None:
+            try:
+                err = self.emu.apply(kind, labels, choice)
+            except Exception as e:  # noqa: BLE001 -- the emulator refused the referee's step: suspend
+                err = f"{type(e).__name__}:{e}"[:200]
             if err:
-                self._lose(i, f"apply:{err}")
+                self._lose(i, f"apply:{err}", kind=kind, msg=msg)
         self.stats["ranked" if ranked and self.lost is None else "not_ranked"] += 1
         self.prev_kind = kind
         return choice
 
-    def _lose(self, i: int, reason: str) -> None:
+    def _lose(self, i: int, reason: str, kind: str | None = None, msg: dict | None = None) -> None:
         self.lost = reason
+        key = reason.split(":")[0] + (":" + reason.split(":")[1] if reason.startswith(("unmapped", "apply")) else "")
+        self.stats["losses"][key] = self.stats["losses"].get(key, 0) + 1
         self.stats["first_loss"] = self.stats["first_loss"] or {"decision": i, "reason": reason}
+        if kind is not None and reason.startswith("apply:"):  # an unmirrorable step is logged like a structure gap
+            self.stats["gaps"] += 1
+            obs = (msg or {}).get("obs", {})
+            self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=True,
+                         diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False)
+
+    def _equal(self, kind: str, labels: list, msg: dict) -> tuple[str | None, list, dict, dict]:
+        reason = None if kind in MAPPED_KINDS else f"unmapped:{kind}"
+        reason = reason or self.emu.sync(kind, labels, msg)
+        r, e = ref_view(msg.get("obs", {})), self.emu.view()
+        return reason, ([] if reason else structural_diff(r, e)), r, e
+
+    def _reanchor(self, plan: str, kind: str, labels: list, msg: dict) -> bool:
+        """Re-anchor, then the same comparison again: a re-anchor counts only when the views agree after it."""
+        try:
+            ok = self.emu.reanchor(plan, msg)
+        except Exception:  # noqa: BLE001 -- a failed re-anchor waits for the next point
+            ok = False
+        if ok:
+            reason, d, _, _ = self._equal(kind, labels, msg)
+            ok = not reason and not d
+        self.stats["reanchors" if ok else "reanchor_failed"] += 1
+        return ok
+
+    def _resume(self, i: int, kind: str, labels: list, msg: dict) -> bool:
+        plan = reanchor_plan(kind, self.prev_kind)
+        if plan is None or kind not in MAPPED_KINDS or not self._reanchor(plan, kind, labels, msg):
+            return False
+        self.lost = None
+        self.stats["resumed"] += 1
+        return True
 
     def _check(self, i: int, kind: str, labels: list, msg: dict) -> bool:
         obs = msg.get("obs", {})
-        reason = None if kind in MAPPED_KINDS else f"unmapped:{kind}"
-        reason = reason or self.emu.sync(kind, labels)
-        r, e = ref_view(obs), self.emu.view()
-        d = [] if reason else structural_diff(r, e)
+        reason, d, r, e = self._equal(kind, labels, msg)
         if not reason and not d:
             return True
-        self.stats["diverged"] += 1
+        gap = bool(reason) and reason.startswith(GAP_PREFIXES)
+        self.stats["gaps" if gap else "diverged"] += 1
         rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind,
                            ref_hash=view_hash(r), emu_hash=view_hash(e), referee_state_hash=msg.get("h"),
-                           reason=reason, diff=d[:12], n_diff=len(d), agent_weighted=True)
+                           reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True)
         plan = reanchor_plan(kind, self.prev_kind)
         rec["reanchor_plan"] = plan
-        if plan and not reason and self.emu.reanchor(plan, msg):
-            self.stats["reanchors"] += 1
-            rec["reanchored"] = True
+        rec["reanchored"] = bool(plan) and not gap and self._reanchor(plan, kind, labels, msg)
+        if rec["reanchored"]:
             return True
-        if plan:
-            self.stats["reanchor_failed"] += 1
-        rec["reanchored"] = False
         self._lose(i, reason or "state_diverged")
         return False
 
@@ -189,7 +228,18 @@ def _room(obs: dict) -> str:
 
 
 class EmuLock:
-    """The real emulator side: a RunSession from the referee's seed, the rules policy, IS-MCTS in fights."""
+    """The real emulator side: a RunSession from the referee's seed, the rules policy, IS-MCTS in fights.
+
+    Re-anchoring uses the run replay's own hooks (scripts/replay_real_run.py's path into the native library):
+    `Sts2Run_DebugResolveCombat` ends a fight the emulator is still in, the emulator is walked to its map screen, and
+    `Sts2Run_DebugSetPlayer` sets the player's holdings (HP, max HP, gold, deck, relics, potion belt) to the referee's
+    record. No new state format and no native rebuild; what stays the emulator's own is its RNG and map position.
+    """
+
+    REST = {"HEAL": "heal", "SMITH": "smith", "CLONE": "clone", "LIFT": "lift", "DIG": "dig", "HATCH": "hatch",
+            "COOK": "cook", "KINDLE": "kindle"}
+    SCREEN = {"neow": "neow", "ancient": "neow", "map": "map", "card_reward": "card_reward", "rest": "rest",
+              "select_cards": "card_select", "shop": "shop", "bundle": "bundle"}
 
     def __init__(self, seed: str, ascension: int = 10, sims: int = 60):
         import leakprobes  # noqa: PLC0415 -- the native library's location
@@ -205,8 +255,10 @@ class EmuLock:
         self.rules = selfplay.RulesPlayer()
         self.rng = __import__("numpy").random.default_rng(int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16))
         self.slug = {k: {v: self.V.game_slug(n) for n, v in m.items()} for k, m in self._id_map().items()}
+        self.ids = {k: {v: i for i, v in m.items()} for k, m in self.slug.items()}
         self.dec = None
-        self.moves = 0
+        self.rq: list = []  # the referee's reward answers not yet mirrored: [type, take]
+        self._msg: dict | None = None
 
     @staticmethod
     def _id_map() -> dict:
@@ -220,6 +272,14 @@ class EmuLock:
     def _card(self, c) -> list:
         return [self.slug["cards"].get(c.card_id, f"?{c.card_id}"), int(c.upgraded)]
 
+    def _obs(self):
+        return self.s.env._run_obs_buf
+
+    def _hand(self) -> list:
+        obs, ls = self._obs(), self.ls
+        return [[self.slug["cards"].get(obs[ls._HAND + k * ls._CARD], "?"), int(obs[ls._HAND + k * ls._CARD + 1])]
+                for k in range(ls._hand_size(obs))]
+
     def view(self) -> dict:
         v = self.s.view()
         out = {"act": self.s.act_index, "floor": v.floor, "hp": v.hp, "max_hp": v.max_hp, "gold": v.gold,
@@ -227,26 +287,83 @@ class EmuLock:
                "relics": [self.slug["relics"].get(r, f"?{r}") for r in v.relics],
                "potions": [self.slug["potions"].get(p, f"?{p}") for p in v.potions]}
         if self.s.phase == self.E.rc.PHASE_COMBAT:
-            obs = self.s.env._run_obs_buf
-            ls = self.ls
-            hand = [[self.slug["cards"].get(obs[ls._HAND + k * ls._CARD], "?"), int(obs[ls._HAND + k * ls._CARD + 1])]
-                    for k in range(ls._hand_size(obs))]
+            obs, ls = self._obs(), self.ls
             hp = [int(obs[ls._ENEMIES + k * ls._ENEMY]) for k in range(self.native.MAX_ENEMIES)
                   if obs[ls._ENEMIES + k * ls._ENEMY] > 0]
-            out["combat"] = {"hand": hand, "enemy_hp": hp}
+            out["combat"] = {"hand": self._hand(), "enemy_hp": hp}
         return out
 
-    def sync(self, kind: str, labels: list) -> str | None:
+    def _decision(self):
+        self.dec = None if self.s.phase in (self.E.rc.PHASE_COMBAT, self.E.rc.PHASE_COMPLETE) else self.s.decision()
+        return self.dec
+
+    def _take(self, kind: str) -> bool:
+        o = next((o for o in self.dec.options if o.kind == kind), None) if self.dec else None
+        if o is not None:
+            self.s.apply(o)
+        return o is not None
+
+    # -- reaching the referee's screen: what the referee does without asking, the emulator does here
+    def _flush_rewards(self) -> None:
+        """Mirror the referee's queued reward answers. The emulator opens a card reward before it offers the potion and
+        relic items (engine._rewards); the referee asks item by item, so a potion or relic answer waits for its screen."""
+        for _ in range(20):
+            d = self._decision()
+            if d is None:
+                return
+            if d.type == "card_reward":
+                k = next((k for k, q in enumerate(self.rq) if q[0] == "card"), None)
+                if k is None:
+                    return
+                _, take = self.rq.pop(k)
+                if take:
+                    return  # the referee's card_reward decision follows
+                self._take("card.skip")
+                continue
+            if d.type != "rewards":
+                return
+            k = next((k for k, q in enumerate(self.rq) if q[0] in ("potion", "relic")), None)
+            if k is None:
+                return
+            t, take = self.rq.pop(k)
+            if take:
+                self._take("reward." + t)
+
+    def _forced(self, want: str | None) -> None:
+        """Steps the referee took without a decision: leaving a rewards screen it has answered (gold, skipped items),
+        and any screen with a single option (Env.Decide asks only with two or more)."""
+        self._flush_rewards()
+        for _ in range(30):
+            d = self._decision()
+            if d is None or d.type == want:
+                return
+            if d.type == "rewards" and want != "rewards":
+                self.rq.clear()
+                self._take("reward.proceed")
+            elif d.type == "card_reward" and want not in ("rewards", "card_reward"):
+                self.rq.clear()
+                self._take("card.skip")
+            elif len(d.options) == 1:
+                self.s.apply(d.options[0])
+            else:
+                return
+
+    def sync(self, kind: str, labels: list, msg: dict | None = None) -> str | None:
+        self._msg = msg
         if kind in COMBAT_KINDS:
+            self._forced("combat")
             self._auto_combat()
             return None if self.s.phase == self.E.rc.PHASE_COMBAT else f"phase:{self.s.phase}"
-        self.dec = self.s.decision()
-        want = {"neow": "neow", "ancient": "neow", "map": "map", "card_reward": "card_reward", "rest": "rest",
-                "reward": "rewards", "select_cards": "card_select"}[kind]
+        if kind == "reward":
+            self._flush_rewards()
+            got = None if self.dec is None else self.dec.type
+            return None if got in ("rewards", "card_reward") else f"screen:{got}!=rewards"
+        if kind == "treasure":  # the emulator takes the chest's relic itself (engine._treasure)
+            self._forced("map")
+            return None
+        self._forced(self.SCREEN[kind])
         got = None if self.dec is None else self.dec.type
-        # The emulator opens a card reward without asking; the referee asks take/skip first, then the cards.
-        ok = got == want or (kind == "reward" and got == "card_reward")
-        return None if ok else f"screen:{got}!={want}"
+        return None if got == self.SCREEN[kind] else f"screen:{got}!={self.SCREEN[kind]}"
 
     def _auto_combat(self) -> None:
         """The referee asks only when two or more actions are legal (Env.Decide), so a lone End Turn is taken for it."""
@@ -262,15 +379,65 @@ class EmuLock:
 
     def _select_action(self, label: list) -> int | None:
         """The emulator's candidate index for a referee selection label [entry, upgraded]."""
-        obs, ls = self.s.env._run_obs_buf, self.ls
+        obs, ls = self._obs(), self.ls
         for a in range(min(obs[ls._SELECTION_COUNT], 32)):
             c = ls._card_at(obs, ls._SELECTION + a * ls._CARD)
             if [self.slug["cards"].get(c[0], "?"), int(c[1])] == [label[0], int(label[1])]:
                 return a
         return None
 
+    # -- re-anchoring (the run replay's hooks)
+    def _to_map(self) -> bool:
+        """Walk the emulator to its map screen: a fight it is still in is resolved, every other screen is left the
+        cheapest way (proceed, skip, leave) or by the rules policy."""
+        rc, env = self.E.rc, self.s.env
+        self.rq.clear()
+        for _ in range(300):
+            ph = self.s.phase
+            if ph == rc.PHASE_COMPLETE:
+                return False
+            if ph == rc.PHASE_COMBAT:
+                if not self.native.run_debug_resolve_combat(self.s.handle, env._run_obs_buf):
+                    return False
+                continue
+            d = self._decision()
+            if d is None:
+                continue
+            if d.type == "map":
+                return True
+            o = next((o for o in d.options if o.kind in ("reward.proceed", "card.skip", "shop.leave", "rest.leave")),
+                     None) or d.options[self.rules.pick(self.s.view(), d, self.rng).index]
+            self.s.apply(o)
+        return False
+
+    def _set_player(self, obs: dict) -> bool:
+        cards = [(self.ids["cards"].get(c[0]), int(c[1]), 0, 0) for c in obs.get("deck", [])]
+        relics = [self.ids["relics"].get(r) for r in obs.get("relics", [])]
+        belt = obs.get("potions", [])
+        potions = [self.ids["potions"].get(p) if p else 0 for p in belt]
+        if any(c[0] is None for c in cards) or None in relics or None in potions:
+            return False  # an id the emulator does not have: not re-anchorable
+        self.native.run_debug_set_player(self.s.handle, self._obs(), hp=int(obs["hp"]), max_hp=int(obs["max_hp"]),
+                                         gold=int(obs["gold"]), cards=cards, relics=relics, potions=potions,
+                                         max_potion_slots=len(belt))
+        return True
+
     def reanchor(self, plan: str, msg: dict) -> bool:
-        return False  # no Python entry to the C# Reanchor (tools/emudump) yet: reported, not faked
+        obs = msg.get("obs", {})
+        if plan == "room_entry":
+            return self._to_map() and self._set_player(obs) and self._decision() is not None
+        if plan == "fight_start":
+            # The referee entered this fight without a map decision (a lone path). A fight the emulator is already in
+            # cannot be re-anchored from Python (that needs tools/emudump Reanchor inside the native library).
+            if self.s.phase == self.E.rc.PHASE_COMBAT or not self._to_map() or not self._set_player(obs):
+                return False
+            d = self._decision()
+            if d is None or len(d.options) != 1:
+                return False
+            self.s.apply(d.options[0])
+            self._auto_combat()
+            return self.s.phase == self.E.rc.PHASE_COMBAT
+        return False
 
     # -- non-combat pairing: referee label index -> emulator option index
     def _pair(self, kind: str, labels: list) -> list[int | None]:
@@ -279,6 +446,8 @@ class EmuLock:
         for lab in labels:
             hit = None
             for j, o in enumerate(opts):
+                if hit is not None or j in out:
+                    continue
                 if kind == "map" and o.kind == "map.node" and list(o.node[:2]) == list(lab[:2]):
                     hit = j
                 elif kind in ("neow", "ancient") and o.kind == "neow.relic" and lab == self.slug["relics"].get(o.relic):
@@ -288,19 +457,21 @@ class EmuLock:
                         hit = j
                     elif o.kind == "card.skip" and lab in ("skip", "Skip"):
                         hit = j
-                elif kind == "rest" and o.kind == "rest." + {"HEAL": "heal", "SMITH": "smith", "CLONE": "clone",
-                                                              "LIFT": "lift", "DIG": "dig", "HATCH": "hatch",
-                                                              "COOK": "cook", "KINDLE": "kindle"}.get(lab, "?"):
+                elif kind == "rest" and o.kind == "rest." + self.REST.get(lab, "?"):
                     hit = j
                 elif kind == "select_cards":
                     deck = (self.dec.view or self.s.view()).deck
                     card = o.card if o.card is not None else (deck[o.deck_index] if o.deck_index is not None else None)
-                    if card is not None and self._card(card) == [lab[0], int(lab[1])] and j not in out and hit is None:
+                    if card is not None and self._card(card) == [lab[0], int(lab[1])]:
                         hit = j
-                elif kind == "reward":
-                    if lab == "take" and o.kind in ("reward.potion", "reward.relic"):
+                elif kind == "shop":
+                    # [kind, slot, cost] or ["leave"]: by kind and price (a removal opens a card choice: not paired)
+                    if lab[0] == "leave" and o.kind == "shop.leave":
                         hit = j
-                    elif lab == "skip" and o.kind == "reward.proceed":
+                    elif lab[0] in ("card", "relic", "potion") and o.kind == "shop." + lab[0] and o.price == lab[2]:
+                        hit = j
+                elif kind == "bundle" and o.kind == "bundle.pick":
+                    if sorted(self.slug["cards"].get(c.card_id, "?") for c in o.cards) == sorted(lab):
                         hit = j
             out.append(hit)
         return out
@@ -308,8 +479,8 @@ class EmuLock:
     def choose(self, kind: str, labels: list, msg: dict) -> int | None:
         if kind in COMBAT_KINDS:
             return self._choose_combat(kind, labels, msg)
-        if kind == "reward" and self.dec.type == "card_reward":
-            return next((i for i, lab in enumerate(labels) if lab == "take"), None)
+        if kind in ("reward", "treasure"):
+            return 0  # take (a card reward's pick follows as its own decision)
         pair = self._pair(kind, labels)
         pick = self.rules.pick(self.s.view(), self.dec, self.rng).index
         for ref_i, emu_j in enumerate(pair):
@@ -320,60 +491,78 @@ class EmuLock:
     def apply(self, kind: str, labels: list, idx: int) -> str | None:
         if kind in COMBAT_KINDS:
             return self._apply_combat(kind, labels, idx)
-        if kind == "reward" and self.dec.type == "card_reward":
-            if labels[idx] == "take":
-                return None  # the card pick follows as the referee's card_reward decision
-            j = next((k for k, o in enumerate(self.dec.options) if o.kind == "card.skip"), None)
-        else:
-            j = self._pair(kind, labels)[idx]
+        if kind == "reward":
+            ctx = (self._msg or {}).get("ctx") or {}
+            self.rq.append([ctx.get("type", "card"), labels[idx] == "take"])
+            self._flush_rewards()
+            return None
+        if kind == "treasure":
+            return None if labels[idx] != "skip" else "treasure_skip"  # the emulator has already taken the relic
+        j = self._pair(kind, labels)[idx]
         if j is None:
-            return f"no_emulator_option:{kind}:{labels[idx]}"
+            return f"no_emulator_option:{kind}:{json.dumps(labels[idx])[:60]}"
         o = self.dec.options[j]
         if o.kind == "rest.smith" and o.deck_index is None:
-            self.s._step(o.action)  # the referee's select_cards follows; unmapped, so the lockstep ends there
+            self.s._step(o.action)  # the referee's select_cards follows
             return None
         self.s.apply(o)
         return None
 
-    # -- combat
-    def _living(self) -> list[int]:
-        return self.ls._living_targets(self.s.env._run_obs_buf)
+    # -- combat: a referee action is matched by what it plays, not by its hand position
+    def _key(self, action: int, target: int):
+        obs, ls = self._obs(), self.ls
+        hand = self._hand()
+        if action < len(hand):
+            return ("card", *hand[action], target)
+        if action == len(hand):
+            return ("end",)
+        return ("potion", self.slug["potions"].get(obs[ls.POTION_OFFSET + 2 * (action - len(hand) - 1)], "?"), target)
 
-    def _action_of(self, label: list) -> tuple[int, int] | None:
-        obs = self.s.env._run_obs_buf
-        hand = self.ls._hand_size(obs)
+    def _action_of(self, label: list, msg: dict | None = None) -> tuple[int, int] | None:
+        obs, ls = self._obs(), self.ls
+        hand = self._hand()
         if label[0] == "end":
-            return hand, -1
-        living = self._living()
+            return len(hand), -1
+        living = ls._living_targets(obs)
         t = label[3] if len(label) > 3 else -1
         slot = living[t] if 0 <= t < len(living) else -1
         if label[0] == "play":
-            return int(label[1]), slot
+            ref_hand = (((msg or {}).get("obs") or {}).get("combat") or {}).get("hand") or []
+            h = int(label[1])
+            want = [label[2], int(ref_hand[h][1])] if h < len(ref_hand) else None
+            same = [k for k, c in enumerate(hand) if (c == want if want else c[0] == label[2])]
+            if not same:
+                return None
+            return (h if h in same else same[0]), slot
         if label[0] == "potion":
-            return hand + 1 + int(label[1]), slot
+            for s in [k for k in (int(label[1]), *range(ls.MAX_POTIONS)) if 0 <= k < ls.MAX_POTIONS]:
+                if self.slug["potions"].get(obs[ls.POTION_OFFSET + 2 * s], "?") == label[2]:
+                    return len(hand) + 1 + s, slot
+            return None
         return None
 
     def _choose_combat(self, kind: str, labels: list, msg: dict) -> int | None:
-        if kind == "card_reward_combat":
-            return None
         root = self.s.combat(fork_combat=True).combat_fork(None)
         try:
             res = self.ls.search_live(root.handle, max_sims=self.sims, min_child_sims=2, confirm_pairs=0,
                                       time_budget_s=120.0, seed=int(self.rng.integers(1 << 30)))
         finally:
             root.close() if hasattr(root, "close") else self.native.destroy(root.handle)
-        want = (res.best.action, res.best.target)
+        if kind != "combat":
+            return next((i for i, lab in enumerate(labels) if self._select_action(lab) == res.best.action), None)
+        want = self._key(res.best.action, res.best.target)
         for i, lab in enumerate(labels):
-            if (kind == "combat" and self._action_of(lab) == want) or (kind != "combat" and self._select_action(lab) == want[0]):
+            a = self._action_of(lab, msg)
+            if a is not None and self._key(*a) == want:
                 return i
         return None
 
     def _apply_combat(self, kind: str, labels: list, idx: int) -> str | None:
-        if kind == "card_reward_combat":
-            return f"unmapped_apply:{kind}"
-        a = self._action_of(labels[idx]) if kind == "combat" else (self._select_action(labels[idx]), -1)
+        a = self._action_of(labels[idx], self._msg) if kind == "combat" else (self._select_action(labels[idx]), -1)
         if a is None or a[0] is None:
-            return f"unmapped_label:{labels[idx][:1]}"
+            return f"unmapped_label:{json.dumps(labels[idx])[:60]}"
+        if not self.native.run_action_mask(self.s.handle, 32)[a[0]]:
+            return f"illegal:{json.dumps(labels[idx])[:60]}"
         env = self.s.env
         st = self.native.run_step(self.s.handle, a[0], a[1], env._run_obs_buf, env._run_rew_buf,
                                   env._run_terminal_buf, env._run_truncated_buf)

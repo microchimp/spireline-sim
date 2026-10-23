@@ -4,6 +4,7 @@ leak tests of DESIGN.md 7.6 (clairvoyance, L2, L3, L8) on the emulator alone. Ru
 
 import sys
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,13 +27,16 @@ class FakeEmu:
 
     def __init__(self, views, reanchor_ok=False, sync_reason=None):
         self.views, self.i, self.reanchor_ok, self.sync_reason = views, -1, reanchor_ok, sync_reason
-        self.reanchored, self.applied = [], []
+        self.reanchored, self.applied, self.anchored = [], [], None
 
-    def sync(self, kind, labels):
-        self.i += 1
+    def sync(self, kind, labels, msg=None):
+        if self.anchored is None:
+            self.i += 1
         return self.sync_reason
 
     def view(self):
+        if self.anchored is not None:  # after a successful re-anchor the fake follows the referee
+            return self.anchored
         return self.views[min(self.i, len(self.views) - 1)]
 
     def choose(self, kind, labels, msg):
@@ -43,7 +47,10 @@ class FakeEmu:
 
     def reanchor(self, plan, msg):
         self.reanchored.append(plan)
-        return self.reanchor_ok
+        ok = self.reanchor_ok.pop(0) if isinstance(self.reanchor_ok, list) else self.reanchor_ok
+        if ok:
+            self.anchored = lockstep.ref_view(msg["obs"])
+        return ok
 
 
 def obs(hp=80, floor=1, combat=False):
@@ -115,12 +122,13 @@ class DivergenceTests(unittest.TestCase):
     def test_failed_reanchor_goes_on_alone(self):
         a = obs(hp=80)
         ls, _ = self.run_stream([msg("map", a), msg("map", a)], FakeEmu([view_of(obs(hp=70))]))
-        self.assertEqual((ls.stats["reanchor_failed"], ls.stats["not_ranked"]), (1, 2))
+        # every later re-anchor point is tried again (round A1 amend), so both room entries count a failure
+        self.assertEqual((ls.stats["reanchor_failed"], ls.stats["not_ranked"]), (2, 2))
 
     def test_unmapped_kind_and_structure_mismatch_end_the_lockstep_with_a_reason(self):
         a = obs()
-        ls, _ = self.run_stream([msg("shop", a)], FakeEmu([view_of(a)]))
-        self.assertEqual(ls.stats["first_loss"]["reason"], "unmapped:shop")
+        ls, _ = self.run_stream([msg("event", a)], FakeEmu([view_of(a)]))
+        self.assertEqual(ls.stats["first_loss"]["reason"], "unmapped:event")  # shop is mapped since the A1 amend
         ls, _ = self.run_stream([msg("map", a)], FakeEmu([view_of(a)], sync_reason="screen:rest!=map"))
         self.assertEqual(ls.log.records[0]["reason"], "screen:rest!=map")
 
@@ -139,6 +147,145 @@ class DivergenceTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")
+class ResumeTests(unittest.TestCase):
+    """Round A1 amend: a lost lockstep is re-anchored at the next fight start or room entry and goes on from there."""
+
+    def test_lost_mid_fight_resumes_at_the_next_room_entry(self):
+        c, a = obs(combat=True), obs()
+        emu = FakeEmu([view_of(obs(hp=50, combat=True))], reanchor_ok=[False, True])
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in (msg("combat", c), msg("combat", c), msg("reward", a), msg("map", a), msg("rest", a)):
+            ls.decide(m)
+        self.assertEqual(emu.reanchored, ["fight_start", "room_entry"])  # no attempt mid-fight or at the reward
+        self.assertIsNone(ls.lost)
+        s = ls.stats
+        self.assertEqual((s["reanchors"], s["reanchor_failed"], s["resumed"], s["ranked"], s["not_ranked"]),
+                         (1, 1, 1, 2, 3))
+
+    def test_lost_at_a_reward_resumes_at_the_next_fight_start(self):
+        a, c = obs(), obs(combat=True)
+        emu = FakeEmu([view_of(obs(hp=10))], reanchor_ok=[True])
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in (msg("reward", a), msg("card_reward", a), msg("combat", c)):
+            ls.decide(m)
+        self.assertEqual(emu.reanchored, ["fight_start"])
+        self.assertEqual((ls.stats["resumed"], ls.stats["ranked"]), (1, 1))
+
+    def test_an_unmapped_kind_suspends_and_the_next_room_entry_resumes(self):
+        a = obs()
+        emu = FakeEmu([view_of(a)], reanchor_ok=True)
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in (msg("event", a), msg("event", a), msg("map", a)):
+            ls.decide(m)
+        self.assertTrue(ls.log.records[0]["gap"])  # a mapping gap, not an emulator divergence
+        self.assertEqual((ls.stats["gaps"], ls.stats["diverged"], ls.stats["resumed"]), (1, 0, 1))
+        self.assertIsNone(ls.lost)
+
+
+def _opt(kind, action=0, **kw):
+    base = {"card": None, "deck_index": None, "relic": None, "potion": None, "price": None, "node": None, "cards": ()}
+    return SimpleNamespace(kind=kind, action=action, **{**base, **kw})
+
+
+def _card(i, up=False):
+    return SimpleNamespace(card_id=i, upgraded=up)
+
+
+class FakeRun:
+    """A RunSession whose screens follow a table: screens[name] = (type, options); moves[(name, kind)] = next name."""
+
+    COMBAT, DONE = 1, 2
+    handle, env = 0, SimpleNamespace(_run_obs_buf=None, _run_rew_buf=None, _run_terminal_buf=None, _run_truncated_buf=None)
+
+    def __init__(self, start, screens, moves):
+        self.cur, self.screens, self.moves, self.taken = start, screens, moves, []
+
+    @property
+    def phase(self):
+        return {"combat": self.COMBAT, "done": self.DONE}.get(self.cur, 7)
+
+    def decision(self):
+        t, opts = self.screens[self.cur]
+        return SimpleNamespace(type=t, options=opts, view=None)
+
+    def apply(self, o):
+        self.taken.append(o.kind)
+        self.cur = self.moves[(self.cur, o.kind)]
+
+
+def stub_emu(run, hand=None):
+    """An EmuLock without the native library: its mapping logic over a FakeRun."""
+    e = lockstep.EmuLock.__new__(lockstep.EmuLock)
+    e.E = SimpleNamespace(rc=SimpleNamespace(PHASE_COMBAT=FakeRun.COMBAT, PHASE_COMPLETE=FakeRun.DONE))
+    e.s, e.rq, e.dec, e._msg = run, [], None, None
+    e.slug = {"cards": {5: "STRIKE_IRONCLAD", 6: "DEFEND_IRONCLAD", 7: "BASH", 8: "ANGER"}, "relics": {}, "potions": {}}
+    e.native = SimpleNamespace(run_action_mask=lambda h, n: [1, 1] + [0] * (n - 2))
+    e.ls = SimpleNamespace(_living_targets=lambda o: [0, 1])
+    e._obs = lambda: None
+    e._hand = lambda: hand or []
+    return e
+
+
+class MappingTests(unittest.TestCase):
+    """The decisions the A1 smoke lost lockstep at, on a scripted emulator (no native library needed)."""
+
+    def test_floor2_potion_take_waits_for_the_items_screen_after_the_card_reward(self):
+        # 23 of the smoke's 25 "state_diverged" losses: the referee's potion take was mirrored as the card reward's
+        # take (the emulator opens the card reward first), so the emulator never took the potion.
+        screens = {"cards": ("card_reward", (_opt("card.take", 0, card=_card(8)), _opt("card.skip", 1))),
+                   "items": ("rewards", (_opt("reward.potion", 1), _opt("reward.proceed", 9))),
+                   "left": ("rewards", (_opt("reward.proceed", 9),)),
+                   "map": ("map", (_opt("map.node", 0, node=(1, 2)), _opt("map.node", 1, node=(3, 2))))}
+        moves = {("cards", "card.take"): "items", ("items", "reward.potion"): "left", ("left", "reward.proceed"): "map",
+                 ("items", "reward.proceed"): "map", ("cards", "card.skip"): "items"}
+        run = FakeRun("cards", screens, moves)
+        e = stub_emu(run)
+        tk = ["take", "skip"]
+        steps = [("reward", tk, {"ctx": {"type": "potion", "id": "FIRE_POTION"}}, 0),
+                 ("reward", tk, {"ctx": {"type": "card"}}, 0),
+                 ("card_reward", [["ANGER", 0], "skip"], {}, 0)]
+        for kind, labels, m, idx in steps:
+            self.assertIsNone(e.sync(kind, labels, m))
+            self.assertIsNone(e.apply(kind, labels, idx))
+        self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {}))
+        self.assertEqual(run.taken, ["card.take", "reward.potion", "reward.proceed"])
+
+    def test_skipped_items_leave_the_screen_and_a_lone_path_enters_the_fight(self):
+        # The 14 "phase:5" losses: the referee left the rewards screen and took a lone map node without asking.
+        screens = {"items": ("rewards", (_opt("reward.relic", 1), _opt("reward.proceed", 9))),
+                   "map": ("map", (_opt("map.node", 0, node=(1, 2)),))}
+        run = FakeRun("items", screens, {("items", "reward.proceed"): "map", ("map", "map.node"): "combat"})
+        e = stub_emu(run)
+        self.assertIsNone(e.sync("reward", ["take", "skip"], {"ctx": {"type": "relic"}}))
+        self.assertIsNone(e.apply("reward", ["take", "skip"], 1))
+        self.assertIsNone(e.sync("combat", [["end"], ["play", 0, "BASH", 0]], {}))
+        self.assertEqual(run.taken, ["reward.proceed", "map.node"])
+
+    def test_a_play_is_matched_by_card_not_by_hand_position(self):
+        e = stub_emu(FakeRun("combat", {}, {}), hand=[["DEFEND_IRONCLAD", 0], ["STRIKE_IRONCLAD", 0], ["BASH", 0]])
+        ref = [["STRIKE_IRONCLAD", 0, 1, True], ["BASH", 0, 2, True], ["DEFEND_IRONCLAD", 0, 1, True]]
+        m = {"obs": {"combat": {"hand": ref}}}
+        self.assertEqual(e._action_of(["play", 0, "STRIKE_IRONCLAD", 1], m), (1, 1))
+        self.assertEqual(e._action_of(["play", 2, "DEFEND_IRONCLAD", -1], m), (0, -1))
+        self.assertEqual(e._action_of(["end"], m), (3, -1))
+        self.assertIsNone(e._action_of(["play", 1, "ANGER", 0], m))
+
+    def test_shop_bundle_and_treasure_are_mirrored(self):
+        e = stub_emu(FakeRun("x", {}, {}))
+        e.dec = SimpleNamespace(type="shop", options=(_opt("shop.card", 0, price=50), _opt("shop.card", 1, price=75),
+                                                      _opt("shop.leave", 9)))
+        self.assertEqual(e._pair("shop", [["card", 0, 75], ["card", 1, 50], ["leave"], ["remove", 0, 75]]),
+                         [1, 0, 2, None])
+        e.dec = SimpleNamespace(type="bundle", options=(_opt("bundle.pick", 0, cards=(_card(5), _card(6), _card(7))),
+                                                        _opt("bundle.pick", 1, cards=(_card(8), _card(8), _card(5)))))
+        labels = [["ANGER", "STRIKE_IRONCLAD", "ANGER"], ["BASH", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"]]
+        self.assertEqual(e._pair("bundle", labels), [1, 0])
+        self.assertIsNone(e.apply("treasure", [["take", "R"], "skip"], 0))
+        self.assertEqual(e.apply("treasure", [["take", "R"], "skip"], 1), "treasure_skip")
+        for k in ("treasure", "shop", "bundle", "card_reward_combat"):
+            self.assertIn(k, lockstep.MAPPED_KINDS)
+
+
 class LeakTests(unittest.TestCase):
     """DESIGN.md 7.6 on the emulator: what a resampled clone hides."""
 
