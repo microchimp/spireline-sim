@@ -350,5 +350,75 @@ class CalibrateRound(unittest.TestCase):
         self.assertIn("snap.player.hp", paths(sc.compare_fight(rec, bad, ROWS)))
 
 
+OLD_ONLY = ("power-folds", "intent-vocabulary", "cost-outside-hand", "affliction-amount", "upgrade-count", "enemy-move-id", "rng-seeds",
+            "net-sequencing", "saved-props-floor", "relic-counters", "after-fight-turn-state", "fight-lost")
+EVERY_ENGINE = ("dead-enemies", "after-last-checksum", "late-steps")
+
+
+class EngineScope(unittest.TestCase):
+    def test_a_row_needs_an_engines_list(self):
+        for bad in (None, [], "old", [""]):
+            row = {"id": "x", "kind": "ignore", "patterns": ["a"], "reason": "r", "legacy": "y"}
+            if bad is not None:
+                row["engines"] = bad
+            with tempfile.TemporaryDirectory() as d:
+                f = Path(d) / "a.json"
+                f.write_text(json.dumps({"rows": [row]}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    sc.load_rows(f)
+
+    def test_scopes(self):
+        by = {r["id"]: r["engines"] for r in ROWS}
+        self.assertEqual(sorted(by), sorted(OLD_ONLY + EVERY_ENGINE))
+        for i in OLD_ONLY:
+            self.assertEqual(by[i], ["old"], i)
+        for i in EVERY_ENGINE:
+            self.assertEqual(by[i], ["*"], i)
+        self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core2")), sorted(EVERY_ENGINE))
+        self.assertEqual(len(sc.for_engine(ROWS, "old")), len(ROWS))
+
+    def test_old_rows_do_not_apply_to_another_engine(self):
+        p = snap()["player"]
+        rec = snap(player={**p, "powers": [["SETUP_STRIKE_POWER", 5]]})
+        eng = snap(player={**p, "powers": [["TEMPORARY_STRENGTH_POWER", 5]]})
+        self.assertIsNone(first([rec], [eng])["first"])  # old folds both into the base power
+        r = sc.compare_fight(*fight([rec], [eng]), ROWS, engine="core2")
+        self.assertEqual(r["engine"], "core2")
+        self.assertIn("snap.player.powers{SETUP_STRIKE_POWER}", paths(r))
+        self.assertIn("snap.player.powers{TEMPORARY_STRENGTH_POWER}", paths(r))
+        e0 = snap()["enemies"][0]
+        moved = snap(enemies=[{**e0, "move": "GOOP_MOVE"}])  # old has no move id (unmodelled); another engine must write it
+        self.assertIsNone(first([moved], [snap()])["first"])
+        self.assertEqual(paths(sc.compare_fight(*fight([moved], [snap()]), ROWS, engine="core2")), ["snap.enemies[0].move"])
+        dead = snap(enemies=[{**e0, "hp": 0}, e0])  # rows for every engine still apply
+        self.assertIsNone(sc.compare_fight(*fight([dead], [snap()]), ROWS, engine="core2")["first"])
+
+    def test_cli_engine_flag(self):
+        from unittest import mock  # noqa: PLC0415
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        p = snap()["player"]
+        g, e = fight([snap(player={**p, "powers": [["SETUP_STRIKE_POWER", 5]]})], [snap(player={**p, "powers": [["TEMPORARY_STRENGTH_POWER", 5]]})])
+        with tempfile.TemporaryDirectory() as d:
+            fg, fe = Path(d) / "g.json", Path(d) / "e.json"
+            fg.write_text(json.dumps({"results": [g]}), encoding="utf-8")
+            fe.write_text(json.dumps({"results": [e]}), encoding="utf-8")
+
+            def run(*extra):
+                with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(sys, "argv", ["struct_compare", str(fg), str(fe), *extra]):
+                    return sc.main()
+            self.assertEqual(run(), 0)
+            self.assertEqual(run("--engine", "core2"), 1)
+
+    def test_intent_unmapped_kinds_differ(self):
+        e0 = snap()["enemies"][0]
+        summon = snap(enemies=[{**e0, "intents": [["Summon"]]}])
+        escape = snap(enemies=[{**e0, "intents": [["Escape"]]}])
+        self.assertEqual(paths(first([summon], [escape])), ["snap.enemies[0].intents[0]"])  # two different unmapped kinds
+        self.assertIsNone(first([summon], [summon])["first"])
+        mapped = snap(enemies=[{**e0, "intents": [["DebuffStrong"]]}])
+        self.assertIsNone(first([mapped], [snap(enemies=[{**e0, "intents": [["Debuff"]]}])])["first"])  # a mapped kind still folds
+
+
 if __name__ == "__main__":
     unittest.main()

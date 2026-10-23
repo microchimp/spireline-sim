@@ -9,6 +9,8 @@ private}). Nothing is renamed or projected here: both sides are flattened by the
 by leaf. The only exceptions are the reviewed representation-only rows of allowed_diff.json (KINDS below), each with
 its reason and the legacy rule it stands for. Scope: combat (corpus fights and traced fights); whole runs
 (run_compare2) are the run layer and not judged here.
+Each row lists the engines it applies to (old: rows that exist only because of the old engine's limits; *: every engine);
+--engine picks the engine whose rows apply (default old), so another engine is judged without the old engine's rows.
 
 Structural rules (facts of the game's schema, the same for every engine):
 - dicts by key; lists by index with ``path#len``, a list of scalars also as one leaf; an empty list is its ``#len``;
@@ -62,8 +64,16 @@ def load_rows(path: Path = ALLOWED_FILE) -> list:
             raise ValueError(f"allowed row {r['id']}: unknown kind {r['kind']}")
         if not r.get("reason") or not r.get("legacy"):
             raise ValueError(f"allowed row {r['id']}: a row needs its reason and its legacy rule")
+        eng = r.get("engines")
+        if not isinstance(eng, list) or not eng or not all(isinstance(x, str) and x for x in eng):
+            raise ValueError(f"allowed row {r['id']}: a row needs its engines list (old: the old engine's limits only; *: every engine)")
         r["_re"] = [_glob(p) for p in r.get("patterns", [])]
     return rows
+
+
+def for_engine(rows: list, engine: str) -> list:
+    """The rows that apply to one engine: those listing it, or * (every engine)."""
+    return [r for r in rows if engine in r["engines"] or "*" in r["engines"]]
 
 
 def rows_sha(path: Path = ALLOWED_FILE) -> str:
@@ -227,7 +237,7 @@ def moved(snap: dict, net: dict) -> set:
 def _coarse(intents: list, classes: dict):
     if not intents:
         return ("NONE", None)
-    kind = classes.get(intents[0][0], "OTHER") if intents[0] else "NONE"
+    kind = classes.get(intents[0][0], intents[0][0]) if intents[0] else "NONE"  # a kind outside the map stays itself
     attack = next(([i[1], i[2]] for i in intents if isinstance(i, list) and len(i) >= 3), None)
     return (kind, attack)
 
@@ -308,9 +318,9 @@ def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict,
             "unmodelled": unmodelled, "unjudged": unjudged}
 
 
-def compare_fight(g: dict, e: dict, rows: list | None = None) -> dict:
-    """Every step of one fight in both shapes; see the module doc for the result."""
-    rows = load_rows() if rows is None else rows
+def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old") -> dict:
+    """Every step of one fight in both shapes; see the module doc for the result. Only the rows of ``engine`` apply."""
+    rows = for_engine(load_rows() if rows is None else rows, engine)
     gsteps, esteps = g.get("steps", []), e.get("steps", [])
     late = next((r for r in rows if r["kind"] == "late_steps"), None)
     limit = net_limit(g) if late else len(gsteps)  # the limit is the row: no row, no limit
@@ -343,14 +353,14 @@ def compare_fight(g: dict, e: dict, rows: list | None = None) -> dict:
     if first is None and len(esteps) < len(gsteps):
         first = len(esteps)
         at = [("(error)" if e.get("error") else "(length)", f"{len(gsteps)} steps", f"{len(esteps)} steps")]
-    return {"seed": g.get("seed"), "first": first, "at": at, "allowed": dict(sorted(fired.items())), "census": sorted(census),
+    return {"seed": g.get("seed"), "engine": engine, "first": first, "at": at, "allowed": dict(sorted(fired.items())), "census": sorted(census),
             "waived": sorted(waived - census), "leaves": leaves, "unmodelled": sorted(unmodelled), "unjudged": sorted(unjudged - census),
             "steps": [len(gsteps), len(esteps)], **({"error": str(e["error"]).splitlines()[0][:200]} if e.get("error") else {})}
 
 
-def judge(g: dict, e: dict, rows: list | None = None) -> dict:
+def judge(g: dict, e: dict, rows: list | None = None, engine: str = "old") -> dict:
     """One fight's entry in the corpus results format (corpus.judge_fight: fd, path, card, ferr) plus the census."""
-    r = compare_fight(g, e, rows)
+    r = compare_fight(g, e, rows, engine)
     out = {"fd": r["first"]}
     if r["first"] is not None:
         out["path"] = r["at"][0][0]
@@ -390,6 +400,7 @@ def main() -> int:
     ap.add_argument("--seed", action="append", default=[])
     ap.add_argument("--json", type=Path, help="write the per-fight results here")
     ap.add_argument("--allowed", type=Path, default=ALLOWED_FILE)
+    ap.add_argument("--engine", dest="engine_id", default="old", help="the engine whose allowed rows apply (default old)")
     a = ap.parse_args()
     rows = load_rows(a.allowed)
     games = [r for r in json.loads(Path(a.referee).read_text(encoding="utf-8"))["results"] if not a.seed or r.get("seed") in a.seed]
@@ -401,7 +412,7 @@ def main() -> int:
             print(f"{g.get('seed')}: no engine result")
             bad += 1
             continue
-        r = compare_fight(g, e, rows)
+        r = compare_fight(g, e, rows, a.engine_id)
         out.append(r)
         bad += r["first"] is not None or "error" in r
         if r["first"] is None:
@@ -411,7 +422,7 @@ def main() -> int:
             for p, x, y in r["at"][:12]:
                 print(f"    {p}: game {_short(x)}  engine {_short(y)}")
     if a.json:
-        a.json.write_text(json.dumps({"comparer": "struct_compare", "allowed_sha": rows_sha(a.allowed), "results": out}), encoding="utf-8")
+        a.json.write_text(json.dumps({"comparer": "struct_compare", "allowed_sha": rows_sha(a.allowed), "engine": a.engine_id, "results": out}), encoding="utf-8")
     print(f"{len(games)} fights, {bad} not reproduced")
     return 0 if games and not bad else 1
 
