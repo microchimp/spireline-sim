@@ -5,6 +5,7 @@
     python referee/envproto.py bench  --game <copy> --out <dir> --procs 8 --seconds 600
     python referee/envproto.py record --game <copy> --out <dir> --seeds S1 S2 S3   the normal driver (seeded chooser)
     python referee/envproto.py replay --game <copy> --out <dir>                    its picks through the channel
+    python referee/envproto.py play   --agent play --game <copy> --out <dir> --runs 50 --procs 4 --sims 60
 
 One game process per GameEnv, which plays whole runs back to back (reset() starts the next one, no restart).
 Each pending choice with two or more legal actions comes as {"kind", "obs", "actions"}; step(i) answers with the
@@ -431,9 +432,122 @@ def smoke(a) -> int:
     return 0
 
 
+def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int) -> None:
+    """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py)."""
+    below_normal_self()
+    import lockstep  # noqa: PLC0415
+    env = None
+    restarts = 0
+    for seed in seeds:
+        if env is None:
+            try:
+                env = GameEnv(Path(game), Path(out) / "scratch" / f"p{wid:02d}r{restarts}", install=False)
+            except Exception as e:  # boot failure
+                q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(e)[:300]})
+                restarts += 1
+                continue
+        t0 = time.time()
+        try:
+            m, ls = lockstep.play_run(_Timed(env, step_timeout), seed, ascension=ascension, sims=sims)
+            ev = {"ev": "end", "w": wid, "seed": seed, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
+                  "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records}
+            if m.get("stale"):
+                q.put(ev)
+                q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
+                env.close()
+                env, restarts = None, restarts + 1
+                continue
+        except (TimeoutError, GameDied, ValueError) as e:
+            ev = {"ev": "crash", "w": wid, "seed": seed, "error": f"{type(e).__name__}: {e}"[:300], "s": round(time.time() - t0, 1)}
+            env.close()
+            env, restarts = None, restarts + 1
+        except Exception as e:  # noqa: BLE001 -- an agent/emulator bug is a crash of that run, reported
+            ev = {"ev": "crash", "w": wid, "seed": seed, "where": "agent", "error": f"{type(e).__name__}: {e}"[:300],
+                  "s": round(time.time() - t0, 1)}
+        q.put(ev)
+    if env is not None:
+        q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
+        env.close()
+    q.put({"ev": "done", "w": wid})
+
+
+class _Timed:
+    """A GameEnv whose reset and step carry the play mode's step timeout."""
+
+    def __init__(self, env, timeout):
+        self.env, self.timeout = env, timeout
+
+    def reset(self, *a, **k):
+        return self.env.reset(*a, timeout=self.timeout, **k)
+
+    def step(self, a):
+        return self.env.step(a, timeout=self.timeout)
+
+
+def play(a) -> int:
+    """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator."""
+    out = Path(a.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    seeds = [f"A1S{i:04d}" for i in range(a.runs)]
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension))
+             for w in range(a.procs)]
+    t0 = time.time()
+    for p in procs:
+        p.start()
+    events, done, nets = [], 0, set()
+    while done < len(procs):
+        try:
+            e = q.get(timeout=5)
+        except queue.Empty:
+            if not any(p.is_alive() for p in procs):
+                break
+            continue
+        if e["ev"] == "done":
+            done += 1
+        elif e["ev"] == "net":
+            nets |= set(e["conns"])
+        else:
+            events.append(e)
+            print(json.dumps({k: v for k, v in e.items() if k != "divergences"})[:300], flush=True)
+    for p in procs:
+        p.join(30)
+    wall = time.time() - t0
+    (out / "runs.jsonl").write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+    ends = [e for e in events if e["ev"] == "end"]
+    dec = sum(e["stats"]["decisions"] for e in ends)
+    rank = sum(e["stats"]["ranked"] for e in ends)
+    divs = [dict(d, seed=e["seed"]) for e in ends for d in e["divergences"]]
+    first = {}
+    for d in divs:
+        first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
+    summary = {"runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] == "win"),
+               "ends": sorted({str(e["end"]) for e in ends}),
+               "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
+               "decisions_per_s": round(dec / wall, 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
+               "diverged_decisions": sum(e["stats"]["diverged"] for e in ends),
+               "divergence_rate": round(sum(e["stats"]["diverged"] for e in ends) / max(1, dec), 4),
+               "reanchors": sum(e["stats"]["reanchors"] for e in ends), "reanchor_failed": sum(e["stats"]["reanchor_failed"] for e in ends),
+               "first_loss_by_reason": _count(e["stats"]["first_loss"]["reason"].split(":")[0] + ":" + (e["stats"]["first_loss"]["reason"].split(":")[1:2] or [""])[0] for e in ends if e["stats"]["first_loss"]),
+               "first_divergences_by_type": {k: v[:5] for k, v in first.items()},
+               "network_connections": sorted(nets), "errors": [e for e in events if e["ev"] == "crash"][:10]}
+    (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    (out / "divergences.jsonl").write_text("\n".join(json.dumps(d) for d in divs), encoding="utf-8")
+    print(json.dumps(summary, indent=1))
+    return 1 if nets else 0
+
+
+def _count(it) -> dict:
+    o: dict = {}
+    for x in it:
+        o[x] = o.get(x, 0) + 1
+    return o
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
-    ap.add_argument("mode", choices=["smoke", "bench", "record", "replay"])
+    ap.add_argument("mode", choices=["smoke", "bench", "record", "replay", "play"])
     ap.add_argument("--game", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--procs", type=int, default=1)
@@ -442,10 +556,13 @@ def main() -> int:
     ap.add_argument("--seeds", nargs="*", default=["FID1", "FID2", "FID3"])
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--buff", type=int, default=0, help="record/replay: buff_max_hp, so random play reaches later floors")
+    ap.add_argument("--agent", choices=["play"], default="play", help="play: lockstep PLAY agent (mode play)")
+    ap.add_argument("--sims", type=int, default=60)
+    ap.add_argument("--ascension", type=int, default=10)
     ap.add_argument("--step-timeout", type=float, default=180)
     ap.add_argument("--recycle", type=int, default=0, help="bench: restart each game after this many runs (0: never)")
     a = ap.parse_args()
-    return {"smoke": smoke, "bench": bench, "record": record, "replay": replay}[a.mode](a)
+    return {"smoke": smoke, "bench": bench, "record": record, "replay": replay, "play": play}[a.mode](a)
 
 
 if __name__ == "__main__":
