@@ -57,6 +57,17 @@ internal static class Env
     /// record and replay leave them off unless the record stored the flag on.</summary>
     internal static bool Extras;
 
+    /// <summary>
+    /// Reset spec "anchor_state" (default false): a decision at a re-anchor point (a map choice, the first decision of a
+    /// fight) carries "anchor_state", the game's hidden state for the lockstep's emulator side: its stream counters
+    /// ({name: {seed, counter}}, the run's and the player's) and, in a fight, the draw pile in order. Nothing else reads it
+    /// (referee/lockstep.py takes it off the message before the agent sees the decision), and it is not part of "obs".
+    /// </summary>
+    internal static bool AnchorState;
+
+    /// <summary>The kind of the previous asked decision (with AnchorState), to find the first decision of a fight.</summary>
+    internal static string? AnchorPrevKind;
+
     /// <summary>Card reward screens checked against the screen's own alternatives list, and how many differed.</summary>
     internal static int AltChecked, AltMismatch;
 
@@ -121,6 +132,12 @@ internal static class Env
         var msg = new JsonObject { ["t"] = "decide", ["kind"] = kind, ["obs"] = Obs(), ["actions"] = actions() };
         if (ctx != null) msg["ctx"] = ctx();
         if (Hashing) msg["h"] = Hash();
+        if (AnchorState)
+        {
+            if (AnchorPoint(kind)) msg["anchor_state"] = AnchorStateOf();
+            AnchorPrevKind = kind;
+        }
+
         Asked++;
         while (true)
         {
@@ -273,6 +290,29 @@ internal static class Env
         return o;
     }
 
+    private static bool CombatKind(string? kind) => kind is "combat" or "select_cards_combat" or "card_reward_combat";
+
+    /// <summary>The decisions referee/lockstep.py re-anchors at: a map choice (room entry) and the first decision of a fight.</summary>
+    private static bool AnchorPoint(string kind) => kind == "map" || (CombatKind(kind) && !CombatKind(AnchorPrevKind));
+
+    /// <summary>
+    /// The game's hidden state for the lockstep's emulator side: every stream's seed and counter (the run's and the
+    /// player's, as the snapshot's "rng" reports them) and, in a fight, the draw pile top first. It is the same serialiser
+    /// as Obs() (Driver.CombatSnap), whose public copy has the counters dropped and the draw pile sorted.
+    /// </summary>
+    internal static JsonObject AnchorStateOf()
+    {
+        var s = Run!;
+        var p = s.Players[0];
+        var rng = new JsonObject();
+        foreach (var set in new object[] { s.Rng, p.PlayerRng })
+            foreach (var kv in Driver.RngCounters(set)) rng[kv.Key] = kv.Value?.DeepClone();
+        var o = new JsonObject { ["rng"] = rng };
+        if (CombatManager.Instance.IsInProgress && Driver.CombatSnap(s, p)["draw"] is JsonArray draw)
+            o["draw"] = draw.DeepClone();
+        return o;
+    }
+
     /// <summary>Leak probe (env/leak-probe): Godot node counts, GC, memory and CPU of this process, and system memory load.</summary>
     internal static JsonObject Probe(int runs)
     {
@@ -327,6 +367,7 @@ public static partial class Driver
     internal static string RunSnapText(RunState s) => RunSnap(s).ToJsonString();
     internal static string CombatSnapText(RunState s) => Snapshot(s, s.Players[0]).ToJsonString();
     internal static JsonObject CombatSnap(RunState s, Player p) => Snapshot(s, p);
+    internal static JsonObject RngCounters(object set) => Counters(set);
 
     /// <summary>
     /// Job "env": runs back to back in this process, each started by the agent's reset and every choice its answer.
