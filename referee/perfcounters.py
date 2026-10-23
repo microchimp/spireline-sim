@@ -9,6 +9,7 @@ typeperf's header carries the host in every counter path and the parser drops it
 from __future__ import annotations
 
 import csv
+import os
 import re
 import subprocess
 import threading
@@ -38,6 +39,11 @@ def _num(x: str) -> float | None:
         return float(x)
     except ValueError:
         return None
+
+
+def typeperf_path() -> str:
+    """typeperf by its full path under %SystemRoot%\System32, never found through the python directory or the current one."""
+    return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "typeperf.exe")
 
 
 class TypeperfParser:
@@ -128,7 +134,7 @@ class PerfSampler:
         self.starts = 0
 
     def start(self) -> None:
-        args = ["typeperf", "-si", str(self.interval), *PERF_SYSTEM, *PERF_PROCESS]
+        args = [typeperf_path(), "-si", str(self.interval), *PERF_SYSTEM, *PERF_PROCESS]
         try:
             self.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                          creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
