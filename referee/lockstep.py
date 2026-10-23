@@ -45,12 +45,14 @@ def _paths() -> None:
 
 # Referee actions beyond a screen's own options (driver/Env.cs, RunPlay.cs), and what each maps to on the emulator side:
 #   "none"                   a card selection that allows 0: the emulator's select.offer_done where it has one
+#   "done"                   the end of a fight card screen taken with full_select (driver/Env.cs): the emulator's decline,
+#                            the action one past its candidates; the screen's picks are its candidates
 #   "skip"                   a card reward's Skip: card.skip
 #   "alt:<id>"               any other card-reward alternative (reroll, a relic's): no emulator option
 #   ["use_potion", s, id]    a potion used outside a fight: no emulator option
 #   ["discard_potion", s, id] a potion discarded outside a fight: no emulator option
 # An action with no emulator option is applied as `no_emulator_option:...`, which suspends the lockstep like any other loss.
-NEW_ACTION_KINDS = ("none", "card_alt", "potion_use", "potion_discard")
+NEW_ACTION_KINDS = ("none", "done", "card_alt", "potion_use", "potion_discard")
 NO_EMULATOR_KINDS = ("card_alt", "potion_use", "potion_discard")
 
 
@@ -58,6 +60,8 @@ def extra_kind(label: Any) -> str | None:
     """Which of the extra referee actions a label is (see above), else None."""
     if label == "none":
         return "none"
+    if label == "done":
+        return "done"
     if isinstance(label, str) and label.startswith("alt:"):
         return "card_alt"
     if isinstance(label, list) and label and label[0] == "use_potion":
@@ -170,6 +174,14 @@ def ref_view(obs: dict) -> dict:
 
 
 # ------------------------------------------------------------------ divergence log and re-anchor plan
+
+
+def mid_screen_pick(kind: str, msg: dict) -> bool:
+    """A further pick of a fight card screen the referee has already taken a card from (driver ctx pick > 1). The referee
+    moves the picked cards only when the screen closes, the emulator after each pick, so the two hands are not comparable
+    until then: EmuLock.sync compares the screen's candidates instead, and the views meet again at the next decision."""
+    ctx = msg.get("ctx") if isinstance(msg, dict) else None
+    return kind == "select_cards_combat" and isinstance(ctx, dict) and int(ctx.get("pick", 1)) > 1
 
 
 def act_type(kind: str, label: Any) -> str:
@@ -317,6 +329,8 @@ class Lockstep:
         reason = None if kind in MAPPED_KINDS else f"unmapped:{kind}"
         reason = reason or self.emu.sync(kind, labels, msg)
         r, e = ref_view(msg.get("obs", {})), self.emu.view()
+        if mid_screen_pick(kind, msg):
+            return reason, [], r, e  # inside a screen: its candidates were compared in sync
         if kind == "treasure":
             # The emulator opens the chest and holds its relic when the referee is first asked whether to take it (the
             # 6 of 12 treasure divergences of the events round); the question's own offer is the referee's side of that.
@@ -532,7 +546,9 @@ class EmuLock:
         if kind in COMBAT_KINDS:
             self._forced("combat")
             self._auto_combat()
-            return None if self.s.phase == self.E.rc.PHASE_COMBAT else f"phase:{self.s.phase}"
+            if self.s.phase != self.E.rc.PHASE_COMBAT:
+                return f"phase:{self.s.phase}"
+            return self._screen_state(kind, labels, msg)
         if kind == "reward":
             self._flush_rewards()
             ph = self.s.phase
@@ -583,8 +599,37 @@ class EmuLock:
             self.native.run_step(self.s.handle, legal[0], -1, env._run_obs_buf, env._run_rew_buf, env._run_terminal_buf,
                                  env._run_truncated_buf)
 
+    def _screen_state(self, kind: str, labels: list, msg: dict | None) -> str | None:
+        """Both sides must stand on the same side of a fight card screen, so that they leave it together. The referee asks `combat`
+        only once its screen has closed, and a further pick only while the screen is open with the cards left: an emulator
+        screen still open at a `combat` decision, closed at a further pick, or showing other cards is a difference."""
+        obs, ls = self._obs(), self.ls
+        is_open = bool(obs[ls._SELECTION_KIND])
+        if mid_screen_pick(kind, msg or {}):
+            if not is_open:
+                return "selection:closed_early"
+            count = int(obs[ls._SELECTION_COUNT])
+            ref = sorted(json.dumps([x[0], int(x[1])]) for x in labels if isinstance(x, list))
+            if count != len(ref):
+                return "selection:candidates_differ"
+            if count <= getattr(ls, "_MAX_CANDIDATES", 10):
+                emu = sorted(json.dumps(self._card_of(ls._card_at(obs, ls._SELECTION + a * ls._CARD))) for a in range(count))
+                if emu != ref:
+                    return "selection:candidates_differ"
+        elif kind == "combat" and is_open:
+            return "selection:left_open"
+        return None
+
+    def _card_of(self, c) -> list:
+        return [self.slug["cards"].get(c[0], "?"), int(c[1])]
+
     def _select_action(self, label: list) -> int | None:
-        """The emulator's candidate index for a referee selection label [entry, upgraded]; None for "none"."""
+        """The emulator's candidate index for a referee selection label [entry, upgraded]; for "done" its decline (one past
+        the candidates; apply checks it is legal); None for "none"."""
+        if label == "done":
+            obs, ls = self._obs(), self.ls
+            n = int(obs[ls._SELECTION_COUNT]) if obs[ls._SELECTION_KIND] else -1
+            return n if 0 <= n < 32 else None
         if not (isinstance(label, list) and len(label) > 1):
             return None  # the "none" action of a screen that allows 0 cards: the emulator's fight selection has no such action
         obs, ls = self._obs(), self.ls
@@ -845,6 +890,8 @@ class EmuLock:
 def referee_only_policy(msg: dict) -> int:
     """Scored-not-ranked play: the first card play, else the first non-end action, else 0. Deterministic."""
     acts = msg["actions"]
+    if "done" in acts and mid_screen_pick(msg.get("kind"), msg):
+        return acts.index("done")  # a fight card screen: one card, as it was always taken, then the screen's end
     for i, a in enumerate(acts):
         if isinstance(a, list) and a and a[0] == "play":
             return i
