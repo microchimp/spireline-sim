@@ -222,6 +222,16 @@ class IngestTest(CorpusTestCase):
         (fake / "tools" / "emudump" / "Fight.cs").write_text('int k = (int?)game["enemy_hp_mult"] ?? 1;', encoding="utf-8")
         self.assertEqual(cp.emudump_features(fake), {"enemy_hp_mult"})
 
+    def test_emudump_features_are_found_in_folders_too_but_not_in_build_output(self):
+        # The old engine's side lives in tools/emudump/Engines/Old: a marker moved there must still count, or the
+        # fights that need it are skipped without a word. bin/ and obj/ hold build output, never source.
+        fake = self.dir / "fork2"
+        for sub, text in (("Engines/Old", 'var s = game["setup"];'), ("bin/Release", 'int k = (int?)game["enemy_hp_mult"] ?? 1;'),
+                          ("obj", 'int k = (int?)game["enemy_hp_mult"] ?? 1;')):
+            (fake / "tools" / "emudump" / sub).mkdir(parents=True)
+            (fake / "tools" / "emudump" / sub / "X.cs").write_text(text, encoding="utf-8")
+        self.assertEqual(cp.emudump_features(fake), {"setup"})
+
     def test_a_format_1_index_is_migrated_and_rescanned(self):
         self.add(self.write("jobs/a.out.json", [recording()]))
         idx = self.corpus.load_index()
