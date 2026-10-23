@@ -11,7 +11,9 @@ its first line (and counted, so it shows).
         [--procs N] [--only ID_OR_SEED ...] [--limit N] [--show N] [--work DIR] [--corpus DIR]
 
 Exit 0 only when every fight of every mode is identical on both sides and no run failed.
-A mode is a row of MODES: the EmuDump command and its flags. Later rounds add reanchor, hookprobe, refset and codex.
+A mode is a row of MODES: the EmuDump command and its flags. The reanchor modes (`reanchor`, plus one per diagnostic flag:
+--scramble, --stale all, --perturb-moves, --trace) also compare what the output holds before its `results` array (the power
+keys). Later rounds add hookprobe, refset and codex.
 
 The fights are batched as corpus.hash_part batches them (`balance`, two parts per process), one EmuDump
 process per part and side, in a spawn pool at BELOW_NORMAL priority.
@@ -43,6 +45,11 @@ MODES: dict[str, tuple[str, list[str]]] = {
     "netstate": ("fight", ["--compact", "--netstate"]),
     "state-hash": ("fight", ["--compact", "--state-hash=fields"]),
     "rng-log": ("fight", ["--compact", "--rng-log"]),
+    "reanchor": ("reanchor", []),
+    "reanchor-scramble": ("reanchor", ["--scramble"]),
+    "reanchor-stale": ("reanchor", ["--stale", "all"]),
+    "reanchor-perturb-moves": ("reanchor", ["--perturb-moves"]),
+    "reanchor-trace": ("reanchor", ["--trace"]),
 }
 
 _ERROR = re.compile(r'"error":"((?:[^"\\]|\\.)*)"')
@@ -72,6 +79,15 @@ def split_results(raw: bytes) -> list[str]:
             i += 1
 
 
+def split_header(raw: bytes) -> str:
+    """What the output holds before its `results` array, as written (the reanchor output's power keys; `{` for a fight's)."""
+    text = raw.decode("utf-8")
+    start = text.find('"results"')
+    if start < 0:
+        raise ValueError("no results array in the output")
+    return text[:start]
+
+
 def first_line_of_errors(piece: str) -> tuple[str, int]:
     """`piece` with each error text cut at its first line (a stack trace names build paths); how many were cut."""
     cut = 0
@@ -94,13 +110,14 @@ def first_difference(x: str, y: str) -> int:
 def compare_outputs(ids: list, raw_a: bytes | None, raw_b: bytes | None) -> dict:
     """Per fight, whether the two outputs are identical. Both None-able: a side that wrote nothing is a problem, not a pass."""
     res = {"same": 0, "differ": [], "problems": [], "error_cut": 0}
-    pieces = {}
+    pieces, headers = {}, {}
     for side, raw in (("a", raw_a), ("b", raw_b)):
         if raw is None:
             res["problems"].append(f"{side}: no output")
             continue
         try:
             pieces[side] = split_results(raw)
+            headers[side] = split_header(raw)
         except (ValueError, IndexError) as ex:
             res["problems"].append(f"{side}: output is not a results array ({type(ex).__name__}: {ex})")
             continue
@@ -109,6 +126,8 @@ def compare_outputs(ids: list, raw_a: bytes | None, raw_b: bytes | None) -> dict
             del pieces[side]
     if len(pieces) < 2:
         return res
+    if headers["a"] != headers["b"]:
+        res["problems"].append(f"the output before `results` differs: a {headers['a'][:80]!r} / b {headers['b'][:80]!r}")
     for fid, pa, pb in zip(ids, pieces["a"], pieces["b"]):
         if pa == pb:
             res["same"] += 1

@@ -122,6 +122,32 @@ class ModeTableTests(unittest.TestCase):
         })
 
 
+    def test_the_reanchor_modes_and_their_flags(self):
+        self.assertEqual({m: bp.MODES[m] for m in bp.MODES if m.startswith("reanchor")}, {
+            "reanchor": ("reanchor", []),
+            "reanchor-scramble": ("reanchor", ["--scramble"]),
+            "reanchor-stale": ("reanchor", ["--stale", "all"]),
+            "reanchor-perturb-moves": ("reanchor", ["--perturb-moves"]),
+            "reanchor-trace": ("reanchor", ["--trace"]),
+        })
+
+
+class HeaderTests(unittest.TestCase):
+    @staticmethod
+    def out(header: str) -> bytes:
+        return ('{' + header + '"results":[{"s":1}]}').encode()
+
+    def test_a_different_power_key_list_is_a_problem_not_a_pass(self):
+        r = bp.compare_outputs(["f1"], self.out('"buff_keys":["A","B"],'), self.out('"buff_keys":["A"],'))
+        self.assertEqual((r["same"], r["differ"]), (1, []))
+        self.assertEqual(len(r["problems"]), 1)
+        self.assertIn("before `results`", r["problems"][0])
+
+    def test_the_same_header_is_no_problem(self):
+        o = self.out('"buff_keys":["A"],"internal_keys":[],')
+        self.assertEqual(bp.compare_outputs(["f1"], o, o)["problems"], [])
+
+
 class FakeEmuDumpTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
