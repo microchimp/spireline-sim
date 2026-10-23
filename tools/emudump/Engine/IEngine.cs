@@ -4,8 +4,8 @@
 // (run engine, combat state, def-id ints, buff enums, RNG wrappers) appears in this folder, so a second
 // engine can plug into the same adapters (referee/design/rebuild-plan.md section 1, "Oracle path").
 // tools/emudump.Tests/EngineBoundaryTests.cs enforces the boundary.
-// Fight.cs and Reanchor.cs reach the engine through these members (the types Reanchor passes are in
-// ReanchorTypes.cs); later rounds add members for Setup, NetState, HookProbe and Trace.
+// Fight.cs, Reanchor.cs and Program.cs's `fight --netstate` reach the engine through these members (the types Reanchor passes are in
+// ReanchorTypes.cs); later rounds add members for Setup, HookProbe and Trace.
 using System.Text.Json.Nodes;
 
 namespace EmuDump.Engine;
@@ -109,4 +109,11 @@ public interface IEngine : IScreenSource
     /// moves_carried, error), key by key as it goes, so a failure part-way leaves the keys written so far.
     /// </summary>
     ReanchorOutcome ReanchorStep(EngineBlock carry, ReanchorMode mode, ReanchorInput input, JsonObject record);
+
+    /// <summary>
+    /// The current combat in the shape of the game's NetFullCombatState (creatures, players with piles, potions,
+    /// relics, orbs and RNG counters, ids as the game writes them), as tools/fidelity/netstate_diff.py reads it, or
+    /// null when no combat is in progress. Fields the engine does not model are absent.
+    /// </summary>
+    JsonObject? GameState();
 }

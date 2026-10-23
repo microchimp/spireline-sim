@@ -7,7 +7,7 @@ using EmuDump.Engines;
 
 static class Fight
 {
-    /// <summary>Called with each step as it is recorded (EmuDump fight --netstate: NetState.cs).</summary>
+    /// <summary>Called with each step as it is recorded (EmuDump fight --netstate: IEngine.GameState).</summary>
     internal static Action<IEngine, JsonObject>? OnStep;
     /// <summary>Called with the engine after the opening (0) and after each replayed step; the live invariant checker sets it.</summary>
     internal static Action<IEngine, int>? AfterStep;

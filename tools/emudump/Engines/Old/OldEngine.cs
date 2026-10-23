@@ -45,6 +45,8 @@ public sealed class OldEngine : IEngine
 
     public JsonObject PowerKeys() => OldAnchor.PowerKeys(OldReanchor.Tables);
 
+    public JsonObject? GameState() => OldNetState.From(Run);
+
     public ReanchorOpening ReanchorOpen() => OldReanchor.Open(this);
 
     public ReanchorOutcome ReanchorStep(EngineBlock carry, ReanchorMode mode, ReanchorInput input, JsonObject record) =>

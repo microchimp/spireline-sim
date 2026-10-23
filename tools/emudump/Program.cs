@@ -59,8 +59,8 @@ if (args[0] == "fight")
     Prof.Start();
     if (args.Contains("--netstate"))
     {
-        // The game's NetFullCombatState fields after each step (NetState.cs), for netstate_diff.
-        Fight.OnStep += (e, step) => step["net"] = new JsonArray(new JsonObject { ["ctx"] = "step", ["state"] = NetState.From(OldEngine.Of(e).Run) });
+        // The game's NetFullCombatState fields after each step (IEngine.GameState), for netstate_diff.
+        Fight.OnStep += (e, step) => step["net"] = new JsonArray(new JsonObject { ["ctx"] = "step", ["state"] = e.GameState() });
     }
 
     if (args.Any(a => a.StartsWith("--state-hash", StringComparison.Ordinal)))
