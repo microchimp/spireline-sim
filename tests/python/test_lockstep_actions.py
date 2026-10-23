@@ -129,3 +129,10 @@ class OfferedCountingTest(unittest.TestCase):
         # a reward screen's take/skip is not a card skip, and an ordinary combat message offers none of them
         self.assertEqual(envproto.extras_of({"kind": "reward", "actions": ["take", "skip"]}), [])
         self.assertEqual(envproto.extras_of({"kind": "combat", "actions": [["end"], ["play", 0, "STRIKE", 0], ["potion", 0, "X", -1]]}), [])
+
+
+class FightSelectionNoneTest(unittest.TestCase):
+    def test_none_in_a_fight_selection_is_not_an_emulator_action(self):
+        e = emu([])
+        self.assertIsNone(e._select_action("none"))  # was: ValueError from int("o") in the gate smoke
+        self.assertTrue(e._apply_combat("select_cards_combat", [["STRIKE", 0], "none"], 1).startswith("unmapped_label"))

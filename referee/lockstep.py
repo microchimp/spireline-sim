@@ -513,7 +513,9 @@ class EmuLock:
                                  env._run_truncated_buf)
 
     def _select_action(self, label: list) -> int | None:
-        """The emulator's candidate index for a referee selection label [entry, upgraded]."""
+        """The emulator's candidate index for a referee selection label [entry, upgraded]; None for "none"."""
+        if not (isinstance(label, list) and len(label) > 1):
+            return None  # the "none" action of a screen that allows 0 cards: the emulator's fight selection has no such action
         obs, ls = self._obs(), self.ls
         for a in range(min(obs[ls._SELECTION_COUNT], 32)):
             c = ls._card_at(obs, ls._SELECTION + a * ls._CARD)
