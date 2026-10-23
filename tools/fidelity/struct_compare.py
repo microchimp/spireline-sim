@@ -20,7 +20,8 @@ Structural rules (facts of the game's schema, the same for every engine):
 
 Per fight: the first differing step and its paths, the allowed rows that fired, and the field census: the schema paths
 (indices [*], keys {*}) compared anywhere in the fight. census_gate() fails an engine compared on fewer fields than
-another on the same fight.
+another on the same fight. A path an allowed row waives (an ignore row, or a difference a row excused) is not compared: it is
+in the waived set of the fight, not in its census; the gate compares census sets only and waived_total() reports the waived counts.
 """
 
 from __future__ import annotations
@@ -237,12 +238,13 @@ def _intents(flat: dict, base: str) -> list:
 
 
 def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict, moved_paths: set = frozenset()) -> dict:
-    """One shape of one step: {diffs: [(path, record, engine)], compared, unmodelled, unjudged} (schema-path sets)."""
+    """One shape of one step: {diffs: [(path, record, engine)], compared, waived, unmodelled, unjudged} (schema-path sets;
+    waived: paths an allowed row excused, never counted as compared)."""
     g, gnodes = flatten(_prefilter(rec, shape, rows, fired, True, rec_snap), shape)
     e, enodes = flatten(_prefilter(eng, shape, rows, {}, False, rec_snap), shape)
     active = [r for r in rows if r.get("shape", "any") in ("any", shape) and _when(r, rec_snap)]
     unmod_rows = [r for r in active if r["kind"] == "unmodelled"]
-    raw, compared, unmodelled, unjudged = [], set(), set(), set()
+    raw, compared, waived, unmodelled, unjudged = [], set(), set(), set(), set()
     for p in sorted(set(g) | set(e)):
         if p in g and p in e:
             compared.add(p)
@@ -273,6 +275,8 @@ def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict,
                 raw.append((p, g[p], None))
         else:
             unjudged.add(schema(p))
+    ignored = [rx for r in active if r["kind"] == "ignore" for rx in r["_re"]]
+    waived |= {p for p in compared if any(rx.match(schema(p)) for rx in ignored)}  # the row stands for the comparison
     diffs = []
     coarse_ok: dict = {}
     for p, gv, ev in raw:
@@ -296,10 +300,12 @@ def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict,
                 break
         if why:
             fired[why] = fired.get(why, 0) + 1
+            waived.add(p)
         else:
             diffs.append((p, gv, ev))
-    return {"diffs": diffs, "compared": {schema(p) for p in compared}, "n": len(compared), "unmodelled": unmodelled,
-            "unjudged": unjudged}
+    compared -= waived
+    return {"diffs": diffs, "compared": {schema(p) for p in compared}, "waived": {schema(p) for p in waived}, "n": len(compared),
+            "unmodelled": unmodelled, "unjudged": unjudged}
 
 
 def compare_fight(g: dict, e: dict, rows: list | None = None) -> dict:
@@ -309,7 +315,7 @@ def compare_fight(g: dict, e: dict, rows: list | None = None) -> dict:
     late = next((r for r in rows if r["kind"] == "late_steps"), None)
     limit = net_limit(g) if late else len(gsteps)  # the limit is the row: no row, no limit
     first, at, fired = None, [], {}
-    census, unmodelled, unjudged, leaves = set(), set(), set(), 0
+    census, waived, unmodelled, unjudged, leaves = set(), set(), set(), set(), 0
     for k, (gs, es) in enumerate(zip(gsteps, esteps)):
         view = es.get("game_view")
         if view is None:
@@ -322,11 +328,12 @@ def compare_fight(g: dict, e: dict, rows: list | None = None) -> dict:
         elif nets and rec_snap.get("in_combat"):
             last = nets[-1]["state"]
             if view.get("net") is None:
-                parts.append({"diffs": [("net", "(state)", None)], "compared": {"net"}, "n": 1, "unmodelled": set(), "unjudged": set()})
+                parts.append({"diffs": [("net", "(state)", None)], "compared": {"net"}, "waived": set(), "n": 1, "unmodelled": set(), "unjudged": set()})
             else:
                 parts.append(compare_shape(last, view["net"], "net", rows, rec_snap, fired, moved(rec_snap, last)))
         for part in parts:
             census |= part["compared"]
+            waived |= part["waived"]
             unmodelled |= part["unmodelled"]
             unjudged |= part["unjudged"]
             leaves += part["n"]
@@ -337,7 +344,7 @@ def compare_fight(g: dict, e: dict, rows: list | None = None) -> dict:
         first = len(esteps)
         at = [("(error)" if e.get("error") else "(length)", f"{len(gsteps)} steps", f"{len(esteps)} steps")]
     return {"seed": g.get("seed"), "first": first, "at": at, "allowed": dict(sorted(fired.items())), "census": sorted(census),
-            "leaves": leaves, "unmodelled": sorted(unmodelled), "unjudged": sorted(unjudged - census),
+            "waived": sorted(waived - census), "leaves": leaves, "unmodelled": sorted(unmodelled), "unjudged": sorted(unjudged - census),
             "steps": [len(gsteps), len(esteps)], **({"error": str(e["error"]).splitlines()[0][:200]} if e.get("error") else {})}
 
 
@@ -350,7 +357,7 @@ def judge(g: dict, e: dict, rows: list | None = None) -> dict:
         out["fields"] = sorted({schema(p) for p, _, _ in r["at"]})
     if r.get("error"):
         out["ferr"] = r["error"]
-    out.update(census=r["census"], leaves=r["leaves"], allowed=r["allowed"])
+    out.update(census=r["census"], waived=r["waived"], leaves=r["leaves"], allowed=r["allowed"])
     return out
 
 
@@ -364,6 +371,11 @@ def census_gate(a: dict, b: dict) -> dict:
         if missing:
             bad[item] = missing
     return bad
+
+
+def waived_total(results: dict) -> int:
+    """Schema paths an allowed row waived (never compared), summed over items; reported next to the census gate."""
+    return sum(len(r.get("waived", [])) for r in results.values())
 
 
 def _short(v, n=70) -> str:

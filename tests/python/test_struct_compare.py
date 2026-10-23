@@ -300,5 +300,33 @@ class LateStepsRow(unittest.TestCase):
         self.assertNotIn("late-steps", r["allowed"])
 
 
+def run_net(rec_net, eng_net, rows=ROWS):
+    rs = snap()
+    return sc.compare_fight(*fight([rs], [rs], rec_nets=[rec_net], eng_nets=[eng_net]), rows)
+
+
+class Waived(unittest.TestCase):
+    def test_waived_cost_is_not_in_the_census(self):
+        cost = "net.players[*].piles.Draw[*].cost"
+        eng = net()
+        eng["players"][0]["piles"]["Draw"][0]["cost"] = 3  # cost outside the hand: waived by cost-outside-hand
+        for e in (net(), eng):  # equal or different: the row stands for the comparison, so it is waived and never compared
+            r = run_net(net(), e)
+            self.assertIsNone(r["first"])
+            self.assertIn(cost, r["waived"])
+            self.assertNotIn(cost, r["census"])
+        self.assertIn("net.players[*].piles.Hand[*].cost", run_net(net(), net())["census"])  # cost in the hand is compared
+
+    def test_gate_compares_census_only_and_reports_waived(self):
+        cost = "net.players[*].piles.Draw[*].cost"
+        a = {"f": run_net(net(), net(), [x for x in ROWS if x["kind"] != "ignore"])}  # an engine with no such row compares it
+        b = {"f": run_net(net(), net())}
+        self.assertIn(cost, a["f"]["census"])
+        self.assertIn(cost, sc.census_gate(a, b)["f"])  # B waived it: not compared there, so the gate fails B
+        self.assertEqual(sc.census_gate(b, a), {})
+        self.assertEqual((sc.waived_total(a), sc.waived_total(b)), (0, len(b["f"]["waived"])))
+        self.assertGreater(sc.waived_total(b), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
