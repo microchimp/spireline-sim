@@ -128,7 +128,7 @@ public class IntentAmbiguityScanTests
                         combat.Enemies.Add(enemy.Clone());
                     }
 
-                    var rng = new Random(HashCode.Combine(encounter, ascension, rollout));
+                    var rng = new Random(encounter * 100003 + ascension * 1009 + rollout);
                     try
                     {
                         for (int turn = 0; turn < Turns && combat.Enemies.Any(x => x.Hp > 0); turn++)
