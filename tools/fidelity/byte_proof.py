@@ -8,7 +8,11 @@ text of an `error` field, which holds a stack trace with build paths and line nu
 its first line (and counted, so it shows).
 
     python tools/fidelity/byte_proof.py --a <A EmuDump.dll> --b <B EmuDump.dll> [--modes fight,netstate]
+        [--a-args "--engine old"] [--b-args "--engine core2"]
         [--procs N] [--only ID_OR_SEED ...] [--limit N] [--show N] [--work DIR] [--corpus DIR]
+
+--a-args and --b-args are appended to that side's command line in every mode (whitespace-split): one build can be
+proved against itself with another engine (`--a X --b X --b-args "--engine core2"`).
 
 Exit 0 only when every fight of every mode is identical on both sides and no run failed.
 A mode is a row of MODES: the EmuDump command and its flags. The reanchor modes (`reanchor`, plus one per diagnostic flag:
@@ -162,11 +166,12 @@ def command_for(emudump) -> list:
 # inlining, the same IL gives the same frames every run.
 
 
-def run_side(emudump: str, command: str, flags: list, src: Path, dst: Path, timeout: float) -> tuple[bytes | None, str | None]:
+def run_side(emudump: str, command: str, flags: list, src: Path, dst: Path, timeout: float,
+             extra: list | None = None) -> tuple[bytes | None, str | None]:
     """One EmuDump over one input file: its stdout, or None and why it failed."""
     try:
         with dst.open("wb") as so:
-            rc = subprocess.run([*command_for(emudump), command, str(src), *flags], stdout=so, stderr=subprocess.DEVNULL,
+            rc = subprocess.run([*command_for(emudump), command, str(src), *flags, *(extra or [])], stdout=so, stderr=subprocess.DEVNULL,
                                 check=False, creationflags=C.BELOW_NORMAL, timeout=timeout,
                                 env={**os.environ, **NO_INLINING}).returncode
     except subprocess.TimeoutExpired:
@@ -176,7 +181,8 @@ def run_side(emudump: str, command: str, flags: list, src: Path, dst: Path, time
     return dst.read_bytes(), None
 
 
-def prove_batch(mode: str, ids: list, games: list, emudump_a: str, emudump_b: str, work: str, timeout: float | None = None) -> dict:
+def prove_batch(mode: str, ids: list, games: list, emudump_a: str, emudump_b: str, work: str, timeout: float | None = None,
+                extra: dict | None = None) -> dict:
     """One worker: both builds over these fights in one mode, compared per fight."""
     command, flags = MODES[mode]
     timeout = timeout or 2 * C.part_timeout(sum(len(g.get("steps", [])) for g in games))
@@ -187,7 +193,7 @@ def prove_batch(mode: str, ids: list, games: list, emudump_a: str, emudump_b: st
     t0 = time.time()
     for side, dll in (("a", emudump_a), ("b", emudump_b)):
         dst = Path(work) / f"bp-{tag}.{side}.out.json"
-        raws[side], problem = run_side(dll, command, flags, src, dst, timeout)
+        raws[side], problem = run_side(dll, command, flags, src, dst, timeout, (extra or {}).get(side))
         if problem:
             why.append(f"{side}: EmuDump {command} {problem}")
         with contextlib.suppress(OSError):
@@ -201,18 +207,20 @@ def prove_batch(mode: str, ids: list, games: list, emudump_a: str, emudump_b: st
     return res
 
 
-def prove_corpus_batch(mode: str, ids: list, corpus_dir: str, emudump_a: str, emudump_b: str, work: str) -> dict:
+def prove_corpus_batch(mode: str, ids: list, corpus_dir: str, emudump_a: str, emudump_b: str, work: str,
+                       extra: dict | None = None) -> dict:
     c = C.Corpus(Path(corpus_dir))
-    return prove_batch(mode, ids, [c.read(i) for i in ids], emudump_a, emudump_b, work)
+    return prove_batch(mode, ids, [c.read(i) for i in ids], emudump_a, emudump_b, work, extra=extra)
 
 
-def prove(corpus: "C.Corpus", ids: list, modes: list, a: Path, b: Path, procs: int, work: Path) -> dict:
+def prove(corpus: "C.Corpus", ids: list, modes: list, a: Path, b: Path, procs: int, work: Path,
+          extra: dict | None = None) -> dict:
     """Every mode over every fight. Returns {mode: totals}."""
     metas = {m["id"]: m for m in corpus.load_index()["fights"]}
     parts = C.balance([metas[i] for i in ids], 2 * procs)
     totals = {m: {"fights": len(ids), "same": 0, "differ": [], "problems": [], "error_cut": 0, "seconds": 0.0} for m in modes}
     with ProcessPoolExecutor(max_workers=procs, mp_context=get_context("spawn"), initializer=C._below_normal) as ex:
-        futures = [ex.submit(prove_corpus_batch, m, p, str(corpus.path), str(a), str(b), str(work)) for m in modes for p in parts]
+        futures = [ex.submit(prove_corpus_batch, m, p, str(corpus.path), str(a), str(b), str(work), extra) for m in modes for p in parts]
         for f in futures:
             r = f.result()
             t = totals[r["mode"]]
@@ -253,6 +261,8 @@ def main(argv=None) -> int:
     ap.add_argument("--only", nargs="*", help="fight ids or seeds")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--show", type=int, default=10, help="differing fights to print per mode")
+    ap.add_argument("--a-args", default="", help="arguments appended to every A command (e.g. \"--engine old\")")
+    ap.add_argument("--b-args", default="", help="arguments appended to every B command (e.g. \"--engine core2\")")
     ap.add_argument("--work", type=Path, help="folder for the temporary inputs and outputs (default: under the corpus's runs/)")
     a = ap.parse_args(argv)
     modes = [m for m in a.modes.split(",") if m]
@@ -269,7 +279,8 @@ def main(argv=None) -> int:
         print(f"skipped, this EmuDump does not apply what they need: {skipped}")
     work = a.work or corpus.path / "runs" / f"byteproof-{time.strftime('%Y%m%d-%H%M%S')}"
     work.mkdir(parents=True, exist_ok=True)
-    totals = prove(corpus, ids, modes, Path(a.a), Path(a.b), a.procs, work)
+    extra = {"a": a.a_args.split(), "b": a.b_args.split()}
+    totals = prove(corpus, ids, modes, Path(a.a), Path(a.b), a.procs, work, extra)
     with contextlib.suppress(OSError):
         work.rmdir()
     return report(totals, {m["id"]: m for m in idx}, a.show)

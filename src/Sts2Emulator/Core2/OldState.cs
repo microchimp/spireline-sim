@@ -39,7 +39,7 @@ public readonly record struct PowerMapping(PowerMapKind Kind, int ModelId, strin
 /// is Folded.
 /// Orbs and enchantments use the old enums, afflictions <see cref="GameAffliction" />.
 /// </summary>
-public sealed class OldModelIds
+public sealed class OldModelIds : IModelIds
 {
     // The BuffIds that are engine bookkeeping with no game power of their own (no class of that name in the game's
     // powers; the comments of BuffState.cs say what each counts). A BuffId is engine-only only by being named here.
@@ -65,6 +65,11 @@ public sealed class OldModelIds
         {
             game[PowerKey(name)] = (int)id!;
             _powerNames[(int)id!] = name;
+        }
+
+        foreach (var (kind, section) in Sections)
+        {
+            _byName[kind] = idMap[section]!.AsObject().ToDictionary(kv => kv.Key, kv => (int)kv.Value!, StringComparer.Ordinal);
         }
 
         var rename = aliases["emu_rename"]!.AsObject().ToDictionary(kv => kv.Key, kv => (string)kv.Value!);
@@ -114,6 +119,41 @@ public sealed class OldModelIds
 
     /// <summary>Osty's monster id (data/id_map.json "enemies").</summary>
     public int OstyModelId { get; }
+
+    // The id_map.json section of each kind whose listener model id is id_map's number (TIER1_KERNEL.md section 3).
+    private static readonly (ListenerKind Kind, string Section)[] Sections =
+    [
+        (ListenerKind.Power, "powers"), (ListenerKind.Card, "cards"), (ListenerKind.Relic, "relics"),
+        (ListenerKind.Potion, "potions"), (ListenerKind.Monster, "enemies"),
+    ];
+
+    private readonly Dictionary<ListenerKind, Dictionary<string, int>> _byName = new();
+
+    /// <summary>
+    /// The listener model id the old state lists for the game model <paramref name="gameId" /> (its class name):
+    /// id_map.json's number for powers, cards, relics, potions and monsters; the old enum for orbs (the class name
+    /// without "Orb"), enchantments and afflictions. Throws for a name the old engine has no id for, and for
+    /// modifiers, badges and the scaling model, which the old state does not identify.
+    /// </summary>
+    public int Resolve(ListenerKind kind, string gameId)
+    {
+        if (_byName.TryGetValue(kind, out var names))
+        {
+            return names.TryGetValue(gameId, out int id)
+                ? id
+                : throw new ArgumentException($"{kind} {gameId}: not in data/id_map.json");
+        }
+
+        int? e = kind switch
+        {
+            ListenerKind.Orb when gameId.EndsWith("Orb", StringComparison.Ordinal)
+                && Enum.TryParse<OrbType>(gameId[..^3], out var o) => (int)o,
+            ListenerKind.Enchantment when Enum.TryParse<Enchantment>(gameId, out var en) && en != Enchantment.None => (int)en,
+            ListenerKind.Affliction when Enum.TryParse<GameAffliction>(gameId, out var af) && af != GameAffliction.None => (int)af,
+            _ => null,
+        };
+        return e ?? throw new ArgumentException($"{kind} {gameId}: the old state has no id for it");
+    }
 
     public PowerMapping Power(BuffId id) => _powers.TryGetValue(id, out var m) ? m : new(PowerMapKind.NotModelled, 0, "");
 
@@ -219,6 +259,39 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     public List<int> Modifiers { get; } = [];
     public List<int> Badges { get; } = [];
     public int? Scaling { get; set; }
+
+    /// <summary>
+    /// Makes this world's marks and supplied models those of <paramref name="from" /> (null: the defaults), bound to
+    /// <paramref name="combat" /> and <paramref name="run" />: a copy of the state this one is on. Dying enemies are
+    /// matched to the copy's roster by index (the old engine keeps a dying enemy in it). A scope opened on the other world
+    /// restores that world, never this one.
+    /// </summary>
+    internal void CopyFrom(OldWorld? from, CombatState? combat, RunState? run)
+    {
+        Combat = combat;
+        Run = run;
+        _dying.Clear();
+        Modifiers.Clear();
+        Badges.Clear();
+        InFlight = from?.InFlight;
+        InSetup = from?.InSetup ?? false;
+        PlayerHooks = from?.PlayerHooks ?? default;
+        Scaling = from?.Scaling;
+        if (from is null)
+            return;
+        var roster = from.Combat?.Enemies;
+        foreach (var dying in from._dying)
+        {
+            int at = -1;
+            for (int i = 0; roster is not null && i < roster.Count && at < 0; i++)
+                if (ReferenceEquals(roster[i], dying))
+                    at = i;
+            _dying.Add(at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : dying);
+        }
+
+        Modifiers.AddRange(from.Modifiers);
+        Badges.AddRange(from.Badges);
+    }
 }
 
 /// <summary>What the kill sequence declared of the player's hooks. Undeclared counts as active (the game deactivates a

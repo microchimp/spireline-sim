@@ -1,5 +1,5 @@
-// The engine boundary of the oracle tools: only Engines/Old/ names the old engine (Sts2Emulator, and the types
-// declared under Engines/Old/). Every other file in tools/emudump reaches an engine through IEngine
+// The engine boundary of the oracle tools: only the engine folders, Engines/Old/ and Engines/Core2/ (the old engine with
+// the Tier 1 kernel attached), name the old engine (Sts2Emulator, and the types declared under Engines/Old/). Every other file in tools/emudump reaches an engine through IEngine
 // (Engine/IEngine.cs), except the consumers listed in Engine/not_moved.txt, which have not moved yet, and
 // Engines/EngineFactory.cs, which makes the engine by name. Five rules:
 //   1. A file outside Engines/Old/ that names Sts2Emulator and is not listed fails.
@@ -17,6 +17,7 @@ using Xunit;
 public class EngineBoundaryTests
 {
     const string OldFolder = "Engines/Old/";
+    const string Core2Folder = "Engines/Core2/";
     const string EnginesFolder = "Engines/";
 
     /// <summary>The most the allowlist may hold: the consumers listed when the reanchor move finished.</summary>
@@ -170,7 +171,7 @@ public class EngineBoundaryTests
         foreach (var (path, source) in files.OrderBy(f => f.Key, StringComparer.Ordinal))
         {
             foreach (var leak in GlobalUsingLeaks(source)) problems.Add($"{path} has `{leak}`: a global using leaks the engine's types to every file without naming them");
-            if (path.StartsWith(OldFolder, StringComparison.Ordinal)) continue;
+            if (path.StartsWith(OldFolder, StringComparison.Ordinal) || path.StartsWith(Core2Folder, StringComparison.Ordinal)) continue;
             bool names = NamesEngine(source);
             bool listed = notMoved.Contains(path);
             if (names && !listed) problems.Add($"{path} names Sts2Emulator outside {OldFolder}: reach the engine through IEngine");
@@ -345,6 +346,16 @@ public class EngineBoundaryTests
         Assert.Contains(path + " names the old engine", problems[0]);
         Assert.Contains(name, problems[0]);
         Assert.False(NamesEngine(source));
+    }
+
+    [Fact]
+    public void TheCore2EngineFolderMayNameTheEngineAndNoOtherEnginesFolderMay()
+    {
+        var files = With(
+            ("Engines/Core2/Core2Engine.cs", "using Sts2Emulator.Core2;\nusing EmuDump.Engines.Old;\nclass Core2Engine : OldEngine {}"),
+            ("Engines/Core3/X.cs", "using Sts2Emulator.Core2;"));
+        var problems = Problems(files, new HashSet<string>(), NotMovedCeiling);
+        Assert.Equal(["Engines/Core3/X.cs names Sts2Emulator outside Engines/Old/: reach the engine through IEngine"], problems);
     }
 
     [Fact]

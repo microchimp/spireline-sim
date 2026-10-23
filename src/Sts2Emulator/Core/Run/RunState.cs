@@ -428,6 +428,13 @@ public sealed class RunState
     public bool AddingBingBongClone;
 
     /// <summary>
+    /// The Tier 1 kernel's state of the run, for the sites that run outside a combat (Core2/KernelState.cs). Null on the
+    /// old engine. Copied by Clone; [IdentityOnly].
+    /// </summary>
+    [IdentityOnly]
+    public Sts2Emulator.Core2.KernelState? Kernel;
+
+    /// <summary>
     /// Combats each Guilty in the deck has sat through. `Guilty.AfterCombatEnd` counts
     /// while the card is in the DECK and removes it at five -- a curse that serves a
     /// sentence and leaves, which is the only self-removing card in the game.

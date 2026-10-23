@@ -64,6 +64,14 @@ public sealed class ChoiceCtx
 
     public void PushModel(ListenerRef model) => _models.Add(model);
 
+    /// <summary>An independent context with the same owner and the same models pushed (a copy of the state holding it).</summary>
+    internal ChoiceCtx Copy()
+    {
+        var c = new ChoiceCtx(Dispatcher, Owner);
+        c._models.AddRange(_models);
+        return c;
+    }
+
     public void PopModel(ListenerRef model)
     {
         if (_models.Count == 0 || _models[^1] != model)

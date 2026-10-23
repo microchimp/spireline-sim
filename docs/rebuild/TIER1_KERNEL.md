@@ -25,6 +25,36 @@ Game code is described by class and method identifiers only. Revised after revie
   commands it calls.
 - The combat-over-or-ending guard of the game's guarded iterator reads the old engine's own flag
   (`CombatEngine.IsOverOrEnding`), so it changes nothing by itself; F10's switch changes when that flag is set.
+- Built in K3 (`python -m tools.kernel.sites build|check|groups`, `tools/kernel/sites.json`, generated
+  `Core2/Switches.g.cs`):
+  - A site is a `hook_dispatch.json` method or region, plus the methods its `generic` entries name before the colon
+    (`CombatEngine.EffectiveCost`, `IncrementPlayedCardTypeCounters`, `CaptureBeforePlayPowers`; a fold rule names no
+    site). 279 sites (the two callers review K3 named, `CombatEngine.TurnPlayerTowardTarget` and `CardEffects.FirstEnemy`,
+    and `RelicEffects.BiteForFurCoat`, which does the same, call `EnemyAI.IsTargetable`, the old `Hook.ShouldAllowHitting`,
+    so they are sites of F08), each resolved to its file and line in the engine (a name that is gone is STALE); 126
+    dispatchers have an old site, 21 have none; one hook with a site has no dispatcher (`AfterModifyingCardPlayResultPileOrPosition`,
+    called outside Hook).
+  - Groups by union over: families sharing a site not declared split, a dispatcher's passes (no dispatcher spans two
+    families today), and the flows (`FLOWS`: F02+F03+F13). `check` fails when a family is in two groups, a dispatcher
+    with a site or a flow is not in exactly one, or a site straddles two; each has a broken case
+    (`tests/python/test_kernel_sites.py`).
+  - **Result: one group, F01-F16.** 28 sites serve more than one family (the turn-start and first-turn methods of
+    CombatEngine and RelicEffects, the EndTurn regions, `EffectiveCost`, `IncrementPlayedCardTypeCounters`, relic
+    bodies such as `ApplyMusicBox`, `FinishBlockDoublingCard`, `RefreshBeltBuckle`, and the run's `AddCardToDeck`,
+    `EnterShop`, `GenerateCombatRewards`); `sites groups` lists them. With every bridge split the groups would be F01,
+    F02+F03+F13, and each other family alone. A coarse group is sound, never finer than the sites allow; before the first
+    family migrates, its bridges are read and either recorded in `SPLITS` or left joined. A record is one of three
+    kinds, each with a reason: `split` (the families' parts are separate statements of the site: the anchor text of each
+    part, in source order), `by_caller` (a shared helper that serves one family per caller: each caller and the text of
+    its call; the gate sits at the callers) and `false_listing` (a `hook_dispatch.json` entry that is not a dispatch
+    there: the hook leaves the site, and the site leaves the inventory if it has no other). A split or by_caller record
+    keeps the file and its hash (line ends normalised) as read, and `sites check` reads the source: a split's anchors
+    must be present, unique and in order, a by_caller's present and its callers methods of the engine, and a changed
+    file sends the record back to be read again. Each kind and each way to break it has a test
+    (`tests/python/test_kernel_sites.py`). `SPLITS` is empty: no bridge has been read yet.
+  - `Switch` has one member per family; `k.On(Switch.F06)` is true when F06's group is on. `KernelOptions` refuses a
+    partial group (the families that share a site are named) and an unknown family. `SwitchGroups.FamilyOf(HookId)`
+    gives a hook virtual's or dispatcher's family (hook_families.json).
 
 ## 2. The hook descriptor and its generator
 
@@ -191,6 +221,50 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
   preventer, `predicate-any` the first true. Damage and block keep `decimal`; the old caller casts where the game casts.
 - Only `Hooks` calls a handler; handlers change state only through the old engine's commands (a source-scan test until
   analyzers exist).
+- Built in K3:
+  - `HandlerTable` (an `IHandlerSource`): `t.Model(kind, "<GameClass>").On(HookId.<virtual>, handler)`, or
+    `t.Register<TModel>()` for an `IMigratedModel` (static `Register(HandlerTable)`); migrated models are listed in
+    `Core2/Models/Registry.cs` (empty). The name resolves through `OldModelIds.Resolve` (OldState.cs): id_map.json's
+    number for powers, cards, relics, potions and monsters; the old enum for orbs (class name without "Orb"),
+    enchantments and afflictions; modifiers, badges and scaling refused. A handler registers only when its hook's family
+    switch is on (the family is the hook's, not the caller's word); a dispatcher id, a hook in no family, a second
+    handler for the same (hook, model) and two names for one old id are errors. `Mask(kind, id|name)` is the model's
+    hook set; `HasAny(hook)` is the dispatchers' fast path. The handler's delegate type is checked when a pass reads it
+    (Listeners.cs), not at registration.
+  - The kernel is two parts (review K3). `Kernel` (Core2/Kernel.cs) is shared and immutable: `new Kernel(KernelOptions,
+    Func<OldModelIds>, models)`, `On(Switch)`, `AnyOn`, and `Handlers` and `Ids`, each built once on first use (a
+    thread-safe `Lazy`) and only with a switch on; `Core2Engine` caches the options, the ids and the default kernel
+    statically, so engines share them. `KernelState : HookRuntime` (Core2/KernelState.cs) is one per combat: the combat
+    binding (`At`), the K2 caller marks and listener cursor (its `OldWorld`), and the recorded `HookActions`, `Stops`,
+    `Waits` and the action counter. `Listeners` is `OldListeners.Cursor` over its `OldWorld`; `OnPaused` records a
+    per-listener pause as a `RecordedHookAction` (id from one counter) and any other pause as a stop; `HookActionMark` is
+    the counter; `WaitAll` records a `WaitPoint` with the pending count and leaves the actions to K4's executor. With no
+    switch on a state builds no world, table or cursor, `OnPaused` and `WaitAll` return without recording, and `HasAny`
+    is false, so every dispatcher returns at its fast path; the eight dispatchers with the net-id guard
+    (`Steps.NetIdGuard`) test the fast path first (the generator orders it so), so the guard is not reached either.
+  - Attachment: nothing is thread-bound. A state holds its own: `CombatState.Kernel` and `RunState.Kernel`
+    (`KernelState?`, `[IdentityOnly]`, so the state walk, reanchor, dumps and snapshot writers never see it; null on the
+    old engine, which pays one null field). `Kernel.Bind(combat, run)` makes the state and sets it; `Kernel.Attach` does
+    that only with a switch on. `RunEngine.Kernel` (set by `Core2Engine`) binds the run's state at `Reset` and each
+    combat the engine starts; a combat built elsewhere (a snapshot restore) holds none and its sites run old until it is
+    bound. `Clone` and `CopyTo` copy the state (`KernelState.CopyTo`): the binding to the copy, the marks (a dying enemy
+    matched by roster index), the recorded actions, stops, waits and the counter, with the pause contexts copied and
+    nothing shared with the source. `CopyTo(into)` fills the `KernelState` that `into` already holds (a step restored in
+    place by `HookChoiceReplay`, `Before.CopyTo(state)`), so a replay records the step's actions once; `RunState.Clone`
+    copies the run's and rebinds the cloned combat's to the cloned run. A site's gate is
+    `if (Kernel.If(Switch.X, combat, run) is { } k) Hooks.Y(k, ...) else <old>`: `k` is the combat's own state (null on
+    the old engine and with the family's switch off); `Kernel.If(Switch.X, run)` is the run-level gate (the active
+    combat's state while one is open, so the marks are one set). The marks are `using (Kernel.Marks.Flying(combat, card))`,
+    `Setup(combat)`, `MarkDying(combat, enemy)`, `KeepPlayerHooks(combat)`, `DeactivatePlayerHooks(combat)`: a shared no-op
+    for a combat with no state or no switch on, and a scope restores the previous value on exit. No old site calls them
+    yet: each is placed with the first switch whose passes need it, with its test. Tests (`KernelTests`,
+    `EngineFlagTests`): an old and a core2 combat on one thread share nothing, an old engine made after a core2 engine
+    runs old, a clone carries its actions and marks and a replay from it records once, a marks scope restores on exit,
+    no switch records nothing.
+  - `--engine core2`: `Core2Engine : OldEngine` (tools/emudump/Engines/Core2, admitted by the engine-boundary test) with
+    `KernelOptions` from `migrated_families.json` (copied next to EmuDump) and `Registry.All`; `EmuDump fight|reanchor|
+    hookprobe|setupinfo --engine old|core2` (refused for other modes). byte_proof and `corpus.py identity` take
+    `--a-args` / `--b-args`.
 
 ## 5. The action queue and pauses
 
