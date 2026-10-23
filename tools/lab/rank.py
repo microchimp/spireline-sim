@@ -294,6 +294,11 @@ def write(folder: Path, out: Path) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     (out / "ranked.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
     (out / "top20.md").write_text(top_md(doc), encoding="utf-8")
+    try:  # the hook-family view of the same ranking (tools/lab/by_family.py); a failure there never costs the files above
+        from tools.lab import by_family  # noqa: PLC0415
+        by_family.write(folder, out, doc)
+    except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError, AttributeError, IndexError) as e:
+        (out / "by_family.error.txt").write_text(type(e).__name__, encoding="utf-8")
     return doc
 
 
