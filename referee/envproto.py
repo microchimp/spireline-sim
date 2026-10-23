@@ -66,7 +66,7 @@ class GameEnv:
             jopts["env_trace"] = True
         job = self.scratch / "job.json"
         job.write_text(json.dumps(jopts), encoding="utf-8")
-        args = command or [str(self.game / "SlayTheSpire2.exe"), "--headless", "--force-steam", "off", *serve.engine_args(fixed_fps)]
+        args = command or [*rr.game_command(self.game), *serve.engine_args(fixed_fps)]
         self.proc = rr.popen_no_wer(args, cwd=self.game, env=rr.game_env(self.scratch, job), stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)

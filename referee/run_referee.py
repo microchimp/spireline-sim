@@ -340,6 +340,11 @@ def popen_no_wer(args, **kw) -> subprocess.Popen:
         return subprocess.Popen(args, **kw)
 
 
+def game_command(game: Path, windowed: bool = False) -> list[str]:
+    """The game's command line: the one place it is written (launch here, envproto.GameEnv through popen_no_wer)."""
+    return [str(game / "SlayTheSpire2.exe")] + ([] if windowed else ["--headless"]) + ["--force-steam", "off"]
+
+
 def launch(game: Path, scratch: Path, job: Path, below_normal: bool = False, dotnet_tuning: bool = True,
            windowed: bool = False, command: list[str] | None = None, extra_args: list[str] | None = None):
     """Start the game headless (or, with windowed, in a normal window) on a scratch profile;
@@ -349,7 +354,7 @@ def launch(game: Path, scratch: Path, job: Path, below_normal: bool = False, dot
     env = game_env(scratch, job, dotnet_tuning)
     log = open(scratch / "game-stdout.log", "wb")
     flags = subprocess.CREATE_NO_WINDOW | (subprocess.BELOW_NORMAL_PRIORITY_CLASS if below_normal else 0)
-    args = command or [str(game / "SlayTheSpire2.exe")] + ([] if windowed else ["--headless"]) + ["--force-steam", "off"]
+    args = command or game_command(game, windowed)
     args = args + list(extra_args or [])
     proc = popen_no_wer(args, cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
     return proc, log
