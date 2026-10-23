@@ -1023,19 +1023,20 @@ def check(corpus: Corpus, run_doc: dict, base_path: Path, show: int = 40) -> int
 # ------------------------------------------------------------------------- identity (byte-safety)
 
 
-def hash_part(ids: list, corpus_dir: str, emudump: str, work: str, fields: bool = False, timeout: float | None = None) -> dict:
+def hash_part(ids: list, corpus_dir: str, emudump: str, work: str, fields: bool = False, timeout: float | None = None,
+              extra: list | None = None) -> dict:
     """One worker: `EmuDump fight --state-hash` over these fights; per fight its step hashes (and field hashes)."""
     c = Corpus(Path(corpus_dir))
     games = [c.read(i) for i in ids]
     timeout = timeout or part_timeout(sum(len(g["steps"]) for g in games))
-    tag = hashlib.sha256((emudump + ids[0]).encode()).hexdigest()[:10]
+    tag = hashlib.sha256((emudump + " ".join(extra or []) + ids[0]).encode()).hexdigest()[:10]
     src, dst = Path(work) / f"hash-{tag}.in.json", Path(work) / f"hash-{tag}.out.json"
     src.write_text(json.dumps({"results": games}), encoding="utf-8")
     flag = "--state-hash=fields" if fields else "--state-hash"
     res, problem = [], None
     try:
         with dst.open("wb") as so:
-            rc = subprocess.run(["dotnet", emudump, "fight", str(src), "--compact", flag], stdout=so, stderr=subprocess.DEVNULL,
+            rc = subprocess.run(["dotnet", emudump, "fight", str(src), "--compact", flag, *(extra or [])], stdout=so, stderr=subprocess.DEVNULL,
                                 check=False, creationflags=BELOW_NORMAL, timeout=timeout).returncode
         res = json.loads(dst.read_text(encoding="utf-8")).get("results", [])
         if rc != 0 or len(res) != len(games):
@@ -1054,12 +1055,13 @@ def hash_part(ids: list, corpus_dir: str, emudump: str, work: str, fields: bool 
     return {"fights": out, "problem": problem}
 
 
-def hash_run(corpus: Corpus, ids: list, emudump: Path, procs: int, work: Path, fields: bool = False) -> dict:
+def hash_run(corpus: Corpus, ids: list, emudump: Path, procs: int, work: Path, fields: bool = False,
+             extra: list | None = None) -> dict:
     metas = {m["id"]: m for m in corpus.load_index()["fights"]}
     parts = balance([metas[i] for i in ids], 2 * procs)
     got, problems = {}, []
     with ProcessPoolExecutor(max_workers=procs, mp_context=get_context("spawn"), initializer=_below_normal) as ex:
-        for r in [f.result() for f in [ex.submit(hash_part, p, str(corpus.path), str(emudump), str(work), fields) for p in parts]]:
+        for r in [f.result() for f in [ex.submit(hash_part, p, str(corpus.path), str(emudump), str(work), fields, None, extra) for p in parts]]:
             got.update(r["fights"])
             if r["problem"]:
                 problems.append(r["problem"])
@@ -1106,7 +1108,8 @@ def identity(corpus: Corpus, a: dict) -> int:
         ids = [m["id"] for m in metas]
         work = corpus.path / "runs" / f"identity-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
         work.mkdir(parents=True, exist_ok=True)
-        ha, hb = (hash_run(corpus, ids, Path(p), a.procs, work) for p in (a.a, a.b))
+        ha, hb = (hash_run(corpus, ids, Path(p), a.procs, work, extra=(x or "").split())
+                  for p, x in ((a.a, getattr(a, "a_args", "")), (a.b, getattr(a, "b_args", ""))))
         res = compare_hashes(ha["fights"], hb["fights"])
         for side, h in (("a", ha), ("b", hb)):
             for p in h["problems"][:3]:
@@ -1199,6 +1202,8 @@ def main(argv=None) -> int:
     idn = sub.add_parser("identity", help="two builds agree on every state field after every step (byte-safety of a refactor)")
     idn.add_argument("--a", help="EmuDump.dll of the old build")
     idn.add_argument("--b", help="EmuDump.dll of the new build")
+    idn.add_argument("--a-args", default="", help="arguments appended to every A run (e.g. \"--engine old\")")
+    idn.add_argument("--b-args", default="", help="arguments appended to every B run (e.g. \"--engine core2\")")
     idn.add_argument("--runs", nargs=2, type=Path, help="two `run --state-hash` results.json instead of running builds")
     idn.add_argument("--procs", type=int, default=min(16, os.cpu_count() or 1))
     idn.add_argument("--only", nargs="*", help="fight ids or seeds")

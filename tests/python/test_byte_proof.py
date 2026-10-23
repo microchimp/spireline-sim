@@ -185,6 +185,17 @@ class FakeEmuDumpTests(unittest.TestCase):
         self.assertEqual(self.run_mode("fight", a, b)["differ"], [])  # --compact only: the same first flag
         self.assertEqual(len(self.run_mode("netstate", a, b)["differ"]), 3)  # a has two flags, b keeps one
 
+    def test_side_args_reach_only_their_side(self):
+        # --a-args/--b-args: one build against itself with another engine. The fake writes its flags into every result.
+        a = fake(self.dir, "a", 'fix = lambda out: [dict(o, flags=flags) for o in out]')
+        ids = ["id-S1"]
+        same = bp.prove_batch("fight", ids, games("S1"), a, a, str(self.dir), timeout=60,
+                              extra={"a": ["--engine", "old"], "b": ["--engine", "old"]})
+        self.assertEqual((same["same"], same["differ"]), (1, []))
+        r = bp.prove_batch("fight", ids, games("S1"), a, a, str(self.dir), timeout=60,
+                           extra={"a": ["--engine", "old"], "b": ["--engine", "core2"]})
+        self.assertEqual(len(r["differ"]), 1)
+
     def test_a_build_that_changes_one_fight_is_named(self):
         a = fake(self.dir, "a")
         b = fake(self.dir, "b", 'fix = lambda out: [dict(o, steps=[{"action": None, "state": {"in_combat": True, "hp": 79}}]) if o["seed"] == "S2" else o for o in out]')

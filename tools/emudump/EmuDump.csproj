@@ -14,6 +14,7 @@
   <ItemGroup>
     <None Include="..\..\data\id_map.json" Link="id_map.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fidelity\power_aliases.json" Link="power_aliases.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fidelity\migrated_families.json" Link="migrated_families.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <!-- The invariant and metamorphic checks live with the xunit suite; EmuDump runs them on recorded fights. -->

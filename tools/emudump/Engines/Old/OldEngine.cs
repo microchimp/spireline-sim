@@ -8,7 +8,7 @@ using Sts2Emulator.Core.Run;
 
 namespace EmuDump.Engines.Old;
 
-public sealed class OldEngine : IEngine
+public class OldEngine : IEngine
 {
     internal OldEngine(RunEngine run) => Run = run;
 
@@ -23,7 +23,7 @@ public sealed class OldEngine : IEngine
     public static OldEngine Of(IEngine e) =>
         e as OldEngine ?? throw new InvalidOperationException($"engine '{e.Name}' is not the old engine");
 
-    public string Name => "old";
+    public virtual string Name => "old";
 
     CombatState? Combat => Run.State.ActiveCombat;
 

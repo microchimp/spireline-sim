@@ -8,6 +8,18 @@ using EmuDump.Engines.Old;
 using Sts2Emulator.Core.Rng;
 using Sts2Emulator.Core.Run;
 
+// --engine old|core2 (EngineFactory): taken out before the mode reads its arguments.
+if (EngineFactory.TakeFlag(args, out string? engineName, out string? engineError) is { } withoutEngine)
+{
+    args = withoutEngine;
+    EngineFactory.Selected = engineName ?? "old";
+}
+else
+{
+    Console.Error.WriteLine($"EmuDump: {engineError}");
+    Environment.Exit(2);
+}
+
 if (!System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported && !AotChecked.Allows(args))
 {
     // The NativeAOT build (aot.sh) is checked byte for byte against this one on the corpus for
