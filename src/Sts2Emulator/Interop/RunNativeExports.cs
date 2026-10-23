@@ -595,10 +595,16 @@ public static class RunNativeExports
             message = "no_run";
             status = -1;
         }
+        else if (record == null || recordLen < 0)
+        {
+            // Checked before the span is built: a bad length comes back as a status, never as a throw across the boundary.
+            message = "no record";
+            status = -2;
+        }
         else
         {
             status = ReanchorFight(run, new ReadOnlySpan<byte>(record, recordLen), out message);
-            if (status >= 0)
+            if (status >= 0 && obsBuf != null)
             {
                 run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
             }

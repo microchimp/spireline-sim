@@ -173,8 +173,15 @@ public class RunReanchorFightTests
         }
     }
 
+    /// <summary>The export with the record pointer and length as given, no message and no observation buffer.</summary>
+    private static unsafe int RawReanchor(int run, byte* record, int recordLen)
+    {
+        delegate* unmanaged<int, byte*, int, byte*, int, int*, int> reanchor = &NativeExports.Sts2Run_ReanchorFight;
+        return reanchor(run, record, recordLen, null, 0, null);
+    }
+
     [Fact]
-    public void NoFightNoRunNoJsonAreRefusedWithTheirOwnCodes()
+    public unsafe void NoFightNoRunNoJsonAreRefusedWithTheirOwnCodes()
     {
         SetTables();
         Assert.Equal(-1, Reanchor(-1, "{}").Status);
@@ -184,6 +191,12 @@ public class RunReanchorFightTests
         {
             Assert.Equal(-1, Reanchor(run, "{}").Status);  // a run on its map
             Assert.Equal(-2, Reanchor(fighting, "not json").Status);
+            Assert.Equal(-2, RawReanchor(fighting, null, 0));
+            byte[] text = Encoding.UTF8.GetBytes("{}");
+            fixed (byte* t = text)
+            {
+                Assert.Equal(-2, RawReanchor(fighting, t, -1));  // a negative length is refused, not thrown
+            }
         }
         finally
         {
