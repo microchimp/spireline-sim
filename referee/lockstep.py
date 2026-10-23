@@ -700,6 +700,12 @@ class EmuLock:
         return True
 
     def reanchor(self, plan: str, msg: dict) -> bool:
+        try:
+            return self._reanchor_with(plan, msg)
+        finally:
+            self._hidden = None  # consumed: nothing after the re-anchor (the search of this decision included) can read it
+
+    def _reanchor_with(self, plan: str, msg: dict) -> bool:
         self.fail = None
         self.anchored_with = None
         obs = msg.get("obs", {})

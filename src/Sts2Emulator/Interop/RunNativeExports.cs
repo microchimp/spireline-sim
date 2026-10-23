@@ -685,12 +685,41 @@ public static class RunNativeExports
     };
 
     /// <summary>
+    /// Why <paramref name="streams" /> cannot be applied, or null. Every entry that names a stream of the run must hold a
+    /// seed and a non-negative counter, so a bad payload is refused before anything moves (all or nothing).
+    /// </summary>
+    internal static string? CheckStreams(RunEngine run, JsonObject streams)
+    {
+        foreach (var kv in streams)
+        {
+            if (StreamNamed(run, kv.Key) is null)
+            {
+                continue;
+            }
+
+            if (kv.Value is not JsonObject g
+                || g["seed"] is not JsonValue seed || !seed.TryGetValue<long>(out _)
+                || g["counter"] is not JsonValue counter || !counter.TryGetValue<int>(out int n) || n < 0)
+            {
+                return $"bad stream {kv.Key}: needs a seed and a counter of 0 or more";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Puts the run's streams on the game's: for each <c>{name: {seed, counter}}</c> whose stream here has that seed,
     /// the stream is moved to that counter (backwards too). A name the run has no stream for, or one with another seed
     /// (not the same stream), is left alone. Returns how many streams moved.
     /// </summary>
     internal static int SetStreams(RunEngine run, JsonObject streams)
     {
+        if (CheckStreams(run, streams) is { } problem)
+        {
+            throw new ArgumentException(problem);
+        }
+
         int moved = 0;
         foreach (var kv in streams)
         {
@@ -778,6 +807,12 @@ public static class RunNativeExports
 
             // The enemies' next moves come from the record's intents; with no later turns known, the nearest position that announces them.
             var (moves, unknown) = FightAnchor.AnchorMoves(q, game, patched, _ => []);
+            if ((flags & AnchorStreams) != 0 && game["rng"] is JsonObject record_rng && CheckStreams(run, record_rng) is { } bad)
+            {
+                message = bad;  // refused before the swap: the run is as it was
+                return -2;
+            }
+
             run.State.ActiveCombat = q;
             if ((flags & AnchorStreams) != 0 && game["rng"] is JsonObject streams)
             {

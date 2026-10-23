@@ -175,6 +175,8 @@ class EmuLockAnchorTests(unittest.TestCase):
         self.assertTrue(e.reanchor("room_entry", {"obs": {"floor": 4}}))
         self.assertEqual(calls, [(3, self.GAME["rng"])])
         self.assertEqual(e.anchored_with, "streams")
+        self.assertIsNone(e._hidden)  # consumed by the re-anchor
+        e.take_anchor_state(self.GAME)
         e.native.run_debug_set_streams = lambda h, rng: -2
         self.assertFalse(e.reanchor("room_entry", {"obs": {"floor": 4}}))
         self.assertEqual(e.fail, "set_streams")
@@ -221,9 +223,12 @@ class NativeFirewallTests(unittest.TestCase):
         def pile(cards):
             return [[e.slug["cards"][c], bool(up)] for c, up in cards]
 
-        draw = sorted(piles["draw"], reverse=True)
-        if draw == list(piles["draw"]):
-            draw = sorted(piles["draw"])
+        # a draw pile of 12 distinct cards in an order of its own, so that two shuffles of it are never the same by chance
+        want = ("ANGER", "CLEAVE", "IRON_WAVE", "POMMEL_STRIKE", "SHRUG_IT_OFF", "TWIN_STRIKE", "BODY_SLAM", "CLASH",
+                "HEADBUTT", "WILD_STRIKE", "TRUE_GRIT", "ARMAMENTS", "BASH", "FLEX", "HAVOC", "WARCRY")
+        ids = sorted(i for i, slug in e.slug["cards"].items() if slug in want)
+        self.assertGreaterEqual(len(ids), 12, "the emulator knows the cards the test draws")
+        draw = [(i, False) for i in ids[:12]][::-1]
         self.assertNotEqual(draw, list(piles["draw"]), "the game's order must differ from the emulator's own")
         view = e.s.view()
         public = {"in_combat": True, "round": 1,
@@ -236,26 +241,50 @@ class NativeFirewallTests(unittest.TestCase):
         e.take_anchor_state(hidden)
         self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": view.floor, "combat": public}}), e.fail)
         self.assertEqual(e.anchored_with, "hidden")
+        self.assertIsNone(e._hidden, "the hidden state is cleared once the re-anchor has used it")
         return draw
 
-    def test_the_anchored_state_holds_the_games_order_and_a_resampled_clone_still_varies_it_over_50_clones(self):
+    @staticmethod
+    def spread(orders):
+        """The share of clone pairs whose draw orders differ."""
+        n = len(orders)
+        differ = sum(1 for i in range(n) for j in range(i + 1, n) if orders[i] != orders[j])
+        return differ / (n * (n - 1) // 2)
+
+    def test_the_anchored_state_holds_the_games_order_and_the_searchs_own_clones_redraw_it(self):
         e = self.e
         game_order = self.anchor(e)
+        base = tuple(game_order)
         self.assertEqual(self.piles(e.s.handle), list(game_order))  # the lockstep state is the game's
         buf = (native.ctypes.c_int * native.RUN_OBS_SIZE)()
-        orders = []
+        # (The streams' seeds are not in a combat snapshot document; RunReanchorFightTests checks them on the combat state.)
+        # The search's own path (rl/live_search.py): its root is a faithful fork of the lockstep state and every
+        # simulation is native.clone(root, resample_hidden=True, seed) of that root.
+        root = native.run_fork_combat(e.s.handle, False, 0, buf)
+        try:
+            self.assertEqual(tuple(native.get_pile(root, "draw")), base)
+            orders = []
+            for seed in range(1, 51):
+                c = native.clone(root, True, seed, buf)
+                try:
+                    orders.append(tuple(native.get_pile(c, "draw")))
+                finally:
+                    native.destroy(c)
+        finally:
+            native.destroy(root)
+        self.assertGreaterEqual(self.spread(orders), 0.9, "at least 90% of clone pairs have different draw orders")
+        self.assertLessEqual(sum(o == base for o in orders), 5, "the game's order is reproduced by a few clones at most")
+        # the run-level clone (resample_hidden=True) redraws the order too
+        run_orders = []
         for seed in range(1, 51):
-            clone = native.run_clone(e.s.handle, True, seed, buf)  # what a search forks from: resample_hidden=True
+            clone = native.run_clone(e.s.handle, True, seed, buf)
             try:
-                orders.append(tuple(self.piles(clone)))
+                run_orders.append(tuple(self.piles(clone)))
             finally:
                 native.run_destroy(clone)
-        self.assertGreater(len(set(orders)), 1, "every resampled clone has one draw order: the anchored order is not redrawn")
-        self.assertLess(sum(o == tuple(game_order) for o in orders), 50, "the resampled clones all keep the game's order")
+        self.assertGreaterEqual(self.spread(run_orders), 0.9)
+        self.assertLessEqual(sum(o == base for o in run_orders), 5)
         self.assertEqual(self.piles(e.s.handle), list(game_order), "cloning does not move the lockstep state")
-        # the resampled fork a search plays out of varies too
-        forks = {tuple(self.piles(e.s.handle, True, seed)) for seed in range(1, 51)}
-        self.assertGreater(len(forks), 1)
 
     def test_the_search_is_handed_no_hidden_state(self):
         e = self.e

@@ -445,6 +445,93 @@ public class RunReanchorFightTests
         }
     }
 
+    [Fact]
+    public void ABadStreamPayloadIsRefusedWithACodeAndLeavesTheRunAsItWas()
+    {
+        SetTables();
+        int run = RunApi.InCombat();
+        int game = GameLike(Fight(run));
+        try
+        {
+            Assert.True(RunNativeExports.TryGetRun(run, out var engine));
+            var shuffle = engine!.State.Rng.Shuffle;
+            int before = shuffle.CallCount;
+            long seed = (long)(uint)shuffle.RawSeed;
+            long upSeed = (long)(uint)engine.State.Rng.UpFront.RawSeed;
+            // all or nothing: a good Shuffle entry beside a bad one moves nothing
+            Assert.Equal(-2, SetStreams(run, $"{{\"Shuffle\":{{\"seed\":{seed},\"counter\":{before + 5}}},\"UpFront\":{{\"seed\":{upSeed},\"counter\":-3}}}}"));
+            Assert.Equal(before, shuffle.CallCount);
+            Assert.Equal(-2, SetStreams(run, $"{{\"Shuffle\":{{\"seed\":\"x\",\"counter\":1}}}}"));
+            Assert.Equal(-2, SetStreams(run, "{\"Niche\":{\"counter\":1}}"));
+            Assert.Equal(before, shuffle.CallCount);
+
+            // through a fight re-anchor: the combat loader ignores UpFront, so only the check before the swap catches it
+            var combat = Fight(run);
+            string piles = Piles(combat);
+            var record = JsonNode.Parse(Hidden(Fight(game)))!.AsObject();
+            record["rng"]!.AsObject()["UpFront"] = new JsonObject { ["seed"] = upSeed, ["counter"] = -3 };
+            var (status, message) = ReanchorHidden(run, record.ToJsonString(), RunNativeExports.AnchorStreams | RunNativeExports.AnchorDrawOrder);
+            Assert.Equal(-2, status);
+            Assert.Contains("UpFront", message);
+            Assert.Same(combat, Fight(run));
+            Assert.Equal(piles, Piles(Fight(run)));
+            Assert.Equal(before, shuffle.CallCount);
+        }
+        finally
+        {
+            RunApi.Destroy(run);
+            RunApi.Destroy(game);
+        }
+    }
+
+    /// <summary>
+    /// A search forks the lockstep state with a resampling seed: every combat stream is reseeded, so a leaked Shuffle seed
+    /// would predict the next reshuffle. The counts are history and stay the game's by design; the seeds must not.
+    /// </summary>
+    [Fact]
+    public void AResampledForkOfAStreamAnchoredFightHasOtherStreamSeedsAndTheGamesCounts()
+    {
+        SetTables();
+        int hidden = RunApi.InCombat();
+        int game = GameLike(Fight(hidden));
+        try
+        {
+            var (status, message) = ReanchorHidden(hidden, Hidden(Fight(game)), RunNativeExports.AnchorStreams | RunNativeExports.AnchorDrawOrder);
+            Assert.True(status > 0, message);
+            Assert.True(RunNativeExports.TryGetRun(hidden, out var engine));
+            var g = Fight(game);
+            Assert.Equal(g.ShuffleRng!.Seed, Fight(hidden).ShuffleRng!.Seed);  // the lockstep state stands on the game's streams
+            var seeds = new HashSet<int>();
+            var orders = new HashSet<string>();
+            for (int s = 1; s <= 50; s++)
+            {
+                var fork = engine!.ForkActiveCombat(s);
+                Assert.NotNull(fork);
+                var c = fork!.Value.Combat;
+                Assert.NotEqual(g.ShuffleRng.Seed, c.ShuffleRng!.Seed);
+                Assert.Equal(g.ShuffleRng.CallCount, c.ShuffleRng.CallCount);
+                Assert.NotEqual(g.CardGenerationRng!.Seed, c.CardGenerationRng!.Seed);
+                Assert.Equal(g.CardGenerationRng.CallCount, c.CardGenerationRng.CallCount);
+                if (g.AiRng is CountingRandom gai && c.AiRng is CountingRandom cai)
+                {
+                    Assert.NotEqual(gai.Seed, cai.Seed);
+                }
+
+                seeds.Add(c.ShuffleRng.Seed);
+                orders.Add(Seq(c.DrawPile));
+            }
+
+            Assert.Equal(50, seeds.Count);
+            Assert.True(orders.Count > 5, "the clones' draw orders vary");
+            Assert.Equal(Seq(g.DrawPile), Seq(Fight(hidden).DrawPile));  // forking moved nothing
+        }
+        finally
+        {
+            RunApi.Destroy(hidden);
+            RunApi.Destroy(game);
+        }
+    }
+
     /// <summary>The run exports a fight is made and destroyed through (as RunForkCombatTests does).</summary>
     private static unsafe class RunApi
     {
