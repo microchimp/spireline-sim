@@ -54,6 +54,9 @@ static class OldChoices
         public void Decline() => step(active()!.PendingSelection!.Candidates.Count);
     }
 
+    /// <summary>A bare combat and a step function as a screen source.</summary>
+    internal static IScreenSource Screens(Func<CombatState?> active, Action<int> step) => new CombatScreens(active, step);
+
     /// <summary><see cref="Fight.ApplyChoice(IScreenSource, JsonObject)"/> over a bare combat.</summary>
     internal static JsonObject Apply(Func<CombatState?> active, Action<int> step, JsonObject choice) =>
         Fight.ApplyChoice(new CombatScreens(active, step), choice);

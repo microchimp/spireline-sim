@@ -4,8 +4,8 @@
 // (run engine, combat state, def-id ints, buff enums, RNG wrappers) appears in this folder, so a second
 // engine can plug into the same adapters (referee/design/rebuild-plan.md section 1, "Oracle path").
 // tools/emudump.Tests/EngineBoundaryTests.cs enforces the boundary.
-// This round carries what Fight.cs needs; later rounds add members for Setup, NetState, Reanchor,
-// HookProbe and Trace.
+// Fight.cs and Reanchor.cs reach the engine through these members (the types Reanchor passes are in
+// ReanchorTypes.cs); later rounds add members for Setup, NetState, HookProbe and Trace.
 using System.Text.Json.Nodes;
 
 namespace EmuDump.Engine;
@@ -85,4 +85,28 @@ public interface IEngine : IScreenSource
 
     /// <summary>The engine's native dump of the current step, in the shape tools/fidelity/fight_compare.py reads.</summary>
     JsonObject DumpStep();
+
+    /// <summary>
+    /// The game power ids (STRENGTH_POWER) the engine has a power for, as <c>buff_keys</c>, and the keys of its
+    /// own powers that are no game power (a piece of one, or a bookkeeping marker), as <c>internal_keys</c>.
+    /// tools/fidelity/reanchor_compare.py reads both.
+    /// </summary>
+    JsonObject PowerKeys();
+
+    /// <summary>
+    /// Opens re-anchoring on the fight <see cref="StartFight"/> left open (it throws when no combat is held): the dump
+    /// of that state, and the block <see cref="ReanchorStep"/> starts from. The block is the engine's own previous
+    /// state, which supplies what the game's snapshot cannot say (relic counters, enemy AI state, per-card
+    /// modifiers, per-turn and per-combat counters, the potion belt).
+    /// </summary>
+    ReanchorOpening ReanchorOpen();
+
+    /// <summary>
+    /// Tries one recorded step on a fresh copy of the carried fight: loads the game's state after the step before,
+    /// puts the enemies' moves on the game's where it can, applies the game's action and its choices, finishes a
+    /// step left on a screen nobody answered, and writes what happened into <paramref name="record"/> (patched,
+    /// anchor_error, moves, moves_unknown, hidden_pre, trace, hidden, choices, fallback_rng_calls, state,
+    /// moves_carried, error), key by key as it goes, so a failure part-way leaves the keys written so far.
+    /// </summary>
+    ReanchorOutcome ReanchorStep(EngineBlock carry, ReanchorMode mode, ReanchorInput input, JsonObject record);
 }

@@ -43,6 +43,13 @@ public sealed class OldEngine : IEngine
 
     public JsonObject DumpStep() => OldDump.Dump(Run);
 
+    public JsonObject PowerKeys() => OldAnchor.PowerKeys(OldReanchor.Tables);
+
+    public ReanchorOpening ReanchorOpen() => OldReanchor.Open(this);
+
+    public ReanchorOutcome ReanchorStep(EngineBlock carry, ReanchorMode mode, ReanchorInput input, JsonObject record) =>
+        OldReanchor.Step(this, carry as OldCarry ?? throw new ArgumentException("not a block of the old engine", nameof(carry)), mode, input, record);
+
     void Step(int action, int target) => Run.Step(action, target, out _, out _, out _);
 
     /// <summary>
