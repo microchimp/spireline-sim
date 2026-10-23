@@ -285,5 +285,20 @@ class PowerFoldCount(unittest.TestCase):
         self.assertEqual(first([sub], [base])["allowed"].get("power-folds"), 1)
 
 
+class LateStepsRow(unittest.TestCase):
+    def test_limit_applies_only_with_the_row_and_counts_the_skipped_steps(self):
+        g, e = fight([snap(), snap()], [snap(), snap()], rec_nets=[net(), net()], eng_nets=[net(), net()])
+        g["steps"][1]["net"][0]["state"]["players"][0]["gold"] = 99  # a field only the record has: a diff when judged
+        g["steps"][0]["checksums"] = [["x", "PlayCardAction"]]
+        g["steps"][1].update(action={"kind": "play", "played": True}, checksums=[["x", "Other"]])
+        r = sc.compare_fight(g, e, ROWS)
+        self.assertIsNone(r["first"])
+        self.assertEqual(r["allowed"].get("late-steps"), 1)
+        without = [x for x in ROWS if x["kind"] != "late_steps"]
+        r = sc.compare_fight(g, e, without)
+        self.assertEqual(paths(r), ["net.players[0].gold"])  # no row, no limit: the step is judged
+        self.assertNotIn("late-steps", r["allowed"])
+
+
 if __name__ == "__main__":
     unittest.main()

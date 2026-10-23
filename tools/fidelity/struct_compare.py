@@ -306,7 +306,8 @@ def compare_fight(g: dict, e: dict, rows: list | None = None) -> dict:
     """Every step of one fight in both shapes; see the module doc for the result."""
     rows = load_rows() if rows is None else rows
     gsteps, esteps = g.get("steps", []), e.get("steps", [])
-    limit = net_limit(g)
+    late = next((r for r in rows if r["kind"] == "late_steps"), None)
+    limit = net_limit(g) if late else len(gsteps)  # the limit is the row: no row, no limit
     first, at, fired = None, [], {}
     census, unmodelled, unjudged, leaves = set(), set(), set(), 0
     for k, (gs, es) in enumerate(zip(gsteps, esteps)):
@@ -316,7 +317,9 @@ def compare_fight(g: dict, e: dict, rows: list | None = None) -> dict:
         rec_snap = gs["state"]
         parts = [compare_shape(rec_snap, view.get("snapshot"), "snap", rows, rec_snap, fired)]
         nets = gs.get("net") or []
-        if nets and rec_snap.get("in_combat") and k < limit:
+        if nets and rec_snap.get("in_combat") and k >= limit:
+            fired[late["id"]] = fired.get(late["id"], 0) + 1  # record integrity: the net shape of this step is not judged
+        elif nets and rec_snap.get("in_combat"):
             last = nets[-1]["state"]
             if view.get("net") is None:
                 parts.append({"diffs": [("net", "(state)", None)], "compared": {"net"}, "n": 1, "unmodelled": set(), "unjudged": set()})
