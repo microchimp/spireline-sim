@@ -365,6 +365,13 @@ public class CombatSnapshotTests
                 continue;
             }
 
+            // A kernel screen's key and action (Core2, set only with a switch on): the core2 writer's (TIER1_KERNEL.md
+            // section 6), not the old engine's document.
+            if (property.Name is nameof(PendingCardSelection.HookKey) or nameof(PendingCardSelection.KernelAction))
+            {
+                continue;
+            }
+
             Assert.False(
                 SameContent(property.GetValue(selection), property.GetValue(bare)),
                 $"PendingCardSelection.{property.Name} is not carried by the snapshot"

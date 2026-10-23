@@ -300,6 +300,20 @@ public sealed class PendingCardSelection
     /// screen drops the stopped step with it.
     /// </summary>
     public HookChoiceReplay? Replay { get; init; }
+
+    /// <summary>
+    /// A kernel screen raised inside a step (Core2): the key its answer is stored under in the replay record
+    /// (<see cref="HookChoiceReplay.Keyed" />). Null for an old screen. Never set with no switch on.
+    /// </summary>
+    [field: IdentityOnly]
+    public Sts2Emulator.Core2.HookAnswerKey? HookKey { get; init; }
+
+    /// <summary>
+    /// A kernel screen between actions (Core2's executor): the id of the hook action it belongs to; its answer resumes
+    /// that action (no replay). 0 otherwise. Never set with no switch on.
+    /// </summary>
+    [field: IdentityOnly]
+    public uint KernelAction { get; init; }
 }
 
 public static class CardSelectionKindExtensions

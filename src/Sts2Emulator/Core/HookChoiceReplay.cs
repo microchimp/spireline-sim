@@ -90,7 +90,12 @@ public sealed class HookChoiceReplay
     /// on the screen: what the replay puts back at that screen before it resolves the answer.
     /// </summary>
     public required IReadOnlyList<ScreenHiddenState> Hidden { get; init; }
-
+    /// <summary>
+    /// The answers to kernel screens (Core2, TIER1_KERNEL.md section 5), keyed by (dispatcher, listener, resume site,
+    /// occurrence) rather than by order: a kernel screen raised inside old code takes its answer where the replay reaches
+    /// it, whatever old screens come before or after it. Empty with no switch on.
+    /// </summary>
+    public IReadOnlyList<Sts2Emulator.Core2.KeyedAnswer> Keyed { get; init; } = new List<Sts2Emulator.Core2.KeyedAnswer>();
     /// <summary>
     /// Whether <see cref="Before" /> is the step's start as the agent's document gave it (public,
     /// in the loaded copy's world), not the true one: its replay reaches the screen's place in the
@@ -180,8 +185,30 @@ public readonly record struct StepAnswer(int Index, CardInstance? Pick);
 /// from, and what it has done so far that a replay must do again. Null outside a step, and for a step
 /// that cannot be replayed.
 /// </summary>
-internal sealed class StepInProgress
+internal sealed class StepInProgress : Sts2Emulator.Core2.IKernelAnswers
 {
+    /// <inheritdoc cref="HookChoiceReplay.Keyed" />
+    public List<Sts2Emulator.Core2.KeyedAnswer> Keyed { get; init; } = [];
+
+    private readonly HashSet<Sts2Emulator.Core2.HookAnswerKey> _keyedUsed = [];
+
+    /// <summary>A kernel screen's keyed answer, its hidden state put back first; false when the step has none for it.</summary>
+    public bool TryAnswer(in Sts2Emulator.Core2.HookAnswerKey key, out int answer)
+    {
+        foreach (var k in Keyed)
+        {
+            if (k.Key == key && _keyedUsed.Add(key))
+            {
+                k.Hidden.PutBack(State, Rng);
+                answer = k.Answer;
+                return true;
+            }
+        }
+
+        answer = -1;
+        return false;
+    }
+
     public required CombatState State { get; init; }
 
     public required CombatState Before { get; init; }
@@ -471,6 +498,11 @@ internal sealed class StepInProgress
             throw new StoppedStepMismatch($"the replay ended with {Answers.Count - Used} of its {Answers.Count} answers left over");
         }
 
+        if (_keyedUsed.Count < Keyed.Count)
+        {
+            throw new StoppedStepMismatch($"the replay ended with {Keyed.Count - _keyedUsed.Count} kernel answers left over");
+        }
+
         if (Record is { } record && Used < record.Screens.Count)
         {
             throw new StoppedStepMismatch($"the replay ended before screen {Used + 1} of the {record.Screens.Count} the step reached");
@@ -487,6 +519,7 @@ internal sealed class StepInProgress
             TargetEnemyIndex = TargetEnemyIndex,
             Answers = [.. Answers],
             Hidden = [.. Hidden],
+            Keyed = [.. Keyed],
             Taken = [.. Taken],
             Screens = [.. Screens],
             Peeks = [.. Peeks],

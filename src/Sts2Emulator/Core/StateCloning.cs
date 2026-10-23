@@ -135,7 +135,9 @@ public static class StateCloning
     public static PendingCardSelection Clone(
         this PendingCardSelection selection,
         HookChoiceReplay? replay,
-        List<int>? candidates = null
+        List<int>? candidates = null,
+        Sts2Emulator.Core2.HookAnswerKey? key = null,
+        uint? kernelAction = null
     ) =>
         new()
         {
@@ -150,6 +152,8 @@ public static class StateCloning
             GeneratedRetained = selection.GeneratedRetained,
             // Never changed once made, so a copy shares it (HookChoiceReplay).
             Replay = replay,
+            HookKey = key ?? selection.HookKey,
+            KernelAction = kernelAction ?? selection.KernelAction,
         };
 
     /// <summary>

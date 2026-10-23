@@ -18,6 +18,8 @@ public sealed class KernelState : HookRuntime
     private RunState? _run;
     private OldWorld? _world;
     private OldListeners? _listeners;
+    private ActionQueueSet? _queue;
+    private readonly Dictionary<(HookId, ListenerRef, string), int> _seq = [];
 
     internal KernelState(Kernel shared, CombatState? combat, RunState? run)
     {
@@ -53,6 +55,39 @@ public sealed class KernelState : HookRuntime
     public IReadOnlyList<PauseSite> Stops => _stops;
 
     public IReadOnlyList<WaitPoint> Waits => _waits;
+
+    /// <summary>
+    /// The action queues (K4, ActionQueueSet.cs), built on first use and only with a switch on (null otherwise): the
+    /// queues of a combat's state start in combat (game: ActionQueueSet.CombatStarted).
+    /// </summary>
+    public ActionQueueSet? Queue
+    {
+        get
+        {
+            if (!AnyOn)
+                return null;
+            if (_queue is null)
+            {
+                _queue = new ActionQueueSet();
+                if (_combat is not null)
+                    _queue.CombatStarted();
+            }
+
+            return _queue;
+        }
+    }
+
+    /// <summary>game: ActionExecutor.IsPaused (CombatManager.Pause): a paused executor runs no action.</summary>
+    public bool ExecutorPaused { get; set; }
+
+    /// <summary>How many win checks the executor made at action boundaries (F10's switch).</summary>
+    public int WinChecks { get; internal set; }
+
+    /// <summary>
+    /// Where answers to kernel screens raised inside a step come from; null: the running step's replay record
+    /// (HookChoiceReplay's keyed answers). Transient (a driver's or a test's), never copied with the state.
+    /// </summary>
+    public IKernelAnswers? Answers { get; set; }
 
     /// <summary>Binds the world to the combat (and run) a site runs on; returns this.</summary>
     public KernelState At(CombatState? combat, RunState? run = null)
@@ -93,6 +128,12 @@ public sealed class KernelState : HookRuntime
         k._waits.Clear();
         k._waits.AddRange(_waits);
         k._nextAction = _nextAction;
+        k._queue = _queue?.Copy();
+        k._seq.Clear();
+        foreach (var kv in _seq)
+            k._seq[kv.Key] = kv.Value;
+        k.ExecutorPaused = ExecutorPaused;
+        k.WinChecks = WinChecks;
         k._listeners = null;
         if (_world is not null || k._world is not null)
             (k._world ??= new OldWorld(null, null, Shared.Ids!)).CopyFrom(_world, k._combat, k._run);
@@ -120,9 +161,16 @@ public sealed class KernelState : HookRuntime
         if (!AnyOn)
             return;
         if (site.Context == ContextMode.PerListener)
+        {
+            // game: HookPlayerChoiceContext.SignalPlayerChoiceBegun: the listener's choice becomes a hook action of type
+            // Combat on its owner's queue (single player: seat 0), run when the executor or a wait point reaches it.
             _actions.Add(new RecordedHookAction(++_nextAction, site, step));
+            Queue!.Enqueue(new GameActionRec(GameActionKind.Hook, GameActionType.Combat) { HookAction = _nextAction });
+        }
         else
+        {
             _stops.Add(site);
+        }
     }
 
     public override long HookActionMark() => _nextAction;
@@ -131,7 +179,160 @@ public sealed class KernelState : HookRuntime
     /// switch on nothing is recorded.</summary>
     public override void WaitAll(HookId dispatcher, long mark)
     {
-        if (AnyOn)
-            _waits.Add(new WaitPoint(dispatcher, mark, _actions.Count(a => a.Id > mark)));
+        if (!AnyOn)
+            return;
+        _waits.Add(new WaitPoint(dispatcher, mark, _actions.Count(a => a.Id > mark)));
+        // game: the dispatcher awaits every listener's task; each paused listener's task ends when its hook action has run.
+        // Here they run now, in id order, after every later listener of the dispatch ran (the screens come after them).
+        foreach (var rec in Queue!.All.Where(r => r.Kind == GameActionKind.Hook && r.HookAction > mark
+                                                    && r.State == GameActionState.WaitingForExecution)
+                     .OrderBy(r => r.Id).ToList())
+            RunAtWait(rec);
+    }
+
+    // ------------------------------------------------------------------------------------- hook actions and answers
+
+    private int ActionIndex(long id) =>
+        _actions.FindIndex(a => a.Id == id) is var i and >= 0 ? i : throw new InvalidOperationException($"no hook action {id}");
+
+    private HookAnswerKey NextKey(in PauseSite site, HookStep step)
+    {
+        var triple = (site.Dispatcher, site.Who, step.Resume!.ResumeSite);
+        int seq = _seq.GetValueOrDefault(triple);
+        _seq[triple] = seq + 1;
+        return new HookAnswerKey(site.Dispatcher, site.Who, step.Resume.ResumeSite, seq);
+    }
+
+    /// <summary>
+    /// The answer to a kernel screen raised inside old code, which cannot stop and resume: the step's keyed answer when it
+    /// has one (a replay, HookChoiceReplay), else the step stops with the screen open (PendingSelection, keyed) and its
+    /// answer replays the step.
+    /// </summary>
+    private int AnswerOrStop(in HookAnswerKey key, object? request)
+    {
+        var source = Answers ?? (CombatEngine.Running is { } run && ReferenceEquals(run.State, _combat) ? run : null);
+        if (source is not null && source.TryAnswer(key, out int answer))
+            return answer;
+        if (_combat is { } c && request is IKernelScreen screen)
+            c.PendingSelection = screen.Open(c).Clone(replay: null, key: key);
+        throw HookChoicePending.Instance;
+    }
+
+    /// <summary>A hook action drained at a wait point inside a step: its screen, then its resume record with the answer.</summary>
+    private void RunAtWait(GameActionRec rec)
+    {
+        var q = Queue!;
+        q.Start(rec);
+        int i = ActionIndex(rec.HookAction);
+        while (true)
+        {
+            var ha = _actions[i];
+            q.Gather(rec);
+            int answer = AnswerOrStop(NextKey(ha.Site, ha.Step), ha.Step.Request);
+            q.Resume(rec.Id!.Value, answer);
+            rec.Answer = null;
+            q.Start(rec);
+            var next = ha.Step.Resume!.Continue(this, answer);
+            if (!next.IsPaused)
+            {
+                q.Remove(rec);
+                return;
+            }
+
+            _actions[i] = ha with { Step = next };
+        }
+    }
+
+    /// <summary>
+    /// A hook action the executor reached between actions (ActionExecutor): there the caller can stop and resume, so its
+    /// screen opens over the combat (PendingSelection naming the action) and the answer (<see cref="Answer" />) runs its
+    /// resume record directly, no replay.
+    /// </summary>
+    internal void RunHookAction(GameActionRec rec)
+    {
+        var q = Queue!;
+        int i = ActionIndex(rec.HookAction);
+        var ha = _actions[i];
+        if (rec.Answer is { } answer)
+        {
+            rec.Answer = null;
+            var next = ha.Step.Resume!.Continue(this, answer);
+            if (!next.IsPaused)
+            {
+                q.Finish(rec);
+                return;
+            }
+
+            _actions[i] = ha = ha with { Step = next };
+        }
+
+        q.PauseForChoice(rec);
+        if (_combat is { } c && ha.Step.Request is IKernelScreen screen)
+            c.PendingSelection = screen.Open(c).Clone(replay: null, kernelAction: rec.Id!.Value);
+    }
+
+    /// <summary>The player's answer to the screen of action <paramref name="actionId" /> (game:
+    /// ActionQueueSet.ResumeActionWithoutSynchronizing: it resumes under a new id when the executor next runs).</summary>
+    public void Answer(uint actionId, int answer) => Queue!.Resume(actionId, answer);
+
+    /// <summary>
+    /// A dispatch whose context awaits each listener (none, passed, passed-unpushed, caller-hook) stopped at a choice
+    /// inside old code: the choice is answered (keyed, or the step stops and replays), the listener's resume record runs
+    /// (it may ask again), then <paramref name="resume" /> (the dispatcher's Resume and what follows it in the caller)
+    /// continues; until the dispatch completes. With <paramref name="flow" /> the choice is the turn start's: its hook
+    /// action (type CombatPlayPhaseOnly) is enqueued when the auto-pre-play phase assigns the task, and runs the choice.
+    /// </summary>
+    public HookStatus Settle(in HookStatus paused, Func<HookStatus, HookStatus> resume, bool flow = false)
+    {
+        var st = paused;
+        var q = Queue!;
+        while (st.IsPaused)
+        {
+            var site = st.Site!.Value;
+            var step = st.Step;
+            var rec = flow ? q.Enqueue(new GameActionRec(GameActionKind.Hook, GameActionType.CombatPlayPhaseOnly)) : null;
+            if (rec is { State: GameActionState.WaitingForExecution })
+            {
+                q.Start(rec);
+                q.Gather(rec);
+            }
+            else
+            {
+                rec = null;
+            }
+
+            while (true)
+            {
+                int answer = AnswerOrStop(NextKey(site, step), step.Request);
+                if (rec is not null)
+                {
+                    q.Resume(rec.Id!.Value, answer);
+                    rec.Answer = null;
+                    q.Start(rec);
+                }
+
+                step = step.Resume!.Continue(this, answer);
+                if (!step.IsPaused)
+                    break;
+                if (rec is not null)
+                    q.Gather(rec);
+            }
+
+            if (rec is not null)
+                q.Remove(rec);
+            st = resume(st);
+        }
+
+        return st;
+    }
+
+    /// <summary>game: CombatManager.StartTurn's player part, as <see cref="ITurnStartFlow" /> says.</summary>
+    public void TurnStart(ITurnStartFlow f)
+    {
+        var st = f.Setup(this);
+        f.SideStart(this);
+        f.OrbStart(this);
+        st = Settle(st, s => f.ResumeSetup(this, s), flow: true);
+        f.AutoPrePlay(this);
     }
 }

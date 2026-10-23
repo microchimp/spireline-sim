@@ -68,8 +68,10 @@ public static class CombatEngine
                 Rng = rng,
                 Action = stopped.Action,
                 TargetEnemyIndex = stopped.TargetEnemyIndex,
-                Answers = [.. stopped.Answers, new StepAnswer(action, pick)],
-                Hidden = [.. stopped.Hidden, hidden],
+                // A kernel screen's answer is keyed (Core2); an old screen's keeps its order.
+                Answers = open.HookKey is null ? [.. stopped.Answers, new StepAnswer(action, pick)] : [.. stopped.Answers],
+                Hidden = open.HookKey is null ? [.. stopped.Hidden, hidden] : [.. stopped.Hidden],
+                Keyed = open.HookKey is { } key ? [.. stopped.Keyed, new Sts2Emulator.Core2.KeyedAnswer(key, action, hidden)] : [.. stopped.Keyed],
                 Record = stopped,
             };
             (action, targetEnemyIndex) = (stopped.Action, stopped.TargetEnemyIndex);
@@ -222,6 +224,9 @@ public static class CombatEngine
     /// <summary>The step running on this thread, if it can be replayed (see <see cref="Step" />).</summary>
     [ThreadStatic]
     private static StepInProgress? _running;
+
+    /// <summary>The step running on this thread (the kernel reads its keyed answers), or null.</summary>
+    internal static StepInProgress? Running => _running;
 
     /// <summary>
     /// Inside a <c>CardSelectCmd.PushSelector(new VakuuCardSelector())</c> scope (Whispering

@@ -25,7 +25,28 @@ public class KernelTests
     private static string Name(string section, int id) =>
         IdMap[section]!.AsObject().First(kv => (int)kv.Value! == id).Key;
 
-    private sealed record TestResume : HookResume;
+    private sealed record TestResume : HookResume
+    {
+        public override HookStep Continue(HookRuntime rt, int answer) => HookStep.Done;
+    }
+
+    // K4 drains a per-listener pass's hook actions at its wait points: these answer every kernel screen with 0.
+    private sealed class Zero : IKernelAnswers
+    {
+        public static readonly Zero Instance = new();
+
+        public bool TryAnswer(in HookAnswerKey key, out int answer)
+        {
+            answer = 0;
+            return true;
+        }
+    }
+
+    private static KernelState Answered(KernelState k)
+    {
+        k.Answers = Zero.Instance;
+        return k;
+    }
 
     // One group per family, the turn-start flow kept whole: lets a test switch one family on and leave another off.
     private static readonly Switch[][] FineGroups =
@@ -37,7 +58,7 @@ public class KernelTests
 
     // The kernel state of a fresh combat (what a core2 engine binds to each combat it starts).
     private static KernelState K(IEnumerable<Switch> on, Action<HandlerTable> models, IReadOnlyList<Switch[]>? groups = null) =>
-        Shared(on, models, groups).Bind(Combat());
+        Answered(Shared(on, models, groups).Bind(Combat()));
 
     private static CombatState Combat()
     {
@@ -294,7 +315,7 @@ public class KernelTests
         var kernel = Shared(Every, PauseAtRelic3);
         var a = Combat();
         var b = Combat();
-        var ka = kernel.Bind(a);
+        var ka = Answered(kernel.Bind(a));
         var kb = kernel.Bind(b);
         Assert.Null(old.Kernel);
         Assert.Null(Kernel.If(Switch.F06, old));
@@ -323,14 +344,14 @@ public class KernelTests
     public void ACloneCarriesItsRecordedActionsAndMarksAndAReplayFromItDoesNotRecordTwice()
     {
         var s = Combat();
-        var k = Shared(Every, PauseAtRelic3).Bind(s);
+        var k = Answered(Shared(Every, PauseAtRelic3).Bind(s));
         var card = new CardInstance(1, false);
         Hooks.AfterTurnEndPasses(k, TurnEnd);
         Assert.Single(k.HookActions);
         using var setup = Kernel.Marks.Setup(s);
         using var flying = Kernel.Marks.Flying(s, card);
         var before = s.Clone();
-        var c = before.Kernel!;
+        var c = Answered(before.Kernel!);
         Assert.NotSame(k, c);
         Assert.Same(k.Shared, c.Shared);
         Assert.Same(before, c.World!.Combat);

@@ -37,6 +37,12 @@ public class StoppedStepLifecycleTests
             + "written by the agent's document as its public part (stopped_step: no true order, no stream) and "
             + "by the save document with the true world, and put back on the loaded screen: the tests below "
             + "and StoppedStepDocumentTests",
+        [nameof(PendingCardSelection.HookKey)] =
+            "Core2 only (null with no switch on): copied by Clone, dropped with the screen; a kernel screen raised inside a "
+            + "step, its answer stored keyed in the replay record (HookChoiceReplay.Keyed); written by the core2 writer (K5)",
+        [nameof(PendingCardSelection.KernelAction)] =
+            "Core2 only (0 with no switch on): copied by Clone, dropped with the screen; the hook action a screen between "
+            + "actions belongs to, answered through KernelState.Answer; written by the core2 writer (K5)",
     };
 
     [Fact]
