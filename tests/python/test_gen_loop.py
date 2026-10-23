@@ -410,5 +410,45 @@ class LabMarkerTests(unittest.TestCase):
             self.assertTrue((marker_dir / "ready-7").exists())  # the lab consumes it when the command succeeds
 
 
+class StaleEnvironmentTests(unittest.TestCase):
+    def test_generation_0_search_kwargs_are_the_base_ones_with_the_variable_unset(self):
+        import search_configs
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SPIRELINE_GEN_DIR", None)
+            pos = search_configs.Position("play", 3, 1.0, False)
+            self.assertEqual(search_configs.get("a3-v1").search_kwargs(pos),
+                             {"max_sims": 30, "min_child_sims": 1, "c": 0.2, "confirm_pairs": 0, "time_budget_s": 120.0,
+                              "resample": True})
+
+    def test_the_variable_reaches_the_lockstep_player_and_never_the_emulator_driver(self):
+        import search_configs
+
+        cfg = search_configs.get("a3-v1")
+        with mock.patch.dict(os.environ, {"SPIRELINE_GEN_DIR": str(trained_candidate()[2])}):
+            self.assertIn("prior_fn", cfg.search_kwargs())
+            self.assertNotIn("prior_fn", cfg.search_kwargs(env_prior=False))
+
+    @unittest.skipUnless(HAVE_NATIVE, "needs the native library")
+    def test_a_stale_variable_gives_the_generation_0_arm_no_prior(self):
+        import live_search
+
+        seen = {}
+
+        class Stop(Exception):
+            pass
+
+        def fake(handle, **kw):
+            seen.update(kw)
+            raise Stop
+
+        with mock.patch.dict(os.environ, {"SPIRELINE_GEN_DIR": str(trained_candidate()[2])}), \
+                mock.patch.object(live_search, "search_live", fake):
+            row = gen0._run_safe("SJ9DHBJHPE", 0, "a3-v1", 10, None)
+        self.assertIn("Stop", row["error"])
+        self.assertNotIn("prior_fn", seen)
+        self.assertNotIn("c_puct", seen)
+
+
 if __name__ == "__main__":
     unittest.main()

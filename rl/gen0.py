@@ -232,7 +232,7 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                     break
                 k += 1
                 tokens = encode(root.handle, root.obs, root.encounter_id, probe=False) if rec is not None else None
-                kw = cfg.search_kwargs(pos)
+                kw = cfg.search_kwargs(pos, env_prior=False)  # the agent argument alone decides the prior
                 kw.update(extra)
                 res = live_search.search_live(root.handle, seed=int(rng.integers(1 << 30)), **kw)
                 sims_spent += res.sims
