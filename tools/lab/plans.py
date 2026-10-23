@@ -628,6 +628,9 @@ def plan_kind(kind: str, c: Ctx) -> list[Step]:
     cmd = Cmd(kind, list(p["cmd"]), cwd=p.get("cwd", "{tree}"), needs=list(p.get("needs") or []), core=True,
               timeout=float(p.get("timeout_min", 60)) * 60, outputs={"result": "result.json"},
               post=lambda cx, k=kind: jobkinds.finish(k, cx.lab, cx.job_dir, cx.params))
+    if kind == "score-real":  # the ranking of the lockstep divergences (tools/lab/rank.py) runs before the markers are consumed
+        fin = cmd.post
+        cmd.post = lambda cx, f=fin: jobkinds.rank_score_real(cx.job_dir) or f(cx)
     if kind == "score-real":  # the window marker keeps other fights runners off the game while it is open
         cmd.pre = _open_score_window
         cmd.after_cleanup = ["{lab}/score/active"]
