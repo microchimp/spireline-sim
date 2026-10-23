@@ -194,9 +194,28 @@ def load(folder: Path) -> tuple[list[dict], list[dict], dict]:
     return divs, runs, summary if isinstance(summary, dict) else {}
 
 
+def run_ends(runs: list[dict]) -> dict[str, dict]:
+    """The run-end events of runs.jsonl by seed."""
+    return {str(r.get("seed")): r for r in runs if r.get("ev") == "end"}
+
+
+def weigh(rec: dict, ends: dict[str, dict]) -> tuple:
+    """(record with the run's outcome filled in, group key, group id, decisions affected, outcome-changing flag, weight) of one
+    state divergence (not a gap, not ai_state_assumed); the one place the weight formula of the module doc is computed."""
+    run = str(rec.get("run") or rec.get("seed"))
+    end = ends.get(run) or ends.get(str(rec.get("seed")))
+    if not rec.get("outcome") and end:
+        rec = dict(rec, outcome={"class": end.get("end"), "floor": end.get("floor")})
+    key = group_key(rec)
+    affected = 1 + int((rec.get("not_ranked_span") or {}).get("count") or 0)
+    oc = outcome_changing(rec, end)
+    w = affected * floor_factor(rec.get("floor")) * (OUTCOME_FACTOR if oc == "confirmed" else 1.0)
+    return rec, key, group_id(key), affected, oc, w
+
+
 def rank(folder: Path) -> dict:
     divs, runs, summary = load(folder)
-    ends = {str(r.get("seed")): r for r in runs if r.get("ev") == "end"}
+    ends = run_ends(runs)
     total = int(summary.get("decisions") or sum(int(e.get("asked") or 0) for e in ends.values()))
     groups: dict[str, dict] = {}
     classes: dict[str, collections.Counter] = {}
@@ -211,14 +230,7 @@ def rank(folder: Path) -> dict:
             assumed += 1
             continue
         run = str(rec.get("run") or rec.get("seed"))
-        end = ends.get(run) or ends.get(str(rec.get("seed")))
-        if not rec.get("outcome") and end:
-            rec = dict(rec, outcome={"class": end.get("end"), "floor": end.get("floor")})
-        key = group_key(rec)
-        gid = group_id(key)
-        affected = 1 + int((rec.get("not_ranked_span") or {}).get("count") or 0)
-        oc = outcome_changing(rec, end)
-        w = affected * floor_factor(rec.get("floor")) * (OUTCOME_FACTOR if oc == "confirmed" else 1.0)
+        rec, key, gid, affected, oc, w = weigh(rec, ends)
         g = groups.setdefault(gid, {"id": gid, "key": key, "tag": "single_site", "class": "single_site", "weight": 0.0,
                                     "display": {"type": rec.get("type"), "kinds": symptom_of(rec)["field"].split(","),
                                     "entities": symptom_of(rec)["ingredients"]}, "decisions_affected": 0, "divergences": 0, "first_floor": None, "outcome_changing_confirmed": 0,
@@ -282,6 +294,11 @@ def write(folder: Path, out: Path) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     (out / "ranked.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
     (out / "top20.md").write_text(top_md(doc), encoding="utf-8")
+    try:  # the hook-family view of the same ranking (tools/lab/by_family.py); a failure there never costs the files above
+        from tools.lab import by_family  # noqa: PLC0415
+        by_family.write(folder, out, doc)
+    except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError, AttributeError, IndexError) as e:
+        (out / "by_family.error.txt").write_text(type(e).__name__, encoding="utf-8")
     return doc
 
 

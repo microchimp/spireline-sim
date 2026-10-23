@@ -283,9 +283,9 @@ def emulator_generation(seed: str, ascension: int) -> dict[str, Any]:
             "act": act,
             "boss": boss,
             "map_nodes": map_nodes,
-            "normal": list(native.run_state_list(handle, LIST_NORMAL_ENCOUNTERS, 64)),
-            "elite": list(native.run_state_list(handle, LIST_ELITE_ENCOUNTERS, 64)),
-            "events": list(native.run_state_list(handle, LIST_EVENTS, 64)),
+            "normal": list(native.run_state_list(handle, LIST_NORMAL_ENCOUNTERS, 64, hidden=True)),
+            "elite": list(native.run_state_list(handle, LIST_ELITE_ENCOUNTERS, 64, hidden=True)),
+            "events": list(native.run_state_list(handle, LIST_EVENTS, 64, hidden=True)),
             "map": list(native.run_state_list(handle, LIST_MAP_NODES, 1024)),
             "edges": list(native.run_state_list(handle, LIST_MAP_EDGES, 2048)),
         }
