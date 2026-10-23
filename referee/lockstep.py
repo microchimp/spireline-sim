@@ -35,6 +35,9 @@ MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "sele
                 "bundle", "event") + COMBAT_KINDS
 # Reasons that are a gap in this adapter's mapping, not a difference of the emulator's: reported apart.
 GAP_PREFIXES = ("unmapped", "apply:", "choose_error")
+# The message key under which the referee driver hands the game's hidden state (stream counters, the draw pile in order)
+# to the emulator side of the lockstep (driver spec "anchor_state"). `Lockstep.decide` takes it off the message first.
+ANCHOR_KEY = "anchor_state"
 
 
 def _paths() -> None:
@@ -239,6 +242,7 @@ class Lockstep:
                       "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
 
     def decide(self, msg: dict) -> int:
+        msg = self._take_hidden(msg)
         kind, labels = msg["kind"], msg["actions"]
         i, self.n = self.n, self.n + 1
         self.stats["decisions"] += 1
@@ -275,6 +279,20 @@ class Lockstep:
             if kind == "map" and isinstance(labels[choice], list) and len(labels[choice]) > 2:
                 self.room_type = labels[choice][2]
         return choice
+
+    def _take_hidden(self, msg: dict) -> dict:
+        """The firewall of the hidden anchor state (PLAN.md section 5, "The bridge, decided"). The game's stream counters and
+        draw order (driver spec "anchor_state") go to the emulator side's `take_anchor_state` and nowhere else: the message
+        returned is a copy without the key, so the agent's fallback, the divergence records, the pairing and the search never
+        see it (the search forks the position with resample_hidden=True besides). Without the key the emulator side is told
+        None, so a state from an earlier decision cannot linger."""
+        hidden = msg.get(ANCHOR_KEY)
+        if ANCHOR_KEY in msg:
+            msg = {k: v for k, v in msg.items() if k != ANCHOR_KEY}
+        take = getattr(self.emu, "take_anchor_state", None)
+        if take is not None:
+            take(hidden)
+        return msg
 
     def _track(self, kind: str, msg: dict) -> None:
         """The context every record of this decision carries (set before the decision's own step is taken)."""
@@ -334,6 +352,10 @@ class Lockstep:
             reason, d, _, _ = self._equal(kind, labels, msg)
             ok = not reason and not d
         self.stats["reanchors" if ok else "reanchor_failed"] += 1
+        how = getattr(self.emu, "anchored_with", None)  # what the emulator side anchored with: the game's hidden state or the observation
+        if ok and how:
+            with_ = self.stats.setdefault("anchored_with", {})
+            with_[how] = with_.get(how, 0) + 1
         if not ok:  # why: the emulator side's own reason, else the views that still differ after it
             why = getattr(self.emu, "fail", None) or (reason or "diff:" + ",".join(f"{x[0]}{x[1]}/{x[2]}" if x[0] in (".floor", ".act") else str(x[0]) for x in d[:4]))
             fails = self.stats.setdefault("reanchor_fail_reasons", {})
@@ -403,6 +425,9 @@ class EmuLock:
             "COOK": "cook", "KINDLE": "kindle"}
     SCREEN = {"neow": "neow", "ancient": "neow", "map": "map", "card_reward": "card_reward", "rest": "rest",
               "select_cards": "card_select", "shop": "shop", "bundle": "bundle", "event": "event"}
+    wants_anchor_state = True  # play_run asks the driver for the game's hidden state, which only this side reads
+    _hidden: dict | None = None  # the game's hidden state at the current decision (take_anchor_state)
+    anchored_with: str | None = None  # "hidden", "observation" or "streams": what the last re-anchor used
 
     def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None, character: str = "IRONCLAD"):
         import leakprobes  # noqa: PLC0415 -- the native library's location
@@ -635,16 +660,40 @@ class EmuLock:
                                          max_potion_slots=len(belt))
         return True
 
+    def take_anchor_state(self, hidden: dict | None) -> None:
+        """The game's hidden state at this decision, or None (driver spec "anchor_state"; `Lockstep._take_hidden`): its
+        stream counters and, in a fight, the draw pile in order. Read by the re-anchors below and by nothing else; it never
+        enters a view, a record, a feature or a search."""
+        self._hidden = hidden if isinstance(hidden, dict) else None
+
+    def _set_streams(self) -> bool:
+        """At a room entry: the run's streams (and the player's) on the game's counters, so the next fight's opening shuffle and
+        the draws after it come from the game's streams, not the lagging ones of an emulator that stood still while suspended."""
+        rng = (self._hidden or {}).get("rng")
+        if not isinstance(rng, dict):
+            return True  # the driver was not asked for the hidden state: the emulator keeps its own streams
+        self.anchored_with = "streams"
+        return self.native.run_debug_set_streams(self.s.handle, rng) >= 0
+
     def _anchor_fight(self, obs: dict) -> bool:
         """Put the fight the emulator stands in on the referee's record of it (obs["combat"], as the agent is shown it:
-        the draw pile as a sorted list, no streams). The native call writes it over a copy of the fight and keeps the
-        emulator's own streams and, where its cards are the record's, its draw order, so a search that follows still
-        resamples the hidden state from the emulator's clone (resample_hidden=True)."""
+        the draw pile as a sorted list, no streams). With the game's hidden state (take_anchor_state: the streams and the
+        draw pile in order) the record also carries them and the native call puts the combat, and the run's streams, on the
+        game's; without it the call keeps the emulator's own streams and, where its cards are the record's, its draw
+        order. Either way a search that follows resamples the hidden state from the emulator's clone
+        (resample_hidden=True): the game's order is the lockstep state's, never the search's."""
         record = obs.get("combat")
         if not record:
             self.fail = "no_record"
             return False
-        status, why = self.native.run_reanchor_fight(self.s.handle, record, self.s.env._run_obs_buf)
+        hidden = self._hidden or {}
+        if isinstance(hidden.get("rng"), dict) and isinstance(hidden.get("draw"), list):
+            full = {**record, "draw": hidden["draw"], "rng": hidden["rng"]}
+            status, why = self.native.run_reanchor_fight_hidden(self.s.handle, full, self.s.env._run_obs_buf)
+            self.anchored_with = "hidden"
+        else:
+            status, why = self.native.run_reanchor_fight(self.s.handle, record, self.s.env._run_obs_buf)
+            self.anchored_with = "observation"
         if status < 0:
             self.fail = f"anchor:{why}"[:60]
             return False
@@ -652,12 +701,15 @@ class EmuLock:
 
     def reanchor(self, plan: str, msg: dict) -> bool:
         self.fail = None
+        self.anchored_with = None
         obs = msg.get("obs", {})
         if plan == "room_entry":
             if not self._to_map(obs.get("floor")):
                 self.fail = "to_map"
             elif not self._set_player(obs):
                 self.fail = "set_player:unknown_id"
+            elif not self._set_streams():
+                self.fail = "set_streams"
             elif self._decision() is None:
                 self.fail = "no_decision"
             return self.fail is None
@@ -855,13 +907,20 @@ def referee_only_policy(msg: dict) -> int:
 
 
 def play_run(env, seed: str, *, ascension: int = 10, sims: int = 60, emu_factory=None, max_decisions: int = 4000,
-             agent_seed=None, character: str = "IRONCLAD"):
-    """One run on a GameEnv under the PLAY agent. Returns (end message, Lockstep)."""
+             agent_seed=None, character: str = "IRONCLAD", anchor_state: bool | None = None):
+    """One run on a GameEnv under the PLAY agent. Returns (end message, Lockstep).
+
+    `anchor_state`: ask the driver (reset spec "anchor_state") for the game's hidden state at the re-anchor points, for the
+    emulator side's re-anchor only (`Lockstep._take_hidden`). Default: yes when the emulator side takes it
+    (`wants_anchor_state`), unless the environment variable SPIRELINE_ANCHOR_STATE is 0 (the A/B switch of the old behaviour)."""
     agent_seed = list(agent_seed) if agent_seed is not None else [fresh_agent_seed(), 0]
     emu = (emu_factory or (lambda s: EmuLock(s, ascension, sims, agent_seed, character)))(seed)
     ls = Lockstep(emu, referee_only_policy, seed, sims, agent_seed)
+    if anchor_state is None:
+        anchor_state = bool(getattr(emu, "wants_anchor_state", False)) and os.environ.get("SPIRELINE_ANCHOR_STATE", "1") != "0"
     try:
-        m, done = env.reset(seed, hash=True, **({} if character == "IRONCLAD" else {"character": character}))
+        m, done = env.reset(seed, hash=True, **({"spec": {"anchor_state": True}} if anchor_state else {}),
+                            **({} if character == "IRONCLAD" else {"character": character}))
         n = 0
         while not done and n < max_decisions:
             m, done = env.step(ls.decide(m))
