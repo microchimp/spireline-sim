@@ -11,7 +11,9 @@ the end, from the newest refset score that has a codex walk. Sub-scores, each wi
               headline alone favours short runs. A stopped run diverged on the floor it stopped on. Act ends are
               floors 17, 33 and 48 (ActModel rooms + 2 per act: 17, 16 and 15 floors).
   corpus      fights identical in the newest corpus baseline
-  lab         open fix groups (not host-suspect, not stale) by estimated run exposure, and the host-suspect count
+  lab         open fix groups (not host-suspect, not stale) by estimated run exposure, and the host-suspect count; and
+              lab.utilisation: CPU minutes the lab's jobs used over the wall minutes the owner left it (last 7 days,
+              minus the runner's user / PAUSE / HALT / main.lock spans, per core), against the 90% target, by strategy
   data        differences between the game export and the emulator tables (newest audit/data-checks table-check text)
   hypotheses  audit setups confirmed / refuted / not testable / open (LAB/hypotheses.json; setups with no verdict are open)
 Blockers: the Codex stop causes by the runs they ended (measured), and the open lab groups by the runs that hold their
@@ -22,7 +24,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
+import datetime as dt
 import json
+import os
 import re
 import statistics
 import sys
@@ -217,6 +222,122 @@ def lab_score(root: Path):
             "open_runs_impact_max": max(est, default=0)}, ranked, None
 
 
+UTIL_DAYS = 7
+UTIL_TARGET_PCT = 90.0
+OWNER_KINDS = ("user", "pause", "halt", "lock")  # runner.log pauses that are the owner's or another session's, not the lab's
+_LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (.*)$")
+_PAUSED = re.compile(r"^paused: (\w+)")
+
+
+def _ts(s: str) -> float:
+    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+
+
+def held_spans(log_text: str, end: float) -> list[tuple[str, float, float]]:
+    """(kind, start, end) of every span the runner was held, from runner.log: `paused: <kind>` to `resuming` (or the next
+    `runner started`); a `HALT:` line holds until the next start or resume. A span still open at the end of the log runs to `end`."""
+    spans: list[tuple[str, float, float]] = []
+    cur: tuple[str, float] | None = None
+    for line in log_text.splitlines():
+        m = _LOG_LINE.match(line)
+        if not m:
+            continue
+        t, msg = _ts(m.group(1)), m.group(2)
+        pm = _PAUSED.match(msg)
+        if pm:
+            if cur and cur[0] == pm.group(1):
+                continue  # logged again (a restarted runner reports the pause it finds)
+            if cur:
+                spans.append((cur[0], cur[1], t))
+            cur = (pm.group(1), t)
+        elif msg.startswith("HALT:"):
+            if cur is None:
+                cur = ("halt", t)
+        elif msg.startswith("resuming") or msg.startswith("runner started"):
+            if cur:
+                spans.append((cur[0], cur[1], t))
+                cur = None
+    if cur:
+        spans.append((cur[0], cur[1], max(end, cur[1])))
+    return spans
+
+
+def _union_min(spans: list[tuple[float, float]], lo: float, hi: float) -> float:
+    """Minutes covered by the spans, clipped to [lo, hi], overlaps counted once."""
+    total, last = 0.0, lo
+    for a, b in sorted((max(a, lo), min(b, hi)) for a, b in spans if b > lo and a < hi):
+        a = max(a, last)
+        if b > a:
+            total += b - a
+            last = b
+    return total / 60.0
+
+
+def _f(x) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def lab_utilisation(root: Path, now: float | None = None, cores: int | None = None, days: int = UTIL_DAYS):
+    """(utilisation, note): CPU minutes the lab's jobs used over the wall minutes the owner left it, last `days` days.
+    CPU minutes are the cpu_min of the finished jobs in LAB/yield.tsv; available wall minutes are the window minus the
+    runner's owner-use spans (user, PAUSE, HALT, main.lock; machine load is reported but not subtracted), times `cores`
+    (a job's cpu_min sums its processes). All-time counters from LAB/state.json ride along. Null and a note without a yield."""
+    lab = root / "lab"
+    now = time.time() if now is None else now
+    cores = max(1, cores or os.cpu_count() or 1)
+    try:
+        rows = list(csv.DictReader((lab / "yield.tsv").read_text(encoding="utf-8").splitlines(), delimiter="\t"))
+    except OSError:
+        return None, "no lab yield.tsv: the lab has no finished job to measure"
+    lo = now - days * 86400
+    try:
+        log = (lab / "runner.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log = ""
+    spans = held_spans(log, now)
+    owner = _union_min([(a, b) for k, a, b in spans if k in OWNER_KINDS], lo, now)
+    held = {k: round(_union_min([(a, b) for kk, a, b in spans if kk == k], lo, now), 1) for k in sorted({k for k, _, _ in spans})}
+    by: dict[str, dict] = {}
+    for r in rows:
+        try:
+            t = _ts(r["utc"])
+        except (KeyError, ValueError):
+            continue
+        if lo <= t <= now:
+            e = by.setdefault(r.get("strategy") or "?", {"jobs": 0, "cpu_min": 0.0, "wall_min": 0.0})
+            e["jobs"] += 1
+            e["cpu_min"] += _f(r.get("cpu_min"))
+            e["wall_min"] += _f(r.get("wall_min"))
+    window = days * 1440.0
+    avail = max(0.0, window - owner)
+    cap = avail * cores
+    cpu = sum(e["cpu_min"] for e in by.values())
+    for e in by.values():
+        e["share_pct"] = round(100 * e["cpu_min"] / cpu, 1) if cpu else 0.0
+        e["pct_of_available"] = round(100 * e["cpu_min"] / cap, 2) if cap else 0.0
+        e["cpu_min"], e["wall_min"] = round(e["cpu_min"], 1), round(e["wall_min"], 1)
+    pct_ = round(100 * cpu / cap, 1) if cap else None
+    st = _load(lab / "state.json")
+    st = st if isinstance(st, dict) else {}
+    ctr = st.get("counters") or {}
+    from tools.lab import mix as labmix
+    weights, mix_notes = labmix.load_mix(lab, create=False)
+    return {"window_days": days, "from_utc": dt.datetime.fromtimestamp(lo, dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+            "to_utc": dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ"), "cores": cores,
+            "cpu_min": round(cpu, 1), "wall_min": window, "owner_min": round(owner, 1), "available_wall_min": round(avail, 1),
+            "held_min": held, "pct": pct_, "target_pct": UTIL_TARGET_PCT,
+            "meets_target": (pct_ >= UTIL_TARGET_PCT) if pct_ is not None else None,
+            "by_strategy": dict(sorted(by.items(), key=lambda kv: -kv[1]["cpu_min"])),
+            "mix_idle_notes": [n for n in mix_notes if labmix.is_idle_note(n)],
+            "idle_with_weight": sorted(k for k, w in weights.items() if w > 0 and not by.get(k, {}).get("cpu_min")),
+            "all_time": {"cpu_min": round(sum(_f(v) for v in (st.get("strategy_cpu") or {}).values()) / 60, 1),
+                         "active_min": round(_f(ctr.get("active_seconds")) / 60, 1), "interrupts": ctr.get("interrupts") or {}},
+            "source": "lab/yield.tsv, lab/runner.log, lab/state.json"}, None
+
+
 def data_score(root: Path):
     best = None
     for p in (root / "audit" / "data-checks").glob("*.txt"):
@@ -270,10 +391,10 @@ def hyp_score(root: Path):
             "date": _day(lp) if lp.exists() else max(_day(p) for p in files),
             "total": len(setups), "confirmed": st["confirmed"], "refuted": st["refuted"],
             "not_testable": st["not_testable"], "open": st["open"], "bad_files": len(problems),
-            "lab_mix_weight": weight, "lab_mix_notes": mix_notes}, None
+            "lab_mix_weight": weight, "lab_mix_notes": [n for n in mix_notes if not labmix.is_idle_note(n)]}, None  # the idle share is in lab.utilisation
 
 
-def build(root: Path, top: int = 5) -> dict:
+def build(root: Path, top: int = 5, now: float | None = None, cores: int | None = None) -> dict:
     notes = {}
     out = {}
     for name, fn in (("codex", codex_score), ("corpus", corpus_score), ("data", data_score), ("hypotheses", hyp_score)):
@@ -285,6 +406,13 @@ def build(root: Path, top: int = 5) -> dict:
     out["lab"] = lab
     if n:
         notes["lab"] = n["note"]
+    util, un = lab_utilisation(root, now, cores)
+    if lab is not None:
+        lab["utilisation"] = util
+    elif util is not None:
+        out["lab_utilisation"] = util  # no groups.json to hang it on
+    if un and lab is not None:  # without a lab folder the "lab" note already says so
+        notes["lab_utilisation"] = un
     cx = out["codex"]
     out["headline_pct"] = cx["identical_pct"] if cx else None
     out["blockers"] = []
@@ -353,6 +481,12 @@ def render(r: dict) -> str:
                      + f"; {b['stale']} stale", b["source"], b["date"]))
         rows.append(("lab host-suspect", f"{b['host_suspect']} of {b['groups']} groups (may be host artefacts, left out of the open count)",
                      b["source"], b["date"]))
+        u = b.get("utilisation")
+        if u and u["pct"] is not None:
+            top_s = ", ".join(f"{k} {v['cpu_min']:.0f}" for k, v in list(u["by_strategy"].items())[:4])
+            idle = f"; idle with weight: {', '.join(u['idle_with_weight'])}" if u["idle_with_weight"] else ""
+            rows.append(("lab utilisation", f"{u['pct']}% of {u['cores']} cores over {u['window_days']} days, owner time ({u['owner_min']:.0f} min) "
+                         f"left out (target {u['target_pct']:.0f}%); CPU min by strategy: {top_s}{idle}", u["source"], u["to_utc"][:10]))
     d = r["data"]
     if d:
         rows.append(("data-check mismatches", f"{d['mismatches']}" + (" (" + ", ".join(f"{a} {n}" for a, n in d["by_check"].items()) + ")" if d["by_check"] else ""),
@@ -381,8 +515,9 @@ def main(argv=None) -> int:
     ap.add_argument("--referee", type=Path, default=DEFAULT_REFEREE)
     ap.add_argument("--json", type=Path, help="write the result as JSON here")
     ap.add_argument("--top", type=int, default=5)
+    ap.add_argument("--cores", type=int, default=None, help="logical cores the lab's CPU minutes are measured against (default: this machine's)")
     a = ap.parse_args(argv)
-    r = build(a.referee, a.top)
+    r = build(a.referee, a.top, cores=a.cores)
     print(render(r))
     if a.json:
         a.json.parent.mkdir(parents=True, exist_ok=True)
