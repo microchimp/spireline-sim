@@ -77,13 +77,7 @@ internal static class TestSwitches
             return CombatEngine.Step(state, action, rng, targetEnemyIndex);
         var engine = Engines.GetValue(state, _ => new RunEngine { Kernel = k });
         if (state.Kernel is null)
-        {
-            // game: every card of a combat is a model with its own identity. A test's hand-made cards carry no uid (0);
-            // the kernel resolves a card source by uid (CARD_UID.md), so they get fresh ones here as CombatFactory
-            // numbers a combat's cards, keeping every uid already given.
-            CardUids.NumberNew(state);
             k.Attach(state, engine.State);
-        }
         Counted();
         return engine.StepCombat(state, action, rng, targetEnemyIndex);
     }
