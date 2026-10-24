@@ -35,8 +35,14 @@ public static partial class OldState
         {
             case ListenerKind.Power:
             {
-                if (OldCreatures.TryAt(w, new CreatureRef(at >> 8)) is not { } owner
-                    || OldCreatures.Buffs(s, owner) is not { } buffs)
+                if (OldCreatures.TryAt(w, new CreatureRef(at >> 8)) is not { } owner)
+                    return null;
+                // Osty's one power, Die For You (OldState.Combat lists it), held while the combat holds the pet.
+                if (owner.Kind == CreatureKind.Osty)
+                    return who.ModelId == w.Ids.DieForYouModelId && (at & 0xFF) == 0
+                        ? new(who, at >> 8, 0, OldPile.None, default, null)
+                        : null;
+                if (OldCreatures.Buffs(s, owner) is not { } buffs)
                     return null;
                 int i = PowerEntry(w, buffs, who);
                 return i < 0 ? null : new(who, at >> 8, i, OldPile.None, buffs[i].Id, owner.Enemy);

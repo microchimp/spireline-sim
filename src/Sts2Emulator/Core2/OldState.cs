@@ -82,6 +82,7 @@ public sealed class OldModelIds : IModelIds
         var foldMembers = aliases["folds"]!.AsObject().SelectMany(kv => kv.Value!.AsArray().Select(x => (string)x!))
             .ToHashSet();
         OstyModelId = (int)idMap["enemies"]!["Osty"]!;
+        DieForYouModelId = Resolve(ListenerKind.Power, "DieForYouPower");
         foreach (var id in Enum.GetValues<BuffId>())
         {
             string key = PowerKey(id.ToString());
@@ -119,6 +120,9 @@ public sealed class OldModelIds : IModelIds
 
     /// <summary>Osty's monster id (data/id_map.json "enemies").</summary>
     public int OstyModelId { get; }
+
+    /// <summary>DieForYouPower's power id (data/id_map.json), the one power the old state's Osty holds.</summary>
+    public int DieForYouModelId { get; }
 
     // The id_map.json section of each kind whose listener model id is id_map's number (TIER1_KERNEL.md section 3).
     private static readonly (ListenerKind Kind, string Section)[] Sections =
@@ -406,8 +410,12 @@ public static partial class OldState
         c++;
         if (s.OstyMaxHp > 0)
         {
-            // A pet: its powers (the old state holds none), then, having no player, its monster.
+            // A pet: its powers, then, having no player, its monster. The old state holds none but Die For You, which the
+            // game applies once when OstyCmd.Summon first adds the pet and never removes (ShouldPowerBeRemovedAfterOwnerDeath),
+            // so the Osty a combat holds has it, dead or alive; any other power on Osty is the gap.
             gaps.Add(new(NotModelledKind.OstyPowers, ListenerKind.Power, c, 0, "Osty"));
+            into.Add(new(new((int)ListenerKind.Power, w.Ids.DieForYouModelId, PowerInstance(c, 0)), c, 0, OldPile.None,
+                default, null));
             into.Add(new(new((int)ListenerKind.Monster, w.Ids.OstyModelId, c), c, 0, OldPile.None, default, null));
             c++;
         }

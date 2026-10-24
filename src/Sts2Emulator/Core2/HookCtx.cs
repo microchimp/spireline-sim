@@ -140,6 +140,13 @@ public readonly struct HookCtx
         creature is { } c && (c == owner || (OldCreatures.TryAt(World, c) is { } old
             && OldCreatures.PetOwner(old) is { } petOwner && OldCreatures.TryRef(World, petOwner) == owner));
 
+    /// <summary>The pet owner of a creature (game: Creature.PetOwner, its creature): the player for Osty (the old state's one
+    /// pet); null for any other creature and a position no creature holds.</summary>
+    public CreatureRef? PetOwner(CreatureRef creature) =>
+        OldCreatures.TryAt(World, creature) is { } old && OldCreatures.PetOwner(old) is { } owner
+            ? OldCreatures.TryRef(World, owner)
+            : null;
+
     /// <summary>The old enemy a creature reference names now (Tier 1: the argument of an old body that takes an
     /// <c>EnemyState</c>, as <c>RelicEffects.ApplyAfterBlockBroken</c> does); null for the player, Osty or a position no
     /// creature of the combat holds.</summary>

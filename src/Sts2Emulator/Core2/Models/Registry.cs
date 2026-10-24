@@ -151,6 +151,13 @@ public static class Registry
         HangPower.Register,
     ];
 
+    /// <summary>Batch R7a (rebuild/f08-r7a), the R7 blockers: Die For You, the pet redirect the enemy-attack site reaches
+    /// through AttackCmd's CreatureCmd.Damage, as the card path does.</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> R7a =
+    [
+        DieForYouPower.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -169,5 +176,6 @@ public static class Registry
         .. L3b,
         .. Relic1,
         .. L3a,
+        .. R7a,
     ];
 }
