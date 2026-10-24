@@ -34,6 +34,7 @@ public class PowerOneTests
         (ListenerKind.Power, "VigorPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "TankPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "ColossusPower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Power, "ShriekPower", HookId.AfterDamageReceived),
     ];
 
     [Fact]
@@ -725,5 +726,126 @@ public class PowerOneTests
     public void ColossusIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "ColossusPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Shriek (power-1)
+
+    /// <summary>One slug standing in for the eel at 10 HP with Shriek 5 (the threshold), the player.</summary>
+    private static CombatState ShriekCombat(int hp = 10, int threshold = 5)
+    {
+        var s = Combat(hp);
+        s.Enemies[0].Buffs.Add(new BuffState(BuffId.Shriek, threshold));
+        return s;
+    }
+
+    private static int Buff(EnemyState e, BuffId id) => BuffSystem.Get(e.Buffs, id);
+
+    [Fact]
+    public void ShriekIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power1), ListenerKind.Power, "ShriekPower", HookId.AfterDamageReceived);
+    }
+
+    [Fact]
+    public void ShriekStunsItsOwnerOnceAnUnblockedHitLeavesItAtOrBelowItsThreshold()
+    {
+        // game: ShriekPower.AfterDamageReceived; old: CardEffects.LandDamageOnEnemy calls
+        // EnemyAI.TriggerShriekIfWounded(target) when the HP lost > 0, whatever the props. A 6 on 10 leaves 4, at or below
+        // 5: the power goes, Terror is queued, the owner is stunned and its intent becomes Unknown; the old body on the
+        // same state (the oracle at 4 HP) gives the same buffs and intent.
+        var s = ShriekCombat();
+        var eel = s.Enemies[0];
+        var k = Kernel(s, Power1);
+
+        var r = Assert.Single(Hit(k, OldCreature.Of(eel), 6m));
+
+        Assert.Equal(6, r.UnblockedDamage);
+        Assert.Equal(4, eel.Hp);
+        var oracle = ShriekCombat();
+        oracle.Enemies[0].Hp = 4;
+        EnemyAI.TriggerShriekIfWounded(oracle.Enemies[0]);
+        Assert.Equal(oracle.Enemies[0].Buffs, eel.Buffs);
+        Assert.Equal(oracle.Enemies[0].CurrentIntent, eel.CurrentIntent);
+        Assert.Equal(0, Buff(eel, BuffId.Shriek));
+        Assert.Equal(1, Buff(eel, BuffId.TerrorQueued));
+        Assert.Equal(1, Buff(eel, BuffId.Stunned));
+        Assert.Equal(IntentType.Unknown, eel.CurrentIntent.Type);
+
+        // A second hit finds no Shriek: nothing more. An unpowered hit fires it too (the old site reads the HP lost alone).
+        Hit(k, OldCreature.Of(eel), 1m);
+        Assert.Equal(1, Buff(eel, BuffId.Stunned));
+        var s2 = ShriekCombat();
+        var k2 = Kernel(s2, Power1);
+        Hit(k2, OldCreature.Of(s2.Enemies[0]), 6m, props: Unpowered);
+        Assert.Equal(0, Buff(s2.Enemies[0], BuffId.Shriek));
+        Assert.Equal(1, Buff(s2.Enemies[0], BuffId.Stunned));
+    }
+
+    [Fact]
+    public void ShriekDoesNothingAboveItsThresholdForABlockedHitOrForTheKillingHit()
+    {
+        // Above the threshold (10 - 3 = 7): nothing. Fully blocked at 4 HP (block 10 against 6: no HP lost, the old site's
+        // condition): nothing, though the owner is below the threshold. The killing hit: the dispatcher runs no
+        // AfterDamageReceived for a killed receiver (and the old body asks the owner to be alive): the corpse keeps Shriek.
+        var s = ShriekCombat();
+        var eel = s.Enemies[0];
+        var k = Kernel(s, Power1);
+
+        Hit(k, OldCreature.Of(eel), 3m);
+        Assert.Equal(7, eel.Hp);
+        Assert.Equal(5, Buff(eel, BuffId.Shriek));
+        Assert.Equal(0, Buff(eel, BuffId.Stunned));
+
+        eel.Hp = 4;
+        eel.Block = 10;
+        Assert.Equal(0, Assert.Single(Hit(k, OldCreature.Of(eel), 6m)).UnblockedDamage);
+        Assert.Equal(5, Buff(eel, BuffId.Shriek));
+        Assert.Equal(0, Buff(eel, BuffId.Stunned));
+
+        eel.Block = 0;
+        k.Commands.KillStandIn = (_, _) => { }; // the kill would strip the corpse's powers: keep them to look
+        var r = Assert.Single(Hit(k, OldCreature.Of(eel), 9m));
+        Assert.True(r.WasTargetKilled);
+        Assert.Equal(0, eel.Hp);
+        Assert.Equal(5, Buff(eel, BuffId.Shriek));
+        Assert.Equal(0, Buff(eel, BuffId.Stunned));
+    }
+
+    [Fact]
+    public void ShriekActsForTheHolderHitAloneAmongTwo()
+    {
+        // The N-holder test: two eels with Shriek 5 at 10 HP. The hit on the first stuns the first alone; the second keeps
+        // its Shriek, its HP and its intent: one call of the old body, for the owner hit.
+        var s = Combat(10, 10);
+        s.Enemies[0].Buffs.Add(new BuffState(BuffId.Shriek, 5));
+        s.Enemies[1].Buffs.Add(new BuffState(BuffId.Shriek, 5));
+        var k = Kernel(s, Power1);
+
+        Hit(k, OldCreature.Of(s.Enemies[0]), 6m);
+
+        Assert.Equal(0, Buff(s.Enemies[0], BuffId.Shriek));
+        Assert.Equal(1, Buff(s.Enemies[0], BuffId.Stunned));
+        Assert.Equal(5, Buff(s.Enemies[1], BuffId.Shriek));
+        Assert.Equal(0, Buff(s.Enemies[1], BuffId.Stunned));
+        Assert.Equal(10, s.Enemies[1].Hp);
+    }
+
+    [Fact]
+    public void ShriekDeleteMutantGivesTheNoHandlerValue()
+    {
+        var s = ShriekCombat();
+        var eel = s.Enemies[0];
+        var k = Kernel(s, Without(Power1, ShriekPower.Register));
+        Hit(k, OldCreature.Of(eel), 6m);
+        Assert.Equal(4, eel.Hp);
+        Assert.Equal(5, Buff(eel, BuffId.Shriek));
+        Assert.Equal(0, Buff(eel, BuffId.TerrorQueued));
+        Assert.Equal(0, Buff(eel, BuffId.Stunned));
+    }
+
+    [Fact]
+    public void ShriekIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "ShriekPower", HookId.AfterDamageReceived);
     }
 }

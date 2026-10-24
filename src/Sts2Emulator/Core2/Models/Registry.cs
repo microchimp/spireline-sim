@@ -40,6 +40,7 @@ public static class Registry
         VigorPower.Register,
         TankPower.Register,
         ColossusPower.Register,
+        ShriekPower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
