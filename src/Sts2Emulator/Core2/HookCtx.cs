@@ -76,6 +76,22 @@ public readonly struct HookCtx
     /// </summary>
     public RelicView? Relic(ListenerRef self) => OldState.RelicOf(World, self);
 
+    /// <summary>
+    /// The creature that owns a card (the game's <c>CardModel.Owner.Creature</c>). The old state holds one card owner, the
+    /// player (creature 0), so every handle names a card of the player; the handle is taken so that a handler written
+    /// against this member ports unchanged to a runtime with several card owners.
+    /// </summary>
+    public CreatureRef CardOwner(CardHandle card) => new(0);
+
+    /// <summary>
+    /// Whether <paramref name="creature" /> is <paramref name="owner" /> or one of its pets (the game's
+    /// <c>creature == Owner || Owner.Pets.Contains(creature)</c>, the test of a damage modifier for its owner's own hits):
+    /// the old state has one pet, Osty, whose owner is the player. False for no creature.
+    /// </summary>
+    public bool IsOwnerOrPet(CreatureRef? creature, CreatureRef owner) =>
+        creature is { } c && (c == owner || (OldCreatures.TryAt(World, c) is { } old
+            && OldCreatures.PetOwner(old) is { } petOwner && OldCreatures.TryRef(World, petOwner) == owner));
+
     /// <summary>The old enemy a creature reference names now (Tier 1: the argument of an old body that takes an
     /// <c>EnemyState</c>, as <c>RelicEffects.ApplyAfterBlockBroken</c> does); null for the player, Osty or a position no
     /// creature of the combat holds.</summary>
