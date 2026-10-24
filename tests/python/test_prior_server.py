@@ -548,6 +548,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(out.stderr.strip().splitlines()), 1, out.stderr)
 
 
+    def test_a_request_longer_than_max_tokens_gets_its_own_eager_forward_and_is_counted(self):
+        server = self.start(extra=["--max-tokens", "8", "--priority", "below"])
+        net = combat_prior.network(self.policy)
+        tokens, legal = tokens_and_legal(0)
+        self.assertGreater(len(tokens), 8)
+        with torch.inference_mode():
+            want = net.model.policy_logits(**net._batch([tokens]))[0].numpy()  # noqa: SLF001
+        conn, status, _ = server.raw()
+        self.assertEqual(status, 0)
+        conn.send_bytes(pp.pack_prior(1, tokens))
+        status, req_id, row = pp.unpack_reply(conn.recv_bytes())
+        self.assertEqual((status, req_id), (0, 1))
+        self.assertTrue(np.array_equal(row, want))
+        conn.send_bytes(pp.pack_bye())
+        self.assertEqual(server.stop(), 0)
+        stats = json.loads(server.stats_path.read_text())
+        self.assertEqual((stats["calls"], stats["overlong"], stats["batches"]), (1, 1, 0))
+        self.assertEqual(stats["restarts"], 0)
+        self.assertEqual(stats["device"], "cpu")
+
     def test_a_key_that_is_not_hex_is_refused(self):
         out = subprocess.run([sys.executable, str(SERVER), "--policy", str(self.policy), "--endpoint", "x",  # noqa: S603
                               "--authkey-env", "SPR_TEST_KEY", "--device", "cpu"],
@@ -566,6 +586,15 @@ class GpuToleranceTests(unittest.TestCase):
     def test_the_graph_logits_match_the_cpu_prior_on_500_positions(self):
         import prior_server
 
+        # server.load() sets process-wide torch switches (fused attention off, TF32 off); put them back afterwards, or the
+        # CPU priors that later tests build in this process would no longer play as the server subprocess does
+        backends = (torch.backends.mha.get_fastpath_enabled(), torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32)
+
+        def restore():
+            torch.backends.mha.set_fastpath_enabled(backends[0])
+            torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32 = backends[1], backends[2]
+
+        self.addCleanup(restore)
         rng = np.random.default_rng(11)
         with tempfile.TemporaryDirectory() as tmp:
             policy = export_prior(Path(tmp)) / combat_prior.POLICY
