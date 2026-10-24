@@ -128,11 +128,18 @@ Five more job types, one command each, configured as data (defaults in `jobs.DEF
 kind `share`, `weekly`, `weekly_days`, `every_h`, `procs`). Priority ladder, each tick the highest ready job whose guards pass:
 presort (1), `score-real` (2), `train` (3), aimed fights (4), runs/rank (5), `selfplay` (6), the rest and the nightly benches (7).
 The fights rotation and `mix.json` still decide within tiers 4, 5 and 7; the new kinds are chosen before it (score-real, train,
-selfplay while under its `share` of the CPU time, due benches) or after it (selfplay as the filler when nothing else can run).
+selfplay while the loop is under its `share` of the last 7 days' CPU time, due benches) or after it (selfplay as the filler when nothing else can run).
+
+**The `selfplay.share` is judged for the loop, over the last 7 days.** The loop is the kinds that exist only because self-play does:
+`selfplay`, `train` (and the promotion it runs) and `score-real` (`jobs.LOOP_KINDS`); the benches, presort and the fights strategies are not
+in it. The runner adds up their `cpu_min` and the lab's whole `cpu_min` over the rows of `LAB/yield.tsv` whose `utc` is in the last 7
+days (`mix.loop_cpu`); self-play gets the slot ahead of the rotation while loop < share x whole. A window with no row (no file, or all rows
+older) means self-play first, and the runner log says so; the log also says the loop's share at each change. The all-time
+`strategy_cpu` in `state.json` stays as a statistic and still drives the fights mix; it no longer decides the self-play slot.
 
 | kind | priority | ready when | default | writes |
 |---|---|---|---|---|
-| `selfplay` | 6 | `enabled` (filler; `share` > 0 puts it ahead of the rotation until that share of CPU is spent) | off; placeholder command | yield: runs, decisions, decisions_s, generation |
+| `selfplay` | 6 | `enabled` (filler; `share` > 0 puts it ahead of the rotation until the loop has used that share of the last 7 days' CPU, see below) | off; placeholder command | yield: runs, decisions, decisions_s, generation |
 | `train` | 3 | `LAB/train/ready-<gen>` exists (oldest first; renamed `done-<gen>` on success); 60 min cap | on, marker-gated | yield: generation, promoted, loss |
 | `score-real` | 2 | `LAB/score/pending` exists, or `weekly` and 7 days since `LAB/score/last-ok`; 240 min cap | on, marker-gated; weekly off | yield: runs, wins, mean_floor, crashes, decisions_s, divergences. `LAB/score/active` exists while it runs; fights and runs jobs are not started then (a marker older than 5 h is ignored) |
 | `bench-env` | 7 | `enabled` and `every_h` (20) since `LAB/bench-env/last-ok` | off | yield: dec_s, crashes, mem_mb_per_run; readiness.json `bench.env` (next to LAB) |

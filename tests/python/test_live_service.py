@@ -1997,9 +1997,13 @@ class StrategyTests(unittest.TestCase):
                 )
 
     def test_without_the_training_package_there_is_no_model(self) -> None:
-        # A None in sys.modules makes the import fail, as on a branch without rl/run_train.
+        # A None in sys.modules makes the import fail, as on a branch without rl/run_train. Every run_train
+        # submodule an earlier test imported is hidden too: importlib.import_module returns a cached
+        # submodule without looking at its parent.
         folder = model_dir(self.root)
-        with mock.patch.dict(sys.modules, {"run_train": None}):
+        hidden = {k: None for k in list(sys.modules) if k == "run_train" or k.startswith("run_train.")}
+        hidden["run_train"] = None
+        with mock.patch.dict(sys.modules, hidden):
             message = self.assert_no_model(self.ask(strategy.StrategyModel(folder)))
         self.assertIn("run_train", message)
 

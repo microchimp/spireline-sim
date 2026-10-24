@@ -400,7 +400,7 @@ def train_cmd(a: argparse.Namespace) -> int:
         return 2
     cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
                                      max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
-                                     retrain=retrain)  # a retrain draws on the larger window
+                                     retrain=retrain, policy_target=a.policy_target)  # a retrain draws on the larger window
     print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": gen + 1}))
     if a.promote:
         if not (a.emu_python and a.seeds_file):
@@ -437,12 +437,56 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
     return 0
 
 
+def emu_arm_match(emu_dir: str | Path | None, agent: dict) -> tuple[bool, str]:
+    """Whether a finished emulator arm in `emu_dir` was played by `agent` (an `Agent.describe()` dict): its summary.json names the
+    same generation, combat-prior sha and macro policy. Returns (matches, why); a missing dir, runs file, summary or agent name is a mismatch."""
+    if not emu_dir:
+        return False, "no emulator dir given"
+    d = Path(emu_dir)
+    if not (d / "runs.jsonl").is_file() or not (d / "summary.json").is_file():
+        return False, "no finished emulator arm in the dir"
+    try:
+        named = json.loads((d / "summary.json").read_text(encoding="utf-8")).get("agent")
+    except (OSError, ValueError):
+        return False, "unreadable summary.json"
+    if not isinstance(named, dict):
+        return False, "summary.json names no agent"
+    named = {"macro": "rules", **named}  # a summary from before the macro switch was played by the rules
+    for key in ("generation", "prior_sha256", "macro"):
+        if named.get(key) != agent.get(key, "rules" if key == "macro" else None):
+            return False, f"names another agent ({key} {named.get(key)!r}, scored {agent.get(key)!r})"
+    return True, "names the scored agent"
+
+
+def play_emu_arm(a: argparse.Namespace, agent, out: Path) -> dict:
+    """Play the scored agent on the emulator over the real block's seeds, config and process count into `out`."""
+    if a.lib:
+        os.environ["STS2_LIB_PATH"] = a.lib
+    seeds = load_seeds(a.seeds_file)[: a.runs]
+    return run_block(seeds, a.config or a.sims, a.procs, out, ascension=a.ascension, character=a.character, agent=agent)
+
+
 def score_real(a: argparse.Namespace) -> int:
-    """The real-game block: envproto `play` (lockstep on) over the seed block, then result.json with the yield keys."""
+    """The real-game block: envproto `play` (lockstep on) over the seed block, then result.json with the yield keys.
+
+    The block is paired with an emulator arm of the same agent (`--gen-dir`): `--emu-dir` is used as given when its summary.json
+    names that agent, otherwise the arm is played first on the same seeds, config and process count into `<out>-emu/`. The
+    real summary.json and compare.json record which arm paired and whether it was played."""
     import subprocess  # noqa: PLC0415
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    _setup()
+    import gen_loop  # noqa: PLC0415
+
+    agent = gen_loop.load_agent(getattr(a, "gen_dir", None) or None)
+    ok, why = emu_arm_match(a.emu_dir, agent.describe())
+    emu_dir = Path(a.emu_dir) if ok else out.with_name(out.name + "-emu")
+    if not ok:
+        print(f"emulator arm: {why}; playing it into {emu_dir.name}", file=sys.stderr)
+        play_emu_arm(a, agent, emu_dir)
+    arm = {"dir": emu_dir.name if not ok else str(a.emu_dir).replace("\\", "/"), "played": not ok, "agent": agent.describe(),
+           "reason": "played: " + why if not ok else why}
     env = dict(os.environ)
     if a.lib:
         env["STS2_LIB_PATH"] = a.lib
@@ -458,10 +502,13 @@ def score_real(a: argparse.Namespace) -> int:
     res = result_json(rows, float(summ.get("wall_s") or 0.0)) if rows else {"runs": 0}
     res["divergences"] = summ.get("diverged_decisions")
     res["character"] = a.character
+    res["emu_arm"] = arm
     (out / "result.json").write_text(json.dumps(res), encoding="utf-8")
-    if a.emu_dir and rows:
-        emu = [json.loads(x) for x in (Path(a.emu_dir) / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
-        (out / "compare.json").write_text(json.dumps(compare(emu, rows, summ), indent=1), encoding="utf-8")
+    if summ:
+        (out / "summary.json").write_text(json.dumps({**summ, "emu_arm": arm}, indent=1), encoding="utf-8")
+    if rows:
+        emu = [json.loads(x) for x in (emu_dir / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+        (out / "compare.json").write_text(json.dumps({**compare(emu, rows, summ), "emu_arm": arm}, indent=1), encoding="utf-8")
     return rc
 
 
@@ -495,6 +542,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--budget-runs", type=int, default=2000)
     t = sub.add_parser("train", help="train generation N's candidate from the last 3 generations' shards")
     t.add_argument("--gen", type=int)
+    t.add_argument("--policy-target", choices=("visits", "completed_q"), default="visits",
+                   help="the combat policy's target: root visits, or the completed-Q softmax (train_combat)")
     t.add_argument("--marker-dir", help="LAB/train: take the lowest ready-<gen> marker instead of --gen")
     t.add_argument("--shards-root", required=True)
     t.add_argument("--agent-root", required=True)
@@ -541,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     sc.add_argument("--stop-after-h", type=float, default=3.5)
     sc.add_argument("--lib")
-    sc.add_argument("--emu-dir", help="the emulator baseline to pair with (its runs.jsonl)")
+    sc.add_argument("--emu-dir", help="an emulator arm to pair with, used only when its summary.json names the agent scored (--gen-dir); otherwise the arm is played first into OUT-emu")
     sc.add_argument("--gen-dir", help="play this generation's combat prior (SPIRELINE_GEN_DIR for the search configs)")
     sc.add_argument("--out", required=True)
     for name in ("bench-env", "bench-emu"):

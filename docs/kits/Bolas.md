@@ -1,5 +1,13 @@
 # Kit Bolas (no lockstep rank or weight; rebuild-lane finding from the per-combat card uid audit; family: card lifecycle / return-to-hand queue)
 
+## Header
+- Base: fork `main` at `f1a869e0` or later (branch `cloud/combat-core-1` from the tip you clone; one commit per kit).
+- Cloud half: the scenario test (fails before, passes after), the fix, both .NET suites and the Python suite green, the PR to `main` describing each commit. Local half (the landing session on the PC): the corpus check against the stored baseline, the byte proof, EmuDump, the lockstep replay of the seeds the kit names, landing commit by commit.
+- Allowed-file footprint: `src/Sts2Emulator/Core/CombatEngine.cs` (`ReturnQueuedCardsToHandBeforeDraw`, `QueueAttackPlayLifecycleEffects`), `src/Sts2Emulator/Core/Effects/CardEffects.cs` (the Thrumming Hatchet arm only), `src/Sts2Emulator/Core/CombatObservation.cs` (the next-hand display); tests in `src/Sts2Emulator.Tests/Cards/Colorless/BolasTests.cs`. Nothing under `Core2/`, no change to the snapshot format.
+- Expected corpus footprint: the three uid-audit fights change (expected, an improvement or neutral), every other fight byte-identical; 0 regressions. The landing session counts them with `EmuDump fight --card-uid-check`.
+- Run-first counts (record them on your base before any change): PC at `f1a869e0`: Sts2Emulator.Tests 6,774 passed / 0 failed / 7 skipped (6,781), EmuDump.Tests 246, Python no new failing name; Linux cloud at `4a4b15f` (`docs/CLOUD_ENV.md`): 6,864 passed of 6,871 (7 static skips), EmuDump.Tests 281, the four Python modules 88 tests (2 data skips). Your counts may differ by the tests the base added since; the rule is 0 failed and no test changed.
+- Stop rules: stop and report if more than a return-queue change is needed, if a pile-order rule (F11) is involved, or if any existing `BolasTests` case needs its expectation changed. A stop is a report, not a failure.
+
 ## Symptom
 Found by the per-combat card uid audit (`docs/rebuild/CARD_UID.md`, rounds 2 and 3): on 3 corpus fights the old engine's turn-start return of a
 played Bolas puts a SECOND Bolas into the hand, a card no pile gave up. The audit calls it "Bolas returning while already drawn back to hand".

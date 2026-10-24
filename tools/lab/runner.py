@@ -304,6 +304,7 @@ class Runner:
                                     parent_pid=os.getppid() if a.exit_with_parent else None, stay=a.always_on)
         self.next_strategy: str | None = None  # the strategy choose() picked for the job new_run() makes next
         self.last_mix_note = ""
+        self.last_loop_note = ""
         self.code_digest0 = code_digest()  # the lab sources this process loaded; a later change on disk is not in this process
         self.code_stale_logged = ""
         self._mark = (0.0, 0.0)  # (cpu seconds, clock) at the last accounting of the running job
@@ -490,7 +491,8 @@ class Runner:
 
     def ladder_top(self, sha: str) -> str:
         """The agent-era kinds that outrank the fights rotation (docs/PLAN.md section 7), highest priority first: score-real (2),
-        train (3), selfplay when its configured share of the CPU time is not yet spent (6, `share` in LAB/jobs.json), the
+        train (3), selfplay when the loop (selfplay + train + score-real) has not yet used its configured share of the last 7 days' CPU
+        (6, `share` in LAB/jobs.json; an empty window means self-play first; all-time `strategy_cpu` is a statistic only), the
         benches (7, nightly, the lab otherwise idle: a running job was resumed before this point and a ready score-real or
         train came first). Presort (1) is decided before, aimed fights (4), runs and rank (5) and the rest (7) by the rotation and the
         mix. A kind that is off or not ready is passed over quietly (its reason is only logged when it was due)."""
@@ -500,9 +502,15 @@ class Runner:
                 return kind
         share = float(cfg["selfplay"].get("share") or 0)
         if share > 0 and cfg["selfplay"].get("enabled"):
-            spent = self.state.get("strategy_cpu", {})
-            total = sum(float(v) for v in spent.values()) or 0.0
-            if float(spent.get("selfplay", 0.0)) < share * total or total == 0.0:
+            loop, total, by = mix.loop_cpu(self.lab.root)  # the loop's share of the last 7 days, not of all time
+            note = (f"self-play loop: {100 * loop / total:.1f}% of the last {mix.WINDOW_DAYS} days' CPU "
+                    f"({', '.join(f'{k} {by.get(k, 0.0):.0f}' for k in jobs.LOOP_KINDS)} of {total:.0f} min) against its share "
+                    f"{100 * share:.0f}%" if total > 0 else
+                    f"self-play loop: no CPU in the last {mix.WINDOW_DAYS} days in LAB/yield.tsv: self-play first")
+            if note != self.last_loop_note:
+                self.last_loop_note = note
+                self.log(note)
+            if total <= 0.0 or loop < share * total:
                 if self.kind_ready("selfplay", sha):
                     return "selfplay"
         for kind in jobs.BENCHES:

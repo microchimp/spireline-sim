@@ -10,7 +10,7 @@ game, its decompile, the corpus or any recording, `data/` beyond what the fork h
 inputs are the migration doc, the port list and the fork's own sources, and whose acceptance is unit tests. A LOCAL item needs the
 decompile, the corpus, a trace, the game, the PC's built EmuDump, or coordination with a round in flight (R4 edits the same old files).
 
-**Verdict: separable.** 48 of the 106 reached models (59 of the 150 gate pairs) are CLOUD handler work, in six branches; the five listed repo-only
+**Verdict: separable.** 45 of the 106 reached models (55 of the 150 gate pairs) are CLOUD handler work, in six branches; the five listed repo-only
 nits are CLOUD, in two branches; everything else is LOCAL. The blocking prerequisite H0 (handler access to the state) is done.
 
 ## 0. H0: done (landed with these briefs)
@@ -31,16 +31,16 @@ second wave once the pilot has proven the pattern.
 | batch | CLOUD models (branch) | LOCAL models, and why |
 |---|---|---|
 | pilot: power-5, relic-2, card-1 (8 models, 9 pairs) | Phantom Blades, Lethality, Tracking, Double Damage, Hand Drill, The Boot, Vitruvian Minion, Melancholy (`cloud/f08-pilot`) | none |
-| power-1 (15) | Strength, Vulnerable, Weak, Thorns, Ravenous, Vigor, Tank, Colossus, Shriek, Flame Barrier (10 models, 10 pairs, `cloud/f08-power-1`) | Shrink (open: AfterDeath and AfterRemoved have no old location); Minion (open pseudo ShouldPowerBeRemovedAfterOwnerDeath); Inferno, Rupture (Core2's `CreatureCmd.Damage` already calls the old player-side body `CardEffects.AfterPlayerDamageReceived`; the handler takes the line over in step with R4); Knockdown (not modelled, nothing to port) |
+| power-1 (15) | Strength, Vulnerable, Weak, Thorns, Vigor, Tank, Colossus, Shriek, Flame Barrier (9 models, 9 pairs, `cloud/f08-power-1`) | Ravenous (`Ravenous_AfterDeath` acts on every holder in one call, so it is split per owner in `Core/` first: the independent review, section 3.3); Shrink (open: AfterDeath and AfterRemoved have no old location); Minion (open pseudo ShouldPowerBeRemovedAfterOwnerDeath); Inferno, Rupture (Core2's `CreatureCmd.Damage` already calls the old player-side body `CardEffects.AfterPlayerDamageReceived`; the handler takes the line over in step with R4); Knockdown (not modelled, nothing to port) |
 | power-2 (15) | Slippery, Buffer, Intangible, Surprise, Possess Speed, Possess Strength, Tainted, Swipe, Gigantification (9 models, 14 pairs, `cloud/f08-power-2`) | Curl Up (its block gain is a `GainBlock` command in section 4's table, F09, not built); The Gambit (the handler must call `Kill([player])`, together with R4's gate at its old inline zeroing); Paper Cuts (needs item 9's `SetMaxHp`/`LoseMaxHp`, not built); Imbalanced, Vital Spark (open); Illusion (ShouldAllowHitting's old location is `CombatEngine.IsPrimaryEnemy`, which R5 left unextracted, and a living Illusion is primary in Core2 only: R3b's known difference) |
-| power-3 (15) | Flutter, Personal Hive, Stock, Asleep, Plow, Crab Rage, Surrounded, Soar (8 models, 11 pairs, `cloud/f08-power-3`) | Slow (open: mechanism B, the fold-mul over SlowAmount, no old location); Hard to Kill (open ModifyDamageCap); Reattach, Slumber, Hex, Dampen, Sandpit (open pseudo AfterRemoved or ShouldPowerBeRemovedAfterOwnerDeath) |
+| power-3 (15) | Flutter, Personal Hive, Plow, Crab Rage, Surrounded, Soar (6 models, 8 pairs, `cloud/f08-power-3`) | Asleep (ported locally in batch L2); Stock (held: `TryRespawnAxebot` revives the enemy in place and Core2's `Kill` removes it from the roster, so it waits for a `CreatureCmd.Add`); Slow (open: mechanism B, the fold-mul over SlowAmount, no old location); Hard to Kill (open ModifyDamageCap); Reattach, Slumber, Hex, Dampen, Sandpit (open pseudo AfterRemoved or ShouldPowerBeRemovedAfterOwnerDeath) |
 | power-4 (15) | Infested, Constrict, Heist, Calcify, Accuracy, Sic 'Em (6 models, 7 pairs, `cloud/f08-power-4`) | Conqueror (ported locally in R4c: Sovereign Blade's one AttackCmd needs it); Adaptable, Steam Eruption, Painful Stabs, Burrowed, Tangled, Ringing (open pseudo pairs); Hang (open); Hardened Shell (its counter `HardenedShellDamageThisTurn` is owned by Core2 in `OldState.Damage.cs`; the handler takes that line over, which edits Core2) |
 | relic-1 (15) | Tungsten Rod, Strike Dummy, Pen Nib, Gremlin Horn, Miniature Cannon, Mystic Lighter, Fake Strike Dummy (7 models, 8 pairs, `cloud/f08-relic-1`) | Self-Forming Clay, Centennial Puzzle, Demon Tongue, Red Skull (same Core2 call of the player-side body as Inferno and Rupture); Beating Remnant (its AfterDamageReceived tally `UnblockedDamageThisTurn` is Core2-owned); Lizard Tail (player-death prevention, coupled to `Kill`, `PlayerIsDead` and R4); Meat on the Bone, Lava Lamp (open) |
 | monster-1 (15), monster-2 (7) | none | All 22 monsters: every pair is open (no old location; 19 + 8 pairs, most pseudo-hooks `BeforeRemovedFromRoom`/`Died`, the rest AfterDeath, AfterCurrentHpChanged, BeforeDeath of the Decimillipede segments, Crusher, Rocket, Vantom, Aeonglass, Soul Fysh, Kin Priest, The Insatiable, Waterfall Giant, Lagavulin Matriarch, Test Subject, Queen); the bodies sit in `EndTurn`, `ExecuteIntent` and the factories and are read from the decompile; Opus |
 | potion-1 | none | Fairy in a Bottle: AfterPreventingDeath open; ShouldDie's location is the slot lookup `PlayerIsDead` and `IsAboutToLose` share (R5 left it) |
 
-Pair arithmetic against the gate (150 pairs without a handler): 59 CLOUD (pilot 9, power-1 10, power-2 14, power-3 11, power-4 7, relic-1 8),
-42 registered pairs of LOCAL models, 49 open pairs (22 hook pairs, 27 pseudo-hook pairs; no old location, each is read in its batch). Five
+Pair arithmetic against the gate (150 pairs without a handler): 55 CLOUD (pilot 9, power-1 9, power-2 14, power-3 8, power-4 7, relic-1 8; Stock and Asleep moved out of power-3 after batch L2, Ravenous out of power-1 after the independent review, Conqueror out of power-4 for R4c),
+46 registered pairs of LOCAL models, 49 open pairs (22 hook pairs, 27 pseudo-hook pairs; no old location, each is read in its batch). Five
 not-modelled pairs need no handler.
 
 ## 2. Everything else (MIGRATION_F08 sections 3, 7; TIER1 section 7; PLAN P0)
@@ -97,6 +97,13 @@ row names, and say so in the PR. Order among listeners of one pass is the dispat
 name test against a tag test, a missing pet case), the handler follows the old function, the comment says the game's rule, and the PR lists it for
 `MIGRATION_F08.md`'s R7 checks list; where the old site has no such condition at all the handler follows the game.
 
+**Event handlers act for their owner alone** (the independent review, `docs/reviews/2026-10-24-f08-migration.md` section 3.3). The dispatcher calls a
+handler once per listener, so a handler must act for `k.Owner(self)` only. An old body that loops over every holder (or every creature) in one
+call would run N times with N holders: apply the stop rule (it needs a per-owner split in `Core/`, an old-engine edit) and list it. For a death
+hook the old site runs inside the loop over the fallen; the handler gets the dead creature as an argument, so its condition is "the dead creature
+is my owner" for the dying creature's own powers (Surprise, Possess Speed, Possess Strength, Swipe, Infested, Heist) and "my owner survives" for
+a survivor's (Crab Rage); read the game override for the rest (Constrict, Surrounded's `TurnPlayerToFaceSurvivor`) and name the condition in the PR.
+
 **Stop rules (report, do not fix).** If the named function is missing, `private`, still inline in a shared site, or its signature does not fit
 the handler's arguments, skip that model and list it in the PR: extraction and visibility are old-engine edits and need the byte proof. If a
 body deals damage, loses HP or kills (Thorns and Flame Barrier retaliate; read every other body for it),
@@ -115,8 +122,9 @@ the model's registration left out (`Without(Registry.<Block>, <Class>.Register)`
 override only presents (a flash, a sound, an animation) has no state to differ: say so in the test, with the reason, and do not fake a mutant (The Boot's
 `AfterModifyingHpLostAfterOsty` is the example); (4) with F08 off the model's pairs are absent from the table; (5) the N-holder test: where the model can be
 held by two creatures (or two copies) in one combat, build it with `Holders` (or `GivePower` twice, `Hold` twice, `Add` twice) and show that a dispatch about one creature
-changes that holder's listener and no other, and counts once. The death hooks (`AfterDeath`, `BeforeDeath`, `ShouldDie`) are tested with the kit's
-builders, and a handler that reads the dying creature inside `Dying`. The batch also has one table test: the (model, hook) set of the batch's `Registry` block
+changes that holder's listener and no other, and counts once; for an event handler the result equals one direct call of the old body per owner. The death hooks
+(`AfterDeath`, `BeforeDeath`, `ShouldDie`) are tested with the kit's builders, and a body that reads the dying creature or the roster (Crab Rage, Surrounded) is
+dispatched inside `Dying` (marked dying, still listed), as the game's override sees it. The batch also has one table test: the (model, hook) set of the batch's `Registry` block
 equals the batch's pair list written out in the test (identifiers only), which stands in for `EmuDump kernel-handlers` and
 `python -m tools.kernel.port_list --gate --families F08 F10` (these need the manifest, the decompile and a built EmuDump, so they are local; run
 `EmuDump kernel-handlers out.json` only if EmuDump builds in the cloud), plus one test that `Registry.All` holds the block. Also run `python -m tools.kernel.gen_hooks --check` and
@@ -148,14 +156,14 @@ and the shared `ModelTestKit.cs` with its `ModelTestKitTests.cs`. The pilot's fi
 card, bind a kernel with the test switch, dispatch; death-hook builders, `Dying`, holders, Osty) that the five later batches reuse unchanged. Tests and local gate: as the shared
 rules; the pilot's gate also reviews the kit and the `Registry.cs` layout before the others start.
 
-### C2: `cloud/f08-power-1` (10 models, 10 pairs)
+### C2: `cloud/f08-power-1` (9 models, 9 pairs)
 
 Inputs: port-list rows power-1. Old functions: `BuffSystem.Strength_ModifyDamageAdditive`, `Vigor_ModifyDamageAdditive`,
 `Weak_ModifyDamageMultiplicative`, `Vulnerable_ModifyDamageMultiplicative` (its second location, `EnemyAI.DealAttackDamage`, is the old enemy-attack
 fold: the handler ports the one fold, not both), `Tank_ModifyDamageMultiplicative`; `EnemyAI.Colossus_ModifyDamageMultiplicative`;
-`CombatEngine.Ravenous_AfterDeath` (AfterDeath event); Thorns' BeforeDamageReceived: `CardEffects.TriggerEnemyThorns` (enemy-owned) and
+Thorns' BeforeDamageReceived: `CardEffects.TriggerEnemyThorns` (enemy-owned) and
 `EnemyAI.ApplyPlayerThorns` (player-owned), one handler choosing by the owner's side as the two call sites do (re-entry: retaliation damage);
-`EnemyAI.TriggerShriekIfWounded` (Shriek, AfterDamageReceived); `EnemyAI.ApplyPlayerFlameBarrier` (Flame Barrier, AfterDamageReceived; re-entry). Files: ten classes under `Core2/Models/Powers/` (namespace `Sts2Emulator.Core2.Models.Powers`, `internal static class <GameClass>`), the `Power1` block in `Registry.cs` (and `.. Power1,` in `All`),
+`EnemyAI.TriggerShriekIfWounded` (Shriek, AfterDamageReceived); `EnemyAI.ApplyPlayerFlameBarrier` (Flame Barrier, AfterDamageReceived; re-entry). Files: nine classes under `Core2/Models/Powers/` (namespace `Sts2Emulator.Core2.Models.Powers`, `internal static class <GameClass>`), the `Power1` block in `Registry.cs` (and `.. Power1,` in `All`),
 `src/Sts2Emulator.Tests/Core2/Models/PowerOneTests.cs`. Strength, Vigor, Weak, Vulnerable, Tank and Colossus test the dealer: read each override for the pet case and use `c.IsOwnerOrPet`
 where the game has it. Tests: shared rules, plus the
 integer-versus-decimal check for the damage folds (a handler returns the addend or the factor as a `decimal`; the one cast to int stays in `CreatureCmd.Damage`). Local gate: the shared
@@ -174,15 +182,13 @@ running minimum); `Surprise_ShouldStopCombatFromEnding` is also exercised throug
 closes one of R3b's known differences for Surprise. Local gate: the shared list, plus the decompile review of the Intangible cap and the HP-loss passes against R2's
 fold tests.
 
-### C4: `cloud/f08-power-3` (8 models, 11 pairs)
+### C4: `cloud/f08-power-3` (6 models, 8 pairs)
 
 Inputs: rows power-3. Old functions: `BuffSystem.Flutter_ModifyDamageMultiplicative` and `CardEffects.Flutter_AfterDamageReceived`, `CardEffects.PersonalHive_AfterDamageReceived`,
-`CombatEngine.TryRespawnAxebot` (Stock, AfterDeath) and `Stock_ShouldStopCombatFromEnding`, `EnemyAI.WakeMatriarchIfStruck` (Asleep; the same function serves the LOCAL Lagavulin
-Matriarch, so the handler passes the Asleep case only), `EnemyAI.TriggerPlowIfWounded`, `CombatEngine.TryEnrageCrabPartner` (Crab Rage), `BuffSystem.Surrounded_ModifyDamageMultiplicative`
-with `CombatEngine.FacePast` and `TurnPlayerToFaceSurvivor` (Surrounded, AfterDeath), `BuffSystem.Soar_ModifyDamageMultiplicative`. Files: eight classes under
-`Core2/Models/Powers/`, the `Power3` block in `Registry.cs`, `PowerThreeTests.cs`; the death hooks use the kit's builders and `Dying`, and Stock, Asleep and Crab Rage run the N-holder test. Tests: shared rules; Stock's AfterDeath keeps the corpse rule of R3a (`AxebotDeathStrips`: the kernel keeps Stock
-for `TryRespawnAxebot`), so the test runs it through `CreatureCmd.Kill` with an Axebot-shaped combat as `KillCommandTests` does. Read the `Surrounded_ModifyDamageMultiplicative`
-body, not its doc comment (the comment says the caller keeps the condition; C9). Local gate: the shared list; the review checks Stock's respawn HP writes against R4's list.
+`EnemyAI.TriggerPlowIfWounded`, `CombatEngine.TryEnrageCrabPartner` (Crab Rage), `BuffSystem.Surrounded_ModifyDamageMultiplicative`
+with `CombatEngine.FacePast` and `TurnPlayerToFaceSurvivor` (Surrounded, AfterDeath), `BuffSystem.Soar_ModifyDamageMultiplicative`. Files: six classes under
+`Core2/Models/Powers/`, the `Power3` block in `Registry.cs`, `PowerThreeTests.cs`; the death hooks use the kit's builders and `Dying`, and Crab Rage and Surrounded run the N-holder test. Tests: shared rules. Read the `Surrounded_ModifyDamageMultiplicative`
+body, not its doc comment (the comment says the caller keeps the condition; C9). Local gate: the shared list. Do not port Stock or Asleep (see the table).
 
 ### C5: `cloud/f08-power-4` (6 models, 7 pairs)
 

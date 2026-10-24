@@ -14,7 +14,8 @@ generation N+1 is generation N's candidate once `promote` accepts it. A self-pla
   values (`qvals`, for a completed-Q target), the fight's final HP (the value label), and `fights` = the run's index in
   its part so `train_combat`'s validation split by "fight" is a split by RUN.
 
-The live search has no Gumbel root (A3 report: no Gumbel knobs exist), so the target is the root visit distribution.
+The live search has no Gumbel root (A3 report: no Gumbel knobs exist), so the target is the root visit distribution by
+default; `--policy-target completed_q` trains on the softmax of the root's completed `qvals` instead.
 
 Native code is imported inside the functions that need it; the maths and the shard format import none.
 """
@@ -410,7 +411,7 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     Returns the arrays plus counts per generation."""
     from prior_loop.loop import merge_datasets  # noqa: PLC0415
 
-    sources, per_gen, ixs = [], {}, []
+    sources, per_gen, ixs, qs = [], {}, [], []
     for d, m in manifests:
         for name in m.get("combat_parts", []):
             blob = read_part(d / name)
@@ -421,10 +422,13 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
                 continue
             per_gen[g] = per_gen.get(g, 0) + int(blob["lengths"].size)
             ixs.append(blob["fight_ix"])
+            qs.append(blob.get("qvals"))
             sources.append((len(sources), d / name))
     if not sources:
         raise ValueError("no combat samples in the window")
     merged = merge_datasets(sources)  # offsets each part's run index, so a run id is unique over the window
+    if all(q is not None for q in qs):  # merge_datasets keeps prior_loop's keys; the completed-Q target needs these
+        merged["qvals"] = np.concatenate(qs)
     key = merged["fights"] * 4096 + np.concatenate(ixs)  # a fight = (run, fight_ix in the run)
     uniq, inv = np.unique(key, return_inverse=True)
     n_all = int(uniq.size)
@@ -471,7 +475,8 @@ def _device(requested: str | None) -> str:
 
 
 def train_combat_prior(data: dict[str, np.ndarray], out: Path, *, device: str | None = None, epochs: int = 16, d_model: int = 128,
-                       layers: int = 2, threads: int = 6, seed: int = 0) -> dict[str, Any]:
+                       layers: int = 2, threads: int = 6, seed: int = 0, policy_target: str = "visits",
+                       q_temperature: float | None = None) -> dict[str, Any]:
     """Fit the policy and value heads with `train_combat.train` (prior_loop's trainer, its settings and its checkpoints)."""
     import argparse  # noqa: PLC0415
 
@@ -488,7 +493,8 @@ def train_combat_prior(data: dict[str, np.ndarray], out: Path, *, device: str | 
     torch.set_num_threads(threads)
     args = argparse.Namespace(epochs=epochs, value_lambda=0.0, seed=seed, bucket=5, batch=64, lr=3e-4, policy_weight=1.0,
                               d_model=d_model, layers=layers, heads=4, ablate_endturn=True, plain_cards=False, fraction=1.0,
-                              device=dev)
+                              device=dev, policy_target=policy_target,
+                              q_temperature=train_combat.Q_TEMPERATURE if q_temperature is None else q_temperature)
     saved = {n: getattr(train_combat, n) for n in ("DATASET", "CHECKPOINT", "POLICY_CHECKPOINT")}
     cap = io.StringIO()
     t0, c0 = time.perf_counter(), time.process_time()
@@ -511,7 +517,8 @@ def train_combat_prior(data: dict[str, np.ndarray], out: Path, *, device: str | 
 
     return {"device": dev, "epochs": epochs, "d_model": d_model, "layers": layers, "wall_min": (time.perf_counter() - t0) / 60,
             "cpu_min": (time.process_time() - c0) / 60, "report": parse_train_report(text), "curves": parse_curves(text),
-            "samples": int(data["lengths"].size)}
+            "samples": int(data["lengths"].size), "policy_target": policy_target,
+            "q_temperature": args.q_temperature if policy_target == "completed_q" else None}
 
 
 def write_prior_model_json(out: Path, generation: int, probe: bool = False) -> dict:
@@ -527,16 +534,18 @@ def write_prior_model_json(out: Path, generation: int, probe: bool = False) -> d
 def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base_sims: int, ascension: int, threads: int = 6) -> dict:
     """Fit FightNet and V_run (DMC target, `run_train.train.fit`) on the window's run records."""
     import torch  # noqa: PLC0415
+    from run_train import keep  # noqa: PLC0415
     from run_train import train as rt  # noqa: PLC0415
     from run_train.engine import CombatBudget  # noqa: PLC0415
 
     t0, c0 = time.perf_counter(), time.process_time()
     pt = Path(out) / "run_value.pt"
     rt.fit(shard_paths, None, pt, generation=generation, combat_budget=CombatBudget(base_sims, base_sims), ascension=ascension,
-           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads))
+           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads), evaluate=keep.evaluate_value_net)
     meta = torch.load(pt, map_location="cpu", weights_only=True)["meta"]
+    value = dict(meta.get("value") or {})
     return {"wall_min": (time.perf_counter() - t0) / 60, "cpu_min": (time.process_time() - c0) / 60,
-            "fight": meta.get("fight"), "value": meta.get("value"), "config": meta.get("config")}
+            "fight": meta.get("fight"), "value": value, "config": meta.get("config")}
 
 
 # ------------------------------------------------------------------ ONNX
@@ -688,9 +697,15 @@ def export_all(out: Path, probe_tokens=None) -> dict[str, Any]:
     return res
 
 
+def macro_for(keep_doc: dict[str, Any] | None, cand: Path) -> str:
+    """`vrun` when the V_run keep record passes every computable condition and the candidate holds its export, else `rules`."""
+    ok = bool(keep_doc and keep_doc.get("all_computable_pass"))
+    return "vrun" if ok and (Path(cand) / "run_value.npz").is_file() else "rules"
+
+
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
                      max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
-                     seed_dir: Path | None = None, retrain: int = 0) -> Path:
+                     seed_dir: Path | None = None, retrain: int = 0, policy_target: str = "visits") -> Path:
     """Train generation `gen`'s candidate (the next generation's) from the last GEN_WINDOW generations' shards."""
     from run_train import shards as rs  # noqa: PLC0415
 
@@ -711,10 +726,11 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
                                for g in sorted({int(m["generation"]) for _, m in mans})},
         "samples_available": {str(int(g)): int(n) for g, n in data["_samples_by_generation"]},
         "fights_available": int(data["_fights_available"][0]), "fights_kept": int(data["_fights_kept"][0]),
-        "samples_trained": int(data["lengths"].size), "target": "root visits (live search has no Gumbel root)",
+        "samples_trained": int(data["lengths"].size), "target": "root visits (live search has no Gumbel root)" if policy_target == "visits" else policy_target,
         "validation": "by run (train_combat splits on the `fights` column, which holds the run index)",
         "build_s": round(time.perf_counter() - t0, 1)}
-    doc["combat"] = train_combat_prior(data, cand, device=device, epochs=epochs, threads=threads, seed=gen)
+    doc["combat"] = train_combat_prior(data, cand, device=device, epochs=epochs, threads=threads, seed=gen,
+                                       policy_target=policy_target)
     write_prior_model_json(cand, gen + 1)
     base_sims = int(mans[0][1]["base_sims"])
     if vrun:
@@ -726,12 +742,28 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         doc["onnx"] = export_all(cand)
     doc["cpu_min_total"] = round(doc["combat"]["cpu_min"] + doc.get("run_value", {}).get("cpu_min", 0.0), 2)
     doc["wall_min_total"] = round(doc["combat"]["wall_min"] + doc.get("run_value", {}).get("wall_min", 0.0), 2)
-    # V_run drives macro choices only once its DESIGN 5.3 keep conditions are shown; until then the rules play outside fights
-    write_json(cand / "agent.json", {"generation": gen + 1, "macro": "rules", "trained_from": gen, "written": utc_now(),
-                                     "note": "macro stays rules until V_run passes DESIGN 5.3 (Brier vs base rate and V0, ECE)"})
+    # V_run drives macro choices only once its DESIGN 5.3 keep conditions are shown (run_train.keep); until then the rules play
+    # outside fights. The record sits in train.json under vrun_keep; the agent.json macro follows its verdict.
+    keep_doc = (doc.get("run_value", {}).get("value") or {}).pop("keep", None)
+    doc["vrun_keep"] = keep_doc if keep_doc is not None else {"status": "not_run", "all_computable_pass": False}
+    macro = macro_for(doc["vrun_keep"], cand)
+    doc["vrun_keep"]["note"] = vrun_keep_note(macro)
+    write_json(cand / "agent.json", {"generation": gen + 1, "macro": macro, "trained_from": gen, "written": utc_now(),
+                                     "note": ("V_run passed every computable DESIGN 5.3 keep condition (Tier-B regret and the battery "
+                                              "are not computed): it picks macro options" if macro == "vrun" else
+                                              "macro stays rules until V_run passes DESIGN 5.3 (Brier vs base rate and V0, ECE)")})
     write_json(cand / "train.json", doc)
     shutil_rmtree(cand / "work")
     return cand
+
+
+def vrun_keep_note(macro: str) -> str:
+    """train.json's vrun_keep note: what the macro verdict means for the candidate's E-block."""
+    if macro == "vrun":
+        return ("V_run passed the computable keep conditions only (Tier-B regret and the battery are not computed); the candidate "
+                "plays a new combat prior and V_run's macro together, so its E-block judges them together and a gain or a loss "
+                "cannot be attributed to one of them")
+    return "macro stays rules: the E-block judges the combat prior alone"
 
 
 def shutil_rmtree(p: Path) -> None:

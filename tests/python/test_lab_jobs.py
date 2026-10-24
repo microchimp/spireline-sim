@@ -151,14 +151,61 @@ class LadderTest(Base):
         jb._atomic(self.lab_dir / "score" / "last-ok", "now\n")
         self.assertEqual("selfplay", r.choose("abc")[0])
 
-    def test_selfplay_share_runs_it_ahead_of_the_rotation_until_its_share_is_spent(self):
+    def window(self, rows: dict[str, float], days_ago: float = 1.0):
+        """Rows in LAB/yield.tsv that finished `days_ago` days back: strategy -> CPU minutes."""
+        t = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days_ago * 86400))
+        for strategy, cpu_min in rows.items():
+            mix.append_yield(self.lab_dir, {"utc": t, "job": "j-" + strategy, "strategy": strategy, "rc": 0, "cpu_min": cpu_min})
+
+    def fights_only(self):
         self.config(selfplay={"share": 0.5})
         pl.PLANS["fights"] = lambda c: [pl.Step("a", [pl.Cmd("x", ["{py}", "-c", "pass"], core=True)])]
-        r = self.runner()
-        r.state["strategy_cpu"] = {"aimed-bugs": 100.0, "selfplay": 10.0}
+        return self.runner()
+
+    def test_selfplay_share_runs_it_ahead_of_the_rotation_until_its_share_is_spent(self):
+        r = self.fights_only()
+        self.window({"aimed-bugs": 100.0, "selfplay": 10.0})
         self.assertEqual("selfplay", r.choose("abc")[0])
-        r.state["strategy_cpu"] = {"aimed-bugs": 100.0, "selfplay": 100.0}
+        self.window({"selfplay": 90.0}, days_ago=0.5)
         self.assertEqual("fights", r.choose("abc")[0])
+
+    def test_the_share_is_the_loop_of_selfplay_plus_train_plus_score_real_not_selfplay_alone(self):
+        r = self.fights_only()
+        r.state["strategy_cpu"] = {"aimed-bugs": 100.0, "selfplay": 10.0}  # all-time, a statistic: it does not decide
+        self.window({"aimed-bugs": 40.0, "selfplay": 30.0, "train": 30.0})  # 60% of the window is the loop
+        job, _, why = r.choose("abc")
+        self.assertEqual("fights", job)
+        self.assertIn("rotation", why)
+
+    def test_selfplay_gets_the_slot_while_the_loop_is_under_its_share(self):
+        r = self.fights_only()
+        r.state["strategy_cpu"] = {"aimed-bugs": 100.0, "selfplay": 100.0}  # all-time says spent; the window says 30%
+        self.window({"aimed-bugs": 70.0, "selfplay": 20.0, "train": 10.0})
+        self.assertEqual("selfplay", r.choose("abc")[0])
+
+    def test_score_real_cpu_counts_for_the_loop_and_the_benches_do_not(self):
+        r = self.fights_only()
+        self.window({"aimed-bugs": 40.0, "selfplay": 20.0, "score-real": 20.0, "bench-emu": 20.0})
+        self.assertEqual("selfplay", r.choose("abc")[0])  # 40 of 100: under 50%
+        self.window({"score-real": 20.0}, days_ago=0.5)
+        self.assertEqual("fights", r.choose("abc")[0])  # 60 of 120 is at the share, no longer under it
+
+    def test_cpu_older_than_seven_days_does_not_count(self):
+        r = self.fights_only()
+        self.window({"selfplay": 600.0, "train": 300.0}, days_ago=8.0)  # long ago: past the window
+        self.window({"aimed-bugs": 90.0, "selfplay": 10.0}, days_ago=2.0)
+        r.state["strategy_cpu"] = {"aimed-bugs": 90.0, "selfplay": 610.0, "train": 300.0}
+        self.assertEqual("selfplay", r.choose("abc")[0])  # 10 of 100 in the window
+        self.window({"selfplay": 300.0}, days_ago=6.5)  # inside the window it counts again
+        self.assertEqual("fights", r.choose("abc")[0])
+
+    def test_no_cpu_in_the_window_means_selfplay_first_and_the_log_says_so(self):
+        r = self.fights_only()
+        self.window({"selfplay": 600.0, "aimed-bugs": 400.0}, days_ago=9.0)  # only old rows: an empty window
+        self.assertEqual("selfplay", r.choose("abc")[0])
+        self.assertIn("self-play first", (self.lab_dir / "runner.log").read_text(encoding="utf-8"))
+        (self.lab_dir / "yield.tsv").unlink()  # no file at all is the same
+        self.assertEqual("selfplay", r.choose("abc")[0])
 
     def test_fights_wait_while_a_score_window_is_open_and_a_stale_marker_does_not_block(self):
         self.config()
