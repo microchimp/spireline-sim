@@ -29,6 +29,7 @@ public class PilotTests
         (ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "DoubleDamagePower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Relic, "VitruvianMinion", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Relic, "HandDrill", HookId.AfterDamageGiven),
         (ListenerKind.Relic, "TheBoot", HookId.AfterModifyingHpLostAfterOsty),
         (ListenerKind.Relic, "TheBoot", HookId.ModifyHpLostAfterOstyLate),
     ];
@@ -491,5 +492,96 @@ public class PilotTests
     {
         AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Relic, "TheBoot", HookId.ModifyHpLostAfterOstyLate,
             HookId.AfterModifyingHpLostAfterOsty);
+    }
+
+    // ---------------------------------------------------------------------------------------- Hand Drill (relic-2)
+
+    /// <summary>The player holding Hand Drill, one slug with 3 block.</summary>
+    private static (CombatState S, ListenerRef Relic) HandDrillCombat(int block = 3)
+    {
+        var s = Combat(40);
+        s.Enemies[0].Block = block;
+        return (s, Hold(s, RelicEffects.HandDrill));
+    }
+
+    private static int Vulnerable(EnemyState e) => BuffSystem.Get(e.Buffs, BuffId.Vulnerable);
+
+    [Fact]
+    public void HandDrillIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Pilot), ListenerKind.Relic, "HandDrill", HookId.AfterDamageGiven);
+    }
+
+    [Fact]
+    public void HandDrillAppliesTheOldBodysVulnerableWhenAHitBreaksBlock()
+    {
+        // game: HandDrill.AfterDamageGiven on result.WasBlockBroken; old: CardEffects.LandDamageOnEnemy calls
+        // RelicEffects.ApplyAfterBlockBroken(state, target) when block was there before the hit and is 0 after it.
+        var (s, _) = HandDrillCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Pilot);
+
+        var r = Assert.Single(Hit(k, OldCreature.Of(slug), 5m));
+
+        Assert.True(r.WasBlockBroken);
+        Assert.Equal(38, slug.Hp);
+        var oracle = HandDrillCombat().S;
+        RelicEffects.ApplyAfterBlockBroken(oracle, oracle.Enemies[0]);
+        Assert.Equal(Vulnerable(oracle.Enemies[0]), Vulnerable(slug));
+        Assert.Equal(2, Vulnerable(slug));
+
+        // A hit that leaves block standing, one on no block, and one exactly the size of the block (broken, fully
+        // blocked): the old site's rule.
+        var (s2, _) = HandDrillCombat(block: 9);
+        var k2 = Kernel(s2, Pilot);
+        Assert.False(Assert.Single(Hit(k2, OldCreature.Of(s2.Enemies[0]), 5m)).WasBlockBroken);
+        Assert.Equal(0, Vulnerable(s2.Enemies[0]));
+        var (s3, _) = HandDrillCombat(block: 0);
+        var k3 = Kernel(s3, Pilot);
+        Assert.False(Assert.Single(Hit(k3, OldCreature.Of(s3.Enemies[0]), 5m)).WasBlockBroken);
+        Assert.Equal(0, Vulnerable(s3.Enemies[0]));
+        var (s4, _) = HandDrillCombat(block: 5);
+        var k4 = Kernel(s4, Pilot);
+        Assert.True(Assert.Single(Hit(k4, OldCreature.Of(s4.Enemies[0]), 5m)).WasBlockBroken);
+        Assert.Equal(2, Vulnerable(s4.Enemies[0]));
+    }
+
+    [Fact]
+    public void HandDrillDoesNothingForAnEnemysHitOrAKilledTarget()
+    {
+        // An enemy breaking the player's block is not the relic's owner's hit; a target the hit kills is not alive for
+        // the old body (its Hp > 0 check), so no Vulnerable lands on the corpse.
+        var (s, _) = HandDrillCombat();
+        s.PlayerBlock = 3;
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Pilot);
+        Assert.True(Assert.Single(Hit(k, OldCreature.Player, 5m, dealer: OldCreature.Of(slug))).WasBlockBroken);
+        Assert.Equal(0, BuffSystem.Get(s.PlayerBuffs, BuffId.Vulnerable));
+
+        var (s2, _) = HandDrillCombat();
+        var dying = s2.Enemies[0];
+        dying.Hp = 2;
+        var k2 = Kernel(s2, Pilot);
+        k2.Commands.KillStandIn = (_, _) => { }; // the kill would strip the corpse's powers: keep them to look
+        var r = Assert.Single(Hit(k2, OldCreature.Of(dying), 9m));
+        Assert.True(r.WasBlockBroken);
+        Assert.True(r.WasTargetKilled);
+        Assert.Equal(0, Vulnerable(dying));
+    }
+
+    [Fact]
+    public void HandDrillDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = HandDrillCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Without(Pilot, HandDrill.Register));
+        Assert.True(Assert.Single(Hit(k, OldCreature.Of(slug), 5m)).WasBlockBroken);
+        Assert.Equal(0, Vulnerable(slug));
+    }
+
+    [Fact]
+    public void HandDrillIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Relic, "HandDrill", HookId.AfterDamageGiven);
     }
 }

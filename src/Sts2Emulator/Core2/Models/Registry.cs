@@ -20,6 +20,7 @@ public static class Registry
         DoubleDamagePower.Register,
         VitruvianMinion.Register,
         TheBoot.Register,
+        HandDrill.Register,
     ];
 
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
