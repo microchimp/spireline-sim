@@ -30,7 +30,10 @@ public static class RunNativeExports
     // v25: Sts2Run_ReanchorFightHidden puts the fight on a record that carries the game's streams and the draw pile in
     // order (its flags say which), and Sts2Run_DebugSetStreams puts the run's streams on the game's counters (the
     // lockstep's re-anchor at a fight start and at a room entry; referee/lockstep.py).
-    public const int RUN_NATIVE_API_VERSION = 25;
+    // v26: Sts2Run_ResetAs starts a run as any of the five characters; the run's action mask carries a discard action
+    // per held potion (RunConstants.DiscardPotionAction) beside the use actions; Sts2Run_PotionActionReason says why a
+    // use or discard action is refused (referee/lockstep.py maps the referee's potion labels onto them).
+    public const int RUN_NATIVE_API_VERSION = 26;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -160,6 +163,71 @@ public static class RunNativeExports
         run.Reset(seed, ascension);
         run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
         return 0;
+    }
+
+    /// <summary>
+    /// Start a new run on this handle as <paramref name="character" /> (a <see cref="PlayerCharacter" /> index: 0
+    /// Ironclad, 1 Silent, 2 Regent, 3 Necrobinder, 4 Defect) at the given ascension level: that character's start
+    /// deck, relic and max HP, and its pools in every roll the run makes.
+    /// </summary>
+    /// <returns>0, -1 for an unknown handle, -2 for an ascension level the engine does not model, -3 for a character index.</returns>
+    public static unsafe int Sts2Run_ResetAs(
+        int handle,
+        byte* seedPtr,
+        int seedLen,
+        int ascension,
+        int character,
+        int* obsBuf
+    )
+    {
+        if (!TryGet(handle, out var run))
+        {
+            return -1;
+        }
+
+        if (ascension is < 0 or > Ascension.MaxRunLevel)
+        {
+            return -2;
+        }
+
+        if (!Enum.IsDefined(typeof(PlayerCharacter), character))
+        {
+            return -3;
+        }
+
+        string seed = Encoding.UTF8.GetString(new ReadOnlySpan<byte>(seedPtr, seedLen));
+        run.Reset(seed, ascension, (PlayerCharacter)character);
+        run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
+        return 0;
+    }
+
+    /// <summary>
+    /// Why the use or discard potion <paramref name="action" /> is refused on this run right now (UTF-8, no terminator).
+    /// </summary>
+    /// <returns>
+    /// The bytes written (0 when the action is legal), -1 for an unknown handle, -2 when the action is not a potion
+    /// action, -3 when the buffer is too small.
+    /// </returns>
+    public static unsafe int Sts2Run_PotionActionReason(int handle, int action, byte* buf, int bufLen)
+    {
+        if (!TryGet(handle, out var run))
+        {
+            return -1;
+        }
+
+        if (RunPotionUse.SlotOf(action) < 0 && RunPotionUse.DiscardSlotOf(action) < 0)
+        {
+            return -2;
+        }
+
+        byte[] reason = Encoding.UTF8.GetBytes(RunPotionUse.Refusal(run.State, action) ?? "");
+        if (reason.Length > bufLen)
+        {
+            return -3;
+        }
+
+        reason.CopyTo(new Span<byte>(buf, bufLen));
+        return reason.Length;
     }
 
     /// <summary>

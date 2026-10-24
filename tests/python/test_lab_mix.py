@@ -65,8 +65,14 @@ class MixFileTest(unittest.TestCase):
             self.assertTrue(any(fragment in n for n in notes), (text, notes))
         weights, notes = mix.parse_mix('{"aimed-bugs": 2, "nonsense": 5, "random": -1, "dense": "x", "choice-edges": true, "under-tested": 0}')
         self.assertEqual({"aimed-bugs": 2.0, "under-tested": 0.0}, weights)
-        self.assertEqual(4, len(notes))
+        self.assertEqual(5, len(notes))  # the four problems and the idle share of the unknown strategy's weight
         self.assertTrue(any("unknown strategy 'nonsense'" in n for n in notes))
+        self.assertTrue(any("5 of 7 weight (71%) is idle (nonsense" in n for n in notes))
+
+    def test_unknown_strategy_weight_is_reported_as_idle_share(self):
+        weights, notes = mix.parse_mix(json.dumps({"aimed-bugs": 100, "ghost-a": 15, "ghost-b": 5}))
+        self.assertEqual({"aimed-bugs": 100.0}, weights)
+        self.assertTrue(any("20 of 120 weight (17%) is idle (ghost-a, ghost-b" in n for n in notes), notes)
 
 
 class PickTest(unittest.TestCase):

@@ -739,7 +739,11 @@ public class RunEngineTests
         Array.Clear(mask);
         engine.State.PotionSlots = [1, 2, 3];
         engine.WriteActionMask(mask);
-        AssertMask(mask, 0, 7, RunConstants.ShopRemoveAction, RunConstants.ShopSkipAction);
+        // The three held potions are not usable away from a fight, but each can be discarded.
+        AssertMask(
+            mask,
+            0, 7, RunConstants.ShopRemoveAction, RunConstants.ShopSkipAction,
+            RunConstants.DiscardPotionAction, RunConstants.DiscardPotionAction + 1, RunConstants.DiscardPotionAction + 2);
     }
 
     [Fact]
@@ -780,9 +784,13 @@ public class RunEngineTests
         Array.Clear(mask);
         engine.State.PotionSlots = [1, 2, 3];
         engine.WriteActionMask(mask);
-        AssertMask(mask, 0, 1, RunConstants.EventSkipAction);
+        AssertMask(
+            mask,
+            0, 1, RunConstants.EventSkipAction,
+            RunConstants.DiscardPotionAction, RunConstants.DiscardPotionAction + 1, RunConstants.DiscardPotionAction + 2);
 
         Array.Clear(mask);
+        Array.Clear(engine.State.PotionSlots);
         engine.State.EventId = RunConstants.EventResultPending;
         engine.WriteActionMask(mask);
         AssertMask(mask, 0, RunConstants.EventSkipAction);

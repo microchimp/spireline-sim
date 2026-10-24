@@ -430,6 +430,89 @@ class EventTests(unittest.TestCase):
         self.assertEqual((ls.stats["gaps"], ls.stats["ranked"], ls.lost), (0, 2, None))
 
 
+class MultiPickScreenTests(unittest.TestCase):
+    """A non-combat card screen the driver asks pick by pick (ctx pick/of): the game applies the picks when the screen
+    closes, the emulator after each one, so from pick 2 on the emulator deck is ahead by the earlier picks (G0a127979b6)."""
+
+    OFFER = [["STRIKE_IRONCLAD", 0], ["DEFEND_IRONCLAD", 0]]
+
+    @staticmethod
+    def with_deck(deck, hp=80):
+        o = obs(hp=hp)
+        o["deck"] = deck
+        return o
+
+    def pick_msg(self, o, pick=2, of=2, kind="select_cards"):
+        m = {**msg(kind, o), "actions": self.OFFER}
+        if pick is not None:
+            m["ctx"] = {"pick": pick, "of": of}
+        return m
+
+    def decide(self, ref_deck, emu_deck, pick=2, of=2, kind="select_cards", ref_hp=80, emu_hp=80):
+        a = self.with_deck(ref_deck, hp=ref_hp)
+        held = {**view_of(self.with_deck(emu_deck, hp=emu_hp))}
+        ls = lockstep.Lockstep(FakeEmu([held]), lambda m: 0)
+        ls.decide(self.pick_msg(a, pick, of, kind))
+        return ls
+
+    def test_the_picks_the_emulator_already_applied_are_not_a_deck_divergence(self):
+        S, B = ["STRIKE_IRONCLAD", 0], ["BASH", 0]
+        cases = {
+            "add": ([S], [S, ["SHRUG_IT_OFF", 0]]),
+            "remove": ([S, S], [S]),
+            "upgrade": ([B], [["BASH", 1]]),
+            "transform": ([S], [["STOKE", 0]]),
+        }
+        for name, (ref_deck, emu_deck) in cases.items():
+            with self.subTest(name):
+                ls = self.decide(ref_deck, emu_deck)
+                self.assertEqual(ls.log.records, [])
+                self.assertEqual((ls.stats["diverged"], ls.stats["ranked"]), (0, 1))
+                self.assertIsNone(ls.lost)
+
+    def test_pick_3_of_3_allows_two_earlier_picks(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        ls = self.decide([S, S, S], [["STOKE", 0], ["OFFERING", 0], S], pick=3, of=3)  # two transforms
+        self.assertEqual((ls.stats["diverged"], ls.stats["ranked"]), (0, 1))
+        ls = self.decide([S, S, S], [["STOKE", 0], ["OFFERING", 0], ["NOT_YET", 0]], pick=3, of=3)  # three: more than two picks
+        self.assertEqual(ls.stats["diverged"], 1)
+
+    def test_the_first_pick_and_a_message_without_ctx_still_compare_the_deck(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        for name, pick in (("pick 1", 1), ("no ctx", None)):
+            with self.subTest(name):
+                ls = self.decide([S], [S, ["SHRUG_IT_OFF", 0]], pick=pick)
+                self.assertEqual((ls.stats["diverged"], len(ls.log.records)), (1, 1))
+                rec = ls.log.records[0]
+                self.assertEqual((rec["type"], [d[0] for d in rec["diff"]]), ("select_cards", [".deck"]))
+                self.assertIsNotNone(ls.lost)
+
+    def test_only_the_deck_is_skipped_at_pick_2(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        ls = self.decide([S], [S, ["SHRUG_IT_OFF", 0]], ref_hp=63, emu_hp=70)
+        self.assertEqual(ls.stats["diverged"], 1)
+        self.assertEqual([d[0] for d in ls.log.records[0]["diff"]], [".hp"])
+
+    def test_a_gross_deck_error_at_pick_2_still_shows(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        ls = self.decide([S], [S, ["SHRUG_IT_OFF", 0], ["BASH", 0], ["ANGER", 0]])  # three cards more after one earlier pick
+        self.assertEqual([d[0] for d in ls.log.records[0]["diff"]], [".deck"])
+
+    def test_other_kinds_with_a_pick_context_are_not_skipped(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        ls = self.decide([S], [S, ["SHRUG_IT_OFF", 0]], kind="card_reward")
+        self.assertEqual(ls.stats["diverged"], 1)
+
+    def test_the_combat_helper_is_unchanged_and_the_new_one_names_the_non_combat_case(self):
+        a = self.with_deck([["STRIKE_IRONCLAD", 0]])
+        pick2 = self.pick_msg(a)
+        self.assertFalse(lockstep.mid_screen_pick("select_cards", pick2))
+        self.assertTrue(lockstep.deck_pending_pick("select_cards", pick2))
+        self.assertFalse(lockstep.deck_pending_pick("select_cards", self.pick_msg(a, pick=1)))
+        self.assertFalse(lockstep.deck_pending_pick("select_cards", self.pick_msg(a, pick=None)))
+        self.assertFalse(lockstep.deck_pending_pick("select_cards_combat", pick2))
+
+
 class TreasureTests(unittest.TestCase):
     def test_the_chest_relic_the_emulator_already_holds_is_not_a_divergence(self):
         # 6 of the 12 divergences of the first events-round run: the emulator holds the chest's relic at the question.
@@ -443,6 +526,55 @@ class TreasureTests(unittest.TestCase):
         ls = lockstep.Lockstep(FakeEmu([held]), lambda m: 0)
         ls.decide(other)
         self.assertEqual(ls.stats["diverged"], 1)
+
+    @staticmethod
+    def question(a, relic):
+        return {**msg("treasure", a), "actions": [["take", relic], "skip"]}
+
+    def test_a_pickup_effect_the_emulator_already_applied_is_not_a_divergence(self):
+        # G96df219a44 and its two siblings: the emulator took the chest relic, so what the pickup changes is already in its
+        # view while the referee still shows the chest. The next decision compares those fields.
+        a = obs(hp=63)
+        b = obs()
+        b["deck"] = [["STRIKE_IRONCLAD", 1]]
+        cases = {
+            "max hp": (a, {**view_of(a), "relics": ["BURNING_BLOOD", "STRAWBERRY"], "hp": 70, "max_hp": 87}, "STRAWBERRY"),
+            "gold": (obs(), {**view_of(obs()), "relics": ["BURNING_BLOOD", "OLD_COIN"], "gold": 399}, "OLD_COIN"),
+            "deck": (obs(), {**view_of(obs()), "relics": ["BURNING_BLOOD", "WHETSTONE"], "deck": view_of(b)["deck"]}, "WHETSTONE"),
+            "potions": (obs(), {**view_of(obs()), "relics": ["BURNING_BLOOD", "POTION_BELT"], "potions": ["BLOCK_POTION"]}, "POTION_BELT"),
+        }
+        for name, (ref, held, relic) in cases.items():
+            with self.subTest(name):
+                ls = lockstep.Lockstep(FakeEmu([held]), lambda m: 0)
+                ls.decide(self.question(ref, relic))
+                self.assertEqual((ls.stats["diverged"], ls.stats["ranked"]), (0, 1))
+                self.assertIsNone(ls.lost)
+
+    def test_the_deferral_hides_nothing_but_the_pickup_fields(self):
+        a = obs(hp=63)
+        held = {**view_of(a), "relics": ["BURNING_BLOOD", "STRAWBERRY"], "hp": 70, "max_hp": 87}
+        for name, change in (("floor", {"floor": 9}), ("act", {"act": 1})):  # a floor or act gap at the question still shows
+            with self.subTest(name):
+                ls = lockstep.Lockstep(FakeEmu([{**held, **change}]), lambda m: 0)
+                ls.decide(self.question(obs(hp=63, floor=10), "STRAWBERRY"))
+                self.assertEqual(ls.stats["diverged"], 1)
+                self.assertIn("." + name, [d[0] for d in ls.log.records[0]["diff"]])
+        with self.subTest("relic not held"):  # the emulator does not hold the offered relic: its hp is no pickup effect
+            ls = lockstep.Lockstep(FakeEmu([{**held, "relics": ["BURNING_BLOOD"]}]), lambda m: 0)
+            ls.decide(self.question(a, "STRAWBERRY"))
+            self.assertEqual(ls.stats["diverged"], 1)
+
+    def test_a_wrong_pickup_effect_shows_at_the_next_decision(self):
+        a = obs(hp=63)
+        held = {**view_of(a), "relics": ["BURNING_BLOOD", "STRAWBERRY"], "hp": 70, "max_hp": 87}
+        ls = lockstep.Lockstep(FakeEmu([held, held]), lambda m: 0)
+        ls.decide(self.question(a, "STRAWBERRY"))
+        self.assertEqual(ls.stats["diverged"], 0)
+        ls.decide(msg("map", a))  # the referee took the relic without the +7: the emulator's hp is wrong
+        self.assertEqual(ls.stats["diverged"], 1)
+        rec = ls.log.records[0]
+        self.assertEqual((rec["decision"], rec["type"]), (1, "map"))
+        self.assertTrue({".hp", ".max_hp"} <= {d[0] for d in rec["diff"]})
 
 
 class FloorRun(FakeRun):
@@ -527,6 +659,69 @@ class FightStartAnchorTests(unittest.TestCase):
         e.rules, e.rng = SimpleNamespace(pick=lambda v, d, r: SimpleNamespace(index=0)), None
         self.assertFalse(e.reanchor("fight_start", {"obs": {"floor": 5, "combat": {"hand": []}}}))
         self.assertEqual(calls, [])  # it is another fight: walked past (here the fake never leaves it), not put on this record
+
+
+class WalkRun(FakeRun):
+    """A suspended emulator that never left its floor-3 fight while the referee went on: every map has one node, and
+    that node leads into the next floor's fight."""
+
+    def __init__(self, floor):
+        super().__init__("combat", {"map": ("map", (_opt("map.node", 0, node=(1, 2)),))}, {})
+        self.floor = floor
+
+    def view(self):
+        return SimpleNamespace(floor=self.floor)
+
+    def apply(self, o):
+        self.taken.append(o.kind)
+        self.floor += 1
+        self.cur = "combat"
+
+
+class FightStartWalkThenAnchorTests(unittest.TestCase):
+    """A1b review: an emulator in a fight at an earlier floor leaves it, walks the maps up to the referee's floor, enters
+    the referee's fight, and only that fight is put on the referee's record."""
+
+    def emu(self, floor):
+        run = WalkRun(floor)
+        e = stub_emu(run)
+        e.rules, e.rng = SimpleNamespace(pick=lambda v, d, r: SimpleNamespace(index=0)), None
+        e._set_player = lambda obs: True
+        calls, anchored_at, resolved_at = [], [], []
+
+        def resolve(handle, buf):
+            resolved_at.append(run.floor)
+            run.cur = "map"
+            return True
+
+        def anchor(handle, record, buf):
+            calls.append(record)
+            anchored_at.append(run.floor)
+            return (3, "moves=same;patched=hand")
+
+        e.native.run_debug_resolve_combat, e.native.run_reanchor_fight = resolve, anchor
+        return e, run, calls, anchored_at, resolved_at
+
+    def test_the_earlier_fights_are_resolved_and_only_the_referees_fight_is_anchored(self):
+        e, run, calls, anchored_at, resolved_at = self.emu(3)
+        record = {"hand": [["BASH", False]], "enemies": []}
+        self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": 5, "combat": record}}))
+        self.assertIsNone(e.fail)
+        self.assertEqual(calls, [record])  # one anchor, the referee's record, not one per fight passed
+        self.assertEqual(anchored_at, [5])  # in the fight of floor 5
+        self.assertEqual(resolved_at, [3, 4])  # the fights of floors 3 and 4 were walked past
+        self.assertEqual((run.floor, run.cur), (5, "combat"))
+        self.assertEqual(e.anchored_with, "observation")
+
+    def test_the_lockstep_goes_on_from_the_referees_fight_without_a_second_walk(self):
+        e, run, calls, anchored_at, resolved_at = self.emu(3)
+        record = {"hand": [["BASH", False]], "enemies": []}
+        msg = {"obs": {"floor": 5, "combat": record}}
+        self.assertTrue(e.reanchor("fight_start", msg))
+        self.assertTrue(e.reanchor("fight_start", msg))  # the emulator now stands in the fight at the referee's floor
+        self.assertEqual(calls, [record, record])
+        self.assertEqual(resolved_at, [3, 4])  # nothing further was resolved or walked
+        self.assertEqual((run.floor, run.cur), (5, "combat"))
 
 
 @unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")

@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -33,6 +34,11 @@ COMBAT_KINDS = ("combat", "select_cards_combat", "card_reward_combat")
 # the next re-anchor point.
 MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "select_cards", "treasure", "shop",
                 "bundle", "event") + COMBAT_KINDS
+# The fields a chest relic's pickup can change (max HP and the healing with it, gold, card upgrades, the potion belt). At the
+# treasure question the emulator has already taken the chest relic (its run engine auto-takes it) and applied the pickup,
+# while the referee has not (it obtains the relic when the player picks it); these fields are not compared at that question,
+# the next decision compares them. The floor, the act and the relic list stay compared.
+TREASURE_PICKUP_PATHS = (".hp", ".max_hp", ".gold", ".deck", ".potions")
 # Reasons that are a gap in this adapter's mapping, not a difference of the emulator's: reported apart.
 GAP_PREFIXES = ("unmapped", "apply:", "choose_error")
 # The message key under which the referee driver hands the game's hidden state (stream counters, the draw pile in order)
@@ -52,11 +58,18 @@ def _paths() -> None:
 #                            the action one past its candidates; the screen's picks are its candidates
 #   "skip"                   a card reward's Skip: card.skip
 #   "alt:<id>"               any other card-reward alternative (reroll, a relic's): no emulator option
-#   ["use_potion", s, id]    a potion used outside a fight: no emulator option
-#   ["discard_potion", s, id] a potion discarded outside a fight: no emulator option
-# An action with no emulator option is applied as `no_emulator_option:...`, which suspends the lockstep like any other loss.
+#   ["use_potion", s, id]    a potion used outside a fight: the run layer's use action (RunPotionUse), for the four
+#                            AnyTime potions; refused with the game's reason for the others
+#   ["discard_potion", s, id] a potion discarded outside a fight: the run layer's discard action
+# An action the emulator refuses is applied as `no_emulator_option:...`, which suspends the lockstep like any other loss.
 NEW_ACTION_KINDS = ("none", "done", "card_alt", "potion_use", "potion_discard")
+# Kinds the screen pairing (`_pair`) never pairs: an agent never picks them, the referee's own choice of one is applied.
 NO_EMULATOR_KINDS = ("card_alt", "potion_use", "potion_discard")
+POTION_KINDS = ("potion_use", "potion_discard")
+# RunConstants.UsePotionAction / DiscardPotionAction / PotionSlotCapacity (native.RUN_USE_POTION_ACTION ...).
+USE_POTION_ACTION = 242
+DISCARD_POTION_ACTION = 248
+POTION_SLOTS = 6
 
 
 def extra_kind(label: Any) -> str | None:
@@ -75,9 +88,10 @@ def extra_kind(label: Any) -> str | None:
 
 
 def character_supported(character: str, native=None) -> str | None:
-    """None when the emulator can start `character`; else why not. The native run API starts Ironclad unless the library
-    binding has run_reset_character (Sts2Run_Reset takes no character)."""
-    if character == "IRONCLAD":
+    """None when the emulator can start `character`; else why not. Ironclad always; any of the five characters the game
+    offers through Sts2Run_ResetAs (the binding's run_reset_character, native.RUN_CHARACTERS)."""
+    name = str(character).upper().removeprefix("CHARACTER.")
+    if name == "IRONCLAD":
         return None
     if native is None:
         _paths()
@@ -86,9 +100,12 @@ def character_supported(character: str, native=None) -> str | None:
         leakprobes.native_env()
         from sts2_gym import native  # noqa: PLC0415
     if hasattr(native, "run_reset_character"):
-        return None
-    return (f"--character {character}: the native emulator library has no run_reset_character (Sts2Run_Reset takes no character), "
-            f"so the emulator side cannot start {character}. Use IRONCLAD, or add the native export first.")
+        offered = getattr(native, "RUN_CHARACTERS", None)
+        if offered is None or name in offered:
+            return None
+        return f"--character {character}: the game offers {', '.join(offered)}"
+    return (f"--character {character}: the native emulator library has no run_reset_character (Sts2Run_ResetAs), "
+            f"so the emulator side cannot start {character}. Use IRONCLAD, or rebuild the library (run API 26).")
 
 
 def require_character(character: str, native=None) -> None:
@@ -182,9 +199,34 @@ def ref_view(obs: dict) -> dict:
 def mid_screen_pick(kind: str, msg: dict) -> bool:
     """A further pick of a fight card screen the referee has already taken a card from (driver ctx pick > 1). The referee
     moves the picked cards only when the screen closes, the emulator after each pick, so the two hands are not comparable
-    until then: EmuLock.sync compares the screen's candidates instead, and the views meet again at the next decision."""
+    until then: EmuLock.sync compares the screen's candidates instead, and the views meet again at the next decision.
+    The non-combat screens (kind select_cards) have the same asymmetry for the deck: see deck_pending_pick."""
     ctx = msg.get("ctx") if isinstance(msg, dict) else None
     return kind == "select_cards_combat" and isinstance(ctx, dict) and int(ctx.get("pick", 1)) > 1
+
+
+def deck_pending_pick(kind: str, msg: dict) -> bool:
+    """A further pick (driver ctx pick > 1) of a card screen outside a fight: a removal, upgrade or transform of several
+    cards, or an offer grid with several picks. The game hands the picks back as one list and applies them when the screen
+    closes, so its deck (as the driver reports it) is still the deck from before the screen; the emulator applies each pick
+    at once, so its deck is ahead by the earlier picks, by design. Only the deck is affected (hp, gold, relics are compared
+    as ever), and mid_screen_pick, which is for the fight screens, stays as it is."""
+    ctx = msg.get("ctx") if isinstance(msg, dict) else None
+    pick = ctx.get("pick") if isinstance(ctx, dict) else None
+    return kind == "select_cards" and isinstance(pick, int) and not isinstance(pick, bool) and pick > 1
+
+
+def _deck_within_picks(ref: dict, emu: dict, pick: int) -> bool:
+    """The two decks differ by no more than the pick - 1 earlier picks can explain: one pick changes at most two cards
+    (a transform or an upgrade swaps one for another), so a bigger gap is a real deck error and stays a difference."""
+    a = Counter(json.dumps(x) for x in ref.get("deck", []) if x is not None)
+    b = Counter(json.dumps(x) for x in emu.get("deck", []) if x is not None)
+    return sum(((a - b) + (b - a)).values()) <= 2 * (pick - 1)
+
+
+def _drop_paths(diff: list, roots: tuple) -> list:
+    """The diff without the entries on the given field paths (".deck" also covers an entry below it)."""
+    return [d for d in diff if not any(d[0] == r or str(d[0]).startswith((r + ".", r + "[")) for r in roots)]
 
 
 def act_type(kind: str, label: Any) -> str:
@@ -347,13 +389,20 @@ class Lockstep:
         reason = None if kind in MAPPED_KINDS else f"unmapped:{kind}"
         reason = reason or self.emu.sync(kind, labels, msg)
         r, e = ref_view(msg.get("obs", {})), self.emu.view()
+        offered: list = []
         if mid_screen_pick(kind, msg):
             return reason, [], r, e  # inside a screen: its candidates were compared in sync
         if kind == "treasure":
             # The emulator opens the chest and holds its relic when the referee is first asked whether to take it (the
             # 6 of 12 treasure divergences of the events round); the question's own offer is the referee's side of that.
-            r["relics"] = r["relics"] + [x[1] for x in labels if isinstance(x, list) and len(x) > 1 and x[0] == "take"]
-        return reason, ([] if reason else structural_diff(r, e)), r, e
+            offered = [x[1] for x in labels if isinstance(x, list) and len(x) > 1 and x[0] == "take"]
+            r["relics"] = r["relics"] + offered
+        diff = [] if reason else structural_diff(r, e)
+        if kind == "treasure" and offered and all(x in e.get("relics", []) for x in offered):
+            diff = _drop_paths(diff, TREASURE_PICKUP_PATHS)  # the emulator holds the offered relic and its pickup effect
+        if deck_pending_pick(kind, msg) and _deck_within_picks(r, e, msg["ctx"]["pick"]):
+            diff = _drop_paths(diff, (".deck",))  # the earlier picks of the screen: the emulator applied them, the game not yet
+        return reason, diff, r, e
 
     def _reanchor(self, plan: str, kind: str, labels: list, msg: dict) -> bool:
         """Re-anchor, then the same comparison again: a re-anchor counts only when the views agree after it."""
@@ -860,6 +909,8 @@ class EmuLock:
     def apply(self, kind: str, labels: list, idx: int) -> str | None:
         if kind in COMBAT_KINDS:
             return self._apply_combat(kind, labels, idx)
+        if extra_kind(labels[idx]) in POTION_KINDS:
+            return self._apply_potion(kind, labels[idx])
         if extra_kind(labels[idx]) in NO_EMULATOR_KINDS:
             return f"no_emulator_option:{kind}:{json.dumps(labels[idx])[:60]}"
         if kind == "reward":
@@ -877,6 +928,36 @@ class EmuLock:
             self.s._step(o.action)  # the referee's select_cards follows
             return None
         self.s.apply(o)
+        return None
+
+    def _potion_action(self, label: list) -> tuple[int | None, str]:
+        """The run action that uses or discards the potion a referee label names ([use_potion|discard_potion, slot, id]),
+        else (None, why). The referee's slot is tried first, then any other slot holding the same potion; the action must
+        be on the run's mask, and a refusal carries the emulator's reason."""
+        base = USE_POTION_ACTION if label[0] == "use_potion" else DISCARD_POTION_ACTION
+        handle = self.s.handle
+        belt = [self.slug["potions"].get(p, f"?{p}") if p else None for p in self.native.run_state_list(handle, 2, POTION_SLOTS)]
+        want = label[2]
+        first = int(label[1]) if len(label) > 1 else -1
+        held = [k for k in (first, *range(POTION_SLOTS)) if 0 <= k < POTION_SLOTS and belt[k] == want]
+        if not held:
+            return None, f"the emulator's belt holds no {want}"
+        mask = self.native.run_action_mask(handle, base + POTION_SLOTS)
+        for slot in held:
+            if mask[base + slot]:
+                return base + slot, ""
+        return None, self.native.run_potion_action_reason(handle, base + held[0]) or "refused"
+
+    def _apply_potion(self, kind: str, label: list) -> str | None:
+        """A potion used or discarded outside a fight, stepped on the emulator; the reason when it cannot be."""
+        action, why = self._potion_action(label)
+        if action is not None:
+            try:
+                self.s._step(action)
+            except RuntimeError as err:
+                action, why = None, str(err)
+        if action is None:
+            return f"no_emulator_option:{kind}:{json.dumps(label)[:60]}:{why}"
         return None
 
     # -- combat: a referee action is matched by what it plays, not by its hand position

@@ -533,6 +533,11 @@ public sealed class RunEngine : Core2.ICombatEndHost
             {
                 SetMask(mask, RunConstants.UsePotionAction + slot);
             }
+
+            if (RunPotionUse.CanDiscard(State, slot))
+            {
+                SetMask(mask, RunConstants.DiscardPotionAction + slot);
+            }
         }
     }
 
@@ -1443,6 +1448,15 @@ public sealed class RunEngine : Core2.ICombatEndHost
         if (State.Phase != RunPhase.Combat && RunPotionUse.SlotOf(action) is var usedSlot and >= 0)
         {
             return RunPotionUse.Use(State, usedSlot) ? 0 : -1;
+        }
+
+        // A potion thrown away from the belt, on the same screens (`DiscardPotionGameAction`).
+        if (
+            State.Phase != RunPhase.Combat
+            && RunPotionUse.DiscardSlotOf(action) is var discardedSlot and >= 0
+        )
+        {
+            return RunPotionUse.Discard(State, discardedSlot) ? 0 : -1;
         }
 
         if (State.Phase == RunPhase.Ancient)

@@ -16,7 +16,7 @@ _LIB_NAMES = {
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
 _REQUIRED_NATIVE_API_VERSION = 36
-_REQUIRED_RUN_NATIVE_API_VERSION = 25
+_REQUIRED_RUN_NATIVE_API_VERSION = 26
 
 
 def _repo_root() -> Path:
@@ -528,6 +528,24 @@ _lib.Sts2Run_Reset.argtypes = [
     ctypes.c_int,
     ctypes.c_int,  # ascension
     ctypes.POINTER(ctypes.c_int),
+]
+
+_lib.Sts2Run_ResetAs.restype = ctypes.c_int
+_lib.Sts2Run_ResetAs.argtypes = [
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_int,
+    ctypes.c_int,  # ascension
+    ctypes.c_int,  # character index (RUN_CHARACTERS)
+    ctypes.POINTER(ctypes.c_int),
+]
+
+_lib.Sts2Run_PotionActionReason.restype = ctypes.c_int
+_lib.Sts2Run_PotionActionReason.argtypes = [
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_int,
 ]
 
 _lib.Sts2Run_Step.restype = ctypes.c_int
@@ -1435,6 +1453,74 @@ def run_reset(
             obs_buf,
         ),
     )
+
+
+# The five characters the game offers, in the emulator's `PlayerCharacter` order (the index Sts2Run_ResetAs takes).
+RUN_CHARACTERS: tuple[str, ...] = ("IRONCLAD", "SILENT", "REGENT", "NECROBINDER", "DEFECT")
+
+# Away from a fight a held potion is used with `RUN_USE_POTION_ACTION + slot` and thrown away with
+# `RUN_DISCARD_POTION_ACTION + slot` (slot 0-5), on any screen whose action mask lists them (`RunPotionUse`).
+RUN_USE_POTION_ACTION: int = 242
+RUN_DISCARD_POTION_ACTION: int = 248
+RUN_POTION_SLOTS: int = 6
+
+
+def run_character_index(character: str) -> int:
+    """The `Sts2Run_ResetAs` index of a character id ("SILENT", or "CHARACTER.SILENT"; any case).
+
+    Raises:
+        ValueError: for a character the game does not offer.
+
+    """
+    name = str(character).upper().removeprefix("CHARACTER.")
+    if name not in RUN_CHARACTERS:
+        raise ValueError(f"unknown character {character!r}; the game offers {', '.join(RUN_CHARACTERS)}")
+    return RUN_CHARACTERS.index(name)
+
+
+def run_reset_character(
+    handle: int,
+    seed: str,
+    obs_buf: ctypes.Array,
+    ascension: int = 0,
+    character: str = "IRONCLAD",
+) -> int:
+    """Start a new run on this handle as `character` (its start deck, relic, max HP and pools) at `ascension`.
+
+    Returns:
+        0 on success, -1 for an unknown handle, -2 for an ascension the run engine does not model.
+
+    Raises:
+        ValueError: for a character the game does not offer.
+
+    """
+    index = run_character_index(character)
+    seed_bytes = seed.encode("utf-8")
+    seed_buf = (ctypes.c_ubyte * len(seed_bytes))(*seed_bytes)
+    return int(
+        _lib.Sts2Run_ResetAs(
+            handle,
+            seed_buf,
+            len(seed_bytes),
+            ascension,
+            index,
+            obs_buf,
+        ),
+    )
+
+
+def run_potion_action_reason(handle: int, action: int) -> str:
+    """Why the use or discard potion `action` is refused on this run right now; "" when it is legal.
+
+    Raises:
+        ValueError: for an unknown handle or an action that is not a potion action.
+
+    """
+    buf = (ctypes.c_ubyte * 256)()
+    n = int(_lib.Sts2Run_PotionActionReason(handle, action, buf, len(buf)))
+    if n < 0:
+        raise ValueError(f"Sts2Run_PotionActionReason({handle}, {action}) failed with status {n}")
+    return bytes(buf[:n]).decode("utf-8")
 
 
 def run_step(

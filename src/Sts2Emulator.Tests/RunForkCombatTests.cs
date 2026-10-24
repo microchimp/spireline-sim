@@ -169,7 +169,7 @@ public class RunForkCombatTests
     [Fact]
     public void TheRunApiVersionSaysTheExportIsThere()
     {
-        Assert.Equal(25, RunNativeExports.RUN_NATIVE_API_VERSION);
+        Assert.Equal(26, RunNativeExports.RUN_NATIVE_API_VERSION);
     }
 
     /// <summary>

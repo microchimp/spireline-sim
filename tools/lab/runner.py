@@ -259,6 +259,26 @@ class Running:
 
 # ---------------------------------------------------------------- the runner
 
+LAB_SOURCES = Path(__file__).resolve().parent
+
+
+def code_digest() -> dict[str, int]:
+    """crc32 of each tools/lab/*.py now (what a long-lived runner process loaded at its start, or what is on disk now)."""
+    out: dict[str, int] = {}
+    for f in sorted(LAB_SOURCES.glob("*.py")):
+        try:
+            out[f.name] = zlib.crc32(f.read_bytes())
+        except OSError:
+            pass
+    return out
+
+
+def changed_sources(before: dict[str, int]) -> str:
+    """Names of the lab sources that differ from `before` (changed, added or gone), comma-joined; "" when none."""
+    now = code_digest()
+    return ", ".join(sorted(k for k in set(before) | set(now) if before.get(k) != now.get(k)))
+
+
 class Runner:
     def __init__(self, a: argparse.Namespace, clock=time.monotonic):
         self.a, self.clock = a, clock
@@ -284,6 +304,8 @@ class Runner:
                                     parent_pid=os.getppid() if a.exit_with_parent else None, stay=a.always_on)
         self.next_strategy: str | None = None  # the strategy choose() picked for the job new_run() makes next
         self.last_mix_note = ""
+        self.code_digest0 = code_digest()  # the lab sources this process loaded; a later change on disk is not in this process
+        self.code_stale_logged = ""
         self._mark = (0.0, 0.0)  # (cpu seconds, clock) at the last accounting of the running job
 
     # ---- plumbing
@@ -492,11 +514,18 @@ class Runner:
         """(job type, strategy) for a fights slot: the available strategy furthest below its share of CPU time in LAB/mix.json;
         ("", None) when none can run."""
         weights, notes = mix.load_mix(self.lab.root, create=not self.a.dry_run)
-        note = "; ".join(notes)
+        note = "; ".join(n for n in notes if not mix.is_idle_note(n))
         if note != self.last_mix_note:
             self.last_mix_note = note
             if note:
                 self.log(note)
+        for n in notes:  # weight the running code cannot spend stays visible: said at every pick, not only when it changes
+            if mix.is_idle_note(n):
+                self.log(n)
+        stale = changed_sources(self.code_digest0)
+        if stale and stale != self.code_stale_logged:
+            self.code_stale_logged = stale
+            self.log(f"runner code on disk changed since this runner started ({stale}); this process still runs the old code: restart it")
         spent = self.state["strategy_cpu"]
         chosen, skipped = mix.pick(weights, spent, lambda s: self.unavailable("runs" if s == "whole-runs" else "fights", sha, s))
         for s, why in skipped.items():
