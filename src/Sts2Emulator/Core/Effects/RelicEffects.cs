@@ -1297,6 +1297,35 @@ public static class RelicEffects
     }
 
     /// <summary>
+    /// game: SelfFormingClay.AfterDamageReceived
+    /// Extracted from RelicEffects.ApplyAfterUnblockedDamageReceived; the caller keeps the condition.
+    /// </summary>
+    internal static void SelfFormingClay_AfterDamageReceived(CombatState state)
+    {
+        // SelfFormingClayPower: 3 unpowered block after the next block clear.
+        BuffSystem.Apply(state.PlayerBuffs, BuffId.BlockNextTurn, 3);
+    }
+
+    /// <summary>
+    /// game: CentennialPuzzle.AfterDamageReceived
+    /// Extracted from RelicEffects.ApplyAfterUnblockedDamageReceived; the caller keeps the condition.
+    /// </summary>
+    internal static void CentennialPuzzle_AfterDamageReceived(CombatState state, Random? rng)
+    {
+        CardEffects.DrawCards(state, 3, DrawRng(state, rng));
+    }
+
+    /// <summary>
+    /// game: DemonTongue.AfterDamageReceived
+    /// Extracted from RelicEffects.ApplyAfterUnblockedDamageReceived; the caller keeps the condition.
+    /// </summary>
+    internal static void DemonTongue_AfterDamageReceived(CombatState state, int unblocked)
+    {
+        SetCounter(state, DemonTongue, 1);
+        CardEffects.HealPlayer(state, unblocked);
+    }
+
+    /// <summary>
     /// Fires when the player takes unblocked damage. The game hangs both of these off
     /// Hook.AfterDamageReceived, which runs per damage instance; here the caller is the
     /// enemy attack path, so self-damage from a card does not trigger them.
@@ -1319,13 +1348,12 @@ public static class RelicEffects
         bool killed = state.PlayerHp <= 0;
         if (!killed && HasRelic(state, SelfFormingClay))
         {
-            // SelfFormingClayPower: 3 unpowered block after the next block clear.
-            BuffSystem.Apply(state.PlayerBuffs, BuffId.BlockNextTurn, 3);
+            SelfFormingClay_AfterDamageReceived(state);
         }
 
         if (!killed && FiresOncePerCombat(state, CentennialPuzzle))
         {
-            CardEffects.DrawCards(state, 3, DrawRng(state, rng));
+            CentennialPuzzle_AfterDamageReceived(state, rng);
         }
 
         // The combat history's `DamageReceivedEntry`, as Emotion Chip reads it: ANY unblocked
@@ -1345,8 +1373,7 @@ public static class RelicEffects
             && GetCounter(state, DemonTongue) == 0
         )
         {
-            SetCounter(state, DemonTongue, 1);
-            CardEffects.HealPlayer(state, unblocked);
+            DemonTongue_AfterDamageReceived(state, unblocked);
         }
     }
 
@@ -1511,18 +1538,24 @@ public static class RelicEffects
         return index >= 0 && state.Relics[index].Counter == 0;
     }
 
-    public static void ApplyAfterPlayerHpChanged(CombatState state)
+    /// <summary>
+    /// game: LizardTail.AfterPreventingDeath (the emulator's heal, in ShouldDieLate's place)
+    /// Extracted from RelicEffects.ApplyAfterPlayerHpChanged; the caller keeps the condition.
+    /// </summary>
+    internal static void LizardTail_AfterPreventingDeath(CombatState state)
     {
-        // LizardTail.ShouldDieLate refuses the death once per run, then heals HealVar(50m)
-        // percent of max HP. The relic is spent, not removed, so the counter records it.
-        if (state.PlayerHp <= 0 && FiresOncePerCombat(state, LizardTail))
-        {
-            // Bare on purpose: this write is INSIDE the hook, and routing it through
-            // HealPlayer would re-enter. Red Skull is re-read a few lines down anyway,
-            // against the revived total.
-            state.PlayerHp = Math.Max(1, state.PlayerMaxHp / 2);
-        }
+        // Bare on purpose: this write is INSIDE the hook, and routing it through
+        // HealPlayer would re-enter. Red Skull is re-read a few lines down anyway,
+        // against the revived total.
+        state.PlayerHp = Math.Max(1, state.PlayerMaxHp / 2);
+    }
 
+    /// <summary>
+    /// game: RedSkull.AfterCurrentHpChanged
+    /// Extracted from RelicEffects.ApplyAfterPlayerHpChanged; the caller keeps the condition.
+    /// </summary>
+    internal static void RedSkull_AfterCurrentHpChanged(CombatState state)
+    {
         int index = state.Relics.FindIndex(relic => relic.DefId == RedSkull);
         if (index < 0)
         {
@@ -1539,6 +1572,18 @@ public static class RelicEffects
 
         GainPlayerStrength(state, shouldBeActive ? 3 : -3);
         state.Relics[index] = state.Relics[index] with { Counter = shouldBeActive ? 1 : 0 };
+    }
+
+    public static void ApplyAfterPlayerHpChanged(CombatState state)
+    {
+        // LizardTail.ShouldDieLate refuses the death once per run, then heals HealVar(50m)
+        // percent of max HP. The relic is spent, not removed, so the counter records it.
+        if (state.PlayerHp <= 0 && FiresOncePerCombat(state, LizardTail))
+        {
+            LizardTail_AfterPreventingDeath(state);
+        }
+
+        RedSkull_AfterCurrentHpChanged(state);
     }
 
     /// <param name="heldNoBlock">
@@ -1616,6 +1661,24 @@ public static class RelicEffects
         state.Relics.Any(relic => relic.DefId == relicId);
 
     /// <summary>
+    /// game: MiniatureCannon.ModifyDamageAdditive
+    /// Extracted from RelicEffects.CardDamageBonus; the caller keeps the condition.
+    /// </summary>
+    internal static int MiniatureCannon_ModifyDamageAdditive() => 3;
+
+    /// <summary>
+    /// game: StrikeDummy.ModifyDamageAdditive
+    /// Extracted from RelicEffects.CardDamageBonus; the caller keeps the condition.
+    /// </summary>
+    internal static int StrikeDummy_ModifyDamageAdditive() => 3;
+
+    /// <summary>
+    /// game: FakeStrikeDummy.ModifyDamageAdditive
+    /// Extracted from RelicEffects.CardDamageBonus; the caller keeps the condition.
+    /// </summary>
+    internal static int FakeStrikeDummy_ModifyDamageAdditive() => 1;
+
+    /// <summary>
     /// `ModifyDamageAdditive` from relics that read the CARD. Both are powered-attack only
     /// and both pay a flat 3.
     /// </summary>
@@ -1630,7 +1693,7 @@ public static class RelicEffects
         // MiniatureCannon: `if (!cardSource.IsUpgraded) return 0m;`
         if (upgraded && HasRelic(state, MiniatureCannon))
         {
-            bonus += 3;
+            bonus += MiniatureCannon_ModifyDamageAdditive();
         }
 
         // StrikeDummy: `cardSource.Tags.Contains(CardTag.Strike)`. This read the card's
@@ -1641,17 +1704,29 @@ public static class RelicEffects
         {
             if (HasRelic(state, StrikeDummy))
             {
-                bonus += 3;
+                bonus += StrikeDummy_ModifyDamageAdditive();
             }
 
             if (HasRelic(state, FakeStrikeDummy))
             {
-                bonus += 1;
+                bonus += FakeStrikeDummy_ModifyDamageAdditive();
             }
         }
 
         return bonus;
     }
+
+    /// <summary>
+    /// game: VitruvianMinion.ModifyDamageMultiplicative
+    /// Extracted from RelicEffects.CardDamageMultiplier; the caller keeps the condition.
+    /// </summary>
+    internal static int VitruvianMinion_ModifyDamageMultiplicative() => 2;
+
+    /// <summary>
+    /// game: PenNib.ModifyDamageMultiplicative
+    /// Extracted from RelicEffects.CardDamageMultiplier; the caller keeps the condition.
+    /// </summary>
+    internal static int PenNib_ModifyDamageMultiplicative() => 2;
 
     /// <summary>
     /// `PenNib.ModifyDamageMultiplicative`: every TENTH Attack the owner plays is doubled.
@@ -1665,7 +1740,10 @@ public static class RelicEffects
         // inside it. Its block half is in `ModifyBlockMultiplicative`, the same rule at
         // the other door: the three Minion cards are Minion Strike, Minion Dive Bomb and
         // Minion Sacrifice, and the relic doubles whichever half each one pays.
-        int minion = def.MinionTag && HasRelic(state, VitruvianMinion) ? 2 : 1;
+        int minion =
+            def.MinionTag && HasRelic(state, VitruvianMinion)
+                ? VitruvianMinion_ModifyDamageMultiplicative()
+                : 1;
 
         if (def.Type != CardType.Attack)
         {
@@ -1674,7 +1752,11 @@ public static class RelicEffects
 
         int index = state.Relics.FindIndex(relic => relic.DefId == PenNib);
         return minion
-            * (index >= 0 && state.Relics[index].Counter == 0 && state.PenNibArmed ? 2 : 1);
+            * (
+                index >= 0 && state.Relics[index].Counter == 0 && state.PenNibArmed
+                    ? PenNib_ModifyDamageMultiplicative()
+                    : 1
+            );
     }
 
     /// <summary>Vitruvian Minion's block half: 2x the block of a Minion-tagged card.</summary>
@@ -2536,6 +2618,28 @@ public static class RelicEffects
     }
 
     /// <summary>
+    /// game: TungstenRod.ModifyHpLostAfterOsty
+    /// Extracted from RelicEffects.ModifyHpLost; the caller keeps the condition.
+    /// </summary>
+    internal static int TungstenRod_ModifyHpLostAfterOsty(int hpLoss)
+    {
+        // TungstenRod: `Math.Max(0m, amount - 1m)`.
+        return Math.Max(0, hpLoss - 1);
+    }
+
+    /// <summary>
+    /// game: BeatingRemnant.ModifyHpLostAfterOsty
+    /// Extracted from RelicEffects.ModifyHpLost; the caller keeps the condition.
+    /// </summary>
+    internal static int BeatingRemnant_ModifyHpLostAfterOsty(CombatState state, int hpLoss)
+    {
+        // BeatingRemnant: `Math.Min(amount, 20 - DamageReceivedThisTurn)` -- a cap on
+        // the TURN's total unblocked damage, not on one hit, and the running total
+        // resets at the owner's side-turn start.
+        return Math.Max(0, Math.Min(hpLoss, 20 - state.UnblockedDamageThisTurn));
+    }
+
+    /// <summary>
     /// `ModifyHpLostAfterOsty` from the two relics that reduce or cap HP loss, run after
     /// block has been taken off and before the HP is (`CardEffects.LosePlayerHp`). In the
     /// order the player holds them, as `IterateHookListeners` walks them: the rod before the
@@ -2547,15 +2651,11 @@ public static class RelicEffects
         {
             if (relic.DefId == TungstenRod)
             {
-                // TungstenRod: `Math.Max(0m, amount - 1m)`.
-                hpLoss = Math.Max(0, hpLoss - 1);
+                hpLoss = TungstenRod_ModifyHpLostAfterOsty(hpLoss);
             }
             else if (relic.DefId == BeatingRemnant)
             {
-                // BeatingRemnant: `Math.Min(amount, 20 - DamageReceivedThisTurn)` -- a cap on
-                // the TURN's total unblocked damage, not on one hit, and the running total
-                // resets at the owner's side-turn start.
-                hpLoss = Math.Max(0, Math.Min(hpLoss, 20 - state.UnblockedDamageThisTurn));
+                hpLoss = BeatingRemnant_ModifyHpLostAfterOsty(state, hpLoss);
             }
         }
 
