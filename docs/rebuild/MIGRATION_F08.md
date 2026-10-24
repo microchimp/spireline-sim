@@ -987,8 +987,8 @@ Burrowed, Asleep, Illusion, Reattach and Adaptable (PowerCmd is not migrated).
   game's stream and answers with the combat's own copy of it, `CombatState.NicheHpRng` (taken at the run's Niche position
   when the fight starts, restreamed with Niche, handed back to the run when the fight ends, cloned with the combat); a
   hand-made combat with none answers with its Shuffle stream, and one with neither throws. (Review round: the first cut
-  answered with `RunState.ActiveCombatRng` through the kernel's run, which a fork shared with the live run; see the R7
-  checks below.)
+  answered with `RunState.ActiveCombatRng` through the kernel's run, which a fork shared with the live run; see "A fork's
+  run view" in the R7 checks below.)
 - **A copy's run.** `KernelState.CopyTo` kept the source's run when a copy was given none, so a combat's clone (a fork of
   `RunEngine.ForkActiveCombat`, a snapshot, a probe) stood in the live run: a forked Stock, Surprise or Infested death drew,
   and advanced, the live run's combat stream. The old engine's fork carries the fight and its own streams only (the combat
@@ -1041,6 +1041,11 @@ corpus fights with an Illusion enemy are read against the game for the win point
 are left, or not), and the old rule's users are listed and either follow the game or carry the difference.
 
 **R7 checks before switch-on** (each closed, with a test, before the switch goes on in `migrated_families.json`):
+- **A fork's run view (blocker, batch L3b review).** Since the L3b fix a combat's clone (a fork of the search, a snapshot,
+  a probe) binds to no run, so under the switch a run+combat pass in a fork leaves out the run deck's cards and enchantments
+  (`DeckWithoutRun`, reported by `Listeners.Report` only) and `HookCtx.Card` answers null for a deck card. The search forks
+  combats, so before switch-on a fork gets a read-only view of its run's deck, or the gap refuses (throws) instead of
+  answering empty. Test: a forked step with a run-deck listener equals the same step unforked.
 - The index holders (the independent review, docs/reviews/2026-10-24-f08-migration.md, recommendation 3, its 1.3 A and B):
   `HandleEnemyDeaths` gated off whole under the switch; Oblivion paid by reference, not by roster position; the play's
   target resolved by reference (`FirstEnemy` reads `PlayTarget`, null for a dead or removed target).

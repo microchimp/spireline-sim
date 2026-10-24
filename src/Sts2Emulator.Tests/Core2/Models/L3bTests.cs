@@ -370,10 +370,11 @@ public class L3bTests
     {
         var fight = Fight.Hand(new CardInstance(Strike, false)).Energy(9).Enemy(hp: 1, defId: KE.Axebot);
         var s = fight.State;
+        s.ShuffleRng = new CountingRandom(7); // a real stream, so the not-the-Shuffle-stream check compares counts, not nulls
         var dead = s.Enemies[0];
         GivePower(s, "StockPower", BuffId.Stock, 2, dead);
         var (k, niche) = InRun(s, L3b);
-        var shuffle = s.ShuffleRng?.CallCount;
+        var shuffle = s.ShuffleRng.CallCount;
         fight.Play(0, target: 0);
         Assert.DoesNotContain(dead, s.Enemies);
         var bot = Assert.Single(s.Enemies);
@@ -381,7 +382,7 @@ public class L3bTests
         Assert.True(bot.Hp > 1);
         Assert.Equal([new BuffState(BuffId.Stock, 1)], bot.Buffs);
         Assert.Equal(1, niche.CallCount);
-        Assert.Equal(shuffle, s.ShuffleRng?.CallCount);
+        Assert.Equal(shuffle, s.ShuffleRng.CallCount);
         Assert.Equal(0, RunStream(k).CallCount);
     }
 
