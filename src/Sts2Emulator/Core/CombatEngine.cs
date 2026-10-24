@@ -2024,6 +2024,12 @@ public static class CombatEngine
 
             state.ExecutedThisEnemyTurn.Clear();
 
+            // game: CombatManager.StartTurn, the enemy side: CheckWinCondition before ExecuteEnemyTurn (F08+F10 on).
+            if (StartTurnWinCheck(state, playerSide: false, turnEndStart) is { } enemyStartResult)
+            {
+                return enemyStartResult;
+            }
+
             // A reviving illusion is at 0 HP and still takes its turn -- that turn IS the
             // revive. It has to stay in the roster's own order while it does, so it comes back
             // where it stood rather than at one end.
@@ -2782,6 +2788,11 @@ public static class CombatEngine
             // The side's turn start, taken by a screen, killed the player: the combat ended
             // with the screen unanswered and the rest of the setup never ran.
             state.PendingSelection = null;
+            if (StartTurnWinCheck(state, playerSide: true, turnEndStart) is { } overResult)
+            {
+                return overResult;
+            }
+
             return new StepResult(
                 Terminal: true,
                 PlayerWon: false,
@@ -2795,6 +2806,11 @@ public static class CombatEngine
 
         if (!sideTurnStart.Ran && SideTurnStart(state, rng, extraTurn))
         {
+            if (StartTurnWinCheck(state, playerSide: true, turnEndStart) is { } sideStartResult)
+            {
+                return sideStartResult;
+            }
+
             return new StepResult(
                 Terminal: true,
                 PlayerWon: false,
@@ -2818,6 +2834,12 @@ public static class CombatEngine
         AutoPlayMayhemCards(state, rng);
         AutoPlayHistoryCourseDupe(state, rng);
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+
+        // game: CombatManager.StartTurn, the player side: CheckWinCondition after the auto-pre-play phase (F08+F10 on).
+        if (StartTurnWinCheck(state, playerSide: true, turnEndStart) is { } startTurnResult)
+        {
+            return startTurnResult;
+        }
 
         return Settle(state, turnEndStart);
     }
@@ -5254,6 +5276,29 @@ public static class CombatEngine
     /// <paramref name="ids" /> the player holds, in the order the player's powers list holds
     /// them -- the order `CombatState.IterateHookListeners` hands a creature's powers to a hook.
     /// </summary>
+    /// <summary>
+    /// game: CombatManager.StartTurn's CheckWinCondition, the player side's (after the auto-pre-play phase) or the enemy
+    /// side's (before ExecuteEnemyTurn), with F08+F10 on; null with them off or while the combat goes on. The old turn start
+    /// read the end off the HP (Settle), which under F10 is not the combat's end: without this point a kill or a loss in the
+    /// turn start (Inferno, a power's damage, the enemy side's poison) left the combat in progress with nothing standing.
+    /// </summary>
+    private static StepResult? StartTurnWinCheck(CombatState state, bool playerSide, in Baseline baseline)
+    {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is not { } core2)
+        {
+            return null;
+        }
+
+        if (Core2.CombatEnd.IsInProgress(core2))
+        {
+            _ = playerSide
+                ? Core2.CombatEnd.StartPlayerTurn(core2, core2.EndHost)
+                : Core2.CombatEnd.StartEnemyTurn(core2, core2.EndHost);
+        }
+
+        return Core2.CombatEnd.IsInProgress(core2) ? null : EndedByCore2(state, core2, baseline);
+    }
+
     /// <summary>The old step's terminal result for a combat Core2 ended (F08+F10 on): won or lost as Core2 decided.</summary>
     private static StepResult EndedByCore2(CombatState state, Core2.KernelState k, in Baseline baseline)
     {

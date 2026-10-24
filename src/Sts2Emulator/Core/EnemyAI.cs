@@ -976,8 +976,15 @@ public static class EnemyAI
         // turn in between and nothing after it.
         BuffSystem.Remove(state.PlayerBuffs, BuffId.DiamondDiadem);
 
-        foreach (var enemy in state.Enemies.Where(enemy => enemy.Hp > 0))
+        // Over the roster as the pass began (game: the hook's listeners are listed once): with F08+F10 on, a Demise kill
+        // removes its enemy from the roster inside the pass (CreatureCmd.Kill's RemoveCreature).
+        foreach (var enemy in state.Enemies.ToArray())
         {
+            if (enemy.Hp <= 0)
+            {
+                continue;
+            }
+
             ApplyHighVoltageEndOfEnemyTurn(enemy);
             ApplyDemiseEndOfEnemyTurn(state, enemy);
         }
