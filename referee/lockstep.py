@@ -308,6 +308,8 @@ class Lockstep:
         self.roster: str | None = None
         self.round: int | None = None
         self.ctx: dict = {}
+        self._ref_now: dict | None = None  # the referee's energy and hand costs at this combat decision, and at the one before
+        self._ref_prev: dict | None = None
         self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
                       "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
 
@@ -379,6 +381,8 @@ class Lockstep:
             self.round = rnd
         self.ctx = {"acted": self.prev_act, "turn": self.round, "turn_advanced": advanced, "encounter": self.roster,
                     "room_type": self.room_type}
+        self._ref_prev = self._ref_now if self.prev_kind in COMBAT_KINDS else None
+        self._ref_now = _ref_energy(c) if c and kind in COMBAT_KINDS else None
 
     def _probe(self, msg: dict | None) -> dict:
         """The lone-End-Turn probe every record carries (small, names and counts only). The referee asks only when two or more
@@ -390,8 +394,9 @@ class Lockstep:
         out: dict = {}
         c = obs.get("combat")
         if c:
-            out["ref_energy"] = (c.get("player") or {}).get("energy")
-            out["ref_hand_cost"] = [[h[0], h[2], bool(h[3])] for h in c.get("hand") or [] if isinstance(h, list) and len(h) > 3]
+            out["ref_energy"], out["ref_hand_cost"] = _ref_energy(c).values()
+        if self._ref_prev:  # the referee's energy and costs when the step before was asked: what that step left, to be set against emu_energy
+            out["prev_ref_energy"], out["prev_ref_hand_cost"] = self._ref_prev.values()
         if "potions" in obs:
             out["ref_potions"] = [p for p in obs.get("potions") or [] if p]
         probe = getattr(self.emu, "probe", None)
@@ -521,6 +526,12 @@ class Lockstep:
             return True
         self._lose(i, reason or "state_diverged", rec=rec)
         return False
+
+
+def _ref_energy(c: dict) -> dict:
+    """The referee's energy and each hand card's [entry, cost, can_play] (driver/Env.cs Obs adds cost and can_play to the hand)."""
+    return {"energy": (c.get("player") or {}).get("energy"),
+            "hand_cost": [[h[0], h[2], bool(h[3])] for h in c.get("hand") or [] if isinstance(h, list) and len(h) > 3]}
 
 
 def _room(obs: dict) -> str:

@@ -1053,6 +1053,21 @@ class LoneEndTurnProbeTests(unittest.TestCase):
         self.assertEqual((rec["ref_energy"], rec["ref_potions"], rec["ref_hand_cost"]),
                          (2, ["FIRE_POTION"], [["BASH", 2, True], ["DEFEND_IRONCLAD", 1, False]]))
 
+    def test_a_record_also_carries_the_referee_energy_and_costs_of_the_decision_before(self):
+        first, second = self.combat(energy=3), self.combat(energy=0)
+        first["combat"]["hand"] = [["BASH", 0, 2, True], ["DEFEND_IRONCLAD", 0, 1, True]]
+        emu = ProbeEmu([view_of(first), view_of(obs(hp=70, combat=True))])
+        ls = lockstep.Lockstep(emu, lambda m_: 0)
+        ls.decide(msg("combat", first))  # in step with the referee: no record
+        ls.decide(msg("combat", second))
+        rec = ls.log.records[0]
+        self.assertEqual((rec["prev_ref_energy"], rec["prev_ref_hand_cost"]), (3, [["BASH", 2, True], ["DEFEND_IRONCLAD", 1, True]]))
+        self.assertEqual(rec["ref_energy"], 0)
+        # not across a fight boundary: a first decision of a fight has no decision before it
+        ls = lockstep.Lockstep(ProbeEmu([view_of(obs(hp=70, combat=True))]), lambda m_: 0)
+        ls.decide(msg("combat", self.combat()))
+        self.assertNotIn("prev_ref_energy", ls.log.records[0])
+
     def test_a_side_without_a_probe_adds_only_the_referee_fields_and_a_failing_probe_costs_no_record(self):
         ls = lockstep.Lockstep(FakeEmu([view_of(obs(hp=70, combat=True))]), lambda m_: 0)
         ls.decide(msg("combat", self.combat()))
