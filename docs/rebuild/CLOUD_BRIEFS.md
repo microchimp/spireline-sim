@@ -11,22 +11,15 @@ inputs are the migration doc, the port list and the fork's own sources, and whos
 decompile, the corpus, a trace, the game, the PC's built EmuDump, or coordination with a round in flight (R4 edits the same old files).
 
 **Verdict: separable.** 49 of the 106 reached models (60 of the 150 gate pairs) are CLOUD handler work, in six branches; the five listed repo-only
-nits are CLOUD, in two branches; everything else is LOCAL. One blocking prerequisite (H0) is LOCAL and comes first.
+nits are CLOUD, in two branches; everything else is LOCAL. The blocking prerequisite H0 (handler access to the state) is done.
 
-## 0. H0 (LOCAL, blocks every handler batch): a handler cannot reach the old state yet
+## 0. H0: done (landed with these briefs)
 
-Found while writing these briefs; verify it first, and strike this section if a path exists. As of `2fbd17ad` every handler delegate
-(`HookEvent`, `HookFold`, `HookCap`, `HookTry*`, `HookPredicate`, `HookMutate` in `Core2/HookRuntime.cs`) takes `(ListenerRef self, in TArgs a, ...)`
-and nothing else: not the `KernelState`, not the `OldWorld`, not the old `CombatState`. `ListenerRef` is (kind, model id, instance), and
-the args carry `CreatureRef`s (positions), not creatures or power amounts. `Register(HandlerTable)` runs once for the shared, immutable
-`Kernel` (TIER1 section 4), so a static model class cannot capture a per-combat state; the existing tests close over `rt` or the combat they built
-(`ActionQueueTests`, `DamageCommandTests`). Every old extracted function a handler must call takes old state (`CombatState`, `EnemyState`, a power
-amount), so no real model handler can be written until the handler's access is decided. Candidate shapes, for the local session to choose
-(the choice changes every delegate type and `tools/kernel/gen_hooks.py` output, so it is a design decision, with R4 touching the same dispatch):
-(a) `HookRuntime rt` (or `KernelState k`) as the first delegate parameter, with `k.World`, `OldCreatures` and a power-amount accessor by
-`ListenerRef`; (b) the args records carry a read-only old-state view; (c) a per-combat model instance. Once the shape is fixed and
-landed on fork main, the handler items below start; the mechanical part (generator, regenerated `Hooks.g.cs`, existing tests moved to the
-new shape) could itself be handed to cloud as a first item with the shape written into its brief.
+Every handler delegate now takes `(HookCtx k, ListenerRef self, in TArgs a, ...)` (`Core2/HookCtx.cs`; the dispatchers pass `rt.Ctx`). Use the
+neutral members (`k.Power(self)` -> `PowerView(Owner, Amount)?`, `k.Owner(self)`) and `Core2/OldState*.cs` helpers; the worked example is
+`src/Sts2Emulator.Tests/Core2/HandlerContextTests.cs` (Strength's additive and Vulnerable's multiplicative damage handlers), and
+`docs/rebuild/MIGRATION_F08.md` section 5 "How to write a handler" is the template. Ask the local session (through the branch's PR text) for any
+accessor a batch needs that `HookCtx` lacks, rather than reaching into old engine internals from `Core2/Models/**`.
 
 ## 1. Handler batches (MIGRATION_F08 section 5): the split
 
@@ -54,7 +47,7 @@ not-modelled pairs need no handler.
 
 | item | verdict | reason |
 |---|---|---|
-| H0, handler access to the old state | LOCAL | design decision on the delegate shape (section 0) |
+| H0, handler access to the old state | done | landed with these briefs (section 0) |
 | R4, rerouting the old sites (42 + 33 + 19 + 7 callers, the 86 HP/block write sites, the hybrid audit, fuzzer and struct_compare on the empty handler set) | LOCAL | runs locally now; edits `CombatEngine.cs`, `RelicEffects.cs`, `CardEffects.cs`, `EnemyAI.cs`, `BuffSystem.cs` and re-records `sites.json` hashes |
 | R7, switch-on (`migrated_families.json`), lockstep re-measure, by-family table | LOCAL | needs the corpus, the lockstep records and the open-pair gate at 0 |
 | Item 9, the HP commands (`Heal`, `SetCurrentHp`, `SetMaxHp`, `GainMaxHp`, `LoseMaxHp`) | LOCAL | which hooks each game method dispatches is read from the decompile; once the local session writes that spec per method, the commands are CLOUD-able |
@@ -68,7 +61,7 @@ not-modelled pairs need no handler.
 
 ## 3. Handler items (C1 pilot, C2-C6): shared rules
 
-**Setup.** Start from fork main once H0 is on it. Branch `cloud/f08-<name>`, PR to `main`, one branch per batch row above, the pilot first (it
+**Setup.** Start from fork main (H0 is on it). Branch `cloud/f08-<name>`, PR to `main`, one branch per batch row above, the pilot first (it
 proves the pattern and is the only batch that restructures `Registry.cs`; the other five wait for its landing). Switch nothing on:
 `migrated_families.json` and `Switches.g.cs` stay as they are, so the handlers are inert in every engine run and live only in unit tests
 (R7 flips the switch). No game text, no decompiled text in code, comments or the PR: identifiers (model ids, hook names, our function names).
