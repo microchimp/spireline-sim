@@ -133,6 +133,16 @@ public static class Registry
         FakeStrikeDummy.Register,
     ];
 
+    /// <summary>Batch L3b (rebuild/f08-l3b): the LOCAL models that needed a kernel addition: Surprise and Infested (the
+    /// HookCtx.Niche stream), Stock (CreatureCmd.Add) and Hang (the card path's multiply gated off under the switch).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> L3b =
+    [
+        SurprisePower.Register,
+        InfestedPower.Register,
+        StockPower.Register,
+        HangPower.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -148,6 +158,7 @@ public static class Registry
         .. Power2,
         .. Power3,
         .. Power4,
+        .. L3b,
         .. Relic1,
     ];
 }
