@@ -195,8 +195,9 @@ F08+F10 switch (a `KernelState` exists only with a switch on) and called from no
   each result gets a `DamageResultRef` in `k.Commands` (`Result(ref)` for handlers; copied with the state, enemies
   re-pointed by roster index). A creature the call kills is marked dying (`OldWorld.MarkDying`) from its HP loss until
   `Kill` returns, since the game keeps it in the combat until the kill removes it. An event dispatch that pauses where
-  the command cannot resume goes through `KernelState.Settle`. Not in the old state, so not done: the combat history
-  entry, the player's damage-dealt counter, visuals.
+  the command cannot resume goes through `KernelState.Settle`. The old state's damage history is owned too (see "Fixes after R2's
+  review" below). Not in the old state, so not done: the run statistics (the player's damage-dealt counter, the map
+  point's damage taken) and visuals.
 - The enchantment steps call the old bodies: `CardEffects.EnchantDamageAdditive` and `EnchantDamageMultiplicative`,
   extracted from `DmgFrom` (which calls them, byte-identical), applied only on a powered attack (every damage
   enchantment of the game checks `IsPoweredAttack`). `NetIdGuard` returns true (one local player). `OwnerInCombat` is
@@ -292,6 +293,47 @@ exists only with a switch on) and called from no old site yet (R4 reroutes). Ite
   corpus fights: old against `--engine core2` 47344 pairs identical, 0 differ; `rebuild/f08-r2` (b78ff33d) against this
   tree, both `--engine old`, 47344 identical, 0 differ; `construct shape` 0 differences; `sites check` 0 problems (279
   sites; sites.json unchanged); `gen_hooks --check` clean. No old-engine file changed.
+
+**Fixes after R2's review (branch `rebuild/f08-r3a`, 2026-10-24).** R2 said the damage history is not in the old state.
+It is: the old damage sites update counters that old code reads later. Core2 owns each, through `OldCreatures`
+(`Core2/OldState.Damage.cs`), at the game's point; R4 deletes the old line when it reroutes the site, and a ported model's
+handler takes its line over.
+- **Counters owned.** At `History.DamageReceived` (per result, in the first loop, after both results' flags are set;
+  unguarded, since the old engine has no IsEnding flag inside a Damage call): `PlayerHpLostThisTurn` (Spite: player
+  receiver, unblocked > 0, on the player's side turn, the entry's round and side), `UnblockedDamageHitCount` (Tear Asunder:
+  every entry with unblocked > 0), `PlayerHitTurn`/`PlayerHitTurnBefore` (Emotion Chip: every entry not fully blocked),
+  `EnemyState.PoweredHitsThisTurn` (Beat Into Shape: enemy receiver, the player itself as dealer, powered attack, the
+  player's turn). At AfterDamageReceived, for a receiver not killed, after the hook dispatch: `UnblockedDamageThisTurn`
+  (Beating Remnant, held or not: the old field is global), `TookUnblockedDamage` (Lava Lamp: unblocked > 0 and not
+  Unblockable), `HardenedShellDamageThisTurn` (the power's owner, not fully blocked), and the old player-side body
+  `CardEffects.AfterPlayerDamageReceived` (now `internal`; Rupture, Inferno, Centennial Puzzle, Self-Forming Clay, Demon
+  Tongue, Red Skull) with Rupture's `fromPlayedCard` derived as the game reads it: the damage's card source is the card in
+  flight (`OldWorld.Flying`) on the player's turn. In `AttackCmd`, at `History.CreatureAttacked` (once per command, after
+  its last hit, before AfterAttack): `OstyAttacksThisTurn` (Flatten, Rattle; Osty as attacker, the player's turn).
+- **Where this reads the game, not the old engine** (R4's fuzzer will list these as differences to read, not regressions):
+  `UnblockedDamageHitCount` now counts every route (old: monster attacks only); `PlayerHitTurn` stamps a result that is not
+  fully blocked even with no HP lost (old: unblocked > 0); Osty attacks count per command (old: per hit, Rattle patched it
+  back); `PlayerHpLostThisTurn` is not counted on the enemy's turn (unobservable: it resets at the player's turn start).
+- **Not counters, left to the handler batches:** the other old writes at the damage sites are model bodies (Slippery,
+  Curl Up's armed flag, Flutter, Slumber, Plow, Shriek, Envenom, Personal Hive, Reaper Form, Monarch's Gaze, Paper Cuts,
+  Imbalanced, The Gambit, Thorns, Skittish through `AttackOutcome`). A killed player gets no old
+  `AfterPlayerDamageReceived`: that body's HP-changed call (Red Skull, Lizard Tail) would revive it before `Kill`, which
+  would kill it again; Lizard Tail's revival belongs to the F10 `ShouldDie` handler.
+- **`AttackCmd.BeforeDamage`** (game: AttackCommand.BeforeDamage): an `Action` run per hit after the target pick and before
+  Calculate and Damage. The game's seven users are Dagger Spray, Fiend Fire, Hyperbeam, Sovereign Blade (both builders),
+  Sweeping Beam, Calcified Cultist and Damp Cultist; every body plays effects or sounds only, none changes simulation
+  state, so **the plan's handler batches wire none of them**. The seam exists for a model that does.
+- **Random targeting, pinned.** `AttackCmd.RandomlyTargeted` draws the attacker's player's CombatTargets stream (the pet
+  owner's for Osty; the old `CombatState.TargetRng`) **once per hit, after the duplicates filter**, as
+  `Next(valid.Count)` over the living opponents, drawn even over one candidate (the game's Rng.NextItem). An enemy
+  attacker throws (it has no such stream). Duplicates disallowed: the filter drops creatures already in the attack's
+  results, none left throws. `RandomPick` stays only as a test seam. R4's callers (Sword Boomerang, the random-target
+  cards and relics) set `RandomlyTargeted` and pass no stream.
+- Tests: `src/Sts2Emulator.Tests/Core2/DamageCounterTests.cs` (15): one per counter, Rupture banked against immediate,
+  random targeting (stream and draw count, over one candidate), duplicates disallowed (filter then draw, throw), an enemy
+  attacker, BeforeDamage's place, Calculate per hit (single target, null, a lone opponent), 0 damage into block fully
+  blocked with AfterDamageReceived firing.
+- Acceptance (R2 fix): `dotnet test src/Sts2Emulator.Tests` 6791 passed, 7 skipped, 0 failed (6798); Core2 tests 127 (15 new in `DamageCounterTests`); byte_proof old against `--b-args "--engine core2"`, modes fight, state-hash, rng-log, `--limit 500`: byte_proof: rng-log: 500 fights, 500 identical, 0 differ, 0 run problems (0 with an error text compared to its first line); byte_proof: ok: 1500 fight-mode pairs identical, 0 differ; `construct shape` 0 differences; `sites check` 0 problems. `tools/emudump.Tests` not rerun (no EmuDump file changed). `CardEffects.cs` changes by one keyword (`private` to `internal`), no line moves.
 
 ## 4. Old sites replaced, and their game counterparts
 
