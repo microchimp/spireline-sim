@@ -220,9 +220,11 @@ def _pass_body(s: Shape, i: int, p: dict) -> list[str]:
     if op == "preventer-only":
         return [f"if (e.Who != {s.arg('ListenerRef')}) continue;"] + _event_body(s, i, p, "none") + ["break;"]
     if op == "fold-add":
-        return [f"{v} d = e.Fn(rt.Ctx, e.Who, in a, v);", "v += d;"] + ([f"if (d != 0m) {ADD}"] if changed != "none" else [])
+        return ([f"{v} d = e.Fn(rt.Ctx, e.Who, in a, v);", "v += d;"]
+                + ([f"if (d != 0m) {ADD}"] if changed != "none" else []))
     if op == "fold-mul":
-        return [f"{v} f = e.Fn(rt.Ctx, e.Who, in a, v);", "v *= f;"] + ([f"if (f != 1m) {ADD}"] if changed != "none" else [])
+        return ([f"{v} f = e.Fn(rt.Ctx, e.Who, in a, v);", "v *= f;"]
+                + ([f"if (f != 1m) {ADD}"] if changed != "none" else []))
     if op == "fold-cap":
         tail = [ADD] if changed != "none" else []
         return [f"{v} c = e.Fn(rt.Ctx, e.Who, in a);", "if (c < cap)", "{", "    cap = c;", "    if (v > c)", "    {",
@@ -239,8 +241,8 @@ def _pass_body(s: Shape, i: int, p: dict) -> list[str]:
         if changed == "none":
             return ["e.Fn(rt.Ctx, e.Who, in a, v, out v);"]
         if "out-not-null" in p.get("also", []):
-            return ["if (e.Fn(rt.Ctx, e.Who, in a, v, out var next) && next is { } got)", "{", "    v = got;", f"    {ADD}",
-                    "}"]
+            return ["if (e.Fn(rt.Ctx, e.Who, in a, v, out var next) && next is { } got)", "{", "    v = got;",
+                    f"    {ADD}", "}"]
         return ["if (e.Fn(rt.Ctx, e.Who, in a, v, out var next))", "{", "    v = next;", f"    {ADD}", "}"]
     if op == "predicate-all":
         return ["if (!e.Fn(rt.Ctx, e.Who, in a))", "{", "    preventer = e.Who;", "    return false;", "}"]
