@@ -211,6 +211,8 @@ Osty, with the truncation at the HP loss). Local gate: the shared list; the revi
 
 ### C7: `cloud/f08-tooling-nits`
 
+Landed (PR #5, 2026-10-24), gate and review passed.
+
 The review nits that touch only tooling. Inputs: this list. (1) `tools/emudump/Engines/Old/ExtractedBody.cs` (`Is`: an underscore after an upper-case initial, an upper-case letter after
 it, an old-engine namespace) and `tools/fidelity/hook_table.py` (`callees`, which follows `<Model>_<Hook>` helpers) must name the same set of functions: add one test in each
 suite that pins the set of extracted names (read by reflection in `tools/emudump.Tests`, by a source scan in `tests/python/test_hook_table.py`) against a literal list, so a function the
@@ -223,6 +225,8 @@ test projects and the Python tests it touches (`tests/python/test_hook_table.py`
 (`sites check` 0 problems), byte proof unchanged (the tooling is not in the engine), and the nit list in `MIGRATION_F08.md` ticked.
 
 ### C8: `cloud/f08-scenario-setters`
+
+Landed (PR #3, 2026-10-24), gate and review passed.
 
 `IEngine` setters for the player's block, the enemies' HP and block, so a scenario can express them (SCENARIOS.md: "Not expressible yet: block and enemy HP/block"). Inputs: `SCENARIOS.md`
 (the format, the setup keys, the setup order relics, deck, potions, HP, the fight, then the combat items), `tools/emudump/Engine/IEngine.cs`, `tools/emudump/Setup.cs`, `tools/emudump/Scenario.cs`,

@@ -58,7 +58,7 @@ fields as they stand, after the fight's start: no hook runs for them, and an int
 rather than cap, since a value the fight cannot hold as written is a drifting assumption a cap would hide: a slot with no living
 enemy (out of range, or dead), a block below 0, an HP below 1, or a `current` above the max HP in force (the `max` given beside it,
 else the rolled one) fails the scenario at that setup item ("did not take", with the reason: `no living enemy in slot 3`, `current HP
-50 above max HP 44`). What shows in the file itself is **invalid** before any engine runs: a negative value, a `current` above its own
+50 above max HP 44`). What shows in the file itself is **invalid** before any engine runs: a negative value, an `enemy_hp` `max` or `current` of 0, a `current` above its own
 `max`, a slot set twice in one list, an `enemy_hp` entry with neither `max` nor `current`. To set a current HP above the rolled max,
 give `max` too.
 Not expressible yet: a potion belt with gaps, other characters.
