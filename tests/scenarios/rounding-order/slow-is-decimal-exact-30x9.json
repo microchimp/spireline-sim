@@ -1,0 +1,127 @@
+{
+  "name": "rounding-order/slow-is-decimal-exact-30x9",
+  "source": "game: Hook.ModifyDamage (one decimal through the additive and multiplicative modifiers, the caps after, one int cast)",
+  "doc": "30 x 1.9 = 57 exactly in decimal, after nine cards played with Slow on (SlowAmount counts cards; a power applied with an amount does not set it).",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {
+      "id": "HUNTER_KILLER",
+      "act": "HIVE",
+      "kind": "normal",
+      "index": 3
+    },
+    "relics": [],
+    "deck": [
+      "STRIKE_IRONCLAD"
+    ],
+    "powers": [
+      {
+        "id": "STRENGTH_POWER",
+        "target": "player",
+        "amount": 24
+      },
+      {
+        "id": "SLOW_POWER",
+        "target": "enemy:0",
+        "amount": 1
+      }
+    ],
+    "energy": 7,
+    "hand": [
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      }
+    ]
+  },
+  "actions": [
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d1"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d2"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d3"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d4"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d5"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d6"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d7"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d8"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d9"
+    },
+    {
+      "do": "play",
+      "card": "STRIKE_IRONCLAD",
+      "target": 0,
+      "name": "hit"
+    }
+  ],
+  "expect": [
+    {
+      "path": "snapshot.enemies[0].hp",
+      "equals": 126,
+      "at": "start"
+    },
+    {
+      "path": "snapshot.enemies[0].hp",
+      "delta_from": "start",
+      "equals": -57
+    }
+  ]
+}

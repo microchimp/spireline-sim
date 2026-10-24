@@ -73,10 +73,12 @@ lists the living enemies (a killed lone enemy is `#len` 0); after a won fight `s
 
 ## Outcomes
 
-pass; fail (a difference, an engine error such as an unknown model, an illegal action, a setup item that did not take); xfail (a fail
-the scenario lists for this engine, with the reason: the open `hook_open.txt` row or the unlanded fix it waits on); **xpass** (listed and
+pass; fail (a difference, an engine error such as an unknown model, an illegal action, a setup item that did not take); xfail (a difference
+the scenario lists for this engine, with the reason: the open `hook_open.txt` row or the unlanded fix it waits on; a run that stopped, by an
+illegal action or an engine error, never reached its expectations and is a plain fail whatever the list says); **xpass** (listed and
 passing: unexpected, take the row out so a fixed engine cannot go back unnoticed); skip (`engines` leaves the engine out); invalid (the
-file breaks the format: always unexpected). `xfail_engines` may name only engines the scenario runs on, with a reason of 8 characters or
+file breaks the format: always unexpected; that includes an `at_least` or `at_most` that is not a number, an `absent` that is not true or false,
+and an `absent: true` on a path whose parent is not in the game view, which would pass for any typo). `xfail_engines` may name only engines the scenario runs on, with a reason of 8 characters or
 more.
 
 ## What is in `tests/scenarios` (23)
@@ -90,8 +92,10 @@ incoming hit is the lone Nibbit's first attack (13 at A10 for the seed) with `ST
 |---|---|---|---|
 | `exhaust-order/` (ExhaustListenerOrderTests) | juggernaut-from-feel-no-pain-kills-before-forgotten-soul, juggernaut-picks-before-charons-ashes-kills | xfail (2) | xfail (2) |
 | `victory-heal/` (VictoryHealOrderTests) | meat-at-threshold-then-burning-blood, ...-black-blood (xfail); meat-above-threshold-does-not-heal, meat-below-threshold-then-burning-blood (pass) | 2 xfail, 2 pass | 2 xfail, 2 pass |
-| `rounding-order/` (RoundingOrderTests) | slow-joins-the-multiplicative-chain, slow-is-decimal-exact-30x11 and -90x3, hard-to-kill-cap-runs-after-slow, intangible-caps-a-halved-30-to-1 and -3-to-1, intangible-colossus-halves-a-vulnerable-4-to-1 (xfail); diadem-halves-15-to-7, intangible-cap-leaves-a-halved-1-at-0, intangible-colossus-halves-a-vulnerable-1-to-0, halving-truncates-once (pass) | 7 xfail, 4 pass | 7 xfail, 4 pass |
+| `rounding-order/` (RoundingOrderTests) | slow-joins-the-multiplicative-chain, slow-is-decimal-exact-90x3, intangible-caps-a-halved-30-to-1 and -3-to-1, intangible-colossus-halves-a-vulnerable-4-to-1 (xfail); slow-is-decimal-exact-30x9, hard-to-kill-cap-runs-after-slow, diadem-halves-15-to-7, intangible-cap-leaves-a-halved-1-at-0, intangible-colossus-halves-a-vulnerable-1-to-0, halving-truncates-once (pass) | 5 xfail, 6 pass | 5 xfail, 6 pass |
 | `regression/` | strike-damages-the-enemy-and-costs-1, vulnerable-multiplies-by-1-5, strength-adds-before-vulnerable-multiplies, weak-truncates-once, feel-no-pain-blocks-per-exhaust, burning-blood-heals-6-after-victory | pass (6) | pass (6) |
+
+Slow's multiplier is `1 + 0.1 x SlowAmount`, and SlowAmount is a separate count of the cards played this turn (zero when the power lands, reset when its owner's side turn starts), not the power's amount. `SLOW_POWER` applied with an amount N therefore multiplies by 1 in the game too, so the four Slow scenarios apply it with amount 1 and play the cards (`DEFEND_IRONCLAD`) before the hit; the hand holds at most 10, so the count tops out at 9.
 
 core2 with no family switch on runs old's rules (`migrated_families.json`), so it fails what old fails; its xfail rows say so and are
 the ones P1's kernel work must turn into passes (the "ExhaustListenerOrder, VictoryHealOrder and RoundingOrder pass on Core2" line of

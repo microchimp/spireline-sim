@@ -1,24 +1,75 @@
 {
   "name": "rounding-order/hard-to-kill-cap-runs-after-slow",
   "source": "game: Hook.ModifyDamage (one decimal through the additive and multiplicative modifiers, the caps after, one int cast)",
-  "doc": "9 x 1.2 = 10.8, capped at 10 by HARD_TO_KILL_POWER after SLOW_POWER.",
-  "xfail_engines": {"old": "old has no SLOW_POWER in the multiplicative chain and holds its count as a separate buff (hook_open: missing SLOW_POWERPower.ModifyDamageMultiplicative; fix/rounding-order 2935e9ff not landed).", "core2": "old has no SLOW_POWER in the multiplicative chain and holds its count as a separate buff (hook_open: missing SLOW_POWERPower.ModifyDamageMultiplicative; fix/rounding-order 2935e9ff not landed); core2 runs old's rules until its family switch is on (migrated_families.json), so it fails the same way."},
+  "doc": "9 x 1.2 = 10.8, capped at 10 by HARD_TO_KILL_POWER after SLOW_POWER. Slow's multiplier counts the cards played this turn (SlowAmount), so the scenario plays them; an applied amount does not set it.",
   "setup": {
     "character": "IRONCLAD",
     "ascension": 10,
     "seed": "SCENARIO01",
-    "encounter": {"id": "HUNTER_KILLER", "act": "HIVE", "kind": "normal", "index": 3},
+    "encounter": {
+      "id": "HUNTER_KILLER",
+      "act": "HIVE",
+      "kind": "normal",
+      "index": 3
+    },
     "relics": [],
-    "deck": ["STRIKE_IRONCLAD"],
+    "deck": [
+      "STRIKE_IRONCLAD"
+    ],
     "powers": [
-      {"id": "STRENGTH_POWER", "target": "player", "amount": 3},
-      {"id": "SLOW_POWER", "target": "enemy:0", "amount": 2},
-      {"id": "HARD_TO_KILL_POWER", "target": "enemy:0", "amount": 10}
+      {
+        "id": "STRENGTH_POWER",
+        "target": "player",
+        "amount": 3
+      },
+      {
+        "id": "SLOW_POWER",
+        "target": "enemy:0",
+        "amount": 1
+      },
+      {
+        "id": "HARD_TO_KILL_POWER",
+        "target": "enemy:0",
+        "amount": 10
+      }
+    ],
+    "hand": [
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      }
     ]
   },
-  "actions": [{"do": "play", "card": "STRIKE_IRONCLAD", "target": 0, "name": "hit"}],
+  "actions": [
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d1"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d2"
+    },
+    {
+      "do": "play",
+      "card": "STRIKE_IRONCLAD",
+      "target": 0,
+      "name": "hit"
+    }
+  ],
   "expect": [
-    {"path": "snapshot.enemies[0].hp", "equals": 126, "at": "start"},
-    {"path": "snapshot.enemies[0].hp", "delta_from": "start", "equals": -10}
+    {
+      "path": "snapshot.enemies[0].hp",
+      "equals": 126,
+      "at": "start"
+    },
+    {
+      "path": "snapshot.enemies[0].hp",
+      "delta_from": "start",
+      "equals": -10
+    }
   ]
 }
