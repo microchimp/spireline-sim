@@ -333,7 +333,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--n", type=int, required=True)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
-    authkey = os.environ.pop(args.authkey_env).encode("utf-8")
+    authkey = bytes.fromhex(os.environ.pop(args.authkey_env).strip())
     shas = tuple(args.shas.split(","))
     try:
         times = bench_client(args.bench, authkey, shas, args.n, args.seed)

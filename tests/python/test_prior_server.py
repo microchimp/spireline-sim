@@ -51,7 +51,7 @@ class ServerProc:
     def __init__(self, policy, *, extra=(), env=None, stdin=subprocess.PIPE, wrapper=None):
         self.policy = Path(policy)
         self.sha = hashlib.sha256(self.policy.read_bytes()).hexdigest()
-        self.key = secrets.token_hex(16)
+        self.key = secrets.token_hex(32)  # hex digits in the environment, as the launcher writes it
         self.tmp = tempfile.TemporaryDirectory()
         tmp = Path(self.tmp.name)
         self.endpoint = (
@@ -84,12 +84,12 @@ class ServerProc:
 
     def prior(self, **overrides):
         fields = dict(policy=str(self.policy), probe=False, endpoint=self.endpoint,
-                      authkey=self.key.encode(), policy_sha256=self.sha, timeout_s=10.0)
+                      authkey=bytes.fromhex(self.key), policy_sha256=self.sha, timeout_s=10.0)
         return pc.RemotePrior(**{**fields, **overrides})
 
     def raw(self, *, key=None, policy_sha=None, vocab=VOCAB_SHA, card=CARD_SHA, version=pp.PROTO):
         family = "AF_PIPE" if IS_WINDOWS else "AF_UNIX"
-        conn = connection.Client(pp.pipe_address(self.endpoint), family=family, authkey=(key or self.key).encode())
+        conn = connection.Client(pp.pipe_address(self.endpoint), family=family, authkey=bytes.fromhex(key or self.key))
         conn.send_bytes(pp.pack_hello(policy_sha or self.sha, vocab, card, version))
         status, reason = pp.unpack_hello_reply(conn.recv_bytes())
         return conn, status, reason
@@ -307,7 +307,7 @@ class ServerTests(unittest.TestCase):
             "h = native.create(0)\nobs = (ctypes.c_int * native.OBS_SIZE)()\n"
             "native.reset_arena(h, args['deck'], obs, encounter_id=args['enc'])\n"
             "mask = native.valid_actions(h, 32)\nlegal = [a for a in range(32) if mask[a]]\n"
-            "p = pc.RemotePrior(args['policy'], False, args['ep'], args['key'].encode(), args['sha'])\n"
+            "p = pc.RemotePrior(args['policy'], False, args['ep'], bytes.fromhex(args['key']), args['sha'])\n"
             "w = p(h, legal)\nprint(json.dumps({'torch': 'torch' in sys.modules, 'server': pc.stats()['server'], 'n': len(w)}))\n"
         )
         args = {"deck": DECK, "enc": TOADPOLES, "policy": str(self.policy), "ep": server.endpoint,
@@ -507,7 +507,7 @@ class ServerTests(unittest.TestCase):
                                    if IS_WINDOWS else str(Path(self.tmp.name) / "parent.sock"),
                                    "--authkey-env", "SPR_TEST_KEY", "--device", "cpu"],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                  env=dict(os.environ, SPR_TEST_KEY="k" * 16))
+                                  env=dict(os.environ, SPR_TEST_KEY="ab" * 16))
         parts = holder.stdout.readline().decode().split()
         self.assertEqual(parts[0], "READY", parts)
         pid = int(parts[-1])
@@ -543,9 +543,17 @@ class ServerTests(unittest.TestCase):
         if torch.cuda.is_available():
             self.skipTest("this interpreter has CUDA")
         out = subprocess.run([sys.executable, str(SERVER), "--policy", str(self.policy), "--endpoint", "x",  # noqa: S603
-                              "--authkey-env", "SPR_TEST_KEY"], capture_output=True, text=True, env=dict(os.environ, SPR_TEST_KEY="k"))
+                              "--authkey-env", "SPR_TEST_KEY"], capture_output=True, text=True, env=dict(os.environ, SPR_TEST_KEY="ab"))
         self.assertEqual(out.returncode, 2)
         self.assertEqual(len(out.stderr.strip().splitlines()), 1, out.stderr)
+
+
+    def test_a_key_that_is_not_hex_is_refused(self):
+        out = subprocess.run([sys.executable, str(SERVER), "--policy", str(self.policy), "--endpoint", "x",  # noqa: S603
+                              "--authkey-env", "SPR_TEST_KEY", "--device", "cpu"],
+                             capture_output=True, text=True, env=dict(os.environ, SPR_TEST_KEY="not hex"))
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("not hexadecimal", out.stderr)
 
 
 @unittest.skipUnless(

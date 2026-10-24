@@ -591,11 +591,11 @@ def selftest(server: PriorServer, calls: int, clients: int) -> None:
             cpu, wall = _measure(server, requests, 200, True)
             print(f"eager forward batch {rows}: host CPU {cpu:.3f} ms/batch, wall {wall:.3f} ms/batch")
 
-    key = secrets.token_hex(16)
+    key = secrets.token_hex(32)
     endpoint = f"spireline-prior-selftest-{os.getpid()}-{secrets.token_hex(4)}"
     if sys.platform != "win32":
         endpoint = str(Path(tempfile.mkdtemp()) / "prior.sock")
-    server.serve(endpoint, key.encode("utf-8"))
+    server.serve(endpoint, bytes.fromhex(key))
     shas = ",".join((server.policy_sha, server.vocab_sha, server.card_sha))
     env = dict(os.environ, SPR_SELFTEST_KEY=key)
     procs = [
@@ -645,7 +645,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="The batched combat prior server (docs/rl/GPU_INFERENCE.md).")
     parser.add_argument("--policy", required=True, help="combat_policy.pt to serve")
     parser.add_argument("--endpoint", help="pipe name (Windows) or socket path (elsewhere)")
-    parser.add_argument("--authkey-env", metavar="NAME", help="environment variable holding the key; it is deleted once read")
+    parser.add_argument("--authkey-env", metavar="NAME", help="environment variable holding the key as hex digits; it is deleted once read")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda", help="cpu is for the tests alone")
     parser.add_argument("--max-batch", type=int, default=128)
     parser.add_argument("--max-tokens", type=int, default=256)
@@ -670,7 +670,11 @@ def main(argv=None) -> int:
         if not value:
             print(f"prior_server: environment variable {args.authkey_env} is not set", file=sys.stderr)
             return 2
-        authkey = value.encode("utf-8")
+        try:
+            authkey = bytes.fromhex(value.strip())
+        except ValueError:
+            print(f"prior_server: environment variable {args.authkey_env} is not hexadecimal", file=sys.stderr)
+            return 2
     procutil.set_priority_class(
         procutil.NORMAL_PRIORITY_CLASS if args.priority == "normal" else procutil.BELOW_NORMAL_PRIORITY_CLASS
     )
