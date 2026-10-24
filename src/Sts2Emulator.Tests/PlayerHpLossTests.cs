@@ -178,7 +178,7 @@ public class RunHpLossTests
     [Fact]
     public void SlipperyBridgeHoldOnWithTheRodCostsOneLess()
     {
-        var engine = new RunEngine();
+        var engine = TestSwitches.Run(new RunEngine());
         engine.Reset("ABCDEF");
         engine.State.Relics.Add(new RelicInstance(RelicEffects.TungstenRod));
         engine.State.PlayerHp = 50;

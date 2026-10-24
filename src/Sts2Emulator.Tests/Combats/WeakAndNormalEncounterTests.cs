@@ -117,7 +117,7 @@ public class WeakAndNormalEncounterTests
         string seed = "WEAKNRM001"
     )
     {
-        var engine = new RunEngine();
+        var engine = TestSwitches.Run(new RunEngine());
         engine.Reset(seed, Ascension.DefaultLevel);
         var state = engine.State;
         state.NormalEncounterSequence = sequence;

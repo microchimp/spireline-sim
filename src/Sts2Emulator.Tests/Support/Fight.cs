@@ -23,7 +23,8 @@ internal sealed class Fight
     private Random _rng = new CountingRandom(0);
     private bool _replacedEncounter;
 
-    private Fight(CombatState state) => State = state;
+    // Bound to the test kernel when STS2_TEST_SWITCHES is set (Support/TestSwitches.cs); untouched otherwise.
+    private Fight(CombatState state) => State = TestSwitches.Bind(state);
 
     public CombatState State { get; }
 
@@ -260,14 +261,14 @@ internal sealed class Fight
 
     /// <summary>Plays the card at <paramref name="index"/>; -1 targets the first living enemy.</summary>
     public StepResult Play(int index = 0, int target = -1) =>
-        CombatEngine.Step(State, index, _rng, target);
+        TestSwitches.Step(State, index, _rng, target);
 
     /// <summary>
     /// Answers an open card-selection screen with the candidate at
     /// <paramref name="candidate" />. A test makes this choice explicitly — that is the
     /// point of modelling it — so there is no "pick something sensible" helper.
     /// </summary>
-    public StepResult Choose(int candidate) => CombatEngine.Step(State, candidate, _rng);
+    public StepResult Choose(int candidate) => TestSwitches.Step(State, candidate, _rng);
 
     /// <summary>
     /// Confirms a screen the emulator reopens per pick. The game's Purity screen is ONE
@@ -279,13 +280,13 @@ internal sealed class Fight
     {
         while (State.PendingSelection is { Skippable: true } screen)
         {
-            CombatEngine.Step(State, screen.Candidates.Count, _rng);
+            TestSwitches.Step(State, screen.Candidates.Count, _rng);
         }
     }
 
     public PendingCardSelection? Pending => State.PendingSelection;
 
-    public StepResult EndTurn() => CombatEngine.Step(State, State.Hand.Count, _rng);
+    public StepResult EndTurn() => TestSwitches.Step(State, State.Hand.Count, _rng);
 
     /// <summary>
     /// Ends the turn and reports the player's HP, for use as a CONTROL.
@@ -304,7 +305,7 @@ internal sealed class Fight
     }
 
     public StepResult Potion(int slot) =>
-        CombatEngine.Step(State, State.Hand.Count + 1 + slot, _rng);
+        TestSwitches.Step(State, State.Hand.Count + 1 + slot, _rng);
 
     public int PlayerBuffAmount(BuffId id) => BuffSystem.Get(State.PlayerBuffs, id);
 

@@ -28,7 +28,7 @@ public class TwinStrikeTests
         state.Hand.Add(new CardInstance(IC.TwinStrike, false));
         state.Energy = 3;
 
-        CombatEngine.Step(state, 0, rng);
+        TestSwitches.Step(state, 0, rng);
 
         // TwinStrike deals 5×2 = 10 damage (no buffs)
         Assert.Equal(enemyHp - 10, state.Enemies[0].Hp);

@@ -18,7 +18,7 @@ public class CombatEndRewardPowerTests
 {
     private static RunEngine Run()
     {
-        var engine = new RunEngine();
+        var engine = TestSwitches.Run(new RunEngine());
         engine.Reset("NXV45HW43K");
         return engine;
     }

@@ -60,7 +60,7 @@ public class HeistGoldRewardTests
         var state = FatGremlinHoldingHeistGold(encounterId);
         int goldBefore = state.PlayerGold;
 
-        CombatEngine.Step(state, 0, new System.Random(0));
+        TestSwitches.Step(state, 0, new System.Random(0));
 
         // Not handed over mid-combat -- it is a row on the screen that follows.
         Assert.Equal(goldBefore, state.PlayerGold);
@@ -90,7 +90,7 @@ public class HeistGoldRewardTests
 
     private static RunEngine AtRewardsFor(CombatState combat)
     {
-        var engine = new RunEngine();
+        var engine = TestSwitches.Run(new RunEngine());
         engine.Reset("9V9WN98106");
         engine.State.CurrentNodeType = RunConstants.NodeNormal;
         engine.State.ActiveCombat = combat;
