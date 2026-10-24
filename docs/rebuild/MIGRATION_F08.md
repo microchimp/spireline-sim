@@ -312,6 +312,18 @@ Porting pattern: the handler calls the model's body where the old engine has it;
 site (Ravenous inside `AnswerDeaths`, Curl Up inside `LandDamageOnEnemy`) is first extracted into a named function that
 the old site calls too, so the switch-off path stays byte-identical.
 
+**R5 result (`rebuild/f08-r5`).** Every inline body of a located (model, hook) pair in a shared dispatch site is now an
+`internal static <Model>_<Hook>(...)` function in the same class, with `game: <Class>.<Method>` in its doc comment, called
+from the old place under the old condition (the call site keeps the `if`, the function holds what was inside it; a value
+hook's function returns its number or factor and the fold calls it in the same order). The port list's location column
+reads the new names from the source (`hook_table.classify` follows a dispatch method's bare-name callees), so no mapping
+file is needed and the statuses did not move. Pairs whose old code was already its own function keep that function
+(`TriggerShriekIfWounded`, `TryRespawnAxebot`, `BootDamageFloor`, ...). Left: the pairs with no old location (the 27
+pseudo-hook pairs and the open hook pairs: their bodies sit in EndTurn, ExecuteIntent, the factories; each is read in its
+handler batch), `CombatEngine.IsPrimaryEnemy` (Creature.IsPrimaryEnemy, not a hook body), Fairy in a Bottle's
+`ShouldDie` (the slot lookup `PlayerIsDead` and `IsAboutToLose` share) and the Tungsten Rod line of
+`RunNonCombatEffects.LoseHp` (run-level HP loss, outside the combat code).
+
 ## 6. Acceptance
 
 Per round:
@@ -345,7 +357,7 @@ a stop.
 | R3a | Opus | `Kill` / `KillWithoutCheckingWinCondition` in the sequence of section 3 item 5, the two removals, `IsPerformingMove` and the move's end, the pseudo-hook ids, `Escape`, the HP commands (item 9) |
 | R3b | Opus | the win check at the game's points, the old answers and in-step checks gated off, the F17 hand-off (`FinishCombat` from the host), `construct commands` with the write check |
 | R4 | Opus | after K5/K6 land: the old entry points rerouted (the 42 + 33 + 19 + 7 callers through adapters returning the old ints, and section 4's write sites), the hybrid audit, fuzzer and struct_compare harness on the empty handler set |
-| R5 | Sonnet | the inline bodies extracted into named functions the old sites call too (Ravenous and the other AnswerDeaths bodies, Curl Up and the LandDamageOnEnemy bodies, The Gambit and Paper Cuts in DealAttackDamage, the EndTurn bodies), byte-identical old path; done before the batches that need them |
+| R5 (done, `rebuild/f08-r5`) | Sonnet | the inline bodies extracted into named functions the old sites call too (Ravenous and the other AnswerDeaths bodies, Curl Up and the LandDamageOnEnemy bodies, The Gambit and Paper Cuts in DealAttackDamage, the EndTurn bodies), byte-identical old path; done before the batches that need them |
 | R6.1-R6.8 | Sonnet; Opus for monster-1 and monster-2 | the eight handler batches of section 5; each closes its pairs on the open-pair gate |
 | R7 | Opus | switch-on behind the open-pair gate (0 open pairs), corpus and lockstep re-measure, by-family table |
 
