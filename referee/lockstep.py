@@ -52,6 +52,16 @@ def _paths() -> None:
             sys.path.insert(0, str(p))
 
 
+def macro_policy():
+    """The macro policy (outside fights) of the agent SPIRELINE_GEN_DIR names (score-real sets it to the scored agent), or
+    generation 0's rules when it is unset. The emulator arm (gen0.play_emu_run) plays the same `Agent.macro_policy()`, so both
+    arms of a paired score play one macro policy."""
+    _paths()
+    import gen_loop  # noqa: PLC0415
+
+    return gen_loop.load_agent(os.environ.get(gen_loop.ENV_GEN_DIR) or None).macro_policy()
+
+
 # Referee actions beyond a screen's own options (driver/Env.cs, RunPlay.cs), and what each maps to on the emulator side:
 #   "none"                   a card selection that allows 0: the emulator's select.offer_done where it has one
 #   "done"                   the end of a fight card screen taken with full_select (driver/Env.cs): the emulator's decline,
@@ -496,7 +506,7 @@ class EmuLock:
         import leakprobes  # noqa: PLC0415 -- the native library's location
 
         leakprobes.native_env()
-        from run_train import engine, features, selfplay, vocab  # noqa: PLC0415
+        from run_train import engine, features, vocab  # noqa: PLC0415
         import live_search  # noqa: PLC0415
         import search_configs  # noqa: PLC0415
         from sts2_gym import native  # noqa: PLC0415
@@ -508,7 +518,7 @@ class EmuLock:
         self.seed, self.sims = seed, sims
         self.s = engine.RunSession(seed, ascension, engine.CombatBudget(self.cfg.sims, self.cfg.sims),
                                    **({} if character == "IRONCLAD" else {"character": character}))
-        self.rules = selfplay.RulesPlayer()
+        self.rules = macro_policy()  # the scored agent's (SPIRELINE_GEN_DIR); the rules for generation 0
         # the agent's RNG is seeded from the agent seed alone, never from the game seed (DESIGN 3.2)
         self.rng = agent_rng(agent_seed if agent_seed is not None else [fresh_agent_seed()])
         self.slug = {k: {v: self.V.game_slug(n) for n, v in m.items()} for k, m in self._id_map().items()}

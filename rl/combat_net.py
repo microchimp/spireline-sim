@@ -169,6 +169,25 @@ class CombatNet(nn.Module):
         owners: torch.Tensor,
         feats: torch.Tensor,
         mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden = self._trunk(types, ids, owners, feats, mask)
+
+        # The global token is slot 0 by construction, and reads as the CLS summary.
+        value = self.head(hidden[:, 0])
+        return value, self._policy_logits(hidden, types)
+
+    def policy_logits(self, types, ids, owners, feats, mask) -> torch.Tensor:
+        """The policy half of `forward` alone (its second output, bit for bit): the play-time prior never reads the value
+        head, so it does not pay for it."""
+        return self._policy_logits(self._trunk(types, ids, owners, feats, mask), types)
+
+    def _trunk(
+        self,
+        types: torch.Tensor,
+        ids: torch.Tensor,
+        owners: torch.Tensor,
+        feats: torch.Tensor,
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         # One id space per token type, so the same integer means different things in
         # different rows and must not share an embedding table.
@@ -205,11 +224,9 @@ class CombatNet(nn.Module):
         embedded = embedded + self.enemy_emb(ids * is_enemy) * is_enemy.unsqueeze(-1)
         embedded = embedded + self.intent_emb(ids * is_intent) * is_intent.unsqueeze(-1)
 
-        hidden = self.encoder(self.norm_in(embedded), src_key_padding_mask=mask)
+        return self.encoder(self.norm_in(embedded), src_key_padding_mask=mask)
 
-        # The global token is slot 0 by construction, and reads as the CLS summary.
-        value = self.head(hidden[:, 0])
-
+    def _policy_logits(self, hidden: torch.Tensor, types: torch.Tensor) -> torch.Tensor:
         # Action i is token 1 + i. Shorter sequences get -inf so a softmax over the full
         # MAX_ACTIONS width cannot put mass on a slot that has no token; the caller masks
         # illegal actions the same way.
@@ -231,4 +248,4 @@ class CombatNet(nn.Module):
                 float("-inf"),
             )
             policy = torch.cat([policy, pad], dim=1)
-        return value, policy
+        return policy

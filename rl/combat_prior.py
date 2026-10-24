@@ -36,7 +36,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from combat_tokens import VOCAB, Tokens, encode
+from combat_tokens import TYPE_PAD, VOCAB, Tokens, encode
 
 from sts2_gym import native
 
@@ -162,6 +162,21 @@ class PolicyNet:
         self._collate = collate
         self._cpu = torch.device("cpu")
 
+    def _batch(self, tokens: Sequence[Tokens]) -> dict:
+        """`combat_net.collate`'s batch. One sequence (the search's case) needs no padding: its tensors are built straight from
+        the arrays, holding the same values as the padded batch of one."""
+        if len(tokens) != 1:
+            return self._collate(list(tokens), self._cpu)
+        item, torch = tokens[0], self._torch
+        types = torch.from_numpy(np.ascontiguousarray(item.types, dtype=np.int64))[None]
+        return {
+            "types": types,
+            "ids": torch.from_numpy(np.ascontiguousarray(item.ids, dtype=np.int64))[None],
+            "owners": torch.from_numpy(np.ascontiguousarray(item.owners, dtype=np.int64))[None],
+            "feats": torch.from_numpy(np.ascontiguousarray(item.feats, dtype=np.float32))[None],
+            "mask": types == TYPE_PAD,
+        }
+
     def weights(
         self,
         tokens: Sequence[Tokens],
@@ -172,7 +187,7 @@ class PolicyNet:
         A position whose head puts no finite score on any legal action gets a uniform prior.
         """
         with self._torch.inference_mode():
-            _, logits = self.model(**self._collate(list(tokens), self._cpu))
+            logits = self.model.policy_logits(**self._batch(tokens))
         out = []
         for row, legal in zip(logits.numpy(), legals, strict=True):
             index = np.asarray(legal, dtype=np.int64)

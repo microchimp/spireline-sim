@@ -527,16 +527,18 @@ def write_prior_model_json(out: Path, generation: int, probe: bool = False) -> d
 def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base_sims: int, ascension: int, threads: int = 6) -> dict:
     """Fit FightNet and V_run (DMC target, `run_train.train.fit`) on the window's run records."""
     import torch  # noqa: PLC0415
+    from run_train import keep  # noqa: PLC0415
     from run_train import train as rt  # noqa: PLC0415
     from run_train.engine import CombatBudget  # noqa: PLC0415
 
     t0, c0 = time.perf_counter(), time.process_time()
     pt = Path(out) / "run_value.pt"
     rt.fit(shard_paths, None, pt, generation=generation, combat_budget=CombatBudget(base_sims, base_sims), ascension=ascension,
-           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads))
+           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads), evaluate=keep.evaluate_value_net)
     meta = torch.load(pt, map_location="cpu", weights_only=True)["meta"]
+    value = dict(meta.get("value") or {})
     return {"wall_min": (time.perf_counter() - t0) / 60, "cpu_min": (time.process_time() - c0) / 60,
-            "fight": meta.get("fight"), "value": meta.get("value"), "config": meta.get("config")}
+            "fight": meta.get("fight"), "value": value, "config": meta.get("config")}
 
 
 # ------------------------------------------------------------------ ONNX
@@ -688,6 +690,12 @@ def export_all(out: Path, probe_tokens=None) -> dict[str, Any]:
     return res
 
 
+def macro_for(keep_doc: dict[str, Any] | None, cand: Path) -> str:
+    """`vrun` when the V_run keep record passes every computable condition and the candidate holds its export, else `rules`."""
+    ok = bool(keep_doc and keep_doc.get("all_computable_pass"))
+    return "vrun" if ok and (Path(cand) / "run_value.npz").is_file() else "rules"
+
+
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
                      max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
                      seed_dir: Path | None = None, retrain: int = 0) -> Path:
@@ -726,12 +734,28 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         doc["onnx"] = export_all(cand)
     doc["cpu_min_total"] = round(doc["combat"]["cpu_min"] + doc.get("run_value", {}).get("cpu_min", 0.0), 2)
     doc["wall_min_total"] = round(doc["combat"]["wall_min"] + doc.get("run_value", {}).get("wall_min", 0.0), 2)
-    # V_run drives macro choices only once its DESIGN 5.3 keep conditions are shown; until then the rules play outside fights
-    write_json(cand / "agent.json", {"generation": gen + 1, "macro": "rules", "trained_from": gen, "written": utc_now(),
-                                     "note": "macro stays rules until V_run passes DESIGN 5.3 (Brier vs base rate and V0, ECE)"})
+    # V_run drives macro choices only once its DESIGN 5.3 keep conditions are shown (run_train.keep); until then the rules play
+    # outside fights. The record sits in train.json under vrun_keep; the agent.json macro follows its verdict.
+    keep_doc = (doc.get("run_value", {}).get("value") or {}).pop("keep", None)
+    doc["vrun_keep"] = keep_doc if keep_doc is not None else {"status": "not_run", "all_computable_pass": False}
+    macro = macro_for(doc["vrun_keep"], cand)
+    doc["vrun_keep"]["note"] = vrun_keep_note(macro)
+    write_json(cand / "agent.json", {"generation": gen + 1, "macro": macro, "trained_from": gen, "written": utc_now(),
+                                     "note": ("V_run passed every computable DESIGN 5.3 keep condition (Tier-B regret and the battery "
+                                              "are not computed): it picks macro options" if macro == "vrun" else
+                                              "macro stays rules until V_run passes DESIGN 5.3 (Brier vs base rate and V0, ECE)")})
     write_json(cand / "train.json", doc)
     shutil_rmtree(cand / "work")
     return cand
+
+
+def vrun_keep_note(macro: str) -> str:
+    """train.json's vrun_keep note: what the macro verdict means for the candidate's E-block."""
+    if macro == "vrun":
+        return ("V_run passed the computable keep conditions only (Tier-B regret and the battery are not computed); the candidate "
+                "plays a new combat prior and V_run's macro together, so its E-block judges them together and a gain or a loss "
+                "cannot be attributed to one of them")
+    return "macro stays rules: the E-block judges the combat prior alone"
 
 
 def shutil_rmtree(p: Path) -> None:
