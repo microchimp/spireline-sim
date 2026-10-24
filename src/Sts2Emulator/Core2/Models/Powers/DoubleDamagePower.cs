@@ -8,14 +8,14 @@ namespace Sts2Emulator.Core2.Models.Powers;
 internal static class DoubleDamagePower
 {
     /// <summary>
-    /// game: DoubleDamagePower.ModifyDamageMultiplicative. A fold-mul: the factor for the owner's powered card attack
-    /// (the old site, BuffSystem.IncomingDamage: the attacker's Double Damage above 0; the card source the old fold
+    /// game: DoubleDamagePower.ModifyDamageMultiplicative. A fold-mul: the factor for a powered card attack by the owner or its pet (the game: the dealer is the
+    /// owner or one of its pets; the old site, BuffSystem.IncomingDamage: the attacker's Double Damage above 0; the card source the old fold
     /// cannot see is required as the old engine's comment on the site records the game's rule); 1 otherwise. The number
     /// is the old function's flat 2: the amount is a stack count, not a multiplier.
     /// </summary>
     internal static decimal ModifyDamageMultiplicative(HookCtx c, ListenerRef self, in ModifyDamageArgs a, decimal current)
     {
-        if (c.Power(self) is not { } me || a.Dealer != me.Owner || !a.Props.IsPoweredAttack() || me.Amount <= 0m
+        if (c.Power(self) is not { } me || !c.IsOwnerOrPet(a.Dealer, me.Owner) || !a.Props.IsPoweredAttack() || me.Amount <= 0m
             || a.CardSource is null)
             return 1m;
         return BuffSystem.DoubleDamage_ModifyDamageMultiplicative();

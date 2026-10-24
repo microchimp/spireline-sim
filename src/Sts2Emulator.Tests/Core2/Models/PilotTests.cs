@@ -140,13 +140,15 @@ public class PilotTests
 
     // ---------------------------------------------------------------------------------------- Lethality (power-5)
 
-    /// <summary>The player with Lethality 50 and the turn's lethal attack play flagged, one slug.</summary>
-    private static CombatState LethalityCombat(int amount = 50, bool lethalPlay = true)
+    /// <summary>The player with Lethality 50, a Strike in hand as the card source and the turn's lethal attack play
+    /// flagged, one slug.</summary>
+    private static (CombatState S, CardHandle Card) LethalityCombat(int amount = 50, bool lethalPlay = true)
     {
         var s = Combat(40);
         s.PlayerBuffs.Add(new BuffState(BuffId.Lethality, amount));
         s.LethalAttackPlay = lethalPlay;
-        return s;
+        var strike = Add(s, s.Hand, 1);
+        return (s, new CardHandle(strike.Uid));
     }
 
     [Fact]
@@ -156,14 +158,15 @@ public class PilotTests
     }
 
     [Fact]
-    public void LethalityMultipliesByTheOldFunctionsFactorOnTheFlaggedPlay()
+    public void LethalityMultipliesByTheOldFunctionsFactorOnTheFlaggedCardPlay()
     {
-        // game: LethalityPower.ModifyDamageMultiplicative; old: CardEffects.DealDamageToEnemy passes
-        // Lethality_ModifyDamageMultiplicative(lethality) as the card multiplier when lethality > 0 && LethalAttackPlay.
-        var s = LethalityCombat();
+        // game: LethalityPower.ModifyDamageMultiplicative needs a card source whose owner is the power's owner (it never
+        // reads the dealer); old: CardEffects.DealDamageToEnemy passes Lethality_ModifyDamageMultiplicative(lethality) as
+        // the card multiplier when lethality > 0 && LethalAttackPlay.
+        var (s, card) = LethalityCombat();
         var k = Kernel(s, Pilot);
 
-        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed);
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out var changed);
 
         Assert.Equal(6m * (decimal)CardEffects.Lethality_ModifyDamageMultiplicative(50), v);
         Assert.Equal(9m, v);
@@ -171,27 +174,63 @@ public class PilotTests
         // The same state through the old fold: 6 x 1.5 = 9.
         Assert.Equal(9, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs,
             CardEffects.Lethality_ModifyDamageMultiplicative(50)));
+        // The dealer is not read: a hit with no dealer from the owner's card counts.
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, dealer: null, card: card), out changed));
+        Assert.Equal([Power("LethalityPower", 0)], changed);
 
-        // Where the old site's condition fails: the flag down, an unpowered hit, an enemy dealer, the amount at 0.
-        s.LethalAttackPlay = false;
+        // Where the condition fails: no card source (the game returns 1 for it), the flag down, an unpowered hit, the
+        // amount at 0.
         Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        s.LethalAttackPlay = false;
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out changed));
         Assert.Empty(changed);
         s.LethalAttackPlay = true;
-        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered), out changed));
-        Assert.Empty(changed);
-        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out changed));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: card), out changed));
         Assert.Empty(changed);
         s.PlayerBuffs[0] = new BuffState(BuffId.Lethality, 0);
-        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out changed));
         Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void LethalityActsForTheOwnerOfTheCardOnlyAmongTwoHolders()
+    {
+        // The N-holder test: the player's card is the player's Lethality's, not the slug's, so the slug's Lethality does
+        // not multiply it (and the factor lands once: 9, not 13.5).
+        var (s, card) = LethalityCombat();
+        var mine = Power("LethalityPower", 0);
+        var theirs = GivePower(s, "LethalityPower", BuffId.Lethality, 50, s.Enemies[0]);
+        var k = Kernel(s, Pilot);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out var changed);
+
+        Assert.Equal(9m, v);
+        Assert.Equal([mine], changed);
+        Assert.DoesNotContain(theirs, changed);
+    }
+
+    [Fact]
+    public void LethalitysFloatFactorIsTheGamesDecimalForEveryIntegerAmount()
+    {
+        // The game's factor is the decimal 1 + amount/100; the old function returns a float. The conversion at the
+        // handler's return is exact for an integer amount (seven significant digits keep two decimals up to 999).
+        var (s, card) = LethalityCombat();
+        var k = Kernel(s, Pilot);
+        for (int amount = 1; amount <= 500; amount++)
+        {
+            s.PlayerBuffs[0] = new BuffState(BuffId.Lethality, amount);
+            Assert.Equal(100m * (1m + amount / 100m),
+                Hooks.ModifyDamage(k, Attack(target: 1, damage: 100m, card: card), out _));
+        }
     }
 
     [Fact]
     public void LethalityDeleteMutantGivesTheNoHandlerValue()
     {
-        var s = LethalityCombat();
+        var (s, card) = LethalityCombat();
         var k = Kernel(s, Without(Pilot, LethalityPower.Register));
-        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out var changed));
         Assert.Empty(changed);
     }
 
@@ -245,6 +284,30 @@ public class PilotTests
         Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, card: card), out changed));
         Assert.Empty(changed);
         Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void TrackingAlsoMultipliesTheOwnersPetsCardAttack()
+    {
+        // game: TrackingPower.ModifyDamageMultiplicative lets the dealer be the owner or one of its pets (Osty, whose
+        // PetOwner is the player). With Osty in the combat creature 1 is Osty and the slug is creature 2.
+        var (s, card) = TrackingCombat();
+        WithOsty(s);
+        var k = Kernel(s, Pilot);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1, card: card), out var changed);
+
+        Assert.Equal(12m, v);
+        Assert.Equal([Power("TrackingPower", 0)], changed);
+        // Where it fails: the pet with no card source, the slug as the dealer (not the owner's pet).
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2, card: card), out changed));
+        Assert.Empty(changed);
+        // The delete-mutant: the no-handler value.
+        var gone = Kernel(s, Without(Pilot, TrackingPower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(gone, Attack(target: 2, damage: 6m, dealer: 1, card: card), out changed));
         Assert.Empty(changed);
     }
 
@@ -304,6 +367,28 @@ public class PilotTests
         Assert.Empty(changed);
         s.PlayerBuffs[0] = new BuffState(BuffId.DoubleDamage, 0);
         Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void DoubleDamageAlsoDoublesTheOwnersPetsCardAttack()
+    {
+        // game: DoubleDamagePower.ModifyDamageMultiplicative lets the dealer be the owner or one of its pets (Osty).
+        var (s, card) = DoubleDamageCombat();
+        WithOsty(s);
+        var k = Kernel(s, Pilot);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1, card: card), out var changed);
+
+        Assert.Equal(12m, v);
+        Assert.Equal([Power("DoubleDamagePower", 0)], changed);
+        // Where it fails: the pet with no card source, the slug as the dealer (not the owner's pet).
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2, card: card), out changed));
+        Assert.Empty(changed);
+        var gone = Kernel(s, Without(Pilot, DoubleDamagePower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(gone, Attack(target: 2, damage: 6m, dealer: 1, card: card), out changed));
         Assert.Empty(changed);
     }
 
