@@ -659,6 +659,18 @@ not-modelled entry with its reason. Then the by-family table re-measured on a lo
 target G2891c25e0d's kill part and mechanism B at 0, F08 proper down by at least its A+B share; any group that grows is
 a stop.
 
+**R7 checks: old-site divergences the handlers inherit or settle.** Each is a place where a handler equals the old function and the
+game does something else, found while porting; R7's corpus re-measure decides each, and none moves a gate by itself.
+
+- **Phantom Blades: name against tag.** The game's override tests the Shiv tag on the card source; the old site
+  (`CardEffects.ShivDamage`, and `PhantomBlades_ModifyDamageAdditive`'s caller) tests the card's name, and so does the handler
+  (`PhantomBladesPower.IsShiv`), so that it equals the old function. The old card data carries the tag as `CardDef.ShivTag`.
+  Check: list the defs with `ShivTag` whose name is not Shiv; a recorded Phantom Blades fight that plays one under the power
+  differs from the game, and the handler then takes the tag test.
+- **Tracking and Double Damage: the pet case.** The game accepts a dealer that is the owner's pet (Osty); the handlers do too
+  (`HookCtx.IsOwnerOrPet`), while the old fold (`BuffSystem.IncomingDamage`) reads the attacker's own buff list. Check: a recorded
+  fight where Osty strikes with a card source under either power; the handler is the game's answer.
+
 ## 7. Rounds and estimate
 
 | round | model | content |

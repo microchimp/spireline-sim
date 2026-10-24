@@ -23,8 +23,11 @@ internal static class PhantomBladesPower
         return CardEffects.PhantomBlades_ModifyDamageAdditive(c.OldCombat);
     }
 
-    /// <summary>The old site's test of the card: its def is named Shiv (not the Shiv tag, which Blade of Ink's and Knife
-    /// Trap's cards also carry).</summary>
+    /// <summary>The old site's test of the card: its def is named Shiv. The game tests the Shiv tag on the card source
+    /// (CardTag.Shiv), not the name; the old card data carries the tag too (<c>CardDef.ShivTag</c>), which the old site does
+    /// not read. A card tagged Shiv under another name would count in the game and not here. Kept as the old site has it
+    /// (the handler must equal the old function), and recorded as an old-site divergence in docs/rebuild/MIGRATION_F08.md
+    /// (R7 checks).</summary>
     private static bool IsShiv(int defId) => GeneratedData.Cards.Get(defId).Name == "Shiv";
 
     public static void Register(HandlerTable t) =>
