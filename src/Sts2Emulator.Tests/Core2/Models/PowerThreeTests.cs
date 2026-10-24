@@ -29,6 +29,7 @@ public class PowerThreeTests
         (ListenerKind.Power, "FlutterPower", HookId.AfterDamageReceived),
         (ListenerKind.Power, "FlutterPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "PersonalHivePower", HookId.AfterDamageReceived),
+        (ListenerKind.Power, "PlowPower", HookId.AfterDamageReceived),
     ];
 
     [Fact]
@@ -296,5 +297,115 @@ public class PowerThreeTests
     public void PersonalHiveIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power3, AllButDamage), ListenerKind.Power, "PersonalHivePower", HookId.AfterDamageReceived);
+    }
+
+    // ---------------------------------------------------------------------------------------- Plow (power-3)
+
+    /// <summary>One slug at <paramref name="hp" /> with Plow at <paramref name="threshold" />, Strength 4 and Temporary
+    /// Strength 2, an attack announced; returns Plow's listener.</summary>
+    private static (CombatState S, ListenerRef Plow) PlowCombat(int hp = 20, int threshold = 10)
+    {
+        var s = Combat(hp);
+        var slug = s.Enemies[0];
+        var plow = GivePower(s, "PlowPower", BuffId.Plow, threshold, slug);
+        slug.Buffs.Add(new BuffState(BuffId.Strength, 4));
+        slug.Buffs.Add(new BuffState(BuffId.TemporaryStrength, 2));
+        slug.CurrentIntent = new Intent(IntentType.Attack, 9);
+        return (s, plow);
+    }
+
+    private static (int Plow, int Strength, int Temporary, int Stunned) Plowed(EnemyState e) =>
+        (BuffSystem.Get(e.Buffs, BuffId.Plow), BuffSystem.Get(e.Buffs, BuffId.Strength),
+            BuffSystem.Get(e.Buffs, BuffId.TemporaryStrength), Stunned(e));
+
+    [Fact]
+    public void PlowIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power3), ListenerKind.Power, "PlowPower", HookId.AfterDamageReceived);
+    }
+
+    [Fact]
+    public void PlowStripsTheOwnersStrengthAndStunsItOnceAHitLeavesItAtTheThreshold()
+    {
+        // game: PlowPower.AfterDamageReceived; old: CardEffects.LandDamageOnEnemy calls EnemyAI.TriggerPlowIfWounded(target)
+        // for a hit with hpLoss > 0, and the body fires once the HP is at or under the threshold: Plow, Strength and
+        // Temporary Strength removed, Stunned 1, the announced intent replaced. The oracle is the body called on an equal
+        // slug at the HP the hit leaves.
+        var (s, _) = PlowCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Power3);
+
+        // 20 to 14: above the threshold, the body returns.
+        Assert.Equal(6, Assert.Single(Hit(k, OldCreature.Of(slug), 6m)).UnblockedDamage);
+        Assert.Equal((10, 4, 2, 0), Plowed(slug));
+        Assert.Equal(new Intent(IntentType.Attack, 9), slug.CurrentIntent);
+
+        // 14 to 10: at the threshold.
+        Hit(k, OldCreature.Of(slug), 4m);
+        var oracle = PlowCombat(hp: 10).S.Enemies[0];
+        EnemyAI.TriggerPlowIfWounded(oracle);
+
+        Assert.Equal(10, slug.Hp);
+        Assert.Equal(oracle.Buffs, slug.Buffs);
+        Assert.Equal(oracle.CurrentIntent, slug.CurrentIntent);
+        Assert.Equal(oracle.MoveIndex, slug.MoveIndex);
+        Assert.Equal((0, 0, 0, 1), Plowed(slug));
+        Assert.Equal(IntentType.Unknown, slug.CurrentIntent.Type);
+    }
+
+    [Fact]
+    public void PlowFiresOnAnUnpoweredHitTooButNotOnABlockedOne()
+    {
+        // The old site reads no props for Plow (a poison tick counts), only hpLoss > 0: a fully blocked hit leaves it.
+        var (s, _) = PlowCombat(hp: 12);
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Power3);
+
+        slug.Block = 9;
+        Assert.Equal(0, Assert.Single(Hit(k, OldCreature.Of(slug), 5m)).UnblockedDamage);
+        Assert.Equal((10, 4, 2, 0), Plowed(slug));
+        slug.Block = 0;
+        Assert.Equal(3, Assert.Single(Hit(k, OldCreature.Of(slug), 3m, props: Unpowered)).UnblockedDamage);
+        Assert.Equal(9, slug.Hp);
+        Assert.Equal((0, 0, 0, 1), Plowed(slug));
+    }
+
+    [Fact]
+    public void PlowActsForItsOwnerAloneAmongThreeHolders()
+    {
+        // Rule 5: the player and both slugs (at 20) hold Plow 10, the slugs Strength 4 too. A hit that brings the first
+        // slug to the threshold strips and stuns that slug alone; a hit that brings the player under it changes nothing
+        // of the player's (the old body takes an enemy: the old site is the enemy side's landing of a hit).
+        var s = Combat(20, 20);
+        Holders(s, "PlowPower", BuffId.Plow, 10);
+        foreach (var e in s.Enemies)
+            e.Buffs.Add(new BuffState(BuffId.Strength, 4));
+        var k = Kernel(s, Power3);
+
+        Hit(k, OldCreature.Of(s.Enemies[0]), 10m);
+        Assert.Equal((0, 0, 0, 1), Plowed(s.Enemies[0]));
+        Assert.Equal((10, 4, 0, 0), Plowed(s.Enemies[1]));
+        Hit(k, OldCreature.Player, 45m, dealer: OldCreature.Of(s.Enemies[1]));
+        Assert.Equal(5, s.PlayerHp);
+        Assert.Equal(10, BuffSystem.Get(s.PlayerBuffs, BuffId.Plow));
+        Assert.Equal(0, BuffSystem.Get(s.PlayerBuffs, BuffId.Stunned));
+    }
+
+    [Fact]
+    public void PlowDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = PlowCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Without(Power3, PlowPower.Register));
+        Hit(k, OldCreature.Of(slug), 10m);
+        Assert.Equal(10, slug.Hp);
+        Assert.Equal((10, 4, 2, 0), Plowed(slug));
+        Assert.Equal(new Intent(IntentType.Attack, 9), slug.CurrentIntent);
+    }
+
+    [Fact]
+    public void PlowIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power3, AllButDamage), ListenerKind.Power, "PlowPower", HookId.AfterDamageReceived);
     }
 }
