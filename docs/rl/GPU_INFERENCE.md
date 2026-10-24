@@ -434,21 +434,21 @@ server at its process count:
 
 1. **Identity:** the fraction of seeds whose two runs are identical decision for decision (the CPU path is
    deterministic per seed), and for the rest the first diverging combat decision (its index and fight).
-2. **Equivalence:** paired mean floor with a two-sided 95% cluster-bootstrap interval; the equivalence bound is sized
-   from the measured standard error (per-run floor SD ~4.7, so ~0.2 at 1,000 pairs if the runs decorrelate): pass
-   when the interval lies inside +-2 SE and the point estimate is within 0.1 floor; boss kills by two-sided exact
-   McNemar not significant at 0.05; sims per decision and decisions per run within 2%. (`compare_arms` gives only
+2. **Equivalence (pre-registered; two one-sided tests at 5%):** the transport passes when (a) the two-sided 90%
+   cluster-bootstrap interval of the paired mean floor difference (server minus CPU path, resampling seeds, 10,000 draws)
+   lies within +-0.30 floor (0.29 is the smallest gain the judge has ever promoted, so a transport effect inside +-0.3 is
+   invisible to it), (b) the two-sided exact McNemar test on Act-1 boss kills is not significant at 0.05, and (c) sims per
+   decision and decisions per run are each within 2%. The point estimate, its standard error, the 95% interval, the
+   identical-seed fraction and the first-diverging-floor histogram are reported as information, with no threshold.
+   (`compare_arms` gives only
    the judge's one-sided lower bound, which is not the statistic here.)
 
 How the tool measures (`rl/prior_bench.py quality`): both arms play with `record=True`, and identity is reported on three levels:
 the run's row (`decisions`, `combat_decisions`, `sims`, `floor`, `end`), the RunRecord (its `decisions` and `fights`, wall-clock
 fields left out) and the search itself (a digest of each combat sample's tokens, root visit counts and simulation count, in
 order). The first diverging floor is that of the first search that differs, else of the first differing record entry. The
-statistics are the ones above: the paired floor difference with a two-sided 95% cluster-bootstrap interval (10,000 draws, fixed
-seed) and its standard error, the verdict, the two-sided exact McNemar on Act-1 boss kills, and the two ratios. Reading the
-verdict: a 95% interval is about +-1.96 SE wide, so "inside +-2 SE" is nearly automatic and bootstrap noise alone can fail it by
-a hair; the binding conditions are |d| < 0.1 floor and the two 2% ratios, and a verdict that fails only on the 2 SE bound is a
-rerun with more draws, not a transport defect.
+statistics are the ones above: the 90% interval the rule reads, the 95% interval, the standard error and the point estimate for
+information, the two-sided exact McNemar on Act-1 boss kills, the two ratios, and the verdict on conditions (a) to (c).
 
 ### 9.4 One generation through the judge
 

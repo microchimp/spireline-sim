@@ -105,24 +105,33 @@ class Statistics(unittest.TestCase):
         # the same number from the one-sided helper the judge uses
         self.assertAlmostEqual(pb.mcnemar_two_sided(3, 12), min(1.0, 2 * gen_loop.mcnemar_exact_one_sided(12, 3)))
 
-    def test_equivalence_verdict(self):
-        ok = {"n": 100, "mean": 0.05, "lo": -0.10, "hi": 0.19, "se": 0.10}
-        self.assertTrue(pb.equivalence_verdict(ok)["equivalent"])
-        wide = {**ok, "hi": 0.40}  # the interval leaves +-2 SE (0.2)
-        v = pb.equivalence_verdict(wide)
+    def test_equivalence_verdict_is_the_preregistered_rule(self):
+        ci90 = {"n": 1000, "mean": 0.05, "lo": -0.12, "hi": 0.22}
+        v = pb.equivalence_verdict(ci90, 0.8, 1.004, 0.999)
+        self.assertTrue(v["equivalent"])
+        self.assertEqual((v["floor_ok"], v["boss_ok"], v["ratios_ok"]), (True, True, True))
+        # the old rule's conditions no longer bind: a point estimate over 0.1 and a thin interval still pass inside +-0.3
+        self.assertTrue(pb.equivalence_verdict({"n": 1000, "mean": 0.2, "lo": 0.15, "hi": 0.25}, 1.0, 1.0, 1.0)["equivalent"])
+        self.assertTrue(pb.equivalence_verdict({"n": 10, "mean": 0.0, "lo": -0.30, "hi": 0.30}, 1.0, 0.98, 1.02)["equivalent"])
+        # (a) an interval that crosses +0.3 fails, whatever the rest says
+        v = pb.equivalence_verdict({**ci90, "hi": 0.31}, 1.0, 1.0, 1.0)
         self.assertFalse(v["equivalent"])
-        self.assertFalse(v["inside_bound"])
-        shifted = {"n": 100, "mean": 0.12, "lo": 0.05, "hi": 0.19, "se": 0.10}  # inside the bound, but off by 0.12 floors
-        v = pb.equivalence_verdict(shifted)
-        self.assertTrue(v["inside_bound"])
-        self.assertFalse(v["point_ok"])
-        self.assertFalse(v["equivalent"])
-        self.assertFalse(pb.equivalence_verdict({"n": 0})["equivalent"])
+        self.assertFalse(v["floor_ok"])
+        self.assertFalse(pb.equivalence_verdict({**ci90, "lo": -0.31}, 1.0, 1.0, 1.0)["floor_ok"])
+        # (b) boss kills significant at 0.05
+        v = pb.equivalence_verdict(ci90, 0.04, 1.0, 1.0)
+        self.assertEqual((v["equivalent"], v["boss_ok"], v["floor_ok"]), (False, False, True))
+        # (c) a 3% sims ratio, or a 3% decisions ratio, fails; so does a missing ratio
+        v = pb.equivalence_verdict(ci90, 1.0, 1.03, 1.0)
+        self.assertEqual((v["equivalent"], v["ratios_ok"]), (False, False))
+        self.assertFalse(pb.equivalence_verdict(ci90, 1.0, 1.0, 0.97)["equivalent"])
+        self.assertFalse(pb.equivalence_verdict(ci90, 1.0, None, 1.0)["equivalent"])
+        self.assertFalse(pb.equivalence_verdict({"n": 0}, 1.0, 1.0, 1.0)["equivalent"])
 
     def test_bootstrap_interval_and_se(self):
         zeros = pb.bootstrap_ci([0.0] * 50, draws=500)
         self.assertEqual((zeros["lo"], zeros["hi"], zeros["se"]), (0.0, 0.0, 0.0))
-        self.assertTrue(pb.equivalence_verdict(zeros)["equivalent"])
+        self.assertTrue(pb.equivalence_verdict(zeros, 1.0, 1.0, 1.0)["equivalent"])
         d = [1.0, -1.0] * 500
         ci = pb.bootstrap_ci(d, draws=2000)
         self.assertAlmostEqual(ci["mean"], 0.0)
@@ -131,8 +140,11 @@ class Statistics(unittest.TestCase):
         self.assertGreater(ci["hi"], 0.0)
         self.assertLess(ci["hi"] - ci["lo"], 5 * ci["se"])
         self.assertEqual(ci, pb.bootstrap_ci(d, draws=2000))  # the seed is fixed
-        self.assertAlmostEqual(ci["hi"], 1.96 * ci["se"], delta=0.01)  # a 95% interval is about +-1.96 SE: +-2 SE is a knife edge
-        self.assertFalse(pb.equivalence_verdict(pb.bootstrap_ci([0.5] * 30 + [0.4] * 30, draws=500))["equivalent"])
+        self.assertAlmostEqual(ci["hi"], 1.96 * ci["se"], delta=0.01)  # a 95% interval is about +-1.96 SE
+        ci90 = pb.bootstrap_ci(d, draws=2000, level=pb.EQUIV_LEVEL)
+        self.assertAlmostEqual(ci90["hi"], 1.645 * ci90["se"], delta=0.01)
+        self.assertLess(ci90["hi"], ci["hi"])
+        self.assertFalse(pb.equivalence_verdict(pb.bootstrap_ci([0.5] * 30 + [0.4] * 30, draws=500, level=pb.EQUIV_LEVEL), 1.0, 1.0, 1.0)["floor_ok"])
 
     def test_quality_stats(self):
         def row(seed, floor, dec=100, comb=40, sims=2400, end="death", win=False):
@@ -154,6 +166,31 @@ class Statistics(unittest.TestCase):
         self.assertAlmostEqual(st["sims_per_decision"]["ratio"], 1.0)
         self.assertAlmostEqual(st["decisions_per_run"]["ratio"], 401 / 400)
         self.assertTrue(st["ratios_within_2_percent"])
+        self.assertFalse(st["verdict"]["equivalent"])  # four pairs: the 90% interval is far wider than +-0.3
+        self.assertFalse(st["verdict"]["floor_ok"])
+
+    def test_quality_verdict_end_to_end(self):
+        def row(i, floor, sims=2400, dec=100):
+            return {"seed": f"S{i:03d}", "floor": floor, "decisions": dec, "combat_decisions": 40, "sims": sims, "end": "death",
+                    "win": False}
+
+        cpu = [row(i, 8 + i % 7) for i in range(60)]
+        same = pb.quality_stats(cpu, [dict(r) for r in cpu], draws=300)
+        self.assertTrue(same["verdict"]["equivalent"])
+        self.assertEqual((same["floor"]["diff_ci90"]["lo"], same["floor"]["diff_ci90"]["hi"]), (0.0, 0.0))
+        # half the seeds one floor higher on the server: mean +0.5, the 90% interval leaves +0.3
+        up = [row(i, 8 + i % 7 + (1 if i % 2 else 0)) for i in range(60)]
+        st = pb.quality_stats(cpu, up, draws=300)
+        self.assertGreater(st["floor"]["diff_ci90"]["hi"], 0.3)
+        self.assertFalse(st["verdict"]["floor_ok"])
+        self.assertFalse(st["verdict"]["equivalent"])
+        # same floors, 3% more sims per decision on the server
+        more = [row(i, 8 + i % 7, sims=2472) for i in range(60)]
+        st = pb.quality_stats(cpu, more, draws=300)
+        self.assertTrue(st["verdict"]["floor_ok"])
+        self.assertAlmostEqual(st["sims_per_decision"]["ratio"], 1.03)
+        self.assertFalse(st["verdict"]["ratios_ok"])
+        self.assertFalse(st["verdict"]["equivalent"])
 
 
 class DivergenceAndParts(unittest.TestCase):

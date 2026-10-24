@@ -8,8 +8,9 @@
     ram         9.1 RAM case: a server block whose server is killed (its own process, never by name) after --after-s;
                 peak commit before and after the kill.
     quality     9.3: the CPU path against the server on the same seeds, identity (run, record and search level), the paired
-                floor difference with a two-sided cluster-bootstrap interval, the equivalence verdict, boss kills by exact
-                two-sided McNemar, sims per decision and decisions per run.
+                floor difference with two-sided cluster-bootstrap intervals, the pre-registered equivalence verdict (90% interval
+                within +-0.30 floor, boss kills by exact two-sided McNemar not significant, sims per decision and
+                decisions per run within 2%), sims per decision and decisions per run.
 
     python rl/prior_bench.py throughput --seeds-file F --seeds 48 --rows "noprior:16,cpu:16,server:16,server:20,server:24" \
         --decisions 100 --repeat 2 --gpu-python <venv-gpu python> --json OUT.json
@@ -136,15 +137,21 @@ def bootstrap_ci(diffs, draws: int = BOOT_DRAWS, seed: int = BOOT_SEED, level: f
             "se": se, "draws": draws}
 
 
-def equivalence_verdict(ci: dict, k: float = 2.0, max_abs: float = 0.1) -> dict:
-    """Equivalent when the interval lies inside +-k standard errors AND the point estimate is within `max_abs` floors."""
-    if not ci["n"]:
-        return {"equivalent": False, "inside_bound": False, "point_ok": False, "bound": None}
-    bound = k * ci["se"]
-    inside = ci["lo"] >= -bound and ci["hi"] <= bound
-    point = abs(ci["mean"]) < max_abs
-    return {"equivalent": bool(inside and point), "inside_bound": bool(inside), "point_ok": bool(point), "bound": bound,
-            "k": k, "max_abs": max_abs}
+EQUIV_BOUND = 0.30  # floors: 0.29 is the smallest gain the judge has ever promoted, so a transport effect inside +-0.3 is invisible to it
+EQUIV_LEVEL = 0.90  # a two-sided 90% interval inside the bound is two one-sided tests at 5%
+
+
+def equivalence_verdict(ci90: dict, boss_p: float, sims_ratio: float | None, decisions_ratio: float | None,
+                        bound: float = EQUIV_BOUND, alpha: float = 0.05, ratio_tol: float = 0.02) -> dict:
+    """Section 9.3's pre-registered rule. Equivalent when (a) the two-sided 90% cluster-bootstrap interval of the paired mean
+    floor difference lies within +-`bound`, (b) the two-sided exact McNemar test on Act-1 boss kills is not significant at
+    `alpha`, and (c) sims per decision and decisions per run (server over CPU path) are each within `ratio_tol` of 1. The point
+    estimate, its SE, the 95% interval and the identity figures are information and carry no threshold."""
+    floor_ok = bool(ci90.get("n")) and ci90["lo"] >= -bound and ci90["hi"] <= bound
+    boss_ok = boss_p >= alpha
+    ratios_ok = all(r is not None and abs(r - 1.0) <= ratio_tol + 1e-9 for r in (sims_ratio, decisions_ratio))
+    return {"equivalent": bool(floor_ok and boss_ok and ratios_ok), "floor_ok": bool(floor_ok), "boss_ok": bool(boss_ok),
+            "ratios_ok": bool(ratios_ok), "bound": bound, "alpha": alpha, "ratio_tol": ratio_tol}
 
 
 def boss_killed(row: dict) -> bool:
@@ -238,10 +245,11 @@ def quality_stats(rows_cpu: list[dict], rows_srv: list[dict], divergence: dict[s
                     "diverged": len(diverged), "first_diverging_floor_histogram": dict(sorted(hist.items(), key=lambda kv: (kv[0] == "None", int(kv[0]) if kv[0] != "None" else 0))),
                     "first_divergence_level": levels})
     d = [float(srv[s]["floor"]) - float(cpu[s]["floor"]) for s in seeds]
-    ci = bootstrap_ci(d, draws)
+    ci = bootstrap_ci(d, draws)  # the 95% interval, information
+    ci90 = bootstrap_ci(d, draws, level=EQUIV_LEVEL)  # the interval the rule reads
     out["floor"] = {"cpu_mean": float(np.mean([cpu[s]["floor"] for s in seeds])) if n else None,
                     "server_mean": float(np.mean([srv[s]["floor"] for s in seeds])) if n else None, "diff_ci": ci,
-                    "verdict": equivalence_verdict(ci)}
+                    "diff_ci90": ci90}
     b = sum(1 for s in seeds if boss_killed(srv[s]) and not boss_killed(cpu[s]))
     c = sum(1 for s in seeds if boss_killed(cpu[s]) and not boss_killed(srv[s]))
     out["boss_kill"] = {"cpu": sum(boss_killed(cpu[s]) for s in seeds), "server": sum(boss_killed(srv[s]) for s in seeds),
@@ -255,6 +263,7 @@ def quality_stats(rows_cpu: list[dict], rows_srv: list[dict], divergence: dict[s
                                 "ratio": dec_s / dec_c if dec_c else None}
     ratios = [out["sims_per_decision"]["ratio"], out["decisions_per_run"]["ratio"]]
     out["ratios_within_2_percent"] = all(r is not None and abs(r - 1.0) <= 0.02 for r in ratios)
+    out["verdict"] = equivalence_verdict(ci90, out["boss_kill"]["p_two_sided"], *ratios)
     return out
 
 
@@ -677,18 +686,20 @@ def cmd_quality(a: argparse.Namespace) -> int:
                      f"({100 * (stats['identical_decision_for_decision_fraction'] or 0):.1f}%) |")
         lines.append(f"| first diverging floor (histogram) | {stats['first_diverging_floor_histogram']} |")
         lines.append(f"| first divergence by level | {stats['first_divergence_level']} |")
-    ci, v = stats["floor"]["diff_ci"], stats["floor"]["verdict"]
+    ci, ci90, v = stats["floor"]["diff_ci"], stats["floor"]["diff_ci90"], stats["verdict"]
     if ci["n"]:
         lines += [f"| mean floor, CPU / server | {stats['floor']['cpu_mean']:.3f} / {stats['floor']['server_mean']:.3f} |",
                   f"| paired floor difference (server - CPU), 95% cluster-bootstrap CI | {ci['mean']:+.3f} [{ci['lo']:+.3f}, {ci['hi']:+.3f}] |",
-                  f"| standard error, 2 SE bound | {ci['se']:.3f}, {v['bound']:.3f} |",
-                  f"| equivalent (CI inside +-2 SE and |d| < 0.1) | {v['equivalent']} |"]
+                  f"| standard error | {ci['se']:.3f} |",
+                  f"| 90% cluster-bootstrap CI (the rule: within +-{v['bound']:.2f}) | [{ci90['lo']:+.3f}, {ci90['hi']:+.3f}] -> {v['floor_ok']} |"]
     bk = stats["boss_kill"]
     lines += [f"| Act-1 boss kills, CPU / server | {bk['cpu']} / {bk['server']} |",
               f"| discordant pairs (server only / CPU only), McNemar two-sided p | {bk['server_only']} / {bk['cpu_only']}, {bk['p_two_sided']:.4f} |",
               f"| sims per combat decision, CPU / server (ratio) | {num(stats['sims_per_decision']['cpu'], 2)} / {num(stats['sims_per_decision']['server'], 2)} ({num(stats['sims_per_decision']['ratio'], 4)}) |",
               f"| decisions per run, CPU / server (ratio) | {num(stats['decisions_per_run']['cpu'], 1)} / {num(stats['decisions_per_run']['server'], 1)} ({num(stats['decisions_per_run']['ratio'], 4)}) |",
-              f"| both ratios within 2% | {stats['ratios_within_2_percent']} |", f"| prior paths | {paths} |"]
+              f"| both ratios within 2% | {v['ratios_ok']} |", f"| boss kills not significant at 0.05 | {v['boss_ok']} |",
+              f"| **equivalent** (90% CI within +-{v['bound']:.2f}, McNemar p >= 0.05, ratios within 2%) | **{v['equivalent']}** |",
+              f"| prior paths | {paths} |"]
     table = "\n".join(lines)
     print(table)
     write_json(a.json, {"tool": "prior_bench quality", "agent": agent_facts(agent), "config": a.config, "recorded": record,
