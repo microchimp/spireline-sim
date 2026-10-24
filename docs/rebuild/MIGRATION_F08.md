@@ -1040,6 +1040,32 @@ Illusion enemy as primary (the game's MinionPower-only `IsPrimaryEnemy`), the ol
 corpus fights with an Illusion enemy are read against the game for the win point (the fight ends when only Illusions
 are left, or not), and the old rule's users are listed and either follow the game or carry the difference.
 
+### R7 proof rerun after R7d and R7e (2026-10-25): not passed, nothing switched on
+
+R7d added the game's two turn-start win checks (CombatManager.StartTurn; under F10 the old turn start never checked, so a
+kill or a loss there was dropped and the fight went on where the game's had ended: the triage above read it backwards) and
+walks a copy in the Demise loop (a crash); R7e makes `CreatureCmd.Damage` skip a target the hooks removed (a crash: an
+Inferno burst kills a Toadpole inside the Toadpole's Thorns answer). Run with F08+F10 on, gated against the old engine:
+
+| check | on `a42c41a3` | after R7d | after R7e | gate |
+|---|---|---|---|---|
+| O1 (291 old-suite tests): fail only switched on | 0 | 0 | 0 | pass |
+| traced (77) against the game: better / same / worse | 8 / 68 / 1 | 8 / 69 / 0 | 8 / 69 / 0 | pass |
+| traced: fights on fewer fields | 3 | 3 | 3 | fail (see below) |
+| corpus (4,392) against the game: better / same / worse | 67 / 4,203 / 122 | 63 / 4,324 / 5 | 63 / 4,326 / 3 | fail |
+| corpus: fights on fewer fields | 20 | 9 | 8 | fail (see below) |
+| step test, strict | 2 of 4 | 4 of 4 | 4 of 4 | pass (`RerouteLanded` set) |
+| fuzz F08,F10 (300): differing / ending disagreements | 291 / 0 | 291 / 0 | 291 / 0 | report |
+
+Open, before the switch (next round):
+- Three worse corpus fights, not yet read: `2b49779387ccd8b9` (Shrink on enemies[0] where the game has it on enemies[2] at
+  step 4: a roster index after a corpse removal, a comparer alignment question, or real targeting), `564797d1d47ddfb9` (the
+  player's HP 51 where the game has 58 at step 1), `7171bcd6dd0b0bd6` (the draw pile's order at step 10).
+- The fewer-fields gate: R7e reads it as a census fault (neither view writes `enemies[*].move` or the net piles' floor; the old
+  run's census holds them only from missing-entry diffs, and `net` from old steps with no net view). Settle it in the comparer
+  (count only the paths an engine wrote, without hiding a field the core2 view stops writing), then rerun.
+- Then rerun this table; the switch goes on in `migrated_families.json` only with every gate passing.
+
 ### R7 proof on `a42c41a3` (2026-10-24): not passed, nothing switched on
 
 Port gate 0 (model, hook) pairs without a handler. Run with F08+F10 on (`struct_calibrate --switches F08,F10 --gate-against` an
