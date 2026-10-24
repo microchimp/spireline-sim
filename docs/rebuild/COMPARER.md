@@ -135,7 +135,9 @@ With no switch on (the default `migrated_families.json`), first 300 corpus fight
 (both same step 37, neither 263, struct crash 0), the allowed rows fired are identical, every fight's first difference, paths,
 census, waived set and leaves are identical (0 of 300 differ), the census gate reports 0 of 300 fights compared on fewer fields,
 surplus empty. byte_proof old against `--b-args "--engine core2"`, all 11 modes (`game-view` and `game-view-netstate`
-added), 300 fights: 3300 fight-mode pairs identical, 0 differ.
+added), 300 fights: 3300 fight-mode pairs identical, 0 differ; the whole corpus (4301 fights run, the rest skipped as the proof
+always skips them) in fight, netstate, game-view, game-view-netstate and state-hash: 21505 pairs identical, 0 differ. C# suites
+at the commit: Sts2Emulator.Tests 6748 passed, 7 skipped, 0 failed; tools/emudump.Tests 242 passed, 0 failed.
 
 ## Left for the next round
 
