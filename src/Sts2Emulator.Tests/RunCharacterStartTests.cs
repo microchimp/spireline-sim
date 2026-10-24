@@ -81,4 +81,108 @@ public class RunCharacterStartTests
                 && !CharacterPools.Relics(PlayerCharacter.Ironclad).ToArray().Contains(id)
         );
     }
+
+    /// <summary>
+    /// `Sts2Run_ResetAs`: the native export that starts a run as a named character (the lockstep's
+    /// `--character X`). Each of the five characters starts with its own kit through the export, and a
+    /// character or ascension the engine does not model is refused before it can abort the host.
+    /// </summary>
+    [Theory]
+    [InlineData(PlayerCharacter.Ironclad, 80, "BURNING_BLOOD", 10)]
+    [InlineData(PlayerCharacter.Silent, 70, "RING_OF_THE_SNAKE", 12)]
+    [InlineData(PlayerCharacter.Regent, 75, "DIVINE_RIGHT", 10)]
+    [InlineData(PlayerCharacter.Necrobinder, 66, "BOUND_PHYLACTERY", 10)]
+    [InlineData(PlayerCharacter.Defect, 75, "CRACKED_CORE", 10)]
+    public unsafe void ResetAs_starts_the_run_as_the_named_character(
+        PlayerCharacter character,
+        int maxHp,
+        string relic,
+        int deckSize
+    )
+    {
+        int handle = Sts2Emulator.Interop.RunNativeExports.Sts2Run_Create();
+        try
+        {
+            var obs = new int[RunConstants.RunObsSize];
+            byte[] seed = System.Text.Encoding.UTF8.GetBytes("RESETAS1");
+            int status;
+            fixed (byte* seedPtr = seed)
+            fixed (int* obsPtr = obs)
+            {
+                status = Sts2Emulator.Interop.RunNativeExports.Sts2Run_ResetAs(
+                    handle, seedPtr, seed.Length, 0, (int)character, obsPtr);
+            }
+
+            Assert.Equal(0, status);
+            Assert.True(Sts2Emulator.Interop.RunNativeExports.TryGetRun(handle, out var run));
+            var s = run.State;
+            Assert.Equal(character, s.Character);
+            Assert.Equal(maxHp, s.PlayerMaxHp);
+            Assert.Equal(maxHp, s.PlayerHp);
+            Assert.Equal(deckSize, s.Deck.Count);
+            Assert.Equal(relic, Relics.Get(Assert.Single(s.Relics).DefId).Entry);
+            Assert.Equal(
+                RunConstants.StartingDeckIds(0, character),
+                s.Deck.Select(c => c.DefId).ToArray()
+            );
+        }
+        finally
+        {
+            Sts2Emulator.Interop.RunNativeExports.Sts2Run_Destroy(handle);
+        }
+    }
+
+    [Fact]
+    public unsafe void ResetAs_refuses_an_unknown_character_handle_or_ascension_without_touching_the_run()
+    {
+        int handle = Sts2Emulator.Interop.RunNativeExports.Sts2Run_Create();
+        try
+        {
+            var obs = new int[RunConstants.RunObsSize];
+            byte[] seed = System.Text.Encoding.UTF8.GetBytes("RESETAS1");
+            fixed (byte* seedPtr = seed)
+            fixed (int* obsPtr = obs)
+            {
+                Assert.Equal(-3, Sts2Emulator.Interop.RunNativeExports.Sts2Run_ResetAs(handle, seedPtr, seed.Length, 0, 5, obsPtr));
+                Assert.Equal(-3, Sts2Emulator.Interop.RunNativeExports.Sts2Run_ResetAs(handle, seedPtr, seed.Length, 0, -1, obsPtr));
+                Assert.Equal(-2, Sts2Emulator.Interop.RunNativeExports.Sts2Run_ResetAs(handle, seedPtr, seed.Length, 99, 1, obsPtr));
+                Assert.Equal(-1, Sts2Emulator.Interop.RunNativeExports.Sts2Run_ResetAs(255, seedPtr, seed.Length, 0, 1, obsPtr));
+            }
+        }
+        finally
+        {
+            Sts2Emulator.Interop.RunNativeExports.Sts2Run_Destroy(handle);
+        }
+    }
+
+    /// <summary>
+    /// The whole way from `Sts2Run_ResetAs` to a first fight: each character walks Neow and the map to its first
+    /// combat and that fight is the character's own (energy, the combat's character), with the start deck intact.
+    /// </summary>
+    [Theory]
+    [InlineData(PlayerCharacter.Ironclad)]
+    [InlineData(PlayerCharacter.Silent)]
+    [InlineData(PlayerCharacter.Regent)]
+    [InlineData(PlayerCharacter.Necrobinder)]
+    [InlineData(PlayerCharacter.Defect)]
+    public void Each_characters_first_fight_starts_on_three_energy_as_that_character(PlayerCharacter character)
+    {
+        var engine = new RunEngine();
+        engine.Reset("CHARFIGHT1", ascension: 0, character);
+        var mask = new int[RunConstants.MaxActions];
+        for (int step = 0; step < 400 && engine.State.Phase != RunPhase.Combat; step++)
+        {
+            Array.Clear(mask);
+            engine.WriteActionMask(mask);
+            var legal = Enumerable.Range(0, RunConstants.UsePotionAction).Where(i => mask[i] != 0).ToList();
+            Assert.NotEmpty(legal);
+            engine.Step(legal[(step * 7 + 3) % legal.Count], -1, out _, out _, out _);
+        }
+
+        Assert.Equal(RunPhase.Combat, engine.State.Phase);
+        var combat = engine.State.ActiveCombat!;
+        Assert.Equal(character, combat.Character);
+        Assert.Equal(3, combat.MaxEnergy);
+        Assert.Equal(3, combat.Energy);
+    }
 }

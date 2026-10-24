@@ -23,6 +23,13 @@ public static class RunPotionUse
             ? action - RunConstants.UsePotionAction
             : -1;
 
+    /// <summary>The slot a discard action names, or -1 when the action is not a discard.</summary>
+    public static int DiscardSlotOf(int action) =>
+        action >= RunConstants.DiscardPotionAction
+        && action < RunConstants.DiscardPotionAction + RunConstants.PotionSlotCapacity
+            ? action - RunConstants.DiscardPotionAction
+            : -1;
+
     /// <summary>
     /// Whether the run is on a screen where the belt can be used: not inside a fight (the
     /// combat engine's own move), not inside a card-select or divination modal, and not in an
@@ -77,6 +84,67 @@ public static class RunPotionUse
         return potion == RunNonCombatEffects.NamedPotion("BloodPotion")
             || potion == RunNonCombatEffects.NamedPotion("FruitJuice")
             || potion == RunNonCombatEffects.NamedPotion("EntropicBrew");
+    }
+
+    /// <summary>
+    /// Whether the potion in <paramref name="slot" /> can be thrown away right now: any held potion, on every screen
+    /// where the belt is open (`NPotionPopup` offers the discard button for every `Usage`, behind the same
+    /// `CanRemovePotions` check as the use button).
+    /// </summary>
+    public static bool CanDiscard(RunState state, int slot) =>
+        (uint)slot < (uint)state.PotionSlots.Length && state.PotionSlots[slot] != 0 && BeltIsOpen(state);
+
+    /// <summary>
+    /// `DiscardPotionGameAction` -> `Player.DiscardPotionInternal`: the potion leaves the belt and nothing else
+    /// happens. Returns false when the slot cannot be discarded.
+    /// </summary>
+    public static bool Discard(RunState state, int slot)
+    {
+        if (!CanDiscard(state, slot))
+        {
+            return false;
+        }
+
+        state.PotionSlots[slot] = 0;
+        return true;
+    }
+
+    /// <summary>
+    /// Why a use or discard action is refused right now, or null when it is legal (or not a potion action at all).
+    /// The reasons are the game's own rules: an empty slot, a belt a fight or a modal holds, a potion whose `Usage`
+    /// is not `AnyTime`, and the Foul Potion's merchant-room check.
+    /// </summary>
+    public static string? Refusal(RunState state, int action)
+    {
+        int useSlot = SlotOf(action);
+        int discardSlot = DiscardSlotOf(action);
+        int slot = useSlot >= 0 ? useSlot : discardSlot;
+        if (slot < 0)
+        {
+            return null;
+        }
+
+        if ((uint)slot >= (uint)state.PotionSlots.Length || state.PotionSlots[slot] == 0)
+        {
+            return "the belt slot is empty";
+        }
+
+        if (!BeltIsOpen(state))
+        {
+            return "the belt is closed on this screen (a fight, a card choice, or an event that holds the belt)";
+        }
+
+        if (useSlot < 0 || CanUse(state, slot))
+        {
+            return null;
+        }
+
+        if (state.PotionSlots[slot] == RunNonCombatEffects.NamedPotion("FoulPotion"))
+        {
+            return "the Foul Potion can be used only in the merchant's room";
+        }
+
+        return "the potion's Usage is not AnyTime: the game offers no use button for it outside a fight";
     }
 
     /// <summary>

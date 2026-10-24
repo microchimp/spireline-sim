@@ -1359,6 +1359,20 @@ public static class NativeExports
         return RunNativeExports.Sts2Run_Reset(handle, seedPtr, seedLen, ascension, obsBuf);
     }
 
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_ResetAs")]
+    public static unsafe int Sts2Run_ResetAs(
+        int handle,
+        byte* seedPtr,
+        int seedLen,
+        int ascension,
+        int character,
+        int* obsBuf
+    ) => RunNativeExports.Sts2Run_ResetAs(handle, seedPtr, seedLen, ascension, character, obsBuf);
+
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_PotionActionReason")]
+    public static unsafe int Sts2Run_PotionActionReason(int handle, int action, byte* buf, int bufLen) =>
+        RunNativeExports.Sts2Run_PotionActionReason(handle, action, buf, bufLen);
+
     [UnmanagedCallersOnly(EntryPoint = "Sts2Run_Step")]
     public static unsafe int Sts2Run_Step(
         int handle,

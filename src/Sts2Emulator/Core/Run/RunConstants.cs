@@ -119,6 +119,13 @@ public static class RunConstants
     /// no screen's own action collides with them.
     /// </summary>
     public const int UsePotionAction = 2 * CrystalSphereCells;
+
+    /// <summary>
+    /// Actions 248..253 discard the potion in belt slot 0..5 away from a fight (<see cref="RunPotionUse.Discard" />):
+    /// the belt's discard button, which `NPotionPopup` offers for every potion whenever the owner's
+    /// `CanRemovePotions` holds. Placed straight after the use actions, inside <see cref="MaxActions" />.
+    /// </summary>
+    public const int DiscardPotionAction = UsePotionAction + PotionSlotCapacity;
     public const int MapWidth = 7;
 
     /// <summary>
