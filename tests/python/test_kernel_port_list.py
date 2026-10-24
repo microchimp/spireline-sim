@@ -1,6 +1,9 @@
 """tools/kernel/port_list.py: the handler port list of a family migration (docs/rebuild/MIGRATION_F08.md)."""
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -163,13 +166,57 @@ class PseudoHookTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
-    def test_ported_reads_core2_model_files(self):
+    @staticmethod
+    def fake_run(doc, code=0):
+        """A stand-in for subprocess.run of ``dotnet EmuDump.dll kernel-handlers <out>``: writes doc to the out path."""
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if code == 0 and doc is not None:
+                Path(cmd[-1]).write_text(doc if isinstance(doc, str) else json.dumps(doc), encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, code, "", "boom")
+        run.calls = calls
+        return run
+
+    def test_handler_pairs_count_a_registered_handler_and_not_a_stub(self):
+        doc = {"handlers": [{"kind": "Power", "model": "RavenousPower", "hook": "AfterDeath", "stub": False},
+                            {"kind": "Monster", "model": "Hopper", "hook": "BeforeRemovedFromRoom", "stub": True},
+                            {"kind": "Power", "model": "VulnerablePower", "hook": "ModifyDamageMultiplicative"}]}
+        self.assertEqual(pl.handler_pairs(doc), {("RavenousPower", "AfterDeath"), ("VulnerablePower", "ModifyDamageMultiplicative")})
+
+    def test_ported_is_the_dump_of_the_registry_and_never_the_source_text(self):
         with tempfile.TemporaryDirectory() as d:
-            write(Path(d), "Powers/Ravenous.cs", 't.Model(ListenerKind.Power, "RavenousPower").On(HookId.AfterDeath, F);')
-            write(Path(d), "Monsters/Hopper.cs", 't.Model( ListenerKind.Monster , "Hopper")\n'
-                                                 '  .On(HookId.BeforeRemovedFromRoom, G);')
-            self.assertEqual(pl.ported(Path(d)), {("RavenousPower", "AfterDeath"), ("Hopper", "BeforeRemovedFromRoom")})
-            self.assertEqual(pl.ported(Path(d) / "gone"), set())
+            dll = Path(d) / "EmuDump.dll"
+            dll.write_text("", encoding="utf-8")
+            # a model file whose comment names a hook, and a stub: neither is a handler in the registry's list
+            write(Path(d), "Core2/Models/Powers/Ravenous.cs", '// t.Model(ListenerKind.Power, "RavenousPower").On(HookId.AfterDeath, F);')
+            run = self.fake_run({"handlers": [{"kind": "Monster", "model": "Hopper", "hook": "AfterDeath", "stub": True}]})
+            self.assertEqual(pl.ported(dll, run), set())
+            self.assertEqual(run.calls[0][:3], ["dotnet", str(dll), "kernel-handlers"])
+            run = self.fake_run({"handlers": [{"kind": "Power", "model": "RavenousPower", "hook": "AfterDeath", "stub": False}]})
+            self.assertEqual(pl.ported(dll, run), {("RavenousPower", "AfterDeath")})
+
+    def test_an_unreadable_handler_list_is_an_error_not_an_empty_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            dll = Path(d) / "EmuDump.dll"
+            with self.assertRaises(pl.HandlerListError):
+                pl.ported(dll, self.fake_run({"handlers": []}))            # not built
+            dll.write_text("", encoding="utf-8")
+            for run in (self.fake_run({"handlers": []}, code=1), self.fake_run(None), self.fake_run("not json"),
+                        self.fake_run({"rows": []})):
+                with self.assertRaises(pl.HandlerListError):
+                    pl.ported(dll, run)
+
+            def no_dotnet(cmd, **kw):
+                raise FileNotFoundError("dotnet")
+            with self.assertRaises(pl.HandlerListError):
+                pl.ported(dll, no_dotnet)
+
+    @unittest.skipUnless(pl.DEFAULT_DLL.is_file() and shutil.which("dotnet"), "EmuDump is not built")
+    def test_the_built_emudump_lists_the_registry(self):
+        got = pl.ported()
+        self.assertTrue(all(isinstance(m, str) and isinstance(h, str) for m, h in got))
 
     def test_unported_pairs_count_every_pair_without_a_handler_but_not_modelled_ones(self):
         doc = pl.build(ROWS, MODELS, pl.family_hooks(FAM_DOC, ["F08", "F10"]))
@@ -201,6 +248,11 @@ class GateTests(unittest.TestCase):
                 pl.make = lambda *a, **k: dict(doc, unported=[["power:X", "AfterDeath", "registered"]])
                 self.assertEqual(pl.main(["--families", "F10", "--md", md]), 0)
                 self.assertEqual(pl.main(["--families", "F10", "--gate", "--md", md]), 1)
+
+                def unreadable(*a, **k):
+                    raise pl.HandlerListError("not built")
+                pl.make = unreadable
+                self.assertEqual(pl.main(["--families", "F10", "--gate", "--md", md]), 2)
             finally:
                 pl.make = orig
 

@@ -280,8 +280,9 @@ buff (Slippery's decrement, Asleep's removal) and is kept.
   names elsewhere, 27 pseudo-hook pairs; each is read in its batch), 5 not modelled (no state change or multiplayer
   only: no handler).** The pseudo-hooks add 12 models (8 monsters, 4 powers).
 
-**Handler gate (fixed in R1).** `--gate` exits 1 while any listed (model, hook) pair has no Core2 handler (a file under
-`Core2/Models/` registering `Model(kind, "<Class>")` with `HookId.<hook>`, the registry of Core2's HandlerTable) and is not
+**Handler gate (fixed in R1).** `--gate` exits 1 while any listed (model, hook) pair has no Core2 handler (one
+`EmuDump kernel-handlers` lists: the HandlerTable with every switch on, built from `Core2/Models/Registry.cs`; a handler marked
+`[StubHandler]` does not count, nor does a comment) and is not
 `not_modelled`. It used to count only open, missing or unmatched pairs, so the 101 registered pairs (an old location to
 call) passed with no handler at all. Today: 150 (101 registered, 49 open); the 5 not-modelled pairs need no handler. Each
 handler batch closes its own pairs; switch-on (section 6) requires 0. The 22 open hook pairs: Slow and Hang
