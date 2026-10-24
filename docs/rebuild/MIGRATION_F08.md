@@ -972,6 +972,37 @@ Burrowed, Asleep, Illusion, Reattach and Adaptable (PowerCmd is not migrated).
 
 - Acceptance (L2): the new tests 36 pass (L2PlayerDamageTests 6, L2TallyTests 7, L2DeathTests 18 with the 9 AfterRemoved cases, L2DeathExtraTests 5); a run with every L2 registration deleted failed every L2 test but the one that registers no model (32 of 33, before the cap pairs were added); `dotnet test src/Sts2Emulator.Tests` 6975 passed, 7 skipped, 0 failed (6982), ModelSourceScanTests included, `TIER2_REWRITE_LIST.md` regenerated; `construct commands` ok: 12 commands, 0 differences, 0 Core2 writes outside Commands, 0 F08 HP writes with the switch on (R4's informational list: 36 F09 block writes, 4 of them in the old bodies L2 calls: TryReviveIllusion, TryReattachSegment, TryRespawnTestSubject, BreakBurrowIfBlockGone); `sites check` 0 problems (279 sites; the CombatEngine.cs and RelicEffects.cs hashes re-recorded, the Doom and Fur Coat parts unchanged); `port_list --gate --families F08 F10`: 60 pairs without a handler (107 before, this batch's 47 closed; of the LOCAL models only Hang and Stock are left); byte_proof of the Release EmuDump against itself, `--engine old` and `--b-args "--engine core2"`, no switch, `--modes fight,state-hash --limit 300`: 600 fight-mode pairs identical, 0 differ; `fuzz_core2.py --switches F08,F10 --fights 300 --procs 3`: 299 differing (L1: 299), all untriaged; top fields ActiveCombat.TookUnblockedDamage and the run's TookUnblockedDamageThisCombat 151 each and UnblockedDamageThisTurn 48 (new: the old global tallies of players without the relic, which only a holder keeps now), ActiveCombat.Enemies 125 (m1: 186), PlayerHp 68 (84), UnblockedDamageHitCount 54 (59). `tools/emudump.Tests` not rerun (no EmuDump file changed).
 
+### Batch L3b: the LOCAL models that needed a kernel addition (branch `rebuild/f08-l3b`)
+
+7 (model, hook) pairs over 4 game models (`Core2/Models/Powers/SurprisePower.cs`, `InfestedPower.cs`, `StockPower.cs`,
+`HangPower.cs`; Registry block `L3b`; tests `Core2/Models/L3bTests.cs`).
+
+- **The stream: `HookCtx.Niche` (engine-neutral).** The old death answer (`CombatEngine.AnswerDeaths`) hands its bodies the
+  `Random` the combat step threads: in a run `RunState.ActiveCombatRng`, the old combat stream (seeded from the run's Niche
+  seed, restarted per combat, restreamed with Niche; `combat` in the RNG log). `Surprise_AfterDeath` and `Infested_AfterDeath`
+  pass it to `CreateEnemy`, whose HP roll (`EnemyAI.RollSummonedHp`) reads the combat's `NicheHpRng` first (the run's Niche
+  stream at its position; `Niche` in the RNG log) and the handed stream only when the combat has none; `TryRespawnAxebot`
+  draws the handed stream itself. The game draws all three through `CombatState.CreateCreature`
+  (`Creature.SetUniqueMonsterHpValue` on `RunState.Rng.Niche`). The accessor is named by the game's stream and, in Tier 1,
+  answers with the old combat stream, so each handler passes exactly what the old site passes (C5's `NicheHpRng` stand-in
+  would have drawn the Niche stream where the old fallback draws the combat stream). It throws when the kernel's run holds
+  no open combat's stream (a combat bound to no run).
+- **The command: `CreatureCmd.Add`** (`Core2/Commands/CreatureCmd.Add.cs`). game: CreatureCmd.Add(Creature): refused outside
+  a combat in progress and for a creature the combat already holds; CombatState.AddCreature puts it at the end of its side's
+  list; CombatManager.AfterCreatureAdded's parts (AfterAddedToRoom, the move roll) are the caller's old body in Tier 1.
+- Surprise and Infested: AfterDeath under the game's condition (the dead creature is the owner, its removal not prevented),
+  the old bodies on `c.Niche`; ShouldStopCombatFromEnding, the old functions.
+- Stock: AfterDeath builds a NEW Axebot from the old respawn's parts, split out of `TryRespawnAxebot` with its behaviour
+  unchanged (`RollAxebotRespawnHp` on `c.Niche`; `NewRespawnedAxebot`, the state the in-place respawn leaves), and lists it
+  with `CreatureCmd.Add`. The dead bot leaves through the Kill's removal after AfterDeath, so the new one stands at the
+  roster's end, as in the game. The old condition (an Axebot) is kept; R3a's corpse rule (`AxebotDeathStrips`) is unchanged.
+  ShouldStopCombatFromEnding: the old function.
+- Hang: ModifyDamageMultiplicative, read against HangPower (the target is the owner and the card source is Hang: the
+  amount; else 1). The old Hang body multiplied its base by `Math.Max(1, stacks)` before `DealDamage`; under the F08 switch
+  that factor is 1 (`Kernel.If(Switch.F08, state) is null`), so the fold applies it once. No switch: unchanged.
+- Tier 1 uses: `c.OldCombat`, `c.Enemy`, `c.K` (Stock's Add). Hybrid: the spawn bodies write the old roster themselves
+  (`state.Enemies.Add` and `Insert`, `RelicEffects.Spawned`) and remove their own buff.
+
 ## 6. Acceptance
 
 Per round:
@@ -1048,6 +1079,20 @@ game does something else, found while porting; R7's corpus re-measure decides ea
   it. Check: a recorded fight with two Stranglers where the one that did not apply Constrict dies; the handler removes the
   player's Constrict, the game does not, and the handler then takes the Applier test.
 - **Strike Dummy, Fake Strike Dummy, Miniature Cannon, Mystic Lighter, Pen Nib: props and owner.** Miniature Cannon and Mystic Lighter also keep the old site's Attack-def test. The game's overrides answer the no-bonus value off a powered attack (`ValueProp.IsPoweredAttack`) and for a dealer or card that is not the owner's (`HookCtx.IsOwnerOrPet` for Pen Nib); the old sites (`RelicEffects.CardDamageBonus`, `CardDamageMultiplier`, `CardEffects.DmgFrom`) read neither, so the handlers take the game's tests. Check: a recorded fight with an unpowered hit carrying a card source (an upgraded Attack's self-damage) under one of the five; the old engine gave the bonus, the handler gives none. The old state has one card owner, so the card-owner tests are always met until a second owner exists.
+- **Surprise, Infested, Stock: the HP stream (batch L3b).** The old fallback (a combat with no `NicheHpRng`) rolls the
+  spawns' HP off the combat stream, and Stock's respawn always does, flat over the band; the game rolls each new monster's
+  HP with SetUniqueMonsterHpValue on the run's Niche stream (unique against the living side). The handlers draw the old
+  site's stream (`HookCtx.Niche`). Check: a recorded Axebot respawn's HP against the Niche stream's next unique draw; Stock's
+  handler then takes `EnemyAI.RollSummonedHp` with the combat.
+- **Stock and Infested: the roster position (batch L3b).** The game appends every added creature (CombatState.AddCreature)
+  and the dead one leaves after AfterDeath; Stock's handler does so (the old engine revived the bot at its index), while
+  Infested's old body inserts the Wrigglers right after the Phrog Parasite and stops at six enemies. Check: a recorded fight
+  with an enemy listed after the Phrog Parasite or the Axebot; enemy turn order and first-enemy targeting.
+- **Hang: the multiply's place (batch L3b).** The old Hang body multiplied the card's base before the fold's additive
+  terms (Strength, Vigor); the game multiplies after them. Under the switch the fold gives the game's order. Check: a
+  recorded Hang played with Strength.
+- **Surprise, Infested, Stock: a prevented removal (batch L3b).** The game's AfterDeath does nothing when the removal was
+  prevented; the old site has no such test; the handlers follow the game.
 - **A HookCtx accessor for the card's live copy.** `MiniatureCannon.Copy` and `MysticLighter.Copy` are the same private helper (the card source's copy read back off `OldCombat` and `World`, for the upgrade flag and the enchantment, which `CardView` does not carry); HookCtx has no near fit, so R7 should add one accessor (the copy for a handle) and both models, and any later one, take it.
 
 ## 7. Rounds and estimate
