@@ -323,13 +323,11 @@ public class HookShapeTests
     [Fact]
     public void UnimplementedStep_NamesTheStepAndTheGameMethod()
     {
+        // ModifyDamage's steps are implemented (F08 R2): off the kernel's own runtime none applies and the clamp runs.
         var rt = new FakeRuntime();
-        var e = Assert.Throws<NotImplementedException>(() =>
-            Hooks.ModifyDamage(rt, DamageArgs(10m, ModifyDamageHookType.None), out _));
-        Assert.Contains("preview-hittable", e.Message);
-        Assert.Contains("Hook.ModifyDamage", e.Message);
+        Assert.Equal(10m, Hooks.ModifyDamage(rt, DamageArgs(10m, ModifyDamageHookType.None), out _));
 
-        e = Assert.Throws<NotImplementedException>(() => Hooks.ModifyBlock(rt,
+        var e = Assert.Throws<NotImplementedException>(() => Hooks.ModifyBlock(rt,
             new ModifyBlockArgs(new CreatureRef(0), 5m, new ValueProp(0), new CardHandle(2), null), out _));
         Assert.Contains("enchant-add", e.Message); // typed by ModifyBlockArgs
         Assert.Contains("Hook.ModifyBlock", e.Message);

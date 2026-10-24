@@ -427,9 +427,10 @@ public class KernelTests
         k.OnPaused(site with { Context = ContextMode.Passed }, HookStep.Paused("choose", new TestResume()));
         k.WaitAll(HookId.Dispatch_AfterTurnEnd, 0);
         Hooks.AfterTurnEnd(k, TurnEnd);
-        // The fast path comes before the net-id guard (a stub until K4): no listener, so the guard is never reached.
+        // The fast path comes before the net-id guard: no listener, so the guard is never reached; with one, the guard
+        // lets the dispatch proceed (one local player, F08 R2).
         Hooks.AfterTurnEnd(Shared(Every, _ => { }).Bind(Combat()), TurnEnd);
-        Assert.Throws<NotImplementedException>(() => Hooks.AfterTurnEnd(K(Every, PauseAtRelic3), TurnEnd));
+        Assert.True(Steps.NetIdGuard(K(Every, PauseAtRelic3), HookId.Dispatch_AfterTurnEnd));
         Assert.Empty(k.HookActions);
         Assert.Empty(k.Stops);
         Assert.Empty(k.Waits);
