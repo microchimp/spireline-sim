@@ -210,7 +210,7 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
 ## 4. Handlers, the handler table and the dispatch
 
 - A migrated model is one static class `Core2/Models/<Kind>/<GameClass>.cs` with one method per game override it
-  ports, named and shaped like the override: events return `HookStep` (`Done`, or `Paused(request, resume)` at the
+  ports, named and shaped like the override (the handler context first, below): events return `HookStep` (`Done`, or `Paused(request, resume)` at the
   game's await-of-choice site, where `resume` is a typed record per site holding what the rest of the body needs);
   folds take and return `decimal`; predicates return `bool`; Early and Late passes are their own methods. Each method
   cites `game: <Class>.<Method>` and calls the old engine for the body.
@@ -221,6 +221,22 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
   preventer, `predicate-any` the first true. Damage and block keep `decimal`; the old caller casts where the game casts.
 - Only `Hooks` calls a handler; handlers change state only through the old engine's commands (a source-scan test until
   analyzers exist).
+- **The handler context (round H0).** Every handler delegate takes a `HookCtx` first, then the `ListenerRef` it runs for,
+  then the dispatcher's argument record (`in`), then what its op adds (the fold's running value, the `ChoiceCtx`):
+  `HookEvent<TArgs>(HookCtx k, ListenerRef self, in TArgs a, ChoiceCtx? ctx)`, `HookFold<TArgs, TValue>(k, self, in a,
+  current)`, `HookCap(k, self, in a)`, `HookTry`/`HookTryOrNull(k, self, in a, current, out next)`, `HookTryInPlace`,
+  `HookPredicate` and `HookMutate(k, self, in a)`. `HookCtx` (Core2/HookCtx.cs) is a readonly struct over the dispatcher's
+  `HookRuntime` (`rt.Ctx`: the generated dispatchers pass it, and so do the calls Core2/Commands make to a pseudo-hook
+  handler, `k.Ctx`); it holds nothing else, so it costs nothing to make and a handler cannot keep state in it. It is the
+  only way from a handler to the combat it acts in. Engine-neutral members, the shape a Tier 2 context keeps:
+  `Power(self)` (`PowerView(Owner, Amount)?`, null when the power is no longer on its owner: the game still visits a power
+  removed mid-pass and the old state keeps no copy) and `Owner(self)` (`CreatureRef?`), answered over the old state by
+  `OldState.Locate` and `OldState.PowerBuff` (Core2/OldState.Models.cs). Tier 1 members: `K` (the `KernelState` the
+  commands take), `World` (the `OldWorld`) and `OldBuffs(creature)` (the old buff list an extracted
+  `BuffSystem.<Model>_<Hook>` function takes); a Tier 2 runtime has none of them and a handler that uses them is rewritten
+  when its model moves. A runtime that is no `KernelState` (a test fake) throws on a member that needs state. A resume
+  record's `Continue(HookRuntime rt, ...)` is unchanged (`rt.Ctx` gives it the context). The worked example is
+  `HandlerContextTests` (MIGRATION_F08.md section 5, "How to write a handler").
 - Built in K3:
   - `HandlerTable` (an `IHandlerSource`): `t.Model(kind, "<GameClass>").On(HookId.<virtual>, handler)`, or
     `t.Register<TModel>()` for an `IMigratedModel` (static `Register(HandlerTable)`); migrated models are listed in
