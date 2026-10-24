@@ -35,6 +35,8 @@ public class PowerTwoTests
         (ListenerKind.Power, "IntangiblePower", HookId.ModifyDamageCap),
         (ListenerKind.Power, "IntangiblePower", HookId.ModifyHpLostAfterOsty),
         (ListenerKind.Power, "IntangiblePower", HookId.AfterModifyingHpLostAfterOsty),
+        (ListenerKind.Power, "SlipperyPower", HookId.ModifyHpLostAfterOsty),
+        (ListenerKind.Power, "SlipperyPower", HookId.AfterDamageReceived),
     ];
 
     [Fact]
@@ -399,5 +401,134 @@ public class PowerTwoTests
     {
         AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "IntangiblePower", HookId.ModifyDamageCap,
             HookId.ModifyHpLostAfterOsty, HookId.AfterModifyingHpLostAfterOsty);
+    }
+
+    // ---------------------------------------------------------------------------------------- Slippery (power-2)
+
+    /// <summary>One slug with Slippery 2 (40 HP).</summary>
+    private static (CombatState S, ListenerRef Power) SlipperyCombat(int amount = 2)
+    {
+        var s = Combat(40);
+        return (s, GivePower(s, "SlipperyPower", BuffId.Slippery, amount, s.Enemies[0]));
+    }
+
+    private static int SlipperyOf(EnemyState e) => BuffSystem.Get(e.Buffs, BuffId.Slippery);
+
+    [Fact]
+    public void SlipperyIsRegisteredForItsTwoPairs()
+    {
+        // The row registers the stack's spending (Slippery_AfterModifyingHpLostAfterOsty) under AfterDamageReceived.
+        AssertRegistered(Table(Power2), ListenerKind.Power, "SlipperyPower", HookId.ModifyHpLostAfterOsty, HookId.AfterDamageReceived);
+        AssertAbsent(Table(Power2), ListenerKind.Power, "SlipperyPower", HookId.AfterModifyingHpLostAfterOsty);
+    }
+
+    [Fact]
+    public void SlipperySetsALossOfOneOrMoreToTheOldFunctionsOne()
+    {
+        // game: SlipperyPower.ModifyHpLostAfterOsty; old: CardEffects.LandDamageOnEnemy sets hpLoss =
+        // Slippery_ModifyHpLostAfterOsty() when the target's Slippery > 0 and hpLoss >= 1, powered or not.
+        var (s, power) = SlipperyCombat();
+        var k = Kernel(s, Power2);
+
+        decimal v = Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out var changed);
+
+        Assert.Equal(CardEffects.Slippery_ModifyHpLostAfterOsty(), v);
+        Assert.Equal(1m, v);
+        Assert.Equal([power], changed);
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m, props: Unpowered, dealer: null), out changed));
+        Assert.Equal([power], changed);
+        // Exactly 1 is left as it is; a loss under 1 too (it truncates to 0, where the old site's int is 0); 1.5 becomes 1
+        // (its truncation was 1 already, so the fold lists no modifier).
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 1m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0.5m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 0.5m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 0m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 1.5m), out changed));
+        Assert.Empty(changed);
+        // Where the condition fails: the before-Osty phase, a loss of another creature, the stack at 0.
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m, phase: HpLossHookPhase.BeforeOsty), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 7m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        s.Enemies[0].Buffs[0] = new BuffState(BuffId.Slippery, 0);
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void SlipperySpendsAStackThroughTheDamageCommandWhenAHitTakesHp()
+    {
+        // game: SlipperyPower.AfterDamageReceived; old: CardEffects.LandDamageOnEnemy calls
+        // Slippery_AfterModifyingHpLostAfterOsty(target) beside the number above, under the same condition. A 7 hit on 40
+        // with Slippery 2: 1 lost, Slippery 1; an unpowered 7: 1 lost, Slippery gone; a third 7: 7 lost.
+        var (s, _) = SlipperyCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Power2);
+
+        Assert.Equal(1, Assert.Single(Hit(k, OldCreature.Of(slug), 7m)).UnblockedDamage);
+        Assert.Equal((39, 1), (slug.Hp, SlipperyOf(slug)));
+        var oracle = SlipperyCombat().S.Enemies[0];
+        oracle.Hp -= CardEffects.Slippery_ModifyHpLostAfterOsty();
+        CardEffects.Slippery_AfterModifyingHpLostAfterOsty(oracle);
+        Assert.Equal((oracle.Hp, SlipperyOf(oracle)), (slug.Hp, SlipperyOf(slug)));
+
+        Assert.Equal(1, Assert.Single(Hit(k, OldCreature.Of(slug), 7m, props: Unpowered)).UnblockedDamage);
+        Assert.Equal((38, 0), (slug.Hp, SlipperyOf(slug)));
+        Assert.Equal(7, Assert.Single(Hit(k, OldCreature.Of(slug), 7m)).UnblockedDamage);
+        Assert.Equal(31, slug.Hp);
+
+        // Block: a fully blocked 7 takes no HP and spends no stack; block 3 against 7 leaves 4, set to 1, a stack spent.
+        // The slug's hit on the player is not a hit on the owner.
+        var (s2, _) = SlipperyCombat();
+        var slug2 = s2.Enemies[0];
+        slug2.Block = 9;
+        var k2 = Kernel(s2, Power2);
+        Assert.Equal(0, Assert.Single(Hit(k2, OldCreature.Of(slug2), 7m)).UnblockedDamage);
+        Assert.Equal((40, 2), (slug2.Hp, SlipperyOf(slug2)));
+        slug2.Block = 3;
+        Assert.Equal(1, Assert.Single(Hit(k2, OldCreature.Of(slug2), 7m)).UnblockedDamage);
+        Assert.Equal((39, 1), (slug2.Hp, SlipperyOf(slug2)));
+        Assert.Equal(7, Assert.Single(Hit(k2, OldCreature.Player, 7m, dealer: OldCreature.Of(slug2))).UnblockedDamage);
+        Assert.Equal(1, SlipperyOf(slug2));
+    }
+
+    [Fact]
+    public void SlipperyActsForItsOwnerAloneAmongTwoHolders()
+    {
+        // The N-holder test: two slippery slugs. A hit on the first sets its loss and spends its stack; the second keeps
+        // both, and its own hit changes its own listener.
+        var s = Combat(40, 40);
+        var first = GivePower(s, "SlipperyPower", BuffId.Slippery, 2, s.Enemies[0]);
+        var second = GivePower(s, "SlipperyPower", BuffId.Slippery, 2, s.Enemies[1]);
+        var k = Kernel(s, Power2);
+
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out var changed));
+        Assert.Equal([first], changed);
+        Assert.Equal(1, Assert.Single(Hit(k, OldCreature.Of(s.Enemies[0]), 7m)).UnblockedDamage);
+        Assert.Equal((39, 1), (s.Enemies[0].Hp, SlipperyOf(s.Enemies[0])));
+        Assert.Equal((40, 2), (s.Enemies[1].Hp, SlipperyOf(s.Enemies[1])));
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 2, 7m), out changed));
+        Assert.Equal([second], changed);
+    }
+
+    [Fact]
+    public void SlipperyDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = SlipperyCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Without(Power2, SlipperyPower.Register));
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(7, Assert.Single(Hit(k, OldCreature.Of(slug), 7m)).UnblockedDamage);
+        Assert.Equal((33, 2), (slug.Hp, SlipperyOf(slug)));
+    }
+
+    [Fact]
+    public void SlipperyIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "SlipperyPower", HookId.ModifyHpLostAfterOsty,
+            HookId.AfterDamageReceived);
     }
 }
