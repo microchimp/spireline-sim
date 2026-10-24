@@ -306,15 +306,18 @@ public class PowerTwoTests
         Assert.Equal([power], changed);
         Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 9m, props: Unpowered, dealer: null), out changed));
         Assert.Equal([power], changed);
-        // A loss the cap does not lower is left as it was, decimals kept: 1, 0, 0.5, and 1.5 (its truncation is 1 already).
+        // The game's value: below 1 the amount itself (0, 0.5, decimals kept), 1 for any amount of 1 or more. 1.5 becomes 1;
+        // its truncation is 1 already, so the fold's changed set stays empty.
         Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 1m), out changed));
         Assert.Empty(changed);
         Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 0m), out changed));
         Assert.Empty(changed);
         Assert.Equal(0.5m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 0.5m), out changed));
         Assert.Empty(changed);
-        Assert.Equal(1.5m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 1.5m), out changed));
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 1.5m), out changed));
         Assert.Empty(changed);
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 3m), out changed));
+        Assert.Equal([power], changed);
         // Where the condition fails: the before-Osty phase (another pass), a loss of another creature, the stack at 0.
         Assert.Equal(9m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 9m, phase: HpLossHookPhase.BeforeOsty), out changed));
         Assert.Empty(changed);

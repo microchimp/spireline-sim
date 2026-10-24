@@ -670,6 +670,18 @@ game does something else, found while porting; R7's corpus re-measure decides ea
 - **Tracking and Double Damage: the pet case.** The game accepts a dealer that is the owner's pet (Osty); the handlers do too
   (`HookCtx.IsOwnerOrPet`), while the old fold (`BuffSystem.IncomingDamage`) reads the attacker's own buff list. Check: a recorded
   fight where Osty strikes with a card source under either power; the handler is the game's answer.
+- **Buffer: any owner.** The game's Buffer acts for any owner, an enemy's too; the old functions read the player's buff list alone
+  and the old enemy site has no Buffer, so the handler acts for the player's Buffer only (`BufferPower`). Check: a recorded fight
+  where an enemy holds Buffer and takes an HP loss; the game spends a stack and the loss becomes 0, the handler leaves it, and the
+  handler then takes the any-owner test.
+- **Personal Hive: the `dealer != null` test.** The game's override tests the target, a non-null dealer and the powered props; the
+  old site (`CardEffects.LandDamageOnEnemy`) has no dealer test and the handler (`PersonalHivePower`, batch C4, whose comment omits
+  it) keeps the old site's tests, the owner's HP above 0 included. Check: a recorded powered hit on a Personal Hive owner with no
+  dealer; the handler shuffles Dazed, the game does not, and the handler then takes the dealer test.
+- **Constrict: the Applier test.** The game's override removes the power when the dead creature is the power's Applier; the old
+  site and the handler (`ConstrictPower`) test that the fallen is a Slithering Strangler by def id, whichever Strangler applied
+  it. Check: a recorded fight with two Stranglers where the one that did not apply Constrict dies; the handler removes the
+  player's Constrict, the game does not, and the handler then takes the Applier test.
 
 ## 7. Rounds and estimate
 

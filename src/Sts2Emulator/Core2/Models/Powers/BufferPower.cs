@@ -14,9 +14,10 @@ internal static class BufferPower
     /// CardEffects.LosePlayerHp, is every HP loss of the player and asks that the player's Buffer is above 0); the value
     /// unchanged otherwise. The old site returns before Buffer when nothing would be lost; here the dispatcher lists this
     /// power as a modifier only when its 0 moved the truncated value, so a loss that truncates to 0 spends no stack, as
-    /// there. The old function acts on the player's list, so the handler acts for an owner that is the player (a power on
-    /// a creature that is no enemy; the old state's pet holds no powers) and leaves an enemy's loss alone, as the old
-    /// enemy site (CardEffects.LandDamageOnEnemy) has no Buffer.
+    /// there. The game's Buffer acts for any owner, an enemy's too. The old function acts on the player's list alone and
+    /// the old enemy site (CardEffects.LandDamageOnEnemy) has no Buffer, so the handler acts for an owner that is the
+    /// player (a power on a creature that is no enemy; the old state's pet holds no powers) and leaves an enemy's loss
+    /// alone: an enemy that holds Buffer takes its HP loss here and not in the game (MIGRATION_F08 section 6, R7 checks).
     /// </summary>
     internal static decimal ModifyHpLostAfterOstyLate(HookCtx c, ListenerRef self, in ModifyHpLostArgs a, decimal current)
     {

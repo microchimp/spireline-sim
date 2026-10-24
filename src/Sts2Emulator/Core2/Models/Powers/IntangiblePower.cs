@@ -26,19 +26,19 @@ internal static class IntangiblePower
     }
 
     /// <summary>
-    /// game: IntangiblePower.ModifyHpLostAfterOsty. A fold-set over the HP lost after the pet redirect: the old function's
-    /// cap on a loss of the power's owner, whatever the props and the dealer (the old site, CardEffects.LosePlayerHp,
-    /// passes every loss to BuffSystem.CapHpLoss); the value unchanged otherwise. The old function takes and returns an
-    /// int, the HP lost after the old engine's cast; here the running value is a decimal, cast once at the HP loss, so
-    /// the cap is decided on the truncated value and a value the cap does not lower is returned as it was, decimals kept.
+    /// game: IntangiblePower.ModifyHpLostAfterOsty. A fold-set over the HP lost after the pet redirect, with the game's
+    /// value: for a loss of the power's owner, 1 for any amount of 1 or more and the amount itself below 1, whatever the
+    /// props and the dealer (the old site, CardEffects.LosePlayerHp, passes every loss to BuffSystem.CapHpLoss); the value
+    /// unchanged for another target. The old function takes an int, the HP lost after the old engine's cast, and agrees
+    /// with this value on every int; here the running value is a decimal, cast once at the HP loss, so 1.5 becomes 1 and
+    /// 0.5 stays 0.5. The dispatcher lists this power as a modifier only when the truncated value moved (1.5 to 1 does
+    /// not). The stack test is the old function's (Intangible above 0): the game removes a power at 0.
     /// </summary>
     internal static decimal ModifyHpLostAfterOsty(HookCtx c, ListenerRef self, in ModifyHpLostArgs a, decimal current)
     {
-        if (c.Power(self) is not { } me || a.Target != me.Owner)
+        if (c.Power(self) is not { } me || a.Target != me.Owner || me.Amount <= 0m || current < 1m)
             return current;
-        int lost = (int)Math.Min(current, int.MaxValue);
-        int capped = BuffSystem.CapHpLoss(lost, c.OldBuffs(me.Owner));
-        return capped == lost ? current : capped;
+        return 1m;
     }
 
     /// <summary>
