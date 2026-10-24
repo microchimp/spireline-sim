@@ -78,7 +78,7 @@ FORMAT = 1
 RERUN_CHUNK = 50  # records per field re-run process
 MAX_FAILED_BATCHES = 10  # a run with no fight limit stops starting batches after this many fail (no dotnet, a broken build)
 BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
-SWITCHABLE = [f"F{n:02d}" for n in range(1, 17)]
+SWITCHABLE = [f"F{n:02d}" for n in range(1, 18)]
 # The first migration's families (F08 damage, F10 kill): the powers whose hooks sit in them are drawn more often.
 FOCUS = frozenset(("F08", "F10"))
 FAVOUR = 8   # extra weight of a power with a hook in a family under test (a power's base weight is 1)
