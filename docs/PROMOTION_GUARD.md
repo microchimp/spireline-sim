@@ -38,7 +38,8 @@ per-seed outcomes of the two arms on the block:
    rate over its last three blocks (6,000 seeds), unpaired, Wilson 95% intervals. *Flagged* when the candidate's upper
    bound is below the pooled lower bound: the promotion goes through but is marked for the weekly review (`review` in
    the decision, `flagged` in the tsv). *Blocked*, and the promotion refused, when that happens twice in a row. The
-   lineage's kills on a block are the promoted candidate's where the block promoted it, else the incumbent's.
+   lineage's kills on a block are the promoted candidate's where the block promoted it, else the incumbent's; a block judged
+   again (`rejudge`) counts once, by its last row.
 4. **The retry cap.** At most two promotion attempts per generation. The lab grants no third self-play budget (no
    `ready-<gen>-r2` marker) after a generation's second rejection, `promote` refuses a third candidate before any run is
    played, and every tsv row records the attempt number. The review's arithmetic: with two attempts per generation the
@@ -53,7 +54,8 @@ columns join `promotions.tsv`: `attempt`, `drift` (clear / flagged / blocked / s
 
 Two things the review said that are not code: re-judging a block under a changed rule is post hoc and applies from the
 next block (so the flag is flipped between generations, and `rejudge --review-guard` exists only for an owner decision
-that says so); and promotions at the margin are subject to the winner's curse, which is why the headline number stays
+that says so; a re-read is not a new attempt, so its attempt number is recorded against the cap, as `attempt 3/2`, and the
+cap does not block it); and promotions at the margin are subject to the winner's curse, which is why the headline number stays
 the weekly real-game block.
 
 ## 2. Power
@@ -161,7 +163,7 @@ of the candidate and of the incumbent), before the flag goes on.
    boss, 1 when it killed it. That is a PC change: it needs the engine's boss HP at the fight's end, and the native
    library to test it. The flag can be flipped without it; the kill guard, the drift check and the cap work from the
    fields the rows already have.
-4. **The lineage in `promotions.tsv`.** The drift check pools the last three rows' `seeds`, `boss_cand` and `boss_base`;
+4. **The lineage in `promotions.tsv`.** The drift check pools the last three blocks' (a rejudged block once, by its last row) `seeds`, `boss_cand` and `boss_base`;
    rows written since 2026-10-23 have them, older rows are skipped. With fewer than one usable row the check reports
    `skipped` and does not block.
 5. **Both venvs reach the module.** `promote` runs in the emulator venv and imports `tools/lab/promotion_guard.py` from

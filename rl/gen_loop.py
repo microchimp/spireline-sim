@@ -898,14 +898,19 @@ def previous_drift_flagged(rows: list[dict[str, str]]) -> bool:
 
 
 def review_guard_verdict(cand_rows: list[dict], base_rows: list[dict], rows: list[dict[str, str]], *, cand_gen: int, cand_sha: str,
-                         block: str, boot: int = BOOT_B) -> dict[str, Any]:
+                         block: str, boot: int = BOOT_B, apply_cap: bool = True) -> dict[str, Any]:
     """The review's guard (promotion_guard.judge) on two arms, with the lineage, the drift history and the attempt count
-    from the promotions.tsv rows written before this judgement (`rows`; this block's own rows do not count as lineage)."""
+    from the promotions.tsv rows written before this judgement (`rows`; this block's own rows do not count as lineage).
+    With `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is reported against the cap but allowed."""
     pg = review_guard_module()
     kills_c, kills_b, dmg_c, dmg_b = pg.from_rows(cand_rows, base_rows, kill=boss_kill)
     history = [r for r in rows if r.get("seed_block") != block]
-    return pg.judge(kills_c, kills_b, dmg_c, dmg_b, lineage=lineage_blocks(history), previous_flagged=previous_drift_flagged(history),
-                    prior_attempts=attempts_before(rows, cand_gen, cand_sha), boot=boot)
+    prior = attempts_before(rows, cand_gen, cand_sha)
+    cap = pg.ATTEMPT_CAP if apply_cap else max(pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed blocks nothing
+    verdict = pg.judge(kills_c, kills_b, dmg_c, dmg_b, lineage=lineage_blocks(history), previous_flagged=previous_drift_flagged(history),
+                       prior_attempts=prior, cap=cap, boot=boot)
+    verdict["attempt"]["cap"] = pg.ATTEMPT_CAP  # report the real cap ("attempt 3/2"), allowed or not
+    return verdict
 
 
 def decide_review(floor: dict, boss: dict, wins: dict, cand_win_rate: float, base_win_rate: float, guard: dict[str, Any],
@@ -1106,7 +1111,8 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     """Apply the current rule to a candidate's finished arms on its own block, without playing again: for an owner
     decision that changes the rule after a block was judged (D24). Both cached arms must cover the whole block. The
     earlier promotion.json is kept beside the new one; the tsv gets a second row for the same candidate and block.
-    `review_guard` as in `promote` (a re-read is not a new attempt: the cap is reported, never applied here)."""
+    `review_guard` as in `promote` (a re-read is not a new attempt: the attempt number is reported against the cap,
+    never applied here; the other checks decide)."""
     import gen0  # noqa: PLC0415
 
     seeds = gen0.load_seeds(seeds_file)
@@ -1119,8 +1125,8 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     cand_sha = cand_agent.describe()["prior_sha256"] or "none"
     rows = read_promotions(Path(agent_root) / "promotions.tsv")
     attempt = attempts_before(rows, cand_agent.generation, cand_sha) + 1
-    guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot)
-             if review_guard_on(review_guard) else None)
+    guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
+                                  apply_cap=False) if review_guard_on(review_guard) else None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
     if res["paired_seeds"] != len(seeds):
         raise ValueError(f"only {res['paired_seeds']} of {len(seeds)} seeds are paired in both cached arms")

@@ -503,6 +503,29 @@ class FlagOnTests(PromoteBase):
         rows = gen_loop.read_promotions(self.agents / "promotions.tsv")
         self.assertEqual([(r["decision"], r["attempt"]) for r in rows], [("promoted", "1"), ("rejected", "1")])
 
+    def test_rejudge_applies_no_attempt_cap_but_reports_the_attempt(self):
+        tsv = self.agents / "promotions.tsv"
+        cand = self.candidate("gen5c", "sha-a")
+        cand_rows, base_rows = self.arms(30, 20)  # clean: the kill guard and the floor pass
+        for arm_dir, rows in ((cand / "arms" / "Etest-1-a3-v1", cand_rows), (self.agents / "gen0" / "arms" / "Etest-1-a3-v1", base_rows)):
+            arm_dir.mkdir(parents=True)
+            (arm_dir / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        for block, sha in (("Ex", "s1"), ("Ey", "s2")):  # two other candidates of generation 5 were judged first
+            gen_loop.append_promotion(tsv, {"cand_gen": 5, "seed_block": block, "seeds": 400, "decision": "rejected", "cand_sha": sha})
+        gen_loop.append_promotion(tsv, {"cand_gen": 5, "seed_block": "Etest-1", "seeds": 400, "boss_cand": 30, "boss_base": 20,
+                                        "decision": "rejected", "cand_sha": "sha-a"})  # this third candidate, judged with the flag off
+        with mock.patch.object(gen0, "run_block", side_effect=AssertionError("must not play again")):
+            doc = gen_loop.rejudge(cand, None, self.seed_file, agent_root=self.agents, note="review guard", boot=500)
+        g = doc["review_guard"]
+        self.assertEqual(g["attempt"]["attempt"], 3)  # reported: the third candidate of its generation
+        self.assertTrue(g["attempt"]["allowed"])  # ... and not applied: a re-read is not a new attempt
+        self.assertEqual((g["blocks"], g["blocking"]), (False, []))
+        self.assertTrue(doc["decision"]["checks"]["attempt"])
+        self.assertEqual((doc["decision_text"], doc["decision"]["rule"]), ("promoted", "D24+" + pg.RULE))
+        self.assertEqual(gen_loop.read_promotions(tsv)[-1]["attempt"], "3")
+        self.assertIn("attempt 3/2", gen_loop.read_promotions(tsv)[-1]["guard"])  # the real cap is shown
+        self.assertEqual(json.loads((self.agents / "current.json").read_text())["generation"], 5)
+
     def test_the_subprocess_command_carries_the_flag(self):
         with mock.patch.object(gen_loop.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
             gen_loop.run_promote_subprocess("py", Path("c"), None, Path("E.json"), Path("a"), 4, None, None, review_guard=True)
