@@ -279,5 +279,66 @@ class T(unittest.TestCase):
         self.assertEqual(set(doc), {"codex", "corpus", "data", "hypotheses", "lab", "headline_pct", "blockers", "lab_blockers", "notes"})
 
 
+class UtilisationTest(unittest.TestCase):
+    """lab.utilisation: CPU minutes over the wall minutes the owner left, from yield.tsv, runner.log and state.json."""
+
+    NOW = __import__("datetime").datetime(2026, 10, 24, tzinfo=__import__("datetime").timezone.utc).timestamp()
+    LOG = "\n".join([
+        "2026-10-10T00:00:00Z paused: user (input 0s ago)",         # before the window: ignored
+        "2026-10-10T05:00:00Z resuming (was held by: user)",
+        "2026-10-20T10:00:00Z paused: user (input 0s ago)",         # 60 min of owner use
+        "2026-10-20T11:00:00Z resuming (was held by: user)",
+        "2026-10-21T00:00:00Z paused: pause (LAB/PAUSE)",           # 120 min held by another session
+        "2026-10-21T02:00:00Z resuming (was held by: pause)",
+        "2026-10-22T00:00:00Z paused: load (other processes 90% of the CPU over 120s)",  # 30 min: reported, not subtracted
+        "2026-10-22T00:30:00Z resuming (was held by: load)",
+        "2026-10-23T22:00:00Z paused: pause (LAB/PAUSE)",           # still open at the end: 120 min to NOW
+        "2026-10-23T22:00:05Z runner started (trial=None)",         # a restart closes the span ...
+        "2026-10-23T22:00:05Z paused: pause (LAB/PAUSE)",           # ... and the new process reports the same pause: no gap, no double count
+    ]) + "\n"
+    YIELD = "\t".join(["utc", "job", "strategy", "main", "rc", "wall_min", "cpu_min"]) + "\n" + "".join("\t".join(r) + "\n" for r in [
+        ("2026-10-20T09:00:00Z", "j1", "aimed-bugs", "abc", "0", "100.0", "4000.0"),
+        ("2026-10-22T09:00:00Z", "j2", "aimed-bugs", "abc", "0", "50.0", "2000.0"),
+        ("2026-10-23T09:00:00Z", "j3", "random", "abc", "0", "80.0", "1824.0"),
+        ("2026-10-23T10:00:00Z", "j4", "invariants", "abc", "3", "0.0", "NA"),
+        ("2026-10-10T09:00:00Z", "old", "random", "abc", "0", "999.0", "99999.0"),  # outside the 7 days
+    ])
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+        lab = self.tmp / "lab"
+        w(lab / "groups.json", {"groups": [], "main_sha": SHA_A})
+        w(lab / "yield.tsv", self.YIELD)
+        w(lab / "runner.log", self.LOG)
+        w(lab / "state.json", {"counters": {"active_seconds": 60000, "interrupts": {"user": 2}}, "strategy_cpu": {"aimed-bugs": 360000, "random": 109440}})
+        w(lab / "mix.json", {"aimed-bugs": 10, "random": 5, "hypotheses": 5})
+
+    def test_cpu_minutes_over_the_wall_minutes_the_owner_left(self):
+        u = rd.build(self.tmp, now=self.NOW, cores=4)["lab"]["utilisation"]
+        self.assertEqual(u["cpu_min"], 7824.0)  # the old row is outside the window; the NA row counts 0
+        self.assertEqual(u["wall_min"], 10080.0)
+        self.assertEqual(u["owner_min"], 300.0)  # 60 user + 120 pause + 120 pause open to the end; load is not owner time
+        self.assertEqual(u["held_min"], {"load": 30.0, "pause": 240.0, "user": 60.0})
+        self.assertEqual(u["available_wall_min"], 9780.0)
+        self.assertEqual(u["pct"], 20.0)  # 7824 / (9780 * 4 cores)
+        self.assertEqual((u["target_pct"], u["meets_target"], u["cores"]), (90.0, False, 4))
+        self.assertEqual(u["by_strategy"]["aimed-bugs"], {"jobs": 2, "cpu_min": 6000.0, "wall_min": 150.0, "share_pct": 76.7, "pct_of_available": 15.34})
+        self.assertEqual(list(u["by_strategy"]), ["aimed-bugs", "random", "invariants"])
+        self.assertEqual(u["idle_with_weight"], ["hypotheses"])  # weight in mix.json, no CPU in the window
+        self.assertEqual(u["all_time"], {"cpu_min": 7824.0, "active_min": 1000.0, "interrupts": {"user": 2}})
+
+    def test_no_yield_gives_a_null_and_a_note(self):
+        (self.tmp / "lab" / "yield.tsv").unlink()
+        r = rd.build(self.tmp, now=self.NOW, cores=4)
+        self.assertIsNone(r["lab"]["utilisation"])
+        self.assertIn("yield.tsv", r["notes"]["lab_utilisation"])
+
+    def test_render_has_the_utilisation_row(self):
+        text = rd.render(rd.build(self.tmp, now=self.NOW, cores=4))
+        self.assertIn("lab utilisation", text)
+        self.assertIn("20.0% of 4 cores", text)
+
+
 if __name__ == "__main__":
     unittest.main()
