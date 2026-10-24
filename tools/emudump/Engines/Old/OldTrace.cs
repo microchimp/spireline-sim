@@ -114,6 +114,7 @@ static class OldTrace
 
             string mn = m.Name, tn = t.Name;
             if (mn.StartsWith('<')) mn = mn[1..mn.IndexOf('>')];  // a lambda or local function: its method
+            if (ExtractedBody.Is(t, mn)) continue;  // an extracted <Model>_<Hook> body: the origin names the method it came from
             if (tn.StartsWith('<') && t.DeclaringType != null) tn = t.DeclaringType.Name;
             parts.Add(tn + "." + mn);
             if (parts.Count == 2) break;
