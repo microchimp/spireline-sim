@@ -22,7 +22,14 @@ GOLDEN = {"ranked.json": "a129adeb40c1550dadffc2ab16b3e6e40f831f80b5ed166e3a6d91
           "top20.md": "04606dfb7e7ada85e1e09ff0b34b521ace575b6ad0bdf03678f82c8ea1868ab9"}
 
 UP = [[".combat.hand", [card("ASCENDERS_BANE")], [json.dumps(["ASCENDERS_BANE", 1])]]]
-CORPSE = [[".combat.enemy_hp", [0, 66], [66]]]
+CORPSE = [[".combat.enemy_hp", [0, 66], [66]]]  # the referee lists a 0-hp enemy the emulator does not
+EMU_CORPSE = [[".combat.enemy_hp", [66], [0, 66]]]  # the emulator lists a 0-hp enemy the referee does not (the shape of the S2 block)
+LIVING_EXTRA = [[".combat.enemy_hp", [20, 30], [20]]]
+GAP_HAND = hand_diff(["BASH"], ["BASH", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"])  # the emulator holds two cards more
+PLAY = {"type": "play", "kind": "combat", "label": ["play", 0, "HEADBUTT", 1]}
+END = {"type": "end_turn", "kind": "combat", "label": ["end"]}
+POTION = {"type": "potion", "kind": "combat", "label": ["potion", 1, "FORTIFIER", -1]}
+CHOICE = {"type": "choice", "kind": "select_cards", "label": ["HEADBUTT", 0]}
 
 
 def fixture_divs():
@@ -62,7 +69,7 @@ class RuleTableTest(unittest.TestCase):
         self.check(rec(1, 3, [], type="reward", reason="phase:0!=rewards"), "R01", "F10", "reason")
         self.check(rec(1, 3, [], type="rest", reason="screen:map!=rest"), "R02", "F16", "reason")
         self.check(rec(1, 3, RUN_HP, type="reward"), "R03", "F17", "diff")
-        self.check(rec(1, 3, CORPSE), "R04", bf.UNASSIGNED, "none")
+        self.check(rec(1, 3, CORPSE), "R04b", "F10", "shape")
         self.check(rec(1, 3, [[".combat.enemy_hp", [999999999], [32768]]]), "R05", bf.UNASSIGNED)
         self.check(rec(1, 3, HP), "R06", "F08", "diff")
         self.check(rec(1, 3, RUN_HP), "R06", "F08")
@@ -89,6 +96,39 @@ class RuleTableTest(unittest.TestCase):
         self.check(rec(1, 3, [[".potions", ["A"], ["B"]]], type="card_reward_combat"), "R15", "F15")
         self.assertIs(rank.COMBAT_TYPES, bf.COMBAT_TYPES)  # one list for the tag and the family rules
 
+    def test_a_corpse_is_placed_by_the_side_that_holds_it_and_the_step_before(self):
+        a = self.check(rec(1, 3, EMU_CORPSE, type="select_cards_combat", acted=PLAY), "R04a", "F10", "shape")
+        self.assertEqual(("HEADBUTT", "death and victory"), (a["ingredient"], a["coarse"]))
+        self.check(rec(1, 3, EMU_CORPSE, acted=PLAY), "R04a", "F10", "shape")  # at combat too
+        self.check(rec(1, 3, CORPSE, acted=PLAY), "R04b", "F10", "shape")  # the referee side: a removal refusal, whatever the step
+        self.check(rec(1, 3, CORPSE, acted=END), "R04b", "F10", "shape")
+        # not placed: the emulator's corpse after an end turn or with no acted; a living entry more on one side
+        self.check(rec(1, 3, EMU_CORPSE, acted=END), "R04", bf.UNASSIGNED, "none")
+        self.check(rec(1, 3, EMU_CORPSE), "R04", bf.UNASSIGNED, "none")
+        self.check(rec(1, 3, LIVING_EXTRA, acted=PLAY), "R04", bf.UNASSIGNED, "none")
+        self.assertEqual(("emu", "ref", None, None), (bf.corpse_side([66], [0, 66]), bf.corpse_side([0, 66], [66]),
+                                                      bf.corpse_side([20, 30], [20]), bf.corpse_side([66], [66])))
+
+    def test_phase_and_screen_reasons(self):
+        self.check(rec(1, 3, [], type="reward", reason="phase:0!=rewards"), "R01", "F10", "reason")
+        self.check(rec(1, 3, [], type="rest", reason="screen:None!=rest"), "R01", "F10", "reason")  # was R02, run flow
+        self.check(rec(1, 3, [], type="combat", reason="phase:6"), "R01b", "F10", "reason")  # the emulator's player is dead
+        self.check(rec(1, 3, [], type="rest", reason="screen:map!=rest"), "R02", "F16", "reason")
+        self.check(rec(1, 3, [], type="event", reason="event:A!=B"), "R02", "F16", "reason")
+
+    def test_hand_gaps_are_split_by_the_step_before(self):
+        for gap, ids in ((GAP_HAND, ("R12a", "R12b", "R12c", "R12")), (SAME_SIZE + RUN_HP, ("R13a", "R13b", "R13c", "R13"))):
+            a = self.check(rec(1, 3, gap, acted=END), ids[0], "F02-F05", "shape")
+            self.assertEqual(("start- and end-of-turn hooks", None), (a["coarse"], a["ingredient"]))
+            a = self.check(rec(1, 3, gap, acted=PLAY), ids[1], "F06", "shape")
+            self.assertEqual(("card-play hooks", "HEADBUTT"), (a["coarse"], a["ingredient"]))  # the card is the ingredient
+            a = self.check(rec(1, 3, gap, acted=POTION), ids[2], "F14", "shape")
+            self.assertEqual("FORTIFIER", a["ingredient"])
+            self.check(rec(1, 3, gap, acted=CHOICE), ids[3], bf.UNASSIGNED, "none")  # a step the split does not name
+            self.check(rec(1, 3, gap), ids[3], bf.UNASSIGNED, "none")  # a record with no acted
+        self.check(rec(1, 3, SAME_SIZE, acted=END), "R10", "F11", "shape")  # the equal-size and off-by-one rules do not read acted
+        self.check(rec(1, 3, BIGGER, acted=PLAY), "R11", "F11", "shape")
+
     def test_every_rule_has_a_matcher_a_known_family_and_a_reason(self):
         ids = [r[0] for r in bf.RULES]
         self.assertEqual(sorted(set(ids)), sorted(ids))
@@ -97,6 +137,7 @@ class RuleTableTest(unittest.TestCase):
             self.assertTrue(coarse in bf.COARSE or (family == bf.UNASSIGNED and not coarse), rid)
             self.assertIn(evidence, bf.EVIDENCE)
             self.assertTrue(reason and matcher, rid)
+        self.assertEqual(["R01b", "R04a", "R04b", "R12a", "R12b", "R12c", "R13a", "R13b", "R13c"], list(bf.SPLIT_RULES))
 
 
 class TableTest(unittest.TestCase):
@@ -146,15 +187,39 @@ class TableTest(unittest.TestCase):
         t = self.table()
         self.assertEqual([("Gd", "F10", "R01"), ("Ge", "F15", "R14")], [(r["id"], r["family"], r["rule"]) for r in t["single_site"]])
 
+    def test_the_verdict_carries_its_bounds_and_is_undecidable_when_they_straddle(self):
+        self.assertTrue(bf.bounded_verdict(0.80, 1.0).startswith("Tier 1"))
+        self.assertTrue(bf.bounded_verdict(0.30, 0.45).startswith("Tier 2"))
+        self.assertTrue(bf.bounded_verdict(0.55, 0.69).startswith("between"))
+        v = bf.bounded_verdict(0.366, 1.0)  # the review's reading: R04 unassigned
+        self.assertTrue(v.startswith("undecidable"), v)
+        self.assertTrue("36.6%" in v and "100.0%" in v and "50%" in v and "70%" in v, v)
+        v = bf.bounded_verdict(0.60, 1.0)
+        self.assertTrue(v.startswith("undecidable") and "70%" in v and "50%" not in v, v)
+        v = bf.bounded_verdict(0.40, 0.60)
+        self.assertTrue(v.startswith("undecidable") and "50%" in v and "70%" not in v, v)
+        self.assertIn("lower bound 80.0%", bf.bounded_verdict(0.80, 1.0))
+
+    def test_the_table_reports_both_bounds_and_says_undecidable_when_they_straddle(self):
+        s = self.table()["summary"]  # lower 95.7%, upper 100%: one side of both thresholds
+        self.assertEqual((0.9574, 1.0, True), (s["top5_arch_lower_bound"], s["top5_arch_upper_bound"], s["verdict_decided"]))
+        gs = [group("Ga", 30.0, "architectural", "combat", SAME_SIZE), group("Gb", 70.0, "architectural", "combat", SAME_SIZE + RUN_HP)]
+        t = bf.build(None, {"groups": gs})  # Gb has no acted: R13, unassigned
+        s = t["summary"]
+        self.assertEqual((0.3, 1.0, False), (s["top5_arch_lower_bound"], s["top5_arch_upper_bound"], s["verdict_decided"]))
+        self.assertTrue(s["verdict"].startswith("undecidable"))
+        self.assertIn("undecidable", bf.md(t))
+        self.assertIn("between 30.0%", bf.md(t))
+
     def test_a_reading_can_flip_the_verdict(self):
         gs = [group("Ga", 50.0, "architectural", "combat", SAME_SIZE), group("Gb", 40.0, "architectural", "combat", CORPSE),
               group("Gc", 10.0, "architectural", "combat", HP)]
         s = bf.table(bf.parts_from_ranked({"groups": gs}), gs)["summary"]
-        self.assertEqual((0.6, ["F11", "F08"]), (s["top5_arch"]["share_of_arch"], s["top5_arch"]["families"]))
-        self.assertTrue(s["verdict"].startswith("between"))
-        c = s["readings"]["C: a listed corpse is a death hook"]
-        self.assertEqual((1.0, ["F11", "F10", "F08"]), (c["share_of_arch"], c["families"]))
-        self.assertTrue(c["verdict"].startswith("Tier 1"))
+        self.assertEqual((1.0, ["F11", "F10", "F08"]), (s["top5_arch"]["share_of_arch"], s["top5_arch"]["families"]))  # R04b is F10
+        self.assertTrue(s["verdict"].startswith("Tier 1"))
+        c = s["readings"]["C: a listed corpse is the comparer's"]  # without the corpse nothing is known about 40% of the weight
+        self.assertEqual((0.6, 1.0, ["F11", "F08"]), (c["share_of_arch"], c["upper_share_of_arch"], c["families"]))
+        self.assertTrue(c["verdict"].startswith("undecidable"))
 
     def test_empty_input(self):
         t = bf.build(None, rank.rank(Path(tempfile.gettempdir()) / "no-such-score-real-dir"))
@@ -173,7 +238,7 @@ class RecordsTest(unittest.TestCase):
         return self.tmp / "in"
 
     def test_a_group_that_mixes_is_split_by_divergence_and_weights_reconcile(self):
-        f = self.folder([rec(1, 5, CORPSE), rec(2, 5, [[".combat.enemy_hp", [20], [21]]], span=3), rec(3, 5, SAME_SIZE)])
+        f = self.folder([rec(1, 5, LIVING_EXTRA), rec(2, 5, [[".combat.enemy_hp", [20], [21]]], span=3), rec(3, 5, SAME_SIZE)])
         doc = rank.rank(f)
         self.assertEqual(2, len(doc["groups"]))  # the two enemy hp divergences share a group key
         t = bf.build(f, doc)
@@ -192,6 +257,26 @@ class RecordsTest(unittest.TestCase):
         a, b = bf.build(f, doc), bf.build(None, doc)
         self.assertEqual("group samples", b["summary"]["basis"])
         self.assertEqual([(r["family"], r["weight"]) for r in a["families"]], [(r["family"], r["weight"]) for r in b["families"]])
+
+    def test_acted_turn_and_encounter_are_read_from_the_records(self):
+        f = self.folder([rec(1, 5, EMU_CORPSE, type="select_cards_combat", acted=PLAY, turn=2, encounter="SLIMES"),
+                         rec(2, 5, GAP_HAND, acted=END, turn=3, encounter="SLIMES"), rec(3, 5, GAP_HAND, acted=PLAY, turn=5, encounter="NIBBITS"),
+                         rec(4, 5, GAP_HAND, acted=CHOICE, turn=6)])
+        t = bf.build(f, rank.rank(f))
+        rows = {r["rule"]: r for r in t["placed_by_split"]}
+        self.assertEqual({"R04a", "R12a", "R12b"}, set(rows))
+        self.assertEqual(({"HEADBUTT": 1.9}, {"SLIMES": 1.9}, 2), (rows["R04a"]["ingredients"], rows["R04a"]["encounters"], rows["R04a"]["median_turn"]))
+        self.assertEqual(({"select_cards_combat": 1.9}, {"play": 1.9}), (rows["R04a"]["by_type"], rows["R04a"]["by_acted"]))
+        self.assertEqual(({"HEADBUTT": 1.9}, {"NIBBITS": 1.9}, 5), (rows["R12b"]["ingredients"], rows["R12b"]["encounters"], rows["R12b"]["median_turn"]))
+        self.assertEqual(5.7, t["summary"]["split_placed_weight"])
+        self.assertEqual({"shape": 5.7}, t["summary"]["split_placed_by_evidence"])
+        by = {r["family"]: r for r in t["families"]}
+        self.assertEqual({"HEADBUTT": 1.9}, by["F06"]["ingredients"])
+        self.assertEqual({"R12": 1.9}, t["unassigned"]["by_rule"])
+        self.assertEqual([("R12", "choice", "combat", 1.9)], [(r["rule"], r["acted"], r["type"], r["weight"]) for r in t["unassigned"]["by_shape"]])
+        text = bf.md(t)
+        self.assertIn("## Placed by the acted-type splits", text)
+        self.assertIn("HEADBUTT 1.9", text)
 
 
 class RankHookTest(unittest.TestCase):
