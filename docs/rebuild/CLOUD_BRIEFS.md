@@ -10,7 +10,7 @@ game, its decompile, the corpus or any recording, `data/` beyond what the fork h
 inputs are the migration doc, the port list and the fork's own sources, and whose acceptance is unit tests. A LOCAL item needs the
 decompile, the corpus, a trace, the game, the PC's built EmuDump, or coordination with a round in flight (R4 edits the same old files).
 
-**Verdict: separable.** 49 of the 106 reached models (60 of the 150 gate pairs) are CLOUD handler work, in six branches; the five listed repo-only
+**Verdict: separable.** 48 of the 106 reached models (59 of the 150 gate pairs) are CLOUD handler work, in six branches; the five listed repo-only
 nits are CLOUD, in two branches; everything else is LOCAL. The blocking prerequisite H0 (handler access to the state) is done.
 
 ## 0. H0: done (landed with these briefs)
@@ -18,7 +18,7 @@ nits are CLOUD, in two branches; everything else is LOCAL. The blocking prerequi
 Every handler delegate now takes `(HookCtx k, ListenerRef self, in TArgs a, ...)` (`Core2/HookCtx.cs`; the dispatchers pass `rt.Ctx`). Use the
 neutral members (`k.Power(self)` -> `PowerView(Owner, Amount)?`, `k.Owner(self)`) and `Core2/OldState*.cs` helpers; the worked example is
 `src/Sts2Emulator.Tests/Core2/HandlerContextTests.cs` (Strength's additive and Vulnerable's multiplicative damage handlers), and
-`docs/rebuild/MIGRATION_F08.md` section 5 "How to write a handler" is the template. Ask the local session (through the branch's PR text) for any
+`docs/rebuild/MIGRATION_F08.md` section 5 "How to write a handler" is the template. `k.CardOwner(card)` and `k.IsOwnerOrPet(dealer, owner)` (added in the C1 fix round) answer the game's "the card's owner is the power's owner" and "the dealer is the owner or one of its pets" tests. Ask the local session (through the branch's PR text) for any
 accessor a batch needs that `HookCtx` lacks, rather than reaching into old engine internals from `Core2/Models/**`.
 
 ## 1. Handler batches (MIGRATION_F08 section 5): the split
@@ -34,13 +34,13 @@ second wave once the pilot has proven the pattern.
 | power-1 (15) | Strength, Vulnerable, Weak, Thorns, Ravenous, Vigor, Tank, Colossus, Shriek, Flame Barrier (10 models, 10 pairs, `cloud/f08-power-1`) | Shrink (open: AfterDeath and AfterRemoved have no old location); Minion (open pseudo ShouldPowerBeRemovedAfterOwnerDeath); Inferno, Rupture (Core2's `CreatureCmd.Damage` already calls the old player-side body `CardEffects.AfterPlayerDamageReceived`; the handler takes the line over in step with R4); Knockdown (not modelled, nothing to port) |
 | power-2 (15) | Slippery, Buffer, Intangible, Surprise, Possess Speed, Possess Strength, Tainted, Swipe, Gigantification (9 models, 14 pairs, `cloud/f08-power-2`) | Curl Up (its block gain is a `GainBlock` command in section 4's table, F09, not built); The Gambit (the handler must call `Kill([player])`, together with R4's gate at its old inline zeroing); Paper Cuts (needs item 9's `SetMaxHp`/`LoseMaxHp`, not built); Imbalanced, Vital Spark (open); Illusion (ShouldAllowHitting's old location is `CombatEngine.IsPrimaryEnemy`, which R5 left unextracted, and a living Illusion is primary in Core2 only: R3b's known difference) |
 | power-3 (15) | Flutter, Personal Hive, Stock, Asleep, Plow, Crab Rage, Surrounded, Soar (8 models, 11 pairs, `cloud/f08-power-3`) | Slow (open: mechanism B, the fold-mul over SlowAmount, no old location); Hard to Kill (open ModifyDamageCap); Reattach, Slumber, Hex, Dampen, Sandpit (open pseudo AfterRemoved or ShouldPowerBeRemovedAfterOwnerDeath) |
-| power-4 (15) | Infested, Constrict, Heist, Calcify, Accuracy, Sic 'Em, Conqueror (7 models, 8 pairs, `cloud/f08-power-4`) | Adaptable, Steam Eruption, Painful Stabs, Burrowed, Tangled, Ringing (open pseudo pairs); Hang (open); Hardened Shell (its counter `HardenedShellDamageThisTurn` is owned by Core2 in `OldState.Damage.cs`; the handler takes that line over, which edits Core2) |
+| power-4 (15) | Infested, Constrict, Heist, Calcify, Accuracy, Sic 'Em (6 models, 7 pairs, `cloud/f08-power-4`) | Conqueror (ported locally in R4c: Sovereign Blade's one AttackCmd needs it); Adaptable, Steam Eruption, Painful Stabs, Burrowed, Tangled, Ringing (open pseudo pairs); Hang (open); Hardened Shell (its counter `HardenedShellDamageThisTurn` is owned by Core2 in `OldState.Damage.cs`; the handler takes that line over, which edits Core2) |
 | relic-1 (15) | Tungsten Rod, Strike Dummy, Pen Nib, Gremlin Horn, Miniature Cannon, Mystic Lighter, Fake Strike Dummy (7 models, 8 pairs, `cloud/f08-relic-1`) | Self-Forming Clay, Centennial Puzzle, Demon Tongue, Red Skull (same Core2 call of the player-side body as Inferno and Rupture); Beating Remnant (its AfterDamageReceived tally `UnblockedDamageThisTurn` is Core2-owned); Lizard Tail (player-death prevention, coupled to `Kill`, `PlayerIsDead` and R4); Meat on the Bone, Lava Lamp (open) |
 | monster-1 (15), monster-2 (7) | none | All 22 monsters: every pair is open (no old location; 19 + 8 pairs, most pseudo-hooks `BeforeRemovedFromRoom`/`Died`, the rest AfterDeath, AfterCurrentHpChanged, BeforeDeath of the Decimillipede segments, Crusher, Rocket, Vantom, Aeonglass, Soul Fysh, Kin Priest, The Insatiable, Waterfall Giant, Lagavulin Matriarch, Test Subject, Queen); the bodies sit in `EndTurn`, `ExecuteIntent` and the factories and are read from the decompile; Opus |
 | potion-1 | none | Fairy in a Bottle: AfterPreventingDeath open; ShouldDie's location is the slot lookup `PlayerIsDead` and `IsAboutToLose` share (R5 left it) |
 
-Pair arithmetic against the gate (150 pairs without a handler): 60 CLOUD (pilot 9, power-1 10, power-2 14, power-3 11, power-4 8, relic-1 8),
-41 registered pairs of LOCAL models, 49 open pairs (22 hook pairs, 27 pseudo-hook pairs; no old location, each is read in its batch). Five
+Pair arithmetic against the gate (150 pairs without a handler): 59 CLOUD (pilot 9, power-1 10, power-2 14, power-3 11, power-4 7, relic-1 8),
+42 registered pairs of LOCAL models, 49 open pairs (22 hook pairs, 27 pseudo-hook pairs; no old location, each is read in its batch). Five
 not-modelled pairs need no handler.
 
 ## 2. Everything else (MIGRATION_F08 sections 3, 7; TIER1 section 7; PLAN P0)
@@ -66,40 +66,60 @@ proves the pattern and is the only batch that restructures `Registry.cs`; the ot
 `migrated_families.json` and `Switches.g.cs` stay as they are, so the handlers are inert in every engine run and live only in unit tests
 (R7 flips the switch). No game text, no decompiled text in code, comments or the PR: identifiers (model ids, hook names, our function names).
 
-**Files.** New: `src/Sts2Emulator/Core2/Models/<Kind>/<GameClass>.cs` (`Power`, `Relic`, `Card`; one static class per model implementing
-`IMigratedModel`, TIER1 section 4), and the batch's test file `src/Sts2Emulator.Tests/Core2/Models/<Batch>Tests.cs`. Edited: `Core2/Models/Registry.cs`
-only (the pilot turns `All` into one block per batch; later branches append their block, and the local session resolves the textual
-conflict by keeping every block). **Nothing else**: not `src/Sts2Emulator/Core/` (the old engine: any edit can move the lines `sites.json` and the port list
-record, change the file hashes of the split records, and needs the byte proof), not `Core2/Commands/`, not generated files, not `tools/kernel/*`, not `hook_families.json`.
-`git diff --stat main...HEAD` must show exactly those.
+**Files.** The house layout is the one the rebuild branches (`rebuild/f08-*`, about 50 models) already use. New: one file per model,
+`src/Sts2Emulator/Core2/Models/<Kind>/<GameClass>.cs` with the **plural** folder `Powers`, `Relics`, `Cards`, `Monsters` or `Potions`, namespace
+`Sts2Emulator.Core2.Models.<Kind>` (`Powers`, `Relics`, ...), holding `internal static class <GameClass>` with `public static void Register(HandlerTable t)`
+(TIER1 section 4; no `IMigratedModel`, which a static class cannot implement; `Registry.cs` lists the method group), and the batch's test file
+`src/Sts2Emulator.Tests/Core2/Models/<Batch>Tests.cs`. Edited: `Core2/Models/Registry.cs` only. The pilot made it one **named block per batch** (a
+`public static readonly IReadOnlyList<Action<HandlerTable>>` such as `Pilot`) with `All` spreading the blocks (`.. Pilot,`). A batch adds its block named as
+the table below says (`Power1`, `Power2`, `Power3`, `Power4`, `Relic1`; the local batches are `Monsters`, `L1`, `L2`) and appends one `.. <Block>,` line to `All`;
+the local session resolves a textual conflict between two batches by keeping every block. Never put a model in `All` outside a block. **Nothing else**: not
+`src/Sts2Emulator/Core/` (the old engine: any edit can move the lines `sites.json` and the port list record, change the file hashes of the split records, and
+needs the byte proof), not `Core2/Commands/`, not generated files, not `tools/kernel/*`, not `hook_families.json`, not `ModelTestKit.cs` unless a member is
+missing (then add it in its own commit, as a pure addition, and say so in the PR; never copy the kit). `git diff --stat main...HEAD` must show exactly the
+model files, the test file, `Registry.cs`.
 
 **Shape of a model class.** `Register(HandlerTable t)` does `t.Model(ListenerKind.<Kind>, "<GameClass>").On(HookId.<Hook>, <handler>)` per pair. The
 game class name is the key in `data/id_map.json` for the row's model id (`power:STRENGTH_POWER` to its `powers` entry; add `power_aliases.json`
-if `OldModelIds.Resolve` throws). One method per game override, named like the override, with a doc comment `game: <Class>.<Method>`.
+if `OldModelIds.Resolve` throws). The class is `internal static` and named by the game class, so `Registry` lists `<GameClass>.Register`. One `internal static`
+method per game override, named like the override, with a doc comment `game: <Class>.<Method>` (class and method by name, never the game's code).
 The HookId is the row's hook, exactly: Early and Late passes are their own ids (`ModifyHpLostAfterOstyLate`, `ModifyHpLostBeforeOstyLate`,
 `ShouldDieLate`); the delegate type is the one the pass op in the `Hooks.g.cs` doc comment of that hook implies (fold-add and fold-mul
 `HookFold<ModifyDamageArgs, decimal>` returning the addend or factor, cap `HookCap`, events `HookEvent` returning `HookStep.Done`, `Should*`
-`HookPredicate`). Values stay `decimal`; the cast is the damage command's. The handler calls the old function the row names, with
+`HookPredicate`). Values stay `decimal`; the cast is the damage command's. The handler reads the combat only through its `HookCtx`; the game's own
+tests have members: `c.Power(self)`, `c.Card(handle)`, `c.CardOwner(handle)` (the card's owner), `c.IsOwnerOrPet(dealer, owner)` (the game's `dealer == Owner ||
+Owner.Pets.Contains(dealer)`). Read each override for which of these tests it makes: an override that tests the dealer, one that tests the card's owner and one that tests the
+pet case are three different handlers. The handler calls the old function the row names, with
 the **condition the old call site has**: R5 left the `if` at the call site and put what was inside it in the function, so read the call
 site (its line is in the row) and put the same condition in the handler. Where the row names a function whose name differs from its hook
 (Slippery's AfterDamageReceived row names `Slippery_AfterModifyingHpLostAfterOsty`) or two locations, register the row's hook, call what the
-row names, and say so in the PR. Order among listeners of one pass is the dispatcher's (K2), not the handler's.
+row names, and say so in the PR. Order among listeners of one pass is the dispatcher's (K2), not the handler's. Where the old site and the game differ (a
+name test against a tag test, a missing pet case), the handler follows the old function, the comment says the game's rule, and the PR lists it for
+`MIGRATION_F08.md`'s R7 checks list; where the old site has no such condition at all the handler follows the game.
 
 **Stop rules (report, do not fix).** If the named function is missing, `private`, still inline in a shared site, or its signature does not fit
 the handler's arguments, skip that model and list it in the PR: extraction and visibility are old-engine edits and need the byte proof. If a
 body deals damage, loses HP or kills (Thorns and Flame Barrier retaliate; read every other body for it),
 call it as it is and list it as a **re-entry** in the PR (R4's hybrid audit gates the old entry; MIGRATION_F08 section 8); do not gate it.
 
-**Tests (all must pass).** `dotnet test src/Sts2Emulator.Tests` green, the count the branch point's plus the new tests. Per model, in the batch's test
-file, with the F08+F10 test switch (`new Kernel(new KernelOptions([Switch.F08, Switch.F10]), () => Ids, [Registry...])`, as `KillCommandTests` builds
-it): (1) every pair of the model is in `HandlerTable.Registered()` for the row's hook and none is a `[StubHandler]`; (2) behaviour: dispatch the
+**Tests (all must pass).** `dotnet test src/Sts2Emulator.Tests` green, the count the branch point's plus the new tests. The tests use `ModelTestKit`
+(`src/Sts2Emulator.Tests/Core2/Models/ModelTestKit.cs`; the pilot's `PilotTests.cs` and `ModelTestKitTests.cs` show every member in use) and do not copy it: `Combat(hp...)`
+and `WithOsty(s)` (Osty is creature 1 and the enemies move up), `Hold` (a relic), `Add` (a card in a pile), `GivePower` (a player- or enemy-owned power holder), `Holders` (the
+N-holder setup), `Dying(k, enemy)` (a creature at 0 HP, marked dying, still listed: the state a death override sees), `Kernel`, `Without` (the delete-mutant), `Table`, `Pairs`,
+`AssertRegistered`, `AssertAbsent`, the listener makers `Power`, `Relic`, `Card`, and the argument builders `Attack`, `HpLoss`, `AfterDeathOf`, `BeforeDeathOf`, `ShouldDieOf`, with `Hit`
+for a whole `CreatureCmd.Damage`. Per model, in the batch's test file, with the F08+F10 test switch (the kit's `DamageOnly`, bound as `KillCommandTests` binds it):
+(1) every pair of the model is in `HandlerTable.Registered()` for the row's hook and none is a `[StubHandler]`; (2) behaviour: dispatch the
 hook through `Hooks.<Dispatcher>(k, args)` (or `CreatureCmd.Damage` for the damage and HP-loss folds) on a combat that holds the model, and the result and
 the `changed` set equal what the old function returns for the same state when called directly; (3) delete-mutant: the same dispatch with
-the model's registration left out gives the no-handler value and a different result, so deleting the handler fails the test; (4) with F08
-off the model's pairs are absent from the table. The batch also has one table test: the (model, hook) set of `Registry.All` for the
-batch equals the batch's pair list written out in the test (identifiers only), which stands in for `EmuDump kernel-handlers` and
+the model's registration left out (`Without(Registry.<Block>, <Class>.Register)`) gives the no-handler value and a different result, so deleting the handler fails the test. A pair whose
+override only presents (a flash, a sound, an animation) has no state to differ: say so in the test, with the reason, and do not fake a mutant (The Boot's
+`AfterModifyingHpLostAfterOsty` is the example); (4) with F08 off the model's pairs are absent from the table; (5) the N-holder test: where the model can be
+held by two creatures (or two copies) in one combat, build it with `Holders` (or `GivePower` twice, `Hold` twice, `Add` twice) and show that a dispatch about one creature
+changes that holder's listener and no other, and counts once. The death hooks (`AfterDeath`, `BeforeDeath`, `ShouldDie`) are tested with the kit's
+builders, and a handler that reads the dying creature inside `Dying`. The batch also has one table test: the (model, hook) set of the batch's `Registry` block
+equals the batch's pair list written out in the test (identifiers only), which stands in for `EmuDump kernel-handlers` and
 `python -m tools.kernel.port_list --gate --families F08 F10` (these need the manifest, the decompile and a built EmuDump, so they are local; run
-`EmuDump kernel-handlers out.json` only if EmuDump builds in the cloud). Also run `python -m tools.kernel.gen_hooks --check` and
+`EmuDump kernel-handlers out.json` only if EmuDump builds in the cloud), plus one test that `Registry.All` holds the block. Also run `python -m tools.kernel.gen_hooks --check` and
 `python -m tools.kernel.sites check` (0 problems: the sites' lines and the split-record hashes are intact, so no old file changed).
 
 **What the local gate checks after, for every handler branch.** `git diff --stat` is only the files above; `python -m tools.kernel.port_list
@@ -109,7 +129,8 @@ proof in all 11 modes over the corpus, `old` against `--b-args "--engine core2"`
 review of each handler's shape (pass and delegate, early or late, the condition, `decimal` against int, the amount and where the game truncates) and
 of the effect against the game's override, not against the old engine; `fuzz_core2.py --switches F08,F10 --fights 300` (informative only once
 R4's reroutes land: until then Core2's commands are called from no old site, so the handlers run in unit tests alone and the decompile review is the
-substantive gate). A branch is landed commit by commit, rejecting only the commit that breaks a gate. The PC runs nothing in the quiet window
+substantive gate). A branch is landed commit by commit, rejecting only the commit that breaks a gate. **D26:** each gate rejection of a cloud commit is exported as an expected-failure scenario under `tests/scenarios` (C8's setters will express block and enemy HP), so the cloud sees
+the corpus signal as a unit test; a branch that meets one fixes the commit, not the scenario. The PC runs nothing in the quiet window
 2026-10-24 10:00Z-11:45Z.
 
 ### C1 pilot: `cloud/f08-pilot` (8 models, 9 pairs)
@@ -120,11 +141,12 @@ Inputs: the port list rows power-5, relic-2, card-1 and MIGRATION_F08 sections 3
 `RelicEffects.VitruvianMinion_ModifyDamageMultiplicative`, `RelicEffects.BootDamageFloor` (The Boot, two pairs:
 AfterModifyingHpLostAfterOsty and ModifyHpLostAfterOstyLate), `CardEffects.CheapenMelancholyForDeath` (Melancholy, AfterDeath event), and Hand Drill's
 AfterDamageGiven, whose old location is the shared `RelicEffects.ApplyAfterBlockBroken` (no `HandDrill_*` function exists: if the body is inline with
-other relics' bodies, apply the stop rule and leave Hand Drill out). Files: the eight classes (`Core2/Models/Power/{PhantomBladesPower,
-LethalityPower, TrackingPower, DoubleDamagePower}.cs` by the game class names in `id_map.json`, `Core2/Models/Relic/{HandDrill, TheBoot,
-VitruvianMinion}.cs`, `Core2/Models/Card/Melancholy.cs`), `Registry.cs` restructured to one block per batch, `src/Sts2Emulator.Tests/Core2/Models/PilotTests.cs`. The pilot's first duty is the pattern: one folder layout, one test helper
-(`ModelTestKit`: build a combat holding a power, relic or card, bind a kernel with the test switch, dispatch) that the five later batches reuse
-unchanged. Tests and local gate: as the shared rules; the pilot's gate also reviews the test helper and the `Registry.cs` layout before the others start.
+other relics' bodies, apply the stop rule and leave Hand Drill out). Files (landed layout, the pattern C2-C6 follow exactly): the eight classes `Core2/Models/Powers/{PhantomBladesPower, LethalityPower, TrackingPower,
+DoubleDamagePower}.cs`, `Core2/Models/Relics/{HandDrill, TheBoot, VitruvianMinion}.cs`, `Core2/Models/Cards/Melancholy.cs` (each `internal static class` by the game class name
+with `public static void Register(HandlerTable t)`), `Registry.cs` as one named block per batch (`Pilot`) with `All` spreading the blocks, `src/Sts2Emulator.Tests/Core2/Models/PilotTests.cs`,
+and the shared `ModelTestKit.cs` with its `ModelTestKitTests.cs`. The pilot's first duty was the pattern: one folder layout, one test kit (build a combat holding a power, relic or
+card, bind a kernel with the test switch, dispatch; death-hook builders, `Dying`, holders, Osty) that the five later batches reuse unchanged. Tests and local gate: as the shared
+rules; the pilot's gate also reviews the kit and the `Registry.cs` layout before the others start.
 
 ### C2: `cloud/f08-power-1` (10 models, 10 pairs)
 
@@ -133,8 +155,9 @@ Inputs: port-list rows power-1. Old functions: `BuffSystem.Strength_ModifyDamage
 fold: the handler ports the one fold, not both), `Tank_ModifyDamageMultiplicative`; `EnemyAI.Colossus_ModifyDamageMultiplicative`;
 `CombatEngine.Ravenous_AfterDeath` (AfterDeath event); Thorns' BeforeDamageReceived: `CardEffects.TriggerEnemyThorns` (enemy-owned) and
 `EnemyAI.ApplyPlayerThorns` (player-owned), one handler choosing by the owner's side as the two call sites do (re-entry: retaliation damage);
-`EnemyAI.TriggerShriekIfWounded` (Shriek, AfterDamageReceived); `EnemyAI.ApplyPlayerFlameBarrier` (Flame Barrier, AfterDamageReceived; re-entry). Files:
-ten classes under `Core2/Models/Power/`, `Registry.cs` (one block), `src/Sts2Emulator.Tests/Core2/Models/PowerOneTests.cs`. Tests: shared rules, plus the
+`EnemyAI.TriggerShriekIfWounded` (Shriek, AfterDamageReceived); `EnemyAI.ApplyPlayerFlameBarrier` (Flame Barrier, AfterDamageReceived; re-entry). Files: ten classes under `Core2/Models/Powers/` (namespace `Sts2Emulator.Core2.Models.Powers`, `internal static class <GameClass>`), the `Power1` block in `Registry.cs` (and `.. Power1,` in `All`),
+`src/Sts2Emulator.Tests/Core2/Models/PowerOneTests.cs`. Strength, Vigor, Weak, Vulnerable, Tank and Colossus test the dealer: read each override for the pet case and use `c.IsOwnerOrPet`
+where the game has it. Tests: shared rules, plus the
 integer-versus-decimal check for the damage folds (a handler returns the addend or the factor as a `decimal`; the one cast to int stays in `CreatureCmd.Damage`). Local gate: the shared
 list, and the review reads Thorns' and Flame Barrier's re-entry against R4's audit list. Excluded and why: section 1.
 
@@ -145,7 +168,8 @@ Slippery's registered hooks are AfterDamageReceived and ModifyHpLostAfterOsty), 
 `BuffSystem.CapIncomingDamage` and `CapHpLoss` (Intangible: ModifyDamageCap, ModifyHpLostAfterOsty, AfterModifyingHpLostAfterOsty; its AfterModifyingDamageAmount is not
 modelled), `CombatEngine.Surprise_AfterDeath` and `Surprise_ShouldStopCombatFromEnding`, `PossessSpeed_AfterDeath`, `PossessStrength_AfterDeath`,
 `BuffSystem.Tainted_ModifyDamageAdditive`, `CombatEngine.Swipe_BeforeDeath`, `CardEffects.Gigantification_ModifyDamageMultiplicative`. Files: nine classes
-under `Core2/Models/Power/`, `Registry.cs` block, `PowerTwoTests.cs`. Tests: shared rules; Intangible's cap handler returns a `HookCap` (the pass keeps the
+under `Core2/Models/Powers/`, the `Power2` block in `Registry.cs`, `PowerTwoTests.cs`; the death hooks (Surprise, Possess Speed, Possess Strength, Swipe) use `AfterDeathOf`,
+`BeforeDeathOf`, `ShouldDieOf` and `Dying`. Tests: shared rules; Intangible's cap handler returns a `HookCap` (the pass keeps the
 running minimum); `Surprise_ShouldStopCombatFromEnding` is also exercised through `CombatEnd` (R3b's boundary check) to show the held fight stays open, which
 closes one of R3b's known differences for Surprise. Local gate: the shared list, plus the decompile review of the Intangible cap and the HP-loss passes against R2's
 fold tests.
@@ -156,16 +180,15 @@ Inputs: rows power-3. Old functions: `BuffSystem.Flutter_ModifyDamageMultiplicat
 `CombatEngine.TryRespawnAxebot` (Stock, AfterDeath) and `Stock_ShouldStopCombatFromEnding`, `EnemyAI.WakeMatriarchIfStruck` (Asleep; the same function serves the LOCAL Lagavulin
 Matriarch, so the handler passes the Asleep case only), `EnemyAI.TriggerPlowIfWounded`, `CombatEngine.TryEnrageCrabPartner` (Crab Rage), `BuffSystem.Surrounded_ModifyDamageMultiplicative`
 with `CombatEngine.FacePast` and `TurnPlayerToFaceSurvivor` (Surrounded, AfterDeath), `BuffSystem.Soar_ModifyDamageMultiplicative`. Files: eight classes under
-`Core2/Models/Power/`, `Registry.cs` block, `PowerThreeTests.cs`. Tests: shared rules; Stock's AfterDeath keeps the corpse rule of R3a (`AxebotDeathStrips`: the kernel keeps Stock
+`Core2/Models/Powers/`, the `Power3` block in `Registry.cs`, `PowerThreeTests.cs`; the death hooks use the kit's builders and `Dying`, and Stock, Asleep and Crab Rage run the N-holder test. Tests: shared rules; Stock's AfterDeath keeps the corpse rule of R3a (`AxebotDeathStrips`: the kernel keeps Stock
 for `TryRespawnAxebot`), so the test runs it through `CreatureCmd.Kill` with an Axebot-shaped combat as `KillCommandTests` does. Read the `Surrounded_ModifyDamageMultiplicative`
 body, not its doc comment (the comment says the caller keeps the condition; C9). Local gate: the shared list; the review checks Stock's respawn HP writes against R4's list.
 
-### C5: `cloud/f08-power-4` (7 models, 8 pairs)
+### C5: `cloud/f08-power-4` (6 models, 7 pairs)
 
 Inputs: rows power-4. Old functions: `CombatEngine.Infested_AfterDeath` and `Infested_ShouldStopCombatFromEnding`, `Constrict_AfterDeath`, `Heist_BeforeDeath`
-(with `SpawnGremlinMercReinforcements` at its second location), `CardEffects.Calcify_ModifyDamageAdditive`, `Accuracy_ModifyDamageAdditive`, `SicEm_AfterDamageGiven`,
-`CardEffects.ConqueredDamage` (Conqueror, ModifyDamageMultiplicative; an own function, not a `<Model>_<Hook>` one). Files: seven classes under `Core2/Models/Power/`,
-`Registry.cs` block, `PowerFourTests.cs`. Tests: shared rules; `Infested_ShouldStopCombatFromEnding` through `CombatEnd` as in C3. Local gate: the shared list; the review
+(with `SpawnGremlinMercReinforcements` at its second location), `CardEffects.Calcify_ModifyDamageAdditive`, `Accuracy_ModifyDamageAdditive`, `SicEm_AfterDamageGiven`. Conqueror is not in this batch (LOCAL, round R4c). Files: six classes under `Core2/Models/Powers/`,
+the `Power4` block in `Registry.cs`, `PowerFourTests.cs`; the death hooks use the kit's builders and `Dying`. Tests: shared rules; `Infested_ShouldStopCombatFromEnding` through `CombatEnd` as in C3. Local gate: the shared list; the review
 reads Heist's BeforeDeath spawn against the kill sequence (step 4) and Constrict's AfterDeath against the dying-window mark.
 
 ### C6: `cloud/f08-relic-1` (7 models, 8 pairs)
@@ -174,7 +197,8 @@ Inputs: rows relic-1. Old functions: `RelicEffects.TungstenRod_ModifyHpLostAfter
 `RunNonCombatEffects.LoseHp`, is run-level HP loss outside the combat code, which R5 left: the handler covers the combat location only), `StrikeDummy_ModifyDamageAdditive`,
 `FakeStrikeDummy_ModifyDamageAdditive`, `PenNib_ModifyDamageMultiplicative`, `MiniatureCannon_ModifyDamageAdditive`, `RelicEffects.EnchantedCardDamageBonus` (Mystic Lighter,
 ModifyDamageAdditive; compare the named step `EnchantAdd` in `Core2/Steps.cs` so the enchantment bonus is not applied twice), `CombatEngine.GremlinHorn_AfterDeath`. Files: seven
-classes under `Core2/Models/Relic/`, `Registry.cs` block, `RelicOneTests.cs`. Tests: shared rules; Tungsten Rod's pair is exercised through `CreatureCmd.Damage` (the fold after
+classes under `Core2/Models/Relics/` (namespace `Sts2Emulator.Core2.Models.Relics`), the `Relic1` block in `Registry.cs`, `RelicOneTests.cs`; Gremlin Horn's AfterDeath uses `AfterDeathOf`
+and `Dying`. Tests: shared rules; Tungsten Rod's pair is exercised through `CreatureCmd.Damage` (the fold after
 Osty, with the truncation at the HP loss). Local gate: the shared list; the review checks Mystic Lighter against `EnchantAdd` (shape) and the Tungsten Rod floor against the game.
 
 ## 4. Repo-only cleanups (CLOUD, one branch each, tests only)
