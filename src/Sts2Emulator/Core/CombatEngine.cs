@@ -5765,25 +5765,130 @@ public static class CombatEngine
         }
     }
 
+    /// <summary>
+    /// `Bolas.BeforeHandDraw` (`ThrummingHatchet.BeforeHandDraw` has the same body): a card that
+    /// finished a play last turn moves ITSELF to the hand, once, from whichever pile holds it, and
+    /// does nothing when it is already there. So each note of <c>ReturnToHandBeforeDraw</c> returns
+    /// the one card it names, as the pile holds it now; a note whose card is in the hand, or in no
+    /// pile, returns nothing. Nothing is ever created here.
+    /// </summary>
     private static void ReturnQueuedCardsToHandBeforeDraw(CombatState state)
     {
-        foreach (var card in state.ReturnToHandBeforeDraw)
+        if (state.ReturnToHandBeforeDraw.Count == 0)
         {
-            int uid = RemoveFirstMatchingCard(state.DiscardPile, card);
-            int drawn = state.DrawPile.FindIndex(pileCard => pileCard.DefId == card.DefId && pileCard.Upgraded == card.Upgraded);
-            if (drawn >= 0)
+            return;
+        }
+
+        var returning = TakeQueuedReturns(
+            state,
+            state.DrawPile,
+            state.DiscardPile,
+            state.ExhaustPile,
+            state.RemoveFromDrawPileAt
+        );
+        foreach (var card in returning)
+        {
+            state.Hand.Add(card with { FreeThisTurn = false });
+        }
+
+        state.ReturnToHandBeforeDraw.Clear();
+    }
+
+    /// <summary>
+    /// The cards <c>ReturnToHandBeforeDraw</c> will put in the hand at the start of the next turn, in
+    /// the order they will arrive, for the next-hand display (<see cref="CombatObservation" />): the
+    /// rule of <see cref="ReturnQueuedCardsToHandBeforeDraw" />, worked on copies of the piles.
+    /// </summary>
+    internal static IReadOnlyList<CardInstance> PeekQueuedReturns(CombatState state)
+    {
+        if (state.ReturnToHandBeforeDraw.Count == 0)
+        {
+            return Array.Empty<CardInstance>();
+        }
+
+        var draw = new List<CardInstance>(state.DrawPile);
+        return TakeQueuedReturns(
+            state,
+            draw,
+            new List<CardInstance>(state.DiscardPile),
+            new List<CardInstance>(state.ExhaustPile),
+            index =>
             {
-                int fromDraw = state.RemoveFromDrawPileAt(drawn).UidOf();
-                uid = uid != 0 ? uid : fromDraw;
+                var card = draw[index];
+                draw.RemoveAt(index);
+                return card;
+            }
+        );
+    }
+
+    /// <summary>
+    /// Takes the card of each note of <c>ReturnToHandBeforeDraw</c> out of the given piles, in note
+    /// order. A note with a uid names its card: a second note for the same card, and a card already
+    /// in the hand, return nothing. A note without one (read from a document, or a hand-built state)
+    /// names the first card of its value, in the discard, then the draw, then the exhaust pile. One
+    /// card per note, and a card no pile holds is not made.
+    /// </summary>
+    private static List<CardInstance> TakeQueuedReturns(
+        CombatState state,
+        List<CardInstance> draw,
+        List<CardInstance> discard,
+        List<CardInstance> exhaust,
+        Func<int, CardInstance> takeFromDraw
+    )
+    {
+        var returning = new List<CardInstance>();
+        HashSet<int>? handled = null;
+        foreach (var note in state.ReturnToHandBeforeDraw)
+        {
+            int uid = note.UidOf();
+            if (uid != 0)
+            {
+                handled ??= [];
+                if (!handled.Add(uid) || state.Hand.Exists(card => card.UidOf() == uid))
+                {
+                    continue;
+                }
             }
 
-            int exhausted = RemoveFirstMatchingCard(state.ExhaustPile, card);
-            // The card that comes back is the one taken out of the piles: it keeps that card's uid. When no
-            // pile held it (it was drawn back already), the hand gains a card it did not have: a new one.
-            uid = uid != 0 ? uid : exhausted != 0 ? exhausted : state.NewCardUid();
-            state.Hand.Add(card.WithUid(uid) with { FreeThisTurn = false });
+            bool Names(CardInstance card) =>
+                uid != 0
+                    ? card.UidOf() == uid
+                    : card.DefId == note.DefId && card.Upgraded == note.Upgraded;
+
+            int index;
+            if ((index = discard.FindIndex(Names)) >= 0)
+            {
+                returning.Add(discard[index]);
+                discard.RemoveAt(index);
+            }
+            else if ((index = draw.FindIndex(Names)) >= 0)
+            {
+                returning.Add(takeFromDraw(index));
+            }
+            else if ((index = exhaust.FindIndex(Names)) >= 0)
+            {
+                returning.Add(exhaust[index]);
+                exhaust.RemoveAt(index);
+            }
         }
-        state.ReturnToHandBeforeDraw.Clear();
+
+        return returning;
+    }
+
+    /// <summary>
+    /// Queues <paramref name="card" /> to return to the hand at the start of the next turn
+    /// (<see cref="ReturnQueuedCardsToHandBeforeDraw" />). `Bolas.BeforeHandDraw` asks whether
+    /// THIS card finished any play last turn, so a card played twice in a turn is queued once.
+    /// </summary>
+    internal static void QueueReturnToHandBeforeDraw(CombatState state, CardInstance card)
+    {
+        int uid = card.UidOf();
+        if (uid != 0 && state.ReturnToHandBeforeDraw.Exists(note => note.UidOf() == uid))
+        {
+            return;
+        }
+
+        state.ReturnToHandBeforeDraw.Add(card with { FreeThisTurn = false });
     }
 
     /// <summary>
@@ -6099,7 +6204,7 @@ public static class CombatEngine
     {
         if (card.DefId == Effects.CL.Bolas)
         {
-            state.ReturnToHandBeforeDraw.Add(card with { FreeThisTurn = false });
+            QueueReturnToHandBeforeDraw(state, card);
         }
     }
 

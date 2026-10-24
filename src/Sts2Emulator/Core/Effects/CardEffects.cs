@@ -236,8 +236,9 @@ public static class CardEffects
                 }
 
                 // BeforeHandDraw puts it back in hand next turn if it was played this
-                // one, which is the queue Feral already uses.
-                state.ReturnToHandBeforeDraw.Add(card with { FreeThisTurn = false });
+                // one, which is the queue Bolas uses: one note per CARD, however many
+                // times it was played.
+                CombatEngine.QueueReturnToHandBeforeDraw(state, card);
 
                 break;
             }
