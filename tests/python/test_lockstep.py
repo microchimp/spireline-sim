@@ -1089,6 +1089,120 @@ class RecordContextTests(unittest.TestCase):
         self.assertEqual(lockstep.act_type("map", [3, 1, "Monster"]), "choice")
 
 
+class ProbeEmu(FakeEmu):
+    """A side that answers the lone-End-Turn probe (EmuLock.probe) with a script."""
+
+    def probe(self):
+        return {"emu_energy": 3, "emu_legal": ["play:BASH", "end", "potion:FIRE_POTION"], "emu_potions": ["FIRE_POTION"],
+                "emu_selection": False}
+
+
+class LoneEndTurnProbeTests(unittest.TestCase):
+    """B7: a divergence record says what both sides could do at the decision (energy, potions, legal actions), so a record
+    where the two stand on different sides of a lone End Turn can be told from a card effect."""
+
+    PROBE_KEYS = ("emu_energy", "emu_legal", "emu_potions", "emu_selection")
+
+    def combat(self, energy=2):
+        o = obs(combat=True)
+        o["potions"] = [None, "FIRE_POTION"]
+        o["combat"].update({"round": 4, "player": {"hp": 70, "energy": energy}, "hand": [["BASH", 0, 2, True], ["DEFEND_IRONCLAD", 0, 1, False]]})
+        return o
+
+    def test_a_record_carries_both_sides_energy_potions_and_legal_actions(self):
+        ls = lockstep.Lockstep(ProbeEmu([view_of(obs(hp=70, combat=True))]), lambda m_: 0)
+        ls.decide(msg("combat", self.combat(energy=2)))
+        rec = ls.log.records[0]
+        self.assertEqual((rec["emu_energy"], rec["emu_legal"], rec["emu_potions"], rec["emu_selection"]),
+                         (3, ["play:BASH", "end", "potion:FIRE_POTION"], ["FIRE_POTION"], False))
+        self.assertEqual((rec["ref_energy"], rec["ref_potions"], rec["ref_hand_cost"]),
+                         (2, ["FIRE_POTION"], [["BASH", 2, True], ["DEFEND_IRONCLAD", 1, False]]))
+
+    def test_a_record_also_carries_the_referee_energy_and_costs_of_the_decision_before(self):
+        first, second = self.combat(energy=3), self.combat(energy=0)
+        first["combat"]["hand"] = [["BASH", 0, 2, True], ["DEFEND_IRONCLAD", 0, 1, True]]
+        emu = ProbeEmu([view_of(first), view_of(obs(hp=70, combat=True))])
+        ls = lockstep.Lockstep(emu, lambda m_: 0)
+        ls.decide(msg("combat", first))  # in step with the referee: no record
+        ls.decide(msg("combat", second))
+        rec = ls.log.records[0]
+        self.assertEqual((rec["prev_ref_energy"], rec["prev_ref_hand_cost"]), (3, [["BASH", 2, True], ["DEFEND_IRONCLAD", 1, True]]))
+        self.assertEqual(rec["ref_energy"], 0)
+        # not across a fight boundary: a first decision of a fight has no decision before it
+        ls = lockstep.Lockstep(ProbeEmu([view_of(obs(hp=70, combat=True))]), lambda m_: 0)
+        ls.decide(msg("combat", self.combat()))
+        self.assertNotIn("prev_ref_energy", ls.log.records[0])
+
+    def test_a_side_without_a_probe_adds_only_the_referee_fields_and_a_failing_probe_costs_no_record(self):
+        ls = lockstep.Lockstep(FakeEmu([view_of(obs(hp=70, combat=True))]), lambda m_: 0)
+        ls.decide(msg("combat", self.combat()))
+        rec = ls.log.records[0]
+        self.assertEqual(rec["ref_energy"], 2)
+        self.assertFalse([k for k in self.PROBE_KEYS if k in rec])
+
+        class Broken(FakeEmu):
+            def probe(self):
+                raise RuntimeError("no native")
+
+        ls = lockstep.Lockstep(Broken([view_of(obs(hp=70, combat=True))]), lambda m_: 0)
+        ls.decide(msg("combat", self.combat()))
+        self.assertEqual(ls.log.records[0]["emu_probe_error"], "RuntimeError")
+
+    def test_a_record_outside_a_fight_has_no_energy_but_the_belt(self):
+        o = obs(hp=80)
+        o["potions"] = ["FIRE_POTION"]
+        ls = lockstep.Lockstep(ProbeEmu([view_of(obs(hp=70))]), lambda m_: 0)
+        ls.decide(msg("rest", o))
+        rec = ls.log.records[0]
+        self.assertEqual(rec["ref_potions"], ["FIRE_POTION"])
+        self.assertNotIn("ref_energy", rec)
+
+    def test_a_lost_step_and_a_search_failure_carry_the_probe_too(self):
+        class Refuses(ProbeEmu):
+            def apply(self, kind, labels, idx):
+                return "no_such_option"
+
+        ls = lockstep.Lockstep(Refuses([view_of(self.combat())]), lambda m_: 0)
+        ls.decide(msg("combat", self.combat()))
+        self.assertTrue(all(k in ls.log.records[0] for k in self.PROBE_KEYS + ("ref_energy",)))
+
+
+class EmuLockProbeTests(unittest.TestCase):
+    """EmuLock.probe names the legal actions the way _auto_combat counts them, over a stub of the native library."""
+
+    HAND = [["BASH", 0], ["DEFEND_IRONCLAD", 0]]
+
+    def side(self, legal, selection=0, run=None):
+        run = run or FakeRun("combat", {}, {})
+        run.view = lambda: SimpleNamespace(potions=[9])
+        e = stub_emu(run, hand=self.HAND)
+        obs_ = [0] * 40
+        obs_[3], obs_[4], obs_[5] = 2, 1 if selection else 0, selection  # energy; selection kind and candidate count
+        obs_[10] = 9  # potion slot 0
+        obs_[20:24], obs_[24:28] = (5, 0, 0, 0), (7, 0, 0, 0)  # the selection's candidates: a Strike, a Bash
+        e._obs = lambda: obs_
+        e.native = SimpleNamespace(run_action_mask=lambda h, n: [int(i in legal) for i in range(n)])
+        e.slug = {"cards": {5: "STRIKE_IRONCLAD", 7: "BASH"}, "relics": {}, "potions": {9: "FIRE_POTION"}}
+        e.ls = SimpleNamespace(POTION_OFFSET=10, _SELECTION_KIND=4, _SELECTION_COUNT=5, _SELECTION=20, _CARD=4, _MAX_CANDIDATES=10,
+                               _card_at=lambda o, off: tuple(o[off:off + 4]))
+        return e
+
+    def test_a_potion_beside_the_end_turn_makes_two_legal_actions(self):
+        got = self.side([2, 3]).probe()  # hand size 2: End Turn is action 2, potion slot 0 action 3
+        self.assertEqual(got, {"emu_energy": 2, "emu_legal": ["end", "potion:FIRE_POTION"], "emu_potions": ["FIRE_POTION"],
+                               "emu_selection": False})
+
+    def test_cards_are_named_by_the_hand_position_they_play(self):
+        self.assertEqual(self.side([0, 2]).probe()["emu_legal"], ["play:BASH", "end"])
+
+    def test_an_open_selection_replaces_the_action_space_with_candidates_and_a_decline(self):
+        got = self.side([1, 2], selection=2).probe()
+        self.assertEqual((got["emu_legal"], got["emu_selection"]), (["select:BASH", "decline"], True))
+
+    def test_outside_a_fight_there_is_nothing_to_read(self):
+        self.assertEqual(self.side([2], run=FakeRun("map", {"map": ("map", ())}, {})).probe(), {})
+
+
 class OutcomeTests(unittest.TestCase):
     class Env:
         def __init__(self, stream, end):

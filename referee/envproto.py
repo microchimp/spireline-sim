@@ -639,6 +639,21 @@ class _Timed:
         return self.env.step(a, timeout=self.timeout)
 
 
+def select_runs(seeds: list, runs: int, only: str | None) -> tuple[list, list]:
+    """(seeds, run indices) a play block starts. The agent's RNG is [agent_seed, run index] and the index is the seed's place in the
+    block, so `only` (comma-separated seeds) keeps each chosen seed's place in the FULL file, not in the subset: the same agent path
+    as the block's own run. Without `only`: the first `runs` seeds, indices 0...runs-1."""
+    if not only:
+        seeds = seeds[:runs]
+        return seeds, list(range(len(seeds)))
+    want = [x.strip() for x in only.split(",") if x.strip()]
+    missing = [x for x in want if x not in seeds]
+    if missing:
+        raise ValueError(f"--only: not in the seeds file: {','.join(missing)}")
+    ids = sorted({seeds.index(x) for x in want})
+    return [seeds[i] for i in ids], ids
+
+
 def play(a) -> int:
     """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator."""
     out = Path(a.out).resolve()
@@ -650,17 +665,20 @@ def play(a) -> int:
     # never play whatever driver an earlier bench or record left in a shared copy.
     rr.check_build(Path(a.game).resolve())
     rr.install(Path(a.game).resolve(), HERE / "driver" / "bin" / "Release" / "net9.0")
-    seeds = [f"A1S{i:04d}" for i in range(a.runs)]
+    seeds = [f"A1S{i:04d}" for i in range(max(a.runs, 0) if not getattr(a, "only", None) else 0)]
     if a.seeds_file:  # a committed seed block (rl/gen0.py): the first --runs of it, in order
         doc = json.loads(Path(a.seeds_file).read_text(encoding="utf-8"))
-        seeds = (doc["seeds"] if isinstance(doc, dict) else doc)[: a.runs]
+        seeds = doc["seeds"] if isinstance(doc, dict) else doc
+    elif getattr(a, "only", None):
+        raise ValueError("--only needs --seeds-file")
+    seeds, run_ids = select_runs(seeds, a.runs, getattr(a, "only", None))
     agent_seed = a.agent_seed if a.agent_seed is not None else int.from_bytes(os.urandom(6), "big")  # not a game seed
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
     stop_at = time.time() + a.stop_after_h * 3600 if a.stop_after_h else 0.0
     live = open(out / "runs.jsonl", "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, list(range(a.runs))[w::a.procs], stop_at, a.character))
+                                       agent_seed, run_ids[w::a.procs], stop_at, a.character))
              for w in range(a.procs)]
     t0 = time.time()
     for p in procs:
@@ -765,6 +783,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--agent", choices=["play"], default="play", help="play: lockstep PLAY agent (mode play)")
     ap.add_argument("--stop-after-h", type=float, default=0.0, help="play: start no new run after this many hours (0: no limit)")
     ap.add_argument("--seeds-file", default=None, help="play: JSON seed block (default: A1S0000...)")
+    ap.add_argument("--only", default=None, help="play: only these seeds of --seeds-file (comma-separated), each keeping its place in the full file as its run index")
     ap.add_argument("--sims", type=lambda v: int(v) if v.isdigit() else v, default=60,
                     help="simulations per combat decision, or a search config name (rl/search_configs.py)")
     ap.add_argument("--agent-seed", type=int, default=None, help="play: the agent's own seed (default: random, recorded); never derived from a game seed")

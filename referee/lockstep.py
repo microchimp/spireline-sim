@@ -308,6 +308,8 @@ class Lockstep:
         self.roster: str | None = None
         self.round: int | None = None
         self.ctx: dict = {}
+        self._ref_now: dict | None = None  # the referee's energy and hand costs at this combat decision, and at the one before
+        self._ref_prev: dict | None = None
         self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
                       "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
 
@@ -379,6 +381,31 @@ class Lockstep:
             self.round = rnd
         self.ctx = {"acted": self.prev_act, "turn": self.round, "turn_advanced": advanced, "encounter": self.roster,
                     "room_type": self.room_type}
+        self._ref_prev = self._ref_now if self.prev_kind in COMBAT_KINDS else None
+        self._ref_now = _ref_energy(c) if c and kind in COMBAT_KINDS else None
+
+    def _probe(self, msg: dict | None) -> dict:
+        """The lone-End-Turn probe every record carries (small, names and counts only). The referee asks only when two or more
+        actions are legal and the lockstep takes a lone one for the emulator (`EmuLock._auto_combat`), so a record where the two
+        sides stand on different sides of an End Turn needs both sides' energy, potions and legal actions to be read: the
+        referee's from its message (obs.combat.player.energy, the belt, each hand card's [cost, can_play]), the emulator's from
+        its side's `probe()` (`EmuLock.probe`; a side without one adds nothing)."""
+        obs = (msg or {}).get("obs") or {}
+        out: dict = {}
+        c = obs.get("combat")
+        if c:
+            out["ref_energy"], out["ref_hand_cost"] = _ref_energy(c).values()
+        if self._ref_prev:  # the referee's energy and costs when the step before was asked: what that step left, to be set against emu_energy
+            out["prev_ref_energy"], out["prev_ref_hand_cost"] = self._ref_prev.values()
+        if "potions" in obs:
+            out["ref_potions"] = [p for p in obs.get("potions") or [] if p]
+        probe = getattr(self.emu, "probe", None)
+        if probe is not None:
+            try:
+                out.update(probe())
+            except Exception as e:  # noqa: BLE001 -- a probe never costs the record
+                out["emu_probe_error"] = type(e).__name__
+        return out
 
     def finish(self, outcome: dict) -> None:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
@@ -396,11 +423,13 @@ class Lockstep:
             self.stats["gaps"] += 1
             obs = (msg or {}).get("obs", {})
             rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=True,
-                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False, **self.ctx)
+                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False, **self.ctx,
+                               **self._probe(msg))
         if rec is None:  # a loss with no record of its own (a search failure): one, so its span has a home
             obs = (msg or {}).get("obs", {})
             rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind, reason=reason, gap=False,
-                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False, **self.ctx)
+                               diff=[], n_diff=0, agent_weighted=True, reanchor_plan=None, reanchored=False, **self.ctx,
+                               **self._probe(msg))
         rec["not_ranked_span"] = {"first": None, "last": None, "count": 0}  # decisions scored, not ranked, after it
         self.open = rec
 
@@ -488,7 +517,8 @@ class Lockstep:
         self.stats["gaps" if gap else "diverged"] += 1
         rec = self.log.add(decision=i, floor=obs.get("floor"), room=_room(obs), type=kind,
                            ref_hash=view_hash(r), emu_hash=view_hash(e), referee_state_hash=msg.get("h"),
-                           reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True, **self.ctx)
+                           reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True, **self.ctx,
+                           **self._probe(msg))
         plan = reanchor_plan(kind, self.prev_kind)
         rec["reanchor_plan"] = plan
         rec["reanchored"] = bool(plan) and not gap and self._reanchor(plan, kind, labels, msg)
@@ -496,6 +526,12 @@ class Lockstep:
             return True
         self._lose(i, reason or "state_diverged", rec=rec)
         return False
+
+
+def _ref_energy(c: dict) -> dict:
+    """The referee's energy and each hand card's [entry, cost, can_play] (driver/Env.cs Obs adds cost and can_play to the hand)."""
+    return {"energy": (c.get("player") or {}).get("energy"),
+            "hand_cost": [[h[0], h[2], bool(h[3])] for h in c.get("hand") or [] if isinstance(h, list) and len(h) > 3]}
 
 
 def _room(obs: dict) -> str:
@@ -721,6 +757,32 @@ class EmuLock:
         if ref and emu and ref != emu:
             return f"event:{ref}!={emu}"  # a different event: the emulator's room is not the referee's
         return None
+
+    def probe(self) -> dict:
+        """The emulator's side of the lone-End-Turn probe (`Lockstep._probe`): its energy, the potion slots it holds, whether a
+        card selection is open and the names of its legal actions (`_auto_combat` takes a step only when this list is one long):
+        play:<card>, end, potion:<id> in a fight; select:<card> and decline while a selection is open. {} outside a fight."""
+        if self.s.phase != self.E.rc.PHASE_COMBAT:
+            return {}
+        obs, ls = self._obs(), self.ls
+        mask = self.native.run_action_mask(self.s.handle, 32)
+        hand = self._hand()
+        potions = lambda s: self.slug["potions"].get(obs[ls.POTION_OFFSET + 2 * s], "?")  # noqa: E731
+        is_open = bool(obs[ls._SELECTION_KIND])
+        count = int(obs[ls._SELECTION_COUNT]) if is_open else 0
+        names = []
+        for a in (i for i in range(32) if mask[i]):
+            if is_open:
+                names.append("decline" if a >= count else "select:" + (self._card_of(ls._card_at(obs, ls._SELECTION + a * ls._CARD))[0]
+                                                                     if a < getattr(ls, "_MAX_CANDIDATES", 10) else f"#{a}"))
+            elif a < len(hand):
+                names.append("play:" + hand[a][0])
+            elif a == len(hand):
+                names.append("end")
+            else:
+                names.append("potion:" + potions(a - len(hand) - 1))
+        belt = [self.slug["potions"].get(p, f"?{p}") for p in self.s.view().potions]
+        return {"emu_energy": int(obs[3]), "emu_legal": names, "emu_potions": belt, "emu_selection": is_open}
 
     def _auto_combat(self) -> None:
         """The referee asks only when two or more actions are legal (Env.Decide), so a lone End Turn is taken for it."""

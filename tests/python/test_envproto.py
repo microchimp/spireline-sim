@@ -134,5 +134,47 @@ class PlayInstallsItsDriverTest(unittest.TestCase):
         self.assertEqual(calls, ["check", ("install", ("driver", "bin", "Release", "net9.0")), "spawn"])
 
 
+class PlayOnlyTest(unittest.TestCase):
+    """B7: `--only` plays chosen seeds of the block with the run index each has in the FULL file (the agent's RNG is [agent seed, index])."""
+
+    SEEDS = ["S0", "S1", "S2", "S3", "S4", "S5"]
+
+    def test_select_runs_keeps_the_place_in_the_full_file(self):
+        self.assertEqual(envproto.select_runs(self.SEEDS, 4, None), (["S0", "S1", "S2", "S3"], [0, 1, 2, 3]))
+        self.assertEqual(envproto.select_runs(self.SEEDS, 2, "S5,S3"), (["S3", "S5"], [3, 5]))  # --runs does not cut a chosen seed
+        with self.assertRaises(ValueError):
+            envproto.select_runs(self.SEEDS, 6, "S3,NOPE")
+
+    def test_the_worker_is_handed_the_full_file_index(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import json
+
+        seen = []
+
+        class Stop(Exception):
+            pass
+
+        class FakeProc:
+            def __init__(self, target=None, args=()):
+                seen.append((target, args))
+
+            def start(self):
+                raise Stop
+
+        fake_ctx = SimpleNamespace(Queue=lambda: None, Process=FakeProc)
+        f = Path(tempfile.mkdtemp()) / "block.json"
+        f.write_text(json.dumps({"name": "x", "seeds": self.SEEDS}), encoding="utf-8")
+        a = SimpleNamespace(out=tempfile.mkdtemp(), game="G", character="IRONCLAD", runs=3, seeds_file=str(f), agent_seed=1,
+                            stop_after_h=0, procs=2, sims=1, step_timeout=1, ascension=10, only="S5,S2,S3")
+        with mock.patch.object(envproto.rr, "check_build", lambda g: None), mock.patch.object(envproto.rr, "install", lambda g, d: None),                 mock.patch.object(envproto.mp, "get_context", lambda _k: fake_ctx):
+            with self.assertRaises(Stop):
+                envproto.play(a)
+        # chosen seeds S2, S3, S5 sit at 2, 3, 5 of the file; two workers take every other one
+        shares = [(args[3], args[9]) for _t, args in seen]
+        self.assertEqual(shares, [(["S2", "S5"], [2, 5]), (["S3"], [3])])
+
+
 if __name__ == "__main__":
     unittest.main()

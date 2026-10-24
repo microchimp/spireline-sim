@@ -482,12 +482,16 @@ def score_real(a: argparse.Namespace) -> int:
     import gen_loop  # noqa: PLC0415
 
     agent = gen_loop.load_agent(getattr(a, "gen_dir", None) or None)
-    ok, why = emu_arm_match(a.emu_dir, agent.describe())
-    emu_dir = Path(a.emu_dir) if ok else out.with_name(out.name + "-emu")
-    if not ok:
-        print(f"emulator arm: {why}; playing it into {emu_dir.name}", file=sys.stderr)
-        play_emu_arm(a, agent, emu_dir)
-    arm = {"dir": emu_dir.name if not ok else str(a.emu_dir).replace("\\", "/"), "played": not ok, "agent": agent.describe(),
+    only = getattr(a, "only", None)
+    if only:  # a probe of chosen seeds: the game's side only, no emulator arm to pair with
+        ok, why, emu_dir = True, "only: no emulator arm", None
+    else:
+        ok, why = emu_arm_match(a.emu_dir, agent.describe())
+        emu_dir = Path(a.emu_dir) if ok else out.with_name(out.name + "-emu")
+        if not ok:
+            print(f"emulator arm: {why}; playing it into {emu_dir.name}", file=sys.stderr)
+            play_emu_arm(a, agent, emu_dir)
+    arm = {"dir": None if only else emu_dir.name if not ok else str(a.emu_dir).replace("\\", "/"), "played": not ok, "agent": agent.describe(),
            "reason": "played: " + why if not ok else why}
     env = dict(os.environ)
     if a.lib:
@@ -498,6 +502,8 @@ def score_real(a: argparse.Namespace) -> int:
     cmd = [sys.executable, str(ROOT / "referee" / "envproto.py"), "play", "--game", a.game, "--out", str(out), "--procs", str(a.procs),
            "--runs", str(a.runs), "--sims", a.config or str(a.sims), "--seeds-file", a.seeds_file, "--agent-seed", str(AGENT_SEED),
            "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h), "--character", a.character]
+    if only:
+        cmd += ["--only", only]
     rc = subprocess.run(cmd, env=env, check=False).returncode
     rows = real_runs(out / "runs.jsonl") if (out / "runs.jsonl").exists() else []
     summ = json.loads((out / "summary.json").read_text(encoding="utf-8")) if (out / "summary.json").exists() else {}
@@ -508,7 +514,7 @@ def score_real(a: argparse.Namespace) -> int:
     (out / "result.json").write_text(json.dumps(res), encoding="utf-8")
     if summ:
         (out / "summary.json").write_text(json.dumps({**summ, "emu_arm": arm}, indent=1), encoding="utf-8")
-    if rows:
+    if rows and not only:
         emu = [json.loads(x) for x in (emu_dir / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
         (out / "compare.json").write_text(json.dumps({**compare(emu, rows, summ), "emu_arm": arm}, indent=1), encoding="utf-8")
     return rc
@@ -602,6 +608,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--stop-after-h", type=float, default=3.5)
     sc.add_argument("--lib")
     sc.add_argument("--emu-dir", help="an emulator arm to pair with, used only when its summary.json names the agent scored (--gen-dir); otherwise the arm is played first into OUT-emu")
+    sc.add_argument("--only", help="play only these seeds of the file (comma-separated), each keeping its place in the full file as its "
+                    "run index (the agent's RNG is [agent seed, index]); the game's side only, no emulator arm")
     sc.add_argument("--gen-dir", help="play this generation's combat prior (SPIRELINE_GEN_DIR for the search configs)")
     sc.add_argument("--out", required=True)
     for name in ("bench-env", "bench-emu"):
