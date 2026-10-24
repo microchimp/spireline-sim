@@ -443,6 +443,7 @@ class Lockstep:
             fails = self.stats.setdefault("reanchor_fail_reasons", {})
             fails[f"{plan}:{why}"[:80]] = fails.get(f"{plan}:{why}"[:80], 0) + 1
         self._note_streams(getattr(self.emu, "streams", None))
+        self._note_walk(getattr(self.emu, "walk", None))
         by = self.stats.setdefault("reanchor_by_plan", {})
         by[f"{plan}:{'ok' if ok else 'failed'}"] = by.get(f"{plan}:{'ok' if ok else 'failed'}", 0) + 1
         return ok
@@ -459,6 +460,16 @@ class Lockstep:
         names = st.setdefault("streams_unmoved_names", {})
         for n in rep["unmoved_names"]:
             names[n] = names.get(n, 0) + 1
+
+    def _note_walk(self, rep: dict | None) -> None:
+        """What the emulator side's walk to the referee's floor did (EmuLock.walk), summed over the run: walks made, floors walked
+        (map nodes taken), picks the rules policy made on the agent's RNG (the agent's choices, not the game's) and fights resolved
+        unplayed. Whatever the walk leaves as the emulator's own (pools, odds, map position) comes from these steps."""
+        if not rep:
+            return
+        w = self.stats.setdefault("walk", {"walks": 0, "floors": 0, "picks": 0, "fights": 0})
+        for k in w:
+            w[k] += rep.get(k, 0)
 
     def _resume(self, i: int, kind: str, labels: list, msg: dict) -> bool:
         plan = reanchor_plan(kind, self.prev_kind)
@@ -524,6 +535,7 @@ class EmuLock:
     wants_anchor_state = True  # play_run asks the driver for the game's hidden state, which only this side reads
     _hidden: dict | None = None  # the game's hidden state at the current decision (take_anchor_state)
     anchored_with: str | None = None  # "hidden", "observation" or "streams": what the last re-anchor used; None: none of them
+    walk: dict | None = None  # the last re-anchor's walk to the map: {"walks", "floors", "picks", "fights"}, else None
     streams: dict | None = None  # the last room-entry stream anchor: {"named", "moved", "unmoved", "unmoved_names"}, else None
 
     def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None, character: str = "IRONCLAD"):
@@ -755,6 +767,7 @@ class EmuLock:
         the 52 failed re-anchors of the events-round smoke were the emulator 1-3 floors behind)."""
         rc, env = self.E.rc, self.s.env
         self.rq.clear()
+        walk = self.walk = {"walks": 1, "floors": 0, "picks": 0, "fights": 0}  # counted live: a failed walk is counted as far as it went
         for _ in range(600):
             ph = self.s.phase
             if ph == rc.PHASE_COMPLETE:
@@ -762,6 +775,7 @@ class EmuLock:
             if ph == rc.PHASE_COMBAT:
                 if not self.native.run_debug_resolve_combat(self.s.handle, env._run_obs_buf):
                     return False
+                walk["fights"] += 1
                 continue
             d = self._decision()
             if d is None:
@@ -769,10 +783,15 @@ class EmuLock:
             if d.type == "map":
                 if floor is None or self.s.view().floor >= floor:
                     return True
+                walk["floors"] += 1
+                walk["picks"] += 1
                 self.s.apply(d.options[self.rules.pick(self.s.view(), d, self.rng).index])
                 continue
             o = next((o for o in d.options if o.kind in ("reward.proceed", "card.skip", "shop.leave", "rest.leave")),
-                     None) or d.options[self.rules.pick(self.s.view(), d, self.rng).index]
+                     None)
+            if o is None:
+                walk["picks"] += 1
+                o = d.options[self.rules.pick(self.s.view(), d, self.rng).index]
             self.s.apply(o)
         return False
 
@@ -845,6 +864,7 @@ class EmuLock:
         self.fail = None
         self.anchored_with = None
         self.streams = None
+        self.walk = None
         obs = msg.get("obs", {})
         if plan == "room_entry":
             if not self._to_map(obs.get("floor")):

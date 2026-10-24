@@ -86,6 +86,12 @@ class ProvenanceSummaryTest(unittest.TestCase):
         self.assertEqual((p["streams_named"], p["streams_moved"]), (51, 30))
         self.assertEqual(p["streams_unmoved_names"], {"Nope": 3, "Odd": 1})
 
+    def test_the_walks_are_summed_over_the_runs(self):
+        w = {"walks": 2, "floors": 5, "picks": 7, "fights": 3}
+        p = envproto._provenance([{"stats": {"walk": w}}, {"stats": {"walk": dict(w, walks=1)}}, {"stats": {}}])
+        self.assertEqual(p["walk"], {"walks": 3, "floors": 10, "picks": 14, "fights": 6})
+        self.assertEqual(envproto._provenance([])["walk"], {"walks": 0, "floors": 0, "picks": 0, "fights": 0})
+
     def test_a_block_on_observation_anchoring_shows_zero_hidden(self):
         p = envproto._provenance([{"stats": {"anchored_with": {"observation": 5}}}])
         self.assertEqual(p["anchored_with"], {"hidden": 0, "observation": 5, "streams": 0, "none": 0})

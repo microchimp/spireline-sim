@@ -174,12 +174,13 @@ class DivergenceTests(unittest.TestCase):
 class ProvEmu(FakeEmu):
     """A fake emulator side that reports how its last re-anchor was done, as EmuLock does."""
 
-    def __init__(self, views, how=None, streams=None, **k):
+    def __init__(self, views, how=None, streams=None, walk=None, **k):
         super().__init__(views, **k)
         self.how, self.streams_now, self.anchored_with, self.streams = how, streams, None, None
+        self.walk_now, self.walk = walk, None
 
     def reanchor(self, plan, msg):
-        self.anchored_with, self.streams = self.how, self.streams_now
+        self.anchored_with, self.streams, self.walk = self.how, self.streams_now, self.walk_now
         return super().reanchor(plan, msg)
 
 
@@ -653,6 +654,76 @@ class ReanchorWalkTests(unittest.TestCase):
         self.assertEqual(run.floor, 6)  # was 3: three maps walked
         self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": 9}}) is False and e.fail == "map_options:2")
         self.assertEqual(run.floor, 8)  # to the map before the fight's room (floor 9 - 1)
+
+
+class SteppedWalkRun(FakeRun):
+    """A suspended emulator's walk: a map node leads to a fight on odd floors and to an event on even ones; a fight is resolved
+    unplayed and its rewards are left by proceed, an event takes the rules policy's pick."""
+
+    def __init__(self):
+        screens = {"map": ("map", (_opt("map.node", 0, node=(1, 2)),)), "reward": ("rewards", (_opt("reward.proceed", 9),)),
+                   "event": ("event", (_opt("event.choice", 0), _opt("event.choice", 1)))}
+        super().__init__("map", screens, {})
+        self.floor = 3
+
+    def view(self):
+        return SimpleNamespace(floor=self.floor)
+
+    def apply(self, o):
+        self.taken.append(o.kind)
+        if o.kind == "map.node":
+            self.floor += 1
+            self.cur = "combat" if self.floor % 2 else "event"
+        else:
+            self.cur = "map"
+
+
+class WalkCountTests(unittest.TestCase):
+    """Review recommendation 4: the walk of a suspended emulator is counted -- floors walked, the rules policy's picks and the
+    fights resolved unplayed -- because those picks are the agent's, not the game's."""
+
+    def drive(self, emu, stream):
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in stream:
+            ls.decide(m)
+        return ls
+
+    def walker(self, run):
+        e = stub_emu(run)
+        e.rules, e.rng = SimpleNamespace(pick=lambda v, d, r: SimpleNamespace(index=0)), None
+
+        def resolve(*a):
+            run.cur = "reward"
+            return True
+
+        e.native = SimpleNamespace(run_debug_resolve_combat=resolve)
+        e._set_player = lambda obs: True
+        return e
+
+    def test_a_walk_of_four_floors_counts_the_floors_the_picks_and_the_fights(self):
+        run = SteppedWalkRun()
+        e = self.walker(run)
+        self.assertTrue(e._to_map(7))
+        self.assertEqual(run.floor, 7)
+        # four map nodes and two events by the rules policy (six picks); the fights of floors 5 and 7 resolved; the rewards left by proceed
+        self.assertEqual(e.walk, {"walks": 1, "floors": 4, "picks": 6, "fights": 2})
+
+    def test_a_walk_that_is_not_needed_is_a_walk_of_nothing_and_a_reanchor_starts_clean(self):
+        run = SteppedWalkRun()
+        e = self.walker(run)
+        self.assertTrue(e._to_map(3))
+        self.assertEqual(e.walk, {"walks": 1, "floors": 0, "picks": 0, "fights": 0})
+        e.take_anchor_state(None)
+        self.assertTrue(e.reanchor("room_entry", {"obs": {"floor": 5}}))
+        self.assertEqual(e.walk, {"walks": 1, "floors": 2, "picks": 3, "fights": 1})  # not 1 + the earlier walk's
+
+    def test_the_run_stats_sum_the_walks(self):
+        a = obs(hp=80)
+        w = {"walks": 1, "floors": 4, "picks": 6, "fights": 2}
+        s = self.drive(ProvEmu([view_of(obs(hp=70))], walk=w, reanchor_ok=[False, True]), [msg("map", a), msg("map", a)]).stats
+        self.assertEqual(s["walk"], {"walks": 2, "floors": 8, "picks": 12, "fights": 4})
+        s = self.drive(FakeEmu([view_of(obs(hp=70))], reanchor_ok=True), [msg("map", a)]).stats
+        self.assertNotIn("walk", s)
 
 
 class ReanchorReasonTests(unittest.TestCase):
