@@ -1,5 +1,13 @@
 # Kit ShivDamage (no lockstep rank or weight; rebuild-lane finding; family: fidelity tooling vocabulary; a decision kit)
 
+## Header
+- Base: fork `main` at `f1a869e0` or later (branch `cloud/combat-core-1` from the tip you clone; one commit per kit).
+- Cloud half: the scenario test (fails before, passes after), the fix, both .NET suites and the Python suite green, the PR to `main` describing each commit. Local half (the landing session on the PC): the corpus check against the stored baseline, the byte proof, EmuDump, the lockstep replay of the seeds the kit names, landing commit by commit.
+- Allowed-file footprint: `tools/fidelity/power_aliases.json` (one `emu_rename` entry) and `tests/python/test_fight_compare.py`. No C# change; `Core2/OldState.cs` keeps its duplicate entry.
+- Expected corpus footprint: a judging change only: fights whose game power list holds `ACCURACY_POWER` may move between diverged and identical (the landing session counts before and after and stores a new baseline); no emulator behaviour changes.
+- Run-first counts (record them on your base before any change): PC at `f1a869e0`: Sts2Emulator.Tests 6,774 passed / 0 failed / 7 skipped (6,781), EmuDump.Tests 246, Python no new failing name; Linux cloud at `4a4b15f` (`docs/CLOUD_ENV.md`): 6,864 passed of 6,871 (7 static skips), EmuDump.Tests 281, the four Python modules 88 tests (2 data skips). Your counts may differ by the tests the base added since; the rule is 0 failed and no test changed.
+- Stop rules: stop and report if the entry makes any `tools/fidelity` or `tools/emudump.Tests` test fail for a reason other than the vocabulary itself. A stop is a report, not a failure.
+
 ## Symptom
 The emulator keeps the Silent power Accuracy as the buff `BuffId.ShivDamage` (bonus damage for Shiv cards). The game's power is `AccuracyPower`. The
 shared name table `tools/fidelity/power_aliases.json` ("emu_rename": emulator buff key -> game power key, both UPPER_SNAKE without `_POWER`) has no

@@ -1,5 +1,13 @@
 # Kit HeldPlayedCard (no lockstep rank or weight; rebuild-lane finding; family: combat state hygiene / snapshot round trip)
 
+## Header
+- Base: fork `main` at `f1a869e0` or later (branch `cloud/combat-core-1` from the tip you clone; one commit per kit).
+- Cloud half: the scenario test (fails before, passes after), the fix, both .NET suites and the Python suite green, the PR to `main` describing each commit. Local half (the landing session on the PC): the corpus check against the stored baseline, the byte proof, EmuDump, the lockstep replay of the seeds the kit names, landing commit by commit.
+- Allowed-file footprint: `src/Sts2Emulator/Core/CombatEngine.cs` (`ReleaseHeldPlayedCard` made idempotent), `src/Sts2Emulator/Support/Invariants/StateInvariants.cs` (held means in no pile); new `src/Sts2Emulator.Tests/HeldPlayedCardTests.cs`. Do not change `Interop/CombatSnapshot.cs` or anything under `Core2/`.
+- Expected corpus footprint: 0 fights change expected (the state the fix acts on is not reached by replayed recordings); byte proof identical. The route that leaves the slot set is found locally with the debug probe the kit describes.
+- Run-first counts (record them on your base before any change): PC at `f1a869e0`: Sts2Emulator.Tests 6,774 passed / 0 failed / 7 skipped (6,781), EmuDump.Tests 246, Python no new failing name; Linux cloud at `4a4b15f` (`docs/CLOUD_ENV.md`): 6,864 passed of 6,871 (7 static skips), EmuDump.Tests 281, the four Python modules 88 tests (2 data skips). Your counts may differ by the tests the base added since; the rule is 0 failed and no test changed.
+- Stop rules: stop and report if test 1 (the deterministic broken-state test) does not fail before the change, or if the only fix you can find restores the slot from a snapshot. A stop is a report, not a failure.
+
 ## Symptom
 Found by the rebuild lane (HANDOFF section 0, "For Lane B, second finding"), not by a lockstep record, so there is no screen, run seed or
 diff to quote. In a search that loads a document taken in the middle of a selection screen (Hidden Daggers is the card that showed it),
