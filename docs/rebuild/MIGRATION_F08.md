@@ -226,6 +226,73 @@ F08+F10 switch (a `KernelState` exists only with a switch on) and called from no
   `rebuild/f08-r1` (5657cd54) against this tree, both `--engine old`, 38736 identical, 0 differ; `construct shape` 0
   differences; `sites check` 0 problems (sites.json rebuilt for the moved CardEffects lines).
 
+**Settled in R3a (branch `rebuild/f08-r3a`, 2026-10-24).** Items 4-6 and 8 are in code, gated as R2's (a `KernelState`
+exists only with a switch on) and called from no old site yet (R4 reroutes). Item 9 (the HP commands) and the win check
+(item 7) are not here.
+- Files: `Core2/Commands/CreatureCmd.Kill.cs` (`Kill`, `KillWithoutCheckingWinCondition`, `Escape`, `PerformMove`,
+  `RemoveCreature`, the pseudo-hook argument records), `Core2/OldState.cs` (`OldRoster`, the `Moving` mark, creature
+  helpers), the four pseudo-hook ids in `HookId` (generated: `gen_hooks.py` appends `port_list.PSEUDO_HOOKS` after the
+  dispatchers, so no existing id moves; `sites.py` gives them F10 in `SwitchGroups.FamilyOf`).
+- `CreatureCmd.Kill(k, killed, force = false)` (game: CreatureCmd.Kill): each creature through
+  `KillWithoutCheckingWinCondition` in list order; a list that held the player, the player dead: `LoseCombat`, **R3b's one
+  call point** (today it only counts `CommandLog.LossCalls`). `KillCalls` counts every call (chained kills too) and the
+  `KillStandIn` seam stays for R2's damage tests.
+- The sequence as the game's (the decompile's order, which differs from item 5's list in two places: the living
+  teammates are read after AfterDeath, and the primary-enemy reading comes after the removal, before the powers): not
+  attached to the combat (an enemy out of the roster): nothing; the creature marked dying from the start (its HP loss
+  included) to the end, and the player's hooks kept (`KeepPlayerHooks`) over its own passes; HP above 0 lost with
+  AfterCurrentHpChanged; BeforeDeath; ShouldDie unless forced or max HP <= 0. Death: `Died` (pseudo-hook, the monster's
+  own model), ShouldCreatureBeRemovedFromCombatAfterDeath (asked for every creature, used for enemies), AfterDeath(false),
+  teammates; removal due and in the roster: `RemoveCreature` (BeforeRemovedFromRoom to the monster's own model, then
+  `OldRoster.ResetMoveState`: move index and intents) always, `OldRoster.RemoveFromRoster` unless `w.IsPerformingMove`;
+  primary read (`OldCreatures.IsPrimaryEnemy`: no power whose game class is MinionPower, the game's only
+  OwnerIsSecondaryEnemy override); the powers; a primary enemy whose living teammates are all secondary: `Kill(teammates)`;
+  a player: orbs cleared, a living Osty `Kill([osty], force)`, then `w.DeactivatePlayerHooks()` left set for the rest of
+  the combat (HandlePlayerDeath is multiplayer only). Prevented: AfterDeath(true), AfterPreventingDeath(preventer), again
+  while dead, the 11th round throws as the game.
+- **Powers** (game: Creature.RemoveAllPowersAfterDeath): every power the listeners list (one per game power instance,
+  `OldCreatures.Powers`) is judged first: its own ShouldPowerBeRemovedAfterOwnerDeath (pseudo-hook, default true), then,
+  the owner still in the combat, `Hooks.ShouldPowerBeRemovedOnDeath` (an owner removed from the roster: true with no
+  listener asked, as the game's `Owner.CombatState == null`); then the rest removed in order (every buff entry of that game
+  power) and AfterRemoved per removed power, in removal order. Limit: engine-only, folded and unclassified buffs are not
+  listed powers, so they are not removed.
+- **Pseudo-hooks** dispatch to the one model through `HandlerTable.Find` (no listener pass): BeforeRemovedFromRoom and
+  Died take `HookEvent<BeforeRemovedFromRoomArgs/DiedArgs>` on the monster, ShouldPowerBeRemovedAfterOwnerDeath
+  `HookPredicate<PowerDeathArgs>` and AfterRemoved `HookEvent<AfterRemovedArgs>` (owner, first BuffId, the entries
+  removed) on the power. They carry `OldCreature`, since the owner may have left the combat; a pseudo-hook handler that
+  pauses throws (the game calls them directly).
+- **The old roster's removal** (item 6): `OldRoster.RemoveFromRoster(w, enemy)` is `CombatState.RemoveDepartedEnemies`
+  for that one enemy (roster out, kind noted in `DepartedEnemyDefIds`, the old sweep's own helper), so the enemy drops out
+  of `OldCreatures.Enemies`, the listener lists and the `CreatureRef` numbering. `OldRoster.Escaped` sets the old
+  `Escaped` flag and `EscapedEnemies` (the escaped list) and removes; `FatGremlinEscaped` stays the caller's (R4).
+- **IsPerformingMove**: `CreatureCmd.PerformMove(k, monster, move)` (game: MonsterModel.PerformMove) sets the
+  `OldWorld.Moving` mark (copied with the state by roster index) around the move; a monster dead in the roster under the
+  mark is in the combat (`OldState.EnemyInCombat`); after the move, dead and still in the roster:
+  ShouldCreatureBeRemovedFromCombatAfterDeath again and, due, `RemoveFromRoster`. R4 wraps `EnemyAI.ExecuteIntent` in it.
+- `CreatureCmd.Escape(k, c)` (game: CreatureCmd.Escape): dead or not attached: nothing; every old buff cleared (no
+  AfterRemoved), `RemoveCreature`, `OldRoster.Escaped`. No death hook.
+- **Damage changes**: the dealer's ref is read at each use and is null once the dealer has left the combat
+  (`OldCreatures.TryRef`; a dealer a nested Damage killed, R2's review); a player the call killed keeps its hooks from the
+  results loop to the kill (`KeepPlayerHooks`), so those passes are not reported `PlayerHooksUndeclared`. A receiver a
+  nested kill removed mid-loop still throws in `Ref` (open; the fix round).
+- Not modelled: a creature's death with removal vetoed stays listed after the kill only while the old
+  `EnemyAI.ShouldRemoveOnDeath` agrees (the old state keeps no veto mark); Osty's own powers (none in the old state).
+- What R3b must provide: `LoseCombat`'s body (the pending loss and its processing at CheckWinCondition, game:
+  CombatManager.LoseCombat / ProcessPendingLoss), the win check at the game's points (item 7) including the executor
+  boundary after a kill, and the F17 hand-off (`RunEngine.FinishCombat` from the host, once). The dead-player EndTurn of
+  Kill's other branch needs a second player and stays out.
+- Tests: `src/Sts2Emulator.Tests/Core2/KillCommandTests.cs` (11): the full sequence order; a revive; the 10-round limit;
+  powers kept and removed by both predicates with AfterRemoved; removal during the monster's move then at its end;
+  Twin Strike and Whirlwind with the real kill; Headbutt's corpse gone before the next effect (G2891c25e0d); Escape with no
+  death hook; the player's death (Osty, deactivation after AfterDeath, the loss point); secondary teammates; a removed
+  dealer. `DamageCommandTests`' stub test now checks the kill runs.
+- Acceptance (R3a): `dotnet test src/Sts2Emulator.Tests` 6776 passed, 7 skipped, 0 failed (6783); `tools/emudump.Tests`
+  246 passed; the kernel's Python tests (sites, shape, port_list) 49 passed; byte_proof in all 11 modes (fight, netstate,
+  game-view, game-view-netstate, state-hash, rng-log, reanchor, -scramble, -stale, -perturb-moves, -trace) over 4304
+  corpus fights: old against `--engine core2` 47344 pairs identical, 0 differ; `rebuild/f08-r2` (b78ff33d) against this
+  tree, both `--engine old`, 47344 identical, 0 differ; `construct shape` 0 differences; `sites check` 0 problems (279
+  sites; sites.json unchanged); `gen_hooks --check` clean. No old-engine file changed.
+
 ## 4. Old sites replaced, and their game counterparts
 
 All F08/F10 sites from `sites.json` (file:line at a1e4d7ea). Each gets `if (Kernel.If(Switch.F08, ...) is { } k)
