@@ -40,6 +40,7 @@ public static class Registry
         BufferPower.Register,
         PossessSpeedPower.Register,
         PossessStrengthPower.Register,
+        SwipePower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when

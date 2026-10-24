@@ -41,6 +41,7 @@ public class PowerTwoTests
         (ListenerKind.Power, "BufferPower", HookId.AfterModifyingHpLostAfterOsty),
         (ListenerKind.Power, "PossessSpeedPower", HookId.AfterDeath),
         (ListenerKind.Power, "PossessStrengthPower", HookId.AfterDeath),
+        (ListenerKind.Power, "SwipePower", HookId.BeforeDeath),
     ];
 
     [Fact]
@@ -872,5 +873,114 @@ public class PowerTwoTests
     public void PossessStrengthIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "PossessStrengthPower", HookId.AfterDeath);
+    }
+
+    // ---------------------------------------------------------------------------------------- Swipe (power-2)
+
+    private static int SwipeOf(EnemyState e) => BuffSystem.Get(e.Buffs, BuffId.Swipe);
+
+    /// <summary>Two slugs, the first a thief holding Swipe 1 and a stolen card (an Attack); nothing stolen back yet.</summary>
+    private static (CombatState S, ListenerRef Power, CardInstance Stolen) SwipeCombat()
+    {
+        var s = Combat(40, 40);
+        var stolen = s.Fresh(new CardInstance(StrikeDef, false));
+        s.Enemies[0].StolenCard = stolen;
+        return (s, GivePower(s, "SwipePower", BuffId.Swipe, 1, s.Enemies[0]), stolen);
+    }
+
+    [Fact]
+    public void SwipeIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power2), ListenerKind.Power, "SwipePower", HookId.BeforeDeath);
+    }
+
+    [Fact]
+    public void SwipeGivesTheStolenCardBackBeforeItsOwnersDeath()
+    {
+        // game: SwipePower.BeforeDeath; old: CombatEngine.AnswerDeaths calls Swipe_BeforeDeath(state, fallen, swiped) for a
+        // fallen creature with a StolenCard that did not escape: the card joins StolenBackCards, the thief's slot clears,
+        // the power leaves. Dispatched inside Dying (the owner at 0 HP, marked dying, still listed), as the kill runs it.
+        var (s, _, stolen) = SwipeCombat();
+        var thief = s.Enemies[0];
+        var k = Kernel(s, Power2);
+        var (oracle, _, oracleStolen) = SwipeCombat();
+
+        using (Dying(k, thief))
+            Assert.False(Hooks.BeforeDeath(k, BeforeDeathOf(1)).IsPaused);
+        CombatEngine.Swipe_BeforeDeath(oracle, oracle.Enemies[0], oracleStolen);
+
+        Assert.Equal(oracle.StolenBackCards.Select(c => c.DefId), s.StolenBackCards.Select(c => c.DefId));
+        Assert.Equal([stolen], s.StolenBackCards);
+        Assert.Null(thief.StolenCard);
+        Assert.Equal(0, SwipeOf(thief));
+        Assert.Equal(oracle.Enemies[0].Buffs, thief.Buffs);
+
+        // Through the kill: CreatureCmd.Kill runs BeforeDeath for the dead owner first.
+        var (s2, _, stolen2) = SwipeCombat();
+        var k2 = Kernel(s2, Power2);
+        CreatureCmd.Kill(k2, [OldCreature.Of(s2.Enemies[0])]);
+        Assert.Equal([stolen2], s2.StolenBackCards);
+        Assert.Null(s2.Enemies[0].StolenCard);
+    }
+
+    [Fact]
+    public void SwipeDoesNothingForAnotherCreaturesDeathAnEscapedThiefOrNoStolenCard()
+    {
+        // The handler's condition is the old site's: the dying creature is its owner, holds a stolen card and did not
+        // escape. The second slug's death, the escaped thief's, and a thief with no card leave everything as it was.
+        var (s, _, stolen) = SwipeCombat();
+        var thief = s.Enemies[0];
+        var k = Kernel(s, Power2);
+
+        using (Dying(k, s.Enemies[1]))
+            Hooks.BeforeDeath(k, BeforeDeathOf(2));
+        Assert.Equal((stolen, 1, 0), (thief.StolenCard, SwipeOf(thief), s.StolenBackCards.Count));
+        thief.Escaped = true;
+        using (Dying(k, thief))
+            Hooks.BeforeDeath(k, BeforeDeathOf(1));
+        Assert.Equal((stolen, 1, 0), (thief.StolenCard, SwipeOf(thief), s.StolenBackCards.Count));
+        thief.Escaped = false;
+        thief.StolenCard = null;
+        using (Dying(k, thief))
+            Hooks.BeforeDeath(k, BeforeDeathOf(1));
+        Assert.Equal((null, 1, 0), (thief.StolenCard, SwipeOf(thief), s.StolenBackCards.Count));
+    }
+
+    [Fact]
+    public void SwipeGivesBackEachThiefsOwnCardAmongTwoHolders()
+    {
+        // The N-holder test: both slugs are thieves. The first's death returns its card alone; the second keeps its card
+        // and its power until its own death: one direct call of the old body per owner.
+        var (s, _, first) = SwipeCombat();
+        var second = s.Fresh(new CardInstance(DefendDef, false));
+        s.Enemies[1].StolenCard = second;
+        GivePower(s, "SwipePower", BuffId.Swipe, 1, s.Enemies[1]);
+        var k = Kernel(s, Power2);
+
+        using (Dying(k, s.Enemies[0]))
+            Hooks.BeforeDeath(k, BeforeDeathOf(1));
+        Assert.Equal([first], s.StolenBackCards);
+        Assert.Equal((null, 0), (s.Enemies[0].StolenCard, SwipeOf(s.Enemies[0])));
+        Assert.Equal((second, 1), (s.Enemies[1].StolenCard, SwipeOf(s.Enemies[1])));
+        using (Dying(k, s.Enemies[1]))
+            Hooks.BeforeDeath(k, BeforeDeathOf(2));
+        Assert.Equal([first, second], s.StolenBackCards);
+        Assert.Equal((null, 0), (s.Enemies[1].StolenCard, SwipeOf(s.Enemies[1])));
+    }
+
+    [Fact]
+    public void SwipeDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _, stolen) = SwipeCombat();
+        var k = Kernel(s, Without(Power2, SwipePower.Register));
+        using (Dying(k, s.Enemies[0]))
+            Hooks.BeforeDeath(k, BeforeDeathOf(1));
+        Assert.Equal((stolen, 1, 0), (s.Enemies[0].StolenCard, SwipeOf(s.Enemies[0]), s.StolenBackCards.Count));
+    }
+
+    [Fact]
+    public void SwipeIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "SwipePower", HookId.BeforeDeath);
     }
 }
