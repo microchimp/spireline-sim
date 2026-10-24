@@ -7,12 +7,14 @@ session gates (corpus, byte proof, EmuDump) and lands commit by commit. Rules: `
 
 ## Batches for the cloud (2026-10-24)
 
+Status 2026-10-24 evening: `cloud/run-flow-1` (PR 7) and `cloud/combat-core-1` (PR 9) are landed on main (`26c19ef2`), each after a local review and the full gate (corpus 0 regressed, 2 improved). Landed locally the same day, from the probes: the lone-End-Turn mechanism (potions the game cannot use were legal combat actions; `PotionUsage` table), the Neow Small Capsule claim, the multi-pick and chest comparer artefacts, and the ranking's combat-type and emulator-arm join fixes.
+
 | batch | kits | code | confidence |
 |---|---|---|---|
 | `cloud/run-flow-1` | `G74caa1c59d` (owner) with `G8318fb1cf5`, `G88f7b7316f`, `Gb1aa8d4875`, `G5b5244da1e` (same mechanism: a Thieving Hopper steal leaves the run deck one card too large until the fight ends); `Gbc5227da53` (Fairy in a Bottle does not prevent death from non-combat HP loss) | C#, run layer (`Core/Run`), `tools/emudump/RunSnap.cs` | high; medium-high |
 | `cloud/combat-core-1` | `Bolas` (the return-to-hand queue invents a card), `HeldPlayedCard` (a stale held card is filed twice; probe-first, test 1 is deterministic), `ShivDamage` (alias table: option A, landed with before/after counts) | C# combat engine outside `Core2/`; Python tooling | medium-high; low-medium; medium-high |
 
-Probe-first, not yet batched: `Gc44f78e430` (player hp at the reward screen after an enemy-phase fight end), `G1162c5de18` (re-run two seeds
+Probe-first, not yet batched (the eight synthetic trace fights of 2026-10-24 showed no difference for the F08 candidates C, D and E in isolation; the exact-fight trace tool is the week-4 item): `Gc44f78e430` (player hp at the reward screen after an enemy-phase fight end), `G1162c5de18` (re-run two seeds
 first; likely the residue of a fixed lockstep artefact), `Gda7c3abc9d` (the emulator did not enter the chest room; probe).
 
 ## Local fixes (not cloud work): `local/`

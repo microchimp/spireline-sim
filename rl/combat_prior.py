@@ -37,6 +37,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from combat_tokens import TYPE_PAD, VOCAB, Tokens, encode
+from prior_protocol import legal_weights
 
 from sts2_gym import native
 
@@ -188,20 +189,10 @@ class PolicyNet:
         """
         with self._torch.inference_mode():
             logits = self.model.policy_logits(**self._batch(tokens))
-        out = []
-        for row, legal in zip(logits.numpy(), legals, strict=True):
-            index = np.asarray(legal, dtype=np.int64)
-            scores = np.full(len(index), -np.inf)
-            inside = index < row.shape[0]
-            scores[inside] = row[index[inside]]
-            finite = np.isfinite(scores)
-            if not finite.any():
-                out.append(np.full(len(index), 1.0 / max(1, len(index))))
-                continue
-            scores = np.where(finite, scores, -np.inf)
-            weights = np.exp(scores - scores[finite].max())
-            out.append(weights / weights.sum())
-        return out
+        return [
+            legal_weights(row, legal)
+            for row, legal in zip(logits.numpy(), legals, strict=True)
+        ]
 
 
 _NETS: dict[str, PolicyNet] = {}
