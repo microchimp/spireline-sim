@@ -67,6 +67,16 @@ public static class Registry
         SoarPower.Register,
     ];
 
+    /// <summary>C5 (cloud/f08-power-4): the port list's power-4 rows that are CLOUD (Conqueror is ported locally, round R4c).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> Power4 =
+    [
+        CalcifyPower.Register,
+        AccuracyPower.Register,
+        SicEmPower.Register,
+        ConstrictPower.Register,
+        HeistPower.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -77,5 +87,6 @@ public static class Registry
         .. Power1,
         .. Power2,
         .. Power3,
+        .. Power4,
     ];
 }
