@@ -78,6 +78,9 @@ from sts2_gym import procutil
 
 BATCH_SIZES = (1, 2, 4, 8, 16, 32, 64, 128)
 TOKEN_STEP = 8
+# Recorded root positions of the generation-3 window are 16-57 tokens long (p50 26, p99 42, max 57 over 10,152 samples), so
+# 64 covers them with 64 graphs; 256 would capture four times as many and reserve ~2.2 GB of GPU memory for nothing.
+DEFAULT_MAX_TOKENS = 64
 HARD_MAX_TOKENS = 1024  # longer than this is a bad request, not an eager forward
 MAX_FRAME = 1 << 17
 # One float32 row per token: the 18 features, then type, id, owner. Every integer here is far below 2**24, so the
@@ -181,7 +184,8 @@ class Request:
 class PriorServer:
     """The model, its buckets, the listener and the threads."""
 
-    def __init__(self, policy, device, *, max_batch=128, max_tokens=256, deadline_us=0, stats_path=None, kill_file=None):
+    def __init__(self, policy, device, *, max_batch=128, max_tokens=DEFAULT_MAX_TOKENS, deadline_us=0, stats_path=None,
+                 kill_file=None):
         self.policy = str(policy)
         self.device = torch.device(device)
         self.cuda = self.device.type == "cuda"
@@ -648,7 +652,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--authkey-env", metavar="NAME", help="environment variable holding the key as hex digits; it is deleted once read")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda", help="cpu is for the tests alone")
     parser.add_argument("--max-batch", type=int, default=128)
-    parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
+                        help="longest sequence with a captured graph; longer ones take an eager forward and are counted")
     parser.add_argument("--deadline-us", type=int, default=0, help="timed wait for a fuller batch; 0 (default) never waits")
     parser.add_argument("--parent-pid", type=int, help="exit when this process is gone")
     parser.add_argument("--kill-file", help="exit when this file exists")
