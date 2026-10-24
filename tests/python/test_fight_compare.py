@@ -8,6 +8,8 @@ A real difference in an amount must still show up.
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -16,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from tools.fidelity.fight_compare import (  # noqa: E402
-    EMU_RENAME, NOT_POWERS, diff, emu_intent, game_intent, game_powers, power)
+    EMU_RENAME, NOT_POWERS, diff, emu_intent, game_intent, game_powers, power, snake)
 
 
 def emu_powers(bs):
@@ -72,6 +74,33 @@ class PowerListTest(unittest.TestCase):
         self.assertEqual(game_powers([["SELF_FORMING_CLAY_POWER", 3]]), emu_powers([["BlockNextTurn", 3]]))
         self.assertTrue(diff(game_powers([["SELF_FORMING_CLAY_POWER", 3]]), emu_powers([["BlockNextTurn", 6]])), "the amount is compared")
         self.assertTrue(diff(game_powers([["SELF_FORMING_CLAY_POWER", 3]]), emu_powers([])), "the power is compared")
+
+    def test_accuracy_is_the_shiv_damage_buff(self):
+        # AccuracyPower adds its Amount to a Shiv's damage; the emulator keeps it as the ShivDamage buff
+        # (sts2_gym.live.powers BUFF_ALIASES maps the live game's ACCURACY_POWER to it). One power, two names:
+        # without the table entry the emulator side stayed SHIV_DAMAGE against the game's ACCURACY, a first
+        # divergence of vocabulary at every Accuracy play (docs/kits/ShivDamage.md).
+        self.assertEqual(game_powers([["ACCURACY_POWER", 4]]), emu_powers([["ShivDamage", 4]]))
+        self.assertEqual(EMU_RENAME["SHIV_DAMAGE"], "ACCURACY")
+        self.assertTrue(diff(game_powers([["ACCURACY_POWER", 4]]), emu_powers([["ShivDamage", 3]])), "the amount is compared")
+
+    def test_emu_rename_keys_are_buff_ids_and_values_are_game_powers(self):
+        # Guards a typo in an entry: every emulator key is the snake form of a BuffId member
+        # (src/Sts2Emulator/Core/BuffState.cs) and every game value a power of data/id_map.json without _POWER.
+        source = (ROOT / "src" / "Sts2Emulator" / "Core" / "BuffState.cs").read_text(encoding="utf-8")
+        body = source[source.index("public enum BuffId"):]
+        body = body[body.index("{") + 1:body.index("\n}")]
+        members = set()
+        for line in body.splitlines():
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(=\s*-?\d+)?\s*,?$", line.split("//", 1)[0].strip())
+            if m:
+                members.add(snake(m.group(1)))
+        self.assertGreater(len(members), 100)
+        powers = {power(name) for name in json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8"))["powers"]}
+        self.assertTrue(EMU_RENAME)
+        for emu, game in EMU_RENAME.items():
+            self.assertIn(emu, members, f"{emu} is no BuffId")
+            self.assertIn(game, powers, f"{game} is no game power")
 
     def test_a_game_power_of_the_buffs_own_name_joins_the_folded_sum(self):
         # Dodge and Roll (BlockNextTurnPower 5) and a Clay hit the same turn: two game powers, one emulator buff of 8.

@@ -3,7 +3,8 @@
   "emu_rename": {
     "CRIMSON_MANTLE_BLOCK": "CRIMSON_MANTLE",
     "NEXT_TURN_ENERGY": "ENERGY_NEXT_TURN",
-    "NEXT_TURN_DRAW": "DRAW_CARDS_NEXT_TURN"
+    "NEXT_TURN_DRAW": "DRAW_CARDS_NEXT_TURN",
+    "SHIV_DAMAGE": "ACCURACY"
   },
   "_folds": "Game powers the emulator holds in one buff, the summed amounts as they stand. Every subclass of the game's TemporaryStrengthPower (TemporaryDexterityPower, TemporaryFocusPower) is one emulator buff, and the owner sets the direction. SelfFormingClayPower pays unpowered block after the next block clear, as BlockNextTurnPower does, so the emulator holds both in BLOCK_NEXT_TURN: a game BLOCK_NEXT_TURN beside a folded power joins their sum (fight_compare.game_powers, Reanchor.PatchBuffs).",
   "folds": {
