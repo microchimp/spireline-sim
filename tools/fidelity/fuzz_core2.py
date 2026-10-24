@@ -291,13 +291,21 @@ def dll_for(dll: Path, switches: list[str] | None, work: Path) -> Path:
     """The DLL to run for a switch set: the build itself for the migrated file's set, else a scratch copy of the build whose
     migrated_families.json (read from beside the DLL) holds the set. The parent calls this once, before any worker starts, and
     hands the result to the workers (Options.dll): a worker never copies or rewrites a build. The copy is this process's own
-    (its pid is in the name), so two runs over one --out do not meet in it; `drop_build` removes it."""
+    (its pid is in the name), so two runs over one --out do not meet in it; `drop_build` removes it. A directory of that name
+    already there is a leftover of an earlier run that had this pid (a crash, a kill): it is removed first and never reused,
+    whatever it holds (a stale DLL or a stale switch file would run the wrong build). A copy that fails halfway is removed
+    before the error goes on, so no half-made `bin-*` stays behind for a caller that never got a path to drop."""
     if switches is None or sorted(switches) == sorted(migrated(Path(dll).parent / "migrated_families.json")):
         return Path(dll)
     dest = work / f"bin-{'none' if not switches else '-'.join(switches)}-{os.getpid()}"
-    if not (dest / "EmuDump.dll").is_file():
-        shutil.copytree(Path(dll).parent, dest, dirs_exist_ok=True)
-    (dest / "migrated_families.json").write_text(json.dumps({"migrated": sorted(switches)}), encoding="utf-8")
+    if dest.exists():
+        shutil.rmtree(dest)
+    try:
+        shutil.copytree(Path(dll).parent, dest)
+        (dest / "migrated_families.json").write_text(json.dumps({"migrated": sorted(switches)}), encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
     return dest / "EmuDump.dll"
 
 
