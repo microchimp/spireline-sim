@@ -60,6 +60,11 @@ def default_text() -> str:
     return json.dumps({"_note": NOTE, **DEFAULT_MIX}, indent=1) + "\n"
 
 
+def is_idle_note(note: str) -> bool:
+    """True for the note that says weight is idle (unknown strategies): the runner repeats it at every pick."""
+    return " is idle (" in note
+
+
 def parse_mix(text: str) -> tuple[dict[str, float], list[str]]:
     """(weights, notes) from the text of mix.json; the defaults and a note when it cannot be used."""
     notes: list[str] = []
@@ -70,15 +75,23 @@ def parse_mix(text: str) -> tuple[dict[str, float], list[str]]:
     if not isinstance(doc, dict):
         return dict(DEFAULT_MIX), ["mix.json is not an object; using the default mix"]
     weights: dict[str, float] = {}
+    unknown: dict[str, float] = {}  # weight the running code cannot spend: it is dropped, and said so on every pick
     for k, v in doc.items():
         if str(k).startswith("_"):
             continue
         if k not in STRATEGIES:
             notes.append(f"mix.json: unknown strategy {k!r} ignored")
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and v > 0:
+                unknown[k] = float(v)
         elif isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v < 0:
             notes.append(f"mix.json: weight of {k} is not a number of at least 0; {k} will not run")
         else:
             weights[k] = float(v)
+    if unknown:  # never silent: how much of the mix sits idle, and the likely cause
+        total = sum(weights.values()) + sum(unknown.values())
+        notes.append(f"mix.json: {sum(unknown.values()):g} of {total:g} weight ({100 * sum(unknown.values()) / total:.0f}%) is idle "
+                     f"({', '.join(sorted(unknown))} unknown to the running code); the shares below are renormalised without it. "
+                     "A runner started before the strategy was added keeps its old code: restart it")
     if not any(w > 0 for w in weights.values()):
         return dict(DEFAULT_MIX), notes + ["mix.json gives no strategy a weight; using the default mix"]
     return weights, notes

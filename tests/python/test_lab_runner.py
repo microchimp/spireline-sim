@@ -810,6 +810,23 @@ class RunnerCase(unittest.TestCase):
         self.assertEqual([p.name for p in r.lab.root.iterdir() if p.name.endswith(".tmp")], [])
 
 
+    def test_weight_the_running_code_cannot_spend_is_logged_on_every_pick_and_changed_sources_are_flagged(self):
+        r = self.runner()
+        (r.lab.root / "mix.json").write_text(json.dumps({"aimed-bugs": 100, "ghost-a": 15, "ghost-b": 5}), encoding="utf-8")
+        r.unavailable = lambda job, sha, strategy=None: None
+        read = lambda: (r.lab.root / "runner.log").read_text(encoding="utf-8")  # noqa: E731
+        self.assertEqual(r.pick_fights("abc"), ("fights", "aimed-bugs"))
+        r.pick_fights("abc")
+        self.assertEqual(read().count("20 of 120 weight (17%) is idle"), 2)  # every pick, not only the first
+        self.assertIn("restart", read())
+        self.assertNotIn("code on disk changed", read())
+        r.code_digest0 = {**r.code_digest0, "mix.py": 0}  # a lab source on disk is not what this process loaded
+        r.pick_fights("abc")
+        r.pick_fights("abc")
+        self.assertEqual(read().count("code on disk changed"), 1)  # said once per change
+        self.assertIn("(mix.py)", read())
+
+
 @unittest.skipUnless(WIN, "Job Objects are Windows only")
 class JobObjectTest(unittest.TestCase):
     def test_killing_the_owner_from_outside_kills_its_whole_tree(self):
