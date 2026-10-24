@@ -25,6 +25,7 @@ public class PilotTests
     [
         (ListenerKind.Power, "PhantomBladesPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "LethalityPower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -190,5 +191,67 @@ public class PilotTests
     public void LethalityIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Power, "LethalityPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Tracking (power-5)
+
+    /// <summary>The player with Tracking 2 and a Strike in hand, one slug with Weak 1.</summary>
+    private static (CombatState S, CardHandle Card) TrackingCombat(int amount = 2)
+    {
+        var s = Combat(40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Tracking, amount));
+        s.Enemies[0].Buffs.Add(new BuffState(BuffId.Weak, 1));
+        var strike = Add(s, s.Hand, 1);
+        return (s, new CardHandle(strike.Uid));
+    }
+
+    [Fact]
+    public void TrackingIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Pilot), ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void TrackingMultipliesByItsAmountAgainstAWeakTarget()
+    {
+        // game: TrackingPower.ModifyDamageMultiplicative; old: BuffSystem.IncomingDamage multiplies by
+        // Tracking_ModifyDamageMultiplicative(tracking) when the attacker's Tracking > 0 and the defender has Weak.
+        var (s, card) = TrackingCombat();
+        var k = Kernel(s, Pilot);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out var changed);
+
+        Assert.Equal(6m * BuffSystem.Tracking_ModifyDamageMultiplicative(2), v);
+        Assert.Equal(12m, v);
+        Assert.Equal([Power("TrackingPower", 0)], changed);
+        // The same state through the old fold (the player is not Weak, the slug is): 6 x 2 = 12.
+        Assert.Equal(12, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs));
+
+        // Where the condition fails: a target without Weak, an unpowered hit, an enemy dealer, no card source.
+        s.Enemies[0].Buffs.Clear();
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out changed));
+        Assert.Empty(changed);
+        s.Enemies[0].Buffs.Add(new BuffState(BuffId.Weak, 1));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: card), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, card: card), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void TrackingDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, card) = TrackingCombat();
+        var k = Kernel(s, Without(Pilot, TrackingPower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void TrackingIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative);
     }
 }
