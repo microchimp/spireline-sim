@@ -308,15 +308,70 @@ paused and `QUIET.lock` held for the wall-clock rows (coordinated with the week-
 2026-10-24 or any time on the 25th, a couple of hours between blocks). Results hold no host names, user names or
 absolute user paths.
 
-### 9.0 Go/no-go (commit 1, before plumbing)
+### Commands for the lane's window
 
-`--selftest` on the real checkpoint, on the loaded machine: host CPU per replayed batch at batch 1, 4, 8, 32; batches
-per second at saturation; p50/p99 latency with 16 synthetic clients at the demand bound. **Go: <= 1.2 ms host CPU
-per batch at batch <= 8 and >= 1,000 batches per second.** Also measured here: cold and warm time to `READY` (the
-review saw a cold venv-gpu torch + CUDA start take minutes under load; the job tolerates up to 10 minutes and the
-lab's job timeout covers it), the server's RSS and GPU memory.
+Git Bash, in the worktree of the commit under test, lab paused and `QUIET.lock` held (section 9.4's rule). `PY` is the emulator
+venv's python, `GPU` the GPU venv's; `OUT` is any scratch folder outside the repo; `N` is the server count under test.
+
+```
+export STS2_LIB_PATH=D:/spireline/fork/wt-w3-int/out STS2_ALLOW_STALE_NATIVE=1
+PY=D:/spireline/src/sts2/.venv/Scripts/python.exe; GPU=D:/spireline/venv-gpu/Scripts/python.exe; OUT=<scratch folder>
+
+# 9.1 throughput rows (ABAB twice, one fixed seed list)
+$PY rl/prior_bench.py throughput --seeds-file referee/seeds/E0-2026-10-23.json --seeds 48 \
+    --rows "noprior:16,cpu:16,server:16,server:20,server:24" --decisions 100 --repeat 2 \
+    --gpu-python $GPU --json $OUT/throughput.json
+
+# 9.1 full-run A/B, N = the server row with the best wall decisions per second (15 minutes per arm plus the tails)
+$PY rl/prior_bench.py fullrun --stream prior-bench --n 4000 --block-min 15 --procs 16 --server-procs N \
+    --gpu-python $GPU --out $OUT/fullrun --json $OUT/fullrun.json
+
+# 9.1 RAM case (the server is killed after 60 s, and its restart once more, so no worker finds a server again)
+$PY rl/prior_bench.py ram --stream prior-bench --n 4000 --procs N --block-min 4 --after-s 60 \
+    --gpu-python $GPU --out $OUT/ram --json $OUT/ram.json
+
+# 9.3 sample quality on a fresh 1,000-seed block (a name no block has used)
+$PY rl/gen0.py seeds --name Q93-<date> --n 1000 --out $OUT/Q93.json
+$PY rl/prior_bench.py quality --seeds-file $OUT/Q93.json --seeds 1000 --procs 16 --server-procs N \
+    --gpu-python $GPU --out $OUT/quality --json $OUT/quality.json
+
+# 9.2 tolerance (any time, the GPU idles; about a minute): CPU logits from the workers' torch, the server from the GPU venv
+$PY  rl/prior_tolerance.py --shards-glob "D:/spireline/referee/lab/runs/*-selfplay/shards/combat-g3-*.npz" \
+    --policy D:/spireline/referee/agent/gen3/candidate-r1/combat_policy.pt --n 10000 --dump-cpu $OUT/cpu.npy
+$GPU rl/prior_tolerance.py --shards-glob "D:/spireline/referee/lab/runs/*-selfplay/shards/combat-g3-*.npz" \
+    --policy D:/spireline/referee/agent/gen3/candidate-r1/combat_policy.pt --n 10000 --cpu-logits $OUT/cpu.npy --json $OUT/tolerance.json
+```
+
+Each command prints its markdown table and writes numbers only to its JSON (no paths). The arithmetic is tested by
+`$PY -m unittest tests/python/test_prior_bench.py`; a smoke run of every subcommand (2 workers, 2 seeds) is how the tools were
+checked.
+
+### 9.0 Go/no-go (commit 1, before plumbing): measured, GO
+
+`--selftest` on the real checkpoint (generation 3, candidate-r1), measured by the commit-1 worker at ~15:50Z on 2026-10-24 at
+machine load 22-70%. The first draft's line "1,000 batches per second" was a proxy for the quantity that matters (calls the
+server answers per second); it held only at a mean batch of 2-3 and is replaced. **Go: <= 1.2 ms host CPU per replayed batch at
+batch <= 8, and a calls-per-second capacity of at least twice the demand bound (~1,830 calls/s, section 0).**
+
+| quantity | measured |
+|---|---|
+| calls/s, 16 synthetic clients at saturation | 4,898 (mean batch 8, 1.30 ms of whole-process host CPU per batch, client p50 / p99 3.0 / 4.5 ms) |
+| calls/s, 8 clients | 4,134 (0.89 ms per batch) |
+| calls/s, 4 clients | 2,820 (0.48 ms per batch) |
+| graph-replay host CPU per batch | 0.09-0.20 ms at batch 1, 0.19-0.20 at 4, 0.25-0.27 at 8, 0.20-0.41 at 32 |
+| eager forward, host CPU per batch (for comparison) | 2.5-3.4 ms |
+| time to READY, warm, 256 buckets | 12.7-13.7 s (5.4-6.3 s of it capture) |
+| server RSS | 1,245 MiB |
+| GPU memory reserved | 2,216 MiB at 256 buckets, 76 MiB at 48 |
+
+Capacity is 1.3 times what the doubled demand bound asks (4,898 against 3,660 calls/s) and replay CPU at batch <= 8 is at least 4 times under the
+1.2 ms line, so the server proceeds. With the default `--max-tokens 64` (64 buckets) the server's own clock read 6.2-6.5 s to
+READY in the commit-3 runs of 9.2 and the smoke tests (machine load 50-70%); the lane re-measures READY in 9.1. A cold start
+(first venv-gpu torch and CUDA import after a reboot) was not measured here.
 
 ### 9.1 Throughput
+
+*Measured in the lane's window.*
 
 | arm | procs | dec/s (wall, total) | dec per CPU-s incl. server | sims per CPU-s incl. server | server CPU share | server calls/s | mean batch | p50 / p99 call latency |
 |---|---|---|---|---|---|---|---|---|
@@ -335,14 +390,44 @@ server killed mid-block (every worker falls back and loads torch). **Stop rule:*
 +10% wall decisions per second over the CPU-path row at 16 processes, the server does not go to `jobs.json` and the
 lane reports why (the doc keeps the table).
 
-### 9.2 Tolerance
+How the tool measures (`rl/prior_bench.py throughput`): every row plays the same `--seeds` prefix of one seed file, each seed to
+`--decisions` combat decisions, on a fresh spawn pool; every worker runs one warm task (imports, model load, the connection)
+behind a barrier before the timed block. The server arms start one server per row (`require`) and stop it after the row. The
+server's CPU is the difference of its stats file's `host_cpu_s` between the snapshot taken once it has counted exactly the
+warm-up calls and the file it writes at exit; server calls/s and mean batch come from the same two files. The "no prior" arm is
+the same agent without its combat prior. `load` is the OS processor load before and after a row and labels it, nothing more.
+The timed block ends when the last task ends, so a row with few tasks per worker carries a tail: 48 seeds give at least 2 per
+worker up to 24 workers.
 
-10,000 recorded positions (token encodings from the lab's shards, generation 3 window): the CPU path's logits against
-the server's, each position in the bucket its bench batch fell in and alone. Report max and 99.9th percentile of
-|dlogit| at the action slots, the count of argmax flips among positions with a top-2 gap over 1e-5 (must be 0), and
-the same statistics on the float64 probabilities for information.
+### 9.2 Tolerance: measured, PASS (commit 3, `rl/prior_tolerance.py`)
+
+10,000 recorded positions (seed 20261025) drawn without replacement from the newest 11 combat-g3 parts of the lab's
+self-play shards (a 41,956-position pool; 16-58 tokens, mean 26.3), generation 3's `combat_policy.pt`. CPU logits: `PolicyNet`'s
+path (one unpadded sequence, `policy_logits`, one thread) under the emulator venv's torch 2.12.0+cpu, the torch the workers run
+(under the GPU venv's torch 2.14.1 on the CPU the maximum is the same 1.91e-06). GPU logits: a real server over its pipe on
+the RTX 3080 (torch 2.14.1+cu132, TF32 off, 64-token graphs, no position over 64 tokens), asked twice: by 16 client threads
+(1,261 batches of 1-12 rows, mean 7.93: mixed rows, padded token buckets) and one position at a time (10,000 batches of one).
+Differences are taken at the action slots; "gap" is the CPU path's top-2 logit gap.
+
+| | batched, 16 client threads | alone, bucket of one |
+|---|---|---|
+| max abs dlogit | 1.91e-06 | 1.91e-06 |
+| 99.9th percentile abs dlogit (61,937 action slots) | 1.43e-06 | 1.43e-06 |
+| mean of the per-position maximum | 4.86e-07 | 4.90e-07 |
+| slots finite in one path only | 0 | 0 |
+| argmax flips, positions with gap > 1e-5, all action slots | 0 of 8,336 | 0 of 8,336 |
+| argmax flips, same, legal slots only | 0 of 8,319 | 0 of 8,319 |
+| flips among the 1,664 positions with no gap over 1e-5 (ties or near-ties, not counted) | 0 | 0 |
+| float64 `legal_weights`: max abs dp / 99.9th percentile | 4.19e-07 / 2.81e-07 | 4.72e-07 / 2.87e-07 |
+| float64 probability argmax flips (gap > 1e-5) | 0 of 8,319 | 0 of 8,319 |
+
+The server against itself (batched against alone, the bucket-to-bucket spread) is at most 1.19e-06. The gate of section 5
+(max abs dlogit <= 1e-4, no flip above a 1e-5 gap) holds with a factor 52 to spare, so TF32 or a wrong kernel would show; the
+last-bit differences are the fp32 rounding section 5 expects, and no position is decided differently by the bucket it fell in.
 
 ### 9.3 Sample quality (the transport must not be a promotable change)
+
+*Measured in the lane's window.*
 
 Two arms on one fresh 1,000-seed block, same agent and config, one on the CPU path at 16 processes and one on the
 server at its process count:
@@ -354,6 +439,16 @@ server at its process count:
    when the interval lies inside +-2 SE and the point estimate is within 0.1 floor; boss kills by two-sided exact
    McNemar not significant at 0.05; sims per decision and decisions per run within 2%. (`compare_arms` gives only
    the judge's one-sided lower bound, which is not the statistic here.)
+
+How the tool measures (`rl/prior_bench.py quality`): both arms play with `record=True`, and identity is reported on three levels:
+the run's row (`decisions`, `combat_decisions`, `sims`, `floor`, `end`), the RunRecord (its `decisions` and `fights`, wall-clock
+fields left out) and the search itself (a digest of each combat sample's tokens, root visit counts and simulation count, in
+order). The first diverging floor is that of the first search that differs, else of the first differing record entry. The
+statistics are the ones above: the paired floor difference with a two-sided 95% cluster-bootstrap interval (10,000 draws, fixed
+seed) and its standard error, the verdict, the two-sided exact McNemar on Act-1 boss kills, and the two ratios. Reading the
+verdict: a 95% interval is about +-1.96 SE wide, so "inside +-2 SE" is nearly automatic and bootstrap noise alone can fail it by
+a hair; the binding conditions are |d| < 0.1 floor and the two 2% ratios, and a verdict that fails only on the 2 SE bound is a
+rerun with more draws, not a transport defect.
 
 ### 9.4 One generation through the judge
 
@@ -419,3 +514,7 @@ Opus-equivalent rounds; commits 1-3 ~7 Sonnet rounds with reviews and amends; 4 
   score arm and lockstep test, logs without tracebacks, real-row padding, the card-table hash, `policy_logits`,
   warm every bucket before `READY`). Unsupported "measured" claims of the draft were reworded or dropped (CUDA
   context size, Python per call, torch import cost, GPU point readings, "dispatch-bound").
+- **2026-10-25, commit 3 (tools, measured 9.0 and 9.2):** `rl/prior_bench.py` (throughput, fullrun, ram, quality),
+  `rl/prior_tolerance.py`, `tests/python/test_prior_bench.py`. 9.0 restated in calls per second and filled from commit 1's
+  selftest; 9.2 measured on the GPU and passes with a factor 52 to spare (max abs dlogit 1.91e-06, 0 flips of 8,336). 9.1 and
+  9.3 wait for the lane's window; their commands are in section 9.
