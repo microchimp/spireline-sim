@@ -2610,7 +2610,7 @@ public static class RunNonCombatEffects
     ///
     /// <c>LoseMaxHpAndUpgrade</c> also kills outright when the price is not less than Max
     /// HP -- it takes MaxHp - 1 and then calls Kill -- so a tablet the run cannot afford
-    /// ends it.
+    /// ends it, unless the same Kill's death hooks refuse (a Fairy in the belt).
     /// </summary>
     public static void Decipher(RunState state)
     {
@@ -2620,6 +2620,7 @@ public static class RunNonCombatEffects
         if (lethal)
         {
             state.PlayerHp = 0;
+            TryPreventDeath(state);
             return;
         }
 
@@ -3510,6 +3511,45 @@ public static class RunNonCombatEffects
         }
 
         state.PlayerHp = Math.Max(0, state.PlayerHp - amount);
+        // At the lethal hit, before whatever the caller does next: an option's gold or potion
+        // offer lands on the revived player, as it does in the game.
+        TryPreventDeath(state);
+    }
+
+    /// <summary>FairyInABottle, looked up by name rather than pinned to an id, as CombatEngine does.</summary>
+    private static readonly int FairyInABottlePotionId =
+        GeneratedData.Potions.FindId("FairyInABottle")
+        ?? throw new InvalidOperationException("No potion named FairyInABottle");
+
+    /// <summary>
+    /// The run layer's half of Fairy in a Bottle. The potion is a creature-level death hook:
+    /// <c>ShouldDie</c> answers false for its owner and <c>AfterPreventingDeath</c> runs its
+    /// <c>OnUse</c>, <c>Max(MaxHp * 0.3, 1)</c> HP with the potion spent, asked at
+    /// <c>CreatureCmd.Kill</c> for any lethal damage -- an event's <c>CreatureCmd.Damage</c> as
+    /// much as a hit in a fight. Combat has its copy in <c>CombatEngine.PlayerIsDead</c>; the
+    /// run layer had none, so a lethal event option left the run dead with the Fairy still in
+    /// the belt (lockstep record BZT5HAF5P2#84, the Jungle Maze Adventure's solo quest).
+    /// Lizard Tail is not modelled outside a fight, and Red Skull's arming is a combat power,
+    /// so nothing else answers the HP change here. The step-end check in
+    /// <c>RunEngine.Step</c> stays the last guard, for a death nothing prevents.
+    /// </summary>
+    /// <returns>Whether a death was prevented.</returns>
+    public static bool TryPreventDeath(RunState state)
+    {
+        if (state.PlayerHp > 0)
+        {
+            return false;
+        }
+
+        int slot = Array.IndexOf(state.PotionSlots, FairyInABottlePotionId);
+        if (slot < 0)
+        {
+            return false;
+        }
+
+        state.PotionSlots[slot] = 0;
+        state.PlayerHp = Math.Max((int)(state.PlayerMaxHp * 0.3m), 1);
+        return true;
     }
 
     /// <summary>

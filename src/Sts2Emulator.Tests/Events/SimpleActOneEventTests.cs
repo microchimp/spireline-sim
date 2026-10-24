@@ -1,5 +1,6 @@
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
+using Sts2Emulator.GeneratedData;
 using Xunit;
 
 namespace Sts2Emulator.Tests;
@@ -178,6 +179,84 @@ public class SimpleActOneEventTests
 
         Assert.Equal(64, engine.State.PlayerHp);
         Assert.Equal(99 + joint, engine.State.Gold);
+    }
+
+    /// <summary>
+    /// The solo quest's damage is a <c>CreatureCmd.Damage</c>, and Fairy in a Bottle is a
+    /// creature-level death hook: <c>ShouldDie</c> answers false for its owner and
+    /// <c>AfterPreventingDeath</c> runs its <c>OnUse</c>, 30% of max HP (at least 1) with the
+    /// potion spent. So it answers a lethal event the same as a lethal hit, and the option's
+    /// gold is paid to the revived player; the run ends only when nothing prevents the death.
+    /// Lockstep record BZT5HAF5P2#84: the game stood at 24 of 80 in the next room, the
+    /// emulator lay dead on this floor with the Fairy still in its belt.
+    /// </summary>
+    [Fact]
+    public void JungleMazeSoloQuestWithAFairyRevivesInsteadOfEndingTheRun()
+    {
+        var engine = At(RunConstants.EventJungleMazeAdventure);
+        engine.State.PlayerMaxHp = 80;
+        engine.State.PlayerHp = 18;
+        engine.State.PotionSlots[0] = Potions.FindId("FairyInABottle")!.Value;
+        int solo = RunNonCombatEffects.JungleMazeSoloGold(engine.State);
+
+        Assert.Equal(0, engine.Step(0, -1, out _, out bool terminal, out _));
+
+        Assert.False(terminal);
+        Assert.Equal(24, engine.State.PlayerHp);
+        Assert.Equal(0, engine.State.PotionSlots[0]);
+        Assert.Equal(99 + solo, engine.State.Gold);
+        Assert.Equal(RunPhase.Event, engine.State.Phase);
+        Assert.Equal(RunConstants.EventResultPending, engine.State.EventId);
+    }
+
+    /// <summary>Without the potion the same damage ends the run: the guard the revive stands in front of.</summary>
+    [Fact]
+    public void JungleMazeSoloQuestWithoutAFairyEndsTheRun()
+    {
+        var engine = At(RunConstants.EventJungleMazeAdventure);
+        engine.State.PlayerMaxHp = 80;
+        engine.State.PlayerHp = 18;
+
+        Assert.Equal(0, engine.Step(0, -1, out _, out bool terminal, out _));
+
+        Assert.True(terminal);
+        Assert.Equal(0, engine.State.PlayerHp);
+        Assert.Equal(RunPhase.Complete, engine.State.Phase);
+        Assert.False(engine.State.LastPlayerWon);
+    }
+
+    // ── The Legends Were True ────────────────────────────────────────────────
+
+    /// <summary>
+    /// The same hook at another event: Slowly Find an Exit's damage may be lethal, and with a
+    /// Fairy the player stands back up BEFORE the option rolls its potion, so with a full belt
+    /// the Fairy's slot is the one the offered potion can land in.
+    /// </summary>
+    [Fact]
+    public void LegendsSlowExitWithAFairyRevivesAndTheOfferedPotionTakesItsSlot()
+    {
+        var engine = At(RunConstants.EventTheLegendsWereTrue);
+        engine.State.PlayerMaxHp = 80;
+        engine.State.PlayerHp = 8;
+        int fairy = Potions.FindId("FairyInABottle")!.Value;
+        for (int i = 0; i < engine.State.MaxPotionSlots; i++)
+        {
+            engine.State.PotionSlots[i] = fairy; // a full belt: only a spent slot can take the offer
+        }
+
+        Assert.Equal(0, engine.Step(1, -1, out _, out bool terminal, out _));
+
+        Assert.False(terminal);
+        Assert.Equal(24, engine.State.PlayerHp);
+        Assert.Equal(0, engine.State.PotionSlots[0]);
+        Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
+        int offered = engine.State.RewardPotion;
+        Assert.NotEqual(0, offered);
+
+        Assert.Equal(0, engine.Step(0, -1, out _, out terminal, out _));
+
+        Assert.False(terminal);
+        Assert.Equal(offered, engine.State.PotionSlots[0]);
     }
 
     // ── Dense Vegetation ─────────────────────────────────────────────────────
