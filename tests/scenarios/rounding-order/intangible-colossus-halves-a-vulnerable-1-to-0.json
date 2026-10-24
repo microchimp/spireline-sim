@@ -1,0 +1,24 @@
+{
+  "name": "rounding-order/intangible-colossus-halves-a-vulnerable-1-to-0",
+  "source": "game: Hook.ModifyDamage (one decimal through the additive and multiplicative modifiers, the caps after, one int cast)",
+  "doc": "COLOSSUS_POWER halves damage from a VULNERABLE_POWER attacker: 1 x 0.5 = 0.5 -> 0.",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "NIBBITS_WEAK", "act": "OVERGROWTH", "kind": "weak", "index": 1},
+    "relics": [],
+    "deck": ["DEFEND_IRONCLAD"],
+    "powers": [
+      {"id": "STRENGTH_POWER", "target": "enemy:0", "amount": -12},
+      {"id": "INTANGIBLE_POWER", "target": "player", "amount": 2},
+      {"id": "COLOSSUS_POWER", "target": "player", "amount": 1},
+      {"id": "VULNERABLE_POWER", "target": "enemy:0", "amount": 2}
+    ]
+  },
+  "actions": [{"do": "end_turn", "name": "enemy_turn"}],
+  "expect": [
+    {"path": "snapshot.player.hp", "equals": 80, "at": "start"},
+    {"path": "snapshot.player.hp", "delta_from": "start", "equals": 0}
+  ]
+}

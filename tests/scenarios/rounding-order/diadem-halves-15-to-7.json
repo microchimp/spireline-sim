@@ -1,0 +1,22 @@
+{
+  "name": "rounding-order/diadem-halves-15-to-7",
+  "source": "game: Hook.ModifyDamage (one decimal through the additive and multiplicative modifiers, the caps after, one int cast)",
+  "doc": "15 x 0.5 = 7.5 -> 7.",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "NIBBITS_WEAK", "act": "OVERGROWTH", "kind": "weak", "index": 1},
+    "relics": [],
+    "deck": ["DEFEND_IRONCLAD"],
+    "powers": [
+      {"id": "STRENGTH_POWER", "target": "enemy:0", "amount": 2},
+      {"id": "DIAMOND_DIADEM_POWER", "target": "player", "amount": 1}
+    ]
+  },
+  "actions": [{"do": "end_turn", "name": "enemy_turn"}],
+  "expect": [
+    {"path": "snapshot.player.hp", "equals": 80, "at": "start"},
+    {"path": "snapshot.player.hp", "delta_from": "start", "equals": -7}
+  ]
+}

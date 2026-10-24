@@ -1,0 +1,20 @@
+{
+  "name": "regression/burning-blood-heals-6-after-victory",
+  "source": "game: Hook.AfterCombatVictory",
+  "doc": "BURNING_BLOOD heals 6 once the fight is won: 40 -> 46.",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "NIBBITS_WEAK", "act": "OVERGROWTH", "kind": "weak", "index": 1},
+    "relics": ["BURNING_BLOOD"],
+    "deck": ["STRIKE_IRONCLAD"],
+    "hp": {"max": 80, "current": 40},
+    "powers": [{"id": "STRENGTH_POWER", "target": "player", "amount": 50}]
+  },
+  "actions": [{"do": "play", "card": "STRIKE_IRONCLAD", "target": 0, "name": "kill"}],
+  "expect": [
+    {"path": "snapshot.enemies#len", "equals": 0},
+    {"path": "snapshot.player.hp", "equals": 46}
+  ]
+}

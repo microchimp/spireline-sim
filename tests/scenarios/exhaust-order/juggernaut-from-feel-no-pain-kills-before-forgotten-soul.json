@@ -1,0 +1,23 @@
+{
+  "name": "exhaust-order/juggernaut-from-feel-no-pain-kills-before-forgotten-soul",
+  "source": "game: Hook.AfterCardExhausted via CombatState.IterateHookListeners (the owner's powers before its relics)",
+  "doc": "FEEL_NO_PAIN_POWER's block sets off JUGGERNAUT_POWER first and its hit kills the lone enemy: the fight is ending, so FORGOTTEN_SOUL has no target and rolls nothing (one CombatTargets draw, JUGGERNAUT_POWER's). Run the other way round, FORGOTTEN_SOUL rolls first.",
+  "xfail_engines": {"old": "old runs the relics' AfterCardExhausted before the owner's powers (hook_open: order play_effect AfterCardExhausted kind relic>power, fix/exhaust-listener-order 2fcefac9 not landed).", "core2": "old runs the relics' AfterCardExhausted before the owner's powers (hook_open: order play_effect AfterCardExhausted kind relic>power, fix/exhaust-listener-order 2fcefac9 not landed); core2 runs old's rules until its family switch is on (migrated_families.json), so it fails the same way."},
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "NIBBITS_WEAK", "act": "OVERGROWTH", "kind": "weak", "index": 1},
+    "relics": ["FORGOTTEN_SOUL"],
+    "deck": ["BURNING_PACT", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"],
+    "powers": [
+      {"id": "FEEL_NO_PAIN_POWER", "target": "player", "amount": 3},
+      {"id": "JUGGERNAUT_POWER", "target": "player", "amount": 99}
+    ]
+  },
+  "actions": [{"do": "play", "card": "BURNING_PACT", "answers": [{"pick": ["DEFEND_IRONCLAD"]}]}],
+  "expect": [
+    {"path": "snapshot.rng.CombatTargets.counter", "delta_from": "start", "equals": 1},
+    {"path": "snapshot.enemies#len", "equals": 0}
+  ]
+}

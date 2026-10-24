@@ -1,0 +1,19 @@
+{
+  "name": "regression/strength-adds-before-vulnerable-multiplies",
+  "source": "game: Hook.ModifyDamage",
+  "doc": "(6 + 2) x 1.5 = 12.",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "HUNTER_KILLER", "act": "HIVE", "kind": "normal", "index": 3},
+    "relics": [],
+    "deck": ["STRIKE_IRONCLAD"],
+    "powers": [
+      {"id": "STRENGTH_POWER", "target": "player", "amount": 2},
+      {"id": "VULNERABLE_POWER", "target": "enemy:0", "amount": 2}
+    ]
+  },
+  "actions": [{"do": "play", "card": "STRIKE_IRONCLAD", "target": 0, "name": "hit"}],
+  "expect": [{"path": "snapshot.enemies[0].hp", "delta_from": "start", "equals": -12}]
+}
