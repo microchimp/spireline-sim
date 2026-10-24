@@ -5649,9 +5649,7 @@ public static class CombatEngine
             return false;
         }
 
-        var def = GeneratedData.Enemies.Get(KE.Axebot);
-        var band = def.HpBand(ascension);
-        int respawnHp = rng.Next(band.Min, band.Max + 1);
+        int respawnHp = RollAxebotRespawnHp(rng, ascension);
         if (state is not null && Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
         {
             Core2.CreatureCmd.SetMaxAndCurrentHp(core2, Core2.OldCreature.Of(enemy), respawnHp);
@@ -5661,6 +5659,37 @@ public static class CombatEngine
             enemy.Hp = respawnHp;
             enemy.MaxHp = enemy.Hp;
         }
+        StartRespawnedAxebot(enemy, stock, ascension);
+        return true;
+    }
+
+    /// <summary>
+    /// The HP a respawned Axebot rolls: a flat draw over its band off the stream handed in (the old in-place respawn's
+    /// draw). game: CombatState.CreateCreature rolls the new Axebot's HP with SetUniqueMonsterHpValue on the run's Niche
+    /// stream (docs/rebuild/MIGRATION_F08.md, batch L3b's R7 checks).
+    /// </summary>
+    internal static int RollAxebotRespawnHp(Random rng, int ascension)
+    {
+        var def = GeneratedData.Enemies.Get(KE.Axebot);
+        var band = def.HpBand(ascension);
+        return rng.Next(band.Min, band.Max + 1);
+    }
+
+    /// <summary>
+    /// game: StockPower.AfterDeath's new Axebot (StockAmount = Amount - 1), as the old state holds one: a fresh creature
+    /// at <paramref name="hp" /> in the state the old in-place respawn leaves the revived bot in
+    /// (<see cref="StartRespawnedAxebot" />). Core2's Stock handler lists it with CreatureCmd.Add.
+    /// </summary>
+    internal static EnemyState NewRespawnedAxebot(int stock, int hp, int ascension)
+    {
+        var bot = new EnemyState { DefId = KE.Axebot, Hp = hp, MaxHp = hp, Buffs = [] };
+        StartRespawnedAxebot(bot, stock, ascension);
+        return bot;
+    }
+
+    /// <summary>What a respawned Axebot starts from, given the <paramref name="stock" /> its predecessor held.</summary>
+    private static void StartRespawnedAxebot(EnemyState enemy, int stock, int ascension)
+    {
         enemy.Block = 0;
         enemy.MoveIndex = 0;
         // `StockPower.AfterDeath` adds a NEW Axebot in the slot -- `ModelDb.Monster<Axebot>()
@@ -5682,8 +5711,6 @@ public static class CombatEngine
         {
             BuffSystem.Apply(enemy.Buffs, BuffId.Stock, stock - 1);
         }
-
-        return true;
     }
 
     /// <summary>
