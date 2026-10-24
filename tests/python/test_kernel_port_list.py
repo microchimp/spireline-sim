@@ -53,7 +53,7 @@ class PortListTests(unittest.TestCase):
         self.assertEqual(self.hooks, {"ModifyDamageMultiplicative": "F08", "AfterDeath": "F10", "AfterCombatEnd": "F10",
                                       **pseudo})
         self.assertEqual(pl.family_hooks(FAM_DOC, ["F08"]), {"ModifyDamageMultiplicative": "F08"})
-        b = pl.family_hooks(FAM_DOC, ["F08", "F10"], pl.F17_RECUT)
+        b = pl.family_hooks(FAM_DOC, ["F08", "F10"], ("AfterCombatEnd",))
         self.assertNotIn("AfterCombatEnd", b)
         self.assertIn("AfterDeath", b)
 
@@ -171,22 +171,34 @@ class GateTests(unittest.TestCase):
             self.assertEqual(pl.ported(Path(d)), {("RavenousPower", "AfterDeath"), ("Hopper", "BeforeRemovedFromRoom")})
             self.assertEqual(pl.ported(Path(d) / "gone"), set())
 
-    def test_open_pairs_count_open_missing_unmatched_less_ported(self):
+    def test_unported_pairs_count_every_pair_without_a_handler_but_not_modelled_ones(self):
         doc = pl.build(ROWS, MODELS, pl.family_hooks(FAM_DOC, ["F08", "F10"]))
-        self.assertEqual(sorted(pl.open_pairs(doc["items"])), [("badge:SOME_BADGE", "AfterDeath", "missing"),
-                                                               ("power:RAVENOUS_POWER", "AfterDeath", "open"),
-                                                               ("relic:NO_ROW", "AfterDeath", "unmatched")])
-        self.assertEqual(len(pl.open_pairs(doc["items"], {("RavenousPower", "AfterDeath")})), 2)
+        got = sorted(pl.unported_pairs(doc["items"]))
+        statuses = {(m, h): s for m, h, s in got}
+        self.assertEqual(statuses[("badge:SOME_BADGE", "AfterDeath")], "missing")
+        self.assertEqual(statuses[("power:RAVENOUS_POWER", "AfterDeath")], "open")
+        self.assertEqual(statuses[("relic:NO_ROW", "AfterDeath")], "unmatched")
+        self.assertNotIn(("relic:BURNING_BLOOD", "AfterCombatEnd"), statuses)  # not modelled: no handler wanted
+        self.assertEqual(len(pl.unported_pairs(doc["items"], {("RavenousPower", "AfterDeath")})), len(got) - 1)
+
+    def test_a_registered_pair_without_a_core2_handler_is_unported_until_its_handler_exists(self):
+        rows = [ht.Row("RavenousPower", "power", "AfterDeath", "registered", ["CombatEngine.AnswerDeaths:4402"], "", [])]
+        models = {"power:RAVENOUS_POWER": model("power", "RavenousPower", ["AfterDeath"], 9)}
+        doc = pl.build(rows, models, pl.family_hooks(FAM_DOC, ["F10"]))
+        self.assertEqual(pl.unported_pairs(doc["items"]), [("power:RAVENOUS_POWER", "AfterDeath", "registered")])
+        self.assertEqual(pl.unported_pairs(doc["items"], {("RavenousPower", "AfterDeath")}), [])
+        self.assertEqual(pl.unported_pairs(doc["items"], {("RavenousPower", "AfterAttack")}),
+                         [("power:RAVENOUS_POWER", "AfterDeath", "registered")])
 
     def test_gate_exit_code(self):
-        doc = {"items": [], "unmatched": [], "families": ["F10"], "excluded": [], "summary": {}, "batches": [], "open": []}
+        doc = {"items": [], "unmatched": [], "families": ["F10"], "excluded": [], "summary": {}, "batches": [], "unported": []}
         orig = pl.make
         with tempfile.TemporaryDirectory() as d:
             md = str(Path(d) / "pl.md")
             try:
                 pl.make = lambda *a, **k: dict(doc)
                 self.assertEqual(pl.main(["--families", "F10", "--gate", "--md", md]), 0)
-                pl.make = lambda *a, **k: dict(doc, open=[["power:X", "AfterDeath", "open"]])
+                pl.make = lambda *a, **k: dict(doc, unported=[["power:X", "AfterDeath", "registered"]])
                 self.assertEqual(pl.main(["--families", "F10", "--md", md]), 0)
                 self.assertEqual(pl.main(["--families", "F10", "--gate", "--md", md]), 1)
             finally:

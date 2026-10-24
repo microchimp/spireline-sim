@@ -12,8 +12,9 @@ and the batch it is ported in. Batches are per kind (power, relic, card, monster
 
 Pseudo-hooks (``PSEUDO_HOOKS``) are the kill sequence's model calls that are not AbstractModel hooks (a MonsterModel
 or PowerModel virtual, or the creature's ``Died`` event a monster subscribes to); they are listed like hooks of their
-family so their models are ported in the same batches. ``--gate`` exits 1 while any listed (model, hook) pair is open,
-missing or unmatched and has no Core2 handler (``Core2/Models``): the switch-on gate of the migration.
+family so their models are ported in the same batches. ``--gate`` exits 1 while any listed (model, hook) pair has
+no Core2 handler (``Core2/Models``) and is not ``not_modelled``: a registered pair (the old engine has a location for it)
+is unported until its handler is in the HandlerTable. That is the switch-on gate of the migration.
 """
 from __future__ import annotations
 
@@ -35,9 +36,6 @@ MANIFEST = Path(os.environ.get("SPIRELINE_REBUILD", r"D:\spireline\referee\rebui
 BATCH_KINDS = ("power", "relic", "card", "monster", "potion")
 SOURCES = ("corpus_fights", "agent_runs", "lab_fights", "codex_runs")
 CORE2_MODELS = ROOT / "src" / "Sts2Emulator" / "Core2" / "Models"
-# Hooks that leave F10 under the migration's option B (MIGRATION_F08.md section 2): pass to --exclude-hooks until the
-# re-cut lands in hook_families.json.
-F17_RECUT = ("AfterCombatEnd", "AfterCombatVictory", "AfterCombatVictoryEarly")
 # The kill sequence's non-hook model calls: name -> (family, kind of the declaring model, how a model takes part).
 PSEUDO_HOOKS = {
     "BeforeRemovedFromRoom": ("F10", "monster", "override"),        # MonsterModel virtual, CombatManager.RemoveCreature
@@ -45,7 +43,8 @@ PSEUDO_HOOKS = {
     "AfterRemoved": ("F10", "power", "override"),                  # PowerModel virtual, after each removed power
     "Died": ("F10", "monster", "event"),                           # Creature.Died, raised before the removal query
 }
-OPEN_STATUSES = ("open", "missing", "unmatched")
+# The one status that needs no Core2 handler: no state change to port, or multiplayer only (hook_unmodelled.json).
+NO_HANDLER = "not_modelled"
 # A value hook (Modify*, Should*) only reads its model; a location whose statement writes the model's buff is where the
 # old engine applies the power (EnemyAI.TriggerSuck applying Strength), not where it folds it in.
 BUFF_WRITE = re.compile(r"BuffSystem\.(?:Apply|Remove)\(|\bBuffs\[[^\]]*\]\s*[-+*]?=(?!=)")
@@ -143,10 +142,11 @@ def ported(models_dir: Path = CORE2_MODELS) -> set[tuple[str, str]]:
     return out
 
 
-def open_pairs(items: list[dict], done: set[tuple[str, str]] = frozenset()) -> list[tuple[str, str, str]]:
-    """(model, hook, status) of every listed pair that is open, missing or unmatched and has no Core2 handler."""
+def unported_pairs(items: list[dict], done: set[tuple[str, str]] = frozenset()) -> list[tuple[str, str, str]]:
+    """(model, hook, status) of every listed pair that has no Core2 handler and is not ``not_modelled``. A registered pair
+    counts: the old engine has a location for it, but the switch needs the handler in Core2's HandlerTable."""
     return [(i["model"], h["hook"], h["status"]) for i in items for h in i["hooks"]
-            if h["status"] in OPEN_STATUSES and (i["class"], h["hook"]) not in done]
+            if h["status"] != NO_HANDLER and (i["class"], h["hook"]) not in done]
 
 
 def reach(entry: dict) -> tuple[int, ...]:
@@ -231,7 +231,7 @@ def render_md(doc: dict) -> str:
     for h in pairs:
         st[h["status"]] = st.get(h["status"], 0) + 1
     L += [f"{len(pairs)} (model, hook) pairs ({sum(1 for h in pairs if h.get('pseudo'))} pseudo-hook): "
-          + ", ".join(f"{k} {v}" for k, v in sorted(st.items())) + f"; gate: {len(doc.get('open', []))} open pairs.", ""]
+          + ", ".join(f"{k} {v}" for k, v in sorted(st.items())) + f"; gate: {len(doc.get('unported', []))} pairs without a Core2 handler.", ""]
     if doc["unmatched"]:
         L += [f"Unmatched (manifest model with no decompile row): {', '.join(doc['unmatched'])}", ""]
     for b in doc["batches"]:
@@ -261,7 +261,7 @@ def make(families: list[str], size: int, manifest_path: Path, decompiled: str, e
     got = build(rows, models, hooks)
     got["families"] = list(families)
     got["excluded"] = sorted(exclude)
-    got["open"] = [list(p) for p in open_pairs(got["items"], ported())]
+    got["unported"] = [list(p) for p in unported_pairs(got["items"], ported())]
     got["summary"] = summary(got["items"])
     got["batches"] = batches(got["items"], size)
     return got
@@ -275,8 +275,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--decompiled", default=ht.DEFAULT_DECOMPILED)
     ap.add_argument("--md", type=Path)
     ap.add_argument("--json", type=Path)
-    ap.add_argument("--exclude-hooks", nargs="*", default=[], help=f"hooks to leave out (option B: {' '.join(F17_RECUT)})")
-    ap.add_argument("--gate", action="store_true", help="exit 1 while any pair is open, missing or unmatched")
+    ap.add_argument("--exclude-hooks", nargs="*", default=[], help="hooks to leave out of the list")
+    ap.add_argument("--gate", action="store_true", help="exit 1 while any pair has no Core2 handler and is not not_modelled")
     a = ap.parse_args(argv)
     doc = make(a.families, a.size, a.manifest, a.decompiled, a.exclude_hooks)
     if a.json:
@@ -286,8 +286,8 @@ def main(argv: list[str] | None = None) -> int:
         a.md.write_text(md, encoding="utf-8")
     else:
         sys.stdout.write(md)
-    if a.gate and doc["open"]:
-        sys.stderr.write(f"gate: {len(doc['open'])} open (model, hook) pairs\n")
+    if a.gate and doc["unported"]:
+        sys.stderr.write(f"gate: {len(doc['unported'])} (model, hook) pairs without a Core2 handler\n")
         return 1
     return 0
 
