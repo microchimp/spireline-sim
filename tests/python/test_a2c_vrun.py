@@ -131,3 +131,95 @@ class MacroSwitchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------------ amend: the real-game arm plays the scored agent's macro policy
+
+import os  # noqa: E402
+import shutil  # noqa: E402
+from unittest import mock  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "referee"))
+import lockstep  # noqa: E402
+
+try:
+    import leakprobes  # noqa: E402
+
+    leakprobes.native_env()
+    from sts2_gym import native  # noqa: E402,F401
+
+    HAVE_NATIVE = True
+except Exception:  # noqa: BLE001 -- no native library: the lockstep tests are skipped
+    HAVE_NATIVE = False
+
+
+def vrun_agent_dir(root: Path) -> Path:
+    """A generation directory whose agent.json says macro vrun, with a loadable run_value.npz (fresh nets)."""
+    import torch  # noqa: PLC0415
+
+    from run_train import models  # noqa: PLC0415
+
+    d = root / "gen4" / "candidate"
+    d.mkdir(parents=True)
+    torch.manual_seed(3)
+    npz = models.save(root / "learner.pt", models.FightNet(), models.RunValueNet(), {"generation": 4})
+    (d / "run_value.npz").write_bytes(Path(npz).read_bytes())
+    (d / "agent.json").write_text(json.dumps({"generation": 4, "macro": "vrun"}), encoding="utf-8")
+    return d
+
+
+def walk(e, steps: int = 8):
+    """The lockstep's own macro picks from the run's start to its first fight (EmuLock.choose / the fast-forward's call)."""
+    picks = []
+    for _ in range(steps):
+        d = e._decision()
+        if d is None:
+            break
+        i = e.rules.pick(e.s.view(), d, e.rng).index
+        picks.append((d.type, i))
+        e.s.apply(d.options[i])
+    return picks, e.rng.bit_generator.state
+
+
+@unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")
+class LockstepMacroPolicyTests(unittest.TestCase):
+    """score-real's lockstep (referee/lockstep.py EmuLock) plays the macro policy of the agent SPIRELINE_GEN_DIR names, as
+    the emulator arm (gen0.play_emu_run -> Agent.macro_policy) does; generation 0 when the variable is unset."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(gen_loop.ENV_GEN_DIR, None)
+
+    def lock(self):
+        e = lockstep.EmuLock("QS2GYXRKWN", sims=2, agent_seed=[11])
+        self.addCleanup(e.close)
+        return e
+
+    def test_without_a_generation_the_lockstep_plays_the_rules_exactly_as_before(self):
+        from run_train import selfplay  # noqa: PLC0415
+
+        new = self.lock()
+        old = self.lock()
+        old.rules = selfplay.RulesPlayer()  # the player the lockstep hard-coded before the amend
+        self.assertIsInstance(new.rules, selfplay.RulesPlayer)
+        self.assertEqual(new.rules.eps, 0.0)
+        a, b = walk(new), walk(old)
+        self.assertGreater(len(a[0]), 0)
+        self.assertEqual(a, b)  # same picks, same exploration stream state
+
+    def test_a_vrun_agent_named_by_spireline_gen_dir_makes_the_lockstep_play_its_lookahead(self):
+        from run_train.policy import LookaheadPolicy  # noqa: PLC0415
+
+        os.environ[gen_loop.ENV_GEN_DIR] = str(vrun_agent_dir(self.tmp))
+        e = self.lock()
+        self.assertIsInstance(e.rules, LookaheadPolicy)
+        self.assertEqual((e.rules.tau, e.rules.eps), (0.0, 0.0))
+        before = e.rng.bit_generator.state
+        picks, after = walk(e)
+        self.assertGreater(len(picks), 0)
+        self.assertTrue(any(p[0] == "map" for p in picks))
+        self.assertEqual(after, before)  # tau = eps = 0 is argmax: the lookahead draws nothing from the exploration stream

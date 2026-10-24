@@ -119,6 +119,12 @@ class ScorePairsWithTheAgentsOwnEmulatorArmTests(unittest.TestCase):
         self.assertEqual(len(self.played), 1)
         self.assertEqual(self.played[0][3], 0)
 
+    def test_an_emulator_arm_played_under_another_macro_policy_is_replayed(self):
+        vrun = _emu_arm(self.tmp / "e3v", {"generation": 3, "prior_sha256": "sha-gen3", "prior": True, "macro": "vrun"})
+        _, summ, _ = self._score(_args(self.tmp, self.gen3, vrun))
+        self.assertEqual(len(self.played), 1)
+        self.assertIn("macro", summ["emu_arm"]["reason"])
+
     def test_emu_arm_match_reports_why(self):
         ok, why = gen0.emu_arm_match(self.tmp / "nope", {"generation": 1})
         self.assertFalse(ok)

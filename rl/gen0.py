@@ -439,7 +439,7 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
 
 def emu_arm_match(emu_dir: str | Path | None, agent: dict) -> tuple[bool, str]:
     """Whether a finished emulator arm in `emu_dir` was played by `agent` (an `Agent.describe()` dict): its summary.json names the
-    same generation and combat-prior sha. Returns (matches, why); a missing dir, runs file, summary or agent name is a mismatch."""
+    same generation, combat-prior sha and macro policy. Returns (matches, why); a missing dir, runs file, summary or agent name is a mismatch."""
     if not emu_dir:
         return False, "no emulator dir given"
     d = Path(emu_dir)
@@ -451,8 +451,9 @@ def emu_arm_match(emu_dir: str | Path | None, agent: dict) -> tuple[bool, str]:
         return False, "unreadable summary.json"
     if not isinstance(named, dict):
         return False, "summary.json names no agent"
-    for key in ("generation", "prior_sha256"):
-        if named.get(key) != agent.get(key):
+    named = {"macro": "rules", **named}  # a summary from before the macro switch was played by the rules
+    for key in ("generation", "prior_sha256", "macro"):
+        if named.get(key) != agent.get(key, "rules" if key == "macro" else None):
             return False, f"names another agent ({key} {named.get(key)!r}, scored {agent.get(key)!r})"
     return True, "names the scored agent"
 
