@@ -41,6 +41,9 @@ public sealed class Core2Engine : OldEngine
         return view;
     }
 
+    /// <summary>The game-model to old-id resolution (id_map.json and power_aliases.json next to EmuDump; read once).</summary>
+    internal static OldModelIds ModelIds => Ids.Value;
+
     /// <summary>The kernel this engine's states are bound to (shared; each combat holds its own KernelState).</summary>
     public Kernel Kernel { get; }
 
