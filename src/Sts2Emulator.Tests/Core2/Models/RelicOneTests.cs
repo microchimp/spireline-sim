@@ -32,6 +32,7 @@ public class RelicOneTests
         (ListenerKind.Relic, "StrikeDummy", HookId.ModifyDamageAdditive),
         (ListenerKind.Relic, "PenNib", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Relic, "GremlinHorn", HookId.AfterDeath),
+        (ListenerKind.Relic, "MiniatureCannon", HookId.ModifyDamageAdditive),
     ];
 
     [Fact]
@@ -536,6 +537,84 @@ public class RelicOneTests
     public void GremlinHornIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "GremlinHorn", HookId.AfterDeath);
+    }
+
+    // ---------------------------------------------------------------------------------------- Miniature Cannon (relic-1)
+
+    /// <summary>The player holding Miniature Cannon with an upgraded Strike, a plain Strike, an upgraded Bash and an
+    /// upgraded Defend in hand, one slug.</summary>
+    private static (CombatState S, ListenerRef Relic, CardHandle StrikePlus, CardHandle Strike, CardHandle BashPlus, CardHandle DefendPlus)
+        MiniatureCannonCombat()
+    {
+        var s = Combat(40);
+        var relic = Hold(s, RelicEffects.MiniatureCannon);
+        var strikePlus = Add(s, s.Hand, StrikeDef, upgraded: true);
+        var strike = Add(s, s.Hand, StrikeDef);
+        var bashPlus = Add(s, s.Hand, BashDef, upgraded: true);
+        var defendPlus = Add(s, s.Hand, DefendDef, upgraded: true);
+        return (s, relic, new CardHandle(strikePlus.Uid), new CardHandle(strike.Uid), new CardHandle(bashPlus.Uid),
+            new CardHandle(defendPlus.Uid));
+    }
+
+    [Fact]
+    public void MiniatureCannonIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Relic1), ListenerKind.Relic, "MiniatureCannon", HookId.ModifyDamageAdditive);
+    }
+
+    [Fact]
+    public void MiniatureCannonAddsTheOldFunctionsNumberToAnUpgradedAttack()
+    {
+        // game: MiniatureCannon.ModifyDamageAdditive; old: RelicEffects.CardDamageBonus adds
+        // MiniatureCannon_ModifyDamageAdditive() for an Attack def when the copy is upgraded and the relic is held.
+        var (s, relic, strikePlus, strike, bashPlus, defendPlus) = MiniatureCannonCombat();
+        var k = Kernel(s, Relic1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strikePlus), out var changed);
+
+        Assert.Equal(6m + RelicEffects.CardDamageBonus(s, Def(StrikeDef), upgraded: true), v);
+        Assert.Equal(6m + RelicEffects.MiniatureCannon_ModifyDamageAdditive(), v);
+        Assert.Equal(9m, v);
+        Assert.Equal([relic], changed);
+        // Any upgraded Attack: the tag is not read.
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: bashPlus), out changed));
+        Assert.Equal([relic], changed);
+        // The copy in play (in flight, off the hand: the card's view is Play, read from the world): the same answer.
+        var flying = s.Hand.Single(x => x.Uid == strikePlus.Uid);
+        s.Hand.Remove(flying);
+        using (k.World!.Flying(flying))
+        {
+            Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strikePlus), out changed));
+            Assert.Equal([relic], changed);
+        }
+        s.Hand.Insert(0, flying);
+
+        // Where the condition fails: a plain copy, an upgraded Skill, no card source, the relic not held.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0, RelicEffects.CardDamageBonus(s, Def(StrikeDef), upgraded: false));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: defendPlus), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        s.Relics.Clear();
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strikePlus), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void MiniatureCannonDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _, strikePlus, _, _, _) = MiniatureCannonCombat();
+        var k = Kernel(s, Without(Relic1, MiniatureCannon.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strikePlus), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void MiniatureCannonIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "MiniatureCannon", HookId.ModifyDamageAdditive);
     }
 
 }

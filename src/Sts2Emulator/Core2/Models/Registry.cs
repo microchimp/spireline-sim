@@ -37,6 +37,7 @@ public static class Registry
         StrikeDummy.Register,
         PenNib.Register,
         GremlinHorn.Register,
+        MiniatureCannon.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
