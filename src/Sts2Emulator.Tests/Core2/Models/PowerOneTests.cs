@@ -30,6 +30,7 @@ public class PowerOneTests
     [
         (ListenerKind.Power, "StrengthPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "VulnerablePower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Power, "WeakPower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -288,5 +289,118 @@ public class PowerOneTests
     public void VulnerableIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "VulnerablePower", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Weak (power-1)
+
+    /// <summary>The player with Weak 1, one slug.</summary>
+    private static CombatState WeakCombat(int amount = 1)
+    {
+        var s = Combat(40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Weak, amount));
+        return s;
+    }
+
+    [Fact]
+    public void WeakIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power1), ListenerKind.Power, "WeakPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void WeakMultipliesTheOwnersPoweredAttackByTheOldFunctionsFactor()
+    {
+        // game: WeakPower.ModifyDamageMultiplicative; old: BuffSystem.IncomingDamage multiplies by
+        // Weak_ModifyDamageMultiplicative(attackerBuffs, weakDelta) when the attacker's Weak > 0; the card path passes no
+        // delta. 4.5 kept as a decimal, 4 by the old fold's cast.
+        var s = WeakCombat();
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed);
+
+        Assert.Equal(6m * (decimal)BuffSystem.Weak_ModifyDamageMultiplicative(s.PlayerBuffs, 0f), v);
+        Assert.Equal(4.5m, v);
+        Assert.Equal([Power("WeakPower", 0)], changed);
+        Assert.Equal(4, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs));
+        Assert.Equal(BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs), (int)v);
+
+        // Debilitate on the owner: the old function's half instead of its three quarters.
+        s.PlayerBuffs.Add(new BuffState(BuffId.Debilitate, 1));
+        Assert.Equal(3m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Equal([Power("WeakPower", 0)], changed);
+        Assert.Equal(3, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs));
+        s.PlayerBuffs.RemoveAt(1);
+
+        // Where the condition fails: the slug's attack on the Weak player (the owner is the target, not the dealer), an
+        // unpowered hit, the amount at 0.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Weak, 0);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void WeakOnAnEnemyTakesThePaperKraneShiftOnItsAttackOnThePlayer()
+    {
+        // The Krane's shift the old enemy-attack path passes (EnemyAI.DealAttackDamage: WeakMultiplierDeltaAgainstPlayer):
+        // a Weak slug hits the Krane's holder for 0.6 of 8, 4.8 kept as a decimal, 4 by the old fold's cast; 6 without the
+        // Krane. The player's own Weak attacking the slug takes no shift (the card path passes 0), Krane or not.
+        var s = Combat(40);
+        var slug = s.Enemies[0];
+        var theirs = GivePower(s, "WeakPower", BuffId.Weak, 1, slug);
+        Hold(s, RelicEffects.PaperKrane);
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 0, damage: 8m, dealer: 1), out var changed);
+
+        float delta = RelicEffects.WeakMultiplierDeltaAgainstPlayer(s);
+        Assert.Equal(8m * (decimal)BuffSystem.Weak_ModifyDamageMultiplicative(slug.Buffs, delta), v);
+        Assert.Equal(4.8m, v);
+        Assert.Equal([theirs], changed);
+        Assert.Equal(4, BuffSystem.IncomingDamage(8, slug.Buffs, s.PlayerBuffs, weakDelta: delta));
+        Assert.Equal(BuffSystem.IncomingDamage(8, slug.Buffs, s.PlayerBuffs, weakDelta: delta), (int)v);
+
+        s.Relics.Clear();
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 8m, dealer: 1), out changed));
+        Assert.Equal([theirs], changed);
+
+        var mine = GivePower(s, "WeakPower", BuffId.Weak, 1);
+        Hold(s, RelicEffects.PaperKrane);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 8m), out changed));
+        Assert.Equal([mine], changed);
+        Assert.Equal(6, BuffSystem.IncomingDamage(8, s.PlayerBuffs, slug.Buffs));
+    }
+
+    [Fact]
+    public void WeakActsForItsOwnHolderAmongThree()
+    {
+        // The N-holder test: the player and both slugs hold Weak 1. The player's hit on the first slug takes the player's
+        // listener alone (the target's Weak is not the dealer's); the second slug's hit on the player takes that slug's alone.
+        var s = Combat(40, 40);
+        var holders = Holders(s, "WeakPower", BuffId.Weak, 1);
+        var k = Kernel(s, Power1);
+
+        Assert.Equal(4.5m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Equal([holders[0]], changed);
+        Assert.Equal(4.5m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2), out changed));
+        Assert.Equal([holders[2]], changed);
+    }
+
+    [Fact]
+    public void WeakDeleteMutantGivesTheNoHandlerValue()
+    {
+        var s = WeakCombat();
+        var k = Kernel(s, Without(Power1, WeakPower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void WeakIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "WeakPower", HookId.ModifyDamageMultiplicative);
     }
 }
