@@ -412,7 +412,7 @@ Differences are taken at the action slots; "gap" is the CPU path's top-2 logit g
 | | batched, 16 client threads | alone, bucket of one |
 |---|---|---|
 | max abs dlogit | 1.91e-06 | 1.91e-06 |
-| 99.9th percentile abs dlogit (61,937 action slots) | 1.43e-06 | 1.43e-06 |
+| 99.9th percentile abs dlogit (61,937 action slots; the batched cell read 1.31e-06 in one of three runs, batch composition follows timing) | 1.43e-06 | 1.43e-06 |
 | mean of the per-position maximum | 4.86e-07 | 4.90e-07 |
 | slots finite in one path only | 0 | 0 |
 | argmax flips, positions with gap > 1e-5, all action slots | 0 of 8,336 | 0 of 8,336 |
