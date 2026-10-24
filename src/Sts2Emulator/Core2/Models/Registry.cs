@@ -30,6 +30,19 @@ public static class Registry
         Melancholy.Register,
     ];
 
+    /// <summary>C2 (cloud/f08-power-1): the port list's power-1 rows that are CLOUD (CLOUD_BRIEFS section 1). Thorns and
+    /// Flame Barrier are not here: their old bodies are private, the stop rule's case (the branch's PR lists them).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> Power1 =
+    [
+        StrengthPower.Register,
+        VulnerablePower.Register,
+        WeakPower.Register,
+        VigorPower.Register,
+        TankPower.Register,
+        ColossusPower.Register,
+        ShriekPower.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -37,5 +50,6 @@ public static class Registry
     public static readonly IReadOnlyList<Action<HandlerTable>> All =
     [
         .. Pilot,
+        .. Power1,
     ];
 }
