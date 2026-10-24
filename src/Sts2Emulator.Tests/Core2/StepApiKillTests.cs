@@ -251,9 +251,13 @@ public class StepApiKillTests
     public void HeadbuttKillRunsTheDeathHooksAndRemovesTheCorpseBeforeItsScreen_SwitchOff_ExpectedToFail() =>
         HeadbuttKill(false, false, FlipOff);
 
+    // Switched on, the whole body is the strict expected failure, not only `Pinned`: R4 has landed and the power-1 handlers
+    // (Ravenous's AfterDeath, Strength) have not, so the kernel's kill skips the old Ravenous site and nothing answers it, and
+    // the survivor's Strength and Ravenous read differently outside `Pinned` too. The fixture is still checked by the switch-off
+    // tests, which run the same body with `mustPass` for it; STS2_STEP_TEST=strict (or RerouteLanded) runs this body plain.
     [Fact]
     public void HeadbuttKillRunsTheDeathHooksAndRemovesTheCorpseBeforeItsScreen_F08F10() =>
-        HeadbuttKill(true, SwitchedOnMustPass, FlipOn);
+        Pinned(SwitchedOnMustPass, FlipOn, () => HeadbuttKill(true, true, FlipOn));
 
     // ------------------------------------------------------------------------------------------ Twin Strike, trace step 1
 
@@ -301,7 +305,11 @@ public class StepApiKillTests
     public void TwinStrikeLandsOneHitWhenTheFirstKills_SwitchOff_EndStateMatchesTheGame() =>
         TwinStrikeKill(false, true, FlipOff);
 
+    // Switched on, the whole body is the strict expected failure, not only `Pinned`: R4 has landed and the power-1 handlers
+    // (Ravenous's AfterDeath, Strength) have not, so the kernel's kill skips the old Ravenous site and nothing answers it, and
+    // the survivor's Strength and Ravenous read differently outside `Pinned` too. The fixture is still checked by the switch-off
+    // tests, which run the same body with `mustPass` for it; STS2_STEP_TEST=strict (or RerouteLanded) runs this body plain.
     [Fact]
     public void TwinStrikeLandsOneHitWhenTheFirstKills_F08F10() =>
-        TwinStrikeKill(true, SwitchedOnMustPass, FlipOn);
+        Pinned(SwitchedOnMustPass, FlipOn, () => TwinStrikeKill(true, true, FlipOn));
 }
