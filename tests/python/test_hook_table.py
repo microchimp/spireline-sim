@@ -541,12 +541,104 @@ public static class X
 """
 
 
+# The engine's extracted bodies, File.Function in ordinal order: the list tools/emudump.Tests/ExtractedBodyTests.cs pins too
+# (there by reflection through ExtractedBody.Is), so a function the two rules would judge differently fails one of the suites.
+EXTRACTED_FUNCTIONS = (
+    "BuffSystem.DoubleDamage_ModifyDamageMultiplicative",
+    "BuffSystem.Flutter_ModifyDamageMultiplicative",
+    "BuffSystem.Shrink_ModifyDamageMultiplicative",
+    "BuffSystem.Soar_ModifyDamageMultiplicative",
+    "BuffSystem.Strength_ModifyDamageAdditive",
+    "BuffSystem.Surrounded_ModifyDamageMultiplicative",
+    "BuffSystem.Tainted_ModifyDamageAdditive",
+    "BuffSystem.Tank_ModifyDamageMultiplicative",
+    "BuffSystem.Tracking_ModifyDamageMultiplicative",
+    "BuffSystem.Vigor_ModifyDamageAdditive",
+    "BuffSystem.Vulnerable_ModifyDamageMultiplicative",
+    "BuffSystem.Weak_ModifyDamageMultiplicative",
+    "CardEffects.Accuracy_ModifyDamageAdditive",
+    "CardEffects.BeatingRemnant_AfterDamageReceived",
+    "CardEffects.Buffer_AfterModifyingHpLostAfterOsty",
+    "CardEffects.Buffer_ModifyHpLostAfterOstyLate",
+    "CardEffects.Calcify_ModifyDamageAdditive",
+    "CardEffects.CurlUp_AfterDamageReceived",
+    "CardEffects.Flutter_AfterDamageReceived",
+    "CardEffects.Gigantification_ModifyDamageMultiplicative",
+    "CardEffects.HardenedShell_AfterDamageReceived",
+    "CardEffects.HardenedShell_ModifyHpLostBeforeOstyLate",
+    "CardEffects.Lethality_ModifyDamageMultiplicative",
+    "CardEffects.PersonalHive_AfterDamageReceived",
+    "CardEffects.PhantomBlades_ModifyDamageAdditive",
+    "CardEffects.Rupture_AfterDamageReceived",
+    "CardEffects.SicEm_AfterDamageGiven",
+    "CardEffects.Slippery_AfterModifyingHpLostAfterOsty",
+    "CardEffects.Slippery_ModifyHpLostAfterOsty",
+    "CardEffects.Slumber_AfterDamageReceived",
+    "CombatEngine.Adaptable_ShouldStopCombatFromEnding",
+    "CombatEngine.Constrict_AfterDeath",
+    "CombatEngine.Dampen_AfterDeath",
+    "CombatEngine.FairyInABottle_AfterPreventingDeath",
+    "CombatEngine.GremlinHorn_AfterDeath",
+    "CombatEngine.Heist_BeforeDeath",
+    "CombatEngine.Hex_AfterDeath",
+    "CombatEngine.Infested_AfterDeath",
+    "CombatEngine.Infested_ShouldStopCombatFromEnding",
+    "CombatEngine.PossessSpeed_AfterDeath",
+    "CombatEngine.PossessStrength_AfterDeath",
+    "CombatEngine.Ravenous_AfterDeath",
+    "CombatEngine.SteamEruption_ShouldStopCombatFromEnding",
+    "CombatEngine.Stock_ShouldStopCombatFromEnding",
+    "CombatEngine.Surprise_AfterDeath",
+    "CombatEngine.Surprise_ShouldStopCombatFromEnding",
+    "CombatEngine.Swipe_BeforeDeath",
+    "EnemyAI.Adaptable_ShouldCreatureBeRemovedFromCombatAfterDeath",
+    "EnemyAI.Colossus_ModifyDamageMultiplicative",
+    "EnemyAI.Illusion_ShouldCreatureBeRemovedFromCombatAfterDeath",
+    "EnemyAI.Imbalanced_AfterDamageGiven",
+    "EnemyAI.PainfulStabs_ShouldCreatureBeRemovedFromCombatAfterDeath",
+    "EnemyAI.PaperCuts_AfterDamageGiven",
+    "EnemyAI.Reattach_ShouldCreatureBeRemovedFromCombatAfterDeath",
+    "EnemyAI.SteamEruption_ShouldCreatureBeRemovedFromCombatAfterDeath",
+    "EnemyAI.TheGambit_AfterDamageReceived",
+    "RelicEffects.BeatingRemnant_ModifyHpLostAfterOsty",
+    "RelicEffects.CentennialPuzzle_AfterDamageReceived",
+    "RelicEffects.DemonTongue_AfterDamageReceived",
+    "RelicEffects.FakeStrikeDummy_ModifyDamageAdditive",
+    "RelicEffects.LizardTail_AfterPreventingDeath",
+    "RelicEffects.MiniatureCannon_ModifyDamageAdditive",
+    "RelicEffects.PenNib_ModifyDamageMultiplicative",
+    "RelicEffects.RedSkull_AfterCurrentHpChanged",
+    "RelicEffects.SelfFormingClay_AfterDamageReceived",
+    "RelicEffects.StrikeDummy_ModifyDamageAdditive",
+    "RelicEffects.TungstenRod_ModifyHpLostAfterOsty",
+    "RelicEffects.VitruvianMinion_ModifyDamageMultiplicative",
+)
+
+
 class ExtractedBodies(unittest.TestCase):
     def test_extracted_internal_functions_are_callees_of_their_dispatch_method(self):
         """R5 (MIGRATION_F08.md): an inline body extracted into an internal <Model>_<Hook> function still belongs to the
         dispatch method that calls it, like a private helper; an internal helper with no such name does not."""
         engine = ht.Engine.load(Path(), {"Core/X.cs": EXTRACTED})
         self.assertEqual(ht.callees(engine, "X.A"), ("X.Ritual_AfterCardPlayed", "X.Helper"))
+
+    def test_only_internal_static_functions_are_extracted_bodies(self):
+        engine = ht.Engine.load(Path(), {"Core/X.cs": EXTRACTED})
+        self.assertEqual(ht.extracted_functions(engine), ("X.Ritual_AfterCardPlayed",))
+
+    def test_the_name_rule_is_an_upper_case_initial_then_the_first_underscore_then_an_upper_case_letter(self):
+        """ExtractedBody.cs's rule (Is), decided at the first underscore: Foo_Bar_baz is an extracted name, Foo_bar_Baz and Foo__Bar are not."""
+        names = ["Strength_ModifyDamageAdditive", "A_B", "Foo1_Bar", "Foo_Bar_baz",
+                 "Foo_bar_Baz", "Foo__Bar", "_Foo_Bar", "foo_Bar", "Foo_", "Foo_1Bar", "FooBar"]
+        text = "public static class X\n{\n" + "".join(f"    internal static void {n}(State s) {{ }}\n" for n in names) + "}\n"
+        engine = ht.Engine.load(Path(), {"Core/X.cs": text})
+        self.assertEqual({m.name for m in engine.methods["Core/X.cs"]}, set(names))
+        self.assertEqual(ht.extracted_functions(engine),
+                         ("X.A_B", "X.Foo1_Bar", "X.Foo_Bar_baz", "X.Strength_ModifyDamageAdditive"))
+
+    def test_the_engines_extracted_functions_are_the_pinned_list(self):
+        """The same list as tools/emudump.Tests/ExtractedBodyTests.cs pins by reflection."""
+        self.assertEqual(ht.extracted_functions(ht.Engine.load(ht.ENGINE)), EXTRACTED_FUNCTIONS)
 
 
 if __name__ == "__main__":
