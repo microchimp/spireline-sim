@@ -40,6 +40,7 @@ public class PowerTwoTests
         (ListenerKind.Power, "BufferPower", HookId.ModifyHpLostAfterOstyLate),
         (ListenerKind.Power, "BufferPower", HookId.AfterModifyingHpLostAfterOsty),
         (ListenerKind.Power, "PossessSpeedPower", HookId.AfterDeath),
+        (ListenerKind.Power, "PossessStrengthPower", HookId.AfterDeath),
     ];
 
     [Fact]
@@ -774,5 +775,102 @@ public class PowerTwoTests
     public void PossessSpeedIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "PossessSpeedPower", HookId.AfterDeath);
+    }
+
+    // ---------------------------------------------------------------------------------------- Possess Strength (power-2)
+
+    private static int Strength(CombatState s) => BuffSystem.Get(s.PlayerBuffs, BuffId.Strength);
+    private static int PossessedStrength(EnemyState e) => BuffSystem.Get(e.Buffs, BuffId.PossessStrength);
+
+    /// <summary>Two slugs, the first with Possess Strength 3 (the Strength it took), the player at Strength -3.</summary>
+    private static (CombatState S, ListenerRef Power) PossessStrengthCombat(int amount = 3)
+    {
+        var s = Combat(40, 40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Strength, -amount));
+        return (s, GivePower(s, "PossessStrengthPower", BuffId.PossessStrength, amount, s.Enemies[0]));
+    }
+
+    [Fact]
+    public void PossessStrengthIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power2), ListenerKind.Power, "PossessStrengthPower", HookId.AfterDeath);
+    }
+
+    [Fact]
+    public void PossessStrengthGivesTheStrengthBackOnItsOwnersDeath()
+    {
+        // game: PossessStrengthPower.AfterDeath; old: CombatEngine.AnswerDeaths calls PossessStrength_AfterDeath(state, fallen)
+        // for a fallen creature whose Possess Strength > 0: the player gains the amount as Strength (through
+        // RelicEffects.GainPlayerStrength) and the power leaves the corpse. Dispatched inside Dying, as the kill runs it.
+        var (s, _) = PossessStrengthCombat();
+        var dead = s.Enemies[0];
+        var k = Kernel(s, Power2);
+        var oracle = PossessStrengthCombat().S;
+
+        using (Dying(k, dead))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        CombatEngine.PossessStrength_AfterDeath(oracle, oracle.Enemies[0]);
+
+        Assert.Equal(Strength(oracle), Strength(s));
+        Assert.Equal(0, Strength(s));
+        Assert.Equal(0, PossessedStrength(dead));
+        Assert.Equal(oracle.Enemies[0].Buffs, dead.Buffs);
+
+        // Through the kill: CreatureCmd.Kill runs AfterDeath(false) for the dead owner before it strips the corpse.
+        var (s2, _) = PossessStrengthCombat();
+        var k2 = Kernel(s2, Power2);
+        CreatureCmd.Kill(k2, [OldCreature.Of(s2.Enemies[0])]);
+        Assert.Equal(0, Strength(s2));
+        Assert.Equal(0, PossessedStrength(s2.Enemies[0]));
+    }
+
+    [Fact]
+    public void PossessStrengthDoesNothingForAnotherCreaturesDeathOrAPreventedOne()
+    {
+        // The handler's condition: the dead creature is its owner, and the death was not prevented (the old site answers
+        // real deaths). The second slug's death, and the owner's prevented death, leave the Strength and the power.
+        var (s, _) = PossessStrengthCombat();
+        var k = Kernel(s, Power2);
+
+        using (Dying(k, s.Enemies[1]))
+            Hooks.AfterDeath(k, AfterDeathOf(2));
+        Assert.Equal((-3, 3), (Strength(s), PossessedStrength(s.Enemies[0])));
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1, removalPrevented: true));
+        Assert.Equal((-3, 3), (Strength(s), PossessedStrength(s.Enemies[0])));
+    }
+
+    [Fact]
+    public void PossessStrengthGivesBackEachOwnersOwnShareAmongTwoHolders()
+    {
+        // The N-holder test: both slugs took 3 (the player at -6). The first's death gives 3 back (not 6) and strips the
+        // first alone; the second's death gives the other 3: one direct call of the old body per owner.
+        var (s, _) = PossessStrengthCombat();
+        GivePower(s, "PossessStrengthPower", BuffId.PossessStrength, 3, s.Enemies[1]);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Strength, -6);
+        var k = Kernel(s, Power2);
+
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        Assert.Equal((-3, 0, 3), (Strength(s), PossessedStrength(s.Enemies[0]), PossessedStrength(s.Enemies[1])));
+        using (Dying(k, s.Enemies[1]))
+            Hooks.AfterDeath(k, AfterDeathOf(2));
+        Assert.Equal((0, 0, 0), (Strength(s), PossessedStrength(s.Enemies[0]), PossessedStrength(s.Enemies[1])));
+    }
+
+    [Fact]
+    public void PossessStrengthDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = PossessStrengthCombat();
+        var k = Kernel(s, Without(Power2, PossessStrengthPower.Register));
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        Assert.Equal((-3, 3), (Strength(s), PossessedStrength(s.Enemies[0])));
+    }
+
+    [Fact]
+    public void PossessStrengthIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "PossessStrengthPower", HookId.AfterDeath);
     }
 }
