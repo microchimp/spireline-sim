@@ -191,6 +191,53 @@ static class OldSetup
         return Ok();
     }
 
+    /// <summary>IEngine.SetBlock: the player's block field written as it stands (no hook, no block modifier runs).</summary>
+    internal static SetupResult Block(RunEngine e, int amount)
+    {
+        var c = e.State.ActiveCombat;
+        if (c == null) return No("unsupported: block outside a fight");
+        if (amount < 0) return No($"block {amount} below 0");
+        c.PlayerBlock = amount;
+        return Ok();
+    }
+
+    /// <summary>
+    /// IEngine.SetEnemyHp: the enemy's max HP and HP fields written as they stand (no hook runs, the intent already rolled stays).
+    /// The slot is an index into the combat's enemies, dead ones included, as ConsoleSetup.ApplyPowerWithoutApplier counts it.
+    /// </summary>
+    internal static SetupResult EnemyHp(RunEngine e, int slot, int? maxHp, int? currentHp)
+    {
+        var c = e.State.ActiveCombat;
+        if (c == null) return No("unsupported: enemy_hp outside a fight");
+        if (LivingEnemy(c, slot) is not { } en) return No($"no living enemy in slot {slot}");
+        int max = maxHp ?? en.MaxHp;
+        if (max < 1) return No($"enemy {slot}: max HP {max} below 1");
+        if (currentHp is { } cur)
+        {
+            if (cur < 1) return No($"enemy {slot}: current HP {cur} below 1");
+            if (cur > max) return No($"enemy {slot}: current HP {cur} above max HP {max}");
+        }
+
+        en.MaxHp = max;
+        en.Hp = Math.Min(currentHp ?? en.Hp, max);
+        return Ok();
+    }
+
+    /// <summary>IEngine.SetEnemyBlock: the enemy's block field written as it stands (no hook runs).</summary>
+    internal static SetupResult EnemyBlock(RunEngine e, int slot, int amount)
+    {
+        var c = e.State.ActiveCombat;
+        if (c == null) return No("unsupported: enemy_block outside a fight");
+        if (LivingEnemy(c, slot) is not { } en) return No($"no living enemy in slot {slot}");
+        if (amount < 0) return No($"enemy {slot}: block {amount} below 0");
+        en.Block = amount;
+        return Ok();
+    }
+
+    /// <summary>The living enemy in a slot, or null when the slot is out of range or its enemy is dead.</summary>
+    static EnemyState? LivingEnemy(CombatState c, int slot) =>
+        slot >= 0 && slot < c.Enemies.Count && c.Enemies[slot].Hp > 0 ? c.Enemies[slot] : null;
+
     /// <summary>IEngine.RefsetItem: RefsetSetup's items (relics_set, deck_set, potions_set, player_load, act), or null for any other.</summary>
     internal static SetupResult? Refset(RunEngine e, JsonObject item, List<JsonObject> choices) =>
         RefsetSetup.Item(e, item, choices) is { } r ? new SetupResult(r.ok, r.msg) : null;

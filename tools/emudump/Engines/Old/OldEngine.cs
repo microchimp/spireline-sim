@@ -67,6 +67,12 @@ public class OldEngine : IEngine
 
     public SetupResult SetHp(int? maxHp, int? currentHp) => OldSetup.Hp(Run, maxHp, currentHp);
 
+    public SetupResult SetBlock(int amount) => OldSetup.Block(Run, amount);
+
+    public SetupResult SetEnemyHp(int slot, int? maxHp, int? currentHp) => OldSetup.EnemyHp(Run, slot, maxHp, currentHp);
+
+    public SetupResult SetEnemyBlock(int slot, int amount) => OldSetup.EnemyBlock(Run, slot, amount);
+
     public SetupResult? RefsetItem(JsonObject item, IReadOnlyList<JsonObject> cardChoices) => OldSetup.Refset(Run, item, cardChoices.ToList());
 
     public string EnterEncounter(int mapOption, string act, string kind, int index, string gameId) =>
