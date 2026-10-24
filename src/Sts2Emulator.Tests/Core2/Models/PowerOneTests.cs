@@ -32,6 +32,7 @@ public class PowerOneTests
         (ListenerKind.Power, "VulnerablePower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "WeakPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "VigorPower", HookId.ModifyDamageAdditive),
+        (ListenerKind.Power, "TankPower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -59,6 +60,35 @@ public class PowerOneTests
     public void WithTheDamageFamilyOffPower1RegistersNothing()
     {
         Assert.Empty(Pairs(Table(Power1, AllButDamage)));
+    }
+
+    [Fact]
+    public void TheDamageFoldsKeepDecimalsAndTheDamageCommandCastsOnce()
+    {
+        // The integer-versus-decimal check over the batch's folds: Strength 3 and Weak 1 on the player, Vulnerable 1 and
+        // Tank 1 on the slug. (6 + 3) x 0.75 x 2 x 1.5 = 20.25, kept as a decimal by the fold (no handler casts), 20 lost
+        // by the one cast in CreatureCmd.Damage; the old float fold casts once at its end too and gives 20. Each listener
+        // changed it, in the dispatcher's order (the player's powers, then the slug's, each in application order).
+        var s = Combat(40);
+        var slug = s.Enemies[0];
+        s.PlayerBuffs.Add(new BuffState(BuffId.Strength, 3));
+        s.PlayerBuffs.Add(new BuffState(BuffId.Weak, 1));
+        slug.Buffs.Add(new BuffState(BuffId.Vulnerable, 1));
+        slug.Buffs.Add(new BuffState(BuffId.Tank, 1));
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed);
+
+        Assert.Equal(20.25m, v);
+        Assert.Equal([Power("StrengthPower", 0), Power("WeakPower", 0), Power("VulnerablePower", 1), Power("TankPower", 1)], changed);
+        Assert.Equal(20, BuffSystem.IncomingDamage(6, s.PlayerBuffs, slug.Buffs));
+        Assert.Equal(20, Assert.Single(Hit(k, OldCreature.Of(slug), 6m)).UnblockedDamage);
+        Assert.Equal(20, slug.Hp);
+        // A 4: (4 + 3) x 0.75 x 2 x 1.5 = 15.75, 15 lost, the old fold's 15.
+        Assert.Equal(15.75m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m), out _));
+        Assert.Equal(15, BuffSystem.IncomingDamage(4, s.PlayerBuffs, slug.Buffs));
+        Assert.Equal(15, Assert.Single(Hit(k, OldCreature.Of(slug), 4m)).UnblockedDamage);
+        Assert.Equal(5, slug.Hp);
     }
 
     [Fact]
@@ -516,5 +546,75 @@ public class PowerOneTests
     public void VigorIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "VigorPower", HookId.ModifyDamageAdditive);
+    }
+
+    // ---------------------------------------------------------------------------------------- Tank (power-1)
+
+    [Fact]
+    public void TankIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power1), ListenerKind.Power, "TankPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void TankDoublesAPoweredAttackOnItsOwnerWhateverItsStackCount()
+    {
+        // game: TankPower.ModifyDamageMultiplicative; old: BuffSystem.IncomingDamage multiplies by
+        // Tank_ModifyDamageMultiplicative() (a flat 2) when the defender's Tank > 0.
+        var s = Combat(40);
+        var slug = s.Enemies[0];
+        var mine = GivePower(s, "TankPower", BuffId.Tank, 1);
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out var changed);
+
+        Assert.Equal(6m * (decimal)BuffSystem.Tank_ModifyDamageMultiplicative(), v);
+        Assert.Equal(12m, v);
+        Assert.Equal([mine], changed);
+        Assert.Equal(12, BuffSystem.IncomingDamage(6, slug.Buffs, s.PlayerBuffs));
+        s.PlayerBuffs[0] = new BuffState(BuffId.Tank, 2);
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out changed));
+        Assert.Equal([mine], changed);
+
+        // Where the condition fails: the owner's own attack on the slug (the owner is the dealer, not the target), an
+        // unpowered hit, the amount at 0.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, props: Unpowered), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Tank, 0);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void TankActsForItsOwnHolderAmongThree()
+    {
+        // The N-holder test: the player and both slugs hold Tank. The player's hit on the first slug takes that slug's
+        // listener alone; the second slug's hit on the player takes the player's alone.
+        var s = Combat(40, 40);
+        var holders = Holders(s, "TankPower", BuffId.Tank, 1);
+        var k = Kernel(s, Power1);
+
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Equal([holders[1]], changed);
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2), out changed));
+        Assert.Equal([holders[0]], changed);
+    }
+
+    [Fact]
+    public void TankDeleteMutantGivesTheNoHandlerValue()
+    {
+        var s = Combat(40);
+        GivePower(s, "TankPower", BuffId.Tank, 1);
+        var k = Kernel(s, Without(Power1, TankPower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void TankIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "TankPower", HookId.ModifyDamageMultiplicative);
     }
 }
