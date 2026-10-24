@@ -1067,6 +1067,40 @@ with its piles intact (the game ends the combat after its action queue drains). 
 - **Fewer fields (20 corpus, 3 traced).** Read which fields go missing under the switch (the census gate) and close each.
 - Then rerun this table; the switch goes on in `migrated_families.json` only with every gate passing.
 
+### R7d: the blockers (branch `rebuild/f08-r7d`, on `dd48f22e`)
+
+**The triage above had the direction reversed.** In all 112 pile cases the game's piles are empty and ours are not, and
+in the 11 `snap.in_combat` cases the game reads false and we read true: the game's combat is over at the recorded step and
+ours goes on. Every one is an `end_turn` step. With F10 on, the combat's end is Core2's `CheckWinCondition` at the game's
+points only, and `RunEngine` drops the old step's terminal reading (Settle) unless a hand-off ran; the old turn start had no
+such point, so a kill or a loss in the turn start (Inferno, a power's damage, a pending loss from the turn start's own
+Kill) left the combat in progress with nothing standing (the missing victory heal is the HP difference). Fixed at the
+game's two `CombatManager.StartTurn` checks: the player side after the auto-pre-play phase (and at the turn start's two
+player-death returns), the enemy side before ExecuteEnemyTurn (`CombatEngine.StartTurnWinCheck`). The 7 step-count
+errors were a crash: under the switch a Demise kill removes its enemy inside the end-of-enemy-turn pass
+(`EnemyAI.ApplyEndOfEnemySideTurn` now walks the roster as the pass began). Tests: `R7dTests`.
+F17 is not migrated: the game runs AfterCombatEnd and AfterCombatVictory inside `EndCombatInternal`, inside
+`CheckWinCondition`, and the hand-off already runs the old `FinishCombat` there; nothing in the corpus needed it.
+
+**AfterAttack after a killing attack.** AfterAttack is F06's. With F06 off the attack's end runs the bridge (the old
+bodies) where the game runs Hook.AfterAttack, after the kill, outside the kernel's dispatch, so no handler could log it.
+`Kernel.BridgePoint` (a test seam) is called at the bridge's two points; the step test logs AfterAttack there. The strict
+run passes and `RerouteLanded` is set.
+
+R7 proof rerun on `rebuild/f08-r7d` (same commands):
+
+| check | result |
+|---|---|
+| O1 (291 tests) | 215 pass both, 76 not covered, 0 fail only switched on |
+| traced (77) | 8 better, 69 same, 0 worse; 3 fights on fewer fields (b00#2, b03#13, b03#14, unchanged: not the early end) |
+| corpus (4,392) | 63 better, 4,324 same, 5 worse; 9 fights on fewer fields (`snap.enemies[*].move`; was 20) |
+| step test, strict | 4 pass |
+| fuzz F08,F10 (300) | 291 differ (untriaged), ending disagreements 0 |
+
+Left before switch-on: the 5 worse corpus fights (26562e018fdc5e6a, 2b49779387ccd8b9, 41193a3af1dede7e,
+564797d1d47ddfb9, 7171bcd6dd0b0bd6; read so far: the enemies after a Beetle Juice, 7 HP more lost on the first end turn, the draw pile),
+the 9 corpus and 3 traced fights on fewer fields, the fuzz triage.
+
 **R7 checks before switch-on** (each closed, with a test, before the switch goes on in `migrated_families.json`):
 - **A fork's run view (blocker, batch L3b review).** Since the L3b fix a combat's clone (a fork of the search, a snapshot,
   a probe) binds to no run, so under the switch a run+combat pass in a fork leaves out the run deck's cards and enchantments

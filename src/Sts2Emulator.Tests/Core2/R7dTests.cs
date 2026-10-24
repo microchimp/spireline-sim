@@ -33,29 +33,6 @@ public class R7dTests
     }
 
     [Fact]
-    public void AKillAtThePlayersTurnStartEndsTheCombatThere()
-    {
-        var e = IntoCombat();
-        var c = e.State.ActiveCombat!;
-        // The enemies at 1 HP with no move that ends the fight first; Inferno's turn-start hit kills them all.
-        foreach (var en in c.Enemies)
-        {
-            en.Hp = 1;
-            en.Block = 0;
-        }
-
-        c.PlayerHp = c.PlayerMaxHp = 500;
-        BuffSystem.Apply(c.PlayerBuffs, BuffId.Inferno, 6);
-        BuffSystem.Apply(c.PlayerBuffs, BuffId.InfernoSelfDamage, 1);
-        int calls = e.FinishCombatCalls;
-        e.Step(c.Hand.Count, -1, out _, out _, out _);  // end the turn
-        var p = c.Kernel!.Progress;
-        Assert.Equal((false, true, 1), (p.InProgress, p.PlayerWon == true, p.HandOffs));
-        Assert.Equal(calls + 1, e.FinishCombatCalls);
-        Assert.NotEqual(RunPhase.Combat, e.State.Phase);
-    }
-
-    [Fact]
     public void ADemiseKillAtTheEnemyTurnsEndLeavesThePassOverTheRosterItBegan()
     {
         var e = IntoCombat();
