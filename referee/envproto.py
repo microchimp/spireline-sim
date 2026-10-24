@@ -707,6 +707,7 @@ def play(a) -> int:
                "losses_by_reason": _merge(e["stats"].get("losses", {}) for e in ends),
                "reanchor_fail_reasons": _merge(e["stats"].get("reanchor_fail_reasons", {}) for e in ends),
                "reanchor_by_plan": _merge(e["stats"].get("reanchor_by_plan", {}) for e in ends),
+               **_provenance(ends),
                "divergences_by_type": _count(f"{d['type']}:{'gap' if d.get('gap') else 'state'}:{(d.get('reason') or ','.join(x[0] for x in d['diff'][:3]))[:40]}" for d in divs),
                "run_s_total": round(sum(e["s"] for e in ends), 1),
                "decisions_per_s_per_proc": round(dec / max(1e-9, sum(e["s"] for e in ends)), 2),
@@ -716,6 +717,23 @@ def play(a) -> int:
     (out / "divergences.jsonl").write_text("\n".join(json.dumps(d) for d in divs), encoding="utf-8")
     print(json.dumps(summary, indent=1))
     return 1 if nets else 0
+
+
+def _provenance(ends) -> dict:
+    """What the block's re-anchors were seeded from, summed over the finished runs (the lockstep's per-run stats): how many held
+    by the game's hidden state ("hidden"), by the observation alone, by moved streams only, or by none of them; and the streams
+    the game's counters named against the streams the emulator moved; and the walks of suspended emulators (walks, floors walked,
+    rules picks, fights resolved unplayed). The four ways are always present, so a block that ran
+    on observation anchoring reads "hidden": 0 rather than looking like one that did not report."""
+    st = [e["stats"] for e in ends]
+    ways = {k: 0 for k in ("hidden", "observation", "streams", "none")}
+    for k, v in _merge(s.get("anchored_with", {}) for s in st).items():
+        ways[k] = ways.get(k, 0) + v
+    return {"anchored_with": ways,
+            "streams_named": sum(s.get("streams_named", 0) for s in st),
+            "streams_moved": sum(s.get("streams_moved", 0) for s in st),
+            "streams_unmoved_names": _merge(s.get("streams_unmoved_names", {}) for s in st),
+            "walk": {k: sum(s.get("walk", {}).get(k, 0) for s in st) for k in ("walks", "floors", "picks", "fights")}}
 
 
 def _merge(dicts) -> dict:

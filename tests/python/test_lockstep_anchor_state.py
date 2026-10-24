@@ -185,6 +185,50 @@ class EmuLockAnchorTests(unittest.TestCase):
         self.assertTrue(e.reanchor("room_entry", {"obs": {"floor": 4}}))
 
 
+class StreamsMovedTests(unittest.TestCase):
+    """Review 1.3: a room-entry stream anchor says how many streams the game named and how many the native call moved; a call
+    that moved none is not reported as a stream anchor."""
+
+    def rng(self):
+        r = {n: {"seed": 7, "counter": 5} for n in sorted(lockstep.EMU_STREAM_NAMES)}
+        r["Nope"] = {"seed": 7, "counter": 5}  # a name the emulator has no stream for
+        return r
+
+    def room_entry(self, moved):
+        e = bare_emu({"rng": self.rng()})
+        e._to_map, e._set_player, e._decision = (lambda floor=None: True), (lambda o: True), (lambda: object())
+        e.native.run_debug_set_streams = lambda h, rng: moved
+        self.assertTrue(e.reanchor("room_entry", {"obs": {"floor": 4}}))
+        return e
+
+    def test_seventeen_names_of_which_one_is_unknown_report_one_unmoved(self):
+        self.assertEqual(len(lockstep.EMU_STREAM_NAMES), 16)
+        e = self.room_entry(16)
+        self.assertEqual(e.streams, {"named": 17, "moved": 16, "unmoved": 1, "unmoved_names": ["Nope"]})
+        self.assertEqual(e.anchored_with, "streams")
+
+    def test_zero_moved_is_not_a_stream_anchor(self):
+        e = self.room_entry(0)
+        self.assertEqual((e.streams["named"], e.streams["moved"], e.streams["unmoved"]), (17, 0, 17))
+        self.assertIsNone(e.anchored_with)
+
+    def test_a_failed_call_moved_none_and_the_next_reanchor_starts_clean(self):
+        e = bare_emu({"rng": self.rng()})
+        e._to_map, e._set_player, e._decision = (lambda floor=None: True), (lambda o: True), (lambda: object())
+        e.native.run_debug_set_streams = lambda h, rng: -2
+        self.assertFalse(e.reanchor("room_entry", {"obs": {"floor": 4}}))
+        self.assertEqual((e.streams["moved"], e.anchored_with), (0, None))
+        e.take_anchor_state(None)  # no hidden state at all: no stream report is left from the earlier re-anchor
+        self.assertTrue(e.reanchor("room_entry", {"obs": {"floor": 4}}))
+        self.assertIsNone(e.streams)
+
+    def test_the_emulator_name_set_is_the_native_mapping(self):
+        src = (ROOT / "src" / "Sts2Emulator" / "Interop" / "RunNativeExports.cs").read_text(encoding="utf-8")
+        body = src.split("StreamNamed(RunEngine run, string name)", 1)[1].split("_ => null", 1)[0]
+        names = {n for line in body.splitlines() if "=>" in line for n in re.findall(r'"(\w+)"', line.split("=>")[0])}
+        self.assertEqual(names, set(lockstep.EMU_STREAM_NAMES))
+
+
 def to_fight(seed="QS2GYXRKWN"):
     e = lockstep.EmuLock(seed, sims=2)
     for _ in range(60):

@@ -171,6 +171,56 @@ class DivergenceTests(unittest.TestCase):
         self.assertIsNone(lockstep.reanchor_plan("rest", "map"))
 
 
+class ProvEmu(FakeEmu):
+    """A fake emulator side that reports how its last re-anchor was done, as EmuLock does."""
+
+    def __init__(self, views, how=None, streams=None, walk=None, **k):
+        super().__init__(views, **k)
+        self.how, self.streams_now, self.anchored_with, self.streams = how, streams, None, None
+        self.walk_now, self.walk = walk, None
+
+    def reanchor(self, plan, msg):
+        self.anchored_with, self.streams, self.walk = self.how, self.streams_now, self.walk_now
+        return super().reanchor(plan, msg)
+
+
+class ProvenanceTests(unittest.TestCase):
+    """Review 1 and 2: what a re-anchor was seeded from reaches the run's stats."""
+
+    def drive(self, emu, stream):
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in stream:
+            ls.decide(m)
+        return ls
+
+    def test_the_streams_named_and_moved_go_into_the_run_stats(self):
+        rep = {"named": 17, "moved": 16, "unmoved": 1, "unmoved_names": ["Nope"]}
+        a = obs(hp=80)
+        emu = ProvEmu([view_of(obs(hp=70))], how="streams", streams=rep, reanchor_ok=[False, True])  # counted when it fails too
+        s = self.drive(emu, [msg("map", a), msg("map", a)]).stats
+        self.assertEqual((s["streams_named"], s["streams_moved"]), (34, 32))
+        self.assertEqual(s["streams_unmoved_names"], {"Nope": 2})
+        zero = dict(rep, moved=0, unmoved=17, unmoved_names=["Nope"])
+        s = self.drive(ProvEmu([view_of(obs(hp=70))], how=None, streams=zero, reanchor_ok=True), [msg("map", a)]).stats
+        self.assertEqual((s["streams_named"], s["streams_moved"], s["streams_unmoved_names"]), (17, 0, {"Nope": 1}))
+
+    def test_a_held_reanchor_is_counted_by_what_it_was_seeded_from_and_none_is_a_way(self):
+        a = obs(hp=80)
+        for how, want in (("hidden", {"hidden": 1}), ("observation", {"observation": 1}), ("streams", {"streams": 1}),
+                          (None, {"none": 1})):
+            emu = ProvEmu([view_of(obs(hp=70))], how=how, reanchor_ok=True)
+            self.assertEqual(self.drive(emu, [msg("map", a)]).stats["anchored_with"], want)
+        s = self.drive(FakeEmu([view_of(obs(hp=70))], reanchor_ok=True), [msg("map", a)]).stats  # a side that reports nothing
+        self.assertEqual(s["anchored_with"], {"none": 1})
+        s = self.drive(ProvEmu([view_of(obs(hp=70))], how="hidden", reanchor_ok=False), [msg("map", a)]).stats
+        self.assertNotIn("anchored_with", s)  # only a re-anchor that held counts
+
+    def test_an_emulator_side_with_no_stream_report_adds_no_stream_counts(self):
+        a = obs(hp=80)
+        s = self.drive(FakeEmu([view_of(obs(hp=70))], reanchor_ok=True), [msg("map", a)]).stats
+        self.assertNotIn("streams_named", s)
+
+
 @unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")
 class ResumeTests(unittest.TestCase):
     """Round A1 amend: a lost lockstep is re-anchored at the next fight start or room entry and goes on from there."""
@@ -606,6 +656,76 @@ class ReanchorWalkTests(unittest.TestCase):
         self.assertEqual(run.floor, 8)  # to the map before the fight's room (floor 9 - 1)
 
 
+class SteppedWalkRun(FakeRun):
+    """A suspended emulator's walk: a map node leads to a fight on odd floors and to an event on even ones; a fight is resolved
+    unplayed and its rewards are left by proceed, an event takes the rules policy's pick."""
+
+    def __init__(self):
+        screens = {"map": ("map", (_opt("map.node", 0, node=(1, 2)),)), "reward": ("rewards", (_opt("reward.proceed", 9),)),
+                   "event": ("event", (_opt("event.choice", 0), _opt("event.choice", 1)))}
+        super().__init__("map", screens, {})
+        self.floor = 3
+
+    def view(self):
+        return SimpleNamespace(floor=self.floor)
+
+    def apply(self, o):
+        self.taken.append(o.kind)
+        if o.kind == "map.node":
+            self.floor += 1
+            self.cur = "combat" if self.floor % 2 else "event"
+        else:
+            self.cur = "map"
+
+
+class WalkCountTests(unittest.TestCase):
+    """Review recommendation 4: the walk of a suspended emulator is counted -- floors walked, the rules policy's picks and the
+    fights resolved unplayed -- because those picks are the agent's, not the game's."""
+
+    def drive(self, emu, stream):
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in stream:
+            ls.decide(m)
+        return ls
+
+    def walker(self, run):
+        e = stub_emu(run)
+        e.rules, e.rng = SimpleNamespace(pick=lambda v, d, r: SimpleNamespace(index=0)), None
+
+        def resolve(*a):
+            run.cur = "reward"
+            return True
+
+        e.native = SimpleNamespace(run_debug_resolve_combat=resolve)
+        e._set_player = lambda obs: True
+        return e
+
+    def test_a_walk_of_four_floors_counts_the_floors_the_picks_and_the_fights(self):
+        run = SteppedWalkRun()
+        e = self.walker(run)
+        self.assertTrue(e._to_map(7))
+        self.assertEqual(run.floor, 7)
+        # four map nodes and two events by the rules policy (six picks); the fights of floors 5 and 7 resolved; the rewards left by proceed
+        self.assertEqual(e.walk, {"walks": 1, "floors": 4, "picks": 6, "fights": 2})
+
+    def test_a_walk_that_is_not_needed_is_a_walk_of_nothing_and_a_reanchor_starts_clean(self):
+        run = SteppedWalkRun()
+        e = self.walker(run)
+        self.assertTrue(e._to_map(3))
+        self.assertEqual(e.walk, {"walks": 1, "floors": 0, "picks": 0, "fights": 0})
+        e.take_anchor_state(None)
+        self.assertTrue(e.reanchor("room_entry", {"obs": {"floor": 5}}))
+        self.assertEqual(e.walk, {"walks": 1, "floors": 2, "picks": 3, "fights": 1})  # not 1 + the earlier walk's
+
+    def test_the_run_stats_sum_the_walks(self):
+        a = obs(hp=80)
+        w = {"walks": 1, "floors": 4, "picks": 6, "fights": 2}
+        s = self.drive(ProvEmu([view_of(obs(hp=70))], walk=w, reanchor_ok=[False, True]), [msg("map", a), msg("map", a)]).stats
+        self.assertEqual(s["walk"], {"walks": 2, "floors": 8, "picks": 12, "fights": 4})
+        s = self.drive(FakeEmu([view_of(obs(hp=70))], reanchor_ok=True), [msg("map", a)]).stats
+        self.assertNotIn("walk", s)
+
+
 class ReanchorReasonTests(unittest.TestCase):
     def test_a_failed_reanchor_records_why(self):
         a = obs()
@@ -872,6 +992,29 @@ class RecordContextTests(unittest.TestCase):
         self.assertEqual((rec["acted"], rec["turn"], rec["encounter"]), (None, None, None))
         ls.decide(msg("card_reward", o))  # the lockstep is lost, the step is still tracked
         self.assertEqual(ls.prev_act, {"type": "choice", "kind": "card_reward", "label": ["x"]})
+
+    def test_turn_advanced_is_true_on_the_first_decision_of_a_new_round_only(self):
+        def fight(rnd, kind="combat"):
+            return {"t": "decide", "kind": kind, "obs": self.combat_obs(rnd, (15, 40)), "actions": [["play", 0, "STRIKE", 0], ["end"]], "h": "abc"}
+
+        ls = lockstep.Lockstep(FakeEmu([view_of(obs())]), lambda m_: 0)
+        seen = []
+        for x in (msg("map", obs()), fight(1), fight(1), fight(1, "select_cards_combat"), fight(2), fight(2), fight(3),
+                  msg("reward", obs()), msg("map", obs()), fight(1)):
+            ls.decide(x)
+            seen.append(ls.ctx["turn_advanced"])
+        # outside a fight; a fight's first decision; a second play; a selection screen of the same round; the new round, then
+        # its second decision; the next round; the reward and the map; the next fight's first decision
+        self.assertEqual(seen, [False, False, False, False, True, False, True, False, False, False])
+
+    def test_a_record_carries_turn_advanced(self):
+        rec = self.run_fight(40).log.records[0]
+        self.assertEqual((rec["turn"], rec["turn_advanced"]), (3, True))  # round 2 at the decision before, round 3 here
+        self.assertIs(self.run_fight(40).ctx["turn_advanced"], True)
+        o, b = obs(hp=80), obs(hp=70)
+        ls = lockstep.Lockstep(FakeEmu([view_of(b), view_of(o)]), lambda m_: 0)
+        ls.decide(msg("rest", o))
+        self.assertIs(ls.log.records[0]["turn_advanced"], False)
 
     def test_a_play_and_a_potion_are_told_apart_from_an_end_turn(self):
         self.assertEqual(lockstep.act_type("combat", ["play", 0, "STRIKE", 0]), "play")
