@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 
 ALLOWED_FILE = Path(__file__).with_name("allowed_diff.json")
+MIGRATED_FILE = Path(__file__).with_name("migrated_families.json")
 
 KEYED = {"powers"}
 SETS = {"keywords"}
@@ -47,7 +48,11 @@ KINDS = {"drop_dead_enemies", "lost_outcome_only", "power_fold", "intent_coarse"
          "both_positive", "settle", "late_steps", "surplus"}
 # An engine that runs over another engine's state has that engine's representation limits, so it is judged with that
 # engine's rows too (core2 is the old engine's state with the Tier 1 kernel attached, TIER1_KERNEL.md section 6). An engine
-# with a state of its own is not listed here and is judged by the rows for every engine only.
+# with a state of its own is not listed here and is judged by the rows for every engine only. A row of the base engine that
+# could hide a rule difference lists its `families` (tools/fidelity/hook_families.json); the derived engine inherits it only
+# while none of them is migrated (migrated_families.json), since a migrated family is the part of the rules the derived engine
+# runs in the game's structure and must then be judged on every field. A row with no families list is a representation limit
+# (how the old engine writes a state, not what the rules do) and is always inherited.
 ENGINE_BASE = {"core2": "old"}
 END_OF_TURN = "After player turn start"
 
@@ -71,14 +76,25 @@ def load_rows(path: Path = ALLOWED_FILE) -> list:
         eng = r.get("engines")
         if not isinstance(eng, list) or not eng or not all(isinstance(x, str) and x for x in eng):
             raise ValueError(f"allowed row {r['id']}: a row needs its engines list (old: the old engine's limits only; *: every engine)")
+        fam = r.get("families", [])
+        if not isinstance(fam, list) or not all(isinstance(x, str) and re.fullmatch(r"F\d{2}", x) for x in fam):
+            raise ValueError(f"allowed row {r['id']}: families is a list of family ids like F10 (hook_families.json)")
         r["_re"] = [_glob(p) for p in r.get("patterns", [])]
     return rows
 
 
-def for_engine(rows: list, engine: str) -> list:
-    """The rows that apply to one engine: those listing it or the engine its state is (ENGINE_BASE), or * (every engine)."""
-    names = {engine, ENGINE_BASE.get(engine, engine), "*"}
-    return [r for r in rows if names & set(r["engines"])]
+def load_migrated(path: Path = MIGRATED_FILE) -> list:
+    """The families the new dispatcher already runs (migrated_families.json)."""
+    return list(json.loads(Path(path).read_text(encoding="utf-8")).get("migrated", []))
+
+
+def for_engine(rows: list, engine: str, migrated: list | None = None) -> list:
+    """The rows that apply to one engine: those listing it or * (every engine), and those of the engine its state is
+    (ENGINE_BASE) unless one of the row's families is migrated (``migrated``: default migrated_families.json)."""
+    base = ENGINE_BASE.get(engine, engine)
+    done = set(load_migrated() if migrated is None else migrated)
+    return [r for r in rows if {engine, "*"} & set(r["engines"])
+            or base in r["engines"] and not done & set(r.get("families", []))]
 
 
 def rows_sha(path: Path = ALLOWED_FILE) -> str:
@@ -343,9 +359,9 @@ def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict,
             "unmodelled": unmodelled, "unjudged": unjudged, "surplus": surplus}
 
 
-def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old") -> dict:
-    """Every step of one fight in both shapes; see the module doc for the result. Only the rows of ``engine`` apply."""
-    rows = for_engine(load_rows() if rows is None else rows, engine)
+def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old", migrated: list | None = None) -> dict:
+    """Every step of one fight in both shapes; see the module doc for the result. Only the rows of ``engine`` apply (for_engine)."""
+    rows = for_engine(load_rows() if rows is None else rows, engine, migrated)
     gsteps, esteps = g.get("steps", []), e.get("steps", [])
     late = next((r for r in rows if r["kind"] == "late_steps"), None)
     limit = net_limit(g) if late else len(gsteps)  # the limit is the row: no row, no limit
@@ -389,9 +405,9 @@ def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old
             "steps": [len(gsteps), len(esteps)], **({"error": str(e["error"]).splitlines()[0][:200]} if e.get("error") else {})}
 
 
-def judge(g: dict, e: dict, rows: list | None = None, engine: str = "old") -> dict:
+def judge(g: dict, e: dict, rows: list | None = None, engine: str = "old", migrated: list | None = None) -> dict:
     """One fight's entry in the corpus results format (corpus.judge_fight: fd, path, card, ferr) plus the census."""
-    r = compare_fight(g, e, rows, engine)
+    r = compare_fight(g, e, rows, engine, migrated)
     out = {"fd": r["first"]}
     if r["first"] is not None:
         out["path"] = r["at"][0][0]

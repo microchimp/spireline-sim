@@ -388,8 +388,10 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
   `KernelState` exists), the kernel's own state, written by `tools/emudump/Engines/Core2/Core2GameView.cs`. The game's
   NetFullCombatState has no field for a queue or a choice set the kernel keeps (its action fields are `lastExecutedActionId`,
   `lastExecutedHookId` and `nextChoiceIds`, the last being PlayerChoiceSynchronizer's counter), so: `net.last_action` and
-  `net.last_hook` carry the first two from the queue's own counters (`ActionQueueSet.LastExecutedActionId/HookId`, set when an
-  action finishes; a resumed action's last id), and everything else is `private.kernel`: `queue` (every action with id, kind,
+  `net.last_hook` carry the first two under the game's names, from the queue's own counters (`ActionQueueSet.LastExecutedActionId/HookId`: the
+  queue's own count and `RecordedHookAction.Id`, 1-based, where the game's HookId is `_nextHookId`'s, 0-based; so neither matches a
+  record and the comparer lists both as surplus; set when an
+  action finishes, a resumed action's last id), and everything else is `private.kernel`: `queue` (every action with id, kind,
   type, state, owner, first id, hook action, step action and target, answer; per queue the front-first ids, paused and the
   three cancel flags; next id), `hook_actions` (pause site: dispatcher, hook, pass, index, listener kind/model/instance,
   context; the screen request as plain data; the resume record's type and site), `stops`, `waits`, `screen` (the combat's open

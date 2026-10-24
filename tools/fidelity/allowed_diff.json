@@ -1,10 +1,10 @@
 {
-  "_about": "Representation-only rows for tools/fidelity/struct_compare.py: where the old engine's game view and the game's record differ in how a state is written, not in the state. Each row: id, kind (struct_compare.KINDS says what each does), its parameters, why it is representation only, and the legacy comparer's rule it stands for. Patterns are globs over schema paths (indices written [*], keyed entries {*}): * matches within one path segment, ** across segments. 'when' restricts a row to steps whose record says so. docs/rebuild/COMPARER.md explains the kinds. engines lists the engines a row applies to: old for rows that exist only because of the old engine's limits, * for every engine.",
+  "_about": "Representation-only rows for tools/fidelity/struct_compare.py: where the old engine's game view and the game's record differ in how a state is written, not in the state. Each row: id, kind (struct_compare.KINDS says what each does), its parameters, why it is representation only, and the legacy comparer's rule it stands for. Patterns are globs over schema paths (indices written [*], keyed entries {*}): * matches within one path segment, ** across segments. 'when' restricts a row to steps whose record says so. docs/rebuild/COMPARER.md explains the kinds. engines lists the engines a row applies to: old for rows that exist only because of the old engine's limits, * for every engine. A row of old that could hide a rule difference also lists its families (hook_families.json ids): an engine that runs over old's state (struct_compare.ENGINE_BASE: core2) inherits the row only while none of them is in migrated_families.json; a row with no families list is a representation limit and is always inherited.",
   "rows": [
     {"id": "dead-enemies", "kind": "drop_dead_enemies", "engines": ["*"], "shape": "snap",
      "reason": "The game's snapshot can list an enemy at 0 HP while it dies; a dead enemy is no state either side plays on, and the engine writes the living roster.",
      "legacy": "fight_compare.game_view / emu_view: enemies if e['hp'] > 0"},
-    {"id": "fight-lost", "kind": "lost_outcome_only", "engines": ["old"], "shape": "snap",
+    {"id": "fight-lost", "kind": "lost_outcome_only", "engines": ["old"], "families": ["F10"], "shape": "snap",
      "reason": "A lost fight ends the run: the game stops the combat at the killing hit, the old engine plays the enemy phase out, and nothing that is left is carried on. Only in_combat and the player's HP are compared.",
      "legacy": "fight_compare._game_end_view / _emu_end_view: {'outcome': 'lost'}"},
     {"id": "power-folds", "kind": "power_fold", "engines": ["old"], "shape": "any",
@@ -35,7 +35,7 @@
      "patterns": ["net.players[*].relics[*].props", "net.players[*].relics[*].floor", "net.players[*].piles.*[*].props", "net.players[*].piles.*[*].floor"],
      "reason": "[SavedProperty] values and FloorAddedToDeck have no field in the old engine (its relic counter has no common unit with the game's named props and is in its private block).",
      "legacy": "netstate_diff.flat: relics.props/relics.floor and piles.*.props/floor written for the game side only"},
-    {"id": "cost-outside-hand", "kind": "ignore", "engines": ["old"], "patterns": ["net.players[*].piles.Draw[*].cost", "net.players[*].piles.Discard[*].cost",
+    {"id": "cost-outside-hand", "kind": "ignore", "engines": ["old"], "families": ["F07"], "patterns": ["net.players[*].piles.Draw[*].cost", "net.players[*].piles.Discard[*].cost",
                                                               "net.players[*].piles.Exhaust[*].cost", "net.players[*].piles.Play[*].cost"],
      "reason": "The old engine prices the hand only (EffectiveCost prices a card about to be played; some game cost hooks look at the pile).",
      "legacy": "netstate_diff._card_detail(c, name == 'Hand')"},
@@ -48,7 +48,7 @@
     {"id": "relic-counters", "kind": "unmodelled", "engines": ["old"], "patterns": ["snap.relic_counters"],
      "reason": "The old engine's relic counter is its own unit (private block); the game's snapshot has none yet.",
      "legacy": "fight_compare.OPTIONAL: .relic_counters compared only where both sides wrote it"},
-    {"id": "after-fight-turn-state", "kind": "unmodelled", "engines": ["old"], "patterns": ["snap.player.energy", "snap.round"], "when": {"in_combat": false},
+    {"id": "after-fight-turn-state", "kind": "unmodelled", "engines": ["old"], "families": ["F10"], "patterns": ["snap.player.energy", "snap.round"], "when": {"in_combat": false},
      "reason": "Once a fight is over the run holds no energy and no round; the game's snapshot still writes the last ones.",
      "legacy": "fight_compare._game_end_view: no energy (and round is never compared)"},
     {"id": "after-last-checksum", "kind": "settle", "engines": ["*"], "shape": "net",
@@ -59,7 +59,7 @@
      "legacy": "netstate_diff.late_steps / diff_fight verdict 'driver: ...'"},
     {"id": "kernel-sequencing", "kind": "surplus", "engines": ["core2"], "shape": "net",
      "patterns": ["net.last_action", "net.last_hook"],
-     "reason": "With a kernel switch on, core2 writes the game's lastExecutedActionId and lastExecutedHookId from its own action queue's counters. The record's ids come from the live game's synchronizer, which also numbers actions the emulator does not run, so the two are not the same count: the paths are listed as surplus of the census and not compared. Where core2 writes none (no switch on) the record's side stays under net-sequencing.",
+     "reason": "With a kernel switch on, core2 writes lastExecutedActionId and lastExecutedHookId from its own action queue. They cannot match the record: the game numbers actions from its synchronizer, which also numbers actions the emulator does not run, and writes the HookId from ActionQueueSynchronizer._nextHookId (0-based, the turn start flow action numbered too), where core2 writes its RecordedHookAction.Id (1-based, 0 for the flow action). Both paths are listed as surplus of the census and not compared. Where core2 writes none (no switch on) the record's side stays under net-sequencing.",
      "legacy": "none: netstate_diff does not model the sequencing ids"}
   ]
 }

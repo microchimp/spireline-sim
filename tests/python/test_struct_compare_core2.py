@@ -3,7 +3,9 @@ old's rows; the kernel's own fields are a surplus of the census and never compar
 
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -73,6 +75,64 @@ class Core2Scope(unittest.TestCase):
         r = sc.compare_fight(g, e, ROWS, engine="core2")
         self.assertEqual(paths(r), ["net.players[0].energy"])
         self.assertEqual(r["surplus"], ["net.last_action"])
+
+
+class Migrated(unittest.TestCase):
+    """core2 inherits an old row only while none of the row's families is migrated; a row with no families is always inherited."""
+
+    def ids(self, migrated):
+        return {r["id"] for r in sc.for_engine(ROWS, "core2", migrated)}
+
+    def test_rows_that_could_hide_a_rule_list_their_families(self):
+        by = {r["id"]: r.get("families") for r in ROWS}
+        self.assertEqual({k: v for k, v in by.items() if v}, {"fight-lost": ["F10"], "after-fight-turn-state": ["F10"], "cost-outside-hand": ["F07"]})
+
+    def test_a_migrated_family_drops_its_rows_and_only_those(self):
+        every = self.ids([])
+        self.assertEqual(self.ids(["F06", "F11"]), every)  # a family no row lists changes nothing
+        self.assertEqual(every - self.ids(["F10"]), {"fight-lost", "after-fight-turn-state"})
+        self.assertEqual(every - self.ids(["F07"]), {"cost-outside-hand"})
+        self.assertEqual(every - self.ids(["F10", "F07", "F12"]), {"fight-lost", "after-fight-turn-state", "cost-outside-hand"})
+        # The representation limits stay however many families are migrated; old itself never loses a row.
+        limits = {r["id"] for r in ROWS if not r.get("families") and "old" in r["engines"]}
+        self.assertTrue({"intent-vocabulary", "power-folds", "upgrade-count", "affliction-amount", "enemy-move-id", "saved-props-floor",
+                         "relic-counters"} <= limits)
+        every_family = [f"F{i:02d}" for i in range(1, 17)]
+        self.assertLessEqual(limits, self.ids(every_family))
+        self.assertEqual({r["id"] for r in sc.for_engine(ROWS, "old", every_family)}, {r["id"] for r in sc.for_engine(ROWS, "old", [])})
+        self.assertEqual({r["id"] for r in sc.for_engine(ROWS, "core3", every_family)}, {"dead-enemies", "after-last-checksum", "late-steps"})
+
+    def test_a_lost_fight_is_compared_in_full_once_its_family_is_migrated(self):
+        rec = snap(in_combat=False, player={**snap()["player"], "hp": 0}, hand=[])
+        eng = snap(in_combat=False, player={**snap()["player"], "hp": 0, "block": 9})
+        self.assertIsNone(sc.compare_fight(*fight([rec], [eng]), ROWS, engine="core2", migrated=[])["first"])
+        self.assertIsNone(sc.compare_fight(*fight([rec], [eng]), ROWS, engine="core2", migrated=["F06"])["first"])
+        r = sc.compare_fight(*fight([rec], [eng]), ROWS, engine="core2", migrated=["F10"])
+        self.assertIn("snap.player.block", paths(r))
+        self.assertIn("snap.hand#len", paths(r))
+        self.assertIsNone(sc.compare_fight(*fight([rec], [eng]), ROWS, engine="old", migrated=["F10"])["first"])  # old keeps its rows
+
+    def test_a_pile_cost_is_compared_once_the_cost_family_is_migrated(self):
+        eng = net()
+        eng["players"][0]["piles"]["Draw"][0]["cost"] = 3
+        rs = snap()
+        g, e = fight([rs], [rs], rec_nets=[net()], eng_nets=[eng])
+        self.assertIsNone(sc.compare_fight(g, e, ROWS, engine="core2", migrated=["F10"])["first"])  # F10 is not the costs
+        r = sc.compare_fight(g, e, ROWS, engine="core2", migrated=["F07"])
+        self.assertEqual(paths(r), ["net.players[0].piles.Draw[0].cost"])
+        self.assertIn("net.players[*].piles.Draw[*].cost", r["census"])
+
+    def test_the_default_is_the_migrated_families_file(self):
+        self.assertEqual(sc.for_engine(ROWS, "core2"), sc.for_engine(ROWS, "core2", sc.load_migrated()))
+
+    def test_a_bad_families_list_is_refused(self):
+        for bad in ("F10", ["F1"], [10], [""]):
+            row = {"id": "x", "kind": "ignore", "engines": ["old"], "families": bad, "patterns": ["a"], "reason": "r", "legacy": "y"}
+            with tempfile.TemporaryDirectory() as d:
+                f = Path(d) / "a.json"
+                f.write_text(json.dumps({"rows": [row]}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    sc.load_rows(f)
 
 
 if __name__ == "__main__":
