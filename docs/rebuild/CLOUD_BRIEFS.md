@@ -68,7 +68,7 @@ proves the pattern and is the only batch that restructures `Registry.cs`; the ot
 
 **Files.** The house layout is the one the rebuild branches (`rebuild/f08-*`, about 50 models) already use. New: one file per model,
 `src/Sts2Emulator/Core2/Models/<Kind>/<GameClass>.cs` with the **plural** folder `Powers`, `Relics`, `Cards`, `Monsters` or `Potions`, namespace
-`Sts2Emulator.Core2.Models.<Kind>` (`Powers`, `Relics`, ...), holding `internal static class <GameClass>` with `public static void Register(HandlerTable t)`
+`Sts2Emulator.Core2.Models.<Kind>` (`Powers`, `Relics`, ...), holding `internal static class <GameClass>` with `internal static void Register(HandlerTable t)`
 (TIER1 section 4; no `IMigratedModel`, which a static class cannot implement; `Registry.cs` lists the method group), and the batch's test file
 `src/Sts2Emulator.Tests/Core2/Models/<Batch>Tests.cs`. Edited: `Core2/Models/Registry.cs` only. The pilot made it one **named block per batch** (a
 `public static readonly IReadOnlyList<Action<HandlerTable>>` such as `Pilot`) with `All` spreading the blocks (`.. Pilot,`). A batch adds its block named as
@@ -151,7 +151,7 @@ AfterModifyingHpLostAfterOsty and ModifyHpLostAfterOstyLate), `CardEffects.Cheap
 AfterDamageGiven, whose old location is the shared `RelicEffects.ApplyAfterBlockBroken` (no `HandDrill_*` function exists: if the body is inline with
 other relics' bodies, apply the stop rule and leave Hand Drill out). Files (landed layout, the pattern C2-C6 follow exactly): the eight classes `Core2/Models/Powers/{PhantomBladesPower, LethalityPower, TrackingPower,
 DoubleDamagePower}.cs`, `Core2/Models/Relics/{HandDrill, TheBoot, VitruvianMinion}.cs`, `Core2/Models/Cards/Melancholy.cs` (each `internal static class` by the game class name
-with `public static void Register(HandlerTable t)`), `Registry.cs` as one named block per batch (`Pilot`) with `All` spreading the blocks, `src/Sts2Emulator.Tests/Core2/Models/PilotTests.cs`,
+with `internal static void Register(HandlerTable t)`), `Registry.cs` as one named block per batch (`Pilot`) with `All` spreading the blocks, `src/Sts2Emulator.Tests/Core2/Models/PilotTests.cs`,
 and the shared `ModelTestKit.cs` with its `ModelTestKitTests.cs`. The pilot's first duty was the pattern: one folder layout, one test kit (build a combat holding a power, relic or
 card, bind a kernel with the test switch, dispatch; death-hook builders, `Dying`, holders, Osty) that the five later batches reuse unchanged. Tests and local gate: as the shared
 rules; the pilot's gate also reviews the kit and the `Registry.cs` layout before the others start.

@@ -22,7 +22,7 @@ internal static class TrackingPower
         return BuffSystem.Tracking_ModifyDamageMultiplicative((int)me.Amount);
     }
 
-    public static void Register(HandlerTable t) =>
+    internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Power, "TrackingPower")
             .On(HookId.ModifyDamageMultiplicative, (HookFold<ModifyDamageArgs, decimal>)ModifyDamageMultiplicative);
 }

@@ -21,7 +21,7 @@ internal static class VitruvianMinion
         return RelicEffects.VitruvianMinion_ModifyDamageMultiplicative();
     }
 
-    public static void Register(HandlerTable t) =>
+    internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Relic, "VitruvianMinion")
             .On(HookId.ModifyDamageMultiplicative, (HookFold<ModifyDamageArgs, decimal>)ModifyDamageMultiplicative);
 }

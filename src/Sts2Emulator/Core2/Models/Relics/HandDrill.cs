@@ -23,7 +23,7 @@ internal static class HandDrill
         return HookStep.Done;
     }
 
-    public static void Register(HandlerTable t) =>
+    internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Relic, "HandDrill")
             .On(HookId.AfterDamageGiven, (HookEvent<AfterDamageGivenArgs>)AfterDamageGiven);
 }

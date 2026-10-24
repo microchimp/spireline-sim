@@ -149,7 +149,8 @@ public static class ModelTestKit
     // ---------------------------------------------------------------------------------------- holders
 
     /// <summary>The creature index of <paramref name="enemy" /> in the combat (the player 0, Osty 1 when present, then the
-    /// enemies in roster order); the enemy must be listed (not dying).</summary>
+    /// enemies in roster order). It counts every earlier entry of s.Enemies, dead ones included, which TryAt skips, so it is the
+    /// creature index only while no earlier enemy is dead; the enemy itself must be listed.</summary>
     public static int IndexOf(CombatState s, EnemyState enemy) =>
         1 + (s.OstyMaxHp > 0 ? 1 : 0) + s.Enemies.FindIndex(e => ReferenceEquals(e, enemy));
 

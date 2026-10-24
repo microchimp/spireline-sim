@@ -35,7 +35,7 @@ internal static class TheBoot
     internal static HookStep AfterModifyingHpLostAfterOsty(HookCtx c, ListenerRef self, in AfterModifyingHpLostAfterOstyArgs a,
         ChoiceCtx? ctx) => HookStep.Done;
 
-    public static void Register(HandlerTable t) =>
+    internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Relic, "TheBoot")
             .On(HookId.ModifyHpLostAfterOstyLate, (HookFold<ModifyHpLostArgs, decimal>)ModifyHpLostAfterOstyLate)
             .On(HookId.AfterModifyingHpLostAfterOsty, (HookEvent<AfterModifyingHpLostAfterOstyArgs>)AfterModifyingHpLostAfterOsty);

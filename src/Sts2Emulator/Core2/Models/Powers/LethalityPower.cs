@@ -25,7 +25,7 @@ internal static class LethalityPower
         return (decimal)CardEffects.Lethality_ModifyDamageMultiplicative((int)me.Amount);
     }
 
-    public static void Register(HandlerTable t) =>
+    internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Power, "LethalityPower")
             .On(HookId.ModifyDamageMultiplicative, (HookFold<ModifyDamageArgs, decimal>)ModifyDamageMultiplicative);
 }

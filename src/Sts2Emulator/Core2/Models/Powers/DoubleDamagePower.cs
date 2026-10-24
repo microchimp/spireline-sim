@@ -21,7 +21,7 @@ internal static class DoubleDamagePower
         return BuffSystem.DoubleDamage_ModifyDamageMultiplicative();
     }
 
-    public static void Register(HandlerTable t) =>
+    internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Power, "DoubleDamagePower")
             .On(HookId.ModifyDamageMultiplicative, (HookFold<ModifyDamageArgs, decimal>)ModifyDamageMultiplicative);
 }

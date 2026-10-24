@@ -281,7 +281,7 @@ public class PilotTests
         s.Enemies[0].Buffs.Add(new BuffState(BuffId.Weak, 1));
         Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: card), out changed));
         Assert.Empty(changed);
-        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, card: card), out changed));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, dealer: 1, card: card), out changed));
         Assert.Empty(changed);
         Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
         Assert.Empty(changed);
@@ -303,7 +303,7 @@ public class PilotTests
         // Where it fails: the pet with no card source, the slug as the dealer (not the owner's pet).
         Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1), out changed));
         Assert.Empty(changed);
-        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2, card: card), out changed));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 2, card: card), out changed));
         Assert.Empty(changed);
         // The delete-mutant: the no-handler value.
         var gone = Kernel(s, Without(Pilot, TrackingPower.Register));

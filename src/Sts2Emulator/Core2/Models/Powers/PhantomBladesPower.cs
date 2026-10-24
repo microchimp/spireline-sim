@@ -30,7 +30,7 @@ internal static class PhantomBladesPower
     /// (R7 checks).</summary>
     private static bool IsShiv(int defId) => GeneratedData.Cards.Get(defId).Name == "Shiv";
 
-    public static void Register(HandlerTable t) =>
+    internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Power, "PhantomBladesPower")
             .On(HookId.ModifyDamageAdditive, (HookFold<ModifyDamageArgs, decimal>)ModifyDamageAdditive);
 }

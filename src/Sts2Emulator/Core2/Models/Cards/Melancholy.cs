@@ -43,6 +43,6 @@ internal static class Melancholy
         return false;
     }
 
-    public static void Register(HandlerTable t) =>
+    internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Card, "Melancholy").On(HookId.AfterDeath, (HookEvent<AfterDeathArgs>)AfterDeath);
 }

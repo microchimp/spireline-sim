@@ -30,6 +30,8 @@ public static class Registry
         Melancholy.Register,
     ];
 
+    // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
+    // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
     /// not ordered).</summary>
     public static readonly IReadOnlyList<Action<HandlerTable>> All =
