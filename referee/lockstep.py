@@ -638,15 +638,30 @@ class EmuLock:
             self._decision()
             self._take("card.skip")
 
+    def _unasked_claim(self, d) -> bool:
+        """True when the rewards screen `d` holds one relic to claim that the referee took without being asked. A screen
+        the game does not let the owner skip (Small Capsule's lone relic after Neow) has one legal action, a claim, and
+        the referee asks only with two or more. The emulator also lists its own proceed there, so the screen is told from
+        one the referee skipped by the referee's holdings: it holds exactly one relic more than the emulator does."""
+        claims = [o for o in d.options if o.kind != "reward.proceed"]
+        if len(claims) != 1 or claims[0].kind != "reward.relic":
+            return False
+        ref = ((self._msg or {}).get("obs") or {}).get("relics")
+        return isinstance(ref, list) and len(ref) == len(self.s.view().relics) + 1
+
     def _forced(self, want: str | None) -> None:
-        """Steps the referee took without a decision: leaving a rewards screen it has answered (gold, skipped items),
-        and any screen with a single option (Env.Decide asks only with two or more)."""
+        """Steps the referee took without a decision: leaving a rewards screen it has answered (gold, skipped items) or
+        claiming its lone unskippable relic (_unasked_claim), and any screen with a single option (Env.Decide asks only
+        with two or more)."""
         self._flush_rewards()
         for _ in range(30):
             d = self._decision()
             if d is None or d.type == want:
                 return
             if d.type == "rewards" and want != "rewards":
+                if self._unasked_claim(d):
+                    self._take("reward.relic")
+                    continue
                 self.rq.clear()
                 self._take("reward.proceed")
             elif d.type == "card_reward" and want not in ("rewards", "card_reward"):
