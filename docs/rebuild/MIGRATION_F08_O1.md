@@ -12,6 +12,10 @@ Classes of a test that fails only with the switch on:
 - **queue gate (no model)**: none of the three: the kernel's queue or its entry gate (`RunEngine.StepCombat`), not a
   model and not R4.
 
+The six below were first seen with the round's first fixture (bound at construction, no run state) and are unchanged
+with the reviewed one (bound at the first step with `Attach(combat, run)`); the exhaust-answer probe was made with the
+first.
+
 ## Suites
 
 42 xunit classes, 287 tests. The ten the review names (15 classes: DeathCheckTests.cs is six): PotionKillTests,
@@ -29,16 +33,52 @@ TurnEndSelfDamageTests, UnpoweredDamageHookTests, TwinStrikeTests, WhirlwindTest
 Variable unset: the whole suite 6871 tests, 6864 passed, 7 skipped, per test identical to the tree before the fixture.
 byte_proof main vs this tree (`fight,state-hash,rng-log,reanchor --limit 300`): 1200 pairs identical, 0 differ.
 
-Off vs on: 287 tests, **281 pass both, 6 fail on only**, 0 fail off only, 0 fail both. Every suite not listed below
-passes all its tests both ways.
+What was exercised: on this base `Registry.All` is empty (no model file under Core2/Models; the pilot's models reached
+main after 4245d9cb), so the switched-on run exercised F10's queue and its boundary win check only, with no Core2
+handler. Main as it is now (pilot merged) is to be measured with the integration tree.
 
-| suite | tests | pass both | fail on only |
-|---|---|---|---|
-| AutoPlayDeathTests | 3 | 2 | 1 |
-| FightHeldOpenTests | 3 | 2 | 1 |
-| PotionKillTests | 10 | 9 | 1 |
-| SelectionAnswerDeathTests | 2 | 1 | 1 |
-| TestSubjectTests | 11 | 9 | 2 |
+Fixture as reviewed (rerun 15:45Z): a combat is bound at its first step with `Attach(combat, run)`, after the test's
+setup, and every kernel-bound step is counted per test method. Variable unset: again 6871 tests, 6864 passed, 7 skipped,
+0 failed (no test added or removed, so per test identical); nothing outside the test project changes, so the byte proof
+above stands.
+
+Off vs on: 287 tests, **209 pass both, 72 not covered, 6 fail on only**, 0 fail off only, 0 fail both, no crashed run.
+"Not covered" passed both ways with no kernel-bound step, so it proves nothing about the switch. Every suite not listed
+passes all its tests both ways with the kernel.
+
+| suite | tests | pass both | not covered | fail on only |
+|---|---|---|---|---|
+| AutoPlayDeathTests | 3 | 2 | 0 | 1 |
+| CombatEndRewardPowerTests | 5 | 0 | 5 | 0 |
+| CombatEndingGateTests | 52 | 42 | 10 | 0 |
+| CorpseRemovalTests | 10 | 1 | 9 | 0 |
+| CorpseSlugsNormalTests | 8 | 0 | 8 | 0 |
+| DamageAndPowerModifierRelicTests | 6 | 1 | 5 | 0 |
+| DamageReceivedRelicTests | 7 | 6 | 1 | 0 |
+| DeathMarchTests | 5 | 4 | 1 | 0 |
+| FightHeldOpenTests | 3 | 2 | 0 | 1 |
+| HeistGoldRewardTests | 7 | 2 | 5 | 0 |
+| IllusionAndMinionTests | 10 | 7 | 3 | 0 |
+| LethalHitHookTests | 5 | 4 | 1 | 0 |
+| MercPowerListTests | 9 | 4 | 5 | 0 |
+| MinionDiveBombTests | 3 | 2 | 1 | 0 |
+| MinionSacrificeTests | 3 | 2 | 1 | 0 |
+| PhrogParasiteTests | 5 | 3 | 2 | 0 |
+| PlayerHpLossTests | 9 | 1 | 8 | 0 |
+| PotionKillTests | 10 | 9 | 0 | 1 |
+| RunHpLossTests | 3 | 0 | 3 | 0 |
+| SelectionAnswerDeathTests | 2 | 1 | 0 | 1 |
+| TestSubjectTests | 11 | 6 | 3 | 2 |
+| UnpoweredDamageHookTests | 10 | 9 | 1 | 0 |
+
+Uncovered classes: wholly CombatEndRewardPowerTests, CorpseSlugsNormalTests, RunHpLossTests; mostly CorpseRemovalTests
+(9 of 10), PlayerHpLossTests (8 of 9), DamageAndPowerModifierRelicTests (5 of 6), HeistGoldRewardTests (5 of 7),
+MercPowerListTests (5 of 9); partly CombatEndingGateTests (10 of 52), IllusionAndMinionTests (3 of 10), TestSubjectTests
+(3 of 11), PhrogParasiteTests (2 of 5), DamageReceivedRelicTests, DeathMarchTests, LethalHitHookTests,
+MinionDiveBombTests, MinionSacrificeTests, UnpoweredDamageHookTests (1 each). By the suites' shape (not read test by test), these are tests that call an engine
+function on a state or an enemy (a predicate, a setup, a removal rule), read a run engine's setup, or step a run engine
+outside combat: they never reach the kernel, and covering them needs a step (or a kernel-aware call) in the test, not
+a wider fixture. Theory cases share their method's count, so a theory counts as covered if any case stepped.
 
 | test (fails with F08+F10 on) | class | why |
 |---|---|---|

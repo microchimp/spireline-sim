@@ -662,13 +662,20 @@ a stop.
 ### The old suites under the switch (O1; the review's recommendation 2)
 
 The old engine's behaviour suites pin game behaviour the old engine was made to match; run with F08+F10 on they are a
-switched-on regression suite. `STS2_TEST_SWITCHES=F08,F10` (src/Sts2Emulator.Tests/Support/TestSwitches.cs) binds one
-kernel with those switches and `Registry.All` to every combat the `Fight` helper builds (after its setup, where
-`RunEngine.StartCombat` binds a run's combat) and sends the helper's steps through `RunEngine.StepCombat`, the kernel's
-entry gate; the suites that make a `RunEngine` or step a combat themselves call `TestSwitches.Run` / `TestSwitches.Step`.
-Unset, empty or `none`: no kernel, nothing written, every step `CombatEngine.Step` (the whole suite and the byte proof
-unchanged). The runner runs the suites once off and once on and writes each test's verdict (pass both, fail on only,
-fail off only, fail both) to `DIR/suites_switch.json` and `DIR/suites_switch.md`:
+switched-on regression suite. `STS2_TEST_SWITCHES=F08,F10` (src/Sts2Emulator.Tests/Support/TestSwitches.cs) makes one
+kernel with those switches and `Registry.All`. A combat a suite steps itself (the `Fight` helper's steps,
+`TestSwitches.Step`) is bound at its first step, after all of the test's setup (factory, fluent `Enemy` / `PlayerBuff` /
+`Seed`, direct writes), with `Attach(combat, run)`, the run being the state of the run engine (one per combat) whose
+`RunEngine.StepCombat`, the kernel's entry gate, takes that and every later step: the order `RunEngine.StartCombat` uses
+(setup, pre-play phase, `Attach(combat, State)`, then the first step). An engine call a test makes on a combat before
+its first step runs unbound. A suite's own `RunEngine` gets the kernel before its `Reset` (`TestSwitches.Run`) and binds
+the combats it starts; its steps go through `TestSwitches.Step(engine, ...)`. With `STS2_TEST_SWITCHES_COVERAGE` set to
+a file, every kernel-bound step appends the test method that made it (found on the stack; a theory's cases share it).
+Unset, empty or `none`: no kernel, nothing bound or written, every step `CombatEngine.Step` / `RunEngine.Step` (the
+whole suite and the byte proof unchanged). The runner runs the suites once off and once on (with the coverage file) and
+writes each test's verdict (pass both, not covered: passed both ways with no kernel-bound step, fail on only, fail off
+only, fail both, skipped, missing off / on) to `DIR/suites_switch.json` and `DIR/suites_switch.md`; it exits 1 when a
+run crashed, wrote no trx or lost tests:
 
     python -m tools.fidelity.suites_switch --out DIR [--switches F08,F10] [--no-build] [--suites A,B]
 
