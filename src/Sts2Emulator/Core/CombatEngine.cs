@@ -4650,28 +4650,40 @@ public static class CombatEngine
     /// <summary>
     /// game: RavenousPower.AfterDeath
     /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
-    /// Every living creature carrying the power reacts to the death, whoever died.
+    /// Every living creature carrying the power reacts to the death, whoever died: each one's part is
+    /// <see cref="Ravenous_AfterDeathOf" />, which the Core2 handler (Core2/Models/Powers/RavenousPower.cs) calls for its
+    /// own owner alone, so the switch-off path is the old one.
     /// </summary>
     internal static void Ravenous_AfterDeath(CombatState state)
     {
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0))
         {
-            int ravenous = BuffSystem.Get(enemy.Buffs, BuffId.Ravenous);
-            if (ravenous <= 0)
-            {
-                continue;
-            }
-
-            BuffSystem.Apply(enemy.Buffs, BuffId.Strength, ravenous);
-            BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
-            // The readout changes the moment the ally dies: a live capture shows the
-            // surviving slug announcing a Stun, not the attack it was going to make.
-            // Leaving the old intent up told an agent to expect 12 damage from a
-            // creature that is about to sit the turn out. Unknown is what a stunned
-            // enemy already announces elsewhere (TerrorEel does it this way).
-            enemy.CurrentIntent = new Intent(IntentType.Unknown, 0);
-            enemy.SecondaryIntent = null;
+            Ravenous_AfterDeathOf(enemy);
         }
+    }
+
+    /// <summary>
+    /// game: RavenousPower.AfterDeath, one holder's part (the game runs the hook once per power): a living holder with
+    /// Ravenous above 0 gains Strength by its amount and one Stun, and announces Unknown. The callers keep the
+    /// condition (a death that was not prevented, the holder alive).
+    /// </summary>
+    internal static void Ravenous_AfterDeathOf(EnemyState enemy)
+    {
+        int ravenous = BuffSystem.Get(enemy.Buffs, BuffId.Ravenous);
+        if (ravenous <= 0)
+        {
+            return;
+        }
+
+        BuffSystem.Apply(enemy.Buffs, BuffId.Strength, ravenous);
+        BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        // The readout changes the moment the ally dies: a live capture shows the
+        // surviving slug announcing a Stun, not the attack it was going to make.
+        // Leaving the old intent up told an agent to expect 12 damage from a
+        // creature that is about to sit the turn out. Unknown is what a stunned
+        // enemy already announces elsewhere (TerrorEel does it this way).
+        enemy.CurrentIntent = new Intent(IntentType.Unknown, 0);
+        enemy.SecondaryIntent = null;
     }
 
     /// <summary>
@@ -5494,7 +5506,7 @@ public static class CombatEngine
 
     private const int QueenEnrageMove = 5;
 
-    private static bool TryEnrageCrabPartner(CombatState state, EnemyState dead)
+    internal static bool TryEnrageCrabPartner(CombatState state, EnemyState dead)
     {
         if (BuffSystem.Get(dead.Buffs, BuffId.CrabRage) <= 0)
         {
@@ -5612,7 +5624,7 @@ public static class CombatEngine
     /// the 1.5x away from it, and it is why the multiplier cannot be a constant baked
     /// into the announced damage.
     /// </remarks>
-    private static void TurnPlayerToFaceSurvivor(CombatState state)
+    internal static void TurnPlayerToFaceSurvivor(CombatState state)
     {
         int facing = BuffSystem.Get(state.PlayerBuffs, BuffId.Surrounded);
         if (facing == 0)
