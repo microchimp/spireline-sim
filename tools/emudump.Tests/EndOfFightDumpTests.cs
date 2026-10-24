@@ -88,4 +88,21 @@ public class EndOfFightDumpTests
         Assert.Null(final["player"]);
         Assert.Null(final["rng"]);
     }
+
+    /// <summary>
+    /// The run snapshot's deck during a fight is the game's: `SwipePower.Steal` removes the stolen
+    /// card's deck version at the steal, and the run settles its own deck only as the fight ends.
+    /// The same reason the snapshot reads the player's hp off the fight.
+    /// </summary>
+    [Fact]
+    public void AStolenCardIsOutOfTheRunSnapshotsDeckAtTheSteal()
+    {
+        var e = InAFight();
+        int before = e.State.Deck.Count;
+        e.State.ActiveCombat!.StolenCards.Add(e.State.Deck[0]);
+
+        Assert.Equal(before - 1, RunSnap.Export(e)["deck"]!.AsArray().Count);
+        // The run's own deck settles at the end of the fight, not before.
+        Assert.Equal(before, e.State.Deck.Count);
+    }
 }

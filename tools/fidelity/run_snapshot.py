@@ -49,8 +49,9 @@ NOT_COMPARED = {
                      "unmelted ones)",
     "event option identity": "the emulator has no option ids: the game's option index is applied as the "
                              "emulator's action; the enabled indices and the first page's count are compared",
-    "a Thieving Hopper's stolen card on a rewards screen": "the emulator returns it to the deck as the fight "
-                                                            "ends (known gap); the deck is compared",
+    "a Thieving Hopper's stolen card on a rewards screen": "both sides lose the card at the steal (the emulator's "
+                                                            "deck view hides it until the run settles it as the fight "
+                                                            "ends); the deck is compared",
     "rest site options the game shows disabled": "the emulator's rest screen lists the enabled ones only",
     "coord and the ancient's events_visited at an act change": "the emulator counts both a decision early; "
                                                                 "compared at the next decision",

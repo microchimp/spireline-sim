@@ -1052,10 +1052,11 @@ public sealed class RunEngine : Core2.ICombatEndHost
         int playerMaxHp = activeCombat?.PlayerMaxHp ?? State.PlayerMaxHp;
         int gold = activeCombat?.PlayerGold ?? State.Gold;
         int[] potionSlots = activeCombat?.PotionSlots ?? State.PotionSlots;
+        var deck = DeckInFight();
         obs[offset + 0] = (int)State.Phase;
         obs[offset + 1] = State.Floor;
         obs[offset + 2] = State.Act;
-        obs[offset + 3] = State.Deck.Count;
+        obs[offset + 3] = deck.Count;
         obs[offset + 4] = gold;
         obs[offset + 5] = playerHp;
         obs[offset + 6] = playerMaxHp;
@@ -1084,7 +1085,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
             obs[offset + RunConstants.PotionObsOffset + i] = potionSlots[i];
         }
 
-        WriteDeckObservation(obs[(offset + RunConstants.DeckObsOffset)..]);
+        WriteDeckObservation(obs[(offset + RunConstants.DeckObsOffset)..], deck);
         WriteRelicObservation(obs[(offset + RunConstants.RelicObsOffset)..]);
         WriteShopObservation(obs[(offset + RunConstants.ShopObsOffset)..]);
     }
@@ -1100,13 +1101,18 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// and <c>FreeThisTurn</c> are combat-local and belong to the combat observation; what
     /// survives a fight is the card, whether it is upgraded, and its one enchantment with
     /// the amount it was applied at.
+    ///
+    /// <paramref name="deck" /> is <see cref="DeckInFight" />: the run's deck, less the
+    /// cards a Thieving Hopper has stolen in the fight in progress, which the game's deck
+    /// lost at the steal. Slot i is the view's slot i; outside a fight that is
+    /// <c>State.Deck[i]</c>, the index a card-select screen's action names.
     /// </summary>
-    private void WriteDeckObservation(Span<int> obs)
+    private static void WriteDeckObservation(Span<int> obs, IReadOnlyList<CardInstance> deck)
     {
-        int slots = Math.Min(State.Deck.Count, RunConstants.MaxObservedDeck);
+        int slots = Math.Min(deck.Count, RunConstants.MaxObservedDeck);
         for (int i = 0; i < slots; i++)
         {
-            var card = State.Deck[i];
+            var card = deck[i];
             int at = i * RunConstants.DeckSlotSize;
             obs[at] = card.DefId;
             obs[at + 1] = card.Upgraded ? 1 : 0;
@@ -1174,7 +1180,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
         info[0] = (int)State.Phase;
         info[1] = State.Floor;
         info[2] = State.Act;
-        info[3] = State.Deck.Count;
+        info[3] = DeckInFight().Count;
         info[4] = gold;
         info[5] = playerHp;
         info[6] = playerMaxHp;
@@ -1827,11 +1833,77 @@ public sealed class RunEngine : Core2.ICombatEndHost
     }
 
     /// <summary>
-    /// <c>SwipePower.Steal</c> removed each stolen card's <c>DeckVersion</c> from the deck as
-    /// it was taken, and <c>BeforeDeath</c> offers that deck version back. The combat holds
+    /// The deck as the game's own reads of it see it during a fight. <c>SwipePower.Steal</c>
+    /// calls <c>CardPileCmd.RemoveFromDeck(card.DeckVersion)</c> at the steal, so from the
+    /// Thieving Hopper's first turn to the end of the fight the master deck is one card short
+    /// per theft. The run's <see cref="RunState.Deck" /> settles that removal only as the
+    /// combat ends (<see cref="TakeStolenCardsFromTheDeck" />: the combat was built from the
+    /// deck and cannot reach it), so until then a reader of the deck -- the run observation,
+    /// the run snapshot the lockstep compares -- takes this view instead: the deck with one
+    /// slot hidden per stolen card, matched exactly as the settlement will match it. Outside
+    /// a fight, or with nothing stolen, it is the deck itself. A stolen card the deck never
+    /// held (one made in the fight) has no deck version and hides nothing, as the game
+    /// removes nothing for it.
+    /// </summary>
+    public IReadOnlyList<CardInstance> DeckInFight()
+    {
+        if (
+            State.Phase != RunPhase.Combat
+            || State.ActiveCombat is not { } combat
+            || combat.StolenCards.Count == 0
+        )
+        {
+            return State.Deck;
+        }
+
+        var view = new List<CardInstance>(State.Deck);
+        foreach (var stolen in combat.StolenCards)
+        {
+            int at = DeckVersionIndex(view, stolen);
+            if (at >= 0)
+            {
+                view.RemoveAt(at);
+            }
+        }
+
+        return view;
+    }
+
+    /// <summary>
+    /// Where a stolen card's deck version sits in <paramref name="deck" />. The combat holds
     /// only its own copy, so the deck version is the deck card it was dealt from: the same
-    /// card if nothing in the fight changed it, else the same card id (an Armaments upgrade
-    /// is the fight's, not the deck's).
+    /// card if nothing in the fight changed it, else the same card id with the same
+    /// enchantment and tinker, else the same card id (an Armaments upgrade is the fight's,
+    /// not the deck's); -1 when the deck never held it. One match per call, on a deck the
+    /// caller has already taken the earlier matches out of, so five identical Strikes are
+    /// matched one to one by <see cref="DeckInFight" /> and
+    /// <see cref="TakeStolenCardsFromTheDeck" /> alike.
+    /// </summary>
+    private static int DeckVersionIndex(List<CardInstance> deck, CardInstance stolen)
+    {
+        int at = deck.IndexOf(stolen);
+        if (at < 0)
+        {
+            at = deck.FindIndex(card =>
+                card.DefId == stolen.DefId
+                && card.Enchantment == stolen.Enchantment
+                && card.TinkerType == stolen.TinkerType
+            );
+        }
+
+        if (at < 0)
+        {
+            at = deck.FindIndex(card => card.DefId == stolen.DefId);
+        }
+
+        return at;
+    }
+
+    /// <summary>
+    /// <c>SwipePower.Steal</c> removed each stolen card's <c>DeckVersion</c> from the deck as
+    /// it was taken, and <c>BeforeDeath</c> offers that deck version back. The removal is
+    /// settled here, once, as the combat ends; <see cref="DeckInFight" /> shows it in the
+    /// meantime. The match is <see cref="DeckVersionIndex" />.
     /// </summary>
     private void TakeStolenCardsFromTheDeck(CombatState combat)
     {
@@ -1843,21 +1915,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
         var returned = new List<CardInstance>();
         foreach (var stolen in combat.StolenCards)
         {
-            int at = State.Deck.IndexOf(stolen);
-            if (at < 0)
-            {
-                at = State.Deck.FindIndex(card =>
-                    card.DefId == stolen.DefId
-                    && card.Enchantment == stolen.Enchantment
-                    && card.TinkerType == stolen.TinkerType
-                );
-            }
-
-            if (at < 0)
-            {
-                at = State.Deck.FindIndex(card => card.DefId == stolen.DefId);
-            }
-
+            int at = DeckVersionIndex(State.Deck, stolen);
             var deckVersion = at >= 0 ? State.Deck[at] : stolen;
             if (at >= 0)
             {
