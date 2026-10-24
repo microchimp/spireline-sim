@@ -31,6 +31,7 @@ public class PowerOneTests
         (ListenerKind.Power, "StrengthPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "VulnerablePower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "WeakPower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Power, "VigorPower", HookId.ModifyDamageAdditive),
     ];
 
     [Fact]
@@ -58,6 +59,29 @@ public class PowerOneTests
     public void WithTheDamageFamilyOffPower1RegistersNothing()
     {
         Assert.Empty(Pairs(Table(Power1, AllButDamage)));
+    }
+
+    [Fact]
+    public void TheDealerSideFoldsDoNotTouchTheOwnersPetsHit()
+    {
+        // Strength 3, Vigor 2 and Weak 1 on the player; Osty (creature 1) hits the slug (creature 2): the dealer is not the
+        // owner, so none applies and the hit stays 6 (game: the pet is the attacker of its own hits, which the player's
+        // Strength does not raise, as the old engine's note at CardEffects.OstyAttackDamage records). The old engine's Osty
+        // path (CardEffects.DealOstyDamage into DealDamageToEnemy) folds the hit with the player's list instead,
+        // (6 + 3 + 2) x 0.75 = 8.25 -> 8: the R7 check the PR lists. The player's own hit takes all three.
+        var s = Combat(40);
+        WithOsty(s);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Strength, 3));
+        s.PlayerBuffs.Add(new BuffState(BuffId.Vigor, 2));
+        s.PlayerBuffs.Add(new BuffState(BuffId.Weak, 1));
+        var k = Kernel(s, Power1);
+
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(8, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs));
+
+        Assert.Equal(8.25m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m), out changed));
+        Assert.Equal([Power("StrengthPower", 0), Power("VigorPower", 0), Power("WeakPower", 0)], changed);
     }
 
     // ---------------------------------------------------------------------------------------- Strength (power-1)
@@ -402,5 +426,95 @@ public class PowerOneTests
     public void WeakIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "WeakPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Vigor (power-1)
+
+    /// <summary>The player with Vigor 2, one slug.</summary>
+    private static CombatState VigorCombat(int amount = 2)
+    {
+        var s = Combat(40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Vigor, amount));
+        return s;
+    }
+
+    [Fact]
+    public void VigorIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power1), ListenerKind.Power, "VigorPower", HookId.ModifyDamageAdditive);
+    }
+
+    [Fact]
+    public void VigorAddsTheOldFunctionsNumberToTheOwnersPoweredAttack()
+    {
+        // game: VigorPower.ModifyDamageAdditive; old: BuffSystem.IncomingDamage adds Vigor_ModifyDamageAdditive(attackerBuffs)
+        // with no condition at the site. The spending of the power after the attack is another hook's.
+        var s = VigorCombat();
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed);
+
+        Assert.Equal(6m + BuffSystem.Vigor_ModifyDamageAdditive(s.PlayerBuffs), v);
+        Assert.Equal(8m, v);
+        Assert.Equal([Power("VigorPower", 0)], changed);
+        Assert.Equal(8, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs));
+
+        // Where the condition fails: the slug's attack on the player (the owner is the target, not the dealer), an
+        // unpowered hit, no dealer; at 0 the addend is 0 and nothing changed.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, dealer: null), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Vigor, 0);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void VigorOnAnEnemyRaisesItsOwnAttack()
+    {
+        // The slug's Vigor 6 on its attack on the player: 6 + 6 by the slug's listener; the old enemy-attack path's fold.
+        var s = Combat(40);
+        var slug = s.Enemies[0];
+        var theirs = GivePower(s, "VigorPower", BuffId.Vigor, 6, slug);
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out var changed);
+
+        Assert.Equal(12m, v);
+        Assert.Equal([theirs], changed);
+        Assert.Equal(12, BuffSystem.IncomingDamage(6, slug.Buffs, s.PlayerBuffs));
+    }
+
+    [Fact]
+    public void VigorActsForItsOwnHolderAmongThree()
+    {
+        // The N-holder test: the player and both slugs hold Vigor 2. The player's hit on the first slug takes the player's
+        // listener alone, once; the second slug's hit on the player takes that slug's alone.
+        var s = Combat(40, 40);
+        var holders = Holders(s, "VigorPower", BuffId.Vigor, 2);
+        var k = Kernel(s, Power1);
+
+        Assert.Equal(8m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Equal([holders[0]], changed);
+        Assert.Equal(8m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2), out changed));
+        Assert.Equal([holders[2]], changed);
+    }
+
+    [Fact]
+    public void VigorDeleteMutantGivesTheNoHandlerValue()
+    {
+        var s = VigorCombat();
+        var k = Kernel(s, Without(Power1, VigorPower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void VigorIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "VigorPower", HookId.ModifyDamageAdditive);
     }
 }

@@ -37,6 +37,7 @@ public static class Registry
         StrengthPower.Register,
         VulnerablePower.Register,
         WeakPower.Register,
+        VigorPower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
