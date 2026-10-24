@@ -31,6 +31,7 @@ public class PowerFourTests
         (ListenerKind.Power, "AccuracyPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "SicEmPower", HookId.AfterDamageGiven),
         (ListenerKind.Power, "ConstrictPower", HookId.AfterDeath),
+        (ListenerKind.Power, "HeistPower", HookId.BeforeDeath),
     ];
 
     private static IOrderedEnumerable<(ListenerKind Kind, string Model, HookId Hook)> Sorted(
@@ -443,6 +444,114 @@ public class PowerFourTests
     public void ConstrictIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power4, AllButDamage), ListenerKind.Power, "ConstrictPower", HookId.AfterDeath);
+    }
+
+    // ---------------------------------------------------------------------------------------- Heist (power-4)
+
+    /// <summary>A Fat Gremlin (creature 1) holding Heist for 25 stolen gold, one slug (creature 2).</summary>
+    private static (CombatState S, EnemyState Gremlin) HeistCombat(int gold = 25)
+    {
+        var s = Combat(30, 40);
+        var gremlin = s.Enemies[0];
+        gremlin.DefId = KE.FatGremlin;
+        gremlin.HeistGold = gold;
+        GivePower(s, "HeistPower", BuffId.Heist, gold, gremlin);
+        return (s, gremlin);
+    }
+
+    /// <summary>The gold banked for the reward, the gold the thief still holds, and its Heist amount.</summary>
+    private static (int Banked, int Held, int Power) Gold(CombatState s, EnemyState thief) =>
+        (s.StolenBackGold, thief.HeistGold, BuffSystem.Get(thief.Buffs, BuffId.Heist));
+
+    [Fact]
+    public void HeistIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power4), ListenerKind.Power, "HeistPower", HookId.BeforeDeath);
+    }
+
+    [Fact]
+    public void HeistBanksTheStolenGoldBeforeTheThiefsDeathAsTheOldFunctionDoes()
+    {
+        // game: HeistPower.BeforeDeath; old: CombatEngine.AnswerDeaths calls Heist_BeforeDeath(state, fallen) for a Fat
+        // Gremlin that has not escaped and holds stolen gold. Dispatched inside Dying: the thief at 0 HP, still listed.
+        var (s, gremlin) = HeistCombat();
+        var k = Kernel(s, Power4);
+        using (Dying(k, gremlin))
+            Assert.False(Hooks.BeforeDeath(k, BeforeDeathOf(1)).IsPaused);
+
+        var (oracle, thief) = HeistCombat();
+        CombatEngine.Heist_BeforeDeath(oracle, thief);
+        Assert.Equal(Gold(oracle, thief), Gold(s, gremlin));
+        Assert.Equal((25, 0, 0), Gold(s, gremlin));
+
+        // Where the condition fails: the slug's death; an escaped Gremlin; one holding no gold; one of another def.
+        var (s2, g2) = HeistCombat();
+        var k2 = Kernel(s2, Power4);
+        using (Dying(k2, s2.Enemies[1]))
+            Hooks.BeforeDeath(k2, BeforeDeathOf(2));
+        Assert.Equal((0, 25, 25), Gold(s2, g2));
+        g2.Escaped = true;
+        using (Dying(k2, g2))
+            Hooks.BeforeDeath(k2, BeforeDeathOf(1));
+        Assert.Equal((0, 25, 25), Gold(s2, g2));
+        g2.Escaped = false;
+        g2.HeistGold = 0;
+        using (Dying(k2, g2))
+            Hooks.BeforeDeath(k2, BeforeDeathOf(1));
+        Assert.Equal((0, 0, 25), Gold(s2, g2));
+        g2.HeistGold = 25;
+        g2.DefId = Slug;
+        using (Dying(k2, g2))
+            Hooks.BeforeDeath(k2, BeforeDeathOf(1));
+        Assert.Equal((0, 25, 25), Gold(s2, g2));
+    }
+
+    [Fact]
+    public void HeistBanksTheGoldThroughTheKillCommandBeforeTheDeath()
+    {
+        // game: CreatureCmd.Kill runs BeforeDeath first (step 4 of the kill sequence), before ShouldDie and the powers'
+        // removal; the thief then leaves the roster.
+        var (s, gremlin) = HeistCombat();
+        var k = Kernel(s, Power4);
+        CreatureCmd.Kill(k, [OldCreature.Of(gremlin)]);
+        Assert.Equal((25, 0, 0), Gold(s, gremlin));
+        Assert.DoesNotContain(gremlin, s.Enemies);
+    }
+
+    [Fact]
+    public void HeistActsForTheDyingThiefOnlyAmongTwoHolders()
+    {
+        // The N-holder test: two Fat Gremlins holding 25 and 40; the first's death banks 25 alone (one call of the old
+        // body for that owner) and leaves the second's gold and power.
+        var s = Combat(30, 30);
+        foreach (var (thief, gold) in new[] { (s.Enemies[0], 25), (s.Enemies[1], 40) })
+        {
+            thief.DefId = KE.FatGremlin;
+            thief.HeistGold = gold;
+            GivePower(s, "HeistPower", BuffId.Heist, gold, thief);
+        }
+
+        var k = Kernel(s, Power4);
+        using (Dying(k, s.Enemies[0]))
+            Hooks.BeforeDeath(k, BeforeDeathOf(1));
+        Assert.Equal((25, 0, 0), Gold(s, s.Enemies[0]));
+        Assert.Equal((25, 40, 40), Gold(s, s.Enemies[1]));
+    }
+
+    [Fact]
+    public void HeistDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, gremlin) = HeistCombat();
+        var k = Kernel(s, Without(Power4, HeistPower.Register));
+        using (Dying(k, gremlin))
+            Hooks.BeforeDeath(k, BeforeDeathOf(1));
+        Assert.Equal((0, 25, 25), Gold(s, gremlin));
+    }
+
+    [Fact]
+    public void HeistIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power4, AllButDamage), ListenerKind.Power, "HeistPower", HookId.BeforeDeath);
     }
 
 }
