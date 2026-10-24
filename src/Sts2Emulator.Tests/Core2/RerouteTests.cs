@@ -433,8 +433,8 @@ public class RerouteTests
         // Core2's Damage writes; the hits are one AttackCommand (one Damage call each).
         var s = Combat(60);
         var k = On(s);
-        OldEntry.HitPlayer(k, 3, OldEntry.Unpowered, s.Enemies[0]);
-        OldEntry.HitPlayer(k, 3, OldEntry.Unpowered, s.Enemies[0]);
+        OldEntry.HitPlayer(k, 3, OldEntry.Unpowered, OldCreature.Of(s.Enemies[0]));
+        OldEntry.HitPlayer(k, 3, OldEntry.Unpowered, OldCreature.Of(s.Enemies[0]));
         int before = k.Commands.KillCalls;
         CardEffects.Apply(GeneratedData.Cards.Get(IC.TearAsunder), false, s, new Random(1),
             new CardInstance(IC.TearAsunder, false) { Uid = 3 });

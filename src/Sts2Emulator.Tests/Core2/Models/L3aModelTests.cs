@@ -165,7 +165,7 @@ public class L3aModelTests
         var s = Combat(40, 40);
         s.Enemies[0].Hp = 0;
         _ = Kernel(s, L3a);
-        CardEffects.DealDamageToPlayer(s, 3, dealer: s.Enemies[0]);
+        CardEffects.DealDamageToPlayer(s, 3, dealer: OldCreature.Of(s.Enemies[0]));
         Assert.Equal(50, s.PlayerHp);
         CardEffects.DealDamageToPlayer(s, 3);
         Assert.Equal(47, s.PlayerHp);

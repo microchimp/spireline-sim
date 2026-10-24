@@ -53,11 +53,10 @@ public static class OldEntry
         CreatureCmd.Damage(k, OldCreatures.HittableEnemies(k.World!), amount, props, dealer, cardSource);
 
     /// <summary>Damage on the player (old DealDamageToPlayer, LosePlayerHp, LoseHp): returns the HP lost.</summary>
-    public static int HitPlayer(KernelState k, int amount, ValueProp props, EnemyState? dealer = null,
+    public static int HitPlayer(KernelState k, int amount, ValueProp props, OldCreature? dealer = null,
         CardHandle? cardSource = null)
     {
-        var by = dealer is null ? (OldCreature?)null : OldCreature.Of(dealer);
-        var rs = CreatureCmd.Damage(k, [OldCreature.Player], amount, props, by, cardSource);
+        var rs = CreatureCmd.Damage(k, [OldCreature.Player], amount, props, dealer, cardSource);
         return rs.Count > 0 ? rs[0].UnblockedDamage : 0;
     }
 
