@@ -29,6 +29,7 @@ public class PowerOneTests
     private static readonly (ListenerKind Kind, string Model, HookId Hook)[] Power1Pairs =
     [
         (ListenerKind.Power, "StrengthPower", HookId.ModifyDamageAdditive),
+        (ListenerKind.Power, "VulnerablePower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -153,5 +154,139 @@ public class PowerOneTests
     public void StrengthIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "StrengthPower", HookId.ModifyDamageAdditive);
+    }
+
+    // ---------------------------------------------------------------------------------------- Vulnerable (power-1)
+
+    /// <summary>The player, one slug with Vulnerable 2.</summary>
+    private static CombatState VulnerableCombat(int amount = 2)
+    {
+        var s = Combat(40);
+        s.Enemies[0].Buffs.Add(new BuffState(BuffId.Vulnerable, amount));
+        return s;
+    }
+
+    [Fact]
+    public void VulnerableIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power1), ListenerKind.Power, "VulnerablePower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void VulnerableMultipliesAHitOnItsOwnerByTheOldFunctionsFactor()
+    {
+        // game: VulnerablePower.ModifyDamageMultiplicative; old: BuffSystem.IncomingDamage multiplies by
+        // Vulnerable_ModifyDamageMultiplicative(attackerBuffs, defenderBuffs, vulnerableDelta) when the defender's
+        // Vulnerable > 0; the card path (CardEffects.DealDamageToEnemy) passes the player's list and the Paper Phrog delta.
+        var s = VulnerableCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed);
+
+        Assert.Equal(6m * (decimal)BuffSystem.Vulnerable_ModifyDamageMultiplicative(s.PlayerBuffs, slug.Buffs, 0f), v);
+        Assert.Equal(9m, v);
+        Assert.Equal([Power("VulnerablePower", 1)], changed);
+        Assert.Equal(9, BuffSystem.IncomingDamage(6, s.PlayerBuffs, slug.Buffs));
+
+        // The inputs the old function reads, each against the old fold with the card path's arguments: the Phrog's shift
+        // (1.75: 10.5 kept, 10 by the cast), Cruelty on the attacker (2), Debilitate on the owner (2).
+        Hold(s, RelicEffects.PaperPhrog);
+        Assert.Equal(10.5m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Equal([Power("VulnerablePower", 1)], changed);
+        Assert.Equal(10, BuffSystem.IncomingDamage(6, s.PlayerBuffs, slug.Buffs,
+            vulnerableDelta: RelicEffects.VulnerableMultiplierDeltaAgainstEnemies(s)));
+        s.Relics.Clear();
+        s.PlayerBuffs.Add(new BuffState(BuffId.CrueltyPower, 50));
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Equal(12, BuffSystem.IncomingDamage(6, s.PlayerBuffs, slug.Buffs));
+        s.PlayerBuffs.Clear();
+        slug.Buffs.Add(new BuffState(BuffId.Debilitate, 1));
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Equal(12, BuffSystem.IncomingDamage(6, s.PlayerBuffs, slug.Buffs));
+        slug.Buffs.RemoveAt(1);
+
+        // Where the condition fails: the slug's own attack on the player (the owner is the dealer, not the target), an
+        // unpowered hit, the amount at 0. No dealer: the owner is the target, so the factor applies with no attacker's list.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, dealer: null), out changed));
+        Assert.Equal([Power("VulnerablePower", 1)], changed);
+        slug.Buffs[0] = new BuffState(BuffId.Vulnerable, 0);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void VulnerableOnThePlayerTakesTheEnemyAttackPathsInputs()
+    {
+        // The old enemy-attack path (EnemyAI.DealAttackDamage) passes the attacking enemy's list and no Phrog delta: a
+        // Vulnerable player holding the Phrog takes 1.5 from the slug, not 1.75; the slug's Cruelty, which the old
+        // function reads off any attacker's list, raises it.
+        var s = Combat(40);
+        var slug = s.Enemies[0];
+        var mine = GivePower(s, "VulnerablePower", BuffId.Vulnerable, 1);
+        Hold(s, RelicEffects.PaperPhrog);
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out var changed);
+
+        Assert.Equal(9m, v);
+        Assert.Equal([mine], changed);
+        Assert.Equal(9, BuffSystem.IncomingDamage(6, slug.Buffs, s.PlayerBuffs));
+        slug.Buffs.Add(new BuffState(BuffId.CrueltyPower, 50));
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out changed));
+        Assert.Equal([mine], changed);
+        Assert.Equal(12, BuffSystem.IncomingDamage(6, slug.Buffs, s.PlayerBuffs));
+    }
+
+    [Fact]
+    public void VulnerableFoldsAnOstyHitWithThePlayersListAsTheOldCardPathDoes()
+    {
+        // The old card path (CardEffects.DealOstyDamage into DealDamageToEnemy) folds Osty's hit with the player's list,
+        // so the player's Cruelty raises it; the handler passes that list for a player-side dealer. The game reads the
+        // dealer's own powers, and Osty has none in the old state: the R7 check the PR lists. Osty is creature 1, the slug 2.
+        var s = VulnerableCombat();
+        WithOsty(s);
+        s.PlayerBuffs.Add(new BuffState(BuffId.CrueltyPower, 50));
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1), out var changed);
+
+        Assert.Equal(12m, v);
+        Assert.Equal([Power("VulnerablePower", 2)], changed);
+        Assert.Equal(12, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs));
+    }
+
+    [Fact]
+    public void VulnerableActsForItsOwnHolderAmongThree()
+    {
+        // The N-holder test: the player and both slugs hold Vulnerable 2. The player's hit on the first slug takes that
+        // slug's listener alone; the second slug's hit on the player takes the player's alone.
+        var s = Combat(40, 40);
+        var holders = Holders(s, "VulnerablePower", BuffId.Vulnerable, 2);
+        var k = Kernel(s, Power1);
+
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Equal([holders[1]], changed);
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2), out changed));
+        Assert.Equal([holders[0]], changed);
+    }
+
+    [Fact]
+    public void VulnerableDeleteMutantGivesTheNoHandlerValue()
+    {
+        var s = VulnerableCombat();
+        var k = Kernel(s, Without(Power1, VulnerablePower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void VulnerableIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "VulnerablePower", HookId.ModifyDamageMultiplicative);
     }
 }
