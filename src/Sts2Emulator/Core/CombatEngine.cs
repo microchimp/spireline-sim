@@ -2025,6 +2025,8 @@ public static class CombatEngine
             state.ExecutedThisEnemyTurn.Clear();
 
             // game: CombatManager.StartTurn, the enemy side: CheckWinCondition before ExecuteEnemyTurn (F08+F10 on).
+            // The game's AfterSideTurnStart (PoisonPower's tick) is before this check; the old engine ticks poison in the
+            // per-enemy loop below, after it, so a poison kill is not caught here (an R7 check, MIGRATION_F08).
             if (StartTurnWinCheck(state, playerSide: false, turnEndStart) is { } enemyStartResult)
             {
                 return enemyStartResult;
@@ -5273,14 +5275,12 @@ public static class CombatEngine
     }
 
     /// <summary>
-    /// <paramref name="ids" /> the player holds, in the order the player's powers list holds
-    /// them -- the order `CombatState.IterateHookListeners` hands a creature's powers to a hook.
-    /// </summary>
-    /// <summary>
     /// game: CombatManager.StartTurn's CheckWinCondition, the player side's (after the auto-pre-play phase) or the enemy
     /// side's (before ExecuteEnemyTurn), with F08+F10 on; null with them off or while the combat goes on. The old turn start
     /// read the end off the HP (Settle), which under F10 is not the combat's end: without this point a kill or a loss in the
-    /// turn start (Inferno, a power's damage, the enemy side's poison) left the combat in progress with nothing standing.
+    /// turn start (Inferno, a power's damage, a pending loss) or after the turn end's last check (a Doom kill) left the combat
+    /// in progress with nothing standing. Not poison: the old engine ticks the enemies' poison in the per-enemy loop, after the
+    /// enemy side's check, where the game ticks it in AfterSideTurnStart, before it (an R7 check, MIGRATION_F08).
     /// </summary>
     private static StepResult? StartTurnWinCheck(CombatState state, bool playerSide, in Baseline baseline)
     {
@@ -5310,6 +5310,10 @@ public static class CombatEngine
         );
     }
 
+    /// <summary>
+    /// <paramref name="ids" /> the player holds, in the order the player's powers list holds
+    /// them -- the order `CombatState.IterateHookListeners` hands a creature's powers to a hook.
+    /// </summary>
     private static List<BuffId> PlayerPowersInOrder(CombatState state, params BuffId[] ids)
     {
         var held = new List<BuffId>(ids.Length);

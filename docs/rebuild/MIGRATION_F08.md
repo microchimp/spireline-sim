@@ -1102,6 +1102,23 @@ Left before switch-on: the 5 worse corpus fights (26562e018fdc5e6a, 2b49779387cc
 the 9 corpus and 3 traced fights on fewer fields, the fuzz triage.
 
 **R7 checks before switch-on** (each closed, with a test, before the switch goes on in `migrated_families.json`):
+- **The enemy side's turn start order (R7e).** The game's `CombatManager.StartTurn` runs `Hook.AfterSideTurnStart`
+  (PoisonPower's tick) before the enemy side's CheckWinCondition; the old engine ticks poison inside the per-enemy loop,
+  after it (`CombatEngine.StartTurnWinCheck`'s enemy-side call), so an enemy can act before a later enemy's poison ticks,
+  and a poison kill of the last enemy is caught by a later check. The enemy-side check has no reproducing test in the old
+  order: nothing between the turn end's last check and it deals damage (`R7dTests.ADoomKillAtThePlayersTurnEndEndsTheCombatBeforeTheEnemiesAct`
+  passes with it off; the turn end's check ends that fight). Test before closing: an enemy-side poison kill ends the combat
+  before any enemy acts.
+- **The loss path (R7e).** On a loss the game runs neither AfterCombatEnd nor AfterCombatVictory, but the hand-off runs the
+  old `FinishCombat` for a lost combat too (as the old engine does). Whatever `FinishCombat` does on a loss must be the
+  game's loss path, or not run. `R7dTests.ALossAtThePlayersTurnStartEndsTheCombatThere` pins one hand-off and one
+  `FinishCombat` call on a loss.
+- **Inferno's turn-start burst under the switch (found in R7e).** With F08+F10 on, Inferno's turn-start self-damage
+  (`OldEntry.HitPlayer`, HpLoss) sets off no burst: run PRB00058 at A8, its first combat, every enemy at 1 HP, Inferno 999 and
+  InfernoSelfDamage 1, end the turn: switch off the enemies die and the combat ends, switch on they stay at 1 HP and the
+  player loses the 1. The game's InfernoPower.AfterDamageReceived fires on that self-damage. Owner: the F08 handlers
+  (Core2 `InfernoPower`, the visit of a power kept in two BuffIds, `NotModelled`). Test before closing: that setup ends the
+  combat with the switch on (the R7d turn-start kill test uses Rolling Boulder until then).
 - **A fork's run view (blocker, batch L3b review).** Since the L3b fix a combat's clone (a fork of the search, a snapshot,
   a probe) binds to no run, so under the switch a run+combat pass in a fork leaves out the run deck's cards and enchantments
   (`DeckWithoutRun`, reported by `Listeners.Report` only) and `HookCtx.Card` answers null for a deck card. The search forks

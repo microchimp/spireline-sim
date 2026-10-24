@@ -32,6 +32,68 @@ public class R7dTests
         return e;
     }
 
+    /// <summary>Ends the turn and checks Core2 ended the combat once (won or lost) and handed it off to FinishCombat.</summary>
+    private static void EndTurnAndAssertTheEnd(RunEngine e, bool won, int turns)
+    {
+        var c = e.State.ActiveCombat!;
+        int calls = e.FinishCombatCalls, turn = c.Turn;
+        e.Step(c.Hand.Count, -1, out _, out _, out _);  // end the turn
+        var p = c.Kernel!.Progress;
+        Assert.Equal((false, won, 1), (p.InProgress, p.PlayerWon == true, p.HandOffs));
+        Assert.Equal(calls + 1, e.FinishCombatCalls);  // a loss too: the hand-off runs FinishCombat, as the old engine does
+        Assert.Equal(turn + turns, c.Turn);
+        Assert.NotEqual(RunPhase.Combat, e.State.Phase);
+    }
+
+    [Fact]
+    public void AKillAtThePlayersTurnStartEndsTheCombatThere()
+    {
+        var e = IntoCombat();
+        var c = e.State.ActiveCombat!;
+        // Every enemy at 1 HP; Rolling Boulder's turn-start hit (AfterPlayerTurnStart) kills them all after their turn,
+        // through any block their moves add. The player side's check (after the auto-pre-play phase) is the end.
+        foreach (var en in c.Enemies)
+        {
+            en.Hp = 1;
+            en.Block = 0;
+        }
+
+        c.PlayerHp = c.PlayerMaxHp = 500;
+        BuffSystem.Apply(c.PlayerBuffs, BuffId.RollingBoulderPower, 999);
+        EndTurnAndAssertTheEnd(e, won: true, turns: 1);
+    }
+
+    [Fact]
+    public void ALossAtThePlayersTurnStartEndsTheCombatThere()
+    {
+        var e = IntoCombat();
+        var c = e.State.ActiveCombat!;
+        // The enemies' hits land on the block; the turn start clears it and Inferno's self-damage takes the last HP: the
+        // player side's check at the turn start's player-death return ends the combat, lost.
+        c.PlayerHp = 1;
+        c.PlayerBlock = 999;
+        BuffSystem.Apply(c.PlayerBuffs, BuffId.Inferno, 1);
+        BuffSystem.Apply(c.PlayerBuffs, BuffId.InfernoSelfDamage, 1);
+        EndTurnAndAssertTheEnd(e, won: false, turns: 1);
+    }
+
+    [Fact]
+    public void ADoomKillAtThePlayersTurnEndEndsTheCombatBeforeTheEnemiesAct()
+    {
+        var e = IntoCombat();
+        var c = e.State.ActiveCombat!;
+        // Doom at least each enemy's HP: the turn end's Doom kills them all, and the combat ends before the enemy side acts.
+        // The turn end's own check ends it (the test passes with the enemy side's StartTurnWinCheck off): in the old order
+        // nothing between that check and the enemy side's deals damage (MIGRATION_F08, R7e), so this guards the turn end.
+        foreach (var en in c.Enemies)
+        {
+            BuffSystem.Apply(en.Buffs, BuffId.Doom, en.Hp);
+        }
+
+        c.PlayerHp = c.PlayerMaxHp = 500;
+        EndTurnAndAssertTheEnd(e, won: true, turns: 0);
+    }
+
     [Fact]
     public void ADemiseKillAtTheEnemyTurnsEndLeavesThePassOverTheRosterItBegan()
     {
