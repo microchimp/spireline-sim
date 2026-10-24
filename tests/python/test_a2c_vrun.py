@@ -280,3 +280,21 @@ class KeepAmendTests(unittest.TestCase):
         self.assertIn("optimistic", v["early_stopping_note"])
         self.assertIn("together", gen_loop.vrun_keep_note("vrun"))
         self.assertIn("rules", gen_loop.vrun_keep_note("rules"))
+
+    def test_a_v0_plus_floor_baseline_is_reported_and_never_gates(self):
+        from run_train import models
+
+        rng = np.random.default_rng(6)
+        n = 600
+        final = np.repeat(np.tile([5, 9, 30], 20), 10).astype(np.int64)
+        values = SimpleNamespace(validation=np.repeat(np.arange(60) >= 48, 10), final_floor=final, run_index=np.repeat(np.arange(60), 10),
+                                 floor=np.where(final > 17, 12, 1) + np.tile(np.arange(10), 60),
+                                 v0=np.stack([rng.random(n), rng.integers(0, 3, n), np.zeros(n)], axis=1).astype(np.float32),
+                                 inputs=lambda rows: rng.random((len(rows), models.VALUE_INPUT)).astype(np.float32))
+        head = keep.evaluate_value_net(values, models.RunValueNet())["heads"]["act1_boss_kill"]
+        info = head["brier_skill_vs_v0_floor_informational"]
+        self.assertIs(info["gated"], False)
+        self.assertEqual(len(info["ci"]), 2)
+        gated = {k: {"pass": True} for k in ("brier_skill_vs_base_rate", "brier_skill_vs_v0", "log_loss_vs_base_rate",
+                                              "ece_bins_ge_30_positives")}
+        self.assertTrue(keep.passes({**gated, "brier_skill_vs_v0_floor_informational": {"pass": False, "gated": False}}))

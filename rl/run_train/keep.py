@@ -168,6 +168,13 @@ def evaluate_value_net(values: Any, net: Any) -> dict[str, Any]:
             heads[name] = {"positives": 0, "rows": int(sv.sum())}
             continue
         heads[name] = head_conditions(probs[name][sv], yv, run[val][sv], yt, v0_probability(v0[trn][st], yt, v0[val][sv]))
+        # informational, never gated: V0 plus the floor's progress through the act (V reads the floor, V0 does not), so the
+        # skill over V0 can be told apart from "knows how far into the act the run is"
+        v0f = v0 + floor / ACT1_LAST_FLOOR
+        pf = v0_probability(v0f[trn][st], yt, v0f[val][sv])
+        heads[name]["brier_skill_vs_v0_floor_informational"] = {
+            **paired_bootstrap_skill(brier_terms(probs[name][sv], yv), brier_terms(pf, yv), run[val][sv]), "gated": False,
+            "baseline": "V0 + floor / 17, through the same training-row quantile table as V0"}
     info = {"act1_head_last_floor": ACT1_HEAD_LAST_FLOOR, "rows": int(len(val)), "runs": int(len(np.unique(run[val]))), "train_rows": int(len(trn)),
             "train_runs": int(len(np.unique(run[trn]))), "split": "held-out tenth of runs by seed hash (run_train.train._held_out)",
             "early_stopping_split": True,
