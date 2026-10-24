@@ -208,12 +208,40 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     /// <summary>Whether <paramref name="enemy" /> is performing its move (<see cref="Moving" />).</summary>
     public bool IsPerformingMove(EnemyState enemy) => ReferenceEquals(Moving, enemy);
 
+    /// <summary>Whether the monster performing its move died during it (CreatureCmd.Kill's death of <see cref="Moving" />,
+    /// noted by <see cref="NoteDeath" />): the game's move ends there, so the old move body's post-attack bookkeeping must
+    /// not run (MIGRATION_F08.md R7 checks, the in-move death). Reset by each <see cref="PerformingMove" />.</summary>
+    public bool MoverDied { get; private set; }
+
+    /// <summary>Notes a death the kill sequence answered: the mover's sets <see cref="MoverDied" />.</summary>
+    internal void NoteDeath(EnemyState enemy)
+    {
+        if (IsPerformingMove(enemy))
+            MoverDied = true;
+    }
+
     /// <summary>Marks <paramref name="enemy" /> as performing its move until the scope is disposed.</summary>
     public IDisposable PerformingMove(EnemyState enemy)
     {
-        var before = Moving;
+        var before = (Moving, MoverDied);
         Moving = enemy;
-        return new Scope(() => Moving = before);
+        MoverDied = false;
+        return new Scope(() => (Moving, MoverDied) = before);
+    }
+
+    /// <summary>The play's target as the creature it is (game: CardPlay.Target, CardModel.CurrentTarget), set by
+    /// <see cref="Aiming" /> for the length of a play that was given one; null with no play or none given. The old step
+    /// holds the target as a roster index, which names another creature once the kernel removes a corpse in front of it
+    /// (the F08 review, 1.3 B). Not detectable when missing.</summary>
+    public EnemyState? Aimed { get; private set; }
+
+    /// <summary>Marks <paramref name="target" /> (null: none) as the play's target until the scope is disposed; a play
+    /// nested in another sets its own and hands the outer one back.</summary>
+    public IDisposable Aiming(EnemyState? target)
+    {
+        var before = Aimed;
+        Aimed = target;
+        return new Scope(() => Aimed = before);
     }
 
     /// <summary>Marks <paramref name="card" /> as the Play pile's card until the scope is disposed.</summary>
@@ -311,6 +339,8 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         PlayerHooks = from?.PlayerHooks ?? default;
         Scaling = from?.Scaling;
         Moving = null;
+        MoverDied = from?.MoverDied ?? false;
+        Aimed = null;
         if (from is null)
             return;
         var roster = from.Combat?.Enemies;
@@ -318,6 +348,12 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         {
             int at = roster?.FindIndex(x => ReferenceEquals(x, moving)) ?? -1;
             Moving = at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : moving;
+        }
+        // A target the roster no longer holds stays the old object: the copy's roster does not hold it either.
+        if (from.Aimed is { } aimed)
+        {
+            int at = roster?.FindIndex(x => ReferenceEquals(x, aimed)) ?? -1;
+            Aimed = at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : aimed;
         }
         foreach (var dying in from._dying)
         {
@@ -1019,11 +1055,15 @@ public static partial class OldCreatures
     }
 
     /// <summary>game: Creature.IsSecondaryEnemy: an enemy carrying a power whose OwnerIsSecondaryEnemy is true (in
-    /// v0.107.1 only MinionPower overrides it), read over the old buffs through the power mapping.</summary>
+    /// v0.107.1 only MinionPower overrides it), read over the old buffs through the power mapping. An Illusion holder
+    /// counts: the game's IllusionPower.AfterApplied applies MinionPower to its owner (when it has none), which the old
+    /// state does not hold, so the Fogmog's Eye With Teeth is a minion and the Fogmog's death ends the fight
+    /// (MIGRATION_F08.md R7 checks, one ending; the F08 review, 1.3 D).</summary>
     public static bool IsSecondaryEnemy(OldWorld w, OldCreature c) =>
         c.Kind == CreatureKind.Enemy && c.Enemy!.Buffs.Exists(b =>
             w.Ids.Power(b.Id) is { Kind: PowerMapKind.Game or PowerMapKind.Piece } m
-            && m.ModelId == w.Ids.Resolve(ListenerKind.Power, "MinionPower"));
+            && (m.ModelId == w.Ids.Resolve(ListenerKind.Power, "MinionPower")
+                || m.ModelId == w.Ids.Resolve(ListenerKind.Power, "IllusionPower")));
 
     /// <summary>game: Creature.IsPrimaryEnemy.</summary>
     public static bool IsPrimaryEnemy(OldWorld w, OldCreature c) =>

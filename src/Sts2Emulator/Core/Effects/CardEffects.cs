@@ -9781,6 +9781,14 @@ public static class CardEffects
 
     private static EnemyState? FirstEnemy(CombatState state)
     {
+        // F08+F10 on: the play's target is the creature (`CardModel.CurrentTarget`), held by reference for the length of
+        // the play, and none once it is dead or removed: the game's later targeted effect hits nobody (C5-F15). The index
+        // would name the creature that moved into the slot of a corpse the kernel removed (the F08 review, 1.3 B).
+        if (Core2.Kernel.If(Core2.Switch.F08, state)?.World is { Aimed: { } aimed })
+        {
+            return state.Enemies.Contains(aimed) && EnemyAI.IsTargetable(aimed) ? aimed : null;
+        }
+
         int idx = state.TargetEnemyIndex;
         if (idx >= 0 && idx < state.Enemies.Count && EnemyAI.IsTargetable(state.Enemies[idx]))
         {

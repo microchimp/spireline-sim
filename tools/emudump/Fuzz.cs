@@ -52,6 +52,7 @@ static class Fuzz
 
             Answer(e, 0, rng, pDecline, choices);
             steps.Add(Step(e, null, fields));
+            Agree(e, 0, outp);
             for (int n = 1; n <= maxSteps && e.CombatOpen; n++)
             {
                 var legal = e.LegalActions();
@@ -79,6 +80,7 @@ static class Fuzz
 
                 Answer(e, n, rng, pDecline, choices);
                 steps.Add(Step(e, action, fields));
+                Agree(e, n, outp);
             }
         }
         catch (Exception ex)
@@ -87,6 +89,18 @@ static class Fuzz
         }
 
         return outp;
+    }
+
+    /// <summary>
+    /// The agreement assertion (F10 on): the old ending predicate equals the kernel's after every step. A step where they
+    /// differ is listed under the output's <c>ending_disagree</c> (step and the two readings); the key is absent when
+    /// they agree throughout, so the old engine's output and an agreeing core2 run are unchanged.
+    /// </summary>
+    static void Agree(IEngine e, int step, JsonObject outp)
+    {
+        if (e.EndingDisagreement() is not { } why) return;
+        if (outp["ending_disagree"] is not JsonArray list) outp["ending_disagree"] = list = new JsonArray();
+        list.Add(new JsonObject { ["step"] = step, ["readings"] = why });
     }
 
     static JsonObject Step(IEngine e, JsonObject? action, bool fields)

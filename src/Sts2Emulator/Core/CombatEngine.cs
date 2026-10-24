@@ -678,6 +678,8 @@ public static class CombatEngine
         // `OnPlayWrapper`'s `target`, the `Target` of every repetition's `CardPlay`: the
         // creature, which a repetition's death check can move by sweeping a corpse.
         var target = PlayTarget.Of(state);
+        // F08+F10 on: the effects' FirstEnemy reads the target by reference for the whole play (the F08 review, 1.3 B).
+        using var aim = Core2.Kernel.If(Core2.Switch.F08, state)?.World?.Aiming(target.Creature);
 
         // The play's first repetition (`CardPlay.IsFirstInSeries`), the only one Echo Form
         // counts; every repetition, this one included, starts a play (`StartPlayRepetition`).
@@ -958,6 +960,10 @@ public static class CombatEngine
             oblivionBefore[i] = BuffSystem.Get(state.Enemies[i].Buffs, BuffId.Oblivion);
         }
 
+        // F08+F10 on: the holders by reference, as the game's per-instance OblivionPower is: the kernel removes a corpse
+        // inside the card, so a roster position after it names another creature at AfterCardPlayed (the F08 review, 1.3 A).
+        EnemyState[]? oblivionHolders = Core2.Kernel.If(Core2.Switch.F08, state) is null ? null : [.. state.Enemies];
+
         // Read here, with Burst and Serpent Form, for the same reason all three are:
         // the power records what it was worth when the play STARTED.
         CaptureBeforePlayPowers(state);
@@ -1093,11 +1099,25 @@ public static class CombatEngine
         // recorded, as Doom on the enemy carrying it. Paying the SNAPSHOT is what keeps
         // Oblivion off the card that applied it -- at BeforeCardPlayed the enemy does not
         // have the power yet, so there is nothing recorded for that play.
-        for (int i = 0; i < state.Enemies.Count && i < oblivionBefore.Length; i++)
+        if (oblivionHolders is not null)
         {
-            if (oblivionBefore[i] > 0 && state.Enemies[i].Hp > 0)
+            for (int i = 0; i < oblivionHolders.Length && i < oblivionBefore.Length; i++)
             {
-                BuffSystem.Apply(state.Enemies[i].Buffs, BuffId.Doom, oblivionBefore[i]);
+                var holder = oblivionHolders[i];
+                if (oblivionBefore[i] > 0 && holder.Hp > 0 && state.Enemies.Contains(holder))
+                {
+                    BuffSystem.Apply(holder.Buffs, BuffId.Doom, oblivionBefore[i]);
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < state.Enemies.Count && i < oblivionBefore.Length; i++)
+            {
+                if (oblivionBefore[i] > 0 && state.Enemies[i].Hp > 0)
+                {
+                    BuffSystem.Apply(state.Enemies[i].Buffs, BuffId.Doom, oblivionBefore[i]);
+                }
             }
         }
 
@@ -1153,7 +1173,7 @@ public static class CombatEngine
         // played, so the copy inherits its upgrade and its enchantment.
         Effects.RelicEffects.ApplyMusicBox(state, card, def);
 
-        ApplyAfterCardPlayedPowers(state, def, rng, energySpent);
+        ApplyAfterCardPlayedPowers(state, def, rng, energySpent, card);
         Effects.RelicEffects.ApplyAfterCardPlayedRares(state, def, rng);
         // The Lamp's latch closes when the card that claimed it finishes resolving.
         Effects.RelicEffects.FinishUnsettlingLampCard(state);
@@ -5306,7 +5326,21 @@ public static class CombatEngine
     internal static bool IsOverOrEnding(CombatState state) =>
         Core2.Kernel.If(Core2.Switch.F08, state) is { } core2
             ? Core2.CombatEnd.IsOverOrEnding(core2)
-            : NoPrimaryEnemyLeft(state) || IsAboutToLose(state);
+            : OldIsOverOrEnding(state);
+
+    /// <summary>
+    /// The old engine's own reading of <see cref="IsOverOrEnding" /> (no primary enemy left, or the player about to lose),
+    /// whatever the switch: F08 and F10 switch together, so with them on the one predicate is Core2's
+    /// (<c>CombatEnd.IsOverOrEnding</c>), and <c>EmuDump fuzz</c> asserts this one agrees with it at every step
+    /// (MIGRATION_F08.md R7 checks, one ending).
+    /// </summary>
+    internal static bool OldIsOverOrEnding(CombatState state) =>
+        NoPrimaryEnemyLeft(state)
+        || (
+            state.PlayerHp <= 0
+            && Array.IndexOf(state.PotionSlots, FairyInABottlePotionId) < 0
+            && !Effects.RelicEffects.LizardTailUnspent(state)
+        );
 
     /// <summary>
     /// `CombatManager.IsAboutToLose`: the player is dead and nothing will stand them back up,
@@ -6434,8 +6468,11 @@ public static class CombatEngine
     /// it gains the power's amount as Unpowered block and the power goes (decompiled
     /// CurlUpPower.cs). Armed by <c>CardEffects.DealDamageToEnemy</c>.
     /// </summary>
-    private static void PayCurlUp(CombatState state)
+    private static void PayCurlUp(CombatState state, CardInstance? played = null)
     {
+        // F08+F10 on: game: CurlUpPower.AfterCardPlayed pays only when the card played is the one it remembered
+        // (`EnemyState.CurlUpCardUid`, set by the Core2 handler); the old flag paid at the next card's end, whichever.
+        bool byCard = played is not null && Core2.Kernel.If(Core2.Switch.F08, state) is not null;
         foreach (var enemy in state.Enemies)
         {
             if (!enemy.CurlUpArmed)
@@ -6443,7 +6480,13 @@ public static class CombatEngine
                 continue;
             }
 
+            if (byCard && enemy.CurlUpCardUid != 0 && enemy.CurlUpCardUid != played.Value.Uid)
+            {
+                continue;
+            }
+
             enemy.CurlUpArmed = false;
+            enemy.CurlUpCardUid = 0;
             int curlUp = BuffSystem.Get(enemy.Buffs, BuffId.CurlUp);
             if (curlUp > 0 && enemy.Hp > 0)
             {
@@ -6473,11 +6516,12 @@ public static class CombatEngine
         CombatState state,
         CardDef def,
         Random? rng,
-        int energySpent = 0
+        int energySpent = 0,
+        CardInstance? played = null
     )
     {
         Effects.RelicEffects.ApplyAfterCardPlayed(state, def, rng, energySpent);
-        PayCurlUp(state);
+        PayCurlUp(state, played);
         PayRupture(state);
         Effects.RelicEffects.FinishBlockDoublingCard(state);
 
@@ -7055,6 +7099,9 @@ public static class CombatEngine
 
         /// <summary>Whether there is one: an AnyEnemy auto-play handed none rolls one.</summary>
         public bool IsGiven => _given;
+
+        /// <summary>The creature, when one was given (null for none, or an index that named no creature).</summary>
+        public EnemyState? Creature => _creature;
 
         /// <summary>
         /// Where it is now: -1 for none, and for a creature the roster no longer holds, which
