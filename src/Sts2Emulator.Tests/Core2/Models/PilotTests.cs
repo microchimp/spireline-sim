@@ -26,6 +26,7 @@ public class PilotTests
         (ListenerKind.Power, "PhantomBladesPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "LethalityPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Power, "DoubleDamagePower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -253,5 +254,64 @@ public class PilotTests
     public void TrackingIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Double Damage (power-5)
+
+    /// <summary>The player with Double Damage (two stacks: still double) and a Strike in hand, one slug.</summary>
+    private static (CombatState S, CardHandle Card) DoubleDamageCombat(int amount = 2)
+    {
+        var s = Combat(40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.DoubleDamage, amount));
+        var strike = Add(s, s.Hand, 1);
+        return (s, new CardHandle(strike.Uid));
+    }
+
+    [Fact]
+    public void DoubleDamageIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Pilot), ListenerKind.Power, "DoubleDamagePower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void DoubleDamageDoublesTheOwnersCardAttackWhateverItsStackCount()
+    {
+        // game: DoubleDamagePower.ModifyDamageMultiplicative; old: BuffSystem.IncomingDamage multiplies by
+        // DoubleDamage_ModifyDamageMultiplicative() (a flat 2) when the attacker's Double Damage > 0.
+        var (s, card) = DoubleDamageCombat();
+        var k = Kernel(s, Pilot);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out var changed);
+
+        Assert.Equal(6m * BuffSystem.DoubleDamage_ModifyDamageMultiplicative(), v);
+        Assert.Equal(12m, v);
+        Assert.Equal([Power("DoubleDamagePower", 0)], changed);
+        Assert.Equal(12, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs));
+
+        // Where the condition fails: an unpowered hit, an enemy dealer, no card source, the amount at 0.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: card), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, card: card), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.DoubleDamage, 0);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void DoubleDamageDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, card) = DoubleDamageCombat();
+        var k = Kernel(s, Without(Pilot, DoubleDamagePower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: card), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void DoubleDamageIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Power, "DoubleDamagePower", HookId.ModifyDamageMultiplicative);
     }
 }

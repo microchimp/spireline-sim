@@ -16,6 +16,7 @@ public static class Registry
         PhantomBladesPower.Register,
         LethalityPower.Register,
         TrackingPower.Register,
+        DoubleDamagePower.Register,
     ];
 
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
