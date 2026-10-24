@@ -1016,13 +1016,14 @@ are left, or not), and the old rule's users are listed and either follow the gam
   (`AMoverKilledInItsOwnMoveGetsNoPostAttackBookkeeping`, a stand-in Thorns handler until L3a's lands);
   `WaterfallGiantTests.KilledByThornsOnItsOwnTurnItBlowsARoundLater` still waits for L3a's Thorns handler.
 - One ending (recommendation 7): Fogmog's primary rule read against the game and closed; the two "ending" predicates one
-  under F10, with an agreement assertion (the old predicate equals Core2's at every step) in `EmuDump fuzz`.
-  **Done (R6.9)**: the game's `IllusionPower.AfterApplied` gives its owner MinionPower (decompile read), so Core2's
+  under F10, with an agreement report (the old predicate against Core2's at every step) in `EmuDump fuzz`.
+  **Done (R6.9), the agreement part reported, not asserted**: the game's `IllusionPower.AfterApplied` gives its owner MinionPower (decompile read), so Core2's
   `OldCreatures.IsSecondaryEnemy` counts an Illusion holder and the Fogmog's death is the last primary's
   (`AnIllusionHolderIsNotAPrimaryEnemy`); F08 and F10 switch together, so `CombatEngine.IsOverOrEnding` is Core2's
   `CombatEnd.IsOverOrEnding` whenever F10 is on, and the old reading is `CombatEngine.OldIsOverOrEnding`; `EmuDump fuzz`
   compares the two after every step with F10 on and lists each disagreement under the output's `ending_disagree`
-  (absent when they agree, so the old engine's output is unchanged).
+  (absent when they agree, so the old engine's output is unchanged). The key is only a list: nothing reads it yet, so
+  a disagreement fails no test (see the R7 acceptance item below).
 - Curl Up: the old flag pays on the next card played (`CombatEngine.PayCurlUp`), where the game's
   CurlUpPower.AfterCardPlayed pays only on the card that armed it.
   **Done (R6.9)**: under the switch the Core2 handler remembers the card (`EnemyState.CurlUpCardUid`, IdentityOnly,
@@ -1038,6 +1039,9 @@ recommendation 5, the traced set with net states (`struct_calibrate traced --eng
 game. Then the by-family table re-measured on a lockstep block with core2;
 target G2891c25e0d's kill part and mechanism B at 0, F08 proper down by at least its A+B share; any group that grows is
 a stop.
+
+R7 item, the ending agreement made an assertion: `tools/fidelity/fuzz_core2.py` fails on any step listed under a fuzz
+output's `ending_disagree` that is outside an expected list (held-open corpses without a handler), and that list is empty at switch-on.
 
 **R7 checks: old-site divergences the handlers inherit or settle.** Each is a place where a handler equals the old function and the
 game does something else, found while porting; R7's corpus re-measure decides each, and none moves a gate by itself.

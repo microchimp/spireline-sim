@@ -125,7 +125,7 @@ public interface IEngine : IScreenSource
 
     /// <summary>With F10 on: where the old engine's ending predicate and the kernel's (CombatManager.IsOverOrEnding)
     /// disagree now, as text; null when they agree, or when no kernel predicate is in force (the fuzzer's agreement
-    /// assertion, MIGRATION_F08.md R7 checks, one ending).</summary>
+    /// report, <c>ending_disagree</c>, MIGRATION_F08.md R7 checks, one ending).</summary>
     string? EndingDisagreement() => null;
 
     /// <summary>Plays the card at this hand index at the creature in this slot (-1: no target).</summary>

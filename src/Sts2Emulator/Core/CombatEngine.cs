@@ -5331,8 +5331,8 @@ public static class CombatEngine
     /// <summary>
     /// The old engine's own reading of <see cref="IsOverOrEnding" /> (no primary enemy left, or the player about to lose),
     /// whatever the switch: F08 and F10 switch together, so with them on the one predicate is Core2's
-    /// (<c>CombatEnd.IsOverOrEnding</c>), and <c>EmuDump fuzz</c> asserts this one agrees with it at every step
-    /// (MIGRATION_F08.md R7 checks, one ending).
+    /// (<c>CombatEnd.IsOverOrEnding</c>), and <c>EmuDump fuzz</c> reports each step where this one disagrees with it
+    /// (<c>ending_disagree</c>: a report, not yet an assertion; MIGRATION_F08.md R7 checks, one ending, and R7 acceptance).
     /// </summary>
     internal static bool OldIsOverOrEnding(CombatState state) =>
         NoPrimaryEnemyLeft(state)

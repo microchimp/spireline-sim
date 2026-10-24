@@ -27,14 +27,29 @@ public class IndexHolderTests
     [Fact]
     public void ACardsSecondTargetedEffectFollowsTheCreatureNotTheIndex()
     {
-        // [A, B, C], Bash at B: the hit kills B and the kernel removes it, so index 1 is C. The game's Vulnerable goes to
-        // CurrentTarget, the dead B (nobody); by index it went to C.
+        // [A, B, C], Bash at B: the hit kills B and the kernel removes it, so index 1 is C. A card's second targeted effect
+        // is a second lookup of the play's target: the game's goes to CurrentTarget, the dead B (nobody); by index it went to
+        // C. Every old card looks its target up once and carries it (Bash gives Vulnerable to the creature it already holds),
+        // so the second effect is a stand-in that looks the target up again, from a hook that runs after the kernel has taken
+        // B out of the roster (the AfterRemoved of B's Weak, inside the play): it gives the creature it finds Vulnerable.
         var f = Three(20, 5, 20, Bash);
         var a = f.State.Enemies[0];
+        var b = f.State.Enemies[1];
         var c = f.State.Enemies[2];
-        Bind(f.State);
+        BuffSystem.Apply(b.Buffs, BuffId.Weak, 1);
+        int lookups = 0;
+        Bind(f.State, t => t.Model(ListenerKind.Power, "WeakPower").On(HookId.AfterRemoved,
+            (HookEvent<AfterRemovedArgs>)((HookCtx ctx, ListenerRef self, in AfterRemovedArgs removed, ChoiceCtx? choice) =>
+            {
+                lookups++;
+                Assert.DoesNotContain(b, ctx.OldCombat.Enemies); // the lookup is made after the removal
+                if (CardEffects.TargetedEnemyFor(ctx.OldCombat) is { } found)
+                    BuffSystem.Apply(found.Buffs, BuffId.Vulnerable, 1);
+                return HookStep.Done;
+            })));
         f.Play(0, target: 1);
         Assert.Equal(2, f.State.Enemies.Count);
+        Assert.Equal(1, lookups);
         Assert.Equal(0, BuffSystem.Get(c.Buffs, BuffId.Vulnerable));
         Assert.Equal(0, BuffSystem.Get(a.Buffs, BuffId.Vulnerable));
     }
