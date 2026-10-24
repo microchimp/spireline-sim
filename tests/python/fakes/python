@@ -2,6 +2,8 @@
 # A stand-in for the Python that tools/build_and_test.sh is given, for
 # tests/python/test_build_and_test.py. "-m unittest ..." prints FAKE_PY_LOG_FILE and exits
 # FAKE_PY_EXIT; "tools/fidelity/corpus.py ... check" prints a check line and exits FAKE_CORPUS.
+# FAKE_CALL_LOG, when set, gets one line per call (the fake dotnet adds its own), to check the order.
+[ -n "${FAKE_CALL_LOG:-}" ] && echo "python $*" >> "$FAKE_CALL_LOG"
 if [ "$1" = "-m" ]; then
   [ -n "${FAKE_PY_LOG_FILE:-}" ] && cat "$FAKE_PY_LOG_FILE"
   exit "${FAKE_PY_EXIT:-0}"

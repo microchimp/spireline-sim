@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # A stand-in for dotnet, for tests/python/test_build_and_test.py: tools/build_and_test.sh run
 # against it step by step. Each subcommand's exit status and output come from FAKE_* variables.
+# FAKE_CALL_LOG, when set, gets one line per call (the fake python adds its own), to check the order.
+[ -n "${FAKE_CALL_LOG:-}" ] && echo "dotnet $*" >> "$FAKE_CALL_LOG"
 case "$1" in
   --version) echo "9.0.0-fake" ;;
   restore) exit "${FAKE_RESTORE:-0}" ;;
