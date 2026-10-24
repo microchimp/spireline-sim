@@ -1046,6 +1046,20 @@ are left, or not), and the old rule's users are listed and either follow the gam
   (`DeckWithoutRun`, reported by `Listeners.Report` only) and `HookCtx.Card` answers null for a deck card. The search forks
   combats, so before switch-on a fork gets a read-only view of its run's deck, or the gap refuses (throws) instead of
   answering empty. Test: a forked step with a run-deck listener equals the same step unforked.
+  **Closed in R7a** (branch `rebuild/f08-r7a`): `RunEngine.ForkActiveCombat` keeps the fight and its streams, and the old
+  combat step never reads the run (its deck changes are made by the run as the combat ends), so a copy bound to no run
+  keeps the deck its source read, frozen at the copy (`KernelState.CopyTo`: the same card values in a list nothing
+  writes; a fork of a fork shares it), and its world reads it as `OldWorld.Deck` (the run pass, the deck member check and
+  probe, `HookCtx.Card`). No live list or stream is reached. Test:
+  `ResampleLeakTests.AForkedStepWithARunDeckListenerEqualsTheSameStepUnforkedAndLeavesTheLiveRunAlone`.
+- **The pet redirect at the enemy-attack site (R7a).** Under the switch the monster's hit is AttackCmd's
+  `CreatureCmd.Damage`, whose `ModifyUnblockedDamageTarget` fold had no holder (the old state lists no power on Osty), so
+  the player took the hit (O1's three OstyDamageSinkTests). `DieForYouPower` (Registry block `R7a`) ports the game's
+  override; OldState lists the power on the Osty a combat holds (the game applies it once, at OstyCmd.Summon's first
+  add, and never removes it), and `HookCtx.PetOwner` names the player for Osty. Tests: `R7aTests`.
+- **Dealers: the player (R7a).** The game's ConstrictPower and DisintegrationPower damage their owner with the owner as
+  dealer; `CardEffects.DealDamageToPlayer` and `OldEntry.HitPlayer` take an `OldCreature` dealer, and those two sites
+  pass `OldCreature.Player` (read only under the switch). Test: `R7aDealerTests`.
 - The index holders (the independent review, docs/reviews/2026-10-24-f08-migration.md, recommendation 3, its 1.3 A and B):
   `HandleEnemyDeaths` gated off whole under the switch; Oblivion paid by reference, not by roster position; the play's
   target resolved by reference (`FirstEnemy` reads `PlayTarget`, null for a dead or removed target).
