@@ -19,6 +19,12 @@ encounter of every act (the sanity run: core2 is the old engine, so it must find
 drawn only when every combat-hook family it overrides (the port manifest's `families`) is in the set; an encounter only
 when each of its monsters is.
 
+Each fight also places a few powers after the fight item (`power` setup items: game power ids on the player and on enemies,
+amounts in a sane range; Catalog.powers). A power is drawn whatever its families, with a weight that favours the powers whose
+hooks sit in the families under test (F08 and F10 when they are in the set, the sanity run's too), and the common combat powers
+(Strength, Vulnerable, Weak, Slow, Intangible, Thorns, Plating, ...) a little more, so the first migration's hooks run often.
+The summary's `power_coverage` says how many fights placed each.
+
 A difference is a first differing step. It is re-run through `EmuDump fight --state-hash=fields` (the fields that differ
 name it) and its minimal re-run spec, the fight cut at that step, is saved under <out>/<run>/ as a record `EmuDump fight`
 replays on either engine. Its signature (`state:<fields>`, `action`, `length` or `error`) is looked up in
@@ -73,6 +79,25 @@ RERUN_CHUNK = 50  # records per field re-run process
 MAX_FAILED_BATCHES = 10  # a run with no fight limit stops starting batches after this many fail (no dotnet, a broken build)
 BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 SWITCHABLE = [f"F{n:02d}" for n in range(1, 17)]
+# The first migration's families (F08 damage, F10 kill): the powers whose hooks sit in them are drawn more often.
+FOCUS = frozenset(("F08", "F10"))
+FAVOUR = 8   # extra weight of a power with a hook in a family under test (a power's base weight is 1)
+STAPLE = 10  # extra weight of a common combat power: the cards and monsters of a real fight apply these all the time
+STAPLE_POWERS = frozenset(f"{n}_POWER" for n in (
+    "STRENGTH", "DEXTERITY", "VULNERABLE", "WEAK", "FRAIL", "POISON", "SLOW", "INTANGIBLE", "THORNS", "PLATING", "ARTIFACT",
+    "BUFFER"))
+POWER_COUNTS = (0, 1, 2, 3, 4, 5)       # powers placed in a fight, and their weights
+POWER_COUNT_WEIGHTS = (2, 2, 3, 3, 2, 1)
+PLAYER_SHARE = 0.35                      # of the placements that land on the player rather than an enemy
+# Amount ranges (low, high) by game power id; any other counter power draws DEFAULT_AMOUNT, a one-shot power 1.
+AMOUNTS = {
+    "STRENGTH_POWER": (-3, 6), "DEXTERITY_POWER": (-3, 5), "VULNERABLE_POWER": (1, 4), "WEAK_POWER": (1, 4),
+    "FRAIL_POWER": (1, 3), "POISON_POWER": (1, 12), "SLOW_POWER": (1, 4), "INTANGIBLE_POWER": (1, 2),
+    "THORNS_POWER": (1, 8), "PLATING_POWER": (1, 8), "ARTIFACT_POWER": (1, 3), "BUFFER_POWER": (1, 3),
+    "VIGOR_POWER": (1, 10), "RITUAL_POWER": (1, 4), "REGEN_POWER": (1, 5), "METALLICIZE_POWER": (1, 6),
+}
+DEFAULT_AMOUNT = (1, 3)
+POWER_SUFFIX = "_POWER"
 
 
 # ================================================================================================ the switch set
@@ -107,6 +132,8 @@ class Catalog:
     potions: list = field(default_factory=list)     # {"id", "families", "target"}
     encounters: list = field(default_factory=list)  # {"id", "act", "kind", "index", "monsters", "families"}
     switches: tuple = ()
+    powers: list = field(default_factory=list)      # {"id" (the game's), "families", "stack"}: what a setup `power` item can place
+    powers_known: int = 0
 
     @property
     def unrestricted(self) -> bool:
@@ -118,10 +145,22 @@ class Catalog:
     def pick(self, kind: str) -> list:
         return [e for e in getattr(self, kind) if self.allowed(e)]
 
+    @property
+    def favoured(self) -> frozenset:
+        """The families whose powers are drawn more often: F08 and F10 of the set, else the set, else (no switch) F08 and F10."""
+        return frozenset((set(self.switches) & FOCUS) or set(self.switches) or FOCUS)
+
+    def power_weight(self, power: dict) -> int:
+        """A power is drawn whatever its families (a half-migrated power is what the fuzzer is for); the weight favours
+        the ones with a hook in a family under test, and the common combat powers."""
+        return 1 + (FAVOUR if set(power.get("families", ())) & self.favoured else 0) + (STAPLE if power["id"] in STAPLE_POWERS else 0)
+
     def coverage(self) -> dict:
         """Per kind: how many models a fight can place under the switch set, and how many the catalog holds."""
-        return {k: {"placeable": len(self.pick(k)), "known": len(getattr(self, k))}
-                for k in ("cards", "relics", "potions", "encounters")}
+        cov = {k: {"placeable": len(self.pick(k)), "known": len(getattr(self, k))}
+               for k in ("cards", "relics", "potions", "encounters")}
+        cov["powers"] = {"placeable": len(self.powers), "known": self.powers_known}
+        return cov
 
 
 def model_families(manifest: dict | None, key: str) -> list[str]:
@@ -148,6 +187,12 @@ def build_catalog(tables: dict, info: dict, manifest: dict | None, switches, ros
     for p in sorted({p for pool in POTION_POOLS for p in tables["potion_pools"][pool]}):
         if p in modelled:
             cat.potions.append({"id": p, "families": fam("potion", p), "target": modelled[p].get("target")})
+    keys, internal = set(info.get("buff_keys", ())), set(info.get("internal_keys", ()))
+    cat.powers_known = len(tables.get("powers", {}))
+    for pid, meta in sorted(tables.get("powers", {}).items()):
+        key = pid[: -len(POWER_SUFFIX)] if pid.endswith(POWER_SUFFIX) else pid
+        if key in keys and key not in internal:  # the old engine holds it as a buff of its own (ApplyPower finds it)
+            cat.powers.append({"id": pid, "families": fam("power", pid), "stack": meta.get("stack_type")})
     for act in ACTS:
         for kind in KINDS:
             for i, name in enumerate(tables["acts"][act].get(kind, [])):
@@ -195,12 +240,40 @@ def generate(cat: Catalog, seed: int, index: int, max_steps: int = 80) -> dict:
     items += pair + [{"cmd": "potions_set", "ids": belt}]
     items.append({"cmd": "hp", "max": hp_max, "current": hp_max if rng.random() < 0.7 else rng.randint(max(1, hp_max // 3), hp_max)})
     items.append({"cmd": "fight", "id": enc["id"]})
-    return {
+    spec = {
         "seed": "".join(rng.choice(ALPHABET) for _ in range(10)), "character": "IRONCLAD", "ascension": 10, "neow_pick": 0,
         "use_potions": True, "setup": items,
         "fight": {"id": enc["id"], "act": enc["act"], "kind": enc["kind"], "index": enc["index"]},
         "tag": f"fuzz:{seed}:{index}", "fuzz": {"seed": rng.getrandbits(48), "max_steps": max_steps},
     }
+    items += draw_powers(cat, rng, enc)  # after the fight item: the combat is open; drawn last, so the rest of a spec is as it was
+    return spec
+
+
+def power_amount(rng: random.Random, power: dict) -> int:
+    """An amount for a setup `power` item: the power's range in AMOUNTS, else 1..3 for a counter and 1 for any other stack type."""
+    if power["id"] in AMOUNTS or power.get("stack") == "Counter":
+        low, high = AMOUNTS.get(power["id"], DEFAULT_AMOUNT)
+        return rng.choice([a for a in range(low, high + 1) if a])  # never 0: the console applies nothing for it
+    return 1
+
+
+def draw_powers(cat: Catalog, rng: random.Random, enc: dict) -> list[dict]:
+    """The `power` setup items of a fight: a few game power ids (weighted, Catalog.power_weight) on the player or on one of the
+    encounter's opening enemies, never the same power twice on one creature."""
+    if not cat.powers:
+        return []
+    weights = [cat.power_weight(p) for p in cat.powers]
+    slots = len(enc.get("monsters") or ())
+    items, seen = [], set()
+    for _ in range(rng.choices(POWER_COUNTS, POWER_COUNT_WEIGHTS)[0]):
+        power = rng.choices(cat.powers, weights)[0]
+        target = "player" if slots == 0 or rng.random() < PLAYER_SHARE else f"enemy:{rng.randrange(slots)}"
+        amount = power_amount(rng, power)
+        if (power["id"], target) not in seen:
+            seen.add((power["id"], target))
+            items.append({"cmd": "power", "id": power["id"], "target": target, "amount": amount})
+    return items
 
 
 # ================================================================================================ running EmuDump
@@ -400,7 +473,7 @@ def process_batch(opts: Options, cat: Catalog, indices: list[int], work: Path, r
     specs = [generate(cat, opts.seed, i, opts.max_steps) for i in indices]
     old, new = runner("old", specs), runner("core2", specs)
     stats = {"fights": len(specs), "steps": sum(len(r.get("steps") or []) for r in old), "errors": sum(1 for r in old if r.get("error")),
-             "seconds": 0.0}
+             "seconds": 0.0, "powers": [sorted({it["id"] for it in sp["setup"] if it["cmd"] == "power"}) for sp in specs]}
     diffs = []
     for i, spec, a, b in zip(indices, specs, old, new):
         d = first_difference(a, b)
@@ -446,7 +519,17 @@ def batches_of(opts: Options):
         start = stop
 
 
-
+def power_coverage(cat: Catalog, results: list[dict]) -> dict:
+    """How many fights placed each power: the common combat powers by id, and the death-trigger powers (the ones with an F10
+    hook) as a group and by id. `fights` counts the fights whose spec was generated, which is every fight a batch ran."""
+    per_fight = [ids for r in results for ids in r["stats"]["powers"]]
+    count = collections.Counter(i for ids in per_fight for i in ids)
+    death = sorted(p["id"] for p in cat.powers if "F10" in p["families"])
+    focus = ("SLOW_POWER", "INTANGIBLE_POWER", "VULNERABLE_POWER", "WEAK_POWER", "STRENGTH_POWER", "THORNS_POWER", "PLATING_POWER")
+    return {"fights": len(per_fight), "fights_with_a_power": sum(1 for ids in per_fight if ids),
+            "focus": {i: count.get(i, 0) for i in focus},
+            "death_trigger": {"placeable": len(death), "fights_with_one": sum(1 for ids in per_fight if set(ids) & set(death)),
+                              "by_power": {i: count[i] for i in death if count.get(i)}}}
 
 
 def run_fuzz(opts: Options, cat: Catalog, runner=None, rerunner=None, now=time.time) -> dict:
@@ -500,7 +583,7 @@ def run_fuzz(opts: Options, cat: Catalog, runner=None, rerunner=None, now=time.t
         "untriaged": sum(1 for d in diffs if not d["explained"]), "failed_batches": errors,
         "top_fields": fields.most_common(10), "signatures": collections.Counter(d["signature"] for d in diffs).most_common(10),
         "seconds": round(seconds, 1), "fights_per_second": round(sum(r["stats"]["fights"] for r in results) / seconds, 2),
-        "procs": 1 if runner is not None else opts.procs, "coverage": cat.coverage(),
+        "procs": 1 if runner is not None else opts.procs, "coverage": cat.coverage(), "power_coverage": power_coverage(cat, results),
         "first": [{k: d[k] for k in ("index", "step", "kind", "signature", "fields", "explained")} for d in diffs[:10]],
         "specs": saved[:50],
     }
@@ -584,8 +667,9 @@ def main(argv=None) -> int:
         summary = run_fuzz(opts, cat)
     finally:
         drop_build(built, a.emudump)
-    print(json.dumps({k: v for k, v in summary.items() if k != "coverage"}, indent=1))
+    print(json.dumps({k: v for k, v in summary.items() if k not in ("coverage", "power_coverage")}, indent=1))
     print("coverage:", json.dumps(summary["coverage"]))
+    print("power coverage:", json.dumps(summary["power_coverage"]))
     return exit_code(summary)
 
 

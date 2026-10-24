@@ -3,6 +3,7 @@ outputs, no EmuDump), the triage file and the exit codes. One smoke test runs th
 
 from __future__ import annotations
 
+import collections
 import copy
 import hashlib
 import os
@@ -19,7 +20,17 @@ sys.path.insert(0, str(ROOT))
 from tools.fidelity import fuzz_core2 as F  # noqa: E402
 
 
-def catalog(switches=()) -> F.Catalog:
+POWERS = [
+    {"id": "SLOW_POWER", "families": ["F02", "F06", "F08"], "stack": "Counter"},
+    {"id": "PLATING_POWER", "families": ["F02", "F05"], "stack": "Counter"},
+    {"id": "ILLUSION_POWER", "families": ["F08", "F10"], "stack": "Single"},
+    {"id": "DEMON_FORM_POWER", "families": ["F02"], "stack": "Counter"},
+    {"id": "STRENGTH_POWER", "families": ["F08"], "stack": "Counter"},
+    {"id": "TANGLED_POWER", "families": [], "stack": "None"},
+]
+
+
+def catalog(switches=(), powers=()) -> F.Catalog:
     cards = [{"id": i, "upgradable": True, "families": f} for i, f in (
         ("STRIKE_IRONCLAD", []), ("DEFEND_IRONCLAD", []), ("BASH", []), ("ASCENDERS_BANE", []), ("ANGER", []), ("INFLAME", ["F08"]),
         ("RAMPAGE", ["F08", "F09"]), ("HEADBUTT", ["F10"]), ("WHIRLWIND", []))]
@@ -30,7 +41,7 @@ def catalog(switches=()) -> F.Catalog:
         {"id": "Mytes", "act": "HIVE", "kind": "normal", "index": 5, "monsters": ["MYTE"], "families": ["F02"]},
         {"id": "KaiserCrab", "act": "HIVE", "kind": "boss", "index": 0, "monsters": ["KAISER_CRAB"], "families": ["F08"]},
     ]
-    return F.Catalog(cards, relics, potions, encounters, tuple(sorted(switches)))
+    return F.Catalog(cards, relics, potions, encounters, tuple(sorted(switches)), copy.deepcopy(list(powers)), len(powers))
 
 
 def result(spec: dict, bend=None, error=None) -> dict:
@@ -125,6 +136,84 @@ class Generation(unittest.TestCase):
         self.assertNotEqual(dll, d / "bin" / "EmuDump.dll")
         self.assertEqual(json.loads((dll.parent / "migrated_families.json").read_text()), {"migrated": ["F08", "F10"]})
         self.assertEqual(json.loads((d / "bin" / "migrated_families.json").read_text()), {"migrated": []})
+
+
+class Powers(unittest.TestCase):
+    def specs(self, cat, n=300, seed=4):
+        return [F.generate(cat, seed, i) for i in range(n)]
+
+    def test_powers_are_placed_after_the_fight_item_on_creatures_that_exist(self):
+        cat = catalog(powers=POWERS)
+        placed = 0
+        for spec in self.specs(cat):
+            cmds = [it["cmd"] for it in spec["setup"]]
+            fight = cmds.index("fight")
+            self.assertEqual(set(cmds[fight + 1:]) - {"power"}, set())  # only powers follow it: the combat is open
+            roster = next(e for e in cat.encounters if e["id"] == spec["fight"]["id"])["monsters"]
+            seen = set()
+            for it in spec["setup"][fight + 1:]:
+                placed += 1
+                power = next(p for p in POWERS if p["id"] == it["id"])
+                self.assertNotIn((it["id"], it["target"]), seen)
+                seen.add((it["id"], it["target"]))
+                self.assertTrue(it["target"] == "player" or (it["target"].startswith("enemy:") and int(it["target"][6:]) < len(roster)), it)
+                ranged = power["stack"] == "Counter" or it["id"] in F.AMOUNTS
+                low, high = F.AMOUNTS.get(it["id"], F.DEFAULT_AMOUNT) if ranged else (1, 1)
+                self.assertTrue(low <= it["amount"] <= high and it["amount"] != 0, it)
+        self.assertGreater(placed, 300)
+
+    def test_a_catalog_without_powers_places_none_and_leaves_the_rest_of_a_spec_alone(self):
+        plain, rich = catalog(), catalog(powers=POWERS)
+        for i in range(30):
+            a, b = F.generate(plain, 9, i), F.generate(rich, 9, i)
+            self.assertEqual(a["setup"], b["setup"][: len(a["setup"])])
+            self.assertEqual({k: v for k, v in a.items() if k != "setup"}, {k: v for k, v in b.items() if k != "setup"})
+
+    def test_the_weights_favour_the_families_under_test(self):
+        weight = lambda cat: {p["id"]: cat.power_weight(p) for p in POWERS}  # noqa: E731
+        w = weight(catalog(("F08",), POWERS))  # F08 alone: its hooks' powers and the staples are favoured
+        self.assertEqual((w["TANGLED_POWER"], w["DEMON_FORM_POWER"]), (1, 1))
+        self.assertEqual(w["ILLUSION_POWER"], 1 + F.FAVOUR)
+        self.assertEqual(w["PLATING_POWER"], 1 + F.STAPLE)
+        self.assertEqual(w["SLOW_POWER"], 1 + F.FAVOUR + F.STAPLE)
+        self.assertEqual(weight(catalog(("F08", "F10"), POWERS)), w)
+        self.assertEqual(weight(catalog((), POWERS)), w)  # the sanity run favours the first migration's families too
+        self.assertEqual(catalog(tuple(F.SWITCHABLE), POWERS).favoured, F.FOCUS)  # `all` favours them, not everything
+        self.assertEqual(catalog(("F02",), POWERS).power_weight(POWERS[3]), 1 + F.FAVOUR)  # a set without F08/F10: its own families
+        counts = collections.Counter(it["id"] for sp in self.specs(catalog(("F08", "F10"), POWERS), 600) for it in sp["setup"] if it["cmd"] == "power")
+        self.assertGreater(counts["SLOW_POWER"], 3 * counts["DEMON_FORM_POWER"])
+        self.assertGreater(counts["ILLUSION_POWER"], 3 * counts["TANGLED_POWER"])
+
+    def test_a_power_is_placeable_whatever_its_families_under_a_switch_set(self):
+        cat = catalog(("F08", "F10"), POWERS)
+        self.assertEqual(len(cat.powers), len(POWERS))  # SLOW has F02 and F06 hooks too: it is what the set is for
+        self.assertEqual(cat.coverage()["powers"], {"placeable": len(POWERS), "known": len(POWERS)})
+
+    def test_the_catalog_takes_the_powers_the_old_engine_holds(self):
+        tables = {"cards": {}, "card_pools": {p: [] for p in F.CARD_POOLS}, "relic_pools": {p: [] for p in F.RELIC_POOLS}, "relics": {},
+                  "potion_pools": {p: [] for p in F.POTION_POOLS}, "potions": {}, "acts": {a: {} for a in F.ACTS},
+                  "powers": {"SLOW_POWER": {"stack_type": "Counter"}, "SETUP_STRIKE_POWER": {"stack_type": "Counter"},
+                             "GUARDED_POWER": {"stack_type": "Counter"}, "ILLUSION_POWER": {"stack_type": "Single"}}}
+        info = {"relics": {}, "buff_keys": ["SLOW", "SETUP_STRIKE", "ILLUSION"], "internal_keys": ["SETUP_STRIKE"]}
+        manifest = {"models": {"power:SLOW_POWER": {"families": ["F08", "F02"]}}}
+        cat = F.build_catalog(tables, info, manifest, ("F08",))
+        self.assertEqual(cat.powers, [{"id": "ILLUSION_POWER", "families": [], "stack": "Single"},
+                                      {"id": "SLOW_POWER", "families": ["F02", "F08"], "stack": "Counter"}])
+        self.assertEqual(cat.powers_known, 4)
+
+    def test_the_summary_counts_the_fights_that_placed_each_power(self):
+        cat = catalog(("F08", "F10"), POWERS)
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        runner = lambda engine, specs: [result(s) for s in specs]  # noqa: E731
+        s = F.run_fuzz(options(str(d), fights=60, batch=20, seed=7), cat, runner, None)
+        cov = s["power_coverage"]
+        specs = self.specs(cat, 60, 7)
+        self.assertEqual(cov["fights"], 60)
+        self.assertEqual(cov["focus"]["SLOW_POWER"], sum(1 for sp in specs if any(it.get("id") == "SLOW_POWER" for it in sp["setup"])))
+        self.assertEqual(cov["death_trigger"]["placeable"], 1)  # ILLUSION_POWER is the one with an F10 hook
+        self.assertEqual(cov["death_trigger"]["fights_with_one"], cov["death_trigger"]["by_power"].get("ILLUSION_POWER", 0))
+        self.assertGreater(cov["fights_with_a_power"], 30)
 
 
 class Comparison(unittest.TestCase):
@@ -352,7 +441,9 @@ class RealEmuDump(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         cat = F.load_catalog(F.DEFAULT_DLL, [], None, d)
         self.assertGreater(len(cat.pick("cards")), 50)
+        self.assertGreater(len(cat.powers), 100)
         specs = [F.generate(cat, 11, i, 30) for i in range(6)]
+        self.assertTrue(any(it["cmd"] == "power" for sp in specs for it in sp["setup"]))
         old, new = (F.run_specs(F.DEFAULT_DLL, e, specs, d) for e in ("old", "core2"))
         self.assertTrue(all(len(r["steps"]) > 1 for r in old))
         self.assertEqual([F.first_difference(a, b) for a, b in zip(old, new)], [None] * 6)
