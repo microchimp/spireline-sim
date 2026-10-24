@@ -930,5 +930,18 @@ class SweepTest(unittest.TestCase):
             self.assertIn("full table: sweeps/x.md", lines[0])
 
 
+class LabelledFlags(unittest.TestCase):
+    def test_packet_and_trace_divergent_hold_rng_diffs_one_tuple(self):
+        """The flags whose runs need NO_INLINING are defined once, in rng_diff; packet and referee/trace_divergent hold that object."""
+        from tools.fidelity import rng_diff  # noqa: PLC0415
+
+        sys.path.insert(0, str(ROOT / "referee"))
+        import trace_divergent  # noqa: PLC0415  # ty: ignore[unresolved-import] -- referee/ is on sys.path
+
+        self.assertEqual(rng_diff.LABELLED_FLAGS, ("--rng-log", "--trace", "--trace-to"))
+        self.assertIs(pk.LABELLED_FLAGS, rng_diff.LABELLED_FLAGS)
+        self.assertIs(trace_divergent.LABELLED_FLAGS, rng_diff.LABELLED_FLAGS)
+
+
 if __name__ == "__main__":
     unittest.main()
