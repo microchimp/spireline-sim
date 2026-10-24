@@ -108,7 +108,7 @@ public class KernelTests
     [Fact]
     public void HandlersAreKeyedByGameModelWithAPerModelMask()
     {
-        HookEvent<AfterCardPlayedArgs> ev = (ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) => HookStep.Done;
+        HookEvent<AfterCardPlayedArgs> ev = (HookCtx _, ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) => HookStep.Done;
         string akabeko = Name("relics", 1);
         var k = K(Every, t => t.Model(ListenerKind.Relic, akabeko).On(HookId.AfterCardPlayed, ev)
             .On(HookId.AfterCardPlayedLate, ev));
@@ -158,7 +158,7 @@ public class KernelTests
     public void ATestHandlerIsDispatchedInGameOrderWithItsArguments()
     {
         var seen = new List<(ListenerRef Who, int Play, bool Pushed)>();
-        HookEvent<AfterCardPlayedArgs> ev = (ListenerRef self, in AfterCardPlayedArgs a, ChoiceCtx? ctx) =>
+        HookEvent<AfterCardPlayedArgs> ev = (HookCtx _, ListenerRef self, in AfterCardPlayedArgs a, ChoiceCtx? ctx) =>
         {
             seen.Add((self, a.CardPlay.Id, ctx is not null && ctx.Models.Count == 1 && ctx.Models[0] == self));
             return HookStep.Done;
@@ -192,8 +192,8 @@ public class KernelTests
     [Fact] // game: Hook.ModifyHandDraw (fold-set over two passes, changed by int-ne)
     public void AFoldRunsThroughTheRuntimeAndReportsWhoChangedIt()
     {
-        HookFold<ModifyHandDrawArgs, decimal> plusOne = (ListenerRef _, in ModifyHandDrawArgs _, decimal v) => v + 1;
-        HookFold<ModifyHandDrawArgs, decimal> same = (ListenerRef _, in ModifyHandDrawArgs _, decimal v) => v + 0.5m;
+        HookFold<ModifyHandDrawArgs, decimal> plusOne = (HookCtx _, ListenerRef _, in ModifyHandDrawArgs _, decimal v) => v + 1;
+        HookFold<ModifyHandDrawArgs, decimal> same = (HookCtx _, ListenerRef _, in ModifyHandDrawArgs _, decimal v) => v + 0.5m;
         var k = K(Every, t =>
         {
             t.Model(ListenerKind.Relic, Name("relics", 2)).On(HookId.ModifyHandDraw, plusOne);
@@ -209,12 +209,12 @@ public class KernelTests
     public void AHandlerOfASwitchedOffGroupNeverRuns()
     {
         int draws = 0, plays = 0;
-        HookFold<ModifyHandDrawArgs, decimal> draw = (ListenerRef _, in ModifyHandDrawArgs _, decimal v) =>
+        HookFold<ModifyHandDrawArgs, decimal> draw = (HookCtx _, ListenerRef _, in ModifyHandDrawArgs _, decimal v) =>
         {
             draws++;
             return v + 1;
         };
-        HookEvent<AfterCardPlayedArgs> play = (ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) =>
+        HookEvent<AfterCardPlayedArgs> play = (HookCtx _, ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) =>
         {
             plays++;
             return HookStep.Done;
@@ -237,13 +237,13 @@ public class KernelTests
     public void PausesAreRecordedAsHookActionsOrStops()
     {
         var order = new List<int>();
-        HookEvent<AfterTurnEndArgs> end = (ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? ctx) =>
+        HookEvent<AfterTurnEndArgs> end = (HookCtx _, ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? ctx) =>
         {
             order.Add(self.ModelId);
             Assert.Equal(HookId.Dispatch_AfterTurnEnd, ctx!.Dispatcher);
             return self.ModelId == 3 ? HookStep.Paused("choose", new TestResume()) : HookStep.Done;
         };
-        HookEvent<AfterCardPlayedArgs> play = (ListenerRef self, in AfterCardPlayedArgs _, ChoiceCtx? _) =>
+        HookEvent<AfterCardPlayedArgs> play = (HookCtx _, ListenerRef self, in AfterCardPlayedArgs _, ChoiceCtx? _) =>
         {
             order.Add(-self.ModelId);
             return self.ModelId == 1 ? HookStep.Paused("choose", new TestResume()) : HookStep.Done;
@@ -318,7 +318,7 @@ public class KernelTests
     // One handler set for the tests below: relic 3 asks the player at the end of the turn (a per-listener pause).
     private static void PauseAtRelic3(HandlerTable t)
     {
-        HookEvent<AfterTurnEndArgs> end = (ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? _) =>
+        HookEvent<AfterTurnEndArgs> end = (HookCtx _, ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? _) =>
             self.ModelId == 3 ? HookStep.Paused("choose", new TestResume()) : HookStep.Done;
         foreach (int r in new[] { 1, 2, 3 })
             t.Model(ListenerKind.Relic, Name("relics", r)).On(HookId.AfterSideTurnEnd, end);

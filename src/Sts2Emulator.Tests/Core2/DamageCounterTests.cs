@@ -301,7 +301,7 @@ public class DamageCounterTests
         s.PlayerBlock = 10;
         int fired = 0;
         var k = K(s, t => t.Model(ListenerKind.Relic, RelicName(1)).On(HookId.AfterDamageReceived,
-            (HookEvent<AfterDamageReceivedArgs>)((ListenerRef self, in AfterDamageReceivedArgs a, ChoiceCtx? c) =>
+            (HookEvent<AfterDamageReceivedArgs>)((HookCtx _, ListenerRef self, in AfterDamageReceivedArgs a, ChoiceCtx? c) =>
             {
                 fired++;
                 return HookStep.Done;

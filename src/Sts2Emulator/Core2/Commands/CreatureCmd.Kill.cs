@@ -215,7 +215,7 @@ public static partial class CreatureCmd
         var w = k.World!;
         if (Pseudo<HookEvent<BeforeRemovedFromRoomArgs>>(k, HookId.BeforeRemovedFromRoom, ListenerKind.Monster,
                 enemy.DefId) is { } fn)
-            Run(fn(Monster(w, c), new BeforeRemovedFromRoomArgs(c), null), HookId.BeforeRemovedFromRoom);
+            Run(fn(k.Ctx, Monster(w, c), new BeforeRemovedFromRoomArgs(c), null), HookId.BeforeRemovedFromRoom);
         OldRoster.ResetMoveState(enemy);
     }
 
@@ -233,7 +233,7 @@ public static partial class CreatureCmd
         foreach (var p in OldCreatures.Powers(w, c))
         {
             bool own = Pseudo<HookPredicate<PowerDeathArgs>>(k, HookId.ShouldPowerBeRemovedAfterOwnerDeath,
-                ListenerKind.Power, p.Who.ModelId) is not { } fn || fn(p.Who, new PowerDeathArgs(c, p.Buff));
+                ListenerKind.Power, p.Who.ModelId) is not { } fn || fn(k.Ctx, p.Who, new PowerDeathArgs(c, p.Buff));
             if (own && (!OldCreatures.InCombat(w, c) || Hooks.ShouldPowerBeRemovedOnDeath(k,
                     new ShouldPowerBeRemovedOnDeathArgs(new PowerRef(R(w, c), p.Who.ModelId, p.Who.Instance)), out _)))
                 removed.Add(p);
@@ -243,7 +243,7 @@ public static partial class CreatureCmd
         foreach (var (p, buffs) in gone)
         {
             if (Pseudo<HookEvent<AfterRemovedArgs>>(k, HookId.AfterRemoved, ListenerKind.Power, p.Who.ModelId) is { } fn)
-                Run(fn(p.Who, new AfterRemovedArgs(c, p.Buff, buffs), null), HookId.AfterRemoved);
+                Run(fn(k.Ctx, p.Who, new AfterRemovedArgs(c, p.Buff, buffs), null), HookId.AfterRemoved);
         }
     }
 
@@ -274,7 +274,7 @@ public static partial class CreatureCmd
         if (c.Enemy is not { } enemy)
             return;
         if (Pseudo<HookEvent<DiedArgs>>(k, HookId.Died, ListenerKind.Monster, enemy.DefId) is { } fn)
-            Run(fn(Monster(k.World!, c), new DiedArgs(c), null), HookId.Died);
+            Run(fn(k.Ctx, Monster(k.World!, c), new DiedArgs(c), null), HookId.Died);
     }
 
     /// <summary>game: Kill's loss branch: every player dead and the combat in progress, CombatManager.LoseCombat (the

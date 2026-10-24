@@ -590,6 +590,35 @@ commands` 0 (6 commands, 0 stray writes), `sites check` 0 problems (279 sites); 
 combat-end fields, Phase, rewards and HP); the R3b tip `d9a0a6f0` alone gives the same 8 fights with byte-identical diff
 files, so the merge adds none: they are the open F08/F10 handlers and the F17 hand-off, for R4 and the batches.
 
+### How to write a handler
+
+The template is `src/Sts2Emulator.Tests/Core2/HandlerContextTests.cs`: test-only handlers for Strength
+(`ModifyDamageAdditive`, its own amount) and Vulnerable (`ModifyDamageMultiplicative`, the old engine's extracted body),
+registered under the F08+F10 switch and run by `Hooks.ModifyDamage` over an old `CombatState`. A handler batch copies it:
+
+1. Take the pair from the port list and read the game method (`game: <Class>.<Method>`). The handler is
+   `internal static` in `Core2/Models/<Kind>/<GameClass>.cs`, with that citation in its doc comment.
+2. The signature is the dispatcher's op (TIER1_KERNEL.md section 4): the context first, then `ListenerRef self`, then
+   `in <Dispatcher>Args a`, then the op's extra: a fold-add or fold-mul `decimal Method(HookCtx c, ListenerRef self, in
+   ModifyDamageArgs a, decimal current)` (the addend, or the factor), a cap `decimal Method(c, self, in a)`, a predicate
+   `bool`, an event `HookStep Method(c, self, in a, ChoiceCtx? ctx)`.
+3. Read the combat only through `c`: `c.Power(self)` for the power's owner and amount (null when it is gone from its owner:
+   answer the identity or name the gap), `c.Owner(self)` for any other model's creature. A body the old engine already
+   has as `BuffSystem.<Model>_<Hook>(...)` (R5) is called with `c.OldBuffs(creature)`; the handler keeps the game's
+   condition (the dealer, the target, `props.IsPoweredAttack()`) and the old function holds the number. State changes go
+   through the commands, which take `c.K`, never by writing the old state.
+4. Where the power does not apply, return the identity: 0 for an addend, 1 for a factor, the cap's `decimal.MaxValue`, the
+   current value for a set. The changed set is the dispatcher's (by the pass's `changed` criterion): a handler never
+   tracks it.
+5. Register in the model's `Register(HandlerTable t)`: `t.Model(ListenerKind.Power, "StrengthPower").On(HookId.
+   ModifyDamageAdditive, (HookFold<ModifyDamageArgs, decimal>)StrengthPower.ModifyDamageAdditive)`, and list the model in
+   `Core2/Models/Registry.cs`. It registers only while its hook's family switch is on.
+6. Test it the way the example does: build an old `CombatState`, bind a `Kernel` with the family's switches and the model
+   registered, call the generated dispatcher (`Hooks.ModifyDamage(k, args, out var changed)`), and assert the value the game
+   returns and the changed set; add the cases where the power does not apply.
+7. `Power(self).Amount` is the old buff's `Magnitude`; where the engine keeps the game's amount somewhere else (a buff's
+   `Data`, a counter on the state) the model's handler reads that and says so in its comment.
+
 ## 6. Acceptance
 
 Per round:
