@@ -216,7 +216,9 @@ static class RunSnap
             ["gold"] = s.Gold,
             ["potion_slots"] = s.MaxPotionSlots,
             ["potions"] = Arr(s.UsablePotionSlots(), p => PotionEntry(p)),
-            ["deck"] = Arr(s.Deck, c => new JsonArray(CardEntry(c.DefId), c.Upgraded ? 1 : 0,
+            // The same reason as hp: a Thieving Hopper's steal takes the card's deck version out at
+            // the steal (SwipePower.Steal), and the run's own deck settles it only as the fight ends.
+            ["deck"] = Arr(e.DeckInFight(), c => new JsonArray(CardEntry(c.DefId), c.Upgraded ? 1 : 0,
                 c.Enchantment == Enchantment.None ? null : Snake(c.Enchantment.ToString()),
                 c.Enchantment == Enchantment.None ? 0 : c.EnchantAmount)),
             ["relics"] = Arr(s.Relics, r => RelicEntry(r.DefId)),

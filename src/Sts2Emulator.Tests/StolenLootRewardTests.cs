@@ -302,4 +302,120 @@ public class StolenLootRewardTests
         Assert.Equal(engine.State.RewardSpecialCards, clone.RewardSpecialCards);
         Assert.NotSame(engine.State.RewardSpecialCards, clone.RewardSpecialCards);
     }
+
+    private static int[] Observe(RunEngine engine)
+    {
+        var obs = new int[RunConstants.RunObsSize];
+        engine.WriteObservation(obs);
+        return obs;
+    }
+
+    /// <summary>The card a deck slot of the run observation carries (see WriteDeckObservation).</summary>
+    private static CardInstance DeckSlot(int[] obs, int index)
+    {
+        int at =
+            RunConstants.CombatObsSize
+            + RunConstants.DeckObsOffset
+            + index * RunConstants.DeckSlotSize;
+        return new CardInstance(
+            obs[at],
+            obs[at + 1] != 0,
+            Enchantment: (Enchantment)obs[at + 2],
+            EnchantAmount: obs[at + 3]
+        );
+    }
+
+    /// <summary>The cards as a sorted multiset, on what survives a fight.</summary>
+    private static string[] Multiset(IEnumerable<CardInstance> cards) =>
+        cards
+            .Select(c => $"{c.DefId}/{c.Upgraded}/{c.Enchantment}/{c.EnchantAmount}")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+    private static List<CardInstance> LessOne(IReadOnlyList<CardInstance> cards, CardInstance card)
+    {
+        var rest = cards.ToList();
+        Assert.True(rest.Remove(card));
+        return rest;
+    }
+
+    /// <summary>
+    /// <c>SwipePower.Steal</c> calls <c>CardPileCmd.RemoveFromDeck(card.DeckVersion)</c> at the
+    /// steal, so the game's master deck is one card short from the Hopper's first turn to the
+    /// end of the fight. The run observation -- the deck count at offset 3, the deck slots and
+    /// <c>info[3]</c> -- is what the agent and the lockstep's emulator side read mid-fight, so
+    /// it carries the deck the game's reads see. Lockstep records 9BKD2MYRNJ#168,
+    /// LL75B9MPHB#155, TN58QWDEL2#157, 5MG5H69EKK#167 and 42DBNHQDDW#147: every one a
+    /// Thieving Hopper at turn 2 with one <c>.deck</c> entry too many.
+    /// </summary>
+    [Fact]
+    public void TheRunObservationCountsTheViewMidFight()
+    {
+        var engine = AtFirstCombat();
+        var before = engine.State.Deck.ToList();
+        var card = before[0];
+        engine.State.ActiveCombat!.StolenCards.Add(card);
+
+        var obs = Observe(engine);
+        var info = new int[RunConstants.RunInfoSize];
+        engine.WriteInfo(info);
+
+        Assert.Equal(before.Count - 1, obs[RunConstants.CombatObsSize + 3]);
+        Assert.Equal(before.Count - 1, info[3]);
+        var slots = Enumerable.Range(0, before.Count - 1).Select(i => DeckSlot(obs, i));
+        Assert.Equal(Multiset(LessOne(before, card)), Multiset(slots));
+        // The slot after the view is clear: the observation's readers stop at the first empty one.
+        Assert.Equal(0, DeckSlot(obs, before.Count - 1).DefId);
+    }
+
+    /// <summary>
+    /// The run state is not touched mid-fight (the combat was built from the deck, and the
+    /// settlement is the end of the fight's); the VIEW is the deck less one copy of each
+    /// stolen card. With a duplicated card -- a basic Strike -- exactly one copy goes.
+    /// </summary>
+    [Fact]
+    public void TheDeckViewInAFightLacksAStolenCardAtOnce()
+    {
+        var engine = AtFirstCombat();
+        var before = engine.State.Deck.ToList();
+        var card = before[0];
+        engine.State.ActiveCombat!.StolenCards.Add(card);
+
+        Assert.Equal(before, engine.State.Deck);
+        Assert.Equal(Multiset(LessOne(before, card)), Multiset(engine.DeckInFight()));
+    }
+
+    /// <summary>
+    /// The card leaves the deck exactly once, at the end: the view hid it during the fight,
+    /// the settlement takes it out, and outside a fight there is nothing left to hide.
+    /// </summary>
+    [Fact]
+    public void ACardStolenMidFightLeavesTheDeckOnceAtTheEnd()
+    {
+        var engine = AtFirstCombat();
+        var before = engine.State.Deck.ToList();
+        var card = before[0];
+
+        Assert.Equal(0, engine.DebugResolveCombat(stolenCards: [card]));
+
+        Assert.Equal(before.Count - 1, engine.State.Deck.Count);
+        Assert.Equal(Multiset(LessOne(before, card)), Multiset(engine.State.Deck));
+        Assert.Equal(engine.State.Deck, engine.DeckInFight());
+    }
+
+    /// <summary>
+    /// A stolen card the deck never held (one the fight made) has no deck version:
+    /// <c>SwipePower.Steal</c> removes nothing for it, and the view hides nothing.
+    /// </summary>
+    [Fact]
+    public void AStolenCardThatIsInNoDeckHidesNothing()
+    {
+        var engine = AtFirstCombat();
+        var before = engine.State.Deck.ToList();
+        int unknownId = Enumerable.Range(1, 5000).First(id => before.All(c => c.DefId != id));
+        engine.State.ActiveCombat!.StolenCards.Add(new CardInstance(unknownId, Upgraded: false));
+
+        Assert.Equal(before, engine.State.Deck);
+        Assert.Equal(before, engine.DeckInFight());
+    }
 }
