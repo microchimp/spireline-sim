@@ -29,6 +29,8 @@ public class PilotTests
         (ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "DoubleDamagePower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Relic, "VitruvianMinion", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Relic, "TheBoot", HookId.AfterModifyingHpLostAfterOsty),
+        (ListenerKind.Relic, "TheBoot", HookId.ModifyHpLostAfterOstyLate),
     ];
 
     [Fact]
@@ -375,5 +377,119 @@ public class PilotTests
     public void VitruvianMinionIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Relic, "VitruvianMinion", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- The Boot (relic-2)
+
+    /// <summary>The player holding The Boot, one slug.</summary>
+    private static (CombatState S, ListenerRef Relic) BootCombat(int enemyHp = 40)
+    {
+        var s = Combat(enemyHp);
+        return (s, Hold(s, RelicEffects.TheBoot));
+    }
+
+    [Fact]
+    public void TheBootIsRegisteredForItsTwoPairs()
+    {
+        AssertRegistered(Table(Pilot), ListenerKind.Relic, "TheBoot", HookId.ModifyHpLostAfterOstyLate,
+            HookId.AfterModifyingHpLostAfterOsty);
+    }
+
+    [Fact]
+    public void TheBootFloorsOneToFourLostToFiveInTheLateAfterOstyPass()
+    {
+        // game: TheBoot.ModifyHpLostAfterOstyLate; old: CardEffects.LandDamageOnEnemy sets hpLoss =
+        // RelicEffects.BootDamageFloor(state, hpLoss) for a powered hit. The fold's changed set is by the truncated value.
+        var (s, relic) = BootCombat();
+        var k = Kernel(s, Pilot);
+
+        decimal v = Hooks.ModifyHpLost(k, HpLoss(target: 1, 3m), out var changed);
+
+        Assert.Equal(RelicEffects.BootDamageFloor(s, 3), v);
+        Assert.Equal(5m, v);
+        Assert.Equal([relic], changed);
+
+        // Five or more, and nothing lost: the old function leaves them; so does the handler, decimals kept.
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(5.5m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 5.5m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 0m), out changed));
+        Assert.Empty(changed);
+        // A decimal between the bounds is decided on its truncation: 4.5 lost is 4 lost, floored to 5; 0.5 is 0, kept.
+        Assert.Equal(5m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 4.5m), out changed));
+        Assert.Equal([relic], changed);
+        Assert.Equal(0.5m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 0.5m), out changed));
+        Assert.Empty(changed);
+
+        // Where the old site's condition fails: the before-Osty phase (another pass), an unpowered hit, an enemy's hit
+        // on the player, a hit on a creature that is no enemy, the relic not held.
+        Assert.Equal(3m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 3m, phase: HpLossHookPhase.BeforeOsty), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(3m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 3m, props: Unpowered), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(3m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 3m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(3m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 3m, dealer: 0), out changed));
+        Assert.Empty(changed);
+        s.Relics.Clear();
+        Assert.Equal(3m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 3m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void TheBootsFloorLandsThroughTheDamageCommandAfterBlock()
+    {
+        // game: CreatureCmd.Damage runs Hook.ModifyHpLost after the block absorption and the pet redirect, then
+        // LoseHpInternal. A 3 hit on 40: 5 lost. Block 2 against 5: 3 unblocked, floored to 5. Block 5 against 3: fully
+        // blocked, 0 lost, no floor. An unpowered 3 on no block: 3 lost.
+        var (s, _) = BootCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Pilot);
+
+        Assert.Equal(5, Assert.Single(Hit(k, OldCreature.Of(slug), 3m)).UnblockedDamage);
+        Assert.Equal(35, slug.Hp);
+        slug.Block = 2;
+        Assert.Equal(5, Assert.Single(Hit(k, OldCreature.Of(slug), 5m)).UnblockedDamage);
+        Assert.Equal(30, slug.Hp);
+        slug.Block = 5;
+        Assert.Equal(0, Assert.Single(Hit(k, OldCreature.Of(slug), 3m)).UnblockedDamage);
+        Assert.Equal(30, slug.Hp);
+        slug.Block = 0;
+        Assert.Equal(3, Assert.Single(Hit(k, OldCreature.Of(slug), 3m, props: Unpowered)).UnblockedDamage);
+        Assert.Equal(27, slug.Hp);
+    }
+
+    [Fact]
+    public void TheBootsAfterModifyingHpLostAfterOstyDoesNothingToTheState()
+    {
+        // game: TheBoot.AfterModifyingHpLostAfterOsty, reached by the filter-set pass when the relic modified the loss.
+        // The old engine has no body at this point; the handler returns Done and the state is as it was.
+        var (s, relic) = BootCombat();
+        var k = Kernel(s, Pilot);
+        int hp = s.Enemies[0].Hp;
+        var status = Hooks.AfterModifyingHpLostAfterOsty(k, new AfterModifyingHpLostAfterOstyArgs([relic]));
+        Assert.False(status.IsPaused);
+        Assert.Equal(hp, s.Enemies[0].Hp);
+        Assert.Equal(50, s.PlayerHp);
+        Assert.Equal([new RelicInstance(RelicEffects.TheBoot)], s.Relics);
+    }
+
+    [Fact]
+    public void TheBootDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = BootCombat();
+        var k = Kernel(s, Without(Pilot, TheBoot.Register));
+        Assert.Equal(3m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 3m), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(3, Assert.Single(Hit(k, OldCreature.Of(s.Enemies[0]), 3m)).UnblockedDamage);
+        Assert.Equal(37, s.Enemies[0].Hp);
+    }
+
+    [Fact]
+    public void TheBootIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Relic, "TheBoot", HookId.ModifyHpLostAfterOstyLate,
+            HookId.AfterModifyingHpLostAfterOsty);
     }
 }
