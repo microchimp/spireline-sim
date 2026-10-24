@@ -4385,7 +4385,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 2610
+   "line": 2672
   },
   "RunEngine.FinishCombat": {
    "hooks": [
@@ -4402,7 +4402,7 @@
     "F17"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 1637
+   "line": 1698
   },
   "RunEngine.GiryaLiftsLeft": {
    "hooks": [
@@ -4416,7 +4416,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 2916
+   "line": 2978
   },
   "RunEngine.RestHealAmount": {
    "hooks": [
@@ -4430,7 +4430,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 5953
+   "line": 6015
   },
   "RunEngine.RollUnknownMapPointNodeType": {
    "hooks": [
@@ -4466,7 +4466,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 2937
+   "line": 2999
   },
   "RunEngine.WritePhaseActionMask": {
    "hooks": [
