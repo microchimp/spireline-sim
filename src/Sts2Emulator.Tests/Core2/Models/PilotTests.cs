@@ -9,6 +9,7 @@ using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core2;
 using Sts2Emulator.Core2.Models;
 using Sts2Emulator.Core2.Models.Power;
+using Sts2Emulator.Core2.Models.Relic;
 using Xunit;
 using static Sts2Emulator.Tests.Core2.Models.ModelTestKit;
 
@@ -27,6 +28,7 @@ public class PilotTests
         (ListenerKind.Power, "LethalityPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "DoubleDamagePower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Relic, "VitruvianMinion", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -313,5 +315,65 @@ public class PilotTests
     public void DoubleDamageIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Power, "DoubleDamagePower", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Vitruvian Minion (relic-2)
+
+    private const int MinionStrikeDef = 310;
+
+    /// <summary>The player holding Vitruvian Minion with a Minion Strike and a Strike in hand, one slug.</summary>
+    private static (CombatState S, ListenerRef Relic, CardHandle Minion, CardHandle Strike) VitruvianMinionCombat()
+    {
+        var s = Combat(40);
+        var relic = Hold(s, RelicEffects.VitruvianMinion);
+        var minion = Add(s, s.Hand, MinionStrikeDef);
+        var strike = Add(s, s.Hand, 1);
+        return (s, relic, new CardHandle(minion.Uid), new CardHandle(strike.Uid));
+    }
+
+    [Fact]
+    public void VitruvianMinionIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Pilot), ListenerKind.Relic, "VitruvianMinion", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void VitruvianMinionDoublesAMinionTaggedCardsDamage()
+    {
+        // game: VitruvianMinion.ModifyDamageMultiplicative; old: RelicEffects.CardDamageMultiplier returns
+        // VitruvianMinion_ModifyDamageMultiplicative() for a def with MinionTag while the relic is held.
+        var (s, relic, minion, strike) = VitruvianMinionCombat();
+        var k = Kernel(s, Pilot);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: minion), out var changed);
+
+        Assert.Equal(6m * RelicEffects.CardDamageMultiplier(s, GeneratedData.Cards.Get(MinionStrikeDef)), v);
+        Assert.Equal(12m, v);
+        Assert.Equal([relic], changed);
+
+        // Where the condition fails: a card without the tag, no card source, the relic not held.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(1, RelicEffects.CardDamageMultiplier(s, GeneratedData.Cards.Get(1)));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        s.Relics.Clear();
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: minion), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void VitruvianMinionDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _, minion, _) = VitruvianMinionCombat();
+        var k = Kernel(s, Without(Pilot, VitruvianMinion.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: minion), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void VitruvianMinionIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Relic, "VitruvianMinion", HookId.ModifyDamageMultiplicative);
     }
 }

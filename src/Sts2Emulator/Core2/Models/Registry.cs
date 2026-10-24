@@ -5,6 +5,7 @@
 // a batch's branch adds its block and appends it to All; a textual conflict between two batches is resolved by keeping
 // every block.
 using Sts2Emulator.Core2.Models.Power;
+using Sts2Emulator.Core2.Models.Relic;
 
 namespace Sts2Emulator.Core2.Models;
 
@@ -17,6 +18,7 @@ public static class Registry
         LethalityPower.Register,
         TrackingPower.Register,
         DoubleDamagePower.Register,
+        VitruvianMinion.Register,
     ];
 
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
