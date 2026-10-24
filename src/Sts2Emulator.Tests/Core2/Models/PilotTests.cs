@@ -8,6 +8,7 @@ using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core2;
 using Sts2Emulator.Core2.Models;
+using Sts2Emulator.Core2.Models.Card;
 using Sts2Emulator.Core2.Models.Power;
 using Sts2Emulator.Core2.Models.Relic;
 using Xunit;
@@ -24,6 +25,7 @@ public class PilotTests
     /// <summary>The pilot's (model, hook) pairs, written out: the port list rows power-5, relic-2 and card-1.</summary>
     private static readonly (ListenerKind Kind, string Model, HookId Hook)[] PilotPairs =
     [
+        (ListenerKind.Card, "Melancholy", HookId.AfterDeath),
         (ListenerKind.Power, "PhantomBladesPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "LethalityPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "TrackingPower", HookId.ModifyDamageMultiplicative),
@@ -583,5 +585,73 @@ public class PilotTests
     public void HandDrillIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Relic, "HandDrill", HookId.AfterDamageGiven);
+    }
+
+    // ---------------------------------------------------------------------------------------- Melancholy (card-1)
+
+    private const int MelancholyDef = 301;
+
+    /// <summary>Three Melancholy copies (hand, draw, exhaust; the draw one upgraded, the hand one already bumped) among
+    /// Strikes in every pile, two slugs.</summary>
+    private static CombatState MelancholyCombat()
+    {
+        var s = Combat(40, 40);
+        Add(s, s.Hand, 1);
+        var hand = Add(s, s.Hand, MelancholyDef);
+        s.Hand[^1] = hand with { CostBump = 2 };
+        Add(s, s.DrawPile, MelancholyDef, upgraded: true);
+        Add(s, s.DrawPile, 1);
+        Add(s, s.DiscardPile, 1);
+        Add(s, s.ExhaustPile, MelancholyDef);
+        return s;
+    }
+
+    private static IEnumerable<int> Bumps(CombatState s) =>
+        new[] { s.Hand, s.DrawPile, s.DiscardPile, s.ExhaustPile }.SelectMany(p => p).Select(c => c.CostBump);
+
+    [Fact]
+    public void MelancholyIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Pilot), ListenerKind.Card, "Melancholy", HookId.AfterDeath);
+    }
+
+    [Fact]
+    public void MelancholyCheapensEachCopyOnceOnADeathAsTheOldFunctionDoesInOneCall()
+    {
+        // game: Melancholy.AfterDeath (EnergyCost.AddThisCombat on the card, once per copy, for a death not prevented);
+        // old: CardEffects.CheapenMelancholyForDeath(state) lowers every copy's CostBump by one in one call. The
+        // dispatcher visits each copy's listener once, so the piles equal the old function's result.
+        var s = MelancholyCombat();
+        var k = Kernel(s, Pilot);
+        var oracle = MelancholyCombat();
+
+        Hooks.AfterDeath(k, new AfterDeathArgs(new CreatureRef(1), false, 0f));
+        CardEffects.CheapenMelancholyForDeath(oracle);
+
+        Assert.Equal(Bumps(oracle), Bumps(s));
+        Assert.Equal([0, 1, -1, 0, 0, -1], Bumps(s));
+        Assert.Equal(s.Hand.Select(c => c.Uid), s.Hand.Select(c => c.Uid)); // the copies stay where they were
+        Assert.Equal([MelancholyDef], s.ExhaustPile.Select(c => c.DefId));
+
+        // A second death: one more off each copy; a prevented death: nothing.
+        Hooks.AfterDeath(k, new AfterDeathArgs(new CreatureRef(2), false, 0f));
+        Assert.Equal([0, 0, -2, 0, 0, -2], Bumps(s));
+        Hooks.AfterDeath(k, new AfterDeathArgs(new CreatureRef(1), true, 0f));
+        Assert.Equal([0, 0, -2, 0, 0, -2], Bumps(s));
+    }
+
+    [Fact]
+    public void MelancholyDeleteMutantGivesTheNoHandlerValue()
+    {
+        var s = MelancholyCombat();
+        var k = Kernel(s, Without(Pilot, Melancholy.Register));
+        Hooks.AfterDeath(k, new AfterDeathArgs(new CreatureRef(1), false, 0f));
+        Assert.Equal([0, 2, 0, 0, 0, 0], Bumps(s));
+    }
+
+    [Fact]
+    public void MelancholyIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Card, "Melancholy", HookId.AfterDeath);
     }
 }

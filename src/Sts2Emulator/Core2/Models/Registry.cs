@@ -4,6 +4,7 @@
 // register only while that family's switch is on. One block per handler batch (docs/rebuild/CLOUD_BRIEFS.md section 3):
 // a batch's branch adds its block and appends it to All; a textual conflict between two batches is resolved by keeping
 // every block.
+using Sts2Emulator.Core2.Models.Card;
 using Sts2Emulator.Core2.Models.Power;
 using Sts2Emulator.Core2.Models.Relic;
 
@@ -21,6 +22,7 @@ public static class Registry
         VitruvianMinion.Register,
         TheBoot.Register,
         HandDrill.Register,
+        Melancholy.Register,
     ];
 
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
