@@ -28,6 +28,7 @@ public class PowerFourTests
     private static readonly (ListenerKind Kind, string Model, HookId Hook)[] Power4Pairs =
     [
         (ListenerKind.Power, "CalcifyPower", HookId.ModifyDamageAdditive),
+        (ListenerKind.Power, "AccuracyPower", HookId.ModifyDamageAdditive),
     ];
 
     private static IOrderedEnumerable<(ListenerKind Kind, string Model, HookId Hook)> Sorted(
@@ -151,6 +152,94 @@ public class PowerFourTests
     public void CalcifyIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power4, AllButDamage), ListenerKind.Power, "CalcifyPower", HookId.ModifyDamageAdditive);
+    }
+
+    // ---------------------------------------------------------------------------------------- Accuracy (power-4)
+
+    private const int ShivDef = 430;
+    private const int HiddenDaggersDef = 249;
+
+    /// <summary>The player with Accuracy 4 (the old ShivDamage buff), a Shiv, a Hidden Daggers and a Strike in hand, one
+    /// slug.</summary>
+    private static (CombatState S, CardHandle Shiv, CardHandle Daggers, CardHandle Strike) AccuracyCombat(int amount = 4)
+    {
+        var s = Combat(40);
+        GivePower(s, "AccuracyPower", BuffId.ShivDamage, amount);
+        var shiv = Add(s, s.Hand, ShivDef);
+        var daggers = Add(s, s.Hand, HiddenDaggersDef);
+        var strike = Add(s, s.Hand, 1);
+        return (s, new CardHandle(shiv.Uid), new CardHandle(daggers.Uid), new CardHandle(strike.Uid));
+    }
+
+    [Fact]
+    public void AccuracyIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power4), ListenerKind.Power, "AccuracyPower", HookId.ModifyDamageAdditive);
+    }
+
+    [Fact]
+    public void AccuracyAddsTheOldFunctionsNumberToTheOwnersShivs()
+    {
+        // game: AccuracyPower.ModifyDamageAdditive; old: CardEffects.ShivDamage adds Accuracy_ModifyDamageAdditive(state)
+        // to the card it costs, which the two Shiv sites reach for a card named Shiv or HiddenDaggers, every Shiv of the
+        // turn (Phantom Blades' first-Shiv test is not Accuracy's).
+        var (s, shiv, daggers, strike) = AccuracyCombat();
+        var k = Kernel(s, Power4);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: shiv), out var changed);
+
+        Assert.Equal(4m + CardEffects.Accuracy_ModifyDamageAdditive(s), v);
+        Assert.Equal(8m, v);
+        Assert.Equal([Power("AccuracyPower", 0)], changed);
+        Assert.Equal(8m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: daggers), out changed));
+        Assert.Equal([Power("AccuracyPower", 0)], changed);
+        s.ShivsPlayedThisTurn = 2;
+        Assert.Equal(8m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: shiv), out changed));
+        Assert.Equal([Power("AccuracyPower", 0)], changed);
+
+        // Where the condition fails: another card, no card, an unpowered hit, an enemy dealer, the amount at 0.
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: strike), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, props: Unpowered, card: shiv), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 4m, dealer: 1, card: shiv), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.ShivDamage, 0);
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: shiv), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void AccuracyActsForTheDealerOnlyAmongTwoHolders()
+    {
+        // The N-holder test: the player's Shiv is the player's hit, so the slug's Accuracy adds nothing (8, not 12).
+        var (s, shiv, _, _) = AccuracyCombat();
+        var mine = Power("AccuracyPower", 0);
+        var theirs = GivePower(s, "AccuracyPower", BuffId.ShivDamage, 4, s.Enemies[0]);
+        var k = Kernel(s, Power4);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: shiv), out var changed);
+
+        Assert.Equal(8m, v);
+        Assert.Equal([mine], changed);
+        Assert.DoesNotContain(theirs, changed);
+    }
+
+    [Fact]
+    public void AccuracyDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, shiv, _, _) = AccuracyCombat();
+        var k = Kernel(s, Without(Power4, AccuracyPower.Register));
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: shiv), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void AccuracyIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power4, AllButDamage), ListenerKind.Power, "AccuracyPower", HookId.ModifyDamageAdditive);
     }
 
 }
