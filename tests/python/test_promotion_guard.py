@@ -388,6 +388,20 @@ class FlagOffTests(PromoteBase):
             self.assertTrue(gen_loop.review_guard_on())
             self.assertFalse(gen_loop.review_guard_on(False))  # the explicit argument wins
 
+    def test_reading_the_flag_off_does_not_import_the_guard_module_or_touch_sys_path(self):
+        path = list(sys.path)
+        with mock.patch.object(gen_loop, "review_guard_module", side_effect=AssertionError("the flag is off: nothing to import")):
+            for v in (None, "", "0", "off", "false", "maybe"):
+                with mock.patch.dict(os.environ, {} if v is None else {pg.FLAG: v}):
+                    self.assertFalse(gen_loop.review_guard_on(), v)
+            self.assertFalse(gen_loop.review_guard_on(False))
+            with mock.patch.dict(os.environ, {pg.FLAG: "on"}):
+                self.assertFalse(gen_loop.review_guard_on(False))
+        self.assertEqual(sys.path, path)
+        self.assertEqual(gen_loop.REVIEW_GUARD_ON_VALUES, pg.ON_VALUES)
+        with mock.patch.dict(os.environ, {pg.FLAG: " On "}):  # on: the module is asked, which owns the rule
+            self.assertTrue(gen_loop.review_guard_on())
+
     def test_with_the_flag_off_the_existing_decision_is_unchanged(self):
         # 8 candidate-only against 20 incumbent-only kills: P(X >= 20 | 28, 1/2) = 0.018, worse at 0.05 but not at D24's 0.01
         cand_rows, base_rows = self.arms(8, 20)

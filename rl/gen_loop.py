@@ -51,6 +51,7 @@ WIN_GATE = 0.10  # wins join the co-primaries once both arms reach this rate
 BOOT_B = 20000
 ENV_GEN_DIR = "SPIRELINE_GEN_DIR"
 REVIEW_GUARD_FLAG = "SPIRELINE_REVIEW_GUARD"  # tools/lab/promotion_guard.FLAG: the review's guard decides when set; off by default
+REVIEW_GUARD_ON_VALUES = ("1", "on", "true", "yes")  # tools/lab/promotion_guard.ON_VALUES (a test keeps them equal)
 PRIOR_SEARCH = {"c_puct": 0.2, "prior_min_visits": 3}  # prior_loop's PriorConfig defaults
 
 TOKEN_KEYS = ("types", "ids", "owners", "feats")
@@ -867,8 +868,13 @@ def review_guard_module():
 
 
 def review_guard_on(flag: bool | None = None) -> bool:
-    """Whether the review's guard decides: `flag` when given, else the SPIRELINE_REVIEW_GUARD variable (off by default)."""
-    return bool(flag) if flag is not None else review_guard_module().enabled()
+    """Whether the review's guard decides: `flag` when given, else the SPIRELINE_REVIEW_GUARD variable (off by default).
+    The variable is read here first and the guard module is imported only when it is on, so the flag off never imports
+    it or puts the repo root on sys.path (the training venv's); the module's `enabled` still has the last word."""
+    if flag is not None:
+        return bool(flag)
+    value = os.environ.get(REVIEW_GUARD_FLAG, "")
+    return value.strip().lower() in REVIEW_GUARD_ON_VALUES and review_guard_module().enabled(value)
 
 
 def lineage_blocks(rows: list[dict[str, str]], blocks: int = 3) -> list[tuple[int, int]]:
