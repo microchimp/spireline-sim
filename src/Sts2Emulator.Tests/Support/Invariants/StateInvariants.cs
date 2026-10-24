@@ -113,6 +113,26 @@ public static class StateInvariants
             Bad("at_rest", "a played card is held with no selection open");
         }
 
+        // The other half of the slot's rule: the held card stands for the game's Play pile, so no
+        // other pile has it (a card is in exactly one pile). A stale slot beside its filed card is
+        // what made the next step file the card twice.
+        if (s.HeldPlayedCard is { } held && held.UidOf() != 0)
+        {
+            foreach (var (name, pile) in Piles(s))
+            {
+                if (
+                    name is "hand" or "draw" or "discard" or "exhaust"
+                    && pile.Exists(card => card.UidOf() == held.UidOf())
+                )
+                {
+                    Bad(
+                        "at_rest",
+                        $"the held played card (uid {held.UidOf()}) is also in the {name} pile"
+                    );
+                }
+            }
+        }
+
         if (s.AutoPlaying)
         {
             Bad("at_rest", "AutoPlaying is set");

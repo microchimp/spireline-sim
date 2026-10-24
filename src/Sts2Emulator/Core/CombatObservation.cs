@@ -196,10 +196,12 @@ public static class CombatObservation
         // Cards already promised to the next hand, in delivery order: EndTurn hands over
         // `ReturnToHandBeforeDraw` and then `CopiesToHandBeforeDraw`. Without this an
         // agent pays three energy for a Nightmare and cannot see what it bought until the
-        // cards turn up -- the game shows the card's NAME on the power.
+        // cards turn up -- the game shows the card's NAME on the power. The returns are the
+        // cards the piles will give up (CombatEngine.PeekQueuedReturns), not the notes: a
+        // card already back in the hand is not promised twice.
         offset = IncomingOffset;
         int incoming = 0;
-        foreach (var card in s.ReturnToHandBeforeDraw.Concat(s.CopiesToHandBeforeDraw))
+        foreach (var card in CombatEngine.PeekQueuedReturns(s).Concat(s.CopiesToHandBeforeDraw))
         {
             if (incoming >= MaxIncomingCards)
             {
