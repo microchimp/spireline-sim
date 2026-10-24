@@ -872,7 +872,7 @@ public readonly struct OldCreature : IEquatable<OldCreature>
 /// enemies in the combat, as <see cref="OldState.Combat" /> numbers listeners). No rule of its own beyond the old fields
 /// and the old bodies it calls.
 /// </summary>
-public static class OldCreatures
+public static partial class OldCreatures
 {
     public static int Hp(CombatState s, OldCreature c) => c.Kind switch
     {

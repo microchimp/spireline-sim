@@ -20,9 +20,12 @@ public static partial class CreatureCmd
     /// </summary>
     /// <remarks>
     /// A creature this call kills stays in the combat (<see cref="OldWorld.MarkDying" />) from its HP loss until
-    /// <see cref="Kill" /> returns, as the game keeps it listed until CreatureCmd.Kill removes it. Not in the old state:
-    /// the combat history entry (CombatManager.History.DamageReceived), the player's damage-dealt counter
-    /// (ExtraFields.DamageDealt) and the visuals.
+    /// <see cref="Kill" /> returns, as the game keeps it listed until CreatureCmd.Kill removes it. The old state's
+    /// damage history is owned here, through <see cref="OldCreatures" />: the counters its readers keep (the History.DamageReceived
+    /// entry at the game's point in the first loop, the tallies the AfterDamageReceived listeners keep after the hook
+    /// dispatch, and the old player-side AfterDamageReceived body with Rupture's fromPlayedCard; MIGRATION_F08.md, "Fixes
+    /// after R2's review"). Not in the old state: the run statistics (the player's damage-dealt counter, the map point's
+    /// damage taken) and the visuals.
     /// </remarks>
     public static IReadOnlyList<DamageResult> Damage(KernelState k, IReadOnlyList<OldCreature> targets, decimal amount,
         ValueProp props, OldCreature? dealer, CardHandle? cardSource, ChoiceCtx? ctx = null)
@@ -81,6 +84,9 @@ public static partial class CreatureCmd
                 own.BlockedDamage = (int)blocked;
                 own.WasBlockBroken = broken;
                 own.WasFullyBlocked = fully;
+                // game: CombatManager.History.DamageReceived for each result of this target, after both results' flags are set.
+                foreach (var entry in list)
+                    OldCreatures.NoteDamageReceived(w, entry, dealer);
                 results.AddRange(list);
             }
 
@@ -110,6 +116,8 @@ public static partial class CreatureCmd
                 {
                     var a = new AfterDamageReceivedArgs(ctx, who, rr, props, By(w, dealer), cardSource);
                     Settle(k, Hooks.AfterDamageReceived(k, a), st => Hooks.AfterDamageReceivedResume(k, a, st));
+                    // The old listeners' state for this point (a ported model's handler takes its line over).
+                    OldCreatures.AfterDamageReceived(w, r, props, cardSource);
                 }
                 else
                 {

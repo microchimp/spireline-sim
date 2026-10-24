@@ -4051,7 +4051,7 @@ public static class CardEffects
     /// The HP is what the card being PLAYED costs: `RupturePower` banks that and pays it
     /// once the card has finished (`CombatEngine.PayRupture`).
     /// </param>
-    private static void AfterPlayerDamageReceived(
+    internal static void AfterPlayerDamageReceived(
         CombatState state,
         int unblocked,
         bool fromPlayedCard

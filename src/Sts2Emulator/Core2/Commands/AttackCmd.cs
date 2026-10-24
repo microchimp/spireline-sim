@@ -20,7 +20,7 @@ public sealed record AttackBridge(Action<AttackCmd>? BeforeAttack = null, Action
 /// <summary>
 /// game: AttackCommand (the builder's state and its Execute). Targeting is one of: a single target
 /// (<see cref="SingleTarget" />), all opponents (<see cref="AllOpponents" />), random opponents
-/// (<see cref="RandomPick" />, the old engine's target pick, with or without duplicates).
+/// (<see cref="RandomlyTargeted" />: one draw of the CombatTargets stream per hit, with or without duplicates).
 /// </summary>
 public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hitCount = 1)
 {
@@ -34,9 +34,23 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
     public OldCreature? SingleTarget { get; init; }
     public bool AllOpponents { get; init; }
 
-    /// <summary>Random targeting: the pick among the valid targets (the game's Rng.CombatTargets.NextItem; the caller
-    /// passes the old engine's).</summary>
+    /// <summary>
+    /// game: IsRandomlyTargeted. Each hit picks its one target among the living opponents, after the duplicates filter
+    /// when duplicates are disallowed, by drawing the attacker's player's CombatTargets stream (the pet owner's for
+    /// Osty; the old state's <c>TargetRng</c>) exactly once per hit: <c>Next(count)</c>, drawn even over one candidate
+    /// (the game's Rng.NextItem). An enemy attacker has no such stream and throws.
+    /// </summary>
+    public bool RandomlyTargeted { get; init; }
+
+    /// <summary>Test seam: replaces the stream draw of <see cref="RandomlyTargeted" /> (and implies random targeting).</summary>
     public Func<IReadOnlyList<OldCreature>, OldCreature>? RandomPick { get; init; }
+
+    /// <summary>
+    /// game: AttackCommand.BeforeDamage, the per-hit callback run after the target pick and before the damage amount is
+    /// calculated and Damage runs. The game's seven users (Dagger Spray, Fiend Fire, Hyperbeam, Sovereign Blade,
+    /// Sweeping Beam, Calcified Cultist, Damp Cultist) only play effects and sounds; none changes simulation state.
+    /// </summary>
+    public Action? BeforeDamage { get; init; }
 
     public bool RandomAllowsDuplicates { get; init; } = true;
     public ValueProp Props { get; init; } = ValueProps.PoweredAttack;
@@ -65,7 +79,7 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
             return this;
         if (OldCreatures.IsDead(s, Attacker))
             return this;
-        if (SingleTarget is null && !AllOpponents && RandomPick is null)
+        if (SingleTarget is null && !AllOpponents && !RandomlyTargeted && RandomPick is null)
             throw new InvalidOperationException("No targets set.");
         bool f06 = k.On(Switch.F06);
         var self = k.Commands.Begin(this);
@@ -85,7 +99,7 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
                 if (valid.Count == 0)
                     break;
                 OldCreature? single;
-                if (RandomPick is null)
+                if (!RandomlyTargeted && RandomPick is null)
                 {
                     single = valid.Count == 1 ? valid[0] : null;
                 }
@@ -98,15 +112,17 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
                             throw new InvalidOperationException("No valid targets for attack with duplicates disallowed.");
                     }
 
-                    single = RandomPick(valid);
+                    single = RandomPick?.Invoke(valid) ?? DrawTarget(s, valid);
                 }
 
+                BeforeDamage?.Invoke();
                 decimal amount = Calculate is { } calc ? calc(single) : DamagePerHit;
                 Results.Add(CreatureCmd.Damage(k, single is { } t ? [t] : valid, amount, Props, Attacker, CardSource,
                     ctx));
             }
 
-            // game: CombatManager.History.CreatureAttacked: the old state keeps no combat history.
+            // game: CombatManager.History.CreatureAttacked, one entry per command after its last hit, before AfterAttack.
+            OldCreatures.NoteAttacked(w, Attacker);
             if (f06)
             {
                 var after = new AfterAttackArgs(ctx ?? new ChoiceCtx(), self);
@@ -123,6 +139,15 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
         }
 
         return this;
+    }
+
+    /// <summary>game: <c>(Attacker.Player ?? Attacker.PetOwner).RunState.Rng.CombatTargets.NextItem(valid)</c>.</summary>
+    private OldCreature DrawTarget(CombatState s, List<OldCreature> valid)
+    {
+        if (Attacker.Kind == CreatureKind.Enemy)
+            throw new InvalidOperationException("Random targeting draws the player's CombatTargets stream: the attacker must be the player or its pet.");
+        var rng = s.TargetRng ?? throw new InvalidOperationException("No CombatTargets stream in this combat.");
+        return valid[rng.Next(valid.Count)];
     }
 
     /// <summary>game: AttackCommand.GetPossibleTargets.</summary>
