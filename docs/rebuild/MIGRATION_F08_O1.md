@@ -107,3 +107,29 @@ To watch there (the review's 1.3, passing on main because nothing is rerouted ye
 `WaterfallGiantTests.KilledByThornsOnItsOwnTurnItBlowsARoundLater` (1.3 C, the in-move death: R4 to deliver) and
 `IllusionAndMinionTests.KillingTheLastPrimaryWinsWithAnIllusionStillAlive` (1.3 D, the Fogmog fight: handler batch, the
 Fogmog / Illusion closer still to be read).
+
+## Measurement 2: the merged tree (rebuild/land-oracles: main with R4, the batches C1-C6, m1/m2, L1/L2, O1 and O2), 2026-10-25
+
+`suites_switch --switches F08,F10`: 42 classes, 291 tests: **183 pass both, 74 not covered, 34 fail on only**, 0 fail off only,
+0 fail both, no crashed run. The five Test Subject / Adaptable tests of measurement 1 now pass (the AdaptablePower batch has
+landed). Classes by reading each test and the game's override list for the model (not traced; "handler batch" names the model
+that is not registered, or registered and not reading what the test seeds):
+
+| class | tests |
+|---|---|
+| handler batch (power-1: Thorns; old bodies private, LOCAL) 8 | ThornsOrderTests (EveryHitOfAMultiHitCardFixesItsDamageBeforeItsOwnThorns, RuptureStrengthFromThornsDoesNotRaiseTheProvokingHit, ThornsStillRetaliatesOncePerPoweredHit); UnpoweredDamageHookTests (AnAoeSkipsAnEnemyThatAnEarlierTargetsInfernoBurstKilled, EchoingSlashDoesNotCountAnEnemyItsVolleySkippedAsDead, InfernoBurnsWhenAnEnemysThornsHitsThePlayer, OmnislicesSplashSkipsAnEnemyThatAnInfernoBurstKilled); WaterfallGiantTests.KilledByThornsOnItsOwnTurnItBlowsARoundLater (rerun after Thorns: the in-move death is then R4's) |
+| handler batch (power-1: Flame Barrier; LOCAL) 4 | UnpoweredDamageHookTests.FlameBarrierDrawsOnAShellRefilledForTheEnemyTurn; MercPowerListTests (AnAttackerKilledMidAttackLandsNoFurtherHits for defId 1 and 37, AMercKilledByItsOwnAttackStealsNothingMore, which also needs Surprise) |
+| handler batch (power-1: Ravenous; LOCAL) 1 | TurnStartDeathTests.ASlugKilledAtTurnStartLeavesTheOthersStunnedNotRerolled |
+| handler batch (power-2: Surprise) 5 | AfterPlayDeathTests.StrangleFinishingALoneGremlinMercLeavesTheFightToItsReinforcements; FightHeldOpenTests.ALoneGremlinMercKilledAsTheTurnEndsSendsInItsReinforcements; MercPowerListTests (ANothingStolenMercLeavesNoHeist, KillingTheFatGremlinSpendsTheHeist, TheFatGremlinHoldsAHeistOfTheStolenGold) |
+| handler batch (power-3: Stock) 1 | AfterPlayDeathTests.AnAfterPlayKillOfAnAxebotWithStockLeftBringsItBack |
+| handler batch (power-4: Infested; LOCAL) 1 | AfterPlayDeathTests.PanacheFinishingALonePhrogParasiteLeavesTheFightToItsWrigglers |
+| handler batch (mixed: The Bomb, Doom) 2 | CombatEndingGateTests.TheBombAheadOfLethalDoomWinsAndBehindItLoses (both cases) |
+| handler batch (Heist, Swipe: registered; the kill returns 0 gold or no card for a fight the test seeds through the old `HeistGold` / `StolenCard` field only) 4 | CombatEndingGateTests.AFirstPhaseKillStillReturnsWhatTheEnemyStole (thief 28 and 92); HeistGoldRewardTests.KillingTheFatGremlinBanksItsGoldForTheRewardScreen (encounter 3 and 7) |
+| R4 to deliver (the enemy-attack site's Osty redirect: the player takes the hit, Osty keeps its HP) 3 | HookListenerTests/OstyDamageSink: AHitOstyAteDoesNotCountAsOneThePlayerTook, DamageBeyondOstysHpStillReachesThePlayer, OstyTakesTheUnblockedDamageInsteadOfThePlayer |
+| old deviation (needs a trace): a Minion enemy dies or stays with the last primary's death 4 | CombatEndingGateTests.ARandomTargetAttackStopsWithTheLeadersDeath (both cases), CombatEndingGateTests.NoExhaustHookRollsAfterTheKill, FeedTests.KillingAMinionFeedsNothing |
+| queue gate 1 | SelectionAnswerDeathTests.AnExhaustAnswerThatKillsTheLastEnemyEndsTheFightAtOnce (the measurement-1 probe, unchanged) |
+
+The step test (`StepApiKillTests`, O2): on this tree the two switched-on tests failed as plain assertions in the whole-suite run
+(R4 has landed, Ravenous's AfterDeath and Strength's fold have not, so outside `Pinned` the survivor reads differently too); they
+are now whole-body strict expected failures, and `STS2_STEP_TEST=strict` runs them plain (Headbutt and Twin Strike both fail on the
+survivor's Strength, 0 against 5). `RerouteLanded` stays false.
