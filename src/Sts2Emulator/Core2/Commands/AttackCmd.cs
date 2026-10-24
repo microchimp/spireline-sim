@@ -63,6 +63,13 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
     /// <summary>The hits that ran (one Damage call each).</summary>
     public int Hits => Results.Count;
 
+    // construct: game AttackCommand.Execute
+    //   -        Hook.BeforeAttack
+    //   -        Hook.ModifyAttackHitCount
+    //   for/if   BeforeDamage
+    //   for      CreatureCmd.Damage
+    //   -        Hook.AfterAttack
+    // end construct
     /// <summary>
     /// game: AttackCommand.Execute. The combat over or ending: return at once (no hook). Attacker dead: nothing.
     /// BeforeAttack; the hit count (ModifyAttackHitCount); per hit: the attacker dead stops it; the living possible

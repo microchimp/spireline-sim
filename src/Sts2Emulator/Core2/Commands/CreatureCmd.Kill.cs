@@ -8,6 +8,11 @@ namespace Sts2Emulator.Core2;
 
 public static partial class CreatureCmd
 {
+    // construct: game CreatureCmd.Kill
+    //   foreach              KillWithoutCheckingWinCondition
+    //   if/if                LoseCombat
+    //   else/foreach/if/if   PlayerCmd.EndTurn ! multiplayer only: the dead player's turn ends while another lives (a second player)
+    // end construct
     /// <summary>
     /// game: CreatureCmd.Kill(creatures, force). Nobody to kill: nothing. Each creature through
     /// <see cref="KillWithoutCheckingWinCondition" /> in list order; then, when the list held the player and the player
@@ -37,6 +42,26 @@ public static partial class CreatureCmd
             LoseCombat(k);
     }
 
+    // construct: game CreatureCmd.KillWithoutCheckingWinCondition
+    //   if           Hook.AfterCurrentHpChanged
+    //   -            Hook.BeforeDeath
+    //   if-cond      Hook.ShouldDie
+    //   if           Died
+    //   if/cond      Hook.ShouldCreatureBeRemovedFromCombatAfterDeath
+    //   if           Hook.AfterDeath
+    //   if/if        RemoveCreature
+    //   if/if/if     RemoveFromRoster
+    //   if           RemoveAllPowersAfterDeath
+    //   if/foreach   AfterRemoved
+    //   if/if/if     Kill
+    //   if/elif      ClearOrbs
+    //   if/elif/if   Kill
+    //   if/elif      DeactivateHooks
+    //   if/elif/if   HandlePlayerDeath ! multiplayer only: another player still alive (a second player)
+    //   else         Hook.AfterDeath
+    //   else         Hook.AfterPreventingDeath
+    //   else/if      KillWithoutCheckingWinCondition
+    // end construct
     /// <summary>
     /// game: CreatureCmd.KillWithoutCheckingWinCondition. A creature no longer attached to the combat (an enemy out of the
     /// roster): nothing. The creature is marked dying (still in the combat) to the kill's end; HP above 0 is lost first
@@ -130,6 +155,11 @@ public static partial class CreatureCmd
         }
     }
 
+    // construct: game CreatureCmd.Escape
+    //   -   RemoveAllPowersInternalExcept
+    //   -   RemoveCreature
+    //   -   CreatureEscaped
+    // end construct
     /// <summary>
     /// game: CreatureCmd.Escape. A dead creature, or one no longer attached to the combat: nothing. Its powers removed
     /// with no AfterRemoved (Creature.RemoveAllPowersInternalExcept, with nothing excepted: every old buff, the engine's

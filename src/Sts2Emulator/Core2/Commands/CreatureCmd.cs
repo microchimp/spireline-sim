@@ -8,6 +8,23 @@ namespace Sts2Emulator.Core2;
 
 public static partial class CreatureCmd
 {
+    // construct: game CreatureCmd.Damage
+    //   foreach        Hook.ModifyDamage
+    //   foreach        Hook.AfterModifyingDamageAmount
+    //   foreach        Hook.BeforeDamageReceived
+    //   foreach        Hook.ModifyHpLost
+    //   foreach        Hook.AfterModifyingHpLostBeforeOsty
+    //   foreach/cond   Hook.ModifyUnblockedDamageTarget
+    //   foreach        Hook.ModifyHpLost
+    //   foreach        Hook.AfterModifyingHpLostAfterOsty
+    //   foreach/else   Hook.ModifyHpLost
+    //   foreach/else   Hook.AfterModifyingHpLostAfterOsty
+    //   foreach/if     Hook.AfterBlockBroken
+    //   foreach/if     Hook.AfterCurrentHpChanged
+    //   foreach/if     Hook.AfterDamageGiven
+    //   foreach/if     Hook.AfterDamageReceived
+    //   -              Kill
+    // end construct
     /// <summary>
     /// game: CreatureCmd.Damage, the list overload every other reaches. A dead dealer: one empty result per target and
     /// nothing else. Per target in list order, skipping the dead: the ModifyDamage fold (all passes, decimal: additive,
