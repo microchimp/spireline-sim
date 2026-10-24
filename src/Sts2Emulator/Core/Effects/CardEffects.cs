@@ -2853,7 +2853,15 @@ public static class CardEffects
     /// </remarks>
     private static int ShivDamage(CombatState state, CardDef def, bool upgraded, CardInstance card)
     {
-        int dmg = Dmg(state, def, upgraded, card) + Accuracy_ModifyDamageAdditive(state);
+        int dmg = Dmg(state, def, upgraded, card);
+        // F08+F10 on: Accuracy's and Phantom Blades' ModifyDamageAdditive are their handlers' folds in Core2's damage
+        // command (the Shiv in flight is the card source), so the base goes on without them.
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is not null)
+        {
+            return dmg;
+        }
+
+        dmg += Accuracy_ModifyDamageAdditive(state);
         if (def.Name == "Shiv" && state.ShivsPlayedThisTurn == 0)
         {
             dmg += PhantomBlades_ModifyDamageAdditive(state);
@@ -9721,8 +9729,27 @@ public static class CardEffects
     /// it does to a printed number. Seventeen of them were passing their computed total
     /// straight to <c>DealDamage</c>, which skipped the lot: a Sharp Body Slam hit for
     /// its block and nothing more.
+    ///
+    /// F08+F10 on: the base itself. The game's attack hands the card's DamageVar or
+    /// CalculatedDamageVar value to the damage command, and Hook.ModifyDamage folds the
+    /// enchantment and every ModifyDamage listener onto it once, per hit; Core2's command
+    /// does that (the EnchantAdd and EnchantMul steps, the relic and Gigantification
+    /// handlers), so folding them here as well counted each twice once the card source
+    /// resolved (docs/rebuild/MIGRATION_F08.md, "Damage terms applied twice").
     /// </remarks>
-    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card)
+    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card) =>
+        Core2.Kernel.If(Core2.Switch.F08, state) is null
+            ? ModifiedCardDamage(state, baseDamage, def, card)
+            : baseDamage;
+
+    /// <summary>
+    /// The old engine's Hook.ModifyDamage for a card source: the base with the card's
+    /// enchantment and the card-reading relic and power terms folded on. The play path
+    /// reaches it through <see cref="DmgFrom" /> with the switch off; Thrash reads it for the
+    /// card it eats either way, since that is a value the game reads, not an amount the
+    /// damage command folds.
+    /// </summary>
+    private static int ModifiedCardDamage(CombatState state, int baseDamage, CardDef def, CardInstance card)
     {
         // The card's enchantment (game: EnchantmentModel.EnchantDamageAdditive, then
         // EnchantDamageMultiplicative, both first in Hook.ModifyDamage); Core2's EnchantAdd and
@@ -9859,9 +9886,12 @@ public static class CardEffects
     {
         var def = GeneratedData.Cards.Get(eaten.DefId);
         int? calculated = CalculatedAttackDamage(state, def, eaten);
-        return calculated is { } value
-            ? DmgFrom(state, value, def, eaten)
-            : Dmg(state, def, eaten.Upgraded, eaten);
+        return ModifiedCardDamage(
+            state,
+            calculated ?? (eaten.Upgraded ? def.BaseDamage + def.UpgradeDamage : def.BaseDamage),
+            def,
+            eaten
+        );
     }
 
     /// <summary>
