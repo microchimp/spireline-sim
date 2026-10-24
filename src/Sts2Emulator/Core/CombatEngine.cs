@@ -370,6 +370,11 @@ public static class CombatEngine
     {
         state.TargetEnemyIndex = targetEnemyIndex;
 
+        // A held card whose screen is already closed as the step begins did not get here
+        // through a step of its own (every step ends by filing it, below): the slot outlived
+        // its play. It is cleared now, and its card filed only if no pile has it.
+        ReleaseHeldPlayedCard(state, stale: true);
+
         // Anything listed before the player has acted goes off FIRST. Imbued's turn-1
         // auto-play is the only thing listed at combat start, and it fires in the game's
         // pre-play phase — before the player's first move, not after it.
@@ -490,9 +495,20 @@ public static class CombatEngine
     /// <summary>
     /// Puts the card <see cref="CombatState.HeldPlayedCard" /> into its result pile once the
     /// selection screen it opened is closed. A no-op while it is still open, and when nothing
-    /// is held.
+    /// is held. The game has no such slot: its card sits in the Play pile and moves to its
+    /// result pile once (`PlayCardAction.ExecuteAction`), so a card a pile already holds is
+    /// never filed again. The slot can outlive its play (only this clears it; a document never
+    /// restores it, a copy carries it), and a step that met it set beside its filed card used
+    /// to file the card a second time.
     /// </summary>
-    private static void ReleaseHeldPlayedCard(CombatState state)
+    /// <param name="stale">
+    /// The slot was found set with its screen closed as a step BEGAN: no step of its own closed
+    /// that screen (every step ends here), so the card may well be filed already, perhaps under
+    /// another uid (a document round trip numbers the cards afresh); then an equal-valued card
+    /// at the end of its result pile counts as it. At a step's end the card's identity is its
+    /// uid alone: an equal-valued twin the screen itself discarded is another card.
+    /// </param>
+    private static void ReleaseHeldPlayedCard(CombatState state, bool stale = false)
     {
         if (state.HeldPlayedCard is not { } held || state.PendingSelection is not null)
         {
@@ -500,7 +516,39 @@ public static class CombatEngine
         }
 
         state.HeldPlayedCard = null;
-        (state.HeldPlayedCardExhausts ? state.ExhaustPile : state.DiscardPile).Add(held);
+        var result = state.HeldPlayedCardExhausts ? state.ExhaustPile : state.DiscardPile;
+        if (IsFiled(state, held, result, stale))
+        {
+            return;
+        }
+
+        result.Add(held);
+    }
+
+    /// <summary>
+    /// Whether a pile already holds the held card: by uid when it has one, and for a stale slot
+    /// (<see cref="ReleaseHeldPlayedCard" />) also an equal-valued card at the end of its result pile.
+    /// </summary>
+    private static bool IsFiled(
+        CombatState state,
+        CardInstance held,
+        List<CardInstance> result,
+        bool stale
+    )
+    {
+        int uid = held.UidOf();
+        if (uid != 0)
+        {
+            foreach (var pile in CardUids.LivePiles(state))
+            {
+                if (pile.Exists(card => card.UidOf() == uid))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return stale && result.Count > 0 && result[^1] == held;
     }
 
     /// <summary>
