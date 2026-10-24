@@ -1,0 +1,20 @@
+{
+  "name": "regression/feel-no-pain-blocks-per-exhaust",
+  "source": "game: Hook.AfterCardExhausted",
+  "doc": "FEEL_NO_PAIN_POWER gives 3 block when BURNING_PACT exhausts a card.",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "NIBBITS_WEAK", "act": "OVERGROWTH", "kind": "weak", "index": 1},
+    "relics": [],
+    "deck": ["BURNING_PACT", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"],
+    "powers": [{"id": "FEEL_NO_PAIN_POWER", "target": "player", "amount": 3}]
+  },
+  "actions": [{"do": "play", "card": "BURNING_PACT", "answers": [{"pick": ["DEFEND_IRONCLAD"]}]}],
+  "expect": [
+    {"path": "snapshot.player.block", "equals": 3},
+    {"path": "snapshot.exhaust[0][0]", "equals": "DEFEND_IRONCLAD"},
+    {"path": "snapshot.exhaust#len", "equals": 1}
+  ]
+}

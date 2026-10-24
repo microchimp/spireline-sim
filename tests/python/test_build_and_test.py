@@ -1,5 +1,6 @@
 """tools/build_and_test.sh FAILS when any step fails: each step broken in turn against a fake toolchain
 (tests/python/fakes), a new Python failure, a suite that did not run; a skipped corpus check is no pass.
+The Release EmuDump is built once, before the Python suite, and a failed build fails the gate.
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ class BuildAndTestBrokenCases(unittest.TestCase):
             "emudump.Tests summary missing": dict(FAKE_EMU_SUMMARY=""),
             "emudump.Tests exit without a failure line": dict(FAKE_EMU_TEST="1"),
             "corpus regression": dict(FAKE_CORPUS="1", FAKE_CORPUS_LINE="FAIL: 3 regressed fights"),
-            "corpus build": dict(FAKE_BUILD="1"),
+            "emudump build": dict(FAKE_BUILD="1"),
             "baseline file missing": dict(BASELINE_FAILURES=str(Path(self.tmp.name) / "nope.txt")),
             "python failure without a baseline": dict(BASELINE_FAILURES=""),
         }
@@ -99,6 +100,25 @@ class BuildAndTestBrokenCases(unittest.TestCase):
             if code != 1 or res["gate"] != "fail":
                 passed[name] = (code, res["gate"])
         self.assertEqual(passed, {}, "broken steps build_and_test.sh let through")
+
+    def test_the_release_emudump_is_built_once_before_the_python_suite_and_a_failed_build_fails(self):
+        calls = Path(self.tmp.name) / "calls.log"
+        code, res = self.gate(FAKE_CALL_LOG=str(calls))
+        self.assertEqual((code, res["emudump_build_exit"]), (0, 0), res)
+        lines = calls.read_text(encoding="utf-8").splitlines()
+        builds = [i for i, ln in enumerate(lines) if ln.startswith("dotnet build ")]
+        suites = [i for i, ln in enumerate(lines) if ln.startswith("python -m unittest")]
+        corpus = [i for i, ln in enumerate(lines) if "corpus.py" in ln]
+        self.assertEqual((len(builds), len(suites), len(corpus)), (1, 1, 1), lines)
+        self.assertIn("tools/emudump/EmuDump.csproj -c Release", lines[builds[0]])
+        self.assertLess(builds[0], suites[0], "the Python suite ran before the EmuDump build")
+        self.assertLess(builds[0], corpus[0])
+        code, res = self.gate(FAKE_BUILD="1")
+        self.assertEqual((code, res["gate"], res["emudump_build_exit"]), (1, "fail", 1), res)
+        self.assertEqual(res["gate_failures"], ["emudump-build", "corpus"], res)
+        self.assertIn("EmuDump build failed", (Path(self.tmp.name) / "log" / "5-corpus-check.log").read_text(encoding="utf-8"))
+        code, res = self.gate(FAKE_BUILD="1", CORPUS_CHECK="0")
+        self.assertEqual((code, res["gate_failures"]), (1, ["emudump-build"]), res)
 
     def test_a_new_python_failure_or_a_suite_that_did_not_run_fails(self):
         self.pylog_text("\n".join([*self.FAILS, "FAIL: test_new (m.T.test_new)"]) + "\n\nRan 9 tests\n\nFAILED (failures=2)\n")

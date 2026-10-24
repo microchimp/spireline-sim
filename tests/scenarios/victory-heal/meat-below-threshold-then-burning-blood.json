@@ -1,0 +1,20 @@
+{
+  "name": "victory-heal/meat-below-threshold-then-burning-blood",
+  "source": "game: Hook.AfterCombatVictory (every early listener before any normal one: MEAT_ON_THE_BONE reads HP before BURNING_BLOOD and BLACK_BLOOD heal)",
+  "doc": "Well below half: MEAT_ON_THE_BONE (+12), then BURNING_BLOOD (+6).",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "NIBBITS_WEAK", "act": "OVERGROWTH", "kind": "weak", "index": 1},
+    "relics": ["BURNING_BLOOD", "MEAT_ON_THE_BONE"],
+    "deck": ["STRIKE_IRONCLAD"],
+    "hp": {"max": 80, "current": 10},
+    "powers": [{"id": "STRENGTH_POWER", "target": "player", "amount": 50}]
+  },
+  "actions": [{"do": "play", "card": "STRIKE_IRONCLAD", "target": 0, "name": "kill"}],
+  "expect": [
+    {"path": "snapshot.enemies#len", "equals": 0},
+    {"path": "snapshot.player.hp", "equals": 28}
+  ]
+}

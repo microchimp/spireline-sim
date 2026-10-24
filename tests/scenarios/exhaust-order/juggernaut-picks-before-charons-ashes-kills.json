@@ -1,0 +1,29 @@
+{
+  "name": "exhaust-order/juggernaut-picks-before-charons-ashes-kills",
+  "source": "game: Hook.AfterCardExhausted via CombatState.IterateHookListeners (the owner's powers before its relics)",
+  "doc": "CHARONS_ASHES (3 to every enemy) comes after FEEL_NO_PAIN_POWER's block, so JUGGERNAUT_POWER picks among all three slimes, the one CHARONS_ASHES would kill included. A STRIKE_IRONCLAD leaves the first slime on 3, and this seed's three-way pick is that slime: it dies to JUGGERNAUT_POWER and CHARONS_ASHES then hits the two others. Run the other way round, CHARONS_ASHES kills it first and JUGGERNAUT_POWER hits one of the other two as well.",
+  "xfail_engines": {"old": "old runs the relics' AfterCardExhausted before the owner's powers (hook_open: order play_effect AfterCardExhausted kind relic>power, fix/exhaust-listener-order 2fcefac9 not landed).", "core2": "old runs the relics' AfterCardExhausted before the owner's powers (hook_open: order play_effect AfterCardExhausted kind relic>power, fix/exhaust-listener-order 2fcefac9 not landed); core2 runs old's rules until its family switch is on (migrated_families.json), so it fails the same way."},
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO04",
+    "encounter": {"id": "SLIMES_WEAK", "act": "OVERGROWTH", "kind": "weak", "index": 3},
+    "relics": ["CHARONS_ASHES"],
+    "deck": ["STRIKE_IRONCLAD", "BURNING_PACT", "DEFEND_IRONCLAD", "DEFEND_IRONCLAD"],
+    "powers": [
+      {"id": "STRENGTH_POWER", "target": "player", "amount": 3},
+      {"id": "FEEL_NO_PAIN_POWER", "target": "player", "amount": 3},
+      {"id": "JUGGERNAUT_POWER", "target": "player", "amount": 5}
+    ]
+  },
+  "actions": [
+    {"do": "play", "card": "STRIKE_IRONCLAD", "target": 0, "name": "strike"},
+    {"do": "play", "card": "BURNING_PACT", "answers": [{"pick": ["DEFEND_IRONCLAD"]}], "name": "pact"}
+  ],
+  "expect": [
+    {"path": "snapshot.enemies[0].hp", "equals": 3, "at": "after:strike"},
+    {"path": "snapshot.enemies#len", "equals": 2},
+    {"path": "snapshot.enemies[0].hp", "equals": 26},
+    {"path": "snapshot.enemies[1].hp", "equals": 12}
+  ]
+}

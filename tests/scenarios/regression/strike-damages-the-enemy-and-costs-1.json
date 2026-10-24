@@ -1,0 +1,19 @@
+{
+  "name": "regression/strike-damages-the-enemy-and-costs-1",
+  "source": "game: Hook.ModifyDamage",
+  "doc": "A STRIKE_IRONCLAD deals 6 to a lone enemy with no modifiers and costs 1 energy.",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "HUNTER_KILLER", "act": "HIVE", "kind": "normal", "index": 3},
+    "relics": [],
+    "deck": ["STRIKE_IRONCLAD"]
+  },
+  "actions": [{"do": "play", "card": "STRIKE_IRONCLAD", "target": 0, "name": "hit"}],
+  "expect": [
+    {"path": "snapshot.enemies[0].hp", "delta_from": "start", "equals": -6},
+    {"path": "snapshot.player.energy", "delta_from": "start", "equals": -1},
+    {"path": "snapshot.discard[0][0]", "equals": "STRIKE_IRONCLAD"}
+  ]
+}

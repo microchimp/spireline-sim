@@ -48,6 +48,12 @@ if (args[0] == "fuzz")
     Environment.Exit(Fuzz.Main(args[1..]));
 }
 
+if (args[0] == "scenario")
+{
+    // EmuDump scenario <file|dir> [--engine old|core2] [--json] [--dump]: engine-neutral scenarios through IEngine (Scenario.cs).
+    Environment.Exit(ScenarioMode.Run(args[1..]));
+}
+
 if (args[0] == "kernel-order")
 {
     // EmuDump kernel-order <scenarios.json> <out.json>: the kernel's listener lists on the hook_order scenarios (Engines/Old/KernelOrder.cs).
