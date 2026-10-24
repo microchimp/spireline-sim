@@ -309,6 +309,119 @@ public static class BuffSystem
         return !atRoundStart.Any(other => other.Id == buff.Id);
     }
 
+    /// <summary>
+    /// game: StrengthPower.ModifyDamageAdditive
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static int Strength_ModifyDamageAdditive(List<BuffState> ownerBuffs) =>
+        Get(ownerBuffs, BuffId.Strength);
+
+    /// <summary>
+    /// game: VigorPower.ModifyDamageAdditive
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static int Vigor_ModifyDamageAdditive(List<BuffState> ownerBuffs) =>
+        Get(ownerBuffs, BuffId.Vigor);
+
+    /// <summary>
+    /// game: TaintedPower.ModifyDamageAdditive
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static int Tainted_ModifyDamageAdditive(List<BuffState> targetBuffs) =>
+        Get(targetBuffs, BuffId.Tainted);
+
+    /// <summary>
+    /// game: WeakPower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static float Weak_ModifyDamageMultiplicative(
+        List<BuffState> attackerBuffs,
+        float weakDelta
+    )
+    {
+        // `DebilitatePower.ModifyWeakMultiplier` is `amount - (1 - amount)` for its
+        // OWNER's attacks, so a debilitated attacker's Weak lands at 0.5 instead of
+        // 0.75. The amount is a duration and does not scale the doubling.
+        return (Get(attackerBuffs, BuffId.Debilitate) > 0 ? 0.5f : 0.75f) + weakDelta;
+    }
+
+    /// <summary>
+    /// game: ShrinkPower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static float Shrink_ModifyDamageMultiplicative() => 0.70f;
+
+    /// <summary>
+    /// game: FlutterPower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static float Flutter_ModifyDamageMultiplicative() => 0.5f;
+
+    /// <summary>
+    /// game: TankPower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static float Tank_ModifyDamageMultiplicative() => 2f;
+
+    /// <summary>
+    /// game: VulnerablePower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static float Vulnerable_ModifyDamageMultiplicative(
+        List<BuffState> attackerBuffs,
+        List<BuffState> defenderBuffs,
+        float vulnerableDelta
+    )
+    {
+        float mult = 1.5f + Get(attackerBuffs, BuffId.CrueltyPower) / 100f + vulnerableDelta;
+        // `DebilitatePower.ModifyVulnerableMultiplier` is `amount + (amount - 1)` when
+        // the target is its owner, which doubles the BONUS rather than the multiplier:
+        // 1.5 becomes 2.0, and a Cruelty-raised 1.75 becomes 2.5.
+        if (Get(defenderBuffs, BuffId.Debilitate) > 0)
+        {
+            mult += mult - 1f;
+        }
+
+        return mult;
+    }
+
+    /// <summary>
+    /// game: SurroundedPower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// The multiplier is 1 when the attack is not from behind: the product is unchanged.
+    /// </summary>
+    internal static float Surrounded_ModifyDamageMultiplicative(
+        List<BuffState> attackerBuffs,
+        List<BuffState> defenderBuffs
+    )
+    {
+        int facing = Get(defenderBuffs, BuffId.Surrounded);
+        bool fromBehind =
+            facing == Run.RunConstants.FacingRight
+                ? Get(attackerBuffs, BuffId.BackAttackLeft) > 0
+                : facing == Run.RunConstants.FacingLeft
+                    && Get(attackerBuffs, BuffId.BackAttackRight) > 0;
+        return fromBehind ? 1.5f : 1f;
+    }
+
+    /// <summary>
+    /// game: TrackingPower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static int Tracking_ModifyDamageMultiplicative(int amount) => amount;
+
+    /// <summary>
+    /// game: DoubleDamagePower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static int DoubleDamage_ModifyDamageMultiplicative() => 2;
+
+    /// <summary>
+    /// game: SoarPower.ModifyDamageMultiplicative
+    /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
+    /// </summary>
+    internal static float Soar_ModifyDamageMultiplicative() => 0.5f;
+
     /// <param name="weakDelta">
     /// `Hook.ModifyWeakMultiplier`, which Paper Krane answers with `-0.15` when its owner
     /// is the TARGET -- a Weak attacker hits them for 0.60 rather than 0.75.
@@ -340,22 +453,19 @@ public static class BuffSystem
         // CardEffects.DealDamageToEnemy. Relic, potion, thorns and poison damage all go
         // through the `Unpowered` helpers instead and never arrive here.
         float dmg = baseDamage;
-        dmg += Get(attackerBuffs, BuffId.Strength);
-        dmg += Get(attackerBuffs, BuffId.Vigor);
+        dmg += Strength_ModifyDamageAdditive(attackerBuffs);
+        dmg += Vigor_ModifyDamageAdditive(attackerBuffs);
         // TaintedPower.ModifyDamageAdditive, which the Infested Prism's Vital Spark stamps
         // on the player for every Skill they play.
-        dmg += Get(defenderBuffs, BuffId.Tainted);
+        dmg += Tainted_ModifyDamageAdditive(defenderBuffs);
         if (Get(attackerBuffs, BuffId.Weak) > 0)
         {
-            // `DebilitatePower.ModifyWeakMultiplier` is `amount - (1 - amount)` for its
-            // OWNER's attacks, so a debilitated attacker's Weak lands at 0.5 instead of
-            // 0.75. The amount is a duration and does not scale the doubling.
-            dmg *= (Get(attackerBuffs, BuffId.Debilitate) > 0 ? 0.5f : 0.75f) + weakDelta;
+            dmg *= Weak_ModifyDamageMultiplicative(attackerBuffs, weakDelta);
         }
 
         if (Get(attackerBuffs, BuffId.Shrink) != 0)
         {
-            dmg *= 0.70f; // negative = permanent
+            dmg *= Shrink_ModifyDamageMultiplicative(); // negative = permanent
         }
 
         // `FlutterPower.ModifyDamageMultiplicative` returns DamageDecrease/100 = 0.5 for
@@ -364,28 +474,23 @@ public static class BuffSystem
         // Unpowered helpers and never reach it, exactly as the game's prop check intends.
         if (Get(defenderBuffs, BuffId.Flutter) > 0)
         {
-            dmg *= 0.5f;
+            dmg *= Flutter_ModifyDamageMultiplicative();
         }
 
         // TankPower.ModifyDamageMultiplicative: 2 for a powered attack whose TARGET is its
         // owner. Like Flutter above, the target check is the defender's buff list.
         if (Get(defenderBuffs, BuffId.Tank) > 0)
         {
-            dmg *= 2f;
+            dmg *= Tank_ModifyDamageMultiplicative();
         }
 
         if (Get(defenderBuffs, BuffId.Vulnerable) > 0)
         {
-            float mult = 1.5f + Get(attackerBuffs, BuffId.CrueltyPower) / 100f + vulnerableDelta;
-            // `DebilitatePower.ModifyVulnerableMultiplier` is `amount + (amount - 1)` when
-            // the target is its owner, which doubles the BONUS rather than the multiplier:
-            // 1.5 becomes 2.0, and a Cruelty-raised 1.75 becomes 2.5.
-            if (Get(defenderBuffs, BuffId.Debilitate) > 0)
-            {
-                mult += mult - 1f;
-            }
-
-            dmg *= mult;
+            dmg *= Vulnerable_ModifyDamageMultiplicative(
+                attackerBuffs,
+                defenderBuffs,
+                vulnerableDelta
+            );
         }
 
         // SurroundedPower.ModifyDamageMultiplicative, the Kaiser Crab's: an attack from
@@ -393,16 +498,7 @@ public static class BuffSystem
         // point of damage because the game's readout shows the modified number --
         // AttackIntent.GetSingleDamage runs the move through Hook.ModifyDamage first --
         // and a live capture confirms it: the Crusher opens announcing 18 for a base 12.
-        int facing = Get(defenderBuffs, BuffId.Surrounded);
-        bool fromBehind =
-            facing == Run.RunConstants.FacingRight
-                ? Get(attackerBuffs, BuffId.BackAttackLeft) > 0
-                : facing == Run.RunConstants.FacingLeft
-                    && Get(attackerBuffs, BuffId.BackAttackRight) > 0;
-        if (fromBehind)
-        {
-            dmg *= 1.5f;
-        }
+        dmg *= Surrounded_ModifyDamageMultiplicative(attackerBuffs, defenderBuffs);
 
         // TrackingPower.ModifyDamageMultiplicative: a powered CARD attack against a target
         // that has Weak is multiplied by the power's own amount, so Tracking 2 is double
@@ -410,7 +506,7 @@ public static class BuffSystem
         int tracking = Get(attackerBuffs, BuffId.Tracking);
         if (tracking > 0 && Get(defenderBuffs, BuffId.Weak) > 0)
         {
-            dmg *= tracking;
+            dmg *= Tracking_ModifyDamageMultiplicative(tracking);
         }
 
         // DoubleDamagePower.ModifyDamageMultiplicative returns a flat `2m` for a powered
@@ -424,14 +520,14 @@ public static class BuffSystem
         // standing caveat Tracking above carries.
         if (Get(attackerBuffs, BuffId.DoubleDamage) > 0)
         {
-            dmg *= 2;
+            dmg *= DoubleDamage_ModifyDamageMultiplicative();
         }
 
         // SoarPower.ModifyDamageMultiplicative: a flying Owl Magistrate takes half from a
         // POWERED attack, which is the only kind that reaches this function.
         if (Get(defenderBuffs, BuffId.Soar) > 0)
         {
-            dmg *= 0.5f;
+            dmg *= Soar_ModifyDamageMultiplicative();
         }
 
         // A multiplicative the caller worked out because it depends on the CARD -- today

@@ -127,6 +127,7 @@ static class OldRngLog
 
             string mn = m.Name, tn = t.Name;
             if (mn.StartsWith('<') && mn.IndexOf('>') > 1) mn = mn[1..mn.IndexOf('>')];  // a lambda or local function: its method
+            if (ExtractedBody.Is(t, mn)) continue;  // an extracted <Model>_<Hook> body: the origin names the method it came from
             while (tn.StartsWith('<') && t.DeclaringType != null)
             {
                 t = t.DeclaringType;
