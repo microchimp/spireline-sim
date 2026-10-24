@@ -587,6 +587,7 @@ EXTRACTED_FUNCTIONS = (
     "CombatEngine.PossessStrength_AfterDeath",
     "CombatEngine.Queen_AfterDeath",
     "CombatEngine.Ravenous_AfterDeath",
+    "CombatEngine.Ravenous_AfterDeathOf",
     "CombatEngine.SteamEruption_ShouldStopCombatFromEnding",
     "CombatEngine.Stock_ShouldStopCombatFromEnding",
     "CombatEngine.Surprise_AfterDeath",
