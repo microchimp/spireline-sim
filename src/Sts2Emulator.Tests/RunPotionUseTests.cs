@@ -186,4 +186,119 @@ public class RunPotionUseTests
         Assert.Equal(-1, Use(engine, 2));
         Assert.Equal(0, Mask(engine)[RunConstants.UsePotionAction + 2]);
     }
+
+    private static int Discard(RunEngine engine, int slot) =>
+        engine.Step(RunConstants.DiscardPotionAction + slot, -1, out _, out _, out _);
+
+    [Fact]
+    public void AtTheMapAFruitJuiceIsListedForUseAndDiscardAndUseRaisesMaxHpByFive()
+    {
+        var engine = At(RunPhase.Map, "FruitJuice", "BloodPotion");
+        var mask = Mask(engine);
+        Assert.NotEqual(0, mask[RunConstants.UsePotionAction + 0]);
+        Assert.NotEqual(0, mask[RunConstants.DiscardPotionAction + 0]);
+        Assert.NotEqual(0, mask[RunConstants.DiscardPotionAction + 1]);
+        Assert.Equal(0, mask[RunConstants.DiscardPotionAction + 2]); // the empty slot
+
+        int before = engine.State.PlayerMaxHp;
+        Assert.Equal(0, Use(engine, 0));
+        Assert.Equal(before + 5, engine.State.PlayerMaxHp);
+        Assert.Equal(0, engine.State.PotionSlots[0]);
+    }
+
+    [Fact]
+    public void DiscardRemovesThePotionAndChangesNothingElse()
+    {
+        var engine = At(RunPhase.Rest, "BloodPotion", "BlockPotion");
+        int hp = engine.State.PlayerHp;
+        int maxHp = engine.State.PlayerMaxHp;
+        int gold = engine.State.Gold;
+        Assert.Equal(0, Discard(engine, 1));
+        Assert.Equal(0, engine.State.PotionSlots[1]);
+        Assert.Equal(Potion("BloodPotion"), engine.State.PotionSlots[0]);
+        Assert.Equal((hp, maxHp, gold), (engine.State.PlayerHp, engine.State.PlayerMaxHp, engine.State.Gold));
+        Assert.Equal(-1, Discard(engine, 1)); // the slot is empty now
+    }
+
+    [Theory]
+    [InlineData(RunPhase.Map)]
+    [InlineData(RunPhase.Rest)]
+    [InlineData(RunPhase.Shop)]
+    [InlineData(RunPhase.Treasure)]
+    [InlineData(RunPhase.Ancient)]
+    public void ACombatOnlyPotionCanBeDiscardedButNotUsedAndTheRefusalSaysWhy(RunPhase phase)
+    {
+        var engine = At(phase, "BlockPotion");
+        var mask = Mask(engine);
+        Assert.Equal(0, mask[RunConstants.UsePotionAction]);
+        Assert.NotEqual(0, mask[RunConstants.DiscardPotionAction]);
+        Assert.Equal(-1, Use(engine, 0));
+        Assert.Equal(Potion("BlockPotion"), engine.State.PotionSlots[0]);
+        Assert.Contains("Usage", RunPotionUse.Refusal(engine.State, RunConstants.UsePotionAction)!);
+        Assert.Null(RunPotionUse.Refusal(engine.State, RunConstants.DiscardPotionAction));
+    }
+
+    [Fact]
+    public void AClosedBeltOffersNoDiscardEitherAndSaysSo()
+    {
+        var engine = At(RunPhase.Event, "FruitJuice");
+        engine.State.EventId = RunConstants.EventTheFutureOfPotions;
+        var mask = Mask(engine);
+        Assert.Equal(0, mask[RunConstants.DiscardPotionAction]);
+        Assert.Equal(-1, Discard(engine, 0));
+        Assert.Contains("belt is closed", RunPotionUse.Refusal(engine.State, RunConstants.DiscardPotionAction)!);
+        Assert.Contains("empty", RunPotionUse.Refusal(engine.State, RunConstants.DiscardPotionAction + 2)!);
+        Assert.Null(RunPotionUse.Refusal(engine.State, 3)); // not a potion action
+    }
+
+    [Fact]
+    public void TheDiscardActionsSitJustPastTheUseActionsAndInsideTheMask()
+    {
+        Assert.Equal(
+            RunConstants.UsePotionAction + RunConstants.PotionSlotCapacity,
+            RunConstants.DiscardPotionAction
+        );
+        Assert.True(
+            RunConstants.DiscardPotionAction + RunConstants.PotionSlotCapacity <= RunConstants.MaxActions
+        );
+        Assert.Equal(242, RunConstants.UsePotionAction);
+        Assert.Equal(248, RunConstants.DiscardPotionAction);
+    }
+
+    [Fact]
+    public unsafe void TheNativeReasonExportNamesTheRefusalAndIsEmptyForALegalAction()
+    {
+        int handle = Sts2Emulator.Interop.RunNativeExports.Sts2Run_Create();
+        try
+        {
+            Assert.True(Sts2Emulator.Interop.RunNativeExports.TryGetRun(handle, out var run));
+            run.Reset("ABCDEF");
+            run.State.Phase = RunPhase.Map;
+            Array.Clear(run.State.PotionSlots);
+            run.State.PotionSlots[0] = Potion("BlockPotion");
+            var buf = new byte[256];
+            fixed (byte* p = buf)
+            {
+                int n = Sts2Emulator.Interop.RunNativeExports.Sts2Run_PotionActionReason(
+                    handle, RunConstants.UsePotionAction, p, buf.Length);
+                Assert.True(n > 0);
+                Assert.Contains("Usage", System.Text.Encoding.UTF8.GetString(buf, 0, n));
+                Assert.Equal(
+                    0,
+                    Sts2Emulator.Interop.RunNativeExports.Sts2Run_PotionActionReason(
+                        handle, RunConstants.DiscardPotionAction, p, buf.Length));
+                Assert.Equal(
+                    -2,
+                    Sts2Emulator.Interop.RunNativeExports.Sts2Run_PotionActionReason(handle, 3, p, buf.Length));
+                Assert.Equal(
+                    -3,
+                    Sts2Emulator.Interop.RunNativeExports.Sts2Run_PotionActionReason(
+                        handle, RunConstants.UsePotionAction, p, 3));
+            }
+        }
+        finally
+        {
+            Sts2Emulator.Interop.RunNativeExports.Sts2Run_Destroy(handle);
+        }
+    }
 }
