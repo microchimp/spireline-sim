@@ -400,7 +400,7 @@ def train_cmd(a: argparse.Namespace) -> int:
         return 2
     cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
                                      max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
-                                     retrain=retrain)  # a retrain draws on the larger window
+                                     retrain=retrain, policy_target=a.policy_target)  # a retrain draws on the larger window
     print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": gen + 1}))
     if a.promote:
         if not (a.emu_python and a.seeds_file):
@@ -542,6 +542,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--budget-runs", type=int, default=2000)
     t = sub.add_parser("train", help="train generation N's candidate from the last 3 generations' shards")
     t.add_argument("--gen", type=int)
+    t.add_argument("--policy-target", choices=("visits", "completed_q"), default="visits",
+                   help="the combat policy's target: root visits, or the completed-Q softmax (train_combat)")
     t.add_argument("--marker-dir", help="LAB/train: take the lowest ready-<gen> marker instead of --gen")
     t.add_argument("--shards-root", required=True)
     t.add_argument("--agent-root", required=True)
