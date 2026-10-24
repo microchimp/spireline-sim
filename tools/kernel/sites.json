@@ -2514,7 +2514,7 @@
     "F06"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 4464
+   "line": 4472
   },
   "EnemyAI.ApplyHighVoltageEndOfEnemyTurn": {
    "hooks": [
@@ -2533,7 +2533,7 @@
     "F05"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 999
+   "line": 1007
   },
   "EnemyAI.DealAttack": {
    "hooks": [
@@ -2549,7 +2549,7 @@
     "F06"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 4434
+   "line": 4442
   },
   "EnemyAI.DealAttackDamage": {
    "hooks": [
@@ -2575,7 +2575,7 @@
     "F08"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 4538
+   "line": 4546
   },
   "EnemyAI.RestoreTemporaryEnemyStrength": {
    "hooks": [
@@ -2594,7 +2594,7 @@
     "F05"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 1052
+   "line": 1060
   },
   "EnemyAI.ShouldRemoveOnDeath": {
    "hooks": [
@@ -2613,7 +2613,7 @@
     "F10"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 5508
+   "line": 5516
   },
   "EnemyAI.TriggerPlowIfWounded": {
    "hooks": [
@@ -2627,7 +2627,7 @@
     "F12"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 4918
+   "line": 4926
   },
   "EnemyAI.WakeMatriarchIfStruck": {
    "hooks": [
@@ -2641,7 +2641,7 @@
     "F08"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 4958
+   "line": 4966
   },
   "PotionEffects.TryToProcure": {
    "hooks": [
