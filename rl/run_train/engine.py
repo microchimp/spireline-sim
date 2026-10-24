@@ -69,6 +69,8 @@ FAKE_MERCHANT_SLOTS = 6  # the stall's relics are actions 0-5
 # `RunConstants.UsePotionAction`): `2 * CrystalSphereCells`, past the Crystal Sphere's board.
 # The emulator offers them on nearly every screen; v1 does not model them (DESIGN.md 1.5.8).
 USE_POTION_ACTION = 242
+# Actions 248..253 discard the potion in belt slot 0..5 (`RunConstants.DiscardPotionAction`): not a screen's decision either.
+DISCARD_POTION_ACTION = 248
 POTION_SLOT_CAPACITY = 6  # RunConstants.PotionSlotCapacity
 EVENT_RESULT_PENDING = -1  # RunConstants.cs:269
 # The treasure room's chest relic (erratum RF1): offered while it is still in the chest,
@@ -370,7 +372,7 @@ def treasure_action(legal: list[int]) -> int:
 
 
 def _legal(handle: int) -> list[int]:
-    """Return the screen's own legal actions: the belt's use-a-potion actions are not among them.
+    """Return the screen's own legal actions: the belt's use-a-potion and discard-a-potion actions are not among them.
 
     The emulator adds `USE_POTION_ACTION + slot` to the mask of every screen where the belt
     is open and a slot holds one of the four `AnyTime` potions. Those are not part of any
@@ -383,7 +385,7 @@ def _legal(handle: int) -> list[int]:
         i
         for i in range(native.RUN_MAX_ACTIONS)
         if mask[i]
-        and not USE_POTION_ACTION <= i < USE_POTION_ACTION + POTION_SLOT_CAPACITY
+        and not USE_POTION_ACTION <= i < DISCARD_POTION_ACTION + POTION_SLOT_CAPACITY
     ]
 
 
