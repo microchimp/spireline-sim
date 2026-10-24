@@ -921,6 +921,15 @@ public static class EnemyAI
             enemy.MoveIndex = 0;
         }
 
+        // F08+F10 on: a creature that died in its own move (the player's Thorns on its attack) had its death answered
+        // inside the hit (CreatureCmd.Damage's Kill), and the game's move ends with it: no MoveIndex step, Ritual, Vigor
+        // refund or Strength restore, so a forced move the death set (the Waterfall Giant's ABOUT_TO_BLOW,
+        // SetMoveImmediate with forceTransition) stands (MIGRATION_F08.md R7 checks, the in-move death).
+        if (Core2.Kernel.If(Core2.Switch.F08, state)?.World is { } moved && moved.IsPerformingMove(enemy) && moved.MoverDied)
+        {
+            return;
+        }
+
         enemy.MoveIndex++;
 
         // Ritual: gain Strength at end of each enemy turn except the turn it was applied.

@@ -1049,13 +1049,34 @@ are left, or not), and the old rule's users are listed and either follow the gam
 - The index holders (the independent review, docs/reviews/2026-10-24-f08-migration.md, recommendation 3, its 1.3 A and B):
   `HandleEnemyDeaths` gated off whole under the switch; Oblivion paid by reference, not by roster position; the play's
   target resolved by reference (`FirstEnemy` reads `PlayTarget`, null for a dead or removed target).
+  **Done (R6.9)**, tests in `Core2/IndexHolderTests`, three enemies each: the positional pairing was already off whole
+  under the switch (R4: `HandleEnemyDeaths` and `AnswerDeathsSince` return first), now pinned
+  (`APositionalDeathCheckDoesNotRunUnderTheSwitch`); Oblivion's snapshot keeps its holders by reference under the switch
+  (`OblivionIsPaidToTheCreatureNotTheSlotAfterAMidCardRemoval`); the play opens an aim mark (`OldWorld.Aiming`, the
+  play's `PlayTarget` creature, nested plays set their own), and `FirstEnemy` reads it, null for a dead, untargetable or
+  removed target, the index fallback only with no target given
+  (`ACardsSecondTargetedEffectFollowsTheCreatureNotTheIndex`). Switch off: unchanged.
 - The in-move death (recommendation 4, 1.3 C): no post-attack bookkeeping (`MoveIndex++`, Ritual, Vigor,
   `RestoreTemporaryEnemyStrength`) on a creature that died in its own move, or the forced move re-applied at
   `PerformMove`'s end; `WaterfallGiantTests` stay true under the switch.
+  **Done (R6.9)**: the kill notes a death of the monster performing its move (`OldWorld.MoverDied`, reset by each
+  `PerformingMove` scope), and `EnemyAI.ExecuteIntent` returns before its post-attack bookkeeping when it is set
+  (`AMoverKilledInItsOwnMoveGetsNoPostAttackBookkeeping`, a stand-in Thorns handler until L3a's lands);
+  `WaterfallGiantTests.KilledByThornsOnItsOwnTurnItBlowsARoundLater` still waits for L3a's Thorns handler.
 - One ending (recommendation 7): Fogmog's primary rule read against the game and closed; the two "ending" predicates one
-  under F10, with an agreement assertion (the old predicate equals Core2's at every step) in `EmuDump fuzz`.
+  under F10, with an agreement report (the old predicate against Core2's at every step) in `EmuDump fuzz`.
+  **Done (R6.9), the agreement part reported, not asserted**: the game's `IllusionPower.AfterApplied` gives its owner MinionPower (decompile read), so Core2's
+  `OldCreatures.IsSecondaryEnemy` counts an Illusion holder and the Fogmog's death is the last primary's
+  (`AnIllusionHolderIsNotAPrimaryEnemy`); F08 and F10 switch together, so `CombatEngine.IsOverOrEnding` is Core2's
+  `CombatEnd.IsOverOrEnding` whenever F10 is on, and the old reading is `CombatEngine.OldIsOverOrEnding`; `EmuDump fuzz`
+  compares the two after every step with F10 on and lists each disagreement under the output's `ending_disagree`
+  (absent when they agree, so the old engine's output is unchanged). The key is only a list: nothing reads it yet, so
+  a disagreement fails no test (see the R7 acceptance item below).
 - Curl Up: the old flag pays on the next card played (`CombatEngine.PayCurlUp`), where the game's
   CurlUpPower.AfterCardPlayed pays only on the card that armed it.
+  **Done (R6.9)**: under the switch the Core2 handler remembers the card (`EnemyState.CurlUpCardUid`, IdentityOnly,
+  and a second card's hit is not remembered, as the game's playedCard test), and `PayCurlUp` pays only at that card's
+  AfterCardPlayed (`CurlUpPaysOnlyAtTheCardThatArmedIt`).
 - Ravenous: `CombatEngine.Ravenous_AfterDeath` split per owner (the review's 3.3), so N holders give N owners' effects,
   not N squared. Done in batch L3a: the loop calls `Ravenous_AfterDeathOf`, the handler (`RavenousPower`) calls it for its
   own owner; `L3aModelTests.RavenousActsForEachSurvivorOnceAmongFourHolders`.
@@ -1067,6 +1088,9 @@ recommendation 5, the traced set with net states (`struct_calibrate traced --eng
 game. Then the by-family table re-measured on a lockstep block with core2;
 target G2891c25e0d's kill part and mechanism B at 0, F08 proper down by at least its A+B share; any group that grows is
 a stop.
+
+R7 item, the ending agreement made an assertion: `tools/fidelity/fuzz_core2.py` fails on any step listed under a fuzz
+output's `ending_disagree` that is outside an expected list (held-open corpses without a handler), and that list is empty at switch-on.
 
 **R7 checks: old-site divergences the handlers inherit or settle.** Each is a place where a handler equals the old function and the
 game does something else, found while porting; R7's corpus re-measure decides each, and none moves a gate by itself.

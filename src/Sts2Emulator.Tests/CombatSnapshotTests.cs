@@ -326,6 +326,14 @@ public class CombatSnapshotTests
                 continue;
             }
 
+            // A per-combat card uid (docs/rebuild/CARD_UID.md): documents carry no uids and a read renumbers the cards, so a
+            // load leaves it 0, and an armed Curl Up then pays at the next card's end, as the old flag did.
+            if (field.Name == nameof(EnemyState.CurlUpCardUid))
+            {
+                Assert.Equal(0, enemy.CurlUpCardUid);
+                continue;
+            }
+
             Assert.False(
                 SameContent(field.GetValue(enemy), field.GetValue(new EnemyState())),
                 $"EnemyState.{field.Name} is not carried by the snapshot"

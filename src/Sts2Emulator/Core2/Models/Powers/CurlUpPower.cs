@@ -21,10 +21,14 @@ internal static class CurlUpPower
     internal static HookStep AfterDamageReceived(HookCtx c, ListenerRef self, in AfterDamageReceivedArgs a,
         ChoiceCtx? ctx)
     {
-        if (c.Power(self) is not { } p || a.Target != p.Owner || !a.Props.IsPoweredAttack() || a.CardSource is null
+        if (c.Power(self) is not { } p || a.Target != p.Owner || !a.Props.IsPoweredAttack() || a.CardSource is not { } card
             || c.Enemy(p.Owner) is not { } e)
             return HookStep.Done;
+        // A card remembered already: another card's hit is not remembered (playedCard != null, cardSource != playedCard).
+        if (e.CurlUpArmed && e.CurlUpCardUid != 0 && e.CurlUpCardUid != card.Uid)
+            return HookStep.Done;
         CardEffects.CurlUp_AfterDamageReceived(e);
+        e.CurlUpCardUid = card.Uid;
         return HookStep.Done;
     }
 

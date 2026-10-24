@@ -33,6 +33,16 @@ public sealed class Core2Engine : OldEngine
 
     public override string Name => "core2";
 
+    /// <summary>With F10 on, while the combat is in progress: the old ending predicate against the kernel's.</summary>
+    public override string? EndingDisagreement()
+    {
+        if (Run.State.ActiveCombat is not { Kernel: { } k } c || !k.On(Switch.F10) || !CombatEnd.IsInProgress(k))
+            return null;
+        bool old = Sts2Emulator.Core.CombatEngine.OldIsOverOrEnding(c);
+        bool core2 = CombatEnd.IsOverOrEnding(k.At(c, Run.State));
+        return old == core2 ? null : $"old {(old ? "ending" : "open")}, core2 {(core2 ? "ending" : "open")}";
+    }
+
     /// <summary>The old engine's game view plus the kernel's own state when a switch is on (Core2GameView); with none, old's bytes.</summary>
     public override JsonObject GameView()
     {
