@@ -749,9 +749,22 @@ def _owner(engine: Engine, rel: str, offset: int) -> Method | None:
 
 PRIVATE_HEAD = re.compile(r"\bprivate\s+static\b")
 # An inline model body moved out of its dispatch method (docs/rebuild/MIGRATION_F08.md R5) is internal, so that a Core2
-# handler can call it, and named <Model>_<Hook>: it stays part of the method that calls it.
+# handler can call it, and named <Model>_<Hook>: it stays part of the method that calls it. The name rule is the one
+# tools/emudump/Engines/Old/ExtractedBody.cs (Is) applies: an upper-case initial, then the first underscore, then an
+# upper-case letter. tests/python/test_hook_table.py and tools/emudump.Tests/ExtractedBodyTests.cs pin the engine's set
+# against one list, so a function the two would judge differently fails one of them.
 EXTRACTED_HEAD = re.compile(r"\binternal\s+static\b")
-EXTRACTED_NAME = re.compile(r"[A-Z]\w*_[A-Z]\w*")
+EXTRACTED_NAME = re.compile(r"[A-Z][^\W_]*_[A-Z]\w*")
+
+
+def _extracted(engine: Engine, rel: str, m: Method) -> bool:
+    return bool(EXTRACTED_NAME.fullmatch(m.name) and EXTRACTED_HEAD.search(engine.masked[rel][m.start:m.body[0]]))
+
+
+def extracted_functions(engine: Engine) -> tuple[str, ...]:
+    """``File.Function`` of every extracted body in the engine (an internal static ``<Model>_<Hook>`` function), in ordinal order, each once."""
+    return tuple(sorted({f"{Path(rel).stem}.{m.name}" for rel, ms in engine.methods.items() for m in ms
+                         if not m.field and _extracted(engine, rel, m)}))
 
 
 @cache
@@ -764,10 +777,7 @@ def _callees(engine_id: int, qualname: str) -> tuple[str, ...]:
             continue
         privates = {
             m.name for m in ms
-            if not m.field and (
-                PRIVATE_HEAD.search(engine.masked[rel][m.start:m.body[0]])
-                or (EXTRACTED_NAME.fullmatch(m.name) and EXTRACTED_HEAD.search(engine.masked[rel][m.start:m.body[0]]))
-            )
+            if not m.field and (PRIVATE_HEAD.search(engine.masked[rel][m.start:m.body[0]]) or _extracted(engine, rel, m))
         }
         for m in ms:
             if m.name != name or m.field:

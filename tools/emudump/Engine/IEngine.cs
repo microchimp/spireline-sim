@@ -259,8 +259,9 @@ public interface IEngine : IScreenSource
     string StateHash();
 
     /// <summary>
-    /// One short hash per top-level field of the run's state, then of the combat's with its name prefixed "ActiveCombat.", in the
-    /// engine's order: a difference in <see cref="StateHash"/> is named by the fields that differ.
+    /// One short hash per top-level field of the run's state, then per top-level field of the combat's, in the engine's order: a
+    /// difference in <see cref="StateHash"/> is named by the fields that differ. The combat's field names carry a prefix the
+    /// engine chooses; callers treat the names as opaque.
     /// </summary>
     IReadOnlyList<KeyValuePair<string, string>> StateFieldHashes();
 

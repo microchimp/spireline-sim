@@ -46,6 +46,10 @@ if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
 
 NO_INLINING = {"DOTNET_TieredCompilation": "0", "DOTNET_JITMinOpts": "1", "DOTNET_TieredPGO": "0"}
+# The EmuDump flags whose output carries a caller label for each RNG draw (tools/emudump/Engines/Old/OldRngLog.cs, OldTrace.cs).
+# The label is read off the stack, which tiered JIT inlining changes from run to run, so a run with one of them uses NO_INLINING.
+# Defined once, here: tools/fidelity/packet.py and referee/trace_divergent.py import it.
+LABELLED_FLAGS = ("--rng-log", "--trace", "--trace-to")
 BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 
