@@ -106,7 +106,7 @@ public class CombatEndRewardPowerTests
         engine.State.Phase = RunPhase.RelicReward;
         int deckBefore = engine.State.Deck.Count;
 
-        Assert.Equal(0, engine.Step(RunConstants.RewardSkipAction, -1, out _, out _, out _));
+        Assert.Equal(0, TestSwitches.Step(engine, RunConstants.RewardSkipAction, -1, out _, out _, out _));
 
         Assert.Equal(RunPhase.TransformSelect, engine.State.Phase);
         Assert.Equal(DeckSelection.Remove, engine.State.PendingSelectionKind);
@@ -123,7 +123,7 @@ public class CombatEndRewardPowerTests
         var engine = Run();
         engine.State.Phase = RunPhase.RelicReward;
 
-        engine.Step(RunConstants.RewardSkipAction, -1, out _, out _, out _);
+        TestSwitches.Step(engine, RunConstants.RewardSkipAction, -1, out _, out _, out _);
 
         Assert.NotEqual(RunPhase.TransformSelect, engine.State.Phase);
     }

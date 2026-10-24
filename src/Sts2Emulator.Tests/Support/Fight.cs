@@ -23,8 +23,8 @@ internal sealed class Fight
     private Random _rng = new CountingRandom(0);
     private bool _replacedEncounter;
 
-    // Bound to the test kernel when STS2_TEST_SWITCHES is set (Support/TestSwitches.cs); untouched otherwise.
-    private Fight(CombatState state) => State = TestSwitches.Bind(state);
+    // With STS2_TEST_SWITCHES set the combat is bound at its first step, after the test's setup (Support/TestSwitches.cs).
+    private Fight(CombatState state) => State = state;
 
     public CombatState State { get; }
 

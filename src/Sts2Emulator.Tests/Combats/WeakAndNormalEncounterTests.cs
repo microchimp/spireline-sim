@@ -134,7 +134,7 @@ public class WeakAndNormalEncounterTests
     {
         int action = Array.IndexOf(engine.State.MapNodeTypes, RunConstants.NodeNormal);
         Assert.True(action >= 0, "the first row offers no Monster node");
-        Assert.Equal(0, engine.Step(action, -1, out _, out _, out _));
+        Assert.Equal(0, TestSwitches.Step(engine, action, -1, out _, out _, out _));
         Assert.Equal(RunPhase.Combat, engine.State.Phase);
         return engine.State.ActiveCombat!;
     }
