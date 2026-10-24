@@ -41,15 +41,27 @@ not lean on what Neow or the seed happens to give):
 | `deck` | ModelIds, or `{id, upgraded}`; the deck becomes exactly this |
 | `potions` | ModelIds; the belt becomes exactly this, slot 0 first (the belt fills from the first free slot, so a gap cannot be written) |
 | `hp` | `{max, current}` of the player; default 80/80 |
+| `block` | the player's block in the fight becomes exactly this (an integer, 0 or more) |
+| `enemy_hp` | `[{slot, max, current}]`: the living enemy in that creature slot (the slot `enemy:<slot>` names) gets this max HP, then this current HP, in the fight. Either may be left out, not both: the rolled max or the held current stays, and a held current above a lowered max comes down to it |
+| `enemy_block` | `[{slot, amount}]`: that enemy's block in the fight becomes exactly this (0 or more) |
 | `powers` | `{id, target, amount}`, `target` `player` or `enemy:<slot>`: a power applied with no applier, in the fight |
 | `energy` | energy the player gains at the start |
 | `hand`, `draw`, `discard` | cards added to that pile in the fight (`{id, upgraded, top}`, `top` for a draw-pile card on top) |
 
-The setup runs as the setup items `Setup.cs` already runs for the fuzzer and the referee's setup fights (relics_set, deck_set,
-potions_set, hp, fight, power, energy, card), in that order: relics, deck, potions, HP, the fight, then the combat items. An item an
-engine cannot build fails the scenario on that engine (xfail-able), it is never skipped.
-Not expressible yet: block and enemy HP/block (no `IEngine` setup member sets them: reach them with actions, as the converted
-cases do), a potion belt with gaps, other characters.
+The setup runs as the setup items `Setup.cs` runs for the fuzzer and the referee's setup fights (relics_set, deck_set, potions_set,
+hp, fight, block, enemy_hp, enemy_block, power, energy, card), in that order: relics, deck, potions, HP, the fight, then the combat
+items: the player's block, the enemies' HP, the enemies' block, powers, energy, cards. An item an engine cannot build fails the
+scenario on that engine (xfail-able), it is never skipped.
+
+`block`, `enemy_hp` and `enemy_block` are the scenarios' own items (the referee has no counterpart yet). They write the creature's
+fields as they stand, after the fight's start: no hook runs for them, and an intent the enemy already rolled stays. They **refuse**
+rather than cap, since a value the fight cannot hold as written is a drifting assumption a cap would hide: a slot with no living
+enemy (out of range, or dead), a block below 0, an HP below 1, or a `current` above the max HP in force (the `max` given beside it,
+else the rolled one) fails the scenario at that setup item ("did not take", with the reason: `no living enemy in slot 3`, `current HP
+50 above max HP 44`). What shows in the file itself is **invalid** before any engine runs: a negative value, a `current` above its own
+`max`, a slot set twice in one list, an `enemy_hp` entry with neither `max` nor `current`. To set a current HP above the rolled max,
+give `max` too.
+Not expressible yet: a potion belt with gaps, other characters.
 
 **actions** run in order against the open fight; each may carry `name` (default `a<n>`, 1-based) and `answers`:
 
@@ -81,19 +93,21 @@ file breaks the format: always unexpected; that includes an `at_least` or `at_mo
 and an `absent: true` on a path whose parent is not in the game view, which would pass for any typo). `xfail_engines` may name only engines the scenario runs on, with a reason of 8 characters or
 more.
 
-## What is in `tests/scenarios` (23)
+## What is in `tests/scenarios` (24)
 
 Converted from the batch-3 reference tests (`referee/design/game-shaped-dispatch.md` section 6; they hold the game's order, so each
 fails on an engine that has the old order). The setups are reached through the fight, not through engine internals, so a few are
 restated: a lone-enemy kill is `JUGGERNAUT_POWER` 99, enemy HP the slimes' and a Strike's damage are tuned with `STRENGTH_POWER`, an
-incoming hit is the lone Nibbit's first attack (13 at A10 for the seed) with `STRENGTH_POWER` on it.
+incoming hit is the lone Nibbit's first attack (13 at A10 for the seed) with `STRENGTH_POWER` on it. They were written before
+`block`, `enemy_hp` and `enemy_block` existed and stay as converted; `regression/block-absorbs-first-and-zero-hp-kills` is the
+setters' own cover (an enemy set to 8 HP and 4 block takes two Strikes: the first breaks the block and leaves 6 HP, the second kills).
 
 | family | scenarios | old | core2 (no switch) |
 |---|---|---|---|
 | `exhaust-order/` (ExhaustListenerOrderTests) | juggernaut-from-feel-no-pain-kills-before-forgotten-soul, juggernaut-picks-before-charons-ashes-kills | xfail (2) | xfail (2) |
 | `victory-heal/` (VictoryHealOrderTests) | meat-at-threshold-then-burning-blood, ...-black-blood (xfail); meat-above-threshold-does-not-heal, meat-below-threshold-then-burning-blood (pass) | 2 xfail, 2 pass | 2 xfail, 2 pass |
 | `rounding-order/` (RoundingOrderTests) | slow-joins-the-multiplicative-chain, slow-is-decimal-exact-90x3, intangible-caps-a-halved-30-to-1 and -3-to-1, intangible-colossus-halves-a-vulnerable-4-to-1 (xfail); slow-is-decimal-exact-30x9, hard-to-kill-cap-runs-after-slow, diadem-halves-15-to-7, intangible-cap-leaves-a-halved-1-at-0, intangible-colossus-halves-a-vulnerable-1-to-0, halving-truncates-once (pass) | 5 xfail, 6 pass | 5 xfail, 6 pass |
-| `regression/` | strike-damages-the-enemy-and-costs-1, vulnerable-multiplies-by-1-5, strength-adds-before-vulnerable-multiplies, weak-truncates-once, feel-no-pain-blocks-per-exhaust, burning-blood-heals-6-after-victory | pass (6) | pass (6) |
+| `regression/` | strike-damages-the-enemy-and-costs-1, vulnerable-multiplies-by-1-5, strength-adds-before-vulnerable-multiplies, weak-truncates-once, feel-no-pain-blocks-per-exhaust, burning-blood-heals-6-after-victory, block-absorbs-first-and-zero-hp-kills | pass (7) | pass (7) |
 
 Slow's multiplier is `1 + 0.1 x SlowAmount`, and SlowAmount is a separate count of the cards played this turn (zero when the power lands, reset when its owner's side turn starts), not the power's amount. `SLOW_POWER` applied with an amount N therefore multiplies by 1 in the game too, so the four Slow scenarios apply it with amount 1 and play the cards (`DEFEND_IRONCLAD`) before the hit; the hand holds at most 10, so the count tops out at 9.
 
