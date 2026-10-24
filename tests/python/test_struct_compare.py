@@ -369,29 +369,31 @@ class EngineScope(unittest.TestCase):
 
     def test_scopes(self):
         by = {r["id"]: r["engines"] for r in ROWS}
+        self.assertEqual(by.pop("kernel-sequencing"), ["core2"])
         self.assertEqual(sorted(by), sorted(OLD_ONLY + EVERY_ENGINE))
         for i in OLD_ONLY:
             self.assertEqual(by[i], ["old"], i)
         for i in EVERY_ENGINE:
             self.assertEqual(by[i], ["*"], i)
-        self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core2")), sorted(EVERY_ENGINE))
-        self.assertEqual(len(sc.for_engine(ROWS, "old")), len(ROWS))
+        self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core3")), sorted(EVERY_ENGINE))  # an engine with a state of its own: no old rows
+        self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core2")), sorted(OLD_ONLY + EVERY_ENGINE + ("kernel-sequencing",)))  # core2 runs over old state
+        self.assertEqual(len(sc.for_engine(ROWS, "old")), len(ROWS) - 1)  # all but the core2-only row
 
     def test_old_rows_do_not_apply_to_another_engine(self):
         p = snap()["player"]
         rec = snap(player={**p, "powers": [["SETUP_STRIKE_POWER", 5]]})
         eng = snap(player={**p, "powers": [["TEMPORARY_STRENGTH_POWER", 5]]})
         self.assertIsNone(first([rec], [eng])["first"])  # old folds both into the base power
-        r = sc.compare_fight(*fight([rec], [eng]), ROWS, engine="core2")
-        self.assertEqual(r["engine"], "core2")
+        r = sc.compare_fight(*fight([rec], [eng]), ROWS, engine="core3")
+        self.assertEqual(r["engine"], "core3")
         self.assertIn("snap.player.powers{SETUP_STRIKE_POWER}", paths(r))
         self.assertIn("snap.player.powers{TEMPORARY_STRENGTH_POWER}", paths(r))
         e0 = snap()["enemies"][0]
         moved = snap(enemies=[{**e0, "move": "GOOP_MOVE"}])  # old has no move id (unmodelled); another engine must write it
         self.assertIsNone(first([moved], [snap()])["first"])
-        self.assertEqual(paths(sc.compare_fight(*fight([moved], [snap()]), ROWS, engine="core2")), ["snap.enemies[0].move"])
+        self.assertEqual(paths(sc.compare_fight(*fight([moved], [snap()]), ROWS, engine="core3")), ["snap.enemies[0].move"])
         dead = snap(enemies=[{**e0, "hp": 0}, e0])  # rows for every engine still apply
-        self.assertIsNone(sc.compare_fight(*fight([dead], [snap()]), ROWS, engine="core2")["first"])
+        self.assertIsNone(sc.compare_fight(*fight([dead], [snap()]), ROWS, engine="core3")["first"])
 
     def test_cli_engine_flag(self):
         from unittest import mock  # noqa: PLC0415
@@ -408,7 +410,7 @@ class EngineScope(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(sys, "argv", ["struct_compare", str(fg), str(fe), *extra]):
                     return sc.main()
             self.assertEqual(run(), 0)
-            self.assertEqual(run("--engine", "core2"), 1)
+            self.assertEqual(run("--engine", "core3"), 1)
 
     def test_intent_unmapped_kinds_differ(self):
         e0 = snap()["enemies"][0]
@@ -431,7 +433,7 @@ class IntentWildcard(unittest.TestCase):
         self.assertEqual(paths(first([it(["Summon"])], [it(["Escape"])])), ["snap.enemies[0].intents[0]"])
         for mapped in (["Attack", 6, 1], ["Buff"]):  # a mapped kind is never hidden behind Unknown
             self.assertEqual(paths(first([it(mapped)], [it(["Unknown"])])), ["snap.enemies[0].intents[0]"])
-        self.assertEqual(paths(sc.compare_fight(*fight([it(["Sleep"])], [it(["Unknown"])]), ROWS, engine="core2")),
+        self.assertEqual(paths(sc.compare_fight(*fight([it(["Sleep"])], [it(["Unknown"])]), ROWS, engine="core3")),
                          ["snap.enemies[0].intents[0]"])  # the wildcard is the old engine's row
 
 

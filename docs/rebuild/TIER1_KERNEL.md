@@ -384,6 +384,22 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
 - `Core2Engine : IEngine` (tools/emudump/Engines/Core2/) is the old engine with the kernel and the switched-on set;
   `EmuDump --engine old|core2` picks it per process. Its native writer is the old engine's game-schema binding
   (`NetState`) plus the kernel's own state (queue, pending hook actions) only when a switch is on.
+- Built in K5 (settled): `Core2Engine.GameView()` is old's view plus, only when a switch is on (the combat's or run's
+  `KernelState` exists), the kernel's own state, written by `tools/emudump/Engines/Core2/Core2GameView.cs`. The game's
+  NetFullCombatState has no field for a queue or a choice set the kernel keeps (its action fields are `lastExecutedActionId`,
+  `lastExecutedHookId` and `nextChoiceIds`, the last being PlayerChoiceSynchronizer's counter), so: `net.last_action` and
+  `net.last_hook` carry the first two under the game's names, from the queue's own counters (`ActionQueueSet.LastExecutedActionId/HookId`: the
+  queue's own count and `RecordedHookAction.Id`, 1-based, where the game's HookId is `_nextHookId`'s, 0-based; so neither matches a
+  record and the comparer lists both as surplus; set when an
+  action finishes, a resumed action's last id), and everything else is `private.kernel`: `queue` (every action with id, kind,
+  type, state, owner, first id, hook action, step action and target, answer; per queue the front-first ids, paused and the
+  three cancel flags; next id), `hook_actions` (pause site: dispatcher, hook, pass, index, listener kind/model/instance,
+  context; the screen request as plain data; the resume record's type and site), `stops`, `waits`, `screen` (the combat's open
+  screen when the kernel opened it: its hook action id or its answer key), `keyed_answers` (the open screen's replay record),
+  `answer_sequence` (`KernelState.AnswerSequence`), `turn_start_flow` (the flow's CombatPlayPhaseOnly hook action pending), the
+  switches on, `executor_paused`, `win_checks`. The block is plain data read from the state alone, so a copy of the state writes
+  the same block (test). With no switch on nothing is added: byte_proof old against `--engine core2` is 0 in every mode,
+  `game-view` and `game-view-netstate` included. The comparer lists these as a surplus (docs/rebuild/COMPARER.md).
 - The fuzzer (`tools/fidelity/fuzz_core2.py` driving `EmuDump fuzz`): setup fights built from models whose switches
   are on (random decks, relics, potions, encounters and legal actions, seeded), run on both engines, compared by state
   hash per step. Every difference is a listed `hook_open.txt` row the switch fixes, or goes to a decompile reading or a

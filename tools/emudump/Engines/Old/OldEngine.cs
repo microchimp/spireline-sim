@@ -49,7 +49,7 @@ public class OldEngine : IEngine
 
     public JsonObject? GameState() => OldNetState.From(Run);
 
-    public JsonObject GameView() => OldGameView.View(Run);
+    public virtual JsonObject GameView() => OldGameView.View(Run);
 
     public JsonObject RngCounters() => OldSetup.Counters(Run.State);
 

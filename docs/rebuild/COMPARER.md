@@ -58,21 +58,34 @@ sets only; the gate fails when the list is not empty. `struct_compare.waived_tot
 
 ## Allowed rows (tools/fidelity/allowed_diff.json)
 
-15 rows. Each lists the `engines` it applies to: `old` for rows that exist only because of the old engine's limits, `*` for the rows
+16 rows. Each lists the `engines` it applies to: `old` for rows that exist only because of the old engine's limits, `*` for the rows
 that state the record's own representation or integrity. `struct_compare --engine E` (default `old`; `compare_fight(engine=)`)
-applies only the rows of E, so a new engine is judged without the old engine's rows.
+applies only the rows of E and of the engine whose state E runs over (`struct_compare.ENGINE_BASE`: core2 is old's state with the
+kernel attached, so it has old's limits and is judged by old's rows; an engine with a state of its own is judged without them),
+so a new state is judged without the old engine's rows.
+
+A row that could hide a rule difference lists its `families` (ids of `hook_families.json`): fight-lost and after-fight-turn-state
+F10 (death / victory), cost-outside-hand F07 (costs). core2 inherits an old row only while none of its families is in
+`migrated_families.json`: a migrated family is a part of the rules core2 runs in the game's structure, so what the row waived
+(a lost fight's enemy phase and leftovers, the costs of cards outside the hand, the energy and round after a fight) is compared
+on core2 from then on (`for_engine(rows, engine, migrated=)`, `compare_fight(..., migrated=)`; default: the file). A row with no
+families list is a representation limit, how old writes a state and not what the rules do (intent-vocabulary, power-folds,
+upgrade-count, affliction-amount, enemy-move-id, saved-props-floor, relic-counters, and rng-seeds and net-sequencing, whose
+fields are the run's seed and the network layer's counters and phase, which no kernel switch writes), and is always inherited.
+old always keeps all its rows, an engine with a state of its own none of them.
 
 | kind | rows | engines | what it does |
 |---|---|---|---|
-| unmodelled | enemy-move-id, rng-seeds, net-sequencing, saved-props-floor, relic-counters, after-fight-turn-state (6) | old | a record-only field old does not write is not compared (listed in the census as unmodelled): enemy move id, RNG seeds, net sequencing ids and phase, saved props and floors, relic counters, energy and round after a fight |
+| unmodelled | enemy-move-id, rng-seeds, net-sequencing, saved-props-floor, relic-counters, after-fight-turn-state (6) | old | a record-only field old does not write is not compared (listed in the census as unmodelled): enemy move id, RNG seeds, net sequencing ids and phase, saved props and floors, relic counters, energy and round after a fight (after-fight-turn-state is F10's) |
 | drop_dead_enemies | dead-enemies | * | the record's enemies at 0 HP are not the roster |
-| lost_outcome_only | fight-lost | old | a lost fight compares in_combat and the player's HP only (old plays the enemy phase out) |
+| lost_outcome_only | fight-lost (F10) | old | a lost fight compares in_combat and the player's HP only (old plays the enemy phase out) |
 | power_fold | power-folds | old | TemporaryStrength/Dexterity/Focus subclasses and SelfFormingClay summed into the base power on both sides; counted as fired only when a folded subclass is present |
 | intent_coarse | intent-vocabulary | old | an intents diff is allowed when the first intent's class and the first attack's [damage, hits] agree. A kind outside the class map keeps its own name (Summon against Escape is a difference); Unknown, the kind old writes for what its five kinds cannot say, is the one wildcard for an unmapped kind of the record, never for a mapped one |
-| ignore | cost-outside-hand | old | card cost outside the hand is waived (old prices the hand only); waived, not compared |
+| ignore | cost-outside-hand (F07) | old | card cost outside the hand is waived (old prices the hand only); waived, not compared |
 | same_first | affliction-amount | old | affliction id compared, not its amount (old's Bound is a flag) |
 | both_positive | upgrade-count | old | upgrade count vs old's flag |
 | settle | after-last-checksum | * | a net path the record's own snapshot shows changed after the step's last checksum is judged by the snapshot |
+| surplus | kernel-sequencing (1) | core2 | the engine-written paths `net.last_action` and `net.last_hook` (the kernel's own queue counters, under the game's field names) are taken out of both sides, listed in the census as `surplus`, never compared: the game's action ids come from its synchronizer, which numbers actions the emulator does not run, and its HookId is `ActionQueueSynchronizer._nextHookId` (0-based, the turn start flow action numbered too) while core2 writes `RecordedHookAction.Id` (1-based, 0 for the flow action), so neither can match a record. Where the engine writes none the record's side stays under net-sequencing |
 | late_steps | late-steps | * | record integrity: the net shape is not compared from a step recorded before the game finished it. The limit applies only when the row is present, and each skipped step is counted under the row |
 
 Each row's `legacy` field names the fight_compare / netstate_diff rule it replaces.
@@ -118,10 +131,29 @@ shape. Result on old: traced 77 of 77 identical, corpus 300 of 300 identical (th
 Census gate on the traced set against itself: 0 of 77 fail; against a census with one more field: 77 of 77 fail (the ids were
 not unique across traced files in the first version: the gate compared 24 of them; fixed).
 
+## Core2 (K5, 2026-10-24, allowed_diff sha 11083dbf8259a2b4)
+
+`IEngine.GameView()` of core2 is old's view plus the kernel's state when a switch is on (TIER1_KERNEL.md section 6): the queue's
+last action id and the last hook action's `RecordedHookAction.Id` under the game's field names `net.last_action` and `net.last_hook`
+(not the game's numbering, so surplus, as above), the rest under `private.kernel`.
+`struct_compare` carries a **surplus** list next to the census: the schema paths of the engine's `private.kernel` block and
+the paths a `surplus` row names (kernel-sequencing). They are listed (`surplus` in a fight's result and in `struct_calibrate`'s
+output), never compared against the record, and never counted into the census, so the census gate (core2 never compared on fewer
+paths than old on the same item) does not move with them. `struct_calibrate corpus|traced --engine core2` runs EmuDump with
+`--engine core2` and judges with core2's rows; `--gate-against <old output>` is the census gate.
+
+With no switch on (the default `migrated_families.json`), first 300 corpus fights, old against core2: the table is identical
+(both same step 37, neither 263, struct crash 0), the allowed rows fired are identical, every fight's first difference, paths,
+census, waived set and leaves are identical (0 of 300 differ), the census gate reports 0 of 300 fights compared on fewer fields,
+surplus empty. byte_proof old against `--b-args "--engine core2"`, all 11 modes (`game-view` and `game-view-netstate`
+added), 300 fights: 3300 fight-mode pairs identical, 0 differ; the whole corpus (4301 fights run, the rest skipped as the proof
+always skips them) in fight, netstate, game-view, game-view-netstate and state-hash: 21505 pairs identical, 0 differ. C# suites
+at the commit: Sts2Emulator.Tests 6748 passed, 7 skipped, 0 failed; tools/emudump.Tests 242 passed, 0 failed.
+
 ## Left for the next round
 
 - The run layer (`run_compare2`) on the same shapes (rows, `--engine`, census, self check).
-- Core2's `GameView` and the census gate against old's census on every corpus and traced fight (`--engine core2`: no old rows).
+- Core2 on the traced set (`struct_calibrate traced --engine core2`), and the census gate there.
 - Fields old could write natively and does not yet: RNG seeds, the enemy's game move id, the game's relic props. Each one removes
   an `old`-only unmodelled row.
 - The legacy comparers keep running on old only, as the calibration reference and the history line; the corpus check

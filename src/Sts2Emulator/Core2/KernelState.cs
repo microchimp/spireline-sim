@@ -80,6 +80,10 @@ public sealed class KernelState : HookRuntime
     /// <summary>game: ActionExecutor.IsPaused (CombatManager.Pause): a paused executor runs no action.</summary>
     public bool ExecutorPaused { get; set; }
 
+    /// <summary>How many kernel screens each (dispatcher, listener, resume site) has reached: the occurrence a keyed answer
+    /// takes (the writer's).</summary>
+    public IReadOnlyDictionary<(HookId, ListenerRef, string), int> AnswerSequence => _seq;
+
     /// <summary>How many win checks the executor made at action boundaries (F10's switch).</summary>
     public int WinChecks { get; internal set; }
 

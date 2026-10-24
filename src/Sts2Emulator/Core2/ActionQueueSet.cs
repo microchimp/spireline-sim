@@ -128,6 +128,32 @@ public sealed class ActionQueueSet
     /// <summary>Every action ever enqueued, in enqueue order (finished and canceled ones too): what a test or a writer reads.</summary>
     public IReadOnlyList<GameActionRec> All => _all;
 
+    /// <summary>The queues (one per player), for the writer.</summary>
+    public int QueueCount => _queues.Count;
+
+    /// <summary>
+    /// The id the last action to finish ran under (a resumed action's new id); null before any finished. It is the queue's own
+    /// count, not the game's lastExecutedActionId: the game's synchronizer also numbers actions the emulator does not run, so a
+    /// record's value cannot be matched (the comparer lists it as surplus).
+    /// </summary>
+    public uint? LastExecutedActionId { get; private set; }
+
+    /// <summary>The <see cref="RecordedHookAction.Id" /> of the last action to finish when it was a hook action (1-based; 0 for the
+    /// turn start's flow action, which has no recorded hook action), else null. Not the game's lastExecutedHookId: the game writes
+    /// the HookId from ActionQueueSynchronizer._nextHookId (0-based, which also numbers the turn start flow action), so this value
+    /// cannot be matched against a record (the comparer lists it as surplus).</summary>
+    public long? LastExecutedHookId { get; private set; }
+
+    /// <summary>One queue's cancel flags, as the game keeps them (the writer's).</summary>
+    public (bool CancellingPlayCard, bool CancellingPlayerDriven, bool CancellingCombat) Cancelling(int owner = 0) =>
+        (Q(owner).CancellingPlayCard, Q(owner).CancellingPlayerDriven, Q(owner).CancellingCombat);
+
+    private void Executed(GameActionRec a)
+    {
+        LastExecutedActionId = a.Id;
+        LastExecutedHookId = a.Kind == GameActionKind.Hook ? a.HookAction : null;
+    }
+
     /// <summary>The actions of <paramref name="owner" />'s queue, front first.</summary>
     public IReadOnlyList<GameActionRec> QueueOf(int owner = 0) => Q(owner).Actions;
 
@@ -205,6 +231,7 @@ public sealed class ActionQueueSet
     internal void Finish(GameActionRec a)
     {
         a.State = GameActionState.Finished;
+        Executed(a);
         var q = Q(a.Owner);
         if (q.Actions.Count == 0 || !ReferenceEquals(q.Actions[0], a))
             throw new InvalidOperationException($"popped {a}, which is not the front of queue {a.Owner}");
@@ -348,7 +375,10 @@ public sealed class ActionQueueSet
     public ActionQueueSet Copy()
     {
         var map = _all.ToDictionary(a => a, a => a.Copy());
-        var c = new ActionQueueSet { NextId = NextId, InCombat = InCombat };
+        var c = new ActionQueueSet
+        {
+            NextId = NextId, InCombat = InCombat, LastExecutedActionId = LastExecutedActionId, LastExecutedHookId = LastExecutedHookId,
+        };
         c._all.AddRange(_all.Select(a => map[a]));
         foreach (var q in _queues)
             c._queues.Add(q.Copy(map));
@@ -384,6 +414,7 @@ public sealed class ActionQueueSet
     internal void Remove(GameActionRec a)
     {
         a.State = GameActionState.Finished;
+        Executed(a);
         if (!Q(a.Owner).Actions.Remove(a))
             throw new InvalidOperationException($"{a} is in no queue");
     }

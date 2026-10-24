@@ -50,6 +50,8 @@ from tools.fidelity.rng_diff import NO_INLINING  # noqa: E402
 MODES: dict[str, tuple[str, list[str]]] = {
     "fight": ("fight", ["--compact"]),
     "netstate": ("fight", ["--compact", "--netstate"]),
+    "game-view": ("fight", ["--compact", "--game-view"]),
+    "game-view-netstate": ("fight", ["--compact", "--game-view", "--netstate"]),
     "state-hash": ("fight", ["--compact", "--state-hash=fields"]),
     "rng-log": ("fight", ["--compact", "--rng-log"]),
     "reanchor": ("reanchor", []),
