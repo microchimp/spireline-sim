@@ -33,6 +33,7 @@ public class PowerOneTests
         (ListenerKind.Power, "WeakPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "VigorPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "TankPower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Power, "ColossusPower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -616,5 +617,113 @@ public class PowerOneTests
     public void TankIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "TankPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Colossus (power-1)
+
+    /// <summary>The player with Colossus 1, one slug with Vulnerable 1 (the attacker the old site halves).</summary>
+    private static CombatState ColossusCombat()
+    {
+        var s = Combat(40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Colossus, 1));
+        s.Enemies[0].Buffs.Add(new BuffState(BuffId.Vulnerable, 1));
+        return s;
+    }
+
+    [Fact]
+    public void ColossusIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power1), ListenerKind.Power, "ColossusPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void ColossusHalvesAVulnerableDealersPoweredAttackOnItsOwner()
+    {
+        // game: ColossusPower.ModifyDamageMultiplicative; old: EnemyAI.DealAttackDamage halves the integer damage with
+        // Colossus_ModifyDamageMultiplicative when the player's Colossus > 0 and the attacking enemy's Vulnerable > 0. The
+        // fold keeps 3.5; the one cast gives the old function's 3. The slug's own Vulnerable does not touch a hit on the player.
+        var s = ColossusCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Power1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 0, damage: 7m, dealer: 1), out var changed);
+
+        Assert.Equal(3.5m, v);
+        Assert.Equal([Power("ColossusPower", 0)], changed);
+        Assert.Equal(EnemyAI.Colossus_ModifyDamageMultiplicative(7), (int)v);
+
+        // Through the damage command against the old enemy-attack path on the same state: 3 lost, 47 left, both.
+        Assert.Equal(3, Assert.Single(Hit(k, OldCreature.Player, 7m, dealer: OldCreature.Of(slug))).UnblockedDamage);
+        Assert.Equal(47, s.PlayerHp);
+        var oracle = ColossusCombat();
+        EnemyAI.DealAttackDamageForTests(oracle.Enemies[0], oracle, 7);
+        Assert.Equal(oracle.PlayerHp, s.PlayerHp);
+
+        // Where the condition fails: a dealer without Vulnerable, the owner's own attack on the Vulnerable slug (the owner
+        // is the dealer: the slug's Vulnerable applies, Colossus does not), an unpowered hit, no dealer, the amount at 0.
+        slug.Buffs.Clear();
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 7m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        slug.Buffs.Add(new BuffState(BuffId.Vulnerable, 1));
+        Assert.Equal(10.5m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 7m), out changed));
+        Assert.Equal([Power("VulnerablePower", 1)], changed);
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 7m, dealer: 1, props: Unpowered), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 7m, dealer: null), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Colossus, 0);
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 7m, dealer: 1), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void ColossussDecimalFactorCastOnceIsTheOldFunctionsIntegerHalvingForEveryDamage()
+    {
+        // The integer-versus-decimal check: the handler returns one half as a decimal; the old function halves an int in
+        // place. For every integer damage the fold's value truncated once (the damage command's cast) is the old
+        // function's result, the floor of half the floor being the floor of the half.
+        var s = ColossusCombat();
+        var k = Kernel(s, Power1);
+        for (int damage = 0; damage <= 200; damage++)
+        {
+            decimal v = Hooks.ModifyDamage(k, Attack(target: 0, damage: damage, dealer: 1), out _);
+            Assert.Equal(damage / 2m, v);
+            Assert.Equal(EnemyAI.Colossus_ModifyDamageMultiplicative(damage), (int)v);
+        }
+    }
+
+    [Fact]
+    public void ColossusActsForItsOwnHolderAmongThree()
+    {
+        // The N-holder test: the player and both slugs hold Colossus; the first slug is Vulnerable. Its attack on the
+        // player takes the player's listener alone (the slugs' Colossus is not the target's). The player's attack on the
+        // second slug takes no Colossus: the handler reads an enemy dealer's Vulnerable as the old site does (the old engine
+        // holds Colossus on the player alone); the game would ask the player's, which the player has not.
+        var s = Combat(40, 40);
+        var holders = Holders(s, "ColossusPower", BuffId.Colossus, 1);
+        s.Enemies[0].Buffs.Add(new BuffState(BuffId.Vulnerable, 1));
+        var k = Kernel(s, Power1);
+
+        Assert.Equal(3.5m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 7m, dealer: 1), out var changed));
+        Assert.Equal([holders[0]], changed);
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 7m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void ColossusDeleteMutantGivesTheNoHandlerValue()
+    {
+        var s = ColossusCombat();
+        var k = Kernel(s, Without(Power1, ColossusPower.Register));
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 7m, dealer: 1), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(7, Assert.Single(Hit(k, OldCreature.Player, 7m, dealer: OldCreature.Of(s.Enemies[0]))).UnblockedDamage);
+        Assert.Equal(43, s.PlayerHp);
+    }
+
+    [Fact]
+    public void ColossusIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power1, AllButDamage), ListenerKind.Power, "ColossusPower", HookId.ModifyDamageMultiplicative);
     }
 }
