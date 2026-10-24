@@ -19,8 +19,9 @@ internal static class ThornsPower
     /// Each body reads its own owner's Thorns, so the dispatcher's one call per owner is one old call per owner.
     /// A re-entry: under the switch both bodies reach CreatureCmd.Damage (DealDamageToPlayer and DealUnpoweredDamageToEnemy
     /// are gated), unpowered, with the owner as dealer and no card source, as the game's call. The game also sets
-    /// SkipHurtAnim, a presentation flag. Where the old body and the game differ: the enemy-owned body hits the player
-    /// whoever dealt (the game hits the dealer, Osty when Osty struck), and the player-owned body needs an enemy dealer.
+    /// SkipHurtAnim, a presentation flag. The enemy-owned retaliation goes to the dealer, as the game's (R7b2): the old body
+    /// when the player dealt (it hits the player), else the same Damage call on the dealer (Osty when Osty struck, an
+    /// enemy), with the owner's Thorns, unpowered, the owner as dealer. The player-owned body needs an enemy dealer.
     /// </summary>
     internal static HookStep BeforeDamageReceived(HookCtx c, ListenerRef self, in BeforeDamageReceivedArgs a, ChoiceCtx? ctx)
     {
@@ -28,11 +29,20 @@ internal static class ThornsPower
             || !(a.Props.IsPoweredAttack() || IsOmnislice(c, a.CardSource)))
             return HookStep.Done;
         if (c.Enemy(me.Owner) is { } owner)
-            CardEffects.TriggerEnemyThorns(c.OldCombat, owner);
+        {
+            if (c.IsPlayer(dealer))
+                CardEffects.TriggerEnemyThorns(c.OldCombat, owner);
+            else if (OldDealer(c, dealer) is { } hit && BuffSystem.Get(owner.Buffs, BuffId.Thorns) is > 0 and var thorns)
+                CreatureCmd.Damage(c.K, [hit], thorns, OldEntry.Unpowered, OldCreature.Of(owner), null);
+        }
         else if (c.IsPlayer(me.Owner) && c.Enemy(dealer) is { } attacker)
             EnemyAI.ApplyPlayerThorns(attacker, c.OldCombat);
         return HookStep.Done;
     }
+
+    /// <summary>The old creature for a dealer that is not the player: an enemy, or the player's pet (Osty).</summary>
+    private static OldCreature? OldDealer(HookCtx c, CreatureRef dealer) =>
+        c.Enemy(dealer) is { } enemy ? OldCreature.Of(enemy) : c.PetOwner(dealer) is not null ? OldCreature.Osty : null;
 
     /// <summary>The game's test that the card source is Omnislice: the card source's def is Omnislice.</summary>
     private static bool IsOmnislice(HookCtx c, CardHandle? source) =>

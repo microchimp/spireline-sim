@@ -5561,18 +5561,27 @@ public static class CombatEngine
                 continue;
             }
 
-            BuffSystem.Apply(other.Buffs, BuffId.Strength, Run.RunConstants.CrabRageStrength);
-            // BlockVar(99, ValueProp.Unpowered): Dexterity does not touch it.
-            other.Block += Run.RunConstants.CrabRageBlock;
-            // `PowerCmd.Remove(this)` -- the rage is spent on the partner it mourned. With
-            // exactly two crabs there is no third death to reach it, so this changes no
-            // reachable outcome; it is here so the power cannot fire twice if one ever
-            // joins them.
-            BuffSystem.Remove(other.Buffs, BuffId.CrabRage);
+            EnrageCrab(other);
             enraged = true;
         }
 
         return enraged;
+    }
+
+    /// <summary>
+    /// game: CrabRagePower.AfterDeath's body for one holder: Strength, Block, the power removed. Extracted from
+    /// TryEnrageCrabPartner (R7b2) for the Core2 handler, which calls it with the game's condition; the caller keeps it.
+    /// </summary>
+    internal static void EnrageCrab(EnemyState crab)
+    {
+        BuffSystem.Apply(crab.Buffs, BuffId.Strength, Run.RunConstants.CrabRageStrength);
+        // BlockVar(99, ValueProp.Unpowered): Dexterity does not touch it.
+        crab.Block += Run.RunConstants.CrabRageBlock;
+        // `PowerCmd.Remove(this)` -- the rage is spent on the partner it mourned. With
+        // exactly two crabs there is no third death to reach it, so this changes no
+        // reachable outcome; it is here so the power cannot fire twice if one ever
+        // joins them.
+        BuffSystem.Remove(crab.Buffs, BuffId.CrabRage);
     }
 
     /// <summary>
