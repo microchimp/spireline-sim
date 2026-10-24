@@ -602,11 +602,27 @@ registered under the F08+F10 switch and run by `Hooks.ModifyDamage` over an old 
    `in <Dispatcher>Args a`, then the op's extra: a fold-add or fold-mul `decimal Method(HookCtx c, ListenerRef self, in
    ModifyDamageArgs a, decimal current)` (the addend, or the factor), a cap `decimal Method(c, self, in a)`, a predicate
    `bool`, an event `HookStep Method(c, self, in a, ChoiceCtx? ctx)`.
-3. Read the combat only through `c`: `c.Power(self)` for the power's owner and amount (null when it is gone from its owner:
-   answer the identity or name the gap), `c.Owner(self)` for any other model's creature. A body the old engine already
-   has as `BuffSystem.<Model>_<Hook>(...)` (R5) is called with `c.OldBuffs(creature)`; the handler keeps the game's
-   condition (the dealer, the target, `props.IsPoweredAttack()`) and the old function holds the number. State changes go
-   through the commands, which take `c.K`, never by writing the old state.
+3. Read the combat only through `c`. Engine-neutral (a Tier 2 context answers them too): `c.Power(self)` for the power's
+   owner and amount (null when it is gone from its owner: answer the identity or name the gap); `c.Owner(self)` for any
+   other model's creature; `c.Card(self)` for a card model's own copy (`CardView`: model id, pile, index; by the K2b uid)
+   and `c.Card(handle)` for a card an argument names (the card source, a played card); `c.Relic(self)` for a relic's
+   counter (`RelicView`; a relic's other saved properties are fields of the old combat state its old body reads).
+   Tier 1 only (each use goes on `TIER2_REWRITE_LIST.md`): `c.OldCombat` (the `CombatState`: the first argument of most
+   old bodies, `CardEffects.PhantomBlades_ModifyDamageAdditive(c.OldCombat)`, `RelicEffects.BootDamageFloor(c.OldCombat,
+   hpLost)`, and the state a Lethality or Melancholy body reads), `c.OldBuffs(creature)` (a body the old engine already
+   has as `BuffSystem.<Model>_<Hook>(...)`, R5), `c.Enemy(creature)` (the old `EnemyState` of a body that takes one, as
+   `RelicEffects.ApplyAfterBlockBroken(state, enemy)` does for Hand Drill) and `c.World`. The handler keeps the game's
+   condition (the dealer, the target, `props.IsPoweredAttack()`) and the old function holds the number; an input the old
+   fold takes from the state is passed the way the old site passes it (the template passes
+   `RelicEffects.VulnerableMultiplierDeltaAgainstEnemies(c.OldCombat)`, not 0). State changes go through the commands,
+   which take `c.K`, never by writing the old state (TIER1_KERNEL.md section 4: in Tier 1 the commands take the
+   `KernelState`; Tier 2 maps each `c.K` use).
+   **One hook call per copy.** The game runs a card's hook once per card model in the combat, so a handler for a card
+   acts on its own copy (`c.Card(self)`: its pile and index), never on every copy. Melancholy is the case in the pilot: the
+   old `CardEffects.CheapenMelancholyForDeath(state)` cheapens every copy in every pile in one call, so called from a
+   per-copy handler it would cheapen N copies N times. The handler must act on its own card only, or the batch first
+   splits the old function into a per-card part (`CheapenMelancholy(CardInstance)`, returned with its `CostBump` lowered) that
+   both the old caller loop and the handler call, keeping the switch-off path byte-identical.
 4. Where the power does not apply, return the identity: 0 for an addend, 1 for a factor, the cap's `decimal.MaxValue`, the
    current value for a set. The changed set is the dispatcher's (by the pass's `changed` criterion): a handler never
    tracks it.
