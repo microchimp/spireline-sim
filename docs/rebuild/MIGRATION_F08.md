@@ -1113,12 +1113,11 @@ the 9 corpus and 3 traced fights on fewer fields, the fuzz triage.
   old `FinishCombat` for a lost combat too (as the old engine does). Whatever `FinishCombat` does on a loss must be the
   game's loss path, or not run. `R7dTests.ALossAtThePlayersTurnStartEndsTheCombatThere` pins one hand-off and one
   `FinishCombat` call on a loss.
-- **Inferno's turn-start burst under the switch (found in R7e).** With F08+F10 on, Inferno's turn-start self-damage
-  (`OldEntry.HitPlayer`, HpLoss) sets off no burst: run PRB00058 at A8, its first combat, every enemy at 1 HP, Inferno 999 and
-  InfernoSelfDamage 1, end the turn: switch off the enemies die and the combat ends, switch on they stay at 1 HP and the
-  player loses the 1. The game's InfernoPower.AfterDamageReceived fires on that self-damage. Owner: the F08 handlers
-  (Core2 `InfernoPower`, the visit of a power kept in two BuffIds, `NotModelled`). Test before closing: that setup ends the
-  combat with the switch on (the R7d turn-start kill test uses Rolling Boulder until then).
+- **Inferno's turn-start burst in a test setup (found in R7e, unread).** Run PRB00058 at A8, its first combat, every
+  enemy at 1 HP, Inferno 999 and InfernoSelfDamage 1 set with BuffSystem.Apply, end the turn: switch off the enemies die,
+  switch on they stay at 1 HP (the player loses the 1). In the corpus the switched-on turn-start burst lands (26562e018fdc5e6a,
+  its end turn at step 8), and so does a Thorns-set-off burst in `R7eTests`, so the setup may be at fault. Read before
+  switch-on; the R7d turn-start kill test uses Rolling Boulder until then.
 - **A fork's run view (blocker, batch L3b review).** Since the L3b fix a combat's clone (a fork of the search, a snapshot,
   a probe) binds to no run, so under the switch a run+combat pass in a fork leaves out the run deck's cards and enchantments
   (`DeckWithoutRun`, reported by `Listeners.Report` only) and `HookCtx.Card` answers null for a deck card. The search forks
@@ -1291,6 +1290,18 @@ The suites are `NAMED` (the ten of review 2.3 item 3; DeathCheckTests.cs is six 
 death, HP and combat-end suites) in tools/fidelity/suites_switch.py. By hand: `STS2_TEST_SWITCHES=F08,F10 dotnet test
 src/Sts2Emulator.Tests --no-build --filter "FullyQualifiedName~.DeathCheckTests.|..."`. Each round that switches more
 on reruns it; a "fail on only" is classed in MIGRATION_F08_O1.md (R4 to deliver, handler batch, old deviation).
+
+### R7e: the R7d proof's worse fights (branch `rebuild/f08-r7d`)
+
+- 26562e018fdc5e6a, 41193a3af1dede7e (fewer steps): a crash, `Enemy(93) is not in the combat`. A card's hit on a Toadpole
+  with Thorns: Thorns hits the player in BeforeDamageReceived, the player's Inferno burst kills the Toadpole and the kernel
+  removes it; `CreatureCmd.Damage` then named the removed target. The game's loop goes on with the dead target, which has no
+  HP to lose; the kernel now skips a target the hooks took out of the combat, as its results loop does. Test: `R7eTests`.
+- The census's fewer fields (`snap.enemies[*].move`, `snap.exhaust[*]`, `net`, `net...piles.*[*].floor`): no view drops a
+  field. Neither view writes `move` or `floor`; the old engine's census holds them only from the comparer's missing-entry
+  diffs (the game lists an enemy or a card the old engine has not), and `net` from steps where the old view had no net
+  state. Core2 has those entries, so the paths become game-only (unmodelled) and leave its census. A comparer question:
+  the census should count a path the engine wrote, not one compared only because the engine lacked the entry.
 
 ### Damage terms applied twice (round R7c, branch `rebuild/f08-r7c`)
 
