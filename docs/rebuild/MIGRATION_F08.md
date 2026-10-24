@@ -659,6 +659,24 @@ not-modelled entry with its reason. Then the by-family table re-measured on a lo
 target G2891c25e0d's kill part and mechanism B at 0, F08 proper down by at least its A+B share; any group that grows is
 a stop.
 
+### The old suites under the switch (O1; the review's recommendation 2)
+
+The old engine's behaviour suites pin game behaviour the old engine was made to match; run with F08+F10 on they are a
+switched-on regression suite. `STS2_TEST_SWITCHES=F08,F10` (src/Sts2Emulator.Tests/Support/TestSwitches.cs) binds one
+kernel with those switches and `Registry.All` to every combat the `Fight` helper builds (after its setup, where
+`RunEngine.StartCombat` binds a run's combat) and sends the helper's steps through `RunEngine.StepCombat`, the kernel's
+entry gate; the suites that make a `RunEngine` or step a combat themselves call `TestSwitches.Run` / `TestSwitches.Step`.
+Unset, empty or `none`: no kernel, nothing written, every step `CombatEngine.Step` (the whole suite and the byte proof
+unchanged). The runner runs the suites once off and once on and writes each test's verdict (pass both, fail on only,
+fail off only, fail both) to `DIR/suites_switch.json` and `DIR/suites_switch.md`:
+
+    python -m tools.fidelity.suites_switch --out DIR [--switches F08,F10] [--no-build] [--suites A,B]
+
+The suites are `NAMED` (the ten of review 2.3 item 3; DeathCheckTests.cs is six classes) and `ADDED` (the other damage,
+death, HP and combat-end suites) in tools/fidelity/suites_switch.py. By hand: `STS2_TEST_SWITCHES=F08,F10 dotnet test
+src/Sts2Emulator.Tests --no-build --filter "FullyQualifiedName~.DeathCheckTests.|..."`. Each round that switches more
+on reruns it; a "fail on only" is classed in MIGRATION_F08_O1.md (R4 to deliver, handler batch, old deviation).
+
 ## 7. Rounds and estimate
 
 | round | model | content |
