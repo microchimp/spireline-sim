@@ -1,5 +1,6 @@
 """tools/fidelity/scenarios.py and `EmuDump scenario`: the checked-in directory (tests/scenarios) on both engines, and broken
-cases the runner must catch (a wrong expectation, an xfail that passes, an unknown key, an engine the scenario leaves out).
+cases the runner must catch (a wrong expectation, an xfail that passes, an unknown key, an engine the scenario leaves out, a
+`block`/`enemy_hp`/`enemy_block` setter the fight cannot hold or the format rejects).
 Needs the Release EmuDump (tools/build_and_test.sh builds it before the Python suite)."""
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from tools.fidelity import scenarios as S  # noqa: E402
 
 BUILT = S.DEFAULT_DLL.is_file() and shutil.which("dotnet")
 REGRESSION = S.DEFAULT_DIR / "regression" / "strike-damages-the-enemy-and-costs-1.json"
+SETTERS = "regression/block-absorbs-first-and-zero-hp-kills"  # the scenario that sets the enemy's HP and block (SCENARIOS.md)
 
 
 class Rendering(unittest.TestCase):
@@ -59,6 +61,11 @@ class CheckedInScenarios(unittest.TestCase):
         a, b = (sorted((r["name"], r["status"]) for r in self.reports[e]["results"]) for e in S.ENGINES)
         self.assertEqual(a, b)
 
+    def test_the_scenario_that_sets_enemy_hp_and_block_passes_on_both_engines(self):
+        for engine, rep in self.reports.items():
+            status = {r["name"]: r["status"] for r in rep["results"]}
+            self.assertEqual(status.get(SETTERS), "pass", (engine, status.get(SETTERS)))
+
     def test_the_runner_names_the_differing_path_of_a_known_failure(self):
         old = {r["name"]: r for r in self.reports["old"]["results"]}
         r = old["victory-heal/meat-at-threshold-then-burning-blood"]
@@ -93,6 +100,17 @@ class BrokenCases(unittest.TestCase):
         make("unknown-model", lambda sc: sc["setup"].update(deck=["NO_SUCH_CARD"]))
         make("bad-path", lambda sc: sc["expect"].append({"path": "snapshot.hand[x", "equals": 1}))
         make("xfail-engine-not-run", lambda sc: sc.update(engines=["core2"], xfail_engines={"old": "a reason the row waits on"}))
+        # The setters: a slot the fight has no living enemy in and a current HP above the rolled max are refused at the setup item
+        # (not capped), a negative value is caught by the format; one that fits passes, and the start view shows it took.
+        make("enemy-slot-unknown", lambda sc: sc["setup"].update(enemy_hp=[{"slot": 7, "current": 5}]))
+        make("enemy-hp-above-max", lambda sc: sc["setup"].update(enemy_hp=[{"slot": 0, "current": 9999}]))
+        make("enemy-block-slot-unknown", lambda sc: sc["setup"].update(enemy_block=[{"slot": 7, "amount": 5}]))
+        make("negative-block", lambda sc: sc["setup"].update(block=-1))
+        make("negative-enemy-block", lambda sc: sc["setup"].update(enemy_block=[{"slot": 0, "amount": -1}]))
+        make("enemy-hp-current-above-its-max", lambda sc: sc["setup"].update(enemy_hp=[{"slot": 0, "max": 5, "current": 6}]))
+        make("setters-that-fit", lambda sc: (sc["setup"].update(block=3, enemy_hp=[{"slot": 0, "current": 30}], enemy_block=[{"slot": 0, "amount": 0}]),
+                                             sc["expect"].extend([{"at": "start", "path": "snapshot.enemies[0].hp", "equals": 30},
+                                                                  {"at": "start", "path": "snapshot.player.block", "equals": 3}])))
         cls.report = S.run_dir(cls.dir, "old")
         cls.status = {r["name"]: r for r in cls.report["results"]}
 
@@ -103,14 +121,18 @@ class BrokenCases(unittest.TestCase):
     def test_outcomes(self):
         want = {"passes": "pass", "wrong-value": "fail", "xfail-that-fails": "xfail", "xfail-that-passes": "xpass", "other-engine-only": "skip",
                 "typo-key": "invalid", "no-source": "invalid", "illegal-action": "fail", "unknown-model": "fail", "bad-path": "invalid",
-                "xfail-engine-not-run": "invalid"}
+                "xfail-engine-not-run": "invalid",
+                "enemy-slot-unknown": "fail", "enemy-hp-above-max": "fail", "enemy-block-slot-unknown": "fail", "negative-block": "invalid",
+                "negative-enemy-block": "invalid", "enemy-hp-current-above-its-max": "invalid", "setters-that-fit": "pass"}
         self.assertEqual({k: self.status["broken/" + k]["status"] for k in want}, want)
 
     def test_the_run_fails_exactly_when_something_unexpected_happened(self):
         self.assertEqual(self.report["exit"], 1)
         self.assertEqual(sorted(r["name"] for r in S.unexpected(self.report)),
                          sorted("broken/" + k for k in ("wrong-value", "xfail-that-passes", "typo-key", "no-source", "illegal-action", "unknown-model",
-                                                        "bad-path", "xfail-engine-not-run")))
+                                                        "bad-path", "xfail-engine-not-run", "enemy-slot-unknown", "enemy-hp-above-max",
+                                                        "enemy-block-slot-unknown", "negative-block", "negative-enemy-block",
+                                                        "enemy-hp-current-above-its-max")))
 
     def test_diagnostics_name_what_was_wrong(self):
         def d(k):
@@ -120,6 +142,13 @@ class BrokenCases(unittest.TestCase):
         self.assertIn("unknown key 'relic'", d("typo-key"))
         self.assertIn("target 5 is not legal", d("illegal-action"))
         self.assertIn("NO_SUCH_CARD", d("unknown-model"))
+        self.assertIn("no living enemy in slot 7", d("enemy-slot-unknown"))
+        self.assertIn("enemy_hp", d("enemy-slot-unknown"))
+        self.assertIn("current HP 9999 above max HP", d("enemy-hp-above-max"))
+        self.assertIn("enemy_block", d("enemy-block-slot-unknown"))
+        self.assertIn("setup.block: an integer, 0 or more", d("negative-block"))
+        self.assertIn("setup.enemy_block[0].amount", d("negative-enemy-block"))
+        self.assertIn("current 6 above max 5", d("enemy-hp-current-above-its-max"))
 
     def test_a_directory_of_passing_scenarios_exits_0(self):
         d = Path(tempfile.mkdtemp())

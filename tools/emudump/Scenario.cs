@@ -1,11 +1,11 @@
 // EmuDump scenario <file|dir> [--engine old|core2] [--json] [--dump]: engine-neutral scenario tests (docs/rebuild/SCENARIOS.md).
 // A scenario file (tests/scenarios/*.json) holds the setup in the game's terms (character, ascension, relics in obtain order, deck,
-// potions by slot, powers with amounts on creatures by slot, the encounter, HP and energy), the actions (play a card by ModelId or
-// hand index, a potion, end turn, screen answers by candidate ModelId) and the expected fields at named points as paths into the
-// game view ({snapshot, net, private} of IEngine.GameView, plus `screen`). Each one is run through IEngine only: the setup becomes
-// the setup items Setup.cs already runs (relics_set, deck_set, potions_set, hp, fight, power, energy, card), the actions are the
-// engine's own PlayCard/UsePotion/EndTurn/Pick/Decline, and the expectations are read off the engine's GameView. No engine type
-// appears here (tools/emudump.Tests/EngineBoundaryTests.cs).
+// potions by slot, powers with amounts on creatures by slot, the encounter, HP, block, the enemies' HP and block by slot, and
+// energy), the actions (play a card by ModelId or hand index, a potion, end turn, screen answers by candidate ModelId) and the
+// expected fields at named points as paths into the game view ({snapshot, net, private} of IEngine.GameView, plus `screen`). Each one
+// is run through IEngine only: the setup becomes the setup items Setup.cs runs (relics_set, deck_set, potions_set, hp, fight, block,
+// enemy_hp, enemy_block, power, energy, card), the actions are the engine's own PlayCard/UsePotion/EndTurn/Pick/Decline, and the
+// expectations are read off the engine's GameView. No engine type appears here (tools/emudump.Tests/EngineBoundaryTests.cs).
 //
 // Outcome per scenario and engine: pass; fail (a difference, an engine error, an illegal action); xfail (a fail the scenario lists for
 // this engine under `xfail_engines`, with its reason); xpass (listed as an xfail and passed: unexpected, take the row out); skip (the
@@ -135,7 +135,10 @@ static class Scenarios
 {
     static readonly string[] Top = ["name", "source", "doc", "engines", "xfail_engines", "setup", "start_answers", "actions", "expect"];
     static readonly string[] SetupKeys =
-        ["character", "ascension", "seed", "encounter", "relics", "deck", "potions", "hp", "powers", "energy", "hand", "draw", "discard"];
+    [
+        "character", "ascension", "seed", "encounter", "relics", "deck", "potions", "hp", "block", "enemy_hp", "enemy_block", "powers", "energy",
+        "hand", "draw", "discard",
+    ];
     static readonly string[] ActionKeys = ["name", "do", "card", "hand_index", "upgraded", "slot", "target", "answers"];
     static readonly string[] ExpectKeys = ["at", "path", "equals", "one_of", "at_least", "at_most", "absent", "delta_from", "why"];
     static readonly string[] Operators = ["equals", "one_of", "at_least", "at_most", "absent"];
@@ -286,6 +289,52 @@ static class Scenarios
         }
 
         if (s["energy"] != null && (s["energy"] is not JsonValue ev || !ev.TryGetValue<int>(out _))) p.Add("setup.energy: an integer");
+        if (s["block"] != null && !NonNegative(s["block"])) p.Add("setup.block: an integer, 0 or more");
+        ValidateEnemyItems(s, "enemy_hp", ["slot", "max", "current"], p, (o, at) =>
+        {
+            if (o["max"] == null && o["current"] == null) p.Add(at + ": `max` or `current`, at least one");
+            foreach (string k in new[] { "max", "current" })
+            {
+                if (o[k] != null && !Positive(o[k])) p.Add($"{at}.{k}: an integer, 1 or more");
+            }
+
+            if (Int(o["max"]) is { } max && Int(o["current"]) is { } cur && cur > max) p.Add($"{at}: current {cur} above max {max}");
+        });
+        ValidateEnemyItems(s, "enemy_block", ["slot", "amount"], p, (o, at) =>
+        {
+            if (!o.ContainsKey("amount")) p.Add(at + ": missing 'amount'");
+            else if (!NonNegative(o["amount"])) p.Add(at + ".amount: an integer, 0 or more");
+        });
+    }
+
+    static int? Int(JsonNode? n) => n is JsonValue v && v.TryGetValue<int>(out int i) ? i : null;
+
+    static bool NonNegative(JsonNode? n) => Int(n) is >= 0;
+
+    static bool Positive(JsonNode? n) => Int(n) is >= 1;
+
+    /// <summary>
+    /// The enemy items of a setup key (<c>enemy_hp</c>, <c>enemy_block</c>): a list of objects, each with a <c>slot</c> (an integer, 0 or
+    /// more) named once in the list and only the keys allowed; <paramref name="more"/> checks the rest of one object.
+    /// </summary>
+    static void ValidateEnemyItems(JsonObject s, string key, string[] allowed, List<string> p, Action<JsonObject, string> more)
+    {
+        if (s[key] == null) return;
+        if (s[key] is not JsonArray list) { p.Add($"setup.{key}: a list of objects {{{string.Join(", ", allowed)}}}"); return; }
+        var slots = new HashSet<int>();
+        for (int i = 0; i < list.Count; i++)
+        {
+            string at = $"setup.{key}[{i}]";
+            if (list[i] is not JsonObject o) { p.Add($"{at}: an object {{{string.Join(", ", allowed)}}}"); continue; }
+            CheckKeys(o, at, allowed, ["slot"], p);
+            if (o.ContainsKey("slot"))
+            {
+                if (!NonNegative(o["slot"])) p.Add(at + ".slot: an integer, 0 or more (a creature slot, as powers' enemy:<slot>)");
+                else if (!slots.Add((int)o["slot"]!)) p.Add(at + $".slot: slot {(int)o["slot"]!} is set twice");
+            }
+
+            more(o, at);
+        }
     }
 
     static void ValidateAnswers(JsonNode? answers, string where, List<string> p)
@@ -316,6 +365,20 @@ static class Scenarios
         var hp = setup["hp"] as JsonObject;
         items.Add(new JsonObject { ["cmd"] = "hp", ["max"] = (int?)hp?["max"] ?? 80, ["current"] = (int?)hp?["current"] ?? (int?)hp?["max"] ?? 80 });
         items.Add(new JsonObject { ["cmd"] = "fight", ["id"] = (string)enc["id"]! });
+        if (setup["block"] != null) items.Add(new JsonObject { ["cmd"] = "block", ["amount"] = (int)setup["block"]! });
+        foreach (var eh in setup["enemy_hp"] as JsonArray ?? new JsonArray())
+        {
+            var item = new JsonObject { ["cmd"] = "enemy_hp", ["slot"] = (int)eh!["slot"]! };
+            if (eh["max"] != null) item["max"] = (int)eh["max"]!;
+            if (eh["current"] != null) item["current"] = (int)eh["current"]!;
+            items.Add(item);
+        }
+
+        foreach (var eb in setup["enemy_block"] as JsonArray ?? new JsonArray())
+        {
+            items.Add(new JsonObject { ["cmd"] = "enemy_block", ["slot"] = (int)eb!["slot"]!, ["amount"] = (int)eb["amount"]! });
+        }
+
         foreach (var pw in setup["powers"] as JsonArray ?? new JsonArray())
         {
             items.Add(new JsonObject { ["cmd"] = "power", ["id"] = (string)pw!["id"]!, ["target"] = (string)pw["target"]!, ["amount"] = (int)pw["amount"]! });

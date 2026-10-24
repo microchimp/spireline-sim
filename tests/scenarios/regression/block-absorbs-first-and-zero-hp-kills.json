@@ -1,0 +1,29 @@
+{
+  "name": "regression/block-absorbs-first-and-zero-hp-kills",
+  "source": "game: CreatureCmd.Damage (block absorbs the hit first, the unblocked rest is HP loss; CreatureCmd.Kill at 0 HP)",
+  "doc": "A lone enemy set to 8 HP and 4 block: the first STRIKE_IRONCLAD (6) breaks the block and leaves 6 HP, the second takes it to 0 and kills it. The player's block is set to 5 and pinned at the start, as are the enemy's HP and block.",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "HUNTER_KILLER", "act": "HIVE", "kind": "normal", "index": 3},
+    "relics": [],
+    "deck": ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD"],
+    "block": 5,
+    "enemy_hp": [{"slot": 0, "current": 8}],
+    "enemy_block": [{"slot": 0, "amount": 4}]
+  },
+  "actions": [
+    {"do": "play", "card": "STRIKE_IRONCLAD", "target": 0, "name": "hit1"},
+    {"do": "play", "card": "STRIKE_IRONCLAD", "target": 0, "name": "hit2"}
+  ],
+  "expect": [
+    {"at": "start", "path": "snapshot.player.block", "equals": 5},
+    {"at": "start", "path": "snapshot.enemies#len", "equals": 1},
+    {"at": "start", "path": "snapshot.enemies[0].hp", "equals": 8},
+    {"at": "start", "path": "snapshot.enemies[0].block", "equals": 4},
+    {"at": "after:hit1", "path": "snapshot.enemies[0].block", "equals": 0, "why": "6 damage into 4 block: the block goes first"},
+    {"at": "after:hit1", "path": "snapshot.enemies[0].hp", "equals": 6, "why": "the 2 the block did not take are HP loss"},
+    {"path": "snapshot.enemies#len", "equals": 0, "why": "the second 6 takes the 6 HP left: 0 HP kills"}
+  ]
+}

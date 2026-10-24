@@ -219,6 +219,25 @@ public interface IEngine : IScreenSource
     /// <summary>Sets the player's max HP, then current HP (capped at max), on the map; null keeps the value held.</summary>
     SetupResult SetHp(int? maxHp, int? currentHp);
 
+    // The scenario setters (Scenario.cs's `block`, `enemy_hp` and `enemy_block`): a creature's block or HP written as it stands, in
+    // a fight, after the fight's start. No hook runs for them and an intent already rolled stays. The referee has no counterpart
+    // item yet, so a referee record never carries them. Each is refused (ok false, with the reason) rather than clamped: a value
+    // the setup cannot hold as written would hide a drifting assumption.
+
+    /// <summary>The player's block becomes exactly this, in a fight. Refused below 0.</summary>
+    SetupResult SetBlock(int amount);
+
+    /// <summary>
+    /// Sets the max HP, then the current HP, of the living enemy in <paramref name="slot"/> (a creature slot, as
+    /// <see cref="ApplyPower"/> counts them), in a fight; null keeps the value held, and a held current HP above a lowered max comes
+    /// down to it. Refused for a slot with no living enemy, a value below 1, or a current HP above the max HP in force (the one
+    /// given, else the one held).
+    /// </summary>
+    SetupResult SetEnemyHp(int slot, int? maxHp, int? currentHp);
+
+    /// <summary>The block of the living enemy in <paramref name="slot"/> becomes exactly this, in a fight. Refused for a slot with no living enemy, or below 0.</summary>
+    SetupResult SetEnemyBlock(int slot, int amount);
+
     /// <summary>
     /// A reference-set item the members above do not cover (relics_set, deck_set, potions_set, player_load, act), as the
     /// record holds it: raw JSON for now. Null when the item is none of those.
@@ -259,8 +278,9 @@ public interface IEngine : IScreenSource
     string StateHash();
 
     /// <summary>
-    /// One short hash per top-level field of the run's state, then of the combat's with its name prefixed "ActiveCombat.", in the
-    /// engine's order: a difference in <see cref="StateHash"/> is named by the fields that differ.
+    /// One short hash per top-level field of the run's state, then per top-level field of the combat's, in the engine's order: a
+    /// difference in <see cref="StateHash"/> is named by the fields that differ. The combat's field names carry a prefix the
+    /// engine chooses; callers treat the names as opaque.
     /// </summary>
     IReadOnlyList<KeyValuePair<string, string>> StateFieldHashes();
 
