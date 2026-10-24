@@ -258,6 +258,30 @@ class RecordsTest(unittest.TestCase):
         self.assertEqual("group samples", b["summary"]["basis"])
         self.assertEqual([(r["family"], r["weight"]) for r in a["families"]], [(r["family"], r["weight"]) for r in b["families"]])
 
+    def test_the_emulator_arm_reaches_the_weights_and_the_report_says_which_rule_was_used(self):
+        f = self.folder([rec(1, 50, RUN_HP, type="map"), rec(2, 50, HP)])
+        arm = self.tmp / "emu"
+        arm.mkdir()
+        (arm / "runs.jsonl").write_text(json.dumps({"seed": "S1", "win": True, "floor": 51, "end": "win"}) + "\n", encoding="utf-8")
+        doc = rank.rank(f, arm)
+        t = bf.build(f, doc)
+        self.assertEqual(3.0, doc["summary"]["total_weight"])  # both confirmed: 1.5 each
+        self.assertEqual(0.0, t["summary"]["weight_check_max_abs_error"])  # by_family joins the same arm
+        self.assertEqual(2, sum(r["outcome_changing_confirmed"] for r in t["families"]))
+        self.assertIn("paired emulator arm", t["summary"]["outcome_rule"])
+        self.assertIn("Outcome weighting: confirmed", bf.md(t))
+        plain = bf.build(f, rank.rank(f))
+        self.assertTrue(plain["summary"]["outcome_rule"].startswith("proxy"))
+        self.assertIn("Outcome weighting: proxy", bf.md(plain))
+        self.assertEqual(0, bf.main([str(f), "--out", str(self.tmp / "cli"), "--emu-dir", str(arm)]))
+        self.assertIn("Outcome weighting: confirmed", (self.tmp / "cli" / "by_family.md").read_text(encoding="utf-8"))
+
+    def test_the_corpse_after_a_play_is_the_games_rule_and_reading_c_is_the_bound(self):
+        text = {r[0]: r[5] for r in bf.RULES}["R04a"]
+        self.assertIn("M0 game trace", text)
+        self.assertIn("primary reading", text)
+        self.assertIn("bound", bf.READINGS["C: a listed corpse is the comparer's"][1])
+
     def test_acted_turn_and_encounter_are_read_from_the_records(self):
         f = self.folder([rec(1, 5, EMU_CORPSE, type="select_cards_combat", acted=PLAY, turn=2, encounter="SLIMES"),
                          rec(2, 5, GAP_HAND, acted=END, turn=3, encounter="SLIMES"), rec(3, 5, GAP_HAND, acted=PLAY, turn=5, encounter="NIBBITS"),

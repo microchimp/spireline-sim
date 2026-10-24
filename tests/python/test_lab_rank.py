@@ -138,6 +138,50 @@ class RankTest(unittest.TestCase):
         self.assertAlmostEqual(0.5, s["arch_share"], places=3)
         self.assertAlmostEqual(0.01, s["state_divergence_rate"])
 
+    def emu_arm(self, *rows):
+        d = self.tmp / "emu"
+        d.mkdir(exist_ok=True)
+        (d / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        return d
+
+    def test_the_paired_emulator_arm_is_joined_by_seed_into_the_outcome(self):
+        write_records(self.tmp / "in", [rec(1, 50, RUN_HP, type="map"), rec(2, 50, HP)])  # the referee run S1 died on floor 9
+        won = self.emu_arm({"seed": "S1", "win": True, "floor": 51, "end": "win"}, {"seed": "S9", "win": False, "floor": 3, "end": "death"})
+        d = rank.rank(self.tmp / "in", won)
+        by = {g["display"]["type"]: g for g in d["groups"]}
+        self.assertEqual((1, 0, 1.5), (by["map"]["outcome_changing_confirmed"], by["map"]["outcome_changing_proxy"], by["map"]["weight"]))
+        self.assertEqual((1, 1.5), (by["combat"]["outcome_changing_confirmed"], by["combat"]["weight"]))
+        s = d["summary"]
+        self.assertEqual((2, 1), (s["outcome_confirmed"], s["emu_runs_joined"]))
+        self.assertIn("paired emulator arm", s["outcome_rule"])
+        self.assertIn("Outcome weighting: confirmed", rank.top_md(d))
+        # the same end on both engines: nothing is confirmed, and the proxy no longer applies (the arm decides)
+        same = rank.rank(self.tmp / "in", self.emu_arm({"seed": "S1", "win": False, "floor": 9, "end": "death"}))
+        self.assertEqual((0, 0), (same["summary"]["outcome_confirmed"], same["summary"]["outcome_proxy"]))
+        # no arm: the proxy rule as before, and no outcome keys in the summary (the golden bytes do not change)
+        none = rank.rank(self.tmp / "in")
+        self.assertEqual((0, 1), (none["summary"]["outcome_confirmed"], none["summary"]["outcome_proxy"]))
+        self.assertNotIn("outcome_rule", none["summary"])
+        self.assertNotIn("Outcome weighting", rank.top_md(none))
+        # a seed the arm lacks falls back to the proxy
+        other = rank.rank(self.tmp / "in", self.emu_arm({"seed": "S9", "end": "death", "floor": 3}))
+        self.assertEqual((0, 1, 0), (other["summary"]["outcome_confirmed"], other["summary"]["outcome_proxy"], other["summary"]["emu_runs_joined"]))
+
+    def test_the_cli_takes_the_emulator_arm_and_the_folder_names_its_own(self):
+        write_records(self.tmp / "in", [rec(1, 50, HP)])
+        arm = self.emu_arm({"seed": "S1", "win": True, "floor": 51, "end": "win"})
+        self.assertIsNone(rank.paired_emu_dir(self.tmp / "in"))
+        self.assertEqual(0, rank.main([str(self.tmp / "in"), "--out", str(self.tmp / "out"), "--emu-dir", str(arm)]))
+        self.assertEqual(1, json.loads((self.tmp / "out" / "ranked.json").read_text())["summary"]["outcome_confirmed"])
+        self.assertIn("Outcome weighting: confirmed", (self.tmp / "out" / "top20.md").read_text())
+        for name in ("summary.json", "compare.json"):
+            (self.tmp / "in" / "summary.json").write_text(json.dumps({"decisions": 1000}), encoding="utf-8")
+            (self.tmp / "in" / name).write_text(json.dumps({"emu_arm": {"dir": arm.as_posix()}}), encoding="utf-8")
+            self.assertEqual(arm, rank.paired_emu_dir(self.tmp / "in"), name)
+        (self.tmp / "in" / "compare.json").write_text(json.dumps({"emu_arm": {"dir": "nowhere"}}), encoding="utf-8")
+        (self.tmp / "in" / "summary.json").write_text(json.dumps({"decisions": 1000}), encoding="utf-8")
+        self.assertIsNone(rank.paired_emu_dir(self.tmp / "in"))
+
     def test_cli_writes_the_files_and_a_missing_folder_is_empty(self):
         write_records(self.tmp / "in", [rec(1, 5, SAME_SIZE)])
         self.assertEqual(0, rank.main([str(self.tmp / "in"), "--out", str(self.tmp / "out")]))
@@ -181,6 +225,21 @@ class JobHookTest(Base):
         self.assertEqual(("2", "2"), (row["divergences"], row["groups"]))
         self.assertNotEqual("NA", row["arch_share"])
         self.assertTrue((self.lab_dir / "score" / "last-ok").exists())
+
+    def test_the_hook_joins_the_emulator_arm_the_summary_names(self):
+        recs, arm = self.tmp / "records", self.tmp / "emu-arm"
+        write_records(recs, [rec(1, 5, SAME_SIZE), rec(2, 30, HP)], decisions=500)
+        arm.mkdir()
+        (arm / "runs.jsonl").write_text(json.dumps({"seed": "S1", "win": True, "floor": 51, "end": "win"}) + "\n", encoding="utf-8")
+        (recs / "summary.json").write_text(json.dumps({"decisions": 500, "emu_arm": {"dir": arm.as_posix()}}), encoding="utf-8")
+        code = "import sys, shutil; shutil.copytree(sys.argv[1], sys.argv[2], dirs_exist_ok=True)"
+        self.config(**{"score-real": {"cmd": ["{python}", "-c", code, str(recs), "{job}"]}})
+        self.marker("score/pending")
+        r = self.runner()
+        run = r.new_run("score-real", "abc")
+        self.assertIsNone(r.execute(run))
+        s = json.loads((run.dir / "ranked.json").read_text())["summary"]
+        self.assertEqual((2, 1), (s["outcome_confirmed"], s["emu_runs_joined"]))
 
 
 if __name__ == "__main__":

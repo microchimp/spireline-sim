@@ -32,6 +32,12 @@ outcome-changing when its class or floor differs from the referee's (confirmed).
 state difference (not a gap), was not repaired by a re-anchor, and its diff touches state that carries into every later fight
 (player hp, max hp, gold, relics, deck, potions outside the combat block) (proxy). Both are counted apart per group (outcome_changing_confirmed, outcome_changing_proxy) and never mixed.
 
+The emulator's outcome comes from the paired arm: the same seeds played on the emulator alone (an `emu-*` folder with its own runs.jsonl:
+seed, end, floor). `--emu-dir` (rank.write(emu_dir=...), rank.paired_emu_dir(folder) reads `emu_arm.dir` from the records folder's
+summary.json / compare.json) joins it by seed into the run ends as `emu_outcome` {class: its end, floor}, so a divergence is confirmed
+outcome-changing when the two engines' ends differ. With no arm the proxy rule above applies, and the report (summary `outcome_rule`,
+top20.md, by_family.md) says which one was used; a run the arm lacks falls back to the proxy.
+
 Tag: architectural when the diff matches a class of the audits (referee/design/game-shaped-dispatch.md, architecture-survey.md):
   rng_stream             a pile (hand, draw, discard, exhaust) holds different cards at equal size; or card reward / potion
                          contents differ in a reward screen
@@ -189,10 +195,47 @@ def outcome_changing(rec: dict, run_end: dict | None) -> str | None:
     return None
 
 
-def load(folder: Path) -> tuple[list[dict], list[dict], dict]:
+def emu_outcomes(emu_dir: Path) -> dict[str, dict]:
+    """The paired emulator arm's outcome by seed ({class: its end, floor}) from <emu_dir>/runs.jsonl; crashed runs have none."""
+    out: dict[str, dict] = {}
+    for r in _read_jsonl(Path(emu_dir) / "runs.jsonl"):
+        if r.get("seed") is None or r.get("crash") or (r.get("end") is None and r.get("floor") is None):
+            continue
+        out[str(r["seed"])] = {"class": r.get("end"), "floor": r.get("floor")}
+    return out
+
+
+def join_emu(runs: list[dict], emu: dict[str, dict]) -> int:
+    """Set emu_outcome on the run ends that lack one and have a seed in emu; how many run ends carry one afterwards."""
+    for r in runs:
+        if r.get("ev") == "end" and not r.get("emu_outcome") and str(r.get("seed")) in emu:
+            r["emu_outcome"] = emu[str(r["seed"])]
+    return sum(1 for r in runs if r.get("ev") == "end" and r.get("emu_outcome"))
+
+
+def paired_emu_dir(folder: Path) -> Path | None:
+    """The paired emulator arm a records folder names (`emu_arm.dir` in its summary.json or compare.json), when that folder exists
+    and holds runs.jsonl; relative paths are tried against the records folder too."""
+    folder = Path(folder)
+    for name in ("summary.json", "compare.json"):
+        try:
+            d = json.loads((folder / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        arm = d.get("emu_arm") if isinstance(d, dict) else None
+        raw = arm.get("dir") if isinstance(arm, dict) else None
+        for c in ([Path(str(raw)), folder / str(raw)] if raw else []):
+            if (c / "runs.jsonl").is_file():
+                return c
+    return None
+
+
+def load(folder: Path, emu_dir: Path | None = None) -> tuple[list[dict], list[dict], dict]:
     folder = Path(folder)
     divs = _read_jsonl(folder / "divergences.jsonl")
     runs = _read_jsonl(folder / "runs.jsonl")
+    if emu_dir is not None:
+        join_emu(runs, emu_outcomes(Path(emu_dir)))
     try:
         summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -219,8 +262,8 @@ def weigh(rec: dict, ends: dict[str, dict]) -> tuple:
     return rec, key, group_id(key), affected, oc, w
 
 
-def rank(folder: Path) -> dict:
-    divs, runs, summary = load(folder)
+def rank(folder: Path, emu_dir: Path | None = None) -> dict:
+    divs, runs, summary = load(folder, emu_dir)
     ends = run_ends(runs)
     total = int(summary.get("decisions") or sum(int(e.get("asked") or 0) for e in ends.values()))
     groups: dict[str, dict] = {}
@@ -265,7 +308,7 @@ def rank(folder: Path) -> dict:
     for i, g in enumerate(out, 1):
         g["rank"] = i
         g["weight"] = round(g["weight"], 3)
-    return {"summary": {
+    doc = {"summary": {
         "decisions": total, "divergences_total": len(divs), "state_divergences": fid, "mapping_gaps": gaps,
         "ai_state_assumed": assumed, "groups": len(out), "total_weight": round(tw, 3), "architectural_weight": round(arch, 3),
         "arch_share": round(arch / tw, 4) if tw else 0.0,
@@ -274,6 +317,12 @@ def rank(folder: Path) -> dict:
         "gap_reasons": dict(gap_reasons),
         "weights": "affected * (1 + (50 - min(floor, 50)) / 50) * (1.5 if outcome-changing confirmed else 1)"},
         "groups": out}
+    if emu_dir is not None:
+        n = sum(1 for e in ends.values() if e.get("emu_outcome"))
+        doc["summary"].update(
+            emu_dir=Path(emu_dir).as_posix(), emu_runs_joined=n,
+            outcome_rule=f"confirmed: the paired emulator arm's end joined by seed ({n} of {len(ends)} run ends); a run the arm lacks uses the proxy")
+    return doc
 
 
 def top_md(doc: dict, n: int = 20) -> str:
@@ -285,6 +334,8 @@ def top_md(doc: dict, n: int = 20) -> str:
              f"outcome-changing confirmed {s['outcome_confirmed']}, proxy {s['outcome_proxy']}", "",
              "| rank | group | weight | decisions affected | first floor | outcome-changing confirmed | outcome-changing (proxy) | tag |",
              "|---|---|---|---|---|---|---|---|"]
+    if s.get("outcome_rule"):
+        lines[4:4] = [f"Outcome weighting: {s['outcome_rule']}.", ""]
     for g in doc["groups"][:n]:
         k = g["display"]
         name = f"{k['type']}: {', '.join(k['kinds']) or '-'} [{', '.join(k['entities']) or '-'}] ({g['id']})"
@@ -294,8 +345,8 @@ def top_md(doc: dict, n: int = 20) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write(folder: Path, out: Path) -> dict:
-    doc = rank(folder)
+def write(folder: Path, out: Path, emu_dir: Path | None = None) -> dict:
+    doc = rank(folder, emu_dir)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "ranked.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
@@ -312,8 +363,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("folder", type=Path)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--emu-dir", type=Path, default=None, help="the paired emulator arm (same seeds, emulator alone): its runs.jsonl gives emu_outcome")
     a = ap.parse_args(argv)
-    print(json.dumps(write(a.folder, a.out)["summary"]))
+    print(json.dumps(write(a.folder, a.out, a.emu_dir)["summary"]))
     return 0
 
 

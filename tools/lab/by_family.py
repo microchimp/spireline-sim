@@ -65,7 +65,7 @@ RULES = [
     ("R01b", "phase_complete", "F10", "death and victory", "reason", "phase:6 (PHASE_COMPLETE) at a combat decision: the emulator's player is dead where the game's is alive: a death check (lethal damage, a revive or a prevention hook), not a win check"),
     ("R02", "screen_mismatch", "F16", "run flow", "reason", "the run layer shows another screen or event page (rest, map, event): flow, not a combat hook"),
     ("R03", "reward_hp", "F17", "death and victory", "diff", "hp differs at the reward screen: what runs at the victory (AfterCombatVictory heals) differs"),
-    ("R04a", "corpse_emulator@play", "F10", "death and victory", "shape", "an enemy with 0 hp is listed on the emulator side only, right after a card play: the game removes a creature inside the kill, the emulator keeps it in its roster until the sweep after the card (CombatEngine.ResolvePlay), so a screen the card's own effect opens (select_cards_combat) or a later decision compares it first: F10 kill and removal timing; at a selection screen it may be the comparer's timing alone (reading C)"),
+    ("R04a", "corpse_emulator@play", "F10", "death and victory", "shape", "an enemy with 0 hp is listed on the emulator side only, right after a card play: the game removes the killed creature inside the kill, before the selection screen the card opens, and the emulator removes it after the card (CombatEngine.ResolvePlay); the F08 diagnosis (mechanism A) and the rebuild lane's M0 game trace settled this as the game's rule, so this is F10 kill and removal timing and the primary reading; reading C (the comparer's timing) stays as the bound"),
     ("R04b", "corpse_referee", "F10", "death and victory", "shape", "an enemy with 0 hp is listed on the referee side only: the game keeps a creature the emulator has removed (ShouldCreatureBeRemovedFromCombatAfterDeath refuses, or the emulator removed it early): F10 removal refusal"),
     ("R04", "enemy_count", UNASSIGNED, "", "none", "the enemy lists differ in length by something other than 0-hp entries (a living enemy missing from one side: roster or the observation's slot limit), or the emulator-only corpse follows a step other than a play, or the record has no acted; the comparer lists every enemy on both sides, dead ones at 0 (referee/lockstep.py); needs the encounter"),
     ("R05", "sentinel_hp", UNASSIGNED, "", "none", "an enemy hp stand-in value (999999999 against 32768) is a representation difference of the encounter, not a hook; needs the encounter"),
@@ -93,7 +93,7 @@ RULES = [
 # primary top-five share, with its own lower and upper bound.
 READINGS = {
     "B: the draw is F03": ({"R10": "F03", "R11": "F03"}, "the dispatch file lists ModifyHandDraw / BeforeHandDraw under F03 (player turn start) and the draw, shuffle and pile moves under F11 (card piles); a hand drawn at turn start can be read either way"),
-    "C: a listed corpse is the comparer's": ({"R04a": UNASSIGNED, "R04b": UNASSIGNED}, "the review's section 2.1: the emulator keeps a dead enemy in its roster until the sweep after the card (CombatEngine.ResolvePlay) while the game removes it inside the kill, so a screen the card's own effect opens is compared before the sweep; if that is all R04a is, it is the comparer's timing and no hook family owns it (the primary reading puts R04a and R04b in F10, kill and removal timing)"),
+    "C: a listed corpse is the comparer's": ({"R04a": UNASSIGNED, "R04b": UNASSIGNED}, "the bound, not the reading to use: the review's section 2.1 offered that a screen the card's own effect opens is compared before the emulator's sweep (CombatEngine.ResolvePlay), which would make R04a the comparer's timing with no hook family; the F08 diagnosis and the rebuild lane's M0 game trace settled the corpse timing as the game's rule (the game removes the killed creature inside the kill), so the primary reading puts R04a and R04b in F10, kill and removal timing, and this reading only shows how far the verdict depends on them"),
 }
 RULE_IDS = {r[0]: r for r in RULES}
 SPLIT_RULES = tuple(r[0] for r in RULES if r[0][-1].isalpha())  # the letter-suffixed rules, which read acted or the phase number
@@ -239,7 +239,7 @@ def sample_record(g: dict, s: dict) -> dict:
 
 def parts_from_records(folder: Path, doc: dict) -> list[dict]:
     """One part per divergence, weighted as rank.rank weighs it (rank.weigh), with its group's tag from doc."""
-    divs, runs, _ = rank.load(Path(folder))
+    divs, runs, _ = rank.load(Path(folder), (doc.get("summary") or {}).get("emu_dir"))
     ends = rank.run_ends(runs)
     groups = {g["id"]: g for g in doc.get("groups", [])}
     parts = []
@@ -477,6 +477,8 @@ def build(folder: Path | None, doc: dict) -> dict:
         parts, basis = parts_from_ranked(doc), "group samples"
     out = table(parts, groups, doc.get("summary"))
     out["summary"]["basis"] = basis
+    out["summary"]["outcome_rule"] = (doc.get("summary") or {}).get("outcome_rule") or \
+        "proxy: no paired emulator arm, so no divergence is confirmed outcome-changing and none weighs the 1.5 factor"
     gw = collections.defaultdict(float)
     for p in parts:
         gw[p["group"]] += p["weight"]
@@ -498,7 +500,7 @@ def md(doc: dict) -> str:
     s = doc["summary"]
     t5 = s["top5_arch"]
     L = ["# Divergence by hook family", "",
-         f"Basis: {s['basis']}. Total agent weight {s['total_weight']}; architectural share {_pct(s['arch_share'])}; unassigned "
+         f"Basis: {s['basis']}. Outcome weighting: {s.get('outcome_rule', 'unknown')}. Total agent weight {s['total_weight']}; architectural share {_pct(s['arch_share'])}; unassigned "
          f"{_pct(s['unassigned_share'])} of the weight ({_pct(s['unassigned_arch_share_of_arch'])} of the architectural weight); "
          f"families with weight {s['families_with_weight']}. Evidence by weight: " +
          ", ".join(f"{k} {_pct(v)}" for k, v in s["evidence_weight_share"].items()) + ".", "",
@@ -572,8 +574,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("folder", type=Path)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--emu-dir", type=Path, default=None, help="the paired emulator arm (see tools/lab/rank.py)")
     a = ap.parse_args(argv)
-    res = write(a.folder, a.out, rank.rank(a.folder))
+    res = write(a.folder, a.out, rank.rank(a.folder, a.emu_dir))
     print(json.dumps(res["summary"]))
     return 0
 
