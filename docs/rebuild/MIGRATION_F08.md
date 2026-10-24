@@ -1040,6 +1040,33 @@ Illusion enemy as primary (the game's MinionPower-only `IsPrimaryEnemy`), the ol
 corpus fights with an Illusion enemy are read against the game for the win point (the fight ends when only Illusions
 are left, or not), and the old rule's users are listed and either follow the game or carry the difference.
 
+### R7 proof on `a42c41a3` (2026-10-24): not passed, nothing switched on
+
+Port gate 0 (model, hook) pairs without a handler. Run with F08+F10 on (`struct_calibrate --switches F08,F10 --gate-against` an
+old-engine run of the same tree, `suites_switch.py`, `StepApiKillTests` strict, `fuzz_core2.py`):
+
+| check | result | gate |
+|---|---|---|
+| O1, the old behaviour suites (291 tests) | 215 pass both, 76 not covered, 0 fail only switched on | pass |
+| traced set against the game (77 fights) | struct_compare 8 better, 68 same, 1 worse (on `ad9c8909`: 5 / 59 / 13); 3 fights on fewer fields | fail |
+| corpus against the game (4,392 fights) | struct_compare 67 better, 4,203 same, 122 worse; 20 fights on fewer fields; 2,027 exposed by the migrated families' rows | fail |
+| step test, strict (traced Headbutt and Twin Strike) | switch-off 2 pass; switched-on 2 fail: the death-event order lacks `AfterAttack` after `AfterDeath` | fail |
+| fuzz F08,F10 (300 fights) | 291 differ (untriaged), ending disagreements 0 | report |
+
+Triage of the 122 worse corpus fights (first differing path): 66 `snap.discard`, 36 `snap.draw`, 11 `snap.in_combat`, 7 a step
+count one short, 1 Shrink, 1 player HP. The 113 pile and in-combat cases are one mechanism: under the switch the combat has ended
+(the old `FinishCombat`, F17's, runs at the kill: in_combat false, the piles cleared) at a step where the game is still in combat
+with its piles intact (the game ends the combat after its action queue drains). The traced set's one worse fight is the same
+(`snap.draw`). Next, before any switch-on:
+- **Combat end after the queue drains (blocker).** Under F10, hold the old `FinishCombat` until the kernel's queue has drained
+  at the step boundary the game ends on (CombatManager's end of combat after the card's actions), or migrate F17's AfterCombatEnd
+  and AfterCombatVictory with it. Gate: the 113 corpus fights and the traced fight same or better, the 7 step-count errors gone.
+- **AfterAttack after a killing attack (blocker).** The step test's switched-on order is BeforeDeath, ShouldDie, ShouldRemove,
+  AfterDeath and stops: the attack's AfterAttack (F06, through the bridge) is not seen after the kill. Read AttackCommand's end
+  in the game (AfterAttack fires whether or not the target died) and the F06 bridge's recording.
+- **Fewer fields (20 corpus, 3 traced).** Read which fields go missing under the switch (the census gate) and close each.
+- Then rerun this table; the switch goes on in `migrated_families.json` only with every gate passing.
+
 **R7 checks before switch-on** (each closed, with a test, before the switch goes on in `migrated_families.json`):
 - **A fork's run view (blocker, batch L3b review).** Since the L3b fix a combat's clone (a fork of the search, a snapshot,
   a probe) binds to no run, so under the switch a run+combat pass in a fork leaves out the run deck's cards and enchantments
