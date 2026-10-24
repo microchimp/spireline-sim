@@ -41,6 +41,34 @@ public static class PotionEffects
     /// <summary>Whether using potion <paramref name="potionId"/> has a real combat effect.</summary>
     public static bool IsModelled(int potionId) => !Unsupported.Contains(potionId);
 
+    /// <summary>
+    /// The potions whose `Usage` is `AnyTime` (BloodPotion, EntropicBrew, FoulPotion, FruitJuice -- the only four
+    /// that override it) and the one whose `Usage` is `Automatic` (FairyInABottle). Every other potion is
+    /// `CombatOnly`. Looked up by name, as the rest of the engine does, rather than pinned to ids.
+    /// </summary>
+    private static readonly HashSet<int> AnyTimeIds = IdsOf("BloodPotion", "EntropicBrew", "FoulPotion", "FruitJuice");
+
+    private static readonly HashSet<int> AutomaticIds = IdsOf("FairyInABottle");
+
+    private static HashSet<int> IdsOf(params string[] names) =>
+        [.. names.Select(name => GeneratedData.Potions.FindId(name) ?? throw new InvalidOperationException($"No potion named {name}"))];
+
+    /// <summary>`PotionModel.Usage` of potion <paramref name="potionId" />.</summary>
+    public static PotionUsage UsageOf(int potionId) =>
+        AutomaticIds.Contains(potionId) ? PotionUsage.Automatic
+        : AnyTimeIds.Contains(potionId) ? PotionUsage.AnyTime
+        : PotionUsage.CombatOnly;
+
+    /// <summary>
+    /// Whether a held potion is offered as a move in a fight: the game's fight loop and `NPotionPopup` enable the use
+    /// button only for a `CombatOnly` or `AnyTime` potion (never `Automatic`: Fairy in a Bottle fires from its own
+    /// death hook), and only when `PassesCustomUsabilityCheck` holds -- which `FoulPotion`, the one override, answers
+    /// true for while a combat is in progress. A target-needing potion is still offered with no enemy: no check
+    /// looks at that. Plus the engine's own rule (<see cref="IsModelled" />).
+    /// </summary>
+    public static bool CanUseInCombat(int potionId) =>
+        IsModelled(potionId) && UsageOf(potionId) != PotionUsage.Automatic;
+
     public static void Apply(int potionId, CombatState state, Random? rng = null)
     {
         // Populated incrementally as potions are reverse-engineered from sts2.dll.

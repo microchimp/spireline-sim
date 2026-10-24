@@ -81,9 +81,7 @@ public static class RunPotionUse
             return state.Phase == RunPhase.Shop;
         }
 
-        return potion == RunNonCombatEffects.NamedPotion("BloodPotion")
-            || potion == RunNonCombatEffects.NamedPotion("FruitJuice")
-            || potion == RunNonCombatEffects.NamedPotion("EntropicBrew");
+        return Effects.PotionEffects.UsageOf(potion) == PotionUsage.AnyTime;
     }
 
     /// <summary>

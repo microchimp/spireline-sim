@@ -1,5 +1,17 @@
 namespace Sts2Emulator.Core;
 
+/// <summary>
+/// `PotionModel.Usage`: when the belt's use button works. `CombatOnly` potions are offered in a fight only,
+/// `AnyTime` ones also away from it, and `Automatic` ones (Fairy in a Bottle) have no use button at all -- they
+/// fire from their own hook (a death), never from a player action. See <see cref="Effects.PotionEffects.UsageOf" />.
+/// </summary>
+public enum PotionUsage
+{
+    CombatOnly,
+    AnyTime,
+    Automatic,
+}
+
 public enum PotionRarity
 {
     None,
