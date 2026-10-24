@@ -347,6 +347,13 @@ public static class EnemyAI
                 // table was corrected to real base values. It announced 21 and dealt 15.
                 int baseDamage = enemy.CurrentIntent.Magnitude;
 
+                // F08 on: game: a move's body runs in its own order (WaterfallGiant.StompMove: the attack, then Weak, then
+                // Steam Eruption), whatever a death inside the attack does to the move machine: SteamEruptionPower.AfterDeath
+                // (TriggerAboutToBlowState, SetMoveImmediate) runs inside the hit and only changes the NEXT move. The old
+                // riders below read the move from MoveIndex, which that death has already set to ABOUT_TO_BLOW, so they read
+                // the move chosen before the hit. Off, the death is answered after the riders and MoveIndex is read live.
+                int moveBeforeHit = enemy.MoveIndex;
+
                 // Hits, not one: the riders below belong to the attack as a whole, and a
                 // multi-hit intent used to break out above them -- which is how Punch
                 // Construct's FAST_PUNCH lost the Frail its DebuffIntent declares.
@@ -600,17 +607,18 @@ public static class EnemyAI
 
                 // The ring's riders, and only the ring's: EXPLODE is a bare attack that banks
                 // no Steam and applies no Weak, and its index would read as a STOMP here.
+                int giantMove = Core2.Kernel.If(Core2.Switch.F08, state) is not null ? moveBeforeHit : enemy.MoveIndex;
                 bool inGiantRing =
                     enemy.DefId == KE.WaterfallGiant
-                    && enemy.MoveIndex > 0
-                    && enemy.MoveIndex < WaterfallGiantAboutToBlowMove;
+                    && giantMove > 0
+                    && giantMove < WaterfallGiantAboutToBlowMove;
 
                 if (inGiantRing)
                 {
                     BuffSystem.Apply(enemy.Buffs, BuffId.SteamEruption, 3);
                 }
 
-                if (inGiantRing && (enemy.MoveIndex - 1) % 5 == 0)
+                if (inGiantRing && (giantMove - 1) % 5 == 0)
                 {
                     BuffSystem.Apply(state.PlayerBuffs, BuffId.Weak, 1);
                 }
