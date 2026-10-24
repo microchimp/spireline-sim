@@ -36,6 +36,7 @@ public static class Registry
         CalcifyPower.Register,
         AccuracyPower.Register,
         SicEmPower.Register,
+        ConstrictPower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when

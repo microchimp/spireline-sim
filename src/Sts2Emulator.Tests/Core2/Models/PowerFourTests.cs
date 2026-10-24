@@ -30,6 +30,7 @@ public class PowerFourTests
         (ListenerKind.Power, "CalcifyPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "AccuracyPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "SicEmPower", HookId.AfterDamageGiven),
+        (ListenerKind.Power, "ConstrictPower", HookId.AfterDeath),
     ];
 
     private static IOrderedEnumerable<(ListenerKind Kind, string Model, HookId Hook)> Sorted(
@@ -351,6 +352,97 @@ public class PowerFourTests
     public void SicEmIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power4, AllButDamage), ListenerKind.Power, "SicEmPower", HookId.AfterDamageGiven);
+    }
+
+    // ---------------------------------------------------------------------------------------- Constrict (power-4)
+
+    /// <summary>The player under Constrict 3, a Slithering Strangler (creature 1) and a slug (creature 2).</summary>
+    private static (CombatState S, EnemyState Strangler) ConstrictCombat(int amount = 3)
+    {
+        var s = Combat(30, 40);
+        s.Enemies[0].DefId = KE.SlitheringStrangler;
+        GivePower(s, "ConstrictPower", BuffId.Constrict, amount);
+        return (s, s.Enemies[0]);
+    }
+
+    private static int Constrict(CombatState s) => BuffSystem.Get(s.PlayerBuffs, BuffId.Constrict);
+
+    [Fact]
+    public void ConstrictIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power4), ListenerKind.Power, "ConstrictPower", HookId.AfterDeath);
+    }
+
+    [Fact]
+    public void ConstrictLeavesThePlayerWhenAStranglerDiesAsTheOldFunctionDoes()
+    {
+        // game: ConstrictPower.AfterDeath; old: CombatEngine.AnswerDeaths calls Constrict_AfterDeath(state) for a fallen
+        // whose def is the Slithering Strangler. Dispatched inside Dying: the fallen at 0 HP, still listed.
+        var (s, strangler) = ConstrictCombat();
+        var k = Kernel(s, Power4);
+        using (Dying(k, strangler))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+
+        var (oracle, _) = ConstrictCombat();
+        CombatEngine.Constrict_AfterDeath(oracle);
+        Assert.Equal(Constrict(oracle), Constrict(s));
+        Assert.Equal(0, Constrict(s));
+        Assert.Empty(s.PlayerBuffs);
+
+        // Where the condition fails: the slug's death, a prevented death of the Strangler.
+        var (s2, strangler2) = ConstrictCombat();
+        var k2 = Kernel(s2, Power4);
+        using (Dying(k2, s2.Enemies[1]))
+            Hooks.AfterDeath(k2, AfterDeathOf(2));
+        Assert.Equal(3, Constrict(s2));
+        using (Dying(k2, strangler2))
+            Hooks.AfterDeath(k2, AfterDeathOf(1, removalPrevented: true));
+        Assert.Equal(3, Constrict(s2));
+    }
+
+    [Fact]
+    public void ConstrictLeavesThePlayerThroughTheKillCommand()
+    {
+        // game: CreatureCmd.Kill runs AfterDeath(false) for a death not prevented, with the Strangler at 0 HP and listed;
+        // the corpse then leaves the roster.
+        var (s, strangler) = ConstrictCombat();
+        var k = Kernel(s, Power4);
+        CreatureCmd.Kill(k, [OldCreature.Of(strangler)]);
+        Assert.Equal(0, Constrict(s));
+        Assert.Equal([40], s.Enemies.Select(e => e.Hp));
+    }
+
+    [Fact]
+    public void ConstrictActsForThePlayersCopyOnlyAmongThreeHolders()
+    {
+        // The N-holder test: Constrict on the player, the Strangler and the slug (Holders); the Strangler's death removes
+        // the player's (one call of the old body for that owner) and leaves the enemies' copies, which the old function
+        // never touches.
+        var s = Combat(30, 40);
+        s.Enemies[0].DefId = KE.SlitheringStrangler;
+        Holders(s, "ConstrictPower", BuffId.Constrict, 3);
+        var k = Kernel(s, Power4);
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        Assert.Equal(0, Constrict(s));
+        Assert.Equal(3, BuffSystem.Get(s.Enemies[0].Buffs, BuffId.Constrict));
+        Assert.Equal(3, BuffSystem.Get(s.Enemies[1].Buffs, BuffId.Constrict));
+    }
+
+    [Fact]
+    public void ConstrictDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, strangler) = ConstrictCombat();
+        var k = Kernel(s, Without(Power4, ConstrictPower.Register));
+        using (Dying(k, strangler))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        Assert.Equal(3, Constrict(s));
+    }
+
+    [Fact]
+    public void ConstrictIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power4, AllButDamage), ListenerKind.Power, "ConstrictPower", HookId.AfterDeath);
     }
 
 }
