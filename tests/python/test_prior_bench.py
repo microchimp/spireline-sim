@@ -51,6 +51,14 @@ def fake_part_runs(rng, shapes):
     return runs
 
 
+OK = (1.0, 1.0, 0)  # the verdict's path and pair conditions met: served share, CPU share, dropped pairs
+
+
+def qrow(seed, floor, path, dec=100, comb=40, sims=2400, end="death", win=False):
+    return {"seed": seed, "floor": floor, "decisions": dec, "combat_decisions": comb, "sims": sims, "end": end, "win": win,
+            "prior_path": path}
+
+
 class RowsAndOrder(unittest.TestCase):
     def test_rows_parse(self):
         self.assertEqual(pb.parse_rows("noprior:16, cpu:16,server:24"), [("noprior", 16), ("cpu", 16), ("server", 24)])
@@ -107,31 +115,47 @@ class Statistics(unittest.TestCase):
 
     def test_equivalence_verdict_is_the_preregistered_rule(self):
         ci90 = {"n": 1000, "mean": 0.05, "lo": -0.12, "hi": 0.22}
-        v = pb.equivalence_verdict(ci90, 0.8, 1.004, 0.999)
+        v = pb.equivalence_verdict(ci90, 0.8, 1.004, 0.999, *OK)
         self.assertTrue(v["equivalent"])
-        self.assertEqual((v["floor_ok"], v["boss_ok"], v["ratios_ok"]), (True, True, True))
+        self.assertEqual((v["floor_ok"], v["boss_ok"], v["ratios_ok"], v["paths_ok"], v["pairs_ok"]), (True,) * 5)
         # the old rule's conditions no longer bind: a point estimate over 0.1 and a thin interval still pass inside +-0.3
-        self.assertTrue(pb.equivalence_verdict({"n": 1000, "mean": 0.2, "lo": 0.15, "hi": 0.25}, 1.0, 1.0, 1.0)["equivalent"])
-        self.assertTrue(pb.equivalence_verdict({"n": 10, "mean": 0.0, "lo": -0.30, "hi": 0.30}, 1.0, 0.98, 1.02)["equivalent"])
+        self.assertTrue(pb.equivalence_verdict({"n": 1000, "mean": 0.2, "lo": 0.15, "hi": 0.25}, 1.0, 1.0, 1.0, *OK)["equivalent"])
+        self.assertTrue(pb.equivalence_verdict({"n": 10, "mean": 0.0, "lo": -0.30, "hi": 0.30}, 1.0, 0.98, 1.02, *OK)["equivalent"])
         # (a) an interval that crosses +0.3 fails, whatever the rest says
-        v = pb.equivalence_verdict({**ci90, "hi": 0.31}, 1.0, 1.0, 1.0)
+        v = pb.equivalence_verdict({**ci90, "hi": 0.31}, 1.0, 1.0, 1.0, *OK)
         self.assertFalse(v["equivalent"])
         self.assertFalse(v["floor_ok"])
-        self.assertFalse(pb.equivalence_verdict({**ci90, "lo": -0.31}, 1.0, 1.0, 1.0)["floor_ok"])
+        self.assertFalse(pb.equivalence_verdict({**ci90, "lo": -0.31}, 1.0, 1.0, 1.0, *OK)["floor_ok"])
         # (b) boss kills significant at 0.05
-        v = pb.equivalence_verdict(ci90, 0.04, 1.0, 1.0)
+        v = pb.equivalence_verdict(ci90, 0.04, 1.0, 1.0, *OK)
         self.assertEqual((v["equivalent"], v["boss_ok"], v["floor_ok"]), (False, False, True))
         # (c) a 3% sims ratio, or a 3% decisions ratio, fails; so does a missing ratio
-        v = pb.equivalence_verdict(ci90, 1.0, 1.03, 1.0)
+        v = pb.equivalence_verdict(ci90, 1.0, 1.03, 1.0, *OK)
         self.assertEqual((v["equivalent"], v["ratios_ok"]), (False, False))
-        self.assertFalse(pb.equivalence_verdict(ci90, 1.0, 1.0, 0.97)["equivalent"])
-        self.assertFalse(pb.equivalence_verdict(ci90, 1.0, None, 1.0)["equivalent"])
-        self.assertFalse(pb.equivalence_verdict({"n": 0}, 1.0, 1.0, 1.0)["equivalent"])
+        self.assertFalse(pb.equivalence_verdict(ci90, 1.0, 1.0, 0.97, *OK)["equivalent"])
+        self.assertFalse(pb.equivalence_verdict(ci90, 1.0, None, 1.0, *OK)["equivalent"])
+        self.assertFalse(pb.equivalence_verdict({"n": 0}, 1.0, 1.0, 1.0, *OK)["equivalent"])
+        # (d) the arms must have run on the paths they are named for: 99% server, 100% cpu
+        self.assertTrue(pb.equivalence_verdict(ci90, 1.0, 1.0, 1.0, 0.99, 1.0, 0)["equivalent"])
+        for served, cpu in ((0.98, 1.0), (0.0, 1.0), (1.0, 0.99), (None, 1.0), (1.0, None)):
+            v = pb.equivalence_verdict(ci90, 1.0, 1.0, 1.0, served, cpu, 0)
+            self.assertEqual((v["equivalent"], v["paths_ok"], v["floor_ok"]), (False, False, True), (served, cpu))
+        # (e) a pair lost to a crash is a finding
+        v = pb.equivalence_verdict(ci90, 1.0, 1.0, 1.0, 1.0, 1.0, 1)
+        self.assertEqual((v["equivalent"], v["pairs_ok"]), (False, False))
+        self.assertFalse(pb.equivalence_verdict(ci90, 1.0, 1.0, 1.0, 1.0, 1.0, None)["equivalent"])
+
+    def test_boss_kill_is_the_judges_rule(self):
+        rows = [{"win": False, "floor": 17}, {"win": False, "floor": 18}, {"win": True, "floor": 17}, {"win": False, "floor": 0},
+                {"win": True, "floor": 53}, {}]
+        for row in rows:
+            self.assertEqual(pb.boss_killed(row), gen_loop.boss_kill(row), row)
+        self.assertEqual([pb.boss_killed(r) for r in rows[:3]], [False, True, True])
 
     def test_bootstrap_interval_and_se(self):
         zeros = pb.bootstrap_ci([0.0] * 50, draws=500)
         self.assertEqual((zeros["lo"], zeros["hi"], zeros["se"]), (0.0, 0.0, 0.0))
-        self.assertTrue(pb.equivalence_verdict(zeros, 1.0, 1.0, 1.0)["equivalent"])
+        self.assertTrue(pb.equivalence_verdict(zeros, 1.0, 1.0, 1.0, *OK)["equivalent"])
         d = [1.0, -1.0] * 500
         ci = pb.bootstrap_ci(d, draws=2000)
         self.assertAlmostEqual(ci["mean"], 0.0)
@@ -144,18 +168,18 @@ class Statistics(unittest.TestCase):
         ci90 = pb.bootstrap_ci(d, draws=2000, level=pb.EQUIV_LEVEL)
         self.assertAlmostEqual(ci90["hi"], 1.645 * ci90["se"], delta=0.01)
         self.assertLess(ci90["hi"], ci["hi"])
-        self.assertFalse(pb.equivalence_verdict(pb.bootstrap_ci([0.5] * 30 + [0.4] * 30, draws=500, level=pb.EQUIV_LEVEL), 1.0, 1.0, 1.0)["floor_ok"])
+        shifted = pb.bootstrap_ci([0.5] * 30 + [0.4] * 30, draws=500, level=pb.EQUIV_LEVEL)
+        self.assertFalse(pb.equivalence_verdict(shifted, 1.0, 1.0, 1.0, *OK)["floor_ok"])
 
     def test_quality_stats(self):
-        def row(seed, floor, dec=100, comb=40, sims=2400, end="death", win=False):
-            return {"seed": seed, "floor": floor, "decisions": dec, "combat_decisions": comb, "sims": sims, "end": end, "win": win}
-
-        cpu = [row("A", 10), row("B", 12), row("C", 18), row("D", 9), {"seed": "E", "crash": True}]
-        srv = [row("A", 10), row("B", 11, dec=101), row("C", 17), row("D", 9), row("E", 5)]
+        cpu = [qrow("A", 10, "cpu"), qrow("B", 12, "cpu"), qrow("C", 18, "cpu"), qrow("D", 9, "cpu"), {"seed": "E", "crash": True}]
+        srv = [qrow("A", 10, "server"), qrow("B", 11, "server", dec=101), qrow("C", 17, "server"), qrow("D", 9, "server"),
+               qrow("E", 5, "server")]
         div = {"A": None, "B": {"level": "search", "index": 3, "fight": 2, "floor": 6}, "C": {"level": "decision", "floor": 12, "index": 9,
                                                                                                "fight": None}, "D": None}
         st = pb.quality_stats(cpu, srv, div, draws=200)
         self.assertEqual(st["paired_seeds"], 4)
+        self.assertEqual((st["crashed_pairs_dropped"], st["unpaired_seeds"]), (1, 0))
         self.assertEqual(st["identical_rows"], 2)  # A and D
         self.assertEqual(st["identical_decision_for_decision"], 2)
         self.assertEqual(st["first_diverging_floor_histogram"], {"6": 1, "12": 1})
@@ -165,32 +189,83 @@ class Statistics(unittest.TestCase):
         self.assertAlmostEqual(st["boss_kill"]["p_two_sided"], 1.0)
         self.assertAlmostEqual(st["sims_per_decision"]["ratio"], 1.0)
         self.assertAlmostEqual(st["decisions_per_run"]["ratio"], 401 / 400)
-        self.assertTrue(st["ratios_within_2_percent"])
+        self.assertTrue(st["verdict"]["ratios_ok"])
+        self.assertNotIn("ratios_within_2_percent", st)  # one copy of the rule: the verdict's
         self.assertFalse(st["verdict"]["equivalent"])  # four pairs: the 90% interval is far wider than +-0.3
         self.assertFalse(st["verdict"]["floor_ok"])
+        self.assertFalse(st["verdict"]["pairs_ok"])  # E crashed on the CPU side
 
     def test_quality_verdict_end_to_end(self):
-        def row(i, floor, sims=2400, dec=100):
-            return {"seed": f"S{i:03d}", "floor": floor, "decisions": dec, "combat_decisions": 40, "sims": sims, "end": "death",
-                    "win": False}
+        def arm(path, floors=None, sims=2400, n=60):
+            return [qrow(f"S{i:03d}", (floors or (lambda i: 8 + i % 7))(i), path, sims=sims) for i in range(n)]
 
-        cpu = [row(i, 8 + i % 7) for i in range(60)]
-        same = pb.quality_stats(cpu, [dict(r) for r in cpu], draws=300)
+        cpu = arm("cpu")
+        same = pb.quality_stats(cpu, arm("server"), draws=300)
         self.assertTrue(same["verdict"]["equivalent"])
         self.assertEqual((same["floor"]["diff_ci90"]["lo"], same["floor"]["diff_ci90"]["hi"]), (0.0, 0.0))
         # half the seeds one floor higher on the server: mean +0.5, the 90% interval leaves +0.3
-        up = [row(i, 8 + i % 7 + (1 if i % 2 else 0)) for i in range(60)]
-        st = pb.quality_stats(cpu, up, draws=300)
+        st = pb.quality_stats(cpu, arm("server", lambda i: 8 + i % 7 + (1 if i % 2 else 0)), draws=300)
         self.assertGreater(st["floor"]["diff_ci90"]["hi"], 0.3)
-        self.assertFalse(st["verdict"]["floor_ok"])
-        self.assertFalse(st["verdict"]["equivalent"])
+        self.assertEqual((st["verdict"]["floor_ok"], st["verdict"]["equivalent"]), (False, False))
         # same floors, 3% more sims per decision on the server
-        more = [row(i, 8 + i % 7, sims=2472) for i in range(60)]
-        st = pb.quality_stats(cpu, more, draws=300)
+        st = pb.quality_stats(cpu, arm("server", sims=2472), draws=300)
         self.assertTrue(st["verdict"]["floor_ok"])
         self.assertAlmostEqual(st["sims_per_decision"]["ratio"], 1.03)
-        self.assertFalse(st["verdict"]["ratios_ok"])
-        self.assertFalse(st["verdict"]["equivalent"])
+        self.assertEqual((st["verdict"]["ratios_ok"], st["verdict"]["equivalent"]), (False, False))
+
+    def test_a_dead_server_cannot_make_two_cpu_arms_equivalent(self):
+        cpu = [qrow(f"S{i:03d}", 8 + i % 7, "cpu") for i in range(100)]
+        dead = [qrow(f"S{i:03d}", 8 + i % 7, "cpu") for i in range(100)]  # the "server" arm that fell back every call
+        st = pb.quality_stats(cpu, dead, draws=100)
+        v = st["verdict"]
+        self.assertEqual((v["floor_ok"], v["boss_ok"], v["ratios_ok"], v["pairs_ok"]), (True, True, True, True))
+        self.assertEqual((v["paths_ok"], v["equivalent"]), (False, False))
+        self.assertEqual(st["arm_paths"], {"server_arm_server_share": 0.0, "cpu_arm_cpu_share": 1.0})
+
+    def test_served_share_gate_is_99_percent_and_the_cpu_arm_must_be_all_cpu(self):
+        cpu = [qrow(f"S{i:03d}", 8 + i % 7, "cpu") for i in range(100)]
+
+        def srv(bad):
+            return [qrow(f"S{i:03d}", 8 + i % 7, "mixed" if i < bad else "server") for i in range(100)]
+
+        self.assertTrue(pb.quality_stats(cpu, srv(1), draws=100)["verdict"]["equivalent"])  # 99 of 100
+        v = pb.quality_stats(cpu, srv(2), draws=100)["verdict"]  # 98 of 100
+        self.assertEqual((v["paths_ok"], v["equivalent"]), (False, False))
+        dirty = list(cpu)
+        dirty[0] = qrow("S000", 8, "server")
+        v = pb.quality_stats(dirty, srv(0), draws=100)["verdict"]
+        self.assertEqual((v["cpu_share"], v["paths_ok"], v["equivalent"]), (0.99, False, False))
+
+    def test_a_missing_run_is_not_a_clean_pair(self):
+        cpu = [qrow(f"S{i:03d}", 8, "cpu") for i in range(10)]
+        srv = [qrow(f"S{i:03d}", 8, "server") for i in range(9)]
+        st = pb.quality_stats(cpu, srv, draws=100)
+        self.assertEqual((st["paired_seeds"], st["unpaired_seeds"], st["crashed_pairs_dropped"]), (9, 1, 0))
+        self.assertFalse(st["verdict"]["pairs_ok"])
+
+
+class ThroughputReport(unittest.TestCase):
+    @staticmethod
+    def row(served, fallback=0, exact=True):
+        base = pb.row_metrics([{"dec": 100, "sims": 4000, "cpu": 10.0}], 5.0, {"cpu_s": 1.0, "calls": 500, "batches": 100})
+        return {"arm": "server", "procs": 2, "repeat": 0, **base, "served_share": served, "fallback_calls": fallback,
+                "latency_ms": None, "server": {"baseline_exact": exact}, "load_before": 50, "load_after": 60}
+
+    def test_a_clean_server_row_has_no_warning(self):
+        self.assertEqual(pb.throughput_warnings([self.row(1.0)]), [])
+        self.assertEqual(pb.throughput_warnings([{**self.row(None), "arm": "cpu"}]), [])
+
+    def test_fallbacks_and_an_inexact_baseline_warn(self):
+        w = pb.throughput_warnings([self.row(0.75, fallback=12), self.row(1.0, exact=False)])
+        self.assertEqual(len(w), 2)
+        self.assertIn("75.0% of tasks tagged server, 12 calls fell back", w[0])
+        self.assertIn("baseline", w[1])
+        self.assertEqual(len(pb.throughput_warnings([self.row(1.0, fallback=3)])), 1)  # calls fell back although every task was tagged
+
+    def test_the_table_has_a_served_column(self):
+        table = pb.table_throughput([self.row(0.5)])
+        self.assertIn("tasks tagged server |", table.splitlines()[0])
+        self.assertIn("| 50.0% |", table)
 
 
 class DivergenceAndParts(unittest.TestCase):
@@ -303,6 +378,28 @@ class Tolerance(unittest.TestCase):
         gpu[1, 4] = -np.inf
         self.assertEqual(pt.compare(cpu, gpu, legal)["mismatch_finite"], 1)
         self.assertFalse(pt.gate([pt.compare(cpu, gpu, legal)])["pass"])
+
+
+class ToleranceInputs(unittest.TestCase):
+    def test_newest_parts_skips_temporary_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("combat-g3-0000.npz", "combat-g3-0001.tmp.npz"):  # the temporary one is written last, so the newest
+                np.savez(Path(tmp) / name, lengths=np.array([3, 4]))
+            got = pt.newest_parts(str(Path(tmp) / "combat-g3-*.npz"), 1)
+        self.assertEqual([Path(g).name for g in got], ["combat-g3-0000.npz"])
+
+    def test_the_digest_names_the_positions(self):
+        rng = np.random.default_rng(4)
+        toks = [fake_tokens(rng, 5), fake_tokens(rng, 7)]
+        legal = np.ones((2, 32), dtype=np.int8)
+        d = pt.positions_digest(toks, legal)
+        self.assertEqual(d, pt.positions_digest(list(toks), legal.copy()))
+        self.assertNotEqual(d, pt.positions_digest(toks[::-1], legal))
+        other = legal.copy()
+        other[0, 3] = 0
+        self.assertNotEqual(d, pt.positions_digest(toks, other))
+        moved = FakeTokens(toks[0].types, toks[0].ids, toks[0].owners, toks[0].feats + np.float32(1e-6))
+        self.assertNotEqual(d, pt.positions_digest([moved, toks[1]], legal))
 
 
 if __name__ == "__main__":

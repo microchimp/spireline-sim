@@ -50,7 +50,8 @@ LOGIT_TOLERANCE = 1e-4  # the gate's bound on max |dlogit| at the action slots
 
 def newest_parts(pattern: str, pool: int) -> list[str]:
     """The newest parts (by modification time, name as the tie-break) holding at least `pool` positions between them."""
-    files = sorted(glob.glob(pattern), key=lambda f: (os.path.getmtime(f), f), reverse=True)
+    files = [f for f in glob.glob(pattern) if ".tmp" not in os.path.basename(f)]  # write_part's temporary files
+    files.sort(key=lambda f: (os.path.getmtime(f), f), reverse=True)
     out, have = [], 0
     for f in files:
         with np.load(f, allow_pickle=False) as blob:
@@ -111,6 +112,18 @@ def load_positions(pattern: str, n: int, seed: int, pool: int):
     info = {"n": n, "seed": seed, "parts": len(parts), "pool": len(index),
             "tokens_min": int(lens.min()), "tokens_mean": round(float(lens.mean()), 2), "tokens_max": int(lens.max())}
     return tokens, legal, info
+
+
+def positions_digest(tokens: list, legal: np.ndarray) -> str:
+    """sha256 over the sampled positions' tokens (length, types, ids, owners, feats) and legal rows, in order: it names the
+    positions a dumped set of CPU logits belongs to."""
+    h = hashlib.sha256()
+    for tok in tokens:
+        h.update(len(tok).to_bytes(4, "little"))
+        for key in TOKEN_KEYS:
+            h.update(np.ascontiguousarray(getattr(tok, key), dtype=np.float32 if key == "feats" else np.int64).tobytes())
+    h.update(np.ascontiguousarray(legal, dtype=np.int8).tobytes())
+    return h.hexdigest()
 
 
 # ------------------------------------------------------------------ the comparison
@@ -351,20 +364,24 @@ def main(argv=None) -> int:
 
     tokens, legal, info = load_positions(a.shards_glob, a.n, a.seed, a.pool)
     print(f"positions: {info}", flush=True)
+    digest = positions_digest(tokens, legal)
     t0 = time.perf_counter()
     cpu_torch = torch.__version__
     if a.cpu_logits:
         cpu = np.load(a.cpu_logits)
         meta = json.loads(Path(a.cpu_logits + ".json").read_text(encoding="utf-8"))
         cpu_torch = meta["torch"]
-        if cpu.shape != (a.n, 32) or meta["n"] != a.n or meta["seed"] != a.seed:
-            raise SystemExit("the dumped CPU logits are not for these positions")
+        if cpu.shape != (a.n, 32) or meta.get("n") != a.n or meta.get("seed") != a.seed:
+            raise SystemExit("the dumped CPU logits are not for these positions (n or seed differ): dump them again with --dump-cpu")
+        if meta.get("digest") != digest:
+            raise SystemExit("the dumped CPU logits are for other positions (the position digest differs or is missing, e.g. new "
+                             "parts arrived or --pool changed): dump them again with --dump-cpu")
     else:
         cpu = cpu_logits(a.policy, tokens)
     print(f"cpu logits: {time.perf_counter() - t0:.1f} s (torch {cpu_torch})", flush=True)
     if a.dump_cpu:
         np.save(a.dump_cpu, cpu)
-        Path(a.dump_cpu + ".json").write_text(json.dumps({"n": a.n, "seed": a.seed, "torch": torch.__version__}), encoding="utf-8")
+        Path(a.dump_cpu + ".json").write_text(json.dumps({"n": a.n, "seed": a.seed, "torch": torch.__version__, "digest": digest}), encoding="utf-8")
         return 0
     result = {"positions": info, "torch": {"cpu": cpu_torch, "server": torch.__version__},
               "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,

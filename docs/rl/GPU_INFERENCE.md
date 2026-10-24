@@ -72,7 +72,7 @@ Two further effects, both measured in section 9:
   card attribute table (`combat_tokens.card_attribute_table`) is not covered by `vocab_sha256`.
 - The run record schema (`run_train.shards.RUN_RECORD_SCHEMA`) has `additionalProperties: false` at the top level;
   five test modules validate records against it.
-- The lab's `train` job runs under `D:/spireline/venv-gpu` (Python 3.12.15, torch 2.14.1+cu132, confirmed from
+- The lab's `train` job runs under the GPU venv (Python 3.12.15, torch 2.14.1+cu132, confirmed from
   dist-info; `torch.cuda.is_available()` True on the GeForce RTX 3080, 10 GB). The emulator venv has torch
   2.12.0+cpu. The GPU idles between train jobs (point readings 8-11% utilisation, under 1 GB used by the desktop).
 - Recorded self-play shards keep the root's token encoding of every sampled decision (`TOKEN_KEYS`), so the GPU
@@ -200,8 +200,9 @@ than of 2). The server records histograms of batch sizes and of queue wait, repl
 
 **Capacity (estimated from the review's measurement; the go/no-go of section 9.0 measures it):** 0.7-1.0 ms of host
 CPU per replayed batch gives ~1,000-1,400 batches per second, which at a mean batch of 2-3 is 2,000-4,000 calls per
-second against a demand bound of ~1,830. If `--selftest` shows less than 1,000 batches per second at batch <= 8 on
-the loaded machine, the server does not proceed to plumbing and the lane reports why.
+second against a demand bound of ~1,830. If `--selftest` shows more than 1.2 ms of host CPU per replayed batch at
+batch <= 8, or a capacity under twice the demand bound (~3,660 calls per second), the server does not proceed to plumbing
+and the lane reports why (the criterion of section 9.0).
 
 ## 5. Numerics and determinism
 
@@ -310,12 +311,14 @@ absolute user paths.
 
 ### Commands for the lane's window
 
-Git Bash, in the worktree of the commit under test, lab paused and `QUIET.lock` held (section 9.4's rule). `PY` is the emulator
-venv's python, `GPU` the GPU venv's; `OUT` is any scratch folder outside the repo; `N` is the server count under test.
+Git Bash, lab paused and `QUIET.lock` held (section 9.4's rule). `<repo>` is the worktree of the commit under test, `<lab>`
+the lab folder, `<gen dir>` the champion's generation folder, `<emulator python>` and `<gpu python>` the two venvs' interpreters,
+`<native lib dir>` a built native library; `OUT` is any scratch folder outside the repo; `N` is the server count under test.
 
 ```
-export STS2_LIB_PATH=D:/spireline/fork/wt-w3-int/out STS2_ALLOW_STALE_NATIVE=1
-PY=D:/spireline/src/sts2/.venv/Scripts/python.exe; GPU=D:/spireline/venv-gpu/Scripts/python.exe; OUT=<scratch folder>
+cd <repo>
+export STS2_LIB_PATH=<native lib dir> STS2_ALLOW_STALE_NATIVE=1
+PY=<emulator python>; GPU=<gpu python>; LAB=<lab>; GEN=<gen dir>; OUT=<scratch folder>
 
 # 9.1 throughput rows (ABAB twice, one fixed seed list)
 $PY rl/prior_bench.py throughput --seeds-file referee/seeds/E0-2026-10-23.json --seeds 48 \
@@ -336,10 +339,10 @@ $PY rl/prior_bench.py quality --seeds-file $OUT/Q93.json --seeds 1000 --procs 16
     --gpu-python $GPU --out $OUT/quality --json $OUT/quality.json
 
 # 9.2 tolerance (any time, the GPU idles; about a minute): CPU logits from the workers' torch, the server from the GPU venv
-$PY  rl/prior_tolerance.py --shards-glob "D:/spireline/referee/lab/runs/*-selfplay/shards/combat-g3-*.npz" \
-    --policy D:/spireline/referee/agent/gen3/candidate-r1/combat_policy.pt --n 10000 --dump-cpu $OUT/cpu.npy
-$GPU rl/prior_tolerance.py --shards-glob "D:/spireline/referee/lab/runs/*-selfplay/shards/combat-g3-*.npz" \
-    --policy D:/spireline/referee/agent/gen3/candidate-r1/combat_policy.pt --n 10000 --cpu-logits $OUT/cpu.npy --json $OUT/tolerance.json
+$PY  rl/prior_tolerance.py --shards-glob "$LAB/runs/*-selfplay/shards/combat-g3-*.npz" \
+    --policy $GEN/combat_policy.pt --n 10000 --dump-cpu $OUT/cpu.npy
+$GPU rl/prior_tolerance.py --shards-glob "$LAB/runs/*-selfplay/shards/combat-g3-*.npz" \
+    --policy $GEN/combat_policy.pt --n 10000 --cpu-logits $OUT/cpu.npy --json $OUT/tolerance.json
 ```
 
 Each command prints its markdown table and writes numbers only to its JSON (no paths). The arithmetic is tested by
@@ -373,13 +376,13 @@ READY in the commit-3 runs of 9.2 and the smoke tests (machine load 50-70%); the
 
 *Measured in the lane's window.*
 
-| arm | procs | dec/s (wall, total) | dec per CPU-s incl. server | sims per CPU-s incl. server | server CPU share | server calls/s | mean batch | p50 / p99 call latency |
-|---|---|---|---|---|---|---|---|---|
-| no prior | 16 | | | | - | - | - | - |
-| prior, CPU path (today) | 16 | | | | - | - | - | - |
-| prior, server | 16 | | | | | | | |
-| prior, server | 20 | | | | | | | |
-| prior, server | 24 | | | | | | | |
+| arm | procs | dec/s (wall, total) | dec per CPU-s incl. server | sims per CPU-s incl. server | server CPU share | server calls/s | mean batch | p50 / p99 call latency | tasks tagged server |
+|---|---|---|---|---|---|---|---|---|---|
+| no prior | 16 | | | | - | - | - | - | - |
+| prior, CPU path (today) | 16 | | | | - | - | - | - | - |
+| prior, server | 16 | | | | | | | | |
+| prior, server | 20 | | | | | | | | |
+| prior, server | 24 | | | | | | | | |
 
 Rules: the server's process CPU (from its stats file) goes into every CPU-time denominator; the arms run interleaved
 ABAB twice (the A2c no-prior arm drifted 1-5% between runs); the deciding number is wall decisions per second with
@@ -396,8 +399,9 @@ behind a barrier before the timed block. The server arms start one server per ro
 server's CPU is the difference of its stats file's `host_cpu_s` between the snapshot taken once it has counted exactly the
 warm-up calls and the file it writes at exit; server calls/s and mean batch come from the same two files. The "no prior" arm is
 the same agent without its combat prior. `load` is the OS processor load before and after a row and labels it, nothing more.
-The timed block ends when the last task ends, so a row with few tasks per worker carries a tail: 48 seeds give at least 2 per
-worker up to 24 workers.
+The timed block ends when the last task ends, so a row with few tasks per worker carries a tail: 48 seeds are 2 seeds per
+worker on average at 24 workers (3 at 16). A server row whose tasks are not all tagged `server`, or whose server-CPU
+baseline was not exact, prints a warning line under the table.
 
 ### 9.2 Tolerance: measured, PASS (commit 3, `rl/prior_tolerance.py`)
 
@@ -437,8 +441,10 @@ server at its process count:
 2. **Equivalence (pre-registered; two one-sided tests at 5%):** the transport passes when (a) the two-sided 90%
    cluster-bootstrap interval of the paired mean floor difference (server minus CPU path, resampling seeds, 10,000 draws)
    lies within +-0.30 floor (0.29 is the smallest gain the judge has ever promoted, so a transport effect inside +-0.3 is
-   invisible to it), (b) the two-sided exact McNemar test on Act-1 boss kills is not significant at 0.05, and (c) sims per
-   decision and decisions per run are each within 2%. The point estimate, its standard error, the 95% interval, the
+   invisible to it), (b) the two-sided exact McNemar test on Act-1 boss kills is not significant at 0.05, (c) sims per
+   decision and decisions per run are each within 2%, (d) the server arm is at least 99% `server` runs and the CPU arm 100%
+   `cpu` runs (otherwise a dead server makes two CPU arms look equivalent), and (e) no pair is lost to a crash or a missing
+   run (a crash on one side is a finding, not a dropped pair). The point estimate, its standard error, the 95% interval, the
    identical-seed fraction and the first-diverging-floor histogram are reported as information, with no threshold.
    (`compare_arms` gives only
    the judge's one-sided lower bound, which is not the statistic here.)
@@ -448,7 +454,7 @@ the run's row (`decisions`, `combat_decisions`, `sims`, `floor`, `end`), the Run
 fields left out) and the search itself (a digest of each combat sample's tokens, root visit counts and simulation count, in
 order). The first diverging floor is that of the first search that differs, else of the first differing record entry. The
 statistics are the ones above: the 90% interval the rule reads, the 95% interval, the standard error and the point estimate for
-information, the two-sided exact McNemar on Act-1 boss kills, the two ratios, and the verdict on conditions (a) to (c).
+information, the two-sided exact McNemar on Act-1 boss kills, the two ratios, and the verdict on conditions (a) to (e).
 
 ### 9.4 One generation through the judge
 

@@ -141,17 +141,29 @@ EQUIV_BOUND = 0.30  # floors: 0.29 is the smallest gain the judge has ever promo
 EQUIV_LEVEL = 0.90  # a two-sided 90% interval inside the bound is two one-sided tests at 5%
 
 
+SERVED_MIN = 0.99  # the server arm must be at least this share `server` runs ...
+CPU_ARM_MIN = 1.0  # ... and the CPU arm all `cpu` runs: otherwise a dead server makes two CPU arms "equivalent"
+
+
 def equivalence_verdict(ci90: dict, boss_p: float, sims_ratio: float | None, decisions_ratio: float | None,
+                        served_share: float | None, cpu_share: float | None, dropped_pairs: int | None,
                         bound: float = EQUIV_BOUND, alpha: float = 0.05, ratio_tol: float = 0.02) -> dict:
     """Section 9.3's pre-registered rule. Equivalent when (a) the two-sided 90% cluster-bootstrap interval of the paired mean
     floor difference lies within +-`bound`, (b) the two-sided exact McNemar test on Act-1 boss kills is not significant at
-    `alpha`, and (c) sims per decision and decisions per run (server over CPU path) are each within `ratio_tol` of 1. The point
-    estimate, its SE, the 95% interval and the identity figures are information and carry no threshold."""
+    `alpha`, (c) sims per decision and decisions per run (server over CPU path) are each within `ratio_tol` of 1, (d) the server
+    arm is at least 99% `server` runs and the CPU arm 100% `cpu` runs, and (e) no pair was lost to a crash or a missing run. A
+    figure that was not measured (None) fails its condition. The point estimate, its SE, the 95% interval and the identity
+    figures are information and carry no threshold."""
     floor_ok = bool(ci90.get("n")) and ci90["lo"] >= -bound and ci90["hi"] <= bound
     boss_ok = boss_p >= alpha
     ratios_ok = all(r is not None and abs(r - 1.0) <= ratio_tol + 1e-9 for r in (sims_ratio, decisions_ratio))
-    return {"equivalent": bool(floor_ok and boss_ok and ratios_ok), "floor_ok": bool(floor_ok), "boss_ok": bool(boss_ok),
-            "ratios_ok": bool(ratios_ok), "bound": bound, "alpha": alpha, "ratio_tol": ratio_tol}
+    paths_ok = (served_share is not None and cpu_share is not None and served_share + 1e-9 >= SERVED_MIN
+                and cpu_share + 1e-9 >= CPU_ARM_MIN)
+    pairs_ok = dropped_pairs == 0
+    return {"equivalent": bool(floor_ok and boss_ok and ratios_ok and paths_ok and pairs_ok), "floor_ok": bool(floor_ok),
+            "boss_ok": bool(boss_ok), "ratios_ok": bool(ratios_ok), "paths_ok": bool(paths_ok), "pairs_ok": bool(pairs_ok),
+            "served_share": served_share, "cpu_share": cpu_share, "dropped_pairs": dropped_pairs, "bound": bound,
+            "alpha": alpha, "ratio_tol": ratio_tol}
 
 
 def boss_killed(row: dict) -> bool:
@@ -221,7 +233,7 @@ def first_divergence(rec_a: dict | None, samples_a: list, rec_b: dict | None, sa
 
 def quality_stats(rows_cpu: list[dict], rows_srv: list[dict], divergence: dict[str, dict | None] | None = None,
                   draws: int = BOOT_DRAWS) -> dict:
-    """Section 9.3's numbers from the two arms' rows (paired on seed; a crashed run on either side leaves the pair out).
+    """Section 9.3's numbers from the two arms' rows (paired on seed; a crashed or missing run on either side leaves the pair out of the statistics and fails the verdict).
 
     `divergence` maps a seed to `first_divergence`'s answer (None: identical), when records were kept.
     """
@@ -230,7 +242,8 @@ def quality_stats(rows_cpu: list[dict], rows_srv: list[dict], divergence: dict[s
     seeds = sorted(set(cpu) & set(srv))
     n = len(seeds)
     same_row = [s for s in seeds if identical_rows(cpu[s], srv[s])]
-    out: dict = {"paired_seeds": n, "crashed_pairs_dropped": len(set(r["seed"] for r in rows_cpu) & set(r["seed"] for r in rows_srv)) - n,
+    out: dict = {"paired_seeds": n, "crashed_pairs_dropped": len({r["seed"] for r in rows_cpu} & {r["seed"] for r in rows_srv}) - n,
+                 "unpaired_seeds": len({r["seed"] for r in rows_cpu} ^ {r["seed"] for r in rows_srv}),
                  "identical_rows": len(same_row), "identical_rows_fraction": len(same_row) / n if n else None,
                  "identity_keys": list(IDENTITY_KEYS)}
     if divergence is not None:
@@ -262,8 +275,11 @@ def quality_stats(rows_cpu: list[dict], rows_srv: list[dict], divergence: dict[s
     out["decisions_per_run"] = {"cpu": dec_c / n if n else None, "server": dec_s / n if n else None,
                                 "ratio": dec_s / dec_c if dec_c else None}
     ratios = [out["sims_per_decision"]["ratio"], out["decisions_per_run"]["ratio"]]
-    out["ratios_within_2_percent"] = all(r is not None and abs(r - 1.0) <= 0.02 for r in ratios)
-    out["verdict"] = equivalence_verdict(ci90, out["boss_kill"]["p_two_sided"], *ratios)
+    served = sum(1 for r in rows_srv if r.get("prior_path") == "server") / len(rows_srv) if rows_srv else None
+    cpu_share = sum(1 for r in rows_cpu if r.get("prior_path") == "cpu") / len(rows_cpu) if rows_cpu else None
+    out["arm_paths"] = {"server_arm_server_share": served, "cpu_arm_cpu_share": cpu_share}
+    out["verdict"] = equivalence_verdict(ci90, out["boss_kill"]["p_two_sided"], *ratios, served, cpu_share,
+                                         out["crashed_pairs_dropped"] + out["unpaired_seeds"])
     return out
 
 
@@ -389,6 +405,10 @@ def num(x, nd: int = 1) -> str:
     return "-" if x is None else f"{x:,.{nd}f}"
 
 
+def pct(x) -> str:
+    return "-" if x is None else f"{100 * x:.1f}%"
+
+
 def agent_facts(agent) -> dict:
     return agent.describe()
 
@@ -448,19 +468,19 @@ def run_row(a: argparse.Namespace, gen0, agent, arm: str, procs: int, seeds: lis
 
     run_agent = dataclasses.replace(agent, prior_dir=None) if arm == "noprior" else agent
     handle = None
-    if arm == "server":
-        opts = server_opts(a, procs)
-        kill = workdir / prior_launch.KILL_FILE_NAME
-        prior_launch.resolve_prior_server("require", opts.gpu_python, kill)
-        handle = prior_launch.start_prior_server(opts.gpu_python, Path(agent.prior_dir) / "combat_policy.pt",
-                                                 lib_path=os.environ.get("STS2_LIB_PATH"), kill_file=kill,
-                                                 stats_path=workdir / f"stats-{tag}.json", extra_args=opts.extra_args)
-        if handle is None:
-            raise prior_launch.PriorServerError("the server did not start")
-        run_agent = dataclasses.replace(agent, prior_server=handle.endpoint, prior_authkey=handle.authkey)
-    ctx = mp.get_context("spawn")
     base, exact, load0, load1 = {}, True, None, None
+    ctx = mp.get_context("spawn")
     try:
+        if arm == "server":
+            opts = server_opts(a, procs)
+            kill = workdir / prior_launch.KILL_FILE_NAME
+            prior_launch.resolve_prior_server("require", opts.gpu_python, kill)
+            handle = prior_launch.start_prior_server(opts.gpu_python, Path(agent.prior_dir) / "combat_policy.pt",
+                                                     lib_path=os.environ.get("STS2_LIB_PATH"), kill_file=kill,
+                                                     stats_path=workdir / f"stats-{tag}.json", extra_args=opts.extra_args)
+            if handle is None:
+                raise prior_launch.PriorServerError("the server did not start")
+            run_agent = dataclasses.replace(agent, prior_server=handle.endpoint, prior_authkey=handle.authkey)
         with ctx.Pool(procs, initializer=_bench_init, initargs=(ctx.Barrier(procs),)) as pool:
             warm = pool.map(_bench_task, [(seeds[0], 0, run_agent, a.config, 2, True)] * procs, chunksize=1)
             if handle is not None:
@@ -485,15 +505,17 @@ def run_row(a: argparse.Namespace, gen0, agent, arm: str, procs: int, seeds: lis
     paths: dict[str, int] = {}
     for t in tasks:
         paths[str(t["prior_path"])] = paths.get(str(t["prior_path"]), 0) + 1
+    served_share = paths.get("server", 0) / len(tasks) if (arm == "server" and tasks) else None
+    fallback_calls = sum((t["calls"] or {}).get("cpu") or 0 for t in tasks) if arm == "server" else None
     return {"arm": arm, "procs": procs, **metrics, "latency_ms": lat, "server": server, "prior_paths": paths,
-            "load_before": load0, "load_after": load1, "workers_used": len({t["pid"] for t in tasks})}
+            "served_share": served_share, "fallback_calls": fallback_calls, "load_before": load0, "load_after": load1, "workers_used": len({t["pid"] for t in tasks})}
 
 
 def table_throughput(rows: list[dict]) -> str:
     """The 9.1 table: one line per (arm, procs), the mean over the repeats; then one line per repeat with load."""
     keys = list(dict.fromkeys((r["arm"], r["procs"]) for r in rows))
     out = ["| arm | procs | dec/s (wall, total) | dec per CPU-s incl. server | sims per CPU-s incl. server | server CPU share "
-           "| server calls/s | mean batch | p50 / p99 call latency (ms) |", "|---|---|---|---|---|---|---|---|---|"]
+           "| server calls/s | mean batch | p50 / p99 call latency (ms) | tasks tagged server |", "|---|---|---|---|---|---|---|---|---|---|"]
     for arm, procs in keys:
         group = [r for r in rows if (r["arm"], r["procs"]) == (arm, procs)]
         m = mean_metrics([{k: v for k, v in r.items() if isinstance(v, (int, float)) or v is None} for r in group])
@@ -501,11 +523,29 @@ def table_throughput(rows: list[dict]) -> str:
         lat = "-" if not lats else f"{sum(x['p50'] for x in lats) / len(lats):.2f} / {sum(x['p99'] for x in lats) / len(lats):.2f}"
         share = "-" if m["server_cpu_share"] is None else f"{100 * m['server_cpu_share']:.1f}%"
         out.append(f"| {ARM_LABELS[arm]} | {procs} | {num(m['dec_s'], 2)} | {num(m['dec_per_cpu_s'], 2)} | {num(m['sims_per_cpu_s'], 0)} "
-                   f"| {share} | {num(m['server_calls_s'], 0)} | {num(m['mean_batch'], 2)} | {lat} |")
+                   f"| {share} | {num(m['server_calls_s'], 0)} | {num(m['mean_batch'], 2)} | {lat} | {pct(m['served_share'])} |")
     out += ["", "| repeat | arm | procs | dec/s | load before / after (%) |", "|---|---|---|---|---|"]
     for r in rows:
         out.append(f"| {r['repeat'] + 1} | {r['arm']} | {r['procs']} | {num(r['dec_s'], 2)} | {num(r['load_before'], 0)} / {num(r['load_after'], 0)} |")
     return "\n".join(out)
+
+
+def throughput_warnings(rows: list[dict]) -> list[str]:
+    """One line per server row that is not a clean server row: tasks not tagged `server` or calls that fell back to the CPU
+    prior (the row then measures a mix), or a server-CPU baseline that is not exact."""
+    out = []
+    for r in rows:
+        if r["arm"] != "server":
+            continue
+        tag = f"repeat {r['repeat'] + 1} server:{r['procs']}"
+        share = r.get("served_share")
+        if (share is not None and share < 1.0) or r.get("fallback_calls"):
+            out.append(f"WARNING: {tag}: {pct(share)} of tasks tagged server, {r.get('fallback_calls') or 0} calls fell back to the "
+                       "CPU prior: not a clean server row")
+        if r.get("server") and not r["server"].get("baseline_exact", True):
+            out.append(f"WARNING: {tag}: the server CPU baseline snapshot was not exact (the stats file never showed the warm-up "
+                       "call count): server CPU is approximate")
+    return out
 
 
 def cmd_throughput(a: argparse.Namespace) -> int:
@@ -523,10 +563,13 @@ def cmd_throughput(a: argparse.Namespace) -> int:
             print(f"  dec/s {num(r['dec_s'], 2)}  load {num(r['load_before'], 0)}/{num(r['load_after'], 0)}  paths {r['prior_paths']}",
                   file=sys.stderr, flush=True)
     table = table_throughput(results)
+    warnings = throughput_warnings(results)
     print(table)
+    for line in warnings:
+        print(line)
     write_json(a.json, {"tool": "prior_bench throughput", "agent": agent_facts(agent), "config": a.config, "seeds": len(seeds),
                         "decisions_per_seed": a.decisions, "rows": a.rows, "repeat": a.repeat, "order": [f"{r}:{x}:{p}" for r, x, p in order],
-                        "results": results, "table": table})
+                        "results": results, "warnings": warnings, "table": table})
     return 0
 
 
@@ -601,6 +644,13 @@ def cmd_ram(a: argparse.Namespace) -> int:
                                              stats_path=out_dir / "prior_server_stats.json", extra_args=opts.extra_args)
     if handle is None:
         raise prior_launch.PriorServerError("the server did not start")
+    try:
+        return _ram_block(a, gen0, agent, seeds, out_dir, handle)
+    finally:
+        handle.stop()  # run_block stops it too; this covers a failure before or around the block
+
+
+def _ram_block(a: argparse.Namespace, gen0, agent, seeds: list[str], out_dir: Path, handle) -> int:
     sampler = CommitSampler(a.sample_s)
     kills: list[float] = []
     done = threading.Event()
@@ -698,7 +748,9 @@ def cmd_quality(a: argparse.Namespace) -> int:
               f"| sims per combat decision, CPU / server (ratio) | {num(stats['sims_per_decision']['cpu'], 2)} / {num(stats['sims_per_decision']['server'], 2)} ({num(stats['sims_per_decision']['ratio'], 4)}) |",
               f"| decisions per run, CPU / server (ratio) | {num(stats['decisions_per_run']['cpu'], 1)} / {num(stats['decisions_per_run']['server'], 1)} ({num(stats['decisions_per_run']['ratio'], 4)}) |",
               f"| both ratios within 2% | {v['ratios_ok']} |", f"| boss kills not significant at 0.05 | {v['boss_ok']} |",
-              f"| **equivalent** (90% CI within +-{v['bound']:.2f}, McNemar p >= 0.05, ratios within 2%) | **{v['equivalent']}** |",
+              f"| pairs lost to a crash / to a missing run (both must be 0) | {stats['crashed_pairs_dropped']} / {stats['unpaired_seeds']} -> {v['pairs_ok']} |",
+              f"| runs tagged server in the server arm (>= 99%) / tagged cpu in the CPU arm (100%) | {pct(v['served_share'])} / {pct(v['cpu_share'])} -> {v['paths_ok']} |",
+              f"| **equivalent** (90% CI within +-{v['bound']:.2f}, McNemar p >= 0.05, ratios within 2%, paths as tagged, no lost pair) | **{v['equivalent']}** |",
               f"| prior paths | {paths} |"]
     table = "\n".join(lines)
     print(table)
@@ -716,7 +768,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     t = sub.add_parser("throughput", help="9.1 rows: one fixed seed list, ABAB repeats, server CPU in the denominators")
     t.add_argument("--seeds-file", required=True)
-    t.add_argument("--seeds", type=int, default=48, help="the first N seeds of the file, the same for every row (default 48, at least 2 per worker)")
+    t.add_argument("--seeds", type=int, default=48, help="the first N seeds of the file, the same for every row (default 48: 2 per worker on average at 24 workers)")
     t.add_argument("--rows", default="noprior:16,cpu:16,server:16,server:20,server:24", help="arm:procs list; arm is noprior, cpu or server")
     t.add_argument("--decisions", type=int, default=100, help="combat decisions per seed before the run is ended")
     t.add_argument("--repeat", type=int, default=2)
