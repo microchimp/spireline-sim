@@ -522,5 +522,32 @@ class RealTable(unittest.TestCase):
         self.assertTrue(any("BeforeHandDraw<AfterPlayerTurnStart" in k and "turn_start" in k for k in new), new)
 
 
+
+
+EXTRACTED = """
+public static class X
+{
+    public static void A(State s)
+    {
+        if (Has(s, BuffId.Ritual)) { Ritual_AfterCardPlayed(s); }
+        Helper(s);
+        Plain(s);
+    }
+
+    internal static void Ritual_AfterCardPlayed(State s) { Gain(s, BuffId.Ritual); }
+    private static void Helper(State s) { Gain(s, BuffId.Tender); }
+    internal static void Plain(State s) { Gain(s, BuffId.Rage); }
+}
+"""
+
+
+class ExtractedBodies(unittest.TestCase):
+    def test_extracted_internal_functions_are_callees_of_their_dispatch_method(self):
+        """R5 (MIGRATION_F08.md): an inline body extracted into an internal <Model>_<Hook> function still belongs to the
+        dispatch method that calls it, like a private helper; an internal helper with no such name does not."""
+        engine = ht.Engine.load(Path(), {"Core/X.cs": EXTRACTED})
+        self.assertEqual(ht.callees(engine, "X.A"), ("X.Ritual_AfterCardPlayed", "X.Helper"))
+
+
 if __name__ == "__main__":
     unittest.main()

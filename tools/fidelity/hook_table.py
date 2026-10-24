@@ -748,6 +748,10 @@ def _owner(engine: Engine, rel: str, offset: int) -> Method | None:
 
 
 PRIVATE_HEAD = re.compile(r"\bprivate\s+static\b")
+# An inline model body moved out of its dispatch method (docs/rebuild/MIGRATION_F08.md R5) is internal, so that a Core2
+# handler can call it, and named <Model>_<Hook>: it stays part of the method that calls it.
+EXTRACTED_HEAD = re.compile(r"\binternal\s+static\b")
+EXTRACTED_NAME = re.compile(r"[A-Z]\w*_[A-Z]\w*")
 
 
 @cache
@@ -758,7 +762,13 @@ def _callees(engine_id: int, qualname: str) -> tuple[str, ...]:
     for rel, ms in engine.methods.items():
         if Path(rel).stem != stem:
             continue
-        privates = {m.name for m in ms if not m.field and PRIVATE_HEAD.search(engine.masked[rel][m.start:m.body[0]])}
+        privates = {
+            m.name for m in ms
+            if not m.field and (
+                PRIVATE_HEAD.search(engine.masked[rel][m.start:m.body[0]])
+                or (EXTRACTED_NAME.fullmatch(m.name) and EXTRACTED_HEAD.search(engine.masked[rel][m.start:m.body[0]]))
+            )
+        }
         for m in ms:
             if m.name != name or m.field:
                 continue
@@ -774,7 +784,8 @@ _ENGINES: dict[int, Engine] = {}
 
 def callees(engine: Engine, qualname: str) -> tuple[str, ...]:
     """The private helpers of the same class that a dispatch method calls by bare name: the listener's code
-    moved out of line (``ApplyAfterCardPlayed`` -> ``MakeRandomHandCardFree``). One level only."""
+    moved out of line (``ApplyAfterCardPlayed`` -> ``MakeRandomHandCardFree``), and the internal ``<Model>_<Hook>``
+    functions an inline body was extracted into. One level only."""
     _ENGINES[id(engine)] = engine
     return _callees(id(engine), qualname)
 
