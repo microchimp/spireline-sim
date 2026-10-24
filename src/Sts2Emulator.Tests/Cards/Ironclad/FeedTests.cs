@@ -67,15 +67,20 @@ public class FeedTests
     [Fact]
     public void KillingAMinionFeedsNothing()
     {
+        // A primary enemy stands beside the minion: a roster of minions alone is already ending
+        // (game: CombatManager.IsEnding, no living primary enemy), a state the game never reaches.
         var fight = Fight
             .Hand(new CardInstance(IC.Feed, false))
             .Energy(3)
+            .Enemy(hp: 50)
             .Enemy(hp: 1, buffs: new BuffState(BuffId.Minion, 1));
+        var minion = fight.Enemy1;
         int maxHpBefore = fight.State.PlayerMaxHp;
 
-        fight.Play(0);
+        fight.Play(0, target: 1);
 
-        Assert.Empty(fight.State.Enemies);
+        Assert.Equal(0, minion.Hp);
+        Assert.DoesNotContain(minion, fight.State.Enemies);
         Assert.Equal(maxHpBefore, fight.State.PlayerMaxHp);
     }
 

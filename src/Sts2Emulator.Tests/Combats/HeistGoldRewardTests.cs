@@ -43,7 +43,8 @@ public class HeistGoldRewardTests
                 Hp = 1,
                 MaxHp = 40,
                 CurrentIntent = new Intent(IntentType.Attack, 4),
-                Buffs = [],
+                // The power with the gold, as the Merc's death hands it over: HeistPower.BeforeDeath banks it.
+                Buffs = [new BuffState(BuffId.Heist, 80)],
                 HeistGold = 80,
             },
         ];

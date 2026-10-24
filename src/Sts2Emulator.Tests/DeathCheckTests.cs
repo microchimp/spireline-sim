@@ -448,7 +448,9 @@ public class SelectionAnswerDeathTests
     public void AnExhaustAnswerThatKillsTheLastEnemyEndsTheFightAtOnce()
     {
         var fight = Fight
-            .Hand(Card(IC.BurningPact), Card(IC.Bash))
+            // Two exhaust candidates, so the screen opens: with one, the game's CardSelectCmd.FromHand answers it itself
+            // (the candidates do not exceed the minimum) and the play, not the answer, is the winning step.
+            .Hand(Card(IC.BurningPact), Card(IC.Bash), Card(IC.DefendIronclad))
             .Energy(1)
             .Draw(Card(IC.Anger), Card(IC.DefendIronclad))
             .Enemy(hp: 3);
@@ -563,8 +565,12 @@ public class AfterPlayDeathTests
         var play = fight.Play();
 
         Assert.False(play.Terminal);
-        Assert.True(axebot.Hp > 0);
-        Assert.Equal(1, BuffSystem.Get(axebot.Buffs, BuffId.Stock));
+        // Read from the roster after the play: game: StockPower.AfterDeath brings the Axebot back as a NEW creature
+        // (CreatureCmd.Add) and the corpse leaves, so the creature held before the play may be the corpse.
+        var back = fight.State.Enemies[0];
+        Assert.Equal(KE.Axebot, back.DefId);
+        Assert.True(back.Hp > 0);
+        Assert.Equal(1, BuffSystem.Get(back.Buffs, BuffId.Stock));
     }
 
     /// <summary>
@@ -625,7 +631,19 @@ public class FightHeldOpenTests
 
         Assert.False(turn.Terminal);
         Assert.Equal([KE.SneakyGremlin, KE.FatGremlin], fight.EnemyDefIds);
-        Assert.Equal(6, fight.State.Hand.Count);
+        if (TestSwitches.On(Sts2Emulator.Core2.Switch.F08, Sts2Emulator.Core2.Switch.F10))
+        {
+            // game: the player's turn end runs Hook.BeforeTurnEnd (the Bomb's kill, so the Horn's draw) in its first
+            // phase and CombatManager.FlushPlayerHand in EndPlayerTurnPhaseTwoInternal, so the Horn's card is flushed
+            // with the hand: the next hand is five, the Horn's card is the one discarded, two are left to draw.
+            Assert.Equal(5, fight.State.Hand.Count);
+            Assert.Equal(IC.DefendIronclad, Assert.Single(fight.State.DiscardPile).DefId);
+            Assert.Equal(2, fight.State.DrawPile.Count);
+        }
+        else
+        {
+            Assert.Equal(6, fight.State.Hand.Count);
+        }
     }
 
     /// <summary>
