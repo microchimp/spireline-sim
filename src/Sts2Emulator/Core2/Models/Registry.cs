@@ -43,6 +43,19 @@ public static class Registry
         ShriekPower.Register,
     ];
 
+    /// <summary>C3 (cloud/f08-power-2): the port list's power-2 rows of the models the batch ports.</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> Power2 =
+    [
+        TaintedPower.Register,
+        GigantificationPower.Register,
+        IntangiblePower.Register,
+        SlipperyPower.Register,
+        BufferPower.Register,
+        PossessSpeedPower.Register,
+        PossessStrengthPower.Register,
+        SwipePower.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -51,5 +64,6 @@ public static class Registry
     [
         .. Pilot,
         .. Power1,
+        .. Power2,
     ];
 }
