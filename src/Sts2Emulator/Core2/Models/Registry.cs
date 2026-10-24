@@ -4,6 +4,8 @@
 // register only while that family's switch is on. One block per handler batch (docs/rebuild/CLOUD_BRIEFS.md section 3):
 // a batch's branch adds its block and appends it to All; a textual conflict between two batches is resolved by keeping
 // every block.
+using Sts2Emulator.Core2.Models.Power;
+
 namespace Sts2Emulator.Core2.Models;
 
 public static class Registry
@@ -11,6 +13,7 @@ public static class Registry
     /// <summary>C1, the pilot (cloud/f08-pilot): the port list's power-5, relic-2 and card-1 rows.</summary>
     public static readonly IReadOnlyList<Action<HandlerTable>> Pilot =
     [
+        PhantomBladesPower.Register,
     ];
 
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,

@@ -8,6 +8,7 @@ using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core2;
 using Sts2Emulator.Core2.Models;
+using Sts2Emulator.Core2.Models.Power;
 using Xunit;
 using static Sts2Emulator.Tests.Core2.Models.ModelTestKit;
 
@@ -22,6 +23,7 @@ public class PilotTests
     /// <summary>The pilot's (model, hook) pairs, written out: the port list rows power-5, relic-2 and card-1.</summary>
     private static readonly (ListenerKind Kind, string Model, HookId Hook)[] PilotPairs =
     [
+        (ListenerKind.Power, "PhantomBladesPower", HookId.ModifyDamageAdditive),
     ];
 
     [Fact]
@@ -58,5 +60,71 @@ public class PilotTests
         Action<HandlerTable> b = static t => { };
         Assert.Equal([b], Without([a, b], a));
         Assert.Equal(Pilot.Count, Without(Pilot, a).Count);
+    }
+
+    // ---------------------------------------------------------------------------------------- Phantom Blades (power-5)
+
+    private const int ShivDef = 430;
+
+    /// <summary>The player with Phantom Blades 3, a Shiv in hand, no Shiv finished this turn, one slug.</summary>
+    private static (CombatState S, CardInstance Shiv) PhantomBladesCombat(int amount = 3)
+    {
+        var s = Combat(40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.PhantomBlades, amount));
+        var shiv = Add(s, s.Hand, ShivDef);
+        return (s, shiv);
+    }
+
+    [Fact]
+    public void PhantomBladesIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Pilot), ListenerKind.Power, "PhantomBladesPower", HookId.ModifyDamageAdditive);
+    }
+
+    [Fact]
+    public void PhantomBladesAddsTheOldFunctionsNumberToTheFirstShivOfTheTurn()
+    {
+        // game: PhantomBladesPower.ModifyDamageAdditive; old: CardEffects.ShivDamage adds
+        // PhantomBlades_ModifyDamageAdditive(state) to a Shiv while ShivsPlayedThisTurn is 0.
+        var (s, shiv) = PhantomBladesCombat();
+        var k = Kernel(s, Pilot);
+        var source = new CardHandle(shiv.Uid);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: source), out var changed);
+
+        Assert.Equal(4m + CardEffects.PhantomBlades_ModifyDamageAdditive(s), v);
+        Assert.Equal(7m, v);
+        Assert.Equal([Power("PhantomBladesPower", 0)], changed);
+
+        // Where the old site's condition fails: a Shiv already finished this turn, another card, no card, an unpowered
+        // hit, an enemy dealer.
+        s.ShivsPlayedThisTurn = 1;
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: source), out changed));
+        Assert.Empty(changed);
+        s.ShivsPlayedThisTurn = 0;
+        var strike = Add(s, s.Hand, 1);
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: new CardHandle(strike.Uid)), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, props: Unpowered, card: source), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 4m, dealer: 1, card: source), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void PhantomBladesDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, shiv) = PhantomBladesCombat();
+        var k = Kernel(s, Without(Pilot, PhantomBladesPower.Register));
+        Assert.Equal(4m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 4m, card: new CardHandle(shiv.Uid)), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void PhantomBladesIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Power, "PhantomBladesPower", HookId.ModifyDamageAdditive);
     }
 }
