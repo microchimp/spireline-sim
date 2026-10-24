@@ -52,14 +52,14 @@ def describe_error(error: BaseException) -> str:
     """Exception type and message only, the way every log of this project names a failure."""
     return f"{type(error).__name__}: {error}"[:LOG_LINE_CAP]
 
-_DRIVE_PATH = re.compile(r"(?<![\w])[A-Za-z]:[\/][^\s\"']*")
+_DRIVE_PATH = re.compile(r"(?<![\w])[A-Za-z]:[\\/][^\s\"']*")
 _UNIX_PATH = re.compile(r"(?<![\w])/(?:home|Users|tmp|var|opt)/[^\s\"']*")
 
 
 def safe_child_line(text: str) -> str | None:
     """A line of the server's output as a log may carry it: traceback lines are dropped (they name files under the user
     profile), every drive-letter or home path is replaced by <path>, and the rest is capped. None means: do not log."""
-    if text.startswith(("Traceback", "  File ", " ", "	")):
+    if text.startswith(("Traceback", "  File ", " ", "\t")):
         return None
     text = _DRIVE_PATH.sub("<path>", text)
     text = _UNIX_PATH.sub("<path>", text)
