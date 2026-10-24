@@ -31,6 +31,7 @@ public class RelicOneTests
         (ListenerKind.Relic, "TungstenRod", HookId.ModifyHpLostAfterOsty),
         (ListenerKind.Relic, "StrikeDummy", HookId.ModifyDamageAdditive),
         (ListenerKind.Relic, "PenNib", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Relic, "GremlinHorn", HookId.AfterDeath),
     ];
 
     [Fact]
@@ -389,6 +390,152 @@ public class RelicOneTests
     public void PenNibIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "PenNib", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Gremlin Horn (relic-1)
+
+    /// <summary>The player holding Gremlin Horn with 3 energy, a Strike, a Bash and a Defend in the draw pile (in that
+    /// order) and nothing in hand, one slug per HP given.</summary>
+    private static (CombatState S, ListenerRef Relic) GremlinHornCombat(params int[] enemyHp)
+    {
+        var s = Combat(enemyHp);
+        var relic = Hold(s, RelicEffects.GremlinHorn);
+        s.Energy = 3;
+        Add(s, s.DrawPile, StrikeDef);
+        Add(s, s.DrawPile, BashDef);
+        Add(s, s.DrawPile, DefendDef);
+        return (s, relic);
+    }
+
+    /// <summary>A pile's cards by (uid, def) in order.</summary>
+    private static string Layout(List<CardInstance> pile) => string.Join(",", pile.Select(c => $"{c.Uid}:{c.DefId}"));
+
+    [Fact]
+    public void GremlinHornIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Relic1), ListenerKind.Relic, "GremlinHorn", HookId.AfterDeath);
+    }
+
+    [Fact]
+    public void GremlinHornPaysTheOldBodysEnergyAndCardForAnEnemysDeath()
+    {
+        // game: GremlinHorn.AfterDeath for a death on the other side; old: CombatEngine.AnswerDeaths calls
+        // GremlinHorn_AfterDeath(state, rng) once per fallen enemy while the relic is held. Dispatched with the slug dead and
+        // still listed (the state the game's override sees), the state equals the old body's on the same state.
+        var (s, _) = GremlinHornCombat(40, 40);
+        var k = Kernel(s, Relic1);
+        var (oracle, _) = GremlinHornCombat(40, 40);
+        var slug = s.Enemies[0];
+
+        using (Dying(k, slug))
+            Hooks.AfterDeath(k, AfterDeathOf(IndexOf(s, slug)));
+        oracle.Enemies[0].Hp = 0;
+        CombatEngine.GremlinHorn_AfterDeath(oracle, new Random(0));
+
+        Assert.Equal(oracle.Energy, s.Energy);
+        Assert.Equal(4, s.Energy);
+        Assert.Equal(Layout(oracle.Hand), Layout(s.Hand));
+        Assert.Equal([StrikeDef], s.Hand.Select(c => c.DefId));
+        Assert.Equal(Layout(oracle.DrawPile), Layout(s.DrawPile));
+        Assert.Equal([BashDef, DefendDef], s.DrawPile.Select(c => c.DefId));
+
+        // A death whose removal was prevented pays too: the old site, as the game, reads the side alone.
+        using (Dying(k, slug))
+            Hooks.AfterDeath(k, AfterDeathOf(IndexOf(s, slug), removalPrevented: true));
+        Assert.Equal(5, s.Energy);
+        Assert.Equal([StrikeDef, BashDef], s.Hand.Select(c => c.DefId));
+    }
+
+    [Fact]
+    public void GremlinHornPaysNothingForADeathOnItsOwnersSide()
+    {
+        // The per-owner condition: the dead creature must be on the other side from the holder (the player). The player's
+        // own death (creature 0) and Osty's (creature 1 once it is in the combat) pay nothing; the slug's (creature 2) does.
+        var (s, _) = GremlinHornCombat(40, 40);
+        WithOsty(s);
+        var k = Kernel(s, Relic1);
+
+        Hooks.AfterDeath(k, AfterDeathOf(0));
+        Hooks.AfterDeath(k, AfterDeathOf(1));
+        Assert.Equal(3, s.Energy);
+        Assert.Empty(s.Hand);
+
+        var slug = s.Enemies[0];
+        using (Dying(k, slug))
+            Hooks.AfterDeath(k, AfterDeathOf(IndexOf(s, slug)));
+        Assert.Equal(4, s.Energy);
+        Assert.Equal([StrikeDef], s.Hand.Select(c => c.DefId));
+    }
+
+    [Fact]
+    public void GremlinHornOnTheLastEnemysDeathPaysTheEnergyAndTheOldBodysDrawRefuses()
+    {
+        // old: CardEffects.DrawCards draws nothing once the fight is over or ending (CombatEngine.IsOverOrEnding), and the
+        // last slug dead makes it so; the energy still comes. The handler equals the old body on the same state.
+        var (s, _) = GremlinHornCombat(40);
+        var k = Kernel(s, Relic1);
+        var (oracle, _) = GremlinHornCombat(40);
+
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        oracle.Enemies[0].Hp = 0;
+        CombatEngine.GremlinHorn_AfterDeath(oracle, new Random(0));
+
+        Assert.Equal(oracle.Energy, s.Energy);
+        Assert.Equal(4, s.Energy);
+        Assert.Equal(Layout(oracle.Hand), Layout(s.Hand));
+        Assert.Empty(s.Hand);
+        Assert.Equal(3, s.DrawPile.Count);
+    }
+
+    [Fact]
+    public void GremlinHornsDrawReshufflesOnTheCombatsShuffleStream()
+    {
+        // The old body takes a Random for the reshuffle and CardEffects.ShuffleIfNecessary prefers the combat's Shuffle
+        // stream to it; the handler passes that stream. With the draw pile empty, the discard is shuffled into it on the
+        // stream, and the result equals the old body's on a combat with the same stream (the same seed, the same count of
+        // draws after).
+        var (s, _) = GremlinHornCombat(40, 40);
+        var (oracle, _) = GremlinHornCombat(40, 40);
+        foreach (var c in new[] { s, oracle })
+        {
+            c.DiscardPile.AddRange(c.DrawPile);
+            c.DrawPile.Clear();
+            c.ShuffleRng = new CountingRandom(7);
+        }
+        var k = Kernel(s, Relic1);
+
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        oracle.Enemies[0].Hp = 0;
+        CombatEngine.GremlinHorn_AfterDeath(oracle, new Random(0));
+
+        Assert.Equal(oracle.Energy, s.Energy);
+        Assert.Equal(Layout(oracle.Hand), Layout(s.Hand));
+        Assert.Single(s.Hand);
+        Assert.Equal(Layout(oracle.DrawPile), Layout(s.DrawPile));
+        Assert.Equal(2, s.DrawPile.Count);
+        Assert.Empty(s.DiscardPile);
+        Assert.Equal(oracle.ShuffleRng!.CallCount, s.ShuffleRng!.CallCount);
+        Assert.True(s.ShuffleRng.CallCount > 0);
+    }
+
+    [Fact]
+    public void GremlinHornDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = GremlinHornCombat(40, 40);
+        var k = Kernel(s, Without(Relic1, GremlinHorn.Register));
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        Assert.Equal(3, s.Energy);
+        Assert.Empty(s.Hand);
+        Assert.Equal(3, s.DrawPile.Count);
+    }
+
+    [Fact]
+    public void GremlinHornIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "GremlinHorn", HookId.AfterDeath);
     }
 
 }
