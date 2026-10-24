@@ -147,7 +147,7 @@ Everything above assumes the two arms are *paired*: every seed is played by both
 both. The cloud cannot see the PC's blocks; these checks belong there, on a finished promotion block (`arms/<block>-<config>/runs.jsonl`
 of the candidate and of the incumbent), before the flag goes on.
 
-1. **The real per-seed pairing of the two arms.** The seed sets of the two `runs.jsonl` files are identical and equal to
+1. **The real per-seed pairing of the two arms** (points 1 and 2 are computed by `tools/lab/pairing_check.py CAND_ARM_DIR BASE_ARM_DIR --seeds-file F --promotion P`). The seed sets of the two `runs.jsonl` files are identical and equal to
    the block's seed file; `paired_seeds` in `promotion.json` equals `n_seeds` (the code refuses a partial arm, but check
    the arms were not played on different configs or ascensions: `summary.json` of each arm names them). Both arms were
    played on the same engine build (the same tree sha in the job record), since a seed is the same game only under the
