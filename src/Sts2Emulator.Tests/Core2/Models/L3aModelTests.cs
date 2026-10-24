@@ -261,16 +261,16 @@ public class L3aModelTests
     }
 
     [Fact]
-    public void CrabRageKeepsTheOldTestOfTheFallen()
+    public void CrabRageTakesTheGamesTestOfTheFallen()
     {
-        // The old body answers the death of a Crab Rage holder only (the game's test is any ally's death).
+        // R7b2: the game's test is any ally's death; the old body answered the death of a Crab Rage holder only.
         var s = CrabCombat(2);
         s.Enemies[0].Buffs.Clear();
         var k = Kernel(s, L3a);
         using (Dying(k, s.Enemies[0]))
             Hooks.AfterDeath(k, AfterDeathOf(1));
-        Assert.Equal(1, Buff(s.Enemies[1].Buffs, BuffId.CrabRage));
-        Assert.Equal(0, s.Enemies[1].Block);
+        Assert.Equal(0, Buff(s.Enemies[1].Buffs, BuffId.CrabRage));
+        Assert.Equal(RunConstants.CrabRageBlock, s.Enemies[1].Block);
     }
 
     [Fact]
@@ -317,7 +317,8 @@ public class L3aModelTests
     public void SurroundedMultipliesAPoweredHitFromBehindAsTheOldBodyDoes()
     {
         // game: SurroundedPower.ModifyDamageMultiplicative; old: BuffSystem.Surrounded_ModifyDamageMultiplicative from the
-        // old powered fold. Slug A, behind: 1.5x (15 of 10); slug B, in front: 1x; an unpowered hit from behind: 1x.
+        // old powered fold. Slug A, behind: 1.5x (15 of 10); slug B, in front: 1x; an unpowered hit from behind: 1.5x too
+        // (R7b2: the game's fold has no props test; the old fold was the powered one).
         var s = KaiserCombat();
         var k = Kernel(s, L3a);
         decimal factor = (decimal)BuffSystem.Surrounded_ModifyDamageMultiplicative(s.Enemies[0].Buffs, s.PlayerBuffs);
@@ -326,7 +327,7 @@ public class L3aModelTests
         Assert.Equal(15m, 10m * factor);
         Assert.Equal([Power("SurroundedPower", 0)], changed);
         Assert.Equal(10m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 10m, dealer: 2), out _));
-        Assert.Equal(10m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 10m, Unpowered, dealer: 1), out _));
+        Assert.Equal(15m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 10m, Unpowered, dealer: 1), out _));
 
         var k2 = Kernel(KaiserCombat(), Without(L3a, SurroundedPower.Register));
         Assert.Equal(10m, Hooks.ModifyDamage(k2, Attack(target: 0, damage: 10m, dealer: 1), out var none));

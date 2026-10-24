@@ -4406,7 +4406,17 @@ public static class EnemyAI
                 break;
 
             case KE.SlitheringStrangler:
+                // F08+F10 on: the power's Applier (ConstrictPower.AfterDeath's test) is the Strangler whose Apply
+                // created it; a later Apply stacks onto it and keeps it. With the switch off nothing is recorded.
+                bool constrictApplier = Core2.Kernel.If(Core2.Switch.F08, state) is not null
+                    && BuffSystem.Get(state.PlayerBuffs, BuffId.Constrict) <= 0;
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Constrict, 3);
+                if (constrictApplier && BuffSystem.Get(state.PlayerBuffs, BuffId.Constrict) > 0)
+                {
+                    foreach (var other in state.Enemies)
+                        other.AppliedPlayersConstrict = ReferenceEquals(other, enemy);
+                }
+
                 break;
 
             case KE.HauntedShip:

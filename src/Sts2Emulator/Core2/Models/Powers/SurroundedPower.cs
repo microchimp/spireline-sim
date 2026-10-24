@@ -12,15 +12,15 @@ internal static class SurroundedPower
     /// <summary>
     /// game: SurroundedPower.ModifyDamageMultiplicative. A fold-mul: 1.5 for a hit on the owner whose dealer is at the
     /// owner's back (the dealer holds Back Attack Left while the owner faces right, or Back Attack Right while it faces
-    /// left), 1 otherwise. The old body reads the defender's facing and the attacker's Back Attack, and the old fold calls it
-    /// for every powered hit with no other test, so the handler passes the dealer's and the owner's buffs and asks for a
-    /// powered attack (the old fold's reach; the game has no props test, so it multiplies an unpowered hit from the back
-    /// too). The body reads its owner's facing only, so it acts for its owner alone. The factor is the old function's
-    /// float, exact as a decimal.
+    /// left), 1 otherwise, whatever the props: the game's fold has no props test, so an unpowered hit from the back is
+    /// multiplied too (R7b2; the old fold, BuffSystem.IncomingDamage, is the powered one and called the body for powered
+    /// hits only). The body reads the defender's facing and the attacker's Back Attack, so the handler passes the dealer's
+    /// and the owner's buffs. The body reads its owner's facing only, so it acts for its owner alone. The factor is the old
+    /// function's float, exact as a decimal.
     /// </summary>
     internal static decimal ModifyDamageMultiplicative(HookCtx c, ListenerRef self, in ModifyDamageArgs a, decimal current)
     {
-        if (c.Power(self) is not { } me || a.Target != me.Owner || a.Dealer is not { } dealer || !a.Props.IsPoweredAttack())
+        if (c.Power(self) is not { } me || a.Target != me.Owner || a.Dealer is not { } dealer)
             return 1m;
         return (decimal)BuffSystem.Surrounded_ModifyDamageMultiplicative(c.OldBuffs(dealer), c.OldBuffs(me.Owner));
     }

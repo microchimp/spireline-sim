@@ -334,6 +334,14 @@ public class CombatSnapshotTests
                 continue;
             }
 
+            // The Applier of the player's Constrict, recorded under the F08 switch (R7b2): documents carry no Applier, so a
+            // load leaves it false and ConstrictPower.AfterDeath falls back to the old site's test (any Strangler).
+            if (field.Name == nameof(EnemyState.AppliedPlayersConstrict))
+            {
+                Assert.False(enemy.AppliedPlayersConstrict);
+                continue;
+            }
+
             Assert.False(
                 SameContent(field.GetValue(enemy), field.GetValue(new EnemyState())),
                 $"EnemyState.{field.Name} is not carried by the snapshot"

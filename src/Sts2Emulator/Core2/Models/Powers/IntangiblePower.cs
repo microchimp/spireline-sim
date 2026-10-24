@@ -32,11 +32,13 @@ internal static class IntangiblePower
     /// unchanged for another target. The old function takes an int, the HP lost after the old engine's cast, and agrees
     /// with this value on every int; here the running value is a decimal, cast once at the HP loss, so 1.5 becomes 1 and
     /// 0.5 stays 0.5. The dispatcher lists this power as a modifier only when the truncated value moved (1.5 to 1 does
-    /// not). The stack test is the old function's (Intangible above 0): the game removes a power at 0.
+    /// not). The stack test is the old function's (Intangible above 0): the game removes a power at 0. The game returns the
+    /// amount unchanged while the combat is not in progress (CombatManager.IsInProgress, <c>HookCtx.CombatInProgress</c>,
+    /// R7b2): a loss after the combat has ended is not capped. The old function has no such test.
     /// </summary>
     internal static decimal ModifyHpLostAfterOsty(HookCtx c, ListenerRef self, in ModifyHpLostArgs a, decimal current)
     {
-        if (c.Power(self) is not { } me || a.Target != me.Owner || me.Amount <= 0m || current < 1m)
+        if (!c.CombatInProgress || c.Power(self) is not { } me || a.Target != me.Owner || me.Amount <= 0m || current < 1m)
             return current;
         return 1m;
     }
