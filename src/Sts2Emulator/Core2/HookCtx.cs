@@ -16,7 +16,7 @@ public readonly record struct PowerView(CreatureRef Owner, decimal Amount);
 /// <item>Engine-neutral members (the shape a Tier 2 context keeps): <see cref="Power" />, <see cref="Owner" />,
 /// <see cref="Card(CardHandle)" />, <see cref="Card(ListenerRef)" />, <see cref="Relic" />, <see cref="IsAlive" />,
 /// <see cref="IsMonster" />, <see cref="IsPlayer" />, <see cref="Damage" />, <see cref="CombatInProgress" />,
-/// <see cref="HittableEnemies" /> and <see cref="IsDebuff" />.</item>
+/// <see cref="HittableEnemies" />, <see cref="IsDebuff" /> and <see cref="Niche" />.</item>
 /// <item>Tier 1 members (the old state, the one view of it): <see cref="K" /> (what the commands take:
 /// <c>CreatureCmd.Damage(c.K, ...)</c>), <see cref="World" />, <see cref="OldCombat" /> (the <c>CombatState</c>, the
 /// argument of most old bodies: <c>CardEffects.PhantomBlades_ModifyDamageAdditive(c.OldCombat)</c>), <see cref="OldBuffs" />
@@ -71,6 +71,18 @@ public readonly struct HookCtx
     /// <summary>Whether the combat is in progress (game: CombatManager.IsInProgress): false once it has ended, or before
     /// it starts.</summary>
     public bool CombatInProgress => CombatEnd.IsInProgress(K);
+
+    /// <summary>
+    /// game: RunState.Rng.Niche, the run's Niche stream: CreatureCmd.Add's CombatState.CreateCreature rolls every new
+    /// enemy's HP from it (Creature.SetUniqueMonsterHpValue), so it is what SurprisePower's, InfestedPower's and StockPower's
+    /// AfterDeath draw, whatever kills the owner. Tier 1 answers with the combat's own copy of it,
+    /// <c>CombatState.NicheHpRng</c>: taken at the run's Niche position when the fight starts, restreamed with Niche on a
+    /// resample, handed back to the run when the fight ends, and cloned with the combat, so a fork, a snapshot or a probe
+    /// draws its own copy and never the run's. A hand-made combat that no run built has none and answers with its Shuffle
+    /// stream (the stand-in the old in-blow death answer passes); throws when it has neither.
+    /// </summary>
+    public Random Niche => OldCombat.NicheHpRng ?? OldCombat.ShuffleRng
+        ?? throw new InvalidOperationException("the combat holds no Niche stream (NicheHpRng) and no Shuffle stream");
 
     /// <summary>The enemies a hit can reach now, in roster order (game: CombatState.HittableEnemies: alive, in the combat
     /// and hittable).</summary>

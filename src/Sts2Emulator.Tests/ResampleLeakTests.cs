@@ -1,5 +1,6 @@
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
+using Sts2Emulator.Core2;
 using Xunit;
 
 namespace Sts2Emulator.Tests;
@@ -98,6 +99,45 @@ public class ResampleLeakTests
             // A fork of a fork rolls again from the same pass.
             Assert.True(IntentParticles.Resample(fork.Clone(), new Random(seed + 1000)));
         }
+    }
+
+    /// <summary>
+    /// A fork's kernel stands in the fork (KernelState.CopyTo binds a combat's copy to no run): a forked step whose Strike
+    /// kills an Axebot with Stock respawns it off the fork's own Niche stream, and the live run's combat stream and the
+    /// live fight's Niche stream stay where they were.
+    /// </summary>
+    [Fact]
+    public void AForkedStepWithAStockDeathLeavesTheLiveRunsStreamsUntouched()
+    {
+        var e = AtMap();
+        e.Kernel = new Sts2Emulator.Core2.Kernel(new KernelOptions([Switch.F08, Switch.F10]),
+            () => Sts2Emulator.Tests.Core2.Models.ModelTestKit.Ids, Sts2Emulator.Core2.Models.Registry.L3b);
+        int option = FirstOption(e, RunConstants.NodeNormal);
+        Assert.Equal(
+            0,
+            e.EnterEncounterDebug(option, (int)CombatFactory.ActOneEncounter.SlimesNormal, RunConstants.NodeNormal)
+        );
+        var live = e.State.ActiveCombat!;
+        Assert.Same(e.State, live.Kernel!.World!.Run);
+        int liveCombat = e.State.ActiveCombatRng!.CallCount;
+        int liveNiche = live.NicheHpRng!.CallCount;
+
+        var (fork, forkRng) = e.ForkActiveCombat(null)!.Value;
+        Assert.Null(fork.Kernel!.World!.Run);
+        var bot = fork.Enemies[0];
+        bot.DefId = KE.Axebot;
+        bot.Hp = 1;
+        bot.Buffs.Add(new BuffState(BuffId.Stock, 2));
+        fork.Hand.Insert(0, new CardInstance(473, false));
+        fork.Energy = 9;
+        CombatEngine.Step(fork, 0, forkRng, 0);
+
+        Assert.DoesNotContain(bot, fork.Enemies);
+        Assert.Equal(KE.Axebot, fork.Enemies[^1].DefId);
+        Assert.Equal(liveNiche + 1, fork.NicheHpRng!.CallCount);
+        Assert.Equal(liveCombat, e.State.ActiveCombatRng.CallCount);
+        Assert.Equal(liveNiche, live.NicheHpRng.CallCount);
+        Assert.NotEqual(KE.Axebot, live.Enemies[0].DefId);
     }
 
     [Fact]

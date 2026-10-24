@@ -7708,7 +7708,10 @@ public static class CardEffects
                 // multiplier is gated on `cardSource is Hang`, and that function attacks
                 // with no idea which card it is holding. The pipeline ends in a single
                 // `(int)dmg`, so multiplying the base is the same arithmetic.
-                DealDamage(state, Dmg(state, def, upgraded, card) * Math.Max(1, stacks));
+                // F08+F10 on: HangPower.ModifyDamageMultiplicative is Core2's fold (Core2/Models/Powers/HangPower.cs) and the
+                // base goes to the damage command unmultiplied, so the factor is applied once.
+                int hangFactor = Core2.Kernel.If(Core2.Switch.F08, state) is null ? Math.Max(1, stacks) : 1;
+                DealDamage(state, Dmg(state, def, upgraded, card) * hangFactor);
 
                 // `Math.Max(2, amount)`, clamped so the counter cannot pass 999999999.
                 int add = Math.Min(Math.Max(2, stacks), Math.Max(0, 999999999 - stacks));
