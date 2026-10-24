@@ -183,6 +183,49 @@ re-implements a model's effect (that is a handler calling the old body). Dispatc
 - `OwnerInCombat` (ShouldPowerBeRemovedOnDeath pre): the power's owner must still be in the combat.
 - `NegativeCostPassthrough` (ModifyEnergyCostInCombat, ModifyStarCost): F07, not needed by this switch.
 
+**Settled in R2 (branch `rebuild/f08-r2`, 2026-10-24).** Items 1-3 and the named steps are in code, gated by the
+F08+F10 switch (a `KernelState` exists only with a switch on) and called from no old site yet (R4 reroutes callers).
+- Files: `Core2/Commands/CreatureCmd.cs` (`Damage`, the `Kill` hook point), `Core2/Commands/AttackCmd.cs` (`AttackCmd`,
+  `AttackBridge`), `Core2/Commands/DamageResult.cs` (`DamageResult`, `CommandLog`, `ValueProps` with the game's bits,
+  `PreviewModes`), and the adapter at the end of `Core2/OldState.cs`: `OldCreature` (player, Osty or an enemy by object)
+  and `OldCreatures` (HP, block, pet owner, opponents, hittable enemies, the source card's enchantment, and
+  `Ref`/`At` between a creature and the `CreatureRef` a dispatcher carries: the player 0, Osty 1 when present, then the
+  enemies in the combat, as `OldState.Combat` numbers listeners). The commands touch HP and block only there.
+- `CreatureCmd.Damage(k, targets, amount, props, dealer, cardSource, ctx)` returns the results in the game's order;
+  each result gets a `DamageResultRef` in `k.Commands` (`Result(ref)` for handlers; copied with the state, enemies
+  re-pointed by roster index). A creature the call kills is marked dying (`OldWorld.MarkDying`) from its HP loss until
+  `Kill` returns, since the game keeps it in the combat until the kill removes it. An event dispatch that pauses where
+  the command cannot resume goes through `KernelState.Settle`. Not in the old state, so not done: the combat history
+  entry, the player's damage-dealt counter, visuals.
+- The enchantment steps call the old bodies: `CardEffects.EnchantDamageAdditive` and `EnchantDamageMultiplicative`,
+  extracted from `DmgFrom` (which calls them, byte-identical), applied only on a powered attack (every damage
+  enchantment of the game checks `IsPoweredAttack`). `NetIdGuard` returns true (one local player). `OwnerInCombat` is
+  true while the power's owner position names a creature in the combat. `PreviewHittable` as above, over
+  `OldCreatures.HittableEnemies` (the old `EnemyAI.IsTargetable`). The ModifyBlock enchantment steps (F09) and
+  `NegativeCostPassthrough` (F07) still throw.
+- **The F06 bridge.** `AttackCmd.Execute(k, ctx)` dispatches BeforeAttack, ModifyAttackHitCount and AfterAttack only
+  with F06 on. With F06 off it takes the count given and runs the `AttackBridge` it carries once at each of the two
+  places: R4's rerouted caller passes its old point there instead of running it (a monster's attack: the post-loop
+  bodies of `EnemyAI.DealAttack`, `TriggerSuck` with the hits that landed and Painful Stabs; Osty's attack:
+  `RelicEffects.ApplyAfterOstyAttack`). A card's attack carries no bridge: its old points
+  (`ResolvePlayRepetition` [effect]/[after], `QueueAttackPlayLifecycleEffects`) stay at the play site, once per play.
+- **What R3a must provide (the Kill contract).** `CreatureCmd.Kill(KernelState k, IReadOnlyList<OldCreature> killed)`
+  is called exactly once per `Damage` call that got past the dead-dealer and empty-target returns, after every result's
+  hooks, with the receivers killed by this call in result order (empty when none died; game: `await
+  Kill(killedCreatures)`), while each killed enemy is still marked dying. The stub counts calls
+  (`CommandLog.KillCalls`), runs the test seam `CommandLog.KillStandIn` when set, and otherwise throws
+  `NotImplementedException` for a non-empty list. R3a replaces the stub's body with item 4 (keeping the count, or
+  updating `DamageCommandTests`, which use the seam), and must leave a removed enemy out of `OldCreatures.Enemies`, so
+  AttackCmd's per-hit target check sees it gone.
+- Card uids in tests: a listing pass renumbers live cards whose uid is above `LastCardUid` (`CardUidInvariant.Normalise`),
+  so a test card needs `CombatState.Fresh`.
+- Tests: `src/Sts2Emulator.Tests/Core2/DamageCommandTests.cs` (16).
+- Acceptance (R2): `dotnet test src/Sts2Emulator.Tests` 6765 passed, 7 skipped, 0 failed (6772); `tools/emudump.Tests`
+  246 passed; byte_proof in the 9 modes (fight, netstate, state-hash, rng-log, reanchor, -scramble, -stale,
+  -perturb-moves, -trace) over 4304 corpus fights: old against `--engine core2` 38736 pairs identical, 0 differ;
+  `rebuild/f08-r1` (5657cd54) against this tree, both `--engine old`, 38736 identical, 0 differ; `construct shape` 0
+  differences; `sites check` 0 problems (sites.json rebuilt for the moved CardEffects lines).
+
 ## 4. Old sites replaced, and their game counterparts
 
 All F08/F10 sites from `sites.json` (file:line at a1e4d7ea). Each gets `if (Kernel.If(Switch.F08, ...) is { } k)
@@ -340,7 +383,7 @@ a stop.
 | round | model | content |
 |---|---|---|
 | R1 (done, `rebuild/f08-r1`) | Sonnet | F17 re-cut in `hook_families.json` (AfterCombatEnd, AfterCombatVictory, AfterCombatVictoryEarly), `Switches.g.cs`, the manifest and the by-family tables rebuilt; the two SPLITS records; `port_list --exclude-hooks` no longer needed |
-| R2 | Opus | `CreatureCmd.Damage`, the decimal fold and `AttackCmd` with the `IsOverOrEnding` return and the F06 bridge; rule tests (section 1's sequences, the fold, the truncation, AfterAttack once) |
+| R2 (done, `rebuild/f08-r2`) | Opus | `CreatureCmd.Damage`, the decimal fold and `AttackCmd` with the `IsOverOrEnding` return and the F06 bridge; rule tests (section 1's sequences, the fold, the truncation, AfterAttack once) |
 | R3a | Opus | `Kill` / `KillWithoutCheckingWinCondition` in the sequence of section 3 item 5, the two removals, `IsPerformingMove` and the move's end, the pseudo-hook ids, `Escape`, the HP commands (item 9) |
 | R3b | Opus | the win check at the game's points, the old answers and in-step checks gated off, the F17 hand-off (`FinishCombat` from the host), `construct commands` with the write check |
 | R4 | Opus | after K5/K6 land: the old entry points rerouted (the 42 + 33 + 19 + 7 callers through adapters returning the old ints, and section 4's write sites), the hybrid audit, fuzzer and struct_compare harness on the empty handler set |
