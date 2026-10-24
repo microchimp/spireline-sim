@@ -1205,6 +1205,45 @@ death, HP and combat-end suites) in tools/fidelity/suites_switch.py. By hand: `S
 src/Sts2Emulator.Tests --no-build --filter "FullyQualifiedName~.DeathCheckTests.|..."`. Each round that switches more
 on reruns it; a "fail on only" is classed in MIGRATION_F08_O1.md (R4 to deliver, handler batch, old deviation).
 
+### Damage terms applied twice (round R7c, branch `rebuild/f08-r7c`)
+
+Found by R7b1: once the fixture gave every hand-made card a uid at the bind, 8 cases failed with F08+F10 on (7
+CalculatedDamageTests Sharp / Corrupted cases, VitruvianMinionDoublesBothHalves). With a card source that resolves (a real
+fight's cards always have one) Core2's `Hook.ModifyDamage` folded the enchantment and Vitruvian Minion's factor onto an
+amount the old card pre-calculation had already folded them into. The class Hang had (batch L3b). Rule: each Calculate
+term runs once, and under the switch it is the kernel's.
+
+Method: `python -m tools.kernel.fold_precalc` lists, for every model of `Registry.All` with a damage fold, the old
+engine's calls of its extracted body and whether an F08 test comes first in that method; each method with none was
+followed to its callers by hand (below). The enchantment is the dispatcher's EnchantAdd / EnchantMul steps, not a pair,
+and is listed with them. 36 pairs and 2 steps checked; 11 applied twice, all 11 fixed at 2 gates.
+
+| model | hook | old site | applied twice |
+|---|---|---|---|
+| enchantment (step) | EnchantAdd, EnchantMul | `CardEffects.DmgFrom` (`EnchantDamageAdditive`, `EnchantDamageMultiplicative`) | yes: fixed (gate 1) |
+| GigantificationPower | ModifyDamageMultiplicative | `DmgFrom` | yes: fixed (gate 1) |
+| MiniatureCannon, StrikeDummy, FakeStrikeDummy | ModifyDamageAdditive | `RelicEffects.CardDamageBonus` from `DmgFrom` | yes (3): fixed (gate 1) |
+| MysticLighter | ModifyDamageAdditive | `RelicEffects.EnchantedCardDamageBonus` from `DmgFrom` | yes: fixed (gate 1) |
+| VitruvianMinion, PenNib | ModifyDamageMultiplicative | `RelicEffects.CardDamageMultiplier` from `DmgFrom` | yes (2): fixed (gate 1) |
+| AccuracyPower, PhantomBladesPower | ModifyDamageAdditive | `CardEffects.ShivDamage` (after `Dmg`) | yes (2): fixed (gate 2) |
+| HangPower | ModifyDamageMultiplicative | the Hang case's factor | no: gated in L3b |
+| ConquerorPower | ModifyDamageMultiplicative | `ConqueredDamage`, Sovereign Blade | no: only on the switch-off branch |
+| CalcifyPower | ModifyDamageAdditive | `OstyAttackDamage` | no, but once by the OLD site: under the switch Osty's hits name the player as dealer, so the handler (dealer the owner's pet) answers 0. Open: Osty as dealer (the Strength gap of `OstyAttackDamage`'s remarks) |
+| Strength, Vigor, Weak, Vulnerable, Shrink, Flutter, Tank, Surrounded, Tracking, DoubleDamage, Soar, Tainted | additive / multiplicative | `BuffSystem.IncomingDamage` | no: its damage callers (`DealDamageToEnemy`, `EnemyAI.DealAttackDamage`) are below their F08 return; `Enemy.AnnouncedDamage` is the intent, no damage |
+| Lethality, Colossus, Slow, HardToKill | multiplicative / cap | `DealDamageToEnemy`, `EnemyAI.DealAttackDamage` | no: below the F08 return |
+| Intangible | cap, ModifyHpLostAfterOsty | `BuffSystem.CapIncomingDamage` / the HP-loss caps | no: below the F08 returns |
+| HardenedShell, Slippery | ModifyHpLostBeforeOstyLate, AfterOsty | `LandDamageOnEnemy` | no: below the F08 return |
+| Buffer, TungstenRod, BeatingRemnant, TheBoot | ModifyHpLost passes | `LosePlayerHp`, `RelicEffects.ModifyHpLost`, `LandDamageOnEnemy` | no: below the F08 returns |
+
+Gate 1, at the shared entry: under F08 `DmgFrom` returns the base (the card's DamageVar or CalculatedDamageVar value) and
+the command folds everything, which is the game's shape (the attack hands the base to the damage command and
+Hook.ModifyDamage folds enchantment, additive, multiplicative and cap per hit). Every play-path caller (`Dmg`, the
+calculated cards, Tinker, Hang, Sovereign Blade, Osty's card attacks) goes through it. The old body is
+`ModifiedCardDamage`, which Thrash keeps calling for the card it eats either way: that is a value the game reads through
+Hook.ModifyDamage with the eaten card as source, not an amount the damage command folds. Gate 2: under F08 `ShivDamage`
+adds neither Accuracy nor Phantom Blades. Switch off, both are byte-identical (the same computation in the same order).
+The fixture keeps the uid at the bind (`TestSwitches`), so the O1 runner sees real card sources.
+
 ## 7. Rounds and estimate
 
 | round | model | content |
