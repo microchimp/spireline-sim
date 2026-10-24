@@ -5,6 +5,11 @@
 // lines them up with the game's). An item the engine cannot build is logged "unsupported": a mirror gap, not an
 // emulator divergence. An item the game refused (ok false) is skipped, so both sides stay alike.
 // What each item does to a run is the engine's: the old engine's is Engines/Old/OldSetup.cs.
+// Three combat items are the scenarios' own (Scenario.cs, docs/rebuild/SCENARIOS.md), with no referee counterpart yet:
+//   {"cmd": "block", "amount": N}                              the player's block becomes N (IEngine.SetBlock)
+//   {"cmd": "enemy_hp", "slot": S, "max": M, "current": C}     the enemy in slot S: max HP, then current HP; either optional (IEngine.SetEnemyHp)
+//   {"cmd": "enemy_block", "slot": S, "amount": N}             the enemy in slot S's block becomes N (IEngine.SetEnemyBlock)
+// The engine refuses a slot with no living enemy, a negative value and a current HP above the max HP in force (ok false, not a gap).
 using System.Text.Json.Nodes;
 using EmuDump.Engine;
 
@@ -116,10 +121,20 @@ static class Setup
                 return e.GainEnergy((int?)item["amount"] ?? 1);
             case "hp":
                 return e.SetHp((int?)item["max"], (int?)item["current"]);
+            case "block":
+                return e.SetBlock((int?)item["amount"] ?? throw new ArgumentException("block: no amount"));
+            case "enemy_hp":
+                return e.SetEnemyHp(Slot(item), (int?)item["max"], (int?)item["current"]);
+            case "enemy_block":
+                return e.SetEnemyBlock(Slot(item), (int?)item["amount"] ?? throw new ArgumentException("enemy_block: no amount"));
             default:
                 return e.RefsetItem(item, choices) ?? new SetupResult(false, "unsupported: " + cmd);
         }
     }
+
+    /// <summary>The creature slot an enemy item names (<c>slot</c>, an integer); throws when it names none.</summary>
+    static int Slot(JsonObject item) =>
+        item["slot"] is JsonValue v && v.TryGetValue<int>(out int slot) ? slot : throw new ArgumentException((string?)item["cmd"] + ": no slot");
 
     /// <summary>
     /// The fight item: the same map option the referee walked onto, meeting the encounter the game entered, found by
