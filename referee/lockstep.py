@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -182,9 +183,34 @@ def ref_view(obs: dict) -> dict:
 def mid_screen_pick(kind: str, msg: dict) -> bool:
     """A further pick of a fight card screen the referee has already taken a card from (driver ctx pick > 1). The referee
     moves the picked cards only when the screen closes, the emulator after each pick, so the two hands are not comparable
-    until then: EmuLock.sync compares the screen's candidates instead, and the views meet again at the next decision."""
+    until then: EmuLock.sync compares the screen's candidates instead, and the views meet again at the next decision.
+    The non-combat screens (kind select_cards) have the same asymmetry for the deck: see deck_pending_pick."""
     ctx = msg.get("ctx") if isinstance(msg, dict) else None
     return kind == "select_cards_combat" and isinstance(ctx, dict) and int(ctx.get("pick", 1)) > 1
+
+
+def deck_pending_pick(kind: str, msg: dict) -> bool:
+    """A further pick (driver ctx pick > 1) of a card screen outside a fight: a removal, upgrade or transform of several
+    cards, or an offer grid with several picks. The game hands the picks back as one list and applies them when the screen
+    closes, so its deck (as the driver reports it) is still the deck from before the screen; the emulator applies each pick
+    at once, so its deck is ahead by the earlier picks, by design. Only the deck is affected (hp, gold, relics are compared
+    as ever), and mid_screen_pick, which is for the fight screens, stays as it is."""
+    ctx = msg.get("ctx") if isinstance(msg, dict) else None
+    pick = ctx.get("pick") if isinstance(ctx, dict) else None
+    return kind == "select_cards" and isinstance(pick, int) and not isinstance(pick, bool) and pick > 1
+
+
+def _deck_within_picks(ref: dict, emu: dict, pick: int) -> bool:
+    """The two decks differ by no more than the pick - 1 earlier picks can explain: one pick changes at most two cards
+    (a transform or an upgrade swaps one for another), so a bigger gap is a real deck error and stays a difference."""
+    a = Counter(json.dumps(x) for x in ref.get("deck", []) if x is not None)
+    b = Counter(json.dumps(x) for x in emu.get("deck", []) if x is not None)
+    return sum(((a - b) + (b - a)).values()) <= 2 * (pick - 1)
+
+
+def _drop_paths(diff: list, roots: tuple) -> list:
+    """The diff without the entries on the given field paths (".deck" also covers an entry below it)."""
+    return [d for d in diff if not any(d[0] == r or str(d[0]).startswith((r + ".", r + "[")) for r in roots)]
 
 
 def act_type(kind: str, label: Any) -> str:
@@ -353,7 +379,10 @@ class Lockstep:
             # The emulator opens the chest and holds its relic when the referee is first asked whether to take it (the
             # 6 of 12 treasure divergences of the events round); the question's own offer is the referee's side of that.
             r["relics"] = r["relics"] + [x[1] for x in labels if isinstance(x, list) and len(x) > 1 and x[0] == "take"]
-        return reason, ([] if reason else structural_diff(r, e)), r, e
+        diff = [] if reason else structural_diff(r, e)
+        if deck_pending_pick(kind, msg) and _deck_within_picks(r, e, msg["ctx"]["pick"]):
+            diff = _drop_paths(diff, (".deck",))  # the earlier picks of the screen: the emulator applied them, the game not yet
+        return reason, diff, r, e
 
     def _reanchor(self, plan: str, kind: str, labels: list, msg: dict) -> bool:
         """Re-anchor, then the same comparison again: a re-anchor counts only when the views agree after it."""

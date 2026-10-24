@@ -430,6 +430,89 @@ class EventTests(unittest.TestCase):
         self.assertEqual((ls.stats["gaps"], ls.stats["ranked"], ls.lost), (0, 2, None))
 
 
+class MultiPickScreenTests(unittest.TestCase):
+    """A non-combat card screen the driver asks pick by pick (ctx pick/of): the game applies the picks when the screen
+    closes, the emulator after each one, so from pick 2 on the emulator deck is ahead by the earlier picks (G0a127979b6)."""
+
+    OFFER = [["STRIKE_IRONCLAD", 0], ["DEFEND_IRONCLAD", 0]]
+
+    @staticmethod
+    def with_deck(deck, hp=80):
+        o = obs(hp=hp)
+        o["deck"] = deck
+        return o
+
+    def pick_msg(self, o, pick=2, of=2, kind="select_cards"):
+        m = {**msg(kind, o), "actions": self.OFFER}
+        if pick is not None:
+            m["ctx"] = {"pick": pick, "of": of}
+        return m
+
+    def decide(self, ref_deck, emu_deck, pick=2, of=2, kind="select_cards", ref_hp=80, emu_hp=80):
+        a = self.with_deck(ref_deck, hp=ref_hp)
+        held = {**view_of(self.with_deck(emu_deck, hp=emu_hp))}
+        ls = lockstep.Lockstep(FakeEmu([held]), lambda m: 0)
+        ls.decide(self.pick_msg(a, pick, of, kind))
+        return ls
+
+    def test_the_picks_the_emulator_already_applied_are_not_a_deck_divergence(self):
+        S, B = ["STRIKE_IRONCLAD", 0], ["BASH", 0]
+        cases = {
+            "add": ([S], [S, ["SHRUG_IT_OFF", 0]]),
+            "remove": ([S, S], [S]),
+            "upgrade": ([B], [["BASH", 1]]),
+            "transform": ([S], [["STOKE", 0]]),
+        }
+        for name, (ref_deck, emu_deck) in cases.items():
+            with self.subTest(name):
+                ls = self.decide(ref_deck, emu_deck)
+                self.assertEqual(ls.log.records, [])
+                self.assertEqual((ls.stats["diverged"], ls.stats["ranked"]), (0, 1))
+                self.assertIsNone(ls.lost)
+
+    def test_pick_3_of_3_allows_two_earlier_picks(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        ls = self.decide([S, S, S], [["STOKE", 0], ["OFFERING", 0], S], pick=3, of=3)  # two transforms
+        self.assertEqual((ls.stats["diverged"], ls.stats["ranked"]), (0, 1))
+        ls = self.decide([S, S, S], [["STOKE", 0], ["OFFERING", 0], ["NOT_YET", 0]], pick=3, of=3)  # three: more than two picks
+        self.assertEqual(ls.stats["diverged"], 1)
+
+    def test_the_first_pick_and_a_message_without_ctx_still_compare_the_deck(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        for name, pick in (("pick 1", 1), ("no ctx", None)):
+            with self.subTest(name):
+                ls = self.decide([S], [S, ["SHRUG_IT_OFF", 0]], pick=pick)
+                self.assertEqual((ls.stats["diverged"], len(ls.log.records)), (1, 1))
+                rec = ls.log.records[0]
+                self.assertEqual((rec["type"], [d[0] for d in rec["diff"]]), ("select_cards", [".deck"]))
+                self.assertIsNotNone(ls.lost)
+
+    def test_only_the_deck_is_skipped_at_pick_2(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        ls = self.decide([S], [S, ["SHRUG_IT_OFF", 0]], ref_hp=63, emu_hp=70)
+        self.assertEqual(ls.stats["diverged"], 1)
+        self.assertEqual([d[0] for d in ls.log.records[0]["diff"]], [".hp"])
+
+    def test_a_gross_deck_error_at_pick_2_still_shows(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        ls = self.decide([S], [S, ["SHRUG_IT_OFF", 0], ["BASH", 0], ["ANGER", 0]])  # three cards more after one earlier pick
+        self.assertEqual([d[0] for d in ls.log.records[0]["diff"]], [".deck"])
+
+    def test_other_kinds_with_a_pick_context_are_not_skipped(self):
+        S = ["STRIKE_IRONCLAD", 0]
+        ls = self.decide([S], [S, ["SHRUG_IT_OFF", 0]], kind="card_reward")
+        self.assertEqual(ls.stats["diverged"], 1)
+
+    def test_the_combat_helper_is_unchanged_and_the_new_one_names_the_non_combat_case(self):
+        a = self.with_deck([["STRIKE_IRONCLAD", 0]])
+        pick2 = self.pick_msg(a)
+        self.assertFalse(lockstep.mid_screen_pick("select_cards", pick2))
+        self.assertTrue(lockstep.deck_pending_pick("select_cards", pick2))
+        self.assertFalse(lockstep.deck_pending_pick("select_cards", self.pick_msg(a, pick=1)))
+        self.assertFalse(lockstep.deck_pending_pick("select_cards", self.pick_msg(a, pick=None)))
+        self.assertFalse(lockstep.deck_pending_pick("select_cards_combat", pick2))
+
+
 class TreasureTests(unittest.TestCase):
     def test_the_chest_relic_the_emulator_already_holds_is_not_a_divergence(self):
         # 6 of the 12 divergences of the first events-round run: the emulator holds the chest's relic at the question.
