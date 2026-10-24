@@ -670,6 +670,8 @@ game does something else, found while porting; R7's corpus re-measure decides ea
 - **Tracking and Double Damage: the pet case.** The game accepts a dealer that is the owner's pet (Osty); the handlers do too
   (`HookCtx.IsOwnerOrPet`), while the old fold (`BuffSystem.IncomingDamage`) reads the attacker's own buff list. Check: a recorded
   fight where Osty strikes with a card source under either power; the handler is the game's answer.
+- **Strike Dummy, Fake Strike Dummy, Miniature Cannon, Mystic Lighter, Pen Nib: props and owner.** The game's overrides answer the no-bonus value off a powered attack (`ValueProp.IsPoweredAttack`) and for a dealer or card that is not the owner's (`HookCtx.IsOwnerOrPet` for Pen Nib); the old sites (`RelicEffects.CardDamageBonus`, `CardDamageMultiplier`, `CardEffects.DmgFrom`) read neither, so the handlers take the game's tests. Check: a recorded fight with an unpowered hit carrying a card source (an upgraded Attack's self-damage) under one of the five; the old engine gave the bonus, the handler gives none. The old state has one card owner, so the card-owner tests are always met until a second owner exists.
+- **A HookCtx accessor for the card's live copy.** `MiniatureCannon.Copy` and `MysticLighter.Copy` are the same private helper (the card source's copy read back off `OldCombat` and `World`, for the upgrade flag and the enchantment, which `CardView` does not carry); HookCtx has no near fit, so R7 should add one accessor (the copy for a handle) and both models, and any later one, take it.
 
 ## 7. Rounds and estimate
 
