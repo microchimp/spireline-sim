@@ -34,6 +34,7 @@ public class RelicOneTests
         (ListenerKind.Relic, "GremlinHorn", HookId.AfterDeath),
         (ListenerKind.Relic, "MiniatureCannon", HookId.ModifyDamageAdditive),
         (ListenerKind.Relic, "MysticLighter", HookId.ModifyDamageAdditive),
+        (ListenerKind.Relic, "FakeStrikeDummy", HookId.ModifyDamageAdditive),
     ];
 
     [Fact]
@@ -721,4 +722,80 @@ public class RelicOneTests
         AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "MysticLighter", HookId.ModifyDamageAdditive);
     }
 
+    // ---------------------------------------------------------------------------------------- Fake Strike Dummy (relic-1)
+
+    /// <summary>The player holding Fake Strike Dummy with a Strike, a Bash and a Defend in hand, one slug.</summary>
+    private static (CombatState S, ListenerRef Relic, CardHandle Strike, CardHandle Bash, CardHandle Defend) FakeStrikeDummyCombat()
+    {
+        var s = Combat(40);
+        var relic = Hold(s, RelicEffects.FakeStrikeDummy);
+        var strike = Add(s, s.Hand, StrikeDef);
+        var bash = Add(s, s.Hand, BashDef);
+        var defend = Add(s, s.Hand, DefendDef);
+        return (s, relic, new CardHandle(strike.Uid), new CardHandle(bash.Uid), new CardHandle(defend.Uid));
+    }
+
+    [Fact]
+    public void FakeStrikeDummyIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Relic1), ListenerKind.Relic, "FakeStrikeDummy", HookId.ModifyDamageAdditive);
+    }
+
+    [Fact]
+    public void FakeStrikeDummyAddsTheOldFunctionsNumberToAStrikeTaggedAttack()
+    {
+        // game: FakeStrikeDummy.ModifyDamageAdditive; old: RelicEffects.CardDamageBonus adds
+        // FakeStrikeDummy_ModifyDamageAdditive() for an Attack def with StrikeTag while the relic is held.
+        var (s, relic, strike, bash, defend) = FakeStrikeDummyCombat();
+        var k = Kernel(s, Relic1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out var changed);
+
+        Assert.Equal(6m + RelicEffects.CardDamageBonus(s, Def(StrikeDef), upgraded: false), v);
+        Assert.Equal(6m + RelicEffects.FakeStrikeDummy_ModifyDamageAdditive(), v);
+        Assert.Equal(7m, v);
+        Assert.Equal([relic], changed);
+
+        // Where the condition fails: an Attack without the tag, a Skill, no card source, the relic not held.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: bash), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: defend), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        s.Relics.Clear();
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void BothDummiesHeldEachAddTheirOwnNumberOnce()
+    {
+        // The two relics of one old function (RelicEffects.CardDamageBonus adds both when both are held): two listeners,
+        // each landing its own number once, 6 + 3 + 1, as the old function gives for the same state.
+        var (s, dummy, strike, _, _) = StrikeDummyCombat();
+        var fake = Hold(s, RelicEffects.FakeStrikeDummy);
+        var k = Kernel(s, Relic1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out var changed);
+
+        Assert.Equal(6m + RelicEffects.CardDamageBonus(s, Def(StrikeDef), upgraded: false), v);
+        Assert.Equal(10m, v);
+        Assert.Equal([dummy, fake], changed.OrderBy(l => l.Instance).ToList());
+    }
+
+    [Fact]
+    public void FakeStrikeDummyDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _, strike, _, _) = FakeStrikeDummyCombat();
+        var k = Kernel(s, Without(Relic1, FakeStrikeDummy.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void FakeStrikeDummyIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "FakeStrikeDummy", HookId.ModifyDamageAdditive);
+    }
 }
