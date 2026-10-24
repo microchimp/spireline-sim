@@ -266,5 +266,30 @@ def read_yield(lab: Path) -> list[dict[str, str]]:
     return [dict(zip(cols, ln.split("\t"))) for ln in lines[1:] if ln.strip()]
 
 
+WINDOW_DAYS = 7  # the span `selfplay.share` is judged over: the lab's CPU in the last 7 days, not since it began
+
+
+def window_cpu(lab: Path, now: float | None = None, days: float = WINDOW_DAYS) -> dict[str, float]:
+    """Strategy -> CPU minutes of the jobs that finished in the last `days` days, from LAB/yield.tsv (`utc`, `strategy`, `cpu_min`).
+    A job with no CPU reading counts its wall minutes, as `strategy_cpu` does. No file, or no row in the window: {}."""
+    lo = (time.time() if now is None else now) - days * 86400
+    out: dict[str, float] = {}
+    for r in read_yield(lab):
+        try:
+            t = dt.datetime.strptime(r["utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC).timestamp()
+            mins = float(r.get("cpu_min") or 0) or float(r.get("wall_min") or 0)
+        except (KeyError, ValueError):
+            continue  # a row that cannot be read is not counted
+        if t >= lo:
+            out[r.get("strategy") or "?"] = out.get(r.get("strategy") or "?", 0.0) + mins
+    return out
+
+
+def loop_cpu(lab: Path, now: float | None = None, days: float = WINDOW_DAYS) -> tuple[float, float, dict[str, float]]:
+    """(loop minutes, all minutes, window_cpu): the self-play loop's CPU (jobs.LOOP_KINDS) and the lab's whole CPU over the window."""
+    by = window_cpu(lab, now, days)
+    return sum(by.get(k, 0.0) for k in jobs.LOOP_KINDS), sum(by.values()), by
+
+
 def now_utc() -> str:
     return dt.datetime.fromtimestamp(time.time(), dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
