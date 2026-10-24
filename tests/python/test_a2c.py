@@ -126,5 +126,130 @@ class ScorePairsWithTheAgentsOwnEmulatorArmTests(unittest.TestCase):
         self.assertEqual(gen0.emu_arm_match(None, {})[0], False)
 
 
+# ------------------------------------------------------------------ the prior's search cost: bit-identical answers
+
+try:
+    import numpy as np
+    import torch
+
+    import combat_prior
+    from combat_net import CombatNet, collate
+    from combat_tokens import TYPE_BUFF, TYPE_DISCARD, TYPE_DRAW, TYPE_ENEMY, TYPE_GLOBAL, TYPE_HAND, TYPE_INTENT, TYPE_RELIC, VOCAB, N_FEATURES
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from prior_fixture import export_prior
+
+    HAVE_TORCH = True
+except Exception as _e:  # noqa: BLE001 -- no torch or native library here: those tests skip
+    HAVE_TORCH = False
+    print('torch tests skipped:', repr(_e), file=sys.stderr)
+
+
+class _Tok:
+    def __init__(self, n: int, rng) -> None:
+        pool = np.array([TYPE_ENEMY, TYPE_BUFF, TYPE_RELIC, TYPE_DRAW, TYPE_DISCARD, TYPE_INTENT])
+        self.types = np.concatenate([[TYPE_GLOBAL], [TYPE_HAND] * 6, pool[rng.integers(0, len(pool), n - 7)]]).astype(np.int64)
+        self.ids = rng.integers(0, 4, n).astype(np.int64)
+        self.ids[0] = 0
+        self.owners = rng.integers(0, 2, n).astype(np.int64)
+        self.feats = (rng.normal(size=(n, N_FEATURES)) * 0.3).astype(np.float32)
+
+    def __len__(self) -> int:
+        return len(self.types)
+
+
+def _reference_weights(net, tokens, legals):
+    """combat_prior.PolicyNet.weights as it was before A2c: the padded collate batch through the whole forward."""
+    with torch.inference_mode():
+        _, logits = net.model(**collate(list(tokens), torch.device("cpu")))
+    out = []
+    for row, legal in zip(logits.numpy(), legals, strict=True):
+        index = np.asarray(legal, dtype=np.int64)
+        scores = np.full(len(index), -np.inf)
+        inside = index < row.shape[0]
+        scores[inside] = row[index[inside]]
+        finite = np.isfinite(scores)
+        if not finite.any():
+            out.append(np.full(len(index), 1.0 / max(1, len(index))))
+            continue
+        scores = np.where(finite, scores, -np.inf)
+        weights = np.exp(scores - scores[finite].max())
+        out.append(weights / weights.sum())
+    return out
+
+
+@unittest.skipUnless(HAVE_TORCH, "needs torch and the native library")
+class PriorForwardIsBitIdenticalTests(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        root = export_prior(Path(self._t.name))
+        self.net = combat_prior.PolicyNet(root / combat_prior.POLICY)
+
+    def tearDown(self):
+        self._t.cleanup()
+
+    def test_policy_logits_are_the_forward_s_second_output_bit_for_bit(self):
+        rng = np.random.default_rng(3)
+        for n in (8, 15, 24, 40, 61):
+            batch = collate([_Tok(n, rng)], torch.device("cpu"))
+            with torch.inference_mode():
+                self.assertTrue(torch.equal(self.net.model(**batch)[1], self.net.model.policy_logits(**batch)))
+
+    def test_weights_equal_the_padded_batch_path_exactly_for_one_position_and_for_a_batch(self):
+        rng = np.random.default_rng(5)
+        toks = [_Tok(int(n), rng) for n in rng.integers(8, 70, 12)]
+        legals = [[int(a) for a in np.arange(1, 7)[rng.random(6) < 0.7]] or [1] for _ in toks]
+        for i in range(len(toks)):  # the search's case: one position per call
+            got = self.net.weights([toks[i]], [legals[i]])[0]
+            self.assertTrue(np.array_equal(got, _reference_weights(self.net, [toks[i]], [legals[i]])[0]), i)
+        got = self.net.weights(toks[:5], legals[:5])  # a batch still takes the padded path
+        for g, w in zip(got, _reference_weights(self.net, toks[:5], legals[:5]), strict=True):
+            self.assertTrue(np.array_equal(g, w))
+
+
+@unittest.skipUnless(HAVE_TORCH and (ROOT / "out" / "Sts2Emulator.dll").exists() or os.path.exists(os.path.join(os.environ["STS2_LIB_PATH"], "Sts2Emulator.dll")),
+                     "needs the native library")
+class SearchIsUnchangedByTheLeanPriorTests(unittest.TestCase):
+    def test_same_visits_and_chosen_actions_as_the_padded_full_forward_on_fixed_seeds(self):
+        import live_search
+        from run_train import engine
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = export_prior(Path(tmp), prior_min_visits=1)
+            settings = combat_prior.find(root_dir).live_settings()
+            lean = settings["prior_fn"]
+            ref_net = combat_prior.PolicyNet(root_dir / combat_prior.POLICY)
+
+            def reference(handle, legal):  # the same LivePrior with the pre-A2c weights()
+                with mock.patch.object(combat_prior, "network", lambda _p: type("N", (), {"weights": staticmethod(
+                        lambda t, l: _reference_weights(ref_net, t, l))})()):
+                    return lenient(handle, legal)
+
+            lenient = combat_prior.LivePrior(str(root_dir / combat_prior.POLICY))
+            checked = 0
+            for seed in ("SJ9DHBJHPE", "A2CSEARCH1"):
+                s = engine.RunSession(seed, 10, engine.CombatBudget(30, 30))
+                try:
+                    rules = gen_loop.Agent().macro_policy()
+                    rng = np.random.default_rng(0)
+                    while s.phase != engine.rc.PHASE_COMBAT or s.decision() is not None:
+                        d = s.decision()
+                        s.apply(d.options[rules.pick(s.view(), d, rng).index])
+                    root = s.combat(fork_combat=True).combat_fork(None)
+                    try:
+                        kw = dict(seed=7, max_sims=48, time_budget_s=120.0, min_child_sims=1, c=0.2, confirm_pairs=0,
+                                  c_puct=settings["c_puct"], prior_min_visits=1)
+                        a = live_search.search_live(root.handle, prior_fn=lean, **kw)
+                        b = live_search.search_live(root.handle, prior_fn=reference, **kw)
+                    finally:
+                        root.close() if hasattr(root, "close") else None
+                finally:
+                    s.close()
+                self.assertEqual(a.best, b.best)
+                self.assertEqual(a.children, b.children)
+                self.assertEqual((a.sims, a.line), (b.sims, b.line))
+                checked += len(a.children)
+            self.assertGreater(checked, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
