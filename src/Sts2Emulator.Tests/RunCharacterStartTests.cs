@@ -154,4 +154,35 @@ public class RunCharacterStartTests
             Sts2Emulator.Interop.RunNativeExports.Sts2Run_Destroy(handle);
         }
     }
+
+    /// <summary>
+    /// The whole way from `Sts2Run_ResetAs` to a first fight: each character walks Neow and the map to its first
+    /// combat and that fight is the character's own (energy, the combat's character), with the start deck intact.
+    /// </summary>
+    [Theory]
+    [InlineData(PlayerCharacter.Ironclad)]
+    [InlineData(PlayerCharacter.Silent)]
+    [InlineData(PlayerCharacter.Regent)]
+    [InlineData(PlayerCharacter.Necrobinder)]
+    [InlineData(PlayerCharacter.Defect)]
+    public void Each_characters_first_fight_starts_on_three_energy_as_that_character(PlayerCharacter character)
+    {
+        var engine = new RunEngine();
+        engine.Reset("CHARFIGHT1", ascension: 0, character);
+        var mask = new int[RunConstants.MaxActions];
+        for (int step = 0; step < 400 && engine.State.Phase != RunPhase.Combat; step++)
+        {
+            Array.Clear(mask);
+            engine.WriteActionMask(mask);
+            var legal = Enumerable.Range(0, RunConstants.UsePotionAction).Where(i => mask[i] != 0).ToList();
+            Assert.NotEmpty(legal);
+            engine.Step(legal[(step * 7 + 3) % legal.Count], -1, out _, out _, out _);
+        }
+
+        Assert.Equal(RunPhase.Combat, engine.State.Phase);
+        var combat = engine.State.ActiveCombat!;
+        Assert.Equal(character, combat.Character);
+        Assert.Equal(3, combat.MaxEnergy);
+        Assert.Equal(3, combat.Energy);
+    }
 }
