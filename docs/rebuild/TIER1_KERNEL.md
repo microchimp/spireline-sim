@@ -231,10 +231,18 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
   only way from a handler to the combat it acts in. Engine-neutral members, the shape a Tier 2 context keeps:
   `Power(self)` (`PowerView(Owner, Amount)?`, null when the power is no longer on its owner: the game still visits a power
   removed mid-pass and the old state keeps no copy) and `Owner(self)` (`CreatureRef?`), answered over the old state by
-  `OldState.Locate` and `OldState.PowerBuff` (Core2/OldState.Models.cs). Tier 1 members: `K` (the `KernelState` the
-  commands take), `World` (the `OldWorld`) and `OldBuffs(creature)` (the old buff list an extracted
-  `BuffSystem.<Model>_<Hook>` function takes); a Tier 2 runtime has none of them and a handler that uses them is rewritten
-  when its model moves. A runtime that is no `KernelState` (a test fake) throws on a member that needs state. A resume
+  `OldState.Locate` and `OldState.PowerBuff` (Core2/OldState.Models.cs), plus `Card(CardHandle)` and `Card(self)` (a card's
+  `CardView`: model id, pile and index by the K2b uid) and `Relic(self)` (`RelicView`: model id, obtain index, counter).
+  Tier 1 members: `K` (the `KernelState` the commands take), `World` (the `OldWorld`), `OldCombat` (the `CombatState`: the
+  argument of the old engine's bodies), `OldBuffs(creature)` (the old buff list an extracted `BuffSystem.<Model>_<Hook>`
+  function takes) and `Enemy(creature)` (the old `EnemyState` of a body that takes one); a Tier 2 runtime has none of them
+  and a handler that uses them is rewritten when its model moves. **Decision (orchestrator, round H0): in Tier 1 the
+  Core2 commands take the `KernelState` (`c.K`: `CreatureCmd.Damage(c.K, ...)`).** A handler never builds a command's
+  arguments from the old state itself. Every use of `K`, `World`, `OldBuffs`, `OldCombat` and `Enemy` in a model is
+  recorded in `docs/rebuild/TIER2_REWRITE_LIST.md`, which `ModelSourceScanTests` generates (it also fails on a model that
+  names `OldState.` or `OldCreatures.` or keeps static mutable state); Tier 2 maps each listed use to its own state (the
+  commands then take the Tier 2 state, the old-body calls are replaced by the model's own body). The context's lookups
+  allocate nothing per call (a position lookup, no listing), since a handler runs inside every pass. A runtime that is no `KernelState` (a test fake) throws on a member that needs state. A resume
   record's `Continue(HookRuntime rt, ...)` is unchanged (`rt.Ctx` gives it the context). The worked example is
   `HandlerContextTests` (MIGRATION_F08.md section 5, "How to write a handler").
 - Built in K3:

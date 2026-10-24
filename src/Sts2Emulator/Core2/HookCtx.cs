@@ -13,12 +13,14 @@ public readonly record struct PowerView(CreatureRef Owner, decimal Amount);
 /// <summary>
 /// What a handler is handed (one per dispatcher call; no state of its own, so a handler cannot keep anything in it).
 /// <list type="bullet">
-/// <item>Engine-neutral members (the shape a Tier 2 context keeps): <see cref="Power" /> and <see cref="Owner" />.</item>
+/// <item>Engine-neutral members (the shape a Tier 2 context keeps): <see cref="Power" />, <see cref="Owner" />,
+/// <see cref="Card(CardHandle)" />, <see cref="Card(ListenerRef)" /> and <see cref="Relic" />.</item>
 /// <item>Tier 1 members (the old state, the one view of it): <see cref="K" /> (what the commands take:
-/// <c>CreatureCmd.Damage(c.K, ...)</c>), <see cref="World" /> and <see cref="OldBuffs" />, for a handler whose body is
-/// the old engine's extracted function
-/// (<c>BuffSystem.Strength_ModifyDamageAdditive(List&lt;BuffState&gt;)</c>). A Tier 2 context has none of these; a handler
-/// that uses them is rewritten when the model moves.</item>
+/// <c>CreatureCmd.Damage(c.K, ...)</c>), <see cref="World" />, <see cref="OldCombat" /> (the <c>CombatState</c>, the
+/// argument of most old bodies: <c>CardEffects.PhantomBlades_ModifyDamageAdditive(c.OldCombat)</c>), <see cref="OldBuffs" />
+/// (a creature's buff list, for an extracted <c>BuffSystem.Strength_ModifyDamageAdditive(List&lt;BuffState&gt;)</c>) and
+/// <see cref="Enemy" /> (the old <c>EnemyState</c>, for a body that takes one). A Tier 2 context has none of these; a
+/// handler that uses them is rewritten when the model moves (docs/rebuild/TIER2_REWRITE_LIST.md lists each use).</item>
 /// </list>
 /// A context made by a runtime that is no <see cref="KernelState" /> (a test fake) answers none of them.
 /// </summary>
@@ -49,6 +51,35 @@ public readonly struct HookCtx
     /// none (a modifier, a badge, a scaling model) or one that is not on the old state now.</summary>
     public CreatureRef? Owner(ListenerRef self) =>
         OldState.Locate(World, self) is { Creature: >= 0 } me ? new CreatureRef(me.Creature) : null;
+
+    /// <summary>The old <c>CombatState</c> (Tier 1: the argument of the old engine's bodies, whose first parameter is the
+    /// state). Read it; write it only through an old body or a command.</summary>
+    public CombatState OldCombat => World.Combat ?? throw new InvalidOperationException("the kernel's world holds no combat");
+
+    /// <summary>
+    /// A card of the combat by its handle (an argument's card source, a played card): its model id, pile and position, or
+    /// null when no live card has that uid. Found by the K2b uid, so the answer is the card's place now.
+    /// </summary>
+    public CardView? Card(CardHandle card) => OldState.CardOf(World, card);
+
+    /// <summary>
+    /// The card a card-kind listener runs for (a card, or the enchantment or affliction on it): its model id, pile and
+    /// position now, so a handler acts on its own copy only (the game's hook runs once per copy). Null when the listener
+    /// is not a card kind, is not on the lists now, or names another model than the card has now.
+    /// </summary>
+    public CardView? Card(ListenerRef self) => OldState.CardOf(World, self);
+
+    /// <summary>
+    /// The relic listener <paramref name="self" /> as held now: its model id, its position in the obtain order and its
+    /// counter (<c>RelicInstance.Counter</c>); null when it is not held. A relic's other saved properties are fields of the
+    /// old <see cref="OldCombat" /> that its old body reads itself (Tier 1; on the rewrite list), not part of the view.
+    /// </summary>
+    public RelicView? Relic(ListenerRef self) => OldState.RelicOf(World, self);
+
+    /// <summary>The old enemy a creature reference names now (Tier 1: the argument of an old body that takes an
+    /// <c>EnemyState</c>, as <c>RelicEffects.ApplyAfterBlockBroken</c> does); null for the player, Osty or a position no
+    /// creature of the combat holds.</summary>
+    public EnemyState? Enemy(CreatureRef creature) => OldCreatures.TryAt(World, creature)?.Enemy;
 
     /// <summary>The old buff list of a creature in the combat (Tier 1: the argument of an extracted
     /// <c>Model_Hook</c> function of BuffSystem). Throws for a creature that has none (a pet).</summary>
