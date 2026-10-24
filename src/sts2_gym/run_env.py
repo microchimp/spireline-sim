@@ -250,7 +250,13 @@ class Sts2RunEnv(gym.Env):
         if self._run_handle is None:
             return np.zeros(native.RUN_MAX_ACTIONS, dtype=bool)
         mask_buf = native.run_action_mask(self._run_handle, native.RUN_MAX_ACTIONS)
-        return np.ctypeslib.as_array(mask_buf).astype(bool)
+        mask = np.ctypeslib.as_array(mask_buf).astype(bool)
+        # The belt's use-a-potion and discard-a-potion actions (242..253) are not part of any screen's
+        # decision (DESIGN.md 1.5.8: v1 never uses a potion away from a fight); the lockstep applies
+        # them through `step` on the referee's word, so they stay out of the mask a policy sees, as
+        # `run_train.engine._legal` keeps them out of the screens' legal actions.
+        mask[native.RUN_USE_POTION_ACTION:native.RUN_DISCARD_POTION_ACTION + native.RUN_POTION_SLOTS] = False
+        return mask
 
     def debug_gain_max_hp(self, amount: int) -> tuple[np.ndarray, dict]:
         """Mirror the mod's debug_gain_max_hp: raise the maximum AND heal by it.

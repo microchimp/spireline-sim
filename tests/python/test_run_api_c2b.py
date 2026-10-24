@@ -2,9 +2,12 @@
 src/sts2_gym/native.py and referee/lockstep.py. The binding tests need the native library (run API 26) and skip without
 it; the lockstep mapping tests run on a scripted emulator."""
 
+import ctypes
 import json
 import sys
 import unittest
+
+import numpy as np
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -107,6 +110,21 @@ class ResetAsBindingTests(unittest.TestCase):
         self.assertEqual(native.RUN_DISCARD_POTION_ACTION, engine.DISCARD_POTION_ACTION)
         self.assertEqual((lockstep.USE_POTION_ACTION, lockstep.DISCARD_POTION_ACTION, lockstep.POTION_SLOTS),
                          (native.RUN_USE_POTION_ACTION, native.RUN_DISCARD_POTION_ACTION, native.RUN_POTION_SLOTS))
+
+    def test_the_gym_run_env_mask_hides_the_use_and_discard_actions_too(self):
+        from sts2_gym import run_env  # noqa: PLC0415
+
+        real = run_env.native.run_action_mask
+        mask = (ctypes.c_uint8 * native.RUN_MAX_ACTIONS)()
+        for i in (3, 242, 243, 248, 250, 253):
+            mask[i] = 1
+        env = run_env.Sts2RunEnv.__new__(run_env.Sts2RunEnv)
+        env._run_handle = 1
+        run_env.native.run_action_mask = lambda handle, n: mask
+        try:
+            self.assertEqual([int(i) for i in np.flatnonzero(env.action_masks())], [3])
+        finally:
+            run_env.native.run_action_mask = real
 
     def test_a_screens_legal_actions_hide_the_use_and_discard_actions(self):
         real = engine.native.run_action_mask
