@@ -276,6 +276,11 @@ class ValueData:
     fight_block: np.ndarray | None = None
     runs: int = 0
     generations: tuple[int, ...] = ()
+    # What the keep conditions (`keep.evaluate_value_net`) read, one entry per row: the run's final floor, the run's index,
+    # and V0's inputs (HP fraction, potions held, act index)
+    final_floor: np.ndarray | None = None
+    run_index: np.ndarray | None = None
+    v0: np.ndarray | None = None
 
     def fill_fight_block(self, fight: models.NumpyFightNet) -> None:
         """Compute H for every row with `fight`, exactly as the policy does (3.3, 5.3)."""
@@ -481,6 +486,9 @@ class _ValueBuilder:
         self.targets: list[np.ndarray] = []
         self.end_hp: list[float] = []
         self.hashes: list[float] = []
+        self.final_floor: list[int] = []
+        self.run_index: list[int] = []
+        self.v0: list[tuple[float, int, int]] = []
         self.runs = 0
         self.generations: set[int] = set()
 
@@ -500,6 +508,9 @@ class _ValueBuilder:
             self.targets.append(target)
             self.end_hp.append(end_hp)
             self.hashes.append(run_hash)
+            self.final_floor.append(int(record["outcome"]["final_floor"]))
+            self.run_index.append(self.runs)
+            self.v0.append((view.hp / max(1, view.max_hp), len(view.potions), view.act_index))
 
     def finish(self, config: TrainConfig) -> ValueData:
         n = len(self.keys)
@@ -516,6 +527,9 @@ class _ValueBuilder:
             validation=_held_out(np.array(self.hashes), config.validation),
             runs=self.runs,
             generations=tuple(sorted(self.generations)),
+            final_floor=np.array(self.final_floor, dtype=np.int64),
+            run_index=np.array(self.run_index, dtype=np.int64),
+            v0=np.array(self.v0, dtype=np.float32).reshape(n, 3),
         )
 
 
@@ -645,6 +659,7 @@ def fit(
     combat_budget: CombatBudget | int,
     ascension: int,
     config: TrainConfig = TrainConfig(),  # noqa: B008 -- frozen
+    evaluate: Callable[[ValueData, torch.nn.Module], dict[str, Any]] | None = None,
 ) -> Path:
     """Train FightNet then V on the buffers of generation `generation`; write `out` (5.3).
 
@@ -686,6 +701,8 @@ def fit(
         fight_stats = train_fight_net(fight_net, fights, config, generator)
         values.fill_fight_block(models.NumpyFightNet(models.numpy_params(fight_net)))
         value_stats = train_value_net(value_net, values, config, generator)
+        if evaluate is not None:  # the keep conditions on the held-out runs (keep.evaluate_value_net)
+            value_stats = {**value_stats, "keep": evaluate(values, value_net)}
         models.save(
             out,
             fight_net,
