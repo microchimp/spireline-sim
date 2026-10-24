@@ -1161,7 +1161,10 @@ def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: i
     if s.is_file():
         old = read_json(s)
         rows = arm_rows(arm_dir)
-        if old.get("config") == config and old.get("agent") == agent.describe() and {r["seed"] for r in rows} == set(seeds):
+        wanted = "server" if (server_opts is not None and server_opts.mode != "off") else "cpu"
+        played = "server" if old.get("prior_server") else "cpu"  # both arms of one comparison play on one transport
+        if (old.get("config") == config and old.get("agent") == agent.describe() and {r["seed"] for r in rows} == set(seeds)
+                and played == wanted):
             return rows
     if server_opts is not None and server_opts.mode != "off":
         gen0.run_block_served(seeds, config, procs, arm_dir, opts=server_opts, ascension=ascension, agent=agent)

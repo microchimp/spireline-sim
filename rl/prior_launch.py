@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import secrets
 import shlex
 import subprocess
@@ -50,6 +51,20 @@ def log(message: str) -> None:
 def describe_error(error: BaseException) -> str:
     """Exception type and message only, the way every log of this project names a failure."""
     return f"{type(error).__name__}: {error}"[:LOG_LINE_CAP]
+
+_DRIVE_PATH = re.compile(r"(?<![\w])[A-Za-z]:[\/][^\s\"']*")
+_UNIX_PATH = re.compile(r"(?<![\w])/(?:home|Users|tmp|var|opt)/[^\s\"']*")
+
+
+def safe_child_line(text: str) -> str | None:
+    """A line of the server's output as a log may carry it: traceback lines are dropped (they name files under the user
+    profile), every drive-letter or home path is replaced by <path>, and the rest is capped. None means: do not log."""
+    if text.startswith(("Traceback", "  File ", " ", "	")):
+        return None
+    text = _DRIVE_PATH.sub("<path>", text)
+    text = _UNIX_PATH.sub("<path>", text)
+    return text[:LOG_LINE_CAP]
+
 
 
 # ------------------------------------------------------------------ the decision
@@ -105,14 +120,15 @@ class ServerOpts:
     def flags(self) -> list[str]:
         """The command-line flags that rebuild these options in another `gen0.py` process (the promotion subprocess)."""
         out: list[str] = []
-        if self.mode != "off":
-            out += ["--prior-server", self.mode]
+        if self.mode == "off":
+            return out  # the default command line stays the default command line
+        out += ["--prior-server", self.mode]
         if self.gpu_python:
             out += ["--gpu-python", self.gpu_python]
         if self.server_procs:
             out += ["--server-procs", str(self.server_procs)]
         if self.extra_args:
-            out += ["--prior-server-args", shlex.join(self.extra_args)]
+            out += ["--prior-server-args=" + shlex.join(self.extra_args)]  # one token: a value like "--foo" survives argparse
         if self.latency_p99_ms != 20.0:
             out += ["--latency-p99-ms", str(self.latency_p99_ms)]
         return out
@@ -162,8 +178,10 @@ class ServerHandle:
                     if text.startswith("READY"):
                         lines.put(text)
                     elif text and logged < LOG_LINES_CAP:
-                        logged += 1
-                        log("server: " + text[:LOG_LINE_CAP])
+                        safe = safe_child_line(text)
+                        if safe is not None:
+                            logged += 1
+                            log("server: " + safe)
             except (OSError, ValueError):
                 pass
             finally:
@@ -174,6 +192,14 @@ class ServerHandle:
                 lines.put(None)
 
         threading.Thread(target=pump, name="prior-server-output", daemon=True).start()
+        try:
+            return self._await_ready(proc, lines)
+        except Exception as error:  # noqa: BLE001 -- a launch that fails for any reason leaves the block on the CPU path
+            log(f"the server launch failed: {describe_error(error)}")
+            self._reap()
+            return False
+
+    def _await_ready(self, proc: subprocess.Popen, lines: queue.Queue) -> bool:
         deadline = time.monotonic() + self._ready_timeout_s
         while True:
             try:
@@ -185,8 +211,14 @@ class ServerHandle:
                     return False
                 continue
             if got is None:
-                code = proc.wait(timeout=STOP_WAIT_S) if proc.poll() is None else proc.returncode
-                log(f"the server exited with code {code} before READY" + (" (no CUDA?)" if code == 2 else ""))
+                code: int | None = proc.returncode
+                if proc.poll() is None:
+                    try:
+                        code = proc.wait(timeout=STOP_WAIT_S)
+                    except (subprocess.TimeoutExpired, OSError):
+                        code = None  # alive with its output closed: reaped below
+                why = " (the server refuses to start without CUDA, exit 2)" if code == 2 else ""
+                log(f"the server exited with code {code} before READY{why}")
                 self._reap()
                 return False
             return True

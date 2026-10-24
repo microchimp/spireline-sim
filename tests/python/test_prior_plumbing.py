@@ -325,6 +325,10 @@ class AgentTransportTests(unittest.TestCase):
                 self.assertIsInstance(gen_loop.active_agent_extra()["prior_fn"], combat_prior.LivePrior)
                 self.assertIsInstance(search_configs.get("a3-v1").search_kwargs(env_prior=True)["prior_fn"], combat_prior.LivePrior)
             self.assertNotIn("prior_fn", search_configs.get("a3-v1").search_kwargs(env_prior=False))
+        # the guard itself: even an agent that arrives with a transport is stripped of it on this path
+        served = gen_loop.Agent(prior_dir=str(d), prior_server="ep", prior_authkey=b"k")
+        with mock.patch.object(gen_loop, "load_agent", return_value=served),                 mock.patch.dict(os.environ, {gen_loop.ENV_GEN_DIR: str(d)}),                 mock.patch.dict(sys.modules, {"prior_client": _StubClient}):
+            self.assertIsInstance(gen_loop.active_agent_extra()["prior_fn"], combat_prior.LivePrior)
 
 
 # ------------------------------------------------------------------ prior_path in rows, records, parts and manifests
@@ -406,8 +410,8 @@ class PartTests(unittest.TestCase):
         self.assertEqual(new["seeds"].shape, new["prior_path"].shape)
         self.assertNotIn("prior_path", old)
         np.testing.assert_array_equal(new["visits"], old["visits"])
-        with self.assertRaises(ValueError):
-            gen_loop.write_part(Path(tempfile.gettempdir()) / "x.npz", runs, 2, ["cpu"])
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(ValueError):
+            gen_loop.write_part(Path(d) / "x.npz", runs, 2, ["cpu"])
 
     def test_the_sink_counts_runs_by_path_in_the_manifest(self):
         rng = np.random.default_rng(2)
@@ -544,7 +548,7 @@ class BlockTests(unittest.TestCase):
         self.assertNotIn("prior_server_degraded", base)
 
     def test_a_block_with_a_handle_restarts_a_dead_server_once_stops_it_and_reports_it(self):
-        h = FakeHandle()
+        h = FakeHandle(die_after=1)
         summ = gen0.run_block(SEEDS[:1], FLAT_SIMS, 1, self.root / "fake", prior_server=h, server_procs=2, latency_p99_ms=5.0)
         self.assertEqual((h.restarts, h.stopped), (1, 1))
         self.assertEqual(summ["prior_server"], {"kind": "unix", "restarts": 1, "stats": {"batches": 7}})
