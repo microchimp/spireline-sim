@@ -739,10 +739,23 @@ public static partial class OldState
     /// (ShouldCreatureBeRemovedFromCombatAfterDeath vetoed: Reattach, Illusion, Adaptable, SteamEruption,
     /// PainfulStabs).
     /// </summary>
-    public static bool EnemyInCombat(OldWorld w, EnemyState enemy) =>
-        w.Combat is { } s && s.Enemies.Exists(x => ReferenceEquals(x, enemy))
-                          && (enemy.Hp > 0 || w.IsDying(enemy) || w.IsPerformingMove(enemy)
-                              || !EnemyAI.ShouldRemoveOnDeath(enemy));
+    public static bool EnemyInCombat(OldWorld w, EnemyState enemy)
+    {
+        if (w.Combat is not { } s)
+            return false;
+        bool listed = false;
+        foreach (var x in s.Enemies)
+        {
+            if (ReferenceEquals(x, enemy))
+            {
+                listed = true;
+                break;
+            }
+        }
+
+        return listed && (enemy.Hp > 0 || w.IsDying(enemy) || w.IsPerformingMove(enemy)
+                          || !EnemyAI.ShouldRemoveOnDeath(enemy));
+    }
 
     private static bool CreatureInCombat(OldWorld w, in OldListener e) =>
         e.Enemy is { } enemy ? EnemyInCombat(w, enemy)
