@@ -35,6 +35,7 @@ public static class Registry
     [
         TaintedPower.Register,
         GigantificationPower.Register,
+        IntangiblePower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when

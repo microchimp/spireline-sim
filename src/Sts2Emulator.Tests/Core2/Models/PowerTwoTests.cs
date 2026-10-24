@@ -32,6 +32,9 @@ public class PowerTwoTests
     [
         (ListenerKind.Power, "TaintedPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "GigantificationPower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Power, "IntangiblePower", HookId.ModifyDamageCap),
+        (ListenerKind.Power, "IntangiblePower", HookId.ModifyHpLostAfterOsty),
+        (ListenerKind.Power, "IntangiblePower", HookId.AfterModifyingHpLostAfterOsty),
     ];
 
     [Fact]
@@ -222,5 +225,179 @@ public class PowerTwoTests
     public void GigantificationIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "GigantificationPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    // ---------------------------------------------------------------------------------------- Intangible (power-2)
+
+    /// <summary>One slug with Intangible 1 (40 HP).</summary>
+    private static (CombatState S, ListenerRef Power) IntangibleCombat(int amount = 1)
+    {
+        var s = Combat(40);
+        return (s, GivePower(s, "IntangiblePower", BuffId.Intangible, amount, s.Enemies[0]));
+    }
+
+    [Fact]
+    public void IntangibleIsRegisteredForItsThreePairs()
+    {
+        AssertRegistered(Table(Power2), ListenerKind.Power, "IntangiblePower", HookId.ModifyDamageCap, HookId.ModifyHpLostAfterOsty,
+            HookId.AfterModifyingHpLostAfterOsty);
+        // The row the port list marks not modelled has no handler.
+        AssertAbsent(Table(Power2), ListenerKind.Power, "IntangiblePower", HookId.AfterModifyingDamageAmount);
+    }
+
+    [Fact]
+    public void IntangibleCapsTheDamageAimedAtItsOwnerAtTheOldFunctionsOne()
+    {
+        // game: IntangiblePower.ModifyDamageCap; old: BuffSystem.IncomingDamage (and the unpowered and player-side sites)
+        // end with CapIncomingDamage(damage, defenderBuffs): Math.Min(damage, 1) while the defender's Intangible > 0. The
+        // cap pass lists the power when its cap lowered the damage.
+        var (s, power) = IntangibleCombat();
+        var k = Kernel(s, Power2);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 9m), out var changed);
+
+        Assert.Equal(BuffSystem.CapIncomingDamage(9, s.Enemies[0].Buffs), v);
+        Assert.Equal(1m, v);
+        Assert.Equal([power], changed);
+        Assert.Equal(1, BuffSystem.IncomingDamage(9, s.PlayerBuffs, s.Enemies[0].Buffs));
+        // The cap reads no props and no dealer: an unpowered hit, a hit with no dealer.
+        Assert.Equal(1m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 9m, props: Unpowered), out changed));
+        Assert.Equal([power], changed);
+        Assert.Equal(1m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 9m, dealer: null), out changed));
+        Assert.Equal([power], changed);
+        // A damage the cap does not lower is not changed: exactly 1, 0, a decimal under 1 (kept, decimals and all);
+        // 1.5 is above the cap and lowered to 1 (the old site caps its int 1 to 1: both land 1).
+        Assert.Equal(1m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 1m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 0m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0.5m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 0.5m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(1m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 1.5m), out changed));
+        Assert.Equal([power], changed);
+        // Where the condition fails: a hit on another creature, the stack at 0.
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 9m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        s.Enemies[0].Buffs[0] = new BuffState(BuffId.Intangible, 0);
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 9m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(9, BuffSystem.CapIncomingDamage(9, s.Enemies[0].Buffs));
+    }
+
+    [Fact]
+    public void IntangibleCapsTheHpLostByItsOwnerAtTheOldFunctionsOne()
+    {
+        // game: IntangiblePower.ModifyHpLostAfterOsty; old: CardEffects.LosePlayerHp runs CapHpLoss(hpLoss, PlayerBuffs):
+        // Math.Min(hpLoss, 1) while the owner's Intangible > 0. The fold's changed set is by the truncated value.
+        var (s, power) = IntangibleCombat();
+        var k = Kernel(s, Power2);
+
+        decimal v = Hooks.ModifyHpLost(k, HpLoss(target: 1, 9m), out var changed);
+
+        Assert.Equal(BuffSystem.CapHpLoss(9, s.Enemies[0].Buffs), v);
+        Assert.Equal(1m, v);
+        Assert.Equal([power], changed);
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 9m, props: Unpowered, dealer: null), out changed));
+        Assert.Equal([power], changed);
+        // A loss the cap does not lower is left as it was, decimals kept: 1, 0, 0.5, and 1.5 (its truncation is 1 already).
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 1m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 0m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0.5m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 0.5m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(1.5m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 1.5m), out changed));
+        Assert.Empty(changed);
+        // Where the condition fails: the before-Osty phase (another pass), a loss of another creature, the stack at 0.
+        Assert.Equal(9m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 9m, phase: HpLossHookPhase.BeforeOsty), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(9m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 9m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        s.Enemies[0].Buffs[0] = new BuffState(BuffId.Intangible, 0);
+        Assert.Equal(9m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 9m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void IntangiblesTwoCapsLandThroughTheDamageCommandOnAnEnemyAndOnThePlayer()
+    {
+        // game: CreatureCmd.Damage runs Hook.ModifyDamage (the cap) before the block and Hook.ModifyHpLost after it. A 9 hit
+        // on an intangible slug: 1 lost; an unpowered 9: 1 lost; block 3 against 9: the capped 1 is absorbed, 0 lost,
+        // block 2. The intangible player against the slug's 9: 1 lost, as the old CardEffects.DealDamageToPlayer leaves it.
+        var (s, _) = IntangibleCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Power2);
+
+        Assert.Equal(1, Assert.Single(Hit(k, OldCreature.Of(slug), 9m)).UnblockedDamage);
+        Assert.Equal(39, slug.Hp);
+        Assert.Equal(1, Assert.Single(Hit(k, OldCreature.Of(slug), 9m, props: Unpowered)).UnblockedDamage);
+        Assert.Equal(38, slug.Hp);
+        slug.Block = 3;
+        var r = Assert.Single(Hit(k, OldCreature.Of(slug), 9m));
+        Assert.Equal((0, 1, 2, 38), (r.UnblockedDamage, r.BlockedDamage, slug.Block, slug.Hp));
+
+        s.PlayerBuffs.Add(new BuffState(BuffId.Intangible, 1));
+        Assert.Equal(1, Assert.Single(Hit(k, OldCreature.Player, 9m, dealer: OldCreature.Of(slug))).UnblockedDamage);
+        Assert.Equal(49, s.PlayerHp);
+        var oracle = Combat(40);
+        oracle.PlayerBuffs.Add(new BuffState(BuffId.Intangible, 1));
+        CardEffects.DealDamageToPlayer(oracle, 9);
+        Assert.Equal(oracle.PlayerHp, s.PlayerHp);
+    }
+
+    [Fact]
+    public void IntangiblesAfterModifyingHpLostAfterOstyDoesNothingToTheState()
+    {
+        // game: IntangiblePower.AfterModifyingHpLostAfterOsty, reached by the filter-set pass when the power lowered the
+        // loss. The old engine has no body at this point (the row's locations are the two cap numbers); the handler
+        // returns Done and the state is as it was. NO DELETE-MUTANT for this pair (CLOUD_BRIEFS section 3, rule 3, does
+        // not apply): the old engine changes no state at this point, so with the handler deleted the state is the same
+        // and no assertion on it could fail. The pair is pinned by IntangibleIsRegisteredForItsThreePairs and the table
+        // test; what the game's override does is for the decompile review. A mutant is not faked here.
+        var (s, power) = IntangibleCombat();
+        var k = Kernel(s, Power2);
+        var status = Hooks.AfterModifyingHpLostAfterOsty(k, new AfterModifyingHpLostAfterOstyArgs([power]));
+        Assert.False(status.IsPaused);
+        Assert.Equal(40, s.Enemies[0].Hp);
+        Assert.Equal(50, s.PlayerHp);
+        Assert.Equal([new BuffState(BuffId.Intangible, 1)], s.Enemies[0].Buffs);
+        Assert.Empty(s.PlayerBuffs);
+    }
+
+    [Fact]
+    public void IntangibleActsForItsOwnerAloneAmongThreeHolders()
+    {
+        // The N-holder test: the player and both slugs are intangible. A hit on the first slug is capped by that slug's
+        // power alone; the second slug's hit on the player by the player's; the HP-loss fold the same.
+        var s = Combat(40, 40);
+        var holders = Holders(s, "IntangiblePower", BuffId.Intangible, 1);
+        var k = Kernel(s, Power2);
+
+        Assert.Equal(1m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 9m), out var changed));
+        Assert.Equal([holders[1]], changed);
+        Assert.Equal(1m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 9m, dealer: 2), out changed));
+        Assert.Equal([holders[0]], changed);
+        Assert.Equal(1m, Hooks.ModifyHpLost(k, HpLoss(target: 2, 9m), out changed));
+        Assert.Equal([holders[2]], changed);
+    }
+
+    [Fact]
+    public void IntangibleDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = IntangibleCombat();
+        var k = Kernel(s, Without(Power2, IntangiblePower.Register));
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 9m), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(9m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 9m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(9, Assert.Single(Hit(k, OldCreature.Of(s.Enemies[0]), 9m)).UnblockedDamage);
+        Assert.Equal(31, s.Enemies[0].Hp);
+    }
+
+    [Fact]
+    public void IntangibleIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "IntangiblePower", HookId.ModifyDamageCap,
+            HookId.ModifyHpLostAfterOsty, HookId.AfterModifyingHpLostAfterOsty);
     }
 }
