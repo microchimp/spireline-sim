@@ -30,6 +30,7 @@ public class RelicOneTests
         (ListenerKind.Relic, "TungstenRod", HookId.AfterModifyingHpLostAfterOsty),
         (ListenerKind.Relic, "TungstenRod", HookId.ModifyHpLostAfterOsty),
         (ListenerKind.Relic, "StrikeDummy", HookId.ModifyDamageAdditive),
+        (ListenerKind.Relic, "PenNib", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -288,6 +289,106 @@ public class RelicOneTests
     public void StrikeDummyIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "StrikeDummy", HookId.ModifyDamageAdditive);
+    }
+
+    // ---------------------------------------------------------------------------------------- Pen Nib (relic-1)
+
+    /// <summary>The player holding Pen Nib at <paramref name="counter" />, the combat's arming flag as said, a Strike and a
+    /// Defend in hand, one slug. The default is the armed state: the counter wrapped to 0 on the tenth Attack.</summary>
+    private static (CombatState S, ListenerRef Relic, CardHandle Strike, CardHandle Defend) PenNibCombat(int counter = 0, bool armed = true)
+    {
+        var s = Combat(40);
+        var relic = Hold(s, RelicEffects.PenNib, counter);
+        s.PenNibArmed = armed;
+        var strike = Add(s, s.Hand, StrikeDef);
+        var defend = Add(s, s.Hand, DefendDef);
+        return (s, relic, new CardHandle(strike.Uid), new CardHandle(defend.Uid));
+    }
+
+    [Fact]
+    public void PenNibIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Relic1), ListenerKind.Relic, "PenNib", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void PenNibDoublesAnAttackWhileArmed()
+    {
+        // game: PenNib.ModifyDamageMultiplicative; old: RelicEffects.CardDamageMultiplier returns
+        // PenNib_ModifyDamageMultiplicative() for an Attack def while the relic's counter is 0 and PenNibArmed is up.
+        var (s, relic, strike, defend) = PenNibCombat();
+        var k = Kernel(s, Relic1);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out var changed);
+
+        Assert.Equal(6m * RelicEffects.CardDamageMultiplier(s, Def(StrikeDef)), v);
+        Assert.Equal(6m * RelicEffects.PenNib_ModifyDamageMultiplicative(), v);
+        Assert.Equal(12m, v);
+        Assert.Equal([relic], changed);
+
+        // Where the condition fails: the flag down, the counter off 0 with the flag up, a Skill, no card source, the relic
+        // not held.
+        s.PenNibArmed = false;
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+        s.PenNibArmed = true;
+        s.Relics[0] = s.Relics[0] with { Counter = 1 };
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+        s.Relics[0] = s.Relics[0] with { Counter = 0 };
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: defend), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(1, RelicEffects.CardDamageMultiplier(s, Def(DefendDef)));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        s.Relics.Clear();
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void PenNibFollowsTheOldCountersArmingCycle()
+    {
+        // old: RelicEffects.BeforeCardPlayedRelics counts an Attack on the relic's counter, wraps it at ten and arms the
+        // flag on the wrap; a card that is no Attack lowers the flag. The handler reads the counter and the flag, so the
+        // tenth Attack is doubled, the eleventh is not, and a Skill played in between disarms.
+        var (s, relic, strike, _) = PenNibCombat(counter: 9, armed: false);
+        var k = Kernel(s, Relic1);
+
+        RelicEffects.BeforeCardPlayedRelics(s, Def(StrikeDef));
+        Assert.Equal(0, s.Relics[0].Counter);
+        Assert.True(s.PenNibArmed);
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out var changed));
+        Assert.Equal([relic], changed);
+
+        RelicEffects.BeforeCardPlayedRelics(s, Def(StrikeDef));
+        Assert.Equal(1, s.Relics[0].Counter);
+        Assert.False(s.PenNibArmed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+
+        s.Relics[0] = s.Relics[0] with { Counter = 0 };
+        s.PenNibArmed = true;
+        RelicEffects.BeforeCardPlayedRelics(s, Def(DefendDef));
+        Assert.Equal(0, s.Relics[0].Counter);
+        Assert.False(s.PenNibArmed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void PenNibDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _, strike, _) = PenNibCombat();
+        var k = Kernel(s, Without(Relic1, PenNib.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void PenNibIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "PenNib", HookId.ModifyDamageMultiplicative);
     }
 
 }
