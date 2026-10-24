@@ -16,15 +16,22 @@ public class ResampleRewardLeakTests
 
     private static RunEngine AtMap()
     {
+        var e = TryAtMap(Seed);
+        Assert.NotNull(e);
+        return e!;
+    }
+
+    /// <summary>The run at its first map screen, or null when ten first-choice steps do not reach it.</summary>
+    private static RunEngine? TryAtMap(string seed)
+    {
         var e = new RunEngine();
-        e.Reset(Seed, 10);
+        e.Reset(seed, 10);
         for (int guard = 0; guard < 10 && e.State.Phase != RunPhase.Map; guard++)
         {
             e.Step(0, -1, out _, out _, out _);
         }
 
-        Assert.Equal(RunPhase.Map, e.State.Phase);
-        return e;
+        return e.State.Phase == RunPhase.Map ? e : null;
     }
 
     private static int NodeOption(RunEngine e) =>
@@ -145,13 +152,37 @@ public class ResampleRewardLeakTests
     [Fact]
     public void ARewardScreenAlreadyOpenedKeepsEveryItemInEveryResampledClone()
     {
+        // Seeds tried in order until the shown screen holds a potion drop too (review note N1: on the
+        // first seed no potion dropped, so a clone that redealt a shown potion would have passed).
+        string[] seeds = { Seed, "QJCEN53FNG", "VCXUAFBJGT", "W5SVJCQEPV", "DW263XSTVU", "4P3GJQTCD9", "4SKURVAYAR", "YWSRUXRLEF" };
         foreach (bool elite in new[] { false, true })
         {
-            var e = AtMap();
-            Enter(e, elite);
-            var shown = Win(e);
-            Assert.Equal(RunPhase.RelicReward, e.State.Phase);
-            Assert.NotEqual("0,0,0", shown.Cards);
+            RunEngine? e = null;
+            Contents? shown = null;
+            foreach (var seed in seeds)
+            {
+                var candidate = TryAtMap(seed);
+                if (candidate is null)
+                {
+                    continue;
+                }
+
+                Enter(candidate, elite);
+                var screen = Win(candidate);
+                if (screen.Potion == 0)
+                {
+                    continue;
+                }
+
+                e = candidate;
+                shown = screen;
+                break;
+            }
+
+            Assert.True(e is not null && shown is not null, "no tried seed dropped a potion at this fight");
+            Assert.Equal(RunPhase.RelicReward, e!.State.Phase);
+            Assert.NotEqual("0,0,0", shown!.Cards);
+            Assert.NotEqual(0, shown.Potion);
 
             for (int seed = 0; seed < Clones; seed++)
             {
