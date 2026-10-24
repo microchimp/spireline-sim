@@ -330,6 +330,28 @@ def stub_emu(run, hand=None):
     return e
 
 
+class NeowRun(FakeRun):
+    """Small Capsule's lone relic screen after Neow: the engine opens a rewards screen holding one relic (and the
+    engine's own proceed, which the game does not offer there); claiming it adds the relic to the run. The proceed page
+    of Neow's own screen is an auto step in RunSession.decision(), so a claim goes straight to the map here."""
+
+    def __init__(self, start="neow", held=2):
+        screens = {"neow": ("neow", (_opt("neow.relic", 0, relic=11), _opt("neow.relic", 1, relic=12))),
+                   "items": ("rewards", (_opt("reward.relic", 0, relic=12), _opt("reward.proceed", 9))),
+                   "map": ("map", (_opt("map.node", 0, node=(1, 2)), _opt("map.node", 1, node=(3, 2))))}
+        super().__init__(start, screens, {("neow", "neow.relic"): "items", ("items", "reward.relic"): "map",
+                                          ("items", "reward.proceed"): "map"})
+        self.relics = list(range(100, 100 + held))
+
+    def view(self):
+        return SimpleNamespace(relics=self.relics)
+
+    def apply(self, o):
+        if (self.cur, o.kind) == ("items", "reward.relic"):
+            self.relics.append(o.relic)
+        super().apply(o)
+
+
 class MappingTests(unittest.TestCase):
     """The decisions the A1 smoke lost lockstep at, on a scripted emulator (no native library needed)."""
 
@@ -362,6 +384,49 @@ class MappingTests(unittest.TestCase):
         self.assertIsNone(e.apply("reward", ["take", "skip"], 1))
         self.assertIsNone(e.sync("combat", [["end"], ["play", 0, "BASH", 0]], {}))
         self.assertEqual(run.taken, ["reward.proceed", "map.node"])
+
+    @staticmethod
+    def _neow_pick(e):
+        """Neow's screen, then the pick of the second option (Small Capsule), as the lockstep mirrors it."""
+        e.slug["relics"] = {11: "STARTER", 12: "SMALL_CAPSULE"}
+        e.sync("neow", ["STARTER", "SMALL_CAPSULE"], {"obs": {"relics": ["BURNING_BLOOD"]}})
+        return e.apply("neow", ["STARTER", "SMALL_CAPSULE"], 1)
+
+    def test_neows_lone_unskippable_relic_claim_is_taken_when_the_referee_passed_it_without_asking(self):
+        # 13 of the 13 "Neow-common-relic" records: Small Capsule opens a rewards screen with one relic and nothing to
+        # decide, so the referee never asks and its next question (the first map) already shows the relic. The
+        # lockstep used to leave that screen by the engine's proceed, with the relic unclaimed.
+        run = NeowRun()
+        e = stub_emu(run)
+        self.assertIsNone(self._neow_pick(e))
+        self.assertEqual(run.cur, "items")
+        msg = {"obs": {"relics": ["BURNING_BLOOD", "SMALL_CAPSULE", "ANCHOR"]}}  # the referee holds one relic more
+        self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], msg))
+        self.assertEqual(run.taken, ["neow.relic", "reward.relic"])
+        self.assertEqual(len(run.relics), 3)
+
+    def test_a_relic_the_referee_skipped_stays_unclaimed_when_leaving_the_screen(self):
+        # The guard: the same screen, but the referee was asked and answered skip, so it holds no relic more.
+        run = NeowRun("items")
+        e = stub_emu(run)
+        msg = {"ctx": {"type": "relic"}, "obs": {"relics": ["BURNING_BLOOD", "SMALL_CAPSULE"]}}
+        self.assertIsNone(e.sync("reward", ["take", "skip"], msg))
+        self.assertIsNone(e.apply("reward", ["take", "skip"], 1))
+        self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {"obs": {"relics": ["BURNING_BLOOD", "SMALL_CAPSULE"]}}))
+        self.assertEqual(run.taken, ["reward.proceed"])
+        self.assertEqual(len(run.relics), 2)
+
+    def test_a_screen_the_referee_left_alone_is_not_claimed_and_a_full_belt_has_no_claim(self):
+        # No relic more on the referee's side: left alone, not claimed. And a potion item with a full belt offers no
+        # action (the engine lists only its proceed), so there is nothing to claim whatever the relic counts say.
+        run = NeowRun("items")
+        e = stub_emu(run)
+        self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {"obs": {"relics": ["BURNING_BLOOD", "SMALL_CAPSULE"]}}))
+        self.assertEqual(run.taken, ["reward.proceed"])
+        belt = ItemsRun(potion=1)
+        e = stub_emu(belt)
+        self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {"obs": {"relics": ["A", "B", "C"]}}))
+        self.assertEqual(belt.taken, ["reward.proceed"])
 
     def test_a_play_is_matched_by_card_not_by_hand_position(self):
         e = stub_emu(FakeRun("combat", {}, {}), hand=[["DEFEND_IRONCLAD", 0], ["STRIKE_IRONCLAD", 0], ["BASH", 0]])
