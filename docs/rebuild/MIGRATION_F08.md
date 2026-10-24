@@ -255,8 +255,8 @@ exists only with a switch on) and called from no old site yet (R4 reroutes). Ite
   `OldCreatures.Powers`) is judged first: its own ShouldPowerBeRemovedAfterOwnerDeath (pseudo-hook, default true), then,
   the owner still in the combat, `Hooks.ShouldPowerBeRemovedOnDeath` (an owner removed from the roster: true with no
   listener asked, as the game's `Owner.CombatState == null`); then the rest removed in order (every buff entry of that game
-  power) and AfterRemoved per removed power, in removal order. Limit: engine-only, folded and unclassified buffs are not
-  listed powers, so they are not removed.
+  power) and AfterRemoved per removed power, in removal order. Engine-only, folded and unclassified buffs are not listed powers, so this pass does not remove them; a corpse
+  that stays loses the ones its revive would strip ("Fixes after R3a's review").
 - **Pseudo-hooks** dispatch to the one model through `HandlerTable.Find` (no listener pass): BeforeRemovedFromRoom and
   Died take `HookEvent<BeforeRemovedFromRoomArgs/DiedArgs>` on the monster, ShouldPowerBeRemovedAfterOwnerDeath
   `HookPredicate<PowerDeathArgs>` and AfterRemoved `HookEvent<AfterRemovedArgs>` (owner, first BuffId, the entries
@@ -274,8 +274,7 @@ exists only with a switch on) and called from no old site yet (R4 reroutes). Ite
   AfterRemoved), `RemoveCreature`, `OldRoster.Escaped`. No death hook.
 - **Damage changes**: the dealer's ref is read at each use and is null once the dealer has left the combat
   (`OldCreatures.TryRef`; a dealer a nested Damage killed, R2's review); a player the call killed keeps its hooks from the
-  results loop to the kill (`KeepPlayerHooks`), so those passes are not reported `PlayerHooksUndeclared`. A receiver a
-  nested kill removed mid-loop still throws in `Ref` (open; the fix round).
+  results loop to the kill (`KeepPlayerHooks`), so those passes are not reported `PlayerHooksUndeclared`. A receiver a nested kill removed mid-loop is skipped ("Fixes after R3a's review").
 - Not modelled: a creature's death with removal vetoed stays listed after the kill only while the old
   `EnemyAI.ShouldRemoveOnDeath` agrees (the old state keeps no veto mark); Osty's own powers (none in the old state).
 - What R3b must provide: `LoseCombat`'s body (the pending loss and its processing at CheckWinCondition, game:
@@ -334,6 +333,45 @@ handler takes its line over.
   attacker, BeforeDamage's place, Calculate per hit (single target, null, a lone opponent), 0 damage into block fully
   blocked with AfterDamageReceived firing.
 - Acceptance (R2 fix): `dotnet test src/Sts2Emulator.Tests` 6791 passed, 7 skipped, 0 failed (6798); Core2 tests 127 (15 new in `DamageCounterTests`); byte_proof old against `--b-args "--engine core2"`, modes fight, state-hash, rng-log, `--limit 500`: byte_proof: rng-log: 500 fights, 500 identical, 0 differ, 0 run problems (0 with an error text compared to its first line); byte_proof: ok: 1500 fight-mode pairs identical, 0 differ; `construct shape` 0 differences; `sites check` 0 problems. `tools/emudump.Tests` not rerun (no EmuDump file changed). `CardEffects.cs` changes by one keyword (`private` to `internal`), no line moves.
+
+**Fixes after R3a's review (branch `rebuild/f08-r3a`, 2026-10-24).**
+- **The player's hooks stay deactivated.** `OldWorld.DeactivatePlayerHooks()` sets `PlayerHooks.Deactivated` and nothing
+  restores an earlier state: the game's `Player.DeactivateHooks` is never scoped, and only a heal of the dead player
+  (`Creature.HealInternal`'s `ActivateHooks`, multiplayer revives) turns the hooks on again, which item 9's HP commands own.
+  `KeepPlayerHooks()` does nothing once the hooks are deactivated, and a Keep scope that ends after a deactivation inside
+  it leaves it standing (it restores its earlier value only while the state is not Deactivated). So a second kill of a dead
+  player (BeforeDeath, ShouldDie), a prevented death of a dead player, and an outer `Damage`'s Keep around a nested player
+  kill no longer re-enable the hooks. `DeactivatePlayerHooks()` still returns a disposable, a no-op. The old scoped-form
+  tests in `KernelTests` and `ListenerOrderTests` now assert the absorbing form (the "undeclared" case uses a fresh world).
+- **A receiver or target removed mid-loop is skipped.** In `CreatureCmd.Damage`: the first loop skips a target that is dead
+  (the game's `IsDead` check over its copy of the target list) or no longer in the combat; the results loop re-checks
+  `OldCreatures.InCombat` before each pass (AfterBlockBroken, AfterCurrentHpChanged, AfterDamageGiven, AfterDamageReceived)
+  and skips the receiver's remaining passes once a nested kill or escape has removed it, instead of throwing in `Ref`. The
+  basis is the game's per-visit membership test in `CombatState.IterateHookListeners` (a model is visited only while
+  `Contains` holds); the game itself still dispatches the others' passes with the removed Creature object, which a
+  `CreatureRef` cannot carry, so those passes are not modelled (a known difference: relics see no AfterDamageGiven for a
+  receiver a hook already removed). The result stays in the returned list and in `k.Commands`. `AttackCmd`'s per-hit target
+  filter adds the same `InCombat` test to its `IsAlive` filter, so a single target that left the combat ends the hits. The
+  dealer was already read through `TryRef`.
+- **A corpse that stays loses what its revive would strip.** After the powers, a dead enemy still in the roster has the
+  buffs the game's power removal does not reach (folded TEMPORARY_*, engine-only such as Stunned, unclassified) stripped by
+  the predicate of the old revive path that claims it (`OldRoster.StripCorpse`): `CombatEngine.IllusionDeathStrips` (debuffs;
+  `TryReviveIllusion`), `ReattachDeathStrips` (everything but Reattach and Reviving; `TryReattachSegment`) and
+  `AxebotDeathStrips` (everything but Stock and Reviving; `TryRespawnAxebot`, which clears and re-applies the Stock it read,
+  so the kernel keeps Stock for it). The old paths call the same predicates (byte-identical), so the two cannot drift. A corpse
+  none of the paths claims keeps its unlisted buffs. Listed game powers are still the hooks' business (a model's
+  ShouldPowerBeRemovedAfterOwnerDeath handler), so only unlisted buffs are touched here.
+- Tests: `KillCommandTests` 21 (10 new: second kill of a dead player, prevented death of a dead player, nested player kill
+  inside an outer Damage's Keep, a hook killing a later target in the first loop and in the results loop, a primary enemy
+  dying in a hook with its minion later in the loop, an attack's single target that escaped mid-attack, a revived segment, a
+  respawned Axebot, an Illusion corpse and an unclaimed corpse); eight of the ten fail on the R3a code. `KernelTests` and
+  `ListenerOrderTests` adjusted for the absorbing mark.
+- Acceptance: `dotnet test src/Sts2Emulator.Tests` 6801 passed, 7 skipped, 0 failed (6808); Core2 tests 137; byte_proof old
+  against `--b-args "--engine core2"`, modes fight, state-hash, reanchor, `--limit 500`: 1500 fight-mode pairs identical, 0
+  differ, 0 run problems (no switch is on in those runs); `construct shape` 0 differences; `sites check` 0 problems (279 sites;
+  `sites.json` rebuilt for the moved `CombatEngine.cs` lines and the `DoomThePlayerAtTurnEnd` split's file hash re-recorded: the
+  two anchors it names are unchanged and the method untouched). `CombatEngine.cs` changed by three predicates and the two old
+  paths that call them.
 
 ## 4. Old sites replaced, and their game counterparts
 
