@@ -529,6 +529,69 @@ class FightStartAnchorTests(unittest.TestCase):
         self.assertEqual(calls, [])  # it is another fight: walked past (here the fake never leaves it), not put on this record
 
 
+class WalkRun(FakeRun):
+    """A suspended emulator that never left its floor-3 fight while the referee went on: every map has one node, and
+    that node leads into the next floor's fight."""
+
+    def __init__(self, floor):
+        super().__init__("combat", {"map": ("map", (_opt("map.node", 0, node=(1, 2)),))}, {})
+        self.floor = floor
+
+    def view(self):
+        return SimpleNamespace(floor=self.floor)
+
+    def apply(self, o):
+        self.taken.append(o.kind)
+        self.floor += 1
+        self.cur = "combat"
+
+
+class FightStartWalkThenAnchorTests(unittest.TestCase):
+    """A1b review: an emulator in a fight at an earlier floor leaves it, walks the maps up to the referee's floor, enters
+    the referee's fight, and only that fight is put on the referee's record."""
+
+    def emu(self, floor):
+        run = WalkRun(floor)
+        e = stub_emu(run)
+        e.rules, e.rng = SimpleNamespace(pick=lambda v, d, r: SimpleNamespace(index=0)), None
+        e._set_player = lambda obs: True
+        calls, anchored_at, resolved_at = [], [], []
+
+        def resolve(handle, buf):
+            resolved_at.append(run.floor)
+            run.cur = "map"
+            return True
+
+        def anchor(handle, record, buf):
+            calls.append(record)
+            anchored_at.append(run.floor)
+            return (3, "moves=same;patched=hand")
+
+        e.native.run_debug_resolve_combat, e.native.run_reanchor_fight = resolve, anchor
+        return e, run, calls, anchored_at, resolved_at
+
+    def test_the_earlier_fights_are_resolved_and_only_the_referees_fight_is_anchored(self):
+        e, run, calls, anchored_at, resolved_at = self.emu(3)
+        record = {"hand": [["BASH", False]], "enemies": []}
+        self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": 5, "combat": record}}))
+        self.assertIsNone(e.fail)
+        self.assertEqual(calls, [record])  # one anchor, the referee's record, not one per fight passed
+        self.assertEqual(anchored_at, [5])  # in the fight of floor 5
+        self.assertEqual(resolved_at, [3, 4])  # the fights of floors 3 and 4 were walked past
+        self.assertEqual((run.floor, run.cur), (5, "combat"))
+        self.assertEqual(e.anchored_with, "observation")
+
+    def test_the_lockstep_goes_on_from_the_referees_fight_without_a_second_walk(self):
+        e, run, calls, anchored_at, resolved_at = self.emu(3)
+        record = {"hand": [["BASH", False]], "enemies": []}
+        msg = {"obs": {"floor": 5, "combat": record}}
+        self.assertTrue(e.reanchor("fight_start", msg))
+        self.assertTrue(e.reanchor("fight_start", msg))  # the emulator now stands in the fight at the referee's floor
+        self.assertEqual(calls, [record, record])
+        self.assertEqual(resolved_at, [3, 4])  # nothing further was resolved or walked
+        self.assertEqual((run.floor, run.cur), (5, "combat"))
+
+
 @unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")
 class FightStartAnchorNativeTests(unittest.TestCase):
     """A real EmuLock in its own fight, put on a record whose hand and top card differ from it."""
