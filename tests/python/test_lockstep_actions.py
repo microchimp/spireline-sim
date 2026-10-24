@@ -20,7 +20,10 @@ def emu(options, deck=()):
     applied = []
     e.slug = SLUG
     e.dec = NS(options=options, view=NS(deck=list(deck)))
-    e.s = NS(apply=applied.append, view=lambda: NS(deck=list(deck)), _step=lambda a: applied.append(("step", a)))
+    e.s = NS(apply=applied.append, view=lambda: NS(deck=list(deck)), _step=lambda a: applied.append(("step", a)), handle=1)
+    # An empty belt: a potion label outside a fight is then a named gap ("the emulator's belt holds no ..."), never a step.
+    e.native = NS(run_state_list=lambda handle, which, n: [0] * n, run_action_mask=lambda handle, n: [0] * n,
+                  run_potion_action_reason=lambda handle, action: "the belt slot is empty")
     e._msg = {}
     e.rq = []
     e._flush_rewards = lambda: None
@@ -91,14 +94,18 @@ class PotionOutsideFightTest(unittest.TestCase):
                 self.assertEqual(e._pair(kind, labels), e._pair(kind, core) + [None, None])
                 self.assertNotIn(None, e._pair(kind, core))
                 for i in (len(core), len(core) + 1):
-                    self.assertTrue(e.apply(kind, labels, i).startswith(f"no_emulator_option:{kind}"))
+                    gap = e.apply(kind, labels, i)
+                    self.assertTrue(gap.startswith(f"no_emulator_option:{kind}"), gap)
+                    self.assertIn("belt holds no FRUIT_JUICE", gap)  # the belt is empty here; a held potion is stepped (test_run_api_c2b)
                 self.assertEqual(e.applied, [])  # nothing was applied to the emulator
 
     def test_reward_screen_potion_action_is_not_taken_as_a_skip(self):
         e = emu([opt("reward.proceed", 0)])
         labels = ["take", "skip", POTION]
-        self.assertTrue(e.apply("reward", labels, 2).startswith("no_emulator_option:reward"))
+        gap = e.apply("reward", labels, 2)
+        self.assertTrue(gap.startswith("no_emulator_option:reward"), gap)
         self.assertEqual(e.rq, [])  # the reward queue the emulator mirrors is untouched
+        self.assertEqual(e.applied, [])
 
 
 
