@@ -69,6 +69,29 @@ class EnvProtoTest(unittest.TestCase):
 
 
 
+class ProvenanceSummaryTest(unittest.TestCase):
+    """Review 1.6: the play summary says what the block's re-anchors were seeded from, so a block that ran on observation
+    anchoring does not read like one that ran on the game's hidden state."""
+
+    def runs(self):
+        a = {"stats": {"anchored_with": {"hidden": 3, "streams": 1}, "streams_named": 34, "streams_moved": 30,
+                       "streams_unmoved_names": {"Nope": 2}}}
+        b = {"stats": {"anchored_with": {"observation": 4, "none": 1}, "streams_named": 17, "streams_moved": 0,
+                       "streams_unmoved_names": {"Nope": 1, "Odd": 1}}}
+        return [a, b, {"stats": {}}]  # a run that never re-anchored carries none of the keys
+
+    def test_the_counts_are_summed_over_the_runs(self):
+        p = envproto._provenance(self.runs())
+        self.assertEqual(p["anchored_with"], {"hidden": 3, "observation": 4, "streams": 1, "none": 1})
+        self.assertEqual((p["streams_named"], p["streams_moved"]), (51, 30))
+        self.assertEqual(p["streams_unmoved_names"], {"Nope": 3, "Odd": 1})
+
+    def test_a_block_on_observation_anchoring_shows_zero_hidden(self):
+        p = envproto._provenance([{"stats": {"anchored_with": {"observation": 5}}}])
+        self.assertEqual(p["anchored_with"], {"hidden": 0, "observation": 5, "streams": 0, "none": 0})
+        self.assertEqual(envproto._provenance([])["anchored_with"], {"hidden": 0, "observation": 0, "streams": 0, "none": 0})
+
+
 class FullSelectSpecTest(unittest.TestCase):
     def test_reset_spec_carries_the_flag_only_when_on(self):
         self.assertNotIn("full_select", envproto.reset_spec("S1"))  # old records and specs are unchanged

@@ -432,9 +432,9 @@ class Lockstep:
             ok = not reason and not d
         self.stats["reanchors" if ok else "reanchor_failed"] += 1
         how = getattr(self.emu, "anchored_with", None)  # what the emulator side anchored with: the game's hidden state or the observation
-        if ok and how:
+        if ok:  # "none": it held, but neither the hidden state nor the observation nor a moved stream seeded anything
             with_ = self.stats.setdefault("anchored_with", {})
-            with_[how] = with_.get(how, 0) + 1
+            with_[how or "none"] = with_.get(how or "none", 0) + 1
         if not ok:  # why: the emulator side's own reason, else the views that still differ after it
             why = getattr(self.emu, "fail", None) or (reason or "diff:" + ",".join(f"{x[0]}{x[1]}/{x[2]}" if x[0] in (".floor", ".act") else str(x[0]) for x in d[:4]))
             fails = self.stats.setdefault("reanchor_fail_reasons", {})

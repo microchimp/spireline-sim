@@ -203,6 +203,17 @@ class ProvenanceTests(unittest.TestCase):
         s = self.drive(ProvEmu([view_of(obs(hp=70))], how=None, streams=zero, reanchor_ok=True), [msg("map", a)]).stats
         self.assertEqual((s["streams_named"], s["streams_moved"], s["streams_unmoved_names"]), (17, 0, {"Nope": 1}))
 
+    def test_a_held_reanchor_is_counted_by_what_it_was_seeded_from_and_none_is_a_way(self):
+        a = obs(hp=80)
+        for how, want in (("hidden", {"hidden": 1}), ("observation", {"observation": 1}), ("streams", {"streams": 1}),
+                          (None, {"none": 1})):
+            emu = ProvEmu([view_of(obs(hp=70))], how=how, reanchor_ok=True)
+            self.assertEqual(self.drive(emu, [msg("map", a)]).stats["anchored_with"], want)
+        s = self.drive(FakeEmu([view_of(obs(hp=70))], reanchor_ok=True), [msg("map", a)]).stats  # a side that reports nothing
+        self.assertEqual(s["anchored_with"], {"none": 1})
+        s = self.drive(ProvEmu([view_of(obs(hp=70))], how="hidden", reanchor_ok=False), [msg("map", a)]).stats
+        self.assertNotIn("anchored_with", s)  # only a re-anchor that held counts
+
     def test_an_emulator_side_with_no_stream_report_adds_no_stream_counts(self):
         a = obs(hp=80)
         s = self.drive(FakeEmu([view_of(obs(hp=70))], reanchor_ok=True), [msg("map", a)]).stats
