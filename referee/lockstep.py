@@ -367,6 +367,7 @@ class Lockstep:
     def _track(self, kind: str, msg: dict) -> None:
         """The context every record of this decision carries (set before the decision's own step is taken)."""
         c = (msg.get("obs") or {}).get("combat")
+        before, advanced = self.round, False  # the round of the decision before; True when this one is in a later round of the fight
         if not c or kind not in COMBAT_KINDS:
             self.roster, self.round = None, None
         else:
@@ -374,8 +375,10 @@ class Lockstep:
             if self.prev_kind not in COMBAT_KINDS or (rnd is not None and self.round is not None and rnd < self.round):
                 names = sorted(str(e.get("name")) for e in c.get("enemies") or [] if isinstance(e, dict))
                 self.roster = "+".join(names) or None  # a new fight: the enemies it began with
+            advanced = rnd is not None and before is not None and rnd > before
             self.round = rnd
-        self.ctx = {"acted": self.prev_act, "turn": self.round, "encounter": self.roster, "room_type": self.room_type}
+        self.ctx = {"acted": self.prev_act, "turn": self.round, "turn_advanced": advanced, "encounter": self.roster,
+                    "room_type": self.room_type}
 
     def finish(self, outcome: dict) -> None:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""

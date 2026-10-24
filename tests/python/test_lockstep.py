@@ -922,6 +922,29 @@ class RecordContextTests(unittest.TestCase):
         ls.decide(msg("card_reward", o))  # the lockstep is lost, the step is still tracked
         self.assertEqual(ls.prev_act, {"type": "choice", "kind": "card_reward", "label": ["x"]})
 
+    def test_turn_advanced_is_true_on_the_first_decision_of_a_new_round_only(self):
+        def fight(rnd, kind="combat"):
+            return {"t": "decide", "kind": kind, "obs": self.combat_obs(rnd, (15, 40)), "actions": [["play", 0, "STRIKE", 0], ["end"]], "h": "abc"}
+
+        ls = lockstep.Lockstep(FakeEmu([view_of(obs())]), lambda m_: 0)
+        seen = []
+        for x in (msg("map", obs()), fight(1), fight(1), fight(1, "select_cards_combat"), fight(2), fight(2), fight(3),
+                  msg("reward", obs()), msg("map", obs()), fight(1)):
+            ls.decide(x)
+            seen.append(ls.ctx["turn_advanced"])
+        # outside a fight; a fight's first decision; a second play; a selection screen of the same round; the new round, then
+        # its second decision; the next round; the reward and the map; the next fight's first decision
+        self.assertEqual(seen, [False, False, False, False, True, False, True, False, False, False])
+
+    def test_a_record_carries_turn_advanced(self):
+        rec = self.run_fight(40).log.records[0]
+        self.assertEqual((rec["turn"], rec["turn_advanced"]), (3, True))  # round 2 at the decision before, round 3 here
+        self.assertIs(self.run_fight(40).ctx["turn_advanced"], True)
+        o, b = obs(hp=80), obs(hp=70)
+        ls = lockstep.Lockstep(FakeEmu([view_of(b), view_of(o)]), lambda m_: 0)
+        ls.decide(msg("rest", o))
+        self.assertIs(ls.log.records[0]["turn_advanced"], False)
+
     def test_a_play_and_a_potion_are_told_apart_from_an_end_turn(self):
         self.assertEqual(lockstep.act_type("combat", ["play", 0, "STRIKE", 0]), "play")
         self.assertEqual(lockstep.act_type("combat", ["potion", 0, "FIRE", -1]), "potion")
