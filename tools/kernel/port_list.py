@@ -1,7 +1,7 @@
 """Handler port list for a family migration (docs/rebuild/MIGRATION_F08.md).
 
     python -m tools.kernel.port_list --families F08 F10 [--exclude-hooks H ...] [--size 12] [--md out.md] [--json out.json]
-                                     [--gate]
+                                     [--gate] [--emudump EmuDump.dll]
 
 Every model the port manifest says is reached by records (corpus, agent, lab or Codex) that overrides a hook of the
 given families, with: the family hooks it overrides, how the old engine stands for each (``hook_table.classify``:
@@ -13,8 +13,10 @@ and the batch it is ported in. Batches are per kind (power, relic, card, monster
 Pseudo-hooks (``PSEUDO_HOOKS``) are the kill sequence's model calls that are not AbstractModel hooks (a MonsterModel
 or PowerModel virtual, or the creature's ``Died`` event a monster subscribes to); they are listed like hooks of their
 family so their models are ported in the same batches. ``--gate`` exits 1 while any listed (model, hook) pair has
-no Core2 handler (``Core2/Models``) and is not ``not_modelled``: a registered pair (the old engine has a location for it)
-is unported until its handler is in the HandlerTable. That is the switch-on gate of the migration.
+no Core2 handler and is not ``not_modelled``: a registered pair (the old engine has a location for it) is unported until
+its handler is in the HandlerTable. A handler counts when ``EmuDump kernel-handlers`` (the built EmuDump.dll, ``--emudump``)
+lists it: the table with every switch on, not the source text; a handler marked ``[StubHandler]`` does not count. That is
+the switch-on gate of the migration.
 """
 from __future__ import annotations
 
@@ -22,7 +24,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,7 +39,7 @@ FAMILIES = ROOT / "tools" / "fidelity" / "hook_families.json"
 MANIFEST = Path(os.environ.get("SPIRELINE_REBUILD", r"D:\spireline\referee\rebuild")) / "manifest.json"
 BATCH_KINDS = ("power", "relic", "card", "monster", "potion")
 SOURCES = ("corpus_fights", "agent_runs", "lab_fights", "codex_runs")
-CORE2_MODELS = ROOT / "src" / "Sts2Emulator" / "Core2" / "Models"
+DEFAULT_DLL = ROOT / "tools" / "emudump" / "bin" / "Release" / "net9.0" / "EmuDump.dll"
 # The kill sequence's non-hook model calls: name -> (family, kind of the declaring model, how a model takes part).
 PSEUDO_HOOKS = {
     "BeforeRemovedFromRoom": ("F10", "monster", "override"),        # MonsterModel virtual, CombatManager.RemoveCreature
@@ -130,16 +134,34 @@ def drop_buff_writes(rows: list, engine) -> list:
     return out
 
 
-def ported(models_dir: Path = CORE2_MODELS) -> set[tuple[str, str]]:
-    """(game class, hook) pairs with a Core2 handler: a file under Core2/Models registering ``Model(kind, "Class")``
-    with ``HookId.<hook>`` (one model per file, TIER1_KERNEL.md section 4)."""
-    out = set()
-    for p in sorted(models_dir.rglob("*.cs")) if models_dir.is_dir() else []:
-        text = p.read_text(encoding="utf-8")
-        names = re.findall(r"\.Model\(\s*ListenerKind\.\w+\s*,\s*\"(\w+)\"", text)
-        for n in names:
-            out |= {(n, h) for h in re.findall(r"\bHookId\.(\w+)", text)}
-    return out
+class HandlerListError(RuntimeError):
+    """The kernel's handler list could not be read. The gate fails on it: no list is not 'no handler ported'."""
+
+
+def handler_pairs(doc: dict) -> set[tuple[str, str]]:
+    """(game class, hook) of every handler in an ``EmuDump kernel-handlers`` document that is not a stub."""
+    return {(h["model"], h["hook"]) for h in doc["handlers"] if not h.get("stub")}
+
+
+def ported(dll: Path = DEFAULT_DLL, run=subprocess.run) -> set[tuple[str, str]]:
+    """(game class, hook) pairs with a Core2 handler: the registrations of the kernel's HandlerTable with every switch on,
+    from ``EmuDump kernel-handlers`` (Engines/Core2/KernelHandlers.cs), stubs left out. The source is never read, so a comment
+    or a model file that does not register does not count."""
+    dll = Path(dll)
+    if not dll.is_file():
+        raise HandlerListError(f"{dll} is not built (dotnet build tools/emudump/EmuDump.csproj -c Release)")
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "handlers.json"
+        try:
+            r = run(["dotnet", str(dll), "kernel-handlers", str(out)], capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise HandlerListError(f"EmuDump kernel-handlers did not run: {e}") from e
+        if r.returncode != 0:
+            raise HandlerListError(f"EmuDump kernel-handlers exited {r.returncode}: {(r.stderr or '').strip()[-300:]}")
+        try:
+            return handler_pairs(json.loads(out.read_text(encoding="utf-8")))
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            raise HandlerListError(f"EmuDump kernel-handlers wrote no usable list: {e!r}") from e
 
 
 def unported_pairs(items: list[dict], done: set[tuple[str, str]] = frozenset()) -> list[tuple[str, str, str]]:
@@ -250,7 +272,7 @@ def render_md(doc: dict) -> str:
     return "\n".join(L) + "\n"
 
 
-def make(families: list[str], size: int, manifest_path: Path, decompiled: str, exclude=()) -> dict:
+def make(families: list[str], size: int, manifest_path: Path, decompiled: str, exclude=(), dll: Path = DEFAULT_DLL) -> dict:
     fam_doc = json.loads(FAMILIES.read_text(encoding="utf-8"))
     hooks = family_hooks(fam_doc, families, exclude)
     engine = ht.Engine.load(ht.ENGINE)
@@ -261,7 +283,7 @@ def make(families: list[str], size: int, manifest_path: Path, decompiled: str, e
     got = build(rows, models, hooks)
     got["families"] = list(families)
     got["excluded"] = sorted(exclude)
-    got["unported"] = [list(p) for p in unported_pairs(got["items"], ported())]
+    got["unported"] = [list(p) for p in unported_pairs(got["items"], ported(dll))]
     got["summary"] = summary(got["items"])
     got["batches"] = batches(got["items"], size)
     return got
@@ -276,9 +298,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--md", type=Path)
     ap.add_argument("--json", type=Path)
     ap.add_argument("--exclude-hooks", nargs="*", default=[], help="hooks to leave out of the list")
+    ap.add_argument("--emudump", type=Path, default=DEFAULT_DLL, help="the built EmuDump.dll whose kernel-handlers lists the handlers")
     ap.add_argument("--gate", action="store_true", help="exit 1 while any pair has no Core2 handler and is not not_modelled")
     a = ap.parse_args(argv)
-    doc = make(a.families, a.size, a.manifest, a.decompiled, a.exclude_hooks)
+    try:
+        doc = make(a.families, a.size, a.manifest, a.decompiled, a.exclude_hooks, a.emudump)
+    except HandlerListError as e:
+        sys.stderr.write(f"port_list: {e}\n")
+        return 2
     if a.json:
         a.json.write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
     md = render_md(doc)

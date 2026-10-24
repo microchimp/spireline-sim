@@ -16,7 +16,7 @@
    "kind": "split",
    "file": "Core/CombatEngine.cs",
    "sha256": "0a3d11809596056520a5dd8b76d654787544a06c331c3180556762afdc477a63",
-   "reason": "Doom's turn-end body is two statements: the threshold test on the Doom stack and the open gate (the BeforeSideTurnEnd moment, F05), then the player's death (HP to zero and the HP-changed dispatch, the kill and AfterDiedToDoom, F10); the F10 part gates on its own switch",
+   "reason": "Doom's turn-end body is two statements: the threshold test on the Doom stack and the open gate (the BeforeSideTurnEnd moment, F05), then the first writes of the player's death (HP to zero and the HP-changed dispatch, F10; the kill and AfterDiedToDoom are not in this body); the F10 part gates on its own switch",
    "parts": [
     {
      "family": "F05",

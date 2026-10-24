@@ -54,6 +54,12 @@ if (args[0] == "kernel-order")
     Environment.Exit(KernelOrderMode.Run(args[1..]));
 }
 
+if (args[0] == "kernel-handlers")
+{
+    // EmuDump kernel-handlers [out.json]: every (model, hook) pair in the kernel's handler table with all switches on (Engines/Core2/KernelHandlers.cs).
+    Environment.Exit(EmuDump.Engines.Core2.KernelHandlersMode.Run(args[1..]));
+}
+
 if (args[0] == "codex")
 {
     // EmuDump codex <runs.jsonl[.gz]> <out.jsonl> [...]: real run histories against the run engine.

@@ -50,6 +50,7 @@ public sealed class HandlerTable : IHandlerSource
     private readonly Dictionary<(ListenerKind Kind, int Model), ulong[]> _masks = new();
     private readonly Dictionary<(ListenerKind Kind, int Model), string> _names = new();
     private readonly HashSet<(HookId Hook, ListenerKind Kind)> _kinds = new();
+    private readonly HashSet<(HookId Hook, ListenerKind Kind, int Model)> _stubs = new();
     private readonly bool[] _any = new bool[Words * 64];
 
     /// <param name="ids">The game-model to old-id resolution (OldModelIds).</param>
@@ -92,6 +93,8 @@ public sealed class HandlerTable : IHandlerSource
             throw new ArgumentException($"{kind} {gameId} and {other} resolve to the same old id {model}");
         if (!_handlers.TryAdd((hook, kind, model), fn))
             throw new ArgumentException($"{kind} {gameId} already has a handler for {hook}");
+        if (fn.Method.IsDefined(typeof(StubHandlerAttribute), false))
+            _stubs.Add((hook, kind, model));
         _names[(kind, model)] = gameId;
         if (!_masks.TryGetValue((kind, model), out var bits))
             _masks[(kind, model)] = bits = new ulong[Words];
@@ -117,7 +120,27 @@ public sealed class HandlerTable : IHandlerSource
 
     /// <summary>The game name a model was registered under.</summary>
     public string? GameId(ListenerKind kind, int modelId) => _names.GetValueOrDefault((kind, modelId));
+
+    /// <summary>
+    /// Every registered (model, hook) pair, in kind, name, hook order, with whether the handler is a stub. This is what
+    /// tools/kernel/port_list.py reads (EmuDump kernel-handlers): the table itself, not the source text.
+    /// </summary>
+    public IReadOnlyList<RegisteredHandler> Registered() =>
+        _handlers.Keys
+            .Select(k => new RegisteredHandler(k.Kind, _names[(k.Kind, k.Model)], k.Hook, _stubs.Contains(k)))
+            .OrderBy(r => r.Kind).ThenBy(r => r.GameId, StringComparer.Ordinal).ThenBy(r => r.Hook.ToString(), StringComparer.Ordinal)
+            .ToList();
 }
+
+/// <summary>One registered handler: the game model, the hook virtual, and whether the handler is a stub.</summary>
+public readonly record struct RegisteredHandler(ListenerKind Kind, string GameId, HookId Hook, bool Stub);
+
+/// <summary>
+/// Marks a handler method that is a placeholder: registered so the model's shape is in place, its body only throws
+/// NotImplementedException. The port list does not count a stub as ported (HandlerTable.Registered says which are).
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class StubHandlerAttribute : Attribute;
 
 /// <summary>One model's registrations (see <see cref="HandlerTable.Model" />).</summary>
 public readonly struct ModelRegistration(HandlerTable table, ListenerKind kind, string gameId, int model)

@@ -97,7 +97,7 @@ class Migrated(unittest.TestCase):
         limits = {r["id"] for r in ROWS if not r.get("families") and "old" in r["engines"]}
         self.assertTrue({"intent-vocabulary", "power-folds", "upgrade-count", "affliction-amount", "enemy-move-id", "saved-props-floor",
                          "relic-counters"} <= limits)
-        every_family = [f"F{i:02d}" for i in range(1, 17)]
+        every_family = [f"F{i:02d}" for i in range(1, 18)]
         self.assertLessEqual(limits, self.ids(every_family))
         self.assertEqual({r["id"] for r in sc.for_engine(ROWS, "old", every_family)}, {r["id"] for r in sc.for_engine(ROWS, "old", [])})
         self.assertEqual({r["id"] for r in sc.for_engine(ROWS, "core3", every_family)}, {"dead-enemies", "after-last-checksum", "late-steps"})
