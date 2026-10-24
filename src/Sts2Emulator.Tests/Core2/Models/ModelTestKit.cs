@@ -34,6 +34,15 @@ public static class ModelTestKit
         return s;
     }
 
+    /// <summary>Osty joins the combat (the player's pet, <paramref name="hp" /> of <paramref name="hp" />): creature 1, so the
+    /// enemies move up to 2 and on, as in the engine. Returns <paramref name="s" /> for chaining:
+    /// <c>WithOsty(Combat(40))</c>. Game: the player's Osty is a pet of the player (<c>Creature.PetOwner</c>).</summary>
+    public static CombatState WithOsty(CombatState s, int hp = 10)
+    {
+        s.OstyMaxHp = s.OstyHp = hp;
+        return s;
+    }
+
     /// <summary>The player (creature 0) holds <paramref name="relicId" /> (the old def id) at the end of the obtain order;
     /// returns its listener.</summary>
     public static ListenerRef Hold(CombatState s, int relicId, int counter = 0)
@@ -136,4 +145,68 @@ public static class ModelTestKit
 
     /// <summary>The unpowered props (thorns, poison, a relic's damage): Move off, Unpowered on.</summary>
     public static readonly ValueProp Unpowered = new(ValueProps.Unpowered);
+
+    // ---------------------------------------------------------------------------------------- holders
+
+    /// <summary>The creature index of <paramref name="enemy" /> in the combat (the player 0, Osty 1 when present, then the
+    /// enemies in roster order); the enemy must be listed (not dying).</summary>
+    public static int IndexOf(CombatState s, EnemyState enemy) =>
+        1 + (s.OstyMaxHp > 0 ? 1 : 0) + s.Enemies.FindIndex(e => ReferenceEquals(e, enemy));
+
+    /// <summary>A holder of a power: <paramref name="buff" /> at <paramref name="amount" /> goes on <paramref name="on" />
+    /// (an enemy) or on the player (null, the default); returns the power's listener, the first instance of
+    /// <paramref name="model" /> on that creature (a creature holds a power once). Enemy-owned and player-owned holders are
+    /// the two calls.</summary>
+    public static ListenerRef GivePower(CombatState s, string model, BuffId buff, int amount, EnemyState? on = null)
+    {
+        (on?.Buffs ?? s.PlayerBuffs).Add(new BuffState(buff, amount));
+        return Power(model, on is null ? 0 : IndexOf(s, on));
+    }
+
+    /// <summary>The N-holder setup (docs/rebuild/CLOUD_BRIEFS.md section 3, rule 5): <paramref name="model" /> is held by the
+    /// player and by every enemy of the combat, each at <paramref name="amount" />; returns the listeners, the player's first,
+    /// then the enemies in roster order. A handler must act for its own holder only: a dispatch that names one creature must
+    /// change that creature's listener and no other.</summary>
+    public static IReadOnlyList<ListenerRef> Holders(CombatState s, string model, BuffId buff, int amount) =>
+        [GivePower(s, model, buff, amount), .. s.Enemies.Select(e => GivePower(s, model, buff, amount, e))];
+
+    // ---------------------------------------------------------------------------------------- death hooks
+
+    /// <summary>The arguments of Hooks.AfterDeath for the creature at <paramref name="creature" />.</summary>
+    public static AfterDeathArgs AfterDeathOf(int creature, bool removalPrevented = false, float animLength = 0f) =>
+        new(new CreatureRef(creature), removalPrevented, animLength);
+
+    /// <summary>The arguments of Hooks.BeforeDeath for the creature at <paramref name="creature" />.</summary>
+    public static BeforeDeathArgs BeforeDeathOf(int creature) => new(new CreatureRef(creature));
+
+    /// <summary>The arguments of Hooks.ShouldDie for the creature at <paramref name="creature" />.</summary>
+    public static ShouldDieArgs ShouldDieOf(int creature) => new(new CreatureRef(creature));
+
+    /// <summary>
+    /// The state the game's death overrides see: <paramref name="enemy" /> is dead (0 HP) but not yet removed, so it is still
+    /// listed in the combat (OldWorld.MarkDying, as CreatureCmd.Kill sets it). Dispose to restore the HP and clear the mark.
+    /// A handler that reads the dying creature (its powers, its position) is tested inside this scope.
+    /// </summary>
+    public static IDisposable Dying(KernelState k, EnemyState enemy)
+    {
+        int hp = enemy.Hp;
+        enemy.Hp = 0;
+        var mark = k.World!.MarkDying(enemy);
+        return new Scope(() =>
+        {
+            mark.Dispose();
+            enemy.Hp = hp;
+        });
+    }
+
+    private sealed class Scope(Action end) : IDisposable
+    {
+        private Action? _end = end;
+
+        public void Dispose()
+        {
+            _end?.Invoke();
+            _end = null;
+        }
+    }
 }

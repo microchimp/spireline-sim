@@ -468,6 +468,10 @@ public class PilotTests
     {
         // game: TheBoot.AfterModifyingHpLostAfterOsty, reached by the filter-set pass when the relic modified the loss.
         // The old engine has no body at this point; the handler returns Done and the state is as it was.
+        // NO DELETE-MUTANT for this pair (CLOUD_BRIEFS section 3, rule 3, does not apply): the game's override only flashes
+        // the relic (presentation, no combat state), so with the handler deleted the state is the same and no assertion on
+        // it could fail. The pair is pinned instead by TheBootIsRegisteredForItsTwoPairs and the table test. A mutant is
+        // not faked here.
         var (s, relic) = BootCombat();
         var k = Kernel(s, Pilot);
         int hp = s.Enemies[0].Hp;
@@ -481,6 +485,7 @@ public class PilotTests
     [Fact]
     public void TheBootDeleteMutantGivesTheNoHandlerValue()
     {
+        // The late pair (ModifyHpLostAfterOstyLate) only: the after-Osty pair has no mutant, see above.
         var (s, _) = BootCombat();
         var k = Kernel(s, Without(Pilot, TheBoot.Register));
         Assert.Equal(3m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 3m), out var changed));
@@ -606,6 +611,11 @@ public class PilotTests
         return s;
     }
 
+    /// <summary>Every pile's cards by (uid, def), pile by pile: a move or a swap of a copy changes it, a cost bump does not.</summary>
+    private static string Layout(CombatState s) =>
+        string.Join("|", new[] { s.Hand, s.DrawPile, s.DiscardPile, s.ExhaustPile }
+            .Select(p => string.Join(",", p.Select(c => $"{c.Uid}:{c.DefId}"))));
+
     private static IEnumerable<int> Bumps(CombatState s) =>
         new[] { s.Hand, s.DrawPile, s.DiscardPile, s.ExhaustPile }.SelectMany(p => p).Select(c => c.CostBump);
 
@@ -625,18 +635,19 @@ public class PilotTests
         var k = Kernel(s, Pilot);
         var oracle = MelancholyCombat();
 
-        Hooks.AfterDeath(k, new AfterDeathArgs(new CreatureRef(1), false, 0f));
+        string layout = Layout(s);
+        Hooks.AfterDeath(k, AfterDeathOf(1));
         CardEffects.CheapenMelancholyForDeath(oracle);
 
         Assert.Equal(Bumps(oracle), Bumps(s));
         Assert.Equal([0, 1, -1, 0, 0, -1], Bumps(s));
-        Assert.Equal(s.Hand.Select(c => c.Uid), s.Hand.Select(c => c.Uid)); // the copies stay where they were
+        Assert.Equal(layout, Layout(s)); // the copies stay where they were, in every pile
         Assert.Equal([MelancholyDef], s.ExhaustPile.Select(c => c.DefId));
 
         // A second death: one more off each copy; a prevented death: nothing.
-        Hooks.AfterDeath(k, new AfterDeathArgs(new CreatureRef(2), false, 0f));
+        Hooks.AfterDeath(k, AfterDeathOf(2));
         Assert.Equal([0, 0, -2, 0, 0, -2], Bumps(s));
-        Hooks.AfterDeath(k, new AfterDeathArgs(new CreatureRef(1), true, 0f));
+        Hooks.AfterDeath(k, AfterDeathOf(1, removalPrevented: true));
         Assert.Equal([0, 0, -2, 0, 0, -2], Bumps(s));
     }
 
@@ -645,7 +656,7 @@ public class PilotTests
     {
         var s = MelancholyCombat();
         var k = Kernel(s, Without(Pilot, Melancholy.Register));
-        Hooks.AfterDeath(k, new AfterDeathArgs(new CreatureRef(1), false, 0f));
+        Hooks.AfterDeath(k, AfterDeathOf(1));
         Assert.Equal([0, 2, 0, 0, 0, 0], Bumps(s));
     }
 
