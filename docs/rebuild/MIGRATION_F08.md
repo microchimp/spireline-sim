@@ -1105,6 +1105,8 @@ a stop.
 
 R7 item, the ending agreement made an assertion: `tools/fidelity/fuzz_core2.py` fails on any step listed under a fuzz
 output's `ending_disagree` that is outside an expected list (held-open corpses without a handler), and that list is empty at switch-on.
+**Done (R7b1)**: `EXPECTED_ENDING_DISAGREE` (power id, readings), empty; the summary counts `ending_disagree` and
+`ending_unexpected`, and an unexpected one exits 1 (`test_an_ending_disagreement_outside_the_expected_list_exits_1`).
 
 **R7 checks: old-site divergences the handlers inherit or settle.** Each is a place where a handler equals the old function and the
 game does something else, found while porting; R7's corpus re-measure decides each, and none moves a gate by itself.

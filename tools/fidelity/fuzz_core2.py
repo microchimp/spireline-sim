@@ -29,7 +29,8 @@ A difference is a first differing step. It is re-run through `EmuDump fight --st
 name it) and its minimal re-run spec, the fight cut at that step, is saved under <out>/<run>/ as a record `EmuDump fight`
 replays on either engine. Its signature (`state:<fields>`, `action`, `length` or `error`) is looked up in
 tools/fidelity/fuzz_explained.json: each entry names the hook_open.txt row or the migration doc item that explains it.
-Exit 0 when every difference is explained (or none), 1 when any is not (or a run failed), 2 on a bad argument.
+Exit 0 when every difference is explained (or none), 1 when any is not (or a run failed, or a core2 step's ending readings
+disagree outside EXPECTED_ENDING_DISAGREE), 2 on a bad argument.
 
 The spec of fight i of seed S is a function of (S, i) alone, so a run is repeatable whatever the batching.
 """
@@ -77,6 +78,12 @@ EXTRA_CARDS = ("ASCENDERS_BANE",)  # no pool holds it; every A10 deck does
 FORMAT = 1
 RERUN_CHUNK = 50  # records per field re-run process
 MAX_FAILED_BATCHES = 10  # a run with no fight limit stops starting batches after this many fail (no dotnet, a broken build)
+# The ending agreement made an assertion (docs/rebuild/MIGRATION_F08.md, R7): with F10 on, EmuDump fuzz lists each step where
+# the old ending predicate and the kernel's disagree under the core2 output's `ending_disagree` ({"step", "readings"}). Every
+# such step fails the run unless an entry here expects it: a held-open corpse whose Core2 handler has not landed, as
+# (the game power id the fight placed that holds the combat open, the readings, e.g. "old open, core2 ending"). Empty: every
+# holder has its handler, so any disagreement is a bug.
+EXPECTED_ENDING_DISAGREE: tuple[tuple[str, str], ...] = ()
 BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 SWITCHABLE = [f"F{n:02d}" for n in range(1, 18)]
 # The first migration's families (F08 damage, F10 kill): the powers whose hooks sit in them are drawn more often.
@@ -503,7 +510,21 @@ def process_batch(opts: Options, cat: Catalog, indices: list[int], work: Path, r
     for d in diffs:
         d["signature"] = signature(d["kind"], d["fields"])
     stats["seconds"] = round(time.time() - t0, 2)
-    return {"stats": stats, "diffs": diffs}
+    return {"stats": stats, "diffs": diffs, "ending": ending_disagreements(indices, specs, new)}
+
+
+def ending_disagreements(indices, specs, results, expected=None) -> list[dict]:
+    """Every step a core2 output lists under `ending_disagree`, with its fight and whether EXPECTED_ENDING_DISAGREE (or
+    `expected`) expects it: an entry whose power the fight placed and whose readings are the step's."""
+    expected = EXPECTED_ENDING_DISAGREE if expected is None else expected
+    out = []
+    for i, spec, r in zip(indices, specs, results):
+        placed = {it["id"] for it in spec.get("setup", ()) if it.get("cmd") == "power"}
+        for e in r.get("ending_disagree") or ():
+            why = e.get("readings")
+            out.append({"index": i, "tag": spec.get("tag"), "step": e.get("step"), "readings": why,
+                        "expected": any(p in placed and why == w for p, w in expected)})
+    return out
 
 
 def _pool_task(args):
@@ -584,11 +605,14 @@ def run_fuzz(opts: Options, cat: Catalog, runner=None, rerunner=None, now=time.t
         saved.append(p.name)
     seconds = max(now() - t0, 1e-9)
     fields = collections.Counter(f for d in diffs for f in d["fields"])
+    ending = [e for r in results for e in r.get("ending") or ()]
+    unexpected = [e for e in ending if not e["expected"]]
     summary = {
         "format": FORMAT, "seed": opts.seed, "switches": opts.switches, "fights": sum(r["stats"]["fights"] for r in results),
         "steps": sum(r["stats"]["steps"] for r in results), "error_fights": sum(r["stats"]["errors"] for r in results),
         "differing_fights": len(diffs), "explained": sum(1 for d in diffs if d["explained"]),
         "untriaged": sum(1 for d in diffs if not d["explained"]), "failed_batches": errors,
+        "ending_disagree": len(ending), "ending_unexpected": len(unexpected), "ending_first": unexpected[:10],
         "top_fields": fields.most_common(10), "signatures": collections.Counter(d["signature"] for d in diffs).most_common(10),
         "seconds": round(seconds, 1), "fights_per_second": round(sum(r["stats"]["fights"] for r in results) / seconds, 2),
         "procs": 1 if runner is not None else opts.procs, "coverage": cat.coverage(), "power_coverage": power_coverage(cat, results),
@@ -600,7 +624,8 @@ def run_fuzz(opts: Options, cat: Catalog, runner=None, rerunner=None, now=time.t
 
 
 def exit_code(summary: dict) -> int:
-    return 1 if summary["untriaged"] or summary["failed_batches"] else 0
+    """1 on an untriaged difference, a failed batch, or an ending disagreement EXPECTED_ENDING_DISAGREE does not expect."""
+    return 1 if summary["untriaged"] or summary["failed_batches"] or summary.get("ending_unexpected") else 0
 
 
 def replay_check(opts: Options, cat: Catalog, n: int, work: Path) -> dict:

@@ -93,7 +93,7 @@ static class Fuzz
 
     /// <summary>
     /// The agreement report (F10 on): the old ending predicate is compared with the kernel's after every step. Nothing here
-    /// fails on a difference, and nothing in this repo reads the key yet (R7: <c>fuzz_core2.py</c> is to fail on one). A step
+    /// fails on a difference; <c>tools/fidelity/fuzz_core2.py</c> fails on one outside its EXPECTED_ENDING_DISAGREE. A step
     /// where they differ is listed under the output's <c>ending_disagree</c> (step and the two readings); the key is absent when
     /// they agree throughout, so the old engine's output and an agreeing core2 run are unchanged.
     /// </summary>
