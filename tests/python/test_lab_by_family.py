@@ -60,7 +60,7 @@ class RuleTableTest(unittest.TestCase):
     def test_each_rule_places_its_shape(self):
         self.check(rec(1, 3, [], type="reward", reason="phase:0!=rewards"), "R01", "F10", "reason")
         self.check(rec(1, 3, [], type="rest", reason="screen:map!=rest"), "R02", "F16", "reason")
-        self.check(rec(1, 3, RUN_HP, type="reward"), "R03", "F10", "diff")
+        self.check(rec(1, 3, RUN_HP, type="reward"), "R03", "F17", "diff")
         self.check(rec(1, 3, CORPSE), "R04", bf.UNASSIGNED, "none")
         self.check(rec(1, 3, [[".combat.enemy_hp", [999999999], [32768]]]), "R05", bf.UNASSIGNED)
         self.check(rec(1, 3, HP), "R06", "F08", "diff")

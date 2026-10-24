@@ -60,7 +60,7 @@ class FamilyMap(unittest.TestCase):
         missing = [h for h in disp if h not in fam["hooks"]]
         self.assertEqual(missing, [])
         self.assertEqual(set(fam["hooks"].values()) - set(fam["families"]), set())
-        self.assertEqual(sorted(fam["families"]), [f"F{i:02d}" for i in range(1, 17)])
+        self.assertEqual(sorted(fam["families"]), [f"F{i:02d}" for i in range(1, 18)])
 
     def test_a_hook_is_in_one_place(self):
         fam = mf.load_families()

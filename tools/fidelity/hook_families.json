@@ -1,5 +1,5 @@
 {
- "_about": "Every gameplay hook of the game's AbstractModel (tools/fidelity/hook_table.py hook_names) mapped to one hook family of referee/design/game-shaped-dispatch.md section 2 (F01-F16). The 156 hooks of hook_dispatch.json are placed as that design counts them (the per-family counts match); the others are placed by name, with the reason in `why`. `unassigned` hooks fit no family without an owner decision and are reported, not hidden. Identifiers only. Read by tools/fidelity/manifest.py.",
+ "_about": "Every gameplay hook of the game's AbstractModel (tools/fidelity/hook_table.py hook_names) mapped to one hook family of referee/design/game-shaped-dispatch.md section 2 (F01-F17; F17 was cut out of F10 on 2026-10-24, see families.F17.why). The 156 hooks of hook_dispatch.json are placed as that design counts them (the per-family counts match); the others are placed by name, with the reason in `why`. `unassigned` hooks fit no family without an owner decision and are reported, not hidden. Identifiers only. Read by tools/fidelity/manifest.py.",
  "families": {
   "F01": {
    "name": "combat start",
@@ -47,8 +47,8 @@
    "run": false
   },
   "F10": {
-   "name": "death / victory",
-   "spike_hooks": 12,
+   "name": "death",
+   "spike_hooks": 9,
    "run": false
   },
   "F11": {
@@ -80,6 +80,12 @@
    "name": "run shop / rest / map / deck",
    "spike_hooks": 19,
    "run": true
+  },
+  "F17": {
+   "name": "combat end",
+   "spike_hooks": 3,
+   "run": false,
+   "why": "AfterCombatEnd, AfterCombatVictoryEarly and AfterCombatVictory run after the combat's result (RunEngine.FinishCombat, the rewards, the run counters), not inside the kill; they leave F10 so that F08 and F10 can switch without the reward generator (docs/rebuild/MIGRATION_F08.md section 2, option B)"
   }
  },
  "hooks": {
@@ -166,9 +172,9 @@
   "BeforeBlockGained": "F09",
   "ModifyBlockAdditive": "F09",
   "ModifyBlockMultiplicative": "F09",
-  "AfterCombatEnd": "F10",
-  "AfterCombatVictory": "F10",
-  "AfterCombatVictoryEarly": "F10",
+  "AfterCombatEnd": "F17",
+  "AfterCombatVictory": "F17",
+  "AfterCombatVictoryEarly": "F17",
   "AfterDeath": "F10",
   "AfterDiedToDoom": "F10",
   "AfterOstyRevived": "F10",

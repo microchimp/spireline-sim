@@ -4,10 +4,10 @@ family, written beside top20.md as by_family.md / by_family.json by every score-
 
     python tools/lab/by_family.py <score-real out dir> --out <dir>
 
-Families. F01-F16 are the hook families of referee/design/game-shaped-dispatch.md section 2 (the audits' hook families, as that
+Families. F01-F17 are the hook families of referee/design/game-shaped-dispatch.md section 2 (the audits' hook families, as that
 file lists them); the coarse family is the audits' grouping of PLAN 8.2 (exhaust and discard triggers, damage and block pipeline,
 start- and end-of-turn hooks, card-play hooks, power stacking and removal, relic triggers, RNG order) plus two this module adds
-because the lockstep sees them: "death and victory" (F10) and "run flow" (the run layer: rewards, shop, rest, map, events, deck).
+because the lockstep sees them: "death and victory" (F10, F17) and "run flow" (the run layer: rewards, shop, rest, map, events, deck).
 
 What a lockstep divergence carries: the decision's type, the differing fields with both values (hand, enemy_hp, hp, deck, gold,
 potions, relics ...), a reason when there is no state diff, and no acted card, no trace event and no hook. So a rule can read the
@@ -40,8 +40,8 @@ from tools.lab import rank  # noqa: E402
 UNASSIGNED = "unassigned"
 FAMILIES = {
     "F01": "combat start", "F02": "side turn start", "F03": "player turn start", "F04": "auto-play", "F05": "turn end / flush",
-    "F06": "card play", "F07": "costs", "F08": "damage / HP", "F09": "block", "F10": "death / victory", "F11": "card piles",
-    "F12": "powers", "F13": "energy / orbs", "F14": "potions", "F15": "run rewards", "F16": "run shop / rest / map / deck"}
+    "F06": "card play", "F07": "costs", "F08": "damage / HP", "F09": "block", "F10": "death", "F11": "card piles",
+    "F12": "powers", "F13": "energy / orbs", "F14": "potions", "F15": "run rewards", "F16": "run shop / rest / map / deck", "F17": "combat end"}
 COARSE = ("exhaust and discard triggers", "damage and block pipeline", "start- and end-of-turn hooks", "card-play hooks",
           "power stacking and removal", "relic triggers", "RNG order", "death and victory", "run flow")
 EVIDENCE = ("diff", "reason", "type", "shape", "none")  # strongest first
@@ -53,7 +53,7 @@ HP_KINDS = {".combat.enemy_hp", ".hp"}
 RULES = [
     ("R01", "phase_mismatch", "F10", "death and victory", "reason", "the referee is at the rewards screen while the emulator is still in combat: the combat-end win check at the action boundary (design 2: victory is not checked there); cause unverified"),
     ("R02", "screen_mismatch", "F16", "run flow", "reason", "the run layer shows another screen or event page (rest, map, event): flow, not a combat hook"),
-    ("R03", "reward_hp", "F10", "death and victory", "diff", "hp differs at the reward screen: what runs at the victory (AfterCombatVictory heals) differs"),
+    ("R03", "reward_hp", "F17", "death and victory", "diff", "hp differs at the reward screen: what runs at the victory (AfterCombatVictory heals) differs"),
     ("R04", "enemy_count", UNASSIGNED, "", "none", "an enemy with 0 hp is listed on the referee side only: the emulator's lockstep view keeps hp above 0 only, the referee's keeps every enemy the game lists (referee/lockstep.py), so this is a comparer asymmetry unless the corpse matters to play; reading C puts it in F10 (AfterDeath, removal after death)"),
     ("R05", "sentinel_hp", UNASSIGNED, "", "none", "an enemy hp stand-in value (999999999 against 32768) is a representation difference of the encounter, not a hook; needs the encounter"),
     ("R06", "hp_only", "F08", "damage and block pipeline", "diff", "only enemy hp and player hp differ: a damage amount (modifier folds, rounding) or an hp change"),

@@ -91,6 +91,21 @@ public class KernelTests
     }
 
     [Fact]
+    public void TheDamageAndDeathFamiliesSwitchTogetherAndApartFromTheOthers()
+    {
+        // F08 and F10 share EnemyAI.ShouldRemoveOnDeath and RelicEffects.ApplyAfterPlayerHpChanged; the other bridges of
+        // F10 (Doom's turn end, Fur Coat's bite, the combat-end hooks now F17) are split or re-cut (tools/kernel/sites.py).
+        Assert.Contains(SwitchGroups.Groups, g => g.Length == 2 && g.Contains(Switch.F08) && g.Contains(Switch.F10));
+        var both = new KernelOptions([Switch.F08, Switch.F10]);
+        Assert.True(both.Switches.SetEquals([Switch.F08, Switch.F10]));
+        Assert.Throws<ArgumentException>(() => new KernelOptions([Switch.F08]));
+        Assert.Throws<ArgumentException>(() => new KernelOptions([Switch.F10]));
+        Assert.Equal(Switch.F17, SwitchGroups.FamilyOf(HookId.AfterCombatVictory));
+        Assert.Equal(Switch.F10, SwitchGroups.FamilyOf(HookId.AfterDeath));
+        Assert.Equal(Switch.F08, SwitchGroups.FamilyOf(HookId.ModifyDamageAdditive));
+    }
+
+    [Fact]
     public void HandlersAreKeyedByGameModelWithAPerModelMask()
     {
         HookEvent<AfterCardPlayedArgs> ev = (ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) => HookStep.Done;

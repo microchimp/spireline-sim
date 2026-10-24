@@ -11,7 +11,7 @@ or hash differs is the first difference.
 
 Switch set: tools/fidelity/migrated_families.json by default, `--switches F01,F02,...` for a test set (written next to a
 scratch copy of the EmuDump build, which reads its switches from the file beside the DLL; the parent makes that copy once
-and hands the workers its DLL path), `--switches none` for no switch, `--switches all` for F01-F16 (today's one switch group).
+and hands the workers its DLL path), `--switches none` for no switch, `--switches all` for F01-F17 (every group whole).
 `--fights N` and `--minutes M` each end the run; given both, whichever comes first; `--minutes` alone runs until the time is
 up, `--fights` alone (default 200) until N fights are done.
 With no switch the models are every Ironclad, colourless and shared card, relic and potion the old engine builds and every
@@ -117,7 +117,7 @@ def parse_switches(text: str | None, path: Path = MIGRATED) -> list[str]:
     fams = sorted({f.strip().upper() for f in text.split(",") if f.strip()})
     bad = [f for f in fams if f not in SWITCHABLE]
     if bad:
-        raise ValueError(f"unknown family {bad[0]} (F01-F16)")
+        raise ValueError(f"unknown family {bad[0]} (F01-F17)")
     return fams
 
 

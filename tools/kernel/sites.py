@@ -56,8 +56,35 @@ FLOWS = [{"families": ["F02", "F03", "F13"], "why": "turn-start flow: one pause 
 # A split's anchors must be present and unique in the file, in the order of its parts; a by_caller's anchors present; each
 # caller a method of the engine; the file's hash (text with \n line ends) the one recorded, so any edit of the file sends
 # the record back to be read again. Verified when build is given a source reader (check does, via fresh()).
-# Empty until a round reads the bridges (tools/kernel/sites.py groups lists them).
-SPLITS: dict[str, dict] = {}
+# Read for the F08 migration (docs/rebuild/MIGRATION_F08.md section 2, round R1): the two bridges that joined F08 and F10 to
+# other families. The third one, RunRewardGenerator.GenerateCombatRewards (F10+F14+F15), needs no record: its F10 hooks
+# (AfterCombatVictory, AfterCombatVictoryEarly) are family F17 now.
+SPLITS: dict[str, dict] = {
+    "CombatEngine.DoomThePlayerAtTurnEnd": {
+        "kind": "split",
+        "file": "Core/CombatEngine.cs",
+        "sha256": "70a0b53b38c872ba226404a9c9ff2483cb7acc4a09d27ac588d7da3ce4e33b58",
+        "reason": "Doom's turn-end body is two statements: the threshold test on the Doom stack and the open gate "
+                  "(the BeforeSideTurnEnd moment, F05), then the player's death (HP to zero and the HP-changed "
+                  "dispatch, the kill and AfterDiedToDoom, F10); the F10 part gates on its own switch",
+        "parts": [
+            {"family": "F05", "anchor": "int doom = BuffSystem.Get(state.PlayerBuffs, BuffId.Doom);"},
+            {"family": "F10", "anchor": "state.PlayerHp = 0;\n        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);"},
+        ],
+    },
+    "RelicEffects.BiteForFurCoat": {
+        "kind": "split",
+        "file": "Core/Effects/RelicEffects.cs",
+        "sha256": "b93a2edc0b96710b6b6fe3c5d7a112a987fd1a716595f2d1ed497f7d3d562a49",
+        "reason": "Fur Coat's AfterCreatureAddedToCombat body is the method as entered (F01: the bite of whatever "
+                  "joins); inside it the hittable test and the one-HP write are F08 (ShouldAllowHitting, "
+                  "SetCurrentHp), a separate statement that gates on its own switch",
+        "parts": [
+            {"family": "F01", "anchor": "public static void BiteForFurCoat(CombatState state, EnemyState enemy)"},
+            {"family": "F08", "anchor": "state.FurCoatBites && EnemyAI.IsTargetable(enemy)"},
+        ],
+    },
+}
 
 SPLIT_KINDS = ("split", "by_caller", "false_listing")
 PART_KINDS = ("split", "by_caller")  # the kinds under which a site no longer binds its families

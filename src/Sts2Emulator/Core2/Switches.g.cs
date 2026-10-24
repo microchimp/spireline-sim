@@ -26,7 +26,7 @@ public enum Switch : byte
     F08,
     /// <summary>block</summary>
     F09,
-    /// <summary>death / victory</summary>
+    /// <summary>death</summary>
     F10,
     /// <summary>card piles</summary>
     F11,
@@ -40,6 +40,8 @@ public enum Switch : byte
     F15,
     /// <summary>run shop / rest / map / deck</summary>
     F16,
+    /// <summary>combat end</summary>
+    F17,
 }
 
 /// <summary>The switch groups of the site inventory (TIER1_KERNEL.md section 1) and each hook's family.</summary>
@@ -48,7 +50,8 @@ public static class SwitchGroups
     /// <summary>Families that switch together, one array per group.</summary>
     public static readonly Switch[][] Groups =
     [
-        [Switch.F01, Switch.F02, Switch.F03, Switch.F04, Switch.F05, Switch.F06, Switch.F07, Switch.F08, Switch.F09, Switch.F10, Switch.F11, Switch.F12, Switch.F13, Switch.F14, Switch.F15, Switch.F16],
+        [Switch.F01, Switch.F02, Switch.F03, Switch.F04, Switch.F05, Switch.F06, Switch.F07, Switch.F09, Switch.F11, Switch.F12, Switch.F13, Switch.F14, Switch.F15, Switch.F16, Switch.F17],
+        [Switch.F08, Switch.F10],
     ];
 
     /// <summary>The family of a hook virtual or dispatcher; None for one no family holds.</summary>
@@ -73,9 +76,9 @@ public static class SwitchGroups
         HookId.AfterCardGeneratedForCombat => Switch.F11,
         HookId.AfterCardPlayed => Switch.F06,
         HookId.AfterCardPlayedLate => Switch.F06,
-        HookId.AfterCombatEnd => Switch.F10,
-        HookId.AfterCombatVictory => Switch.F10,
-        HookId.AfterCombatVictoryEarly => Switch.F10,
+        HookId.AfterCombatEnd => Switch.F17,
+        HookId.AfterCombatVictory => Switch.F17,
+        HookId.AfterCombatVictoryEarly => Switch.F17,
         HookId.AfterCreatureAddedToCombat => Switch.F01,
         HookId.AfterCurrentHpChanged => Switch.F08,
         HookId.AfterDamageGiven => Switch.F08,
@@ -245,8 +248,8 @@ public static class SwitchGroups
         HookId.Dispatch_AfterCardExhausted => Switch.F11,
         HookId.Dispatch_AfterCardGeneratedForCombat => Switch.F11,
         HookId.Dispatch_AfterCardPlayed => Switch.F06,
-        HookId.Dispatch_AfterCombatEnd => Switch.F10,
-        HookId.Dispatch_AfterCombatVictory => Switch.F10,
+        HookId.Dispatch_AfterCombatEnd => Switch.F17,
+        HookId.Dispatch_AfterCombatVictory => Switch.F17,
         HookId.Dispatch_AfterCreatureAddedToCombat => Switch.F01,
         HookId.Dispatch_AfterCurrentHpChanged => Switch.F08,
         HookId.Dispatch_AfterDamageGiven => Switch.F08,

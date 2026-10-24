@@ -51,12 +51,17 @@ families, read for this plan:
 | `RelicEffects.BiteForFurCoat` | F01+F08 | Fur Coat's AfterCreatureAddedToCombat body (F01) reads the hittable predicate (F08, the old `Hook.ShouldAllowHitting`). | `split`: F01 `public static void BiteForFurCoat(CombatState state, EnemyState enemy)`, F08 `state.FurCoatBites && EnemyAI.IsTargetable(enemy)` |
 | `RunRewardGenerator.GenerateCombatRewards` | F10+F14+F15 | F10's part is AfterCombatVictory(Early) bodies, interleaved with F14's potion forcing and F15's reward modifiers. | none needed under option B below |
 
-Anchors checked unique and in order in the current files; each record keeps the file's hash when R1 writes it.
+Anchors checked unique and in order in the current files. R1 wrote both records in `tools/kernel/sites.py` (`SPLITS`, kind
+`split`) with the hash of each file; any later edit of `CombatEngine.cs` or `RelicEffects.cs` (R4 reroutes sites in both) makes
+`sites check` fail until the two parts are read again and the new hash recorded.
 
-**Option B (recommended): re-cut F10.** Move AfterCombatEnd, AfterCombatVictory and AfterCombatVictoryEarly from F10
-to a new family F17 "combat end / victory" in `tools/fidelity/hook_families.json`. They run after the combat's result
-(RunEngine.FinishCombat, the rewards, run counters), not inside the kill. Computed in memory with
-`sites.build` and the two splits above: groups become **F08+F10** and the other fifteen (F01-F07, F09, F11-F17). The
+**Option B (taken, landed in R1): re-cut F10.** Moved AfterCombatEnd, AfterCombatVictory and AfterCombatVictoryEarly from F10
+to a new family F17 "combat end" in `tools/fidelity/hook_families.json`. They run after the combat's result
+(RunEngine.FinishCombat, the rewards, run counters), not inside the kill. With
+the two splits above `python -m tools.kernel.sites groups` shows **F08+F10** as one group; every other family (F01-F07, F09,
+F11-F17) stays together in the second group only through bridges that belong to later migrations (the turn-start flow
+F02+F03+F13 and the F01/F02/F03/F05/F06/F07/F09/F11/F12/F14/F15/F16 sites; with every one of them split the groups would be
+F01, F02+F03+F13, F04-F07, F09, F11, F12, F14-F17). The
 switch then needs 94 hook-overriding models instead of 135, 106 with the pseudo-hooks of section 5 (41 victory-only
 models left: 40 relics and one card; 26 of their 40
 AfterCombatEnd overrides are not modelled). Cost: the family table, `Switches.g.cs` and the manifest are rebuilt;
@@ -244,13 +249,11 @@ fails, and an F09 write is reported under F09.
 
 ## 5. Handlers
 
-`python -m tools.kernel.port_list --families F08 F10 --exclude-hooks AfterCombatEnd AfterCombatVictory
-AfterCombatVictoryEarly --size 15 [--md ...] [--json ...] [--gate]` (this branch, test
-`tests/python/test_kernel_port_list.py`, 13 tests) lists every model reached by records that overrides an F08 or F10
+`python -m tools.kernel.port_list --families F08 F10 --size 15 [--md ...] [--json ...] [--gate]` (this branch, test
+`tests/python/test_kernel_port_list.py`, 14 tests) lists every model reached by records that overrides an F08 or F10
 hook or takes part in an F10 pseudo-hook, with each hook's old status and location (from `hook_table.classify`: the
 dispatch site and line where the old engine implements that override, else the methods naming it, or the not-modelled
-reason) and its batch. `--exclude-hooks` computes option B until round 1 re-cuts F17 in `hook_families.json` (then the
-flag is dropped). Option-B output: `D:/spireline/referee/rebuild/port-f08-f10.md`.
+reason) and its batch. R1 re-cut F17 in `hook_families.json`, so no exclusion is needed (`--exclude-hooks` stays as a general option). Output: `D:/spireline/referee/rebuild/port-f08-f10.md`.
 
 **Pseudo-hooks** (`PSEUDO_HOOKS`, F10): the kill's model calls that are not AbstractModel hooks, found in the
 decompile by override (inherited ones included) or event subscription: `BeforeRemovedFromRoom` (MonsterModel; 11
@@ -277,9 +280,11 @@ buff (Slippery's decrement, Asleep's removal) and is kept.
   names elsewhere, 27 pseudo-hook pairs; each is read in its batch), 5 not modelled (no state change or multiplayer
   only: no handler).** The pseudo-hooks add 12 models (8 monsters, 4 powers).
 
-**Open-pair gate.** `--gate` exits 1 while any listed pair is open, missing or unmatched and has no Core2 handler (a
-file under `Core2/Models/` registering `Model(kind, "<Class>")` with `HookId.<hook>`). Today: 49. Each handler batch
-closes its own pairs; switch-on (section 6) requires 0. The 22 open hook pairs: Slow and Hang
+**Handler gate (fixed in R1).** `--gate` exits 1 while any listed (model, hook) pair has no Core2 handler (a file under
+`Core2/Models/` registering `Model(kind, "<Class>")` with `HookId.<hook>`, the registry of Core2's HandlerTable) and is not
+`not_modelled`. It used to count only open, missing or unmatched pairs, so the 101 registered pairs (an old location to
+call) passed with no handler at all. Today: 150 (101 registered, 49 open); the 5 not-modelled pairs need no handler. Each
+handler batch closes its own pairs; switch-on (section 6) requires 0. The 22 open hook pairs: Slow and Hang
 (ModifyDamageMultiplicative), Hard to Kill (ModifyDamageCap), Imbalanced (AfterDamageGiven), Shrink (AfterDeath), Fairy
 in a Bottle (AfterPreventingDeath), Lava Lamp (AfterDamageReceived), Meat on the Bone (AfterCurrentHpChanged), Crusher
 and Rocket (AfterCurrentHpChanged, BeforeDeath), and AfterDeath of the three Decimillipede segments, Aeonglass, Kin
@@ -323,10 +328,10 @@ Per round:
 - the AfterAttack-once test of the F06 bridge (section 3 item 1) and the single `FinishCombat` test of the F17
   hand-off (section 2) stay in the suite from the round that adds them.
 
-Final (switch on in `migrated_families.json`): **the open-pair gate first**: `python -m tools.kernel.port_list
---families F08 F10 --gate` exits 0, that is zero open, missing or unmatched (model, hook) pairs, pseudo-hooks included,
-over the reached set (today 49: section 5); a pair is closed only by a Core2 handler or a not-modelled entry with its
-reason. Then the by-family table re-measured on a lockstep block with core2;
+Final (switch on in `migrated_families.json`): **the handler gate first**: `python -m tools.kernel.port_list
+--families F08 F10 --gate` exits 0, that is every (model, hook) pair of the reached set, pseudo-hooks included, has a Core2
+handler or is not modelled (today 150 pairs have neither: section 5); a pair is closed only by a Core2 handler or a
+not-modelled entry with its reason. Then the by-family table re-measured on a lockstep block with core2;
 target G2891c25e0d's kill part and mechanism B at 0, F08 proper down by at least its A+B share; any group that grows is
 a stop.
 
@@ -334,7 +339,7 @@ a stop.
 
 | round | model | content |
 |---|---|---|
-| R1 | Sonnet | F17 re-cut in `hook_families.json` (AfterCombatEnd, AfterCombatVictory, AfterCombatVictoryEarly), `Switches.g.cs`, the manifest and the by-family tables rebuilt; the two SPLITS records; `port_list --exclude-hooks` no longer needed |
+| R1 (done, `rebuild/f08-r1`) | Sonnet | F17 re-cut in `hook_families.json` (AfterCombatEnd, AfterCombatVictory, AfterCombatVictoryEarly), `Switches.g.cs`, the manifest and the by-family tables rebuilt; the two SPLITS records; `port_list --exclude-hooks` no longer needed |
 | R2 | Opus | `CreatureCmd.Damage`, the decimal fold and `AttackCmd` with the `IsOverOrEnding` return and the F06 bridge; rule tests (section 1's sequences, the fold, the truncation, AfterAttack once) |
 | R3a | Opus | `Kill` / `KillWithoutCheckingWinCondition` in the sequence of section 3 item 5, the two removals, `IsPerformingMove` and the move's end, the pseudo-hook ids, `Escape`, the HP commands (item 9) |
 | R3b | Opus | the win check at the game's points, the old answers and in-step checks gated off, the F17 hand-off (`FinishCombat` from the host), `construct commands` with the write check |

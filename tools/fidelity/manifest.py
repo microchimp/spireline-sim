@@ -7,7 +7,7 @@ sections 3 and 4, referee/design/game-shaped-dispatch.md section 2).
     python -m tools.fidelity.manifest codex  [--out <dir>]        (only the Codex counts, a slow read of the dataset)
 
 Inputs (all outside the repo, read only):
-  hook_families.json     every gameplay hook -> one family F01-F16 (or `unassigned`), checked in
+  hook_families.json     every gameplay hook -> one family F01-F17 (or `unassigned`), checked in
   migrated_families.json {"migrated": [...]}: the families the new dispatcher already runs, filled in as they land
   the decompile          class and hook names only, through hook_table (no game text is copied)
   the corpus             the game's recorded fights: per fight, the models in its piles, on every creature, in its
