@@ -121,7 +121,7 @@ public class CombatEndTests
         int asked = 0;
         var s = Combat(5);
         var k = K(s, t => t.Model(ListenerKind.Relic, Relic).On(HookId.ShouldStopCombatFromEnding,
-            (HookPredicate<ShouldStopCombatFromEndingArgs>)((ListenerRef self, in ShouldStopCombatFromEndingArgs a) =>
+            (HookPredicate<ShouldStopCombatFromEndingArgs>)((HookCtx _, ListenerRef self, in ShouldStopCombatFromEndingArgs a) =>
             {
                 asked++;
                 return hold;

@@ -208,7 +208,7 @@ public class ActionQueueTests
 
     private static KernelState Relics<TArgs>(bool f10, List<string> log, string pauses, params HookId[] hooks) where TArgs : struct
     {
-        HookEvent<TArgs> ev = (ListenerRef self, in TArgs _, ChoiceCtx? _) =>
+        HookEvent<TArgs> ev = (HookCtx _, ListenerRef self, in TArgs _, ChoiceCtx? _) =>
         {
             string who = Name(self.ModelId);
             log.Add($"run:{who}");

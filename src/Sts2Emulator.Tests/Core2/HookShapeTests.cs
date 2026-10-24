@@ -65,7 +65,7 @@ public class HookShapeTests
         new(new PowerRef(new CreatureRef(0), 1, 0), new CreatureRef(0), amount, null, null);
 
     private static HookFold<ModifyPowerAmountGivenArgs, decimal> Fold(FakeRuntime rt, ListenerRef who, decimal r) =>
-        (ListenerRef self, in ModifyPowerAmountGivenArgs a, decimal current) =>
+        (HookCtx _, ListenerRef self, in ModifyPowerAmountGivenArgs a, decimal current) =>
         {
             rt.Log.Add($"{Name(self)} sees {current}");
             return r;
@@ -101,7 +101,7 @@ public class HookShapeTests
         new(new CreatureRef(1), new CreatureRef(0), damage, new ValueProp(0), null, type, new PreviewMode(0));
 
     private static HookCap<ModifyDamageArgs, decimal> Cap(decimal cap) =>
-        (ListenerRef self, in ModifyDamageArgs a) => cap;
+        (HookCtx _, ListenerRef self, in ModifyDamageArgs a) => cap;
 
     [Fact]
     public void FoldCap_KeepsTheRunningMinimumAndTheListenersThatLowered()
@@ -109,7 +109,7 @@ public class HookShapeTests
         var rt = new FakeRuntime();
         bool additiveCalled = false;
         rt.On(HookId.ModifyDamageAdditive, D, (HookFold<ModifyDamageArgs, decimal>)(
-              (ListenerRef self, in ModifyDamageArgs a, decimal current) => { additiveCalled = true; return 100m; }))
+              (HookCtx _, ListenerRef self, in ModifyDamageArgs a, decimal current) => { additiveCalled = true; return 100m; }))
           .On(HookId.ModifyDamageCap, A, Cap(8m))
           .On(HookId.ModifyDamageCap, B, Cap(12m))
           .On(HookId.ModifyDamageCap, C, Cap(5m))
@@ -129,7 +129,7 @@ public class HookShapeTests
     public void PredicateAll_ReturnsTheFirstPreventer()
     {
         var rt = new FakeRuntime();
-        HookPredicate<ShouldDieArgs> Says(ListenerRef who, bool answer) => (ListenerRef self, in ShouldDieArgs a) =>
+        HookPredicate<ShouldDieArgs> Says(ListenerRef who, bool answer) => (HookCtx _, ListenerRef self, in ShouldDieArgs a) =>
         {
             rt.Log.Add(Name(self));
             return answer;
@@ -151,7 +151,7 @@ public class HookShapeTests
     {
         var rt = new FakeRuntime();
         HookPredicate<ShouldStopCombatFromEndingArgs> Says(bool answer) =>
-            (ListenerRef self, in ShouldStopCombatFromEndingArgs a) =>
+            (HookCtx _, ListenerRef self, in ShouldStopCombatFromEndingArgs a) =>
             {
                 rt.Log.Add(Name(self));
                 return answer;
@@ -175,7 +175,7 @@ public class HookShapeTests
         var rt = new FakeRuntime();
         var ctx = new ChoiceCtx();
         var pausing = new HashSet<ListenerRef> { A, C };
-        HookEvent<AfterCardDrawnArgs> Run() => (ListenerRef self, in AfterCardDrawnArgs a, ChoiceCtx? c) =>
+        HookEvent<AfterCardDrawnArgs> Run() => (HookCtx _, ListenerRef self, in AfterCardDrawnArgs a, ChoiceCtx? c) =>
         {
             Assert.Same(ctx, c);
             Assert.Equal(self, c!.Models[^1]); // pushed for the listener's turn
@@ -216,7 +216,7 @@ public class HookShapeTests
     {
         var rt = new FakeRuntime();
         var ctx = new ChoiceCtx();
-        HookEvent<AfterCardDrawnArgs> Run(bool pause) => (ListenerRef self, in AfterCardDrawnArgs a, ChoiceCtx? c) =>
+        HookEvent<AfterCardDrawnArgs> Run(bool pause) => (HookCtx _, ListenerRef self, in AfterCardDrawnArgs a, ChoiceCtx? c) =>
         {
             rt.Log.Add(Name(self));
             return pause ? HookStep.Paused("choose", new PickResume(1)) : HookStep.Done;
@@ -235,7 +235,7 @@ public class HookShapeTests
     public void PerListenerPause_RecordsAHookActionAndMovesOnToTheNextListener()
     {
         var rt = new FakeRuntime();
-        HookEvent<AfterTurnEndArgs> Run(bool pause) => (ListenerRef self, in AfterTurnEndArgs a, ChoiceCtx? c) =>
+        HookEvent<AfterTurnEndArgs> Run(bool pause) => (HookCtx _, ListenerRef self, in AfterTurnEndArgs a, ChoiceCtx? c) =>
         {
             Assert.Equal(self, c!.Owner);
             rt.Log.Add(Name(self));
@@ -286,7 +286,7 @@ public class HookShapeTests
     {
         var rt = new FakeRuntime();
         rt.On(HookId.ModifyShuffleOrder, A, (HookMutate<ModifyShuffleOrderArgs>)(
-            (ListenerRef self, in ModifyShuffleOrderArgs a) =>
+            (HookCtx _, ListenerRef self, in ModifyShuffleOrderArgs a) =>
             {
                 var top = a.Cards[a.Cards.Count - 1];
                 a.Cards.RemoveAt(a.Cards.Count - 1);
@@ -304,7 +304,7 @@ public class HookShapeTests
     {
         var rt = new FakeRuntime();
         HookTryOrNull<ModifyCardBeingAddedToDeckArgs, CardHandle> Gives(bool answer, CardHandle? card) =>
-            (ListenerRef self, in ModifyCardBeingAddedToDeckArgs a, CardHandle current, out CardHandle? next) =>
+            (HookCtx _, ListenerRef self, in ModifyCardBeingAddedToDeckArgs a, CardHandle current, out CardHandle? next) =>
             {
                 next = card;
                 return answer;

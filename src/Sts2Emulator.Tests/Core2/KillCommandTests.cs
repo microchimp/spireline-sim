@@ -43,7 +43,7 @@ public class KillCommandTests
     private static int PowerId(BuffId b) => Ids.Power(b).ModelId;
 
     private static HookEvent<T> Log<T>(List<string> log, Func<T, string> what) where T : struct =>
-        (ListenerRef self, in T a, ChoiceCtx? c) =>
+        (HookCtx _, ListenerRef self, in T a, ChoiceCtx? c) =>
         {
             log.Add(what(a));
             return HookStep.Done;
@@ -51,7 +51,7 @@ public class KillCommandTests
 
     private static HookPredicate<T> Ask<T>(List<string> log, Func<T, string> what, Func<T, bool>? answer = null)
         where T : struct =>
-        (ListenerRef self, in T a) =>
+        (HookCtx _, ListenerRef self, in T a) =>
         {
             log.Add(what(a));
             return answer?.Invoke(a) ?? true;
@@ -98,7 +98,7 @@ public class KillCommandTests
                 .On(HookId.ShouldPowerBeRemovedAfterOwnerDeath, Ask(log, (PowerDeathArgs a) => $"OwnDeath {a.Buff}"))
                 .On(HookId.AfterRemoved, Log<AfterRemovedArgs>(log, a => $"AfterRemoved {a.Buff} {a.Removed.Count}"));
             t.Model(ListenerKind.Monster, Name("enemies", Slug)).On(HookId.AfterDeath,
-                (HookEvent<AfterDeathArgs>)((ListenerRef self, in AfterDeathArgs a, ChoiceCtx? c) =>
+                (HookEvent<AfterDeathArgs>)((HookCtx _, ListenerRef self, in AfterDeathArgs a, ChoiceCtx? c) =>
                 {
                     listedAtAfterDeath = OldCreatures.Enemies(kk!.World!).Count;
                     return HookStep.Done;
@@ -127,7 +127,7 @@ public class KillCommandTests
         {
             DeathHooks(t, log, shouldDie: a => a.Creature.Index != 0);
             t.Model(ListenerKind.Relic, Relic).On(HookId.AfterPreventingDeath,
-                (HookEvent<AfterPreventingDeathArgs>)((ListenerRef self, in AfterPreventingDeathArgs a, ChoiceCtx? c) =>
+                (HookEvent<AfterPreventingDeathArgs>)((HookCtx _, ListenerRef self, in AfterPreventingDeathArgs a, ChoiceCtx? c) =>
                 {
                     log.Add("AfterPreventingDeath");
                     s.PlayerHp = 10;
@@ -170,7 +170,7 @@ public class KillCommandTests
         {
             t.Model(ListenerKind.Relic, Relic)
                 .On(HookId.ShouldCreatureBeRemovedFromCombatAfterDeath,
-                    (HookPredicate<ShouldCreatureBeRemovedFromCombatAfterDeathArgs>)((ListenerRef self,
+                    (HookPredicate<ShouldCreatureBeRemovedFromCombatAfterDeathArgs>)((HookCtx _, ListenerRef self,
                         in ShouldCreatureBeRemovedFromCombatAfterDeathArgs a) => false))
                 .On(HookId.ShouldPowerBeRemovedOnDeath,
                     Ask(log, (ShouldPowerBeRemovedOnDeathArgs a) => $"OnDeath {a.Power.ModelId == weak}",
@@ -250,7 +250,7 @@ public class KillCommandTests
         var seen = new List<int>();
         KernelState? kk = null;
         var k = kk = K(s, t => t.Model(ListenerKind.Power, "RavenousPower").On(HookId.AfterDeath,
-            (HookEvent<AfterDeathArgs>)((ListenerRef self, in AfterDeathArgs a, ChoiceCtx? c) =>
+            (HookEvent<AfterDeathArgs>)((HookCtx _, ListenerRef self, in AfterDeathArgs a, ChoiceCtx? c) =>
             {
                 seen.Add(OldCreatures.Enemies(kk!.World!).Count);
                 return HookStep.Done;
@@ -351,14 +351,14 @@ public class KillCommandTests
         KernelState? kk = null;
         var k = kk = K(s, t => t.Model(ListenerKind.Relic, Relic)
             .On(HookId.AfterCurrentHpChanged,
-                (HookEvent<AfterCurrentHpChangedArgs>)((ListenerRef self, in AfterCurrentHpChangedArgs a, ChoiceCtx? c) =>
+                (HookEvent<AfterCurrentHpChangedArgs>)((HookCtx _, ListenerRef self, in AfterCurrentHpChangedArgs a, ChoiceCtx? c) =>
                 {
                     if (a.Creature.Index == 0)
                         Hit(kk!, OldCreature.Of(attacker), 99m, OldCreature.Player);
                     return HookStep.Done;
                 }))
             .On(HookId.AfterDamageGiven,
-                (HookEvent<AfterDamageGivenArgs>)((ListenerRef self, in AfterDamageGivenArgs a, ChoiceCtx? c) =>
+                (HookEvent<AfterDamageGivenArgs>)((HookCtx _, ListenerRef self, in AfterDamageGivenArgs a, ChoiceCtx? c) =>
                 {
                     if (a.Target.Index == 0)
                         dealerSeen = a.Dealer;
@@ -374,7 +374,7 @@ public class KillCommandTests
     // -------------------------------------------------------------------------- the player's hooks stay deactivated
 
     private static HookEvent<T> Do<T>(Action<T> body) where T : struct =>
-        (ListenerRef self, in T a, ChoiceCtx? c) =>
+        (HookCtx _, ListenerRef self, in T a, ChoiceCtx? c) =>
         {
             body(a);
             return HookStep.Done;

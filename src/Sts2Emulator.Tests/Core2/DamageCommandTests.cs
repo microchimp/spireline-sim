@@ -52,7 +52,7 @@ public class DamageCommandTests
     private static bool OnOwner(ListenerRef self, CreatureRef? target) => target is { } t && t.Index == Owner(self);
 
     private static HookFold<ModifyDamageArgs, decimal> MulOnOwner(decimal factor) =>
-        (ListenerRef self, in ModifyDamageArgs a, decimal v) => OnOwner(self, a.Target) ? factor : 1m;
+        (HookCtx _, ListenerRef self, in ModifyDamageArgs a, decimal v) => OnOwner(self, a.Target) ? factor : 1m;
 
     private static IReadOnlyList<DamageResult> Hit(KernelState k, OldCreature target, decimal amount,
         OldCreature? dealer = null, ValueProp? props = null, CardHandle? card = null) =>
@@ -75,12 +75,12 @@ public class DamageCommandTests
         var k = K(s, t =>
         {
             t.Model(ListenerKind.Power, "StrengthPower").On(HookId.ModifyDamageAdditive,
-                (HookFold<ModifyDamageArgs, decimal>)((ListenerRef self, in ModifyDamageArgs a, decimal v) =>
+                (HookFold<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef self, in ModifyDamageArgs a, decimal v) =>
                     a.Dealer is { } d && d.Index == Owner(self) ? 2m : 0m));
             t.Model(ListenerKind.Power, "VulnerablePower").On(HookId.ModifyDamageMultiplicative, MulOnOwner(1.5m));
             t.Model(ListenerKind.Power, "SlowPower").On(HookId.ModifyDamageMultiplicative, MulOnOwner(1.1m));
             t.Model(ListenerKind.Relic, RelicName(1)).On(HookId.BeforeDamageReceived,
-                (HookEvent<BeforeDamageReceivedArgs>)((ListenerRef self, in BeforeDamageReceivedArgs a, ChoiceCtx? c) =>
+                (HookEvent<BeforeDamageReceivedArgs>)((HookCtx _, ListenerRef self, in BeforeDamageReceivedArgs a, ChoiceCtx? c) =>
                 {
                     seen = a.Amount;
                     return HookStep.Done;
@@ -118,10 +118,10 @@ public class DamageCommandTests
         var told = new List<int>();
         var k = K(s, t =>
             t.Model(ListenerKind.Power, "IntangiblePower").On(HookId.ModifyDamageCap,
-                    (HookCap<ModifyDamageArgs, decimal>)((ListenerRef self, in ModifyDamageArgs a) =>
+                    (HookCap<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef self, in ModifyDamageArgs a) =>
                         OnOwner(self, a.Target) ? 1m : decimal.MaxValue))
                 .On(HookId.AfterModifyingDamageAmount,
-                    (HookEvent<AfterModifyingDamageAmountArgs>)((ListenerRef self, in AfterModifyingDamageAmountArgs a,
+                    (HookEvent<AfterModifyingDamageAmountArgs>)((HookCtx _, ListenerRef self, in AfterModifyingDamageAmountArgs a,
                         ChoiceCtx? c) =>
                     {
                         told.Add(a.Modifiers.Count);
@@ -146,7 +146,7 @@ public class DamageCommandTests
         {
             t.Model(ListenerKind.Power, "SlowPower").On(HookId.ModifyDamageMultiplicative, MulOnOwner(1.2m));
             t.Model(ListenerKind.Power, "HardToKillPower").On(HookId.ModifyDamageCap,
-                (HookCap<ModifyDamageArgs, decimal>)((ListenerRef self, in ModifyDamageArgs a) =>
+                (HookCap<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef self, in ModifyDamageArgs a) =>
                     OnOwner(self, a.Target) ? 5m : decimal.MaxValue));
         });
         Assert.Equal(5, Assert.Single(Hit(k, OldCreature.Of(s.Enemies[0]), 10m)).UnblockedDamage);
@@ -169,10 +169,10 @@ public class DamageCommandTests
         var k = K(s, t =>
         {
             t.Model(ListenerKind.Power, "VulnerablePower").On(HookId.ModifyDamageMultiplicative,
-                (HookFold<ModifyDamageArgs, decimal>)((ListenerRef self, in ModifyDamageArgs a, decimal v) =>
+                (HookFold<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef self, in ModifyDamageArgs a, decimal v) =>
                     vulnerable && OnOwner(self, a.Target) ? 1.5m : 1m));
             t.Model(ListenerKind.Relic, RelicName(1)).On(HookId.ModifyDamageAdditive,
-                (HookFold<ModifyDamageArgs, decimal>)((ListenerRef self, in ModifyDamageArgs a, decimal v) => add));
+                (HookFold<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef self, in ModifyDamageArgs a, decimal v) => add));
         });
         var enemy = OldCreature.Of(s.Enemies[0]);
         Assert.Equal(13, Assert.Single(Hit(k, enemy, 6m, card: new CardHandle(sharp.Uid))).UnblockedDamage);
@@ -199,7 +199,7 @@ public class DamageCommandTests
         s.Hand.Add(whirl);
         decimal factor = 1.5m;
         var k = K(s, t => t.Model(ListenerKind.Power, "VulnerablePower").On(HookId.ModifyDamageMultiplicative,
-            (HookFold<ModifyDamageArgs, decimal>)((ListenerRef self, in ModifyDamageArgs a, decimal v) =>
+            (HookFold<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef self, in ModifyDamageArgs a, decimal v) =>
                 OnOwner(self, a.Target) ? factor : 1m)));
         var preview = new ModifyDamageArgs(null, new CreatureRef(0), 5m, ValueProps.PoweredAttack, new CardHandle(whirl.Uid),
             ModifyDamageHookType.All, PreviewModes.MultiCreatureTargeting);
@@ -229,13 +229,13 @@ public class DamageCommandTests
         {
             t.Model(ListenerKind.Power, "VulnerablePower").On(HookId.ModifyDamageMultiplicative, MulOnOwner(1.5m));
             t.Model(ListenerKind.Relic, RelicName(1))
-                .On(HookId.AfterBlockBroken, (HookEvent<AfterBlockBrokenArgs>)((ListenerRef self, in AfterBlockBrokenArgs a,
+                .On(HookId.AfterBlockBroken, (HookEvent<AfterBlockBrokenArgs>)((HookCtx _, ListenerRef self, in AfterBlockBrokenArgs a,
                     ChoiceCtx? c) =>
                 {
                     broke.Add(a.Creature.Index);
                     return HookStep.Done;
                 }))
-                .On(HookId.AfterCurrentHpChanged, (HookEvent<AfterCurrentHpChangedArgs>)((ListenerRef self,
+                .On(HookId.AfterCurrentHpChanged, (HookEvent<AfterCurrentHpChangedArgs>)((HookCtx _, ListenerRef self,
                     in AfterCurrentHpChangedArgs a, ChoiceCtx? c) =>
                 {
                     hpChanged.Add(a.Delta);
@@ -267,10 +267,10 @@ public class DamageCommandTests
         var k = K(s, t =>
         {
             t.Model(ListenerKind.Monster, "Osty").On(HookId.ModifyUnblockedDamageTarget,
-                (HookFold<ModifyUnblockedDamageTargetArgs, CreatureRef>)((ListenerRef self,
+                (HookFold<ModifyUnblockedDamageTargetArgs, CreatureRef>)((HookCtx _, ListenerRef self,
                     in ModifyUnblockedDamageTargetArgs a, CreatureRef v) => a.OriginalTarget.Index == 0 ? new CreatureRef(1) : v));
             t.Model(ListenerKind.Relic, RelicName(1)).On(HookId.ModifyHpLostAfterOsty,
-                (HookFold<ModifyHpLostArgs, decimal>)((ListenerRef self, in ModifyHpLostArgs a, decimal v) =>
+                (HookFold<ModifyHpLostArgs, decimal>)((HookCtx _, ListenerRef self, in ModifyHpLostArgs a, decimal v) =>
                 {
                     afterOsty.Add((a.Target.Index, v));
                     return v;
@@ -290,23 +290,23 @@ public class DamageCommandTests
     // ---------------------------------------------------------------------------------------- the sequence
 
     private static Action<HandlerTable> Recorder(List<string> log) => t => t.Model(ListenerKind.Relic, RelicName(1))
-        .On(HookId.ModifyDamageAdditive, (HookFold<ModifyDamageArgs, decimal>)((ListenerRef s, in ModifyDamageArgs a, decimal v) =>
+        .On(HookId.ModifyDamageAdditive, (HookFold<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef s, in ModifyDamageArgs a, decimal v) =>
             Note(log, "add", a.Target, 0m)))
-        .On(HookId.ModifyDamageMultiplicative, (HookFold<ModifyDamageArgs, decimal>)((ListenerRef s, in ModifyDamageArgs a,
+        .On(HookId.ModifyDamageMultiplicative, (HookFold<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef s, in ModifyDamageArgs a,
             decimal v) => Note(log, "mul", a.Target, 1m)))
-        .On(HookId.ModifyDamageCap, (HookCap<ModifyDamageArgs, decimal>)((ListenerRef s, in ModifyDamageArgs a) =>
+        .On(HookId.ModifyDamageCap, (HookCap<ModifyDamageArgs, decimal>)((HookCtx _, ListenerRef s, in ModifyDamageArgs a) =>
             Note(log, "cap", a.Target, decimal.MaxValue)))
         .On(HookId.AfterModifyingDamageAmount, Ev<AfterModifyingDamageAmountArgs>(log, _ => "afterAmount"))
         .On(HookId.BeforeDamageReceived, Ev<BeforeDamageReceivedArgs>(log, a => $"before{a.Target.Index}"))
-        .On(HookId.ModifyHpLostBeforeOsty, (HookFold<ModifyHpLostArgs, decimal>)((ListenerRef s, in ModifyHpLostArgs a,
+        .On(HookId.ModifyHpLostBeforeOsty, (HookFold<ModifyHpLostArgs, decimal>)((HookCtx _, ListenerRef s, in ModifyHpLostArgs a,
             decimal v) => Note(log, "lostBefore", a.Target, v)))
-        .On(HookId.ModifyUnblockedDamageTarget, (HookFold<ModifyUnblockedDamageTargetArgs, CreatureRef>)((ListenerRef s,
+        .On(HookId.ModifyUnblockedDamageTarget, (HookFold<ModifyUnblockedDamageTargetArgs, CreatureRef>)((HookCtx _, ListenerRef s,
             in ModifyUnblockedDamageTargetArgs a, CreatureRef v) =>
         {
             log.Add($"redirect{a.OriginalTarget.Index}");
             return v;
         }))
-        .On(HookId.ModifyHpLostAfterOsty, (HookFold<ModifyHpLostArgs, decimal>)((ListenerRef s, in ModifyHpLostArgs a,
+        .On(HookId.ModifyHpLostAfterOsty, (HookFold<ModifyHpLostArgs, decimal>)((HookCtx _, ListenerRef s, in ModifyHpLostArgs a,
             decimal v) => Note(log, "lostAfter", a.Target, v)))
         .On(HookId.AfterBlockBroken, Ev<AfterBlockBrokenArgs>(log, a => $"broken{a.Creature.Index}"))
         .On(HookId.AfterCurrentHpChanged, Ev<AfterCurrentHpChangedArgs>(log, a => $"hp{a.Creature.Index}"))
@@ -320,7 +320,7 @@ public class DamageCommandTests
     }
 
     private static HookEvent<T> Ev<T>(List<string> log, Func<T, string> what) where T : struct =>
-        (ListenerRef self, in T a, ChoiceCtx? c) =>
+        (HookCtx _, ListenerRef self, in T a, ChoiceCtx? c) =>
         {
             log.Add(what(a));
             return HookStep.Done;
@@ -460,7 +460,7 @@ public class DamageCommandTests
         KernelState? k0 = null;
         var k = K(s, t => t.Model(ListenerKind.Relic, RelicName(1))
             .On(HookId.BeforeAttack, Ev<BeforeAttackArgs>(log, _ => "beforeAttack"))
-            .On(HookId.ModifyAttackHitCount, (HookFold<ModifyAttackHitCountArgs, int>)((ListenerRef self,
+            .On(HookId.ModifyAttackHitCount, (HookFold<ModifyAttackHitCountArgs, int>)((HookCtx _, ListenerRef self,
                 in ModifyAttackHitCountArgs a, int v) => v + 1))
             .On(HookId.AfterAttack, Ev<AfterAttackArgs>(log, a => $"afterAttack{k0!.Commands.Attack(a.Command).Hits}")));
         k0 = k;

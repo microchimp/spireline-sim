@@ -349,7 +349,7 @@ public readonly record struct OldListener(ListenerRef Who, int Creature, int Ind
 }
 
 /// <summary>The game's listener lists over the old state, and its membership rule (CombatState.Contains).</summary>
-public static class OldState
+public static partial class OldState
 {
     /// <summary>A power's instance field: its creature and the instance among that creature's powers of its model.</summary>
     public static int PowerInstance(int creature, int instance) => (creature << 8) | instance;
@@ -1031,7 +1031,11 @@ public static partial class OldCreatures
     }
 
     /// <summary>The creature a <see cref="CreatureRef" /> names now (the inverse of <see cref="Ref" />).</summary>
-    public static OldCreature At(OldWorld w, CreatureRef r)
+    public static OldCreature At(OldWorld w, CreatureRef r) =>
+        TryAt(w, r) ?? throw new ArgumentOutOfRangeException(nameof(r), r.Index, "no creature at this position");
+
+    /// <summary><see cref="At" />, or null when no creature of the combat is at that position now.</summary>
+    public static OldCreature? TryAt(OldWorld w, CreatureRef r)
     {
         var s = w.Combat ?? throw new InvalidOperationException("no combat");
         int osty = s.OstyMaxHp > 0 ? 1 : 0;
@@ -1048,7 +1052,7 @@ public static partial class OldCreatures
                 return OldCreature.Of(e);
         }
 
-        throw new ArgumentOutOfRangeException(nameof(r), r.Index, "no creature at this position");
+        return null;
     }
 
     /// <summary>The live card a handle names (<see cref="OldState.FindLive" />).</summary>

@@ -195,7 +195,7 @@ def _event_body(s: Shape, i: int, p: dict, ctx_mode: str) -> list[str]:
     push = ctx_mode in PUSH
     if push:
         out.append(f"{ctx}.PushModel(e.Who);")
-    out.append(f"var step = e.Fn(e.Who, in a, {ctx});")
+    out.append(f"var step = e.Fn(rt.Ctx, e.Who, in a, {ctx});")
     site = f"new PauseSite({disp_id(s.name)}, {hook}, {i}, l.Index, e.Who, ContextMode.{CTX[ctx_mode]}, {ctx})"
     if s.stops:
         # The game awaits the listener's task: the later listeners wait for the answer (pushed until Resume).
@@ -220,34 +220,34 @@ def _pass_body(s: Shape, i: int, p: dict) -> list[str]:
     if op == "preventer-only":
         return [f"if (e.Who != {s.arg('ListenerRef')}) continue;"] + _event_body(s, i, p, "none") + ["break;"]
     if op == "fold-add":
-        return [f"{v} d = e.Fn(e.Who, in a, v);", "v += d;"] + ([f"if (d != 0m) {ADD}"] if changed != "none" else [])
+        return [f"{v} d = e.Fn(rt.Ctx, e.Who, in a, v);", "v += d;"] + ([f"if (d != 0m) {ADD}"] if changed != "none" else [])
     if op == "fold-mul":
-        return [f"{v} f = e.Fn(e.Who, in a, v);", "v *= f;"] + ([f"if (f != 1m) {ADD}"] if changed != "none" else [])
+        return [f"{v} f = e.Fn(rt.Ctx, e.Who, in a, v);", "v *= f;"] + ([f"if (f != 1m) {ADD}"] if changed != "none" else [])
     if op == "fold-cap":
         tail = [ADD] if changed != "none" else []
-        return [f"{v} c = e.Fn(e.Who, in a);", "if (c < cap)", "{", "    cap = c;", "    if (v > c)", "    {",
+        return [f"{v} c = e.Fn(rt.Ctx, e.Who, in a);", "if (c < cap)", "{", "    cap = c;", "    if (v > c)", "    {",
                 "        v = c;"] + ["        " + t for t in tail] + ["    }", "}"]
     if op == "fold-set":
         if changed == "none":
-            return ["v = e.Fn(e.Who, in a, v);"]
+            return ["v = e.Fn(rt.Ctx, e.Who, in a, v);"]
         test = {"ne": "prev != v", "int-ne": "(int)prev != (int)v",
                 "trunc-ne": "decimal.Truncate(prev) != decimal.Truncate(v)"}[changed]
-        return [f"{v} prev = v;", "v = e.Fn(e.Who, in a, v);", f"if ({test}) {ADD}"]
+        return [f"{v} prev = v;", "v = e.Fn(rt.Ctx, e.Who, in a, v);", f"if ({test}) {ADD}"]
     if op == "try":
         if not s.value:
-            return [f"if (e.Fn(e.Who, in a)) {ADD}"]
+            return [f"if (e.Fn(rt.Ctx, e.Who, in a)) {ADD}"]
         if changed == "none":
-            return ["e.Fn(e.Who, in a, v, out v);"]
+            return ["e.Fn(rt.Ctx, e.Who, in a, v, out v);"]
         if "out-not-null" in p.get("also", []):
-            return ["if (e.Fn(e.Who, in a, v, out var next) && next is { } got)", "{", "    v = got;", f"    {ADD}",
+            return ["if (e.Fn(rt.Ctx, e.Who, in a, v, out var next) && next is { } got)", "{", "    v = got;", f"    {ADD}",
                     "}"]
-        return ["if (e.Fn(e.Who, in a, v, out var next))", "{", "    v = next;", f"    {ADD}", "}"]
+        return ["if (e.Fn(rt.Ctx, e.Who, in a, v, out var next))", "{", "    v = next;", f"    {ADD}", "}"]
     if op == "predicate-all":
-        return ["if (!e.Fn(e.Who, in a))", "{", "    preventer = e.Who;", "    return false;", "}"]
+        return ["if (!e.Fn(rt.Ctx, e.Who, in a))", "{", "    preventer = e.Who;", "    return false;", "}"]
     if op == "predicate-any":
-        return ["if (e.Fn(e.Who, in a))", "{", "    first = e.Who;", "    return true;", "}"]
+        return ["if (e.Fn(rt.Ctx, e.Who, in a))", "{", "    first = e.Who;", "    return true;", "}"]
     if op == "mutate":
-        return ["e.Fn(e.Who, in a);"]
+        return ["e.Fn(rt.Ctx, e.Who, in a);"]
     raise GenError(f"{s.name}: unknown op {op}")
 
 
