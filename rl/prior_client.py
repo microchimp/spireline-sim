@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from multiprocessing import connection
 from pathlib import Path
 
@@ -201,7 +201,7 @@ class RemotePrior:
     policy: str
     probe: bool
     endpoint: str
-    authkey: bytes
+    authkey: bytes = field(repr=False)  # a repr of the prior, or of an Agent holding it, never prints the key
     policy_sha256: str
     timeout_s: float = 5.0
 

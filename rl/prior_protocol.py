@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import struct
 import sys
 from collections.abc import Sequence
@@ -66,12 +67,16 @@ def pipe_address(endpoint: str) -> str:
     return endpoint
 
 
+_DRIVE_PATH = re.compile(r"(?<![\w])[A-Za-z]:[\\/][^\s\"']*")
+
+
 def describe_error(error: BaseException) -> str:
     """`Type: message` for a log line: no traceback, and the user's home directory is not written out."""
     text = f"{type(error).__name__}: {error}"
     for home in {str(Path.home()), os.environ.get("USERPROFILE", "")}:
         if home:
             text = text.replace(home, "~")
+    text = _DRIVE_PATH.sub("<path>", text)  # a startup error can still name a file by its drive path
     return text[:300].replace("\n", " ")
 
 

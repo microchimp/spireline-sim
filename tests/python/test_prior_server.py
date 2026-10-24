@@ -479,7 +479,8 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(pc.stats()["server"], 1)
             started = time.perf_counter()
             server.kill_file.write_text("off")
-            self.assertEqual(server.proc.wait(2.0), 0)
+            self.assertEqual(server.proc.wait(5.0), 0)
+            self.assertLess(time.perf_counter() - started, 2.5)
             print(f"kill file to exit: {time.perf_counter() - started:.2f} s")
             with contextlib.redirect_stderr(io.StringIO()):
                 remote(combat.handle, legal)
@@ -543,7 +544,7 @@ class ServerTests(unittest.TestCase):
         if torch.cuda.is_available():
             self.skipTest("this interpreter has CUDA")
         out = subprocess.run([sys.executable, str(SERVER), "--policy", str(self.policy), "--endpoint", "x",  # noqa: S603
-                              "--authkey-env", "SPR_TEST_KEY"], capture_output=True, text=True, env=dict(os.environ, SPR_TEST_KEY="ab"))
+                              "--authkey-env", "SPR_TEST_KEY"], capture_output=True, text=True, env=dict(os.environ, SPR_TEST_KEY="ab" * 16))
         self.assertEqual(out.returncode, 2)
         self.assertEqual(len(out.stderr.strip().splitlines()), 1, out.stderr)
 
@@ -630,6 +631,29 @@ class GpuToleranceTests(unittest.TestCase):
             print(f"gpu bucket of {rows}: max |dlogit| {worst:.3g}, argmax flips {flips} of {compared} clear positions")
             self.assertLessEqual(worst, 1e-4)
             self.assertEqual(flips, 0)
+
+
+class SecretsTests(unittest.TestCase):
+    def test_a_repr_of_the_remote_prior_never_shows_the_key(self):
+        key = bytes(range(32))
+        prior = pc.RemotePrior(policy="p.pt", probe=False, endpoint="ep", authkey=key, policy_sha256="0" * 64)
+        text = repr(prior) + str(prior)
+        self.assertNotIn(key.hex(), text)
+        self.assertNotIn(repr(key), text)
+        self.assertEqual(prior.authkey, key)
+
+    def test_a_short_key_is_refused_at_start(self):
+        proc = subprocess.run([sys.executable, str(ROOT / "rl" / "prior_server.py"), "--device", "cpu", "--policy", "x.pt",
+                               "--endpoint", "e", "--authkey-env", "SPR_TEST_KEY"], capture_output=True, text=True,
+                              env=dict(os.environ, SPR_TEST_KEY="ab"))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("at least", proc.stderr)
+
+    def test_describe_error_hides_drive_paths(self):
+        text = pp.describe_error(FileNotFoundError("no such file: C:\\x\\y.pt or D:/a/b.pt"))
+        self.assertNotIn("C:", text)
+        self.assertNotIn("D:/", text)
+        self.assertIn("<path>", text)
 
 
 if __name__ == "__main__":

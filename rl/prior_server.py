@@ -82,6 +82,7 @@ TOKEN_STEP = 8
 # 64 covers them with 64 graphs; 256 would capture four times as many and reserve ~2.2 GB of GPU memory for nothing.
 DEFAULT_MAX_TOKENS = 64
 HARD_MAX_TOKENS = 1024  # longer than this is a bad request, not an eager forward
+MIN_AUTHKEY_BYTES = 16  # a short or empty key would let any local client in
 MAX_FRAME = 1 << 17
 # One float32 row per token: the 18 features, then type, id, owner. Every integer here is far below 2**24, so the
 # float is exact, and a batch is one staging buffer, one host-to-device copy and one device-to-host copy.
@@ -204,6 +205,8 @@ class PriorServer:
         self.lock = threading.Lock()
         self.calls = self.batches = self.overlong = self.connections = self.refused = 0
         self.hist: collections.Counter = collections.Counter()
+        self.token_hist: collections.Counter = collections.Counter()  # requests by token bucket, incl. overlong
+        self.tokens_max = 0
         self.queue_wait = collections.deque(maxlen=20000)
         self.replay = collections.deque(maxlen=20000)
         self.total = collections.deque(maxlen=20000)
@@ -341,6 +344,9 @@ class PriorServer:
         if self.fault == "batcher":
             raise RuntimeError("injected fault (batcher)")
         started = time.perf_counter()
+        for request in batch:
+            self.token_hist[((request.n + TOKEN_STEP - 1) // TOKEN_STEP) * TOKEN_STEP] += 1
+            self.tokens_max = max(self.tokens_max, request.n)
         normal = [r for r in batch if r.n <= self.max_tokens]
         for request in batch:
             if request.n > self.max_tokens:
@@ -389,7 +395,9 @@ class PriorServer:
     # ------------------------------------------------------------------ connections
 
     def _valid(self, request: Request) -> bool:
-        if request.n > HARD_MAX_TOKENS or int(request.types.max()) >= N_TYPES or int(request.owners.max()) > MAX_ENEMIES:
+        if request.n == 0 or request.n > HARD_MAX_TOKENS or int(request.types[0]) == TYPE_PAD:
+            return False  # slot 0 is the global token by the action-block contract; an all-PAD row is a NaN row
+        if int(request.types.max()) >= N_TYPES or int(request.owners.max()) > MAX_ENEMIES:
             return False
         return int(request.ids.min()) >= 0 and bool((request.ids < self.id_limits[request.types]).all())
 
@@ -489,10 +497,11 @@ class PriorServer:
                 "overlong": self.overlong,
                 "connections": self.connections,
                 "hello_refused": self.refused,
-                "queue_wait_ms": _summary(list(self.queue_wait)),
-                "replay_ms": _summary(list(self.replay)),
-                "total_ms": _summary(list(self.total)),
+                "token_hist": {str(k): v for k, v in sorted(self.token_hist.items())},
+                "tokens_max": self.tokens_max,
             }
+            waits, replays, totals = list(self.queue_wait), list(self.replay), list(self.total)
+        snapshot.update(queue_wait_ms=_summary(waits), replay_ms=_summary(replays), total_ms=_summary(totals))
         snapshot.update(
             host_cpu_s=round(time.process_time(), 3),
             uptime_s=round(time.perf_counter() - _T0, 3),
@@ -507,14 +516,17 @@ class PriorServer:
     def write_stats(self) -> None:
         if not self.stats_path:
             return
-        tmp = f"{self.stats_path}.tmp"
+        tmp = f"{self.stats_path}.{threading.get_ident()}.tmp"  # the loop and finish() never share a temp file
         Path(tmp).write_text(json.dumps(self.stats(), indent=1), encoding="utf-8")
         os.replace(tmp, self.stats_path)
 
     def _stats_loop(self) -> None:
         while True:
             time.sleep(5)
-            self.write_stats()
+            try:
+                self.write_stats()
+            except OSError:
+                continue  # on Windows os.replace fails while a reader holds the file open; the next tick writes again
 
     def finish(self, code: int) -> None:
         """Flush the stats and leave at once: nothing a server thread holds is worth waiting for."""
@@ -536,9 +548,9 @@ class PriorServer:
         sys.stderr.flush()
         self.finish(1)
 
-    def watch(self, parent_pid: int | None) -> None:
-        """Poll the exit conditions once a second: parent gone, stdin closed, kill file present."""
-        gone = procutil.watch_process(parent_pid) if parent_pid else None
+    def watch(self, gone) -> None:
+        """Poll the exit conditions once a second: parent gone (`gone()` from a handle opened at start), stdin closed,
+        kill file present."""
         while True:
             time.sleep(1.0)
             if self.stop_stdin.is_set() or (gone and gone()) or (self.kill_file and os.path.exists(self.kill_file)):
@@ -666,6 +678,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    gone = procutil.watch_process(args.parent_pid) if args.parent_pid else None  # the handle, before anything slow
     if args.selftest is None and not (args.endpoint and args.authkey_env):
         print("prior_server: --endpoint and --authkey-env are required unless --selftest is given", file=sys.stderr)
         return 2
@@ -679,6 +692,9 @@ def main(argv=None) -> int:
             authkey = bytes.fromhex(value.strip())
         except ValueError:
             print(f"prior_server: environment variable {args.authkey_env} is not hexadecimal", file=sys.stderr)
+            return 2
+        if len(authkey) < MIN_AUTHKEY_BYTES:
+            print(f"prior_server: the authkey must be at least {MIN_AUTHKEY_BYTES} bytes", file=sys.stderr)
             return 2
     procutil.set_priority_class(
         procutil.NORMAL_PRIORITY_CLASS if args.priority == "normal" else procutil.BELOW_NORMAL_PRIORITY_CLASS
@@ -702,7 +718,7 @@ def main(argv=None) -> int:
     server.guard(lambda: read_stdin_until_eof(server), "stdin")
     print(f"READY {args.endpoint}", flush=True)
     try:
-        server.watch(args.parent_pid)
+        server.watch(gone)
     except KeyboardInterrupt:
         server.finish(0)
     return 0
