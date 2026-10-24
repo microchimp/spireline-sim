@@ -223,3 +223,23 @@ class LockstepMacroPolicyTests(unittest.TestCase):
         self.assertGreater(len(picks), 0)
         self.assertTrue(any(p[0] == "map" for p in picks))
         self.assertEqual(after, before)  # tau = eps = 0 is argmax: the lookahead draws nothing from the exploration stream
+
+
+class KeepAmendTests(unittest.TestCase):
+    """The review's changes to run_train/keep.py."""
+
+    def test_ece_eligibility_counts_distinct_positive_runs_not_rows(self):
+        # DESIGN 5.3: a bin needs >= 30 wins / boss kills; the rows of one run are correlated, so 40 positive rows of 2 runs
+        # are 2 outcomes, not 40
+        p, y = np.full(100, 0.45), np.r_[np.ones(40), np.zeros(60)]
+        two = np.r_[np.repeat([0, 1], 20), np.arange(2, 62)]
+        head = keep.head_conditions(p, y, two, np.r_[np.ones(4), np.zeros(6)], p, n_boot=50)
+        self.assertEqual(head["ece_bins_ge_30_positives"]["eligible_bins"], 0)
+        self.assertFalse(head["ece_bins_ge_30_positives"]["pass"])
+        self.assertEqual((head["positives"], head["positive_runs"]), (40, 2))
+        e = keep.expected_calibration_error(p, y, run=two)
+        self.assertEqual((e["eligible_bins"], e["bins"][4]["positives"], e["bins"][4]["positive_runs"]), (0, 40, 2))
+        thirty = np.r_[np.arange(30), np.arange(10), np.arange(30, 90)]  # the same 40 positive rows over 30 runs
+        e = keep.expected_calibration_error(p, y, run=thirty)
+        self.assertEqual((e["eligible_bins"], e["bins"][4]["positive_runs"]), (1, 30))
+        self.assertAlmostEqual(e["value"], 0.05, places=9)

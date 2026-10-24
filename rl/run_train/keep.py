@@ -6,7 +6,8 @@ win (final floor 53). For a head with positives the conditions are:
   * Brier skill score > 0 against the base-rate model (the training split's rate), the paired bootstrap CI over runs excluding 0;
   * the same against V0, the hand-written "arrive healthy" value (below), fitted only as far as its score-to-probability table;
   * log-loss lower than the base rate's;
-  * ECE <= 3 pp, over the equal-width bins that hold at least 30 positives (no such bin: not passed).
+  * ECE <= 3 pp, over the equal-width bins that hold positives of at least 30 distinct runs (DESIGN counts wins / boss kills,
+    and the rows of one run are correlated outcomes of one run; no such bin: not passed).
 
 Tier-B regret against V0 and the battery gain need the lab's decision sets and are `not_computed`. A head with no positives in
 the validation split is recorded as `no_positives` and judges nothing. `all_computable_pass` is true when at least one head has
@@ -68,16 +69,20 @@ def paired_bootstrap_skill(err_model: np.ndarray, err_ref: np.ndarray, run: np.n
     return {"value": float(point), "ci": [float(lo), float(hi)], "runs": int(n), "resamples": int(n_boot)}
 
 
-def expected_calibration_error(p: np.ndarray, y: np.ndarray, bins: int = BINS, min_positives: int = MIN_POSITIVES) -> dict[str, Any]:
-    """ECE over the equal-width bins holding at least `min_positives` positives, weighted by bin size among those bins."""
-    p = np.asarray(p, np.float64)
+def expected_calibration_error(p: np.ndarray, y: np.ndarray, run: np.ndarray | None = None, bins: int = BINS,
+                               min_positives: int = MIN_POSITIVES) -> dict[str, Any]:
+    """ECE over the equal-width bins whose positive rows come from at least `min_positives` distinct runs (`run`: each row's
+    run id; none = every row its own run), weighted by bin size among those bins."""
+    p, y = np.asarray(p, np.float64), np.asarray(y, np.float64)
+    run = np.arange(len(p)) if run is None else np.asarray(run)
     idx = np.minimum((p * bins).astype(np.int64), bins - 1)
     rows = []
     for b in range(bins):
         m = idx == b
         n, pos = int(m.sum()), int(y[m].sum())
-        rows.append({"bin": b, "n": n, "positives": pos, "mean_pred": float(p[m].mean()) if n else None,
-                     "freq": pos / n if n else None, "eligible": pos >= min_positives})
+        pos_runs = int(np.unique(run[m & (y > 0)]).size)
+        rows.append({"bin": b, "n": n, "positives": pos, "positive_runs": pos_runs, "mean_pred": float(p[m].mean()) if n else None,
+                     "freq": pos / n if n else None, "eligible": pos_runs >= min_positives})
     ok = [r for r in rows if r["eligible"]]
     value = None
     if ok:
@@ -97,8 +102,8 @@ def head_conditions(p: np.ndarray, y: np.ndarray, run: np.ndarray, train_y: np.n
     for d in (vs_base, vs_v0):
         d["pass"] = bool(d["ci"][0] > 0.0 and d["value"] > 0.0)
     ll_model, ll_base = log_loss(p, y), log_loss(base, y)
-    ece = expected_calibration_error(p, y)
-    return {"positives": int(y.sum()), "rows": int(len(y)), "base_rate": float(base[0]) if len(base) else None,
+    ece = expected_calibration_error(p, y, run)
+    return {"positives": int(y.sum()), "positive_runs": int(np.unique(np.asarray(run)[y > 0]).size), "rows": int(len(y)), "base_rate": float(base[0]) if len(base) else None,
             "brier_skill_vs_base_rate": vs_base, "brier_skill_vs_v0": vs_v0,
             "log_loss_vs_base_rate": {"model": ll_model, "base_rate": ll_base, "pass": bool(ll_model < ll_base)},
             "ece_bins_ge_30_positives": {**ece, "max": ECE_MAX, "pass": bool(ece["value"] is not None and ece["value"] <= ECE_MAX)},
