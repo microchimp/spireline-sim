@@ -39,6 +39,13 @@ internal static class TestSwitches
     /// <summary>The test kernel, or null (the variable unset): the old engine.</summary>
     public static Kernel? Kernel => Shared.Value;
 
+    /// <summary>
+    /// True when the test kernel holds every one of <paramref name="families" /> (the switched-on run), false with no
+    /// kernel. A case that pins an old-engine behaviour the game does not have asserts the game's under it (with a
+    /// <c>game:</c> cite) and keeps the old assertion when it is false.
+    /// </summary>
+    public static bool On(params Sts2Emulator.Core2.Switch[] families) => Kernel is { } k && families.All(k.On);
+
     private static Kernel? Make()
     {
         string? v = Environment.GetEnvironmentVariable(Variable);
@@ -70,7 +77,13 @@ internal static class TestSwitches
             return CombatEngine.Step(state, action, rng, targetEnemyIndex);
         var engine = Engines.GetValue(state, _ => new RunEngine { Kernel = k });
         if (state.Kernel is null)
+        {
+            // game: every card of a combat is a model with its own identity. A test's hand-made cards carry no uid (0);
+            // the kernel resolves a card source by uid (CARD_UID.md), so they get fresh ones here as CombatFactory
+            // numbers a combat's cards, keeping every uid already given.
+            CardUids.NumberNew(state);
             k.Attach(state, engine.State);
+        }
         Counted();
         return engine.StepCombat(state, action, rng, targetEnemyIndex);
     }
