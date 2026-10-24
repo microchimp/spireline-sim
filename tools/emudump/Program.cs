@@ -48,10 +48,22 @@ if (args[0] == "fuzz")
     Environment.Exit(Fuzz.Main(args[1..]));
 }
 
+if (args[0] == "scenario")
+{
+    // EmuDump scenario <file|dir> [--engine old|core2] [--json] [--dump]: engine-neutral scenarios through IEngine (Scenario.cs).
+    Environment.Exit(ScenarioMode.Run(args[1..]));
+}
+
 if (args[0] == "kernel-order")
 {
     // EmuDump kernel-order <scenarios.json> <out.json>: the kernel's listener lists on the hook_order scenarios (Engines/Old/KernelOrder.cs).
     Environment.Exit(KernelOrderMode.Run(args[1..]));
+}
+
+if (args[0] == "kernel-handlers")
+{
+    // EmuDump kernel-handlers [out.json]: every (model, hook) pair in the kernel's handler table with all switches on (Engines/Core2/KernelHandlers.cs).
+    Environment.Exit(EmuDump.Engines.Core2.KernelHandlersMode.Run(args[1..]));
 }
 
 if (args[0] == "codex")

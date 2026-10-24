@@ -1,13 +1,20 @@
 """Construction checks of the Tier 1 kernel (docs/rebuild/TIER1_KERNEL.md sections 2 and 7).
 
     python -m tools.kernel.construct shape [--decompiled DIR]
+    python -m tools.kernel.construct commands [--decompiled DIR] [--list-writes]
 
 ``shape``: tools/kernel/hooks.json against a fresh extraction from the local decompile, both ways (a dispatcher,
 iterator, pass, op, changed criterion, other part of a try condition, run-time flag, context, wait point, named step or partner on one side only
 fails, printed per dispatcher), and the generated Core2/HookId.g.cs and Hooks.g.cs against a fresh generation from
 hooks.json. Exit 0 only when both hold.
 
-Modes are a table (``MODES``); later rounds add ``commands``, ``pauses`` and ``rng``.
+``commands`` (tools/kernel/commands.py): each migrated Core2 command's declared call sequence against the game method's
+(hook calls and named callees with branch labels) and against the Core2 method's calls, both ways; and the HP/block
+write scan: a write in Core2 outside Core2/Commands and the OldState adapter fails; the old engine's writes that run with
+the F08+F10 switch on are listed (R4 reroutes them; ``--list-writes`` prints each). Exit 0 only when every command
+matches and Core2 has no stray write.
+
+Modes are a table (``MODES``); later rounds add ``pauses`` and ``rng``.
 """
 
 from __future__ import annotations
@@ -83,9 +90,36 @@ def shape(a) -> int:
     return 1 if problems else 0
 
 
-# mode -> (handler, help). Later rounds: commands, pauses, rng.
+def commands(a) -> int:
+    from tools.kernel import commands as cm
+
+    problems: list[str] = []
+    for name, cmd in cm.COMMANDS.items():
+        p = cm.check_command(name, cmd, Path(a.decompiled), Path(a.engine))
+        print(f"  {name}: {'ok' if not p else f'{len(p)} differences'}")
+        problems += p
+    for p in problems:
+        print(f"  {p}")
+    stray = cm.core2_writes(Path(a.engine))
+    for w in stray:
+        print(f"  Core2 writes {w.field} outside Core2/Commands and OldState: {w.file}:{w.line}")
+    old = cm.old_writes(Path(a.engine))
+    if getattr(a, "list_writes", False):
+        for w in old:
+            print(f"  R4 {w.family} {w.file}:{w.line} {w.method} {w.field}: {w.text}")
+    fam = {f: sum(1 for w in old if w.family == f) for f in ("F08", "F09")}
+    files = len({w.file for w in old})
+    bad = bool(problems or stray)
+    print(f"commands: {'FAIL' if bad else 'ok'}: {len(cm.COMMANDS)} commands, {len(problems)} differences; "
+          f"{len(stray)} Core2 writes outside Commands; old HP/block writes with the switch on (R4's list): {len(old)} "
+          f"({fam['F08']} F08 HP, {fam['F09']} F09 block) in {files} files")
+    return 1 if bad else 0
+
+
+# mode -> (handler, help). Later rounds: pauses, rng.
 MODES = {
     "shape": (shape, "hooks.json against the decompile both ways, and the generated hook code against hooks.json"),
+    "commands": (commands, "the migrated commands' call sequences against the game's and Core2's, and the write scan"),
 }
 
 
@@ -97,6 +131,8 @@ def main(argv=None) -> int:
         p.add_argument("--decompiled", default=ht.DEFAULT_DECOMPILED)
         p.add_argument("--descriptor", default=str(hx.DESCRIPTOR))
         p.add_argument("--engine", default=str(gen_hooks.ENGINE), help="src/Sts2Emulator (where the .g.cs files are)")
+        if name == "commands":
+            p.add_argument("--list-writes", action="store_true", help="print every old write R4 must reroute")
     a = ap.parse_args(argv)
     return MODES[a.mode][0](a)
 

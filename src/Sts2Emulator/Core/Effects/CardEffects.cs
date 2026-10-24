@@ -2786,6 +2786,20 @@ public static class CardEffects
     }
 
     /// <summary>
+    /// game: AccuracyPower.ModifyDamageAdditive
+    /// Extracted from CardEffects.ShivDamage; the caller keeps the condition.
+    /// </summary>
+    internal static int Accuracy_ModifyDamageAdditive(CombatState state) =>
+        BuffSystem.Get(state.PlayerBuffs, BuffId.ShivDamage);
+
+    /// <summary>
+    /// game: PhantomBladesPower.ModifyDamageAdditive
+    /// Extracted from CardEffects.ShivDamage; the caller keeps the condition.
+    /// </summary>
+    internal static int PhantomBlades_ModifyDamageAdditive(CombatState state) =>
+        BuffSystem.Get(state.PlayerBuffs, BuffId.PhantomBlades);
+
+    /// <summary>
     /// <c>CorrosiveWavePower.AfterCardDrawn</c>: every card its owner draws poisons every
     /// hittable enemy, and the power is removed at the end of the owner's side turn — so
     /// it is a one-turn draw engine.
@@ -2802,11 +2816,10 @@ public static class CardEffects
     /// </remarks>
     private static int ShivDamage(CombatState state, CardDef def, bool upgraded, CardInstance card)
     {
-        int dmg =
-            Dmg(state, def, upgraded, card) + BuffSystem.Get(state.PlayerBuffs, BuffId.ShivDamage);
+        int dmg = Dmg(state, def, upgraded, card) + Accuracy_ModifyDamageAdditive(state);
         if (def.Name == "Shiv" && state.ShivsPlayedThisTurn == 0)
         {
-            dmg += BuffSystem.Get(state.PlayerBuffs, BuffId.PhantomBlades);
+            dmg += PhantomBlades_ModifyDamageAdditive(state);
         }
 
         return dmg;
@@ -3982,6 +3995,38 @@ public static class CardEffects
     }
 
     /// <summary>
+    /// game: BufferPower.AfterModifyingHpLostAfterOsty
+    /// Extracted from CardEffects.LosePlayerHp; the caller keeps the condition.
+    /// </summary>
+    internal static void Buffer_AfterModifyingHpLostAfterOsty(CombatState state, int buffer)
+    {
+        if (buffer == 1)
+        {
+            BuffSystem.Remove(state.PlayerBuffs, BuffId.Buffer);
+        }
+        else
+        {
+            BuffSystem.Apply(state.PlayerBuffs, BuffId.Buffer, -1);
+        }
+    }
+
+    /// <summary>
+    /// game: BufferPower.ModifyHpLostAfterOstyLate
+    /// Extracted from CardEffects.LosePlayerHp; the caller keeps the condition.
+    /// </summary>
+    internal static int Buffer_ModifyHpLostAfterOstyLate() => 0;
+
+    /// <summary>
+    /// game: BeatingRemnant.AfterDamageReceived
+    /// Extracted from CardEffects.LosePlayerHp; the caller keeps the condition.
+    /// The tally counts for every hit, held or not (the cap reads it when the relic is held).
+    /// </summary>
+    internal static void BeatingRemnant_AfterDamageReceived(CombatState state, int lost)
+    {
+        state.UnblockedDamageThisTurn += lost;
+    }
+
+    /// <summary>
     /// The player's half of `CreatureCmd.Damage` once block (and Osty) have taken their
     /// share: `Hook.ModifyHpLost` in its AfterOsty phase, `Hook.AfterModifyingHpLostAfterOsty`,
     /// then `Creature.LoseHpInternal`. Every route by which the player loses HP in a fight --
@@ -4012,16 +4057,9 @@ public static class CardEffects
         int buffer = BuffSystem.Get(state.PlayerBuffs, BuffId.Buffer);
         if (buffer > 0)
         {
-            if (buffer == 1)
-            {
-                BuffSystem.Remove(state.PlayerBuffs, BuffId.Buffer);
-            }
-            else
-            {
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.Buffer, -1);
-            }
+            Buffer_AfterModifyingHpLostAfterOsty(state, buffer);
 
-            return 0;
+            return Buffer_ModifyHpLostAfterOstyLate();
         }
 
         int hpBefore = state.PlayerHp;
@@ -4029,8 +4067,28 @@ public static class CardEffects
         int lost = hpBefore - state.PlayerHp;
         // `BeatingRemnant.AfterDamageReceived`: `DamageReceivedThisTurn += UnblockedDamage`
         // on any damage to its owner, its cap measured against what actually landed.
-        state.UnblockedDamageThisTurn += lost;
+        BeatingRemnant_AfterDamageReceived(state, lost);
         return lost;
+    }
+
+    /// <summary>
+    /// game: RupturePower.AfterDamageReceived
+    /// Extracted from CardEffects.AfterPlayerDamageReceived; the caller keeps the condition.
+    /// </summary>
+    internal static void Rupture_AfterDamageReceived(
+        CombatState state,
+        int rupture,
+        bool fromPlayedCard
+    )
+    {
+        if (fromPlayedCard)
+        {
+            state.RuptureOwed += rupture;
+        }
+        else
+        {
+            RelicEffects.GainPlayerStrength(state, rupture);
+        }
     }
 
     /// <summary>
@@ -4051,7 +4109,7 @@ public static class CardEffects
     /// The HP is what the card being PLAYED costs: `RupturePower` banks that and pays it
     /// once the card has finished (`CombatEngine.PayRupture`).
     /// </param>
-    private static void AfterPlayerDamageReceived(
+    internal static void AfterPlayerDamageReceived(
         CombatState state,
         int unblocked,
         bool fromPlayedCard
@@ -4074,14 +4132,7 @@ public static class CardEffects
         int rupture = BuffSystem.Get(state.PlayerBuffs, BuffId.RupturePower);
         if (rupture > 0 && state.PlayerTurn)
         {
-            if (fromPlayedCard)
-            {
-                state.RuptureOwed += rupture;
-            }
-            else
-            {
-                RelicEffects.GainPlayerStrength(state, rupture);
-            }
+            Rupture_AfterDamageReceived(state, rupture, fromPlayedCard);
         }
 
         TriggerInfernoAfterPlayerDamage(state, unblocked);
@@ -5102,7 +5153,9 @@ public static class CardEffects
         // turn's first Attack card -- the flag the play set.
         int lethality = BuffSystem.Get(state.PlayerBuffs, BuffId.Lethality);
         float lethalMultiplier =
-            lethality > 0 && state.LethalAttackPlay ? 1f + lethality / 100f : 1f;
+            lethality > 0 && state.LethalAttackPlay
+                ? Lethality_ModifyDamageMultiplicative(lethality)
+                : 1f;
         int damage = BuffSystem.IncomingDamage(
             amount,
             state.PlayerBuffs,
@@ -5220,6 +5273,110 @@ public static class CardEffects
     }
 
     /// <summary>
+    /// game: HardenedShellPower.ModifyHpLostBeforeOstyLate
+    /// Extracted from CardEffects.LandDamageOnEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static int HardenedShell_ModifyHpLostBeforeOstyLate(
+        EnemyState target,
+        int hardened,
+        int hpLoss
+    ) => Math.Min(hpLoss, Math.Max(0, hardened - target.HardenedShellDamageThisTurn));
+
+    /// <summary>
+    /// game: HardenedShellPower.AfterDamageReceived
+    /// Extracted from CardEffects.LandDamageOnEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static void HardenedShell_AfterDamageReceived(EnemyState target, int hpBefore)
+    {
+        target.HardenedShellDamageThisTurn += hpBefore - target.Hp;
+    }
+
+    /// <summary>
+    /// game: SlipperyPower.ModifyHpLostAfterOsty
+    /// Extracted from CardEffects.LandDamageOnEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static int Slippery_ModifyHpLostAfterOsty() => 1;
+
+    /// <summary>
+    /// game: SlipperyPower.AfterModifyingHpLostAfterOsty
+    /// Extracted from CardEffects.LandDamageOnEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static void Slippery_AfterModifyingHpLostAfterOsty(EnemyState target)
+    {
+        BuffSystem.Apply(target.Buffs, BuffId.Slippery, -1);
+    }
+
+    /// <summary>
+    /// game: CurlUpPower.AfterDamageReceived
+    /// Extracted from CardEffects.LandDamageOnEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static void CurlUp_AfterDamageReceived(EnemyState target)
+    {
+        target.CurlUpArmed = true;
+    }
+
+    /// <summary>
+    /// game: FlutterPower.AfterDamageReceived
+    /// Extracted from CardEffects.LandDamageOnEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static void Flutter_AfterDamageReceived(EnemyState target)
+    {
+        BuffSystem.Apply(target.Buffs, BuffId.Flutter, -1);
+        if (BuffSystem.Get(target.Buffs, BuffId.Flutter) <= 0)
+        {
+            BuffSystem.Apply(target.Buffs, BuffId.Stunned, 1);
+        }
+    }
+
+    /// <summary>
+    /// game: SlumberPower.AfterDamageReceived
+    /// Extracted from CardEffects.LandDamageOnEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static void Slumber_AfterDamageReceived(EnemyState target)
+    {
+        BuffSystem.Apply(target.Buffs, BuffId.Slumber, -1);
+        // `SlumberPower.AfterDamageReceived` at zero does NOT wake the beetle on the
+        // spot: it calls `CreatureCmd.Stun(owner, WakeUpMove, "ROLL_OUT_MOVE")`, so the
+        // wake -- and the Plating it removes -- is the body of the stun move the
+        // beetle performs on its own turn (`EnemyAI`'s stunned branch), and the
+        // roll-outs start after it. Seen live: the waking hit left Plating 14 standing
+        // and the intent on STUN.
+        if (
+            target.DefId == KE.SlumberingBeetle
+            && BuffSystem.Get(target.Buffs, BuffId.Slumber) <= 0
+        )
+        {
+            BuffSystem.Apply(target.Buffs, BuffId.Stunned, 1);
+            // CreatureCmd.Stun changes the move immediately, so the readout is the stun.
+            target.CurrentIntent = new Intent(IntentType.Unknown, 0);
+        }
+    }
+
+    /// <summary>
+    /// game: PersonalHivePower.AfterDamageReceived
+    /// Extracted from CardEffects.LandDamageOnEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static void PersonalHive_AfterDamageReceived(CombatState state, int personalHive)
+    {
+        // No rng parameter reaches this far down the damage path, and the helper
+        // prefers `state.ShuffleRng` anyway; the fallback is only for a state
+        // built without one, which is a hand-made test fight rather than a run.
+        AddCardToDrawPileRandomly(
+            state,
+            ST.Dazed,
+            personalHive,
+            state.ShuffleRng ?? new Random(0)
+        );
+    }
+
+    /// <summary>
+    /// game: LethalityPower.ModifyDamageMultiplicative
+    /// Extracted from CardEffects.DealDamageToEnemy; the caller keeps the condition.
+    /// </summary>
+    internal static float Lethality_ModifyDamageMultiplicative(int lethality) =>
+        1f + lethality / 100f;
+
+    /// <summary>
     /// The rest of `CreatureCmd.Damage` once a hit's number is fixed and
     /// `BeforeDamageReceived` (Thorns) has run: block, the HP-loss modifiers, the HP itself,
     /// and the block-broken, after-damage and death hooks. Returns the HP lost (before the
@@ -5291,14 +5448,14 @@ public static class CardEffects
         int hardened = BuffSystem.Get(target.Buffs, BuffId.HardenedShell);
         if (hardened > 0 && hpLoss != 0)
         {
-            hpLoss = Math.Min(hpLoss, Math.Max(0, hardened - target.HardenedShellDamageThisTurn));
+            hpLoss = HardenedShell_ModifyHpLostBeforeOstyLate(target, hardened, hpLoss);
         }
 
         int slippery = BuffSystem.Get(target.Buffs, BuffId.Slippery);
         if (slippery > 0 && hpLoss >= 1)
         {
-            hpLoss = 1;
-            BuffSystem.Apply(target.Buffs, BuffId.Slippery, -1);
+            hpLoss = Slippery_ModifyHpLostAfterOsty();
+            Slippery_AfterModifyingHpLostAfterOsty(target);
         }
         int hpBefore = target.Hp;
         target.Hp = Math.Max(0, target.Hp - hpLoss);
@@ -5309,7 +5466,7 @@ public static class CardEffects
         // fully blocked hit. It reads no props either.
         if (hardened > 0)
         {
-            target.HardenedShellDamageThisTurn += hpBefore - target.Hp;
+            HardenedShell_AfterDamageReceived(target, hpBefore);
         }
 
         // `CurlUpPower.AfterDamageReceived` reads no damage result -- a hit the louse
@@ -5319,7 +5476,7 @@ public static class CardEffects
         // Powered attacks only (`props.IsPoweredAttack()`).
         if (powered && BuffSystem.Get(target.Buffs, BuffId.CurlUp) > 0)
         {
-            target.CurlUpArmed = true;
+            CurlUp_AfterDamageReceived(target);
         }
 
         // `ShriekPower`, `PlowPower` and `AsleepPower.AfterDamageReceived` ask only for
@@ -5373,32 +5530,13 @@ public static class CardEffects
         // NAB -> ESCAPE) and only a RandomBranchState spends a value.
         if (powered && hpLoss > 0 && BuffSystem.Get(target.Buffs, BuffId.Flutter) > 0)
         {
-            BuffSystem.Apply(target.Buffs, BuffId.Flutter, -1);
-            if (BuffSystem.Get(target.Buffs, BuffId.Flutter) <= 0)
-            {
-                BuffSystem.Apply(target.Buffs, BuffId.Stunned, 1);
-            }
+            Flutter_AfterDamageReceived(target);
         }
 
         // Slumber reads no props: a Combust tick or a poison tick costs a point of sleep too.
         if (hpLoss > 0 && BuffSystem.Get(target.Buffs, BuffId.Slumber) > 0)
         {
-            BuffSystem.Apply(target.Buffs, BuffId.Slumber, -1);
-            // `SlumberPower.AfterDamageReceived` at zero does NOT wake the beetle on the
-            // spot: it calls `CreatureCmd.Stun(owner, WakeUpMove, "ROLL_OUT_MOVE")`, so the
-            // wake -- and the Plating it removes -- is the body of the stun move the
-            // beetle performs on its own turn (`EnemyAI`'s stunned branch), and the
-            // roll-outs start after it. Seen live: the waking hit left Plating 14 standing
-            // and the intent on STUN.
-            if (
-                target.DefId == KE.SlumberingBeetle
-                && BuffSystem.Get(target.Buffs, BuffId.Slumber) <= 0
-            )
-            {
-                BuffSystem.Apply(target.Buffs, BuffId.Stunned, 1);
-                // CreatureCmd.Stun changes the move immediately, so the readout is the stun.
-                target.CurrentIntent = new Intent(IntentType.Unknown, 0);
-            }
+            Slumber_AfterDamageReceived(target);
         }
 
         if (powered && hpLoss > 0)
@@ -5438,15 +5576,7 @@ public static class CardEffects
         int personalHive = powered ? BuffSystem.Get(target.Buffs, BuffId.PersonalHive) : 0;
         if (personalHive > 0 && target.Hp > 0)
         {
-            // No rng parameter reaches this far down the damage path, and the helper
-            // prefers `state.ShuffleRng` anyway; the fallback is only for a state
-            // built without one, which is a hand-made test fight rather than a run.
-            AddCardToDrawPileRandomly(
-                state,
-                ST.Dazed,
-                personalHive,
-                state.ShuffleRng ?? new Random(0)
-            );
+            PersonalHive_AfterDamageReceived(state, personalHive);
         }
 
         // `SkittishPower.AfterAttack` is NOT here: it fires once the whole `AttackCommand`
@@ -9225,21 +9355,12 @@ public static class CardEffects
         DmgFrom(state, upgraded ? def.BaseDamage + def.UpgradeDamage : def.BaseDamage, def, card);
 
     /// <summary>
-    /// Everything <see cref="Dmg" /> adds on top of a printed damage number, applied to a
-    /// base the CALLER computed.
+    /// The damage a card's enchantment adds to its powered attack (game: Sharp, Vigorous, TezcatarasEmber,
+    /// Momentum and Inky's EnchantDamageAdditive; 0 for any other card).
     /// </summary>
-    /// <remarks>
-    /// Cards whose damage is a calculation — Body Slam off block, Ashen Strike off the
-    /// exhaust pile, Perfected Strike off the Strikes in the deck — reach the same
-    /// `DamageCmd.Attack` as any other attack, just with a `CalculatedDamageVar` instead
-    /// of a `DamageVar`. So every enchantment and relic bonus applies to them exactly as
-    /// it does to a printed number. Seventeen of them were passing their computed total
-    /// straight to <c>DealDamage</c>, which skipped the lot: a Sharp Body Slam hit for
-    /// its block and nothing more.
-    /// </remarks>
-    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card)
+    internal static int EnchantDamageAdditive(CardInstance card)
     {
-        int damage = baseDamage + card.EnchantedWith(Enchantment.Sharp);
+        int damage = card.EnchantedWith(Enchantment.Sharp);
 
         // Vigorous.EnchantDamageAdditive adds its amount while the enchantment is Normal
         // and nothing once it has fired.
@@ -9273,18 +9394,61 @@ public static class CardEffects
             damage += 1;
         }
 
+        return damage;
+    }
+
+    /// <summary>
+    /// The factor a card's enchantment multiplies its powered attack by (game: Corrupted and Instinct's
+    /// EnchantDamageMultiplicative; 1 for any other card).
+    /// </summary>
+    internal static decimal EnchantDamageMultiplicative(CardInstance card)
+    {
         // Corrupted.EnchantDamageMultiplicative is 1.5x on a powered attack, every play --
         // it has no once-only status of its own.
         if (card.Enchantment == Enchantment.Corrupted)
         {
-            damage = (int)(damage * 1.5m);
+            return 1.5m;
         }
 
         // Instinct.EnchantDamageMultiplicative is a flat 2x on a powered attack -- also
         // every play, and also with no once-only status.
         if (card.Enchantment == Enchantment.Instinct)
         {
-            damage *= 2;
+            return 2m;
+        }
+
+        return 1m;
+    }
+
+    /// <summary>
+    /// game: GigantificationPower.ModifyDamageMultiplicative
+    /// Extracted from CardEffects.DmgFrom; the caller keeps the condition.
+    /// </summary>
+    internal static int Gigantification_ModifyDamageMultiplicative() => 3;
+
+    /// <summary>
+    /// Everything <see cref="Dmg" /> adds on top of a printed damage number, applied to a
+    /// base the CALLER computed.
+    /// </summary>
+    /// <remarks>
+    /// Cards whose damage is a calculation — Body Slam off block, Ashen Strike off the
+    /// exhaust pile, Perfected Strike off the Strikes in the deck — reach the same
+    /// `DamageCmd.Attack` as any other attack, just with a `CalculatedDamageVar` instead
+    /// of a `DamageVar`. So every enchantment and relic bonus applies to them exactly as
+    /// it does to a printed number. Seventeen of them were passing their computed total
+    /// straight to <c>DealDamage</c>, which skipped the lot: a Sharp Body Slam hit for
+    /// its block and nothing more.
+    /// </remarks>
+    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card)
+    {
+        // The card's enchantment (game: EnchantmentModel.EnchantDamageAdditive, then
+        // EnchantDamageMultiplicative, both first in Hook.ModifyDamage); Core2's EnchantAdd and
+        // EnchantMul steps call the same two functions.
+        int damage = baseDamage + EnchantDamageAdditive(card);
+        decimal enchantFactor = EnchantDamageMultiplicative(card);
+        if (enchantFactor != 1m)
+        {
+            damage = (int)(damage * enchantFactor);
         }
 
         damage += RelicEffects.CardDamageBonus(state, def, card.Upgraded);
@@ -9311,7 +9475,7 @@ public static class CardEffects
             && BuffSystem.Get(state.PlayerBuffs, BuffId.Gigantification) > 0
         )
         {
-            damage *= 3;
+            damage *= Gigantification_ModifyDamageMultiplicative();
         }
 
         return damage;
@@ -9760,6 +9924,13 @@ public static class CardEffects
     }
 
     /// <summary>
+    /// game: CalcifyPower.ModifyDamageAdditive
+    /// Extracted from CardEffects.OstyAttackDamage; the caller keeps the condition.
+    /// </summary>
+    internal static int Calcify_ModifyDamageAdditive(CombatState state) =>
+        BuffSystem.Get(state.PlayerBuffs, BuffId.Calcify);
+
+    /// <summary>
     /// An OSTY attack: the pet swings, so nothing happens when it is not alive.
     /// </summary>
     /// <remarks>
@@ -9785,7 +9956,16 @@ public static class CardEffects
         // Flatten watches for.
         state.OstyAttacksThisTurn++;
         RelicEffects.ApplyAfterOstyAttack(state, rng: null);
-        return amount + BuffSystem.Get(state.PlayerBuffs, BuffId.Calcify);
+        return amount + Calcify_ModifyDamageAdditive(state);
+    }
+
+    /// <summary>
+    /// game: SicEmPower.AfterDamageGiven
+    /// Extracted from CardEffects.DealOstyDamage; the caller keeps the condition.
+    /// </summary>
+    internal static void SicEm_AfterDamageGiven(CombatState state, int sicEm)
+    {
+        SummonOsty(state, sicEm);
     }
 
     private static void DealOstyDamage(CombatState state, int amount)
@@ -9817,7 +9997,7 @@ public static class CardEffects
         int sicEm = BuffSystem.Get(target.Buffs, BuffId.SicEm);
         if (sicEm > 0)
         {
-            SummonOsty(state, sicEm);
+            SicEm_AfterDamageGiven(state, sicEm);
         }
     }
 

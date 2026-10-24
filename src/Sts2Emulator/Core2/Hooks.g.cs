@@ -475,7 +475,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterActEntered, HookId.AfterActEntered, 0, l.Index, e.Who, ContextMode.None, null);
@@ -514,7 +514,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterAttack, HookId.AfterAttack, 0, l.Index, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext);
@@ -563,7 +563,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.PlayerChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.PlayerChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterAutoPostPlayPhaseEntered, HookId.AfterAutoPostPlayPhaseEntered, 0, l.Index, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext);
@@ -613,7 +613,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.PlayerChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.PlayerChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEnteredEarly, 0, l.Index, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext);
@@ -631,7 +631,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.PlayerChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.PlayerChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEntered, 1, l.Index, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext);
@@ -649,7 +649,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.PlayerChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.PlayerChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterAutoPrePlayPhaseEntered, HookId.AfterAutoPrePlayPhaseEnteredLate, 2, l.Index, e.Who, ContextMode.CallerHook, a.PlayerChoiceContext);
@@ -689,7 +689,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterBlockBroken, HookId.AfterBlockBroken, 0, l.Index, e.Who, ContextMode.None, null);
@@ -728,7 +728,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterBlockCleared, HookId.AfterBlockCleared, 0, l.Index, e.Who, ContextMode.None, null);
@@ -767,7 +767,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterBlockGained, HookId.AfterBlockGained, 0, l.Index, e.Who, ContextMode.None, null);
@@ -806,7 +806,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardChangedPiles, HookId.AfterCardChangedPiles, 0, l.Index, e.Who, ContextMode.None, null);
@@ -822,7 +822,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardChangedPiles, HookId.AfterCardChangedPilesLate, 1, l.Index, e.Who, ContextMode.None, null);
@@ -863,7 +863,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardDiscarded, HookId.AfterCardDiscarded, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -905,7 +905,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardDrawn, HookId.AfterCardDrawnEarly, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -923,7 +923,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardDrawn, HookId.AfterCardDrawn, 1, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -963,7 +963,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardEnteredCombat, HookId.AfterCardEnteredCombat, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1004,7 +1004,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardExhausted, HookId.AfterCardExhausted, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -1044,7 +1044,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardGeneratedForCombat, HookId.AfterCardGeneratedForCombat, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1085,7 +1085,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardPlayed, HookId.AfterCardPlayed, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -1103,7 +1103,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCardPlayed, HookId.AfterCardPlayedLate, 1, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -1143,7 +1143,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCombatEnd, HookId.AfterCombatEnd, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1182,7 +1182,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCombatVictory, HookId.AfterCombatVictoryEarly, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1198,7 +1198,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCombatVictory, HookId.AfterCombatVictory, 1, l.Index, e.Who, ContextMode.None, null);
@@ -1237,7 +1237,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCreatureAddedToCombat, HookId.AfterCreatureAddedToCombat, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1276,7 +1276,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterCurrentHpChanged, HookId.AfterCurrentHpChanged, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1317,7 +1317,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterDamageGiven, HookId.AfterDamageGiven, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -1359,7 +1359,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterDamageReceived, HookId.AfterDamageReceived, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -1377,7 +1377,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterDamageReceived, HookId.AfterDamageReceivedLate, 1, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -1417,7 +1417,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_AfterDeath, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDeath, HookId.AfterDeath, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -1450,7 +1450,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_AfterDiedToDoom, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterDiedToDoom, HookId.AfterDiedToDoom, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -1483,7 +1483,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterEnergyReset, HookId.AfterEnergyReset, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1499,7 +1499,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterEnergyReset, HookId.AfterEnergyResetLate, 1, l.Index, e.Who, ContextMode.None, null);
@@ -1538,7 +1538,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterEnergySpent, HookId.AfterEnergySpent, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1579,7 +1579,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.PlayerChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.PlayerChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterFlush, HookId.AfterFlush, 0, l.Index, e.Who, ContextMode.Passed, a.PlayerChoiceContext);
@@ -1619,7 +1619,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterForge, HookId.AfterForge, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1658,7 +1658,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterGoldGained, HookId.AfterGoldGained, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1699,7 +1699,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterHandEmptied, HookId.AfterHandEmptied, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -1739,7 +1739,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterItemPurchased, HookId.AfterItemPurchased, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1778,7 +1778,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterMapGenerated, HookId.AfterMapGenerated, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1818,7 +1818,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingBlockAmount, HookId.AfterModifyingBlockAmount, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1858,7 +1858,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingCardPlayCount, HookId.AfterModifyingCardPlayCount, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1898,7 +1898,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingCardRewardOptions, HookId.AfterModifyingCardRewardOptions, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1938,7 +1938,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingDamageAmount, HookId.AfterModifyingDamageAmount, 0, l.Index, e.Who, ContextMode.None, null);
@@ -1978,7 +1978,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingEnergyGain, HookId.AfterModifyingEnergyGain, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2018,7 +2018,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingGoldGained, HookId.AfterModifyingGoldGained, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2058,7 +2058,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingHandDraw, HookId.AfterModifyingHandDraw, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2098,7 +2098,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingHpLostAfterOsty, HookId.AfterModifyingHpLostAfterOsty, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2138,7 +2138,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingHpLostBeforeOsty, HookId.AfterModifyingHpLostBeforeOsty, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2178,7 +2178,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingOrbPassiveTriggerCount, HookId.AfterModifyingOrbPassiveTriggerCount, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2218,7 +2218,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingPowerAmountGiven, HookId.AfterModifyingPowerAmountGiven, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2258,7 +2258,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingPowerAmountReceived, HookId.AfterModifyingPowerAmountReceived, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2298,7 +2298,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (!HookRuntime.Contains(a.Modifiers, e.Who)) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterModifyingRewards, HookId.AfterModifyingRewards, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2339,7 +2339,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterOrbChanneled, HookId.AfterOrbChanneled, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -2379,7 +2379,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterOrbEvoked, HookId.AfterOrbEvoked, 0, l.Index, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext);
@@ -2418,7 +2418,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterOstyRevived, HookId.AfterOstyRevived, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2459,7 +2459,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStartEarly, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -2477,7 +2477,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStart, 1, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -2495,7 +2495,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPlayerTurnStart, HookId.AfterPlayerTurnStartLate, 2, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -2535,7 +2535,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPotionDiscarded, HookId.AfterPotionDiscarded, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2574,7 +2574,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPotionProcured, HookId.AfterPotionProcured, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2613,7 +2613,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPotionUsed, HookId.AfterPotionUsed, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2652,7 +2652,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPowerAmountChanged, HookId.AfterPowerAmountChanged, 0, l.Index, e.Who, ContextMode.PassedUnpushed, a.ChoiceContext);
@@ -2692,7 +2692,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (e.Who != a.Preventer) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPreventingBlockClear, HookId.AfterPreventingBlockClear, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2733,7 +2733,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (e.Who != a.Preventer) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPreventingDeath, HookId.AfterPreventingDeath, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2774,7 +2774,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 if (e.Who != a.Modifier) continue;
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterPreventingDraw, HookId.AfterPreventingDraw, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2814,7 +2814,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterRestSiteHeal, HookId.AfterRestSiteHeal, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2853,7 +2853,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterRestSiteSmith, HookId.AfterRestSiteSmith, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2892,7 +2892,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterRewardTaken, HookId.AfterRewardTaken, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2931,7 +2931,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterRoomEntered, HookId.AfterRoomEntered, 0, l.Index, e.Who, ContextMode.None, null);
@@ -2972,7 +2972,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterShuffle, HookId.AfterShuffle, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -3012,7 +3012,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterSideTurnStart, HookId.AfterSideTurnStart, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3028,7 +3028,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterSideTurnStart, HookId.AfterSideTurnStartLate, 1, l.Index, e.Who, ContextMode.None, null);
@@ -3067,7 +3067,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterStarsGained, HookId.AfterStarsGained, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3106,7 +3106,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterStarsSpent, HookId.AfterStarsSpent, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3147,7 +3147,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterSummon, HookId.AfterSummon, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -3187,7 +3187,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_AfterTakingExtraTurn, HookId.AfterTakingExtraTurn, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3227,7 +3227,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_AfterTurnEnd, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterTurnEnd, HookId.AfterSideTurnEnd, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -3238,7 +3238,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_AfterTurnEnd, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_AfterTurnEnd, HookId.AfterSideTurnEndLate, 1, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -3272,7 +3272,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeAttack, HookId.BeforeAttack, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3311,7 +3311,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeBlockGained, HookId.BeforeBlockGained, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3350,7 +3350,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeCardAutoPlayed, HookId.BeforeCardAutoPlayed, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3389,7 +3389,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeCardPlayed, HookId.BeforeCardPlayed, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3428,7 +3428,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeCardRemoved, HookId.BeforeCardRemoved, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3467,7 +3467,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeCombatStart, HookId.BeforeCombatStart, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3483,7 +3483,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeCombatStart, HookId.BeforeCombatStartLate, 1, l.Index, e.Who, ContextMode.None, null);
@@ -3524,7 +3524,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.ChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.ChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.ChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeDamageReceived, HookId.BeforeDamageReceived, 0, l.Index, e.Who, ContextMode.Passed, a.ChoiceContext);
@@ -3564,7 +3564,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeDeath, HookId.BeforeDeath, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3604,7 +3604,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeFlush, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeFlush, HookId.BeforeFlush, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -3614,7 +3614,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeFlush, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeFlush, HookId.BeforeFlushLate, 1, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -3650,7 +3650,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.PlayerChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.PlayerChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeHandDraw, HookId.BeforeHandDraw, 0, l.Index, e.Who, ContextMode.Passed, a.PlayerChoiceContext);
@@ -3668,7 +3668,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 a.PlayerChoiceContext.PushModel(e.Who);
-                var step = e.Fn(e.Who, in a, a.PlayerChoiceContext);
+                var step = e.Fn(rt.Ctx, e.Who, in a, a.PlayerChoiceContext);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeHandDraw, HookId.BeforeHandDrawLate, 1, l.Index, e.Who, ContextMode.Passed, a.PlayerChoiceContext);
@@ -3708,7 +3708,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforePotionUsed, HookId.BeforePotionUsed, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3747,7 +3747,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforePowerAmountChanged, HookId.BeforePowerAmountChanged, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3786,7 +3786,7 @@ public static partial class Hooks
             cur = null;
             while (l.Next(out var e))
             {
-                var step = e.Fn(e.Who, in a, null);
+                var step = e.Fn(rt.Ctx, e.Who, in a, null);
                 if (step.IsPaused)
                 {
                     var site = new PauseSite(HookId.Dispatch_BeforeRoomEntered, HookId.BeforeRoomEntered, 0, l.Index, e.Who, ContextMode.None, null);
@@ -3825,7 +3825,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeSideTurnStart, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeSideTurnStart, HookId.BeforeSideTurnStart, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -3859,7 +3859,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeTurnEnd, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEndVeryEarly, 0, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -3869,7 +3869,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeTurnEnd, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEndEarly, 1, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -3879,7 +3879,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 var ctx = rt.NewHookContext(HookId.Dispatch_BeforeTurnEnd, e.Who);
-                var step = e.Fn(e.Who, in a, ctx);
+                var step = e.Fn(rt.Ctx, e.Who, in a, ctx);
                 if (step.IsPaused) rt.OnPaused(new PauseSite(HookId.Dispatch_BeforeTurnEnd, HookId.BeforeSideTurnEnd, 2, l.Index, e.Who, ContextMode.PerListener, ctx), step);
             }
         }
@@ -3899,7 +3899,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyAttackHitCountArgs, int>>(HookIterator.Combat, HookId.ModifyAttackHitCount);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -3930,7 +3930,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyBlockArgs, decimal>>(HookIterator.Combat, HookId.ModifyBlockAdditive);
             while (l.Next(out var e))
             {
-                decimal d = e.Fn(e.Who, in a, v);
+                decimal d = e.Fn(rt.Ctx, e.Who, in a, v);
                 v += d;
                 if (d != 0m) (ch ??= new()).Add(e.Who);
             }
@@ -3940,7 +3940,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyBlockArgs, decimal>>(HookIterator.Combat, HookId.ModifyBlockMultiplicative);
             while (l.Next(out var e))
             {
-                decimal f = e.Fn(e.Who, in a, v);
+                decimal f = e.Fn(rt.Ctx, e.Who, in a, v);
                 v *= f;
                 if (f != 1m) (ch ??= new()).Add(e.Who);
             }
@@ -3964,7 +3964,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryOrNull<ModifyCardBeingAddedToDeckArgs, CardHandle>>(HookIterator.Run, HookId.TryModifyCardBeingAddedToDeck);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a, v, out var next) && next is { } got)
+                if (e.Fn(rt.Ctx, e.Who, in a, v, out var next) && next is { } got)
                 {
                     v = got;
                     (ch ??= new()).Add(e.Who);
@@ -3976,7 +3976,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryOrNull<ModifyCardBeingAddedToDeckArgs, CardHandle>>(HookIterator.Run, HookId.TryModifyCardBeingAddedToDeckLate);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a, v, out var next) && next is { } got)
+                if (e.Fn(rt.Ctx, e.Who, in a, v, out var next) && next is { } got)
                 {
                     v = got;
                     (ch ??= new()).Add(e.Who);
@@ -4003,7 +4003,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 int prev = v;
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
                 if (prev != v) (ch ??= new()).Add(e.Who);
             }
         }
@@ -4027,7 +4027,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 PileDest prev = v;
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
                 if (prev != v) (ch ??= new()).Add(e.Who);
             }
         }
@@ -4048,7 +4048,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryInPlace<ModifyCardRewardAlternativesArgs>>(HookIterator.Run, HookId.TryModifyCardRewardAlternatives);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
+                if (e.Fn(rt.Ctx, e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         return HookRuntime.Changed(ch);
@@ -4067,7 +4067,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyCardRewardCreationOptionsArgs, Opaque>>(HookIterator.Run, HookId.ModifyCardRewardCreationOptions);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         // pass 1: ModifyCardRewardCreationOptionsLate (fold-set)
@@ -4075,7 +4075,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyCardRewardCreationOptionsArgs, Opaque>>(HookIterator.Run, HookId.ModifyCardRewardCreationOptionsLate);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4094,7 +4094,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyCardRewardUpgradeOddsArgs, decimal>>(HookIterator.Run, HookId.ModifyCardRewardUpgradeOdds);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4134,7 +4134,7 @@ public static partial class Hooks
                 var l = rt.Listeners<HookFold<ModifyDamageArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyDamageAdditive);
                 while (l.Next(out var e))
                 {
-                    decimal d = e.Fn(e.Who, in a, v);
+                    decimal d = e.Fn(rt.Ctx, e.Who, in a, v);
                     v += d;
                     if (d != 0m) (ch ??= new()).Add(e.Who);
                 }
@@ -4147,7 +4147,7 @@ public static partial class Hooks
                 var l = rt.Listeners<HookFold<ModifyDamageArgs, decimal>>(HookIterator.RunCombat, HookId.ModifyDamageMultiplicative);
                 while (l.Next(out var e))
                 {
-                    decimal f = e.Fn(e.Who, in a, v);
+                    decimal f = e.Fn(rt.Ctx, e.Who, in a, v);
                     v *= f;
                     if (f != 1m) (ch ??= new()).Add(e.Who);
                 }
@@ -4161,7 +4161,7 @@ public static partial class Hooks
                 decimal cap = decimal.MaxValue;
                 while (l.Next(out var e))
                 {
-                    decimal c = e.Fn(e.Who, in a);
+                    decimal c = e.Fn(rt.Ctx, e.Who, in a);
                     if (c < cap)
                     {
                         cap = c;
@@ -4202,7 +4202,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTry<ModifyEnergyCostInCombatArgs, decimal>>(HookIterator.Combat, HookId.TryModifyEnergyCostInCombat);
             while (l.Next(out var e))
             {
-                e.Fn(e.Who, in a, v, out v);
+                e.Fn(rt.Ctx, e.Who, in a, v, out v);
             }
         }
         // pass 1: TryModifyEnergyCostInCombatLate (try)
@@ -4210,7 +4210,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTry<ModifyEnergyCostInCombatArgs, decimal>>(HookIterator.Combat, HookId.TryModifyEnergyCostInCombatLate);
             while (l.Next(out var e))
             {
-                e.Fn(e.Who, in a, v, out v);
+                e.Fn(rt.Ctx, e.Who, in a, v, out v);
             }
         }
         return v;
@@ -4232,7 +4232,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 decimal prev = v;
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
                 if ((int)prev != (int)v) (ch ??= new()).Add(e.Who);
             }
         }
@@ -4253,7 +4253,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyExtraRestSiteHealTextArgs, Opaque>>(HookIterator.Run, HookId.ModifyExtraRestSiteHealText);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4280,7 +4280,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyGeneratedMapArgs, Opaque>>(HookIterator.Run, HookId.ModifyGeneratedMap);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4299,7 +4299,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyGeneratedMapLateArgs, Opaque>>(HookIterator.Run, HookId.ModifyGeneratedMapLate);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4321,7 +4321,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 decimal prev = v;
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
                 if ((int)prev != (int)v) (ch ??= new()).Add(e.Who);
             }
         }
@@ -4345,7 +4345,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 decimal prev = v;
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
                 if ((int)prev != (int)v) (ch ??= new()).Add(e.Who);
             }
         }
@@ -4355,7 +4355,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 decimal prev = v;
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
                 if ((int)prev != (int)v) (ch ??= new()).Add(e.Who);
             }
         }
@@ -4381,7 +4381,7 @@ public static partial class Hooks
                 while (l.Next(out var e))
                 {
                     decimal prev = v;
-                    v = e.Fn(e.Who, in a, v);
+                    v = e.Fn(rt.Ctx, e.Who, in a, v);
                     if (decimal.Truncate(prev) != decimal.Truncate(v)) (ch ??= new()).Add(e.Who);
                 }
             }
@@ -4394,7 +4394,7 @@ public static partial class Hooks
                 while (l.Next(out var e))
                 {
                     decimal prev = v;
-                    v = e.Fn(e.Who, in a, v);
+                    v = e.Fn(rt.Ctx, e.Who, in a, v);
                     if (decimal.Truncate(prev) != decimal.Truncate(v)) (ch ??= new()).Add(e.Who);
                 }
             }
@@ -4407,7 +4407,7 @@ public static partial class Hooks
                 while (l.Next(out var e))
                 {
                     decimal prev = v;
-                    v = e.Fn(e.Who, in a, v);
+                    v = e.Fn(rt.Ctx, e.Who, in a, v);
                     if (decimal.Truncate(prev) != decimal.Truncate(v)) (ch ??= new()).Add(e.Who);
                 }
             }
@@ -4420,7 +4420,7 @@ public static partial class Hooks
                 while (l.Next(out var e))
                 {
                     decimal prev = v;
-                    v = e.Fn(e.Who, in a, v);
+                    v = e.Fn(rt.Ctx, e.Who, in a, v);
                     if (decimal.Truncate(prev) != decimal.Truncate(v)) (ch ??= new()).Add(e.Who);
                 }
             }
@@ -4441,7 +4441,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookMutate<ModifyKeywordsInCombatArgs>>(HookIterator.CombatDirect, HookId.TryModifyKeywordsInCombat);
             while (l.Next(out var e))
             {
-                e.Fn(e.Who, in a);
+                e.Fn(rt.Ctx, e.Who, in a);
             }
         }
     }
@@ -4459,7 +4459,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyMaxEnergyArgs, decimal>>(HookIterator.Combat, HookId.ModifyMaxEnergy);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4477,7 +4477,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookMutate<ModifyMerchantCardCreationResultsArgs>>(HookIterator.Run, HookId.ModifyMerchantCardCreationResults);
             while (l.Next(out var e))
             {
-                e.Fn(e.Who, in a);
+                e.Fn(rt.Ctx, e.Who, in a);
             }
         }
     }
@@ -4495,7 +4495,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyMerchantCardPoolArgs, Opaque>>(HookIterator.Run, HookId.ModifyMerchantCardPool);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4514,7 +4514,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyMerchantCardRarityArgs, Opaque>>(HookIterator.Run, HookId.ModifyMerchantCardRarity);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4533,7 +4533,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyMerchantPriceArgs, decimal>>(HookIterator.Run, HookId.ModifyMerchantPrice);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4552,7 +4552,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyNextEventArgs, Opaque>>(HookIterator.Run, HookId.ModifyNextEvent);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4571,7 +4571,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyOddsIncreaseForUnrolledRoomTypeArgs, float>>(HookIterator.Run, HookId.ModifyOddsIncreaseForUnrolledRoomType);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4593,7 +4593,7 @@ public static partial class Hooks
             while (l.Next(out var e))
             {
                 int prev = v;
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
                 if (prev != v) (ch ??= new()).Add(e.Who);
             }
         }
@@ -4614,7 +4614,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyOrbValueArgs, decimal>>(HookIterator.Combat, HookId.ModifyOrbValue);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4635,7 +4635,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyPowerAmountGivenArgs, decimal>>(HookIterator.Combat, HookId.ModifyPowerAmountGivenAdditive);
             while (l.Next(out var e))
             {
-                decimal d = e.Fn(e.Who, in a, v);
+                decimal d = e.Fn(rt.Ctx, e.Who, in a, v);
                 v += d;
                 if (d != 0m) (ch ??= new()).Add(e.Who);
             }
@@ -4645,7 +4645,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyPowerAmountGivenArgs, decimal>>(HookIterator.Combat, HookId.ModifyPowerAmountGivenMultiplicative);
             while (l.Next(out var e))
             {
-                decimal f = e.Fn(e.Who, in a, v);
+                decimal f = e.Fn(rt.Ctx, e.Who, in a, v);
                 v *= f;
                 if (f != 1m) (ch ??= new()).Add(e.Who);
             }
@@ -4669,7 +4669,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTry<ModifyPowerAmountReceivedArgs, decimal>>(HookIterator.Combat, HookId.TryModifyPowerAmountReceived);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a, v, out var next))
+                if (e.Fn(rt.Ctx, e.Who, in a, v, out var next))
                 {
                     v = next;
                     (ch ??= new()).Add(e.Who);
@@ -4693,7 +4693,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyRestSiteHealAmountArgs, decimal>>(HookIterator.Run, HookId.ModifyRestSiteHealAmount);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4712,7 +4712,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryInPlace<ModifyRestSiteHealRewardsArgs>>(HookIterator.Run, HookId.TryModifyRestSiteHealRewards);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
+                if (e.Fn(rt.Ctx, e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         return HookRuntime.Changed(ch);
@@ -4731,7 +4731,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryInPlace<ModifyRestSiteOptionsArgs>>(HookIterator.Run, HookId.TryModifyRestSiteOptions);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
+                if (e.Fn(rt.Ctx, e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         return HookRuntime.Changed(ch);
@@ -4750,7 +4750,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryInPlace<ModifyRewardsArgs>>(HookIterator.Run, HookId.TryModifyRewards);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
+                if (e.Fn(rt.Ctx, e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         // pass 1: TryModifyRewardsLate (try, changed try-true)
@@ -4758,7 +4758,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryInPlace<ModifyRewardsArgs>>(HookIterator.Run, HookId.TryModifyRewardsLate);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
+                if (e.Fn(rt.Ctx, e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         return HookRuntime.Changed(ch);
@@ -4776,7 +4776,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookMutate<ModifyShuffleOrderArgs>>(HookIterator.Combat, HookId.ModifyShuffleOrder);
             while (l.Next(out var e))
             {
-                e.Fn(e.Who, in a);
+                e.Fn(rt.Ctx, e.Who, in a);
             }
         }
     }
@@ -4805,7 +4805,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTry<ModifyStarCostArgs, decimal>>(HookIterator.Combat, HookId.TryModifyStarCost);
             while (l.Next(out var e))
             {
-                e.Fn(e.Who, in a, v, out v);
+                e.Fn(rt.Ctx, e.Who, in a, v, out v);
             }
         }
         return v;
@@ -4824,7 +4824,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifySummonAmountArgs, decimal>>(HookIterator.Combat, HookId.ModifySummonAmount);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4843,7 +4843,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyUnblockedDamageTargetArgs, CreatureRef>>(HookIterator.CombatDirect, HookId.ModifyUnblockedDamageTarget);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4862,7 +4862,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyUnknownMapPointRoomTypesArgs, Opaque>>(HookIterator.Run, HookId.ModifyUnknownMapPointRoomTypes);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4881,7 +4881,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookFold<ModifyXValueArgs, int>>(HookIterator.Combat, HookId.ModifyXValue);
             while (l.Next(out var e))
             {
-                v = e.Fn(e.Who, in a, v);
+                v = e.Fn(rt.Ctx, e.Who, in a, v);
             }
         }
         return v;
@@ -4900,7 +4900,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldAddToDeckArgs>>(HookIterator.Run, HookId.ShouldAddToDeck);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -4924,7 +4924,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldAfflictArgs>>(HookIterator.Combat, HookId.ShouldAfflict);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -4948,7 +4948,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldAllowAncientArgs>>(HookIterator.Run, HookId.ShouldAllowAncient);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -4972,7 +4972,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldAllowFreeTravelArgs>>(HookIterator.Run, HookId.ShouldAllowFreeTravel);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a))
+                if (e.Fn(rt.Ctx, e.Who, in a))
                 {
                     first = e.Who;
                     return true;
@@ -4996,7 +4996,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldAllowHittingArgs>>(HookIterator.Combat, HookId.ShouldAllowHitting);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5020,7 +5020,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldAllowMerchantCardRemovalArgs>>(HookIterator.Run, HookId.ShouldAllowMerchantCardRemoval);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5044,7 +5044,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldAllowSelectingMoreCardRewardsArgs>>(HookIterator.Run, HookId.ShouldAllowSelectingMoreCardRewards);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a))
+                if (e.Fn(rt.Ctx, e.Who, in a))
                 {
                     first = e.Who;
                     return true;
@@ -5068,7 +5068,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldAllowTargetingArgs>>(HookIterator.Combat, HookId.ShouldAllowTargeting);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5092,7 +5092,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldClearBlockArgs>>(HookIterator.Combat, HookId.ShouldClearBlock);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5116,7 +5116,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldCreatureBeRemovedFromCombatAfterDeathArgs>>(HookIterator.CombatDirect, HookId.ShouldCreatureBeRemovedFromCombatAfterDeath);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5140,7 +5140,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldDieArgs>>(HookIterator.RunCombat, HookId.ShouldDie);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5152,7 +5152,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldDieArgs>>(HookIterator.RunCombat, HookId.ShouldDieLate);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5176,7 +5176,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldDisableRemainingRestSiteOptionsArgs>>(HookIterator.Run, HookId.ShouldDisableRemainingRestSiteOptions);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5200,7 +5200,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldDrawArgs>>(HookIterator.Combat, HookId.ShouldDraw);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5224,7 +5224,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldEtherealTriggerArgs>>(HookIterator.Combat, HookId.ShouldEtherealTrigger);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5248,7 +5248,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldFlushArgs>>(HookIterator.Combat, HookId.ShouldFlush);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5272,7 +5272,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldForcePotionRewardArgs>>(HookIterator.Run, HookId.ShouldForcePotionReward);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a))
+                if (e.Fn(rt.Ctx, e.Who, in a))
                 {
                     first = e.Who;
                     return true;
@@ -5296,7 +5296,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldGainStarsArgs>>(HookIterator.Combat, HookId.ShouldGainStars);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5320,7 +5320,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldGenerateTreasureArgs>>(HookIterator.Run, HookId.ShouldGenerateTreasure);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5344,7 +5344,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldPayExcessEnergyCostWithStarsArgs>>(HookIterator.Combat, HookId.ShouldPayExcessEnergyCostWithStars);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a))
+                if (e.Fn(rt.Ctx, e.Who, in a))
                 {
                     first = e.Who;
                     return true;
@@ -5368,7 +5368,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldPlayArgs>>(HookIterator.Combat, HookId.ShouldPlay);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5392,7 +5392,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldPlayerResetEnergyArgs>>(HookIterator.Combat, HookId.ShouldPlayerResetEnergy);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5427,7 +5427,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldPowerBeRemovedOnDeathArgs>>(HookIterator.CombatDirect, HookId.ShouldPowerBeRemovedOnDeath);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5451,7 +5451,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldProceedToNextMapPointArgs>>(HookIterator.Run, HookId.ShouldProceedToNextMapPoint);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5475,7 +5475,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldProcurePotionArgs>>(HookIterator.RunCombat, HookId.ShouldProcurePotion);
             while (l.Next(out var e))
             {
-                if (!e.Fn(e.Who, in a))
+                if (!e.Fn(rt.Ctx, e.Who, in a))
                 {
                     preventer = e.Who;
                     return false;
@@ -5499,7 +5499,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldRefillMerchantEntryArgs>>(HookIterator.Run, HookId.ShouldRefillMerchantEntry);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a))
+                if (e.Fn(rt.Ctx, e.Who, in a))
                 {
                     first = e.Who;
                     return true;
@@ -5523,7 +5523,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldStopCombatFromEndingArgs>>(HookIterator.CombatDirect, HookId.ShouldStopCombatFromEnding);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a))
+                if (e.Fn(rt.Ctx, e.Who, in a))
                 {
                     first = e.Who;
                     return true;
@@ -5547,7 +5547,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookPredicate<ShouldTakeExtraTurnArgs>>(HookIterator.Combat, HookId.ShouldTakeExtraTurn);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a))
+                if (e.Fn(rt.Ctx, e.Who, in a))
                 {
                     first = e.Who;
                     return true;
@@ -5571,7 +5571,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryInPlace<TryModifyCardRewardOptionsArgs>>(HookIterator.Run, HookId.TryModifyCardRewardOptions);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
+                if (e.Fn(rt.Ctx, e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         // pass 1: TryModifyCardRewardOptionsLate (try, changed try-true)
@@ -5579,7 +5579,7 @@ public static partial class Hooks
             var l = rt.Listeners<HookTryInPlace<TryModifyCardRewardOptionsArgs>>(HookIterator.Run, HookId.TryModifyCardRewardOptionsLate);
             while (l.Next(out var e))
             {
-                if (e.Fn(e.Who, in a)) (ch ??= new()).Add(e.Who);
+                if (e.Fn(rt.Ctx, e.Who, in a)) (ch ??= new()).Add(e.Who);
             }
         }
         return HookRuntime.Changed(ch);

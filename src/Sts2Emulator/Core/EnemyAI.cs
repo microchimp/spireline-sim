@@ -4413,6 +4413,45 @@ public static class EnemyAI
         int baseDamage
     ) => DealAttackDamage(enemy, state, baseDamage);
 
+    /// <summary>
+    /// game: ColossusPower.ModifyDamageMultiplicative
+    /// Extracted from EnemyAI.DealAttackDamage; the caller keeps the condition.
+    /// Halves the integer damage, as the inline `/= 2` did.
+    /// </summary>
+    internal static int Colossus_ModifyDamageMultiplicative(int damage) => damage / 2;
+
+    /// <summary>
+    /// game: TheGambitPower.AfterDamageReceived
+    /// Extracted from EnemyAI.DealAttackDamage; the caller keeps the condition.
+    /// </summary>
+    internal static void TheGambit_AfterDamageReceived(CombatState state)
+    {
+        BuffSystem.Remove(state.PlayerBuffs, BuffId.TheGambitPower);
+        state.PlayerHp = 0;
+    }
+
+    /// <summary>
+    /// game: PaperCutsPower.AfterDamageGiven
+    /// Extracted from EnemyAI.DealAttackDamage; the caller keeps the condition.
+    /// </summary>
+    internal static void PaperCuts_AfterDamageGiven(CombatState state, int paperCuts)
+    {
+        // No hook: `CreatureCmd.SetMaxHp` does not dispatch
+        // `AfterCurrentHpChanged`, so a shrinking maximum does not re-ask Red
+        // Skull's question even though it moves the threshold.
+        state.PlayerMaxHp = Math.Max(1, state.PlayerMaxHp - paperCuts);
+        state.PlayerHp = Math.Min(state.PlayerHp, state.PlayerMaxHp);
+    }
+
+    /// <summary>
+    /// game: ImbalancedPower.AfterDamageGiven
+    /// Extracted from EnemyAI.DealAttackDamage; the caller keeps the condition.
+    /// </summary>
+    internal static void Imbalanced_AfterDamageGiven(EnemyState enemy)
+    {
+        enemy.OffBalance = true;
+    }
+
     private static bool DealAttackDamage(
         EnemyState enemy,
         CombatState state,
@@ -4446,7 +4485,7 @@ public static class EnemyAI
             && BuffSystem.Get(enemy.Buffs, BuffId.Vulnerable) > 0
         )
         {
-            damage /= 2;
+            damage = Colossus_ModifyDamageMultiplicative(damage);
         }
         int absorbed = Math.Min(state.PlayerBlock, damage);
         state.PlayerBlock -= absorbed;
@@ -4488,8 +4527,7 @@ public static class EnemyAI
         // an agent the card is cheap when it can end the run.
         if (unblocked > 0 && BuffSystem.Get(state.PlayerBuffs, BuffId.TheGambitPower) > 0)
         {
-            BuffSystem.Remove(state.PlayerBuffs, BuffId.TheGambitPower);
-            state.PlayerHp = 0;
+            TheGambit_AfterDamageReceived(state);
         }
 
         if (unblocked > 0)
@@ -4521,11 +4559,7 @@ public static class EnemyAI
             int paperCuts = BuffSystem.Get(enemy.Buffs, BuffId.PaperCuts);
             if (paperCuts > 0)
             {
-                // No hook: `CreatureCmd.SetMaxHp` does not dispatch
-                // `AfterCurrentHpChanged`, so a shrinking maximum does not re-ask Red
-                // Skull's question even though it moves the threshold.
-                state.PlayerMaxHp = Math.Max(1, state.PlayerMaxHp - paperCuts);
-                state.PlayerHp = Math.Min(state.PlayerHp, state.PlayerMaxHp);
+                PaperCuts_AfterDamageGiven(state, paperCuts);
             }
         }
 
@@ -4537,7 +4571,7 @@ public static class EnemyAI
         // takes to 0 counts, and a hit Osty soaks without block does not.
         if (enemy.DefId == KE.BowlbugRock && damage > 0 && absorbed > 0 && unblocked == 0)
         {
-            enemy.OffBalance = true;
+            Imbalanced_AfterDamageGiven(enemy);
         }
 
         ApplyPlayerThorns(enemy, state);
@@ -5327,6 +5361,41 @@ public static class EnemyAI
     }
 
     /// <summary>
+    /// game: ReattachPower.ShouldCreatureBeRemovedFromCombatAfterDeath
+    /// Extracted from EnemyAI.ShouldRemoveOnDeath; the caller keeps the condition.
+    /// </summary>
+    internal static bool Reattach_ShouldCreatureBeRemovedFromCombatAfterDeath(EnemyState enemy) =>
+        !BuffSystem.Has(enemy.Buffs, BuffId.Reattach);
+
+    /// <summary>
+    /// game: IllusionPower.ShouldCreatureBeRemovedFromCombatAfterDeath
+    /// Extracted from EnemyAI.ShouldRemoveOnDeath; the caller keeps the condition.
+    /// </summary>
+    internal static bool Illusion_ShouldCreatureBeRemovedFromCombatAfterDeath(EnemyState enemy) =>
+        !BuffSystem.Has(enemy.Buffs, BuffId.Illusion);
+
+    /// <summary>
+    /// game: AdaptablePower.ShouldCreatureBeRemovedFromCombatAfterDeath
+    /// Extracted from EnemyAI.ShouldRemoveOnDeath; the caller keeps the condition.
+    /// </summary>
+    internal static bool Adaptable_ShouldCreatureBeRemovedFromCombatAfterDeath(EnemyState enemy) =>
+        !BuffSystem.Has(enemy.Buffs, BuffId.Adaptable);
+
+    /// <summary>
+    /// game: SteamEruptionPower.ShouldCreatureBeRemovedFromCombatAfterDeath
+    /// Extracted from EnemyAI.ShouldRemoveOnDeath; the caller keeps the condition.
+    /// </summary>
+    internal static bool SteamEruption_ShouldCreatureBeRemovedFromCombatAfterDeath(EnemyState enemy) =>
+        !BuffSystem.Has(enemy.Buffs, BuffId.SteamEruption);
+
+    /// <summary>
+    /// game: PainfulStabsPower.ShouldCreatureBeRemovedFromCombatAfterDeath
+    /// Extracted from EnemyAI.ShouldRemoveOnDeath; the caller keeps the condition.
+    /// </summary>
+    internal static bool PainfulStabs_ShouldCreatureBeRemovedFromCombatAfterDeath(EnemyState enemy) =>
+        !BuffSystem.Has(enemy.Buffs, BuffId.PainfulStabs);
+
+    /// <summary>
     /// `Hook.ShouldCreatureBeRemovedFromCombatAfterDeath`: a creature that dies leaves the
     /// combat unless a power vetoes it. Unanimous consent -- the default is REMOVE, and any
     /// listener returning false keeps the creature in the roster.
@@ -5342,11 +5411,11 @@ public static class EnemyAI
     /// player-side pet, and never sits in `state.Enemies`.
     /// </remarks>
     internal static bool ShouldRemoveOnDeath(EnemyState enemy) =>
-        !BuffSystem.Has(enemy.Buffs, BuffId.Reattach)
-        && !BuffSystem.Has(enemy.Buffs, BuffId.Illusion)
-        && !BuffSystem.Has(enemy.Buffs, BuffId.Adaptable)
-        && !BuffSystem.Has(enemy.Buffs, BuffId.SteamEruption)
-        && !BuffSystem.Has(enemy.Buffs, BuffId.PainfulStabs);
+        Reattach_ShouldCreatureBeRemovedFromCombatAfterDeath(enemy)
+        && Illusion_ShouldCreatureBeRemovedFromCombatAfterDeath(enemy)
+        && Adaptable_ShouldCreatureBeRemovedFromCombatAfterDeath(enemy)
+        && SteamEruption_ShouldCreatureBeRemovedFromCombatAfterDeath(enemy)
+        && PainfulStabs_ShouldCreatureBeRemovedFromCombatAfterDeath(enemy);
 
     /// <summary>
     /// `Hook.ShouldAllowHitting`: whether a card or effect may target this creature.

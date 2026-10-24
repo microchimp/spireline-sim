@@ -121,7 +121,7 @@ class Generation(unittest.TestCase):
         self.assertEqual(F.parse_switches(None, d / "m.json"), ["F08", "F10"])
         self.assertEqual(F.parse_switches("none", d / "m.json"), [])
         self.assertEqual(F.parse_switches("f10, F08,F10"), ["F08", "F10"])
-        self.assertEqual(F.parse_switches("all"), [f"F{n:02d}" for n in range(1, 17)])
+        self.assertEqual(F.parse_switches("all"), [f"F{n:02d}" for n in range(1, 18)])
         with self.assertRaises(ValueError):
             F.parse_switches("F08,F99")
 

@@ -1,0 +1,83 @@
+{
+  "name": "rounding-order/slow-is-decimal-exact-90x3",
+  "source": "game: Hook.ModifyDamage (one decimal through the additive and multiplicative modifiers, the caps after, one int cast)",
+  "doc": "90 x 1.3 = 117 exactly in decimal. Slow's multiplier counts the cards played this turn (SlowAmount), so the scenario plays them; an applied amount does not set it.",
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {
+      "id": "HUNTER_KILLER",
+      "act": "HIVE",
+      "kind": "normal",
+      "index": 3
+    },
+    "relics": [],
+    "deck": [
+      "STRIKE_IRONCLAD"
+    ],
+    "powers": [
+      {
+        "id": "STRENGTH_POWER",
+        "target": "player",
+        "amount": 84
+      },
+      {
+        "id": "SLOW_POWER",
+        "target": "enemy:0",
+        "amount": 1
+      }
+    ],
+    "energy": 1,
+    "hand": [
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      },
+      {
+        "id": "DEFEND_IRONCLAD"
+      }
+    ]
+  },
+  "actions": [
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d1"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d2"
+    },
+    {
+      "do": "play",
+      "card": "DEFEND_IRONCLAD",
+      "name": "d3"
+    },
+    {
+      "do": "play",
+      "card": "STRIKE_IRONCLAD",
+      "target": 0,
+      "name": "hit"
+    }
+  ],
+  "expect": [
+    {
+      "path": "snapshot.enemies[0].hp",
+      "equals": 126,
+      "at": "start"
+    },
+    {
+      "path": "snapshot.enemies[0].hp",
+      "delta_from": "start",
+      "equals": -117
+    }
+  ],
+  "xfail_engines": {
+    "old": "old multiplies the int damage by 1f + 0.1f * count in float32, so 90 x 1.3 truncates to 116 where the game's one decimal chain gives 117 (fix/rounding-order 2935e9ff not landed).",
+    "core2": "old multiplies the int damage by 1f + 0.1f * count in float32, so 90 x 1.3 truncates to 116 where the game's one decimal chain gives 117 (fix/rounding-order 2935e9ff not landed). core2 runs old's rules until its family switch is on (migrated_families.json), so it fails the same way."
+  }
+}

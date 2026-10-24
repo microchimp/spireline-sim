@@ -3200,6 +3200,18 @@ public static class CombatEngine
         ?? throw new InvalidOperationException("No potion named FairyInABottle");
 
     /// <summary>
+    /// game: FairyInABottle.AfterPreventingDeath
+    /// Extracted from CombatEngine.PlayerIsDead; the caller keeps the condition.
+    /// </summary>
+    internal static void FairyInABottle_AfterPreventingDeath(CombatState state, int slot)
+    {
+        state.PotionSlots[slot] = 0;
+        state.PlayerHp = Math.Max((int)(state.PlayerMaxHp * 0.3m), 1);
+        // Thirty percent is under half, so the revive is exactly when Red Skull arms.
+        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+    }
+
+    /// <summary>
     /// Whether the player is really dead, after anything that refuses to let them be.
     /// </summary>
     /// <remarks>
@@ -3222,10 +3234,7 @@ public static class CombatEngine
             return true;
         }
 
-        state.PotionSlots[slot] = 0;
-        state.PlayerHp = Math.Max((int)(state.PlayerMaxHp * 0.3m), 1);
-        // Thirty percent is under half, so the revive is exactly when Red Skull arms.
-        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+        FairyInABottle_AfterPreventingDeath(state, slot);
         return false;
     }
 
@@ -4391,6 +4400,147 @@ public static class CombatEngine
     }
 
     /// <summary>
+    /// game: GremlinHorn.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void GremlinHorn_AfterDeath(CombatState state, Random rng)
+    {
+        Effects.CardEffects.GainEnergy(state, 1);
+        Effects.CardEffects.DrawCards(state, 1, rng);
+    }
+
+    /// <summary>
+    /// game: PossessSpeedPower.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void PossessSpeed_AfterDeath(CombatState state, EnemyState fallen)
+    {
+        // PossessSpeedPower.AfterDeath returns every point of Dexterity its owner
+        // took off the player -- so killing The Forgotten hands the whole debuff
+        // back, which the emulator never did.
+        int possessed = BuffSystem.Get(fallen.Buffs, BuffId.PossessSpeed);
+        BuffSystem.Apply(state.PlayerBuffs, BuffId.Dexterity, possessed);
+        BuffSystem.Remove(fallen.Buffs, BuffId.PossessSpeed);
+    }
+
+    /// <summary>
+    /// game: PossessStrengthPower.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void PossessStrength_AfterDeath(CombatState state, EnemyState fallen)
+    {
+        // `PossessStrengthPower.AfterDeath`, the same for The Lost's Strength.
+        // Written beside its twin rather than anywhere else, because the two
+        // being apart is how one of them stayed unmodelled.
+        int possessed = BuffSystem.Get(fallen.Buffs, BuffId.PossessStrength);
+        Effects.RelicEffects.GainPlayerStrength(state, possessed);
+        BuffSystem.Remove(fallen.Buffs, BuffId.PossessStrength);
+    }
+
+    /// <summary>
+    /// game: HexPower.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void Hex_AfterDeath(CombatState state)
+    {
+        BuffSystem.Remove(state.PlayerBuffs, BuffId.Hex);
+    }
+
+    /// <summary>
+    /// game: DampenPower.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void Dampen_AfterDeath(CombatState state)
+    {
+        Effects.CardEffects.RemoveDampen(state);
+    }
+
+    /// <summary>
+    /// game: SurprisePower.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void Surprise_AfterDeath(CombatState state, Random rng, EnemyState fallen)
+    {
+        SpawnGremlinMercReinforcements(state, rng, fallen.StolenGold);
+        // `RemoveAllPowersAfterDeath` strips the power once `AfterDeath` has run --
+        // SurprisePower claims no exemption -- so the answered corpse holds nothing
+        // open and cannot send its reinforcements twice.
+        BuffSystem.Remove(fallen.Buffs, BuffId.Surprise);
+    }
+
+    /// <summary>
+    /// game: InfestedPower.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void Infested_AfterDeath(CombatState state, Random rng, EnemyState fallen)
+    {
+        SpawnPhrogParasiteWrigglers(state, rng, fallen);
+        BuffSystem.Remove(fallen.Buffs, BuffId.Infested);
+    }
+
+    /// <summary>
+    /// game: HeistPower.BeforeDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void Heist_BeforeDeath(CombatState state, EnemyState fallen)
+    {
+        // HeistPower.BeforeDeath adds an extra REWARD, and it does so in every
+        // encounter -- the merc's own fight was excluded here, which is the one
+        // fight the power exists for. ModifyGoldGained is applied when the row is
+        // claimed, the way it is for the fight's ordinary gold.
+        state.StolenBackGold += fallen.HeistGold;
+        fallen.HeistGold = 0;
+        BuffSystem.Remove(fallen.Buffs, BuffId.Heist);
+    }
+
+    /// <summary>
+    /// game: SwipePower.BeforeDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void Swipe_BeforeDeath(CombatState state, EnemyState fallen, CardInstance swiped)
+    {
+        state.StolenBackCards.Add(swiped);
+        fallen.StolenCard = null;
+        BuffSystem.Remove(fallen.Buffs, BuffId.Swipe);
+    }
+
+    /// <summary>
+    /// game: ConstrictPower.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// </summary>
+    internal static void Constrict_AfterDeath(CombatState state)
+    {
+        BuffSystem.Remove(state.PlayerBuffs, BuffId.Constrict);
+    }
+
+    /// <summary>
+    /// game: RavenousPower.AfterDeath
+    /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
+    /// Every living creature carrying the power reacts to the death, whoever died.
+    /// </summary>
+    internal static void Ravenous_AfterDeath(CombatState state)
+    {
+        foreach (var enemy in state.Enemies.Where(e => e.Hp > 0))
+        {
+            int ravenous = BuffSystem.Get(enemy.Buffs, BuffId.Ravenous);
+            if (ravenous <= 0)
+            {
+                continue;
+            }
+
+            BuffSystem.Apply(enemy.Buffs, BuffId.Strength, ravenous);
+            BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+            // The readout changes the moment the ally dies: a live capture shows the
+            // surviving slug announcing a Stun, not the attack it was going to make.
+            // Leaving the old intent up told an agent to expect 12 damage from a
+            // creature that is about to sit the turn out. Unknown is what a stunned
+            // enemy already announces elsewhere (TerrorEel does it this way).
+            enemy.CurrentIntent = new Intent(IntentType.Unknown, 0);
+            enemy.SecondaryIntent = null;
+        }
+    }
+
+    /// <summary>
     /// The death answer itself: for each of <paramref name="dead" /> in turn, every death
     /// hook, then its revive or its spawns; then the corpse sweep.
     /// </summary>
@@ -4421,8 +4571,7 @@ public static class CombatEngine
             // rather than after them.
             if (Effects.RelicEffects.Has(state.Relics, Effects.RelicEffects.GremlinHorn))
             {
-                Effects.CardEffects.GainEnergy(state, 1);
-                Effects.CardEffects.DrawCards(state, 1, rng);
+                GremlinHorn_AfterDeath(state, rng);
             }
 
             // Side effects of a death that are nobody's revive, and so must not sit in
@@ -4437,22 +4586,12 @@ public static class CombatEngine
 
             if (BuffSystem.Get(fallen.Buffs, BuffId.PossessSpeed) > 0)
             {
-                // PossessSpeedPower.AfterDeath returns every point of Dexterity its owner
-                // took off the player -- so killing The Forgotten hands the whole debuff
-                // back, which the emulator never did.
-                int possessed = BuffSystem.Get(fallen.Buffs, BuffId.PossessSpeed);
-                BuffSystem.Apply(state.PlayerBuffs, BuffId.Dexterity, possessed);
-                BuffSystem.Remove(fallen.Buffs, BuffId.PossessSpeed);
+                PossessSpeed_AfterDeath(state, fallen);
             }
 
             if (BuffSystem.Get(fallen.Buffs, BuffId.PossessStrength) > 0)
             {
-                // `PossessStrengthPower.AfterDeath`, the same for The Lost's Strength.
-                // Written beside its twin rather than anywhere else, because the two
-                // being apart is how one of them stayed unmodelled.
-                int possessed = BuffSystem.Get(fallen.Buffs, BuffId.PossessStrength);
-                Effects.RelicEffects.GainPlayerStrength(state, possessed);
-                BuffSystem.Remove(fallen.Buffs, BuffId.PossessStrength);
+                PossessStrength_AfterDeath(state, fallen);
             }
 
             // `ShrinkPower.AfterDeath`: the Shrink goes with the beetle that applied it,
@@ -4465,7 +4604,7 @@ public static class CombatEngine
             // is the applier's.
             if (fallen.DefId == KE.SpectralKnight)
             {
-                BuffSystem.Remove(state.PlayerBuffs, BuffId.Hex);
+                Hex_AfterDeath(state);
             }
 
             // `DampenPower.AfterDeath`: the power tracks the CASTERS that applied it and
@@ -4480,7 +4619,7 @@ public static class CombatEngine
                 )
             )
             {
-                Effects.CardEffects.RemoveDampen(state);
+                Dampen_AfterDeath(state);
             }
 
             // The revive chain proper: at most one of these applies, and the ones that
@@ -4488,11 +4627,7 @@ public static class CombatEngine
             // it-really-died work below.
             if (BuffSystem.Get(fallen.Buffs, BuffId.Surprise) > 0)
             {
-                SpawnGremlinMercReinforcements(state, rng, fallen.StolenGold);
-                // `RemoveAllPowersAfterDeath` strips the power once `AfterDeath` has run --
-                // SurprisePower claims no exemption -- so the answered corpse holds nothing
-                // open and cannot send its reinforcements twice.
-                BuffSystem.Remove(fallen.Buffs, BuffId.Surprise);
+                Surprise_AfterDeath(state, rng, fallen);
             }
             else if (TryReviveIllusion(fallen))
             {
@@ -4518,18 +4653,11 @@ public static class CombatEngine
 
             if (BuffSystem.Get(fallen.Buffs, BuffId.Infested) > 0)
             {
-                SpawnPhrogParasiteWrigglers(state, rng, fallen);
-                BuffSystem.Remove(fallen.Buffs, BuffId.Infested);
+                Infested_AfterDeath(state, rng, fallen);
             }
             else if (fallen.DefId == KE.FatGremlin && !fallen.Escaped && fallen.HeistGold > 0)
             {
-                // HeistPower.BeforeDeath adds an extra REWARD, and it does so in every
-                // encounter -- the merc's own fight was excluded here, which is the one
-                // fight the power exists for. ModifyGoldGained is applied when the row is
-                // claimed, the way it is for the fight's ordinary gold.
-                state.StolenBackGold += fallen.HeistGold;
-                fallen.HeistGold = 0;
-                BuffSystem.Remove(fallen.Buffs, BuffId.Heist);
+                Heist_BeforeDeath(state, fallen);
             }
 
             // `SwipePower.BeforeDeath` gives the stolen card back -- but only on DEATH.
@@ -4537,36 +4665,17 @@ public static class CombatEngine
             // checked here exactly as it is for the Heist above.
             if (fallen.StolenCard is { } swiped && !fallen.Escaped)
             {
-                state.StolenBackCards.Add(swiped);
-                fallen.StolenCard = null;
-                BuffSystem.Remove(fallen.Buffs, BuffId.Swipe);
+                Swipe_BeforeDeath(state, fallen, swiped);
             }
 
             if (fallen.DefId == KE.SlitheringStrangler)
             {
-                BuffSystem.Remove(state.PlayerBuffs, BuffId.Constrict);
+                Constrict_AfterDeath(state);
             }
 
             Effects.CardEffects.CheapenMelancholyForDeath(state);
 
-            foreach (var enemy in state.Enemies.Where(e => e.Hp > 0))
-            {
-                int ravenous = BuffSystem.Get(enemy.Buffs, BuffId.Ravenous);
-                if (ravenous <= 0)
-                {
-                    continue;
-                }
-
-                BuffSystem.Apply(enemy.Buffs, BuffId.Strength, ravenous);
-                BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
-                // The readout changes the moment the ally dies: a live capture shows the
-                // surviving slug announcing a Stun, not the attack it was going to make.
-                // Leaving the old intent up told an agent to expect 12 damage from a
-                // creature that is about to sit the turn out. Unknown is what a stunned
-                // enemy already announces elsewhere (TerrorEel does it this way).
-                enemy.CurrentIntent = new Intent(IntentType.Unknown, 0);
-                enemy.SecondaryIntent = null;
-            }
+            Ravenous_AfterDeath(state);
 
             // `SteamEruptionPower.AfterDeath` -> `TriggerAboutToBlowState`. Not in the
             // revive chain above, because this death is a REAL one: `Hook.AfterDeath` runs
@@ -4599,6 +4708,41 @@ public static class CombatEngine
     }
 
     /// <summary>
+    /// game: SteamEruptionPower.ShouldStopCombatFromEnding
+    /// Extracted from CombatEngine.HoldsTheFightOpen; the caller keeps the condition.
+    /// </summary>
+    internal static bool SteamEruption_ShouldStopCombatFromEnding(EnemyState enemy) =>
+        BuffSystem.Has(enemy.Buffs, BuffId.SteamEruption);
+
+    /// <summary>
+    /// game: AdaptablePower.ShouldStopCombatFromEnding
+    /// Extracted from CombatEngine.HoldsTheFightOpen; the caller keeps the condition.
+    /// </summary>
+    internal static bool Adaptable_ShouldStopCombatFromEnding(EnemyState enemy) =>
+        BuffSystem.Get(enemy.Buffs, BuffId.Adaptable) > 0;
+
+    /// <summary>
+    /// game: SurprisePower.ShouldStopCombatFromEnding
+    /// Extracted from CombatEngine.HoldsTheFightOpen; the caller keeps the condition.
+    /// </summary>
+    internal static bool Surprise_ShouldStopCombatFromEnding(EnemyState enemy) =>
+        BuffSystem.Get(enemy.Buffs, BuffId.Surprise) > 0;
+
+    /// <summary>
+    /// game: InfestedPower.ShouldStopCombatFromEnding
+    /// Extracted from CombatEngine.HoldsTheFightOpen; the caller keeps the condition.
+    /// </summary>
+    internal static bool Infested_ShouldStopCombatFromEnding(EnemyState enemy) =>
+        BuffSystem.Get(enemy.Buffs, BuffId.Infested) > 0;
+
+    /// <summary>
+    /// game: StockPower.ShouldStopCombatFromEnding
+    /// Extracted from CombatEngine.HoldsTheFightOpen; the caller keeps the condition.
+    /// </summary>
+    internal static bool Stock_ShouldStopCombatFromEnding(EnemyState enemy) =>
+        BuffSystem.Get(enemy.Buffs, BuffId.Stock) > 0;
+
+    /// <summary>
     /// Whether this creature holds the fight open: it carries one of the five powers whose
     /// `ShouldStopCombatFromEnding` is true, which `CombatManager.IsEnding` asks of every
     /// hook listener once no primary enemy is left (CombatManager.cs:181-203,
@@ -4621,11 +4765,11 @@ public static class CombatEngine
     /// power is gone from the corpse, or the creature is standing again.
     /// </remarks>
     private static bool HoldsTheFightOpen(EnemyState enemy) =>
-        BuffSystem.Has(enemy.Buffs, BuffId.SteamEruption)
-        || BuffSystem.Get(enemy.Buffs, BuffId.Adaptable) > 0
-        || BuffSystem.Get(enemy.Buffs, BuffId.Surprise) > 0
-        || BuffSystem.Get(enemy.Buffs, BuffId.Infested) > 0
-        || BuffSystem.Get(enemy.Buffs, BuffId.Stock) > 0;
+        SteamEruption_ShouldStopCombatFromEnding(enemy)
+        || Adaptable_ShouldStopCombatFromEnding(enemy)
+        || Surprise_ShouldStopCombatFromEnding(enemy)
+        || Infested_ShouldStopCombatFromEnding(enemy)
+        || Stock_ShouldStopCombatFromEnding(enemy);
 
     /// <summary>
     /// Whether this creature's death holds the fight open and has not been answered yet.
@@ -5011,6 +5155,19 @@ public static class CombatEngine
     /// against the emulator's first LIVING enemy, so every blow the player spent on the
     /// illusion landed on the Fogmog instead and the fight ended floors early.
     /// </remarks>
+    /// <summary>What the Fogmog illusion's death strips (<see cref="TryReviveIllusion" />): every debuff. Shared with the
+    /// kernel's kill (Core2 <c>OldRoster.StripCorpse</c>), which strips the buffs of a corpse that stays in the roster
+    /// that the game's power removal does not reach.</summary>
+    internal static bool IllusionDeathStrips(BuffId id) => BuffSystem.IsDebuff(id);
+
+    /// <summary>What a Decimillipede segment's death strips (<see cref="TryReattachSegment" />): everything but its Reattach
+    /// and the Reviving bookkeeping. Shared with the kernel's kill.</summary>
+    internal static bool ReattachDeathStrips(BuffId id) => id is not (BuffId.Reattach or BuffId.Reviving);
+
+    /// <summary>What an Axebot's death strips (<see cref="TryRespawnAxebot" /> clears every buff and re-applies the Stock it
+    /// read): everything but the Stock the respawn reads and the Reviving bookkeeping. Shared with the kernel's kill.</summary>
+    internal static bool AxebotDeathStrips(BuffId id) => id is not (BuffId.Stock or BuffId.Reviving);
+
     private static bool TryReviveIllusion(EnemyState enemy)
     {
         if (BuffSystem.Get(enemy.Buffs, BuffId.Illusion) <= 0)
@@ -5026,7 +5183,7 @@ public static class CombatEngine
         // The death strips every power `Hook.ShouldPowerBeRemovedOnDeath` does not veto, and
         // `IllusionPower` vetoes only buffs and temporary debuffs: a debuff that is not an
         // `ITemporaryPower` (Vulnerable, Weak, Poison ...) goes with the death.
-        enemy.Buffs.RemoveAll(buff => BuffSystem.IsDebuff(buff.Id));
+        enemy.Buffs.RemoveAll(buff => IllusionDeathStrips(buff.Id));
         BuffSystem.Apply(enemy.Buffs, BuffId.Reviving, 1);
         // A HealIntent, so the readout says what the turn will be spent on.
         enemy.CurrentIntent = new Intent(IntentType.Buff, 0);
@@ -5084,7 +5241,7 @@ public static class CombatEngine
         // Kept: Reattach itself, and the Reviving bookkeeping applied just below. Without
         // this a segment that died mid-fight came back with every point of Strength it had
         // ever gained, and announced damage the game never deals.
-        enemy.Buffs.RemoveAll(buff => buff.Id is not (BuffId.Reattach or BuffId.Reviving));
+        enemy.Buffs.RemoveAll(buff => ReattachDeathStrips(buff.Id));
 
         // TWO, not one, for a death on the player's turn: the phase it dies in is not the
         // phase it reattaches in. See the revive loop in EndTurn. A death on the ENEMY turn

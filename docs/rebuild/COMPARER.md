@@ -65,7 +65,7 @@ kernel attached, so it has old's limits and is judged by old's rows; an engine w
 so a new state is judged without the old engine's rows.
 
 A row that could hide a rule difference lists its `families` (ids of `hook_families.json`): fight-lost and after-fight-turn-state
-F10 (death / victory), cost-outside-hand F07 (costs). core2 inherits an old row only while none of its families is in
+F10 (death), F17 (combat end), cost-outside-hand F07 (costs). core2 inherits an old row only while none of its families is in
 `migrated_families.json`: a migrated family is a part of the rules core2 runs in the game's structure, so what the row waived
 (a lost fight's enemy phase and leftovers, the costs of cards outside the hand, the energy and round after a fight) is compared
 on core2 from then on (`for_engine(rows, engine, migrated=)`, `compare_fight(..., migrated=)`; default: the file). A row with no

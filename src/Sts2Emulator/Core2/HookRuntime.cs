@@ -164,24 +164,26 @@ public readonly record struct HookStatus(PauseSite? Site, HookStep Step, PassSna
 /// <summary>One entry of a pass's listener snapshot: the listener and its handler for the pass's hook.</summary>
 public readonly record struct HookListener<THandler>(ListenerRef Who, THandler Fn) where THandler : Delegate;
 
-// Handler shapes, one per pass op (section 4). TArgs is the dispatcher's generated argument record.
-public delegate HookStep HookEvent<TArgs>(ListenerRef self, in TArgs a, ChoiceCtx? ctx) where TArgs : struct;
+// Handler shapes, one per pass op (section 4). TArgs is the dispatcher's generated argument record. Every handler takes
+// the handler context first (HookCtx: the one way to the combat it acts in, TIER1_KERNEL.md section 4), then the
+// listener it runs for, then the arguments.
+public delegate HookStep HookEvent<TArgs>(HookCtx k, ListenerRef self, in TArgs a, ChoiceCtx? ctx) where TArgs : struct;
 /// <summary>fold-add returns the addend, fold-mul the factor, fold-set the new value.</summary>
-public delegate TValue HookFold<TArgs, TValue>(ListenerRef self, in TArgs a, TValue current) where TArgs : struct;
+public delegate TValue HookFold<TArgs, TValue>(HookCtx k, ListenerRef self, in TArgs a, TValue current) where TArgs : struct;
 /// <summary>fold-cap: the listener's cap (the pass keeps the running minimum).</summary>
-public delegate TValue HookCap<TArgs, TValue>(ListenerRef self, in TArgs a) where TArgs : struct;
+public delegate TValue HookCap<TArgs, TValue>(HookCtx k, ListenerRef self, in TArgs a) where TArgs : struct;
 /// <summary>try: whether the listener changed the value, and the value.</summary>
-public delegate bool HookTry<TArgs, TValue>(ListenerRef self, in TArgs a, TValue current, out TValue next)
+public delegate bool HookTry<TArgs, TValue>(HookCtx k, ListenerRef self, in TArgs a, TValue current, out TValue next)
     where TArgs : struct;
 /// <summary>try whose condition also needs the listener's new value to be present ("also": out-not-null): a true
 /// answer with no value changes nothing.</summary>
-public delegate bool HookTryOrNull<TArgs, TValue>(ListenerRef self, in TArgs a, TValue current, out TValue? next)
+public delegate bool HookTryOrNull<TArgs, TValue>(HookCtx k, ListenerRef self, in TArgs a, TValue current, out TValue? next)
     where TArgs : struct where TValue : struct;
 /// <summary>try without a value: the listener changes its arguments in place and says whether it did.</summary>
-public delegate bool HookTryInPlace<TArgs>(ListenerRef self, in TArgs a) where TArgs : struct;
-public delegate bool HookPredicate<TArgs>(ListenerRef self, in TArgs a) where TArgs : struct;
+public delegate bool HookTryInPlace<TArgs>(HookCtx k, ListenerRef self, in TArgs a) where TArgs : struct;
+public delegate bool HookPredicate<TArgs>(HookCtx k, ListenerRef self, in TArgs a) where TArgs : struct;
 /// <summary>mutate: the listener changes a mutable argument in place (a list it may reorder, a set, a game object).</summary>
-public delegate void HookMutate<TArgs>(ListenerRef self, in TArgs a) where TArgs : struct;
+public delegate void HookMutate<TArgs>(HookCtx k, ListenerRef self, in TArgs a) where TArgs : struct;
 
 /// <summary>A dispatcher's passes as one call, for a step that runs them more than once (preview-hittable).</summary>
 public delegate decimal HookPasses<TArgs>(HookRuntime rt, in TArgs a, decimal value,
@@ -192,6 +194,9 @@ public delegate decimal HookPasses<TArgs>(HookRuntime rt, in TArgs a, decimal va
 /// </summary>
 public abstract class HookRuntime
 {
+    /// <summary>The handler context of this runtime: the first argument of every handler the dispatchers call.</summary>
+    public HookCtx Ctx => new(this);
+
     /// <summary>Whether any switched-on listener handles this hook virtual (the dispatcher's zero-listener fast path).</summary>
     public abstract bool HasAny(HookId hook);
 

@@ -3,7 +3,7 @@ using Sts2Emulator.Core.Rng;
 
 namespace Sts2Emulator.Core.Run;
 
-public sealed class RunEngine
+public sealed class RunEngine : Core2.ICombatEndHost
 {
     public RunState State { get; private set; } = new();
 
@@ -1359,7 +1359,8 @@ public sealed class RunEngine
     /// The executor's host for one step: a player action's body is <see cref="StepInner" />, or, for a combat stepped on
     /// its own (<see cref="StepCombat" />), the combat engine's step on the caller's stream.
     /// </summary>
-    private sealed class QueueHost(RunEngine engine, Sts2Emulator.Core.CombatState combat, Random? bare) : Core2.IActionHost
+    private sealed class QueueHost(RunEngine engine, Sts2Emulator.Core.CombatState combat, Random? bare)
+        : Core2.IActionHost, Core2.ICombatEndHost
     {
         public bool Ran;
         public int Status;
@@ -1376,6 +1377,10 @@ public sealed class RunEngine
                 var r = Sts2Emulator.Core.CombatEngine.Step(combat, action, bare, target);
                 Result = r;
                 (Reward, Terminal) = (r.Reward, r.Terminal);
+                if (r.Terminal && combat.Kernel is { } k && k.On(Core2.Switch.F10))
+                {
+                    Core2.CombatEnd.OldStepEnded(k, r.PlayerWon, this);
+                }
             }
             else
             {
@@ -1398,13 +1403,31 @@ public sealed class RunEngine
             return combat.PendingSelection is { Replay: not null, KernelAction: 0 };
         }
 
+        // game: CombatManager.IsInProgress: Core2's with F10 on (CombatEnd), else the old gate.
         public bool InProgress =>
             (bare is not null || ReferenceEquals(engine.State.ActiveCombat, combat))
-            && !Sts2Emulator.Core.CombatEngine.IsOverOrEnding(combat);
+            && (combat.Kernel is { } k && k.On(Core2.Switch.F10)
+                ? Core2.CombatEnd.IsInProgress(k)
+                : !Sts2Emulator.Core.CombatEngine.IsOverOrEnding(combat));
 
-        // The old step checks the win condition inside itself; the boundary's check reads it (F10 moves it here).
+        // game: CheckWinCondition at the executor's boundary (called with F10 on only). A combat that ends here hands off
+        // to the run engine's FinishCombat (a combat stepped on its own: this host), whose result is the step's.
         public void CheckWin(Core2.KernelState k)
         {
+            if (bare is not null)
+            {
+                Core2.CombatEnd.AfterAction(k, this);
+                return;
+            }
+
+            Core2.CombatEnd.AfterAction(k, engine);
+            Status = engine.TakeHandOff(Status, ref Terminal);
+        }
+
+        // A combat stepped on its own has no run to finish: its end is the step's terminal result.
+        public void EndCombat(Core2.KernelState k, bool playerWon)
+        {
+            Terminal = true;
         }
     }
 
@@ -1578,6 +1601,15 @@ public sealed class RunEngine
             }
             if (result.Terminal)
             {
+                // With F10 on the combat's end is Core2's (CombatEnd.CheckWinCondition), which hands it back to
+                // FinishCombat once (the F17 hand-off). Until R4 reroutes the old in-step check, its point stands for the
+                // game's (CombatEnd.OldStepEnded).
+                if (State.ActiveCombat?.Kernel is { } k && k.On(Core2.Switch.F10))
+                {
+                    terminal = false;
+                    Core2.CombatEnd.OldStepEnded(k, result.PlayerWon, this);
+                    return TakeHandOff(0, ref terminal);
+                }
                 return FinishCombat(result.PlayerWon, out terminal);
             }
             return 0;
@@ -1648,8 +1680,38 @@ public sealed class RunEngine
     /// replay resolves (<see cref="DebugResolveCombat" />) leave through this one door, so
     /// the two cannot drift apart.
     /// </summary>
+    /// <summary>What the F17 hand-off's FinishCombat returned, until the step that caused it takes it.</summary>
+    private (int Status, bool Terminal)? _handOff;
+
+    /// <summary>
+    /// The F17 hand-off (Core2.ICombatEndHost; only with F10 on): Core2 decided the combat ended, after IsInProgress went
+    /// false, at the game's EndCombatInternal point (or ProcessPendingLoss): the old end of the fight runs once, with the
+    /// arguments the old in-step caller passed.
+    /// </summary>
+    void Core2.ICombatEndHost.EndCombat(Core2.KernelState k, bool playerWon)
+    {
+        State.LastPlayerWon = playerWon;
+        int status = FinishCombat(playerWon, out bool terminal);
+        _handOff = (status, terminal);
+    }
+
+    /// <summary>The hand-off's status and terminal flag when one ran since the last take, else <paramref name="status" />
+    /// and <paramref name="terminal" /> unchanged.</summary>
+    private int TakeHandOff(int status, ref bool terminal)
+    {
+        if (_handOff is not { } h)
+            return status;
+        _handOff = null;
+        terminal = h.Terminal;
+        return h.Status;
+    }
+
+    /// <summary>How many times <see cref="FinishCombat" /> ran (the F17 hand-off's test: once per combat).</summary>
+    internal int FinishCombatCalls { get; private set; }
+
     private int FinishCombat(bool playerWon, out bool terminal)
     {
+        FinishCombatCalls++;
         terminal = true;
         // `RoyaltiesPower.AfterCombatEnd` and
         // `ForbiddenGrimoirePower.AfterCombatEnd` each hang an extra reward on the

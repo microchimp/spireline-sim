@@ -153,7 +153,7 @@ class ListenerCheck(unittest.TestCase):
 
     def test_real_family_file_places_the_dispatchers(self):
         hooks, names = lc.load_families()
-        self.assertEqual(len(names), 16)
+        self.assertEqual(len(names), 17)
         for dispatcher, fam in {"AfterCardDrawn": "F11", "ModifyDamage": "F08", "ModifyEnergyCostInCombat": "F07", "ShouldPlay": "F06",
                                 "ModifyBlock": "F09", "ModifyHpLost": "F08", "BeforeTurnEnd": "F05", "AfterTurnEnd": "F05", "AfterActEntered": "F16", "ModifyMaxEnergy": "F03"}.items():
             self.assertEqual(lc.family_of(dispatcher, hooks), fam, dispatcher)

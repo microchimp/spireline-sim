@@ -337,4 +337,11 @@ public enum HookId : ushort
     Dispatch_ShouldStopCombatFromEnding,
     Dispatch_ShouldTakeExtraTurn,
     Dispatch_TryModifyCardRewardOptions,
+
+    // pseudo-hooks: the kill sequence's model calls that are not Hook virtuals (tools/kernel/port_list.py
+    // PSEUDO_HOOKS); Core2/Commands dispatches each to the one model it belongs to
+    AfterRemoved,
+    BeforeRemovedFromRoom,
+    Died,
+    ShouldPowerBeRemovedAfterOwnerDeath,
 }

@@ -91,9 +91,24 @@ public class KernelTests
     }
 
     [Fact]
+    public void TheDamageAndDeathFamiliesSwitchTogetherAndApartFromTheOthers()
+    {
+        // F08 and F10 share EnemyAI.ShouldRemoveOnDeath and RelicEffects.ApplyAfterPlayerHpChanged; the other bridges of
+        // F10 (Doom's turn end, Fur Coat's bite, the combat-end hooks now F17) are split or re-cut (tools/kernel/sites.py).
+        Assert.Contains(SwitchGroups.Groups, g => g.Length == 2 && g.Contains(Switch.F08) && g.Contains(Switch.F10));
+        var both = new KernelOptions([Switch.F08, Switch.F10]);
+        Assert.True(both.Switches.SetEquals([Switch.F08, Switch.F10]));
+        Assert.Throws<ArgumentException>(() => new KernelOptions([Switch.F08]));
+        Assert.Throws<ArgumentException>(() => new KernelOptions([Switch.F10]));
+        Assert.Equal(Switch.F17, SwitchGroups.FamilyOf(HookId.AfterCombatVictory));
+        Assert.Equal(Switch.F10, SwitchGroups.FamilyOf(HookId.AfterDeath));
+        Assert.Equal(Switch.F08, SwitchGroups.FamilyOf(HookId.ModifyDamageAdditive));
+    }
+
+    [Fact]
     public void HandlersAreKeyedByGameModelWithAPerModelMask()
     {
-        HookEvent<AfterCardPlayedArgs> ev = (ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) => HookStep.Done;
+        HookEvent<AfterCardPlayedArgs> ev = (HookCtx _, ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) => HookStep.Done;
         string akabeko = Name("relics", 1);
         var k = K(Every, t => t.Model(ListenerKind.Relic, akabeko).On(HookId.AfterCardPlayed, ev)
             .On(HookId.AfterCardPlayedLate, ev));
@@ -143,7 +158,7 @@ public class KernelTests
     public void ATestHandlerIsDispatchedInGameOrderWithItsArguments()
     {
         var seen = new List<(ListenerRef Who, int Play, bool Pushed)>();
-        HookEvent<AfterCardPlayedArgs> ev = (ListenerRef self, in AfterCardPlayedArgs a, ChoiceCtx? ctx) =>
+        HookEvent<AfterCardPlayedArgs> ev = (HookCtx _, ListenerRef self, in AfterCardPlayedArgs a, ChoiceCtx? ctx) =>
         {
             seen.Add((self, a.CardPlay.Id, ctx is not null && ctx.Models.Count == 1 && ctx.Models[0] == self));
             return HookStep.Done;
@@ -177,8 +192,8 @@ public class KernelTests
     [Fact] // game: Hook.ModifyHandDraw (fold-set over two passes, changed by int-ne)
     public void AFoldRunsThroughTheRuntimeAndReportsWhoChangedIt()
     {
-        HookFold<ModifyHandDrawArgs, decimal> plusOne = (ListenerRef _, in ModifyHandDrawArgs _, decimal v) => v + 1;
-        HookFold<ModifyHandDrawArgs, decimal> same = (ListenerRef _, in ModifyHandDrawArgs _, decimal v) => v + 0.5m;
+        HookFold<ModifyHandDrawArgs, decimal> plusOne = (HookCtx _, ListenerRef _, in ModifyHandDrawArgs _, decimal v) => v + 1;
+        HookFold<ModifyHandDrawArgs, decimal> same = (HookCtx _, ListenerRef _, in ModifyHandDrawArgs _, decimal v) => v + 0.5m;
         var k = K(Every, t =>
         {
             t.Model(ListenerKind.Relic, Name("relics", 2)).On(HookId.ModifyHandDraw, plusOne);
@@ -194,12 +209,12 @@ public class KernelTests
     public void AHandlerOfASwitchedOffGroupNeverRuns()
     {
         int draws = 0, plays = 0;
-        HookFold<ModifyHandDrawArgs, decimal> draw = (ListenerRef _, in ModifyHandDrawArgs _, decimal v) =>
+        HookFold<ModifyHandDrawArgs, decimal> draw = (HookCtx _, ListenerRef _, in ModifyHandDrawArgs _, decimal v) =>
         {
             draws++;
             return v + 1;
         };
-        HookEvent<AfterCardPlayedArgs> play = (ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) =>
+        HookEvent<AfterCardPlayedArgs> play = (HookCtx _, ListenerRef _, in AfterCardPlayedArgs _, ChoiceCtx? _) =>
         {
             plays++;
             return HookStep.Done;
@@ -222,13 +237,13 @@ public class KernelTests
     public void PausesAreRecordedAsHookActionsOrStops()
     {
         var order = new List<int>();
-        HookEvent<AfterTurnEndArgs> end = (ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? ctx) =>
+        HookEvent<AfterTurnEndArgs> end = (HookCtx _, ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? ctx) =>
         {
             order.Add(self.ModelId);
             Assert.Equal(HookId.Dispatch_AfterTurnEnd, ctx!.Dispatcher);
             return self.ModelId == 3 ? HookStep.Paused("choose", new TestResume()) : HookStep.Done;
         };
-        HookEvent<AfterCardPlayedArgs> play = (ListenerRef self, in AfterCardPlayedArgs _, ChoiceCtx? _) =>
+        HookEvent<AfterCardPlayedArgs> play = (HookCtx _, ListenerRef self, in AfterCardPlayedArgs _, ChoiceCtx? _) =>
         {
             order.Add(-self.ModelId);
             return self.ModelId == 1 ? HookStep.Paused("choose", new TestResume()) : HookStep.Done;
@@ -274,9 +289,6 @@ public class KernelTests
         }
 
         Assert.False(k.World.InSetup);
-        using (Kernel.Marks.DeactivatePlayerHooks(s))
-            Assert.False(OldState.PlayerActive(k.World));
-        Assert.True(OldState.PlayerActive(k.World));
         var enemy = s.Enemies[0];
         using (Kernel.Marks.MarkDying(s, enemy))
             Assert.True(k.World.IsDying(enemy));
@@ -285,22 +297,28 @@ public class KernelTests
             Assert.Equal(PlayerHooks.Active, k.World.PlayerHooks);
         Assert.Equal(PlayerHooks.Undeclared, k.World.PlayerHooks);
         // A nested scope restores what it replaced, not the default; a scope disposed twice restores once.
-        using (Kernel.Marks.DeactivatePlayerHooks(s))
-        {
-            var inner = Kernel.Marks.KeepPlayerHooks(s);
-            Assert.Equal(PlayerHooks.Active, k.World.PlayerHooks);
-            inner.Dispose();
-            inner.Dispose();
-            Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
-        }
-
+        var outer = Kernel.Marks.KeepPlayerHooks(s);
+        var inner = Kernel.Marks.KeepPlayerHooks(s);
+        inner.Dispose();
+        inner.Dispose();
+        Assert.Equal(PlayerHooks.Active, k.World.PlayerHooks);
+        outer.Dispose();
         Assert.Equal(PlayerHooks.Undeclared, k.World.PlayerHooks);
+        // Deactivated is absorbing (the game never scopes DeactivateHooks): no scope end restores an earlier state, and a
+        // keep opened once it is set does nothing.
+        using (Kernel.Marks.KeepPlayerHooks(s))
+            Kernel.Marks.DeactivatePlayerHooks(s).Dispose();
+        Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
+        Assert.False(OldState.PlayerActive(k.World));
+        using (Kernel.Marks.KeepPlayerHooks(s))
+            Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
+        Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
     }
 
     // One handler set for the tests below: relic 3 asks the player at the end of the turn (a per-listener pause).
     private static void PauseAtRelic3(HandlerTable t)
     {
-        HookEvent<AfterTurnEndArgs> end = (ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? _) =>
+        HookEvent<AfterTurnEndArgs> end = (HookCtx _, ListenerRef self, in AfterTurnEndArgs _, ChoiceCtx? _) =>
             self.ModelId == 3 ? HookStep.Paused("choose", new TestResume()) : HookStep.Done;
         foreach (int r in new[] { 1, 2, 3 })
             t.Model(ListenerKind.Relic, Name("relics", r)).On(HookId.AfterSideTurnEnd, end);
@@ -412,9 +430,10 @@ public class KernelTests
         k.OnPaused(site with { Context = ContextMode.Passed }, HookStep.Paused("choose", new TestResume()));
         k.WaitAll(HookId.Dispatch_AfterTurnEnd, 0);
         Hooks.AfterTurnEnd(k, TurnEnd);
-        // The fast path comes before the net-id guard (a stub until K4): no listener, so the guard is never reached.
+        // The fast path comes before the net-id guard: no listener, so the guard is never reached; with one, the guard
+        // lets the dispatch proceed (one local player, F08 R2).
         Hooks.AfterTurnEnd(Shared(Every, _ => { }).Bind(Combat()), TurnEnd);
-        Assert.Throws<NotImplementedException>(() => Hooks.AfterTurnEnd(K(Every, PauseAtRelic3), TurnEnd));
+        Assert.True(Steps.NetIdGuard(K(Every, PauseAtRelic3), HookId.Dispatch_AfterTurnEnd));
         Assert.Empty(k.HookActions);
         Assert.Empty(k.Stops);
         Assert.Empty(k.Waits);

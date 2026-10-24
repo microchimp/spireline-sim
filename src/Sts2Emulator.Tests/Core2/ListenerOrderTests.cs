@@ -425,7 +425,10 @@ public class ListenerOrderTests
             Assert.DoesNotContain(reported, n => n.Gap.Why == NotModelledKind.PlayerHooksUndeclared);
         }
 
-        // Nothing declared with the player down: inside the kill or after it, the state cannot say.
+        // Nothing declared with the player down: inside the kill or after it, the state cannot say. (A fresh world: a
+        // deactivation is final.)
+        w = new OldWorld(s, null, Ids);
+        lis = new OldListeners(w, EveryListener.Instance) { Report = reported.Add };
         Visit(lis.Cursor<Action>(HookIterator.CombatDirect, H));
         Assert.Contains(reported, n => n.Gap.Why == NotModelledKind.PlayerHooksUndeclared && n.Gap.Kind == ListenerKind.Relic);
         Assert.Contains(reported, n => n.Gap.Why == NotModelledKind.PlayerHooksUndeclared && n.Gap.Kind == ListenerKind.Power);
@@ -501,10 +504,13 @@ public class ListenerOrderTests
                 Assert.Equal(PlayerHooks.Deactivated, w.PlayerHooks);
             }
 
-            Assert.Equal(PlayerHooks.Active, w.PlayerHooks);
+            // Absorbing: neither the inner scope's end nor the outer's restores an earlier state.
+            Assert.Equal(PlayerHooks.Deactivated, w.PlayerHooks);
         }
 
-        Assert.Equal(PlayerHooks.Undeclared, w.PlayerHooks);
+        Assert.Equal(PlayerHooks.Deactivated, w.PlayerHooks);
+        w.KeepPlayerHooks().Dispose();
+        Assert.Equal(PlayerHooks.Deactivated, w.PlayerHooks);
     }
 
     private static List<NotModelled> OrbPass(Action<CombatState>? change)
