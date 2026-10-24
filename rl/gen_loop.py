@@ -739,6 +739,7 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     keep_doc = (doc.get("run_value", {}).get("value") or {}).pop("keep", None)
     doc["vrun_keep"] = keep_doc if keep_doc is not None else {"status": "not_run", "all_computable_pass": False}
     macro = macro_for(doc["vrun_keep"], cand)
+    doc["vrun_keep"]["note"] = vrun_keep_note(macro)
     write_json(cand / "agent.json", {"generation": gen + 1, "macro": macro, "trained_from": gen, "written": utc_now(),
                                      "note": ("V_run passed every computable DESIGN 5.3 keep condition (Tier-B regret and the battery "
                                               "are not computed): it picks macro options" if macro == "vrun" else
@@ -746,6 +747,15 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     write_json(cand / "train.json", doc)
     shutil_rmtree(cand / "work")
     return cand
+
+
+def vrun_keep_note(macro: str) -> str:
+    """train.json's vrun_keep note: what the macro verdict means for the candidate's E-block."""
+    if macro == "vrun":
+        return ("V_run passed the computable keep conditions only (Tier-B regret and the battery are not computed); the candidate "
+                "plays a new combat prior and V_run's macro together, so its E-block judges them together and a gain or a loss "
+                "cannot be attributed to one of them")
+    return "macro stays rules: the E-block judges the combat prior alone"
 
 
 def shutil_rmtree(p: Path) -> None:

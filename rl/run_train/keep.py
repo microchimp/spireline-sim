@@ -169,5 +169,8 @@ def evaluate_value_net(values: Any, net: Any) -> dict[str, Any]:
             continue
         heads[name] = head_conditions(probs[name][sv], yv, run[val][sv], yt, v0_probability(v0[trn][st], yt, v0[val][sv]))
     info = {"act1_head_last_floor": ACT1_HEAD_LAST_FLOOR, "rows": int(len(val)), "runs": int(len(np.unique(run[val]))), "train_rows": int(len(trn)),
-            "train_runs": int(len(np.unique(run[trn]))), "split": "held-out tenth of runs by seed hash (run_train.train._held_out)"}
+            "train_runs": int(len(np.unique(run[trn]))), "split": "held-out tenth of runs by seed hash (run_train.train._held_out)",
+            "early_stopping_split": True,
+            "early_stopping_note": ("the same held-out tenth chose the fit's best epoch (train._optimise, patience 3), so these "
+                                    "conditions are mildly optimistic")}
     return keep_conditions(heads, info)

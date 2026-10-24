@@ -265,3 +265,18 @@ class KeepAmendTests(unittest.TestCase):
         self.assertAlmostEqual(head["base_rate"], 0.2, places=9)
         self.assertEqual(record["validation"]["act1_head_last_floor"], 16)
         self.assertEqual(record["heads"]["win"]["rows"], 120)
+
+    def test_the_record_says_its_split_also_stopped_the_fit_and_a_vrun_switch_mixes_prior_and_macro(self):
+        from run_train import models
+
+        rng = np.random.default_rng(5)
+        n = 200
+        values = SimpleNamespace(validation=np.repeat(np.arange(20) >= 15, 10), final_floor=np.full(n, 5, np.int64),
+                                 run_index=np.repeat(np.arange(20), 10), floor=np.tile(np.arange(1, 11), 20),
+                                 v0=np.zeros((n, 3), np.float32),
+                                 inputs=lambda rows: rng.random((len(rows), models.VALUE_INPUT)).astype(np.float32))
+        v = keep.evaluate_value_net(values, models.RunValueNet())["validation"]
+        self.assertIs(v["early_stopping_split"], True)
+        self.assertIn("optimistic", v["early_stopping_note"])
+        self.assertIn("together", gen_loop.vrun_keep_note("vrun"))
+        self.assertIn("rules", gen_loop.vrun_keep_note("rules"))
