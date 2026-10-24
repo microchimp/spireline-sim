@@ -3219,6 +3219,13 @@ public static class CombatEngine
             return StepResult.Invalid;
         }
 
+        // An Automatic potion (Fairy in a Bottle) has no use button: the game cannot enqueue a manual use of it, and
+        // spending it here would burn the potion for nothing.
+        if (Effects.PotionEffects.UsageOf(state.PotionSlots[slot]) == PotionUsage.Automatic)
+        {
+            return StepResult.Invalid;
+        }
+
         var beforeUse = new Baseline(state);
 
         // `PotionModel.OnUseWrapper` calls `RemoveBeforeUse()` before `OnUse`, so the
@@ -3730,7 +3737,7 @@ public static class CombatEngine
         int potionSlots = Math.Min(state.PotionSlots.Length, state.MaxPotionSlots);
         for (int s = 0; s < potionSlots; s++)
         {
-            if (state.PotionSlots[s] != 0 && Effects.PotionEffects.IsModelled(state.PotionSlots[s]))
+            if (state.PotionSlots[s] != 0 && Effects.PotionEffects.CanUseInCombat(state.PotionSlots[s]))
             {
                 actions.Add(state.Hand.Count + 1 + s);
             }
