@@ -60,6 +60,10 @@
     {"id": "kernel-sequencing", "kind": "surplus", "engines": ["core2"], "shape": "net",
      "patterns": ["net.last_action", "net.last_hook"],
      "reason": "With a kernel switch on, core2 writes lastExecutedActionId and lastExecutedHookId from its own action queue. They cannot match the record: the game numbers actions from its synchronizer, which also numbers actions the emulator does not run, and writes the HookId from ActionQueueSynchronizer._nextHookId (0-based, the turn start flow action numbered too), where core2 writes its RecordedHookAction.Id (1-based, 0 for the flow action). Both paths are listed as surplus of the census and not compared. Where core2 writes none (no switch on) the record's side stays under net-sequencing.",
-     "legacy": "none: netstate_diff does not model the sequencing ids"}
+     "legacy": "none: netstate_diff does not model the sequencing ids"},
+    {"id": "holder-tallies", "kind": "ignore", "engines": ["core2"], "families": ["F08"], "shape": "any",
+     "patterns": ["**.TookUnblockedDamage", "**.TookUnblockedDamageThisCombat", "**.UnblockedDamageThisTurn"],
+     "reason": "The relic tallies TookUnblockedDamage (Lava Lamp's) and UnblockedDamageThisTurn (Beating Remnant's): the game keeps each only on its holder, and with F08 on core2 does the same (batch L2's handlers), while the old engine counts them for every player. Nothing else reads them: the run's Lava Lamp upgrade reads TookUnblockedDamage only after checking for Lava Lamp, and only Beating Remnant's cap reads UnblockedDamageThisTurn, so a player without the relic differs in the field, not in what is played. Waived on core2, not compared; F08's, so it goes when a reader outside the holder appears.",
+     "legacy": "none: the old comparers do not read the tallies"}
   ]
 }

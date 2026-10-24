@@ -256,6 +256,10 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         return new Scope(() => { });
     }
 
+    /// <summary>game: Player.ActivateHooks, from Creature.HealInternal when a heal brings the dead player back: the hooks
+    /// are active again (the Deactivated mark lifted, so a later Keep scope scopes as before any death).</summary>
+    public void ActivatePlayerHooks() => PlayerHooks = PlayerHooks.Active;
+
     /// <summary>Declares the player's hooks still active until the scope is disposed: the death passes of the player's
     /// own kill (death prevention, AfterDeath) run before DeactivateHooks, with the player at 0 HP. Does nothing when the
     /// hooks are already deactivated (a second kill of a dead player: its BeforeDeath and ShouldDie passes skip the player
@@ -985,6 +989,16 @@ public static partial class OldCreatures
         CreatureKind.Osty => s.OstyMaxHp,
         _ => c.Enemy!.MaxHp,
     };
+
+    public static void SetMaxHp(CombatState s, OldCreature c, int max)
+    {
+        switch (c.Kind)
+        {
+            case CreatureKind.Player: s.PlayerMaxHp = max; break;
+            case CreatureKind.Osty: s.OstyMaxHp = max; break;
+            default: c.Enemy!.MaxHp = max; break;
+        }
+    }
 
     /// <summary>The creature's own buffs (Osty has none in the old state).</summary>
     public static List<BuffState>? Buffs(CombatState s, OldCreature c) => c.Kind switch

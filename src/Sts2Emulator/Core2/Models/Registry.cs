@@ -1,6 +1,6 @@
 // The migrated models (docs/rebuild/TIER1_KERNEL.md section 4): one `internal static class <GameClass>` per game model under
 // Core2/Models/{Powers,Relics,Cards,Monsters,Potions}/ (namespace Sts2Emulator.Core2.Models.<Kind>), each with a
-// `public static void Register(HandlerTable t)` that adds its handlers. A model is listed here when its family migrates; its
+// `internal static void Register(HandlerTable t)` that adds its handlers. A model is listed here when its family migrates; its
 // handlers register only while that family's switch is on.
 //
 // One named block per handler batch (docs/rebuild/CLOUD_BRIEFS.md section 3), and `All` spreads the blocks. A batch adds
@@ -10,6 +10,8 @@
 //          rebuild/f08-l1, f08-l2);
 //   cloud: Power1, Power2, Power3, Power4 (C2-C5) and Relic1 (C6).
 using Sts2Emulator.Core2.Models.Cards;
+using Sts2Emulator.Core2.Models.Monsters;
+using Sts2Emulator.Core2.Models.Potions;
 using Sts2Emulator.Core2.Models.Powers;
 using Sts2Emulator.Core2.Models.Relics;
 
@@ -28,6 +30,48 @@ public static class Registry
         TheBoot.Register,
         HandDrill.Register,
         Melancholy.Register,
+    ];
+
+    /// <summary>F08/F10 monster-1 and monster-2 (rebuild/f08-m1, f08-m2).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> Monsters =
+    [
+        // F08/F10 monster-1 (docs/rebuild/port-f08-f10.md), first half.
+        Ovicopter.Register, SoulNexus.Register, ThievingHopper.Register, CubexConstruct.Register,
+        DecimillipedeSegment.Register, SlumberingBeetle.Register, Queen.Register, Vantom.Register, Aeonglass.Register,
+        // Second half of monster-1, and monster-2 (R6.m2).
+        LagavulinMatriarch.Register, Crusher.Register, Rocket.Register,
+        OwlMagistrate.Register, SnappingJaxfruit.Register, KnowledgeDemon.Register, TheInsatiable.Register, SoulFysh.Register,
+        KinPriest.Register, TestSubject.Register, WaterfallGiant.Register,
+    ];
+
+    /// <summary>Batch L1, the LOCAL non-monster models (rebuild/f08-l1).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> L1 =
+    [
+        // Batch L1: the LOCAL non-monster models (docs/rebuild/CLOUD_BRIEFS.md section 1).
+        PaperCutsPower.Register, TheGambitPower.Register, HardToKillPower.Register, SlowPower.Register,
+        MinionPower.Register, ReattachPower.Register, AdaptablePower.Register, SteamEruptionPower.Register,
+        PainfulStabsPower.Register, LizardTail.Register, FairyInABottle.Register,
+    ];
+
+    /// <summary>Batch L2, the LOCAL models L1 left (rebuild/f08-l2).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> L2 =
+    [
+        // Batch L2: the player-side AfterDamageReceived listeners Core2's damage command called as one old body.
+        InfernoPower.Register, RupturePower.Register, SelfFormingClay.Register, CentennialPuzzle.Register,
+        DemonTongue.Register, RedSkull.Register,
+        // Batch L2: the AfterDamageReceived tallies Core2's damage command kept, and Curl Up.
+        BeatingRemnant.Register, LavaLamp.Register, HardenedShellPower.Register, CurlUpPower.Register,
+        // Batch L2: the death pairs and the open pairs.
+        ShrinkPower.Register, IllusionPower.Register, ImbalancedPower.Register, VitalSparkPower.Register,
+        SlumberPower.Register, HexPower.Register, TangledPower.Register, RingingPower.Register, SandpitPower.Register,
+        BurrowedPower.Register, DampenPower.Register, AsleepPower.Register, MeatOnTheBone.Register,
+    ];
+
+    /// <summary>R4c, the LOCAL Conqueror (rebuild/f08-r4).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> R4c =
+    [
+        // R4c: Conqueror, a LOCAL model (Sovereign Blade's one AttackCmd takes its doubling from this hook)
+        ConquerorPower.Register,
     ];
 
     /// <summary>C2 (cloud/f08-power-1): the port list's power-1 rows that are CLOUD (CLOUD_BRIEFS section 1). Thorns and
@@ -96,6 +140,10 @@ public static class Registry
     public static readonly IReadOnlyList<Action<HandlerTable>> All =
     [
         .. Pilot,
+        .. Monsters,
+        .. L1,
+        .. L2,
+        .. R4c,
         .. Power1,
         .. Power2,
         .. Power3,

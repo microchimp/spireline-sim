@@ -7,4 +7,161 @@ them, so each line is rewritten when its model moves to the Tier 2 state. Genera
 FullyQualifiedName~ModelSourceScanTests`); regenerate after a batch lands. The same test fails on `OldState.`,
 `OldCreatures.` and static mutable state in a model, so those never appear here.
 
-No migrated model uses a Tier 1 member yet.
+53 uses in 25 models.
+
+| model | K | World | OldBuffs | OldCombat | Enemy |
+|---|---|---|---|---|---|
+| `Monsters/Queen.cs` | 0 | 0 | 0 | 0 | 1 |
+| `Potions/FairyInABottle.cs` | 0 | 0 | 0 | 1 | 0 |
+| `Powers/AsleepPower.cs` | 0 | 0 | 0 | 0 | 1 |
+| `Powers/BurrowedPower.cs` | 0 | 0 | 0 | 0 | 1 |
+| `Powers/CurlUpPower.cs` | 0 | 0 | 0 | 0 | 1 |
+| `Powers/DampenPower.cs` | 0 | 0 | 0 | 3 | 1 |
+| `Powers/HardenedShellPower.cs` | 0 | 0 | 0 | 0 | 2 |
+| `Powers/HexPower.cs` | 0 | 0 | 0 | 1 | 0 |
+| `Powers/IllusionPower.cs` | 0 | 0 | 1 | 0 | 2 |
+| `Powers/ImbalancedPower.cs` | 0 | 0 | 0 | 0 | 1 |
+| `Powers/InfernoPower.cs` | 1 | 0 | 0 | 1 | 1 |
+| `Powers/KeptAfterOwnerDeath.cs` | 0 | 0 | 2 | 2 | 9 |
+| `Powers/PaperCutsPower.cs` | 1 | 0 | 0 | 0 | 0 |
+| `Powers/RupturePower.cs` | 0 | 1 | 0 | 2 | 0 |
+| `Powers/ShrinkPower.cs` | 0 | 0 | 0 | 1 | 1 |
+| `Powers/SlowPower.cs` | 0 | 0 | 1 | 0 | 0 |
+| `Powers/SlumberPower.cs` | 0 | 0 | 0 | 0 | 1 |
+| `Powers/TheGambitPower.cs` | 0 | 0 | 0 | 1 | 0 |
+| `Relics/BeatingRemnant.cs` | 0 | 0 | 0 | 2 | 0 |
+| `Relics/CentennialPuzzle.cs` | 0 | 0 | 0 | 2 | 0 |
+| `Relics/DemonTongue.cs` | 0 | 0 | 0 | 2 | 0 |
+| `Relics/LavaLamp.cs` | 0 | 0 | 0 | 1 | 0 |
+| `Relics/LizardTail.cs` | 0 | 0 | 0 | 3 | 0 |
+| `Relics/RedSkull.cs` | 0 | 0 | 0 | 1 | 0 |
+| `Relics/SelfFormingClay.cs` | 0 | 0 | 0 | 1 | 0 |
+
+## `Monsters/Queen.cs`
+
+- line 23, `Enemy`: `if (c.IsMonster(a.Creature, "TorchHeadAmalgam") && c.IsAlive(me) && c.Enemy(me) is { } queen)`
+
+## `Potions/FairyInABottle.cs`
+
+- line 23, `OldCombat`: `CombatEngine.FairyInABottle_AfterPreventingDeath(c.OldCombat, self.Instance);`
+
+## `Powers/AsleepPower.cs`
+
+- line 18, `Enemy`: `|| c.Enemy(p.Owner) is not { } e)`
+
+## `Powers/BurrowedPower.cs`
+
+- line 16, `Enemy`: `|| c.Enemy(p.Owner) is not { } e)`
+
+## `Powers/CurlUpPower.cs`
+
+- line 25, `Enemy`: `|| c.Enemy(p.Owner) is not { } e)`
+
+## `Powers/DampenPower.cs`
+
+- line 19, `Enemy`: `|| !c.IsMonster(a.Creature, "MagiKnight") || c.Enemy(a.Creature) is not { } fallen`
+- line 20, `OldCombat`: `|| c.OldCombat.Enemies.Any(o => o.DefId == fallen.DefId && o.Hp > 0 && !ReferenceEquals(o, fallen)))`
+- line 22, `OldCombat`: `CombatEngine.Dampen_AfterDeath(c.OldCombat);`
+- line 31, `OldCombat`: `CardEffects.RemoveDampen(c.OldCombat);`
+
+## `Powers/HardenedShellPower.cs`
+
+- line 21, `Enemy`: `if (r.WasFullyBlocked || c.Enemy(p.Owner) is not { } e)`
+- line 33, `Enemy`: `c.Power(self) is { } p && a.Target == p.Owner && current != 0m && c.Enemy(p.Owner) is { } e`
+
+## `Powers/HexPower.cs`
+
+- line 19, `OldCombat`: `CombatEngine.Hex_AfterDeath(c.OldCombat);`
+
+## `Powers/IllusionPower.cs`
+
+- line 16, `Enemy`: `if (a.WasRemovalPrevented || c.Owner(self) is not { } me || a.Creature != me || c.Enemy(me) is not { } e)`
+- line 25, `OldBuffs`: `c.Owner(self) is not { } me || a.Creature != me || BuffSystem.Get(c.OldBuffs(me), BuffId.Reviving) <= 0;`
+- line 32, `Enemy`: `|| (c.Enemy(me) is { } e && EnemyAI.Illusion_ShouldCreatureBeRemovedFromCombatAfterDeath(e));`
+
+## `Powers/ImbalancedPower.cs`
+
+- line 19, `Enemy`: `if (c.IsMonster(p.Owner, "BowlbugRock") && c.Enemy(p.Owner) is { } rock)`
+
+## `Powers/InfernoPower.cs`
+
+- line 22, `OldCombat`: `|| !c.IsPlayer(p.Owner) || !c.OldCombat.PlayerTurn)`
+- line 27, `Enemy`: `if (c.Enemy(r) is { } e)`
+- line 31, `K`: `CreatureCmd.Damage(c.K, targets, p.Amount, new ValueProp(ValueProps.Unpowered), OldCreature.Player, null,`
+
+## `Powers/KeptAfterOwnerDeath.cs`
+
+- line 33, `Enemy`: `if (a.WasRemovalPrevented || c.Owner(self) is not { } me || a.Creature != me || c.Enemy(me) is not { } e)`
+- line 35, `OldCombat`: `CombatEngine.TryReattachSegment(c.OldCombat, e);`
+- line 42, `OldBuffs`: `c.Owner(self) is not { } me || a.Creature != me || BuffSystem.Get(c.OldBuffs(me), BuffId.Reviving) <= 0;`
+- line 49, `Enemy`: `|| (c.Enemy(me) is { } e && EnemyAI.Reattach_ShouldCreatureBeRemovedFromCombatAfterDeath(e));`
+- line 73, `Enemy`: `|| c.Enemy(me) is not { } e)`
+- line 82, `OldBuffs`: `c.Owner(self) is not { } me || a.Creature != me || BuffSystem.Get(c.OldBuffs(me), BuffId.Reviving) <= 0;`
+- line 87, `Enemy`: `c.Owner(self) is { } me && c.Enemy(me) is { } e && CombatEngine.Adaptable_ShouldStopCombatFromEnding(e);`
+- line 94, `Enemy`: `|| (c.Enemy(me) is { } e && EnemyAI.Adaptable_ShouldCreatureBeRemovedFromCombatAfterDeath(e));`
+- line 117, `Enemy`: `if (a.WasRemovalPrevented || c.Owner(self) is not { } me || a.Creature != me || c.Enemy(me) is not { } e)`
+- line 119, `OldCombat`: `EnemyAI.TriggerAboutToBlow(e, c.OldCombat);`
+- line 126, `Enemy`: `c.Owner(self) is { } me && c.Enemy(me) is { } e && CombatEngine.SteamEruption_ShouldStopCombatFromEnding(e);`
+- line 133, `Enemy`: `|| (c.Enemy(me) is { } e && EnemyAI.SteamEruption_ShouldCreatureBeRemovedFromCombatAfterDeath(e));`
+- line 155, `Enemy`: `|| (c.Enemy(me) is { } e && EnemyAI.PainfulStabs_ShouldCreatureBeRemovedFromCombatAfterDeath(e));`
+
+## `Powers/PaperCutsPower.cs`
+
+- line 19, `K`: `CreatureCmd.LoseMaxHp(c.K, OldCreature.Player, p.Amount, isFromCard: false, a.ChoiceContext);`
+
+## `Powers/RupturePower.cs`
+
+- line 24, `OldCombat`: `|| !c.IsPlayer(p.Owner) || !c.OldCombat.PlayerTurn)`
+- line 26, `World`: `bool playing = a.CardSource is { } h && c.World.InFlight is { } flying && flying.Uid == h.Uid;`
+- line 27, `OldCombat`: `CardEffects.Rupture_AfterDamageReceived(c.OldCombat, (int)p.Amount, playing);`
+
+## `Powers/ShrinkPower.cs`
+
+- line 23, `Enemy`: `|| !c.IsMonster(a.Creature, "ShrinkerBeetle") || c.Enemy(a.Creature) is not { } beetle)`
+- line 25, `OldCombat`: `CardEffects.RemoveDeathBoundPowers(c.OldCombat, beetle);`
+
+## `Powers/SlowPower.cs`
+
+- line 22, `OldBuffs`: `return 1m + 0.1m * BuffSystem.Get(c.OldBuffs(p.Owner), BuffId.SlowCount);`
+
+## `Powers/SlumberPower.cs`
+
+- line 17, `Enemy`: `|| c.Enemy(p.Owner) is not { } e)`
+
+## `Powers/TheGambitPower.cs`
+
+- line 22, `OldCombat`: `EnemyAI.TheGambit_AfterDamageReceived(c.OldCombat);`
+
+## `Relics/BeatingRemnant.cs`
+
+- line 20, `OldCombat`: `CardEffects.BeatingRemnant_AfterDamageReceived(c.OldCombat, c.Damage(a.Result).UnblockedDamage);`
+- line 28, `OldCombat`: `c.CombatInProgress && c.IsPlayer(a.Target) ? Math.Min(current, 20m - c.OldCombat.UnblockedDamageThisTurn) : cu...`
+
+## `Relics/CentennialPuzzle.cs`
+
+- line 18, `OldCombat`: `|| !RelicEffects.FiresOncePerCombat(c.OldCombat, RelicEffects.CentennialPuzzle))`
+- line 20, `OldCombat`: `RelicEffects.CentennialPuzzle_AfterDamageReceived(c.OldCombat, null);`
+
+## `Relics/DemonTongue.cs`
+
+- line 19, `OldCombat`: `if (c.Relic(self) is not { Counter: 0 } || !c.OldCombat.PlayerTurn || !c.IsPlayer(a.Target) || unblocked <= 0)`
+- line 21, `OldCombat`: `RelicEffects.DemonTongue_AfterDamageReceived(c.OldCombat, unblocked);`
+
+## `Relics/LavaLamp.cs`
+
+- line 21, `OldCombat`: `RelicEffects.LavaLamp_AfterDamageReceived(c.OldCombat);`
+
+## `Relics/LizardTail.cs`
+
+- line 14, `OldCombat`: `!(c.IsPlayer(a.Creature) && RelicEffects.LizardTailUnspent(c.OldCombat));`
+- line 24, `OldCombat`: `RelicEffects.FiresOncePerCombat(c.OldCombat, RelicEffects.LizardTail);`
+- line 25, `OldCombat`: `RelicEffects.LizardTail_AfterPreventingDeath(c.OldCombat);`
+
+## `Relics/RedSkull.cs`
+
+- line 18, `OldCombat`: `RelicEffects.RedSkull_AfterCurrentHpChanged(c.OldCombat);`
+
+## `Relics/SelfFormingClay.cs`
+
+- line 18, `OldCombat`: `RelicEffects.SelfFormingClay_AfterDamageReceived(c.OldCombat);`
+

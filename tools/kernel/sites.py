@@ -64,20 +64,21 @@ SPLITS: dict[str, dict] = {
     "CombatEngine.DoomThePlayerAtTurnEnd": {
         "kind": "split",
         "file": "Core/CombatEngine.cs",
-        "sha256": "6583e3c9d772cf211d7886f1f92bb152f5a9fbb8afca97fb84111be16bedc3ff",
+        "sha256": "406cdd792c576fff83dd8c7211dabdd068663e77651ed305bcfe434afc7346e0",
         "reason": "Doom's turn-end body is two statements: the threshold test on the Doom stack and the open gate "
                   "(the BeforeSideTurnEnd moment, F05), then the first writes of the player's death (HP to zero and the "
                   "HP-changed dispatch, F10; the kill and AfterDiedToDoom are not in this body); the F10 part gates on "
-                  "its own switch",
+                  "its own switch (R4: the old two statements are the else branch of the F08 gate, whose switch-on "
+                  "branch is CreatureCmd.Kill on the player)",
         "parts": [
             {"family": "F05", "anchor": "int doom = BuffSystem.Get(state.PlayerBuffs, BuffId.Doom);"},
-            {"family": "F10", "anchor": "state.PlayerHp = 0;\n        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);"},
+            {"family": "F10", "anchor": "state.PlayerHp = 0;\n            Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);"},
         ],
     },
     "RelicEffects.BiteForFurCoat": {
         "kind": "split",
         "file": "Core/Effects/RelicEffects.cs",
-        "sha256": "4c9dca7c6ebd1f818980b4d741fcea2faa10e05b9e3cb5361175a5d954a1209d",
+        "sha256": "ec94b82e5bcedcfd81c67058c0b2f956f29bb04724e88dc7b00d9ac0dd22dc0f",
         "reason": "Fur Coat's AfterCreatureAddedToCombat body is the method as entered (F01: the bite of whatever "
                   "joins); inside it the hittable test and the one-HP write are F08 (ShouldAllowHitting, "
                   "SetCurrentHp), a separate statement that gates on its own switch",

@@ -14,7 +14,9 @@ public readonly record struct PowerView(CreatureRef Owner, decimal Amount);
 /// What a handler is handed (one per dispatcher call; no state of its own, so a handler cannot keep anything in it).
 /// <list type="bullet">
 /// <item>Engine-neutral members (the shape a Tier 2 context keeps): <see cref="Power" />, <see cref="Owner" />,
-/// <see cref="Card(CardHandle)" />, <see cref="Card(ListenerRef)" /> and <see cref="Relic" />.</item>
+/// <see cref="Card(CardHandle)" />, <see cref="Card(ListenerRef)" />, <see cref="Relic" />, <see cref="IsAlive" />,
+/// <see cref="IsMonster" />, <see cref="IsPlayer" />, <see cref="Damage" />, <see cref="CombatInProgress" />,
+/// <see cref="HittableEnemies" /> and <see cref="IsDebuff" />.</item>
 /// <item>Tier 1 members (the old state, the one view of it): <see cref="K" /> (what the commands take:
 /// <c>CreatureCmd.Damage(c.K, ...)</c>), <see cref="World" />, <see cref="OldCombat" /> (the <c>CombatState</c>, the
 /// argument of most old bodies: <c>CardEffects.PhantomBlades_ModifyDamageAdditive(c.OldCombat)</c>), <see cref="OldBuffs" />
@@ -51,6 +53,40 @@ public readonly struct HookCtx
     /// none (a modifier, a badge, a scaling model) or one that is not on the old state now.</summary>
     public CreatureRef? Owner(ListenerRef self) =>
         OldState.Locate(World, self) is { Creature: >= 0 } me ? new CreatureRef(me.Creature) : null;
+
+    /// <summary>Whether a creature of the combat is alive now (game: Creature.IsAlive); false for a position no creature
+    /// holds.</summary>
+    public bool IsAlive(CreatureRef creature) =>
+        OldCreatures.TryAt(World, creature) is { } it && !OldCreatures.IsDead(World.Combat!, it);
+
+    /// <summary>Whether a creature is a monster of the game model <paramref name="gameClass" /> (its class name: game
+    /// <c>creature.Monster is T</c>); false for the player's side and for a position no creature holds.</summary>
+    public bool IsMonster(CreatureRef creature, string gameClass) =>
+        OldCreatures.TryAt(World, creature)?.Enemy is { } e && e.DefId == World.Ids.Resolve(ListenerKind.Monster, gameClass);
+
+    /// <summary>Whether a creature of the combat is a player (game: Creature.IsPlayer); false for a pet, a monster and a
+    /// position no creature holds.</summary>
+    public bool IsPlayer(CreatureRef creature) => OldCreatures.TryAt(World, creature)?.Kind == CreatureKind.Player;
+
+    /// <summary>Whether the combat is in progress (game: CombatManager.IsInProgress): false once it has ended, or before
+    /// it starts.</summary>
+    public bool CombatInProgress => CombatEnd.IsInProgress(K);
+
+    /// <summary>The enemies a hit can reach now, in roster order (game: CombatState.HittableEnemies: alive, in the combat
+    /// and hittable).</summary>
+    public IReadOnlyList<CreatureRef> HittableEnemies()
+    {
+        var w = World;
+        return OldCreatures.HittableEnemies(w).Select(e => OldCreatures.Ref(w, e)).ToList();
+    }
+
+    /// <summary>Whether a power is a debuff (game: PowerModel.Type == PowerType.Debuff), read from the game's power data
+    /// by its model id.</summary>
+    public bool IsDebuff(PowerRef power) => !Sts2Emulator.GeneratedData.Powers.Get(power.ModelId).IsBuff;
+
+    /// <summary>The damage result an argument names (game: the DamageResult a damage hook is handed): its unblocked and
+    /// blocked damage, overkill and kill.</summary>
+    public DamageResult Damage(DamageResultRef result) => K.Commands.Result(result);
 
     /// <summary>The old <c>CombatState</c> (Tier 1: the argument of the old engine's bodies, whose first parameter is the
     /// state). Read it; write it only through an old body or a command.</summary>

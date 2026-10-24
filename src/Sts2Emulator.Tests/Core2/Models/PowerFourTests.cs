@@ -315,12 +315,14 @@ public class PowerFourTests
     public void SicEmStillSummonsOnTheHitThatKillsTheHolder()
     {
         // The dying holder is listed until the kill (CreatureCmd.Damage's dying mark), so AfterDamageGiven visits its
-        // listener, as the old site reads the corpse's SicEm before the death answer.
+        // listener, as the old site reads the corpse's SicEm before the death answer. The slug is the last enemy, so the
+        // hit ends the combat: game: OstyCmd.Summon raises Osty's max HP through CreatureCmd.GainMaxHp, whose Heal skips a
+        // non-player while the combat is ending (batch L1's Heal), so Osty's max grows by 3 and its current HP stays.
         var (s, slug, card) = SicEmCombat(slugHp: 3);
         var k = Kernel(s, Power4);
         var r = Assert.Single(OstyHit(k, slug, card));
         Assert.True(r.WasTargetKilled);
-        Assert.Equal((13, 13), Osty(s));
+        Assert.Equal((10, 13), Osty(s));
         Assert.DoesNotContain(slug, s.Enemies);
     }
 

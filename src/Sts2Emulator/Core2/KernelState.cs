@@ -37,6 +37,16 @@ public sealed class KernelState : HookRuntime
     /// read and changed through <see cref="CombatEnd" />.</summary>
     public CombatProgress Progress => _progress;
 
+    /// <summary>Where a combat end decided inside the old step goes (the run engine, or a bare combat's queue host), set by
+    /// the step's caller; <see cref="CombatEnd.NoHost" /> when none is set. Not copied with the state.</summary>
+    public ICombatEndHost EndHost
+    {
+        get => _endHost ?? CombatEnd.NoHost;
+        set => _endHost = value;
+    }
+
+    private ICombatEndHost? _endHost;
+
     /// <summary>The kernel's shared, immutable part.</summary>
     public Kernel Shared { get; }
 

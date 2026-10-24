@@ -370,14 +370,15 @@ class EngineScope(unittest.TestCase):
     def test_scopes(self):
         by = {r["id"]: r["engines"] for r in ROWS}
         self.assertEqual(by.pop("kernel-sequencing"), ["core2"])
+        self.assertEqual(by.pop("holder-tallies"), ["core2"])
         self.assertEqual(sorted(by), sorted(OLD_ONLY + EVERY_ENGINE))
         for i in OLD_ONLY:
             self.assertEqual(by[i], ["old"], i)
         for i in EVERY_ENGINE:
             self.assertEqual(by[i], ["*"], i)
         self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core3")), sorted(EVERY_ENGINE))  # an engine with a state of its own: no old rows
-        self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core2")), sorted(OLD_ONLY + EVERY_ENGINE + ("kernel-sequencing",)))  # core2 runs over old state
-        self.assertEqual(len(sc.for_engine(ROWS, "old")), len(ROWS) - 1)  # all but the core2-only row
+        self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core2")), sorted(OLD_ONLY + EVERY_ENGINE + ("kernel-sequencing", "holder-tallies")))  # core2 runs over old state
+        self.assertEqual(len(sc.for_engine(ROWS, "old")), len(ROWS) - 2)  # all but the two core2-only rows
 
     def test_old_rows_do_not_apply_to_another_engine(self):
         p = snap()["player"]

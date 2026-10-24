@@ -405,8 +405,10 @@ end's points stay old until R4 reroutes them.
   `CheckWinCondition` there. R4 deletes it when it gates the old checks and routes the player's death through `Kill`.
 - Known differences under F10 until the handler batches: the five old holders (`HoldsTheFightOpen`: Steam Eruption,
   Adaptable, Surprise, Infested, Stock) have no Core2 ShouldStopCombatFromEnding handler yet, so a boundary check can end
-  a fight the old engine holds open; a living Illusion enemy is primary in Core2 (the game's MinionPower-only rule) and not
-  in the old `IsPrimaryEnemy`.
+  a fight the old engine holds open; their handlers are in the batches (Surprise power-2, Stock power-3, Steam Eruption,
+  Adaptable and Infested power-4) and the handler gate keeps the switch off until they land. A living Illusion enemy is
+  primary in Core2 (the game's MinionPower-only rule) and not in the old `IsPrimaryEnemy`: no handler closes that, so it
+  is its own switch-on check (section 6).
 - **`construct commands`**: per command the game method's `Hook.X` calls and named callees in order with branch labels
   (enclosing blocks; `<kind>-cond` inside a header, `cond` after `&&`, `||`, `?:`; `IsEnding` inlined) against the
   `// construct: game X` block in the Core2 source, both ways, and the block's modelled names against the Core2 method's
@@ -414,8 +416,9 @@ end's points stay old until R4 reroutes them.
   calls), AttackCommand.Execute (5), Kill (3, the multiplayer EndTurn marked not modelled), KillWithoutCheckingWinCondition
   (18, HandlePlayerDeath not modelled), Escape (3), CombatManager.CheckWinCondition (3): 0 differences. The write scan:
   0 Core2 writes outside `Core2/Commands` and `OldState*.cs`; **86 old HP/block writes run with the switch on (R4's list,
-  `construct commands --list-writes`): 47 F08 (HP) and 39 F09 (block) in `EnemyAI.cs` 35, `CombatEngine.cs` 25,
-  `CardEffects.cs` 21, `RelicEffects.cs` 5** (the setup allow-list: CombatFactory, StateCloning, FightAnchor*, Run*,
+  `construct commands --list-writes`): 50 F08 (47 HP and the damage's 3 block absorptions, which move with the HP
+  write: `CardEffects.DealDamageToPlayer`, `LandDamageOnEnemy`, `EnemyAI.DealAttackDamage`; R3b's review) and 36 F09
+  (block) in `EnemyAI.cs` 35, `CombatEngine.cs` 25, `CardEffects.cs` 21, `RelicEffects.cs` 5** (the setup allow-list: CombatFactory, StateCloning, FightAnchor*, Run*,
   CreateEnemy; the spawned hatchling's two lines in `ApplyBuffIntent` are setup R4 allow-lists, F09's stay until F09).
 - Tests: `src/Sts2Emulator.Tests/Core2/CombatEndTests.cs` (8): victory at the boundary after the action's end, a minion
   left, ShouldStopCombatFromEnding holding then releasing, the pending loss beating a victory at the same point,
@@ -434,6 +437,125 @@ end's points stay old until R4 reroutes them.
   identical, 0 differ; `construct shape` 0 differences; `construct commands` 0 differences for the six commands, 0 Core2
   stray writes, 86 old write sites listed; `sites check` 0 problems (279 sites; `sites.json` rebuilt for the moved
   `RunEngine.cs` lines); `gen_hooks --check` clean.
+
+**Settled in R4 (branch `rebuild/f08-r4`, 2026-10-24).** The old entry points are rerouted behind
+`if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)` (F08 and F10 are one group; with no switch a combat holds no
+kernel state and every site runs its old code).
+- Core2: `Core2/Commands/OldEntry.cs` (HitEnemy, HitPlayer, HitOsty, EnemyAttack, EnemyHit, Kill, Escape: the old call's
+  arguments in, the old int out; powered is Move, else Unpowered; HP loss is Unblockable and Unpowered; the card in flight
+  is the source), `CreatureCmd.Hp.cs` (item 9: Heal, SetCurrentHp, SetMaxHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp),
+  `OldCreatures.SetMaxHp`, `KernelState.EndHost` (the end's host for a check inside the old step, set by RunEngine and the
+  bare queue host, else `CombatEnd.NoHost`). R3b's `CombatEnd.OldStepEnded` is deleted.
+- Sites rerouted: `CardEffects.cs` 13 (DealDamageToEnemy, LandDamageOnEnemy, DealDamageToPlayer, LosePlayerHp, LoseHp,
+  HealPlayer, GainMaxHp, LoseMaxHp, Spur's Osty heal, SummonOsty, DamageOsty, KillOsty, KillDoomedEnemies); `EnemyAI.cs` 12
+  (DealAttack as AttackCmd with Suck and Painful Stabs as the F06 bridge's AfterAttack, DealAttackDamage as a one-hit
+  AttackCmd, the GasBomb and IsExploding kills, the Thieving Hopper and Fat Gremlin escapes, the Knowledge Demon and
+  heal-intent heals, The Gambit's body as Kill, Paper Cuts' as LoseMaxHp, TriggerAboutToBlow as SetMaxAndCurrentHp; the
+  hatchling's HP moved to `SetUpHatchling`, setup); `RelicEffects.cs` 2 (Fur Coat, Lizard Tail: SetCurrentHp);
+  `CombatEngine.cs` 21 (Regen, Reattach, Sandpit as Kill force, Battleworn Dummy as Escape, Fairy in a Bottle, Doom as Kill,
+  the Axebot and Test Subject respawns; the sweeps HandleEnemyDeaths, AnswerDeaths, AnswerDeathsSince,
+  AnswerDeathsHoldingTheFightOpen and the GasBomb roster sweep do nothing; CheckWinCondition, PlayerIsDead, IsOverOrEnding
+  and IsAboutToLose read Core2; ExecuteIntent inside PerformMove with ExecuteEnemyTurn's per-enemy check; EndEnemyTurn's
+  check; the InFlight mark over the card's effects).
+- The write scan: 0 F08 writes run with the switch on (36 F09 stay for F09). Allow-listed with reasons: `SetUpHatchling`,
+  the run-level heals `ApplyAfterRoomEntered` and `ApplyBeforeBossCombat` (RunState, F01's), Baseline's copy of the HP. A
+  gated `if` whose block ends in return gates the rest of its block.
+- No handler added (H0 changes the handler delegates). Dropped under the switch until their handler batch lands: the
+  damage fold (Strength, Vigor, Vulnerable, Weak, Intangible, Slow, Hard to Kill, the relic bonuses), Thorns, Buffer,
+  Tungsten Rod, Osty's redirect, every after-damage and death body (Curl Up, Ravenous, revives, respawns, Fairy in a Bottle
+  and Lizard Tail), Necro Mastery, the heal modifiers. `DealUnpoweredDamageToEnemy` gates at its top, so its old Intangible
+  and Hard to Kill caps and Thorns never run under the switch (they are ModifyDamage's and BeforeDamageReceived's hooks).
+  Skittish is not dropped: it is the card attack's AfterAttack (F06's), and with F06 off it runs once per card attack as
+  the AttackCmd's F06 bridge (`Bridge.AfterAttack`: `AttackOutcome.Finish` over the command's results); with F06 on the
+  hooks dispatch and the bridge does not run.
+- Card attacks are one AttackCmd each (`CardEffects.CardAttack`, review fix): the one-hit attack, `DealDamageMultiHit`
+  (Twin Strike), `DealDamageAsSeparateAttacks` (one command per attack), `DealDamageToAll` (Cleave),
+  `DealDamageToAllMultiHit` (Whirlwind's X hits), `DealDamageToRandomEnemiesMultiHit` (Sword Boomerang) and Ricochet. The
+  player is the attacker and the card in flight the source; the hit count; single target, all opponents or random; one
+  Damage call per hit over every live target and one Kill after it, so a death resolves after the whole hit (no longer
+  between Cleave's targets); Calculate per hit when the caller passes one; the history's CreatureAttacked entry; the F06
+  points through the bridge once. Random targets draw the CombatTargets stream (`TargetRng`) once per hit over the live
+  enemies, as the old card did; with no stream, the card's rng as the old fallback.
+- Left old: Osty's swings are one Damage call per hit, each hit noted so their `Finish` runs Skittish once after the
+  last (Omnislice, Echoing Slash and Seeking Edge's sweep take the game's shape since the second review, below);
+  the intent preview keeps the int fold; Doom kills with one Kill call per creature, as the game's `DoomPower.DoomKill`
+  does (`OldEntry`'s unused list overload is removed); the turn start's two points are reached only through K4's flow.
+- R7 checks (recorded, not run now): the intent preview equals the AttackCmd hit it previews (same fold, same amount per
+  hit). Settled in R4c (below): relic and power damage fired inside `CardEffects.Apply` carries the in-flight card as
+  its source where the game's call passes one, and none where the game passes none.
+- Second review (one Damage over a list where the game makes one). `OldEntry.AttackContext` is the game's AttackContext
+  (BeforeAttack when opened, AddHit, AfterAttack when disposed; no CreatureAttacked entry and no hit-count hook, as the
+  game's context; with F06 off the card attack's bridge, Skittish). `OldEntry.HitEnemies` is one CreatureCmd.Damage over
+  CombatState.HittableEnemies. Under the switch: Omnislice is its OnPlay (the aimed hit with Move; the splash ONE Damage
+  over the other hittable enemies for TotalDamage + OverkillDamage with Unpowered | Move and the card as source, so
+  ThornsPower, which answers a powered attack or an Omnislice, sees the game's props and every splashed enemy is hit
+  before any death resolves); Echoing Slash is one context whose volleys are one Damage each over the hittable enemies,
+  adding a volley per result with WasTargetKilled; Sovereign Blade is one AttackCmd of the base amount, at all opponents
+  under Seeking Edge, else the target (Conqueror's doubling is its ModifyDamageMultiplicative hook's, not the amount's).
+  The cards that read their attack read the AttackCmd's results as the game: Feed, Hand of Greed, The Hunt, Sunder and
+  Knockout Blow a result with WasTargetKilled (not the target's HP after), Fisticuffs the results' TotalDamage +
+  OverkillDamage, Beat Into Shape the CalculatedForge after the attack (the history's powered hits on the target this
+  turn) less the attack's Results.Count; Blight Strike already summed TotalDamage; Tear Asunder's count is 1 + the
+  history's unblocked hits on the player, which Core2's Damage writes, and its hits are one AttackCmd (ModifyAttackHitCount
+  inside it with F06 on; the game has no listener of it).
+- The sweep (a script over `Core/`: every for/foreach/while loop that names the enemies and calls a per-target damage
+  helper; 17 loops). Fixed: 9 loops at 8 sites, `CardEffects` Omnislice (`DealOmnislice`), Echoing Slash (its volley loop
+  and `DealDamageToAllCountingKills`), Seeking Edge's sweep (`case "SovereignBlade"`), `DamageAllForSpeedster`, Black Hole
+  (in `GainStars`), `TriggerInfernoAfterPlayerDamage`, `CountPoisonForOutbreak` and `DealUnpoweredDamageToAll`, the root
+  helper of 21 callers (CombatEngine 4: Hailstorm, Rolling Boulder, Panache, The Bomb; CardEffects 6: Smokestack, the Glass orb
+  twice and three card bodies; PotionEffects 2: Explosive Ampoule, Foul Potion's enemy part; RelicEffects 9: Metronome,
+  Festive Popper, Mercury Hourglass, Mr. Struggles and five more after-card, exhaust and end-of-turn ones): each is now one
+  Damage over the hittable enemies. Already one command under the switch (old branch only): 4 (`DealDamageToAll`,
+  `DealDamageToAllMultiHit`'s two, Ricochet). Per target in the game too: 3 (`CombatEngine.EndTurn`'s enemy loop and
+  Poison ticks, `ApplyAfterCardPlayedPowers`' Strangle, each power its own Damage). Listed: 1 (Necro Mastery, below).
+- R7 checks from the sweep (listed, not fixed): Osty's swings wait for Necrobinder, each hit one Damage where the game's
+  Osty attack is one AttackCommand whose CreatureAttacked entry Flatten and Rattle count: `CardEffects.cs:7319, 7328,
+  7331, 7343` (Rattle's loop at 7340), `7356, 7381, 7388, 10268` (`DealOstyDamage`); Necro Mastery's per-enemy loop at
+  `CardEffects.cs:10195` sits behind `DamageOsty`'s gate (under the switch it is NecroMasteryPower's handler: one Damage
+  over the hittable enemies, Unblockable | Unpowered); Foul Potion (`PotionEffects.cs:287`) hits the player then the
+  enemies, where the game's FoulPotion makes one Damage over every non-pet creature; the list sites' props are
+  Unpowered where the game passes a DamageVar's props (Letter Opener, Festive Popper, Mercury Hourglass, Metronome,
+  Screaming Flagon, Stone Calendar, The Bomb, Charon's Ashes, Lost Wisp, Explosive Ampoule): read each at its batch.
+- Acceptance (R4, after the second review): `dotnet test src/Sts2Emulator.Tests` 6852 passed, 7 skipped, 0 failed (6859;
+  four new RerouteTests: Omnislice's splash as one Damage call with both Thorns answers before the death, Seeking Edge's
+  sweep as one attack at the base amount, Echoing Slash's kill-counted volleys, Tear Asunder's hits from the history);
+  `tools/emudump.Tests` 281 passed; the Python suite ran 2894 tests, 14 failures and errors, all in the reviewed baseline
+  (0 new); `sites check` 0 problems (280 sites); `construct commands` 0 differences; the build's corpus check 4298
+  compared, 0 regressed. With no switch: byte_proof over 500 fights in the modes fight, state-hash, rng-log and reanchor,
+  main's build against this tree, 2000 pairs identical, 0 differ, and this tree's old engine against `--engine core2`,
+  2000 identical, 0 differ. The fuzzer with F08+F10 on (`--fights 300 --procs 3`): 298 of 300 fights differ, 0 errors
+  (no handler is registered yet).
+- For the batches: the extracted bodies that write HP are gated, so a handler calling them under the switch reaches the HP
+  commands; TriggerAboutToBlow, TryRespawnAxebot and RespawnTestSubject take the combat as an optional last argument (pass
+  it); DealAttackDamage's callers get one AttackCmd per hit, so when F06 migrates each multi-hit caller becomes one
+  EnemyAttack; Rupture's fromPlayedCard comes from the InFlight mark.
+- Tests: `RerouteTests` (13; the review added six: Cleave as one Damage call with its death after both hits, Twin Strike's
+  dead target eating the second hit, Whirlwind's X hits, Sword Boomerang's draws equal to the old engine's over 20 seeds,
+  Skittish once per command, the unpowered path's caps gone under the switch).
+  `ActionQueueTests`' lockstep test now uses F05, and `CombatEndTests`' run is played with F08+F10
+  alone (each combat handed off once): neither expects F08+F10 to play as the old engine any more.
+- Acceptance (R4, after the review): `dotnet test src/Sts2Emulator.Tests` 6848 passed, 7 skipped, 0 failed (6855);
+  `tools/emudump.Tests` 281 passed; the Python suite ran 2894 tests, 14 failures and errors, all in the reviewed
+  baseline (0 new); `sites check` 0 problems (280 sites); `construct commands` 0 differences; the build's corpus check
+  4298 compared, 0 regressed. With no switch: corpus identity, main's Release EmuDump against this tree, 4304 fights,
+  4304 identical, 0 differ; byte_proof over 500 fights in the modes fight, state-hash, rng-log and reanchor, main's
+  build against this tree, 2000 pairs identical, 0 differ, and this tree's old engine against `--engine core2`, 2000
+  identical, 0 differ. The fuzzer with F08+F10 on (`--fights 300 --procs 3`): 298 of 300 fights differ, 0 errors (no
+  handler is registered, so the fold and the bodies listed above are missing until their batches).
+- R4c (Conqueror as a LOCAL model; the list and unpowered hits take their card source from the caller). The source
+  sweep: every call that reaches an `OldEntry` hit while a card is in flight, read against the game's call, 60 calls
+  checked: 42 fixed (a power, relic, orb or potion Damage passes no card source in the game, where the `InFlight` mark
+  gave it the card), 6 card sources kept (the card's own hits: the game passes the card).
+  `ConquerorPower` (ModifyDamageMultiplicative) gives Sovereign Blade's one AttackCmd its doubling.
+- The dealer sweep beside it (R4c's review): `OldEntry.HitEnemy` and `HitEnemies` take the dealer from the caller, as
+  the source. The game's PoisonPower, StranglePower, HauntPower and DemisePower Damage calls pass no dealer and no
+  source, so under the switch their ticks fire no AfterDamageGiven with the player as dealer and take no dealer-dead
+  skip (`CardEffects.DealUnblockableUnpoweredDamageToEnemy`'s `noDealer` at the four sites); every other caller keeps
+  the player, and Flame Barrier, Reflect and Thorns keep their owner as dealer (the game passes the owner and no
+  source). Test: `RerouteTests.PoisonTickHasNoDealerSoNoAfterDamageGivenForThePlayerAndNoDeadDealerSkip`.
+- Acceptance (R4c): with no switch, byte_proof main's build against this tree 2000 pairs identical, 0 differ, and this
+  tree's old engine against `--engine core2` 2000 identical, 0 differ; `dotnet test src/Sts2Emulator.Tests` 6894
+  tests; the fuzzer with F08+F10 on (`--fights 300`): 298 of 300 fights differ.
 
 ## 4. Old sites replaced, and their game counterparts
 
@@ -635,6 +757,221 @@ registered under the F08+F10 switch and run by `Hooks.ModifyDamage` over an old 
 7. `Power(self).Amount` is the old buff's `Magnitude`; where the engine keeps the game's amount somewhere else (a buff's
    `Data`, a counter on the state) the model's handler reads that and says so in its comment.
 
+### Batch monster-1, first half (R6.m1, branch `rebuild/f08-m1`)
+
+Nine game models, 13 (model, hook) pairs, the first eleven port-list monsters by corpus reach (the three Decimillipede
+segments are one game base class): Ovicopter, Thieving Hopper, Cubex Construct (BeforeRemovedFromRoom), Soul Nexus (Died,
+BeforeRemovedFromRoom), Slumbering Beetle (Died), Queen (AfterDeath, BeforeRemovedFromRoom), Vantom, Aeonglass and
+DecimillipedeSegment for Back, Front and Middle (AfterDeath). Each is `Core2/Models/Monsters/<GameClass>.cs` with its test
+in `src/Sts2Emulator.Tests/Core2/Models/Monsters/`, listed in `Core2/Models/Registry.cs`.
+- Read from the game: every pair but Queen's AfterDeath has no combat-state effect (sound loops, animation tracks, music
+  parameters, a sleeping effect, a phobia-mode texture, unsubscribing a visual handler), so its handler is the game's call at
+  the game's point and changes nothing. Queen's AfterDeath is the one body with state: the old
+  `EnrageQueenIfWaitingToBurnBright` looped over every Queen, so it is split into a per-Queen
+  `CombatEngine.Queen_AfterDeath(EnemyState)` that the old loop and the handler both call (one hook call per copy); the
+  old path is unchanged.
+- Accessor gaps closed in `HookCtx` (engine-neutral): `IsAlive(CreatureRef)` (game `Creature.IsAlive`) and
+  `IsMonster(CreatureRef, gameClass)` (game `creature.Monster is T`). Queen still reads her old `EnemyState` through
+  `c.Enemy` for the old body (listed in `TIER2_REWRITE_LIST.md`).
+- Registration gap closed in `HandlerTable`: the old state has one enemy id for the three Decimillipede segment models, and
+  two game names may not share an old id, so `ModelRegistration.InheritedBy(...)` declares game models that inherit the
+  registered model's overrides; `Registered()` (what `EmuDump kernel-handlers` and the port-list gate read) names each.
+- The test harness (`MonsterHarness`) registers a model as it registers itself, wraps each handler to log its call, and
+  kills through `CreatureCmd.Damage`: the log gives the pass and order (Died, then AfterDeath on every listener, then
+  BeforeRemovedFromRoom to the leaving monster), and a deleted handler leaves its pair unregistered and unlogged.
+- Acceptance (R6.m1): the monster tests 24 pass; `dotnet test src/Sts2Emulator.Tests` 6895 passed, 7 skipped, 0 failed
+  (6902); `tools/emudump.Tests` 281 passed; `port_list --gate --families F08 F10`: 137 pairs without a handler (150 before,
+  this batch's 13 closed); byte_proof of the Release EmuDump against itself, `--engine old` and `--b-args "--engine
+  core2"`, no switch, `--modes fight,state-hash --limit 300`: 600 fight-mode pairs identical, 0 differ;
+  `fuzz_core2.py --switches F08,F10 --fights 300 --procs 3`: 299 differing (R4: 299), all untriaged, top fields the
+  generic ones (ActiveCombat.Enemies 186, PlayerHp 84, UnblockedDamageHitCount 59); 29 of them are encounters of this
+  batch's monsters, with the same generic signatures (the damage fold and the death bodies the power batches carry).
+
+### Batch monster-1, second half, and monster-2 (R6.m2, branch `rebuild/f08-m2`)
+
+Eleven game models, 17 (model, hook) pairs: the rest of the port list's monster rows. Lagavulin Matriarch
+(AfterDamageReceived, AfterDeath), Crusher (AfterCurrentHpChanged, BeforeDeath), Rocket (the same two and
+BeforeRemovedFromRoom), Owl Magistrate, Snapping Jaxfruit and Knowledge Demon (BeforeRemovedFromRoom), The Insatiable, Soul
+Fysh and Kin Priest (AfterDeath), Test Subject and Waterfall Giant (AfterDeath, BeforeRemovedFromRoom). Same layout and
+harness as m1.
+- Read from the game: all 17 bodies are presentation only (the Kaiser Crab background's arm and body animations, sound
+  loops, music parameters, the Matriarch's sleeping effect and shell-eye animation with the `IsShellAwake` flag only that
+  animation reads, the Kin Priest's all-followers-dead talk line, the Test Subject's colour and its unsubscribing of the
+  PowerApplied and PowerRemoved handlers that set it). So each handler is the game's call at the game's point, changes
+  nothing and reads nothing; no open pair needed a body.
+- Two monster pairs are `registered` in the port list on an old location that is a power's body, and the power's row
+  lists the same location: Lagavulin Matriarch's AfterDamageReceived on `EnemyAI.WakeMatriarchIfStruck`
+  (AsleepPower.AfterDamageReceived, batch power-3) and Test Subject's AfterDeath on `CombatEngine.TryRespawnTestSubject`
+  (AdaptablePower.AfterDeath, power-4). Waterfall Giant's stand-up, `EnemyAI.TriggerAboutToBlow`, is
+  SteamEruptionPower.AfterDeath (power-4), and the Axebot's `TryRespawnAxebot` is StockPower's. The power handlers call
+  them, passing the combat as R4's optional last argument (`RespawnTestSubject` too, from the respawn move); the monster
+  handlers do not, so no body runs twice once both rows are ported. The tests pin that: with the monster registered alone
+  the Matriarch stays asleep, the Test Subject gets no Reviving and the giant does not stand up.
+- `HookCtx` gaps: none (no handler reads the combat). `MonsterHarness` now also wraps BeforeDeath, AfterCurrentHpChanged
+  (logging the delta) and AfterDamageReceived. A `CreatureRef` is the roster slot, so a death in a slot an earlier death
+  emptied logs the same index (the Kin Priest's test).
+- Acceptance (R6.m2): the monster tests 47 pass (23 new); `dotnet test src/Sts2Emulator.Tests` 6918 passed, 7 skipped, 0
+  failed (6925), ModelSourceScanTests included; `tools/emudump.Tests` 281 passed; `port_list --gate --families F08 F10`: 120
+  pairs without a handler (137 before, this batch's 17 closed; every monster row now has its handlers); byte_proof of the
+  Release EmuDump against itself, `--engine old` and `--b-args "--engine core2"`, no switch, `--modes fight,state-hash
+  --limit 300`: 600 fight-mode pairs identical, 0 differ; `fuzz_core2.py --switches F08,F10 --fights 300 --procs 3`: 299
+  differing (m1: 299), all untriaged, top fields the generic ones (ActiveCombat.Enemies 186, PlayerHp 84,
+  UnblockedDamageHitCount 59). As expected for handlers that change nothing: the differences are the power and relic
+  batches' (the damage fold and the death bodies).
+
+
+### Batch L1: item 9's HP commands and the first LOCAL non-monster models (branch `rebuild/f08-l1`)
+
+**Item 9, the spec per method (read from the decompile; `Core2/Commands/CreatureCmd.Hp.cs`, each with its `construct`
+declaration).** `construct commands` checks all six against the game (12 commands with R3a's six).
+- `Heal(creature, amount)`: a non-player heals nothing while the combat IsEnding; Creature.HealInternal (HP = min(HP +
+  amount, max), truncated; a dead creature brought back has its player's hooks activated again: `OldWorld.ActivatePlayerHooks`,
+  R3a's left item); then AfterCurrentHpChanged with the **asked-for amount** whenever it is positive, even at full HP (the old
+  engine announced only a change, with the change).
+- `SetCurrentHp(creature, amount)`: Creature.SetCurrentHpInternal (min(amount, max), no floor); AfterCurrentHpChanged with
+  asked-for minus old HP when they differ; then Kill when the creature is dead. No hook activation (only Heal's
+  HealInternal has it). An enemy set to 0 HP is marked dying over the hook, as the game keeps it in the combat until the kill.
+- `SetMaxHp(creature, amount)`: Creature.SetMaxHpInternal with the amount floored at 0 (max = min(amount, 999999999), HP
+  lowered to it) with **no hook**; Kill at a max of 0; returns the change of the max.
+- `SetMaxAndCurrentHp`: SetMaxHp, then SetCurrentHp.
+- `GainMaxHp(creature, amount)`: negative refused (the game throws); SetMaxHp(max + amount), then Heal by the change it
+  returns (so the hook and the ending gate are the heal's).
+- `LoseMaxHp(ctx, creature, amount, isFromCard)`: negative refused; when the lowered max is under the HP, the excess is real
+  damage first (CreatureCmd.Damage, Unblockable and Unpowered, plus Move when from a card; no dealer, no card source: so
+  Rupture applies Strength at once), then SetMaxHp(max(1, lowered max)). Callers: Brightest Flame (`CardEffects.LoseMaxHp`,
+  from a card: the InFlight mark) and Paper Cuts (not from a card).
+- Old sites: R4 had already routed every F08 heal and max-HP write (the write scan: 0 F08 HP writes with the switch on); L1
+  passes `isFromCard` and moves the two death-prevention heals of the old bodies from SetCurrentHp to the game's Heal
+  (`RelicEffects.LizardTail_AfterPreventingDeath`, `CombatEngine.FairyInABottle_AfterPreventingDeath`; switch off unchanged).
+  Not modelled: the heal's sound, animations, numbers, the revive animation, the map point's history and the scaled wait.
+
+**Models (11 game models, 13 pairs; `Core2/Models/Powers`, `Relics`, `Potions`; tests `Core2/Models/L1ModelTests.cs`,
+`Core2/HpCommandTests.cs`).**
+- Paper Cuts AfterDamageGiven (registered; the switch skips its inline old body): dealer the owner, target the player, a powered
+  attack with unblocked damage: LoseMaxHp by the amount, not from a card.
+- The Gambit AfterDamageReceived (registered): target the owner, powered, unblocked > 0: the old body (the buff removed,
+  then Core2's Kill).
+- Hard to Kill ModifyDamageCap (open): the amount when the target is the owner, else no cap; any props.
+- Slow ModifyDamageMultiplicative (open, mechanism B): 1 + 0.1 x SlowAmount for a powered attack on the owner, a decimal factor
+  inside the fold; SlowAmount is the old `BuffId.SlowCount` buff (its per-turn card counter, kept by the old engine).
+- Minion, Reattach, Adaptable, Steam Eruption, Painful Stabs ShouldPowerBeRemovedAfterOwnerDeath (open pseudo): false (each
+  game override); their other pairs stay with their batches and go in the same class later.
+- Lizard Tail ShouldDieLate and AfterPreventingDeath (registered): the owner with the relic unused is not let die; then the
+  relic is spent (its counter) and the owner heals max(1, max HP x 50%) through Heal.
+- Fairy in a Bottle ShouldDie and AfterPreventingDeath (open; the potion's slot is the listener): the owner is not let die
+  while it is held; then the slot is emptied and the owner heals max(max HP x 0.3, 1) through Heal. Not modelled: the
+  potion-use hooks of OnUseWrapper (another family).
+- `HookCtx` (engine-neutral): `IsPlayer(CreatureRef)` (game Creature.IsPlayer) and `Damage(DamageResultRef)` (the result a
+  damage hook is handed). Tier 1 uses: Slow's `c.OldBuffs`, The Gambit's, Lizard Tail's and Fairy's old bodies through
+  `c.OldCombat`.
+- Left LOCAL: Inferno, Rupture, Self-Forming Clay, Centennial Puzzle, Demon Tongue, Red Skull (one change: Core2's call of
+  the player-side `CardEffects.AfterPlayerDamageReceived` in `OldState.Damage.cs` goes, six handlers take it over), Beating
+  Remnant and Hardened Shell (their Core2-owned tallies), Curl Up (needs F09's GainBlock), Shrink (AfterDeath reads the
+  applier, which the old buff does not keep; AfterRemoved is a node scale only), Illusion, Imbalanced, Vital Spark, Hang,
+  Meat on the Bone, Lava Lamp, the AfterRemoved pseudo pairs (Slumber, Hex, Dampen, Sandpit, Burrowed, Tangled, Ringing),
+  and the registered pairs of Minion, Reattach, Adaptable, Steam Eruption and Painful Stabs.
+- Acceptance (L1): the new tests 21 pass (HpCommandTests 10, L1ModelTests 11); `dotnet test src/Sts2Emulator.Tests` 6939 passed, 7 skipped, 0 failed (6946), ModelSourceScanTests included; `construct commands` ok: 12 commands, 0 differences, 0 Core2 writes outside Commands, 0 F08 HP writes with the switch on; `sites check` 0 problems (279 sites; the CombatEngine.cs and RelicEffects.cs hashes re-recorded, the Doom and Fur Coat parts unchanged); `port_list --gate --families F08 F10`: 107 pairs without a handler (120 before, this batch's 13 closed); byte_proof of the Release EmuDump against itself, `--engine old` and `--b-args "--engine core2"`, no switch, `--modes fight,state-hash --limit 300`: 600 fight-mode pairs identical, 0 differ; `fuzz_core2.py --switches F08,F10 --fights 300 --procs 3`: 299 differing (m2: 299), all untriaged. `tools/emudump.Tests` not rerun (no EmuDump file changed).
+
+### Batch L2: the LOCAL models L1 left (branch `rebuild/f08-l2`)
+
+47 (model, hook) pairs over 27 game models (`Core2/Models/Powers`, `Relics`, the classes in `KeptAfterOwnerDeath.cs`; tests
+`Core2/Models/L2PlayerDamageTests.cs`, `L2TallyTests.cs`, `L2DeathTests.cs`, `L2DeathExtraTests.cs`).
+
+**The player-side body goes (one change, item 1).** Core2's damage command called the old
+`CardEffects.AfterPlayerDamageReceived` after the AfterDamageReceived pass for a player it did not kill: Rupture, Inferno,
+Self-Forming Clay, Centennial Puzzle, Demon Tongue, then `ApplyAfterPlayerHpChanged` (Red Skull, and Lizard Tail, which is
+L1's handler) and Emotion Chip's `RecordPlayerHit` (the same entry `NoteDamageReceived` writes in the first loop). The
+call is gone and six handlers take it over at the game's hook and pass, in the game's listener order (the creature's
+powers before the player's relics) rather than the old body's fixed order:
+- Inferno (AfterDamageReceived): the game's one `CreatureCmd.Damage` over the hittable enemies (the old body hit each enemy
+  with its own call, so each had its own AfterDamageReceived passes and Kill); the owner hit, unblocked > 0, its own turn.
+- Rupture (AfterDamageReceived): the old body with the fromPlayedCard Core2 computed before (the card source is the
+  in-flight card on the player's turn: the bank, `RuptureOwed`, paid by the old `PayRupture`).
+- Self-Forming Clay, Centennial Puzzle, Demon Tongue (AfterDamageReceived): the old extracted bodies under the game's
+  conditions (IsInProgress; Centennial Puzzle's used flag and Demon Tongue's turn flag are the old relic counters).
+- Red Skull (AfterCurrentHpChanged): any creature's HP change while the combat is in progress re-reads the owner (the old
+  body is idempotent). With the switch on the old heal returns into the Heal command and no longer re-read Red Skull; the
+  handler answers the Heal, SetCurrentHp and kill passes as well as the damage one.
+
+**The tallies (item 2) and Lava Lamp.** `OldCreatures.AfterDamageReceived` is gone with its call; each line is its
+listener's handler: Beating Remnant (`UnblockedDamageThisTurn`, old body `CardEffects.BeatingRemnant_AfterDamageReceived`),
+Hardened Shell (`HardenedShellDamageThisTurn`, old body `CardEffects.HardenedShell_AfterDamageReceived`, handed the HP
+now plus the unblocked damage) and Lava Lamp (`TookUnblockedDamage`, through the new
+`RelicEffects.LavaLamp_AfterDamageReceived`; open pair). As in the game, only a holder keeps them: with core2 the two
+global old fields stay 0 for a player without Beating Remnant or Lava Lamp. Nothing else reads them (the cap and the
+reward upgrade check the relic first), so the difference against old is a field, not a behaviour. The two models' caps
+are theirs too (the whole class is LOCAL): Beating Remnant's ModifyHpLostAfterOsty (min(amount, 20 - tally)) and Hardened
+Shell's ModifyHpLostBeforeOstyLate (min(amount, Amount - tally), amount 0 left alone), in the decimal fold with the old
+tallies, and their AfterModifying flashes (presentation).
+
+**Curl Up (item 3).** The game's AfterDamageReceived only remembers the card (powered attack, a card source, the first
+card); the block is CurlUpPower.AfterCardPlayed's. The handler arms the old flag (`CardEffects.CurlUp_AfterDamageReceived`).
+Hybrid: the block is the old `CombatEngine.PayCurlUp` through the old block code once the card has finished
+(AfterCardPlayed and F09's GainBlock are not migrated), so the handler calls no block-gain command.
+
+**Item 4.**
+- Shrink AfterDeath (open): the old buff keeps no applier, so the applier is read as the old engine reads it: a Shrink on
+  the player came from the Shrinker Beetle (the one monster that applies it), whose death runs
+  `CardEffects.RemoveDeathBoundPowers`. Not modelled: an enemy's Shrink (the player applied it, by a potion) goes with the
+  player's death, which ends the combat; two Shrinker Beetles in one combat, which no encounter has. AfterRemoved: the node
+  scale, nothing. ModifyDamageMultiplicative: the owner dealing a powered attack, the old factor
+  (`BuffSystem.Shrink_ModifyDamageMultiplicative`, 0.70).
+- Illusion: AfterDeath calls `CombatEngine.TryReviveIllusion` (the Reviving marker, the intent, the block; it also strips
+  the debuffs); ShouldAllowHitting reads the Reviving marker; ShouldCreatureBeRemovedFromCombatAfterDeath keeps the owner;
+  ShouldPowerBeRemovedOnDeath answers by the power's type (`HookCtx.IsDebuff`, from the game's power data): a debuff goes, a
+  buff stays, for any dying creature, as the game asks every listener. The R3b primary-enemy rule is unchanged.
+- Imbalanced AfterDamageGiven (open): a fully blocked attack of the owner puts the Bowlbug Rock off balance
+  (`EnemyAI.Imbalanced_AfterDamageGiven`); another owner's Stun is not modelled (the old engine gives the power to the
+  Rock only).
+- Vital Spark AfterRemoved: nothing to clear (the old engine reads the Tainted stamp off the living enemies' Vital Spark).
+- Meat on the Bone AfterCurrentHpChanged (open): the relic's status only, so nothing; its heal is F17's.
+- Lava Lamp: above. **Hang is not ported**: the old Hang card multiplies its damage by the stacks before the damage call
+  (`CardEffects.ApplyNecrobinderCard`, a card-attack path the R4 fix round owns), so a ModifyDamageMultiplicative handler
+  would multiply a second time with the switch on. The handler lands with that site's switch gate.
+
+**Item 5.**
+- AfterRemoved (pseudo) of Shrink, Slumber, Hex, Dampen, Sandpit, Burrowed, Tangled, Ringing and Vital Spark (Sword Sage is
+  not reached): Dampen gives the upgrades back (`CardEffects.RemoveDampen`); Hex, Tangled and Ringing have no affliction on
+  the old cards (the old engine reads the buff); Sandpit's old owner is dead at every AfterRemoved Core2 dispatches (the
+  death removal), so the game returns; Burrowed's dead owner leaves the combat, so its block is read by nothing; Slumber's
+  override is empty. A removal outside a death (PowerCmd.Remove) is not F08/F10.
+- Read again at the F08 integration (landing 8), against the game's overrides: Hex, Dampen, Slumber and Burrowed agree
+  with the game's conditions (Slumber on unblocked damage not 0, Burrowed on its owner's block broken, Hex on the
+  applier's death, Dampen on the last caster's). Dampen's `RemoveDampen` runs once under the switch: its one old caller
+  (`CombatEngine.Dampen_AfterDeath`, from `AnswerDeaths`) returns at the gate on its top; a second Magi Knight's
+  AfterDeath finds the buff gone (`HookCtx.Power` re-reads it); AfterRemoved is dispatched only from the owner's death
+  removal; and the body is idempotent (the flags it clears). One timing note, not a count: two Knights killed by one
+  Damage lift it at the first one's AfterDeath (the living Knights are read by HP), where the game lifts it at the
+  second's (its caster set).
+- The other pairs of the AfterRemoved models (their class files are this batch's): Slumber AfterDamageReceived
+  (`CardEffects.Slumber_AfterDamageReceived`), Hex AfterDeath (the applier read as the Spectral Knight,
+  `CombatEngine.Hex_AfterDeath`), Dampen AfterDeath (the casters read as the living Magi Knights,
+  `CombatEngine.Dampen_AfterDeath`), Burrowed AfterBlockBroken (`EnemyAI.BreakBurrowIfBlockGone`).
+- The registered pairs of the L1 pseudo-pair powers, calling the power-owned old bodies the monster batches left: Reattach
+  AfterDeath (`CombatEngine.TryReattachSegment`), ShouldAllowHitting, ShouldCreatureBeRemovedFromCombatAfterDeath; Adaptable
+  AfterDeath (`CombatEngine.TryRespawnTestSubject`; the respawn move already passes the combat), ShouldAllowHitting,
+  ShouldStopCombatFromEnding, ShouldCreatureBeRemovedFromCombatAfterDeath; Steam Eruption AfterDeath
+  (`EnemyAI.TriggerAboutToBlow` with the combat), ShouldStopCombatFromEnding, ShouldCreatureBeRemovedFromCombatAfterDeath;
+  Painful Stabs ShouldCreatureBeRemovedFromCombatAfterDeath. Minion has no other F08/F10 pair. Asleep AfterDamageReceived
+  (`EnemyAI.WakeMatriarchIfStruck`) is here as the batch was asked; it is also in the CLOUD brief C3, which drops it.
+  `TryReviveIllusion`, `TryReattachSegment` and `TryRespawnTestSubject` went from private to internal (no other change).
+- **Stock is not ported**: the game's AfterDeath adds a new Axebot (CreatureCmd.Add) and the dead one leaves; the old
+  `TryRespawnAxebot` revives the same `EnemyState` in place, which Core2's Kill then takes out of the roster (the removal
+  is decided before AfterDeath and nothing vetoes it for an Axebot), so the respawn would be lost. It needs a
+  CreatureCmd.Add over the old roster (a new enemy in the slot) first. Stock is C3's CLOUD model; C3 should skip its
+  AfterDeath for the same reason.
+
+`HookCtx` (engine-neutral): `CombatInProgress` (CombatManager.IsInProgress), `HittableEnemies()`
+(CombatState.HittableEnemies), `IsDebuff(PowerRef)` (PowerModel.Type). Tier 1 uses (on the rewrite list): `c.World.InFlight`
+(Rupture), `c.K` (Inferno's Damage), `c.OldCombat` and `c.Enemy` (the old bodies), `c.OldBuffs` (the Reviving marker).
+Hybrid calls (an old body run from a handler; each re-enters Core2 only through the switch-gated old entries): Demon
+Tongue's heal (`CardEffects.HealPlayer`, gated to Heal), Steam Eruption's HP write (gated to SetMaxAndCurrentHp), Rupture's
+and Red Skull's Strength (`RelicEffects.GainPlayerStrength`, the old buff write: F-power, not migrated), Centennial
+Puzzle's draws (`CardEffects.DrawCards`), Curl Up's block (above), and the old buff writes of Shrink, Hex, Dampen, Slumber,
+Burrowed, Asleep, Illusion, Reattach and Adaptable (PowerCmd is not migrated).
+
+- Acceptance (L2): the new tests 36 pass (L2PlayerDamageTests 6, L2TallyTests 7, L2DeathTests 18 with the 9 AfterRemoved cases, L2DeathExtraTests 5); a run with every L2 registration deleted failed every L2 test but the one that registers no model (32 of 33, before the cap pairs were added); `dotnet test src/Sts2Emulator.Tests` 6975 passed, 7 skipped, 0 failed (6982), ModelSourceScanTests included, `TIER2_REWRITE_LIST.md` regenerated; `construct commands` ok: 12 commands, 0 differences, 0 Core2 writes outside Commands, 0 F08 HP writes with the switch on (R4's informational list: 36 F09 block writes, 4 of them in the old bodies L2 calls: TryReviveIllusion, TryReattachSegment, TryRespawnTestSubject, BreakBurrowIfBlockGone); `sites check` 0 problems (279 sites; the CombatEngine.cs and RelicEffects.cs hashes re-recorded, the Doom and Fur Coat parts unchanged); `port_list --gate --families F08 F10`: 60 pairs without a handler (107 before, this batch's 47 closed; of the LOCAL models only Hang and Stock are left); byte_proof of the Release EmuDump against itself, `--engine old` and `--b-args "--engine core2"`, no switch, `--modes fight,state-hash --limit 300`: 600 fight-mode pairs identical, 0 differ; `fuzz_core2.py --switches F08,F10 --fights 300 --procs 3`: 299 differing (L1: 299), all untriaged; top fields ActiveCombat.TookUnblockedDamage and the run's TookUnblockedDamageThisCombat 151 each and UnblockedDamageThisTurn 48 (new: the old global tallies of players without the relic, which only a holder keeps now), ActiveCombat.Enemies 125 (m1: 186), PlayerHp 68 (84), UnblockedDamageHitCount 54 (59). `tools/emudump.Tests` not rerun (no EmuDump file changed).
+
 ## 6. Acceptance
 
 Per round:
@@ -655,7 +992,30 @@ Per round:
 Final (switch on in `migrated_families.json`): **the handler gate first**: `python -m tools.kernel.port_list
 --families F08 F10 --gate` exits 0, that is every (model, hook) pair of the reached set, pseudo-hooks included, has a Core2
 handler or is not modelled (today 150 pairs have neither: section 5); a pair is closed only by a Core2 handler or a
-not-modelled entry with its reason. Then the by-family table re-measured on a lockstep block with core2;
+not-modelled entry with its reason. **The Illusion primary rule** (no handler closes it, R3b): Core2 reads a living
+Illusion enemy as primary (the game's MinionPower-only `IsPrimaryEnemy`), the old engine as not; before switch-on the
+corpus fights with an Illusion enemy are read against the game for the win point (the fight ends when only Illusions
+are left, or not), and the old rule's users are listed and either follow the game or carry the difference.
+
+**R7 checks before switch-on** (each closed, with a test, before the switch goes on in `migrated_families.json`):
+- The index holders (the independent review, docs/reviews/2026-10-24-f08-migration.md, recommendation 3, its 1.3 A and B):
+  `HandleEnemyDeaths` gated off whole under the switch; Oblivion paid by reference, not by roster position; the play's
+  target resolved by reference (`FirstEnemy` reads `PlayTarget`, null for a dead or removed target).
+- The in-move death (recommendation 4, 1.3 C): no post-attack bookkeeping (`MoveIndex++`, Ritual, Vigor,
+  `RestoreTemporaryEnemyStrength`) on a creature that died in its own move, or the forced move re-applied at
+  `PerformMove`'s end; `WaterfallGiantTests` stay true under the switch.
+- One ending (recommendation 7): Fogmog's primary rule read against the game and closed; the two "ending" predicates one
+  under F10, with an agreement assertion (the old predicate equals Core2's at every step) in `EmuDump fuzz`.
+- Curl Up: the old flag pays on the next card played (`CombatEngine.PayCurlUp`), where the game's
+  CurlUpPower.AfterCardPlayed pays only on the card that armed it.
+- Ravenous: `CombatEngine.Ravenous_AfterDeath` split per owner (the review's 3.3), so N holders give N owners' effects,
+  not N squared.
+
+**R7 acceptance items** (the oracle rounds O1 and O2 are building them): recommendation 1, the step-API acceptance test
+from the traced Headbutt and Twin Strike fights; recommendation 2, the old behaviour suites run under F08+F10 through a
+test-fixture switch, each failure classified (R4 to deliver, handler batch, or old deviation updated with a trace);
+recommendation 5, the traced set with net states (`struct_calibrate traced --engine core2`), no fight worse against the
+game. Then the by-family table re-measured on a lockstep block with core2;
 target G2891c25e0d's kill part and mechanism B at 0, F08 proper down by at least its A+B share; any group that grows is
 a stop.
 
@@ -670,6 +1030,9 @@ game does something else, found while porting; R7's corpus re-measure decides ea
 - **Tracking and Double Damage: the pet case.** The game accepts a dealer that is the owner's pet (Osty); the handlers do too
   (`HookCtx.IsOwnerOrPet`), while the old fold (`BuffSystem.IncomingDamage`) reads the attacker's own buff list. Check: a recorded
   fight where Osty strikes with a card source under either power; the handler is the game's answer.
+- **Sic 'Em on the last enemy's killing hit.** Under the switch Osty's max HP grows and its current HP stays (GainMaxHp's Heal
+  skips a non-player while the combat is ending); the old engine raised both. Check: a recorded Necrobinder fight that ends on
+  Osty's hit on a Sic 'Em holder.
 - **Intangible: the ending guard.** The game's `IntangiblePower.ModifyHpLostAfterOsty` returns the amount unchanged while the
   combat is not in progress; HookCtx has no accessor for it and the handler (`IntangiblePower`, batch C3) does not model it.
 - **Buffer: any owner.** The game's Buffer acts for any owner, an enemy's too; the old functions read the player's buff list alone

@@ -58,7 +58,7 @@ sets only; the gate fails when the list is not empty. `struct_compare.waived_tot
 
 ## Allowed rows (tools/fidelity/allowed_diff.json)
 
-16 rows. Each lists the `engines` it applies to: `old` for rows that exist only because of the old engine's limits, `*` for the rows
+17 rows. Each lists the `engines` it applies to: `old` for rows that exist only because of the old engine's limits, `*` for the rows
 that state the record's own representation or integrity. `struct_compare --engine E` (default `old`; `compare_fight(engine=)`)
 applies only the rows of E and of the engine whose state E runs over (`struct_compare.ENGINE_BASE`: core2 is old's state with the
 kernel attached, so it has old's limits and is judged by old's rows; an engine with a state of its own is judged without them),
@@ -87,6 +87,7 @@ old always keeps all its rows, an engine with a state of its own none of them.
 | settle | after-last-checksum | * | a net path the record's own snapshot shows changed after the step's last checksum is judged by the snapshot |
 | surplus | kernel-sequencing (1) | core2 | the engine-written paths `net.last_action` and `net.last_hook` (the kernel's own queue counters, under the game's field names) are taken out of both sides, listed in the census as `surplus`, never compared: the game's action ids come from its synchronizer, which numbers actions the emulator does not run, and its HookId is `ActionQueueSynchronizer._nextHookId` (0-based, the turn start flow action numbered too) while core2 writes `RecordedHookAction.Id` (1-based, 0 for the flow action), so neither can match a record. Where the engine writes none the record's side stays under net-sequencing |
 | late_steps | late-steps | * | record integrity: the net shape is not compared from a step recorded before the game finished it. The limit applies only when the row is present, and each skipped step is counted under the row |
+| ignore | holder-tallies (F08) | core2 | the relic tallies TookUnblockedDamage (Lava Lamp) and UnblockedDamageThisTurn (Beating Remnant) are waived on core2: the game, and core2 with F08 on, keep them only for a holder, old counts them for every player; their only readers check the relic first |
 
 Each row's `legacy` field names the fight_compare / netstate_diff rule it replaces.
 

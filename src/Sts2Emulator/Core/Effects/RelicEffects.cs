@@ -860,7 +860,14 @@ public static class RelicEffects
     {
         if (state.FurCoatBites && EnemyAI.IsTargetable(enemy))
         {
-            enemy.Hp = 1;
+            if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+            {
+                Core2.CreatureCmd.SetCurrentHp(core2, Core2.OldCreature.Of(enemy), 1);
+            }
+            else
+            {
+                enemy.Hp = 1;
+            }
         }
     }
 
@@ -1326,6 +1333,16 @@ public static class RelicEffects
     }
 
     /// <summary>
+    /// game: LavaLamp.AfterDamageReceived: TookDamageThisCombat set (the combat's latch, which the run copies at the
+    /// combat's end). The caller keeps the condition (the owner hit, unblocked damage, not Unblockable); the old damage
+    /// sites set the field inline, and Core2's handler calls this.
+    /// </summary>
+    internal static void LavaLamp_AfterDamageReceived(CombatState state)
+    {
+        state.TookUnblockedDamage = true;
+    }
+
+    /// <summary>
     /// Fires when the player takes unblocked damage. The game hangs both of these off
     /// Hook.AfterDamageReceived, which runs per damage instance; here the caller is the
     /// enemy attack path, so self-damage from a card does not trigger them.
@@ -1470,7 +1487,7 @@ public static class RelicEffects
     /// A once-per-combat relic, held as a counter because that is the only per-relic state
     /// there is. Combat setup builds fresh RelicInstances, so the flag clears itself.
     /// </summary>
-    private static bool FiresOncePerCombat(CombatState state, int relicId)
+    internal static bool FiresOncePerCombat(CombatState state, int relicId)
     {
         int index = state.Relics.FindIndex(relic => relic.DefId == relicId);
         if (index < 0 || state.Relics[index].Counter != 0)
@@ -1547,6 +1564,13 @@ public static class RelicEffects
         // Bare on purpose: this write is INSIDE the hook, and routing it through
         // HealPlayer would re-enter. Red Skull is re-read a few lines down anyway,
         // against the revived total.
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            // game: LizardTail.AfterPreventingDeath heals (CreatureCmd.Heal) by max(1, max HP x 50%), from 0 HP.
+            Core2.CreatureCmd.Heal(core2, Core2.OldCreature.Player, Math.Max(1m, state.PlayerMaxHp * 0.5m));
+            return;
+        }
+
         state.PlayerHp = Math.Max(1, state.PlayerMaxHp / 2);
     }
 
