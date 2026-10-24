@@ -36,6 +36,7 @@ public static class Registry
     public static readonly IReadOnlyList<Action<HandlerTable>> Power3 =
     [
         FlutterPower.Register,
+        PersonalHivePower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when

@@ -28,6 +28,7 @@ public class PowerThreeTests
     [
         (ListenerKind.Power, "FlutterPower", HookId.AfterDamageReceived),
         (ListenerKind.Power, "FlutterPower", HookId.ModifyDamageMultiplicative),
+        (ListenerKind.Power, "PersonalHivePower", HookId.AfterDamageReceived),
     ];
 
     [Fact]
@@ -200,5 +201,100 @@ public class PowerThreeTests
     {
         AssertAbsent(Table(Power3, AllButDamage), ListenerKind.Power, "FlutterPower", HookId.ModifyDamageMultiplicative,
             HookId.AfterDamageReceived);
+    }
+
+    // ---------------------------------------------------------------------------------------- Personal Hive (power-3)
+
+    private const int DazedDef = ST.Dazed;
+
+    /// <summary>One slug with Personal Hive 2, three Strikes in the player's draw pile; returns the hive's listener.</summary>
+    private static (CombatState S, ListenerRef Hive) PersonalHiveCombat(int amount = 2)
+    {
+        var s = Combat(40);
+        var hive = GivePower(s, "PersonalHivePower", BuffId.PersonalHive, amount, s.Enemies[0]);
+        for (int i = 0; i < 3; i++)
+            Add(s, s.DrawPile, 1);
+        return (s, hive);
+    }
+
+    /// <summary>The draw pile's cards by (uid, def), top first: where each Dazed landed.</summary>
+    private static string Draw(CombatState s) => string.Join(",", s.DrawPile.Select(c => $"{c.Uid}:{c.DefId}"));
+
+    private static int Dazed(CombatState s) => s.DrawPile.Count(c => c.DefId == DazedDef);
+
+    [Fact]
+    public void PersonalHiveIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power3), ListenerKind.Power, "PersonalHivePower", HookId.AfterDamageReceived);
+    }
+
+    [Fact]
+    public void PersonalHiveShufflesItsAmountOfDazedIntoTheDrawPileOnAPoweredHit()
+    {
+        // game: PersonalHivePower.AfterDamageReceived; old: CardEffects.LandDamageOnEnemy calls
+        // PersonalHive_AfterDamageReceived(state, personalHive) for a powered hit on a target with Personal Hive > 0 that
+        // is alive after it; no damage result is read. The old body draws each card's place from state.ShuffleRng or, for
+        // a state made without one, a fixed stream, so the oracle's pile equals the dispatch's card for card, uids included.
+        var (s, _) = PersonalHiveCombat();
+        var slug = s.Enemies[0];
+        var k = Kernel(s, Power3);
+        var oracle = PersonalHiveCombat().S;
+
+        Hit(k, OldCreature.Of(slug), 5m);
+        CardEffects.PersonalHive_AfterDamageReceived(oracle, 2);
+
+        Assert.Equal(35, slug.Hp);
+        Assert.Equal(Draw(oracle), Draw(s));
+        Assert.Equal(5, s.DrawPile.Count);
+        Assert.Equal(2, Dazed(s));
+
+        // A fully blocked hit counts too (no result is read); an unpowered one does not; nor does a hit that kills the
+        // owner (the old site's Hp > 0; CreatureCmd.Damage runs AfterDamageReceived for a target it did not kill).
+        slug.Block = 9;
+        Assert.Equal(0, Assert.Single(Hit(k, OldCreature.Of(slug), 5m)).UnblockedDamage);
+        CardEffects.PersonalHive_AfterDamageReceived(oracle, 2);
+        Assert.Equal(Draw(oracle), Draw(s));
+        Assert.Equal(4, Dazed(s));
+        Hit(k, OldCreature.Of(slug), 5m, props: Unpowered);
+        Assert.Equal(4, Dazed(s));
+        k.Commands.KillStandIn = (_, _) => { }; // the kill would sweep the corpse: the pile is what is looked at
+        Assert.True(Assert.Single(Hit(k, OldCreature.Of(slug), 99m)).WasTargetKilled);
+        Assert.Equal(4, Dazed(s));
+    }
+
+    [Fact]
+    public void PersonalHiveActsForItsOwnerAloneAmongTwoHolders()
+    {
+        // Rule 5: both slugs hold Personal Hive, at 2 and at 3. A hit on the first adds its two Dazed once, not the
+        // second's three as well; a hit on the second adds three.
+        var s = Combat(40, 40);
+        Add(s, s.DrawPile, 1);
+        GivePower(s, "PersonalHivePower", BuffId.PersonalHive, 2, s.Enemies[0]);
+        GivePower(s, "PersonalHivePower", BuffId.PersonalHive, 3, s.Enemies[1]);
+        var k = Kernel(s, Power3);
+
+        Hit(k, OldCreature.Of(s.Enemies[0]), 5m);
+        Assert.Equal(2, Dazed(s));
+        Hit(k, OldCreature.Of(s.Enemies[1]), 5m);
+        Assert.Equal(5, Dazed(s));
+        Assert.Equal(6, s.DrawPile.Count);
+    }
+
+    [Fact]
+    public void PersonalHiveDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = PersonalHiveCombat();
+        var k = Kernel(s, Without(Power3, PersonalHivePower.Register));
+        string before = Draw(s);
+        Hit(k, OldCreature.Of(s.Enemies[0]), 5m);
+        Assert.Equal(35, s.Enemies[0].Hp);
+        Assert.Equal(before, Draw(s));
+        Assert.Equal(0, Dazed(s));
+    }
+
+    [Fact]
+    public void PersonalHiveIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power3, AllButDamage), ListenerKind.Power, "PersonalHivePower", HookId.AfterDamageReceived);
     }
 }
