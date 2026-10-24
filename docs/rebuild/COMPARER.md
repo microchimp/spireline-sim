@@ -189,10 +189,14 @@ appear as surplus. This is the baseline: a reroute commit must keep "worse" at 0
 
 The step test (recommendation 1) is `src/Sts2Emulator.Tests/Core2/StepApiKillTests.cs`: the traced Headbutt and Twin Strike fights
 (ids and numbers of the trace only) played through the old step API, with the game's HP, roster after the killing hit and order of the
-death hooks pinned. Switch off, the Headbutt test asserts the failure (the corpse is still in the roster at the discard screen); the
-Twin Strike end state matches the game even in the old order, so its switch-off test is an ordinary pin. Switched on (F08+F10
-bound, the real Registry plus a logging observer), both are strict expected failures on main until `RerouteLanded` is set in R4's
-commit; `STS2_STEP_TEST=strict` runs them as plain tests.
+death hooks pinned. The fixture and every value that holds in the old order and the new alike run as plain assertions; only what
+differs by order is a strict expected failure (`Pinned`): at the Headbutt stop the roster, the survivor's Strength, the kernel's kill
+count and the event order, and for Twin Strike the kill count and the event order (its end state matches the game even in the old
+order, so its switch-off test is an ordinary pin). The survivor's Stunned state and intent are in the trace only in the state at the
+end of the step, so they are pinned there; Gremlin Horn, which the review names, is not in the traced fights. Switched on (F08+F10
+bound, the real Registry plus a logging observer) the expected failures stay until R4 and the handlers these fights run through
+(at least Ravenous's AfterDeath and Strength's damage fold, batch power-1) have landed and `RerouteLanded` is set; R4 alone does not
+flip them. `STS2_STEP_TEST=strict` runs the switched-on assertions plain.
 
 ## Left for the next round
 

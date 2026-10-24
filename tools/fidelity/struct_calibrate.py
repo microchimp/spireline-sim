@@ -232,8 +232,10 @@ def main(argv: list | None = None) -> int:
         return 2
     work = a.work or a.out.parent
     work.mkdir(parents=True, exist_ok=True)
-    built = FZ.dll_for(Path(a.emudump), switches, work) if switches is not None else Path(a.emudump)  # once, here: the workers get this path
+    built = Path(a.emudump)  # the build itself unless a switch set makes a scratch copy of it
     try:
+        if switches is not None:
+            built = FZ.dll_for(built, switches, work)  # once, here: the workers get this path (a failed copy removes itself)
         return run(a, work, built, switches)
     finally:
         FZ.drop_build(built, Path(a.emudump))

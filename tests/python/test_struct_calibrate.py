@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -124,6 +125,67 @@ class Command(unittest.TestCase):
         _, _, jobs = run_main(self.argv("--engine", "core2", "--switches", "F08,F10"))
         self.assertEqual(Path(jobs[0][2]), self.bin / "EmuDump.dll")
         self.assertTrue((self.bin / "EmuDump.dll").exists(), "the build the user named is never removed")
+
+    def scratch_dirs(self) -> list:
+        return sorted(p.name for p in self.out.parent.glob("bin-*"))
+
+    def test_a_leftover_scratch_directory_is_never_reused(self):
+        # an earlier run with this pid died: its directory (a stale DLL, a stale file, another switch set) must not be the run's build
+        stale = self.out.parent / f"bin-F08-F10-{os.getpid()}"
+        stale.mkdir(parents=True)
+        (stale / "EmuDump.dll").write_bytes(b"stale")
+        (stale / "stale.txt").write_text("x")
+        (stale / "migrated_families.json").write_text('{"migrated": ["F01"]}', encoding="utf-8")
+        seen: list = []
+
+        def spy(jobs, procs):
+            d = Path(jobs[0][2]).parent
+            seen.append(((d / "EmuDump.dll").read_bytes(), (d / "stale.txt").exists(),
+                         json.loads((d / "migrated_families.json").read_text())))
+            return []
+
+        with mock.patch.object(cal, "run_jobs", spy), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cal.main(self.argv("--engine", "core2", "--switches", "F08,F10")), 0)
+        self.assertEqual(seen, [(b"dll", False, {"migrated": ["F08", "F10"]})])
+        self.assertEqual(self.scratch_dirs(), [])
+
+    def test_the_scratch_build_is_dropped_when_the_run_fails(self):
+        def boom(jobs, procs):
+            raise RuntimeError("worker died")
+
+        with mock.patch.object(cal, "run_jobs", boom), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                cal.main(self.argv("--engine", "core2", "--switches", "F08,F10"))
+        self.assertEqual(self.scratch_dirs(), [])
+
+    def test_a_copy_that_fails_halfway_leaves_nothing_behind_and_the_error_surfaces(self):
+        def half(src, dest, *a, **kw):
+            Path(dest).mkdir(parents=True)
+            (Path(dest) / "EmuDump.dll").write_bytes(b"half")
+            raise OSError("disk full")
+
+        ran: list = []
+        with mock.patch.object(cal.FZ.shutil, "copytree", half), mock.patch.object(cal, "run_jobs", lambda j, p: ran.append(j) or []), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(OSError):
+                cal.main(self.argv("--engine", "core2", "--switches", "F08,F10"))
+        self.assertEqual((self.scratch_dirs(), ran), ([], []))
+        self.assertEqual((self.bin / "EmuDump.dll").read_bytes(), b"dll")  # the build itself is untouched
+
+    def test_dll_for_removes_a_stale_directory_and_a_failed_switch_file_write(self):
+        work = Path(self.tmp.name) / "w"
+        stale = work / f"bin-F08-{os.getpid()}"
+        stale.mkdir(parents=True)
+        (stale / "old.txt").write_text("x")
+        dll = cal.FZ.dll_for(self.bin / "EmuDump.dll", ["F08"], work)
+        self.assertEqual(dll.parent, stale)
+        self.assertFalse((stale / "old.txt").exists())
+        self.assertEqual(json.loads((stale / "migrated_families.json").read_text()), {"migrated": ["F08"]})
+        cal.FZ.drop_build(dll, self.bin / "EmuDump.dll")
+        with mock.patch.object(Path, "write_text", side_effect=OSError("no space")):
+            with self.assertRaises(OSError):
+                cal.FZ.dll_for(self.bin / "EmuDump.dll", ["F08"], work)
+        self.assertEqual(sorted(p.name for p in work.glob("bin-*")), [])
 
     def test_the_flag_with_old_exits_2_and_runs_nothing(self):
         rc, err, jobs = run_main(self.argv("--switches", "F08,F10"))
