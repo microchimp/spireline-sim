@@ -380,6 +380,10 @@ public static class SwitchGroups
         HookId.Dispatch_ShouldStopCombatFromEnding => Switch.F10,
         HookId.Dispatch_ShouldTakeExtraTurn => Switch.F05,
         HookId.Dispatch_TryModifyCardRewardOptions => Switch.F15,
+        HookId.AfterRemoved => Switch.F10,
+        HookId.BeforeRemovedFromRoom => Switch.F10,
+        HookId.Died => Switch.F10,
+        HookId.ShouldPowerBeRemovedAfterOwnerDeath => Switch.F10,
         _ => Switch.None,
     };
 }

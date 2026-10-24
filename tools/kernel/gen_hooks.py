@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 from tools.kernel import hooks_extract as hx
+from tools.kernel.port_list import PSEUDO_HOOKS
 
 ROOT = Path(__file__).resolve().parents[2]
 ENGINE = ROOT / "src" / "Sts2Emulator"
@@ -433,7 +434,10 @@ def render(desc: dict) -> dict[str, str]:
     shapes = {n: Shape(n, ds[n]) for n in sorted(ds)}
     virtuals = sorted({p["hook"] for d in ds.values() for p in d["passes"]})
     ids = ["None = 0,", "", "// hook virtuals a dispatcher calls"] + [f"{h}," for h in virtuals] + [
-        "", "// dispatchers (Hook's public static methods)"] + [f"Dispatch_{n}," for n in sorted(ds)]
+        "", "// dispatchers (Hook's public static methods)"] + [f"Dispatch_{n}," for n in sorted(ds)] + [
+        "", "// pseudo-hooks: the kill sequence's model calls that are not Hook virtuals (tools/kernel/port_list.py",
+        "// PSEUDO_HOOKS); Core2/Commands dispatches each to the one model it belongs to"] + [
+        f"{h}," for h in sorted(PSEUDO_HOOKS)]
     hook_id = (HEADER + "namespace Sts2Emulator.Core2;\n\n"
                "/// <summary>Hook virtuals and dispatchers of the game's Hook class, by name.</summary>\n"
                "public enum HookId : ushort\n{\n" + "\n".join(_indent(ids, 4)) + "\n}\n")
