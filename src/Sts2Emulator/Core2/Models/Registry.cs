@@ -37,6 +37,7 @@ public static class Registry
         GigantificationPower.Register,
         IntangiblePower.Register,
         SlipperyPower.Register,
+        BufferPower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when

@@ -37,6 +37,8 @@ public class PowerTwoTests
         (ListenerKind.Power, "IntangiblePower", HookId.AfterModifyingHpLostAfterOsty),
         (ListenerKind.Power, "SlipperyPower", HookId.ModifyHpLostAfterOsty),
         (ListenerKind.Power, "SlipperyPower", HookId.AfterDamageReceived),
+        (ListenerKind.Power, "BufferPower", HookId.ModifyHpLostAfterOstyLate),
+        (ListenerKind.Power, "BufferPower", HookId.AfterModifyingHpLostAfterOsty),
     ];
 
     [Fact]
@@ -530,5 +532,149 @@ public class PowerTwoTests
     {
         AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "SlipperyPower", HookId.ModifyHpLostAfterOsty,
             HookId.AfterDamageReceived);
+    }
+
+    // ---------------------------------------------------------------------------------------- Buffer (power-2)
+
+    /// <summary>The player with Buffer 2, one slug.</summary>
+    private static (CombatState S, ListenerRef Power) BufferCombat(int amount = 2)
+    {
+        var s = Combat(40);
+        return (s, GivePower(s, "BufferPower", BuffId.Buffer, amount));
+    }
+
+    private static int BufferOf(CombatState s) => BuffSystem.Get(s.PlayerBuffs, BuffId.Buffer);
+
+    [Fact]
+    public void BufferIsRegisteredForItsTwoPairs()
+    {
+        AssertRegistered(Table(Power2), ListenerKind.Power, "BufferPower", HookId.ModifyHpLostAfterOstyLate,
+            HookId.AfterModifyingHpLostAfterOsty);
+    }
+
+    [Fact]
+    public void BufferTakesTheOwnersLossToTheOldFunctionsZeroInTheLateAfterOstyPass()
+    {
+        // game: BufferPower.ModifyHpLostAfterOstyLate; old: CardEffects.LosePlayerHp returns
+        // Buffer_ModifyHpLostAfterOstyLate() for a loss above 0 while the player's Buffer > 0, whatever the props. The
+        // fold's changed set is by the truncated value, so a loss that truncates to 0 does not list the power (the old
+        // site returns before Buffer for it).
+        var (s, power) = BufferCombat();
+        var k = Kernel(s, Power2);
+
+        decimal v = Hooks.ModifyHpLost(k, HpLoss(target: 0, 7m, dealer: 1), out var changed);
+
+        Assert.Equal(CardEffects.Buffer_ModifyHpLostAfterOstyLate(), v);
+        Assert.Equal(0m, v);
+        Assert.Equal([power], changed);
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 7m, props: Unpowered, dealer: null), out changed));
+        Assert.Equal([power], changed);
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 1m, dealer: 1), out changed));
+        Assert.Equal([power], changed);
+        // A loss under 1 goes to the same 0, with the power listed as no modifier (its truncation was 0 already).
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 0.5m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 0m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        // Where the condition fails: the before-Osty phase (another pass), a loss of another creature, the stack at 0.
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 7m, dealer: 1, phase: HpLossHookPhase.BeforeOsty), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Buffer, 0);
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 7m, dealer: 1), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void BuffersAfterModifyingHpLostAfterOstySpendsTheOldFunctionsStack()
+    {
+        // game: BufferPower.AfterModifyingHpLostAfterOsty, reached by the filter-set pass when the power is among the
+        // modifiers: one stack spent (2 to 1), and at 1 the power removed, as Buffer_AfterModifyingHpLostAfterOsty does.
+        // Dispatched with the power absent from the modifiers, the pass does not reach it.
+        var (s, power) = BufferCombat();
+        var k = Kernel(s, Power2);
+        var oracle = BufferCombat().S;
+
+        Assert.False(Hooks.AfterModifyingHpLostAfterOsty(k, new AfterModifyingHpLostAfterOstyArgs([power])).IsPaused);
+        CardEffects.Buffer_AfterModifyingHpLostAfterOsty(oracle, 2);
+
+        Assert.Equal(BufferOf(oracle), BufferOf(s));
+        Assert.Equal(1, BufferOf(s));
+        Hooks.AfterModifyingHpLostAfterOsty(k, new AfterModifyingHpLostAfterOstyArgs([]));
+        Assert.Equal(1, BufferOf(s));
+        Hooks.AfterModifyingHpLostAfterOsty(k, new AfterModifyingHpLostAfterOstyArgs([power]));
+        CardEffects.Buffer_AfterModifyingHpLostAfterOsty(oracle, 1);
+        Assert.Equal(0, BufferOf(s));
+        Assert.Equal(oracle.PlayerBuffs, s.PlayerBuffs);
+        Assert.DoesNotContain(s.PlayerBuffs, b => b.Id == BuffId.Buffer);
+    }
+
+    [Fact]
+    public void BufferSpendsAStackThroughTheDamageCommandOnlyWhenHpWouldHaveComeOff()
+    {
+        // game: Hook.ModifyHpLost lists Buffer as a modifier when its 0 moved the amount, and AfterModifyingHpLostAfterOsty
+        // then reaches BufferPower.AfterModifyingHpLostAfterOsty; old: CardEffects.LosePlayerHp spends a stack (removing at
+        // 1) and returns 0. The slug's 7 on the player with Buffer 2: 0 lost, Buffer 1; an unpowered 7: 0 lost, Buffer
+        // gone; a third 7: 7 lost. A fully blocked 7 spends nothing.
+        var (s, _) = BufferCombat();
+        var slug = OldCreature.Of(s.Enemies[0]);
+        var k = Kernel(s, Power2);
+
+        Assert.Equal(0, Assert.Single(Hit(k, OldCreature.Player, 7m, dealer: slug)).UnblockedDamage);
+        Assert.Equal((50, 1), (s.PlayerHp, BufferOf(s)));
+        var oracle = BufferCombat().S;
+        Assert.Equal(0, CardEffects.LosePlayerHp(oracle, 7));
+        Assert.Equal((oracle.PlayerHp, BufferOf(oracle)), (s.PlayerHp, BufferOf(s)));
+
+        Assert.Equal(0, Assert.Single(Hit(k, OldCreature.Player, 7m, dealer: slug, props: Unpowered)).UnblockedDamage);
+        Assert.Equal((50, 0), (s.PlayerHp, BufferOf(s)));
+        Assert.DoesNotContain(s.PlayerBuffs, b => b.Id == BuffId.Buffer);
+        Assert.Equal(7, Assert.Single(Hit(k, OldCreature.Player, 7m, dealer: slug)).UnblockedDamage);
+        Assert.Equal(43, s.PlayerHp);
+
+        var (s2, _) = BufferCombat();
+        s2.PlayerBlock = 9;
+        var k2 = Kernel(s2, Power2);
+        Assert.Equal(0, Assert.Single(Hit(k2, OldCreature.Player, 7m, dealer: OldCreature.Of(s2.Enemies[0]))).UnblockedDamage);
+        Assert.Equal((50, 2, 2), (s2.PlayerHp, BufferOf(s2), s2.PlayerBlock));
+    }
+
+    [Fact]
+    public void BufferLeavesAnEnemysLossAlone()
+    {
+        // The per-owner rule where the model has one holder in the old engine: the old function acts on the player's list
+        // and the old enemy site (CardEffects.LandDamageOnEnemy) has no Buffer, so a Buffer put on a slug takes nothing off
+        // a hit on it and spends nothing, on either side; the player's own loss is still taken by the player's.
+        var (s, mine) = BufferCombat();
+        var theirs = GivePower(s, "BufferPower", BuffId.Buffer, 2, s.Enemies[0]);
+        var k = Kernel(s, Power2);
+
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(7, Assert.Single(Hit(k, OldCreature.Of(s.Enemies[0]), 7m)).UnblockedDamage);
+        Assert.Equal((33, 2, 2), (s.Enemies[0].Hp, BuffSystem.Get(s.Enemies[0].Buffs, BuffId.Buffer), BufferOf(s)));
+        Hooks.AfterModifyingHpLostAfterOsty(k, new AfterModifyingHpLostAfterOstyArgs([theirs]));
+        Assert.Equal((2, 2), (BuffSystem.Get(s.Enemies[0].Buffs, BuffId.Buffer), BufferOf(s)));
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 7m, dealer: 1), out changed));
+        Assert.Equal([mine], changed);
+    }
+
+    [Fact]
+    public void BufferDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = BufferCombat();
+        var k = Kernel(s, Without(Power2, BufferPower.Register));
+        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 7m, dealer: 1), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(7, Assert.Single(Hit(k, OldCreature.Player, 7m, dealer: OldCreature.Of(s.Enemies[0]))).UnblockedDamage);
+        Assert.Equal((43, 2), (s.PlayerHp, BufferOf(s)));
+    }
+
+    [Fact]
+    public void BufferIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "BufferPower", HookId.ModifyHpLostAfterOstyLate,
+            HookId.AfterModifyingHpLostAfterOsty);
     }
 }
