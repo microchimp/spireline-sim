@@ -5,14 +5,10 @@
 // cited by class and method only.
 using Sts2Emulator.Core;
 
-namespace Sts2Emulator.Core2.Models.Card;
+namespace Sts2Emulator.Core2.Models.Cards;
 
-public sealed class Melancholy : IMigratedModel
+internal static class Melancholy
 {
-    private Melancholy()
-    {
-    }
-
     /// <summary>
     /// game: Melancholy.AfterDeath. An event: on a death that was not prevented (the old site calls the body from the
     /// half of CombatEngine.HandleEnemyDeaths that runs for a real death), this copy's cost bump goes down by one where it

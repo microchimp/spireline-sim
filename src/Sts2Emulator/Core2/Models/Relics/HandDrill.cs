@@ -3,14 +3,10 @@
 // CardEffects.LandDamageOnEnemy under the condition the site keeps. Game code is cited by class and method only.
 using Sts2Emulator.Core.Effects;
 
-namespace Sts2Emulator.Core2.Models.Relic;
+namespace Sts2Emulator.Core2.Models.Relics;
 
-public sealed class HandDrill : IMigratedModel
+internal static class HandDrill
 {
-    private HandDrill()
-    {
-    }
-
     /// <summary>
     /// game: HandDrill.AfterDamageGiven. An event: the old body, which applies Vulnerable to the enemy hit, is called
     /// when the hit broke the target's block (the old site, CardEffects.LandDamageOnEnemy: block that was there and is

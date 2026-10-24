@@ -10,7 +10,10 @@ public interface IModelIds
     int Resolve(ListenerKind kind, string gameId);
 }
 
-/// <summary>A migrated model: one static class under Core2/Models/ whose Register adds its handlers.</summary>
+/// <summary>A migrated model: one static class under Core2/Models/ whose Register adds its handlers. No model implements it
+/// now: the house layout is a static class with a <c>public static void Register(HandlerTable t)</c> (a static class cannot
+/// implement an interface), listed in Registry.cs as a method group. It stays for <see cref="HandlerTable.Register{TModel}" />,
+/// which has no caller either.</summary>
 public interface IMigratedModel
 {
     static abstract void Register(HandlerTable table);

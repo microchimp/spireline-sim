@@ -4,14 +4,10 @@
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 
-namespace Sts2Emulator.Core2.Models.Power;
+namespace Sts2Emulator.Core2.Models.Powers;
 
-public sealed class PhantomBladesPower : IMigratedModel
+internal static class PhantomBladesPower
 {
-    private PhantomBladesPower()
-    {
-    }
-
     /// <summary>
     /// game: PhantomBladesPower.ModifyDamageAdditive. A fold-add: the addend for the owner's powered attack with a Shiv
     /// as its card source while no Shiv play has finished this turn (the old site, CardEffects.ShivDamage: the card is

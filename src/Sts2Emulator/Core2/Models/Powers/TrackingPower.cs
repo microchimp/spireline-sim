@@ -3,14 +3,10 @@
 // the site keeps. Game code is cited by class and method only.
 using Sts2Emulator.Core;
 
-namespace Sts2Emulator.Core2.Models.Power;
+namespace Sts2Emulator.Core2.Models.Powers;
 
-public sealed class TrackingPower : IMigratedModel
+internal static class TrackingPower
 {
-    private TrackingPower()
-    {
-    }
-
     /// <summary>
     /// game: TrackingPower.ModifyDamageMultiplicative. A fold-mul: the factor for the owner's powered card attack on a
     /// target that has Weak (the old site, BuffSystem.IncomingDamage: the attacker's Tracking above 0 and the defender's

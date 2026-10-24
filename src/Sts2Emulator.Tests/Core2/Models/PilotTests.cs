@@ -8,9 +8,9 @@ using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core2;
 using Sts2Emulator.Core2.Models;
-using Sts2Emulator.Core2.Models.Card;
-using Sts2Emulator.Core2.Models.Power;
-using Sts2Emulator.Core2.Models.Relic;
+using Sts2Emulator.Core2.Models.Cards;
+using Sts2Emulator.Core2.Models.Powers;
+using Sts2Emulator.Core2.Models.Relics;
 using Xunit;
 using static Sts2Emulator.Tests.Core2.Models.ModelTestKit;
 

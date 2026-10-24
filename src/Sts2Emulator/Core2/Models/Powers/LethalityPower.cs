@@ -3,14 +3,10 @@
 // condition the site keeps. Game code is cited by class and method only.
 using Sts2Emulator.Core.Effects;
 
-namespace Sts2Emulator.Core2.Models.Power;
+namespace Sts2Emulator.Core2.Models.Powers;
 
-public sealed class LethalityPower : IMigratedModel
+internal static class LethalityPower
 {
-    private LethalityPower()
-    {
-    }
-
     /// <summary>
     /// game: LethalityPower.ModifyDamageMultiplicative. A fold-mul: the factor for the owner's powered attack while the
     /// combat's <c>LethalAttackPlay</c> flag is set (the old site, CardEffects.DealDamageToEnemy: the power's amount is

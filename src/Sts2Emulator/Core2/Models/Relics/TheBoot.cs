@@ -3,14 +3,10 @@
 // condition the site keeps. Game code is cited by class and method only.
 using Sts2Emulator.Core.Effects;
 
-namespace Sts2Emulator.Core2.Models.Relic;
+namespace Sts2Emulator.Core2.Models.Relics;
 
-public sealed class TheBoot : IMigratedModel
+internal static class TheBoot
 {
-    private TheBoot()
-    {
-    }
-
     /// <summary>
     /// game: TheBoot.ModifyHpLostAfterOstyLate. A fold-set over the HP lost after the pet redirect: the old function's
     /// floor for a powered attack by the player's side (the player or their pet: a dealer that is no enemy) on an enemy

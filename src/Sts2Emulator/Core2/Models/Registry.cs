@@ -1,12 +1,17 @@
-// The migrated models (docs/rebuild/TIER1_KERNEL.md section 4): one class per game model under Core2/Models/<Kind>/,
-// sealed with no instances (a static class cannot implement an interface), each an IMigratedModel whose Register adds
-// its handlers. A model is listed here when its family migrates; its handlers
-// register only while that family's switch is on. One block per handler batch (docs/rebuild/CLOUD_BRIEFS.md section 3):
-// a batch's branch adds its block and appends it to All; a textual conflict between two batches is resolved by keeping
-// every block.
-using Sts2Emulator.Core2.Models.Card;
-using Sts2Emulator.Core2.Models.Power;
-using Sts2Emulator.Core2.Models.Relic;
+// The migrated models (docs/rebuild/TIER1_KERNEL.md section 4): one `internal static class <GameClass>` per game model under
+// Core2/Models/{Powers,Relics,Cards,Monsters,Potions}/ (namespace Sts2Emulator.Core2.Models.<Kind>), each with a
+// `public static void Register(HandlerTable t)` that adds its handlers. A model is listed here when its family migrates; its
+// handlers register only while that family's switch is on.
+//
+// One named block per handler batch (docs/rebuild/CLOUD_BRIEFS.md section 3), and `All` spreads the blocks. A batch adds
+// its block next to the others and one `.. <Block>` line to `All`; a textual conflict between two batches is resolved by
+// keeping every block. The blocks to come, by the names the briefs and the rebuild branches use:
+//   local: Monsters (monster-1 and monster-2, rebuild/f08-m1, f08-m2), L1 and L2 (the LOCAL non-monster models,
+//          rebuild/f08-l1, f08-l2);
+//   cloud: Power1, Power2, Power3, Power4 (C2-C5) and Relic1 (C6).
+using Sts2Emulator.Core2.Models.Cards;
+using Sts2Emulator.Core2.Models.Powers;
+using Sts2Emulator.Core2.Models.Relics;
 
 namespace Sts2Emulator.Core2.Models;
 
@@ -29,7 +34,6 @@ public static class Registry
     /// not ordered).</summary>
     public static readonly IReadOnlyList<Action<HandlerTable>> All =
     [
-        // C1 pilot: power-5, relic-2, card-1
         .. Pilot,
     ];
 }

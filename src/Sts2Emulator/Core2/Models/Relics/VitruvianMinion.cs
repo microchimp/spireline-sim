@@ -4,14 +4,10 @@
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 
-namespace Sts2Emulator.Core2.Models.Relic;
+namespace Sts2Emulator.Core2.Models.Relics;
 
-public sealed class VitruvianMinion : IMigratedModel
+internal static class VitruvianMinion
 {
-    private VitruvianMinion()
-    {
-    }
-
     /// <summary>
     /// game: VitruvianMinion.ModifyDamageMultiplicative. A fold-mul: the factor for damage whose card source carries the
     /// Minion tag, whatever the card's type (the old site, RelicEffects.CardDamageMultiplier, reads the tag before its

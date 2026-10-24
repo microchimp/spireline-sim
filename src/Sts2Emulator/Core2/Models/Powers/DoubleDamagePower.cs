@@ -3,14 +3,10 @@
 // condition the site keeps. Game code is cited by class and method only.
 using Sts2Emulator.Core;
 
-namespace Sts2Emulator.Core2.Models.Power;
+namespace Sts2Emulator.Core2.Models.Powers;
 
-public sealed class DoubleDamagePower : IMigratedModel
+internal static class DoubleDamagePower
 {
-    private DoubleDamagePower()
-    {
-    }
-
     /// <summary>
     /// game: DoubleDamagePower.ModifyDamageMultiplicative. A fold-mul: the factor for the owner's powered card attack
     /// (the old site, BuffSystem.IncomingDamage: the attacker's Double Damage above 0; the card source the old fold
