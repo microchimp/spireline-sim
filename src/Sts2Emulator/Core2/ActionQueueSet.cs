@@ -132,13 +132,16 @@ public sealed class ActionQueueSet
     public int QueueCount => _queues.Count;
 
     /// <summary>
-    /// game: NetFullCombatState.lastExecutedActionId: the id the last action to finish ran under (a resumed action's new
-    /// id); null before any finished.
+    /// The id the last action to finish ran under (a resumed action's new id); null before any finished. It is the queue's own
+    /// count, not the game's lastExecutedActionId: the game's synchronizer also numbers actions the emulator does not run, so a
+    /// record's value cannot be matched (the comparer lists it as surplus).
     /// </summary>
     public uint? LastExecutedActionId { get; private set; }
 
-    /// <summary>game: NetFullCombatState.lastExecutedHookId: the recorded hook action's id when the last action to finish was a
-    /// hook action (the turn start's flow action has none: 0), else null.</summary>
+    /// <summary>The <see cref="RecordedHookAction.Id" /> of the last action to finish when it was a hook action (1-based; 0 for the
+    /// turn start's flow action, which has no recorded hook action), else null. Not the game's lastExecutedHookId: the game writes
+    /// the HookId from ActionQueueSynchronizer._nextHookId (0-based, which also numbers the turn start flow action), so this value
+    /// cannot be matched against a record (the comparer lists it as surplus).</summary>
     public long? LastExecutedHookId { get; private set; }
 
     /// <summary>One queue's cancel flags, as the game keeps them (the writer's).</summary>

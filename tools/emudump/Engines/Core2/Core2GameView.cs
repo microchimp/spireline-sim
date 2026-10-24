@@ -2,10 +2,13 @@
 // (docs/rebuild/TIER1_KERNEL.md section 6, docs/rebuild/COMPARER.md). With no switch on nothing is added: the view is the old
 // engine's, byte for byte.
 //
-// Where the game's NetFullCombatState has a field for it, the kernel writes it in the game's terms and name:
-//   net.last_action  lastExecutedActionId: the id the last action to finish ran under;
-//   net.last_hook    lastExecutedHookId: the hook action's id, when that action was a hook action.
-// (nextChoiceIds is PlayerChoiceSynchronizer's counter, which the kernel does not keep; the schema has no field for the queue
+// Where the game's NetFullCombatState has a field of the same name, the kernel writes its own counter under that name:
+//   net.last_action  the id the last action to finish ran under (the queue's count; the game's lastExecutedActionId counts
+//                    actions the emulator does not run);
+//   net.last_hook    RecordedHookAction.Id of the last action to finish, when it was a hook action (1-based, 0 for the turn
+//                    start flow action); the game's lastExecutedHookId is ActionQueueSynchronizer._nextHookId's value
+//                    (0-based, the flow action numbered too).
+// Neither can match a record, so both are surplus to the comparer and are never compared. (nextChoiceIds is PlayerChoiceSynchronizer's counter, which the kernel does not keep; the schema has no field for the queue
 // itself.) Everything else is the kernel's own and goes under private.kernel, which no comparer reads, and which the
 // comparer lists as a surplus (struct_compare: the census's `surplus`), never against the record:
 //   queue            every action (kind, type, state, id, owner) in enqueue order, and each queue's front-first ids and flags;
@@ -38,8 +41,9 @@ public static class Core2GameView
             Sequencing(k, net);
     }
 
-    /// <summary>The game's lastExecutedActionId and lastExecutedHookId (net.last_action, net.last_hook), from the queue's own
-    /// counters; absent until an action finished.</summary>
+    /// <summary>The kernel's own sequencing counters under the game's field names (net.last_action, net.last_hook): the queue's
+    /// last action id and the last hook action's RecordedHookAction.Id. Not the game's numbering (see the file header), so the
+    /// comparer treats both as surplus; absent until an action finished.</summary>
     internal static void Sequencing(KernelState k, JsonObject net)
     {
         if (k.Queue is not { } q)

@@ -106,13 +106,16 @@ public class Core2GameViewTests
         Assert.Equal("Finished", (string)done["queue"]!["actions"]![0]!["state"]!);
         Assert.NotNull(done["queue"]!["actions"]![0]!["first_id"]);  // resumed under a new id
 
-        // The game's own sequencing fields, from the queue's counters, in the net shape; the copy writes the same.
+        // The kernel's sequencing counters under the game's field names, in the net shape; the copy writes the same.
         var net = new JsonObject();
         Core2GameView.Sequencing(k, net);
         var net2 = new JsonObject();
         Core2GameView.Sequencing(copy.Kernel!, net2);
         Assert.Equal(net.ToJsonString(), net2.ToJsonString());
         Assert.Equal((uint)done["queue"]!["actions"]![0]!["id"]!, (uint)net["last_action"]!);
+        // last_hook is RecordedHookAction.Id (1-based), not the game's HookId (0-based, from _nextHookId): the first hook action
+        // is 1 here, so the value cannot match a record and the comparer lists the path as surplus.
+        Assert.Equal((long)done["queue"]!["actions"]![0]!["hook_action"]!, (long)net["last_hook"]!);
         Assert.Equal(1L, (long)net["last_hook"]!);
         Assert.Equal(48, copy.PlayerHp);
     }
