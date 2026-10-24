@@ -366,16 +366,19 @@ public class DamageCommandTests
     }
 
     [Fact]
-    public void TheKillStubIsReachedOncePerDamageCallAndThrowsOnlyForADeath()
+    public void KillIsReachedOncePerDamageCallAndAnswersADeath()
     {
-        // The R3a hook point: Damage always reaches Kill once (game: `await Kill(killedCreatures)`, empty or not).
+        // Damage always reaches Kill once (game: `await Kill(killedCreatures)`, empty or not); since R3a the kill runs
+        // (KillCommandTests): the dead enemy leaves the roster.
         var s = Combat(5);
         var k = K(s, _ => { }, DamageOnly, countKills: false);
         Hit(k, OldCreature.Of(s.Enemies[0]), 1m);
         Hit(k, OldCreature.Of(s.Enemies[0]), 1m);
         Assert.Equal(2, k.Commands.KillCalls);
-        Assert.Throws<NotImplementedException>(() => Hit(k, OldCreature.Of(s.Enemies[0]), 9m));
+        var enemy = s.Enemies[0];
+        Hit(k, OldCreature.Of(enemy), 9m);
         Assert.Equal(3, k.Commands.KillCalls);
+        Assert.DoesNotContain(enemy, s.Enemies);
     }
 
     // ---------------------------------------------------------------------------------------- AttackCmd

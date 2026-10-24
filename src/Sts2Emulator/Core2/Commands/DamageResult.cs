@@ -50,7 +50,10 @@ public sealed class CommandLog
     /// <summary>How many times Damage reached <see cref="CreatureCmd.Kill" /> (one per Damage call that ran).</summary>
     public int KillCalls { get; internal set; }
 
-    /// <summary>Test seam until R3a: what <see cref="CreatureCmd.Kill" /> runs instead of its stub. Not copied.</summary>
+    /// <summary>How many times a kill reached the loss (game: CombatManager.LoseCombat), R3b's point.</summary>
+    public int LossCalls { get; internal set; }
+
+    /// <summary>Test seam: what <see cref="CreatureCmd.Kill" /> runs instead of the kill (R2's damage tests). Not copied.</summary>
     internal Action<KernelState, IReadOnlyList<OldCreature>>? KillStandIn { get; set; }
 
     internal DamageResultRef Add(DamageResult r)
@@ -77,7 +80,7 @@ public sealed class CommandLog
 
     internal CommandLog CopyFor(Core.CombatState? from, Core.CombatState? to)
     {
-        var c = new CommandLog { KillCalls = KillCalls, _nextAttack = _nextAttack };
+        var c = new CommandLog { KillCalls = KillCalls, LossCalls = LossCalls, _nextAttack = _nextAttack };
         foreach (var r in _results)
         {
             var who = r.Receiver;

@@ -1,12 +1,12 @@
 // game: CreatureCmd, the game-shaped damage command over the old state (docs/rebuild/MIGRATION_F08.md section 3 items
 // 2-3). Dispatch is only through Hooks.*; HP and block are read and written only through OldCreatures (OldState.cs).
-// Round R2: written and tested, called from no old site yet (R4 reroutes the callers). Game code is cited by class and
+// Rounds R2 (Damage) and R3a (the kill, CreatureCmd.Kill.cs): written and tested, called from no old site yet (R4 reroutes the callers). Game code is cited by class and
 // method only.
 using Sts2Emulator.Core;
 
 namespace Sts2Emulator.Core2;
 
-public static class CreatureCmd
+public static partial class CreatureCmd
 {
     /// <summary>
     /// game: CreatureCmd.Damage, the list overload every other reaches. A dead dealer: one empty result per target and
@@ -36,6 +36,7 @@ public static class CreatureCmd
             return results;
         ctx ??= new ChoiceCtx();
         var dying = new List<IDisposable>();
+        IDisposable? keep = null;
         try
         {
             foreach (var original in targets)
@@ -43,7 +44,7 @@ public static class CreatureCmd
                 if (OldCreatures.IsDead(s, original))
                     continue;
                 var to = R(w, original);
-                var by = dealer is { } d ? R(w, d) : (CreatureRef?)null;
+                var by = By(w, dealer);
                 decimal modified = Hooks.ModifyDamage(k, new ModifyDamageArgs(to, by, amount, props, cardSource,
                     ModifyDamageHookType.All, PreviewModes.None), out var mods);
                 var amountArgs = new AfterModifyingDamageAmountArgs(cardSource, mods);
@@ -83,11 +84,13 @@ public static class CreatureCmd
                 results.AddRange(list);
             }
 
+            // A player this call killed keeps its hooks over the passes before the kill (the game deactivates them only
+            // inside it, after AfterDeath).
+            keep = results.Exists(r => r.WasTargetKilled && r.Receiver.Kind == CreatureKind.Player) ? w.KeepPlayerHooks() : null;
             var killed = new List<OldCreature>();
             foreach (var r in results)
             {
                 var who = R(w, r.Receiver);
-                var by = dealer is { } d ? R(w, d) : (CreatureRef?)null;
                 var rr = k.Commands.Add(r);
                 if (r.WasBlockBroken)
                 {
@@ -101,11 +104,11 @@ public static class CreatureCmd
                     Settle(k, Hooks.AfterCurrentHpChanged(k, a), st => Hooks.AfterCurrentHpChangedResume(k, a, st));
                 }
 
-                var given = new AfterDamageGivenArgs(ctx, by, rr, props, who, cardSource);
+                var given = new AfterDamageGivenArgs(ctx, By(w, dealer), rr, props, who, cardSource);
                 Settle(k, Hooks.AfterDamageGiven(k, given), st => Hooks.AfterDamageGivenResume(k, given, st));
                 if (!r.WasTargetKilled || !OldCreatures.IsDead(s, r.Receiver))
                 {
-                    var a = new AfterDamageReceivedArgs(ctx, who, rr, props, by, cardSource);
+                    var a = new AfterDamageReceivedArgs(ctx, who, rr, props, By(w, dealer), cardSource);
                     Settle(k, Hooks.AfterDamageReceived(k, a), st => Hooks.AfterDamageReceivedResume(k, a, st));
                 }
                 else
@@ -114,35 +117,18 @@ public static class CreatureCmd
                 }
             }
 
-            // ---- R3a hook point: the game's `await Kill(killedCreatures)`, once per Damage call, after every target.
+            keep?.Dispose();
+            // game: `await Kill(killedCreatures)`, once per Damage call, after every target (CreatureCmd.Kill.cs).
             Kill(k, killed);
         }
         finally
         {
+            keep?.Dispose();
             for (int i = dying.Count - 1; i >= 0; i--)
                 dying[i].Dispose();
         }
 
         return results;
-    }
-
-    /// <summary>
-    /// game: CreatureCmd.Kill(creatures), reached once per <see cref="Damage" /> call with the creatures it killed (empty
-    /// when none died). Round R3a implements it (MIGRATION_F08.md section 3 items 4-5); until then a death under a
-    /// switch throws, and a call with nobody to kill does nothing. Every call is counted in
-    /// <see cref="CommandLog.KillCalls" />.
-    /// </summary>
-    public static void Kill(KernelState k, IReadOnlyList<OldCreature> killed)
-    {
-        k.Commands.KillCalls++;
-        if (k.Commands.KillStandIn is { } standIn)
-        {
-            standIn(k, killed);
-            return;
-        }
-
-        if (killed.Count > 0 && k.AnyOn)
-            throw new NotImplementedException("CreatureCmd.Kill (game: CreatureCmd.Kill) is round R3a's");
     }
 
     /// <summary>game: Creature.DamageBlockInternal: the blocked amount (none when unblockable) is min(block, amount),
@@ -190,6 +176,10 @@ public static class CreatureCmd
     }
 
     private static CreatureRef R(OldWorld w, OldCreature c) => OldCreatures.Ref(w, c);
+
+    /// <summary>The dealer's ref at each use: null once it has left the combat (a dealer a nested Damage killed and the
+    /// kill removed; the game keeps the Creature object, but no position names it any more).</summary>
+    private static CreatureRef? By(OldWorld w, OldCreature? dealer) => dealer is { } d ? OldCreatures.TryRef(w, d) : null;
 
     /// <summary>An event dispatch inside a command: a pause the command cannot resume itself is settled in place
     /// (<see cref="KernelState.Settle" />: keyed answer, or the step stops and replays).</summary>
