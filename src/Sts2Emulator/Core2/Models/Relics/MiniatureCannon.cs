@@ -9,16 +9,20 @@ namespace Sts2Emulator.Core2.Models.Relics;
 internal static class MiniatureCannon
 {
     /// <summary>
-    /// game: MiniatureCannon.ModifyDamageAdditive. A fold-add: the addend for damage whose card source is an upgraded
-    /// Attack (the old site, RelicEffects.CardDamageBonus: 0 for a def that is no Attack, then the copy's Upgraded flag and
-    /// that the relic is held; neither the dealer nor the props are read, as the computation is only reached for the
-    /// player's card attacks); 0 otherwise. The copy's flag is read off the live card the handle names (<see cref="Copy" />).
-    /// The number is the old function's flat 3.
+    /// game: MiniatureCannon.ModifyDamageAdditive. A fold-add: the addend for a powered attack (ValueProp.IsPoweredAttack)
+    /// whose card source is an upgraded card, when the dealer is the owner's creature or the card is the owner's (the same
+    /// owner rule as Strike Dummy's); 0 otherwise. The old site, RelicEffects.CardDamageBonus, is 0 for a def that is no
+    /// Attack, then the copy's Upgraded flag and that the relic is held, and reads neither the dealer nor the props, as the
+    /// computation is only reached for the player's card attacks; the handler follows the game (see
+    /// StrikeDummy.ModifyDamageAdditive) and keeps the old site's Attack-def test, which the game's override does not have.
+    /// The copy's flag is read off the live card the handle names (<see cref="Copy" />). The number is the old function's
+    /// flat 3.
     /// </summary>
     internal static decimal ModifyDamageAdditive(HookCtx c, ListenerRef self, in ModifyDamageArgs a, decimal current)
     {
-        if (c.Relic(self) is null || Copy(c, a.CardSource) is not { Upgraded: true } card
-            || GeneratedData.Cards.Get(card.DefId).Type != CardType.Attack)
+        if (c.Relic(self) is null || c.Owner(self) is not { } owner || !a.Props.IsPoweredAttack() || a.CardSource is not { } source
+            || Copy(c, source) is not { Upgraded: true } card || GeneratedData.Cards.Get(card.DefId).Type != CardType.Attack
+            || (a.Dealer != owner && c.CardOwner(source) != owner))
             return 0m;
         return RelicEffects.MiniatureCannon_ModifyDamageAdditive();
     }

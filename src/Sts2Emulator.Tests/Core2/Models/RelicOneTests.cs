@@ -281,6 +281,37 @@ public class RelicOneTests
     }
 
     [Fact]
+    public void StrikeDummyAddsNothingToAnUnpoweredHitWithACardSource()
+    {
+        // game: StrikeDummy.ModifyDamageAdditive answers 0 off a powered attack (ValueProp.IsPoweredAttack). The old site read
+        // no props, so an unpowered hit with a card source (a Strike's self-damage, thorns off a card) got the bonus; the
+        // handler follows the game, and the no-handler value is the damage as it was.
+        var (s, _, strike, _, _) = StrikeDummyCombat();
+        var k = Kernel(s, Relic1);
+
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: strike), out var changed));
+        Assert.Empty(changed);
+        // The same card as a powered attack: the bonus lands.
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+    }
+
+    [Fact]
+    public void StrikeDummyRefusesOnlyWhenBothTheDealerAndTheCardsOwnerAreNotItsOwner()
+    {
+        // game: StrikeDummy.ModifyDamageAdditive answers 0 when the dealer is not the owner's creature AND the card is not
+        // the owner's. The old state holds one card owner, the player (HookCtx.CardOwner), so a hit by an enemy or by no
+        // dealer with the player's Strike still gets the bonus (the card test is met), as the game's test gives; the
+        // refusal of both failing is not reachable until the kernel has several card owners.
+        var (s, relic, strike, _, _) = StrikeDummyCombat();
+        var k = Kernel(s, Relic1);
+
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, card: strike), out var changed));
+        Assert.Equal([relic], changed);
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, dealer: null, card: strike), out changed));
+        Assert.Equal([relic], changed);
+    }
+
+    [Fact]
     public void StrikeDummyDeleteMutantGivesTheNoHandlerValue()
     {
         var (s, _, strike, _, _) = StrikeDummyCombat();
@@ -377,6 +408,44 @@ public class RelicOneTests
         Assert.Equal(0, s.Relics[0].Counter);
         Assert.False(s.PenNibArmed);
         Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void PenNibDoublesNothingOnAnUnpoweredHitAndNothingForAnotherDealer()
+    {
+        // game: PenNib.ModifyDamageMultiplicative answers 1 off a powered attack (ValueProp.IsPoweredAttack) and for a
+        // dealer that is neither the owner's creature nor its pet (HookCtx.IsOwnerOrPet). The old site read neither, so
+        // an unpowered hit with a card source, or an enemy's hit carrying the player's card, was doubled; the handler
+        // follows the game, and the no-handler value is the damage as it was.
+        var (s, relic, strike, _) = PenNibCombat();
+        var k = Kernel(s, Relic1);
+
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: strike), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, card: strike), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, dealer: null, card: strike), out changed));
+        Assert.Empty(changed);
+        // Controls: the owner's powered attack is doubled.
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+        Assert.Equal([relic], changed);
+    }
+
+    [Fact]
+    public void PenNibDoublesTheOwnersPetsHitAndNotAnEnemys()
+    {
+        // game: PenNib.ModifyDamageMultiplicative accepts a dealer that is the owner's creature or its Osty. Osty is
+        // creature 1 and the slug creature 2 here.
+        var s = WithOsty(Combat(40));
+        var relic = Hold(s, RelicEffects.PenNib);
+        s.PenNibArmed = true;
+        var strike = new CardHandle(Add(s, s.Hand, StrikeDef).Uid);
+        var k = Kernel(s, Relic1);
+
+        Assert.Equal(12m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1, card: strike), out var changed));
+        Assert.Equal([relic], changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2, card: strike), out changed));
         Assert.Empty(changed);
     }
 
@@ -605,6 +674,35 @@ public class RelicOneTests
     }
 
     [Fact]
+    public void MiniatureCannonAddsNothingToAnUnpoweredHitWithACardSource()
+    {
+        // game: MiniatureCannon.ModifyDamageAdditive answers 0 off a powered attack (ValueProp.IsPoweredAttack); the old site
+        // read no props, so an upgraded Attack's unpowered hit got the bonus. The no-handler value is the damage as it was.
+        var (s, _, strikePlus, _, _, _) = MiniatureCannonCombat();
+        var k = Kernel(s, Relic1);
+
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: strikePlus), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strikePlus), out changed));
+    }
+
+    [Fact]
+    public void MiniatureCannonRefusesOnlyWhenBothTheDealerAndTheCardsOwnerAreNotItsOwner()
+    {
+        // game: MiniatureCannon.ModifyDamageAdditive answers 0 when the dealer is not the owner's creature AND the card is
+        // not the owner's. The old state holds one card owner, the player (HookCtx.CardOwner), so a hit by an enemy or by no
+        // dealer with the player's upgraded card still gets the bonus; the refusal of both failing is not reachable until
+        // the kernel has several card owners.
+        var (s, relic, strikePlus, _, _, _) = MiniatureCannonCombat();
+        var k = Kernel(s, Relic1);
+
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, card: strikePlus), out var changed));
+        Assert.Equal([relic], changed);
+        Assert.Equal(9m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, dealer: null, card: strikePlus), out changed));
+        Assert.Equal([relic], changed);
+    }
+
+    [Fact]
     public void MiniatureCannonDeleteMutantGivesTheNoHandlerValue()
     {
         var (s, _, strikePlus, _, _, _) = MiniatureCannonCombat();
@@ -707,6 +805,37 @@ public class RelicOneTests
     }
 
     [Fact]
+    public void MysticLighterAddsNothingToAnUnpoweredHitWithACardSource()
+    {
+        // game: MysticLighter.ModifyDamageAdditive answers 0 off a powered attack (ValueProp.IsPoweredAttack); the old site
+        // read no props, so an enchanted Attack's unpowered hit got the 9. The enchantment's own step answers 0 off a
+        // powered attack too, so the no-handler value is the damage as it was.
+        var (s, _, sharp, _, _) = MysticLighterCombat();
+        var k = Kernel(s, Relic1);
+        var args = Attack(target: 1, damage: 8m, props: Unpowered, card: new CardHandle(sharp.Uid));
+
+        Assert.Equal(8m, Hooks.ModifyDamage(k, args, out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(8m, Steps.EnchantAdd(k, HookId.Dispatch_ModifyDamage, in args, 8m));
+    }
+
+    [Fact]
+    public void MysticLighterReadsTheCardsOwnerAndNotTheDealer()
+    {
+        // game: MysticLighter.ModifyDamageAdditive answers 0 for a card of another owner and reads no dealer. The old state
+        // holds one card owner, the player (HookCtx.CardOwner), so a hit by an enemy or by no dealer with the player's
+        // enchanted card still gets the 9; the refusal for another card owner is not reachable until the kernel has several.
+        var (s, relic, sharp, _, _) = MysticLighterCombat();
+        var k = Kernel(s, Relic1);
+        var card = new CardHandle(sharp.Uid);
+
+        Assert.Equal(19m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 8m, dealer: 1, card: card), out var changed));
+        Assert.Equal([relic], changed);
+        Assert.Equal(19m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 8m, dealer: null, card: card), out changed));
+        Assert.Equal([relic], changed);
+    }
+
+    [Fact]
     public void MysticLighterDeleteMutantGivesTheNoHandlerValue()
     {
         // The enchantment's own bonus is the dispatcher's step, not the model's: it stays; the relic's 9 goes.
@@ -782,6 +911,34 @@ public class RelicOneTests
         Assert.Equal(6m + RelicEffects.CardDamageBonus(s, Def(StrikeDef), upgraded: false), v);
         Assert.Equal(10m, v);
         Assert.Equal([dummy, fake], changed.OrderBy(l => l.Instance).ToList());
+    }
+
+    [Fact]
+    public void FakeStrikeDummyAddsNothingToAnUnpoweredHitWithACardSource()
+    {
+        // game: FakeStrikeDummy.ModifyDamageAdditive answers 0 off a powered attack (ValueProp.IsPoweredAttack); the old site
+        // read no props. The no-handler value is the damage as it was.
+        var (s, _, strike, _, _) = FakeStrikeDummyCombat();
+        var k = Kernel(s, Relic1);
+
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: strike), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: strike), out changed));
+    }
+
+    [Fact]
+    public void FakeStrikeDummyRefusesOnlyWhenBothTheDealerAndTheCardsOwnerAreNotItsOwner()
+    {
+        // game: FakeStrikeDummy.ModifyDamageAdditive answers 0 when the dealer is not the owner's creature AND the card is
+        // not the owner's; with one card owner in the old state (HookCtx.CardOwner) a hit by an enemy or by no dealer with
+        // the player's Strike still gets the bonus, as for Strike Dummy.
+        var (s, relic, strike, _, _) = FakeStrikeDummyCombat();
+        var k = Kernel(s, Relic1);
+
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1, card: strike), out var changed));
+        Assert.Equal([relic], changed);
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, dealer: null, card: strike), out changed));
+        Assert.Equal([relic], changed);
     }
 
     [Fact]

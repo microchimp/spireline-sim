@@ -9,10 +9,13 @@ namespace Sts2Emulator.Core2.Models.Relics;
 internal static class MysticLighter
 {
     /// <summary>
-    /// game: MysticLighter.ModifyDamageAdditive. A fold-add: the addend for damage whose card source is an Attack carrying
-    /// an enchantment, any enchantment (the old site, CardEffects.DmgFrom: the copy's Enchantment is not None and the def
-    /// is an Attack; the old function asks that the relic is held; neither the dealer nor the props are read, as the
-    /// computation is only reached for the player's card attacks); 0 otherwise. The enchantment's own bonus is not this
+    /// game: MysticLighter.ModifyDamageAdditive. A fold-add: the addend for a powered attack (ValueProp.IsPoweredAttack)
+    /// whose card source carries an enchantment, any enchantment, and is the owner's card (the dealer is not read); 0
+    /// otherwise. The old site, CardEffects.DmgFrom: the copy's Enchantment is not None and the def is an Attack (the
+    /// handler keeps the Attack test, which the game's override does not have); the old function asks that the relic is
+    /// held, and the site reads neither the dealer nor the props, as the computation is only reached for the player's card
+    /// attacks; the handler follows the game (see StrikeDummy.ModifyDamageAdditive). The old state holds one card owner,
+    /// the player (<see cref="HookCtx.CardOwner" />), so the owner test is met by every live card. The enchantment's own bonus is not this
     /// one: the dispatcher's enchant-add step (Steps.EnchantAdd, before the additive pass) adds the card's
     /// EnchantmentModel.EnchantDamageAdditive through CardEffects.EnchantDamageAdditive, which reads the enchantment alone
     /// (Sharp, Vigorous, TezcatarasEmber, Momentum, Inky) and never this relic, as the old DmgFrom adds the two apart; so
@@ -21,8 +24,9 @@ internal static class MysticLighter
     /// </summary>
     internal static decimal ModifyDamageAdditive(HookCtx c, ListenerRef self, in ModifyDamageArgs a, decimal current)
     {
-        if (c.Relic(self) is null || Copy(c, a.CardSource) is not { Enchantment: not Enchantment.None } card
-            || GeneratedData.Cards.Get(card.DefId).Type != CardType.Attack)
+        if (c.Relic(self) is null || c.Owner(self) is not { } owner || !a.Props.IsPoweredAttack() || a.CardSource is not { } source
+            || Copy(c, source) is not { Enchantment: not Enchantment.None } card
+            || GeneratedData.Cards.Get(card.DefId).Type != CardType.Attack || c.CardOwner(source) != owner)
             return 0m;
         return RelicEffects.EnchantedCardDamageBonus(c.OldCombat);
     }
