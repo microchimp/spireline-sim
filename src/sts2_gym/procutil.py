@@ -20,6 +20,7 @@ NORMAL_PRIORITY_CLASS = 0x00000020
 _SYNCHRONIZE = 0x00100000
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
+_WAIT_TIMEOUT = 0x102
 _TH32CS_SNAPPROCESS = 0x2
 _INVALID_HANDLE = -1
 
@@ -36,6 +37,8 @@ if IS_WINDOWS:
     _k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     _k32.GetPriorityClass.argtypes = [wintypes.HANDLE]
     _k32.GetPriorityClass.restype = wintypes.DWORD
+    _k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _k32.WaitForSingleObject.restype = wintypes.DWORD
     _k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     _k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     for _f in (_k32.Process32FirstW, _k32.Process32NextW):
@@ -83,6 +86,33 @@ def lower_priority(level: int = 10) -> None:
         return
     if not _k32.SetPriorityClass(_k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS):
         raise OSError(ctypes.get_last_error(), "SetPriorityClass failed")
+
+
+def set_priority_class(cls: int) -> None:
+    """Put this process in Windows priority class `cls` (the *_PRIORITY_CLASS constants); a no-op elsewhere.
+
+    Unlike `lower_priority` it can also raise a process its parent started lower: a server that BelowNormal
+    workers wait on must not inherit their class.
+    """
+    if not IS_WINDOWS:
+        return
+    if not _k32.SetPriorityClass(_k32.GetCurrentProcess(), cls):
+        raise OSError(ctypes.get_last_error(), "SetPriorityClass failed")
+
+
+def watch_process(pid: int):
+    """Return a function that says whether process `pid` has exited.
+
+    Windows opens a handle to the process once, now, and asks it with a zero wait, so a pid reused later by
+    another process cannot pass for the one watched; a pid that cannot be opened counts as gone. POSIX probes
+    with signal 0.
+    """
+    if not IS_WINDOWS:
+        return lambda: not pid_alive(pid)
+    handle = _k32.OpenProcess(_SYNCHRONIZE | _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return lambda: True
+    return lambda: _k32.WaitForSingleObject(handle, 0) != _WAIT_TIMEOUT
 
 
 def popen_priority_kwargs(level: int = 10) -> dict:
