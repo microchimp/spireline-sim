@@ -27,6 +27,9 @@ ECE_MAX = 0.03
 BOOTSTRAP = 2000
 CI = (2.5, 97.5)
 ACT1_LAST_FLOOR = 17  # the same cut as gen_loop.boss_kill
+# The Act-1 head is judged on rows before the boss room. A run's decisions on floor 17 (the boss's rewards, the next map) and
+# past it are all taken after the kill, so their label is fixed by the state and would inflate every condition.
+ACT1_HEAD_LAST_FLOOR = ACT1_LAST_FLOOR - 1
 NOT_COMPUTED = {"status": "not_computed", "why": "needs the lab's Tier-B decision sets / the paired battery, which no fit has"}
 
 
@@ -140,6 +143,7 @@ def evaluate_value_net(values: Any, net: Any) -> dict[str, Any]:
     held = np.asarray(values.validation, bool)
     val, trn = np.flatnonzero(held), np.flatnonzero(~held)
     final = np.asarray(values.final_floor, np.int64)
+    floor = np.asarray(values.floor, np.int64)  # each row's own floor (ValueData.floor)
     run = np.asarray(values.run_index, np.int64)
     if not len(val) or not len(trn):
         return {"status": "no_split", "validation": {"rows": int(len(val)), "train_rows": int(len(trn))}, "all_computable_pass": False}
@@ -155,12 +159,15 @@ def evaluate_value_net(values: Any, net: Any) -> dict[str, Any]:
             probs["act1_boss_kill"][start:start + len(rows)] = p[:, first_boss:].sum(axis=1)
             probs["win"][start:start + len(rows)] = p[:, models.FLOOR_CLASSES - 1]
     v0 = v0_score(values.v0[:, 0], values.v0[:, 1], values.v0[:, 2])
+    scope = {"act1_boss_kill": floor <= ACT1_HEAD_LAST_FLOOR, "win": np.ones(len(floor), bool)}
     heads: dict[str, dict | None] = {}
     for name, y in labels.items():
-        if y[val].sum() == 0:
-            heads[name] = {"positives": 0, "rows": int(len(val))}
+        sv, st = scope[name][val], scope[name][trn]
+        yv, yt = y[val][sv], y[trn][st]
+        if yv.sum() == 0:
+            heads[name] = {"positives": 0, "rows": int(sv.sum())}
             continue
-        heads[name] = head_conditions(probs[name], y[val], run[val], y[trn], v0_probability(v0[trn], y[trn], v0[val]))
-    info = {"rows": int(len(val)), "runs": int(len(np.unique(run[val]))), "train_rows": int(len(trn)),
+        heads[name] = head_conditions(probs[name][sv], yv, run[val][sv], yt, v0_probability(v0[trn][st], yt, v0[val][sv]))
+    info = {"act1_head_last_floor": ACT1_HEAD_LAST_FLOOR, "rows": int(len(val)), "runs": int(len(np.unique(run[val]))), "train_rows": int(len(trn)),
             "train_runs": int(len(np.unique(run[trn]))), "split": "held-out tenth of runs by seed hash (run_train.train._held_out)"}
     return keep_conditions(heads, info)

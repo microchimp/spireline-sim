@@ -277,8 +277,9 @@ class ValueData:
     runs: int = 0
     generations: tuple[int, ...] = ()
     # What the keep conditions (`keep.evaluate_value_net`) read, one entry per row: the run's final floor, the run's index,
-    # and V0's inputs (HP fraction, potions held, act index)
+    # the row's own floor, and V0's inputs (HP fraction, potions held, act index)
     final_floor: np.ndarray | None = None
+    floor: np.ndarray | None = None
     run_index: np.ndarray | None = None
     v0: np.ndarray | None = None
 
@@ -487,6 +488,7 @@ class _ValueBuilder:
         self.end_hp: list[float] = []
         self.hashes: list[float] = []
         self.final_floor: list[int] = []
+        self.floor: list[int] = []
         self.run_index: list[int] = []
         self.v0: list[tuple[float, int, int]] = []
         self.runs = 0
@@ -509,6 +511,7 @@ class _ValueBuilder:
             self.end_hp.append(end_hp)
             self.hashes.append(run_hash)
             self.final_floor.append(int(record["outcome"]["final_floor"]))
+            self.floor.append(int(view.floor))
             self.run_index.append(self.runs)
             self.v0.append((view.hp / max(1, view.max_hp), len(view.potions), view.act_index))
 
@@ -528,6 +531,7 @@ class _ValueBuilder:
             runs=self.runs,
             generations=tuple(sorted(self.generations)),
             final_floor=np.array(self.final_floor, dtype=np.int64),
+            floor=np.array(self.floor, dtype=np.int64),
             run_index=np.array(self.run_index, dtype=np.int64),
             v0=np.array(self.v0, dtype=np.float32).reshape(n, 3),
         )

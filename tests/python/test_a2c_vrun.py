@@ -100,6 +100,7 @@ class KeepMathTests(unittest.TestCase):
         run = np.repeat(np.arange(60), 10)
         final = np.repeat(rng.choice([5, 9, 12, 18, 30], 60), 10).astype(np.int64)  # some runs past floor 17, none won
         values = SimpleNamespace(validation=np.repeat(np.arange(60) >= 48, 10), final_floor=final, run_index=run,
+                                 floor=np.tile(np.arange(1, 11), 60),
                                  v0=np.stack([rng.random(n), rng.integers(0, 3, n), np.zeros(n)], axis=1).astype(np.float32),
                                  inputs=lambda rows: rng.random((len(rows), width)).astype(np.float32))
         record = keep.evaluate_value_net(values, models.RunValueNet())
@@ -243,3 +244,24 @@ class KeepAmendTests(unittest.TestCase):
         e = keep.expected_calibration_error(p, y, run=thirty)
         self.assertEqual((e["eligible_bins"], e["bins"][4]["positive_runs"]), (1, 30))
         self.assertAlmostEqual(e["value"], 0.05, places=9)
+
+    def test_the_act1_head_is_judged_on_rows_before_the_boss_room_only(self):
+        # Every decision of a boss-killing run from floor 17 on (the boss's rewards, the next map, Act 2) is taken after the
+        # kill, so its Act-1 label is fixed by the state; those rows would inflate BSS, log-loss and ECE. The win head keeps all.
+        from run_train import models
+
+        rng = np.random.default_rng(4)
+        n, width = 600, models.VALUE_INPUT
+        run = np.repeat(np.arange(60), 10)
+        final = np.repeat(np.tile([5, 9, 30], 20), 10).astype(np.int64)  # every third run kills the boss
+        floor = np.where(final > 17, 12, 1) + np.tile(np.arange(10), 60)  # a kill run's rows on floors 12-21, others 1-10
+        values = SimpleNamespace(validation=np.repeat(np.arange(60) >= 48, 10), final_floor=final, run_index=run, floor=floor,
+                                 v0=np.stack([rng.random(n), rng.integers(0, 3, n), np.zeros(n)], axis=1).astype(np.float32),
+                                 inputs=lambda rows: rng.random((len(rows), width)).astype(np.float32))
+        record = keep.evaluate_value_net(values, models.RunValueNet())
+        head = record["heads"]["act1_boss_kill"]
+        # validation: 8 runs x 10 rows + 4 kill runs x 5 rows on floors 12-16; training base rate 16 x 5 / (32 x 10 + 16 x 5)
+        self.assertEqual((head["rows"], head["positives"], head["positive_runs"]), (100, 20, 4))
+        self.assertAlmostEqual(head["base_rate"], 0.2, places=9)
+        self.assertEqual(record["validation"]["act1_head_last_floor"], 16)
+        self.assertEqual(record["heads"]["win"]["rows"], 120)
