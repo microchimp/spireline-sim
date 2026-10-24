@@ -64,8 +64,8 @@ CHECKPOINT = Path(__file__).resolve().parent / "data" / "combat_net.pt"
 POLICY_CHECKPOINT = Path(__file__).resolve().parent / "data" / "combat_policy.pt"
 STEP_CAP = 300
 # The completed-Q policy target's softmax temperature, in the search's value units (HP; a death
-# scores far below 0). Chosen on a held-out split by run, see `rl/a2c_target.py`.
-Q_TEMPERATURE = 10.0
+# scores far below 0). Chosen on a held-out split by run over 1, 3, 10, 30 (rl/a2c_target.py heldout, gen-3 window).
+Q_TEMPERATURE = 1.0
 
 
 def generate(args: argparse.Namespace) -> None:
