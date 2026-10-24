@@ -56,6 +56,17 @@ public static class Registry
         SwipePower.Register,
     ];
 
+    /// <summary>C4 (cloud/f08-power-3): the port list's power-3 rows. Not here: Crab Rage and Surrounded, whose AfterDeath
+    /// bodies (CombatEngine.TryEnrageCrabPartner, FacePast, TurnPlayerToFaceSurvivor) are private (the stop rule of
+    /// CLOUD_BRIEFS section 3); Stock and Asleep, the local batch L2's.</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> Power3 =
+    [
+        FlutterPower.Register,
+        PersonalHivePower.Register,
+        PlowPower.Register,
+        SoarPower.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -65,5 +76,6 @@ public static class Registry
         .. Pilot,
         .. Power1,
         .. Power2,
+        .. Power3,
     ];
 }
