@@ -873,17 +873,18 @@ def review_guard_on(flag: bool | None = None) -> bool:
 
 def lineage_blocks(rows: list[dict[str, str]], blocks: int = 3) -> list[tuple[int, int]]:
     """The promoted lineage's (kills, runs) on the last `blocks` judged blocks, oldest first: the candidate's kills on a
-    block that promoted it, the incumbent's where it stayed. Rows without the counts are skipped."""
-    out: list[tuple[int, int]] = []
-    for r in rows:
+    block that promoted it, the incumbent's where it stayed. A block judged again (`rejudge` adds a second row for it) counts
+    once, by its last row, in the place of its first judgement. Rows without the counts are skipped."""
+    by_block: dict[Any, tuple[int, int]] = {}
+    for i, r in enumerate(rows):
         try:
             n = int(r.get("seeds") or 0)
             k = int(r.get("boss_cand") if r.get("decision") == "promoted" else r.get("boss_base"))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             continue
         if n > 0:
-            out.append((k, n))
-    return out[-blocks:]
+            by_block[r.get("seed_block") or ("row", i)] = (k, n)  # a row naming no block stands alone
+    return list(by_block.values())[-blocks:]
 
 
 def attempts_before(rows: list[dict[str, str]], cand_gen: int, cand_sha: str) -> int:

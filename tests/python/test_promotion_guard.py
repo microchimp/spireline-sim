@@ -272,6 +272,20 @@ class DriftCheckTests(unittest.TestCase):
         self.assertFalse(gen_loop.previous_drift_flagged([*rows, {"drift": "clear"}]))
         self.assertFalse(gen_loop.previous_drift_flagged([]))
 
+    def test_a_rejudged_block_counts_once_in_the_lineage_by_its_last_row(self):
+        rows = [{"seed_block": "E1", "seeds": "2000", "decision": "promoted", "boss_cand": "40", "boss_base": "27"},
+                {"seed_block": "E1", "seeds": "2000", "decision": "rejected", "boss_cand": "40", "boss_base": "27"}]  # E1 rejudged
+        self.assertEqual(gen_loop.lineage_blocks(rows), [(27, 2000)])  # one block, read by the rejudged decision (the incumbent stayed)
+        more = [*rows, {"seed_block": "E2", "seeds": "2000", "decision": "promoted", "boss_cand": "50", "boss_base": "45"},
+                {"seed_block": "E3", "seeds": "2000", "decision": "rejected", "boss_cand": "9", "boss_base": "52"},
+                {"seed_block": "E4", "seeds": "2000", "decision": "promoted", "boss_cand": "48", "boss_base": "44"},
+                {"seed_block": "E2", "seeds": "2000", "decision": "rejected", "boss_cand": "50", "boss_base": "45"}]  # E2 rejudged later
+        # four blocks, three kept; E2 keeps its place among the blocks and its rejudged row; no block twice
+        self.assertEqual(gen_loop.lineage_blocks(more), [(45, 2000), (52, 2000), (48, 2000)])
+        self.assertEqual(gen_loop.lineage_blocks(more, blocks=4), [(27, 2000), (45, 2000), (52, 2000), (48, 2000)])
+        # a later row without the counts does not replace a block's counted row
+        self.assertEqual(gen_loop.lineage_blocks([*rows, {"seed_block": "E1", "seeds": "", "decision": "rejected"}]), [(27, 2000)])
+
 
 class RetryCapTests(unittest.TestCase):
     def test_two_attempts_per_generation(self):
