@@ -58,7 +58,7 @@ public class StepApiKillTests
     /// Flip to true in the commit after which the switched-on tests must pass: R4 (the reroute) together with the handlers the
     /// two fights touch (Ravenous's AfterDeath and Strength's damage fold at least, both of batch power-1). Not R4 alone.
     /// </summary>
-    private const bool RerouteLanded = false;
+    private const bool RerouteLanded = true;  // R7d: the strict run passes (AfterAttack logged at its bridge point)
 
     private const string FlipOn =
         "the switched-on values now hold: if R4 and the handlers these fights run through (at least Ravenous's AfterDeath and " +
@@ -142,6 +142,13 @@ public class StepApiKillTests
             return new Play { S = s };
         var log = new List<string>();
         var kernel = new Kernel(new KernelOptions([Switch.F08, Switch.F10]), () => Ids, Registry.All.Append(Observer(log)).ToArray());
+        // AfterAttack is F06's: with F06 off the attack's end runs it as the bridge, which no handler sees, so its point
+        // is logged through the kernel's bridge seam, in order with the F10 hooks the kernel dispatches.
+        kernel.BridgePoint = h =>
+        {
+            if (h == HookId.AfterAttack)
+                log.Add("AfterAttack");
+        };
         var engine = new RunEngine { Kernel = kernel };
         engine.BindCombat(s);
         return new Play { S = s, K = s.Kernel, E = engine, Log = log };

@@ -85,6 +85,14 @@ public sealed class Kernel
 
     public KernelOptions Options { get; }
 
+    /// <summary>
+    /// Test seam: the attack's F06 points while F06 is off. There the bridge runs the old bodies where the game runs
+    /// Hook.BeforeAttack and Hook.AfterAttack (AttackCmd.Execute, OldEntry.AttackContext), outside the kernel's dispatch, so
+    /// no handler sees them; this is called with the hook at that point, in order with the kernel's own dispatches. Unset
+    /// outside tests.
+    /// </summary>
+    internal Action<HookId>? BridgePoint { get; set; }
+
     /// <summary>Whether any switch is on. When false the kernel never builds its table and no state records anything.</summary>
     public bool AnyOn { get; }
 

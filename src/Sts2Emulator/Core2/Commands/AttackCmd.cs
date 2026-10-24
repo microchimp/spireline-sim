@@ -96,7 +96,10 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
                 CreatureCmd.Settle(k, Hooks.BeforeAttack(k, new BeforeAttackArgs(self)),
                     st => Hooks.BeforeAttackResume(k, new BeforeAttackArgs(self), st));
             else
+            {
+                k.Shared.BridgePoint?.Invoke(HookId.BeforeAttack);
                 Bridge?.BeforeAttack?.Invoke(this);
+            }
             int count = f06 ? Hooks.ModifyAttackHitCount(k, new ModifyAttackHitCountArgs(self, HitCount)) : HitCount;
             for (int i = 0; i < count; i++)
             {
@@ -139,6 +142,9 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
             }
             else
             {
+                // game: AttackCommand's end runs AfterAttack whether or not its target died; with F06 off that point is
+                // the bridge.
+                k.Shared.BridgePoint?.Invoke(HookId.AfterAttack);
                 Bridge?.AfterAttack?.Invoke(this);
             }
         }

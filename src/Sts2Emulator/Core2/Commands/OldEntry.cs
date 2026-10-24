@@ -119,7 +119,10 @@ public static class OldEntry
                 CreatureCmd.Settle(k, Hooks.BeforeAttack(k, new BeforeAttackArgs(_self)),
                     st => Hooks.BeforeAttackResume(k, new BeforeAttackArgs(_self), st));
             else
+            {
+                k.Shared.BridgePoint?.Invoke(HookId.BeforeAttack);
                 bridge?.BeforeAttack?.Invoke(Attack);
+            }
         }
 
         /// <summary>game: AttackContext.AddHit (IncrementHitsInternal, AddResultsInternal); hands the results back.</summary>
@@ -144,6 +147,7 @@ public static class OldEntry
                 }
                 else
                 {
+                    _k.Shared.BridgePoint?.Invoke(HookId.AfterAttack);
                     _bridge?.AfterAttack?.Invoke(Attack);
                 }
             }
