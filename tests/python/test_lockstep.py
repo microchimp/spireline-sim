@@ -527,6 +527,55 @@ class TreasureTests(unittest.TestCase):
         ls.decide(other)
         self.assertEqual(ls.stats["diverged"], 1)
 
+    @staticmethod
+    def question(a, relic):
+        return {**msg("treasure", a), "actions": [["take", relic], "skip"]}
+
+    def test_a_pickup_effect_the_emulator_already_applied_is_not_a_divergence(self):
+        # G96df219a44 and its two siblings: the emulator took the chest relic, so what the pickup changes is already in its
+        # view while the referee still shows the chest. The next decision compares those fields.
+        a = obs(hp=63)
+        b = obs()
+        b["deck"] = [["STRIKE_IRONCLAD", 1]]
+        cases = {
+            "max hp": (a, {**view_of(a), "relics": ["BURNING_BLOOD", "STRAWBERRY"], "hp": 70, "max_hp": 87}, "STRAWBERRY"),
+            "gold": (obs(), {**view_of(obs()), "relics": ["BURNING_BLOOD", "OLD_COIN"], "gold": 399}, "OLD_COIN"),
+            "deck": (obs(), {**view_of(obs()), "relics": ["BURNING_BLOOD", "WHETSTONE"], "deck": view_of(b)["deck"]}, "WHETSTONE"),
+            "potions": (obs(), {**view_of(obs()), "relics": ["BURNING_BLOOD", "POTION_BELT"], "potions": ["BLOCK_POTION"]}, "POTION_BELT"),
+        }
+        for name, (ref, held, relic) in cases.items():
+            with self.subTest(name):
+                ls = lockstep.Lockstep(FakeEmu([held]), lambda m: 0)
+                ls.decide(self.question(ref, relic))
+                self.assertEqual((ls.stats["diverged"], ls.stats["ranked"]), (0, 1))
+                self.assertIsNone(ls.lost)
+
+    def test_the_deferral_hides_nothing_but_the_pickup_fields(self):
+        a = obs(hp=63)
+        held = {**view_of(a), "relics": ["BURNING_BLOOD", "STRAWBERRY"], "hp": 70, "max_hp": 87}
+        for name, change in (("floor", {"floor": 9}), ("act", {"act": 1})):  # a floor or act gap at the question still shows
+            with self.subTest(name):
+                ls = lockstep.Lockstep(FakeEmu([{**held, **change}]), lambda m: 0)
+                ls.decide(self.question(obs(hp=63, floor=10), "STRAWBERRY"))
+                self.assertEqual(ls.stats["diverged"], 1)
+                self.assertIn("." + name, [d[0] for d in ls.log.records[0]["diff"]])
+        with self.subTest("relic not held"):  # the emulator does not hold the offered relic: its hp is no pickup effect
+            ls = lockstep.Lockstep(FakeEmu([{**held, "relics": ["BURNING_BLOOD"]}]), lambda m: 0)
+            ls.decide(self.question(a, "STRAWBERRY"))
+            self.assertEqual(ls.stats["diverged"], 1)
+
+    def test_a_wrong_pickup_effect_shows_at_the_next_decision(self):
+        a = obs(hp=63)
+        held = {**view_of(a), "relics": ["BURNING_BLOOD", "STRAWBERRY"], "hp": 70, "max_hp": 87}
+        ls = lockstep.Lockstep(FakeEmu([held, held]), lambda m: 0)
+        ls.decide(self.question(a, "STRAWBERRY"))
+        self.assertEqual(ls.stats["diverged"], 0)
+        ls.decide(msg("map", a))  # the referee took the relic without the +7: the emulator's hp is wrong
+        self.assertEqual(ls.stats["diverged"], 1)
+        rec = ls.log.records[0]
+        self.assertEqual((rec["decision"], rec["type"]), (1, "map"))
+        self.assertTrue({".hp", ".max_hp"} <= {d[0] for d in rec["diff"]})
+
 
 class FloorRun(FakeRun):
     """Every map node leads to a fight, whose resolution and rewards lead back to the next map; floor counts the rooms."""

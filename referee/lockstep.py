@@ -34,6 +34,11 @@ COMBAT_KINDS = ("combat", "select_cards_combat", "card_reward_combat")
 # the next re-anchor point.
 MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "select_cards", "treasure", "shop",
                 "bundle", "event") + COMBAT_KINDS
+# The fields a chest relic's pickup can change (max HP and the healing with it, gold, card upgrades, the potion belt). At the
+# treasure question the emulator has already taken the chest relic (its run engine auto-takes it) and applied the pickup,
+# while the referee has not (it obtains the relic when the player picks it); these fields are not compared at that question,
+# the next decision compares them. The floor, the act and the relic list stay compared.
+TREASURE_PICKUP_PATHS = (".hp", ".max_hp", ".gold", ".deck", ".potions")
 # Reasons that are a gap in this adapter's mapping, not a difference of the emulator's: reported apart.
 GAP_PREFIXES = ("unmapped", "apply:", "choose_error")
 # The message key under which the referee driver hands the game's hidden state (stream counters, the draw pile in order)
@@ -373,13 +378,17 @@ class Lockstep:
         reason = None if kind in MAPPED_KINDS else f"unmapped:{kind}"
         reason = reason or self.emu.sync(kind, labels, msg)
         r, e = ref_view(msg.get("obs", {})), self.emu.view()
+        offered: list = []
         if mid_screen_pick(kind, msg):
             return reason, [], r, e  # inside a screen: its candidates were compared in sync
         if kind == "treasure":
             # The emulator opens the chest and holds its relic when the referee is first asked whether to take it (the
             # 6 of 12 treasure divergences of the events round); the question's own offer is the referee's side of that.
-            r["relics"] = r["relics"] + [x[1] for x in labels if isinstance(x, list) and len(x) > 1 and x[0] == "take"]
+            offered = [x[1] for x in labels if isinstance(x, list) and len(x) > 1 and x[0] == "take"]
+            r["relics"] = r["relics"] + offered
         diff = [] if reason else structural_diff(r, e)
+        if kind == "treasure" and offered and all(x in e.get("relics", []) for x in offered):
+            diff = _drop_paths(diff, TREASURE_PICKUP_PATHS)  # the emulator holds the offered relic and its pickup effect
         if deck_pending_pick(kind, msg) and _deck_within_picks(r, e, msg["ctx"]["pick"]):
             diff = _drop_paths(diff, (".deck",))  # the earlier picks of the screen: the emulator applied them, the game not yet
         return reason, diff, r, e
