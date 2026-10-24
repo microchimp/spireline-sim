@@ -5,6 +5,8 @@ v0.107.1. Input: `TIER1_KERNEL.md`, the F08 diagnosis (`D:/spireline/referee/reb
 kill timing, 52% of F08's groups and 93.9% of G2891c25e0d; mechanism B, Slow outside the decimal fold), the site
 inventory (`python -m tools.kernel.sites groups`), the port manifest (`D:/spireline/referee/rebuild/manifest.md`) and
 the decompile (read only). Game code is named by class and method only. This round changes no engine behaviour.
+Amended after review (same day): the F06 bridge, the kill's step sequence, the pseudo-hooks, the unlisted HP writes and
+Escape, the open-pair gate, the F17 hand-off and the round split.
 
 ## 1. Confirming trace (traced, 2026-10-24)
 
@@ -49,18 +51,30 @@ families, read for this plan:
 | `RelicEffects.BiteForFurCoat` | F01+F08 | Fur Coat's AfterCreatureAddedToCombat body (F01) reads the hittable predicate (F08, the old `Hook.ShouldAllowHitting`). | `split`: F01 `public static void BiteForFurCoat(CombatState state, EnemyState enemy)`, F08 `state.FurCoatBites && EnemyAI.IsTargetable(enemy)` |
 | `RunRewardGenerator.GenerateCombatRewards` | F10+F14+F15 | F10's part is AfterCombatVictory(Early) bodies, interleaved with F14's potion forcing and F15's reward modifiers. | none needed under option B below |
 
-Anchors checked unique and in order in the current files; each record keeps the file's hash when M1 writes it.
+Anchors checked unique and in order in the current files; each record keeps the file's hash when R1 writes it.
 
 **Option B (recommended): re-cut F10.** Move AfterCombatEnd, AfterCombatVictory and AfterCombatVictoryEarly from F10
 to a new family F17 "combat end / victory" in `tools/fidelity/hook_families.json`. They run after the combat's result
 (RunEngine.FinishCombat, the rewards, run counters), not inside the kill. Computed in memory with
 `sites.build` and the two splits above: groups become **F08+F10** and the other fifteen (F01-F07, F09, F11-F17). The
-switch then needs 94 handlers instead of 135 (41 victory-only models: 40 relics and one card; 26 of their 40
+switch then needs 94 hook-overriding models instead of 135, 106 with the pseudo-hooks of section 5 (41 victory-only
+models left: 40 relics and one card; 26 of their 40
 AfterCombatEnd overrides are not modelled). Cost: the family table, `Switches.g.cs` and the manifest are rebuilt;
 by-family tables carry the new row.
 
 Option A (F10 whole): also split `GenerateCombatRewards` (three parts, anchors to be read) and port the 41 victory
 handlers in this migration.
+
+**The F17 hand-off under option B (amend, 2026-10-24).** Once the old in-step win checks are gated off (section 3
+item 7), nothing in the old step calls `RunEngine.FinishCombat` any more. Under the switch the call moves to the host,
+at the game's point: Core2's win check (CombatManager.CheckWinCondition) finds the combat ending, sets the old state's
+`IsInProgress` false (the game's EndCombatInternal start: no action runs after it, the executor drains nothing more),
+and then calls the old `RunEngine.FinishCombat` once, from the same place the game reaches EndCombatInternal, with the
+same arguments the old in-step caller passed. The loss path is the same with the pending loss. F17's hooks
+(AfterCombatEnd, AfterCombatVictoryEarly, AfterCombatVictory) keep their old dispatch inside `FinishCombat`,
+`GenerateCombatRewards` and the run counters until F17 migrates; F17's switch then replaces those inside the same call.
+Test (round 3): a fight won by an AfterDeath kill (Ravenous' survivor killed by Thorns) calls `FinishCombat` exactly
+once, after the last action, with `IsInProgress` false and the same rewards as the switch-off path.
 
 ## 3. Commands to write in Core2
 
@@ -68,10 +82,21 @@ Folder `src/Sts2Emulator/Core2/Commands/`. Each is the game's command in its sha
 reads and writes HP, block and buffs through the old state (`CombatState`, `EnemyState`, `BuffSystem`), and never
 re-implements a model's effect (that is a handler calling the old body). Dispatch is only through `Hooks.*`.
 
-1. **`AttackCmd.Execute`** (game: AttackCommand's execute): attacker dead: nothing. BeforeAttack; hit count through
-   ModifyAttackHitCount (no old site today: the old cards pass a count); per hit: stop if the attacker is dead; the
-   living possible targets; none left in a live combat: stop; one `CreatureCmd.Damage` per hit, single target or all
-   valid targets in one call; then AfterAttack. Random targeting with or without duplicates as the game's flag.
+1. **`AttackCmd.Execute`** (game: AttackCommand's execute): the combat over or ending (`IsOverOrEnding`): return at
+   once; attacker dead: nothing. BeforeAttack; hit count through ModifyAttackHitCount; per hit: stop if the attacker
+   is dead; the living possible targets; none left in a live combat: stop; one `CreatureCmd.Damage` per hit, single
+   target or all valid targets in one call; then AfterAttack. Random targeting with or without duplicates as the
+   game's flag.
+   **The F06 bridge.** BeforeAttack, ModifyAttackHitCount and AfterAttack are F06 in `hook_families.json`, and their
+   old sites are F06-only (`CombatEngine.ResolvePlayRepetition[effect]`/`[after]`, `QueueAttackPlayLifecycleEffects`,
+   `EnemyAI.DealAttack`, `RelicEffects.ApplyAfterOstyAttack`; ModifyAttackHitCount has none: the old card passes its
+   count). Until F06 migrates, AttackCmd dispatches none of the three: with `Switch.F06` off it takes the count it is
+   given and the old F06 points keep firing BeforeAttack/AfterAttack where they do today; with F06 on, AttackCmd
+   dispatches them through `Hooks.*` and the F06 switch gates the old points off. Either way AfterAttack fires exactly
+   once per attack. Test (round 2): F08 on and F06 off, then both on: a Twin Strike and a Whirlwind with a counting
+   AfterAttack listener see one BeforeAttack and one AfterAttack per card play, and an enemy's multi-hit move one per
+   move. The game's AfterAttack-before-the-card's-next-effect order (section 1: before Headbutt's screen) comes with
+   F06, not here; the fuzzer lists it as an F06 difference.
 2. **`CreatureCmd.Damage(targets, amount, props, dealer, cardSource)`** (game: CreatureCmd.Damage, the list overload
    all others reach): dealer dead: empty results. Per target in list order, skipping the dead:
    `Hooks.ModifyDamage` (all passes, decimal) then `AfterModifyingDamageAmount` with its changed set;
@@ -93,25 +118,53 @@ re-implements a model's effect (that is a handler calling the old body). Dispatc
 4. **`CreatureCmd.Kill(list, force)`** (game: CreatureCmd.Kill): each creature through `KillWithoutCheckingWinCondition`;
    then, all players dead: the loss (old `IsAboutToLose` / pending loss) and stop; else, during the player's side, a dead
    player ends their turn. No win check here.
-5. **`KillWithoutCheckingWinCondition(creature, force, recursion)`**: not in a live combat: nothing. HP above 0: lose
-   it (unblockable, unpowered) and AfterCurrentHpChanged. `MarkDying(creature)` from here to the removal.
-   BeforeDeath; `ShouldDie` (both passes; preventer) unless forced or max HP <= 0. Dies:
-   `ShouldCreatureBeRemovedFromCombatAfterDeath`; `AfterDeath(wasRemovalPrevented: false)` (per-listener: a listener's
-   screen is a hook action that runs after the current action, K4); then, if removal is due and the creature is an
-   enemy still in the roster: the removal, **skipped while its monster `IsPerformingMove`** (the move's end removes
-   it); the creature's powers removed with `ShouldPowerBeRemovedOnDeath` (OwnerInCombat) and each removed power's
-   AfterRemoved; a primary enemy whose living teammates are all secondary: `Kill(teammates)`; a player: orb queue
-   cleared, Osty killed, `DeactivatePlayerHooks` from here, player death handling. Prevented: `AfterDeath(true)`,
-   `AfterPreventingDeath(preventer)`, and again while still dead (at most 10, else the game's error).
+5. **`KillWithoutCheckingWinCondition(creature, force, recursion)`**, in the game's sequence:
+   1. not in a live combat: nothing.
+   2. HP above 0: lose it (unblockable, unpowered) and AfterCurrentHpChanged.
+   3. `MarkDying(creature)` from here to the removal (step 9).
+   4. BeforeDeath.
+   5. `ShouldDie` (both passes; preventer) unless forced or max HP <= 0. Prevented: go to step 12.
+   6. The creature's `Died` event (pseudo-hook, section 5: SlumberingBeetle and SoulNexus subscribe), raised
+      **before** the removal query.
+   7. `ShouldCreatureBeRemovedFromCombatAfterDeath` (removal due unless a listener says no).
+   8. `AfterDeath(wasRemovalPrevented: false)` (per-listener: a listener's screen is a hook action that runs after the
+      current action, K4).
+   9. Removal due and the creature still in the combat: **`CombatManager.RemoveCreature` always** (item 6: the
+      monster's BeforeRemovedFromRoom pseudo-hook, its state machine reset, its hooks unsubscribed), **even while its
+      monster `IsPerformingMove`**; only `CombatState.RemoveCreature` (the roster) is skipped during the move.
+   10. Whether the creature is a primary enemy is read here, before its powers go (Minion decides it). Then **powers on
+       every death**, removal or not (game: Creature.RemoveAllPowersAfterDeath): each power whose
+       `ShouldPowerBeRemovedOnDeath` (OwnerInCombat step) and its own `ShouldPowerBeRemovedAfterOwnerDeath`
+       (pseudo-hook, overridden by Adaptable, Die For You, Minion, Painful Stabs, Reattach, Steam Eruption) allow it is
+       removed; then `AfterRemoved(oldOwner)` (pseudo-hook) per removed power, in removal order.
+   11. A primary enemy (step 10's reading) whose living teammates are all secondary: `Kill(teammates)`; a player: orb
+       queue cleared, Osty killed, `DeactivatePlayerHooks` from here, player death handling.
+   12. Prevented: `AfterDeath(true)`, `AfterPreventingDeath(preventer)`, and again while still dead (at most 10, else
+       the game's error).
    `KeepPlayerHooks` covers the player's own BeforeDeath/ShouldDie/AfterDeath.
-6. **Removal in the old state** (game: CombatManager.RemoveCreature + CombatState.RemoveCreature): one function that
-   does what `CombatState.RemoveDepartedEnemies` does for one enemy today (roster, departed ids, targeting indices),
-   called from the kill; the old per-card sweep (`AnswerDeathsSince`, `HandleEnemyDeaths`, `AnswerDeaths`) does nothing
-   under the switch for a death the kill answered.
+   **The move's end** (game: the monster's PerformMove after its move's last action): if the monster died during its
+   move, ask `ShouldCreatureBeRemovedFromCombatAfterDeath` again and, removal due, `CombatState.RemoveCreature` now.
+   The old engine has no `IsPerformingMove`: round 3 adds it to the enemy-turn site that runs a move.
+6. **Removal in the old state**, two functions as the game's two: `RemoveCreature` (CombatManager's: BeforeRemovedFromRoom,
+   the monster's move state reset in the old `EnemyState` (intent, move index), its listener entries dropped from the
+   kernel's tables) and `RemoveFromRoster` (CombatState's: what `CombatState.RemoveDepartedEnemies` does for one enemy
+   today: roster, departed ids, targeting indices). The kill calls both (the second skipped during the move), Escape
+   (item 8) calls both, the move's end calls the second. The old per-card sweep (`AnswerDeathsSince`,
+   `HandleEnemyDeaths`, `AnswerDeaths`) does nothing under the switch for a death the kill answered.
 7. **Win check at the game's points** (game: CombatManager.CheckWinCondition: pending loss first, then IsEnding with
    `ShouldStopCombatFromEnding`): K4's executor boundary (after every action but end turn and ready-to-begin-enemy-turn)
    plus StartTurn, EndEnemyTurn, ExecuteEnemyTurn's per-enemy check and EndPlayerTurnPhaseOneInternal; `CombatEnded`
-   at the end. The old in-step checks (`CombatEngine.CheckWinCondition` callers) are gated off under the switch.
+   at the end. The old in-step checks (`CombatEngine.CheckWinCondition` callers) are gated off under the switch; the
+   old `RunEngine.FinishCombat` is then called from here (section 2, the F17 hand-off).
+8. **`CreatureCmd.Escape(creature)`** (game: CreatureCmd.Escape): dead: nothing. The creature's powers removed but the
+   one the game keeps (RemoveAllPowersInternalExcept), `RemoveCreature` and `RemoveFromRoster` (item 6), the escaped
+   list (CombatState.CreatureEscaped). **No death hooks**: no BeforeDeath, ShouldDie, Died, AfterDeath, no power
+   AfterRemoved; the win check follows at the next check point (item 7). Callers: ThievingHopper's and FatGremlin's
+   flee moves, Battleworn Dummy's time limit (section 4).
+9. **`CreatureCmd.Heal`, `SetCurrentHp`, `SetMaxHp`, `GainMaxHp`, `LoseMaxHp`** (game: the CreatureCmd methods of
+   those names): thin commands over the old HP fields with the game's hook calls (AfterCurrentHpChanged where the game
+   dispatches it; SetMaxHp does not). They exist so the HP writes of section 4's second table have a Commands home;
+   each caller moves when its own family does, through these commands.
 
 **Named steps** (`Core2/Steps.cs`, from the descriptor):
 - `ClampMin0` (ModifyDamage post): the folded value is max(0, value).
@@ -151,33 +204,103 @@ Under option B the victory sites (`RunEngine.FinishCombat`, `RunNonCombatEffects
 `CountEliteVictoryForSwordOfStone`, `TriggerFishingRod`, `RelicEffects.CountCombatFor*`, `CarryRunCountersBack`,
 `GenerateCombatRewards`) leave this switch.
 
+**HP writes the site table does not list (amend).** Kills and escapes done by writing HP in place, all routed in round 3
+(each becomes `if (Kernel.If(Switch.F08, ...)) <command> else <old>`):
+
+| old write | what it does | remedy |
+|---|---|---|
+| `EnemyAI.ExecuteIntent` (357) GasBomb | its explode move zeroes its own HP | `CreatureCmd.Kill([self])` from the move (IsPerformingMove: roster removal at the move's end) |
+| `EnemyAI.ExecuteIntent` (365) `IsExploding` | Waterfall Giant's explosion zeroes its own HP | `Kill([self])`, same |
+| `EnemyAI.ExecuteIntent` (791, 803) ThievingHopper, FatGremlin | the flee move zeroes HP and sets `Escaped` | `CreatureCmd.Escape` (section 3 item 8) |
+| `CombatEngine.EndTurn` (2064) Sandpit | force-kills the player (no prevention) | `Kill([player], force: true)` |
+| `CombatEngine.EndTurn` (2227) Battleworn Dummy | the time limit zeroes HP with the escape flag | `Escape` (BattlewornDummyTimeLimitPower) |
+| `EnemyAI.DealAttackDamage` (4491-4492) The Gambit | removes the power and zeroes the player's HP inside the hit | The Gambit's AfterDamageReceived handler (batch power-2) calling `Kill([player])` after the hit's results |
+| `CardEffects.KillOsty` (9758) | zeroes Osty's HP | `Kill([osty])` (the player's death step 11; Osty's own deaths come through Damage) |
+
+Further HP and block writes from the grep of the old engine (every write of `PlayerHp`, `PlayerMaxHp`, `PlayerBlock`,
+`OstyHp`, an enemy's `Hp`, `MaxHp`, `Block` in `Core/`, outside setup: `CombatFactory`, `CreateEnemy`, `StateCloning`,
+`FightAnchor`, `Run*`):
+
+| old write | remedy |
+|---|---|
+| `CombatEngine.EndTurn` (1643) Regen heal | `Heal` (item 9), with F05's Regen body |
+| `CombatEngine.EndTurn` (1995) Reattach's HP set at turn | `SetCurrentHp` inside Reattach's handler (power-3) |
+| `EnemyAI.ExecuteIntent` (466) Knowledge Demon heal; `ApplyBuffIntent` (4061) heal intent | `Heal` |
+| `EnemyAI.ApplyBuffIntent` (4095-4096) a spawned hatchling's HP | creature setup (the game's Add), not an HP change: allow-listed |
+| `EnemyAI.DealAttackDamage` (4527-4528) Paper Cuts | `SetMaxHp`/`LoseMaxHp` in Paper Cuts' handler (power-2; no AfterCurrentHpChanged, as the game) |
+| `EnemyAI.TriggerAboutToBlow` (4924-4925) Waterfall Giant | `SetMaxAndCurrentHp` |
+| `CardEffects.HealPlayer` (5778), `GainMaxHp` (5792), `LoseMaxHp` (5821-5822) | `Heal`, `GainMaxHp`, `LoseMaxHp` |
+| `CardEffects.ApplyNecrobinderCard` (6920), `SummonOsty` (9704, 9709) | `Heal` on Osty; the summon stays with AfterSummon (F10 handlers) |
+| `RelicEffects.BiteForFurCoat` (863) | `SetCurrentHp` (its F08 split, section 2) |
+| `CombatEngine.RespawnTestSubject` (5364-5376), `TryRespawnAxebot` (5298-5300) | `SetMaxAndCurrentHp` inside the respawn bodies (Test Subject, Stock handlers) |
+| `RelicEffects.ApplyAfterRoomEntered` (2850, 2855), `ApplyBeforeBossCombat` (3122) | `Heal`/`SetCurrentHp`, with F01 |
+| `CardEffects.ApplyCore` (1562) a card strips the first enemy's block | `LoseBlock` (F09) |
+| `CardEffects.Finish` (5216) Skittish block inside the hit's outcome; `CombatEngine.PayCurlUp` (5967) | `GainBlock` from Skittish's and Curl Up's AfterDamageReceived handlers |
+| enemy block gains in `ExecuteIntent`/`ApplyBuffIntent`/`ApplyDebuffIntent`, `GrantRampartBlock`, the turn-start block clears in `EndTurn` (1939, 2328, 2332), `BreakBurrowIfBlockGone` (5323), the revival bodies' block resets | F09's (GainBlock, LoseBlock, the turn-start clear): stay old until F09 moves |
+
+`construct commands` (round 3) checks writes, not only hook sites: every write of those fields in `Core/` outside
+`Core2/Commands`, outside the else branch of a gated site and outside the setup allow-list (each entry with its reason)
+fails, and an F09 write is reported under F09.
+
 ## 5. Handlers
 
-`python -m tools.kernel.port_list --families F08 F10 [--size 15] [--md ...] [--json ...]` (this branch, test
-`tests/python/test_kernel_port_list.py`) lists every model reached by records that overrides an F08 or F10 hook, with
-each hook's old status and location (from `hook_table.classify`: the dispatch site and line where the old engine
-implements that override, else the methods naming it, or the not-modelled reason) and its batch. Full output for this
-plan: `D:/spireline/referee/rebuild/port-f08-f10.md`.
+`python -m tools.kernel.port_list --families F08 F10 --exclude-hooks AfterCombatEnd AfterCombatVictory
+AfterCombatVictoryEarly --size 15 [--md ...] [--json ...] [--gate]` (this branch, test
+`tests/python/test_kernel_port_list.py`, 13 tests) lists every model reached by records that overrides an F08 or F10
+hook or takes part in an F10 pseudo-hook, with each hook's old status and location (from `hook_table.classify`: the
+dispatch site and line where the old engine implements that override, else the methods naming it, or the not-modelled
+reason) and its batch. `--exclude-hooks` computes option B until round 1 re-cuts F17 in `hook_families.json` (then the
+flag is dropped). Option-B output: `D:/spireline/referee/rebuild/port-f08-f10.md`.
 
-- Option A: 135 models (power 60, relic 58, monster 14, card 2, potion 1); 174 (model, hook) pairs.
-- **Option B: 94 models (power 60, relic 18, monster 14, card 1, potion 1); 128 pairs: 101 registered (an old
-  location to call), 22 open (the old engine names the model elsewhere or not at all: each is read in its batch), 5
-  not modelled (no state change or multiplayer only: no handler).**
+**Pseudo-hooks** (`PSEUDO_HOOKS`, F10): the kill's model calls that are not AbstractModel hooks, found in the
+decompile by override (inherited ones included) or event subscription: `BeforeRemovedFromRoom` (MonsterModel; 11
+monsters: Cubex Construct, Knowledge Demon, Ovicopter, Owl Magistrate, Queen, Rocket, Snapping Jaxfruit, Soul Nexus,
+Test Subject, Thieving Hopper, Waterfall Giant), `ShouldPowerBeRemovedAfterOwnerDeath` (PowerModel; 6 powers:
+Adaptable, Die For You, Minion, Painful Stabs, Reattach, Steam Eruption), `AfterRemoved(oldOwner)` (PowerModel, not
+the relic virtual of the same name; 10 powers: Burrowed, Dampen, Hex, Ringing, Sandpit, Shrink, Slumber, Sword Sage,
+Tangled, Vital Spark), the `Died` event (SlumberingBeetle, SoulNexus). The old engine has no dispatch point for them, so
+each pair is open with the methods that name the model. Core2 dispatches each to the one model it belongs to (the dying
+monster, the removed power), not over the listener list; round 3 adds their ids to `HookId` with F10.
 
-Batches of 15 by reach (option B):
+**Locations that apply the model.** A value hook (Modify*, Should*) only reads its model, so a location whose statement
+applies or removes the model's buff is moved to elsewhere: `EnemyAI.TriggerSuck` (Suck applying Strength) left
+Strength's ModifyDamageAdditive; the same check moved three more: Buffer's ModifyHpLostAfterOstyLate
+(`CardEffects.LosePlayerHp`'s decrement, which is AfterModifyingHpLostAfterOsty's), Slippery's ModifyHpLostAfterOsty
+(`LandDamageOnEnemy`'s decrement, likewise) and Tracking's ModifyDamageMultiplicative (`CardEffects.ApplyCore` applying
+Tracking). Each keeps another location, so all four stay registered. An After/Before hook's body may write its own
+buff (Slippery's decrement, Asleep's removal) and is kept.
+
+- Option A: 135 models (power 60, relic 58, monster 14, card 2, potion 1); 174 (model, hook) pairs (hooks only).
+- **Option B with the pseudo-hooks: 106 models (power 64, relic 18, monster 22, card 1, potion 1); 155 pairs, 27 of
+  them pseudo-hook (BeforeRemovedFromRoom 11, AfterRemoved 9, ShouldPowerBeRemovedAfterOwnerDeath 5, Died 2; Die For
+  You and Sword Sage are not reached): 101 registered (an old location to call), 49 open (22 hook pairs the old engine
+  names elsewhere, 27 pseudo-hook pairs; each is read in its batch), 5 not modelled (no state change or multiplayer
+  only: no handler).** The pseudo-hooks add 12 models (8 monsters, 4 powers).
+
+**Open-pair gate.** `--gate` exits 1 while any listed pair is open, missing or unmatched and has no Core2 handler (a
+file under `Core2/Models/` registering `Model(kind, "<Class>")` with `HookId.<hook>`). Today: 49. Each handler batch
+closes its own pairs; switch-on (section 6) requires 0. The 22 open hook pairs: Slow and Hang
+(ModifyDamageMultiplicative), Hard to Kill (ModifyDamageCap), Imbalanced (AfterDamageGiven), Shrink (AfterDeath), Fairy
+in a Bottle (AfterPreventingDeath), Lava Lamp (AfterDamageReceived), Meat on the Bone (AfterCurrentHpChanged), Crusher
+and Rocket (AfterCurrentHpChanged, BeforeDeath), and AfterDeath of the three Decimillipede segments, Aeonglass, Kin
+Priest, Lagavulin Matriarch, Soul Fysh, The Insatiable, Vantom and Waterfall Giant.
+
+Batches of 15 by reach (option B with the pseudo-hooks; the four small ones form one batch):
 - power-1: Strength, Vulnerable, Weak, Thorns, Ravenous, Shrink, Inferno, Vigor, Rupture, Tank, Knockdown, Colossus,
-  Shriek, Flame Barrier, Curl Up
-- power-2: Slippery, Buffer, The Gambit, Imbalanced, Intangible, Surprise, Possess Speed, Possess Strength, Paper Cuts,
-  Tainted, Illusion, Swipe, Gigantification, Slow, Flutter
-- power-3: Reattach, Slumber, Hard to Kill, Hex, Personal Hive, Dampen, Stock, Asleep, Plow, Crab Rage, Surrounded,
-  Sandpit, Soar, Adaptable, Steam Eruption
-- power-4: Infested, Hardened Shell, Constrict, Burrowed, Heist, Painful Stabs, Calcify, Hang, Accuracy, Sic 'Em,
-  Conqueror, Phantom Blades, Lethality, Tracking, Double Damage
+  Shriek, Minion, Flame Barrier
+- power-2: Curl Up, Slippery, Buffer, The Gambit, Imbalanced, Intangible, Surprise, Possess Speed, Possess Strength,
+  Paper Cuts, Vital Spark, Tainted, Illusion, Swipe, Gigantification
+- power-3: Slow, Flutter, Reattach, Slumber, Hard to Kill, Hex, Personal Hive, Dampen, Stock, Asleep, Plow, Crab Rage,
+  Surrounded, Sandpit, Soar
+- power-4: Adaptable, Steam Eruption, Infested, Hardened Shell, Constrict, Burrowed, Heist, Tangled, Ringing, Painful
+  Stabs, Calcify, Hang, Accuracy, Sic 'Em, Conqueror
 - relic-1: Self-Forming Clay, Tungsten Rod, Strike Dummy, Red Skull, Centennial Puzzle, Pen Nib, Lizard Tail, Gremlin
   Horn, Miniature Cannon, Beating Remnant, Mystic Lighter, Meat on the Bone, Lava Lamp, Demon Tongue, Fake Strike Dummy
-- relic-2 + card + potion: Hand Drill, The Boot, Vitruvian Minion, Melancholy, Fairy in a Bottle
-- monster-1: Decimillipede segments (back, front, middle), Queen, Vantom, Aeonglass, Lagavulin Matriarch, Crusher,
-  Rocket, The Insatiable, Soul Fysh, Test Subject, Waterfall Giant, Kin Priest
+- monster-1: Ovicopter, Soul Nexus, Thieving Hopper, Cubex Construct, Decimillipede segments (back, front, middle),
+  Slumbering Beetle, Queen, Vantom, Aeonglass, Lagavulin Matriarch, Crusher, Rocket, Owl Magistrate
+- monster-2: The Insatiable, Snapping Jaxfruit, Knowledge Demon, Soul Fysh, Test Subject, Waterfall Giant, Kin Priest
+- mixed (power-5, relic-2, card-1, potion-1): Phantom Blades, Lethality, Tracking, Double Damage, Hand Drill, The Boot,
+  Vitruvian Minion, Melancholy, Fairy in a Bottle
 
 Porting pattern: the handler calls the model's body where the old engine has it; a body that sits inline in an old
 site (Ravenous inside `AnswerDeaths`, Curl Up inside `LandDamageOnEnemy`) is first extracted into a named function that
@@ -195,9 +318,15 @@ Per round:
 - `struct_compare` on the corpus fights with `--engine core2` (test switch) against old and against the game: no fight
   worse against the game; improvements listed;
 - the gates: C# and EmuDump tests, corpus 0 regressed on old, core2 with no switch byte-identical, `sites check`,
-  `construct shape`, and (from P0) `construct commands`: every F08/F10 site gated.
+  `construct shape`, and (from round 3) `construct commands`: every F08/F10 site gated and no ungated HP or block
+  write outside `Core2/Commands` (section 4);
+- the AfterAttack-once test of the F06 bridge (section 3 item 1) and the single `FinishCombat` test of the F17
+  hand-off (section 2) stay in the suite from the round that adds them.
 
-Final (switch on in `migrated_families.json`): the by-family table re-measured on a lockstep block with core2;
+Final (switch on in `migrated_families.json`): **the open-pair gate first**: `python -m tools.kernel.port_list
+--families F08 F10 --gate` exits 0, that is zero open, missing or unmatched (model, hook) pairs, pseudo-hooks included,
+over the reached set (today 49: section 5); a pair is closed only by a Core2 handler or a not-modelled entry with its
+reason. Then the by-family table re-measured on a lockstep block with core2;
 target G2891c25e0d's kill part and mechanism B at 0, F08 proper down by at least its A+B share; any group that grows is
 a stop.
 
@@ -205,21 +334,25 @@ a stop.
 
 | round | model | content |
 |---|---|---|
-| M1 | Opus | F10 re-cut (option B), the two SPLITS records, gates scaffolding with the switch for tests only; `CreatureCmd.Damage` and `AttackCmd` with rule tests |
-| M2 | Opus | `Kill` / `KillWithoutCheckingWinCondition`, the removal, the marks, the win check moved to the host; the old answers gated off |
-| M3 | Opus | the old entry points routed (the 42 + 33 + 19 + 7 callers through adapters returning the old ints), hybrid audit, fuzzer and struct_compare harness on the empty handler set |
-| M4-M10 | Sonnet | seven handler batches (section 5), 13-15 models each |
-| M11 | Opus | switch on, corpus and lockstep re-measure, by-family table |
+| R1 | Sonnet | F17 re-cut in `hook_families.json` (AfterCombatEnd, AfterCombatVictory, AfterCombatVictoryEarly), `Switches.g.cs`, the manifest and the by-family tables rebuilt; the two SPLITS records; `port_list --exclude-hooks` no longer needed |
+| R2 | Opus | `CreatureCmd.Damage`, the decimal fold and `AttackCmd` with the `IsOverOrEnding` return and the F06 bridge; rule tests (section 1's sequences, the fold, the truncation, AfterAttack once) |
+| R3a | Opus | `Kill` / `KillWithoutCheckingWinCondition` in the sequence of section 3 item 5, the two removals, `IsPerformingMove` and the move's end, the pseudo-hook ids, `Escape`, the HP commands (item 9) |
+| R3b | Opus | the win check at the game's points, the old answers and in-step checks gated off, the F17 hand-off (`FinishCombat` from the host), `construct commands` with the write check |
+| R4 | Opus | after K5/K6 land: the old entry points rerouted (the 42 + 33 + 19 + 7 callers through adapters returning the old ints, and section 4's write sites), the hybrid audit, fuzzer and struct_compare harness on the empty handler set |
+| R5 | Sonnet | the inline bodies extracted into named functions the old sites call too (Ravenous and the other AnswerDeaths bodies, Curl Up and the LandDamageOnEnemy bodies, The Gambit and Paper Cuts in DealAttackDamage, the EndTurn bodies), byte-identical old path; done before the batches that need them |
+| R6.1-R6.8 | Sonnet; Opus for monster-1 and monster-2 | the eight handler batches of section 5; each closes its pairs on the open-pair gate |
+| R7 | Opus | switch-on behind the open-pair gate (0 open pairs), corpus and lockstep re-measure, by-family table |
 
-About 11 rounds: 5 Opus, 7 Sonnet, ~15.5 reviewed-round units at Opus 1.7x (range 13-22 with amends). Depends on K5
-(writer) and K6 (fuzzer) landing first for M3's harness.
+Estimate: 15 rounds, 7 Opus (R2, R3a, R3b, R4, two monster batches, R7) and 8 Sonnet (R1, R5, six batches), about 20
+reviewed-round units at Opus 1.7x. Range 13-17: 13 when R3 fits one round and the mixed batch rides with relic-1, 16-17
+with one or two amends (the reviewer's 13-16). R4 waits for K5 (writer) and K6 (fuzzer); R1-R3b do not.
 
 ## 8. Risks
 
 - **Hybrid re-entry.** A handler that calls an old command which hand-dispatches (Thorns' retaliation through
   `DealDamageToPlayer`, Inferno through `LoseHp`, a death body that deals damage) would run F08/F10 hooks by hand
   inside a kernel dispatch. Rule: under the switch every old damage/HP/kill entry is gated into Core2, so a handler's
-  call re-enters the kernel; M3's audit lists every call from a handler into old code and the `commands` check fails on
+  call re-enters the kernel; R4's audit lists every call from a handler into old code and the `commands` check fails on
   an ungated F08/F10 site.
 - **Inline bodies.** Old sites hold several models' bodies inline; extraction must keep the old path identical (the
   byte-identity gate catches a slip).
@@ -229,6 +362,7 @@ About 11 rounds: 5 Opus, 7 Sonnet, ~15.5 reviewed-round units at Opus 1.7x (rang
 - **Roster indices.** Removal inside the hit changes enemy indices mid-card; old code that holds an index across a
   card (multi-target loops, `ResolvePlayRepetition`'s position pairing) must read creatures, not positions (diagnosis
   F: part of the multi-enemy weight may move here).
-- **IsPerformingMove.** An enemy killed during its own move (Thorns) stays in the combat state until its move ends; the
-  old engine has no such flag: the enemy turn site sets it.
+- **IsPerformingMove.** An enemy killed during its own move (Thorns) leaves the room at once (RemoveCreature:
+  BeforeRemovedFromRoom, state reset, hooks dropped) but stays in the roster until its move ends; the old engine has no
+  such flag: the enemy turn site sets it (R3a).
 - **Option B changes family numbers**; the by-family tables must be rebuilt before the comparison of section 6.
