@@ -63,6 +63,9 @@ CHECKPOINT = Path(__file__).resolve().parent / "data" / "combat_net.pt"
 # best checkpoint. Selecting both on the value loss cost the policy head 0.026 nats.
 POLICY_CHECKPOINT = Path(__file__).resolve().parent / "data" / "combat_policy.pt"
 STEP_CAP = 300
+# The completed-Q policy target's softmax temperature, in the search's value units (HP; a death
+# scores far below 0). Chosen on a held-out split by run, see `rl/a2c_target.py`.
+Q_TEMPERATURE = 10.0
 
 
 def generate(args: argparse.Namespace) -> None:
@@ -166,6 +169,31 @@ def load() -> tuple:
         blob["returns"] if "returns" in blob else None,
         int(blob["max_hp"][0]),
     )
+
+
+def completed_q_target(visits: np.ndarray, legal: np.ndarray, qvals: np.ndarray, temperature: float) -> np.ndarray:
+    """The improved-policy target from the root's values: softmax(completedQ / temperature) over legal actions.
+
+    completedQ is the root's mean value of an action the search visited, and the root value (the visit-weighted
+    mean of those) for a legal action no simulation reached -- the completion of Gumbel MuZero's improved policy
+    (Danihelka et al. 2022) without its prior logits, which the shards do not keep. A row with no visited legal
+    action is all zeros, as the visit target leaves it (it carries no policy signal).
+    """
+    ok = legal > 0
+    n = np.where(ok, visits, 0.0).astype(np.float64)
+    q = np.asarray(qvals, dtype=np.float64)
+    seen = ok & (n > 0) & np.isfinite(q)
+    w = np.where(seen, n, 0.0)
+    rows = w.sum(axis=1) > 0
+    out = np.zeros(visits.shape, dtype=np.float32)
+    if not rows.any():
+        return out
+    w, q, ok, seen = w[rows], q[rows], ok[rows], seen[rows]
+    root = (w * np.where(seen, q, 0.0)).sum(axis=1, keepdims=True) / w.sum(axis=1, keepdims=True)
+    z = np.where(ok, np.where(seen, q, root) / float(temperature), -np.inf)
+    p = np.where(ok, np.exp(z - z.max(axis=1, keepdims=True)), 0.0)
+    out[rows] = (p / p.sum(axis=1, keepdims=True)).astype(np.float32)
+    return out
 
 
 def report(
@@ -301,6 +329,14 @@ def train(args: argparse.Namespace) -> None:
     visit_total = visit_t.sum(dim=1, keepdim=True)
     has_policy = (visit_total.squeeze(1) > 0).float()
     policy_target = visit_t / visit_total.clamp(min=1.0)
+    # Or the completed-Q softmax over the root's mean values (`--policy-target completed_q`). Read with getattr:
+    # prior_loop builds its Namespace without these options.
+    if getattr(args, "policy_target", "visits") == "completed_q":
+        temperature = getattr(args, "q_temperature", Q_TEMPERATURE)
+        with np.load(DATASET) as blob:
+            qvals = blob["qvals"]
+        policy_target = torch.from_numpy(completed_q_target(visits, legal, qvals, temperature)).to(device)
+        print(f"policy target completed_q (temperature {temperature:g})")
     # Pad the whole set ONCE. Collating per batch rebuilt 64 little tensors in Python on
     # every step, which at 225 batches x 2 passes x N epochs dominated everything the GPU
     # was doing -- the first attempt at this ran for 25 minutes without finishing an
@@ -572,6 +608,11 @@ def main() -> None:
             "exactly; 1 trains purely on the search. See FINDINGS.md."
         ),
     )
+    parser.add_argument("--policy-target", choices=("visits", "completed_q"), default="visits",
+                        help="the policy head's target: the root visit distribution, or the softmax of the root's "
+                             "completed mean values (needs a `qvals` column)")
+    parser.add_argument("--q-temperature", type=float, default=Q_TEMPERATURE,
+                        help="completed_q's softmax temperature, in the search's value units (HP)")
     parser.add_argument("--seed", type=int, default=0,
                         help="torch init/dropout seed")
     parser.add_argument("--device", default="",

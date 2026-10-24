@@ -14,7 +14,8 @@ generation N+1 is generation N's candidate once `promote` accepts it. A self-pla
   values (`qvals`, for a completed-Q target), the fight's final HP (the value label), and `fights` = the run's index in
   its part so `train_combat`'s validation split by "fight" is a split by RUN.
 
-The live search has no Gumbel root (A3 report: no Gumbel knobs exist), so the target is the root visit distribution.
+The live search has no Gumbel root (A3 report: no Gumbel knobs exist), so the target is the root visit distribution by
+default; `--policy-target completed_q` trains on the softmax of the root's completed `qvals` instead.
 
 Native code is imported inside the functions that need it; the maths and the shard format import none.
 """
@@ -410,7 +411,7 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     Returns the arrays plus counts per generation."""
     from prior_loop.loop import merge_datasets  # noqa: PLC0415
 
-    sources, per_gen, ixs = [], {}, []
+    sources, per_gen, ixs, qs = [], {}, [], []
     for d, m in manifests:
         for name in m.get("combat_parts", []):
             blob = read_part(d / name)
@@ -421,10 +422,13 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
                 continue
             per_gen[g] = per_gen.get(g, 0) + int(blob["lengths"].size)
             ixs.append(blob["fight_ix"])
+            qs.append(blob.get("qvals"))
             sources.append((len(sources), d / name))
     if not sources:
         raise ValueError("no combat samples in the window")
     merged = merge_datasets(sources)  # offsets each part's run index, so a run id is unique over the window
+    if all(q is not None for q in qs):  # merge_datasets keeps prior_loop's keys; the completed-Q target needs these
+        merged["qvals"] = np.concatenate(qs)
     key = merged["fights"] * 4096 + np.concatenate(ixs)  # a fight = (run, fight_ix in the run)
     uniq, inv = np.unique(key, return_inverse=True)
     n_all = int(uniq.size)
@@ -471,7 +475,8 @@ def _device(requested: str | None) -> str:
 
 
 def train_combat_prior(data: dict[str, np.ndarray], out: Path, *, device: str | None = None, epochs: int = 16, d_model: int = 128,
-                       layers: int = 2, threads: int = 6, seed: int = 0) -> dict[str, Any]:
+                       layers: int = 2, threads: int = 6, seed: int = 0, policy_target: str = "visits",
+                       q_temperature: float | None = None) -> dict[str, Any]:
     """Fit the policy and value heads with `train_combat.train` (prior_loop's trainer, its settings and its checkpoints)."""
     import argparse  # noqa: PLC0415
 
@@ -488,7 +493,8 @@ def train_combat_prior(data: dict[str, np.ndarray], out: Path, *, device: str | 
     torch.set_num_threads(threads)
     args = argparse.Namespace(epochs=epochs, value_lambda=0.0, seed=seed, bucket=5, batch=64, lr=3e-4, policy_weight=1.0,
                               d_model=d_model, layers=layers, heads=4, ablate_endturn=True, plain_cards=False, fraction=1.0,
-                              device=dev)
+                              device=dev, policy_target=policy_target,
+                              q_temperature=train_combat.Q_TEMPERATURE if q_temperature is None else q_temperature)
     saved = {n: getattr(train_combat, n) for n in ("DATASET", "CHECKPOINT", "POLICY_CHECKPOINT")}
     cap = io.StringIO()
     t0, c0 = time.perf_counter(), time.process_time()
@@ -511,7 +517,8 @@ def train_combat_prior(data: dict[str, np.ndarray], out: Path, *, device: str | 
 
     return {"device": dev, "epochs": epochs, "d_model": d_model, "layers": layers, "wall_min": (time.perf_counter() - t0) / 60,
             "cpu_min": (time.process_time() - c0) / 60, "report": parse_train_report(text), "curves": parse_curves(text),
-            "samples": int(data["lengths"].size)}
+            "samples": int(data["lengths"].size), "policy_target": policy_target,
+            "q_temperature": args.q_temperature if policy_target == "completed_q" else None}
 
 
 def write_prior_model_json(out: Path, generation: int, probe: bool = False) -> dict:
@@ -690,7 +697,7 @@ def export_all(out: Path, probe_tokens=None) -> dict[str, Any]:
 
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
                      max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
-                     seed_dir: Path | None = None, retrain: int = 0) -> Path:
+                     seed_dir: Path | None = None, retrain: int = 0, policy_target: str = "visits") -> Path:
     """Train generation `gen`'s candidate (the next generation's) from the last GEN_WINDOW generations' shards."""
     from run_train import shards as rs  # noqa: PLC0415
 
@@ -711,10 +718,11 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
                                for g in sorted({int(m["generation"]) for _, m in mans})},
         "samples_available": {str(int(g)): int(n) for g, n in data["_samples_by_generation"]},
         "fights_available": int(data["_fights_available"][0]), "fights_kept": int(data["_fights_kept"][0]),
-        "samples_trained": int(data["lengths"].size), "target": "root visits (live search has no Gumbel root)",
+        "samples_trained": int(data["lengths"].size), "target": "root visits (live search has no Gumbel root)" if policy_target == "visits" else policy_target,
         "validation": "by run (train_combat splits on the `fights` column, which holds the run index)",
         "build_s": round(time.perf_counter() - t0, 1)}
-    doc["combat"] = train_combat_prior(data, cand, device=device, epochs=epochs, threads=threads, seed=gen)
+    doc["combat"] = train_combat_prior(data, cand, device=device, epochs=epochs, threads=threads, seed=gen,
+                                       policy_target=policy_target)
     write_prior_model_json(cand, gen + 1)
     base_sims = int(mans[0][1]["base_sims"])
     if vrun:
