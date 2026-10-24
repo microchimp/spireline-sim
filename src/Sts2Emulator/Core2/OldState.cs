@@ -448,7 +448,8 @@ public static partial class OldState
         {
             // A pet: its powers, then, having no player, its monster. The old state holds none but Die For You, which the
             // game applies once when OstyCmd.Summon first adds the pet and never removes (ShouldPowerBeRemovedAfterOwnerDeath),
-            // so the Osty a combat holds has it, dead or alive; any other power on Osty is the gap.
+            // so the Osty a combat holds has it, dead, alive or revived (the revive re-adds the same creature); any other
+            // power on Osty is the gap.
             gaps.Add(new(NotModelledKind.OstyPowers, ListenerKind.Power, c, 0, "Osty"));
             into.Add(new(new((int)ListenerKind.Power, w.Ids.DieForYouModelId, PowerInstance(c, 0)), c, 0, OldPile.None,
                 default, null));

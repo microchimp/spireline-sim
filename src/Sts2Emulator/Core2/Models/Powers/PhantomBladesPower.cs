@@ -24,10 +24,10 @@ internal static class PhantomBladesPower
     }
 
     /// <summary>The old site's test of the card: its def is named Shiv. The game tests the Shiv tag on the card source
-    /// (CardTag.Shiv), not the name; the old card data carries the tag too (<c>CardDef.ShivTag</c>), which the old site does
-    /// not read. A card tagged Shiv under another name would count in the game and not here. Kept as the old site has it
-    /// (the handler must equal the old function), and recorded as an old-site divergence in docs/rebuild/MIGRATION_F08.md
-    /// (R7 checks).</summary>
+    /// (CardTag.Shiv), and the one card the game tags Shiv is Shiv (its CanonicalTags; R7b2 read every card), so the name
+    /// test is the game's tag test. <c>CardDef.ShivTag</c> is not: the extractor sets it on any card whose text names the
+    /// tag, so Knife Trap (a Skill that counts the Shivs in the exhaust pile) carries it too, and the tag flag would add
+    /// that card where the game has none. Kept on the name (docs/rebuild/MIGRATION_F08.md, R7 checks).</summary>
     private static bool IsShiv(int defId) => GeneratedData.Cards.Get(defId).Name == "Shiv";
 
     internal static void Register(HandlerTable t) =>
