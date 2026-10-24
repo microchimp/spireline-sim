@@ -171,6 +171,44 @@ class DivergenceTests(unittest.TestCase):
         self.assertIsNone(lockstep.reanchor_plan("rest", "map"))
 
 
+class ProvEmu(FakeEmu):
+    """A fake emulator side that reports how its last re-anchor was done, as EmuLock does."""
+
+    def __init__(self, views, how=None, streams=None, **k):
+        super().__init__(views, **k)
+        self.how, self.streams_now, self.anchored_with, self.streams = how, streams, None, None
+
+    def reanchor(self, plan, msg):
+        self.anchored_with, self.streams = self.how, self.streams_now
+        return super().reanchor(plan, msg)
+
+
+class ProvenanceTests(unittest.TestCase):
+    """Review 1 and 2: what a re-anchor was seeded from reaches the run's stats."""
+
+    def drive(self, emu, stream):
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in stream:
+            ls.decide(m)
+        return ls
+
+    def test_the_streams_named_and_moved_go_into_the_run_stats(self):
+        rep = {"named": 17, "moved": 16, "unmoved": 1, "unmoved_names": ["Nope"]}
+        a = obs(hp=80)
+        emu = ProvEmu([view_of(obs(hp=70))], how="streams", streams=rep, reanchor_ok=[False, True])  # counted when it fails too
+        s = self.drive(emu, [msg("map", a), msg("map", a)]).stats
+        self.assertEqual((s["streams_named"], s["streams_moved"]), (34, 32))
+        self.assertEqual(s["streams_unmoved_names"], {"Nope": 2})
+        zero = dict(rep, moved=0, unmoved=17, unmoved_names=["Nope"])
+        s = self.drive(ProvEmu([view_of(obs(hp=70))], how=None, streams=zero, reanchor_ok=True), [msg("map", a)]).stats
+        self.assertEqual((s["streams_named"], s["streams_moved"], s["streams_unmoved_names"]), (17, 0, {"Nope": 1}))
+
+    def test_an_emulator_side_with_no_stream_report_adds_no_stream_counts(self):
+        a = obs(hp=80)
+        s = self.drive(FakeEmu([view_of(obs(hp=70))], reanchor_ok=True), [msg("map", a)]).stats
+        self.assertNotIn("streams_named", s)
+
+
 @unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")
 class ResumeTests(unittest.TestCase):
     """Round A1 amend: a lost lockstep is re-anchored at the next fight start or room entry and goes on from there."""

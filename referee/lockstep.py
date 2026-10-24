@@ -30,6 +30,12 @@ from typing import Any, Protocol
 ROOT = Path(__file__).resolve().parents[1]
 
 COMBAT_KINDS = ("combat", "select_cards_combat", "card_reward_combat")
+# The stream names the native SetStreams maps to a stream of the run (RunNativeExports.StreamNamed; a test keeps the two
+# lists equal). Any other name in the game's counters is never moved, whatever its value.
+EMU_STREAM_NAMES = frozenset((
+    "UpFront", "Shuffle", "UnknownMapPoint", "CombatCardGeneration", "CombatPotionGeneration", "CombatCardSelection",
+    "CombatEnergyCosts", "CombatTargets", "MonsterAi", "Niche", "CombatOrbGeneration", "CombatOrbs", "TreasureRoomRelics",
+    "Rewards", "Shops", "Transformations"))
 # Referee decision kinds the emulator side mirrors. Any other kind suspends the lockstep (reason unmapped:<kind>) until
 # the next re-anchor point.
 MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "select_cards", "treasure", "shop",
@@ -433,9 +439,23 @@ class Lockstep:
             why = getattr(self.emu, "fail", None) or (reason or "diff:" + ",".join(f"{x[0]}{x[1]}/{x[2]}" if x[0] in (".floor", ".act") else str(x[0]) for x in d[:4]))
             fails = self.stats.setdefault("reanchor_fail_reasons", {})
             fails[f"{plan}:{why}"[:80]] = fails.get(f"{plan}:{why}"[:80], 0) + 1
+        self._note_streams(getattr(self.emu, "streams", None))
         by = self.stats.setdefault("reanchor_by_plan", {})
         by[f"{plan}:{'ok' if ok else 'failed'}"] = by.get(f"{plan}:{'ok' if ok else 'failed'}", 0) + 1
         return ok
+
+    def _note_streams(self, rep: dict | None) -> None:
+        """What the emulator side's last room-entry stream anchor did (EmuLock.streams): the streams the game's counters named,
+        the streams the native call moved, and the names the emulator has no stream for. Counted whether or not the re-anchor
+        then held, because the gap it measures is in the call, not in the comparison after it."""
+        if not rep:
+            return
+        st = self.stats
+        st["streams_named"] = st.get("streams_named", 0) + rep["named"]
+        st["streams_moved"] = st.get("streams_moved", 0) + rep["moved"]
+        names = st.setdefault("streams_unmoved_names", {})
+        for n in rep["unmoved_names"]:
+            names[n] = names.get(n, 0) + 1
 
     def _resume(self, i: int, kind: str, labels: list, msg: dict) -> bool:
         plan = reanchor_plan(kind, self.prev_kind)
@@ -500,7 +520,8 @@ class EmuLock:
               "select_cards": "card_select", "shop": "shop", "bundle": "bundle", "event": "event"}
     wants_anchor_state = True  # play_run asks the driver for the game's hidden state, which only this side reads
     _hidden: dict | None = None  # the game's hidden state at the current decision (take_anchor_state)
-    anchored_with: str | None = None  # "hidden", "observation" or "streams": what the last re-anchor used
+    anchored_with: str | None = None  # "hidden", "observation" or "streams": what the last re-anchor used; None: none of them
+    streams: dict | None = None  # the last room-entry stream anchor: {"named", "moved", "unmoved", "unmoved_names"}, else None
 
     def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None, character: str = "IRONCLAD"):
         import leakprobes  # noqa: PLC0415 -- the native library's location
@@ -776,8 +797,16 @@ class EmuLock:
         rng = (self._hidden or {}).get("rng")
         if not isinstance(rng, dict):
             return True  # the driver was not asked for the hidden state: the emulator keeps its own streams
-        self.anchored_with = "streams"
-        return self.native.run_debug_set_streams(self.s.handle, rng) >= 0
+        moved = int(self.native.run_debug_set_streams(self.s.handle, rng))
+        named = len(rng)
+        # `moved` counts the counters the native call changed: a name it has no stream for, a stream with another seed and one
+        # already at the game's counter are all left out, so "unmoved" is the whole gap and `unmoved_names` the part of it the
+        # call cannot have moved by name.
+        self.streams = {"named": named, "moved": max(0, moved), "unmoved": named - max(0, moved),
+                        "unmoved_names": sorted(str(n) for n in rng if n not in EMU_STREAM_NAMES)}
+        if moved > 0:
+            self.anchored_with = "streams"  # a call that moved none seeded nothing: not reported as a stream anchor
+        return moved >= 0
 
     def _anchor_fight(self, obs: dict) -> bool:
         """Put the fight the emulator stands in on the referee's record of it (obs["combat"], as the agent is shown it:
@@ -812,6 +841,7 @@ class EmuLock:
     def _reanchor_with(self, plan: str, msg: dict) -> bool:
         self.fail = None
         self.anchored_with = None
+        self.streams = None
         obs = msg.get("obs", {})
         if plan == "room_entry":
             if not self._to_map(obs.get("floor")):
