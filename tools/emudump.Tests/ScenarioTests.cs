@@ -183,6 +183,57 @@ public class ScenarioTests
         Assert.Contains("not legal", res.Diffs[0]);
     }
 
+    [Theory]
+    [InlineData("old")]
+    [InlineData("core2")]
+    public void ARunThatStoppedIsAFailEvenWhenTheEngineIsListedXfail(string engine)
+    {
+        var sc = Obj(Minimal.Replace("\"target\": 0", "\"target\": 3"));
+        sc["xfail_engines"] = new JsonObject { [engine] = "a reason the row waits on" };
+        var res = Scenarios.Run("t.json", sc, engine, keepPoints: false);
+        Assert.Equal("fail", res.Status);
+        Assert.True(res.Unexpected);
+        Assert.Contains("run stopped", res.Diffs[0]);
+    }
+
+    [Theory]
+    [InlineData("at_least", "\"5\"")]
+    [InlineData("at_least", "true")]
+    [InlineData("at_most", "[1]")]
+    [InlineData("at_most", "null")]
+    [InlineData("absent", "\"yes\"")]
+    [InlineData("absent", "1")]
+    public void AnOperandOfTheWrongTypeIsInvalidNotACrash(string op, string operand)
+    {
+        var sc = Obj(Minimal);
+        sc["expect"] = JsonNode.Parse("[{\"path\": \"snapshot.enemies[0].hp\", \"" + op + "\": " + operand + "}]");
+        Assert.Contains(Scenarios.Validate(sc), p => p.StartsWith("expect[0]." + op, StringComparison.Ordinal));
+        var res = Scenarios.Run("t.json", sc, "old", keepPoints: false);
+        Assert.Equal("invalid", res.Status);
+        Assert.True(res.Unexpected);
+
+        // Check on its own, for a caller that skipped Validate: a named fault, no exception.
+        var diffs = Scenarios.Check(Points(), sc["expect"]!.AsArray());
+        Assert.StartsWith(Scenarios.InvalidMark, Assert.Single(diffs));
+    }
+
+    [Fact]
+    public void AbsentOnAPathWhoseParentDoesNotExistIsInvalid()
+    {
+        var sc = Obj(Minimal);
+        sc["expect"] = JsonNode.Parse("""[{"path": "snapshot.enemis[0].gold", "absent": true}]""");
+        var diffs = Scenarios.Check(Points(), sc["expect"]!.AsArray());
+        Assert.StartsWith(Scenarios.InvalidMark, Assert.Single(diffs));
+        Assert.Contains("parent does not exist", diffs[0]);
+        var res = Scenarios.Run("t.json", sc, "old", keepPoints: false);
+        Assert.Equal("invalid", res.Status);
+        Assert.Contains("parent does not exist", res.Reason ?? string.Join(";", res.Diffs));
+
+        // Where the parent exists the check still means what it says, and a scalar is no parent.
+        Assert.Empty(Scenarios.Check(Points(), JsonNode.Parse("""[{"path": "snapshot.player.gold", "absent": true}, {"path": "snapshot.enemies[0].gold", "absent": true}]""")!.AsArray()));
+        Assert.StartsWith(Scenarios.InvalidMark, Assert.Single(Scenarios.Check(Points(), JsonNode.Parse("""[{"path": "snapshot.player.hp.gold", "absent": true}]""")!.AsArray())));
+    }
+
     [Fact]
     public void AnEngineTheScenarioLeavesOutIsSkipped()
     {

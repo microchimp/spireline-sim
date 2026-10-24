@@ -210,6 +210,12 @@ static class Scenarios
                 if (e["at"] != null && !names.Contains((string?)e["at"] ?? "")) p.Add(at + $".at: one of {string.Join(", ", names)}");
                 if (e["delta_from"] != null && !names.Contains((string?)e["delta_from"] ?? "")) p.Add(at + $".delta_from: one of {string.Join(", ", names)}");
                 if (e["one_of"] != null && e["one_of"] is not JsonArray) p.Add(at + ".one_of: a list");
+                foreach (string bound in new[] { "at_least", "at_most" })
+                {
+                    if (e.ContainsKey(bound) && !Num(e[bound], out _)) p.Add(at + $".{bound}: a number");
+                }
+
+                if (e.ContainsKey("absent") && !(e["absent"] is JsonValue av && av.TryGetValue<bool>(out _))) p.Add(at + ".absent: true or false");
                 try { Resolve(new JsonObject(), (string?)e["path"] ?? ""); }
                 catch (FormatException ex2) { p.Add(at + ".path: " + ex2.Message); }
             }
@@ -443,6 +449,30 @@ static class Scenarios
 
     static string Show(JsonNode? n) => n?.ToJsonString() ?? "<absent>";
 
+    /// <summary>Starts a Check diff that is a fault in the scenario, not a difference in the engine: the run is `invalid`.</summary>
+    internal const string InvalidMark = "invalid: ";
+
+    /// <summary>
+    /// Whether the container the last step of <paramref name="path"/> would read from exists in <paramref name="view"/>: an `absent`
+    /// check on a path whose parent is missing (a mistyped key) holds for everything and says nothing.
+    /// </summary>
+    static bool ParentExists(JsonNode? view, string path)
+    {
+        int last = 0, i = 0;
+        while (i < path.Length)
+        {
+            char c = path[i];
+            if (c == '.') { i++; continue; }
+            last = i;
+            if (c == '[' || c == '{') { int j = path.IndexOf(c == '[' ? ']' : '}', i); i = j < 0 ? path.Length : j + 1; }
+            else if (c == '#') break;
+            else { while (i < path.Length && ".[{#".IndexOf(path[i]) < 0) i++; }
+        }
+
+        string parent = path[..last].TrimEnd('.');
+        return parent.Length == 0 ? view != null : Resolve(view, parent) is JsonObject or JsonArray;
+    }
+
     /// <summary>The expectations that do not hold at the points the run reached (empty: all hold).</summary>
     internal static List<string> Check(IReadOnlyDictionary<string, JsonObject> points, JsonArray expect)
     {
@@ -474,15 +504,19 @@ static class Scenarios
             }
             else if (e.ContainsKey("at_least"))
             {
-                if (!Num(got, out double v) || v < (double)e["at_least"]!) diffs.Add($"{label}: expected at least {Show(e["at_least"])}, got {Show(got)}");
+                if (!Num(e["at_least"], out double lim)) diffs.Add($"{InvalidMark}{label}: at_least is not a number ({Show(e["at_least"])})");
+                else if (!Num(got, out double v) || v < lim) diffs.Add($"{label}: expected at least {Show(e["at_least"])}, got {Show(got)}");
             }
             else if (e.ContainsKey("at_most"))
             {
-                if (!Num(got, out double v) || v > (double)e["at_most"]!) diffs.Add($"{label}: expected at most {Show(e["at_most"])}, got {Show(got)}");
+                if (!Num(e["at_most"], out double lim)) diffs.Add($"{InvalidMark}{label}: at_most is not a number ({Show(e["at_most"])})");
+                else if (!Num(got, out double v) || v > lim) diffs.Add($"{label}: expected at most {Show(e["at_most"])}, got {Show(got)}");
             }
-            else if (e.ContainsKey("absent") && (bool)e["absent"]! == (got != null))
+            else if (e.ContainsKey("absent"))
             {
-                diffs.Add($"{label}: expected {((bool)e["absent"]! ? "absent" : "present")}, got {Show(got)}");
+                if (e["absent"] is not JsonValue av || !av.TryGetValue<bool>(out bool wantAbsent)) diffs.Add($"{InvalidMark}{label}: absent is not true or false ({Show(e["absent"])})");
+                else if (wantAbsent && !ParentExists(view, path)) diffs.Add($"{InvalidMark}{label}: absent names a path whose parent does not exist, so it would hold for any typo");
+                else if (wantAbsent == (got != null)) diffs.Add($"{label}: expected {(wantAbsent ? "absent" : "present")}, got {Show(got)}");
             }
         }
 
@@ -518,8 +552,12 @@ static class Scenarios
 
         if (error != null) res.Diffs.Add("run stopped: " + error);
         res.Diffs.AddRange(Check(points, sc["expect"]!.AsArray()));
+        var faults = res.Diffs.Where(d => d.StartsWith(InvalidMark, StringComparison.Ordinal)).Select(d => d[InvalidMark.Length..]).ToList();
+        if (faults.Count > 0) return ScenarioResult.Invalid(file, name, engineName, string.Join("; ", faults));
         bool failed = res.Diffs.Count > 0;
-        res.Status = !failed ? (res.Reason != null ? "xpass" : "pass") : (res.Reason != null ? "xfail" : "fail");
+        // A run that stopped (an illegal action, an engine error) never reached the expectations, so no xfail row can claim it: the row
+        // waits on a value, and a crash is not a value.
+        res.Status = error != null ? "fail" : !failed ? (res.Reason != null ? "xpass" : "pass") : (res.Reason != null ? "xfail" : "fail");
         if (keepPoints) res.Points = new JsonObject(points.Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)kv.Value.DeepClone())));
         return res;
     }
