@@ -46,7 +46,8 @@ COARSE = ("exhaust and discard triggers", "damage and block pipeline", "start- a
           "power stacking and removal", "relic triggers", "RNG order", "death and victory", "run flow")
 EVIDENCE = ("diff", "reason", "type", "shape", "none")  # strongest first
 SENTINEL_HP = 10000  # an enemy hp delta this large is a stand-in value (999999999 against 32768), not a damage difference
-COMBAT_TYPES = ("combat", "select_cards_combat")
+COMBAT_TYPES = rank.COMBAT_TYPES  # one list with rank.classify
+REWARD_TYPES = ("reward", "card_reward", "card_reward_combat")
 HP_KINDS = {".combat.enemy_hp", ".hp"}
 
 # id, matcher, family, coarse family, evidence, reason. First match wins.
@@ -149,9 +150,9 @@ def _match(name: str, rec: dict) -> bool:
     if name == "gold_reward":
         return typ == "reward" and kinds == {".gold"}
     if name == "potion_reward":
-        return typ in ("reward", "card_reward") and ".potions" in kinds
+        return typ in REWARD_TYPES and ".potions" in kinds
     if name == "deck_or_relics_carried":
-        return bool(kinds) and kinds <= {".deck", ".gold", ".relics"} and (combat or typ in ("reward", "card_reward"))
+        return bool(kinds) and kinds <= {".deck", ".gold", ".relics"} and (combat or typ in REWARD_TYPES)
     if name == "run_screen":
         return typ in ("select_cards", "treasure", "map", "event", "shop", "rest") and bool(kinds)
     return name == "no_rule"

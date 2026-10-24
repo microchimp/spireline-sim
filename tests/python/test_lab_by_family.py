@@ -16,9 +16,10 @@ sys.path.insert(0, str(ROOT))
 from tools.lab import by_family as bf, rank  # noqa: E402
 from tests.python.test_lab_rank import BIGGER, HP, RUN_HP, SAME_SIZE, card, hand_diff, rec, write_records  # noqa: E402
 
-# sha256 of ranked.json and top20.md that tools/lab/rank.py (97b03d1e, before by_family) wrote for fixture_divs().
-GOLDEN = {"ranked.json": "b8bb6459f0873ed1ae4a0c24fe2ff6c6e15a55755ba9af582a07da381dae99f7",
-          "top20.md": "d480aa0729628b760d440a780c2eb3ad9169c66b7632f60befc1d24d400493b6"}
+# sha256 of ranked.json and top20.md that tools/lab/rank.py (97b03d1e, before by_family) wrote for fixture_divs(), over the text with
+# line endings normalised to LF (write_text writes CRLF on Windows; the first golden was the CRLF hash, which failed anywhere else).
+GOLDEN = {"ranked.json": "a129adeb40c1550dadffc2ab16b3e6e40f831f80b5ed166e3a6d91df607ccb0b",
+          "top20.md": "04606dfb7e7ada85e1e09ff0b34b521ace575b6ad0bdf03678f82c8ea1868ab9"}
 
 UP = [[".combat.hand", [card("ASCENDERS_BANE")], [json.dumps(["ASCENDERS_BANE", 1])]]]
 CORPSE = [[".combat.enemy_hp", [0, 66], [66]]]
@@ -84,6 +85,9 @@ class RuleTableTest(unittest.TestCase):
 
     def test_combat_selection_screen_uses_the_combat_rules(self):
         self.check(rec(1, 3, SAME_SIZE, type="select_cards_combat"), "R10", "F11")
+        self.check(rec(1, 3, HP, type="card_reward_combat"), "R06", "F08")
+        self.check(rec(1, 3, [[".potions", ["A"], ["B"]]], type="card_reward_combat"), "R15", "F15")
+        self.assertIs(rank.COMBAT_TYPES, bf.COMBAT_TYPES)  # one list for the tag and the family rules
 
     def test_every_rule_has_a_matcher_a_known_family_and_a_reason(self):
         ids = [r[0] for r in bf.RULES]
@@ -200,7 +204,7 @@ class RankHookTest(unittest.TestCase):
         doc = rank.write(self.tmp / "in", self.tmp / "out")
         out = self.tmp / "out"
         for name, digest in GOLDEN.items():
-            self.assertEqual(digest, hashlib.sha256((out / name).read_bytes()).hexdigest(), name)
+            self.assertEqual(digest, hashlib.sha256((out / name).read_bytes().replace(b"\r\n", b"\n")).hexdigest(), name)
         md = (out / "by_family.md").read_text(encoding="utf-8")
         self.assertTrue(md.startswith("# Divergence by hook family"))
         js = json.loads((out / "by_family.json").read_text(encoding="utf-8"))

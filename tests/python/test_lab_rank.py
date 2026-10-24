@@ -76,6 +76,22 @@ class RankTest(unittest.TestCase):
     def test_pile_size_difference_is_the_action_queue(self):
         self.assertEqual("action_queue", self.doc([rec(1, 5, BIGGER)])["groups"][0]["class"])
 
+    def test_a_selection_or_card_reward_in_a_fight_is_a_combat_decision(self):
+        # enemy hp alone at the selection screen a card opened is the damage pipeline, as at `combat` (it was single_site)
+        for typ in ("combat", "select_cards_combat", "card_reward_combat"):
+            g = self.doc([rec(1, 5, HP, type=typ)])["groups"][0]
+            self.assertEqual(("architectural", "damage_block_pipeline"), (g["tag"], g["class"]), typ)
+        self.assertEqual(("single_site", "single_site"), tuple(self.doc([rec(1, 5, HP, type="select_cards")])["groups"][0][k] for k in ("tag", "class")))
+        self.assertEqual("listener_order", self.doc([rec(1, 5, [[".combat.powers", 1, 2]], type="select_cards_combat")])["groups"][0]["class"])
+        self.assertEqual(("combat", "select_cards_combat", "card_reward_combat"), rank.COMBAT_TYPES)
+
+    def test_the_relic_holding_at_a_combat_decision_is_not_a_listener_order(self):
+        # `.relics` is carried state (which relics the run owns), like `.deck`: an order of triggers lives in the combat block
+        for typ in ("combat", "select_cards_combat"):
+            for diff in ([[".relics", ["A"], ["A", "B"]]], [[".deck", [card("BASH")], [card("BASH"), card("ANGER")]]]):
+                g = self.doc([rec(1, 5, diff, type=typ)])["groups"][0]
+                self.assertEqual(("single_site", "single_site"), (g["tag"], g["class"]), (typ, diff[0][0]))
+
     def test_run_layer_state_is_single_site(self):
         g = self.doc([rec(1, 5, [[".relics", ["A"], ["A", "B"]]], type="treasure")])["groups"][0]
         self.assertEqual(("single_site", "single_site"), (g["tag"], g["class"]))

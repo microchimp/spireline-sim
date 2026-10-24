@@ -36,9 +36,11 @@ Tag: architectural when the diff matches a class of the audits (referee/design/g
   rng_stream             a pile (hand, draw, discard, exhaust) holds different cards at equal size; or card reward / potion
                          contents differ in a reward screen
   action_queue           a pile differs in size (a card created, exhausted, drawn or played in a different order of actions)
-  listener_order         powers, buffs, relics or energy differ in a combat (no pile differs)
+  listener_order         powers, buffs, relics or energy of the combat block differ in a combat decision (no pile differs); the
+                         run's relic holding (`.relics`) is carried state like `.deck`, not an order of triggers: single_site
   damage_block_pipeline  enemy hp / hp / block differ and nothing above does
-otherwise single_site (run layer, selections, events, shop, unmapped). First match in that order. A group takes the
+A combat decision is any type in COMBAT_TYPES (combat, select_cards_combat, card_reward_combat), the one list by_family reads too.
+otherwise single_site (run layer, selections outside a fight, events, shop, unmapped). First match in that order. A group takes the
 most frequent class among its divergences (ties: the order above).
 
 Summary (8.2): arch_share = architectural weight / total weight; state_divergence_rate = (non-gap, non-assumed divergences)
@@ -67,6 +69,9 @@ PILES = ("hand", "draw", "discard", "exhaust")
 HP_FIELDS = ("enemy_hp", "block", "hp")
 LISTENERS = ("power", "buff", "relic", "energy")
 CLASSES = ("rng_stream", "action_queue", "listener_order", "damage_block_pipeline")
+# The decision types at which a fight is on the table (referee/lockstep.py COMBAT_KINDS): a selection screen or a card reward opened
+# by a card is compared with the fight's state, so it is a combat decision. The one list rank.classify and by_family both read.
+COMBAT_TYPES = ("combat", "select_cards_combat", "card_reward_combat")
 
 
 def floor_factor(floor: Any) -> float:
@@ -137,8 +142,9 @@ def classify(rec: dict) -> str:
     if rec.get("type") in ("card_reward", "card_reward_combat", "reward") and not rec.get("gap") and \
             any("card" in p or "potion" in p for p in paths):
         return "rng_stream"
-    if rec.get("type") == "combat":
-        if any(w in p for p in paths for w in LISTENERS):
+    if rec.get("type") in COMBAT_TYPES:
+        # listener words count on the combat block only: `.relics` is the run's holding (like `.deck`), not an order of triggers
+        if any(p.startswith(".combat.") and w in p for p in paths for w in LISTENERS):
             return "listener_order"
         if any(w in p for p in paths for w in HP_FIELDS):
             return "damage_block_pipeline"
