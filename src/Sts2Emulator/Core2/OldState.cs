@@ -200,6 +200,22 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     /// its removal.</summary>
     public bool IsDying(EnemyState enemy) => _dying.Contains(enemy);
 
+    /// <summary>The monster performing its move (game: MonsterModel.IsPerformingMove), set by <see cref="PerformingMove" />
+    /// (Core2's <c>CreatureCmd.PerformMove</c>). A monster killed during its own move leaves the room but stays in the
+    /// roster, so in the combat, until the move ends. Not detectable when missing: the kill removes the mover at once.</summary>
+    public EnemyState? Moving { get; private set; }
+
+    /// <summary>Whether <paramref name="enemy" /> is performing its move (<see cref="Moving" />).</summary>
+    public bool IsPerformingMove(EnemyState enemy) => ReferenceEquals(Moving, enemy);
+
+    /// <summary>Marks <paramref name="enemy" /> as performing its move until the scope is disposed.</summary>
+    public IDisposable PerformingMove(EnemyState enemy)
+    {
+        var before = Moving;
+        Moving = enemy;
+        return new Scope(() => Moving = before);
+    }
+
     /// <summary>Marks <paramref name="card" /> as the Play pile's card until the scope is disposed.</summary>
     public IDisposable Flying(CardInstance card)
     {
@@ -277,9 +293,15 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         InSetup = from?.InSetup ?? false;
         PlayerHooks = from?.PlayerHooks ?? default;
         Scaling = from?.Scaling;
+        Moving = null;
         if (from is null)
             return;
         var roster = from.Combat?.Enemies;
+        if (from.Moving is { } moving)
+        {
+            int at = roster?.FindIndex(x => ReferenceEquals(x, moving)) ?? -1;
+            Moving = at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : moving;
+        }
         foreach (var dying in from._dying)
         {
             int at = -1;
@@ -420,7 +442,7 @@ public static class OldState
         RunModels(w, into);
     }
 
-    private static void Powers(OldWorld w, List<BuffState> buffs, int creature, EnemyState? enemy,
+    internal static void Powers(OldWorld w, List<BuffState> buffs, int creature, EnemyState? enemy,
         List<OldListener> into, List<OldGap> gaps)
     {
         // One game power instance per (model, k): the k-th entry of any of its buffs; a power the engine keeps in
@@ -706,7 +728,8 @@ public static class OldState
     /// </summary>
     public static bool EnemyInCombat(OldWorld w, EnemyState enemy) =>
         w.Combat is { } s && s.Enemies.Exists(x => ReferenceEquals(x, enemy))
-                          && (enemy.Hp > 0 || w.IsDying(enemy) || !EnemyAI.ShouldRemoveOnDeath(enemy));
+                          && (enemy.Hp > 0 || w.IsDying(enemy) || w.IsPerformingMove(enemy)
+                              || !EnemyAI.ShouldRemoveOnDeath(enemy));
 
     private static bool CreatureInCombat(OldWorld w, in OldListener e) =>
         e.Enemy is { } enemy ? EnemyInCombat(w, enemy)
@@ -909,6 +932,63 @@ public static class OldCreatures
         w.Combat!.Enemies.Where(e => OldState.EnemyInCombat(w, e) && EnemyAI.IsTargetable(e))
             .Select(OldCreature.Of).ToList();
 
+    /// <summary>The creature's <see cref="CreatureRef" /> now, or null once it has left the combat (removed or escaped:
+    /// the game keeps the Creature object, but no position names it any more).</summary>
+    public static CreatureRef? TryRef(OldWorld w, OldCreature c) => InCombat(w, c) ? Ref(w, c) : null;
+
+    /// <summary>Whether the creature is still in the combat as the listeners number it (<see cref="Ref" /> names it).</summary>
+    public static bool InCombat(OldWorld w, OldCreature c) => c.Kind switch
+    {
+        CreatureKind.Player => true,
+        CreatureKind.Osty => w.Combat!.OstyMaxHp > 0,
+        _ => OldState.EnemyInCombat(w, c.Enemy!),
+    };
+
+    /// <summary>Whether the creature is still attached to the combat (game: Creature.CombatState is set): the player and a
+    /// present Osty always, an enemy while the roster holds it, dead or alive.</summary>
+    public static bool InRoster(CombatState s, OldCreature c) => c.Kind switch
+    {
+        CreatureKind.Player => true,
+        CreatureKind.Osty => s.OstyMaxHp > 0,
+        _ => s.Enemies.Exists(x => ReferenceEquals(x, c.Enemy)),
+    };
+
+    public static int MaxHp(CombatState s, OldCreature c) => c.Kind switch
+    {
+        CreatureKind.Player => s.PlayerMaxHp,
+        CreatureKind.Osty => s.OstyMaxHp,
+        _ => c.Enemy!.MaxHp,
+    };
+
+    /// <summary>The creature's own buffs (Osty has none in the old state).</summary>
+    public static List<BuffState>? Buffs(CombatState s, OldCreature c) => c.Kind switch
+    {
+        CreatureKind.Player => s.PlayerBuffs,
+        CreatureKind.Osty => null,
+        _ => c.Enemy!.Buffs,
+    };
+
+    /// <summary>The creature's powers as the listeners list them (OldState.Powers: one entry per game power instance, at
+    /// its first buff), in application order.</summary>
+    public static List<OldListener> Powers(OldWorld w, OldCreature c)
+    {
+        var into = new List<OldListener>();
+        if (Buffs(w.Combat!, c) is { } buffs)
+            OldState.Powers(w, buffs, InCombat(w, c) ? Ref(w, c).Index : -1, c.Enemy, into, []);
+        return into;
+    }
+
+    /// <summary>game: Creature.IsSecondaryEnemy: an enemy carrying a power whose OwnerIsSecondaryEnemy is true (in
+    /// v0.107.1 only MinionPower overrides it), read over the old buffs through the power mapping.</summary>
+    public static bool IsSecondaryEnemy(OldWorld w, OldCreature c) =>
+        c.Kind == CreatureKind.Enemy && c.Enemy!.Buffs.Exists(b =>
+            w.Ids.Power(b.Id) is { Kind: PowerMapKind.Game or PowerMapKind.Piece } m
+            && m.ModelId == w.Ids.Resolve(ListenerKind.Power, "MinionPower"));
+
+    /// <summary>game: Creature.IsPrimaryEnemy.</summary>
+    public static bool IsPrimaryEnemy(OldWorld w, OldCreature c) =>
+        c.Kind == CreatureKind.Enemy && !IsSecondaryEnemy(w, c);
+
     /// <summary>The creature's <see cref="CreatureRef" /> now. Throws for a creature that is not in the combat.</summary>
     public static CreatureRef Ref(OldWorld w, OldCreature c)
     {
@@ -984,5 +1064,39 @@ public static class OldCreatures
         if (target is not (CardTarget.AllEnemies or CardTarget.RandomEnemy))
             return false;
         return w.InFlight is { } flying && flying.Uid == card.Uid || w.Combat!.Hand.Exists(x => x.Uid == card.Uid);
+    }
+}
+
+/// <summary>
+/// The old roster's removals, as the game's two (MIGRATION_F08.md section 3 item 6). Each reuses the old engine's own
+/// helper, so the old state stays as its own sweep leaves it.
+/// </summary>
+public static class OldRoster
+{
+    /// <summary>
+    /// game: CombatState.RemoveCreature, for one enemy: out of the roster through the old sweep's own helper
+    /// (<see cref="CombatState.RemoveDepartedEnemies" />, which notes its kind in <see cref="CombatState.DepartedEnemyDefIds" />),
+    /// so it drops out of <see cref="OldCreatures.Enemies" /> and every later listing. False when the roster did not hold it.
+    /// </summary>
+    public static bool RemoveFromRoster(OldWorld w, EnemyState enemy) =>
+        (w.Combat ?? throw new InvalidOperationException("no combat"))
+        .RemoveDepartedEnemies(e => ReferenceEquals(e, enemy)) > 0;
+
+    /// <summary>game: MonsterModel.ResetStateMachine over the old state (CombatManager.RemoveCreature): the move state the
+    /// old <see cref="EnemyState" /> keeps, its move index and announced intents, back to a fresh enemy's.</summary>
+    public static void ResetMoveState(EnemyState enemy)
+    {
+        enemy.MoveIndex = 0;
+        enemy.CurrentIntent = default;
+        enemy.SecondaryIntent = null;
+    }
+
+    /// <summary>game: CombatState.CreatureEscaped: on the escaped list (the old <see cref="EnemyState.Escaped" /> flag and
+    /// <see cref="CombatState.EscapedEnemies" /> count, which the gold proportion reads), then out of the roster.</summary>
+    public static void Escaped(OldWorld w, EnemyState enemy)
+    {
+        enemy.Escaped = true;
+        w.Combat!.EscapedEnemies++;
+        RemoveFromRoster(w, enemy);
     }
 }
