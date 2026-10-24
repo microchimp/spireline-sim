@@ -150,10 +150,53 @@ added), 300 fights: 3300 fight-mode pairs identical, 0 differ; the whole corpus 
 always skips them) in fight, netstate, game-view, game-view-netstate and state-hash: 21505 pairs identical, 0 differ. C# suites
 at the commit: Sts2Emulator.Tests 6748 passed, 7 skipped, 0 failed; tools/emudump.Tests 242 passed, 0 failed.
 
+## Core2 on the traced set with F08+F10 on (rebuild lane O2, 2026-10-24, main with no reroutes)
+
+`struct_calibrate traced --engine core2 --switches F08,F10 --gate-against <old output>` (the F08 review's recommendation 5). The switch set
+is a scratch copy of the EmuDump build whose `migrated_families.json` (read from beside the DLL) holds the set, made by
+`fuzz_core2.dll_for` as the fuzzer does and removed afterwards; struct_compare judges core2 with the set as `migrated`, so F10's two rows
+(fight-lost, after-fight-turn-state) are no longer inherited and what they waived is compared. Each fight is then measured against
+the game next to the old engine's run of the same fight: better, same or worse by the first step struct_compare flags (then by how
+many fields differ there) and by the first step netstate_diff flags. The verdict reads the run judged with old's rows (`sc_shared`:
+the same rows old was judged by), so the stricter F10 rows cannot make a fight look worse; the fights the stricter rows flag earlier
+are counted apart ("exposed"). The gate fails on a fight compared on fewer fields, on a worse fight, or on a missing one.
+
+Commands (two worker processes; no switch, `--switches none`, is the control):
+
+    struct_calibrate.py traced --emudump <EmuDump.dll> --out <old.json> --procs 2 --limit 77 <six traced.out.json>
+    struct_calibrate.py traced --engine core2 --switches F08,F10 --gate-against <old.json> --emudump <EmuDump.dll> --out <core2.json> --procs 2 --limit 77 <same files>
+
+The traced set is again the first 77 fights (with an ascension and net states) of the six newest `traced.out.json` files, which are
+newer than the calibration's, so the old table below is a new baseline, not the 2026-10-24 morning one.
+
+| run (77 traced fights) | vs fight_compare: same step / struct earlier / struct later / legacy only / struct only | vs netstate_diff: same step / struct earlier / struct later / legacy only / struct only | struct crash |
+|---|---|---|---|
+| old | 63 / 14 / 0 / 0 / 0 | 61 / 6 / 1 / 0 / 9 | 0 |
+| core2, F08+F10 | 63 / 14 / 0 / 0 / 0 | 61 / 6 / 1 / 0 / 9 | 0 |
+| core2, no switch | 63 / 14 / 0 / 0 / 0 | 61 / 6 / 1 / 0 / 9 | 0 |
+
+Against the game, core2 relative to old, per fight:
+
+| core2 run | struct_compare better / same / worse | netstate_diff better / same / worse | flagged earlier by the migrated rows | compared on fewer fields |
+|---|---|---|---|---|
+| F08+F10 | 0 / 77 / 0 | 0 / 77 / 0 | 0 of 77 | 0 of 77 |
+| no switch | 0 / 77 / 0 | 0 / 77 / 0 | 0 of 77 | 0 of 77 |
+
+Main has no reroutes, so the switch changes no fight: all 77 are the same, as expected. Waived schema paths summed over the fights: 225
+on old and on core2. With the set on, the allowed rows after-fight-turn-state (20 firings on old) and fight-lost (3) no longer fire
+(compared instead; none of the 77 first differences moves because of them), and the kernel's `net.last_action` and `private.kernel.*`
+appear as surplus. This is the baseline: a reroute commit must keep "worse" at 0 and move fights to "better".
+
+The step test (recommendation 1) is `src/Sts2Emulator.Tests/Core2/StepApiKillTests.cs`: the traced Headbutt and Twin Strike fights
+(ids and numbers of the trace only) played through the old step API, with the game's HP, roster after the killing hit and order of the
+death hooks pinned. Switch off, the Headbutt test asserts the failure (the corpse is still in the roster at the discard screen); the
+Twin Strike end state matches the game even in the old order, so its switch-off test is an ordinary pin. Switched on (F08+F10
+bound, the real Registry plus a logging observer), both are strict expected failures on main until `RerouteLanded` is set in R4's
+commit; `STS2_STEP_TEST=strict` runs them as plain tests.
+
 ## Left for the next round
 
 - The run layer (`run_compare2`) on the same shapes (rows, `--engine`, census, self check).
-- Core2 on the traced set (`struct_calibrate traced --engine core2`), and the census gate there.
 - Fields old could write natively and does not yet: RNG seeds, the enemy's game move id, the game's relic props. Each one removes
   an `old`-only unmodelled row.
 - The legacy comparers keep running on old only, as the calibration reference and the history line; the corpus check
