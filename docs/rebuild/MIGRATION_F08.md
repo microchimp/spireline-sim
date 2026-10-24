@@ -373,6 +373,68 @@ handler takes its line over.
   two anchors it names are unchanged and the method untouched). `CombatEngine.cs` changed by three predicates and the two old
   paths that call them.
 
+**Settled in R3b (branch `rebuild/f08-r3b`, 2026-10-24).** Item 7 (the win check), `LoseCombat`'s body and the F17
+hand-off are in code, gated by F10 (a `KernelState` exists only with a switch on); the old in-step checks and the turn
+end's points stay old until R4 reroutes them.
+- Files: `Core2/Commands/CombatEnd.cs` (`CombatEnd`, `CombatProgress`, `ICombatEndHost`), `KernelState.Progress` (copied
+  with the state), `CreatureCmd.Kill`'s loss branch, `RunEngine` (the hand-off), `tools/kernel/commands.py` and
+  `construct commands`.
+- **The check** (game: CombatManager.CheckWinCondition): a pending loss first (`ProcessPendingLoss`: the loss cleared,
+  `IsInProgress` false), else `IsEnding` (in progress; a pending loss; no living primary enemy in the roster, primary as
+  `OldCreatures.IsPrimaryEnemy`; `Hooks.ShouldStopCombatFromEnding` holds no listener) and `EndCombatInternal`
+  (`IsInProgress` false first). Both then hand off once (`ICombatEndHost.EndCombat(k, playerWon)`; a second hand-off
+  throws) and call `ActionQueueSet.CombatEnded` (the game's NotInCombat at EndCombatInternal's end; for a loss the run's
+  reset), which cancels every combat action not executing. `IsInProgress`, `IsAboutToLose`, `IsEnding`, `IsOverOrEnding`
+  read `CombatProgress`.
+- **The game's points**: `CombatEnd.AfterAction` (K4's executor boundary: `IActionHost.CheckWin`, F10 on, after every
+  action but EndTurn and ReadyToBeginEnemyTurn, only while `InProgress`), `StartPlayerTurn` (both StartTurn player
+  points, for `ITurnStartFlow.CheckWin`), `StartEnemyTurn`, `AfterEnemyTakesTurn` (ExecuteEnemyTurn per enemy; go on while
+  `IsInProgress`), `EndEnemyTurn` (switch sides on `!IsEnding`, as the game), `AfterBeforeTurnEnd` and
+  `EndPlayerTurnPhaseOne` (EndPlayerTurnPhaseOneInternal's two). K4's `KernelState.WinCheck` still calls `CombatEnded` after a
+  flow's true answer; the second call cancels nothing new.
+- **LoseCombat** (game: CreatureCmd.Kill's loss branch, CombatManager.LoseCombat): every player dead and the combat in
+  progress: the loss pending, once. Nothing else runs: no hook, `IsInProgress` stays true, `IsEnding`/`IsOverOrEnding`
+  turn true; HandlePlayerDeath (multiplayer) and the dead player's EndTurn are not modelled. `LossCalls` counts every reach.
+- **The F17 hand-off**: `RunEngine` implements `ICombatEndHost` (explicitly): `LastPlayerWon` set, then the old
+  `FinishCombat(playerWon)` once (victory heal, rewards, run counters, `SyncAfterCombat`; a loss as the old engine finishes
+  it, although the game runs no AfterCombatEnd on a loss: F17 decides); the step returns what FinishCombat returned
+  (`TakeHandOff`). `QueueHost.InProgress` is Core2's with F10 on; `QueueHost.CheckWin` runs `AfterAction` with the run
+  engine as the end's host; a combat stepped on its own (`StepCombat`) ends as the step's terminal result.
+- **R4's bridge** (`CombatEnd.OldStepEnded`): with F10 on, `StepInner` no longer calls FinishCombat on an old terminal
+  result; the old in-step check's point stands for the game's: a loss is the old death answered (`LoseCombat`), then
+  `CheckWinCondition` there. R4 deletes it when it gates the old checks and routes the player's death through `Kill`.
+- Known differences under F10 until the handler batches: the five old holders (`HoldsTheFightOpen`: Steam Eruption,
+  Adaptable, Surprise, Infested, Stock) have no Core2 ShouldStopCombatFromEnding handler yet, so a boundary check can end
+  a fight the old engine holds open; a living Illusion enemy is primary in Core2 (the game's MinionPower-only rule) and not
+  in the old `IsPrimaryEnemy`.
+- **`construct commands`**: per command the game method's `Hook.X` calls and named callees in order with branch labels
+  (enclosing blocks; `<kind>-cond` inside a header, `cond` after `&&`, `||`, `?:`; `IsEnding` inlined) against the
+  `// construct: game X` block in the Core2 source, both ways, and the block's modelled names against the Core2 method's
+  `Hooks.X` calls (not the Resume continuations) and mapped callees, both ways. Six commands: CreatureCmd.Damage (15
+  calls), AttackCommand.Execute (5), Kill (3, the multiplayer EndTurn marked not modelled), KillWithoutCheckingWinCondition
+  (18, HandlePlayerDeath not modelled), Escape (3), CombatManager.CheckWinCondition (3): 0 differences. The write scan:
+  0 Core2 writes outside `Core2/Commands` and `OldState*.cs`; **86 old HP/block writes run with the switch on (R4's list,
+  `construct commands --list-writes`): 47 F08 (HP) and 39 F09 (block) in `EnemyAI.cs` 35, `CombatEngine.cs` 25,
+  `CardEffects.cs` 21, `RelicEffects.cs` 5** (the setup allow-list: CombatFactory, StateCloning, FightAnchor*, Run*,
+  CreateEnemy; the spawned hatchling's two lines in `ApplyBuffIntent` are setup R4 allow-lists, F09's stay until F09).
+- Tests: `src/Sts2Emulator.Tests/Core2/CombatEndTests.cs` (8): victory at the boundary after the action's end, a minion
+  left, ShouldStopCombatFromEnding holding then releasing, the pending loss beating a victory at the same point,
+  CombatEnded cancelling an unstarted hook action (and a later enqueue), the turn-flow points' answers, the progress
+  copied with the state, and a whole run (PRB00058 A8) with F08+F10 on beside the old engine: same masks, results, HP,
+  gold and phase at every step, `FinishCombatCalls` equal at every step, each combat handed off exactly once
+  (`HandOffs` 1, `IsInProgress` false, `PlayerWon` the old `LastPlayerWon`), at least one victory, a loss only for the
+  death. `tests/python/test_kernel_commands.py` (13): labels, inlining, strings and comments; each broken case caught
+  (a call missing from the declaration, a label, the order, a call missing from Core2, an undeclared Core2 call, a
+  not-modelled call Core2 makes, no declaration, bad blocks); the write scan's gated else and else-if branches, the
+  allow-list, Core2's stray write; the real decompile (0 differences, and a broken CombatEnd caught).
+- Acceptance (R3b): `dotnet test src/Sts2Emulator.Tests` 6809 passed, 7 skipped, 0 failed (6816); Core2 tests 145 (8 new);
+  `tools/emudump.Tests` 246 passed; the kernel's Python tests (sites, shape, port_list, commands) 62 passed (13 new);
+  byte_proof in all 11 modes over 4304 corpus fights: old against `--b-args "--engine core2"` 47344 pairs identical, 0
+  differ; `rebuild/f08-r3a` (76ed5a1a, built from a clean worktree) against this tree, both `--engine old`, 47344
+  identical, 0 differ; `construct shape` 0 differences; `construct commands` 0 differences for the six commands, 0 Core2
+  stray writes, 86 old write sites listed; `sites check` 0 problems (279 sites; `sites.json` rebuilt for the moved
+  `RunEngine.cs` lines); `gen_hooks --check` clean.
+
 ## 4. Old sites replaced, and their game counterparts
 
 All F08/F10 sites from `sites.json` (file:line at a1e4d7ea). Each gets `if (Kernel.If(Switch.F08, ...) is { } k)
