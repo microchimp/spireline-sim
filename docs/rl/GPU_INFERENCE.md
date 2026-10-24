@@ -372,17 +372,47 @@ Capacity is 1.3 times what the doubled demand bound asks (4,898 against 3,660 ca
 READY in the commit-3 runs of 9.2 and the smoke tests (machine load 50-70%); the lane re-measures READY in 9.1. A cold start
 (first venv-gpu torch and CUDA import after a reboot) was not measured here.
 
-### 9.1 Throughput
+### 9.1 Throughput: measured, PASS (+21.6% wall decisions/s at 20 workers; the +10% stop rule is cleared)
 
-*Measured in the lane's window.*
+Measured 2026-10-24 21:01Z-21:08Z with the lab paused and `QUIET.lock` held (tag `gpu-lane`), OS load 0-34% between rows
+(81% before the first row: the lab's last step winding down), generation 3 `candidate-r1`, config `a3-v1`, 48 seeds of
+`E0-2026-10-23` x 100 combat decisions each, every row the same seed list, ABAB twice. Means of the two repeats; the
+repeats agree within 0.2% except the 24-worker row (188.5 and 193.2).
 
 | arm | procs | dec/s (wall, total) | dec per CPU-s incl. server | sims per CPU-s incl. server | server CPU share | server calls/s | mean batch | p50 / p99 call latency | tasks tagged server |
 |---|---|---|---|---|---|---|---|---|---|
-| no prior | 16 | | | | - | - | - | - | - |
-| prior, CPU path (today) | 16 | | | | - | - | - | - | - |
-| prior, server | 16 | | | | | | | | |
-| prior, server | 20 | | | | | | | | |
-| prior, server | 24 | | | | | | | | |
+| no prior | 16 | 207.4 | 16.87 | 595 | - | - | - | - | - |
+| prior, CPU path (today) | 16 | 157.8 | 12.05 | 419 | - | - | - | - | - |
+| prior, server | 16 | 179.6 | 15.51 | 540 | 4.1% | 1,346 | 1.58 | 1.50 / 3.79 ms | 100% |
+| **prior, server** | **20** | **191.9** | 15.55 | 541 | 3.6% | 1,438 | 1.62 | 1.87 / 6.98 ms | 100% |
+| prior, server | 24 | 190.8 | 15.43 | 537 | 3.8% | 1,430 | 1.64 | 2.23 / 16.97 ms | 100% |
+
+**Reading.** Against today's CPU path the server gives +13.8% wall decisions per second at 16 workers, **+21.6% at 20**
+and +20.9% at 24; per CPU-second (the server's CPU counted) +29%, as section 0 estimated: with the prior in the server the
+search keeps 15.5 of the no-prior arm's 16.9 decisions per CPU-second, so the prior costs 8% of the CPU instead of 40%, and
+the server itself takes 3.6-4.1% of it. At 16 workers the gain is bounded by the waits (p50 1.5 ms per call); 20 workers
+fill them; 24 add nothing and the p99 latency rises to 17 ms (queueing behind 24 connections on the server's one
+interpreter). **The server count is 20.** The server ran at ~1,400 calls/s and a mean batch of 1.6, far under its
+4,900 calls/s capacity (9.0); the token census over the window was 16-55 tokens with 0 over the 64-token graphs.
+
+**Full-run A/B (21:08Z-21:38Z, 15 minutes per arm plus tails, the same seed stream):**
+
+| arm | workers | runs | runs/h | decisions/h | mean floor | peak commit (GB) | prior paths |
+|---|---|---|---|---|---|---|---|
+| CPU path | 16 | 1,234 | 4,871 | 624,264 | 12.56 | 28.6 | cpu 1,234 |
+| server | 20 | 1,544 | 6,024 | 778,707 | 12.62 | 29.8 | server 1,544 |
+
+Decisions per hour x1.247, runs per hour x1.237 (the lab's block `T0432` gave 1,115 runs per 20-minute block, 3,345/h,
+with the lab's other load beside it).
+
+**RAM (21:38Z-21:43Z, 20 workers, the server killed after 60 s and its one restart killed too, so every worker fell back and
+loaded torch):** commit charge 19.5 GB before the block (the PC's standing load with the lab paused), peak 29.7 GB with
+the server alive, **31.2 GB after the kill**; the PC has 31.9 GB of RAM and a 37.8 GB commit limit. So a server death at
+20 workers stays inside the commit limit but at the edge of physical memory for the rest of that block (paths of that
+block: server 96, mixed 19, cpu 249 runs; 0 crashes). **Decision:** the 9.4 block runs at 20 and records its peak commit;
+`jobs.json` takes 20 if that peak stays under 30 GB with the server alive, else 16 (where a fallback equals today's
+footprint and the gain is +13.8%). Queued, not done (cap): a memory-aware fallback (a worker above the sixteenth that
+loses the server exits instead of loading torch, and the pool refills at 16).
 
 Rules: the server's process CPU (from its stats file) goes into every CPU-time denominator; the arms run interleaved
 ABAB twice (the A2c no-prior arm drifted 1-5% between runs); the deciding number is wall decisions per second with
@@ -429,9 +459,33 @@ The server against itself (batched against alone, the bucket-to-bucket spread) i
 (max abs dlogit <= 1e-4, no flip above a 1e-5 gap) holds with a factor 52 to spare, so TF32 or a wrong kernel would show; the
 last-bit differences are the fp32 rounding section 5 expects, and no position is decided differently by the bucket it fell in.
 
-### 9.3 Sample quality (the transport must not be a promotable change)
+### 9.3 Sample quality (the transport must not be a promotable change): measured, PASS
 
-*Measured in the lane's window.*
+Measured 2026-10-24 21:43Z-22:06Z on the fresh block `Q93-2026-10-24` (1,000 seeds, never played before), the CPU path at 16
+workers against the server at 20, same agent and config, both arms recorded:
+
+| statistic | value |
+|---|---|
+| paired seeds | 1,000 |
+| identical rows (decisions, combat decisions, sims, floor, end) | 1,000 (100%) |
+| identical decision for decision (tokens, root visits, record) | 1,000 (100%) |
+| mean floor, CPU / server | 12.764 / 12.764 |
+| paired floor difference, 95% CI; standard error | +0.000 [+0.000, +0.000]; 0.000 |
+| 90% CI (the rule: within +-0.30) | [+0.000, +0.000] |
+| Act-1 boss kills, CPU / server; discordant pairs; McNemar p | 42 / 42; 0 / 0; 1.0 |
+| sims per combat decision, CPU / server | 43.84 / 43.84 |
+| decisions per run, CPU / server | 131.2 / 131.2 |
+| runs tagged server in the server arm / cpu in the CPU arm | 100% / 100% |
+| pairs lost to a crash / a missing run | 0 / 0 |
+| **equivalent** | **True** |
+
+**Reading.** In 1,000 runs (131,200 decisions, 5.75 million simulations) the server's last-bit logit differences (9.2)
+never flipped a PUCT choice: the two arms are not merely equivalent but identical, so for self-play the transport is
+invisible by construction and seed replays on the CPU path have been exact so far. Runs stay tagged, because identity
+is measured, not guaranteed. **Consequence (decided in the design, review answer 2): the promotion arms may move to the
+server, both arms on the same transport within one comparison;** the lab config change waits for 9.4 and the lane's cap.
+
+The rule as registered before the measurement:
 
 Two arms on one fresh 1,000-seed block, same agent and config, one on the CPU path at 16 processes and one on the
 server at its process count:
@@ -456,7 +510,7 @@ order). The first diverging floor is that of the first search that differs, else
 statistics are the ones above: the 90% interval the rule reads, the 95% interval, the standard error and the point estimate for
 information, the two-sided exact McNemar on Act-1 boss kills, the two ratios, and the verdict on conditions (a) to (e).
 
-### 9.4 One generation through the judge
+### 9.4 One generation through the judge: pending (the block runs after 2026-10-25 01:15Z)
 
 A 2,000-run self-play block on the server, recorded into the lab's shards with the lab paused for the block
 (`LAB/PAUSE` carrying `gpu-lane <UTC>` and `QUIET.lock` with the owner and UTC line, written and removed by this lane;
