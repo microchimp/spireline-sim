@@ -9225,21 +9225,12 @@ public static class CardEffects
         DmgFrom(state, upgraded ? def.BaseDamage + def.UpgradeDamage : def.BaseDamage, def, card);
 
     /// <summary>
-    /// Everything <see cref="Dmg" /> adds on top of a printed damage number, applied to a
-    /// base the CALLER computed.
+    /// The damage a card's enchantment adds to its powered attack (game: Sharp, Vigorous, TezcatarasEmber,
+    /// Momentum and Inky's EnchantDamageAdditive; 0 for any other card).
     /// </summary>
-    /// <remarks>
-    /// Cards whose damage is a calculation — Body Slam off block, Ashen Strike off the
-    /// exhaust pile, Perfected Strike off the Strikes in the deck — reach the same
-    /// `DamageCmd.Attack` as any other attack, just with a `CalculatedDamageVar` instead
-    /// of a `DamageVar`. So every enchantment and relic bonus applies to them exactly as
-    /// it does to a printed number. Seventeen of them were passing their computed total
-    /// straight to <c>DealDamage</c>, which skipped the lot: a Sharp Body Slam hit for
-    /// its block and nothing more.
-    /// </remarks>
-    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card)
+    internal static int EnchantDamageAdditive(CardInstance card)
     {
-        int damage = baseDamage + card.EnchantedWith(Enchantment.Sharp);
+        int damage = card.EnchantedWith(Enchantment.Sharp);
 
         // Vigorous.EnchantDamageAdditive adds its amount while the enchantment is Normal
         // and nothing once it has fired.
@@ -9273,18 +9264,55 @@ public static class CardEffects
             damage += 1;
         }
 
+        return damage;
+    }
+
+    /// <summary>
+    /// The factor a card's enchantment multiplies its powered attack by (game: Corrupted and Instinct's
+    /// EnchantDamageMultiplicative; 1 for any other card).
+    /// </summary>
+    internal static decimal EnchantDamageMultiplicative(CardInstance card)
+    {
         // Corrupted.EnchantDamageMultiplicative is 1.5x on a powered attack, every play --
         // it has no once-only status of its own.
         if (card.Enchantment == Enchantment.Corrupted)
         {
-            damage = (int)(damage * 1.5m);
+            return 1.5m;
         }
 
         // Instinct.EnchantDamageMultiplicative is a flat 2x on a powered attack -- also
         // every play, and also with no once-only status.
         if (card.Enchantment == Enchantment.Instinct)
         {
-            damage *= 2;
+            return 2m;
+        }
+
+        return 1m;
+    }
+
+    /// <summary>
+    /// Everything <see cref="Dmg" /> adds on top of a printed damage number, applied to a
+    /// base the CALLER computed.
+    /// </summary>
+    /// <remarks>
+    /// Cards whose damage is a calculation — Body Slam off block, Ashen Strike off the
+    /// exhaust pile, Perfected Strike off the Strikes in the deck — reach the same
+    /// `DamageCmd.Attack` as any other attack, just with a `CalculatedDamageVar` instead
+    /// of a `DamageVar`. So every enchantment and relic bonus applies to them exactly as
+    /// it does to a printed number. Seventeen of them were passing their computed total
+    /// straight to <c>DealDamage</c>, which skipped the lot: a Sharp Body Slam hit for
+    /// its block and nothing more.
+    /// </remarks>
+    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card)
+    {
+        // The card's enchantment (game: EnchantmentModel.EnchantDamageAdditive, then
+        // EnchantDamageMultiplicative, both first in Hook.ModifyDamage); Core2's EnchantAdd and
+        // EnchantMul steps call the same two functions.
+        int damage = baseDamage + EnchantDamageAdditive(card);
+        decimal enchantFactor = EnchantDamageMultiplicative(card);
+        if (enchantFactor != 1m)
+        {
+            damage = (int)(damage * enchantFactor);
         }
 
         damage += RelicEffects.CardDamageBonus(state, def, card.Upgraded);
