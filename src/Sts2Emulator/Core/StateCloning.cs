@@ -113,6 +113,7 @@ public static class StateCloning
         into.RollsNextMove = enemy.RollsNextMove;
         into.CurlUpArmed = enemy.CurlUpArmed;
         into.CurlUpCardUid = enemy.CurlUpCardUid;
+        into.AppliedPlayersConstrict = enemy.AppliedPlayersConstrict;
         into.NemesisIntangibleOn = enemy.NemesisIntangibleOn;
         into.StarterMove = enemy.StarterMove;
         into.Slot = enemy.Slot;
