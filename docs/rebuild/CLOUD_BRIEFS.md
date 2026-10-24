@@ -10,7 +10,7 @@ game, its decompile, the corpus or any recording, `data/` beyond what the fork h
 inputs are the migration doc, the port list and the fork's own sources, and whose acceptance is unit tests. A LOCAL item needs the
 decompile, the corpus, a trace, the game, the PC's built EmuDump, or coordination with a round in flight (R4 edits the same old files).
 
-**Verdict: separable.** 45 of the 106 reached models (55 of the 150 gate pairs) are CLOUD handler work, in six branches; the five listed repo-only
+**Verdict: separable.** 44 of the 106 reached models (53 of the 150 gate pairs) are CLOUD handler work, in six branches; the five listed repo-only
 nits are CLOUD, in two branches; everything else is LOCAL. The blocking prerequisite H0 (handler access to the state) is done.
 
 ## 0. H0: done (landed with these briefs)
@@ -34,13 +34,13 @@ second wave once the pilot has proven the pattern.
 | power-1 (15) | Strength, Vulnerable, Weak, Thorns, Vigor, Tank, Colossus, Shriek, Flame Barrier (9 models, 9 pairs, `cloud/f08-power-1`) | Ravenous (`Ravenous_AfterDeath` acts on every holder in one call, so it is split per owner in `Core/` first: the independent review, section 3.3); Shrink (open: AfterDeath and AfterRemoved have no old location); Minion (open pseudo ShouldPowerBeRemovedAfterOwnerDeath); Inferno, Rupture (Core2's `CreatureCmd.Damage` already calls the old player-side body `CardEffects.AfterPlayerDamageReceived`; the handler takes the line over in step with R4); Knockdown (not modelled, nothing to port) |
 | power-2 (15) | Slippery, Buffer, Intangible, Surprise, Possess Speed, Possess Strength, Tainted, Swipe, Gigantification (9 models, 14 pairs, `cloud/f08-power-2`) | Curl Up (its block gain is a `GainBlock` command in section 4's table, F09, not built); The Gambit (the handler must call `Kill([player])`, together with R4's gate at its old inline zeroing); Paper Cuts (needs item 9's `SetMaxHp`/`LoseMaxHp`, not built); Imbalanced, Vital Spark (open); Illusion (ShouldAllowHitting's old location is `CombatEngine.IsPrimaryEnemy`, which R5 left unextracted, and a living Illusion is primary in Core2 only: R3b's known difference) |
 | power-3 (15) | Flutter, Personal Hive, Plow, Crab Rage, Surrounded, Soar (6 models, 8 pairs, `cloud/f08-power-3`) | Asleep (ported locally in batch L2); Stock (held: `TryRespawnAxebot` revives the enemy in place and Core2's `Kill` removes it from the roster, so it waits for a `CreatureCmd.Add`); Slow (open: mechanism B, the fold-mul over SlowAmount, no old location); Hard to Kill (open ModifyDamageCap); Reattach, Slumber, Hex, Dampen, Sandpit (open pseudo AfterRemoved or ShouldPowerBeRemovedAfterOwnerDeath) |
-| power-4 (15) | Infested, Constrict, Heist, Calcify, Accuracy, Sic 'Em (6 models, 7 pairs, `cloud/f08-power-4`) | Conqueror (ported locally in R4c: Sovereign Blade's one AttackCmd needs it); Adaptable, Steam Eruption, Painful Stabs, Burrowed, Tangled, Ringing (open pseudo pairs); Hang (open); Hardened Shell (its counter `HardenedShellDamageThisTurn` is owned by Core2 in `OldState.Damage.cs`; the handler takes that line over, which edits Core2) |
+| power-4 (15) | Constrict, Heist, Calcify, Accuracy, Sic 'Em (5 models, 5 pairs, `cloud/f08-power-4`) | Infested (the C5 review: its old body takes a `Random` and HookCtx has none, the stop rule); Conqueror (ported locally in R4c: Sovereign Blade's one AttackCmd needs it); Adaptable, Steam Eruption, Painful Stabs, Burrowed, Tangled, Ringing (open pseudo pairs); Hang (open); Hardened Shell (its counter `HardenedShellDamageThisTurn` is owned by Core2 in `OldState.Damage.cs`; the handler takes that line over, which edits Core2) |
 | relic-1 (15) | Tungsten Rod, Strike Dummy, Pen Nib, Gremlin Horn, Miniature Cannon, Mystic Lighter, Fake Strike Dummy (7 models, 8 pairs, `cloud/f08-relic-1`) | Self-Forming Clay, Centennial Puzzle, Demon Tongue, Red Skull (same Core2 call of the player-side body as Inferno and Rupture); Beating Remnant (its AfterDamageReceived tally `UnblockedDamageThisTurn` is Core2-owned); Lizard Tail (player-death prevention, coupled to `Kill`, `PlayerIsDead` and R4); Meat on the Bone, Lava Lamp (open) |
 | monster-1 (15), monster-2 (7) | none | All 22 monsters: every pair is open (no old location; 19 + 8 pairs, most pseudo-hooks `BeforeRemovedFromRoom`/`Died`, the rest AfterDeath, AfterCurrentHpChanged, BeforeDeath of the Decimillipede segments, Crusher, Rocket, Vantom, Aeonglass, Soul Fysh, Kin Priest, The Insatiable, Waterfall Giant, Lagavulin Matriarch, Test Subject, Queen); the bodies sit in `EndTurn`, `ExecuteIntent` and the factories and are read from the decompile; Opus |
 | potion-1 | none | Fairy in a Bottle: AfterPreventingDeath open; ShouldDie's location is the slot lookup `PlayerIsDead` and `IsAboutToLose` share (R5 left it) |
 
-Pair arithmetic against the gate (150 pairs without a handler): 55 CLOUD (pilot 9, power-1 9, power-2 14, power-3 8, power-4 7, relic-1 8; Stock and Asleep moved out of power-3 after batch L2, Ravenous out of power-1 after the independent review, Conqueror out of power-4 for R4c),
-46 registered pairs of LOCAL models, 49 open pairs (22 hook pairs, 27 pseudo-hook pairs; no old location, each is read in its batch). Five
+Pair arithmetic against the gate (150 pairs without a handler): 53 CLOUD (pilot 9, power-1 9, power-2 14, power-3 8, power-4 5, relic-1 8; Infested out of power-4 after the C5 review; Stock and Asleep moved out of power-3 after batch L2, Ravenous out of power-1 after the independent review, Conqueror out of power-4 for R4c),
+48 registered pairs of LOCAL models, 49 open pairs (22 hook pairs, 27 pseudo-hook pairs; no old location, each is read in its batch). Five
 not-modelled pairs need no handler.
 
 ## 2. Everything else (MIGRATION_F08 sections 3, 7; TIER1 section 7; PLAN P0)
@@ -158,6 +158,8 @@ rules; the pilot's gate also reviews the kit and the `Registry.cs` layout before
 
 ### C2: `cloud/f08-power-1` (9 models, 9 pairs)
 
+Landed (PR #11, 2026-10-24): 7 models; Thorns and Flame Barrier skipped by the stop rule (their old bodies are private), now LOCAL.
+
 Inputs: port-list rows power-1. Old functions: `BuffSystem.Strength_ModifyDamageAdditive`, `Vigor_ModifyDamageAdditive`,
 `Weak_ModifyDamageMultiplicative`, `Vulnerable_ModifyDamageMultiplicative` (its second location, `EnemyAI.DealAttackDamage`, is the old enemy-attack
 fold: the handler ports the one fold, not both), `Tank_ModifyDamageMultiplicative`; `EnemyAI.Colossus_ModifyDamageMultiplicative`;
@@ -170,6 +172,8 @@ integer-versus-decimal check for the damage folds (a handler returns the addend 
 list, and the review reads Thorns' and Flame Barrier's re-entry against R4's audit list. Excluded and why: section 1.
 
 ### C3: `cloud/f08-power-2` (9 models, 14 pairs)
+
+Landed (PR #12, 2026-10-24) with a local fix of Intangible's HP-loss value; Surprise skipped by the stop rule (its old body takes a `Random`), now LOCAL.
 
 Inputs: rows power-2. Old functions: `CardEffects.Slippery_ModifyHpLostAfterOsty`, `Slippery_AfterModifyingHpLostAfterOsty` (see the row-name rule above:
 Slippery's registered hooks are AfterDamageReceived and ModifyHpLostAfterOsty), `Buffer_AfterModifyingHpLostAfterOsty` and `Buffer_ModifyHpLostAfterOstyLate`,
@@ -184,6 +188,8 @@ fold tests.
 
 ### C4: `cloud/f08-power-3` (6 models, 8 pairs)
 
+Landed (PR #10, 2026-10-24): 4 models; Crab Rage and Surrounded skipped by the stop rule (private old functions, per-owner split), now LOCAL.
+
 Inputs: rows power-3. Old functions: `BuffSystem.Flutter_ModifyDamageMultiplicative` and `CardEffects.Flutter_AfterDamageReceived`, `CardEffects.PersonalHive_AfterDamageReceived`,
 `EnemyAI.TriggerPlowIfWounded`, `CombatEngine.TryEnrageCrabPartner` (Crab Rage), `BuffSystem.Surrounded_ModifyDamageMultiplicative`
 with `CombatEngine.FacePast` and `TurnPlayerToFaceSurvivor` (Surrounded, AfterDeath), `BuffSystem.Soar_ModifyDamageMultiplicative`. Files: six classes under
@@ -192,12 +198,16 @@ body, not its doc comment (the comment says the caller keeps the condition; C9).
 
 ### C5: `cloud/f08-power-4` (6 models, 7 pairs)
 
+Landed (PR #13, 2026-10-24) without Infested (the review: the stop rule's signature case), now LOCAL.
+
 Inputs: rows power-4. Old functions: `CombatEngine.Infested_AfterDeath` and `Infested_ShouldStopCombatFromEnding`, `Constrict_AfterDeath`, `Heist_BeforeDeath`
 (with `SpawnGremlinMercReinforcements` at its second location), `CardEffects.Calcify_ModifyDamageAdditive`, `Accuracy_ModifyDamageAdditive`, `SicEm_AfterDamageGiven`. Conqueror is not in this batch (LOCAL, round R4c). Files: six classes under `Core2/Models/Powers/`,
 the `Power4` block in `Registry.cs`, `PowerFourTests.cs`; the death hooks use the kit's builders and `Dying`. Tests: shared rules; `Infested_ShouldStopCombatFromEnding` through `CombatEnd` as in C3. Local gate: the shared list; the review
 reads Heist's BeforeDeath spawn against the kill sequence (step 4) and Constrict's AfterDeath against the dying-window mark.
 
 ### C6: `cloud/f08-relic-1` (7 models, 8 pairs)
+
+Landed (PR #14, 2026-10-24) with a local fix: five relics take the game's powered-attack and owner tests.
 
 Inputs: rows relic-1. Old functions: `RelicEffects.TungstenRod_ModifyHpLostAfterOsty` (ModifyHpLostAfterOsty and AfterModifyingHpLostAfterOsty; the second location,
 `RunNonCombatEffects.LoseHp`, is run-level HP loss outside the combat code, which R5 left: the handler covers the combat location only), `StrikeDummy_ModifyDamageAdditive`,

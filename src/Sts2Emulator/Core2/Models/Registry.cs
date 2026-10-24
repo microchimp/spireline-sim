@@ -77,6 +77,18 @@ public static class Registry
         HeistPower.Register,
     ];
 
+    /// <summary>C6 (cloud/f08-relic-1): the port list's relic-1 rows.</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> Relic1 =
+    [
+        TungstenRod.Register,
+        StrikeDummy.Register,
+        PenNib.Register,
+        GremlinHorn.Register,
+        MiniatureCannon.Register,
+        MysticLighter.Register,
+        FakeStrikeDummy.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -88,5 +100,6 @@ public static class Registry
         .. Power2,
         .. Power3,
         .. Power4,
+        .. Relic1,
     ];
 }
