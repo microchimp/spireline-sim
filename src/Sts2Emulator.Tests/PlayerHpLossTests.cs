@@ -178,15 +178,15 @@ public class RunHpLossTests
     [Fact]
     public void SlipperyBridgeHoldOnWithTheRodCostsOneLess()
     {
-        var engine = new RunEngine();
+        var engine = TestSwitches.Run(new RunEngine());
         engine.Reset("ABCDEF");
         engine.State.Relics.Add(new RelicInstance(RelicEffects.TungstenRod));
         engine.State.PlayerHp = 50;
         RunNonCombatEffects.BeginEvent(engine.State, RunConstants.EventSlipperyBridge);
 
-        Assert.Equal(0, engine.Step(1, -1, out _, out _, out _));
+        Assert.Equal(0, TestSwitches.Step(engine, 1, -1, out _, out _, out _));
         Assert.Equal(48, engine.State.PlayerHp);
-        Assert.Equal(0, engine.Step(1, -1, out _, out _, out _));
+        Assert.Equal(0, TestSwitches.Step(engine, 1, -1, out _, out _, out _));
         Assert.Equal(45, engine.State.PlayerHp);
     }
 

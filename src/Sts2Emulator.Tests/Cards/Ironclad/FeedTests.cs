@@ -19,7 +19,7 @@ public class FeedTests
         state.Hand.Add(new CardInstance(IC.Feed, false));
         state.Energy = 3;
 
-        CombatEngine.Step(state, 0, rng);
+        TestSwitches.Step(state, 0, rng);
         Assert.Equal(0, enemy.Hp);
         Assert.Equal(maxHpBefore + 3, state.PlayerMaxHp);
     }
@@ -37,7 +37,7 @@ public class FeedTests
         state.Hand.Add(new CardInstance(IC.Feed, false));
         state.Energy = 3;
 
-        CombatEngine.Step(state, 0, rng);
+        TestSwitches.Step(state, 0, rng);
         Assert.Equal(maxHpBefore, state.PlayerMaxHp);
     }
 

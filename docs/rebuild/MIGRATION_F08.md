@@ -1050,6 +1050,31 @@ game does something else, found while porting; R7's corpus re-measure decides ea
 - **Strike Dummy, Fake Strike Dummy, Miniature Cannon, Mystic Lighter, Pen Nib: props and owner.** Miniature Cannon and Mystic Lighter also keep the old site's Attack-def test. The game's overrides answer the no-bonus value off a powered attack (`ValueProp.IsPoweredAttack`) and for a dealer or card that is not the owner's (`HookCtx.IsOwnerOrPet` for Pen Nib); the old sites (`RelicEffects.CardDamageBonus`, `CardDamageMultiplier`, `CardEffects.DmgFrom`) read neither, so the handlers take the game's tests. Check: a recorded fight with an unpowered hit carrying a card source (an upgraded Attack's self-damage) under one of the five; the old engine gave the bonus, the handler gives none. The old state has one card owner, so the card-owner tests are always met until a second owner exists.
 - **A HookCtx accessor for the card's live copy.** `MiniatureCannon.Copy` and `MysticLighter.Copy` are the same private helper (the card source's copy read back off `OldCombat` and `World`, for the upgrade flag and the enchantment, which `CardView` does not carry); HookCtx has no near fit, so R7 should add one accessor (the copy for a handle) and both models, and any later one, take it.
 
+### The old suites under the switch (O1; the review's recommendation 2)
+
+The old engine's behaviour suites pin game behaviour the old engine was made to match; run with F08+F10 on they are a
+switched-on regression suite. `STS2_TEST_SWITCHES=F08,F10` (src/Sts2Emulator.Tests/Support/TestSwitches.cs) makes one
+kernel with those switches and `Registry.All`. A combat a suite steps itself (the `Fight` helper's steps,
+`TestSwitches.Step`) is bound at its first step, after all of the test's setup (factory, fluent `Enemy` / `PlayerBuff` /
+`Seed`, direct writes), with `Attach(combat, run)`, the run being the state of the run engine (one per combat) whose
+`RunEngine.StepCombat`, the kernel's entry gate, takes that and every later step: the order `RunEngine.StartCombat` uses
+(setup, pre-play phase, `Attach(combat, State)`, then the first step). An engine call a test makes on a combat before
+its first step runs unbound. A suite's own `RunEngine` gets the kernel before its `Reset` (`TestSwitches.Run`) and binds
+the combats it starts; its steps go through `TestSwitches.Step(engine, ...)`. With `STS2_TEST_SWITCHES_COVERAGE` set to
+a file, every kernel-bound step appends the test method that made it (found on the stack; a theory's cases share it).
+Unset, empty or `none`: no kernel, nothing bound or written, every step `CombatEngine.Step` / `RunEngine.Step` (the
+whole suite and the byte proof unchanged). The runner runs the suites once off and once on (with the coverage file) and
+writes each test's verdict (pass both, not covered: passed both ways with no kernel-bound step, fail on only, fail off
+only, fail both, skipped, missing off / on) to `DIR/suites_switch.json` and `DIR/suites_switch.md`; it exits 1 when a
+run crashed, wrote no trx or lost tests:
+
+    python -m tools.fidelity.suites_switch --out DIR [--switches F08,F10] [--no-build] [--suites A,B]
+
+The suites are `NAMED` (the ten of review 2.3 item 3; DeathCheckTests.cs is six classes) and `ADDED` (the other damage,
+death, HP and combat-end suites) in tools/fidelity/suites_switch.py. By hand: `STS2_TEST_SWITCHES=F08,F10 dotnet test
+src/Sts2Emulator.Tests --no-build --filter "FullyQualifiedName~.DeathCheckTests.|..."`. Each round that switches more
+on reruns it; a "fail on only" is classed in MIGRATION_F08_O1.md (R4 to deliver, handler batch, old deviation).
+
 ## 7. Rounds and estimate
 
 | round | model | content |

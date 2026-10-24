@@ -71,7 +71,7 @@ public class GremlinHornTests
         state.DiscardPile.Add(new CardInstance(IC.DefendIronclad, false));
         state.DiscardPile.Add(new CardInstance(IC.DefendIronclad, false));
 
-        var result = CombatEngine.Step(state, 0, new Random(0));
+        var result = TestSwitches.Step(state, 0, new Random(0));
 
         Assert.True(result.Terminal && result.PlayerWon);
         Assert.Empty(state.Hand);
@@ -86,7 +86,7 @@ public class GremlinHornTests
         var state = WithHorn(enemyHp: 1, alone: true);
         int drawBefore = state.DrawPile.Count;
 
-        Assert.True(CombatEngine.Step(state, 0, new Random(0)).Terminal);
+        Assert.True(TestSwitches.Step(state, 0, new Random(0)).Terminal);
 
         Assert.Equal(3, state.Energy);
         Assert.Equal(drawBefore, state.DrawPile.Count);
@@ -98,7 +98,7 @@ public class GremlinHornTests
         var state = WithHorn(enemyHp: 1);
         int drawBefore = state.DrawPile.Count;
 
-        CombatEngine.Step(state, 0, new Random(0));
+        TestSwitches.Step(state, 0, new Random(0));
 
         // Strike costs 1 and the death gives it straight back.
         Assert.Equal(3, state.Energy);
@@ -111,7 +111,7 @@ public class GremlinHornTests
         var state = WithHorn(enemyHp: 30);
         int drawBefore = state.DrawPile.Count;
 
-        CombatEngine.Step(state, 0, new Random(0));
+        TestSwitches.Step(state, 0, new Random(0));
 
         Assert.Equal(2, state.Energy);
         Assert.Equal(drawBefore, state.DrawPile.Count);
@@ -124,7 +124,7 @@ public class GremlinHornTests
         state.Relics.Clear();
         int drawBefore = state.DrawPile.Count;
 
-        CombatEngine.Step(state, 0, new Random(0));
+        TestSwitches.Step(state, 0, new Random(0));
 
         Assert.Equal(2, state.Energy);
         Assert.Equal(drawBefore, state.DrawPile.Count);
