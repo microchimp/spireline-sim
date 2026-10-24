@@ -10,7 +10,7 @@ internal static class ConstrictPower
     /// <summary>
     /// game: ConstrictPower.AfterDeath. An event: the old body, which removes the player's Constrict, is called on a death
     /// that was not prevented (the old site runs for a real death) of a Slithering Strangler (the old site's test of the
-    /// fallen: its def id; the game's test, read in the decompile review, is expected to be the applier's death) while the
+    /// fallen: its def id; the game's test is that the dead creature is the power's Applier) while the
     /// handler's owner is on the player's side (the old function acts on the player's buffs, and the old state's one power
     /// holder on that side is the player; a holder on an enemy is not what the old function removes, so its handler does
     /// nothing). The debuff is a survivor's, not the fallen's: the per-owner condition is "my owner is the player and the

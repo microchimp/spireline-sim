@@ -38,7 +38,6 @@ public static class Registry
         SicEmPower.Register,
         ConstrictPower.Register,
         HeistPower.Register,
-        InfestedPower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
