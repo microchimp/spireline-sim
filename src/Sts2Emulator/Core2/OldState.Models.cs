@@ -172,7 +172,7 @@ public static partial class OldState
         if (who.Instance < 0)
         {
             int d = -who.Instance - 1;
-            return w.Run?.Deck is { } deck && (uint)d < (uint)deck.Count
+            return w.Deck is { } deck && (uint)d < (uint)deck.Count
                 && (ListenerKind)who.Kind == ListenerKind.Card && deck[d].DefId == who.ModelId
                 ? new(new CardHandle(who.Instance), who.ModelId, CardPile.Deck, d)
                 : null;

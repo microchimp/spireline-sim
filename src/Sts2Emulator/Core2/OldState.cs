@@ -177,6 +177,19 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     public RunState? Run { get; set; } = run;
     public OldModelIds Ids { get; } = ids;
 
+    // A combat's clone (a fork of RunEngine.ForkActiveCombat, a snapshot, a probe) binds to no run. The old engine's fork
+    // carries the fight and its own streams, and its combat step never reads the run (the deck's changes are the run's,
+    // made as the combat ends). So the clone keeps the deck its source read, as it stood at the copy: a frozen list of
+    // the same card values, which nothing writes, so a fork reads the run deck's listeners and cards as the live fight
+    // does and reaches neither the live run's list nor any of its streams (KernelState.CopyTo takes the copy).
+    internal List<CardInstance>? ForkDeck { get; set; }
+
+    /// <summary>The run deck this world reads: the run's when it is bound to one, else the frozen copy a combat's clone
+    /// took of its source's (null: no run deck known, a DeckWithoutRun gap). Read only.</summary>
+    public IReadOnlyList<CardInstance>? Deck => DeckList;
+
+    internal List<CardInstance>? DeckList => Run?.Deck ?? ForkDeck;
+
     private readonly HashSet<EnemyState> _dying = new(ReferenceEqualityComparer.Instance);
 
     // The marks below are what only the kernel's own sites know. Each has a scoped setter (a K3 obligation: the site
@@ -299,10 +312,11 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     /// matched to the copy's roster by index (the old engine keeps a dying enemy in it). A scope opened on the other world
     /// restores that world, never this one.
     /// </summary>
-    internal void CopyFrom(OldWorld? from, CombatState? combat, RunState? run)
+    internal void CopyFrom(OldWorld? from, CombatState? combat, RunState? run, List<CardInstance>? forkDeck)
     {
         Combat = combat;
         Run = run;
+        ForkDeck = forkDeck;
         _dying.Clear();
         Modifiers.Clear();
         Badges.Clear();
@@ -420,7 +434,7 @@ public static partial class OldState
     /// </summary>
     public static void Run(OldWorld w, List<OldListener> into, List<OldGap> gaps, bool withRunItems)
     {
-        if (w.Run is not { } r)
+        if (w.Deck is not { } deck)
         {
             gaps.Add(new(NotModelledKind.DeckWithoutRun, ListenerKind.Card, 0, 0, "deck"));
             gaps.Add(new(NotModelledKind.DeckWithoutRun, ListenerKind.Enchantment, 0, 0, "deck"));
@@ -433,9 +447,9 @@ public static partial class OldState
             return;
         }
 
-        for (int i = 0; i < r.Deck.Count; i++)
+        for (int i = 0; i < deck.Count; i++)
         {
-            var card = r.Deck[i];
+            var card = deck[i];
             int inst = DeckInstance(i);
             into.Add(new(new((int)ListenerKind.Card, card.DefId, inst), 0, i, OldPile.Deck, default, null));
             if (card.Enchantment != Enchantment.None)
@@ -445,7 +459,8 @@ public static partial class OldState
             }
         }
 
-        if (!withRunItems)
+        // A world with a deck and no run is a combat's clone, which always has its combat, so never lists run items.
+        if (!withRunItems || w.Run is not { } r)
         {
             return;
         }
@@ -665,13 +680,13 @@ public static partial class OldState
                 {
                     // Deck cards are matched by index: a removal shifts the later entries. The pass reports NotModelled at
                     // the first deck entry visited after any change to the deck list.
-                    if (view?.Deck is { } deckProbe && deckProbe.Changed(w.Run?.Deck))
+                    if (view?.Deck is { } deckProbe && deckProbe.Changed(w.DeckList))
                     {
                         view.Note(new(NotModelledKind.DeckChangedMidPass, e.Kind, 0, who.ModelId, "run deck"));
                     }
 
                     int i = -who.Instance - 1;
-                    if (w.Run?.Deck is not { } deck || i >= deck.Count)
+                    if (w.Deck is not { } deck || i >= deck.Count)
                     {
                         return false;
                     }
@@ -818,9 +833,9 @@ public sealed class PassView
             Orbs = new ChangeProbe<OrbState>(c.Orbs);
         }
 
-        if (deck && w.Run is { } r)
+        if (deck && w.DeckList is { } d)
         {
-            Deck = new ChangeProbe<CardInstance>(r.Deck);
+            Deck = new ChangeProbe<CardInstance>(d);
         }
     }
 

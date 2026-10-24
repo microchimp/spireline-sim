@@ -17,6 +17,10 @@ public sealed class KernelState : HookRuntime
     private CombatState? _combat;
     private RunState? _run;
     private OldWorld? _world;
+
+    // The run deck a combat's clone reads (bound to no run): a frozen copy of the deck its source read, the same card values,
+    // which nothing writes; null when the state is bound to a run or none was known. Handed to the world (OldWorld.Deck).
+    private List<CardInstance>? _forkDeck;
     private OldListeners? _listeners;
     private ActionQueueSet? _queue;
     private CommandLog? _commands;
@@ -62,7 +66,7 @@ public sealed class KernelState : HookRuntime
     public HandlerTable? Handlers => Shared.Handlers;
 
     /// <summary>The old state the listeners are read from, with this state's marks; null with no switch on.</summary>
-    public OldWorld? World => AnyOn ? _world ??= new OldWorld(_combat, _run, Shared.Ids!) : null;
+    public OldWorld? World => AnyOn ? _world ??= new OldWorld(_combat, _run, Shared.Ids!) { ForkDeck = _forkDeck } : null;
 
     /// <summary>The listener cursor of the passes; null with no switch on.</summary>
     public OldListeners? Passes => AnyOn ? _listeners ??= new OldListeners(World!, Handlers!) : null;
@@ -139,7 +143,8 @@ public sealed class KernelState : HookRuntime
     /// <para>The run is the copy's own. A null <paramref name="run" /> binds a new copy to no run (a combat's clone: a fork
     /// of <c>RunEngine.ForkActiveCombat</c>, a snapshot, a probe; the old engine's fork carries the fight and its own
     /// streams, never the run) and leaves a restored holder bound to the run it stands in. A copy never keeps this state's
-    /// run, so no handler of a fork reaches the live run (a fork's run deck is a DeckWithoutRun gap); a run's clone passes
+    /// run, so no handler of a fork reaches the live run (a fork reads the frozen copy of the run deck its world takes,
+    /// <c>OldWorld.Deck</c>); a run's clone passes
     /// itself and rebinds its fight (<c>StateCloning.Clone(RunState)</c>).</para>
     /// </summary>
     internal KernelState CopyTo(CombatState? combat, RunState? run, KernelState? into)
@@ -166,8 +171,10 @@ public sealed class KernelState : HookRuntime
         k.ExecutorPaused = ExecutorPaused;
         k.WinChecks = WinChecks;
         k._listeners = null;
+        // A copy bound to no run keeps its source's run deck, frozen as it stands now (a fork of a fork shares the list).
+        k._forkDeck = k._run is not null ? null : _run?.Deck is { } liveDeck ? [.. liveDeck] : _forkDeck;
         if (_world is not null || k._world is not null)
-            (k._world ??= new OldWorld(null, null, Shared.Ids!)).CopyFrom(_world, k._combat, k._run);
+            (k._world ??= new OldWorld(null, null, Shared.Ids!)).CopyFrom(_world, k._combat, k._run, k._forkDeck);
         return k;
     }
 
