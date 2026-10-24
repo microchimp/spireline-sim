@@ -12,7 +12,7 @@ internal static class SurprisePower
     /// game: SurprisePower.AfterDeath. When the dead creature is the owner and its removal was not prevented: a Sneaky
     /// Gremlin and a Fat Gremlin are added, the Fat one holding Heist for the gold the owner's Thievery took. The old body is
     /// <c>CombatEngine.Surprise_AfterDeath</c> (old site: CombatEngine.AnswerDeaths, for a fallen holding Surprise), handed
-    /// the stream the old site hands it (<see cref="HookCtx.Niche" />); its HP rolls read the combat's NicheHpRng first.
+    /// the game's Niche stream (<see cref="HookCtx.Niche" />: the combat's NicheHpRng, which its HP rolls read first).
     /// </summary>
     internal static HookStep AfterDeath(HookCtx c, ListenerRef self, in AfterDeathArgs a, ChoiceCtx? ctx)
     {

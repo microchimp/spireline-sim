@@ -132,10 +132,15 @@ public sealed class KernelState : HookRuntime
 
     /// <summary>
     /// This state as a copy of the state it is on carries it: the same switches, marks, recorded actions, stops, waits
-    /// and action counter, bound to <paramref name="combat" /> (and <paramref name="run" />; null keeps this state's
-    /// run). The copy fills <paramref name="into" /> when that is a state of the same kernel (the in-place restore of
-    /// <c>CopyTo</c>, whose holder is mid-step and keeps its object), else a new one. Nothing is shared with this state:
-    /// the lists and pause contexts are copied, and a scope open on this state restores this state only.
+    /// and action counter, bound to <paramref name="combat" /> and <paramref name="run" />. The copy fills
+    /// <paramref name="into" /> when that is a state of the same kernel (the in-place restore of <c>CopyTo</c>, whose holder
+    /// is mid-step and keeps its object), else a new one. Nothing is shared with this state: the lists and pause contexts
+    /// are copied, and a scope open on this state restores this state only.
+    /// <para>The run is the copy's own. A null <paramref name="run" /> binds a new copy to no run (a combat's clone: a fork
+    /// of <c>RunEngine.ForkActiveCombat</c>, a snapshot, a probe; the old engine's fork carries the fight and its own
+    /// streams, never the run) and leaves a restored holder bound to the run it stands in. A copy never keeps this state's
+    /// run, so no handler of a fork reaches the live run (a fork's run deck is a DeckWithoutRun gap); a run's clone passes
+    /// itself and rebinds its fight (<c>StateCloning.Clone(RunState)</c>).</para>
     /// </summary>
     internal KernelState CopyTo(CombatState? combat, RunState? run, KernelState? into)
     {
@@ -143,7 +148,8 @@ public sealed class KernelState : HookRuntime
             return this;
         var k = into is not null && ReferenceEquals(into.Shared, Shared) ? into : new KernelState(Shared, combat, run);
         k._combat = combat;
-        k._run = run ?? _run;
+        if (run is not null || !ReferenceEquals(k, into))
+            k._run = run;
         k._actions.Clear();
         k._actions.AddRange(_actions.Select(a => a with { Site = Detach(a.Site) }));
         k._stops.Clear();

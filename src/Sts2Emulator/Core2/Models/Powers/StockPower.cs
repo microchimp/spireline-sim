@@ -14,9 +14,9 @@ internal static class StockPower
     /// game: StockPower.AfterDeath. When the dead creature is the owner, its removal was not prevented and the amount is
     /// above 0: a new Axebot with StockAmount = Amount - 1 is added on the owner's side (CreatureCmd.Add; its
     /// AfterAddedToRoom applies that stock). The old site's condition (CombatEngine.TryRespawnAxebot: an Axebot holding
-    /// Stock) is kept; its parts build the bot: the HP draw on the stream the old site passes
-    /// (<c>CombatEngine.RollAxebotRespawnHp</c> on <see cref="HookCtx.Niche" />) and the state the old respawn leaves
-    /// (<c>CombatEngine.NewRespawnedAxebot</c>). The dead bot leaves the roster after this, through the Kill's removal, so
+    /// Stock) is kept. The HP is CombatState.CreateCreature's roll, SetUniqueMonsterHpValue on the Niche stream
+    /// (<c>CombatEngine.RollAddedAxebotHp</c> on <see cref="HookCtx.Niche" />; the old in-place respawn drew its site's
+    /// stream flat, MIGRATION_F08.md R7), and the old respawn's parts build the rest (<c>CombatEngine.NewRespawnedAxebot</c>). The dead bot leaves the roster after this, through the Kill's removal, so
     /// the new one stands at the roster's end as in the game (the old engine kept the revived bot at its index).
     /// </summary>
     internal static HookStep AfterDeath(HookCtx c, ListenerRef self, in AfterDeathArgs a, ChoiceCtx? ctx)
@@ -25,7 +25,7 @@ internal static class StockPower
             || !c.IsMonster(me.Owner, "Axebot"))
             return HookStep.Done;
         int ascension = c.OldCombat.AscensionLevel;
-        int hp = CombatEngine.RollAxebotRespawnHp(c.Niche, ascension);
+        int hp = CombatEngine.RollAddedAxebotHp(c.OldCombat, c.Niche, c.Enemy(me.Owner), ascension);
         CreatureCmd.Add(c.K, CombatEngine.NewRespawnedAxebot((int)me.Amount, hp, ascension));
         return HookStep.Done;
     }

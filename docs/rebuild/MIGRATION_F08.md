@@ -983,18 +983,30 @@ Burrowed, Asleep, Illusion, Reattach and Adaptable (PowerCmd is not migrated).
   pass it to `CreateEnemy`, whose HP roll (`EnemyAI.RollSummonedHp`) reads the combat's `NicheHpRng` first (the run's Niche
   stream at its position; `Niche` in the RNG log) and the handed stream only when the combat has none; `TryRespawnAxebot`
   draws the handed stream itself. The game draws all three through `CombatState.CreateCreature`
-  (`Creature.SetUniqueMonsterHpValue` on `RunState.Rng.Niche`). The accessor is named by the game's stream and, in Tier 1,
-  answers with the old combat stream, so each handler passes exactly what the old site passes (C5's `NicheHpRng` stand-in
-  would have drawn the Niche stream where the old fallback draws the combat stream). It throws when the kernel's run holds
-  no open combat's stream (a combat bound to no run).
+  (`Creature.SetUniqueMonsterHpValue` on `RunState.Rng.Niche`), whatever kills the owner. The accessor is named by the
+  game's stream and answers with the combat's own copy of it, `CombatState.NicheHpRng` (taken at the run's Niche position
+  when the fight starts, restreamed with Niche, handed back to the run when the fight ends, cloned with the combat); a
+  hand-made combat with none answers with its Shuffle stream, and one with neither throws. (Review round: the first cut
+  answered with `RunState.ActiveCombatRng` through the kernel's run, which a fork shared with the live run; see the R7
+  checks below.)
+- **A copy's run.** `KernelState.CopyTo` kept the source's run when a copy was given none, so a combat's clone (a fork of
+  `RunEngine.ForkActiveCombat`, a snapshot, a probe) stood in the live run: a forked Stock, Surprise or Infested death drew,
+  and advanced, the live run's combat stream. The old engine's fork carries the fight and its own streams only (the combat
+  clone and a clone of `ActiveCombatRng`). A copy now binds to the run it is given: none for a combat's clone (its run
+  deck is then a DeckWithoutRun gap), and a restored holder keeps the run it stands in; a run's clone rebinds its fight
+  as before. The other `World.Run` reads in Core2 (OldState's deck, relic and potion fallbacks, `HookCtx.Card` for a deck
+  card) read the same binding, so none reaches the live run from a fork. Test: `ResampleLeakTests`, a forked step with a
+  Stock death.
 - **The command: `CreatureCmd.Add`** (`Core2/Commands/CreatureCmd.Add.cs`). game: CreatureCmd.Add(Creature): refused outside
   a combat in progress and for a creature the combat already holds; CombatState.AddCreature puts it at the end of its side's
   list; CombatManager.AfterCreatureAdded's parts (AfterAddedToRoom, the move roll) are the caller's old body in Tier 1.
 - Surprise and Infested: AfterDeath under the game's condition (the dead creature is the owner, its removal not prevented),
   the old bodies on `c.Niche`; ShouldStopCombatFromEnding, the old functions.
 - Stock: AfterDeath builds a NEW Axebot from the old respawn's parts, split out of `TryRespawnAxebot` with its behaviour
-  unchanged (`RollAxebotRespawnHp` on `c.Niche`; `NewRespawnedAxebot`, the state the in-place respawn leaves), and lists it
-  with `CreatureCmd.Add`. The dead bot leaves through the Kill's removal after AfterDeath, so the new one stands at the
+  unchanged (`NewRespawnedAxebot`, the state the in-place respawn leaves), rolls its HP as CreateCreature does
+  (`RollAddedAxebotHp`: unique against the living side and the dying bot, on `c.Niche`; the old respawn keeps
+  `RollAxebotRespawnHp`, flat on its site's stream), and lists it with `CreatureCmd.Add`, which fires
+  Hook.AfterCreatureAddedToCombat behind F01's switch. The dead bot leaves through the Kill's removal after AfterDeath, so the new one stands at the
   roster's end, as in the game. The old condition (an Axebot) is kept; R3a's corpse rule (`AxebotDeathStrips`) is unchanged.
   ShouldStopCombatFromEnding: the old function.
 - Hang: ModifyDamageMultiplicative, read against HangPower (the target is the owner and the card source is Hang: the
@@ -1079,11 +1091,26 @@ game does something else, found while porting; R7's corpus re-measure decides ea
   it. Check: a recorded fight with two Stranglers where the one that did not apply Constrict dies; the handler removes the
   player's Constrict, the game does not, and the handler then takes the Applier test.
 - **Strike Dummy, Fake Strike Dummy, Miniature Cannon, Mystic Lighter, Pen Nib: props and owner.** Miniature Cannon and Mystic Lighter also keep the old site's Attack-def test. The game's overrides answer the no-bonus value off a powered attack (`ValueProp.IsPoweredAttack`) and for a dealer or card that is not the owner's (`HookCtx.IsOwnerOrPet` for Pen Nib); the old sites (`RelicEffects.CardDamageBonus`, `CardDamageMultiplier`, `CardEffects.DmgFrom`) read neither, so the handlers take the game's tests. Check: a recorded fight with an unpowered hit carrying a card source (an upgraded Attack's self-damage) under one of the five; the old engine gave the bonus, the handler gives none. The old state has one card owner, so the card-owner tests are always met until a second owner exists.
-- **Surprise, Infested, Stock: the HP stream (batch L3b).** The old fallback (a combat with no `NicheHpRng`) rolls the
-  spawns' HP off the combat stream, and Stock's respawn always does, flat over the band; the game rolls each new monster's
-  HP with SetUniqueMonsterHpValue on the run's Niche stream (unique against the living side). The handlers draw the old
-  site's stream (`HookCtx.Niche`). Check: a recorded Axebot respawn's HP against the Niche stream's next unique draw; Stock's
-  handler then takes `EnemyAI.RollSummonedHp` with the combat.
+- **Surprise, Infested, Stock: the HP stream by site (batch L3b).** The old engine draws by site: the in-blow death
+  answer of a card's kill (`CardEffects.OnEnemyDeath`, `AnswerDeathsHoldingTheFightOpen` on `state.ShuffleRng`) hands the
+  Shuffle stream, every other death answer (`AnswerDeaths`, `AnswerDeathsSince`) the step's combat stream
+  (`RunState.ActiveCombatRng` in a run). Surprise's and Infested's spawns read `NicheHpRng` first and the handed stream only
+  without one; Stock's respawn always draws the handed stream, flat over the band. The game draws `RunState.Rng.Niche`
+  (SetUniqueMonsterHpValue, unique against the side) whatever the site. Under the switch the handlers run from Kill and draw
+  `HookCtx.Niche` (the combat's `NicheHpRng`); Stock's HP is the unique roll (`RollAddedAxebotHp`). So an Axebot respawn
+  under the switch moves the Niche stream where the old engine moved the Shuffle or the combat stream. Check: a recorded
+  Axebot respawn's HP against the Niche stream's next unique draw, and the Shuffle stream's next shuffle after a card's kill.
+  GremlinHorn's AfterDeath draws `ShuffleRng` for its card draw's reshuffle (the game's Shuffle stream), not a spawn: kept.
+- **Stock: the unique-HP side (batch L3b).** The game's set excludes every creature still listed on the side, the dying
+  one included (CreatureCmd.Kill removes it after AfterDeath); `RollAddedAxebotHp` excludes the living enemies and the dying
+  bot, as the old roster keeps corpses the game has removed. `EnemyAI.RollSummonedHp` (Surprise, Infested, every old summon)
+  excludes the living only. Check: a recorded respawn whose dead bot's max HP is in the band.
+- **CreatureCmd.Add: AfterCreatureAddedToCombat (batch L3b).** The game's CreatureCmd.Add ends with
+  Hook.AfterCreatureAddedToCombat (PhilosophersStone, FurCoat, Sandpit, Murderous). Its family is F01 (the other switch
+  group): Add fires it behind F01's switch, and with F01 off nothing runs for the new Axebot, as the old in-place respawn
+  never called `RelicEffects.Spawned` (the old body: PhilosophersStone's Strength, FurCoat's bite). Core2 registers no F01
+  handler for it yet. Check: a recorded Axebot respawn under PhilosophersStone or FurCoat; the game gives the new bot
+  Strength 1 or bites it, the old engine does neither.
 - **Stock and Infested: the roster position (batch L3b).** The game appends every added creature (CombatState.AddCreature)
   and the dead one leaves after AfterDeath; Stock's handler does so (the old engine revived the bot at its index), while
   Infested's old body inserts the Wrigglers right after the Phrog Parasite and stops at six enemies. Check: a recorded fight

@@ -73,15 +73,16 @@ public readonly struct HookCtx
     public bool CombatInProgress => CombatEnd.IsInProgress(K);
 
     /// <summary>
-    /// game: RunState.Rng.Niche, the run's Niche stream: CombatState.CreateCreature rolls a new monster's HP from it
-    /// (Creature.SetUniqueMonsterHpValue), so it is the stream SurprisePower's, InfestedPower's and StockPower's AfterDeath
-    /// draw through CreatureCmd.Add. Tier 1 answers with the old engine's combat stream (RunState.ActiveCombatRng: seeded
-    /// from the run's Niche seed and restreamed with it, the Random a run's combat step hands its death answer), so a
-    /// handler passes its old body exactly the stream the old site passes; the old summon bodies roll HP off the combat's
-    /// NicheHpRng first (EnemyAI.RollSummonedHp). Throws when the kernel's run holds no open combat's stream.
+    /// game: RunState.Rng.Niche, the run's Niche stream: CreatureCmd.Add's CombatState.CreateCreature rolls every new
+    /// enemy's HP from it (Creature.SetUniqueMonsterHpValue), so it is what SurprisePower's, InfestedPower's and StockPower's
+    /// AfterDeath draw, whatever kills the owner. Tier 1 answers with the combat's own copy of it,
+    /// <c>CombatState.NicheHpRng</c>: taken at the run's Niche position when the fight starts, restreamed with Niche on a
+    /// resample, handed back to the run when the fight ends, and cloned with the combat, so a fork, a snapshot or a probe
+    /// draws its own copy and never the run's. A hand-made combat that no run built has none and answers with its Shuffle
+    /// stream (the stand-in the old in-blow death answer passes); throws when it has neither.
     /// </summary>
-    public Random Niche => World.Run?.ActiveCombatRng
-        ?? throw new InvalidOperationException("no run with an open combat stream is bound: the Niche stream is the run's");
+    public Random Niche => OldCombat.NicheHpRng ?? OldCombat.ShuffleRng
+        ?? throw new InvalidOperationException("the combat holds no Niche stream (NicheHpRng) and no Shuffle stream");
 
     /// <summary>The enemies a hit can reach now, in roster order (game: CombatState.HittableEnemies: alive, in the combat
     /// and hittable).</summary>

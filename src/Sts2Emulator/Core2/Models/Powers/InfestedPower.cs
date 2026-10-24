@@ -12,7 +12,7 @@ internal static class InfestedPower
     /// game: InfestedPower.AfterDeath. When the dead creature is the owner and its removal was not prevented (after the death animation's wait),
     /// four stunned Wrigglers are added, in the Phrog Parasite's Wriggler slots. The old body is
     /// <c>CombatEngine.Infested_AfterDeath</c> (old site: CombatEngine.AnswerDeaths, for a fallen holding Infested), handed
-    /// the stream the old site hands it (<see cref="HookCtx.Niche" />); its HP rolls read the combat's NicheHpRng first.
+    /// the game's Niche stream (<see cref="HookCtx.Niche" />: the combat's NicheHpRng, which its HP rolls read first).
     /// </summary>
     internal static HookStep AfterDeath(HookCtx c, ListenerRef self, in AfterDeathArgs a, ChoiceCtx? ctx)
     {

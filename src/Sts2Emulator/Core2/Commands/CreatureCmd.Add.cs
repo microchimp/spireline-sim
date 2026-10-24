@@ -13,7 +13,10 @@ public static partial class CreatureCmd
     /// turn, its move roll). Tier 1: the caller's old body built the creature (CombatState.CreateCreature's HP roll) and gave
     /// it what AfterAddedToRoom and the roll give it (an Axebot's Stock, its opening intent), so the command lists it and
     /// returns it. The game's IsLiveCombat test is always true over the old state. A creature that dies in the same Kill
-    /// leaves after its AfterDeath, so a respawn added there stands at the end of the roster, as in the game.
+    /// leaves after its AfterDeath, so a respawn added there stands at the end of the roster, as in the game. Last, the
+    /// game's Hook.AfterCreatureAddedToCombat (PhilosophersStone, FurCoat, Sandpit, Murderous), fired behind its own
+    /// family's switch (F01); with F01 off the old engine's body for it (RelicEffects.Spawned) runs where the old spawn
+    /// sites call it, and the old in-place Axebot respawn calls it nowhere (MIGRATION_F08.md R7).
     /// </summary>
     public static OldCreature Add(KernelState k, EnemyState monster)
     {
@@ -23,6 +26,13 @@ public static partial class CreatureCmd
         if (s.Enemies.Any(e => ReferenceEquals(e, monster)))
             throw new InvalidOperationException("CreatureCmd.Add: the creature is already in the combat");
         s.Enemies.Add(monster);
-        return OldCreature.Of(monster);
+        var added = OldCreature.Of(monster);
+        if (k.On(Switch.F01))
+        {
+            var a = new AfterCreatureAddedToCombatArgs(R(k.World!, added));
+            Settle(k, Hooks.AfterCreatureAddedToCombat(k, a), st => Hooks.AfterCreatureAddedToCombatResume(k, a, st));
+        }
+
+        return added;
     }
 }

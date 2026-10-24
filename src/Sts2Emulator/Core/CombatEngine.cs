@@ -5676,6 +5676,23 @@ public static class CombatEngine
     }
 
     /// <summary>
+    /// The HP of a NEW Axebot as CreatureCmd.Add creates it (game: CombatState.CreateCreature, SetUniqueMonsterHpValue on
+    /// the run's Niche stream): a value of its band that no creature on the enemy side has as its max HP, else any value of
+    /// the band. The side is the living enemies and the dying one (the game removes the dead creature after its AfterDeath,
+    /// and the old roster keeps corpses the game has removed). Core2's StockPower draws it on HookCtx.Niche; the old respawn
+    /// keeps <see cref="RollAxebotRespawnHp" />.
+    /// </summary>
+    internal static int RollAddedAxebotHp(CombatState state, Random niche, EnemyState? dying, int ascension)
+    {
+        var band = GeneratedData.Enemies.Get(KE.Axebot).HpBand(ascension);
+        var available = Enumerable.Range(band.Min, band.Max - band.Min + 1).ToHashSet();
+        available.ExceptWith(state.Enemies.Where(e => e.Hp > 0 || ReferenceEquals(e, dying)).Select(e => e.MaxHp));
+        return available.Count == 0
+            ? niche.Next(band.Min, band.Max + 1)
+            : available.ElementAt(niche.Next(0, available.Count));
+    }
+
+    /// <summary>
     /// game: StockPower.AfterDeath's new Axebot (StockAmount = Amount - 1), as the old state holds one: a fresh creature
     /// at <paramref name="hp" /> in the state the old in-place respawn leaves the revived bot in
     /// (<see cref="StartRespawnedAxebot" />). Core2's Stock handler lists it with CreatureCmd.Add.
