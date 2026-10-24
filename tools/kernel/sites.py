@@ -65,8 +65,9 @@ SPLITS: dict[str, dict] = {
         "file": "Core/CombatEngine.cs",
         "sha256": "70a0b53b38c872ba226404a9c9ff2483cb7acc4a09d27ac588d7da3ce4e33b58",
         "reason": "Doom's turn-end body is two statements: the threshold test on the Doom stack and the open gate "
-                  "(the BeforeSideTurnEnd moment, F05), then the player's death (HP to zero and the HP-changed "
-                  "dispatch, the kill and AfterDiedToDoom, F10); the F10 part gates on its own switch",
+                  "(the BeforeSideTurnEnd moment, F05), then the first writes of the player's death (HP to zero and the "
+                  "HP-changed dispatch, F10; the kill and AfterDiedToDoom are not in this body); the F10 part gates on "
+                  "its own switch",
         "parts": [
             {"family": "F05", "anchor": "int doom = BuffSystem.Get(state.PlayerBuffs, BuffId.Doom);"},
             {"family": "F10", "anchor": "state.PlayerHp = 0;\n        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);"},
