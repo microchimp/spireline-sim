@@ -11,6 +11,7 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `jobs.py` | the agent-era job kinds (selfplay, train, score-real, bench-env, bench-emu): defaults, `LAB/jobs.json`, markers |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
 | `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict` |
+| `promotion_guard.py` | the review's promotion guard (McNemar at 0.05, boss damage, lineage drift, retry cap) and its power tables; `rl/gen_loop.py` calls it behind `SPIRELINE_REVIEW_GUARD` (off), see `docs/PROMOTION_GUARD.md` |
 | `prune.py` | what may be deleted, in what order, and what never (recordings the corpus already holds go first) |
 | `corpus_import.py` | adds a job's exact and divergent fights to the regression corpus (last step of a fights job) |
 | `winsys.py` | ctypes: GetLastInputInfo, priority class, Job Objects, GetSystemTimes, mutex |

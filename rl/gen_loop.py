@@ -51,6 +51,8 @@ ALPHA = 0.01
 WIN_GATE = 0.10  # wins join the co-primaries once both arms reach this rate
 BOOT_B = 20000
 ENV_GEN_DIR = "SPIRELINE_GEN_DIR"
+REVIEW_GUARD_FLAG = "SPIRELINE_REVIEW_GUARD"  # tools/lab/promotion_guard.FLAG: the review's guard decides when set; off by default
+REVIEW_GUARD_ON_VALUES = ("1", "on", "true", "yes")  # tools/lab/promotion_guard.ON_VALUES (a test keeps them equal)
 PRIOR_SEARCH = {"c_puct": 0.2, "prior_min_visits": 3}  # prior_loop's PriorConfig defaults
 
 TOKEN_KEYS = ("types", "ids", "owners", "feats")
@@ -796,17 +798,22 @@ def rejections(tsv: Path | None, cand_gen: int) -> int:
     return sum(1 for r in read_promotions(tsv) if r.get("cand_gen") == str(cand_gen) and r.get("decision") == "rejected")
 
 
-def mark_ready(lab: Path, gen: int, shards_root: Path, budget: int = BUDGET_RUNS, tsv: Path | None = None) -> Path | None:
+def mark_ready(lab: Path, gen: int, shards_root: Path, budget: int = BUDGET_RUNS, tsv: Path | None = None,
+               review_guard: bool | None = None) -> Path | None:
     """Write `LAB/train/ready-<gen>` once the generation's self-play budget is spent, never twice (ready- or done-).
 
     After a rejection the generation gets another budget: once its candidate was rejected (a rejected row for generation
     gen + 1 in `promotions.tsv`) and the generation's runs reach (markers so far + 1) x budget, `ready-<gen>-r<n>` follows, and
     `train` retrains on the larger window. A promotion moves self-play to the next generation, so no further marker appears.
+    With the review guard on (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable) a generation gets at most
+    `promotion_guard.ATTEMPT_CAP` budgets: no marker after its second rejection.
     """
     d = Path(lab) / "train"
     issued = sum(1 for p in (d.glob("*") if d.is_dir() else []) if (m := _MARKER.fullmatch(p.name)) and int(m[2]) == gen)
     if issued and rejections(tsv, gen + 1) < issued:
         return None
+    if issued and review_guard_on(review_guard) and issued >= review_guard_module().ATTEMPT_CAP:
+        return None  # the review guard's cap: no third promotion attempt (budget) for this generation
     if runs_in_generation(shards_root, gen) < budget * (issued + 1):
         return None
     d.mkdir(parents=True, exist_ok=True)
@@ -880,6 +887,86 @@ def decide(floor: dict, boss: dict, wins: dict, cand_win_rate: float, base_win_r
             "boss_kill_p_worse": p_worse, "promote": all(checks.values()), "alpha": alpha, "rule": "D24"}
 
 
+# ------------------------------------------------------------------ the review's guard (behind the flag)
+
+
+def review_guard_module():
+    """tools/lab/promotion_guard, imported on demand: the pure guard module (docs/PROMOTION_GUARD.md)."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from tools.lab import promotion_guard  # noqa: PLC0415
+
+    return promotion_guard
+
+
+def review_guard_on(flag: bool | None = None) -> bool:
+    """Whether the review's guard decides: `flag` when given, else the SPIRELINE_REVIEW_GUARD variable (off by default).
+    The variable is read here first and the guard module is imported only when it is on, so the flag off never imports
+    it or puts the repo root on sys.path (the training venv's); the module's `enabled` still has the last word."""
+    if flag is not None:
+        return bool(flag)
+    value = os.environ.get(REVIEW_GUARD_FLAG, "")
+    return value.strip().lower() in REVIEW_GUARD_ON_VALUES and review_guard_module().enabled(value)
+
+
+def lineage_blocks(rows: list[dict[str, str]], blocks: int = 3) -> list[tuple[int, int]]:
+    """The promoted lineage's (kills, runs) on the last `blocks` judged blocks, oldest first: the candidate's kills on a
+    block that promoted it, the incumbent's where it stayed. A block judged again (`rejudge` adds a second row for it) counts
+    once, by its last row, in the place of its first judgement. Rows without the counts are skipped."""
+    by_block: dict[Any, tuple[int, int]] = {}
+    for i, r in enumerate(rows):
+        try:
+            n = int(r.get("seeds") or 0)
+            k = int(r.get("boss_cand") if r.get("decision") == "promoted" else r.get("boss_base"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            by_block[r.get("seed_block") or ("row", i)] = (k, n)  # a row naming no block stands alone
+    return list(by_block.values())[-blocks:]
+
+
+def attempts_before(rows: list[dict[str, str]], cand_gen: int, cand_sha: str) -> int:
+    """Other candidates of generation `cand_gen` judged so far (distinct shas; a row without a sha counts as one)."""
+    return len({r.get("cand_sha", "") for r in rows if r.get("cand_gen") == str(cand_gen) and r.get("cand_sha", "") != cand_sha})
+
+
+def previous_drift_flagged(rows: list[dict[str, str]]) -> bool:
+    """Whether the last judged candidate's drift check flagged (the drift column; empty while the guard was off)."""
+    return bool(rows) and rows[-1].get("drift", "") in ("flagged", "blocked")
+
+
+def review_guard_verdict(cand_rows: list[dict], base_rows: list[dict], rows: list[dict[str, str]], *, cand_gen: int, cand_sha: str,
+                         block: str, boot: int = BOOT_B, apply_cap: bool = True) -> dict[str, Any]:
+    """The review's guard (promotion_guard.judge) on two arms, with the lineage, the drift history and the attempt count
+    from the promotions.tsv rows written before this judgement (`rows`; this block's own rows do not count as lineage).
+    With `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is reported against the cap but allowed."""
+    pg = review_guard_module()
+    kills_c, kills_b, dmg_c, dmg_b = pg.from_rows(cand_rows, base_rows, kill=boss_kill)
+    history = [r for r in rows if r.get("seed_block") != block]
+    prior = attempts_before(rows, cand_gen, cand_sha)
+    cap = pg.ATTEMPT_CAP if apply_cap else max(pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed blocks nothing
+    verdict = pg.judge(kills_c, kills_b, dmg_c, dmg_b, lineage=lineage_blocks(history), previous_flagged=previous_drift_flagged(history),
+                       prior_attempts=prior, cap=cap, boot=boot)
+    verdict["attempt"]["cap"] = pg.ATTEMPT_CAP  # report the real cap ("attempt 3/2"), allowed or not
+    return verdict
+
+
+def decide_review(floor: dict, boss: dict, wins: dict, cand_win_rate: float, base_win_rate: float, guard: dict[str, Any],
+                  alpha: float = ALPHA) -> dict[str, Any]:
+    """D24 with the review's guard (docs/PROMOTION_GUARD.md): the floor primary and the 10% co-primary clauses as `decide`;
+    in guard mode the boss kill is the review's McNemar guard at its own alpha (0.05); the boss-damage guard, the drift
+    check's block and the attempt cap are further not-worse checks. A flagged (not blocked) drift sets `review`."""
+    d = decide(floor, boss, wins, cand_win_rate, base_win_rate, alpha)
+    checks = dict(d["checks"])
+    if d["boss_kill_mode"] == "guard":
+        checks["boss_kill"] = not guard["kill"]["fires"]
+    checks["boss_damage"] = not guard["damage"]["fires"]
+    checks["drift"] = not guard["drift"]["blocks"]
+    checks["attempt"] = bool(guard["attempt"]["allowed"])
+    return {**d, "checks": checks, "promote": all(checks.values()), "rule": "D24+" + guard["rule"], "guard_alpha": guard["alpha"],
+            "review": bool(guard["review"])}
+
+
 def arm_rows(arm_dir: Path) -> list[dict]:
     return [json.loads(x) for x in (Path(arm_dir) / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
 
@@ -893,8 +980,10 @@ def arm_summary(rows: list[dict]) -> dict[str, Any]:
     return {**t, "boss_kills": k, "boss_kill_rate": k / len(rows) if rows else None, "boss_kill_lo": lo, "boss_kill_hi": hi}
 
 
-def compare_arms(cand_rows: list[dict], base_rows: list[dict], alpha: float = ALPHA, boot: int = BOOT_B) -> dict[str, Any]:
-    """The promotion table's numbers from two arms' rows, paired on seed."""
+def compare_arms(cand_rows: list[dict], base_rows: list[dict], alpha: float = ALPHA, boot: int = BOOT_B,
+                 guard: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The promotion table's numbers from two arms' rows, paired on seed. With `guard` (the review's verdict,
+    `review_guard_verdict`) the decision is `decide_review`'s and the verdict is kept under `review_guard`; without, D24's."""
     c = {r["seed"]: r for r in cand_rows}
     b = {r["seed"]: r for r in base_rows}
     seeds = sorted(set(c) & set(b))
@@ -904,15 +993,26 @@ def compare_arms(cand_rows: list[dict], base_rows: list[dict], alpha: float = AL
     wins = paired_binary({s: bool(c[s]["win"]) for s in seeds}, {s: bool(b[s]["win"]) for s in seeds})
     cw = sum(bool(c[s]["win"]) for s in seeds) / max(1, len(seeds))
     bw = sum(bool(b[s]["win"]) for s in seeds) / max(1, len(seeds))
-    return {"paired_seeds": len(seeds), "floor": floor, "boss_kill": boss, "wins": wins,
-            "decision": decide(floor, boss, wins, cw, bw, alpha)}
+    out: dict[str, Any] = {"paired_seeds": len(seeds), "floor": floor, "boss_kill": boss, "wins": wins}
+    if guard is None:
+        return {**out, "decision": decide(floor, boss, wins, cw, bw, alpha)}
+    return {**out, "review_guard": guard, "decision": decide_review(floor, boss, wins, cw, bw, guard, alpha)}
 
 
 # ------------------------------------------------------------------ the E-block and the promotion run
 
 
 TSV_COLUMNS = ("written", "cand_gen", "base_gen", "seed_block", "seeds", "d_floor", "floor_lower", "p_floor", "boss_cand",
-               "boss_base", "p_boss", "wins_cand", "wins_base", "decision", "cand_sha", "cand_dir")
+               "boss_base", "p_boss", "wins_cand", "wins_base", "decision", "cand_sha", "cand_dir",
+               # the review's guard: the attempt of the generation (always), the drift verdict and the guard line (empty / "off" when off)
+               "attempt", "drift", "guard")
+
+
+def guard_cells(guard: dict[str, Any] | None, attempt: int) -> dict[str, Any]:
+    """The three guard columns of a promotions.tsv row."""
+    if guard is None:
+        return {"attempt": attempt, "drift": "", "guard": "off"}
+    return {"attempt": attempt, "drift": guard["drift"]["verdict"], "guard": review_guard_module().summary(guard)}
 
 
 def read_promotions(tsv: Path | None) -> list[dict[str, str]]:
@@ -987,8 +1087,11 @@ def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: i
 
 
 def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, procs: int = 16, config: str = "a3-v1",
-            ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B) -> dict[str, Any]:
-    """Play candidate and base on the same E-block seeds, test, and record the decision."""
+            ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B,
+            review_guard: bool | None = None) -> dict[str, Any]:
+    """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
+    (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s, a third attempt
+    of a generation is refused before any run is played, and the tsv row carries the attempt and the guard's verdict."""
     import gen0  # noqa: PLC0415
 
     seeds = gen0.load_seeds(seeds_file)
@@ -1002,11 +1105,19 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     tsv = Path(agent_root) / "promotions.tsv"
     if block_used_by_another(tsv, name, cand_sha):  # a second look at one block is a look the alpha does not pay for
         raise ValueError(f"E-block {name} already judged another candidate; make a fresh one (resolve_e_block)")
+    rows = read_promotions(tsv)
+    guard_on = review_guard_on(review_guard)
+    attempt = attempts_before(rows, cand_agent.generation, cand_sha) + 1
+    if guard_on and attempt > review_guard_module().ATTEMPT_CAP:
+        raise ValueError(f"generation {cand_agent.generation} already had {attempt - 1} promotion attempts "
+                         f"(the review guard caps them at {review_guard_module().ATTEMPT_CAP}); no block is played")
     arm = f"{name}-{config}"
     cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension)
     base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
     base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension)
-    res = compare_arms(cand_rows, base_rows, ALPHA, boot)
+    guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot)
+             if guard_on else None)
+    res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
     if res["paired_seeds"] != len(seeds):  # a partial arm must not promote on fewer pairs than the block
         raise ValueError(f"only {res['paired_seeds']} of {len(seeds)} seeds are paired in both arms")
     doc = {"written": utc_now(), "seed_block": name, "n_seeds": len(seeds), "config": config, "procs": procs,
@@ -1021,7 +1132,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                            "seed_block": name, "seeds": doc["n_seeds"], "d_floor": f"{f['mean']:.4f}", "floor_lower": f"{f['lower']:.4f}",
                            "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
                            "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
-                           "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name})
+                           "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name,
+                           **guard_cells(guard, attempt)})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name})
@@ -1033,10 +1145,12 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
 
 
 def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, config: str = "a3-v1", note: str,
-            lab: Path | None = None, boot: int = BOOT_B) -> dict[str, Any]:
+            lab: Path | None = None, boot: int = BOOT_B, review_guard: bool | None = None) -> dict[str, Any]:
     """Apply the current rule to a candidate's finished arms on its own block, without playing again: for an owner
     decision that changes the rule after a block was judged (D24). Both cached arms must cover the whole block. The
-    earlier promotion.json is kept beside the new one; the tsv gets a second row for the same candidate and block."""
+    earlier promotion.json is kept beside the new one; the tsv gets a second row for the same candidate and block.
+    `review_guard` as in `promote` (a re-read is not a new attempt: the attempt number is reported against the cap,
+    never applied here; the other checks decide)."""
     import gen0  # noqa: PLC0415
 
     seeds = gen0.load_seeds(seeds_file)
@@ -1046,14 +1160,18 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     arm = f"{name}-{config}"
     base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
     cand_rows, base_rows = arm_rows(Path(cand) / "arms" / arm), arm_rows(base_dir / "arms" / arm)
-    res = compare_arms(cand_rows, base_rows, ALPHA, boot)
+    cand_sha = cand_agent.describe()["prior_sha256"] or "none"
+    rows = read_promotions(Path(agent_root) / "promotions.tsv")
+    attempt = attempts_before(rows, cand_agent.generation, cand_sha) + 1
+    guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
+                                  apply_cap=False) if review_guard_on(review_guard) else None)
+    res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
     if res["paired_seeds"] != len(seeds):
         raise ValueError(f"only {res['paired_seeds']} of {len(seeds)} seeds are paired in both cached arms")
     old = Path(cand) / "promotion.json"
     before = json.loads(old.read_text(encoding="utf-8")) if old.is_file() else None
     if before is not None:
         old.rename(Path(cand) / f"promotion-{before.get('decision_text', 'earlier')}-{str(before.get('written', 'x'))[:10]}.json")
-    cand_sha = cand_agent.describe()["prior_sha256"] or "none"
     doc = {"written": utc_now(), "seed_block": name, "n_seeds": len(seeds), "config": config, "alpha": ALPHA,
            "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
@@ -1067,7 +1185,7 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                       "seed_block": name, "seeds": doc["n_seeds"], "d_floor": f"{f['mean']:.4f}", "floor_lower": f"{f['lower']:.4f}",
                       "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
                       "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
-                      "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name})
+                      "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name, **guard_cells(guard, attempt)})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name, "note": note})
@@ -1100,8 +1218,9 @@ def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = 
 
 
 def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds_file: Path, agent_root: Path, procs: int,
-                           lib: str | None, lab: Path | None, lab_runs: Path | None = None) -> int:
-    """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv."""
+                           lib: str | None, lab: Path | None, lab_runs: Path | None = None, review_guard: bool = False) -> int:
+    """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv. The child inherits the
+    environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on."""
     cmd = [emu_python, str(ROOT / "rl" / "gen0.py"), "promote", "--cand", str(cand), "--seeds-file", str(seeds_file),
            "--agent-root", str(agent_root), "--procs", str(procs)]
     if base:
@@ -1112,6 +1231,8 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--lab", str(lab)]
     if lab_runs:
         cmd += ["--lab-runs", str(lab_runs)]  # the E-block must not hold a seed the self-play streams played
+    if review_guard:
+        cmd += ["--review-guard"]
     return subprocess.run(cmd, check=False).returncode
 
 

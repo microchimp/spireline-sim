@@ -410,7 +410,7 @@ def train_cmd(a: argparse.Namespace) -> int:
                                                 cand_sha=json.loads((cand / "model.json").read_text())["policy_sha256"]) \
             if "{k}" in a.seeds_file else Path(a.seeds_file)
         return gen_loop.run_promote_subprocess(a.emu_python, cand, None, seeds_file, Path(a.agent_root), a.procs, a.lib,
-                                               Path(a.lab) if a.lab else None, Path(a.shards_root))
+                                               Path(a.lab) if a.lab else None, Path(a.shards_root), review_guard=a.review_guard)
     return 0
 
 
@@ -422,7 +422,8 @@ def promote_cmd(a: argparse.Namespace) -> int:
 
     doc = gen_loop.promote(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            procs=a.procs, config=a.config, ascension=a.ascension, lab=Path(a.lab) if a.lab else None,
-                           lab_runs=[Path(x) for x in a.lab_runs] if a.lab_runs else None)
+                           lab_runs=[Path(x) for x in a.lab_runs] if a.lab_runs else None,
+                           review_guard=True if a.review_guard else None)
     print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins")}, indent=1))
     return 0
 
@@ -432,7 +433,8 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
     import gen_loop  # noqa: PLC0415
 
     doc = gen_loop.rejudge(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
-                           config=a.config, note=a.note, lab=Path(a.lab) if a.lab else None)
+                           config=a.config, note=a.note, lab=Path(a.lab) if a.lab else None,
+                           review_guard=True if a.review_guard else None)
     print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins", "decision")}, indent=1))
     return 0
 
@@ -559,6 +561,9 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--procs", type=int, default=16)
     t.add_argument("--lib")
     t.add_argument("--lab")
+    t.add_argument("--review-guard", action="store_true",
+                    help="decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
+                         "default: the SPIRELINE_REVIEW_GUARD variable, off")
     pr = sub.add_parser("promote", help="play candidate and base on a fresh E-block and test the promotion rule")
     pr.add_argument("--cand", required=True)
     pr.add_argument("--base", help="the base generation directory (default: the champion in --agent-root, else generation 0)")
@@ -571,6 +576,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
     pr.add_argument("--lab-runs", action="append", help="a folder of self-play job directories (the lab's runs folder): "
                     "the E-block must not contain their seeds; repeatable")
+    pr.add_argument("--review-guard", action="store_true",
+                    help="decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
+                         "default: the SPIRELINE_REVIEW_GUARD variable, off")
     rj = sub.add_parser("rejudge", help="apply the current promotion rule to a candidate's finished arms on its own block")
     rj.add_argument("--cand", required=True)
     rj.add_argument("--base")
@@ -579,6 +587,9 @@ def build_parser() -> argparse.ArgumentParser:
     rj.add_argument("--config", default="a3-v1")
     rj.add_argument("--note", required=True, help="why the block is judged again (the decision that changed the rule)")
     rj.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
+    rj.add_argument("--review-guard", action="store_true",
+                    help="decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
+                         "default: the SPIRELINE_REVIEW_GUARD variable, off")
     sc = sub.add_parser("score")
     sc.add_argument("--game", required=True)
     sc.add_argument("--seeds-file", required=True)
