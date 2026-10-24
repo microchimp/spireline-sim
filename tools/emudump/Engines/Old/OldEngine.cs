@@ -43,6 +43,8 @@ public class OldEngine : IEngine
 
     public void EndTurn() => Step(Combat!.Hand.Count, -1);
 
+    public IReadOnlyList<LegalAction> LegalActions() => OldActions.Of(Run);
+
     public JsonObject DumpStep() => OldDump.Dump(Run);
 
     public JsonObject PowerKeys() => OldAnchor.PowerKeys(OldReanchor.Tables);
@@ -132,9 +134,22 @@ public class OldEngine : IEngine
         }
 
         Setup.MapItems(this, game, setupLog);  // the setup items before the fight, on the map after Neow
-        var want = spec.Room;
-        int idx = Array.FindIndex(s.MapOptionCoords, c => c == want);
-        if (idx < 0) throw new InvalidOperationException($"room {want} not offered; phase {s.Phase}");
+        int idx;
+        if (spec.HasRoom)
+        {
+            var want = spec.Room;
+            idx = Array.FindIndex(s.MapOptionCoords, c => c == want);
+            if (idx < 0) throw new InvalidOperationException($"room {want} not offered; phase {s.Phase}");
+        }
+        else
+        {
+            // No room named (EmuDump fuzz): the first option the run offers, written out so a re-run can name it.
+            idx = Array.FindIndex(s.MapOptionCoords, c => c != null);
+            if (idx < 0) throw new InvalidOperationException($"no room offered; phase {s.Phase}");
+            var took = s.MapOptionCoords[idx]!.Value;
+            report["room"] = new JsonArray(took.Col, took.Row);
+        }
+
         var fight = new JsonObject();
         if (Setup.EnterFight(this, game, idx, fight))
         {
