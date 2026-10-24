@@ -245,19 +245,32 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         });
     }
 
-    /// <summary>Declares the player's hooks deactivated (CreatureCmd.Kill's DeactivateHooks has run) until the scope is
-    /// disposed.</summary>
-    public IDisposable DeactivatePlayerHooks() => SetHooks(PlayerHooks.Deactivated);
+    /// <summary>Declares the player's hooks deactivated (CreatureCmd.Kill's DeactivateHooks has run), for the rest of the
+    /// combat: the state is absorbing. The game's Player.DeactivateHooks is never scoped, and only a heal of the dead
+    /// player (Creature.HealInternal's ActivateHooks, multiplayer revives) turns them on again, which item 9's HP commands
+    /// own. So no scope end restores an earlier state, and <see cref="KeepPlayerHooks" /> does nothing once this is set.
+    /// The returned scope is a no-op, kept so callers written for the scoped form still dispose it.</summary>
+    public IDisposable DeactivatePlayerHooks()
+    {
+        PlayerHooks = PlayerHooks.Deactivated;
+        return new Scope(() => { });
+    }
 
     /// <summary>Declares the player's hooks still active until the scope is disposed: the death passes of the player's
-    /// own kill (death prevention, AfterDeath) run before DeactivateHooks, with the player at 0 HP.</summary>
-    public IDisposable KeepPlayerHooks() => SetHooks(PlayerHooks.Active);
-
-    private Scope SetHooks(PlayerHooks to)
+    /// own kill (death prevention, AfterDeath) run before DeactivateHooks, with the player at 0 HP. Does nothing when the
+    /// hooks are already deactivated (a second kill of a dead player: its BeforeDeath and ShouldDie passes skip the player
+    /// as the game's do), and a scope that ends after a deactivation inside it leaves the deactivation standing.</summary>
+    public IDisposable KeepPlayerHooks()
     {
+        if (PlayerHooks == PlayerHooks.Deactivated)
+            return new Scope(() => { });
         var before = PlayerHooks;
-        PlayerHooks = to;
-        return new Scope(() => PlayerHooks = before);
+        PlayerHooks = PlayerHooks.Active;
+        return new Scope(() =>
+        {
+            if (PlayerHooks != PlayerHooks.Deactivated)
+                PlayerHooks = before;
+        });
     }
 
     private sealed class Scope(Action undo) : IDisposable
@@ -1081,6 +1094,27 @@ public static class OldRoster
     public static bool RemoveFromRoster(OldWorld w, EnemyState enemy) =>
         (w.Combat ?? throw new InvalidOperationException("no combat"))
         .RemoveDepartedEnemies(e => ReferenceEquals(e, enemy)) > 0;
+
+    /// <summary>
+    /// What the old revive paths strip from a corpse that stays in the roster (the Fogmog illusion, a Decimillipede segment,
+    /// an Axebot with Stock: <c>CombatEngine.IllusionDeathStrips</c>, <c>ReattachDeathStrips</c>, <c>AxebotDeathStrips</c>,
+    /// the old paths' own predicates) over the buffs the game's power removal does not reach: folded (TEMPORARY_*),
+    /// engine-only (Stunned) and unclassified ones. The game removes the powers those stand for with the death; without
+    /// this a revived segment would still hold its banked TemporaryStrength and stay stunned. A corpse of no such kind
+    /// keeps them (its removal is due, or none of the paths revive it).
+    /// </summary>
+    public static void StripCorpse(OldWorld w, EnemyState enemy)
+    {
+        Func<BuffId, bool>? strips =
+            BuffSystem.Has(enemy.Buffs, BuffId.Illusion) ? CombatEngine.IllusionDeathStrips
+            : BuffSystem.Has(enemy.Buffs, BuffId.Reattach) ? CombatEngine.ReattachDeathStrips
+            : enemy.DefId == KE.Axebot && BuffSystem.Has(enemy.Buffs, BuffId.Stock) ? CombatEngine.AxebotDeathStrips
+            : null;
+        if (strips is null)
+            return;
+        enemy.Buffs.RemoveAll(b => w.Ids.Power(b.Id).Kind is PowerMapKind.Folded or PowerMapKind.EngineOnly
+            or PowerMapKind.NotModelled && strips(b.Id));
+    }
 
     /// <summary>game: MonsterModel.ResetStateMachine over the old state (CombatManager.RemoveCreature): the move state the
     /// old <see cref="EnemyState" /> keeps, its move index and announced intents, back to a fresh enemy's.</summary>

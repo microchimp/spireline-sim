@@ -44,7 +44,9 @@ public static partial class CreatureCmd
         {
             foreach (var original in targets)
             {
-                if (OldCreatures.IsDead(s, original))
+                // game: `if (originalTarget.IsDead) continue`, and a target a nested kill or escape took out of the combat
+                // meanwhile has no position to name (see the results loop): skipped too.
+                if (OldCreatures.IsDead(s, original) || !OldCreatures.InCombat(w, original))
                     continue;
                 var to = R(w, original);
                 var by = By(w, dealer);
@@ -96,25 +98,35 @@ public static partial class CreatureCmd
             var killed = new List<OldCreature>();
             foreach (var r in results)
             {
-                var who = R(w, r.Receiver);
                 var rr = k.Commands.Add(r);
+                // A receiver a nested kill or escape removed since its hit has no position to name in a hook argument, so its
+                // passes are skipped (the game visits a model only while the combat still holds it, IterateHookListeners'
+                // per-visit Contains; the Creature object it would pass to the others cannot be carried here). Checked again
+                // before each pass: a hook can remove the receiver in the middle of its own result.
+                bool Gone() => !OldCreatures.InCombat(w, r.Receiver);
+                if (Gone())
+                    continue;
                 if (r.WasBlockBroken)
                 {
-                    var a = new AfterBlockBrokenArgs(who);
+                    var a = new AfterBlockBrokenArgs(R(w, r.Receiver));
                     Settle(k, Hooks.AfterBlockBroken(k, a), st => Hooks.AfterBlockBrokenResume(k, a, st));
                 }
 
-                if (r.UnblockedDamage > 0)
+                if (r.UnblockedDamage > 0 && !Gone())
                 {
-                    var a = new AfterCurrentHpChangedArgs(who, -r.UnblockedDamage);
+                    var a = new AfterCurrentHpChangedArgs(R(w, r.Receiver), -r.UnblockedDamage);
                     Settle(k, Hooks.AfterCurrentHpChanged(k, a), st => Hooks.AfterCurrentHpChangedResume(k, a, st));
                 }
 
-                var given = new AfterDamageGivenArgs(ctx, By(w, dealer), rr, props, who, cardSource);
+                if (Gone())
+                    continue;
+                var given = new AfterDamageGivenArgs(ctx, By(w, dealer), rr, props, R(w, r.Receiver), cardSource);
                 Settle(k, Hooks.AfterDamageGiven(k, given), st => Hooks.AfterDamageGivenResume(k, given, st));
+                if (Gone())
+                    continue;
                 if (!r.WasTargetKilled || !OldCreatures.IsDead(s, r.Receiver))
                 {
-                    var a = new AfterDamageReceivedArgs(ctx, who, rr, props, By(w, dealer), cardSource);
+                    var a = new AfterDamageReceivedArgs(ctx, R(w, r.Receiver), rr, props, By(w, dealer), cardSource);
                     Settle(k, Hooks.AfterDamageReceived(k, a), st => Hooks.AfterDamageReceivedResume(k, a, st));
                     // The old listeners' state for this point (a ported model's handler takes its line over).
                     OldCreatures.AfterDamageReceived(w, r, props, cardSource);

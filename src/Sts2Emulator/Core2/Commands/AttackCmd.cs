@@ -95,7 +95,9 @@ public sealed class AttackCmd(OldCreature attacker, decimal damagePerHit, int hi
             {
                 if (OldCreatures.IsDead(s, Attacker))
                     break;
-                var valid = PossibleTargets(w).Where(c => !OldCreatures.IsDead(s, c)).ToList();
+                // game: `GetPossibleTargets().Where(c => c.IsAlive)`; a target a nested kill or escape took out of the combat
+                // (a single target no roster lists any more) is not one either.
+                var valid = PossibleTargets(w).Where(c => !OldCreatures.IsDead(s, c) && OldCreatures.InCombat(w, c)).ToList();
                 if (valid.Count == 0)
                     break;
                 OldCreature? single;

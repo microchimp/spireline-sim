@@ -93,6 +93,9 @@ public static partial class CreatureCmd
                 RemoveAllPowersAfterDeath(k, c);
                 if (c.Kind == CreatureKind.Enemy)
                 {
+                    // A corpse that stays in the roster loses the unlisted buffs its revive would strip (OldRoster.StripCorpse).
+                    if (c.Enemy is { } stays && OldCreatures.InRoster(s, c))
+                        OldRoster.StripCorpse(w, stays);
                     if (primary && teammates.Count != 0 && teammates.All(t => OldCreatures.IsSecondaryEnemy(w, t)))
                         Kill(k, teammates);
                 }

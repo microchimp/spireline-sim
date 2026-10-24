@@ -289,9 +289,6 @@ public class KernelTests
         }
 
         Assert.False(k.World.InSetup);
-        using (Kernel.Marks.DeactivatePlayerHooks(s))
-            Assert.False(OldState.PlayerActive(k.World));
-        Assert.True(OldState.PlayerActive(k.World));
         var enemy = s.Enemies[0];
         using (Kernel.Marks.MarkDying(s, enemy))
             Assert.True(k.World.IsDying(enemy));
@@ -300,16 +297,22 @@ public class KernelTests
             Assert.Equal(PlayerHooks.Active, k.World.PlayerHooks);
         Assert.Equal(PlayerHooks.Undeclared, k.World.PlayerHooks);
         // A nested scope restores what it replaced, not the default; a scope disposed twice restores once.
-        using (Kernel.Marks.DeactivatePlayerHooks(s))
-        {
-            var inner = Kernel.Marks.KeepPlayerHooks(s);
-            Assert.Equal(PlayerHooks.Active, k.World.PlayerHooks);
-            inner.Dispose();
-            inner.Dispose();
-            Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
-        }
-
+        var outer = Kernel.Marks.KeepPlayerHooks(s);
+        var inner = Kernel.Marks.KeepPlayerHooks(s);
+        inner.Dispose();
+        inner.Dispose();
+        Assert.Equal(PlayerHooks.Active, k.World.PlayerHooks);
+        outer.Dispose();
         Assert.Equal(PlayerHooks.Undeclared, k.World.PlayerHooks);
+        // Deactivated is absorbing (the game never scopes DeactivateHooks): no scope end restores an earlier state, and a
+        // keep opened once it is set does nothing.
+        using (Kernel.Marks.KeepPlayerHooks(s))
+            Kernel.Marks.DeactivatePlayerHooks(s).Dispose();
+        Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
+        Assert.False(OldState.PlayerActive(k.World));
+        using (Kernel.Marks.KeepPlayerHooks(s))
+            Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
+        Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
     }
 
     // One handler set for the tests below: relic 3 asks the player at the end of the turn (a per-listener pause).

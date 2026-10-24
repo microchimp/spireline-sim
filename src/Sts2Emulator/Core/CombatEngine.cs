@@ -5011,6 +5011,19 @@ public static class CombatEngine
     /// against the emulator's first LIVING enemy, so every blow the player spent on the
     /// illusion landed on the Fogmog instead and the fight ended floors early.
     /// </remarks>
+    /// <summary>What the Fogmog illusion's death strips (<see cref="TryReviveIllusion" />): every debuff. Shared with the
+    /// kernel's kill (Core2 <c>OldRoster.StripCorpse</c>), which strips the buffs of a corpse that stays in the roster
+    /// that the game's power removal does not reach.</summary>
+    internal static bool IllusionDeathStrips(BuffId id) => BuffSystem.IsDebuff(id);
+
+    /// <summary>What a Decimillipede segment's death strips (<see cref="TryReattachSegment" />): everything but its Reattach
+    /// and the Reviving bookkeeping. Shared with the kernel's kill.</summary>
+    internal static bool ReattachDeathStrips(BuffId id) => id is not (BuffId.Reattach or BuffId.Reviving);
+
+    /// <summary>What an Axebot's death strips (<see cref="TryRespawnAxebot" /> clears every buff and re-applies the Stock it
+    /// read): everything but the Stock the respawn reads and the Reviving bookkeeping. Shared with the kernel's kill.</summary>
+    internal static bool AxebotDeathStrips(BuffId id) => id is not (BuffId.Stock or BuffId.Reviving);
+
     private static bool TryReviveIllusion(EnemyState enemy)
     {
         if (BuffSystem.Get(enemy.Buffs, BuffId.Illusion) <= 0)
@@ -5026,7 +5039,7 @@ public static class CombatEngine
         // The death strips every power `Hook.ShouldPowerBeRemovedOnDeath` does not veto, and
         // `IllusionPower` vetoes only buffs and temporary debuffs: a debuff that is not an
         // `ITemporaryPower` (Vulnerable, Weak, Poison ...) goes with the death.
-        enemy.Buffs.RemoveAll(buff => BuffSystem.IsDebuff(buff.Id));
+        enemy.Buffs.RemoveAll(buff => IllusionDeathStrips(buff.Id));
         BuffSystem.Apply(enemy.Buffs, BuffId.Reviving, 1);
         // A HealIntent, so the readout says what the turn will be spent on.
         enemy.CurrentIntent = new Intent(IntentType.Buff, 0);
@@ -5084,7 +5097,7 @@ public static class CombatEngine
         // Kept: Reattach itself, and the Reviving bookkeeping applied just below. Without
         // this a segment that died mid-fight came back with every point of Strength it had
         // ever gained, and announced damage the game never deals.
-        enemy.Buffs.RemoveAll(buff => buff.Id is not (BuffId.Reattach or BuffId.Reviving));
+        enemy.Buffs.RemoveAll(buff => ReattachDeathStrips(buff.Id));
 
         // TWO, not one, for a death on the player's turn: the phase it dies in is not the
         // phase it reattaches in. See the revive loop in EndTurn. A death on the ENEMY turn
