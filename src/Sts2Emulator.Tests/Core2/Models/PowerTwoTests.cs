@@ -39,6 +39,7 @@ public class PowerTwoTests
         (ListenerKind.Power, "SlipperyPower", HookId.AfterDamageReceived),
         (ListenerKind.Power, "BufferPower", HookId.ModifyHpLostAfterOstyLate),
         (ListenerKind.Power, "BufferPower", HookId.AfterModifyingHpLostAfterOsty),
+        (ListenerKind.Power, "PossessSpeedPower", HookId.AfterDeath),
     ];
 
     [Fact]
@@ -676,5 +677,102 @@ public class PowerTwoTests
     {
         AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "BufferPower", HookId.ModifyHpLostAfterOstyLate,
             HookId.AfterModifyingHpLostAfterOsty);
+    }
+
+    // ---------------------------------------------------------------------------------------- Possess Speed (power-2)
+
+    private static int Dexterity(CombatState s) => BuffSystem.Get(s.PlayerBuffs, BuffId.Dexterity);
+    private static int PossessedSpeed(EnemyState e) => BuffSystem.Get(e.Buffs, BuffId.PossessSpeed);
+
+    /// <summary>Two slugs, the first with Possess Speed 3 (the Dexterity it took), the player at Dexterity -3.</summary>
+    private static (CombatState S, ListenerRef Power) PossessSpeedCombat(int amount = 3)
+    {
+        var s = Combat(40, 40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Dexterity, -amount));
+        return (s, GivePower(s, "PossessSpeedPower", BuffId.PossessSpeed, amount, s.Enemies[0]));
+    }
+
+    [Fact]
+    public void PossessSpeedIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power2), ListenerKind.Power, "PossessSpeedPower", HookId.AfterDeath);
+    }
+
+    [Fact]
+    public void PossessSpeedGivesTheDexterityBackOnItsOwnersDeath()
+    {
+        // game: PossessSpeedPower.AfterDeath; old: CombatEngine.AnswerDeaths calls PossessSpeed_AfterDeath(state, fallen) for
+        // a fallen creature whose Possess Speed > 0: the player gains the amount as Dexterity and the power leaves the
+        // corpse. Dispatched inside Dying (the owner at 0 HP, marked dying, still listed), as the kill runs the hook.
+        var (s, _) = PossessSpeedCombat();
+        var dead = s.Enemies[0];
+        var k = Kernel(s, Power2);
+        var oracle = PossessSpeedCombat().S;
+
+        using (Dying(k, dead))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        CombatEngine.PossessSpeed_AfterDeath(oracle, oracle.Enemies[0]);
+
+        Assert.Equal(Dexterity(oracle), Dexterity(s));
+        Assert.Equal(0, Dexterity(s));
+        Assert.Equal(0, PossessedSpeed(dead));
+        Assert.Equal(oracle.Enemies[0].Buffs, dead.Buffs);
+
+        // Through the kill: CreatureCmd.Kill runs AfterDeath(false) for the dead owner before it strips the corpse.
+        var (s2, _) = PossessSpeedCombat();
+        var k2 = Kernel(s2, Power2);
+        CreatureCmd.Kill(k2, [OldCreature.Of(s2.Enemies[0])]);
+        Assert.Equal(0, Dexterity(s2));
+        Assert.Equal(0, PossessedSpeed(s2.Enemies[0]));
+    }
+
+    [Fact]
+    public void PossessSpeedDoesNothingForAnotherCreaturesDeathOrAPreventedOne()
+    {
+        // The handler's condition: the dead creature is its owner, and the death was not prevented (the old site answers
+        // real deaths). The second slug's death, and the owner's prevented death, leave the Dexterity and the power.
+        var (s, _) = PossessSpeedCombat();
+        var k = Kernel(s, Power2);
+
+        using (Dying(k, s.Enemies[1]))
+            Hooks.AfterDeath(k, AfterDeathOf(2));
+        Assert.Equal((-3, 3), (Dexterity(s), PossessedSpeed(s.Enemies[0])));
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1, removalPrevented: true));
+        Assert.Equal((-3, 3), (Dexterity(s), PossessedSpeed(s.Enemies[0])));
+    }
+
+    [Fact]
+    public void PossessSpeedGivesBackEachOwnersOwnShareAmongTwoHolders()
+    {
+        // The N-holder test: both slugs took 3 (the player at -6). The first's death gives 3 back (not 6) and strips the
+        // first alone; the second's death gives the other 3: one direct call of the old body per owner.
+        var (s, _) = PossessSpeedCombat();
+        GivePower(s, "PossessSpeedPower", BuffId.PossessSpeed, 3, s.Enemies[1]);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Dexterity, -6);
+        var k = Kernel(s, Power2);
+
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        Assert.Equal((-3, 0, 3), (Dexterity(s), PossessedSpeed(s.Enemies[0]), PossessedSpeed(s.Enemies[1])));
+        using (Dying(k, s.Enemies[1]))
+            Hooks.AfterDeath(k, AfterDeathOf(2));
+        Assert.Equal((0, 0, 0), (Dexterity(s), PossessedSpeed(s.Enemies[0]), PossessedSpeed(s.Enemies[1])));
+    }
+
+    [Fact]
+    public void PossessSpeedDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = PossessSpeedCombat();
+        var k = Kernel(s, Without(Power2, PossessSpeedPower.Register));
+        using (Dying(k, s.Enemies[0]))
+            Hooks.AfterDeath(k, AfterDeathOf(1));
+        Assert.Equal((-3, 3), (Dexterity(s), PossessedSpeed(s.Enemies[0])));
+    }
+
+    [Fact]
+    public void PossessSpeedIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "PossessSpeedPower", HookId.AfterDeath);
     }
 }
