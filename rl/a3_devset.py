@@ -54,6 +54,9 @@ def _collect_run(seed: str, ix: int) -> list[dict]:
         return False
 
     r = gen0.play_emu_run(seed, ix, "gen0-60", hook=hook)
+    import gen_loop  # noqa: PLC0415
+
+    gen_loop.replay_note(r.get("prior_path"), f"the run on seed {seed}")  # a log line, never a failure
     for x in rows:
         x["run_floor"] = r["floor"]
     return rows

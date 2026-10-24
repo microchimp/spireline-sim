@@ -32,7 +32,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -53,6 +53,9 @@ BOOT_B = 20000
 ENV_GEN_DIR = "SPIRELINE_GEN_DIR"
 REVIEW_GUARD_FLAG = "SPIRELINE_REVIEW_GUARD"  # tools/lab/promotion_guard.FLAG: the review's guard decides when set; off by default
 REVIEW_GUARD_ON_VALUES = ("1", "on", "true", "yes")  # tools/lab/promotion_guard.ON_VALUES (a test keeps them equal)
+# which prior produced a run's decisions: the row, the record and the npz part (an int8 per run) all carry it
+PRIOR_PATHS = ("none", "cpu", "server", "mixed")
+PRIOR_PATH_CODES = {"none": 0, "cpu": 1, "server": 2, "mixed": 3}  # -1: unknown (a part written before the field)
 PRIOR_SEARCH = {"c_puct": 0.2, "prior_min_visits": 3}  # prior_loop's PriorConfig defaults
 
 TOKEN_KEYS = ("types", "ids", "owners", "feats")
@@ -91,12 +94,27 @@ class Agent:
     tau: float = 0.0
     eps: float = 0.0
     W: float = 53.0  # the value of a won run (run_train.vocab.WON_FLOOR)
+    # the transport of the combat prior, not part of the agent's identity (`describe` leaves them out): the batched prior
+    # server's endpoint and this job's key (docs/rl/GPU_INFERENCE.md). Set by `gen0.run_block` after it started the server.
+    prior_server: str | None = None
+    prior_authkey: bytes | None = field(default=None, repr=False)
 
     def search_extra(self) -> dict[str, Any]:
-        """`live_search.search_live` keyword arguments that switch the tree to PUCT with the prior; {} for none."""
+        """`live_search.search_live` keyword arguments that switch the tree to PUCT with the prior; {} for none.
+        With `prior_server` the champion's in-process prior is replaced by a `prior_client.RemotePrior` to that server."""
         if not self.prior_dir:
             return {}
-        return dict(_champion_settings(self.prior_dir))
+        extra = dict(_champion_settings(self.prior_dir))
+        if self.prior_server:
+            if self.prior_authkey is None:
+                raise ValueError("prior_server needs prior_authkey")
+            import prior_client  # noqa: PLC0415 -- numpy only, but absent from builds before the server
+
+            champion = _champion(self.prior_dir)
+            extra["prior_fn"] = prior_client.RemotePrior(policy=str(champion.policy), probe=champion.probe,
+                                                         endpoint=self.prior_server, authkey=self.prior_authkey,
+                                                         policy_sha256=champion.policy_sha256)
+        return extra
 
     def macro_policy(self):
         from run_train import selfplay  # noqa: PLC0415
@@ -118,13 +136,18 @@ class Agent:
 
 
 @lru_cache(maxsize=8)
-def _champion_settings(prior_dir: str) -> tuple[tuple[str, Any], ...]:
+def _champion(prior_dir: str):
     import combat_prior  # noqa: PLC0415 -- native
 
     champion = combat_prior.find(prior_dir)
     if champion is None:
         raise FileNotFoundError(f"no combat prior (model.json and combat_policy.pt) in {Path(prior_dir).name}")
-    return tuple(champion.live_settings().items())
+    return champion
+
+
+@lru_cache(maxsize=8)
+def _champion_settings(prior_dir: str) -> tuple[tuple[str, Any], ...]:
+    return tuple(_champion(prior_dir).live_settings().items())
 
 
 def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None = None, macro: str | None = None) -> Agent:
@@ -153,7 +176,19 @@ def active_agent_extra() -> dict[str, Any]:
     """`search_configs.SearchConfig.search_kwargs` adds this: the prior of the agent named by SPIRELINE_GEN_DIR (score-real's
     lockstep player builds its search from a config alone), nothing when the variable is unset."""
     d = os.environ.get(ENV_GEN_DIR)
-    return load_agent(d).search_extra() if d else {}
+    if not d:
+        return {}
+    # built from a directory, so it has no server; the lockstep and the score never receive a RemotePrior (a test pins it)
+    return dataclasses.replace(load_agent(d), prior_server=None, prior_authkey=None).search_extra()
+
+
+def replay_note(prior_path: str | None, what: str) -> bool:
+    """Log one line (never fail) when a run or sample that is being replayed was not played on the CPU path: a replay always
+    uses the in-process prior, so a `server` or `mixed` run may not be reproduced decision for decision. True when noted."""
+    if prior_path in (None, "cpu", "none"):
+        return False
+    print(f"replay: {what} was played with prior_path {prior_path!r}; the CPU replay may not be exact", file=sys.stderr, flush=True)
+    return True
 
 
 # ------------------------------------------------------------------ per-run recording (inside the worker)
@@ -288,13 +323,15 @@ class RunRecorder:
         visits, q = root_targets(res.children, MAX_ACTIONS)
         self.samples.add(tokens, visits, q, legal, f["encounter"], f["deck"], f["relics"], res.sims)
 
-    def finish(self, session, moves: int, won: bool, steps_cap_hit: bool = False) -> dict[str, Any]:
+    def finish(self, session, moves: int, won: bool, steps_cap_hit: bool = False, prior_path: str | None = None,
+               prior_calls: dict | None = None) -> dict[str, Any]:
+        """The run's RunRecord. `prior_path` ("none", "cpu", "server" or "mixed") and `prior_calls` say which prior played it."""
         from run_train import FEATURE_VERSION, shards  # noqa: PLC0415
         from run_train.vocab import WON_FLOOR  # noqa: PLC0415
 
         self.run.moves = moves
         info, stats = session.info, session.stats
-        return {
+        record = {
             "schema": shards.SCHEMA_VERSION, "feature_version": FEATURE_VERSION, "seed": self.seed,
             "generation": self.generation, "policy": self.policy_desc,
             "combat": {"budget": str(session.budget), "c": self.c, "crn_fraction": 1.0},
@@ -306,14 +343,24 @@ class RunRecorder:
             "stats": {"unknown_decisions": dict(stats.unknown_decisions), "forced_skips": dict(stats.forced_skips),
                       "potion_left_full_belt": stats.potion_left_full_belt, "steps": session.steps + moves,
                       "seconds": time.perf_counter() - self.started}}
+        if prior_path is not None:
+            record["prior_path"] = prior_path
+        if prior_calls is not None:
+            record["prior_calls"] = dict(prior_calls)
+        return record
 
 
 # ------------------------------------------------------------------ shards of a self-play block
 
 
-def write_part(path: Path, runs: list[tuple[str, dict | None]], generation: int) -> int:
+def prior_path_code(tag: str | None) -> int:
+    return PRIOR_PATH_CODES.get(tag, -1) if tag is not None else -1
+
+
+def write_part(path: Path, runs: list[tuple[str, dict | None]], generation: int, prior_paths: list[str | None] | None = None) -> int:
     """Write the combat samples of `runs` (seed, arrays-or-None) as one npz in `prior_loop`'s layout; return the sample count.
-    `fights` is the run's index in the part (so a split by that column is a split by run)."""
+    `fights` is the run's index in the part (so a split by that column is a split by run). With `prior_paths` (one tag per run)
+    the part also holds `prior_path`, an int8 per run aligned with `seeds` (0 none, 1 cpu, 2 server, 3 mixed, -1 unknown)."""
     path = Path(path)
     have = [(i, a) for i, (_, a) in enumerate(runs) if a is not None]
     out: dict[str, np.ndarray] = {}
@@ -325,6 +372,10 @@ def write_part(path: Path, runs: list[tuple[str, dict | None]], generation: int)
         out["fights"] = np.concatenate([np.full(a["lengths"].size, i, dtype=np.int64) for i, a in have])
         out["max_hp"] = np.array([max(int(a["max_hp"][0]) for _, a in have)], dtype=np.int64)
     out["seeds"] = np.array([s for s, _ in runs])
+    if prior_paths is not None:
+        if len(prior_paths) != len(runs):
+            raise ValueError("one prior_path per run")
+        out["prior_path"] = np.array([prior_path_code(t) for t in prior_paths], dtype=np.int8)
     out["generation"] = np.array([generation], dtype=np.int64)
     out["n_runs"] = np.array([len(runs)], dtype=np.int64)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -355,8 +406,10 @@ class ShardSink:
                      "ascension": ascension, "agent": agent}
         self.writer = shards.ShardWriter(self.dir, part_runs)
         self.pending: list[tuple[str, dict | None]] = []
+        self.pending_paths: list[str | None] = []
         self.parts: list[str] = []
         self.runs = self.samples = 0
+        self.prior_paths: dict[str, int] = {}  # runs by the prior that played them ("unknown": a record without the field)
 
     def add(self, record: dict, arrays: dict | None) -> None:
         if record["generation"] != self.generation:
@@ -364,6 +417,9 @@ class ShardSink:
                              f"generation {self.generation} block")
         self.writer.add(record)
         self.pending.append((record["seed"], arrays))
+        tag = record.get("prior_path")
+        self.pending_paths.append(tag)
+        self.prior_paths[tag or "unknown"] = self.prior_paths.get(tag or "unknown", 0) + 1
         self.runs += 1
         if len(self.pending) >= self.part_runs:
             self.flush()
@@ -371,9 +427,9 @@ class ShardSink:
     def flush(self) -> None:
         if self.pending:
             name = f"combat-g{self.generation}-{len(self.parts):04d}.npz"
-            self.samples += write_part(self.dir / name, self.pending, self.generation)
+            self.samples += write_part(self.dir / name, self.pending, self.generation, self.pending_paths)
             self.parts.append(name)
-            self.pending = []
+            self.pending, self.pending_paths = [], []
         self.writer.flush()
         self._manifest()
 
@@ -381,6 +437,7 @@ class ShardSink:
         from run_train import shards  # noqa: PLC0415
 
         write_json(self.dir / "shards.json", {**self.meta, "runs": self.runs, "samples": self.samples,
+                                              "prior_paths": dict(sorted(self.prior_paths.items())),
                                               "run_shards": [p.name for p in shards.shard_paths(self.dir)],
                                               "combat_parts": list(self.parts), "written": utc_now()})
 
@@ -408,12 +465,18 @@ def runs_in_generation(root: Path, gen: int) -> int:
     return sum(int(m.get("runs", 0)) for _, m in find_manifests(root) if int(m["generation"]) == gen)
 
 
-def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = MAX_FIGHTS, seed: int = 0) -> dict[str, Any]:
+def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = MAX_FIGHTS, seed: int = 0,
+                       exclude_prior_paths: tuple[str, ...] = ()) -> dict[str, Any]:
     """Merge the combat parts of the window with `prior_loop.loop.merge_datasets` and sample at most `max_fights` fights.
-    Returns the arrays plus counts per generation."""
+    Returns the arrays plus counts per generation. `exclude_prior_paths` (tags of `PRIOR_PATHS`) drops the runs a part's
+    `prior_path` codes tag so; a part from before the field has none and is never dropped."""
     from prior_loop.loop import merge_datasets  # noqa: PLC0415
 
-    sources, per_gen, ixs, qs = [], {}, [], []
+    bad = [t for t in exclude_prior_paths if t not in PRIOR_PATH_CODES]
+    if bad:
+        raise ValueError(f"unknown prior path {bad[0]!r}; one of {', '.join(PRIOR_PATHS)}")
+    excluded = np.array([PRIOR_PATH_CODES[t] for t in exclude_prior_paths], dtype=np.int8)
+    sources, per_gen, ixs, qs, keeps = [], {}, [], [], []
     for d, m in manifests:
         for name in m.get("combat_parts", []):
             blob = read_part(d / name)
@@ -422,7 +485,11 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
                 raise ValueError(f"{name} is tagged generation {int(blob['generation'][0])} but its manifest says {g}")
             if "lengths" not in blob:  # a part whose runs recorded no searched decision
                 continue
-            per_gen[g] = per_gen.get(g, 0) + int(blob["lengths"].size)
+            keep = np.ones(blob["lengths"].size, dtype=bool)
+            if excluded.size and "prior_path" in blob:  # `fights` is the run's index in the part, the index of its code
+                keep = ~np.isin(blob["prior_path"][blob["fights"]], excluded)
+            keeps.append(keep)
+            per_gen[g] = per_gen.get(g, 0) + int(keep.sum())
             ixs.append(blob["fight_ix"])
             qs.append(blob.get("qvals"))
             sources.append((len(sources), d / name))
@@ -431,7 +498,15 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     merged = merge_datasets(sources)  # offsets each part's run index, so a run id is unique over the window
     if all(q is not None for q in qs):  # merge_datasets keeps prior_loop's keys; the completed-Q target needs these
         merged["qvals"] = np.concatenate(qs)
-    key = merged["fights"] * 4096 + np.concatenate(ixs)  # a fight = (run, fight_ix in the run)
+    ix_all = np.concatenate(ixs)
+    keep_all = np.concatenate(keeps)
+    n_excluded = int(keep_all.size - keep_all.sum())
+    if n_excluded:
+        if not keep_all.any():
+            raise ValueError("no combat samples in the window after excluding prior paths " + ",".join(exclude_prior_paths))
+        merged = _take_rows(merged, keep_all)
+        ix_all = ix_all[keep_all]
+    key = merged["fights"] * 4096 + ix_all  # a fight = (run, fight_ix in the run)
     uniq, inv = np.unique(key, return_inverse=True)
     n_all = int(uniq.size)
     if n_all > max_fights:
@@ -441,6 +516,7 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
         kept = int(np.unique(key[keep]).size)
     else:
         kept = n_all
+    merged["_samples_excluded"] = np.array([n_excluded])
     merged["_fights_available"] = np.array([n_all])
     merged["_fights_kept"] = np.array([kept])
     merged["_samples_by_generation"] = np.array(sorted(per_gen.items()))
@@ -707,7 +783,8 @@ def macro_for(keep_doc: dict[str, Any] | None, cand: Path) -> str:
 
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
                      max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
-                     seed_dir: Path | None = None, retrain: int = 0, policy_target: str = "visits") -> Path:
+                     seed_dir: Path | None = None, retrain: int = 0, policy_target: str = "visits",
+                     exclude_prior_paths: tuple[str, ...] = ()) -> Path:
     """Train generation `gen`'s candidate (the next generation's) from the last GEN_WINDOW generations' shards."""
     from run_train import shards as rs  # noqa: PLC0415
 
@@ -720,7 +797,7 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     cand = Path(agent_root) / f"gen{gen + 1}" / ("candidate" if retrain == 0 else f"candidate-r{retrain}")
     cand.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    data = build_training_set(mans, max_fights=max_fights, seed=gen)
+    data = build_training_set(mans, max_fights=max_fights, seed=gen, exclude_prior_paths=exclude_prior_paths)
     doc: dict[str, Any] = {
         "generation_trained_from": gen, "candidate_generation": gen + 1, "window": GEN_WINDOW,
         "blocks": len(mans), "runs": sum(int(m["runs"]) for _, m in mans),
@@ -728,6 +805,8 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
                                for g in sorted({int(m["generation"]) for _, m in mans})},
         "samples_available": {str(int(g)): int(n) for g, n in data["_samples_by_generation"]},
         "fights_available": int(data["_fights_available"][0]), "fights_kept": int(data["_fights_kept"][0]),
+        **({"excluded_prior_paths": list(exclude_prior_paths), "samples_excluded": int(data["_samples_excluded"][0])}
+           if exclude_prior_paths else {}),
         "samples_trained": int(data["lengths"].size), "target": "root visits (live search has no Gumbel root)" if policy_target == "visits" else policy_target,
         "validation": "by run (train_combat splits on the `fights` column, which holds the run index)",
         "build_s": round(time.perf_counter() - t0, 1)}
@@ -1071,8 +1150,10 @@ def known_seed_sets(seed_dir: Path, lab_runs: Path | list[Path] | None, e_name: 
     return out
 
 
-def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: int, ascension: int = 10) -> list[dict]:
-    """Play the seeds with `agent`, or reuse the arm if the same seeds and config were already played there."""
+def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: int, ascension: int = 10,
+            server_opts=None) -> list[dict]:
+    """Play the seeds with `agent`, or reuse the arm if the same seeds and config were already played there. The arm uses a
+    prior server only when `server_opts` (a `prior_launch.ServerOpts`) says so; the promotion arms default to the CPU path."""
     import gen0  # noqa: PLC0415
 
     arm_dir = Path(arm_dir)
@@ -1082,16 +1163,20 @@ def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: i
         rows = arm_rows(arm_dir)
         if old.get("config") == config and old.get("agent") == agent.describe() and {r["seed"] for r in rows} == set(seeds):
             return rows
-    gen0.run_block(seeds, config, procs, arm_dir, ascension=ascension, agent=agent)
+    if server_opts is not None and server_opts.mode != "off":
+        gen0.run_block_served(seeds, config, procs, arm_dir, opts=server_opts, ascension=ascension, agent=agent)
+    else:
+        gen0.run_block(seeds, config, procs, arm_dir, ascension=ascension, agent=agent)
     return arm_rows(arm_dir)
 
 
 def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, procs: int = 16, config: str = "a3-v1",
             ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B,
-            review_guard: bool | None = None) -> dict[str, Any]:
+            review_guard: bool | None = None, server_opts=None) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
     (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s, a third attempt
-    of a generation is refused before any run is played, and the tsv row carries the attempt and the guard's verdict."""
+    of a generation is refused before any run is played, and the tsv row carries the attempt and the guard's verdict.
+    `server_opts` puts both arms on a prior server each (one policy per server); the default is the CPU path."""
     import gen0  # noqa: PLC0415
 
     seeds = gen0.load_seeds(seeds_file)
@@ -1112,9 +1197,10 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         raise ValueError(f"generation {cand_agent.generation} already had {attempt - 1} promotion attempts "
                          f"(the review guard caps them at {review_guard_module().ATTEMPT_CAP}); no block is played")
     arm = f"{name}-{config}"
-    cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension)
+    arm_kw = {"server_opts": server_opts} if server_opts is not None else {}  # the CPU path passes nothing new
+    cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension, **arm_kw)
     base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
-    base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension)
+    base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension, **arm_kw)
     guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot)
              if guard_on else None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
@@ -1218,9 +1304,11 @@ def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = 
 
 
 def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds_file: Path, agent_root: Path, procs: int,
-                           lib: str | None, lab: Path | None, lab_runs: Path | None = None, review_guard: bool = False) -> int:
+                           lib: str | None, lab: Path | None, lab_runs: Path | None = None, review_guard: bool = False,
+                           prior_server_flags: tuple[str, ...] = ()) -> int:
     """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv. The child inherits the
-    environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on."""
+    environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on, and
+    `prior_server_flags` the server options (none by default: the arms play on the CPU path)."""
     cmd = [emu_python, str(ROOT / "rl" / "gen0.py"), "promote", "--cand", str(cand), "--seeds-file", str(seeds_file),
            "--agent-root", str(agent_root), "--procs", str(procs)]
     if base:
@@ -1233,6 +1321,7 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--lab-runs", str(lab_runs)]  # the E-block must not hold a seed the self-play streams played
     if review_guard:
         cmd += ["--review-guard"]
+    cmd += list(prior_server_flags)  # none by default: the promotion arms play on the CPU path unless a flag says otherwise
     return subprocess.run(cmd, check=False).returncode
 
 
