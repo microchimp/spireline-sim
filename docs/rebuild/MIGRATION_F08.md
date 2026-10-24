@@ -576,6 +576,20 @@ handler batch), `CombatEngine.IsPrimaryEnemy` (Creature.IsPrimaryEnemy, not a ho
 `ShouldDie` (the slot lookup `PlayerIsDead` and `IsAboutToLose` share) and the Tungsten Rod line of
 `RunNonCombatEffects.LoseHp` (run-level HP loss, outside the combat code).
 
+**Integration (landing 6, `rebuild/integrate-f08a`).** R3b's tip `d9a0a6f0`, R1's review fixes (`622271a6`), R5 (`50af5b24`) and
+`rebuild/tier1-kernel` (fork main `7727a1b7` plus the scenario format) merged in that order. Conflicts: the Doom split record
+in `sites.json` (R1's corrected reason kept), `CardEffects.cs` (doc comments only: R2's `EnchantDamageAdditive` and
+`EnchantDamageMultiplicative` kept, R5's `Gigantification_ModifyDamageMultiplicative` placed ahead of `DmgFrom`), `sites.py`
+and `sites.json` (the Doom and Fur Coat parts re-read, anchors unchanged and unique; the `CombatEngine.cs` hash re-recorded,
+`sites.json` rebuilt). Acceptance: `dotnet test src/Sts2Emulator.Tests` 6809 passed, 7 skipped, 0 failed (6816);
+`tools/emudump.Tests` 281 passed; byte_proof against a Release EmuDump of fork main `7727a1b7`, all 11 modes over 4304
+corpus fights, `--engine old` and `--b-args "--engine core2"`: 47344 pairs identical, 0 differ, each; `corpus.py identity`
+4304 identical in every field at every step; `fuzz_core2.py --fights 300` 0 differences; `construct shape` 0, `construct
+commands` 0 (6 commands, 0 stray writes), `sites check` 0 problems (279 sites); `EmuDump scenario tests/scenarios` 14 pass,
+9 xfail on old and on core2. `fuzz_core2.py --switches F08,F10 --fights 300` finds 8 differing fights (all untriaged: the
+combat-end fields, Phase, rewards and HP); the R3b tip `d9a0a6f0` alone gives the same 8 fights with byte-identical diff
+files, so the merge adds none: they are the open F08/F10 handlers and the F17 hand-off, for R4 and the batches.
+
 ## 6. Acceptance
 
 Per round:
