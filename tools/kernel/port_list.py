@@ -1,6 +1,7 @@
 """Handler port list for a family migration (docs/rebuild/MIGRATION_F08.md).
 
-    python -m tools.kernel.port_list --families F08 F10 [--size 12] [--md out.md] [--json out.json]
+    python -m tools.kernel.port_list --families F08 F10 [--exclude-hooks H ...] [--size 12] [--md out.md] [--json out.json]
+                                     [--gate]
 
 Every model the port manifest says is reached by records (corpus, agent, lab or Codex) that overrides a hook of the
 given families, with: the family hooks it overrides, how the old engine stands for each (``hook_table.classify``:
@@ -8,12 +9,18 @@ registered at a dispatch site, not modelled with its reason, open, or missing), 
 site and line where the old engine names the model for that hook, else the methods that name it elsewhere), its reach,
 and the batch it is ported in. Batches are per kind (power, relic, card, monster, potion, other), ordered by reach,
 ``--size`` models each, so a worker ports one batch per round. Identifiers only: no game text.
+
+Pseudo-hooks (``PSEUDO_HOOKS``) are the kill sequence's model calls that are not AbstractModel hooks (a MonsterModel
+or PowerModel virtual, or the creature's ``Died`` event a monster subscribes to); they are listed like hooks of their
+family so their models are ported in the same batches. ``--gate`` exits 1 while any listed (model, hook) pair is open,
+missing or unmatched and has no Core2 handler (``Core2/Models``): the switch-on gate of the migration.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -27,16 +34,119 @@ FAMILIES = ROOT / "tools" / "fidelity" / "hook_families.json"
 MANIFEST = Path(os.environ.get("SPIRELINE_REBUILD", r"D:\spireline\referee\rebuild")) / "manifest.json"
 BATCH_KINDS = ("power", "relic", "card", "monster", "potion")
 SOURCES = ("corpus_fights", "agent_runs", "lab_fights", "codex_runs")
+CORE2_MODELS = ROOT / "src" / "Sts2Emulator" / "Core2" / "Models"
+# Hooks that leave F10 under the migration's option B (MIGRATION_F08.md section 2): pass to --exclude-hooks until the
+# re-cut lands in hook_families.json.
+F17_RECUT = ("AfterCombatEnd", "AfterCombatVictory", "AfterCombatVictoryEarly")
+# The kill sequence's non-hook model calls: name -> (family, kind of the declaring model, how a model takes part).
+PSEUDO_HOOKS = {
+    "BeforeRemovedFromRoom": ("F10", "monster", "override"),        # MonsterModel virtual, CombatManager.RemoveCreature
+    "ShouldPowerBeRemovedAfterOwnerDeath": ("F10", "power", "override"),  # PowerModel virtual, the kill's power sweep
+    "AfterRemoved": ("F10", "power", "override"),                  # PowerModel virtual, after each removed power
+    "Died": ("F10", "monster", "event"),                           # Creature.Died, raised before the removal query
+}
+OPEN_STATUSES = ("open", "missing", "unmatched")
+# A value hook (Modify*, Should*) only reads its model; a location whose statement writes the model's buff is where the
+# old engine applies the power (EnemyAI.TriggerSuck applying Strength), not where it folds it in.
+BUFF_WRITE = re.compile(r"BuffSystem\.(?:Apply|Remove)\(|\bBuffs\[[^\]]*\]\s*[-+*]?=(?!=)")
 
 
-def family_hooks(fam_doc: dict, families: list[str]) -> dict[str, str]:
-    """hook -> family, for the hooks of the given families."""
+def family_hooks(fam_doc: dict, families: list[str], exclude=()) -> dict[str, str]:
+    """hook -> family, for the hooks of the given families (pseudo-hooks included), less ``exclude``."""
     out = {}
     for hook, v in fam_doc["hooks"].items():
         fam = v if isinstance(v, str) else v.get("family")
         if fam in families:
             out[hook] = fam
+    for hook, (fam, _kind, _how) in PSEUDO_HOOKS.items():
+        if fam in families:
+            out[hook] = fam
+    for hook in exclude:
+        out.pop(hook, None)
     return out
+
+
+EVENT_SUB = re.compile(r"\bCreature\.(\w+)\s*\+=")
+
+
+def pseudo_overrides(decompiled: str) -> list[tuple[str, str, str]]:
+    """(model key, kind, pseudo-hook) for every concrete model taking part in a pseudo-hook, inherited ones included."""
+    classes = ht.model_classes(decompiled)
+    root = Path(decompiled)
+    own: dict[str, list[str]] = {}
+    for key, c in classes.items():
+        text = ht._read(root / c.rel)
+        got = [h for h in dict.fromkeys(ht.OVERRIDE.findall(text)) if PSEUDO_HOOKS.get(h, ("", "", ""))[2] == "override"]
+        got += [h for h in dict.fromkeys(EVENT_SUB.findall(text)) if PSEUDO_HOOKS.get(h, ("", "", ""))[2] == "event"]
+        own[c.name] = got
+    out = []
+    for key, c in sorted(classes.items()):
+        if c.abstract or c.name in ht.KIND_OF_BASE:
+            continue
+        kind = ht.kind_of(classes, c.base)
+        cur, seen, done = c, set(), []
+        while cur is not None and cur.name not in ht.KIND_OF_BASE and cur.name not in seen:
+            seen.add(cur.name)
+            done += [h for h in own.get(cur.name, []) if h not in done]
+            cur = classes.get(cur.base)
+        out += [(key, kind, h) for h in done if PSEUDO_HOOKS[h][1] == kind]
+    return out
+
+
+def pseudo_rows(decompiled: str, engine) -> list:
+    """Rows for the pseudo-hooks: no old dispatch site exists, so a pair is open (the old engine names the model in
+    the methods listed under elsewhere: each is read in its batch) or missing (named nowhere)."""
+    rows = []
+    for key, kind, hook in pseudo_overrides(decompiled):
+        name = ht.short(key)
+        refs = ht.references(engine, kind, name)
+        elsewhere = sorted({ht.qual(mt) for r in refs if (mt := engine.method_at(r.file, r.offset)) is not None})
+        rows.append(ht.Row(key, kind, hook, "open" if elsewhere else "missing", [], "", elsewhere))
+    return rows
+
+
+def drop_buff_writes(rows: list, engine) -> list:
+    """A value hook's location whose statement writes the model's buff is an application, not the hook: moved from
+    where to elsewhere (a row left with no location becomes open)."""
+    out = []
+    for r in rows:
+        if not (r.hook.startswith("Modify") or r.hook.startswith("Should")) or not r.where or not r.sites:
+            out.append(r)
+            continue
+        writes = set()
+        for rel, off in r.sites:
+            text = engine.masked[rel]
+            if BUFF_WRITE.search(text[text.rfind(";", 0, off) + 1:text.find(";", off)]):
+                mt = engine.method_at(rel, off)
+                writes.add(f"{ht.qual(mt) if mt else ''}:{engine.line_of(rel, off)}")
+        keep = [w for w in r.where if re.sub(r"\[[^\]]*\]", "", w) not in writes]
+        moved = [w for w in r.where if w not in keep]
+        if not moved:
+            out.append(r)
+            continue
+        where = list(dict.fromkeys(keep))
+        status = r.status if where else "open"
+        out.append(ht.Row(r.model, r.kind, r.hook, status, where, r.reason,
+                          sorted(set(r.elsewhere) | {m.rsplit(":", 1)[0] for m in moved}), r.sites))
+    return out
+
+
+def ported(models_dir: Path = CORE2_MODELS) -> set[tuple[str, str]]:
+    """(game class, hook) pairs with a Core2 handler: a file under Core2/Models registering ``Model(kind, "Class")``
+    with ``HookId.<hook>`` (one model per file, TIER1_KERNEL.md section 4)."""
+    out = set()
+    for p in sorted(models_dir.rglob("*.cs")) if models_dir.is_dir() else []:
+        text = p.read_text(encoding="utf-8")
+        names = re.findall(r"\.Model\(\s*ListenerKind\.\w+\s*,\s*\"(\w+)\"", text)
+        for n in names:
+            out |= {(n, h) for h in re.findall(r"\bHookId\.(\w+)", text)}
+    return out
+
+
+def open_pairs(items: list[dict], done: set[tuple[str, str]] = frozenset()) -> list[tuple[str, str, str]]:
+    """(model, hook, status) of every listed pair that is open, missing or unmatched and has no Core2 handler."""
+    return [(i["model"], h["hook"], h["status"]) for i in items for h in i["hooks"]
+            if h["status"] in OPEN_STATUSES and (i["class"], h["hook"]) not in done]
 
 
 def reach(entry: dict) -> tuple[int, ...]:
@@ -50,7 +160,8 @@ def batch_kind(kind: str) -> str:
 def build(rows: list, models: dict, hooks: dict[str, str]) -> dict:
     """The port list from classify rows, the manifest's models (key -> entry) and the families' hooks.
 
-    A model is listed when its manifest entry overrides one of the hooks (combat_hooks) and any source reaches it. Rows
+    A model is listed when its manifest entry overrides one of the hooks (combat_hooks), or a pseudo-hook row names it,
+    and any source reaches it. Rows
     are matched to manifest entries by (kind, class); a reached model with a family hook and no row (the decompile and
     the manifest disagree) is listed under ``unmatched``, never dropped."""
     by_class: dict[tuple[str, str], list] = {}
@@ -59,7 +170,8 @@ def build(rows: list, models: dict, hooks: dict[str, str]) -> dict:
             by_class.setdefault((r.kind, ht.short(r.model)), []).append(r)
     items, unmatched = [], []
     for key, m in sorted(models.items()):
-        mine = sorted(h for h in m.get("combat_hooks", []) if h in hooks)
+        pseudo = {r.hook for r in by_class.get((m["kind"], m["class"]), []) if r.hook in PSEUDO_HOOKS}
+        mine = sorted({h for h in m.get("combat_hooks", []) if h in hooks} | pseudo)
         if not mine or not any(reach(m)):
             continue
         got = {r.hook: r for r in by_class.get((m["kind"], m["class"]), [])}
@@ -69,7 +181,7 @@ def build(rows: list, models: dict, hooks: dict[str, str]) -> dict:
         for h in mine:
             r = got.get(h)
             per_hook.append({
-                "hook": h, "family": hooks[h],
+                "hook": h, "family": hooks[h], "pseudo": h in PSEUDO_HOOKS,
                 "status": r.status if r else "unmatched",
                 "where": list(r.where) if r else [],
                 "elsewhere": list(r.elsewhere) if r else [],
@@ -111,7 +223,15 @@ def render_md(doc: dict) -> str:
     items = {i["model"]: i for i in doc["items"]}
     L = [f"# Port list: {'+'.join(doc['families'])}", "",
          f"{len(items)} models reached by records override a hook of these families: "
-         + ", ".join(f"{k} {v}" for k, v in doc["summary"].items()) + ".", ""]
+         + ", ".join(f"{k} {v}" for k, v in doc["summary"].items()) + "."]
+    if doc.get("excluded"):
+        L.append(f"Hooks left out: {', '.join(doc['excluded'])}.")
+    pairs = [h for i in doc["items"] for h in i["hooks"]]
+    st: dict[str, int] = {}
+    for h in pairs:
+        st[h["status"]] = st.get(h["status"], 0) + 1
+    L += [f"{len(pairs)} (model, hook) pairs ({sum(1 for h in pairs if h.get('pseudo'))} pseudo-hook): "
+          + ", ".join(f"{k} {v}" for k, v in sorted(st.items())) + f"; gate: {len(doc.get('open', []))} open pairs.", ""]
     if doc["unmatched"]:
         L += [f"Unmatched (manifest model with no decompile row): {', '.join(doc['unmatched'])}", ""]
     for b in doc["batches"]:
@@ -124,20 +244,24 @@ def render_md(doc: dict) -> str:
                 loc = "; ".join(h["where"]) or ("elsewhere: " + ", ".join(h["elsewhere"][:4]) if h["elsewhere"] else "")
                 if h["status"] == "not_modelled" and h["reason"]:
                     loc = (loc + "; " if loc else "") + "not modelled: " + h["reason"][:80]
-                L.append(f"| {key if n == 0 else ''} | {rr if n == 0 else ''} | {h['hook']} | {h['status']} | {loc} |")
+                name = h["hook"] + (" (pseudo)" if h.get("pseudo") else "")
+                L.append(f"| {key if n == 0 else ''} | {rr if n == 0 else ''} | {name} | {h['status']} | {loc} |")
         L.append("")
     return "\n".join(L) + "\n"
 
 
-def make(families: list[str], size: int, manifest_path: Path, decompiled: str) -> dict:
+def make(families: list[str], size: int, manifest_path: Path, decompiled: str, exclude=()) -> dict:
     fam_doc = json.loads(FAMILIES.read_text(encoding="utf-8"))
-    hooks = family_hooks(fam_doc, families)
+    hooks = family_hooks(fam_doc, families, exclude)
     engine = ht.Engine.load(ht.ENGINE)
     open_keys = {k.split(" ", 1)[1] for k in ht.read_open() if k.startswith("missing ")}
     rows = ht.classify(decompiled, engine, ht.load_json(ht.DISPATCH), ht.load_json(ht.UNMODELLED), open_keys)
+    rows = drop_buff_writes(rows, engine) + pseudo_rows(decompiled, engine)
     models = json.loads(Path(manifest_path).read_text(encoding="utf-8"))["models"]
     got = build(rows, models, hooks)
     got["families"] = list(families)
+    got["excluded"] = sorted(exclude)
+    got["open"] = [list(p) for p in open_pairs(got["items"], ported())]
     got["summary"] = summary(got["items"])
     got["batches"] = batches(got["items"], size)
     return got
@@ -151,8 +275,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--decompiled", default=ht.DEFAULT_DECOMPILED)
     ap.add_argument("--md", type=Path)
     ap.add_argument("--json", type=Path)
+    ap.add_argument("--exclude-hooks", nargs="*", default=[], help=f"hooks to leave out (option B: {' '.join(F17_RECUT)})")
+    ap.add_argument("--gate", action="store_true", help="exit 1 while any pair is open, missing or unmatched")
     a = ap.parse_args(argv)
-    doc = make(a.families, a.size, a.manifest, a.decompiled)
+    doc = make(a.families, a.size, a.manifest, a.decompiled, a.exclude_hooks)
     if a.json:
         a.json.write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
     md = render_md(doc)
@@ -160,6 +286,9 @@ def main(argv: list[str] | None = None) -> int:
         a.md.write_text(md, encoding="utf-8")
     else:
         sys.stdout.write(md)
+    if a.gate and doc["open"]:
+        sys.stderr.write(f"gate: {len(doc['open'])} open (model, hook) pairs\n")
+        return 1
     return 0
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -47,8 +48,23 @@ class PortListTests(unittest.TestCase):
         self.doc = pl.build(ROWS, MODELS, self.hooks)
         self.items = {i["model"]: i for i in self.doc["items"]}
 
-    def test_family_hooks_reads_both_entry_shapes(self):
-        self.assertEqual(self.hooks, {"ModifyDamageMultiplicative": "F08", "AfterDeath": "F10", "AfterCombatEnd": "F10"})
+    def test_family_hooks_reads_both_entry_shapes_adds_pseudo_hooks_and_excludes(self):
+        pseudo = {h: "F10" for h in pl.PSEUDO_HOOKS}
+        self.assertEqual(self.hooks, {"ModifyDamageMultiplicative": "F08", "AfterDeath": "F10", "AfterCombatEnd": "F10",
+                                      **pseudo})
+        self.assertEqual(pl.family_hooks(FAM_DOC, ["F08"]), {"ModifyDamageMultiplicative": "F08"})
+        b = pl.family_hooks(FAM_DOC, ["F08", "F10"], pl.F17_RECUT)
+        self.assertNotIn("AfterCombatEnd", b)
+        self.assertIn("AfterDeath", b)
+
+    def test_a_pseudo_hook_row_lists_a_model_without_family_hooks(self):
+        models = dict(MODELS, **{"monster:HOPPER": model("monster", "Hopper", ["AfterAttack"], 4)})
+        rows = ROWS + [ht.Row("Hopper", "monster", "BeforeRemovedFromRoom", "open", [], "", ["EnemyAI.ExecuteIntent"])]
+        doc = pl.build(rows, models, self.hooks)
+        h = {i["model"]: i for i in doc["items"]}["monster:HOPPER"]["hooks"]
+        self.assertEqual([(x["hook"], x["status"], x["pseudo"]) for x in h], [("BeforeRemovedFromRoom", "open", True)])
+        self.assertIn("BeforeRemovedFromRoom (pseudo)", pl.render_md(dict(
+            doc, families=["F10"], summary=pl.summary(doc["items"]), batches=pl.batches(doc["items"], 12))))
 
     def test_only_reached_models_with_a_family_hook_are_listed(self):
         self.assertNotIn("power:UNREACHED_POWER", self.items)  # no source reaches it
@@ -94,6 +110,87 @@ class PortListTests(unittest.TestCase):
             self.assertEqual(md.count(f"| {key} |"), 1, key)
         self.assertIn("not modelled: heals after the fight", md)
         self.assertIn("Unmatched (manifest model with no decompile row): relic:NO_ROW", md)
+
+
+def write(root: Path, rel: str, text: str) -> None:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def cs(head: str, *body: str) -> str:
+    return head + "\n{\n" + "".join(f"\t{b}\n" for b in body) + "}\n"
+
+
+class PseudoHookTests(unittest.TestCase):
+    def test_pseudo_overrides_by_kind_inherited_and_event_subscriptions(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, ns = Path(d), ht.MODELS_NS
+            write(root, f"{ns}/AbstractModel.cs", cs("public abstract class AbstractModel",
+                                                     "public virtual Task AfterDeath(int x)"))
+            write(root, f"{ns}.Monsters/Hopper.cs", cs("public sealed class Hopper : MonsterModel",
+                                                       "public override void BeforeRemovedFromRoom()", "{", "}"))
+            write(root, f"{ns}.Monsters/Beetle.cs", cs("public sealed class Beetle : MonsterModel",
+                                                       "public override void AfterAddedToRoom()", "{",
+                                                       "\tbase.Creature.Died += AfterDeath;", "}"))
+            write(root, f"{ns}.Powers/BaseShrink.cs", cs("public abstract class BaseShrink : PowerModel",
+                                                         "public override Task AfterRemoved(Creature oldOwner)", "{", "}"))
+            write(root, f"{ns}.Powers/ShrinkPower.cs", cs("public sealed class ShrinkPower : BaseShrink"))
+            write(root, f"{ns}.Relics/Charm.cs", cs("public sealed class Charm : RelicModel",
+                                                    "public override Task AfterRemoved()", "{", "}"))
+            got = pl.pseudo_overrides(str(root))
+        # inherited from an abstract base; the relic's AfterRemoved is another virtual (RelicModel), not the power's
+        self.assertEqual(sorted(got), [("Beetle", "monster", "Died"), ("Hopper", "monster", "BeforeRemovedFromRoom"),
+                                       ("ShrinkPower", "power", "AfterRemoved")])
+
+    def test_a_value_hook_location_that_applies_the_buff_is_moved_to_elsewhere(self):
+        texts = {"Core/EnemyAI.cs": cs("public static class EnemyAI", "private static void TriggerSuck(EnemyState e)",
+                                       "{", "\tBuffSystem.Apply(e.Buffs, BuffId.Strength, 2);", "}"),
+                 "Core/BuffSystem.cs": cs("public static class BuffSystem", "public static int IncomingDamage(int b)",
+                                          "{", "\treturn b + Get(buffs, BuffId.Strength);", "}")}
+        e = ht.Engine.load(Path("."), texts)
+        sites = [[rel, t.index("BuffId.Strength")] for rel, t in sorted(texts.items())]
+        where = [f"{ht.qual(e.method_at(r, o))}:{e.line_of(r, o)}" for r, o in sites]
+        self.assertEqual(where, ["BuffSystem.IncomingDamage:5", "EnemyAI.TriggerSuck:5"])
+        rows = [ht.Row("StrengthPower", "power", "ModifyDamageAdditive", "registered", list(where), "", [], sites),
+                ht.Row("SuckPower", "power", "AfterDamageGiven", "registered", where[1:], "", [], sites[1:]),
+                ht.Row("OnlyApplied", "power", "ModifyDamageCap", "registered", where[1:], "", [], sites[1:])]
+        got = pl.drop_buff_writes(rows, e)
+        self.assertEqual((got[0].status, got[0].where, got[0].elsewhere),
+                         ("registered", ["BuffSystem.IncomingDamage:5"], ["EnemyAI.TriggerSuck"]))
+        self.assertEqual(got[1].where, ["EnemyAI.TriggerSuck:5"])    # an After hook's body may write its own buff
+        self.assertEqual((got[2].status, got[2].where), ("open", []))
+
+
+class GateTests(unittest.TestCase):
+    def test_ported_reads_core2_model_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            write(Path(d), "Powers/Ravenous.cs", 't.Model(ListenerKind.Power, "RavenousPower").On(HookId.AfterDeath, F);')
+            write(Path(d), "Monsters/Hopper.cs", 't.Model( ListenerKind.Monster , "Hopper")\n'
+                                                 '  .On(HookId.BeforeRemovedFromRoom, G);')
+            self.assertEqual(pl.ported(Path(d)), {("RavenousPower", "AfterDeath"), ("Hopper", "BeforeRemovedFromRoom")})
+            self.assertEqual(pl.ported(Path(d) / "gone"), set())
+
+    def test_open_pairs_count_open_missing_unmatched_less_ported(self):
+        doc = pl.build(ROWS, MODELS, pl.family_hooks(FAM_DOC, ["F08", "F10"]))
+        self.assertEqual(sorted(pl.open_pairs(doc["items"])), [("badge:SOME_BADGE", "AfterDeath", "missing"),
+                                                               ("power:RAVENOUS_POWER", "AfterDeath", "open"),
+                                                               ("relic:NO_ROW", "AfterDeath", "unmatched")])
+        self.assertEqual(len(pl.open_pairs(doc["items"], {("RavenousPower", "AfterDeath")})), 2)
+
+    def test_gate_exit_code(self):
+        doc = {"items": [], "unmatched": [], "families": ["F10"], "excluded": [], "summary": {}, "batches": [], "open": []}
+        orig = pl.make
+        with tempfile.TemporaryDirectory() as d:
+            md = str(Path(d) / "pl.md")
+            try:
+                pl.make = lambda *a, **k: dict(doc)
+                self.assertEqual(pl.main(["--families", "F10", "--gate", "--md", md]), 0)
+                pl.make = lambda *a, **k: dict(doc, open=[["power:X", "AfterDeath", "open"]])
+                self.assertEqual(pl.main(["--families", "F10", "--md", md]), 0)
+                self.assertEqual(pl.main(["--families", "F10", "--gate", "--md", md]), 1)
+            finally:
+                pl.make = orig
 
 
 if __name__ == "__main__":
