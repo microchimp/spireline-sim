@@ -202,7 +202,7 @@ def rank_score_real(job_dir: Path) -> str | None:
     if src is None:
         return None
     try:
-        s = rank.write(src, job_dir)["summary"]
+        s = rank.write(src, job_dir, emu_dir=rank.paired_emu_dir(src) or rank.paired_emu_dir(job_dir))["summary"]
         res = read_result(job_dir)
         res.update(divergences=s["state_divergences"], groups=s["groups"], arch_share=s["arch_share"])
         _atomic(job_dir / "result.json", json.dumps(res, indent=1))
