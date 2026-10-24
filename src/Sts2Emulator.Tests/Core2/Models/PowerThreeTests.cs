@@ -30,6 +30,7 @@ public class PowerThreeTests
         (ListenerKind.Power, "FlutterPower", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Power, "PersonalHivePower", HookId.AfterDamageReceived),
         (ListenerKind.Power, "PlowPower", HookId.AfterDamageReceived),
+        (ListenerKind.Power, "SoarPower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -407,5 +408,85 @@ public class PowerThreeTests
     public void PlowIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power3, AllButDamage), ListenerKind.Power, "PlowPower", HookId.AfterDamageReceived);
+    }
+
+    // ---------------------------------------------------------------------------------------- Soar (power-3)
+
+    /// <summary>One slug with Soar 1 (flying); returns its listener.</summary>
+    private static (CombatState S, ListenerRef Soar) SoarCombat(int amount = 1)
+    {
+        var s = Combat(40);
+        return (s, GivePower(s, "SoarPower", BuffId.Soar, amount, s.Enemies[0]));
+    }
+
+    [Fact]
+    public void SoarIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power3), ListenerKind.Power, "SoarPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void SoarHalvesAPoweredAttackOnItsOwner()
+    {
+        // game: SoarPower.ModifyDamageMultiplicative; old: BuffSystem.IncomingDamage (the powered-attack path) multiplies
+        // by Soar_ModifyDamageMultiplicative() when the defender's Soar > 0.
+        var (s, me) = SoarCombat();
+        var k = Kernel(s, Power3);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 7m), out var changed);
+
+        Assert.Equal(7m * (decimal)BuffSystem.Soar_ModifyDamageMultiplicative(), v);
+        Assert.Equal(3.5m, v);
+        Assert.Equal([me], changed);
+        // The same state through the old fold, cast at its end: 7 x 0.5 = 3.5, 3; through the damage command the cast is
+        // the HP loss's: 3 lost.
+        Assert.Equal(3, BuffSystem.IncomingDamage(7, s.PlayerBuffs, s.Enemies[0].Buffs));
+        Assert.Equal(3, Assert.Single(Hit(k, OldCreature.Of(s.Enemies[0]), 7m)).UnblockedDamage);
+        Assert.Equal(37, s.Enemies[0].Hp);
+        // The dealer is not read: a hit with none on the owner halves too.
+        Assert.Equal(3.5m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 7m, dealer: null), out changed));
+        Assert.Equal([me], changed);
+
+        // Where the old site's condition fails: an unpowered hit, a hit on another creature, the amount at 0.
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 7m, props: Unpowered), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 7m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        s.Enemies[0].Buffs[0] = new BuffState(BuffId.Soar, 0);
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 7m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void SoarActsForItsOwnerAloneAmongThreeHolders()
+    {
+        // Rule 5: the player and both slugs hold Soar. A hit on the first slug is halved once, by that slug's listener;
+        // the second slug's hit on the player by the player's; the second slug's own listener changes neither.
+        var s = Combat(40, 40);
+        var holders = Holders(s, "SoarPower", BuffId.Soar, 1);
+        var k = Kernel(s, Power3);
+
+        Assert.Equal(3m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Equal([holders[1]], changed);
+        Assert.Equal(3m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2), out changed));
+        Assert.Equal([holders[0]], changed);
+        Assert.DoesNotContain(holders[2], changed);
+    }
+
+    [Fact]
+    public void SoarDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, _) = SoarCombat();
+        var k = Kernel(s, Without(Power3, SoarPower.Register));
+        Assert.Equal(7m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 7m), out var changed));
+        Assert.Empty(changed);
+        Assert.Equal(7, Assert.Single(Hit(k, OldCreature.Of(s.Enemies[0]), 7m)).UnblockedDamage);
+        Assert.Equal(33, s.Enemies[0].Hp);
+    }
+
+    [Fact]
+    public void SoarIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power3, AllButDamage), ListenerKind.Power, "SoarPower", HookId.ModifyDamageMultiplicative);
     }
 }
