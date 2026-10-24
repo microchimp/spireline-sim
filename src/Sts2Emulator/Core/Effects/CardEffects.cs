@@ -4024,11 +4024,12 @@ public static class CardEffects
             .Max();
 
     /// <summary>
-    /// Unpowered, blockable damage on the player. <paramref name="dealer" /> is the enemy that deals it, where the game's
-    /// Damage call names one (an enemy-owned Thorns: the power's owner); it is read only under the F08 switch, where it
-    /// reaches CreatureCmd.Damage as the dealer. The old path below does not read it.
+    /// Unpowered, blockable damage on the player. <paramref name="dealer" /> is the creature that deals it, where the game's
+    /// Damage call names one: an enemy-owned Thorns' owner, or the player itself (Constrict and Disintegration pass their
+    /// owner); it is read only under the F08 switch, where it reaches CreatureCmd.Damage as the dealer. The old path below
+    /// does not read it.
     /// </summary>
-    public static void DealDamageToPlayer(CombatState state, int amount, EnemyState? dealer = null)
+    public static void DealDamageToPlayer(CombatState state, int amount, Core2.OldCreature? dealer = null)
     {
         if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
         {
@@ -11043,7 +11044,7 @@ public static class CardEffects
         // reached half its call sites: the underdocks sweep found it as a ONE point gap on
         // a single Toadpole capture -- the player held 1 block, which ate 1 of the 2
         // Thorns, and the emulator charged both to HP.
-        DealDamageToPlayer(state, thorns, dealer: target);
+        DealDamageToPlayer(state, thorns, dealer: Core2.OldCreature.Of(target));
     }
 
     private static void ApplyEnemyDebuff(CombatState state, BuffId id, int magnitude, Random rng)

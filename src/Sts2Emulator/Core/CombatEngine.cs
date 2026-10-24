@@ -1938,7 +1938,8 @@ public static class CombatEngine
         int constrict = BuffSystem.Get(state.PlayerBuffs, BuffId.Constrict);
         if (constrict > 0 && afterTurnEndOpen)
         {
-            Effects.CardEffects.DealDamageToPlayer(state, constrict);
+            // game: ConstrictPower's turn-end damage names its owner, the player, as the dealer.
+            Effects.CardEffects.DealDamageToPlayer(state, constrict, Core2.OldCreature.Player);
         }
 
         // `NoDrawPower.AfterSideTurnEnd` -- Battle Trance's and Bullet Time's gag, lifted
@@ -1963,7 +1964,8 @@ public static class CombatEngine
         int disintegration = BuffSystem.Get(state.PlayerBuffs, BuffId.Disintegration);
         if (disintegration > 0 && !IsOverOrEnding(state))
         {
-            Effects.CardEffects.DealDamageToPlayer(state, disintegration);
+            // game: DisintegrationPower's late turn-end damage names its owner, the player, as the dealer.
+            Effects.CardEffects.DealDamageToPlayer(state, disintegration, Core2.OldCreature.Player);
         }
 
         // `DoomPower.BeforeSideTurnEnd` kills a doomed enemy at the end of the ENEMY side's

@@ -2,6 +2,7 @@ using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 using Sts2Emulator.Core2;
 using Xunit;
+using C2 = Sts2Emulator.Core2;
 
 namespace Sts2Emulator.Tests;
 
@@ -138,6 +139,68 @@ public class ResampleLeakTests
         Assert.Equal(liveCombat, e.State.ActiveCombatRng.CallCount);
         Assert.Equal(liveNiche, live.NicheHpRng.CallCount);
         Assert.NotEqual(KE.Axebot, live.Enemies[0].DefId);
+    }
+
+    /// <summary>
+    /// A fork's run view (MIGRATION_F08.md, R7 checks): a combat's clone binds to no run and reads the frozen copy of the
+    /// run deck its world takes, so a run-deck listener answers in a forked step as in the same step unforked (HookCtx.Card
+    /// names the deck card), and the forked step leaves the live run's deck, streams and fight as they were.
+    /// </summary>
+    [Fact]
+    public void AForkedStepWithARunDeckListenerEqualsTheSameStepUnforkedAndLeavesTheLiveRunAlone()
+    {
+        var e = AtMap();
+        int deckAnswers = 0;
+        // A test model on the deck's Bash: 3 more on every hit while the listener is the run deck's card.
+        void DeckBash(C2.HandlerTable t) =>
+            t.Model(C2.ListenerKind.Card, "Bash").On(C2.HookId.ModifyDamageAdditive,
+                (C2.HookFold<C2.ModifyDamageArgs, decimal>)((C2.HookCtx c, C2.ListenerRef self, in C2.ModifyDamageArgs a,
+                    decimal current) =>
+                {
+                    if (c.Card(self) is not { Pile: C2.CardPile.Deck })
+                        return 0m;
+                    deckAnswers++;
+                    return 3m;
+                }));
+        var ids = Sts2Emulator.Tests.Core2.Models.ModelTestKit.Ids;
+        e.Kernel = new C2.Kernel(new KernelOptions([Switch.F08, Switch.F10]), () => ids, [DeckBash]);
+        int option = FirstOption(e, RunConstants.NodeNormal);
+        Assert.Equal(
+            0,
+            e.EnterEncounterDebug(option, (int)CombatFactory.ActOneEncounter.SlimesNormal, RunConstants.NodeNormal)
+        );
+        int bash = ids.Resolve(C2.ListenerKind.Card, "Bash");
+        Assert.Contains(e.State.Deck, card => card.DefId == bash);
+        var live = e.State.ActiveCombat!;
+        var deck = e.State.Deck.ToList();
+        var liveHp = live.Enemies.Select(x => x.Hp).ToList();
+        int liveCombat = e.State.ActiveCombatRng!.CallCount;
+        int liveNiche = live.NicheHpRng!.CallCount;
+
+        var (fork, forkRng) = e.ForkActiveCombat(null)!.Value;
+        Assert.Null(fork.Kernel!.World!.Run);
+        Play(fork);
+        CombatEngine.Step(fork, 0, forkRng, 0);
+        int forkAnswers = deckAnswers;
+
+        Assert.Equal(deck, e.State.Deck);
+        Assert.Equal(liveHp, live.Enemies.Select(x => x.Hp));
+        Assert.Equal(liveCombat, e.State.ActiveCombatRng.CallCount);
+        Assert.Equal(liveNiche, live.NicheHpRng.CallCount);
+
+        deckAnswers = 0;
+        Play(live);
+        CombatEngine.Step(live, 0, e.State.ActiveCombatRng, 0);
+        Assert.True(forkAnswers > 0, $"deck answers: fork {forkAnswers}, live {deckAnswers}");
+        Assert.Equal(deckAnswers, forkAnswers);
+        Assert.Equal(live.Enemies.Select(x => x.Hp), fork.Enemies.Select(x => x.Hp));
+        Assert.Equal((live.PlayerHp, live.Energy, live.Hand.Count), (fork.PlayerHp, fork.Energy, fork.Hand.Count));
+
+        static void Play(CombatState s)
+        {
+            s.Hand.Insert(0, new CardInstance(473, false));
+            s.Energy = 9;
+        }
     }
 
     [Fact]
