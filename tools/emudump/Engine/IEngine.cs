@@ -62,9 +62,22 @@ public sealed class FightSpec(JsonObject record)
 
     public int NeowPick => (int)Record["neow_pick"]!;
 
+    /// <summary>
+    /// Whether the record names its map room. A record without one (EmuDump fuzz writes them) meets its encounter at the
+    /// first map option the run offers; the engine then writes the room it took into the report as <c>room</c>.
+    /// </summary>
+    public bool HasRoom => Record["room"] != null;
+
     /// <summary>The map room the fight is in, as the record's [column, row].</summary>
     public (int Col, int Row) Room => ((int)Record["room"]![0]!, (int)Record["room"]![1]!);
 }
+
+/// <summary>
+/// One move the player can make now (EmuDump fuzz): <see cref="Kind"/> "play" (<see cref="Index"/> the hand index),
+/// "potion" (the belt slot) or "end_turn" (0). <see cref="Targets"/> are the creature slots it can take; [-1] when it
+/// takes none.
+/// </summary>
+public sealed record LegalAction(string Kind, int Index, IReadOnlyList<int> Targets);
 
 /// <summary>
 /// What a setup item came to: <see cref="Ok"/> when the engine built it, with a note or the reason it did not in
@@ -117,6 +130,12 @@ public interface IEngine : IScreenSource
     void UsePotion(int slot, int targetSlot);
 
     void EndTurn();
+
+    /// <summary>
+    /// The moves open to the player now, in a stable order: plays by hand index, end turn, potions by slot. Empty with no
+    /// combat in play, once the fight is over, and while a screen is open (<see cref="IScreenSource.Screen"/> answers that).
+    /// </summary>
+    IReadOnlyList<LegalAction> LegalActions();
 
     /// <summary>The engine's native dump of the current step, in the shape tools/fidelity/fight_compare.py reads.</summary>
     JsonObject DumpStep();

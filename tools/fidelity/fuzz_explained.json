@@ -1,0 +1,5 @@
+{
+  "format": 1,
+  "about": "Differences the old-against-Core2 fuzzer (tools/fidelity/fuzz_core2.py) may find and why they are expected. One entry per kind of difference: `signature` is an fnmatch pattern over the difference's signature (`state:<up to six differing fields, sorted, comma-joined>`, `action`, `length` or `error`), exactly one of `row` (the text of a hook_open.txt row, before its # note; the row must still be there) or `doc` (`<path>: <item>` of the migration doc that explains it), and a `note`. A run exits 1 while any difference matches no entry. python -m tools.fidelity.fuzz_core2 --check-explained validates this file.",
+  "explained": []
+}
