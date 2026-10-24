@@ -808,3 +808,181 @@ internal sealed class ChangeProbe<T>(List<T> list)
         }
     }
 }
+
+// ------------------------------------------------------------------------------------------- creatures (F08 adapter)
+
+/// <summary>What kind of creature of the old state an <see cref="OldCreature" /> is.</summary>
+public enum CreatureKind : byte { Player, Osty, Enemy }
+
+/// <summary>
+/// A creature of the old state, as Core2's commands hold one: the player, the player's Osty (a pet) or an enemy (by
+/// object, never by roster index, so a removal mid-command moves nobody). Equality is by kind and enemy identity.
+/// </summary>
+public readonly struct OldCreature : IEquatable<OldCreature>
+{
+    private OldCreature(CreatureKind kind, EnemyState? enemy)
+    {
+        Kind = kind;
+        Enemy = enemy;
+    }
+
+    public CreatureKind Kind { get; }
+    public EnemyState? Enemy { get; }
+
+    public static OldCreature Player => new(CreatureKind.Player, null);
+    public static OldCreature Osty => new(CreatureKind.Osty, null);
+    public static OldCreature Of(EnemyState enemy) => new(CreatureKind.Enemy, enemy);
+
+    public bool Equals(OldCreature other) => Kind == other.Kind && ReferenceEquals(Enemy, other.Enemy);
+    public override bool Equals(object? obj) => obj is OldCreature c && Equals(c);
+    public override int GetHashCode() =>
+        HashCode.Combine(Kind, Enemy is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Enemy));
+    public static bool operator ==(OldCreature a, OldCreature b) => a.Equals(b);
+    public static bool operator !=(OldCreature a, OldCreature b) => !a.Equals(b);
+    public override string ToString() => Kind == CreatureKind.Enemy ? $"Enemy({Enemy!.DefId})" : Kind.ToString();
+}
+
+/// <summary>
+/// The one place Core2's commands read and write the old state's creatures (MIGRATION_F08.md section 3): HP, block,
+/// the pet owner, sides, the hittable filter, the source card's enchantment, and the <see cref="CreatureRef" /> a
+/// dispatcher's arguments carry (the creature's position in the game's creature order: the player 0, Osty, then the
+/// enemies in the combat, as <see cref="OldState.Combat" /> numbers listeners). No rule of its own beyond the old fields
+/// and the old bodies it calls.
+/// </summary>
+public static class OldCreatures
+{
+    public static int Hp(CombatState s, OldCreature c) => c.Kind switch
+    {
+        CreatureKind.Player => s.PlayerHp,
+        CreatureKind.Osty => s.OstyHp,
+        _ => c.Enemy!.Hp,
+    };
+
+    public static void SetHp(CombatState s, OldCreature c, int hp)
+    {
+        switch (c.Kind)
+        {
+            case CreatureKind.Player: s.PlayerHp = hp; break;
+            case CreatureKind.Osty: s.OstyHp = hp; break;
+            default: c.Enemy!.Hp = hp; break;
+        }
+    }
+
+    /// <summary>The creature's own block. Osty has none in the old state (a pet's hits are blocked by its owner,
+    /// game: CreatureCmd.Damage's PetOwner).</summary>
+    public static int Block(CombatState s, OldCreature c) => c.Kind switch
+    {
+        CreatureKind.Player => s.PlayerBlock,
+        CreatureKind.Osty => 0,
+        _ => c.Enemy!.Block,
+    };
+
+    public static void SetBlock(CombatState s, OldCreature c, int block)
+    {
+        switch (c.Kind)
+        {
+            case CreatureKind.Player: s.PlayerBlock = block; break;
+            case CreatureKind.Osty: throw new InvalidOperationException("Osty holds no block in the old state");
+            default: c.Enemy!.Block = block; break;
+        }
+    }
+
+    /// <summary>game: Creature.IsDead (current HP 0).</summary>
+    public static bool IsDead(CombatState s, OldCreature c) => Hp(s, c) <= 0;
+
+    /// <summary>game: Creature.PetOwner's creature: the player for Osty, else none.</summary>
+    public static OldCreature? PetOwner(OldCreature c) => c.Kind == CreatureKind.Osty ? OldCreature.Player : null;
+
+    public static bool IsPlayerSide(OldCreature c) => c.Kind != CreatureKind.Enemy;
+
+    /// <summary>The enemies in the combat (<see cref="OldState.EnemyInCombat" />) in roster order.</summary>
+    public static List<OldCreature> Enemies(OldWorld w) =>
+        w.Combat!.Enemies.Where(e => OldState.EnemyInCombat(w, e)).Select(OldCreature.Of).ToList();
+
+    /// <summary>game: AttackCommand's possible targets of an all-opponents attack: a monster's are the combat's player
+    /// creatures (CombatState.PlayerCreatures, pets not included), a player-side attacker's the enemies.</summary>
+    public static List<OldCreature> Opponents(OldWorld w, OldCreature attacker) =>
+        IsPlayerSide(attacker) ? Enemies(w) : [OldCreature.Player];
+
+    /// <summary>game: CombatState.HittableEnemies (Creature.IsHittable: the old EnemyAI.IsTargetable).</summary>
+    public static List<OldCreature> HittableEnemies(OldWorld w) =>
+        w.Combat!.Enemies.Where(e => OldState.EnemyInCombat(w, e) && EnemyAI.IsTargetable(e))
+            .Select(OldCreature.Of).ToList();
+
+    /// <summary>The creature's <see cref="CreatureRef" /> now. Throws for a creature that is not in the combat.</summary>
+    public static CreatureRef Ref(OldWorld w, OldCreature c)
+    {
+        var s = w.Combat ?? throw new InvalidOperationException("no combat");
+        int osty = s.OstyMaxHp > 0 ? 1 : 0;
+        switch (c.Kind)
+        {
+            case CreatureKind.Player:
+                return new(0);
+            case CreatureKind.Osty when osty == 1:
+                return new(1);
+            case CreatureKind.Enemy:
+                int i = 1 + osty;
+                foreach (var e in s.Enemies)
+                {
+                    if (!OldState.EnemyInCombat(w, e))
+                        continue;
+                    if (ReferenceEquals(e, c.Enemy))
+                        return new(i);
+                    i++;
+                }
+
+                break;
+        }
+
+        throw new InvalidOperationException($"{c} is not in the combat");
+    }
+
+    /// <summary>The creature a <see cref="CreatureRef" /> names now (the inverse of <see cref="Ref" />).</summary>
+    public static OldCreature At(OldWorld w, CreatureRef r)
+    {
+        var s = w.Combat ?? throw new InvalidOperationException("no combat");
+        int osty = s.OstyMaxHp > 0 ? 1 : 0;
+        if (r.Index == 0)
+            return OldCreature.Player;
+        if (osty == 1 && r.Index == 1)
+            return OldCreature.Osty;
+        int i = 1 + osty;
+        foreach (var e in s.Enemies)
+        {
+            if (!OldState.EnemyInCombat(w, e))
+                continue;
+            if (i++ == r.Index)
+                return OldCreature.Of(e);
+        }
+
+        throw new ArgumentOutOfRangeException(nameof(r), r.Index, "no creature at this position");
+    }
+
+    /// <summary>The live card a handle names (<see cref="OldState.FindLive" />).</summary>
+    public static CardInstance? Card(OldWorld w, CardHandle? h) => h is { } c ? OldState.FindLive(w, c.Uid) : null;
+
+    /// <summary>game: the source card's EnchantmentModel.EnchantDamageAdditive. Every damage enchantment of the game
+    /// answers 0 off a powered attack (ValueProp.IsPoweredAttack); the body is the old one DmgFrom uses.</summary>
+    public static decimal EnchantDamageAdditive(OldWorld w, CardHandle? h, ValueProp props) =>
+        Card(w, h) is { Enchantment: not Enchantment.None } card && props.IsPoweredAttack()
+            ? Core.Effects.CardEffects.EnchantDamageAdditive(card)
+            : 0m;
+
+    /// <summary>game: the source card's EnchantmentModel.EnchantDamageMultiplicative (1 off a powered attack).</summary>
+    public static decimal EnchantDamageMultiplicative(OldWorld w, CardHandle? h, ValueProp props) =>
+        Card(w, h) is { Enchantment: not Enchantment.None } card && props.IsPoweredAttack()
+            ? Core.Effects.CardEffects.EnchantDamageMultiplicative(card)
+            : 1m;
+
+    /// <summary>game: Hook.ModifyDamage's preview condition on the card: an all-enemies or random-enemy card (its
+    /// TargetType) in the Hand or Play pile.</summary>
+    public static bool IsAllEnemiesCardInHandOrPlay(OldWorld w, CardHandle? h)
+    {
+        if (Card(w, h) is not { } card)
+            return false;
+        var target = GeneratedData.Cards.Get(card.DefId).Target;
+        if (target is not (CardTarget.AllEnemies or CardTarget.RandomEnemy))
+            return false;
+        return w.InFlight is { } flying && flying.Uid == card.Uid || w.Combat!.Hand.Exists(x => x.Uid == card.Uid);
+    }
+}
