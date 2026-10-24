@@ -34,6 +34,7 @@ public static class Registry
     public static readonly IReadOnlyList<Action<HandlerTable>> Power2 =
     [
         TaintedPower.Register,
+        GigantificationPower.Register,
     ];
 
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when

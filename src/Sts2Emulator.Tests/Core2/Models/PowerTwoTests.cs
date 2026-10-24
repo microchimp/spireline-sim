@@ -31,6 +31,7 @@ public class PowerTwoTests
     private static readonly (ListenerKind Kind, string Model, HookId Hook)[] Power2Pairs =
     [
         (ListenerKind.Power, "TaintedPower", HookId.ModifyDamageAdditive),
+        (ListenerKind.Power, "GigantificationPower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -135,5 +136,91 @@ public class PowerTwoTests
     public void TaintedIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "TaintedPower", HookId.ModifyDamageAdditive);
+    }
+
+    // ---------------------------------------------------------------------------------------- Gigantification (power-2)
+
+    /// <summary>The player with Gigantification 1, an Attack card and a Skill card in hand, one slug.</summary>
+    private static (CombatState S, CardHandle Attack, CardHandle Skill) GigantificationCombat(int amount = 1)
+    {
+        var s = Combat(40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Gigantification, amount));
+        var strike = Add(s, s.Hand, StrikeDef);
+        var defend = Add(s, s.Hand, DefendDef);
+        return (s, new CardHandle(strike.Uid), new CardHandle(defend.Uid));
+    }
+
+    [Fact]
+    public void GigantificationIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power2), ListenerKind.Power, "GigantificationPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void GigantificationTriplesTheOwnersAttackCardsDamage()
+    {
+        // game: GigantificationPower.ModifyDamageMultiplicative; old: CardEffects.DmgFrom multiplies the card's damage by
+        // Gigantification_ModifyDamageMultiplicative() (a flat 3) for an Attack def while the player's Gigantification > 0.
+        var (s, attack, skill) = GigantificationCombat();
+        var k = Kernel(s, Power2);
+        Assert.Equal(CardType.Attack, GeneratedData.Cards.Get(StrikeDef).Type);
+        Assert.Equal(CardType.Skill, GeneratedData.Cards.Get(DefendDef).Type);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: attack), out var changed);
+
+        Assert.Equal(6m * CardEffects.Gigantification_ModifyDamageMultiplicative(), v);
+        Assert.Equal(18m, v);
+        Assert.Equal([Power("GigantificationPower", 0)], changed);
+        // Two stacks still triple once: the number is flat.
+        s.PlayerBuffs[0] = new BuffState(BuffId.Gigantification, 2);
+        Assert.Equal(18m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: attack), out changed));
+        Assert.Equal([Power("GigantificationPower", 0)], changed);
+
+        // Where the condition fails: a Skill as the card source, no card source, an unpowered hit, the amount at 0.
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: skill), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered, card: attack), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Gigantification, 0);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: attack), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void GigantificationFollowsTheOwnersCardNotTheDealerAndNeverAnEnemysHolder()
+    {
+        // The factor follows the card (the old site reads no dealer; the game triples the latched command's card source), so
+        // the owner's card dealt by its pet counts (Osty is creature 1, the slug 2). The N-holder case: a slug holding
+        // Gigantification does not triple the player's card (the card's owner is the player), and the factor lands once;
+        // the slug's own hit has no card source and is not tripled.
+        var (s, attack, _) = GigantificationCombat();
+        WithOsty(s);
+        var theirs = GivePower(s, "GigantificationPower", BuffId.Gigantification, 1, s.Enemies[0]);
+        var k = Kernel(s, Power2);
+
+        Assert.Equal(18m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, dealer: 1, card: attack), out var changed));
+        Assert.Equal([Power("GigantificationPower", 0)], changed);
+        Assert.Equal(18m, Hooks.ModifyDamage(k, Attack(target: 2, damage: 6m, card: attack), out changed));
+        Assert.Equal([Power("GigantificationPower", 0)], changed);
+        Assert.DoesNotContain(theirs, changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 2), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void GigantificationDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, attack, _) = GigantificationCombat();
+        var k = Kernel(s, Without(Power2, GigantificationPower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, card: attack), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void GigantificationIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power2, AllButDamage), ListenerKind.Power, "GigantificationPower", HookId.ModifyDamageMultiplicative);
     }
 }
