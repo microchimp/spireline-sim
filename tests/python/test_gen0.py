@@ -117,5 +117,26 @@ class BenchResultTests(unittest.TestCase):
         self.assertTrue(set(r) <= set(mix.AGENT_COLUMNS))
 
 
+class ScoreOnlyTest(unittest.TestCase):
+    """B7: `score --only` hands the seed subset to envproto play and plays no emulator arm."""
+
+    def test_only_goes_to_the_game_side_and_no_emulator_arm_is_played(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        out = Path(tempfile.mkdtemp()) / "probe"
+        a = SimpleNamespace(out=str(out), game="G", seeds_file="F.json", runs=500, procs=4, sims=60, config="a3-v1", ascension=10,
+                            character="IRONCLAD", stop_after_h=1.0, lib=None, emu_dir=None, gen_dir=None, only="S3,S5")
+        cmds = []
+        with mock.patch("subprocess.run", lambda cmd, **kw: cmds.append(cmd) or SimpleNamespace(returncode=0)),                 mock.patch.object(gen0, "play_emu_arm", side_effect=AssertionError("an emulator arm was played")):
+            gen0.score_real(a)
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0][cmds[0].index("--only") + 1], "S3,S5")
+
+    def test_the_parser_takes_only(self):
+        a = gen0.build_parser().parse_args(["score", "--game", "G", "--seeds-file", "F", "--out", "O", "--only", "A,B"])
+        self.assertEqual(a.only, "A,B")
+
+
 if __name__ == "__main__":
     unittest.main()
