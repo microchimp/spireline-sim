@@ -33,6 +33,7 @@ public class RelicOneTests
         (ListenerKind.Relic, "PenNib", HookId.ModifyDamageMultiplicative),
         (ListenerKind.Relic, "GremlinHorn", HookId.AfterDeath),
         (ListenerKind.Relic, "MiniatureCannon", HookId.ModifyDamageAdditive),
+        (ListenerKind.Relic, "MysticLighter", HookId.ModifyDamageAdditive),
     ];
 
     [Fact]
@@ -615,6 +616,109 @@ public class RelicOneTests
     public void MiniatureCannonIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "MiniatureCannon", HookId.ModifyDamageAdditive);
+    }
+
+    // ---------------------------------------------------------------------------------------- Mystic Lighter (relic-1)
+
+    /// <summary>The copy of <paramref name="card" /> in hand enchanted, the same uid (the old state keeps the enchantment
+    /// on the CardInstance).</summary>
+    private static CardInstance Enchant(CombatState s, CardInstance card, Enchantment enchantment, int amount)
+    {
+        int i = s.Hand.FindIndex(c => c.Uid == card.Uid);
+        s.Hand[i] = s.Hand[i] with { Enchantment = enchantment, EnchantAmount = amount };
+        return s.Hand[i];
+    }
+
+    /// <summary>The player holding Mystic Lighter with a Sharp 2 Bash, a plain Bash and a Nimble 2 Defend in hand, one
+    /// slug.</summary>
+    private static (CombatState S, ListenerRef Relic, CardInstance Sharp, CardHandle Plain, CardHandle NimbleDefend) MysticLighterCombat()
+    {
+        var s = Combat(40);
+        var relic = Hold(s, RelicEffects.MysticLighter);
+        var sharp = Enchant(s, Add(s, s.Hand, BashDef), Enchantment.Sharp, 2);
+        var plain = Add(s, s.Hand, BashDef);
+        var nimble = Enchant(s, Add(s, s.Hand, DefendDef), Enchantment.Nimble, 2);
+        return (s, relic, sharp, new CardHandle(plain.Uid), new CardHandle(nimble.Uid));
+    }
+
+    [Fact]
+    public void MysticLighterIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Relic1), ListenerKind.Relic, "MysticLighter", HookId.ModifyDamageAdditive);
+    }
+
+    [Fact]
+    public void MysticLighterAddsTheOldFunctionsNumberOnceBesideTheEnchantmentsOwnBonus()
+    {
+        // game: MysticLighter.ModifyDamageAdditive; old: CardEffects.DmgFrom adds the card's own enchantment bonus
+        // (EnchantDamageAdditive) and, apart from it, RelicEffects.EnchantedCardDamageBonus for an enchanted Attack. In the
+        // kernel the enchantment's own bonus is the dispatcher's enchant-add step (Steps.EnchantAdd), run before the
+        // additive pass, and the relic's is this handler: a Sharp 2 Bash at 8 is 8 + 2 + 9, the 9 once.
+        var (s, relic, sharp, plain, nimbleDefend) = MysticLighterCombat();
+        var k = Kernel(s, Relic1);
+        var args = Attack(target: 1, damage: 8m, card: new CardHandle(sharp.Uid));
+
+        decimal v = Hooks.ModifyDamage(k, args, out var changed);
+
+        Assert.Equal(8m + CardEffects.EnchantDamageAdditive(sharp) + RelicEffects.EnchantedCardDamageBonus(s), v);
+        Assert.Equal(19m, v);
+        Assert.Equal([relic], changed);
+        // The two parts, apart: the step adds the enchantment's 2 and nothing of the relic's; the old function is the 9.
+        Assert.Equal(10m, Steps.EnchantAdd(k, HookId.Dispatch_ModifyDamage, in args, 8m));
+        Assert.Equal(2, CardEffects.EnchantDamageAdditive(sharp));
+        Assert.Equal(9, RelicEffects.EnchantedCardDamageBonus(s));
+        // The copy in play (in flight, off the hand: the card's view is Play, read from the world): the same answer.
+        s.Hand.Remove(sharp);
+        using (k.World!.Flying(sharp))
+        {
+            Assert.Equal(19m, Hooks.ModifyDamage(k, args, out changed));
+            Assert.Equal([relic], changed);
+        }
+        s.Hand.Insert(0, sharp);
+
+        // Where the condition fails: a card without an enchantment, an enchanted Skill, no card source, the relic not held
+        // (the enchantment's own 2 stays, the relic's 9 goes).
+        Assert.Equal(8m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 8m, card: plain), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(8m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 8m, card: nimbleDefend), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(8m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 8m), out changed));
+        Assert.Empty(changed);
+        s.Relics.Clear();
+        Assert.Equal(10m, Hooks.ModifyDamage(k, args, out changed));
+        Assert.Empty(changed);
+        Assert.Equal(0, RelicEffects.EnchantedCardDamageBonus(s));
+    }
+
+    [Fact]
+    public void MysticLighterPaysForAnyEnchantmentOnAnAttack()
+    {
+        // Any enchantment, not only a damage one: a Swift Strike (an enchantment with no damage bonus of its own) gets
+        // the 9 and nothing from the step.
+        var (s, relic, _, _, _) = MysticLighterCombat();
+        var swift = Enchant(s, Add(s, s.Hand, StrikeDef), Enchantment.Swift, 1);
+        var k = Kernel(s, Relic1);
+        var args = Attack(target: 1, damage: 6m, card: new CardHandle(swift.Uid));
+
+        Assert.Equal(15m, Hooks.ModifyDamage(k, args, out var changed));
+        Assert.Equal([relic], changed);
+        Assert.Equal(6m, Steps.EnchantAdd(k, HookId.Dispatch_ModifyDamage, in args, 6m));
+    }
+
+    [Fact]
+    public void MysticLighterDeleteMutantGivesTheNoHandlerValue()
+    {
+        // The enchantment's own bonus is the dispatcher's step, not the model's: it stays; the relic's 9 goes.
+        var (s, _, sharp, _, _) = MysticLighterCombat();
+        var k = Kernel(s, Without(Relic1, MysticLighter.Register));
+        Assert.Equal(10m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 8m, card: new CardHandle(sharp.Uid)), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void MysticLighterIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Relic1, AllButDamage), ListenerKind.Relic, "MysticLighter", HookId.ModifyDamageAdditive);
     }
 
 }
