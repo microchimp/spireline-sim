@@ -29,6 +29,7 @@ public class PowerFourTests
     [
         (ListenerKind.Power, "CalcifyPower", HookId.ModifyDamageAdditive),
         (ListenerKind.Power, "AccuracyPower", HookId.ModifyDamageAdditive),
+        (ListenerKind.Power, "SicEmPower", HookId.AfterDamageGiven),
     ];
 
     private static IOrderedEnumerable<(ListenerKind Kind, string Model, HookId Hook)> Sorted(
@@ -240,6 +241,116 @@ public class PowerFourTests
     public void AccuracyIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Power4, AllButDamage), ListenerKind.Power, "AccuracyPower", HookId.ModifyDamageAdditive);
+    }
+
+    // ---------------------------------------------------------------------------------------- Sic 'Em (power-4)
+
+    /// <summary>The player with Osty (10 of 10, creature 1) and a card in hand (the Osty attack's source), one slug
+    /// (creature 2) under Sic 'Em 3.</summary>
+    private static (CombatState S, EnemyState Slug, CardHandle Card) SicEmCombat(int amount = 3, int slugHp = 40)
+    {
+        var s = WithOsty(Combat(slugHp));
+        GivePower(s, "SicEmPower", BuffId.SicEm, amount, s.Enemies[0]);
+        var card = Add(s, s.Hand, 1);
+        return (s, s.Enemies[0], new CardHandle(card.Uid));
+    }
+
+    private static (int Hp, int MaxHp) Osty(CombatState s) => (s.OstyHp, s.OstyMaxHp);
+
+    /// <summary>Osty's hit on <paramref name="target" /> from the player's card <paramref name="card" />.</summary>
+    private static IReadOnlyList<DamageResult> OstyHit(KernelState k, EnemyState target, CardHandle card, decimal amount = 5m) =>
+        Hit(k, OldCreature.Of(target), amount, dealer: OldCreature.Osty, card: card);
+
+    [Fact]
+    public void SicEmIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Power4), ListenerKind.Power, "SicEmPower", HookId.AfterDamageGiven);
+    }
+
+    [Fact]
+    public void SicEmSummonsOstyForItsAmountWhenOstyHitsTheHolder()
+    {
+        // game: SicEmPower.AfterDamageGiven (the dealer is Osty, the target the holder); old: CardEffects.DealOstyDamage
+        // calls SicEm_AfterDamageGiven(state, sicEm) after Osty's hit when the target's SicEm is above 0; a living Osty
+        // grows by it (CardEffects.SummonOsty).
+        var (s, slug, card) = SicEmCombat();
+        var k = Kernel(s, Power4);
+
+        var r = Assert.Single(OstyHit(k, slug, card));
+
+        Assert.Equal(5, r.UnblockedDamage);
+        Assert.Equal(35, slug.Hp);
+        var (oracle, _, _) = SicEmCombat();
+        CardEffects.SicEm_AfterDamageGiven(oracle, 3);
+        Assert.Equal(Osty(oracle), Osty(s));
+        Assert.Equal((13, 13), Osty(s));
+        // A fully blocked hit summons too: the old site asks nothing of the result, and the game's hook runs for every
+        // result.
+        slug.Block = 9;
+        Assert.True(Assert.Single(OstyHit(k, slug, card)).WasFullyBlocked);
+        Assert.Equal((16, 16), Osty(s));
+        slug.Block = 0;
+
+        // Where the condition fails: the player's hit on the holder from the same card, the holder's hit on the player, a
+        // hit with no card source (the old site is reached from card plays alone), the amount at 0, a dead Osty (the
+        // command deals nothing for a dead dealer).
+        Hit(k, OldCreature.Of(slug), 5m, card: card);
+        Assert.Equal((16, 16), Osty(s));
+        Hit(k, OldCreature.Player, 5m, dealer: OldCreature.Of(slug));
+        Assert.Equal((16, 16), Osty(s));
+        Hit(k, OldCreature.Of(slug), 5m, dealer: OldCreature.Osty);
+        Assert.Equal((16, 16), Osty(s));
+        slug.Buffs[0] = new BuffState(BuffId.SicEm, 0);
+        OstyHit(k, slug, card);
+        Assert.Equal((16, 16), Osty(s));
+        slug.Buffs[0] = new BuffState(BuffId.SicEm, 3);
+        s.OstyHp = 0;
+        Assert.Equal(0, Assert.Single(OstyHit(k, slug, card)).UnblockedDamage);
+        Assert.Equal((0, 16), Osty(s));
+    }
+
+    [Fact]
+    public void SicEmStillSummonsOnTheHitThatKillsTheHolder()
+    {
+        // The dying holder is listed until the kill (CreatureCmd.Damage's dying mark), so AfterDamageGiven visits its
+        // listener, as the old site reads the corpse's SicEm before the death answer.
+        var (s, slug, card) = SicEmCombat(slugHp: 3);
+        var k = Kernel(s, Power4);
+        var r = Assert.Single(OstyHit(k, slug, card));
+        Assert.True(r.WasTargetKilled);
+        Assert.Equal((13, 13), Osty(s));
+        Assert.DoesNotContain(slug, s.Enemies);
+    }
+
+    [Fact]
+    public void SicEmActsForTheHolderHitOnlyAmongTwoHolders()
+    {
+        // The N-holder test: two slugs under Sic 'Em 3 and 5; Osty's hit on the first grows Osty by 3 alone (one call of
+        // the old body for that holder, none for the other), its hit on the second by 5.
+        var s = WithOsty(Combat(40, 40));
+        GivePower(s, "SicEmPower", BuffId.SicEm, 3, s.Enemies[0]);
+        GivePower(s, "SicEmPower", BuffId.SicEm, 5, s.Enemies[1]);
+        var card = new CardHandle(Add(s, s.Hand, 1).Uid);
+        var k = Kernel(s, Power4);
+        OstyHit(k, s.Enemies[0], card);
+        Assert.Equal((13, 13), Osty(s));
+        OstyHit(k, s.Enemies[1], card);
+        Assert.Equal((18, 18), Osty(s));
+    }
+
+    [Fact]
+    public void SicEmDeleteMutantGivesTheNoHandlerValue()
+    {
+        var (s, slug, card) = SicEmCombat();
+        var k = Kernel(s, Without(Power4, SicEmPower.Register));
+        Assert.Equal(5, Assert.Single(OstyHit(k, slug, card)).UnblockedDamage);
+        Assert.Equal((10, 10), Osty(s));
+    }
+
+    [Fact]
+    public void SicEmIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Power4, AllButDamage), ListenerKind.Power, "SicEmPower", HookId.AfterDamageGiven);
     }
 
 }
