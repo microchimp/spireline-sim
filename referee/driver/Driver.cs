@@ -89,17 +89,6 @@ public static partial class Driver
 
     /// <summary>Fights finished in this process, for the watchdog's message.</summary>
     private static int _done;
-    private static readonly object _saveLock = new();
-
-    private static void Save(string path, JsonArray results)
-    {
-        lock (_saveLock)
-        {
-            string tmp = path + ".tmp";
-            File.WriteAllText(tmp, new JsonObject { ["results"] = results.DeepClone() }.ToJsonString());
-            File.Move(tmp, path, overwrite: true);
-        }
-    }
 
     /// <summary>
     /// One fight spec, start to finish: play it (<c>kind</c>), then leave the run. Shared by the
@@ -191,7 +180,7 @@ public static partial class Driver
     {
         var job = JsonNode.Parse(File.ReadAllText(jobPath))!.AsObject();
         string outPath = (string)job["out"]!;
-        var results = new JsonArray();
+        var results = new ResultsFile(outPath);  // ResultsFile.cs: writes each result once, never the whole list again
         // Watchdog (Watchdog.cs): if the game stops making progress for stall_s seconds while it keeps
         // running frames, or stops running frames, it is stuck; keep what is saved and end the process.
         NormalSettings = (bool?)job["normal_settings"] == true;
@@ -309,15 +298,19 @@ public static partial class Driver
 
             foreach (var spec in job["runs"]!.AsArray())
             {
-                results.Add(await PlaySpec(spec!.AsObject(), fastReset));
+                results.Append(await PlaySpec(spec!.AsObject(), fastReset));  // after every fight: a hang or kill keeps what is done
                 _done++;
+                if (_done % 25 == 0)
+                {
+                    GD.Print($"[referee] results file: {results.Count} results, last write {results.LastMs:F2} ms, all writes {results.TotalMs:F0} ms");
+                }
+
                 if (StaleState() is { } stale)
                 {
                     // Server mode retires the process here (Server.cs); a runs job cannot, so it says so.
                     GD.Print($"[referee] warning: game state left stale after fight {_done} ({stale}); later fights may time out");
                 }
 
-                Save(outPath, results);  // after every fight: a hang or kill keeps what is done
                 Heartbeat();
             }
         }
@@ -332,10 +325,10 @@ public static partial class Driver
                 return;
             }
 
-            results.Add(err);
+            results.Append(err);
         }
 
-        Save(outPath, results);
+        results.Finish();
         ((SceneTree)Engine.GetMainLoop()).Quit(exitCode);
     }
 
