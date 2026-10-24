@@ -1061,9 +1061,12 @@ Open, before the switch (next round):
 - Three worse corpus fights, not yet read: `2b49779387ccd8b9` (Shrink on enemies[0] where the game has it on enemies[2] at
   step 4: a roster index after a corpse removal, a comparer alignment question, or real targeting), `564797d1d47ddfb9` (the
   player's HP 51 where the game has 58 at step 1), `7171bcd6dd0b0bd6` (the draw pile's order at step 10).
+- A target removed inside its own hit (R7e): the kernel keeps the game's zero result in the results but does not note it in
+  `History.DamageReceived` as the game does (the removed creature has no position to name); check a recorded Thorns-Inferno fight.
 - The fewer-fields gate: R7e reads it as a census fault (neither view writes `enemies[*].move` or the net piles' floor; the old
   run's census holds them only from missing-entry diffs, and `net` from old steps with no net view). Settle it in the comparer
-  (count only the paths an engine wrote, without hiding a field the core2 view stops writing), then rerun.
+  (in the missing-entry branch `compared.add(p)` runs before the unmodelled-row test: apply the unmodelled rows there, keeping
+  the documented rule that a record-only field is a difference), then rerun.
 - Then rerun this table; the switch goes on in `migrated_families.json` only with every gate passing.
 
 ### R7 proof on `a42c41a3` (2026-10-24): not passed, nothing switched on

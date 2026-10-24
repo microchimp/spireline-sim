@@ -74,10 +74,15 @@ public static partial class CreatureCmd
                 var before = new BeforeDamageReceivedArgs(ctx, to, modified, props, by, cardSource);
                 Settle(k, Hooks.BeforeDamageReceived(k, before), st => Hooks.BeforeDamageReceivedResume(k, before, st));
                 // game: the loop goes on with a target the hooks above killed (an enemy's Thorns hits the dealer, whose Inferno
-                // burst kills it): it has no HP left to lose, so the hit changes nothing on it. One that kill took out of the
-                // combat has no position to name (see the results loop): skipped here as there (R7e).
+                // burst kills it): it has no HP left to lose, so its result is a zero one (not killed), kept in the results as
+                // the game keeps it. One that kill took out of the combat has no position to name, so it is not lost from here
+                // on and its hook passes are skipped in the results loop; the game also notes that zero result in
+                // History.DamageReceived, which this does not (an R7 check) (R7e).
                 if (!OldCreatures.InCombat(w, original))
+                {
+                    results.Add(new DamageResult(original, props));
                     continue;
+                }
 
                 decimal blocked = DamageBlock(s, OldCreatures.PetOwner(original) ?? original, modified, props);
                 decimal unblocked = Hooks.ModifyHpLost(k, new ModifyHpLostArgs(R(w, original),
