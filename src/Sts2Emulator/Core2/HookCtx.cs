@@ -16,7 +16,7 @@ public readonly record struct PowerView(CreatureRef Owner, decimal Amount);
 /// <item>Engine-neutral members (the shape a Tier 2 context keeps): <see cref="Power" />, <see cref="Owner" />,
 /// <see cref="Card(CardHandle)" />, <see cref="Card(ListenerRef)" />, <see cref="Relic" />, <see cref="IsAlive" />,
 /// <see cref="IsMonster" />, <see cref="IsPlayer" />, <see cref="Damage" />, <see cref="CombatInProgress" />,
-/// <see cref="HittableEnemies" /> and <see cref="IsDebuff" />.</item>
+/// <see cref="HittableEnemies" />, <see cref="IsDebuff" /> and <see cref="Niche" />.</item>
 /// <item>Tier 1 members (the old state, the one view of it): <see cref="K" /> (what the commands take:
 /// <c>CreatureCmd.Damage(c.K, ...)</c>), <see cref="World" />, <see cref="OldCombat" /> (the <c>CombatState</c>, the
 /// argument of most old bodies: <c>CardEffects.PhantomBlades_ModifyDamageAdditive(c.OldCombat)</c>), <see cref="OldBuffs" />
@@ -71,6 +71,17 @@ public readonly struct HookCtx
     /// <summary>Whether the combat is in progress (game: CombatManager.IsInProgress): false once it has ended, or before
     /// it starts.</summary>
     public bool CombatInProgress => CombatEnd.IsInProgress(K);
+
+    /// <summary>
+    /// game: RunState.Rng.Niche, the run's Niche stream: CombatState.CreateCreature rolls a new monster's HP from it
+    /// (Creature.SetUniqueMonsterHpValue), so it is the stream SurprisePower's, InfestedPower's and StockPower's AfterDeath
+    /// draw through CreatureCmd.Add. Tier 1 answers with the old engine's combat stream (RunState.ActiveCombatRng: seeded
+    /// from the run's Niche seed and restreamed with it, the Random a run's combat step hands its death answer), so a
+    /// handler passes its old body exactly the stream the old site passes; the old summon bodies roll HP off the combat's
+    /// NicheHpRng first (EnemyAI.RollSummonedHp). Throws when the kernel's run holds no open combat's stream.
+    /// </summary>
+    public Random Niche => World.Run?.ActiveCombatRng
+        ?? throw new InvalidOperationException("no run with an open combat stream is bound: the Niche stream is the run's");
 
     /// <summary>The enemies a hit can reach now, in roster order (game: CombatState.HittableEnemies: alive, in the combat
     /// and hittable).</summary>
