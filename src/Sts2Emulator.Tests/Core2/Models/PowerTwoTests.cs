@@ -647,21 +647,20 @@ public class PowerTwoTests
     }
 
     [Fact]
-    public void BufferLeavesAnEnemysLossAlone()
+    public void BufferActsForItsOwnersLossOnEitherSide()
     {
-        // The per-owner rule where the model has one holder in the old engine: the old function acts on the player's list
-        // and the old enemy site (CardEffects.LandDamageOnEnemy) has no Buffer, so a Buffer put on a slug takes nothing off
-        // a hit on it and spends nothing, on either side; the player's own loss is still taken by the player's.
+        // The per-owner rule (R7b2: the game's Buffer acts for any owner): a Buffer put on a slug takes the slug's loss and
+        // spends the slug's stack, and leaves the player's; the player's own loss is taken by the player's.
         var (s, mine) = BufferCombat();
         var theirs = GivePower(s, "BufferPower", BuffId.Buffer, 2, s.Enemies[0]);
         var k = Kernel(s, Power2);
 
-        Assert.Equal(7m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out var changed));
-        Assert.Empty(changed);
-        Assert.Equal(7, Assert.Single(Hit(k, OldCreature.Of(s.Enemies[0]), 7m)).UnblockedDamage);
-        Assert.Equal((33, 2, 2), (s.Enemies[0].Hp, BuffSystem.Get(s.Enemies[0].Buffs, BuffId.Buffer), BufferOf(s)));
+        Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 1, 7m), out var changed));
+        Assert.Equal([theirs], changed);
+        Hit(k, OldCreature.Of(s.Enemies[0]), 7m);
+        Assert.Equal((40, 1, 2), (s.Enemies[0].Hp, BuffSystem.Get(s.Enemies[0].Buffs, BuffId.Buffer), BufferOf(s)));
         Hooks.AfterModifyingHpLostAfterOsty(k, new AfterModifyingHpLostAfterOstyArgs([theirs]));
-        Assert.Equal((2, 2), (BuffSystem.Get(s.Enemies[0].Buffs, BuffId.Buffer), BufferOf(s)));
+        Assert.Equal((0, 2), (BuffSystem.Get(s.Enemies[0].Buffs, BuffId.Buffer), BufferOf(s)));
         Assert.Equal(0m, Hooks.ModifyHpLost(k, HpLoss(target: 0, 7m, dealer: 1), out changed));
         Assert.Equal([mine], changed);
     }

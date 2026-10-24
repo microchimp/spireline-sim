@@ -2,6 +2,7 @@
 // The old bodies are CardEffects.Buffer_ModifyHpLostAfterOstyLate (the number the loss becomes) and
 // CardEffects.Buffer_AfterModifyingHpLostAfterOsty (the stack spent), both called from CardEffects.LosePlayerHp under the
 // condition the site keeps. Game code is cited by class and method only.
+using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 
 namespace Sts2Emulator.Core2.Models.Powers;
@@ -9,35 +10,39 @@ namespace Sts2Emulator.Core2.Models.Powers;
 internal static class BufferPower
 {
     /// <summary>
-    /// game: BufferPower.ModifyHpLostAfterOstyLate. A fold-set over the HP lost after the pet redirect: the old function's
-    /// number (0) for a loss of the power's owner, the player, whatever the props and the dealer (the old site,
-    /// CardEffects.LosePlayerHp, is every HP loss of the player and asks that the player's Buffer is above 0); the value
-    /// unchanged otherwise. The old site returns before Buffer when nothing would be lost; here the dispatcher lists this
-    /// power as a modifier only when its 0 moved the truncated value, so a loss that truncates to 0 spends no stack, as
-    /// there. The game's Buffer acts for any owner, an enemy's too. The old function acts on the player's list alone and
-    /// the old enemy site (CardEffects.LandDamageOnEnemy) has no Buffer, so the handler acts for an owner that is the
-    /// player (a power on a creature that is no enemy; the old state's pet holds no powers) and leaves an enemy's loss
-    /// alone: an enemy that holds Buffer takes its HP loss here and not in the game (MIGRATION_F08 section 6, R7 checks).
+    /// game: BufferPower.ModifyHpLostAfterOstyLate. A fold-set over the HP lost after the pet redirect: 0 for a loss of the
+    /// power's owner, whatever the props and the dealer, the value unchanged otherwise. The owner is any creature, an
+    /// enemy too, as the game's (R7b2; the old functions read the player's list alone and the old enemy site,
+    /// CardEffects.LandDamageOnEnemy, has no Buffer, so the old engine took an enemy's loss). The number is the old
+    /// function's (0). The old site returns before Buffer when nothing would be lost; here the dispatcher lists this power
+    /// as a modifier only when its 0 moved the truncated value, so a loss that truncates to 0 spends no stack, as there.
     /// </summary>
     internal static decimal ModifyHpLostAfterOstyLate(HookCtx c, ListenerRef self, in ModifyHpLostArgs a, decimal current)
     {
-        if (c.Power(self) is not { } me || a.Target != me.Owner || c.Enemy(me.Owner) is not null || me.Amount <= 0m)
+        if (c.Power(self) is not { } me || a.Target != me.Owner || me.Amount <= 0m)
             return current;
         return CardEffects.Buffer_ModifyHpLostAfterOstyLate();
     }
 
     /// <summary>
-    /// game: BufferPower.AfterModifyingHpLostAfterOsty. An event the dispatcher's filter-set pass reaches only when this
-    /// power is among the fold's modifiers (its 0 took the loss off): the stack spent by
-    /// CardEffects.Buffer_AfterModifyingHpLostAfterOsty, which takes the stack count and removes the power at its last
-    /// stack (the old site calls it with the player's Buffer, above 0, right before returning the 0 above). The owner is
-    /// the player, as above.
+    /// game: BufferPower.AfterModifyingHpLostAfterOsty (PowerCmd.Decrement). An event the dispatcher's filter-set pass
+    /// reaches only when this power is among the fold's modifiers (its 0 took the loss off): one stack spent, the power
+    /// removed at its last. The player's is the old function, CardEffects.Buffer_AfterModifyingHpLostAfterOsty; an
+    /// enemy's is the same step on that enemy's list.
     /// </summary>
     internal static HookStep AfterModifyingHpLostAfterOsty(HookCtx c, ListenerRef self, in AfterModifyingHpLostAfterOstyArgs a,
         ChoiceCtx? ctx)
     {
-        if (c.Power(self) is not { } me || c.Enemy(me.Owner) is not null || me.Amount <= 0m)
+        if (c.Power(self) is not { } me || me.Amount <= 0m)
             return HookStep.Done;
+        if (c.Enemy(me.Owner) is { } enemy)
+        {
+            if (me.Amount == 1m)
+                BuffSystem.Remove(enemy.Buffs, BuffId.Buffer);
+            else
+                BuffSystem.Apply(enemy.Buffs, BuffId.Buffer, -1);
+            return HookStep.Done;
+        }
         CardEffects.Buffer_AfterModifyingHpLostAfterOsty(c.OldCombat, (int)me.Amount);
         return HookStep.Done;
     }

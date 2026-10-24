@@ -1057,6 +1057,7 @@ are left, or not), and the old rule's users are listed and either follow the gam
   the player took the hit (O1's three OstyDamageSinkTests). `DieForYouPower` (Registry block `R7a`) ports the game's
   override; OldState lists the power on the Osty a combat holds (the game applies it once, at OstyCmd.Summon's first
   add, and never removes it), and `HookCtx.PetOwner` names the player for Osty. Tests: `R7aTests`.
+  **Die For You on revive (R7b2)**: the game applies the power at OstyCmd.Summon's first add only; the revive branch re-adds the same creature, which kept it (ShouldPowerBeRemovedAfterOwnerDeath is false), so a revived Osty holds it. OldState lists it whenever the combat holds an Osty (`OstyMaxHp` above 0, dead or alive under the switch), so the code already acts after a revive; the comments now say so. Test: `R7b2Tests.ARevivedOstyStillTakesThePlayersPoweredHit` (passes before and after).
 - **Dealers: the player (R7a).** The game's ConstrictPower and DisintegrationPower damage their owner with the owner as
   dealer; `CardEffects.DealDamageToPlayer` and `OldEntry.HitPlayer` take an `OldCreature` dealer, and those two sites
   pass `OldCreature.Player` (read only under the switch). Test: `R7aDealerTests`.
@@ -1116,6 +1117,7 @@ game does something else, found while porting; R7's corpus re-measure decides ea
   (`PhantomBladesPower.IsShiv`), so that it equals the old function. The old card data carries the tag as `CardDef.ShivTag`.
   Check: list the defs with `ShivTag` whose name is not Shiv; a recorded Phantom Blades fight that plays one under the power
   differs from the game, and the handler then takes the tag test.
+  **Closed in R7b2, no behaviour change** (branch `rebuild/f08-r7b2`): the one card the game tags Shiv is Shiv (CanonicalTags, every card read), so the name test is the game's tag test. `CardDef.ShivTag` is not the tag: `scripts/extract_data.py` sets it on any card whose text names `CardTag.Shiv`, so Knife Trap (a Skill that counts the exhaust pile's Shivs) carries it, and taking the flag would add a card the game does not count. The handler stays on the name, its comment says why. The flag's other reader is old: `RelicEffects` HelicalDart pays on a Knife Trap play, which the game's tag test does not; fixing the extractor moves the old engine, so it is the owner's call. Test: `R7b2Tests.PhantomBladesAnswersTheGamesShivTagWhichOnlyShivCarries` (passes before and after: a guard against the flag).
 - **Tracking and Double Damage: the pet case.** The game accepts a dealer that is the owner's pet (Osty); the handlers do too
   (`HookCtx.IsOwnerOrPet`), while the old fold (`BuffSystem.IncomingDamage`) reads the attacker's own buff list. Check: a recorded
   fight where Osty strikes with a card source under either power; the handler is the game's answer.
@@ -1124,31 +1126,38 @@ game does something else, found while porting; R7's corpus re-measure decides ea
   Osty's hit on a Sic 'Em holder.
 - **Intangible: the ending guard.** The game's `IntangiblePower.ModifyHpLostAfterOsty` returns the amount unchanged while the
   combat is not in progress; HookCtx has no accessor for it and the handler (`IntangiblePower`, batch C3) does not model it.
+  **Closed in R7b2**: `IntangiblePower.ModifyHpLostAfterOsty` returns the amount while `HookCtx.CombatInProgress` is false (the accessor existed: `CombatEnd.IsInProgress`). Test: `R7b2Tests.IntangibleLeavesAnHpLossAloneOnceTheCombatIsNotInProgress`.
 - **Buffer: any owner.** The game's Buffer acts for any owner, an enemy's too; the old functions read the player's buff list alone
   and the old enemy site has no Buffer, so the handler acts for the player's Buffer only (`BufferPower`). Check: a recorded fight
   where an enemy holds Buffer and takes an HP loss; the game spends a stack and the loss becomes 0, the handler leaves it, and the
   handler then takes the any-owner test.
+  **Closed in R7b2**: `BufferPower` acts for any owner; an enemy's stack is spent on its own list (the old function's step), the player's by the old function. Tests: `R7b2Tests.AnEnemysBufferTakesItsHpLossAndSpendsAStack`, `PowerTwoTests.BufferActsForItsOwnersLossOnEitherSide` (was `BufferLeavesAnEnemysLossAlone`).
 - **Personal Hive: the `dealer != null` test.** The game's override tests the target, a non-null dealer and the powered props; the
   old site (`CardEffects.LandDamageOnEnemy`) has no dealer test and the handler (`PersonalHivePower`, batch C4, whose comment omits
   it) keeps the old site's tests, the owner's HP above 0 included. Check: a recorded powered hit on a Personal Hive owner with no
   dealer; the handler shuffles Dazed, the game does not, and the handler then takes the dealer test.
+  **Closed in R7b2**: the handler tests a non-null dealer; the old site's HP test is kept. Test: `R7b2Tests.PersonalHiveShufflesNoDazedForAPoweredHitWithNoDealer`.
 - **Constrict: the Applier test.** The game's override removes the power when the dead creature is the power's Applier; the old
   site and the handler (`ConstrictPower`) test that the fallen is a Slithering Strangler by def id, whichever Strangler applied
   it. Check: a recorded fight with two Stranglers where the one that did not apply Constrict dies; the handler removes the
   player's Constrict, the game does not, and the handler then takes the Applier test.
+  **Closed in R7b2, with a gated old-engine edit**: the old state had no Applier, so the Strangler's Constrict move (`EnemyAI`, the debuff intent) records it under the F08 switch only, when its Apply creates the player's power (`EnemyState.AppliedPlayersConstrict`, IdentityOnly, cloned; a later Apply stacks and keeps it, as PowerCmd.Apply's ModifyAmount); the handler removes the power at its Applier's death, and falls back to the old Strangler test when no enemy is recorded (a loaded document, a test). Switch off: nothing recorded (byte proof 0 differ). Tests: `R7b2Tests.ConstrictStaysWhenTheStranglerThatDidNotApplyItDiesAndGoesWithItsApplier`, `TheStranglersConstrictMoveRecordsTheApplierOnlyUnderTheSwitchAndOnlyWhenItCreatesThePower`.
 - **Strike Dummy, Fake Strike Dummy, Miniature Cannon, Mystic Lighter, Pen Nib: props and owner.** Miniature Cannon and Mystic Lighter also keep the old site's Attack-def test. The game's overrides answer the no-bonus value off a powered attack (`ValueProp.IsPoweredAttack`) and for a dealer or card that is not the owner's (`HookCtx.IsOwnerOrPet` for Pen Nib); the old sites (`RelicEffects.CardDamageBonus`, `CardDamageMultiplier`, `CardEffects.DmgFrom`) read neither, so the handlers take the game's tests. Check: a recorded fight with an unpowered hit carrying a card source (an upgraded Attack's self-damage) under one of the five; the old engine gave the bonus, the handler gives none. The old state has one card owner, so the card-owner tests are always met until a second owner exists.
 - **Thorns, an enemy's: the target.** The game's `ThornsPower.BeforeDamageReceived` damages the dealer; the old body
   (`CardEffects.TriggerEnemyThorns`) and the handler (`ThornsPower`, batch L3a) damage the player whoever dealt, so Osty's
   powered hit on a Thorns holder costs the player, not Osty. The retaliation's dealer is the owner under the switch
   (`DealDamageToPlayer`'s dealer, L3a). Check: a recorded Necrobinder fight where Osty strikes a Thorns holder; the handler
   then takes the dealer as its target.
+  **Closed in R7b2**: the enemy-owned retaliation goes to the dealer: the old body when the player dealt, else CreatureCmd.Damage on the dealer (Osty, an enemy), unpowered, the owner as dealer. Test: `R7b2Tests.AnEnemysThornsHitsOstyWhenOstyStrikes`.
 - **Crab Rage: whose death.** The game's `CrabRagePower.AfterDeath` answers any ally's death; the old body and the handler
   (`CrabRagePower`) answer only the death of a Crab Rage holder. With the Kaiser Crab's two halves the only enemies, no
   reachable fight differs until another ally joins them.
+  **Closed in R7b2**: the handler answers any death on its owner's side but its own (side: enemy, or the player with its pet), with the old body's step for its own owner (Strength, unpowered Block, the power removed). Tests: `R7b2Tests.CrabRageAnswersTheDeathOfAnAllyThatHoldsNoCrabRage`, `L3aModelTests.CrabRageTakesTheGamesTestOfTheFallen` (was `CrabRageKeepsTheOldTestOfTheFallen`).
 - **Surrounded: the props.** The game's `SurroundedPower.ModifyDamageMultiplicative` has no props test; the old fold
   (`BuffSystem.IncomingDamage`) is the powered one and the handler (`SurroundedPower`) asks for a powered attack. Check: an
   unpowered hit on the player from the half at the back; the game multiplies it by 1.5. Its AfterDeath takes the game's
   condition (a real death on the other side), which the old site reached only after a Crab Rage.
+  **Closed in R7b2**: the fold has no props test. Tests: `R7b2Tests.SurroundedMultipliesAnUnpoweredHitFromTheBack`, `L3aModelTests.SurroundedMultipliesAPoweredHitFromBehindAsTheOldBodyDoes` (its unpowered line now 1.5x).
 - **Surprise, Infested, Stock: the HP stream by site (batch L3b).** The old engine draws by site: the in-blow death
   answer of a card's kill (`CardEffects.OnEnemyDeath`, `AnswerDeathsHoldingTheFightOpen` on `state.ShuffleRng`) hands the
   Shuffle stream, every other death answer (`AnswerDeaths`, `AnswerDeathsSince`) the step's combat stream

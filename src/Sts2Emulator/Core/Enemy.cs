@@ -165,6 +165,15 @@ public sealed class EnemyState
     public int CurlUpCardUid;
 
     /// <summary>
+    /// F08+F10 on: this enemy is the Applier of the player's Constrict (the game's <c>PowerModel.Applier</c>, set when
+    /// PowerCmd.Apply creates the power and kept when a later Apply stacks onto it), set by the Slithering Strangler's
+    /// Constrict move when the player held none; <c>ConstrictPower.AfterDeath</c> removes the power when its Applier dies.
+    /// False for every enemy with the switch off.
+    /// </summary>
+    [IdentityOnly]
+    public bool AppliedPlayersConstrict;
+
+    /// <summary>
     /// <c>NemesisPower</c>'s private flip bool: false, then true, then false, once per
     /// enemy side turn. True means the power applied Intangible on this flip.
     /// </summary>

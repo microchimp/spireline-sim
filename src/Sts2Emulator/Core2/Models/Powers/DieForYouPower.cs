@@ -1,7 +1,7 @@
 // DieForYouPower (power:DIE_FOR_YOU_POWER), batch R7a (docs/rebuild/MIGRATION_F08.md, R7 checks): ModifyUnblockedDamageTarget,
 // the pet redirect. The game applies the power to Osty once, when OstyCmd.Summon first adds the pet, and never removes it
-// (ShouldPowerBeRemovedAfterOwnerDeath), so an Osty the old state holds (OstyMaxHp above 0) holds it, and OldState lists it
-// on Osty. The old enemy-attack site (EnemyAI's player hit) moved the unblocked rest of a powered hit onto a living Osty
+// (ShouldPowerBeRemovedAfterOwnerDeath): Summon's revive branch re-adds the same creature, which kept it, so a revived Osty
+// holds it too. An Osty the old state holds (OstyMaxHp above 0, dead or revived) holds it, and OldState lists it on Osty. The old enemy-attack site (EnemyAI's player hit) moved the unblocked rest of a powered hit onto a living Osty
 // itself; under the F08 switch that hit is AttackCmd's CreatureCmd.Damage, whose ModifyUnblockedDamageTarget fold this
 // handler answers, and Damage deals the overkill back to the player. Game code is cited by class and method only.
 using Sts2Emulator.Core;
