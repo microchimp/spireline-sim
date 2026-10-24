@@ -369,4 +369,246 @@ public class KillCommandTests
         Assert.DoesNotContain(attacker, s.Enemies);
         Assert.Null(dealerSeen);
     }
+
+
+    // -------------------------------------------------------------------------- the player's hooks stay deactivated
+
+    private static HookEvent<T> Do<T>(Action<T> body) where T : struct =>
+        (ListenerRef self, in T a, ChoiceCtx? c) =>
+        {
+            body(a);
+            return HookStep.Done;
+        };
+
+    [Fact]
+    public void ASecondKillOfADeadPlayerLeavesItsHooksOffForBeforeDeathAndShouldDie()
+    {
+        // game: Player.DeactivateHooks runs once, inside the kill, and nothing but a heal from dead (HealInternal) turns the
+        // hooks on again: a later kill of the dead player visits none of its listeners.
+        var s = Combat(30);
+        var log = new List<string>();
+        var k = K(s, t => DeathHooks(t, log));
+        Hit(k, OldCreature.Player, 80m, OldCreature.Of(s.Enemies[0]));
+        Assert.Equal(PlayerHooks.Deactivated, k.World!.PlayerHooks);
+        log.Clear();
+        CreatureCmd.Kill(k, [OldCreature.Player]);
+        Assert.Empty(log);
+        Assert.Equal(PlayerHooks.Deactivated, k.World.PlayerHooks);
+    }
+
+    [Fact]
+    public void APreventedDeathOfADeadPlayerDoesNotReEnableItsHooks()
+    {
+        // game: the prevented branch of KillWithoutCheckingWinCondition runs no ActivateHooks; a monster's ShouldDie (the
+        // only listener the dead player's side leaves) prevents the second kill and the player's relic stays unvisited.
+        var s = Combat(30);
+        var log = new List<string>();
+        bool prevent = false;
+        var k = K(s, t =>
+        {
+            DeathHooks(t, log);
+            t.Model(ListenerKind.Monster, Monster)
+                .On(HookId.ShouldDie, Ask(log, (ShouldDieArgs a) => "MonsterShouldDie", _ => !prevent))
+                .On(HookId.AfterPreventingDeath, Do<AfterPreventingDeathArgs>(_ =>
+                {
+                    log.Add("Prevented");
+                    s.PlayerHp = 10;
+                }));
+        });
+        Hit(k, OldCreature.Player, 80m, OldCreature.Of(s.Enemies[0]));
+        prevent = true;
+        log.Clear();
+        CreatureCmd.Kill(k, [OldCreature.Player]);
+        Assert.Equal(["MonsterShouldDie", "Prevented"], log);
+        Assert.Equal(PlayerHooks.Deactivated, k.World!.PlayerHooks);
+        Assert.False(OldState.PlayerActive(k.World));
+    }
+
+    [Fact]
+    public void ANestedPlayerKillInsideADamagesKeepStaysDeactivatedWhenTheOuterScopeEnds()
+    {
+        // game: the outer Damage's results loop and its own Kill call run after a hook killed the player: the player's
+        // hooks went off in that kill and stay off, so the outer Kill's BeforeDeath does not reach the relic again.
+        var s = Combat(30);
+        var log = new List<string>();
+        bool nested = false;
+        KernelState? kk = null;
+        var k = kk = K(s, t =>
+        {
+            DeathHooks(t, log);
+            t.Model(ListenerKind.Relic, Relic).On(HookId.AfterCurrentHpChanged, Do<AfterCurrentHpChangedArgs>(a =>
+            {
+                if (a.Creature.Index != 0 || nested)
+                    return;
+                nested = true;
+                CreatureCmd.Kill(kk!, [OldCreature.Player]);
+            }));
+        });
+        Hit(k, OldCreature.Player, 80m, OldCreature.Of(s.Enemies[0]));
+        Assert.Equal(PlayerHooks.Deactivated, k.World!.PlayerHooks);
+        Assert.Single(log, "BeforeDeath 0");
+        Assert.Single(log, "ShouldDie 0");
+    }
+
+    // ------------------------------------------------------------- a target a nested kill removed mid-loop is skipped
+
+    [Fact]
+    public void ADamageHookThatKillsALaterTargetBeforeItsTurnInTheFirstLoopLeavesNoResultForIt()
+    {
+        // game: CreatureCmd.Damage's `if (target.IsDead) continue` over its copy of the target list: Letter Opener-style
+        // damage to everyone from a BeforeDamageReceived hook kills the second enemy before the loop reaches it.
+        var s = Combat(30, 5);
+        var a = s.Enemies[0];
+        var b = s.Enemies[1];
+        KernelState? kk = null;
+        bool fired = false;
+        var k = kk = K(s, t => t.Model(ListenerKind.Relic, Relic).On(HookId.BeforeDamageReceived,
+            Do<BeforeDamageReceivedArgs>(args =>
+            {
+                if (args.Target.Index != 1 || fired)
+                    return;
+                fired = true;
+                Hit(kk!, OldCreature.Of(b), 99m);
+            })));
+        var results = CreatureCmd.Damage(k, [OldCreature.Of(a), OldCreature.Of(b)], 3m, ValueProps.PoweredAttack,
+            OldCreature.Player, null);
+        Assert.Equal([OldCreature.Of(a)], results.Select(r => r.Receiver));
+        Assert.Equal([a], s.Enemies);
+        Assert.Equal(27, a.Hp);
+    }
+
+    [Fact]
+    public void ADamageHookThatKillsALaterTargetInTheResultsLoopSkipsThatTargetsPasses()
+    {
+        // game: IterateHookListeners visits a model only while the combat still holds it; the thorns-like damage from a hook
+        // on the first target's result removes the second target, whose later passes (it has no position to name) are skipped
+        // instead of throwing in the CreatureRef lookup.
+        var s = Combat(30, 20);
+        var a = s.Enemies[0];
+        var b = s.Enemies[1];
+        var given = new List<int>();
+        KernelState? kk = null;
+        var k = kk = K(s, t => t.Model(ListenerKind.Relic, Relic).On(HookId.AfterDamageGiven,
+            Do<AfterDamageGivenArgs>(args =>
+            {
+                given.Add(args.Target.Index);
+                if (args.Target.Index == 1 && given.Count == 1)
+                    Hit(kk!, OldCreature.Of(b), 99m);
+            })));
+        var results = CreatureCmd.Damage(k, [OldCreature.Of(a), OldCreature.Of(b)], 3m, ValueProps.PoweredAttack,
+            OldCreature.Player, null);
+        Assert.Equal(2, results.Count);
+        // Visits: the first target's result, then the nested Damage's result for the second target (index 2, before its
+        // removal); the outer result for the second target is skipped.
+        Assert.Equal([1, 2], given);
+        Assert.Equal([a], s.Enemies);
+    }
+
+    [Fact]
+    public void APrimaryEnemyThatDiesInAHookTakesItsMinionOutOfTheLoopBeforeItsTurn()
+    {
+        // game: Kill(primary) kills the all-secondary teammates (Kill.cs); the outer Damage's later result for the minion
+        // finds it gone and skips it.
+        var s = Combat(30, 20);
+        var primary = s.Enemies[0];
+        var minion = s.Enemies[1];
+        minion.Buffs.Add(new BuffState(BuffId.Minion, 1));
+        var given = new List<int>();
+        KernelState? kk = null;
+        var k = kk = K(s, t => t.Model(ListenerKind.Relic, Relic).On(HookId.AfterDamageGiven,
+            Do<AfterDamageGivenArgs>(args =>
+            {
+                given.Add(args.Target.Index);
+                if (args.Target.Index == 1 && given.Count == 1)
+                    Hit(kk!, OldCreature.Of(primary), 99m);
+            })));
+        var results = CreatureCmd.Damage(k, [OldCreature.Of(primary), OldCreature.Of(minion)], 3m, ValueProps.PoweredAttack,
+            OldCreature.Player, null);
+        Assert.Equal(2, results.Count);
+        Assert.Empty(s.Enemies);
+        Assert.Equal([1, 1], given);
+        Assert.Equal(0, minion.Hp);
+    }
+
+    [Fact]
+    public void AnAttacksSingleTargetThatLeftTheCombatMidAttackEndsTheHitsWithoutThrowing()
+    {
+        // game: AttackCommand's per-hit `GetPossibleTargets().Where(IsAlive)`; the target is gone after hit 1 (escaped from a
+        // hook of its own result), so hit 2 finds none and the loop stops (Damage skips the removed receiver's passes).
+        var s = Combat(30, 30);
+        var b = s.Enemies[1];
+        KernelState? kk = null;
+        var k = kk = K(s, t => t.Model(ListenerKind.Relic, Relic).On(HookId.AfterDamageGiven,
+            Do<AfterDamageGivenArgs>(args =>
+            {
+                if (args.Target.Index == 2)
+                    CreatureCmd.Escape(kk!, OldCreature.Of(b));
+            })));
+        var cmd = new AttackCmd(OldCreature.Player, 3m, 2) { SingleTarget = OldCreature.Of(b) }.Execute(k);
+        Assert.Equal(1, cmd.Hits);
+        Assert.True(b.Escaped);
+        Assert.Equal(27, b.Hp);
+        Assert.Single(s.Enemies);
+    }
+
+    // ---------------------------------------------------- a corpse that stays loses what its revive would strip
+
+    private static KernelState Corpse(CombatState s, string power)
+    {
+        var log = new List<string>();
+        return K(s, t =>
+        {
+            DeathHooks(t, log, remove: a => a.Creature.Index != 1);
+            t.Model(ListenerKind.Power, power).On(HookId.ShouldPowerBeRemovedAfterOwnerDeath,
+                Ask(log, (PowerDeathArgs a) => "own", _ => false));
+        });
+    }
+
+    [Fact]
+    public void ARevivedSegmentKeepsNeitherItsTemporaryStrengthNorItsStun()
+    {
+        // game: Creature.RemoveAllPowersAfterDeath removes every power but ReattachPower's own (it vetoes); the engine's
+        // folded TemporaryStrength and the Stunned bookkeeping stand for powers the game removes, and the old
+        // TryReattachSegment strips everything but Reattach and Reviving: so does the kernel's kill for a corpse that stays.
+        var s = Combat(5, 40);
+        var seg = s.Enemies[0];
+        seg.Buffs.AddRange([new(BuffId.Reattach, 1), new(BuffId.Strength, 6), new(BuffId.TemporaryStrength, -2),
+            new(BuffId.Stunned, 1), new(BuffId.Vulnerable, 2)]);
+        var k = Corpse(s, "ReattachPower");
+        Hit(k, OldCreature.Of(seg), 9m);
+        Assert.Contains(seg, s.Enemies);
+        Assert.Equal([BuffId.Reattach], seg.Buffs.Select(b => b.Id));
+    }
+
+    [Fact]
+    public void ARespawnedAxebotKeepsOnlyTheStockItsRespawnReads()
+    {
+        // game: StockPower vetoes its own removal and the old TryRespawnAxebot clears every buff but re-applies the Stock it
+        // read: the corpse's Strength, TemporaryStrength and Stunned must not reach the respawn.
+        var s = Combat(5, 40);
+        var bot = s.Enemies[0];
+        bot.DefId = KE.Axebot;
+        bot.Buffs.AddRange([new(BuffId.Stock, 2), new(BuffId.Strength, 3), new(BuffId.TemporaryStrength, -1),
+            new(BuffId.Stunned, 1)]);
+        var k = Corpse(s, "StockPower");
+        Hit(k, OldCreature.Of(bot), 9m);
+        Assert.Contains(bot, s.Enemies);
+        Assert.Equal([new BuffState(BuffId.Stock, 2)], bot.Buffs);
+    }
+
+    [Fact]
+    public void AnIllusionCorpseStripsWhatTheOldPathDoesAndOtherCorpsesKeepTheirUnlistedBuffs()
+    {
+        // The old TryReviveIllusion removes debuffs only (IsDebuff: neither TemporaryStrength nor Stunned is one).
+        var s = Combat(5, 40);
+        var illusion = s.Enemies[0];
+        illusion.Buffs.AddRange([new(BuffId.Illusion, 1), new(BuffId.TemporaryStrength, 2), new(BuffId.Stunned, 1)]);
+        Hit(Corpse(s, "IllusionPower"), OldCreature.Of(illusion), 9m);
+        Assert.Equal([BuffId.Illusion, BuffId.TemporaryStrength, BuffId.Stunned], illusion.Buffs.Select(b => b.Id));
+        // A corpse none of the revive paths claims (removal vetoed for another reason) keeps them.
+        var s2 = Combat(5, 40);
+        s2.Enemies[0].Buffs.AddRange([new(BuffId.TemporaryStrength, 2), new(BuffId.Stunned, 1)]);
+        Hit(Corpse(s2, "StrengthPower"), OldCreature.Of(s2.Enemies[0]), 9m);
+        Assert.Equal([BuffId.TemporaryStrength, BuffId.Stunned], s2.Enemies[0].Buffs.Select(b => b.Id));
+    }
 }
