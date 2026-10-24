@@ -53,7 +53,7 @@ def self_record(g: dict, e: dict) -> dict:
     return {"seed": g.get("seed"), "steps": steps}
 
 
-def _judge(fid: str, g: dict, e: dict, nm: dict, rows: list, traced: bool, self_check: bool = False) -> dict:
+def _judge(fid: str, g: dict, e: dict, nm: dict, rows: list, traced: bool, self_check: bool = False, engine: str = "old") -> dict:
     out: dict = {"id": fid, "seed": g.get("seed")}
     fd = None if self_check else fc.first_difference(g, e, nm)
     out["fc"] = None if fd is None else fd[0]
@@ -69,9 +69,10 @@ def _judge(fid: str, g: dict, e: dict, nm: dict, rows: list, traced: bool, self_
     if self_check:
         g = self_record(g, e)
     try:
-        s = sc.compare_fight(g, e, rows)
+        s = sc.compare_fight(g, e, rows, engine)
         out.update(sc=s["first"], sc_paths=[p for p, _, _ in s["at"][:8]], sc_vals=[[p, x, y] for p, x, y in s["at"][:4]],
-                   census=s["census"], waived=s["waived"], leaves=s["leaves"], allowed=s["allowed"])
+                   census=s["census"], waived=s["waived"], leaves=s["leaves"], allowed=s["allowed"],
+                   surplus=s["surplus"])
     except Exception as ex:  # noqa: BLE001 - a comparer crash is a finding, reported per fight
         out["sc"], out["sc_error"] = -1, f"{type(ex).__name__}: {ex}"[:300]
     if e.get("error"):
@@ -80,14 +81,14 @@ def _judge(fid: str, g: dict, e: dict, nm: dict, rows: list, traced: bool, self_
 
 
 def _part(args) -> list:
-    ids, games, emudump, work, traced, self_check = args
+    ids, games, emudump, work, traced, self_check, engine = args
     C._below_normal()
     nm = fc.names(json.loads((ROOT / "data" / "id_map.json").read_text(encoding="utf-8")))
     rows = sc.load_rows()
     tag = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in ids[0])
     src, dst, err = (Path(work) / f"cal-{tag}{x}" for x in (".in.json", ".out.json", ".err.txt"))
     src.write_text(json.dumps({"results": games}), encoding="utf-8")
-    flags = ["--compact", "--game-view"] + (["--netstate"] if traced else [])
+    flags = ["--compact", "--game-view"] + (["--netstate"] if traced else []) + ["--engine", engine]
     with dst.open("wb") as so, err.open("wb") as se:
         rc = subprocess.run([*C.emudump_command(emudump), "fight", str(src), *flags], stdout=so, stderr=se, check=False,
                             creationflags=C.BELOW_NORMAL, timeout=C.part_timeout(sum(len(g["steps"]) for g in games))).returncode
@@ -95,7 +96,7 @@ def _part(args) -> list:
     out = []
     for n, (fid, g) in enumerate(zip(ids, games)):
         e = res[n] if n < len(res) else {"error": f"EmuDump exit {rc}", "steps": []}
-        out.append(_judge(fid, g, e, nm, rows, traced, self_check))
+        out.append(_judge(fid, g, e, nm, rows, traced, self_check, engine))
     for f in (src, dst, err):
         with contextlib.suppress(OSError):
             f.unlink()
@@ -137,6 +138,8 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--self", dest="self_check", action="store_true",
                     help="shadow of the engine against itself: its own game view stands as the record; every fight must be identical")
+    ap.add_argument("--engine", choices=("old", "core2"), default="old",
+                    help="the engine EmuDump runs and whose allowed rows apply (core2 also gets old's: it runs over old's state)")
     ap.add_argument("--gate-against", type=Path, help="an earlier output (engine A): fail any fight compared on fewer fields here")
     a = ap.parse_args()
     work = a.work or a.out.parent
@@ -146,7 +149,7 @@ def main() -> int:
         c = C.Corpus(a.corpus)
         metas = c.load_index()["fights"][: a.limit or None]
         for ids in C.balance(metas, a.procs * 4):
-            jobs.append((ids, [c.read(i) for i in ids], a.emudump, str(work), False, a.self_check))
+            jobs.append((ids, [c.read(i) for i in ids], a.emudump, str(work), False, a.self_check, a.engine))
     else:
         fights = []
         for f in a.files:
@@ -157,7 +160,7 @@ def main() -> int:
         per = max(1, len(fights) // (a.procs * 2))
         for i in range(0, len(fights), per):
             chunk = fights[i:i + per]
-            jobs.append(([x[0] for x in chunk], [x[1] for x in chunk], a.emudump, str(work), True, a.self_check))
+            jobs.append(([x[0] for x in chunk], [x[1] for x in chunk], a.emudump, str(work), True, a.self_check, a.engine))
     t0 = time.time()
     with mp.get_context("spawn").Pool(min(a.procs, len(jobs) or 1)) as pool:
         results = [r for part in pool.imap_unordered(_part, jobs) for r in part]
@@ -173,7 +176,8 @@ def main() -> int:
         for k, v in (r.get("allowed") or {}).items():
             allowed[k] = allowed.get(k, 0) + v
     doc = {"mode": a.mode, "fights": len(results), "seconds": round(time.time() - t0), "allowed_sha": sc.rows_sha(),
-           "tables": tables, "allowed_fired": allowed, "sc_errors": sum("sc_error" in r for r in results), "results": results}
+           "engine": a.engine, "tables": tables, "allowed_fired": allowed,
+           "surplus": sorted({p for r in results for p in r.get("surplus", [])}), "sc_errors": sum("sc_error" in r for r in results), "results": results}
     a.out.write_text(json.dumps(doc), encoding="utf-8")
     print(json.dumps({k: v for k, v in doc.items() if k != "results"}, indent=1))
     if a.self_check:

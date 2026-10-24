@@ -44,7 +44,11 @@ _CARD = re.compile(r"^net\.players\[\d+\]\.piles\.\w+\[\d+\]$")
 _ELEM = re.compile(r"\[\d+\]|\{[^}]*\}")
 # The row kinds allowed_diff.json may use (docs/rebuild/COMPARER.md).
 KINDS = {"drop_dead_enemies", "lost_outcome_only", "power_fold", "intent_coarse", "unmodelled", "ignore", "same_first",
-         "both_positive", "settle", "late_steps"}
+         "both_positive", "settle", "late_steps", "surplus"}
+# An engine that runs over another engine's state has that engine's representation limits, so it is judged with that
+# engine's rows too (core2 is the old engine's state with the Tier 1 kernel attached, TIER1_KERNEL.md section 6). An engine
+# with a state of its own is not listed here and is judged by the rows for every engine only.
+ENGINE_BASE = {"core2": "old"}
 END_OF_TURN = "After player turn start"
 
 
@@ -72,8 +76,9 @@ def load_rows(path: Path = ALLOWED_FILE) -> list:
 
 
 def for_engine(rows: list, engine: str) -> list:
-    """The rows that apply to one engine: those listing it, or * (every engine)."""
-    return [r for r in rows if engine in r["engines"] or "*" in r["engines"]]
+    """The rows that apply to one engine: those listing it or the engine its state is (ENGINE_BASE), or * (every engine)."""
+    names = {engine, ENGINE_BASE.get(engine, engine), "*"}
+    return [r for r in rows if names & set(r["engines"])]
 
 
 def rows_sha(path: Path = ALLOWED_FILE) -> str:
@@ -263,6 +268,16 @@ def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict,
     g, gnodes = flatten(_prefilter(rec, shape, rows, fired, True, rec_snap), shape)
     e, enodes = flatten(_prefilter(eng, shape, rows, {}, False, rec_snap), shape)
     active = [r for r in rows if r.get("shape", "any") in ("any", shape) and _when(r, rec_snap)]
+    # A surplus row names paths only the engine writes (its own bookkeeping in the game's terms, e.g. the kernel's queue ids):
+    # an engine-written path is taken out of both sides, listed, and never compared against the record. A path the engine
+    # does not write is left alone, so the record's side is still the unmodelled rows' business.
+    surplus = set()
+    for r in active:
+        if r["kind"] == "surplus":
+            for p in [p for p in e if any(rx.match(schema(p)) for rx in r["_re"])]:
+                surplus.add(schema(p))
+                del e[p]
+                g.pop(p, None)
     unmod_rows = [r for r in active if r["kind"] == "unmodelled"]
     raw, compared, waived, unmodelled, unjudged = [], set(), set(), set(), set()
     for p in sorted(set(g) | set(e)):
@@ -325,7 +340,7 @@ def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict,
             diffs.append((p, gv, ev))
     compared -= waived
     return {"diffs": diffs, "compared": {schema(p) for p in compared}, "waived": {schema(p) for p in waived}, "n": len(compared),
-            "unmodelled": unmodelled, "unjudged": unjudged}
+            "unmodelled": unmodelled, "unjudged": unjudged, "surplus": surplus}
 
 
 def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old") -> dict:
@@ -335,7 +350,7 @@ def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old
     late = next((r for r in rows if r["kind"] == "late_steps"), None)
     limit = net_limit(g) if late else len(gsteps)  # the limit is the row: no row, no limit
     first, at, fired = None, [], {}
-    census, waived, unmodelled, unjudged, leaves = set(), set(), set(), set(), 0
+    census, waived, unmodelled, unjudged, surplus, leaves = set(), set(), set(), set(), set(), 0
     for k, (gs, es) in enumerate(zip(gsteps, esteps)):
         view = es.get("game_view")
         if view is None:
@@ -356,7 +371,12 @@ def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old
             waived |= part["waived"]
             unmodelled |= part["unmodelled"]
             unjudged |= part["unjudged"]
+            surplus |= part.get("surplus", set())
             leaves += part["n"]
+        # The engine's private kernel block (no comparer reads `private`): its schema paths are a surplus, never compared.
+        kernel = (view.get("private") or {}).get("kernel")
+        if kernel is not None:
+            surplus |= {schema(p) for p in flatten(kernel, "private.kernel")[0]}
         diffs = [d for part in parts for d in part["diffs"]]
         if diffs and first is None:
             first, at = k, diffs
@@ -365,6 +385,7 @@ def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old
         at = [("(error)" if e.get("error") else "(length)", f"{len(gsteps)} steps", f"{len(esteps)} steps")]
     return {"seed": g.get("seed"), "engine": engine, "first": first, "at": at, "allowed": dict(sorted(fired.items())), "census": sorted(census),
             "waived": sorted(waived - census), "leaves": leaves, "unmodelled": sorted(unmodelled), "unjudged": sorted(unjudged - census),
+            "surplus": sorted(surplus),
             "steps": [len(gsteps), len(esteps)], **({"error": str(e["error"]).splitlines()[0][:200]} if e.get("error") else {})}
 
 
@@ -378,6 +399,8 @@ def judge(g: dict, e: dict, rows: list | None = None, engine: str = "old") -> di
     if r.get("error"):
         out["ferr"] = r["error"]
     out.update(census=r["census"], waived=r["waived"], leaves=r["leaves"], allowed=r["allowed"])
+    if r["surplus"]:
+        out["surplus"] = r["surplus"]
     return out
 
 

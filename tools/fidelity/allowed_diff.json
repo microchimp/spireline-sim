@@ -56,6 +56,10 @@
      "legacy": "netstate_diff.settle / snapshot_flat"},
     {"id": "late-steps", "kind": "late_steps", "engines": ["*"], "shape": "net",
      "reason": "Record integrity, not the engine: a step whose action left no checksum was recorded before the game finished it; the net shape is not compared from the suspect step on (the snapshot still is).",
-     "legacy": "netstate_diff.late_steps / diff_fight verdict 'driver: ...'"}
+     "legacy": "netstate_diff.late_steps / diff_fight verdict 'driver: ...'"},
+    {"id": "kernel-sequencing", "kind": "surplus", "engines": ["core2"], "shape": "net",
+     "patterns": ["net.last_action", "net.last_hook"],
+     "reason": "With a kernel switch on, core2 writes the game's lastExecutedActionId and lastExecutedHookId from its own action queue's counters. The record's ids come from the live game's synchronizer, which also numbers actions the emulator does not run, so the two are not the same count: the paths are listed as surplus of the census and not compared. Where core2 writes none (no switch on) the record's side stays under net-sequencing.",
+     "legacy": "none: netstate_diff does not model the sequencing ids"}
   ]
 }
