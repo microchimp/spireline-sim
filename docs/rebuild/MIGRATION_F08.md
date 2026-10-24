@@ -1009,7 +1009,8 @@ are left, or not), and the old rule's users are listed and either follow the gam
 - Curl Up: the old flag pays on the next card played (`CombatEngine.PayCurlUp`), where the game's
   CurlUpPower.AfterCardPlayed pays only on the card that armed it.
 - Ravenous: `CombatEngine.Ravenous_AfterDeath` split per owner (the review's 3.3), so N holders give N owners' effects,
-  not N squared.
+  not N squared. Done in batch L3a: the loop calls `Ravenous_AfterDeathOf`, the handler (`RavenousPower`) calls it for its
+  own owner; `L3aModelTests.RavenousActsForEachSurvivorOnceAmongFourHolders`.
 
 **R7 acceptance items** (the oracle rounds O1 and O2 are building them): recommendation 1, the step-API acceptance test
 from the traced Headbutt and Twin Strike fights; recommendation 2, the old behaviour suites run under F08+F10 through a
@@ -1048,6 +1049,18 @@ game does something else, found while porting; R7's corpus re-measure decides ea
   it. Check: a recorded fight with two Stranglers where the one that did not apply Constrict dies; the handler removes the
   player's Constrict, the game does not, and the handler then takes the Applier test.
 - **Strike Dummy, Fake Strike Dummy, Miniature Cannon, Mystic Lighter, Pen Nib: props and owner.** Miniature Cannon and Mystic Lighter also keep the old site's Attack-def test. The game's overrides answer the no-bonus value off a powered attack (`ValueProp.IsPoweredAttack`) and for a dealer or card that is not the owner's (`HookCtx.IsOwnerOrPet` for Pen Nib); the old sites (`RelicEffects.CardDamageBonus`, `CardDamageMultiplier`, `CardEffects.DmgFrom`) read neither, so the handlers take the game's tests. Check: a recorded fight with an unpowered hit carrying a card source (an upgraded Attack's self-damage) under one of the five; the old engine gave the bonus, the handler gives none. The old state has one card owner, so the card-owner tests are always met until a second owner exists.
+- **Thorns, an enemy's: the target.** The game's `ThornsPower.BeforeDamageReceived` damages the dealer; the old body
+  (`CardEffects.TriggerEnemyThorns`) and the handler (`ThornsPower`, batch L3a) damage the player whoever dealt, so Osty's
+  powered hit on a Thorns holder costs the player, not Osty. The retaliation's dealer is the owner under the switch
+  (`DealDamageToPlayer`'s dealer, L3a). Check: a recorded Necrobinder fight where Osty strikes a Thorns holder; the handler
+  then takes the dealer as its target.
+- **Crab Rage: whose death.** The game's `CrabRagePower.AfterDeath` answers any ally's death; the old body and the handler
+  (`CrabRagePower`) answer only the death of a Crab Rage holder. With the Kaiser Crab's two halves the only enemies, no
+  reachable fight differs until another ally joins them.
+- **Surrounded: the props.** The game's `SurroundedPower.ModifyDamageMultiplicative` has no props test; the old fold
+  (`BuffSystem.IncomingDamage`) is the powered one and the handler (`SurroundedPower`) asks for a powered attack. Check: an
+  unpowered hit on the player from the half at the back; the game multiplies it by 1.5. Its AfterDeath takes the game's
+  condition (a real death on the other side), which the old site reached only after a Crab Rage.
 - **A HookCtx accessor for the card's live copy.** `MiniatureCannon.Copy` and `MysticLighter.Copy` are the same private helper (the card source's copy read back off `OldCombat` and `World`, for the upgrade flag and the enchantment, which `CardView` does not carry); HookCtx has no near fit, so R7 should add one accessor (the copy for a handle) and both models, and any later one, take it.
 
 ### The old suites under the switch (O1; the review's recommendation 2)

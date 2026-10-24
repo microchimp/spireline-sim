@@ -4687,7 +4687,7 @@ public static class EnemyAI
     /// separate from this one and is not addressed here.
     /// </para>
     /// </remarks>
-    private static void ApplyPlayerFlameBarrier(EnemyState enemy, CombatState state)
+    internal static void ApplyPlayerFlameBarrier(EnemyState enemy, CombatState state)
     {
         int flameBarrier = BuffSystem.Get(state.PlayerBuffs, BuffId.FlameBarrier);
         if (flameBarrier <= 0 || state.PlayerHp <= 0)
@@ -4726,7 +4726,7 @@ public static class EnemyAI
         Effects.CardEffects.DealUnpoweredDamageToEnemy(state, enemy, blocked);
     }
 
-    private static void ApplyPlayerThorns(EnemyState enemy, CombatState state)
+    internal static void ApplyPlayerThorns(EnemyState enemy, CombatState state)
     {
         int thorns = BuffSystem.Get(state.PlayerBuffs, BuffId.Thorns);
         if (thorns <= 0)

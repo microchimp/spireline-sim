@@ -6,8 +6,8 @@
 // One named block per handler batch (docs/rebuild/CLOUD_BRIEFS.md section 3), and `All` spreads the blocks. A batch adds
 // its block next to the others and one `.. <Block>` line to `All`; a textual conflict between two batches is resolved by
 // keeping every block. The blocks to come, by the names the briefs and the rebuild branches use:
-//   local: Monsters (monster-1 and monster-2, rebuild/f08-m1, f08-m2), L1 and L2 (the LOCAL non-monster models,
-//          rebuild/f08-l1, f08-l2);
+//   local: Monsters (monster-1 and monster-2, rebuild/f08-m1, f08-m2), L1, L2 and L3a (the LOCAL non-monster models,
+//          rebuild/f08-l1, f08-l2, f08-l3a);
 //   cloud: Power1, Power2, Power3, Power4 (C2-C5) and Relic1 (C6).
 using Sts2Emulator.Core2.Models.Cards;
 using Sts2Emulator.Core2.Models.Monsters;
@@ -133,6 +133,14 @@ public static class Registry
         FakeStrikeDummy.Register,
     ];
 
+    /// <summary>Batch L3a, the LOCAL models whose old bodies were private or acted for every holder (rebuild/f08-l3a).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> L3a =
+    [
+        // Batch L3a: the retaliations (re-entries), and the death answers made per owner.
+        ThornsPower.Register, FlameBarrierPower.Register, CrabRagePower.Register, SurroundedPower.Register,
+        RavenousPower.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -149,5 +157,6 @@ public static class Registry
         .. Power3,
         .. Power4,
         .. Relic1,
+        .. L3a,
     ];
 }
