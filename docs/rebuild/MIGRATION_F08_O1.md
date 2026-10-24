@@ -133,3 +133,37 @@ The step test (`StepApiKillTests`, O2): on this tree the two switched-on tests f
 (R4 has landed, Ravenous's AfterDeath and Strength's fold have not, so outside `Pinned` the survivor reads differently too); they
 are now whole-body strict expected failures, and `STS2_STEP_TEST=strict` runs them plain (Headbutt and Twin Strike both fail on the
 survivor's Strength, 0 against 5). `RerouteLanded` stays false.
+
+## Triage on f34f64db
+
+The 15 failing cases (11 methods) of the old suites with `STS2_TEST_SWITCHES=F08,F10`, each run, read and probed on f34f64db
+(temporary probes, not kept). 15 cases: old deviation 6, fixture gap 7, Core2 bug 1, missing handler 1. This supersedes the
+class column of the 2026-10-25 table above for these tests (Stock, Surprise, Heist, Swipe, Thorns and Gremlin Horn are
+registered now; no test of this list waits on a registered model except the Bomb and Doom case).
+
+| test (case) | class | fix hint |
+|---|---|---|
+| AfterPlayDeathTests.AnAfterPlayKillOfAnAxebotWithStockLeftBringsItBack | old deviation: the test holds the dead Axebot; StockPower.AfterDeath adds a NEW Axebot (CreatureCmd.Add) and the corpse leaves | re-read `fight.State.Enemies[0]` after the play and assert its Hp and Stock 1 |
+| CombatEndingGateTests.AFirstPhaseKillStillReturnsWhatTheEnemyStole (thief 28) | fixture gap: the enemy is seeded through the old `HeistGold` field with no Heist power, so HeistPower.BeforeDeath has no listener | seed BuffId.Heist next to the field (with it the probe banks 40) |
+| CombatEndingGateTests.AFirstPhaseKillStillReturnsWhatTheEnemyStole (thief 92) | fixture gap: `StolenCard` seeded with no Swipe power, so SwipePower.BeforeDeath has no listener | seed BuffId.Swipe next to the field (with it the probe returns the card) |
+| CombatEndingGateTests.ARandomTargetAttackStopsWithTheLeadersDeath (seed 0 rolls 3) | old deviation: the roll counts pass; the minion is dead with the last primary (CreatureCmd.Kill, the all-secondary teammates branch; MinionPower.OwnerIsSecondaryEnemy), the test pins it standing | assert the minion Hp is 0 (keep the CallCount assert) |
+| CombatEndingGateTests.ARandomTargetAttackStopsWithTheLeadersDeath (seed 2 rolls 1) | old deviation: same | same |
+| CombatEndingGateTests.NoExhaustHookRollsAfterTheKill | old deviation: same (CallCount 0 passes; minion Hp 0, test pins 20) | assert the minion Hp is 0 |
+| CombatEndingGateTests.TheBombAheadOfLethalDoomWinsAndBehindItLoses (bombFirst true, won) | old deviation: the Bomb kills the lone enemy and the game removes the corpse from the roster (Kill removal; ShouldCreatureBeRemovedFromCombatAfterDeath), so the test reads Enemy0 of an empty list: ArgumentOutOfRangeException, stack top `List<T>.get_Item` from `Fight.get_Enemy0` (Support/Fight.cs:31) at CombatEndingGateTests.cs:584 | hold `var enemy = fight.State.Enemies[0]` before EndTurn and assert enemy.Hp 0 |
+| CombatEndingGateTests.TheBombAheadOfLethalDoomWinsAndBehindItLoses (bombFirst false, lost) | missing handler (TheBombPower and DoomPower, BeforeSideTurnEnd): neither is registered, the old turn-end site orders them and the gated Damage drops the Bomb hit after the Doom kill (enemy stays 20, test pins 0) | register both handlers in the game order; read the game gate on Damage while the combat is ending (CreatureCmd.cs around lines 296 and 694) before deciding whether the test pins the old order |
+| FeedTests.KillingAMinionFeedsNothing | fixture gap: a roster with no primary enemy is already ending (CombatManager.IsEnding), so the gated damage never lands (minion 1/1, fight won); not reachable in the game | add a primary enemy, Feed the minion (target 1), assert minion Hp 0 and max HP unchanged; do not assert an empty roster |
+| FightHeldOpenTests.ALoneGremlinMercKilledAsTheTurnEndsSendsInItsReinforcements | old deviation: Hook.BeforeTurnEnd (the Bomb, so the Horn draw) runs before CombatManager.FlushPlayerHand, so the Horn card is flushed: hand 5, discard 1, draw 2 (test pins 6) | assert 5 and the Horn card in the discard pile, or update from a trace |
+| HeistGoldRewardTests.KillingTheFatGremlinBanksItsGoldForTheRewardScreen (encounter 3) | fixture gap: hand-built Fat Gremlin with `HeistGold` 80 and `Buffs = []`, no Heist power | add BuffState(BuffId.Heist, 1) to the enemy |
+| HeistGoldRewardTests.KillingTheFatGremlinBanksItsGoldForTheRewardScreen (encounter 7) | fixture gap: same | same |
+| SelectionAnswerDeathTests.AnExhaustAnswerThatKillsTheLastEnemyEndsTheFightAtOnce | fixture gap: one exhaust candidate is answered inside the play step (CardSelectCmd.FromHand opens no screen when the candidates do not exceed the minimum), so the fight ends in the play and the answer step runs on a finished combat (old repeats the terminal result, Core2 StepCombat returns Invalid); with a second candidate the screen opens and the answer wins with the switch on and off. Replaces the earlier queue-gate reading | add a second card to the hand so the screen opens |
+| UnpoweredDamageHookTests.OmnislicesSplashSkipsAnEnemyThatAnInfernoBurstKilled | fixture gap: the hand-made Omnislice has card uid 0; Thorns resolves the damage card source by uid (OldState.LocateCard rejects uid 0; ThornsPower.IsOmnislice sees source uid 0, no view), so Thorns never answers the splash and Inferno never bursts (player 60, struck 42, thorny 22) | stamp uids on hand-made cards in Fight.Hand or TestSwitches.Attach, as CombatFactory does |
+| WaterfallGiantTests.KilledByThornsOnItsOwnTurnItBlowsARoundLater | Core2 bug (Core/EnemyAI.cs:603-614, mechanism: the STOMP riders read `enemy.MoveIndex` after the hit, but SteamEruption.AfterDeath inside the hit already forced ABOUT_TO_BLOW (Core2/Models/Powers/KeptAfterOwnerDeath.cs:119), so Weak and the 3 Steam are skipped: Weak 0, Steam 15, off gives 1 and 18) | decide inGiantRing and the Weak turn before the attack damage and apply the riders from that snapshot |
+
+### Mechanism groups
+
+- Seeded through an old field with no power (4 cases): both AFirstPhaseKill cases and both HeistGoldReward cases. One fixture change: the seeders add the power.
+- A minion dies with the last primary (3 cases): both ARandomTarget cases and NoExhaustHookRollsAfterTheKill. One assertion change.
+- A corpse or a replaced creature read through the old roster or reference (2 cases): the Axebot test and the Bomb-first crash. Hold the reference before the step, as the game removes or replaces the creature.
+- A hand-made state the game does not reach (3 cases): FeedTests (no primary), SelectionAnswerDeathTests (one candidate), the Omnislice test (card uid 0). Three separate fixture edits; the uid one may belong in the fixture for every hand-made card.
+- Turn-end order of BeforeSideTurnEnd against the hand flush and the Doom kill (2 cases): the Gremlin Merc test (old deviation) and the Bomb-behind-Doom case (missing handler). The Bomb and Doom handlers are the open item.
+- Alone: WaterfallGiantTests (Core2 bug in the rider decision).
