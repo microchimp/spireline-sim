@@ -33,6 +33,14 @@ public sealed class Core2Engine : OldEngine
 
     public override string Name => "core2";
 
+    /// <summary>The old engine's game view plus the kernel's own state when a switch is on (Core2GameView); with none, old's bytes.</summary>
+    public override JsonObject GameView()
+    {
+        var view = base.GameView();
+        Core2GameView.Add(view, Run);
+        return view;
+    }
+
     /// <summary>The kernel this engine's states are bound to (shared; each combat holds its own KernelState).</summary>
     public Kernel Kernel { get; }
 
