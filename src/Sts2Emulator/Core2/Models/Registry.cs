@@ -14,6 +14,7 @@ public static class Registry
     public static readonly IReadOnlyList<Action<HandlerTable>> Pilot =
     [
         PhantomBladesPower.Register,
+        LethalityPower.Register,
     ];
 
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,

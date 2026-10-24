@@ -24,6 +24,7 @@ public class PilotTests
     private static readonly (ListenerKind Kind, string Model, HookId Hook)[] PilotPairs =
     [
         (ListenerKind.Power, "PhantomBladesPower", HookId.ModifyDamageAdditive),
+        (ListenerKind.Power, "LethalityPower", HookId.ModifyDamageMultiplicative),
     ];
 
     [Fact]
@@ -126,5 +127,68 @@ public class PilotTests
     public void PhantomBladesIsAbsentWithTheDamageFamilyOff()
     {
         AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Power, "PhantomBladesPower", HookId.ModifyDamageAdditive);
+    }
+
+    // ---------------------------------------------------------------------------------------- Lethality (power-5)
+
+    /// <summary>The player with Lethality 50 and the turn's lethal attack play flagged, one slug.</summary>
+    private static CombatState LethalityCombat(int amount = 50, bool lethalPlay = true)
+    {
+        var s = Combat(40);
+        s.PlayerBuffs.Add(new BuffState(BuffId.Lethality, amount));
+        s.LethalAttackPlay = lethalPlay;
+        return s;
+    }
+
+    [Fact]
+    public void LethalityIsRegisteredForItsPair()
+    {
+        AssertRegistered(Table(Pilot), ListenerKind.Power, "LethalityPower", HookId.ModifyDamageMultiplicative);
+    }
+
+    [Fact]
+    public void LethalityMultipliesByTheOldFunctionsFactorOnTheFlaggedPlay()
+    {
+        // game: LethalityPower.ModifyDamageMultiplicative; old: CardEffects.DealDamageToEnemy passes
+        // Lethality_ModifyDamageMultiplicative(lethality) as the card multiplier when lethality > 0 && LethalAttackPlay.
+        var s = LethalityCombat();
+        var k = Kernel(s, Pilot);
+
+        decimal v = Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed);
+
+        Assert.Equal(6m * (decimal)CardEffects.Lethality_ModifyDamageMultiplicative(50), v);
+        Assert.Equal(9m, v);
+        Assert.Equal([Power("LethalityPower", 0)], changed);
+        // The same state through the old fold: 6 x 1.5 = 9.
+        Assert.Equal(9, BuffSystem.IncomingDamage(6, s.PlayerBuffs, s.Enemies[0].Buffs,
+            CardEffects.Lethality_ModifyDamageMultiplicative(50)));
+
+        // Where the old site's condition fails: the flag down, an unpowered hit, an enemy dealer, the amount at 0.
+        s.LethalAttackPlay = false;
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+        s.LethalAttackPlay = true;
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m, props: Unpowered), out changed));
+        Assert.Empty(changed);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 0, damage: 6m, dealer: 1), out changed));
+        Assert.Empty(changed);
+        s.PlayerBuffs[0] = new BuffState(BuffId.Lethality, 0);
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void LethalityDeleteMutantGivesTheNoHandlerValue()
+    {
+        var s = LethalityCombat();
+        var k = Kernel(s, Without(Pilot, LethalityPower.Register));
+        Assert.Equal(6m, Hooks.ModifyDamage(k, Attack(target: 1, damage: 6m), out var changed));
+        Assert.Empty(changed);
+    }
+
+    [Fact]
+    public void LethalityIsAbsentWithTheDamageFamilyOff()
+    {
+        AssertAbsent(Table(Pilot, AllButDamage), ListenerKind.Power, "LethalityPower", HookId.ModifyDamageMultiplicative);
     }
 }
