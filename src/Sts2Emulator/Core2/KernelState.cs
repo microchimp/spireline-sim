@@ -20,6 +20,7 @@ public sealed class KernelState : HookRuntime
     private OldListeners? _listeners;
     private ActionQueueSet? _queue;
     private CommandLog? _commands;
+    private CombatProgress _progress = new();
     private readonly Dictionary<(HookId, ListenerRef, string), int> _seq = [];
 
     internal KernelState(Kernel shared, CombatState? combat, RunState? run)
@@ -31,6 +32,10 @@ public sealed class KernelState : HookRuntime
 
     /// <summary>The commands' log (Core2/Commands): damage results by ref, the attacks executing, the kill calls.</summary>
     public CommandLog Commands => _commands ??= new();
+
+    /// <summary>The combat's progress as CombatManager keeps it (IsInProgress, the pending loss, the end handed off);
+    /// read and changed through <see cref="CombatEnd" />.</summary>
+    public CombatProgress Progress => _progress;
 
     /// <summary>The kernel's shared, immutable part.</summary>
     public Kernel Shared { get; }
@@ -138,6 +143,7 @@ public sealed class KernelState : HookRuntime
         k._nextAction = _nextAction;
         k._queue = _queue?.Copy();
         k._commands = _commands?.CopyFor(_combat, combat);
+        k._progress = _progress.Copy();
         k._seq.Clear();
         foreach (var kv in _seq)
             k._seq[kv.Key] = kv.Value;

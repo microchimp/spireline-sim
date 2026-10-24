@@ -11,8 +11,8 @@ public static partial class CreatureCmd
     /// <summary>
     /// game: CreatureCmd.Kill(creatures, force). Nobody to kill: nothing. Each creature through
     /// <see cref="KillWithoutCheckingWinCondition" /> in list order; then, when the list held the player and the player
-    /// is dead, the loss (<see cref="LoseCombat" />, R3b's point). No win check here: the game checks it at its own points
-    /// (CombatManager.CheckWinCondition, R3b). The dead-player EndTurn of the other branch needs a second player.
+    /// is dead, the loss (<see cref="LoseCombat" />). No win check here: the game checks it at its own points
+    /// (<see cref="CombatEnd.CheckWinCondition" />). The dead-player EndTurn of the other branch needs a second player.
     /// </summary>
     /// <remarks>Every call is counted in <see cref="CommandLog.KillCalls" /> (R2's contract: one per Damage call, the
     /// chained kills of teammates and Osty counted too); the test seam <see cref="CommandLog.KillStandIn" /> runs in its
@@ -247,10 +247,15 @@ public static partial class CreatureCmd
             Run(fn(Monster(k.World!, c), new DiedArgs(c), null), HookId.Died);
     }
 
-    /// <summary>R3b's point: game CombatManager.LoseCombat (the pending loss, processed at the next
-    /// CheckWinCondition) and the F17 hand-off. Until R3b only counted (<see cref="CommandLog.LossCalls" />); the old
-    /// state already shows the loss (the player at 0 HP: CombatEngine.IsAboutToLose).</summary>
-    private static void LoseCombat(KernelState k) => k.Commands.LossCalls++;
+    /// <summary>game: Kill's loss branch: every player dead and the combat in progress, CombatManager.LoseCombat (the
+    /// pending loss, processed at the next CheckWinCondition: <see cref="CombatEnd" />). Every reach is counted in
+    /// <see cref="CommandLog.LossCalls" />.</summary>
+    private static void LoseCombat(KernelState k)
+    {
+        k.Commands.LossCalls++;
+        if (CombatEnd.IsInProgress(k))
+            CombatEnd.LoseCombat(k);
+    }
 
     private static ListenerRef Monster(OldWorld w, OldCreature c) =>
         new((int)ListenerKind.Monster, c.Enemy!.DefId, OldCreatures.TryRef(w, c)?.Index ?? -1);

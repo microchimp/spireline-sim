@@ -50,7 +50,7 @@ public sealed class CommandLog
     /// <summary>How many times Damage reached <see cref="CreatureCmd.Kill" /> (one per Damage call that ran).</summary>
     public int KillCalls { get; internal set; }
 
-    /// <summary>How many times a kill reached the loss (game: CombatManager.LoseCombat), R3b's point.</summary>
+    /// <summary>How many times a kill reached the loss (game: CreatureCmd.Kill's loss branch, CombatManager.LoseCombat).</summary>
     public int LossCalls { get; internal set; }
 
     /// <summary>Test seam: what <see cref="CreatureCmd.Kill" /> runs instead of the kill (R2's damage tests). Not copied.</summary>
