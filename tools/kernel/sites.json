@@ -15,7 +15,7 @@
   "CombatEngine.DoomThePlayerAtTurnEnd": {
    "kind": "split",
    "file": "Core/CombatEngine.cs",
-   "sha256": "28bc09351c8ff72c4c53214d83cf4711da27659f40ae9489622f5a933ed4cb52",
+   "sha256": "251404102c68ab18fd2ef7647509b6534e7248609a043bf6f79ddac16be06a44",
    "reason": "Doom's turn-end body is two statements: the threshold test on the Doom stack and the open gate (the BeforeSideTurnEnd moment, F05), then the first writes of the player's death (HP to zero and the HP-changed dispatch, F10; the kill and AfterDiedToDoom are not in this body); the F10 part gates on its own switch (R4: the old two statements are the else branch of the F08 gate, whose switch-on branch is CreatureCmd.Kill on the player)",
    "parts": [
     {
@@ -222,7 +222,7 @@
     "F11"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10327
+   "line": 10328
   },
   "CardEffects.AddGeneratedStatusToDiscard": {
    "hooks": [
@@ -236,7 +236,7 @@
     "F11"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10042
+   "line": 10043
   },
   "CardEffects.AfterPlayerDamageReceived": {
    "hooks": [
@@ -250,7 +250,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 4173
+   "line": 4174
   },
   "CardEffects.AfterShuffle": {
    "hooks": [
@@ -278,7 +278,7 @@
     "F12"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11177
+   "line": 11178
   },
   "CardEffects.ApplyTurnEndInHand": {
    "hooks": [
@@ -326,7 +326,7 @@
     "F09"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 9769
+   "line": 9770
   },
   "CardEffects.ChannelOrb": {
    "hooks": [
@@ -340,7 +340,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 6207
+   "line": 6208
   },
   "CardEffects.ConfuseCostOnDraw": {
    "hooks": [
@@ -391,7 +391,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10181
+   "line": 10182
   },
   "CardEffects.DarkPassiveValue": {
    "hooks": [
@@ -405,7 +405,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10988
+   "line": 10989
   },
   "CardEffects.DealDamageToPlayer": {
    "hooks": [
@@ -435,7 +435,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 4031
+   "line": 4032
   },
   "CardEffects.DealOstyDamage": {
    "hooks": [
@@ -449,7 +449,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10278
+   "line": 10279
   },
   "CardEffects.DmgFrom": {
    "hooks": [
@@ -467,7 +467,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 9724
+   "line": 9725
   },
   "CardEffects.DrawCards": {
    "hooks": [
@@ -500,7 +500,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10901
+   "line": 10902
   },
   "CardEffects.ExhaustCard": {
    "hooks": [
@@ -528,7 +528,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 9790
+   "line": 9791
   },
   "CardEffects.Forge": {
    "hooks": [
@@ -556,7 +556,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10985
+   "line": 10986
   },
   "CardEffects.FrostPassiveValue": {
    "hooks": [
@@ -570,7 +570,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10982
+   "line": 10983
   },
   "CardEffects.GainBlock": {
    "hooks": [
@@ -589,7 +589,7 @@
     "F09"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 5855
+   "line": 5856
   },
   "CardEffects.GainEnergy": {
    "hooks": [
@@ -605,7 +605,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 6073
+   "line": 6074
   },
   "CardEffects.GainStars": {
    "hooks": [
@@ -619,7 +619,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 5998
+   "line": 5999
   },
   "CardEffects.GlassValue": {
    "hooks": [
@@ -633,7 +633,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10963
+   "line": 10964
   },
   "CardEffects.GrowKinglyCardOnDraw": {
    "hooks": [
@@ -661,7 +661,7 @@
     "F10"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10624
+   "line": 10625
   },
   "CardEffects.LandDamageOnEnemy": {
    "hooks": [
@@ -693,7 +693,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 5599
+   "line": 5600
   },
   "CardEffects.LightningEvokeValue": {
    "hooks": [
@@ -707,7 +707,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10974
+   "line": 10975
   },
   "CardEffects.LightningPassiveValue": {
    "hooks": [
@@ -721,7 +721,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10966
+   "line": 10967
   },
   "CardEffects.LoseHp": {
    "hooks": [
@@ -742,7 +742,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 6193
+   "line": 6194
   },
   "CardEffects.LosePlayerHp": {
    "hooks": [
@@ -767,7 +767,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 4097
+   "line": 4098
   },
   "CardEffects.NoteDoomApplied": {
    "hooks": [
@@ -781,7 +781,7 @@
     "F12"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11351
+   "line": 11352
   },
   "CardEffects.NoteGeneratedCard": {
    "hooks": [
@@ -815,7 +815,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10259
+   "line": 10260
   },
   "CardEffects.PrimeRocketPunches": {
    "hooks": [
@@ -843,7 +843,7 @@
     "F10"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 5818
+   "line": 5819
   },
   "CardEffects.ShivDamage": {
    "hooks": [
@@ -893,7 +893,7 @@
     "F03"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3130
+   "line": 3132
   },
   "CombatEngine.AnswerDeaths": {
    "hooks": [
@@ -914,7 +914,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 4698
+   "line": 4700
   },
   "CombatEngine.AnswerDeathsHoldingTheFightOpen": {
    "hooks": [
@@ -935,7 +935,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 4981
+   "line": 4983
   },
   "CombatEngine.AnswerDeathsSince": {
    "hooks": [
@@ -956,7 +956,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5121
+   "line": 5123
   },
   "CombatEngine.ApplyAfterCardPlayedPowers": {
    "hooks": [
@@ -971,7 +971,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6528
+   "line": 6530
   },
   "CombatEngine.ApplyBlockNextTurn": {
    "hooks": [
@@ -985,7 +985,7 @@
     "F02"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7477
+   "line": 7479
   },
   "CombatEngine.ApplyEnchantmentOnPlay": {
    "hooks": [
@@ -999,7 +999,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3442
+   "line": 3444
   },
   "CombatEngine.AutoPlayBombardmentsFromExhaust": {
    "hooks": [
@@ -1013,7 +1013,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5980
+   "line": 5982
   },
   "CombatEngine.AutoPlayCard": {
    "hooks": [
@@ -1027,7 +1027,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7289
+   "line": 7291
   },
   "CombatEngine.AutoPlayCore": {
    "hooks": [
@@ -1041,7 +1041,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7407
+   "line": 7409
   },
   "CombatEngine.AutoPlayDrawnCard": {
    "hooks": [
@@ -1055,7 +1055,7 @@
     "F11"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7305
+   "line": 7307
   },
   "CombatEngine.AutoPlayHistoryCourseDupe": {
    "hooks": [
@@ -1069,7 +1069,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6015
+   "line": 6017
   },
   "CombatEngine.AutoPlayHowlsFromExhaust": {
    "hooks": [
@@ -1083,7 +1083,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5948
+   "line": 5950
   },
   "CombatEngine.AutoPlayIAmInvincible": {
    "hooks": [
@@ -1097,7 +1097,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6034
+   "line": 6036
   },
   "CombatEngine.AutoPlayMayhemCards": {
    "hooks": [
@@ -1112,7 +1112,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6007
+   "line": 6009
   },
   "CombatEngine.AutoPlayStampedeAttacks": {
    "hooks": [
@@ -1126,7 +1126,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5892
+   "line": 5894
   },
   "CombatEngine.AwaitRetainSelection": {
    "hooks": [
@@ -1141,7 +1141,7 @@
     "F05"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6268
+   "line": 6270
   },
   "CombatEngine.BeginAutoPlay": {
    "hooks": [
@@ -1155,7 +1155,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6434
+   "line": 6436
   },
   "CombatEngine.CanPlayFromHand": {
    "hooks": [
@@ -1169,7 +1169,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3753
+   "line": 3755
   },
   "CombatEngine.CaptureBeforePlayPowers": {
    "hooks": [
@@ -1190,7 +1190,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6310
+   "line": 6312
   },
   "CombatEngine.CheckWinCondition": {
    "hooks": [
@@ -1204,7 +1204,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5196
+   "line": 5198
   },
   "CombatEngine.ContinueFirstTurn": {
    "hooks": [
@@ -1245,7 +1245,7 @@
     "F03"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3031
+   "line": 3033
   },
   "CombatEngine.CountPlayedCardForPanache": {
    "hooks": [
@@ -1259,7 +1259,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7498
+   "line": 7500
   },
   "CombatEngine.DecideResultPile": {
    "hooks": [
@@ -1274,7 +1274,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6777
+   "line": 6779
   },
   "CombatEngine.DeliverQueuedCardCopiesBeforeDraw": {
    "hooks": [
@@ -1288,7 +1288,7 @@
     "F03"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6177
+   "line": 6179
   },
   "CombatEngine.DiedHoldingTheFightOpen": {
    "hooks": [
@@ -1302,7 +1302,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 4933
+   "line": 4935
   },
   "CombatEngine.DoomThePlayerAtTurnEnd": {
    "hooks": [
@@ -1324,7 +1324,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5274
+   "line": 5276
   },
   "CombatEngine.DrainAutoPlayQueue": {
    "hooks": [
@@ -1340,7 +1340,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6833
+   "line": 6835
   },
   "CombatEngine.EffectiveCost": {
    "hooks": [
@@ -1372,7 +1372,7 @@
     "F11"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3431
+   "line": 3433
   },
   "CombatEngine.EffectiveMaxEnergy": {
    "hooks": [
@@ -1386,7 +1386,7 @@
     "F03"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3414
+   "line": 3416
   },
   "CombatEngine.EffectiveMaxEnergyForTurn": {
    "hooks": [
@@ -1400,7 +1400,7 @@
     "F03"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3411
+   "line": 3413
   },
   "CombatEngine.EndTurn": {
    "hooks": [
@@ -1451,7 +1451,7 @@
     "F05"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 1976
+   "line": 1978
   },
   "CombatEngine.EndTurn[player_end]": {
    "hooks": [
@@ -1530,7 +1530,7 @@
     "F05"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 2342
+   "line": 2344
   },
   "CombatEngine.EnrageQueenIfWaitingToBurnBright": {
    "hooks": [
@@ -1551,7 +1551,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5474
+   "line": 5476
   },
   "CombatEngine.FirstHittableEnemy": {
    "hooks": [
@@ -1565,7 +1565,7 @@
     "F08"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7036
+   "line": 7038
   },
   "CombatEngine.GrantRampartBlock": {
    "hooks": [
@@ -1588,7 +1588,7 @@
     "F02"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 2953
+   "line": 2955
   },
   "CombatEngine.HandleEnemyDeaths": {
    "hooks": [
@@ -1609,7 +1609,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 4495
+   "line": 4497
   },
   "CombatEngine.HoldsTheFightOpen": {
    "hooks": [
@@ -1625,7 +1625,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 4918
+   "line": 4920
   },
   "CombatEngine.IncrementPlayedCardTypeCounters": {
    "hooks": [
@@ -1652,7 +1652,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7447
+   "line": 7449
   },
   "CombatEngine.IsAboutToLose": {
    "hooks": [
@@ -1667,7 +1667,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5334
+   "line": 5336
   },
   "CombatEngine.IsBlockedByBound": {
    "hooks": [
@@ -1681,7 +1681,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3397
+   "line": 3399
   },
   "CombatEngine.IsBlockedByEnthralled": {
    "hooks": [
@@ -1695,7 +1695,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3667
+   "line": 3669
   },
   "CombatEngine.IsBlockedByRinging": {
    "hooks": [
@@ -1709,7 +1709,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3394
+   "line": 3396
   },
   "CombatEngine.IsBlockedBySloth": {
    "hooks": [
@@ -1723,7 +1723,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3400
+   "line": 3402
   },
   "CombatEngine.IsBlockedBySmoggy": {
    "hooks": [
@@ -1737,7 +1737,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3660
+   "line": 3662
   },
   "CombatEngine.IsEtherealForPowers": {
    "hooks": [
@@ -1751,7 +1751,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6338
+   "line": 6340
   },
   "CombatEngine.IsFreeUnderVoidForm": {
    "hooks": [
@@ -1767,7 +1767,7 @@
     "F07"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3654
+   "line": 3656
   },
   "CombatEngine.IsPlayableNow": {
    "hooks": [
@@ -1781,7 +1781,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3681
+   "line": 3683
   },
   "CombatEngine.IsPrimaryEnemy": {
    "hooks": [
@@ -1795,7 +1795,7 @@
     "F08"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5161
+   "line": 5163
   },
   "CombatEngine.NoPrimaryEnemyLeft": {
    "hooks": [
@@ -1809,7 +1809,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5182
+   "line": 5184
   },
   "CombatEngine.PayCurlUp": {
    "hooks": [
@@ -1823,7 +1823,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6493
+   "line": 6495
   },
   "CombatEngine.PayMonologue": {
    "hooks": [
@@ -1837,7 +1837,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7553
+   "line": 7555
   },
   "CombatEngine.PayRupture": {
    "hooks": [
@@ -1851,7 +1851,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6516
+   "line": 6518
   },
   "CombatEngine.PlacePlayedCard": {
    "hooks": [
@@ -1880,7 +1880,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3346
+   "line": 3348
   },
   "CombatEngine.QueueAttackPlayLifecycleEffects": {
    "hooks": [
@@ -1896,7 +1896,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6480
+   "line": 6482
   },
   "CombatEngine.RefillHardenedShells": {
    "hooks": [
@@ -1910,7 +1910,7 @@
     "F08"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 4948
+   "line": 4950
   },
   "CombatEngine.RefusedByShouldPlay": {
    "hooks": [
@@ -1924,7 +1924,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3772
+   "line": 3774
   },
   "CombatEngine.ResolveCosts": {
    "hooks": [
@@ -1941,7 +1941,7 @@
     "F07"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3710
+   "line": 3712
   },
   "CombatEngine.ResolvePlayRepetition[after]": {
    "hooks": [
@@ -2009,7 +2009,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6868
+   "line": 6870
   },
   "CombatEngine.ReturnQueuedCardsToHandBeforeDraw": {
    "hooks": [
@@ -2023,7 +2023,7 @@
     "F03"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6052
+   "line": 6054
   },
   "CombatEngine.ReturnsToHandAfterPlay": {
    "hooks": [
@@ -2037,7 +2037,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6747
+   "line": 6749
   },
   "CombatEngine.RunWhisperingEarringAutoPlay": {
    "hooks": [
@@ -2051,7 +2051,7 @@
     "F04"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6909
+   "line": 6911
   },
   "CombatEngine.SettlePlayCount": {
    "hooks": [
@@ -2081,7 +2081,7 @@
     "F06"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 6676
+   "line": 6678
   },
   "CombatEngine.SideTurnStart": {
    "hooks": [
@@ -2096,7 +2096,7 @@
     "F02"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 2821
+   "line": 2823
   },
   "CombatEngine.SpawnGremlinMercReinforcements": {
    "hooks": [
@@ -2117,7 +2117,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5843
+   "line": 5845
   },
   "CombatEngine.SpawnPhrogParasiteWrigglers": {
    "hooks": [
@@ -2138,7 +2138,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5818
+   "line": 5820
   },
   "CombatEngine.SpendResources": {
    "hooks": [
@@ -2199,7 +2199,7 @@
     "F03"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 2996
+   "line": 2998
   },
   "CombatEngine.StartPlayRepetition": {
    "hooks": [
@@ -2232,7 +2232,7 @@
     "F05"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 4466
+   "line": 4468
   },
   "CombatEngine.TickTheBomb": {
    "hooks": [
@@ -2251,7 +2251,7 @@
     "F05"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7629
+   "line": 7631
   },
   "CombatEngine.TickToricToughness": {
    "hooks": [
@@ -2270,7 +2270,7 @@
     "F05"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 7598
+   "line": 7600
   },
   "CombatEngine.TryEnrageCrabPartner": {
    "hooks": [
@@ -2291,7 +2291,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5509
+   "line": 5511
   },
   "CombatEngine.TryReattachSegment": {
    "hooks": [
@@ -2312,7 +2312,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5413
+   "line": 5415
   },
   "CombatEngine.TryRespawnAxebot": {
    "hooks": [
@@ -2333,7 +2333,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5651
+   "line": 5653
   },
   "CombatEngine.TryRespawnTestSubject": {
    "hooks": [
@@ -2354,7 +2354,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5753
+   "line": 5755
   },
   "CombatEngine.TryReviveIllusion": {
    "hooks": [
@@ -2375,7 +2375,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5366
+   "line": 5368
   },
   "CombatEngine.TurnPlayerToFaceSurvivor": {
    "hooks": [
@@ -2396,7 +2396,7 @@
     "F10"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5627
+   "line": 5629
   },
   "CombatEngine.TurnPlayerTowardTarget": {
    "hooks": [
@@ -2410,7 +2410,7 @@
     "F08"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 5555
+   "line": 5557
   },
   "CombatEngine.UsePotion": {
    "hooks": [
@@ -2426,7 +2426,7 @@
     "F14"
    ],
    "file": "Core/CombatEngine.cs",
-   "line": 3275
+   "line": 3277
   },
   "CombatFactory.DrawOpeningHand": {
    "hooks": [
