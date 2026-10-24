@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
 import json
 import shutil
 import sys
@@ -47,7 +48,7 @@ def result(spec: dict, bend=None, error=None) -> dict:
 
 
 def options(out: str, **kw) -> F.Options:
-    return F.Options(dll="none", seed=kw.pop("seed", 7), fights=kw.pop("fights", 8), batch=kw.pop("batch", 4), out=out,
+    return F.Options(dll=kw.pop("dll", "none"), seed=kw.pop("seed", 7), fights=kw.pop("fights", 8), batch=kw.pop("batch", 4), out=out,
                      explained=kw.pop("explained", str(Path(out) / "none.json")), **kw)
 
 
@@ -241,6 +242,90 @@ class Triage(unittest.TestCase):
         s = F.run_fuzz(options(str(self.dir / "o2")), self.cat, runner, None)
         self.assertEqual((s["fights"], s["untriaged"], len(s["failed_batches"])), (0, 0, 2))  # two batches, none judged
         self.assertEqual(F.exit_code(s), 1)
+
+    def test_every_differing_fight_gets_its_fields_in_a_few_processes(self):
+        calls = []
+
+        def runner(engine, specs):
+            return [result(s, bend=(lambda i, h: "0" * 16 if i == 2 else h) if engine == "core2" else None) for s in specs]
+
+        def rerunner(engine, recs):
+            calls.append((engine, len(recs)))
+            return [{"steps": [{"state_fields": {"ActiveCombat.Hand": "a" if engine == "old" else "b"}} for _ in r["steps"]]} for r in recs]
+        n = F.RERUN_CHUNK + 20  # more than one chunk, and far more than the 40 the old code looked at
+        s = F.run_fuzz(options(str(self.dir / "o3"), fights=n, batch=n, explained=self.explained("state:ActiveCombat.Hand")), self.cat, runner, rerunner)
+        self.assertEqual((s["differing_fights"], s["explained"], s["untriaged"], F.exit_code(s)), (n, n, 0, 0))
+        self.assertEqual(s["signatures"], [("state:ActiveCombat.Hand", n)])
+        self.assertEqual(sorted(calls), [("core2", 20), ("core2", F.RERUN_CHUNK), ("old", 20), ("old", F.RERUN_CHUNK)])
+
+    def test_a_field_rerun_that_answers_the_wrong_count_fails_the_batch(self):
+        runner, _ = self.fakes()
+        s = F.run_fuzz(options(str(self.dir / "o4")), self.cat, runner, lambda engine, recs: [])
+        self.assertEqual(len(s["failed_batches"]), 1)
+        self.assertEqual(F.exit_code(s), 1)
+
+    def test_the_workers_get_the_parents_build_and_never_copy_one(self):
+        """process_batch runs the build `Options.dll` names, as it is: it neither resolves a scratch build nor writes beside it."""
+        used = []
+        names = ("dll_for", "run_specs", "run_records")
+        orig = [getattr(F, n) for n in names]
+        self.addCleanup(lambda: [setattr(F, n, f) for n, f in zip(names, orig)])
+
+        def no_resolve(*a, **k):
+            raise AssertionError("a worker resolved a build")
+        F.dll_for = no_resolve
+        F.run_specs = lambda dll, engine, specs, work, fields=False: used.append(dll) or [result(sp) for sp in specs]
+        F.run_records = lambda dll, engine, recs, work, fields=True: used.append(dll) or []
+        dll = self.dir / "scratch" / "EmuDump.dll"
+        opts = options(str(self.dir / "o5"), switches=["F08", "F10"], dll=str(dll))
+        out = F.process_batch(opts, self.cat, [0, 1, 2], self.dir / "work")
+        self.assertEqual((out["stats"]["fights"], out["diffs"]), (3, []))
+        self.assertEqual(used, [dll, dll])
+        self.assertFalse((self.dir / "work").exists() and list((self.dir / "work").glob("*")))
+
+    def test_the_parent_makes_one_scratch_build_of_its_own_and_drops_it(self):
+        src = self.dir / "src"
+        src.mkdir()
+        (src / "EmuDump.dll").write_bytes(b"x")
+        (src / "migrated_families.json").write_text('{"migrated": []}')
+        a = F.dll_for(src / "EmuDump.dll", ["F08", "F10"], self.dir / "w")
+        self.assertEqual(F.dll_for(src / "EmuDump.dll", ["F08", "F10"], self.dir / "w"), a)  # the same one again
+        self.assertIn(str(os.getpid()), a.parent.name)  # another run over this --out gets its own
+        self.assertEqual(json.loads((a.parent / "migrated_families.json").read_text()), {"migrated": ["F08", "F10"]})
+        F.drop_build(a, src / "EmuDump.dll")
+        self.assertFalse(a.parent.exists())
+        F.drop_build(src / "EmuDump.dll", src / "EmuDump.dll")  # the user's own build stays
+        self.assertTrue((src / "EmuDump.dll").is_file())
+
+    def test_minutes_alone_runs_until_the_time_is_up(self):
+        self.assertEqual((F.fights_limit(None, None), F.fights_limit(None, 5), F.fights_limit(30, 5), F.fights_limit(30, None)), (200, None, 30, 30))
+        clock = [0.0]
+
+        def runner(engine, specs):
+            clock[0] += 10  # each engine's pass over a batch takes ten seconds
+            return [result(s) for s in specs]
+        opts = options(str(self.dir / "o6"), fights=F.fights_limit(None, 1), batch=100, minutes=1)
+        s = F.run_fuzz(opts, self.cat, runner, None, now=lambda: clock[0])
+        self.assertEqual(s["fights"], 400)  # past the default 200: four batches before the minute was over
+        self.assertEqual(F.exit_code(s), 0)
+
+    def test_fights_and_minutes_each_end_the_run(self):
+        clock = [0.0]
+
+        def runner(engine, specs):
+            clock[0] += 1
+            return [result(s) for s in specs]
+        s = F.run_fuzz(options(str(self.dir / "o7"), fights=250, batch=100, minutes=60), self.cat, runner, None, now=lambda: clock[0])
+        self.assertEqual(s["fights"], 250)  # the fight count came first
+        clock[0] = 0.0
+        s = F.run_fuzz(options(str(self.dir / "o8"), fights=10000, batch=100, minutes=1), self.cat, runner, None, now=lambda: clock[0])
+        self.assertEqual(s["fights"], 3100)  # the time came first: 1 s per pass, 60 s on the clock
+
+    def test_a_run_with_no_fight_limit_stops_when_every_batch_fails(self):
+        def runner(engine, specs):
+            raise RuntimeError("no dotnet")
+        s = F.run_fuzz(options(str(self.dir / "o9"), fights=None, batch=5, minutes=1), self.cat, runner, None, now=lambda: 0.0)
+        self.assertEqual((s["fights"], len(s["failed_batches"])), (0, F.MAX_FAILED_BATCHES))
 
     def test_the_triage_file_is_checked(self):
         rows = {"missing X.Y"}

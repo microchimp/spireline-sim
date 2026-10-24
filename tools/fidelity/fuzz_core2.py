@@ -10,7 +10,10 @@ or hash differs is the first difference.
         [--replay-check N] [--catalog] [--check-explained]
 
 Switch set: tools/fidelity/migrated_families.json by default, `--switches F01,F02,...` for a test set (written next to a
-scratch copy of the EmuDump build, which reads its switches from the file beside the DLL), `--switches none` for no switch, `--switches all` for F01-F16 (today's one switch group).
+scratch copy of the EmuDump build, which reads its switches from the file beside the DLL; the parent makes that copy once
+and hands the workers its DLL path), `--switches none` for no switch, `--switches all` for F01-F16 (today's one switch group).
+`--fights N` and `--minutes M` each end the run; given both, whichever comes first; `--minutes` alone runs until the time is
+up, `--fights` alone (default 200) until N fights are done.
 With no switch the models are every Ironclad, colourless and shared card, relic and potion the old engine builds and every
 encounter of every act (the sanity run: core2 is the old engine, so it must find nothing). With a switch set a model is
 drawn only when every combat-hook family it overrides (the port manifest's `families`) is in the set; an encounter only
@@ -66,6 +69,8 @@ POTION_POOLS = ("IroncladPotionPool", "SharedPotionPool")
 STARTER_CARDS = ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH")
 EXTRA_CARDS = ("ASCENDERS_BANE",)  # no pool holds it; every A10 deck does
 FORMAT = 1
+RERUN_CHUNK = 50  # records per field re-run process
+MAX_FAILED_BATCHES = 10  # a run with no fight limit stops starting batches after this many fail (no dotnet, a broken build)
 BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 SWITCHABLE = [f"F{n:02d}" for n in range(1, 17)]
 
@@ -211,14 +216,22 @@ def emudump(dll: Path, args: list[str], timeout: float = 1800) -> str:
 
 def dll_for(dll: Path, switches: list[str] | None, work: Path) -> Path:
     """The DLL to run for a switch set: the build itself for the migrated file's set, else a scratch copy of the build whose
-    migrated_families.json (read from beside the DLL) holds the set."""
+    migrated_families.json (read from beside the DLL) holds the set. The parent calls this once, before any worker starts, and
+    hands the result to the workers (Options.dll): a worker never copies or rewrites a build. The copy is this process's own
+    (its pid is in the name), so two runs over one --out do not meet in it; `drop_build` removes it."""
     if switches is None or sorted(switches) == sorted(migrated(Path(dll).parent / "migrated_families.json")):
         return Path(dll)
-    dest = work / ("bin-" + ("none" if not switches else "-".join(switches)))
+    dest = work / f"bin-{'none' if not switches else '-'.join(switches)}-{os.getpid()}"
     if not (dest / "EmuDump.dll").is_file():
         shutil.copytree(Path(dll).parent, dest, dirs_exist_ok=True)
     (dest / "migrated_families.json").write_text(json.dumps({"migrated": sorted(switches)}), encoding="utf-8")
     return dest / "EmuDump.dll"
+
+
+def drop_build(built: Path, original: Path) -> None:
+    """Remove the scratch build `dll_for` made (never the build the user named)."""
+    if Path(built).parent.resolve() != Path(original).parent.resolve() and Path(built).parent.name.startswith("bin-"):
+        shutil.rmtree(Path(built).parent, ignore_errors=True)
 
 
 def run_specs(dll: Path, engine: str, specs: list[dict], work: Path, fields: bool = False) -> list[dict]:
@@ -361,9 +374,9 @@ def explanation(sig: str, entries: list[dict]) -> dict | None:
 
 @dataclass
 class Options:
-    dll: str
+    dll: str  # the build to run as it is (dll_for's answer: workers never resolve it again)
     seed: int = 1
-    fights: int = 200
+    fights: int | None = 200  # None: no limit, the run ends at `minutes`
     minutes: float | None = None
     switches: list = field(default_factory=list)
     procs: int = 3
@@ -373,15 +386,15 @@ class Options:
     manifest: str | None = str(DEFAULT_MANIFEST)
     explained: str = str(EXPLAINED)
     replay_check: int = 0
-    max_reruns: int = 40
 
 
 def process_batch(opts: Options, cat: Catalog, indices: list[int], work: Path, runner=None, rerunner=None) -> dict:
     """Generate, run on both engines, compare; the differences with their re-run specs and fields. `runner(engine, specs)` and
-    `rerunner(engine, records)` default to EmuDump (tests pass fakes)."""
+    `rerunner(engine, records)` default to EmuDump on the build `opts.dll` names (tests pass fakes). The build is the parent's:
+    nothing here copies or rewrites one."""
     t0 = time.time()
     if runner is None or rerunner is None:
-        dll = dll_for(Path(opts.dll), opts.switches, work)
+        dll = Path(opts.dll)
         runner = runner or (lambda engine, specs: run_specs(dll, engine, specs, work))
         rerunner = rerunner or (lambda engine, recs: run_records(dll, engine, recs, work))
     specs = [generate(cat, opts.seed, i, opts.max_steps) for i in indices]
@@ -396,13 +409,16 @@ def process_batch(opts: Options, cat: Catalog, indices: list[int], work: Path, r
         d.update({"index": i, "tag": spec["tag"], "seed": spec["seed"], "fields": [],
                   "record": replay_record(spec, a, d["step"])})  # old's moves through the step: core2 refuses or answers it differently
         diffs.append(d)
-    for d in diffs[: opts.max_reruns]:
-        if d["kind"] != "state":
-            continue
-        ra, rb = (rerunner(e, [d["record"]])[0] for e in ("old", "core2"))
-        sa, sb = ra.get("steps") or [], rb.get("steps") or []
-        if len(sa) > d["step"] and len(sb) > d["step"]:
-            d["fields"] = differing_fields(sa[d["step"]], sb[d["step"]])
+    states = [d for d in diffs if d["kind"] == "state"]
+    for lo in range(0, len(states), RERUN_CHUNK):  # every hash difference gets its fields, a few EmuDump processes for all
+        chunk = states[lo: lo + RERUN_CHUNK]
+        ra, rb = (rerunner(e, [d["record"] for d in chunk]) for e in ("old", "core2"))
+        if len(ra) != len(chunk) or len(rb) != len(chunk):
+            raise RuntimeError(f"the field re-run answered {len(ra)} and {len(rb)} fights for {len(chunk)} records")
+        for d, a, b in zip(chunk, ra, rb):
+            sa, sb = a.get("steps") or [], b.get("steps") or []
+            if len(sa) > d["step"] and len(sb) > d["step"]:
+                d["fields"] = differing_fields(sa[d["step"]], sb[d["step"]])
     for d in diffs:
         d["signature"] = signature(d["kind"], d["fields"])
     stats["seconds"] = round(time.time() - t0, 2)
@@ -414,17 +430,37 @@ def _pool_task(args):
     return process_batch(opts, cat, indices, Path(work))
 
 
+def fights_limit(fights: int | None, minutes: float | None) -> int | None:
+    """How many fights a run plays: `--fights` as given; with neither flag 200; with `--minutes` alone no limit (it ends on time)."""
+    if fights is not None:
+        return fights
+    return None if minutes else 200
+
+
+def batches_of(opts: Options):
+    """The batches of fight indices, lazily: to `opts.fights`, or without end when it is None (`minutes` stops the run)."""
+    start = 0
+    while opts.fights is None or start < opts.fights:
+        stop = start + opts.batch if opts.fights is None else min(start + opts.batch, opts.fights)
+        yield list(range(start, stop))
+        start = stop
+
+
+
+
+
 def run_fuzz(opts: Options, cat: Catalog, runner=None, rerunner=None, now=time.time) -> dict:
-    """The run: batches over a spawn pool (inline with a runner), the summary. Never raises on a difference."""
+    """The run: batches over a spawn pool (inline with a runner), the summary. Never raises on a difference. `opts.dll` is the
+    build to run as it is (the parent resolved it once, `dll_for`)."""
     out = Path(opts.out) / f"run-{opts.seed}-{'-'.join(opts.switches) or 'none'}"
     work = out / "work"
     out.mkdir(parents=True, exist_ok=True)
-    batches = [list(range(s, min(s + opts.batch, opts.fights))) for s in range(0, opts.fights, opts.batch)]
+    batches = batches_of(opts)
     deadline = now() + opts.minutes * 60 if opts.minutes else None
     t0, results, errors = now(), [], []
     if runner is not None or opts.procs <= 1:
         for b in batches:
-            if deadline and now() > deadline:
+            if (deadline and now() > deadline) or len(errors) >= MAX_FAILED_BATCHES:
                 break
             try:
                 results.append(process_batch(opts, cat, b, work, runner, rerunner))
@@ -433,7 +469,7 @@ def run_fuzz(opts: Options, cat: Catalog, runner=None, rerunner=None, now=time.t
     else:
         with ProcessPoolExecutor(max_workers=opts.procs, mp_context=get_context("spawn")) as pool:
             pending = collections.deque()
-            it = iter(batches)
+            it = batches
             for _ in range(opts.procs):
                 if (b := next(it, None)) is not None:
                     pending.append(pool.submit(_pool_task, (opts, cat, b, str(work))))
@@ -443,7 +479,7 @@ def run_fuzz(opts: Options, cat: Catalog, runner=None, rerunner=None, now=time.t
                     results.append(fut.result())
                 except Exception as ex:  # noqa: BLE001 - a failed batch is reported, the run goes on
                     errors.append(repr(ex)[:300])
-                if not (deadline and now() > deadline) and (b := next(it, None)) is not None:
+                if not (deadline and now() > deadline) and len(errors) < MAX_FAILED_BATCHES and (b := next(it, None)) is not None:
                     pending.append(pool.submit(_pool_task, (opts, cat, b, str(work))))
     entries = load_explained(Path(opts.explained))
     diffs = [d for r in results for d in r["diffs"]]
@@ -479,7 +515,7 @@ def exit_code(summary: dict) -> int:
 def replay_check(opts: Options, cat: Catalog, n: int, work: Path) -> dict:
     """The round trip the minimal specs rely on: the first `n` fights of the run, replayed from their records by
     `EmuDump fight` on the old engine, hash for hash the same as EmuDump fuzz played them."""
-    dll = dll_for(Path(opts.dll), opts.switches, work)
+    dll = Path(opts.dll)
     specs = [generate(cat, opts.seed, i, opts.max_steps) for i in range(n)]
     played = run_specs(dll, "old", specs, work)
     recs = [replay_record(s, r, len(r.get("steps") or []) - 1) for s, r in zip(specs, played)]
@@ -492,7 +528,7 @@ def replay_check(opts: Options, cat: Catalog, n: int, work: Path) -> dict:
 def preflight(opts: Options, cat: Catalog, work: Path) -> str | None:
     """Why core2 cannot run the switch set at all (a partial switch group is refused when the engine is made), or None: one
     fight with no steps on each engine; an error on core2 alone is the set's, not a difference to triage."""
-    dll = dll_for(Path(opts.dll), opts.switches, work)
+    dll = Path(opts.dll)
     spec = generate(cat, opts.seed, 0, 0)
     old, new = (run_specs(dll, e, [spec], work)[0] for e in ("old", "core2"))
     return error_head(new) if error_head(new) and not error_head(old) else None
@@ -500,8 +536,8 @@ def preflight(opts: Options, cat: Catalog, work: Path) -> str | None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--fights", type=int, default=200)
-    ap.add_argument("--minutes", type=float)
+    ap.add_argument("--fights", type=int, help="fights to play (default 200, or no limit with --minutes alone)")
+    ap.add_argument("--minutes", type=float, help="stop starting batches after M minutes (alone: run until then)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--switches", help="F01,F02,... for a test set, `all`, or `none` for no switch; default: migrated_families.json")
     ap.add_argument("--emudump", type=Path, default=DEFAULT_DLL)
@@ -520,30 +556,34 @@ def main(argv=None) -> int:
         print("\n".join(bad) or "triage file ok")
         return 1 if bad else 0
     if a.procs < 1 or a.procs > 3:
-        print("--procs 1..3 (the run keeps to eight processes)", file=sys.stderr)
+        print("--procs 1..3 (the run keeps to three EmuDump processes at a time)", file=sys.stderr)
         return 2
     try:
         switches = parse_switches(a.switches)
     except ValueError as ex:
         print(ex, file=sys.stderr)
         return 2
-    opts = Options(dll=str(a.emudump), seed=a.seed, fights=a.fights, minutes=a.minutes, switches=switches, procs=a.procs,
-                   batch=a.batch, max_steps=a.max_steps, out=str(a.out), manifest=str(a.manifest), explained=str(a.explained),
-                   replay_check=a.replay_check)
     work = Path(a.out) / "work"
-    cat = load_catalog(dll_for(a.emudump, switches, work), switches, a.manifest, work)
-    if a.catalog:
-        print(json.dumps({"switches": switches, "coverage": cat.coverage()}, indent=1))
-        return 0
-    if why := preflight(opts, cat, work):
-        print(f"core2 cannot run the switch set {switches}: {why}", file=sys.stderr)
-        return 2
-    if a.replay_check:
-        rc = replay_check(opts, cat, a.replay_check, work)
-        print("replay check:", json.dumps(rc))
-        if rc["mismatched"]:
-            return 1
-    summary = run_fuzz(opts, cat)
+    built = dll_for(a.emudump, switches, work)  # once, here: the workers get this path and never copy a build
+    try:
+        opts = Options(dll=str(built), seed=a.seed, fights=fights_limit(a.fights, a.minutes), minutes=a.minutes, switches=switches,
+                       procs=a.procs, batch=a.batch, max_steps=a.max_steps, out=str(a.out), manifest=str(a.manifest),
+                       explained=str(a.explained), replay_check=a.replay_check)
+        cat = load_catalog(built, switches, a.manifest, work)
+        if a.catalog:
+            print(json.dumps({"switches": switches, "coverage": cat.coverage()}, indent=1))
+            return 0
+        if why := preflight(opts, cat, work):
+            print(f"core2 cannot run the switch set {switches}: {why}", file=sys.stderr)
+            return 2
+        if a.replay_check:
+            rc = replay_check(opts, cat, a.replay_check, work)
+            print("replay check:", json.dumps(rc))
+            if rc["mismatched"]:
+                return 1
+        summary = run_fuzz(opts, cat)
+    finally:
+        drop_build(built, a.emudump)
     print(json.dumps({k: v for k, v in summary.items() if k != "coverage"}, indent=1))
     print("coverage:", json.dumps(summary["coverage"]))
     return exit_code(summary)
