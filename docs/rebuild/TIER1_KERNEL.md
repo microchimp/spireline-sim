@@ -388,6 +388,26 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
   are on (random decks, relics, potions, encounters and legal actions, seeded), run on both engines, compared by state
   hash per step. Every difference is a listed `hook_open.txt` row the switch fixes, or goes to a decompile reading or a
   lab recording the same day. With no switch on it must find none.
+- Built in K6 (`python -m tools.fidelity.fuzz_core2`, `EmuDump fuzz <specs.json> [--fields]`, `tools/fidelity/fuzz_explained.json`):
+  - A spec is a seeded setup record (`relics_set`, `deck_set`, `potions_set`, `hp`, the `fight` item and an `act` item for acts
+    2 and 3; no map room: the first option is taken and written out) built from the engine's own tables (`EmuDump tables` and
+    `setupinfo`, no game files): 137 Ironclad, colourless and A10 cards, 119 relics (those whose pickup opens no screen), 48
+    potions and the 80 encounters the old engine builds. A switch set keeps a model when its combat families (the port
+    manifest's) are all on, an encounter when each of its monsters is (rosters read once from step 0 of each encounter). No
+    switch draws everything. Spec i of seed S depends on (S, i) alone.
+  - `EmuDump fuzz` plays each spec with a seeded player (SplitMix64) over `IEngine.LegalActions` (plays with their targets, end
+    turn, potions; screens answered one pick or the decline at a time through the replay's own `Fight.ApplyChoice`) and writes
+    the actions, the answers and `StateHash` per step. The same spec on `--engine old` and `--engine core2` plays the same
+    fight while the states agree, so the first step whose action or hash differs is the first difference. A difference is
+    re-run through `EmuDump fight --state-hash=fields` on its record cut at that step (saved under the rebuild folder's `fuzz`,
+    a record `EmuDump fight` replays on either engine); the differing fields make its signature.
+  - A test switch set is a scratch copy of the EmuDump build whose `migrated_families.json` holds it. `--switches F08,F10` is
+    refused while the sites form one group (K3: F01-F16 switch together; the run says so and exits 2), so the no-handler
+    sanity set is `--switches all`.
+  - Triage: `fuzz_explained.json` maps a signature pattern to the `hook_open.txt` row (which must still be there) or the
+    migration doc item that explains it; a difference matching none makes the run exit 1.
+  - Sanity: no switch, 3000 fights (55,637 steps): 0 differences; `--switches all` (no handler ported), 2500 fights (56,182
+    steps): 0 differences. About 9 fights per second per process (each fight runs on both engines), three processes.
 
 ## 7. Rounds and gates
 
