@@ -715,7 +715,7 @@ def play(a) -> int:
     stop_at = time.time() + a.stop_after_h * 3600 if a.stop_after_h else 0.0
     live = open(out / "runs.jsonl", "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, a.recycle))
+                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0)))
              for w in range(a.procs)]
     t0 = time.time()
     for p in procs:

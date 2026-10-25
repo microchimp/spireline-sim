@@ -34,7 +34,7 @@ NEW_KINDS = ("selfplay", "train", "score-real", "nightly-real", "bench-env", "be
 BENCHES = ("bench-env", "bench-emu")
 # The kinds that exist only because self-play does: self-play, the training (and the promotion it runs) of what it recorded, and the
 # real-game score of what training promoted. `selfplay.share` is judged on their CPU together (mix.loop_cpu), not on self-play alone.
-LOOP_KINDS = ("selfplay", "train", "score-real", "nightly-real")
+LOOP_KINDS = ("selfplay", "train", "score-real")  # nightly-real is outside the loop share: it scores the incumbent whether or not self-play ran (D29 accounting)
 PRIORITY = {"presort": 1, "score-real": 2, "nightly-real": 2, "train": 3, "fights-aimed": 4, "runs": 5, "selfplay": 6, "rest": 7,
             "bench-env": 7, "bench-emu": 7}
 SCORE_WINDOW_H = 4.0  # the longest a score-real window may run

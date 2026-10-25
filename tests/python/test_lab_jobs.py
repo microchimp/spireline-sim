@@ -557,7 +557,7 @@ class NightlyKindTest(Base):
         self.assertFalse((self.lab_dir.parent / "readiness.json").exists())
 
     def test_the_loop_share_counts_it(self):
-        self.assertIn("nightly-real", jb.LOOP_KINDS)
+        self.assertNotIn("nightly-real", jb.LOOP_KINDS)  # outside the self-play loop share (D29 accounting)
 
 
 if __name__ == "__main__":
