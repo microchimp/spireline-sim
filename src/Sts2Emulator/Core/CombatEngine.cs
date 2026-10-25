@@ -413,6 +413,9 @@ public static class CombatEngine
             // SurroundedPower.BeforePotionUsed, the same rule for a targeted potion. The
             // potion's own target is not tracked, so this uses the aimed-at enemy.
             TurnPlayerTowardTarget(state, card: null);
+            // F08+F10 on: the potion's effect reads its own target (`PotionModel.OnUseWrapper`'s target) by reference, as
+            // a play's does; never an aim a copy of the world kept from an earlier play.
+            using var aim = Core2.Kernel.If(Core2.Switch.F08, state)?.World?.Aiming(PlayTarget.Of(state).Creature);
             result = UsePotion(state, potionSlot, rng);
         }
 
