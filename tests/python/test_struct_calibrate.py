@@ -113,12 +113,21 @@ class Command(unittest.TestCase):
         doc = json.loads(self.out.read_text())
         self.assertEqual((doc["engine"], doc["switches"]), ("core2", ["F08", "F10"]))
 
-    def test_without_the_flag_the_build_itself_runs_and_the_comparer_reads_the_default_file(self):
+    def test_without_the_flag_the_build_itself_runs_and_the_comparer_gets_the_builds_own_set(self):
+        # The build's own migrated_families.json is the set: the comparer judges core2 with it as migrated and also with the
+        # shared rows (like with like against old), as with --switches; no scratch build is made.
+        (self.bin / "migrated_families.json").write_text('{"migrated": ["F10"]}')
         rc, _, jobs = run_main(self.argv("--engine", "core2"))
         self.assertEqual(rc, 0)
         self.assertEqual(Path(jobs[0][2]), self.bin / "EmuDump.dll")
+        self.assertEqual(jobs[0][7], ["F10"])
+        self.assertEqual(json.loads(self.out.read_text())["switches"], ["F10"])
+
+    def test_old_without_the_flag_judges_with_no_migrated_set(self):
+        (self.bin / "migrated_families.json").write_text('{"migrated": ["F10"]}')
+        rc, _, jobs = run_main(self.argv("--engine", "old"))
+        self.assertEqual(rc, 0)
         self.assertIsNone(jobs[0][7])
-        self.assertIsNone(json.loads(self.out.read_text())["switches"])
 
     def test_the_set_equal_to_the_builds_own_runs_on_the_build(self):
         (self.bin / "migrated_families.json").write_text('{"migrated": ["F08", "F10"]}', encoding="utf-8")
@@ -221,8 +230,11 @@ class Judge(unittest.TestCase):
         self.assertEqual(r["sc_shared_n"], 0)
 
     def test_no_set_is_one_judgement(self):
+        # None reads the repository's migrated_families.json (F08+F10 since the switch-on): held empty here, so the case is
+        # the comparer with no migrated family whatever the file says.
         for migrated in (None, []):
-            r = self.judge(migrated)
+            with mock.patch.object(cal.sc, "load_migrated", return_value=[]):
+                r = self.judge(migrated)
             self.assertIsNone(r["sc"])
             self.assertNotIn("sc_shared", r)
 

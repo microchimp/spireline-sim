@@ -252,6 +252,13 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 : null;
         State.EventCombatHps = null;
 
+        // The kernel's state is bound before the combat is set up (game: the combat's hooks are live from
+        // CombatManager.SetUpCombat on), so turn one's start and the pre-play phase run under the switches: a combat-start
+        // kill (Festive Popper, Mercury Hourglass, Mr Struggles, an Imbued or Whispering Earring play) goes through
+        // CreatureCmd.Kill and leaves the roster there. Bound after the setup, those kills ran the old code, whose
+        // deferred corpse sweep the switch turns off, and the corpse stayed listed for the rest of the fight.
+        combat.Kernel = _kernel?.Attach(combat, State);
+
         CombatFactory.Reset(
             combat,
             combatRng,
@@ -286,7 +293,6 @@ public sealed class RunEngine : Core2.ICombatEndHost
         // creature it pins to 1hp must be pinned before an auto-played attack can reach it.
         CombatEngine.ResolvePrePlayPhase(combat, combatRng);
 
-        combat.Kernel = _kernel?.Attach(combat, State);
         State.ActiveCombat = combat;
         State.ActiveCombatRng = combatRng;
         State.LastPlayerWon = false;

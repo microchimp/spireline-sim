@@ -2,7 +2,7 @@
   "name": "victory-heal/meat-at-threshold-then-burning-blood",
   "source": "game: Hook.AfterCombatVictory (every early listener before any normal one: MEAT_ON_THE_BONE reads HP before BURNING_BLOOD and BLACK_BLOOD heal)",
   "doc": "At exactly half HP (40 of 80) MEAT_ON_THE_BONE still heals (+12), then BURNING_BLOOD (+6).",
-  "xfail_engines": {"old": "old heals BURNING_BLOOD and BLACK_BLOOD before MEAT_ON_THE_BONE reads HP (fix/victory-passes 3afa8e0a not landed).", "core2": "old heals BURNING_BLOOD and BLACK_BLOOD before MEAT_ON_THE_BONE reads HP (fix/victory-passes 3afa8e0a not landed); core2 runs old's rules until its family switch is on (migrated_families.json), so it fails the same way."},
+  "xfail_engines": {"old": "old heals BURNING_BLOOD and BLACK_BLOOD before MEAT_ON_THE_BONE reads HP (fix/victory-passes 3afa8e0a not landed).", "core2": "old heals BURNING_BLOOD and BLACK_BLOOD before MEAT_ON_THE_BONE reads HP (fix/victory-passes 3afa8e0a not landed); core2 runs old's rules for this (its family F17 is not in migrated_families.json), so it fails the same way."},
   "setup": {
     "character": "IRONCLAD",
     "ascension": 10,

@@ -34,7 +34,7 @@ public class EngineFlagTests
     [Fact]
     public void Core2WithNoSwitchOnIsTheOldEngineWithAnIdleKernel()
     {
-        var e = (Core2Engine)EngineFactory.Create("core2");
+        var e = new Core2Engine(KernelOptions.None);  // no switch chosen here, not the repository's file
         Assert.Equal("core2", e.Name);
         Assert.False(e.Kernel.AnyOn);
         Assert.Empty(e.Kernel.Options.Switches);
@@ -42,6 +42,18 @@ public class EngineFlagTests
         Assert.Null(e.Run.State.Kernel);
         Assert.Same(e.Run, OldEngine.Of(e).Run);
         Assert.Equal("old", EngineFactory.Create("old").Name);
+    }
+
+    [Fact]
+    public void TheDefaultCore2RunsTheSwitchesTheRepositorysFileLists()
+    {
+        var listed = Core2Engine.Load().Switches;
+        var e = (Core2Engine)EngineFactory.Create("core2");
+        Assert.Equal(listed.OrderBy(s => s), e.Kernel.Options.Switches.OrderBy(s => s));
+        Assert.Equal(listed.Count > 0, e.Kernel.AnyOn);
+        e.Run.Reset("DEFAULTCORE2", 0);
+        Assert.Equal(listed.Count > 0, e.Run.State.Kernel is not null);
+        Assert.Null(((OldEngine)EngineFactory.Create("old")).Run.State.Kernel);
     }
 
     [Fact]
@@ -59,6 +71,6 @@ public class EngineFlagTests
         Assert.NotNull(copy.Kernel);
         Assert.NotSame(core2.Run.State.Kernel, copy.Kernel);
         Assert.Null(Sts2Emulator.Core.StateCloning.Clone(old.Run.State).Kernel);
-        Assert.Null(((Core2Engine)EngineFactory.Create("core2")).Run.State.Kernel);
+        Assert.Null(new Core2Engine(KernelOptions.None).Run.State.Kernel);
     }
 }

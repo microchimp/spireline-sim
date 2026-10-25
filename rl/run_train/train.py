@@ -26,7 +26,7 @@ import copy
 import hashlib
 import math
 import operator
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from functools import cache
 from pathlib import Path
@@ -53,6 +53,7 @@ __all__ = [
     "TrainConfig",
     "ValueData",
     "bootstrap_targets",
+    "eligible_records",
     "end_hp_target",
     "fight_rows",
     "fit",
@@ -78,6 +79,12 @@ class TrainConfig:
     patience: int = 3  # epochs without a better validation loss before stopping
     validation: float = 0.1  # of runs, held out whole: their decisions and fights
     threads: int = 2
+    # Beyond the lab's old recipe (docs/rl/VRUN_SWEEP.md 3); with rows_per_run=0 the "cpu" path is unchanged bit for bit.
+    device: str = "cpu"  # anything else ("cuda", "cuda:1"; "cpu:0" too, which tests use) trains with the rows resident on it
+    hidden: int = 256  # RunValueNet's width, both layers
+    dropout: float = 0.1  # RunValueNet's, before the second layer
+    # rows_per_run 4: the sweep (VRUN_SWEEP.md 1.5) measured out-of-fold Brier skill 0.044 against 0.027 for 0, best epoch 9-20 against 1-2
+    rows_per_run: int = 4  # k > 0: each epoch samples k rows of every run (fewer if it has fewer); 0: every row, every epoch
 
 
 # --------------------------------------------------------------------------------------
@@ -283,6 +290,7 @@ class ValueData:
     floor: np.ndarray | None = None
     run_index: np.ndarray | None = None
     v0: np.ndarray | None = None
+    run_hash: np.ndarray | None = None  # float64: `_unit_hash` of each row's run seed
 
     def fill_fight_block(self, fight: models.NumpyFightNet) -> None:
         """Compute H for every row with `fight`, exactly as the policy does (3.3, 5.3)."""
@@ -347,6 +355,50 @@ def _in_era(record: RunRecord, budget: str, ascension: int) -> bool:
         and record["ascension"] == ascension
         and record["feature_version"] == FEATURE_VERSION
     )
+
+
+def eligible_records(
+    shards: Iterable[Path | str],
+    *,
+    generation: int,
+    combat_budget: CombatBudget | int,
+    ascension: int,
+    dedupe: bool = True,
+) -> Iterator[tuple[int, int, RunRecord]]:
+    """Yield (shard order, line, record) of every run record that counts for generation `generation` (5.4).
+
+    A record counts when it was played at `generation` or before, was not truncated, is of the current era
+    (`_in_era`), and its (generation, seed) was not read before (a resumed block can hold copies). Records come in the
+    order the shards are given in. This is the filter `load_buffers` applies (it keeps its own loop to count the copies).
+
+    Raises:
+        ValueError: If any record, of any era, is a run of an eval or final-test seed (5.6).
+
+    """
+    budget = str(CombatBudget.of(combat_budget))
+    reserved = _reserved_seeds()
+    seen: set[tuple[int, str]] = set()
+    for order, path in enumerate(shards):
+        for line, record in enumerate(read_shard(Path(path))):
+            seed = canonicalize(record["seed"])
+            if seed in reserved:
+                raise ValueError(
+                    f"{path}: run {record['seed']!r} is seed {seed} of {reserved[seed]}, "
+                    "which is held out of training (DESIGN.md 5.6)",
+                )
+            played = record.get("generation")
+            if (
+                played is None
+                or played > generation
+                or record["outcome"]["truncated"]
+                or not _in_era(record, budget, ascension)
+            ):
+                continue
+            if dedupe:  # the same rule as load_buffers: one record per (generation, seed); off for a census of the copies
+                if (played, seed) in seen:
+                    continue
+                seen.add((played, seed))
+            yield order, line, record
 
 
 def load_buffers(
@@ -547,6 +599,7 @@ class _ValueBuilder:
             floor=np.array(self.floor, dtype=np.int64),
             run_index=np.array(self.run_index, dtype=np.int64),
             v0=np.array(self.v0, dtype=np.float32).reshape(n, 3),
+            run_hash=np.array(self.hashes, dtype=np.float64),
         )
 
 
@@ -555,20 +608,60 @@ class _ValueBuilder:
 # --------------------------------------------------------------------------------------
 
 
+def _device_of(config: TrainConfig) -> torch.device | None:
+    """Return the device a fit trains on, or None for the lab's own CPU path (`config.device == "cpu"`)."""
+    return None if config.device == "cpu" else torch.device(config.device)
+
+
+def _epoch_order(
+    train_rows: np.ndarray,
+    groups: np.ndarray | None,
+    per_group: int,
+    generator: torch.Generator,
+) -> np.ndarray:
+    """Return an epoch's rows in the order they are visited.
+
+    Every row, shuffled, by default. With `per_group` k > 0, k rows of every group (fewer if it has fewer), drawn without
+    replacement by the same generator, then shuffled: each run gets the same say however long it is.
+    """
+    if per_group <= 0 or groups is None:
+        return train_rows[torch.randperm(len(train_rows), generator=generator).numpy()]
+    keys = torch.rand(len(train_rows), generator=generator).numpy()
+    group = groups[train_rows]
+    by_group = np.lexsort((keys, group))  # grouped, and random within a group
+    sorted_group = group[by_group]
+    starts = np.concatenate([[0], np.flatnonzero(np.diff(sorted_group)) + 1])
+    sizes = np.diff(np.concatenate([starts, [len(sorted_group)]]))
+    rank = np.arange(len(sorted_group)) - np.repeat(starts, sizes)
+    chosen = train_rows[by_group[rank < per_group]]
+    return chosen[torch.randperm(len(chosen), generator=generator).numpy()]
+
+
 def _optimise(
     net: torch.nn.Module,
-    loss_of: Callable[[np.ndarray], torch.Tensor],
+    loss_of: Callable[[Any], torch.Tensor],
     validation: np.ndarray,
     config: TrainConfig,
     generator: torch.Generator,
+    *,
+    groups: np.ndarray | None = None,
+    epoch_end: Callable[[int, torch.nn.Module], dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Fit `net` with AdamW on a cosine schedule, early-stopped on validation loss.
 
     At most `config.epochs` epochs; training stops after `patience` epochs without a
     better validation loss and keeps the best epoch's weights. With nothing held out (a
     buffer of one run) it trains every epoch and keeps the last.
+
+    On the CPU `loss_of` takes a numpy array of rows. On another device (`config.device`; the net is already there) it takes a
+    tensor of rows on that device, the epoch's loss is summed there and read once, and the shuffle stays on the CPU generator.
+    `groups` (each row's run) with `config.rows_per_run` > 0 samples that many rows of every run per epoch. `epoch_end(epoch,
+    net)`, if given, runs after each epoch's validation with the net in evaluation mode; the numbers it returns join the
+    epoch's history entry.
     """
+    device = _device_of(config)
     train_rows, held = np.flatnonzero(~validation), np.flatnonzero(validation)
+    held_rows = held if device is None else torch.from_numpy(held).to(device)
     optimiser = torch.optim.AdamW(
         net.parameters(),
         lr=config.lr,
@@ -582,15 +675,27 @@ def _optimise(
     history: list[dict[str, float]] = []
     for _ in range(config.epochs):
         net.train()
-        order = train_rows[torch.randperm(len(train_rows), generator=generator).numpy()]
-        total = 0.0
-        for start in range(0, len(order), config.batch):
-            rows = order[start : start + config.batch]
-            loss = loss_of(rows)
-            optimiser.zero_grad()
-            loss.backward()
-            optimiser.step()
-            total += loss.item() * len(rows)
+        order = _epoch_order(train_rows, groups, config.rows_per_run, generator)
+        if device is None:
+            total = 0.0
+            for start in range(0, len(order), config.batch):
+                rows = order[start : start + config.batch]
+                loss = loss_of(rows)
+                optimiser.zero_grad()
+                loss.backward()
+                optimiser.step()
+                total += loss.item() * len(rows)
+        else:
+            order_on_device = torch.from_numpy(order).to(device)
+            running = torch.zeros((), dtype=torch.float64, device=device)
+            for start in range(0, len(order), config.batch):
+                rows = order_on_device[start : start + config.batch]
+                loss = loss_of(rows)
+                optimiser.zero_grad()
+                loss.backward()
+                optimiser.step()
+                running += loss.detach().double() * len(rows)
+            total = float(running)
         schedule.step()
         epoch = {"train": total / max(1, len(order))}
         history.append(epoch)
@@ -598,11 +703,20 @@ def _optimise(
             continue
         net.eval()
         with torch.no_grad():
-            epoch["validation"] = sum(
-                float(loss_of(held[start : start + config.batch]))
-                * len(held[start : start + config.batch])
-                for start in range(0, len(held), config.batch)
-            ) / len(held)
+            if device is None:
+                epoch["validation"] = sum(
+                    float(loss_of(held[start : start + config.batch]))
+                    * len(held[start : start + config.batch])
+                    for start in range(0, len(held), config.batch)
+                ) / len(held)
+            else:
+                summed = torch.zeros((), dtype=torch.float64, device=device)
+                for start in range(0, len(held), config.batch):
+                    part = held_rows[start : start + config.batch]
+                    summed += loss_of(part).double() * len(part)
+                epoch["validation"] = float(summed) / len(held)
+            if epoch_end is not None:
+                epoch.update(epoch_end(len(history) - 1, net))
         if epoch["validation"] < best:
             best, best_state, stale = (
                 epoch["validation"],
@@ -625,25 +739,92 @@ def _optimise(
     }
 
 
+def _resident(
+    count: int,
+    make: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]],
+    device: torch.device,
+    chunk: int = 16384,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Return the dense and count inputs of rows 0..count-1 as float32 tensors on `device`, built `chunk` rows at a time.
+
+    The whole set lives on the device (about 2.2 GB for 300k rows of V's 1,863 numbers) so no batch is densified on the CPU.
+    Returns None if the device runs out of memory, after freeing what it took: the caller then densifies per batch.
+    """
+    dense = counts = None
+    try:
+        for start in range(0, count, chunk):
+            part_dense, part_counts = make(np.arange(start, min(count, start + chunk)))
+            if dense is None:
+                dense = torch.empty((count, part_dense.shape[1]), dtype=torch.float32, device=device)
+                counts = torch.empty((count, part_counts.shape[1]), dtype=torch.float32, device=device)
+            dense[start : start + len(part_dense)] = torch.from_numpy(part_dense).to(device)
+            counts[start : start + len(part_counts)] = torch.from_numpy(part_counts).to(device)
+    except torch.cuda.OutOfMemoryError:
+        dense = counts = None
+        torch.cuda.empty_cache()
+    return None if dense is None else (dense, counts)
+
+
+def _staged(array: np.ndarray, device: torch.device) -> torch.Tensor:
+    """Return a CPU array's batch on `device` through pinned memory (the fallback when the rows are not resident)."""
+    tensor = torch.from_numpy(array)
+    return tensor.pin_memory().to(device, non_blocking=True) if device.type == "cuda" else tensor.to(device)
+
+
+def _release(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.empty_cache()  # the cache would otherwise keep the rows' memory from a server sharing the GPU
+
+
 def train_fight_net(
     net: torch.nn.Module,
     data: FightData,
     config: TrainConfig,
     generator: torch.Generator,
 ) -> dict[str, Any]:
-    """Fit FightNet: cross-entropy against each fight's class (5.3)."""
+    """Fit FightNet: cross-entropy against each fight's class (5.3).
+
+    On a `config.device` other than the CPU the net trains there (moved before the optimiser is built) with the rows resident,
+    and comes back on the CPU. `stats["resident"]` says whether the rows fitted on the device.
+    """
     labels = torch.from_numpy(data.labels)
+    device = _device_of(config)
 
-    def loss_of(rows: np.ndarray) -> torch.Tensor:
-        dense, counts = models.fight_inputs(
-            data.bases.take(rows),
-            data.encounters[rows],
-            data.weak[rows],
-        )
-        logits = net(torch.from_numpy(dense), torch.from_numpy(counts))
-        return functional.cross_entropy(logits, labels[rows])
+    if device is None:
 
-    return _optimise(net, loss_of, data.validation, config, generator)
+        def loss_of(rows: np.ndarray) -> torch.Tensor:
+            dense, counts = models.fight_inputs(
+                data.bases.take(rows),
+                data.encounters[rows],
+                data.weak[rows],
+            )
+            logits = net(torch.from_numpy(dense), torch.from_numpy(counts))
+            return functional.cross_entropy(logits, labels[rows])
+
+        return _optimise(net, loss_of, data.validation, config, generator)
+
+    def make(rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return models.fight_inputs(data.bases.take(rows), data.encounters[rows], data.weak[rows])
+
+    net.to(device)
+    try:
+        held = _resident(len(data.labels), make, device)
+        labels_on_device = labels.to(device)
+
+        def loss_of_device(rows: torch.Tensor) -> torch.Tensor:
+            if held is not None:
+                dense, counts = held[0][rows], held[1][rows]
+            else:
+                dense, counts = (_staged(a, device) for a in make(rows.cpu().numpy()))
+            return functional.cross_entropy(net(dense, counts), labels_on_device[rows])
+
+        stats = _optimise(net, loss_of_device, data.validation, config, generator)
+        stats["resident"] = held is not None
+    finally:
+        held = None
+        net.to("cpu")
+        _release(device)
+    return stats
 
 
 def train_value_net(
@@ -651,19 +832,74 @@ def train_value_net(
     data: ValueData,
     config: TrainConfig,
     generator: torch.Generator,
+    *,
+    epoch_end: Callable[[int, torch.nn.Module], dict[str, float]] | None = None,
 ) -> dict[str, Any]:
-    """Fit V: soft cross-entropy on the floor logits plus 0.25 x MSE on end HP (5.3)."""
+    """Fit V: soft cross-entropy on the floor logits plus 0.25 x MSE on end HP (5.3).
+
+    `config.rows_per_run` > 0 samples that many rows of every run per epoch (it needs `data.run_index`); the loss stays a
+    mean over the sampled rows. On a `config.device` other than the CPU the net trains there (moved before the optimiser is
+    built) with the dense rows resident, H included, and comes back on the CPU; `stats["resident"]` says whether they fitted.
+    `epoch_end(epoch, net)` runs after each epoch's validation (see `_optimise`).
+
+    Raises:
+        ValueError: For `rows_per_run` without `data.run_index`.
+
+    """
     targets, end_hp = torch.from_numpy(data.targets), torch.from_numpy(data.end_hp)
+    device = _device_of(config)
+    groups = None
+    if config.rows_per_run > 0:
+        if data.run_index is None:
+            raise ValueError("rows_per_run samples rows of each run, and this data has no run_index")
+        groups = data.run_index
 
-    def loss_of(rows: np.ndarray) -> torch.Tensor:
-        dense, counts = models.value_inputs(data.inputs(rows))
-        logits, predicted = net(torch.from_numpy(dense), torch.from_numpy(counts))
-        log_p = functional.log_softmax(logits, dim=1)
-        floors = -(targets[rows] * log_p).sum(dim=1).mean()
-        end = functional.mse_loss(predicted, end_hp[rows])
-        return floors + config.end_hp_weight * end
+    if device is None:
 
-    return _optimise(net, loss_of, data.validation, config, generator)
+        def loss_of(rows: np.ndarray) -> torch.Tensor:
+            dense, counts = models.value_inputs(data.inputs(rows))
+            logits, predicted = net(torch.from_numpy(dense), torch.from_numpy(counts))
+            log_p = functional.log_softmax(logits, dim=1)
+            floors = -(targets[rows] * log_p).sum(dim=1).mean()
+            end = functional.mse_loss(predicted, end_hp[rows])
+            return floors + config.end_hp_weight * end
+
+        return _optimise(net, loss_of, data.validation, config, generator, groups=groups, epoch_end=epoch_end)
+
+    def make(rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return models.value_inputs(data.inputs(rows))
+
+    net.to(device)
+    try:
+        held = _resident(len(data.targets), make, device)
+        targets_on_device, end_hp_on_device = targets.to(device), end_hp.to(device)
+
+        def loss_of_device(rows: torch.Tensor) -> torch.Tensor:
+            if held is not None:
+                dense, counts = held[0][rows], held[1][rows]
+            else:
+                dense, counts = (_staged(a, device) for a in make(rows.cpu().numpy()))
+            logits, predicted = net(dense, counts)
+            log_p = functional.log_softmax(logits, dim=1)
+            floors = -(targets_on_device[rows] * log_p).sum(dim=1).mean()
+            end = functional.mse_loss(predicted, end_hp_on_device[rows])
+            return floors + config.end_hp_weight * end
+
+        stats = _optimise(
+            net,
+            loss_of_device,
+            data.validation,
+            config,
+            generator,
+            groups=groups,
+            epoch_end=epoch_end,
+        )
+        stats["resident"] = held is not None
+    finally:
+        held = None
+        net.to("cpu")
+        _release(device)
+    return stats
 
 
 def fit(
@@ -712,7 +948,8 @@ def fit(
             )
         torch.manual_seed(generation)
         generator = torch.Generator().manual_seed(generation)
-        fight_net, value_net = models.FightNet(), models.RunValueNet()
+        fight_net = models.FightNet()
+        value_net = models.RunValueNet(hidden=config.hidden, dropout=config.dropout)
         if prev_checkpoint is not None:
             models.load_torch(prev_checkpoint, fight_net, value_net)
         fight_stats = train_fight_net(fight_net, fights, config, generator)

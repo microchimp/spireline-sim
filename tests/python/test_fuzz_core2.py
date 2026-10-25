@@ -474,7 +474,11 @@ class RealEmuDump(unittest.TestCase):
         self.assertGreater(len(cat.powers), 100)
         specs = [F.generate(cat, 11, i, 30) for i in range(6)]
         self.assertTrue(any(it["cmd"] == "power" for sp in specs for it in sp["setup"]))
-        old, new = (F.run_specs(F.DEFAULT_DLL, e, specs, d) for e in ("old", "core2"))
+        # core2 with no switch chosen here: a scratch build whose migrated_families.json is empty, whatever the repository lists
+        bare = F.dll_for(F.DEFAULT_DLL, [], d / "w")
+        self.addCleanup(F.drop_build, bare, F.DEFAULT_DLL)
+        old = F.run_specs(F.DEFAULT_DLL, "old", specs, d)
+        new = F.run_specs(bare, "core2", specs, d)
         self.assertTrue(all(len(r["steps"]) > 1 for r in old))
         self.assertEqual([F.first_difference(a, b) for a, b in zip(old, new)], [None] * 6)
         recs = [F.replay_record(s, r, len(r["steps"]) - 1) for s, r in zip(specs, old)]

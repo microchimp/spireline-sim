@@ -1710,17 +1710,11 @@ public static class CombatEngine
 
         // `RegenPower.AfterSideTurnEnd`: HEAL the amount, then DECREMENT -- so a 5 pays
         // 5+4+3+2+1 and stops, not 5 a turn forever. Guarded on `!base.Owner.IsDead`.
+        // F08+F10 on: in the game's `Hook.AfterTurnEnd` pass, after the flush (below).
         int regen = BuffSystem.Get(state.PlayerBuffs, BuffId.Regen);
-        if (regen > 0 && state.PlayerHp > 0)
+        if (regen > 0 && state.PlayerHp > 0 && Core2.Kernel.If(Core2.Switch.F08, state) is null)
         {
-            if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
-            {
-                Core2.CreatureCmd.Heal(core2, Core2.OldCreature.Player, regen);
-            }
-            else
-            {
-                state.PlayerHp = Math.Min(state.PlayerMaxHp, state.PlayerHp + regen);
-            }
+            state.PlayerHp = Math.Min(state.PlayerMaxHp, state.PlayerHp + regen);
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Regen, -1);
         }
 
@@ -1936,7 +1930,31 @@ public static class CombatEngine
         // through this whole pass (see the Doom kill below the Late pass).
         bool afterTurnEndOpen = !IsOverOrEnding(state);
         int constrict = BuffSystem.Get(state.PlayerBuffs, BuffId.Constrict);
-        if (constrict > 0 && afterTurnEndOpen)
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } afterTurnEndCore2)
+        {
+            // F08+F10 on: the player's AfterSideTurnEnd powers that change HP, in the order the player holds them
+            // (game: Hook.AfterTurnEnd after FlushPlayerHand): Constrict's damage and Regen's heal, whose damage-then-heal
+            // order at the max HP or a kill differs from the old heal before the hand's turn-end damage.
+            foreach (var power in PlayerPowersInOrder(state, BuffId.Constrict, BuffId.Regen))
+            {
+                if (!afterTurnEndOpen)
+                {
+                    break;
+                }
+
+                if (power == BuffId.Constrict && constrict > 0)
+                {
+                    // game: ConstrictPower's turn-end damage names its owner, the player, as the dealer.
+                    Effects.CardEffects.DealDamageToPlayer(state, constrict, Core2.OldCreature.Player);
+                }
+                else if (power == BuffId.Regen && BuffSystem.Get(state.PlayerBuffs, BuffId.Regen) is > 0 and var heal && state.PlayerHp > 0)
+                {
+                    Core2.CreatureCmd.Heal(afterTurnEndCore2, Core2.OldCreature.Player, heal);
+                    BuffSystem.Apply(state.PlayerBuffs, BuffId.Regen, -1);
+                }
+            }
+        }
+        else if (constrict > 0 && afterTurnEndOpen)
         {
             // game: ConstrictPower's turn-end damage names its owner, the player, as the dealer.
             Effects.CardEffects.DealDamageToPlayer(state, constrict, Core2.OldCreature.Player);
@@ -1953,7 +1971,8 @@ public static class CombatEngine
         // The relics' `AfterSideTurnEnd` -- Joss Paper's payout. It is the same
         // `Hook.AfterTurnEnd` pass as the player's powers above, but
         // `CombatState.IterateHookListeners` walks a creature's powers BEFORE its player's
-        // relics, so No Draw has lifted by the time the paper draws.
+        // relics, so No Draw has lifted by the time the paper draws. F08+F10 on: Parrying Shield and
+        // Lunar Pastry are in it too, in the obtain order, after the flush as the game's are.
         Effects.RelicEffects.ApplyAfterEndOfPlayerTurnShared(state, rng, fold: afterTurnEndOpen);
 
         // `DisintegrationPower.AfterSideTurnEndLate`: the LATE pass, which

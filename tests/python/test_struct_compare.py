@@ -243,6 +243,15 @@ class NetShape(unittest.TestCase):
     def test_missing_engine_net_in_combat(self):
         self.assertEqual(paths(self.run_net(net(), None)), ["net"])
 
+    def test_a_missing_engine_net_is_no_census_field(self):
+        # R7h, the traced fight on fewer fields: an engine with no net view at a step compared nothing on net there, so
+        # an engine that writes the view at that step is not compared on fewer fields than it.
+        missing, written = self.run_net(net(), None), self.run_net(net(), net())
+        self.assertNotIn("net", missing["census"])
+        self.assertFalse(any(p.startswith("net") for p in missing["census"]))
+        self.assertEqual(sc.census_gate({"f": missing}, {"f": written}), {})
+        self.assertIn("f", sc.census_gate({"f": written}, {"f": missing}))
+
     def test_late_steps_stop_the_net_shape(self):
         g, e = fight([snap(), snap()], [snap(), snap()], rec_nets=[net(), net()], eng_nets=[net(), net()])
         g["steps"][1]["net"][0]["state"]["players"][0]["gold"] = 99  # a field only the record has, not unmodelled: a diff
@@ -401,8 +410,22 @@ class EngineScope(unittest.TestCase):
         for i in EVERY_ENGINE:
             self.assertEqual(by[i], ["*"], i)
         self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core3")), sorted(EVERY_ENGINE))  # an engine with a state of its own: no old rows
-        self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core2")), sorted(OLD_ONLY + EVERY_ENGINE + ("kernel-sequencing", "holder-tallies")))  # core2 runs over old state
+        self.assertEqual(sorted(r["id"] for r in sc.for_engine(ROWS, "core2", [])), sorted(OLD_ONLY + EVERY_ENGINE + ("kernel-sequencing", "holder-tallies")))  # core2 with no family migrated runs over old state
         self.assertEqual(len(sc.for_engine(ROWS, "old")), len(ROWS) - 2)  # all but the two core2-only rows
+
+    def test_scopes_under_the_checked_in_switch(self):
+        # The default for core2 is the repository's migrated_families.json: an old row whose family is migrated no longer applies.
+        migrated = set(sc.load_migrated())
+        listed = {r["id"]: set(r.get("families", [])) for r in ROWS if "old" in r["engines"]}
+        got = {r["id"] for r in sc.for_engine(ROWS, "core2")}
+        self.assertEqual(got, {r["id"] for r in sc.for_engine(ROWS, "core2", sorted(migrated))})
+        self.assertEqual({i for i in listed if i not in got}, {i for i, f in listed.items() if f & migrated})
+        # F10 migrated (as checked in): the two old rows that could hide a combat-end rule are out; F08 alone leaves them in.
+        out = {i for i in OLD_ONLY if i not in {r["id"] for r in sc.for_engine(ROWS, "core2", ["F10"])}}
+        self.assertEqual(out, {"fight-lost", "after-fight-turn-state"})
+        self.assertEqual({i for i in OLD_ONLY if i not in {r["id"] for r in sc.for_engine(ROWS, "core2", ["F08"])}}, set())
+        if {"F08", "F10"} <= migrated:
+            self.assertEqual({i for i in OLD_ONLY if i not in got}, {"fight-lost", "after-fight-turn-state"})
 
     def test_old_rows_do_not_apply_to_another_engine(self):
         p = snap()["player"]

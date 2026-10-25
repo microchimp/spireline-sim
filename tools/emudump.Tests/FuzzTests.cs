@@ -3,6 +3,8 @@
 // first map option and says which, and the same spec on core2 with no switch on plays the same fight.
 using System.Text.Json.Nodes;
 using EmuDump.Engines;
+using EmuDump.Engines.Core2;
+using Sts2Emulator.Core2;
 using Xunit;
 
 public class FuzzTests
@@ -33,6 +35,10 @@ public class FuzzTests
         finally { EngineFactory.Selected = "old"; }
     }
 
+    // core2 with no switch chosen here, whatever tools/fidelity/migrated_families.json lists.
+    static JsonObject PlayCore2NoSwitch(JsonObject spec) =>
+        Fuzz.Play(spec, false, () => new Core2Engine(KernelOptions.None));
+
     [Fact]
     public void TheSeedNamesTheFight()
     {
@@ -58,7 +64,7 @@ public class FuzzTests
         for (long seed = 1; seed <= 3; seed++)
         {
             var old = Play("old", Spec(seed));
-            var core2 = Play("core2", Spec(seed));
+            var core2 = PlayCore2NoSwitch(Spec(seed));
             Assert.Null(core2["error"]);
             Assert.Equal(old["steps"]!.ToJsonString(), core2["steps"]!.ToJsonString());
             Assert.Equal(old["choices"]!.ToJsonString(), core2["choices"]!.ToJsonString());
