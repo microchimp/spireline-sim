@@ -310,6 +310,10 @@ class Lockstep:
         self.ctx: dict = {}
         self._ref_now: dict | None = None  # the referee's energy and hand costs at this combat decision, and at the one before
         self._ref_prev: dict | None = None
+        _paths()
+        import run_fields  # noqa: PLC0415
+
+        self.fields = run_fields.RunFields()  # the run's record fields (boss damage), read by envproto play
         self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
                       "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
 
@@ -381,8 +385,20 @@ class Lockstep:
             self.round = rnd
         self.ctx = {"acted": self.prev_act, "turn": self.round, "turn_advanced": advanced, "encounter": self.roster,
                     "room_type": self.room_type}
+        self._boss_fight(kind, c, msg)
         self._ref_prev = self._ref_now if self.prev_kind in COMBAT_KINDS else None
         self._ref_now = _ref_energy(c) if c and kind in COMBAT_KINDS else None
+
+    def _boss_fight(self, kind: str, combat: dict | None, msg: dict) -> None:
+        """The boss fight's enemy HP into the run's record fields: the fight is the one the last map choice named a Boss node;
+        any decision outside a fight (and outside its card screens) ends it as won, the run's end (`finish`) as the run's outcome."""
+        import run_fields  # noqa: PLC0415
+
+        if kind in COMBAT_KINDS and combat:
+            if self.room_type == "Boss":
+                self.fields.boss_enemies((msg.get("obs") or {}).get("act") or 0, run_fields.real_enemies(combat))
+        elif self.fields.in_boss_fight:
+            self.fields.boss_over(won=True)
 
     def _probe(self, msg: dict | None) -> dict:
         """The lone-End-Turn probe every record carries (small, names and counts only). The referee asks only when two or more
@@ -409,6 +425,7 @@ class Lockstep:
 
     def finish(self, outcome: dict) -> None:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
+        self.fields.finish(won_run=outcome.get("class") == "win")
         for r in self.log.records:
             r["run"], r["agent_seed"], r["outcome"] = self.seed, self.agent_seed, outcome
             r["ai_state_assumed"] = r["decision"] in self.assumed

@@ -130,6 +130,9 @@ def result_json(runs: list[dict], wall_s: float, generation: int = 0) -> dict:
             "crashes": t["crashes"]}
 
 
+RUN_FIELD_KEYS = ("boss_damage", "boss_damage_acts")  # rl/run_fields.py: what an envproto end event adds to its row
+
+
 def real_runs(runs_jsonl: str | Path) -> list[dict]:
     """envproto play's runs.jsonl as the per-run rows of the emulator driver (a crash is a loss on floor 0)."""
     rows = []
@@ -141,7 +144,7 @@ def real_runs(runs_jsonl: str | Path) -> list[dict]:
             win = str(e.get("end")).lower() in ("win", "victory", "won")
             rows.append({"seed": e["seed"], "win": win, "floor": e.get("floor") or 0, "decisions": (e.get("stats") or {}).get("decisions", 0),
                          "wall": e.get("s", 0.0), "crash": False,
-                         "ai_state_assumed": e.get("assumed", 0)})
+                         "ai_state_assumed": e.get("assumed", 0), **{k: e[k] for k in RUN_FIELD_KEYS if k in e}})
         elif e.get("ev") == "crash":
             rows.append({"seed": e["seed"], "win": False, "floor": 0, "decisions": 0, "wall": e.get("s", 0.0), "crash": True,
                          "error": e.get("error")})
@@ -193,6 +196,7 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
     _setup()
     import gen_loop  # noqa: PLC0415
     import live_search  # noqa: PLC0415
+    import run_fields  # noqa: PLC0415
     import search_configs  # noqa: PLC0415
     from run_train import engine  # noqa: PLC0415
     from sts2_gym import native  # noqa: PLC0415
@@ -214,6 +218,8 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
         rec = gen_loop.RunRecorder(seed, agent.generation, rules.describe(), cfg.sims, cfg.c, ascension)
     s = engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims), **session_kwargs(agent, character))
     decisions = assumed = k = sims_spent = 0
+    fields = run_fields.RunFields()  # the row's boss damage (and what else the run record keeps)
+    fight_boss: bool | None = None  # None: no fight open; else whether the open fight is a boss fight
     end = "?"
     try:
         env = s.env
@@ -224,6 +230,10 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
             d = s.decision()
             if rec is not None and rec.fight is not None and (d is not None or s.phase != engine.rc.PHASE_COMBAT):
                 rec.close_fight(s, won=d is not None or s.won)  # the fight ended: the run goes on, or it ended in a win/death
+            if fight_boss is not None and (d is not None or s.phase != engine.rc.PHASE_COMBAT):
+                if fight_boss:
+                    fields.boss_over(won=d is not None or s.won)
+                fight_boss = None
             if d is None and s.phase != engine.rc.PHASE_COMBAT:
                 end = "win" if s.won else "death"
                 break
@@ -235,6 +245,11 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 s.apply(d.options[pick.index])
                 decisions += 1
                 continue
+            if fight_boss is None:
+                fight_boss = s.info["node_type"] == engine.vocab.NODE_BOSS
+            if fight_boss:  # the combat observation opens the run observation: the boss's HP at this decision
+                fields.boss_enemies(s.act_index, run_fields.obs_enemies(env._run_obs_buf, native.OBS_ENEMY_OFFSET,
+                                                                       native.OBS_ENEMY_SLOT_SIZE, native.MAX_ENEMIES))
             if rec is not None and rec.fight is None:
                 rec.open_fight(s, s.combat())
             root = s.combat(fork_combat=True).combat_fork(None)
@@ -267,6 +282,7 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                "character": character, "prior_path": prior_path, "prior_calls": prior_calls}
         if prior_latency is not None:
             row["prior_latency_ms"] = prior_latency
+        row.update(fields.row())
         if rec is not None and end in ("win", "death"):
             row["_shard"] = {"record": rec.finish(s, k, won=end == "win", prior_path=prior_path, prior_calls=prior_calls),
                              "samples": rec.samples.arrays()}
@@ -339,7 +355,8 @@ def _run_safe(seed: str, ix: int, sims: int | str, ascension: int, agent=None, r
         return play_emu_run(seed, ix, sims, ascension, agent=agent, record=record, character=character)
     except Exception as e:  # noqa: BLE001 -- an engine or agent defect is a crash of that run: a loss, reported
         return {"seed": seed, "ix": ix, "win": False, "floor": 0, "end": "crash", "decisions": 0, "wall": round(time.perf_counter() - t0, 2),
-                "ai_state_assumed": 0, "crash": True, "error": f"{type(e).__name__}: {e}"[:300]}
+                "ai_state_assumed": 0, "crash": True, "error": f"{type(e).__name__}: {e}"[:300],
+                "boss_damage": 0.0}  # a crash is a loss on floor 0: the boss was not reached
 
 
 def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascension: int = 10, character: str = "IRONCLAD",

@@ -598,7 +598,7 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                                  agent_seed=[agent_seed, run_ix], character=character)
             ev = {"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
-                  "agent_seed": ls.agent_seed, "assumed": len(ls.assumed)}
+                  "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **(ls.fields.row() if getattr(ls, "fields", None) else {})}
             if m.get("stale"):
                 q.put(ev)
                 q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
