@@ -1040,6 +1040,42 @@ Illusion enemy as primary (the game's MinionPower-only `IsPrimaryEnemy`), the ol
 corpus fights with an Illusion enemy are read against the game for the win point (the fight ends when only Illusions
 are left, or not), and the old rule's users are listed and either follow the game or carry the difference.
 
+### R7g: the last R7 gates (branch `rebuild/f08-r7g`, on `95cdd87b`): not passed, nothing switched on
+
+`port_list --gate` now lists the `--unreached` pairs too. The 11 pairs it named are ported in block `R7g` (R7gTests), each
+with its game override's condition: Envenom, Monarch's Gaze and Reaper Form (AfterDamageGiven; the old sites are inline in
+`LandDamageOnEnemy` after the switch's early return), Reflect (AfterDamageReceived; the old `ApplyPlayerReflect` is after
+`DealAttackDamage`'s early return), Necro Mastery (AfterCurrentHpChanged; the old loop is after `DamageOsty`'s early return):
+under F08 each handler is the one application. Book Repair Knife: the old `KillDoomedEnemies` call is ungated and no Core2
+command dispatches AfterDiedToDoom, so the heal stays the old site's, once (R7 check: when a Core2 Doom kill dispatches it, the
+old call goes). Die For You's three death pairs, Sword Sage's AfterRemoved, Emotion Chip's AfterDamageReceived (presentation only).
+Re-entries: Reflect, Necro Mastery. R7 checks (old site and game differ, handler follows the game): Envenom and Monarch's Gaze
+test the dealer; Reaper Form's Doom is the result's total, not the damage asked.
+
+| check | after R7f | after R7g | gate |
+|---|---|---|---|
+| O1: fail only switched on | 0 | 0 | pass |
+| traced (77): better / same / worse; fewer fields | 8 / 69 / 0; 1 | 8 / 69 / 0; 1 | fail (fewer 1) |
+| corpus (4,392): better / same / worse; fewer fields | 63 / 4,327 / 2; 0 | 63 / 4327 / 2; 0 | fail (worse 2) |
+| step test, strict | 4 of 4 | 4 of 4 | pass |
+| fuzz (300): differing / ending disagreements | 291 / 0 | 291 / 0 | report |
+| port gate, unreached pairs counted | 0 / 11 | 0 | pass |
+
+Diagnosed, not yet fixed (the round's call cap):
+- `2b49779387ccd8b9` (Shrink on enemies[0], the game's on enemies[2], step 4: Beetle Juice aimed at 2). Under F08
+  `CardEffects.FirstEnemy` returns `OldWorld.Aimed` when it is set. Step 1's Strike aimed enemies[0]; the play's aim scope
+  (`OldWorld.Aiming`, opened in the play) restores only the world it was opened on, and `KernelState`'s copy
+  (`OldWorld.CopyFrom`) carries `Aimed` over, so a copy taken inside a play keeps that play's aim after it ends and the potion
+  four steps later reads it. Fix: no copy keeps a play's aim past the play (the mark belongs to the play, game
+  `CardPlay.Target`), with a test (a copy inside a play, then a potion aimed elsewhere).
+- `7171bcd6dd0b0bd6` (draw pile at step 10). The game runs `ParryingShield.AfterSideTurnEnd` in `Hook.AfterTurnEnd`, after
+  `FlushPlayerHand`; the old engine runs it in `RelicEffects.ApplyEndOfPlayerTurn`, before the Ethereal exhaust and the discard,
+  and never answers that turn-end death (no Gremlin Horn pay). Under F10 the Gremlin Horn handler pays at the kill, so its card
+  is drawn before the flush and flushed (exhaust 8 to 9); in the game the card drawn after the flush stays in the hand and the
+  next turn's draw stops at ten cards (draw pile 11). Fix in the game's shape: the AfterSideTurnEnd bodies (Parrying Shield)
+  after the flush, under the switch (an old-engine edit in a hashed file: re-record the sites hash), with a test.
+- The traced fight on fewer fields: not read this round.
+
 ### R7 proof rerun after R7f (2026-10-25): not passed, nothing switched on
 
 R7f: the struct_compare census applies the unmodelled rows in the missing-entry branch (a record-only field no row lists is
