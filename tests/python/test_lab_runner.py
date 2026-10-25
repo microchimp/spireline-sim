@@ -70,6 +70,16 @@ class GuardsTest(unittest.TestCase):
         (self.lab / "PAUSE").unlink()
         self.assertTrue(g.poll().ok)
 
+    def test_the_pause_tag_is_the_first_word_after_an_optional_now(self):
+        pause = self.lab / "PAUSE"
+        self.assertEqual(gd.pause_tag(self.lab), "")  # no file
+        for text, tag in (("", ""), ("now\n", ""), ("w4-macro 2026-10-25T07:01:00Z\n", "w4-macro"), ("NOW w4-macro\n", "w4-macro"),
+                          ("now\r\nsecond line\n", ""), ("a/b\\c:d" + "x" * 80, "abc:d" + "x" * 35)):
+            pause.write_text(text, encoding="utf-8")
+            self.assertEqual(gd.pause_tag(self.lab), tag, text)
+        pause.write_bytes("now w4-macro\n".encode("utf-16"))  # PowerShell 5.1 writes UTF-16 with a BOM
+        self.assertEqual(gd.pause_tag(self.lab), "w4-macro")
+
     def test_main_lock_pauses(self):
         g = self.guards()
         self.lock.write_text("", encoding="utf-8")
@@ -671,6 +681,118 @@ class RunnerCase(unittest.TestCase):
         self.assertEqual(job, "")
         self.assertIn("presort", why)
         self.assertEqual(self.runner("--once", "presort").choose("abc")[0], "presort")
+
+    # ---- the presort gap: one presort per batch of main moves, the other jobs on the presorted tree meanwhile
+
+    def presorted(self, *extra: str, ago_min: float = 5.0, others: bool = True) -> rn.Runner:
+        """A runner whose lab was presorted at aaa, ago_min minutes ago; presort and fights are trivial, the rest cannot run."""
+        def unavailable(c):
+            raise pl.Unavailable("nothing to do")
+        ok = lambda c: [pl.Step("a", [self.py("x", "pass", core=True)])]  # noqa: E731
+        pl.PLANS["presort"] = ok
+        pl.PLANS["fights"] = ok if others else unavailable
+        for j in ("probes", "mutation", "invariants"):
+            pl.PLANS[j] = unavailable
+        r = self.runner(*extra)
+        r.state["last_presorted_sha"] = r.state["tree_sha"] = "aaa"
+        r.state["last_presort_end"] = time.time() - ago_min * 60
+        return r
+
+    def made_jobs(self, r: rn.Runner) -> list[tuple[str, str]]:
+        """(job type, sha) of every job the runner makes from now on, in order."""
+        made: list[tuple[str, str]] = []
+        orig = r.new_run
+        r.new_run = lambda job, sha: (made.append((job, sha)), orig(job, sha))[1]
+        return made
+
+    def test_two_main_moves_inside_the_gap_give_one_presort_after_the_gap(self):
+        r = self.presorted()  # the default gap is 60 minutes
+        made = self.made_jobs(r)
+        head = ["bbb"]
+        r.main_sha = lambda: head[0]
+        self.assertIsNone(r.one_pass())  # main moved to bbb: the rotation's job runs on the presorted tree
+        head[0] = "ccc"
+        self.assertIsNone(r.one_pass())  # and moved again
+        self.assertEqual(made, [("fights", "aaa"), ("fights", "aaa")])
+        self.assertEqual((r.state["last_presorted_sha"], r.state["tree_sha"]), ("aaa", "aaa"))
+        r.state["last_presort_end"] = time.time() - 61 * 60  # the gap has passed
+        self.assertIsNone(r.one_pass())
+        self.assertEqual(made[2], ("presort", "ccc"))  # one presort for both moves
+        self.assertEqual((r.state["last_presorted_sha"], r.state["tree_sha"]), ("ccc", "ccc"))
+        self.assertIsNone(r.one_pass())
+        self.assertEqual(made[3], ("fights", "ccc"))
+        self.assertEqual([j for j, _ in made].count("presort"), 1)
+        self.assertIn("presort of ccc deferred", r.lab.log_path.read_text(encoding="utf-8"))
+
+    def test_inside_the_gap_the_next_pick_is_the_rotations_on_the_presorted_tree(self):
+        r = self.presorted()
+        job, run, why = r.choose("bbb")
+        self.assertEqual((job, run), ("fights", None))
+        self.assertTrue(why.startswith("rotation"), why)
+        self.assertEqual(r.defer_sha, "aaa")
+        self.assertIn("presort of bbb deferred", why)
+        self.assertEqual(r.state["rotation"], 1)  # the rotation moved on: this was its slot
+        r.main_sha = lambda: "bbb"
+        r.one_pass()
+        run = rn.Run.load(next(r.lab.runs.iterdir()))
+        self.assertEqual((run.job, run.data["main_sha"]), ("fights", "aaa"))  # the job record names the tree it ran on
+
+    def test_a_job_on_the_presorted_tree_resumes_inside_the_gap_and_closes_after_it(self):
+        r = self.presorted()
+        run = r.new_run("fights", "aaa")
+        job, got, _ = r.choose("bbb")
+        self.assertEqual((job, got.name), ("fights", run.name))
+        r.state["last_presort_end"] = time.time() - 61 * 60
+        job, got, _ = r.choose("bbb")
+        self.assertEqual((job, got), ("presort", None))
+        self.assertEqual((run.dir / "done.rc").read_text().strip(), "3")
+
+    def test_once_presort_ignores_the_gap(self):
+        self.assertEqual(self.presorted().choose("bbb")[0], "fights")  # the same lab without --once: deferred
+        job, _, why = self.presorted("--once", "presort").choose("bbb")
+        self.assertEqual((job, why), ("presort", "--once presort"))
+        job, _, why = self.presorted("--once", "fights").choose("bbb")  # any other --once still needs the tree at main
+        self.assertEqual(job, "")
+        self.assertIn("presorted", why)
+
+    def test_a_presort_is_not_deferred_when_no_other_job_can_run(self):
+        r = self.presorted(others=False)
+        job, run, why = r.choose("bbb")
+        self.assertEqual((job, run), ("presort", None))
+        self.assertIn("no other job can run on the tree at aaa", why)
+        self.assertIsNone(r.defer_sha)
+
+    def test_a_presort_is_not_deferred_without_a_good_presorted_tree_or_with_the_gap_off(self):
+        r = self.presorted()
+        r.state["tree_sha"] = None  # a failed presort: nothing may run on the tree
+        self.assertEqual(r.choose("bbb")[0], "presort")
+        r = self.presorted()
+        r.state["last_presort_end"] = None
+        self.assertEqual(r.choose("bbb")[0], "presort")  # no presort on record and no folder: long ago
+        self.assertEqual(self.presorted("--presort-gap-min", "0").choose("bbb")[0], "presort")  # the gap off: every move
+        r = self.presorted()
+        r.state["last_presort_end"] = None
+        d = r.lab.runs / "20260101T0000-presort"
+        d.mkdir()
+        (d / "done.rc").write_text("0", encoding="utf-8")  # an older runner left no note: the newest presort folder's end is read
+        os.utime(d / "done.rc", (1.0, 1.0))
+        self.assertEqual(r.choose("bbb")[0], "presort")  # that was long ago
+        os.utime(d / "done.rc")
+        self.assertEqual(r.choose("bbb")[0], "fights")  # that was just now
+
+    def test_the_paused_line_carries_the_pause_files_tag(self):
+        r = self.runner()
+        (r.lab.root / "PAUSE").write_text("w4-macro 2026-10-25T07:01:00Z\n", encoding="utf-8")
+        t = threading.Thread(target=r.gate)
+        t.start()
+        deadline = time.time() + 20
+        read = lambda: r.lab.log_path.read_text(encoding="utf-8") if r.lab.log_path.exists() else ""  # noqa: E731
+        while "paused:" not in read() and time.time() < deadline:
+            time.sleep(0.05)
+        (r.lab.root / "PAUSE").unlink()
+        t.join(20)
+        self.assertFalse(t.is_alive())
+        self.assertIn("paused: pause (LAB/PAUSE) (w4-macro)\n", read())
 
     def test_pause_now_stops_the_command_and_it_restarts_from_scratch_when_released(self):
         marker = self.tmp / "runs.txt"

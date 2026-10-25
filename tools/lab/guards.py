@@ -23,6 +23,7 @@ from __future__ import annotations
 import collections
 import dataclasses
 import os
+import re
 import shutil
 import time
 from collections.abc import Callable
@@ -193,6 +194,17 @@ def read_text_lenient(p: Path) -> str:
     else:
         text = raw.decode("utf-8-sig", errors="replace")
     return text.replace("\x00", "").lstrip("﻿")
+
+
+def pause_tag(lab: Path) -> str:
+    """Who paused: the first word of LAB/PAUSE after an optional leading ``now`` ("" when there is none), as it goes in runner.log."""
+    try:
+        words = _first_line(lab / "PAUSE").split()
+    except OSError:
+        return ""
+    if words and words[0].lower() == "now":
+        words = words[1:]
+    return re.sub(r"[^\w.:+-]", "", words[0])[:40] if words else ""
 
 
 def _first_line(p: Path) -> str:

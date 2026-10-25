@@ -40,6 +40,11 @@ nothing to do with `--once`, or another runner holds this lab; 1: crash; 2: refu
 - `--dry-run`: guard readings, the mix, next job, its plan with every command's skip reason. Creates and changes nothing.
 - `--trial M`: work for M minutes, let a running step finish within `--grace` (at most 60 s), exit 0.
 - `--once J`: one job of type J (a `fights` needs the tree presorted at main first: `--once presort`), then exit.
+- `--presort-gap-min M` (default 60): one presort per batch of main moves. When main moved, the presort waits until the last
+  one ended M minutes ago; meanwhile the ladder and the fights rotation keep running on the presorted tree (their job
+  records name that tree's sha). It does not wait when no other job can run on the tree, when the tree is not a good presorted
+  one (a failed presort), or with `--once presort`; `0` presorts on every move. The end of the last presort is `state.last_presort_end`
+  (an older state: the newest finished presort folder).
 - `--skip`: prefixes of step or command names. Steps: `tree restore build driver native game checks corpus groups
   kits corpus-import targets batch-NN runs-NN probes mutation invariants`. Commands: `worktree-add checkout restore-* build-emudump
   build-driver publish-native game-copy codex-s0..3 refset corpus groups kits corpus-import targets scen-NN batch-NN analyze-NN runs-NN
@@ -58,7 +63,8 @@ nothing to do with `--once`, or another runner holds this lab; 1: crash; 2: refu
 
 ## Jobs
 
-`presort` runs when local `main` differs from `state.last_presorted_sha` (or the tree is not at it): `tree` (worktree add /
+`presort` runs when local `main` differs from `state.last_presorted_sha` (or the tree is not at it), at most once per
+`--presort-gap-min` unless nothing else can run: `tree` (worktree add /
 `checkout --detach --force`), `restore` (offline, only when `obj/project.assets.json` is missing), `build` (EmuDump),
 `driver` (referee driver), `native` (`dotnet publish ... win-x64`), `game` (linkcopy), `checks` (codex walk in 4 shards +
 refset score, in parallel; the refset score and the corpus results are copied into the job folder under the roles
@@ -171,7 +177,7 @@ status (pending|running|done|failed|skipped), interrupted, started_utc, finished
 corpus run's results), `fights` (verdicts), `runs` (`runs.json`), `probes`, `mutation_reach`, `metamorphic`, `invariants`.
 `done.rc`: 0 ok, 1 required step failed or every core command failed, 3 superseded.
 
-`PAUSE` and `HALT` are read whoever wrote them: PowerShell's `echo now > PAUSE` writes UTF-16 with a BOM.
+`PAUSE` and `HALT` are read whoever wrote them: PowerShell's `echo now > PAUSE` writes UTF-16 with a BOM. A tag in it (its first word after an optional `now`, e.g. `echo "w4-macro 2026-10-25T07:01:00Z" > PAUSE`) is logged on the `paused:` line, `paused: pause (LAB/PAUSE) (w4-macro)`, so pause time can be split by session.
 
 ## The Windows task
 

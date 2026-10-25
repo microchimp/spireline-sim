@@ -9739,7 +9739,7 @@ public static class CardEffects
     /// </remarks>
     private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card) =>
         Core2.Kernel.If(Core2.Switch.F08, state) is null
-            ? ModifiedCardDamage(state, baseDamage, def, card)
+            ? ModifiedCardDamage(state, baseDamage, def, card, BuffSystem.AttackerDamageAdditive(state.PlayerBuffs))
             : baseDamage;
 
     /// <summary>
@@ -9749,7 +9749,13 @@ public static class CardEffects
     /// card it eats either way, since that is a value the game reads, not an amount the
     /// damage command folds.
     /// </summary>
-    private static int ModifiedCardDamage(CombatState state, int baseDamage, CardDef def, CardInstance card)
+    private static int ModifiedCardDamage(
+        CombatState state,
+        int baseDamage,
+        CardDef def,
+        CardInstance card,
+        int creatureAdditive = 0
+    )
     {
         // The card's enchantment (game: EnchantmentModel.EnchantDamageAdditive, then
         // EnchantDamageMultiplicative, both first in Hook.ModifyDamage); Core2's EnchantAdd and
@@ -9768,7 +9774,7 @@ public static class CardEffects
         {
             damage += RelicEffects.EnchantedCardDamageBonus(state);
         }
-        damage *= RelicEffects.CardDamageMultiplier(state, def);
+        int factor = RelicEffects.CardDamageMultiplier(state, def);
 
         // `GigantificationPower.ModifyDamageMultiplicative` returns 3 for the next powered
         // ATTACK card. LAST, because it is multiplicative and so lands on the total every
@@ -9785,10 +9791,17 @@ public static class CardEffects
             && BuffSystem.Get(state.PlayerBuffs, BuffId.Gigantification) > 0
         )
         {
-            damage *= Gigantification_ModifyDamageMultiplicative();
+            factor *= Gigantification_ModifyDamageMultiplicative();
         }
 
-        return damage;
+        // Hook.ModifyDamage folds EVERY additive term before the first multiplicative one, so the three multipliers
+        // above (Pen Nib, Vitruvian Minion, Gigantification) land on the card's total PLUS the creature-level additive
+        // terms. Those terms (the attacker's Strength and Vigor) are added later, by BuffSystem.IncomingDamage on the
+        // amount this returns, so the caller passes them in as `creatureAdditive`: the multiplier is applied to the sum
+        // and the sum's own share is taken back out, and IncomingDamage's addition then restores it (B*f + S*(f-1) + S =
+        // (B+S)*f). With no multiplier (f = 1) or no such term this is `damage` unchanged. Thrash's read of an eaten
+        // card (EatenAttackDamage) passes none.
+        return (damage + creatureAdditive) * factor - creatureAdditive;
     }
 
     /// <summary>
