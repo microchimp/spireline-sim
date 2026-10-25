@@ -200,7 +200,7 @@ class TableTests(unittest.TestCase):
             arm = {"summary": {"runs": 2000, **({"run_fields": gen0.engine_block(self.ROWS)["run_fields"]} if fields else {})}}
             p = root / "agent" / f"gen{gen}" / "candidate" / "promotion.json"
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps({"written": written, "seed_block": f"E{gen}", "decision": "rejected", "cand": arm, "base": arm}), encoding="utf-8")
+            p.write_text(json.dumps({"written": written, "seed_block": f"E{gen}", "decision": {"promote": False, "checks": {}}, "cand": arm, "base": arm}), encoding="utf-8")
 
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -213,6 +213,7 @@ class TableTests(unittest.TestCase):
             promo(root, 3, "2026-10-25T00:00:00Z", fields=True)
             sec, note = rd.agent_score(root)
             self.assertIsNone(note)
+            self.assertEqual(sec["decision"], "rejected")  # promotion.json holds the decide dict, shown as promoted or rejected
             self.assertEqual((sec["block"], sec["arms"]["cand"]["boss_damage_mean"], sec["arms"]["base"]["skip_rate"]), ("E3", 0.75, 0.5))
             self.assertEqual(sec["arms"]["cand"]["cards_taken_by_floor"], {"2": 1, "4": 1})
             self.assertEqual(rd.build(root)["agent"]["block"], "E3")

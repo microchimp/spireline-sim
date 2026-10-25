@@ -222,7 +222,7 @@ def agent_score(root: Path):
                       "skip_rate": cd.get("skip_rate"), "cards_taken_per_run": cd.get("taken_per_run"),
                       "cards_taken_by_floor": cd.get("taken_by_floor")}
     known = any(a["boss_damage_mean"] is not None or a["skip_rate"] is not None for a in arms.values())
-    return ({"source": _rel(p, root), "date": written[:10] or _day(p), "block": d.get("seed_block"), "decision": d.get("decision"),
+    return ({"source": _rel(p, root), "date": written[:10] or _day(p), "block": d.get("seed_block"), "decision": ("promoted" if d["decision"].get("promote") else "rejected") if isinstance(d.get("decision"), dict) else d.get("decision"),
              "arms": arms},
             None if known else {"note": "the latest agent block's rows predate the boss_damage and cards fields"})
 
