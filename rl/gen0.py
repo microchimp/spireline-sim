@@ -797,7 +797,9 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--shards-root", help="where the lab's job directories (with shards) are, to count the budget")
     e.add_argument("--budget-runs", type=int, default=2000)
     add_prior_server_flags(e)
-    t = sub.add_parser("train", help="train generation N's candidate from the last 3 generations' shards")
+    t = sub.add_parser("train", help="train generation N's candidate from the last 3 generations' shards. Since D33 (2026-10-25) a "
+                       "candidate whose V_run is kept plays the value-head macro (agent.json macro vrun, no environment variable); "
+                       "SPIRELINE_MACRO_VRUN=rules writes macro rules instead")
     t.add_argument("--gen", type=int)
     t.add_argument("--policy-target", choices=("visits", "completed_q"), default="visits",
                    help="the combat policy's target: root visits, or the completed-Q softmax (train_combat)")

@@ -293,7 +293,7 @@ def trained_candidate() -> tuple[Path, Path, Path]:
                 sink.add(fake_record(f"S{g}{i:08d}"[:10], g), fake_run_arrays(rng, 3, 5))
             sink.close()
         with mock.patch.dict(os.environ):
-            os.environ.pop(gen_loop.MACRO_VRUN_FLAG, None)  # the macro switch is off, as by default
+            os.environ.pop(gen_loop.MACRO_VRUN_FLAG, None)  # no variable: the switch is on by default (D33)
             cand = gen_loop.train_generation(1, root / "runs", root / "agent", device="cpu", epochs=2, max_fights=20, threads=2,
                                              vrun=False)
         _FIXTURE.update(runs=root / "runs", agents=root / "agent", cand=cand)
@@ -318,9 +318,9 @@ class TrainTests(unittest.TestCase):
         self.assertGreater(t["combat"]["cpu_min"], 0)
         self.assertEqual(json.loads((c / "agent.json").read_text())["generation"], 2)
         self.assertEqual(json.loads((c / "agent.json").read_text())["mask_version"], 2)  # D32: new candidates carry the versioned mask
-        switch = t["vrun_keep"]["macro_switch"]  # the macro fence: off unless SPIRELINE_MACRO_VRUN is set
-        self.assertEqual((switch["passed"], switch["enabled"]), (False, False))
-        self.assertIn("owner decision", switch["note"])
+        switch = t["vrun_keep"]["macro_switch"]  # D33: on without the variable (no fit here: vrun=False, so nothing passed)
+        self.assertEqual((switch["passed"], switch["enabled"]), (False, True))
+        self.assertIn("D33", switch["note"])
 
     def test_onnx_is_written_and_read_back_or_the_reason_is_recorded(self):
         c = self.cand

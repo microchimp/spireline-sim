@@ -55,8 +55,13 @@ BOOT_B = 20000
 ENV_GEN_DIR = "SPIRELINE_GEN_DIR"
 REVIEW_GUARD_FLAG = "SPIRELINE_REVIEW_GUARD"  # tools/lab/promotion_guard.FLAG: the review's guard decides when set; off by default
 REVIEW_GUARD_ON_VALUES = ("1", "on", "true", "yes")  # tools/lab/promotion_guard.ON_VALUES (a test keeps them equal)
-MACRO_VRUN_FLAG = "SPIRELINE_MACRO_VRUN"  # the macro fence: V_run plays macro only when this is on too (VRUN_SWEEP.md 1.5); off
-MACRO_SWITCH_NOTE = ("the switch waits for a paired rules-against-vrun A/B and an owner decision (VRUN_SWEEP.md 1.5)")
+# D33 (2026-10-25): the paired rules-against-vrun A/B (VRUN_SWEEP.md 1.5) was decided, so the value-head macro is the macro of every new
+# candidate whose V_run is kept, with no environment variable. SPIRELINE_MACRO_VRUN stays as an explicit opt-out: "rules" (or off, 0,
+# false, no) makes `train_generation` write macro rules; anything else, or unset, leaves the default.
+MACRO_VRUN_FLAG = "SPIRELINE_MACRO_VRUN"
+MACRO_OPT_OUT_VALUES = ("rules", "off", "0", "false", "no")
+MACRO_SWITCH_NOTE = ("D33 (2026-10-25): the macro switch is on by default after the paired rules-against-vrun A/B "
+                     "(VRUN_SWEEP.md 1.5); SPIRELINE_MACRO_VRUN=rules opts a candidate out")
 # which prior produced a run's decisions: the row, the record and the npz part (an int8 per run) all carry it
 # "uniform": at least one call was answered by the uniform prior of the memory floor (prior_client), whatever else answered
 PRIOR_PATHS = ("none", "cpu", "server", "mixed", "uniform")
@@ -867,18 +872,18 @@ def vrun_keep_passed(keep_doc: dict[str, Any] | None, cand: Path) -> bool:
 
 
 def macro_vrun_on(flag: bool | None = None) -> bool:
-    """Whether the macro switch is on: `flag` when given, else the SPIRELINE_MACRO_VRUN variable (off by default)."""
+    """Whether the macro switch is on: `flag` when given, else on unless SPIRELINE_MACRO_VRUN opts out (`MACRO_OPT_OUT_VALUES`)."""
     if flag is not None:
         return bool(flag)
-    return os.environ.get(MACRO_VRUN_FLAG, "").strip().lower() in REVIEW_GUARD_ON_VALUES
+    return os.environ.get(MACRO_VRUN_FLAG, "").strip().lower() not in MACRO_OPT_OUT_VALUES
 
 
 def macro_for(keep_doc: dict[str, Any] | None, cand: Path, enabled: bool | None = None) -> str:
     """`vrun` when the keep record passes (`vrun_keep_passed`) and the macro switch is on (`macro_vrun_on(enabled)`), else `rules`.
 
-    The switch is the macro fence of VRUN_SWEEP.md 1.5: a V_run fit that passes the keep conditions does not by itself
-    make the candidate play V_run's macro, since that would judge the prior and V_run together without DESIGN 5.3's Tier-B
-    regret and battery conditions."""
+    The switch is on by default since D33 (2026-10-25); SPIRELINE_MACRO_VRUN=rules is the opt-out. A candidate that plays
+    V_run's macro is judged with its prior and V_run together; that is the decision (VRUN_SWEEP.md 1.5), and the E-block's
+    rule (floor, boss-kill guard, F7 audit) is unchanged."""
     return "vrun" if vrun_keep_passed(keep_doc, cand) and macro_vrun_on(enabled) else "rules"
 
 
@@ -929,8 +934,8 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         doc["onnx"] = export_all(cand)
     doc["cpu_min_total"] = round(doc["combat"]["cpu_min"] + doc.get("run_value", {}).get("cpu_min", 0.0), 2)
     doc["wall_min_total"] = round(doc["combat"]["wall_min"] + doc.get("run_value", {}).get("wall_min", 0.0), 2)
-    # V_run drives macro choices only once its DESIGN 5.3 keep conditions are shown (run_train.keep); until then the rules play
-    # outside fights. The record sits in train.json under vrun_keep; the agent.json macro follows its verdict.
+    # V_run drives macro choices once its keep conditions are shown (run_train.keep) and the switch is not opted out (D33); the
+    # rules play outside fights otherwise. The record sits in train.json under vrun_keep; the agent.json macro follows its verdict.
     keep_doc = (doc.get("run_value", {}).get("value") or {}).pop("keep", None)
     doc["vrun_keep"] = keep_doc if keep_doc is not None else {"status": "not_run", "all_computable_pass": False}
     passed, enabled = vrun_keep_passed(doc["vrun_keep"], cand), macro_vrun_on()
@@ -939,11 +944,11 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     doc["vrun_keep"]["note"] = vrun_keep_note(macro)
     write_json(cand / "agent.json", {"generation": gen + 1, "macro": macro, "trained_from": gen, "written": utc_now(),
                                      "mask_version": CANDIDATE_MASK_VERSION,
-                                     "note": ("V_run passed every computable DESIGN 5.3 keep condition (Tier-B regret and the battery "
-                                              "are not computed) and the macro switch is on: it picks macro options" if macro == "vrun" else
-                                              f"V_run passed the computable keep conditions; the macro switch ({MACRO_VRUN_FLAG}) is "
-                                              "off, so macro stays rules" if passed else
-                                              "macro stays rules until V_run passes DESIGN 5.3 (Brier vs base rate and V0, ECE)")})
+                                     "note": ("V_run passed the computable keep conditions (Tier-B regret and the battery are not "
+                                              "computed) and the macro switch is on (D33): it picks macro options" if macro == "vrun" else
+                                              f"V_run passed the computable keep conditions; {MACRO_VRUN_FLAG}=rules opts "
+                                              "out, so macro stays rules" if passed else
+                                              "macro stays rules: V_run did not pass the keep conditions")})
     write_json(cand / "train.json", doc)
     shutil_rmtree(cand / "work")
     return cand
