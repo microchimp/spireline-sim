@@ -126,6 +126,18 @@ public static class RunConstants
     /// `CanRemovePotions` holds. Placed straight after the use actions, inside <see cref="MaxActions" />.
     /// </summary>
     public const int DiscardPotionAction = UsePotionAction + PotionSlotCapacity;
+
+    /// <summary>
+    /// The run action mask's version, a setting of the run handle (<see cref="RunEngine.MaskVersion" />). Version 1 is the
+    /// mask as it was before the versions existed and the default of every run. Version 2 adds the discard actions
+    /// (<see cref="DiscardPotionAction" />) on the card reward, deck-select, bundle-select and Crystal Sphere screens
+    /// (<see cref="RunPotionUse.DiscardBeltIsOpen" />) and changes nothing else.
+    /// </summary>
+    public const int MaskVersion1 = 1;
+
+    public const int MaskVersion2 = 2;
+
+    public const int MaxMaskVersion = MaskVersion2;
     public const int MapWidth = 7;
 
     /// <summary>

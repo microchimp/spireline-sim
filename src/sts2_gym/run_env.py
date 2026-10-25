@@ -60,8 +60,12 @@ class Sts2RunEnv(gym.Env):
         max_floors: int = 16,
         ascension: int = 0,
         character: str = "IRONCLAD",
+        mask_version: int = native.RUN_MASK_VERSION_DEFAULT,
     ):
         super().__init__()
+        # The run action mask's version (native.RUN_MASK_VERSIONS): set on every handle `reset` creates. Version 2 lists the
+        # potion discard on the closed-belt screens; `action_masks` hides it from a policy all the same.
+        self._mask_version = int(mask_version)
         self._character = character  # the game's character id; the native run API starts Ironclad unless it exports run_reset_character
         self._seed = seed
         self._max_episode_steps = max_episode_steps
@@ -91,6 +95,8 @@ class Sts2RunEnv(gym.Env):
         if self._run_handle is not None:
             native.run_destroy(self._run_handle)
         self._run_handle = native.run_create()
+        if self._mask_version != native.RUN_MASK_VERSION_DEFAULT:
+            native.run_set_mask_version(self._run_handle, self._mask_version)
         if self._character != "IRONCLAD":
             reset_as = getattr(native, "run_reset_character", None)
             if reset_as is None:
@@ -141,6 +147,7 @@ class Sts2RunEnv(gym.Env):
             max_episode_steps=self._max_episode_steps,
             max_floors=self._max_floors,
             ascension=self._ascension,
+            mask_version=self._mask_version,
         )
         copy._run_handle = native.run_clone(
             self._run_handle,

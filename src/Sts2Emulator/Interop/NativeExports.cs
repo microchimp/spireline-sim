@@ -1369,6 +1369,10 @@ public static class NativeExports
         int* obsBuf
     ) => RunNativeExports.Sts2Run_ResetAs(handle, seedPtr, seedLen, ascension, character, obsBuf);
 
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_SetMaskVersion")]
+    public static int Sts2Run_SetMaskVersion(int handle, int version) =>
+        RunNativeExports.Sts2Run_SetMaskVersion(handle, version);
+
     [UnmanagedCallersOnly(EntryPoint = "Sts2Run_PotionActionReason")]
     public static unsafe int Sts2Run_PotionActionReason(int handle, int action, byte* buf, int bufLen) =>
         RunNativeExports.Sts2Run_PotionActionReason(handle, action, buf, bufLen);
