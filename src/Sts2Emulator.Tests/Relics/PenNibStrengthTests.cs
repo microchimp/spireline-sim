@@ -22,14 +22,21 @@ public class PenNibStrengthTests
         () => Core2.ListenerOrderTests.Ids,
         Sts2Emulator.Core2.Models.Registry.All));
 
-    /// <summary>Pen Nib at nine Attacks played, the given Strength, a Strike in hand, one 50 HP enemy with no block or powers.</summary>
-    private static CombatState TenthAttack(int strength)
+    /// <summary>
+    /// Pen Nib at <paramref name="attacksPlayed" /> Attacks played (nine: the next is the tenth), the given Strength, Vigor and
+    /// Gigantification, a Strike in hand, one 50 HP enemy with no block or powers.
+    /// </summary>
+    private static CombatState TenthAttack(int strength, int vigor = 0, int gigantification = 0, int attacksPlayed = 9)
     {
         var state = CombatFactory.NewCombat(seed: 0);
-        state.Relics.Add(new RelicInstance(RelicEffects.PenNib, 9));
+        state.Relics.Add(new RelicInstance(RelicEffects.PenNib, attacksPlayed));
         state.PenNibArmed = false;
         if (strength != 0)
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Strength, strength);
+        if (vigor != 0)
+            BuffSystem.Apply(state.PlayerBuffs, BuffId.Vigor, vigor);
+        if (gigantification != 0)
+            BuffSystem.Apply(state.PlayerBuffs, BuffId.Gigantification, gigantification);
         state.Hand.Clear();
         state.Hand.Add(new CardInstance(IC.StrikeIronclad, false));
         state.Enemies =
@@ -77,6 +84,25 @@ public class PenNibStrengthTests
 
         Assert.Equal(switchOn, state.Kernel is not null);
         Assert.Equal(0, state.Relics.Single(r => r.DefId == RelicEffects.PenNib).Counter);
+        Assert.Equal(enemyHpAfter, state.Enemies[0].Hp);
+    }
+
+    /// <summary>
+    /// The same fold for the other additive creature term and the other multipliers: Vigor (6 + 3) * 2 on the tenth Attack,
+    /// and Gigantification, which triples the total (6 + 2) * 3 on a card that is not the tenth Attack.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 0, 3, 0, 9, 32)]
+    [InlineData(true, 0, 3, 0, 9, 32)]
+    [InlineData(false, 2, 0, 1, 0, 26)]
+    [InlineData(true, 2, 0, 1, 0, 26)]
+    public void EveryAdditiveTermLandsBeforeEveryMultiplier(bool switchOn, int strength, int vigor, int gigantification,
+        int attacksPlayed, int enemyHpAfter)
+    {
+        var state = TenthAttack(strength, vigor, gigantification, attacksPlayed);
+
+        Play(state, switchOn);
+
         Assert.Equal(enemyHpAfter, state.Enemies[0].Hp);
     }
 }

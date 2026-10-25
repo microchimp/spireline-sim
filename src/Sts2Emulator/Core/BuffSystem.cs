@@ -324,6 +324,15 @@ public static class BuffSystem
         Get(ownerBuffs, BuffId.Vigor);
 
     /// <summary>
+    /// The additive damage terms IncomingDamage adds on the ATTACKER's side (Strength, then Vigor; Tainted is the
+    /// defender's and no card attack's target carries it). CardEffects.DmgFrom hands this to the card's multiplicative
+    /// fold so Pen Nib, Vitruvian Minion and Gigantification land after these terms, as Hook.ModifyDamage orders them.
+    /// Keep it equal to the attacker-side additions at the top of IncomingDamage.
+    /// </summary>
+    internal static int AttackerDamageAdditive(List<BuffState> attackerBuffs) =>
+        Strength_ModifyDamageAdditive(attackerBuffs) + Vigor_ModifyDamageAdditive(attackerBuffs);
+
+    /// <summary>
     /// game: TaintedPower.ModifyDamageAdditive
     /// Extracted from BuffSystem.IncomingDamage; the caller keeps the condition.
     /// </summary>
