@@ -257,9 +257,6 @@ class GateTests(unittest.TestCase):
                 pl.make = orig
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class GateCountsUnreachedTests(unittest.TestCase):
     """Round R7g: ``--gate`` lists the ``--unreached`` pairs too, so a model no record reaches counts against the gate."""
@@ -290,3 +287,7 @@ class GateCountsUnreachedTests(unittest.TestCase):
 
     def test_unreached_without_gate_lists_but_passes(self):
         self.assertEqual(self._run(["--families", "F08", "F10", "--unreached"]), (0, True))
+
+
+if __name__ == "__main__":
+    unittest.main()
