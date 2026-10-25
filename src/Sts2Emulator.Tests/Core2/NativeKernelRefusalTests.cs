@@ -29,7 +29,7 @@ public class NativeKernelRefusalTests
     }
 
     [Fact]
-    public unsafe void WithASwitchOnCloneAndReanchorAreRefusedAndTheRunIsUntouched()
+    public unsafe void WithASwitchOnCloneCarriesTheKernelAndReanchorIsNotRefusedForIt()
     {
         var (handle, run) = NewRun(switchedOn: true);
         try
@@ -42,10 +42,17 @@ public class NativeKernelRefusalTests
             fixed (byte* r = rec)
             fixed (byte* m = msg)
             {
-                Assert.Equal(-3, RunNativeExports.Sts2Run_Clone(handle, 0, 0, o));
-                Assert.Equal(-1, RunNativeExports.Sts2Run_ReanchorFight(handle, r, rec.Length, m, msg.Length, o));
-                Assert.StartsWith("kernel_on", Encoding.UTF8.GetString(msg, 0, Array.IndexOf(msg, (byte)0)));
-                Assert.Equal(-1, RunNativeExports.Sts2Run_ReanchorFightHidden(handle, r, rec.Length, 3, m, msg.Length, o));
+                // NATIVE_KERNEL.md pieces 2-3: the clone carries the kernel; a re-anchor with no fight is refused for that,
+                // never for the kernel.
+                int copy = RunNativeExports.Sts2Run_Clone(handle, 0, 0, o);
+                Assert.True(copy >= 0);
+                Assert.True(RunNativeExports.TryGetRun(copy, out var c));
+                Assert.Same(run.Kernel, c!.Kernel);
+                RunNativeExports.Sts2Run_Destroy(copy);
+                RunNativeExports.Sts2Run_ReanchorFight(handle, r, rec.Length, m, msg.Length, o);
+                Assert.DoesNotContain("kernel_on", Encoding.UTF8.GetString(msg, 0, Array.IndexOf(msg, (byte)0)));
+                RunNativeExports.Sts2Run_ReanchorFightHidden(handle, r, rec.Length, 3, m, msg.Length, o);
+                Assert.DoesNotContain("kernel_on", Encoding.UTF8.GetString(msg, 0, Array.IndexOf(msg, (byte)0)));
             }
 
             Assert.Equal(phase, run.State.Phase);

@@ -15,8 +15,8 @@ _LIB_NAMES = {
     "darwin": "Sts2Emulator.dylib",
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
-_REQUIRED_NATIVE_API_VERSION = 37
-_REQUIRED_RUN_NATIVE_API_VERSION = 28
+_REQUIRED_NATIVE_API_VERSION = 38
+_REQUIRED_RUN_NATIVE_API_VERSION = 29
 # The engine this process runs (docs/rebuild/NATIVE_KERNEL.md section 3): read once, when the library loads, and passed
 # to Sts2_SetEngine before any handle exists. Unset or "old": the old engine. "core2": the Tier 1 kernel of
 # tools/fidelity/migrated_families.json. Inherited by every spawn worker, so one flag on the parent reaches them all.
@@ -1442,8 +1442,8 @@ def run_clone(
     is an oracle -- see docs/agent-interface.md.
 
     Raises:
-        RuntimeError: If the source handle is unknown or the handle pool is full, or (-3) the run's engine has a kernel
-            switch on (`STS2_ENGINE=core2`) and the copy cannot carry the kernel yet; the message is `Sts2_GetLastError`'s.
+        RuntimeError: If the source handle is unknown or the handle pool is full, or (-3) the library refused the clone; the
+            message is `Sts2_GetLastError`'s. Under `STS2_ENGINE=core2` the copy carries the run's kernel.
 
     """
     handle_out = int(
