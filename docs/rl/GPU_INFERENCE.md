@@ -253,6 +253,7 @@ the record tags `cpu`.
 | reply later than `--client-timeout-s` (5 s) | same as a transport error (the search has a 120 s budget per decision) | `mixed` |
 | slow but live server | the client's p50/p99 latency goes into `summary.json`; p99 above `--latency-p99-ms` (20) marks the block `prior_server_degraded` | `server`, flagged |
 | server thread exception, CUDA error, OOM | `os._exit(1)`; every worker falls back at its next call; the job's main process restarts the server once on the same endpoint (new workers connect; fallen-back workers stay on the CPU path until recycled) | `mixed` |
+| server dead twice (the restarted server dies too), the case that matters being N > `--procs` workers | the block stops dispatching, waits for the runs in flight (their workers fall back and check the memory floor below: torch, or a uniform prior when under it), terminates the pool and goes on with a fresh pool of `--procs` CPU-path workers whose agent has no server; no seed is replayed or skipped | `uniform` (or `cpu`/`mixed` above the floor) for the drained runs, `cpu` after; `pool_shrunk` {from, to, at_run, drained_s} and `prior_server_degraded` in `summary.json` |
 | parent job dies | server exits within ~1 s (parent handle signalled, or stdin EOF); the Job Object kills it anyway | - |
 | kill file `<lab>/GPU_OFF` appears | server exits within 1 s; workers fall back; `auto` resolves to `off` for new jobs | `mixed`, then `cpu` |
 | `SPIRELINE_PRIOR_SERVER=off` in the environment | overrides any flag to `off` | `cpu` |
@@ -262,6 +263,18 @@ Fallback is per process and sticky: a worker that fell back once does not retry 
 renews every worker about every 5-6 minutes), so a flapping server cannot cost a reconnect per call. A block with
 under 99% `server` runs under `auto`, or with p99 latency over the bound, is reported in the lab's `result.json` as
 `prior_server_degraded`.
+
+**The memory floor (D32).** A process that must fall back, for any reason in the table, first reads its headroom: the
+smaller of the available physical memory and the available commit, in GiB (`GlobalMemoryStatusEx` on Windows,
+`MemAvailable` elsewhere, unlimited when unknown). Under `SPIRELINE_FALLBACK_MIN_FREE_GB` (default 3.0) it does not
+import torch: it serves a uniform prior (equal weight per legal action) for the rest of its life, with one stderr line,
+and `stats()` counts those calls under `uniform` (beside `server` and `cpu`) with `fallback_reason` naming the floor.
+At or above the floor it loads `LivePrior` as above. The check runs once per process, at the moment of the fallback,
+and is sticky like the fallback itself. `SPIRELINE_FAKE_MEM_HEADROOM_GB` replaces the measured number (tests only).
+Why uniform rather than a crash: the run completes and is tagged `uniform` (any uniform call tags the run, whatever
+else answered it; `prior_calls` then carries the `uniform` count), the manifest counts it, and `--exclude-prior-paths
+uniform` keeps its samples out of the training set, whereas a worker that exits loses the run and its seed and a
+machine pushed past its commit limit takes the whole lab with it.
 
 **Why `--device cpu` is test-only.** A CPU-device server is a net loss (its cost grows with rows, one batcher serves a
 few hundred calls per second) while every run would be tagged `server`: a silent degradation. The served device is
@@ -411,8 +424,12 @@ the server alive, **31.2 GB after the kill**; the PC has 31.9 GB of RAM and a 37
 20 workers stays inside the commit limit but at the edge of physical memory for the rest of that block (paths of that
 block: server 96, mixed 19, cpu 249 runs; 0 crashes). **Decision:** the 9.4 block runs at 20 and records its peak commit;
 `jobs.json` takes 20 if that peak stays under 30 GB with the server alive, else 16 (where a fallback equals today's
-footprint and the gain is +13.8%). Queued, not done (cap): a memory-aware fallback (a worker above the sixteenth that
-loses the server exits instead of loading torch, and the pool refills at 16).
+footprint and the gain is +13.8%). Done (D32): the memory-aware fallback of section 6. A worker that must fall back reads its
+headroom (the smaller of available physical memory and available commit) and, under 3 GiB, serves a uniform prior
+without loading torch, tagged `uniform`; when the restarted server dies too, the block drains the runs in flight,
+replaces the pool with a fresh one of `--procs` workers on the CPU path (`pool_shrunk` in `summary.json`) and the seed
+stream goes on. This is meant to keep the memory after a second death at the 16-worker footprint; it has not been
+re-measured at 20 workers.
 
 Rules: the server's process CPU (from its stats file) goes into every CPU-time denominator; the arms run interleaved
 ABAB twice (the A2c no-prior arm drifted 1-5% between runs); the deciding number is wall decisions per second with
@@ -536,7 +553,7 @@ HANDOFF when it lands.
 
 **Lab config, decided here:** `jobs.json` `selfplay` gains `--prior-server auto --gpu-python <venv-gpu python>
 --server-procs 20` (the 20 of 9.1; the fallback RAM finding of 9.1 is accepted with the kill file `LAB/GPU_OFF` as the
-brake and the memory-aware fallback queued), and `train` gains the same flags so the promotion arms play on the server, both
+brake, and the memory-aware fallback of section 6), and `train` gains the same flags so the promotion arms play on the server, both
 arms on one transport (9.3). With `auto`, a missing GPU interpreter, a kill file or a server that fails to start twice
 leaves the job on the CPU path at `--procs 16`, exactly as today.
 
