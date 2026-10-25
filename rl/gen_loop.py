@@ -33,6 +33,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -884,15 +885,16 @@ def macro_for(keep_doc: dict[str, Any] | None, cand: Path, enabled: bool | None 
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
                      max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
                      seed_dir: Path | None = None, retrain: int = 0, policy_target: str = "visits",
-                     exclude_prior_paths: tuple[str, ...] = ()) -> Path:
-    """Train generation `gen`'s candidate (the next generation's) from the last GEN_WINDOW generations' shards."""
+                     exclude_prior_paths: tuple[str, ...] = (), seed_dirs: Sequence[Path | str] = ()) -> Path:
+    """Train generation `gen`'s candidate (the next generation's) from the last GEN_WINDOW generations' shards. `seed_dirs`
+    are further folders of E-blocks (the lab's generated ones) that no training seed may belong to."""
     from run_train import shards as rs  # noqa: PLC0415
 
     mans = window_manifests(shards_root, gen)
     if not mans:
         raise ValueError(f"no shards of generations {max(0, gen - GEN_WINDOW + 1)}..{gen} under {Path(shards_root).name}")
     window_seeds = [str(x) for d, m in mans for name in m.get("combat_parts", []) for x in read_part(d / name)["seeds"]]
-    check_disjoint(window_seeds, known_seed_sets(seed_dir or ROOT / "referee" / "seeds", None, ""))  # no benchmark seed trains
+    check_disjoint(window_seeds, known_seed_sets(seed_dir or COMMITTED_SEEDS, None, "", seed_dirs))  # no benchmark seed trains
     # a retrain after a rejection keeps the rejected candidate (and its promotion.json) where it is
     cand = Path(agent_root) / f"gen{gen + 1}" / ("candidate" if retrain == 0 else f"candidate-r{retrain}")
     cand.mkdir(parents=True, exist_ok=True)
@@ -1237,14 +1239,30 @@ def check_disjoint(seeds: list[str], others: dict[str, list[str]]) -> None:
             raise ValueError(f"{len(both)} seeds also in {name}")
 
 
-def known_seed_sets(seed_dir: Path, lab_runs: Path | list[Path] | None, e_name: str) -> dict[str, list[str]]:
-    """Every committed seed block except this one, and the seeds the lab's self-play blocks actually played."""
+COMMITTED_SEEDS = ROOT / "referee" / "seeds"  # the benchmark blocks the checkout carries; nothing generated is written here
+
+
+def lab_seed_dir(lab: Path | str) -> Path:
+    """Where the loop's generated E-blocks live: `<lab>/seeds`, outside the checkout, so the tree stays clean (the presort's
+    refset score refuses a tree with uncommitted or untracked files)."""
+    return Path(lab) / "seeds"
+
+
+def known_seed_sets(seed_dir: Path, lab_runs: Path | list[Path] | None, e_name: str,
+                    extra_dirs: Sequence[Path | str] = ()) -> dict[str, list[str]]:
+    """Every seed block except this one, and the seeds the lab's self-play blocks actually played. The blocks are read from
+    `seed_dir`, from the checkout's committed folder and from each of `extra_dirs` (the lab's generated blocks), so a block
+    is checked against every other whichever folder holds it."""
     import gen0  # noqa: PLC0415
 
     out: dict[str, list[str]] = {}
-    for f in sorted(Path(seed_dir).glob("*.json")):
-        if f.stem != e_name:
-            out[f.stem] = gen0.load_seeds(f)
+    folders: dict[Path, Path] = {}
+    for d in (Path(seed_dir), COMMITTED_SEEDS, *map(Path, extra_dirs)):
+        folders.setdefault(d.resolve(), d)
+    for d in folders.values():
+        for f in sorted(d.glob("*.json")):
+            if f.stem != e_name and f.stem not in out:
+                out[f.stem] = gen0.load_seeds(f)
     for name in ("eval_seeds", "test_seeds"):  # run_train's held-out seeds (DESIGN 5.6)
         f = ROOT / "rl" / "run_train" / f"{name}.json"
         if f.is_file():
@@ -1295,7 +1313,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     name = Path(seeds_file).stem
     if name.startswith("SP-"):
         raise ValueError("an E-block is never named like a self-play stream")
-    check_disjoint(seeds, known_seed_sets(Path(seeds_file).parent, lab_runs, name))
+    check_disjoint(seeds, known_seed_sets(Path(seeds_file).parent, lab_runs, name, [lab_seed_dir(lab)] if lab else ()))
     cand_agent = load_agent(cand)
     base_agent = load_agent(base, agent_root=None if base else agent_root)
     cand_sha = cand_agent.describe()["prior_sha256"] or "none"
@@ -1394,21 +1412,28 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     return doc
 
 
-def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = None, cand_sha: str | None = None) -> Path:
+def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = None, cand_sha: str | None = None,
+                    also_dirs: Sequence[Path | str] | None = None) -> Path:
     """The E-block for candidate generation `k`: `template` with {k} for the generation and {date} for today (UTC).
     An existing `E<k>-*.json` that has not judged another candidate (per `promotions.tsv`) is used as it is
     (E1-2026-10-23 is committed). If every such block did, a new `E<k>-<date>-r<n>` is created by the seed rule, so a
-    candidate is never judged on a block that already judged a different one."""
+    candidate is never judged on a block that already judged a different one. A new block is written to the template's
+    folder (the lab's `seeds` folder, outside the checkout); existing blocks are looked for there and in `also_dirs`
+    (default: the checkout's committed folder), and a new name is free in all of them."""
     import gen0  # noqa: PLC0415
 
     path = Path(template.format(k=k, date=datetime.now(UTC).strftime("%Y-%m-%d")))
-    existing = sorted(path.parent.glob(f"E{k}-*.json"))
+    found: dict[str, Path] = {}
+    for d in (path.parent, *map(Path, [COMMITTED_SEEDS] if also_dirs is None else also_dirs)):
+        for p in sorted(d.glob(f"E{k}-*.json")):
+            found.setdefault(p.stem, p)
+    existing = [found[name] for name in sorted(found)]
     for p in existing:
         if not block_used_by_another(tsv, p.stem, cand_sha or "none"):
             return p
     if existing:
         j = 1
-        while (path.parent / f"{path.stem}-r{j}.json").exists():
+        while f"{path.stem}-r{j}" in found or (path.parent / f"{path.stem}-r{j}.json").exists():
             j += 1
         path = path.parent / f"{path.stem}-r{j}.json"
     gen0.write_seed_file(path.stem, n, path)
