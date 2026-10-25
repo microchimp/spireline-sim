@@ -363,21 +363,28 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     runs_file = out / "runs.jsonl"
     runs_file.write_text("", encoding="utf-8")
     gave_up = False
+    todo = list(enumerate(seeds, start_ix))  # (index in the stream, seed)
+    resumed = None
+    if sink is not None and sink.done:  # a resumed block: the job replays its stream; the seeds its shards hold are not played again
+        todo = [(ix, s) for ix, s in todo if s not in sink.done]
+        resumed = {"runs_held": len(sink.done), "seeds_skipped": len(seeds) - len(todo)}
+        print(f"resume: the shards hold {resumed['runs_held']} runs; {resumed['seeds_skipped']} of the {len(seeds)} seeds are not "
+              "played again", file=sys.stderr, flush=True)
     try:
         with ctx.Pool(nprocs, initializer=_init_worker, maxtasksperchild=20) as pool, open(runs_file, "a", encoding="utf-8") as fh:
             pending: list = []
             nxt = 0
-            while nxt < len(seeds) or pending:
+            while nxt < len(todo) or pending:
                 if prior_server is not None and not gave_up and not prior_server.alive() and not prior_server.restart_once():
                     gave_up = True  # the second death: the workers are on the CPU path from their next call
                     print("prior-server: the server is gone and cannot be restarted; the block goes on on the CPU path",
                           file=sys.stderr, flush=True)
-                while nxt < len(seeds) and len(pending) < nprocs and (deadline is None or time.time() < deadline):
-                    pending.append(pool.apply_async(_run_safe, (seeds[nxt], start_ix + nxt, sims, ascension, agent, record,
-                                                                character)))
+                while nxt < len(todo) and len(pending) < nprocs and (deadline is None or time.time() < deadline):
+                    ix, seed = todo[nxt]
+                    pending.append(pool.apply_async(_run_safe, (seed, ix, sims, ascension, agent, record, character)))
                     nxt += 1
                 if deadline is not None and time.time() >= deadline:
-                    nxt = len(seeds)
+                    nxt = len(todo)
                 still = []
                 for p in pending:
                     if p.ready():
@@ -403,6 +410,8 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                **engine_block(rows), "decisions_per_s": round(sum(r["decisions"] for r in rows) / wall, 2) if wall else None}
     if shard_doc is not None:
         summary["shards"] = {"runs": shard_doc["runs"], "samples": shard_doc["samples"], "generation": shard_doc["generation"]}
+    if resumed is not None:
+        summary["resumed"] = resumed
     tags = [r["prior_path"] for r in rows if "prior_path" in r]
     summary["prior_paths"] = dict(sorted(Counter(tags).items()))
     if prior_server is not None:

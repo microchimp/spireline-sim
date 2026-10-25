@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import time
+import zipfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -390,10 +391,28 @@ def read_part(path: Path) -> dict[str, np.ndarray]:
         return {k: blob[k] for k in blob.files}
 
 
+def shard_run_seeds(directory: Path, generation: int) -> set[str]:
+    """The seeds of `generation`'s run records in the run shards of `directory`."""
+    from run_train import shards  # noqa: PLC0415
+
+    return {str(r["seed"]) for p in shards.shard_paths(Path(directory)) for r in shards.read_shard(p)
+            if r.get("generation") == generation}
+
+
+_PRIOR_TAGS = {code: tag for tag, code in PRIOR_PATH_CODES.items()}
+
+
 class ShardSink:
     """The main process's writer for one self-play block: run shards (RunRecords) and combat parts, and `shards.json`,
     which names the generation that played them. The manifest is rewritten at every flush, so an interrupted block is
-    still readable."""
+    still readable.
+
+    The writer is idempotent on a resume. The lab resumes an interrupted job in the same directory and the job replays its
+    seed stream from the first seed, so a sink that finds the block's run shards holds those seeds as `done`: `add` ignores
+    a record of a `done` seed, `gen0.run_block` does not play it, the combat parts that cover them are kept and the new
+    parts are numbered on from them, and `runs`, `samples` and `prior_paths` start from what is on disk. A flush writes the
+    combat part, then the run shard, then the manifest, so a kill leaves either nothing of a part's runs in the shards
+    (they are replayed) or the part beside them (it is adopted here)."""
 
     def __init__(self, out_dir: Path, generation: int, *, config: str, base_sims: int, ascension: int, agent: dict,
                  part_runs: int = PART_RUNS) -> None:
@@ -404,17 +423,50 @@ class ShardSink:
         self.generation, self.part_runs = generation, part_runs
         self.meta = {"kind": "selfplay-shards", "generation": generation, "config": config, "base_sims": base_sims,
                      "ascension": ascension, "agent": agent}
-        self.writer = shards.ShardWriter(self.dir, part_runs)
+        self.writer = shards.ShardWriter(self.dir, 1 << 30)  # only `flush` writes a run shard, after the combat part
         self.pending: list[tuple[str, dict | None]] = []
         self.pending_paths: list[str | None] = []
         self.parts: list[str] = []
         self.runs = self.samples = 0
         self.prior_paths: dict[str, int] = {}  # runs by the prior that played them ("unknown": a record without the field)
+        self.done: set[str] = set()  # the seeds this block holds: written to a run shard, or pending
+        self.duplicates_skipped = 0  # records `add` ignored because their seed was `done`
+        self._resume()
+        self.resumed_runs = self.runs
+
+    def _resume(self) -> None:
+        """Take over what an interrupted block of this generation left in the directory (nothing on disk is rewritten)."""
+        self.done = shard_run_seeds(self.dir, self.generation)
+        covered: set[str] = set()
+        while self.done:
+            path = self.dir / f"combat-g{self.generation}-{len(self.parts):04d}.npz"
+            try:
+                blob = read_part(path)
+            except (OSError, ValueError, EOFError, zipfile.BadZipFile):
+                break
+            seeds = [str(s) for s in blob["seeds"]]
+            if (int(blob["generation"][0]) != self.generation or not set(seeds) <= self.done or covered & set(seeds)
+                    or len(set(seeds)) != len(seeds)):
+                break  # a stale part (its runs are not in the shards, or another part holds them) is overwritten, not adopted
+            covered.update(seeds)
+            self.parts.append(path.name)
+            self.samples += int(blob["lengths"].size) if "lengths" in blob else 0
+            codes = blob["prior_path"].tolist() if "prior_path" in blob else [-1] * len(seeds)
+            for code in codes:
+                tag = _PRIOR_TAGS.get(int(code), "unknown")
+                self.prior_paths[tag] = self.prior_paths.get(tag, 0) + 1
+        self.runs = len(self.done)
+        if self.runs > len(covered):  # run records whose combat samples were not kept (a block from before this writer)
+            self.prior_paths["unknown"] = self.prior_paths.get("unknown", 0) + self.runs - len(covered)
 
     def add(self, record: dict, arrays: dict | None) -> None:
         if record["generation"] != self.generation:
             raise ValueError(f"a shard is tagged with the generation that played it: {record['generation']} in a "
                              f"generation {self.generation} block")
+        if str(record["seed"]) in self.done:  # a replayed seed: its run record and combat part are already held
+            self.duplicates_skipped += 1
+            return
+        self.done.add(str(record["seed"]))
         self.writer.add(record)
         self.pending.append((record["seed"], arrays))
         tag = record.get("prior_path")
@@ -437,6 +489,7 @@ class ShardSink:
         from run_train import shards  # noqa: PLC0415
 
         write_json(self.dir / "shards.json", {**self.meta, "runs": self.runs, "samples": self.samples,
+                                              "resumed_runs": self.resumed_runs, "duplicates_skipped": self.duplicates_skipped,
                                               "prior_paths": dict(sorted(self.prior_paths.items())),
                                               "run_shards": [p.name for p in shards.shard_paths(self.dir)],
                                               "combat_parts": list(self.parts), "written": utc_now()})
@@ -469,14 +522,20 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
                        exclude_prior_paths: tuple[str, ...] = ()) -> dict[str, Any]:
     """Merge the combat parts of the window with `prior_loop.loop.merge_datasets` and sample at most `max_fights` fights.
     Returns the arrays plus counts per generation. `exclude_prior_paths` (tags of `PRIOR_PATHS`) drops the runs a part's
-    `prior_path` codes tag so; a part from before the field has none and is never dropped."""
+    `prior_path` codes tag so; a part from before the field has none and is never dropped.
+
+    A (generation, seed) counts once: a block that was resumed before `ShardSink` was idempotent holds its replayed runs again,
+    so the first part to name a seed keeps its rows and the later copies' rows are dropped (`_runs_dropped`, `_runs_distinct`
+    and `_samples_dedup_dropped` say how many)."""
     from prior_loop.loop import merge_datasets  # noqa: PLC0415
 
     bad = [t for t in exclude_prior_paths if t not in PRIOR_PATH_CODES]
     if bad:
         raise ValueError(f"unknown prior path {bad[0]!r}; one of {', '.join(PRIOR_PATHS)}")
     excluded = np.array([PRIOR_PATH_CODES[t] for t in exclude_prior_paths], dtype=np.int8)
-    sources, per_gen, ixs, qs, keeps = [], {}, [], [], []
+    sources, per_gen, ixs, qs, keeps, firsts = [], {}, [], [], [], []
+    seen: set[tuple[int, str]] = set()
+    runs_dropped = 0
     for d, m in manifests:
         for name in m.get("combat_parts", []):
             blob = read_part(d / name)
@@ -488,8 +547,16 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
             keep = np.ones(blob["lengths"].size, dtype=bool)
             if excluded.size and "prior_path" in blob:  # `fights` is the run's index in the part, the index of its code
                 keep = ~np.isin(blob["prior_path"][blob["fights"]], excluded)
+            first = np.ones(len(blob["seeds"]), dtype=bool)  # per run in the part: its seed is not an earlier part's
+            for i, s in enumerate(blob["seeds"]):
+                if (g, str(s)) in seen:
+                    first[i] = False
+                seen.add((g, str(s)))
+            runs_dropped += int((~first).sum())
+            fresh = first[blob["fights"]]  # `fights` is the run's index in the part
             keeps.append(keep)
-            per_gen[g] = per_gen.get(g, 0) + int(keep.sum())
+            firsts.append(fresh)
+            per_gen[g] = per_gen.get(g, 0) + int((keep & fresh).sum())
             ixs.append(blob["fight_ix"])
             qs.append(blob.get("qvals"))
             sources.append((len(sources), d / name))
@@ -499,9 +566,10 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     if all(q is not None for q in qs):  # merge_datasets keeps prior_loop's keys; the completed-Q target needs these
         merged["qvals"] = np.concatenate(qs)
     ix_all = np.concatenate(ixs)
-    keep_all = np.concatenate(keeps)
-    n_excluded = int(keep_all.size - keep_all.sum())
-    if n_excluded:
+    prior_keep, fresh_all = np.concatenate(keeps), np.concatenate(firsts)
+    keep_all = prior_keep & fresh_all
+    n_excluded = int((~prior_keep & fresh_all).sum())
+    if not keep_all.all():
         if not keep_all.any():
             raise ValueError("no combat samples in the window after excluding prior paths " + ",".join(exclude_prior_paths))
         merged = _take_rows(merged, keep_all)
@@ -517,6 +585,9 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     else:
         kept = n_all
     merged["_samples_excluded"] = np.array([n_excluded])
+    merged["_runs_dropped"] = np.array([runs_dropped])
+    merged["_runs_distinct"] = np.array([len(seen)])
+    merged["_samples_dedup_dropped"] = np.array([int((~fresh_all).sum())])
     merged["_fights_available"] = np.array([n_all])
     merged["_fights_kept"] = np.array([kept])
     merged["_samples_by_generation"] = np.array(sorted(per_gen.items()))
@@ -807,6 +878,8 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         "fights_available": int(data["_fights_available"][0]), "fights_kept": int(data["_fights_kept"][0]),
         **({"excluded_prior_paths": list(exclude_prior_paths), "samples_excluded": int(data["_samples_excluded"][0])}
            if exclude_prior_paths else {}),
+        "dedup": {"combat_runs_distinct": int(data["_runs_distinct"][0]), "combat_runs_dropped": int(data["_runs_dropped"][0]),
+                  "combat_samples_dropped": int(data["_samples_dedup_dropped"][0])},
         "samples_trained": int(data["lengths"].size), "target": "root visits (live search has no Gumbel root)" if policy_target == "visits" else policy_target,
         "validation": "by run (train_combat splits on the `fights` column, which holds the run index)",
         "build_s": round(time.perf_counter() - t0, 1)}
@@ -818,6 +891,8 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         paths = [d / n for d, m in mans for n in m.get("run_shards", [])]
         doc["run_value"] = train_run_value(paths, cand, generation=gen, base_sims=base_sims,
                                            ascension=int(mans[0][1]["ascension"]), threads=threads)
+        doc["dedup"]["run_records_dropped"] = int(doc["run_value"]["value"].get("duplicates_dropped", 0))
+        doc["dedup"]["run_records_distinct"] = int(doc["run_value"]["value"].get("runs", 0))
     del rs
     if export:
         doc["onnx"] = export_all(cand)
