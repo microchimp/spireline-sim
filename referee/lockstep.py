@@ -314,6 +314,7 @@ class Lockstep:
         import run_fields  # noqa: PLC0415
 
         self.fields = run_fields.RunFields()  # the run's record fields (boss damage), read by envproto play
+        self.fields_error: str | None = None  # the first fault of a record-field hook; the hooks stop after it
         self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
                       "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
 
@@ -354,7 +355,7 @@ class Lockstep:
             self.prev_act = {"type": act_type(kind, labels[choice]), "kind": kind, "label": labels[choice]}
             if kind == "map" and isinstance(labels[choice], list) and len(labels[choice]) > 2:
                 self.room_type = labels[choice][2]
-            self.fields.real_macro(kind, labels[choice], (msg.get("obs") or {}).get("floor"))
+            self._fields("real_macro", kind, labels[choice], (msg.get("obs") or {}).get("floor"))
         return choice
 
     def _take_hidden(self, msg: dict) -> dict:
@@ -397,9 +398,20 @@ class Lockstep:
 
         if kind in COMBAT_KINDS and combat:
             if self.room_type == "Boss":
-                self.fields.boss_enemies((msg.get("obs") or {}).get("act") or 0, run_fields.real_enemies(combat))
+                self._fields("boss_enemies", (msg.get("obs") or {}).get("act") or 0, lambda: run_fields.real_enemies(combat))
         elif self.fields.in_boss_fight:
-            self.fields.boss_over(won=True)
+            self._fields("boss_over", won=True)
+
+    def _fields(self, name: str, *args, **kwargs) -> None:
+        """One record-field hook, fenced: the fields are telemetry on the run's record, so a fault in them is recorded once
+        (`fields_error`, in the record) and the hooks go quiet, instead of ending the scored run as a crash. A callable argument
+        is evaluated inside the fence."""
+        if self.fields_error is not None:
+            return
+        try:
+            getattr(self.fields, name)(*[a() if callable(a) else a for a in args], **kwargs)
+        except Exception as e:  # noqa: BLE001
+            self.fields_error = f"{name}: {type(e).__name__}: {e}"
 
     def _probe(self, msg: dict | None) -> dict:
         """The lone-End-Turn probe every record carries (small, names and counts only). The referee asks only when two or more
@@ -426,7 +438,7 @@ class Lockstep:
 
     def finish(self, outcome: dict) -> None:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
-        self.fields.finish(won_run=outcome.get("class") == "win")
+        self._fields("finish", won_run=outcome.get("class") == "win")
         for r in self.log.records:
             r["run"], r["agent_seed"], r["outcome"] = self.seed, self.agent_seed, outcome
             r["ai_state_assumed"] = r["decision"] in self.assumed

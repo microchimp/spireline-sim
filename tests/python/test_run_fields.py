@@ -222,3 +222,41 @@ class TableTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FieldHookFenceTests(unittest.TestCase):
+    """A fault in a record-field hook never ends the scored run: it is recorded once and the hooks go quiet."""
+
+    def test_a_raising_hook_is_recorded_once_and_the_run_goes_on(self):
+        import lockstep
+
+        class Raising:
+            in_boss_fight = False
+            calls = 0
+
+            def real_macro(self, *a, **k):
+                self.calls += 1
+                raise TypeError("int() argument must be a string")
+
+        ls = lockstep.Lockstep.__new__(lockstep.Lockstep)
+        ls.fields, ls.fields_error = Raising(), None
+        ls._fields("real_macro", "card_reward", ["take", "STRIKE"], None)
+        ls._fields("real_macro", "card_reward", ["take", "STRIKE"], None)
+        self.assertEqual(ls.fields_error, "real_macro: TypeError: int() argument must be a string")
+        self.assertEqual(ls.fields.calls, 1)
+
+    def test_a_callable_argument_is_evaluated_inside_the_fence(self):
+        import lockstep
+
+        class Quiet:
+            seen = None
+
+            def boss_enemies(self, act, enemies):
+                self.seen = (act, enemies)
+
+        ls = lockstep.Lockstep.__new__(lockstep.Lockstep)
+        ls.fields, ls.fields_error = Quiet(), None
+        ls._fields("boss_enemies", 0, lambda: [("a", 10, 10)])
+        self.assertEqual(ls.fields.seen, (0, [("a", 10, 10)]))
+        ls._fields("boss_enemies", 0, lambda: 1 / 0)
+        self.assertTrue(ls.fields_error.startswith("boss_enemies: ZeroDivisionError"))

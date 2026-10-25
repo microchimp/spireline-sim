@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Any
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -574,6 +575,21 @@ def smoke(a) -> int:
     return 0
 
 
+def _fields_row(ls: Any) -> dict:
+    """The run's record fields for the end event, fenced like the hooks: a fault is reported as `fields_error`, never as a crash."""
+    fields = getattr(ls, "fields", None)
+    err = getattr(ls, "fields_error", None)
+    if fields is None:
+        return {}
+    try:
+        row = dict(fields.row())
+    except Exception as e:  # noqa: BLE001
+        row, err = {}, err or f"row: {type(e).__name__}: {e}"
+    if err:
+        row["fields_error"] = err
+    return row
+
+
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
                 agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD") -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py)."""
@@ -598,7 +614,7 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                                  agent_seed=[agent_seed, run_ix], character=character)
             ev = {"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
-                  "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **(ls.fields.row() if getattr(ls, "fields", None) else {})}
+                  "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **_fields_row(ls)}
             if m.get("stale"):
                 q.put(ev)
                 q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
