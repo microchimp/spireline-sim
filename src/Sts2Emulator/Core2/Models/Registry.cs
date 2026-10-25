@@ -84,7 +84,6 @@ public static class Registry
         VigorPower.Register,
         TankPower.Register,
         ColossusPower.Register,
-        DiamondDiademPower.Register,
         ShriekPower.Register,
     ];
 
@@ -129,7 +128,6 @@ public static class Registry
         StrikeDummy.Register,
         PenNib.Register,
         GremlinHorn.Register,
-        UndyingSigil.Register,
         MiniatureCannon.Register,
         MysticLighter.Register,
         FakeStrikeDummy.Register,
@@ -160,6 +158,14 @@ public static class Registry
         DieForYouPower.Register,
     ];
 
+    /// <summary>R7f: the damage folds of models no record reaches (port_list --unreached): Diamond Diadem's and
+    /// Undying Sigil's halving.</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> R7f =
+    [
+        DiamondDiademPower.Register,
+        UndyingSigil.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -179,5 +185,6 @@ public static class Registry
         .. Relic1,
         .. L3a,
         .. R7a,
+        .. R7f,
     ];
 }
