@@ -37,11 +37,16 @@ public sealed class KernelOptions
 
     public IReadOnlyList<Switch[]> Groups { get; }
 
-    /// <summary>Options from family names ("F06", as tools/fidelity/migrated_families.json lists them).</summary>
+    /// <summary>
+    /// Options from family names ("F06", as tools/fidelity/migrated_families.json lists them). Only a defined F-name passes:
+    /// <c>Enum.TryParse</c> alone also takes a number ("8", "200") and a padded name, and a number is no family.
+    /// </summary>
     public static KernelOptions FromFamilies(IEnumerable<string> families) =>
-        new(families.Select(f => Enum.TryParse<Switch>(f, out var s) && s != Switch.None
+        new(families.Select(f => IsFamilyName(f) && Enum.TryParse<Switch>(f, out var s) && s != Switch.None && Enum.IsDefined(s)
             ? s
             : throw new ArgumentException($"unknown family '{f}'")));
+
+    private static bool IsFamilyName(string f) => f.Length >= 2 && f[0] == 'F' && f.Skip(1).All(char.IsAsciiDigit);
 }
 
 /// <summary>A hook action a per-listener pass recorded (the listener paused at a choice); K4's queue runs it.</summary>
