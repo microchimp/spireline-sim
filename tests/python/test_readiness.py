@@ -328,6 +328,21 @@ class UtilisationTest(unittest.TestCase):
         self.assertEqual(u["idle_with_weight"], ["hypotheses"])  # weight in mix.json, no CPU in the window
         self.assertEqual(u["all_time"], {"cpu_min": 7824.0, "active_min": 1000.0, "interrupts": {"user": 2}})
 
+    def test_days_narrows_the_window_to_the_last_two_days(self):
+        u = rd.build(self.tmp, now=self.NOW, cores=4, days=2)["lab"]["utilisation"]
+        self.assertEqual((u["window_days"], u["wall_min"], u["from_utc"]), (2, 2880.0, "2026-10-22T00:00Z"))
+        self.assertEqual(u["cpu_min"], 3824.0)  # j2 and j3; the 7-day jobs before the window are out
+        self.assertEqual(u["owner_min"], 120.0)  # only the open pause counts; the earlier user and pause spans are outside
+        self.assertEqual(u["held_min"], {"load": 30.0, "pause": 120.0, "user": 0.0})
+        self.assertEqual(u["pct"], 34.6)  # 3824 / (2760 * 4 cores)
+        self.assertEqual(rd.UTIL_DAYS, 7)  # the default window is unchanged
+
+    def test_main_days_option_reaches_the_window(self):
+        out = self.tmp / "out.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            rd.main(["--referee", str(self.tmp), "--cores", "4", "--days", "3", "--json", str(out)])
+        self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["lab"]["utilisation"]["window_days"], 3)
+
     def test_no_yield_gives_a_null_and_a_note(self):
         (self.tmp / "lab" / "yield.tsv").unlink()
         r = rd.build(self.tmp, now=self.NOW, cores=4)
