@@ -184,10 +184,14 @@ public static class NativeExports
         /// new, seeded from <paramref name="seed" />, because the document carries no RNG
         /// -- the live game's is hidden information.
         /// </remarks>
-        public NativeCombat(CombatState state, int seed)
+        public NativeCombat(CombatState state, int seed, Sts2Emulator.Core2.Kernel? kernel)
         {
             Seed = seed;
+            Kernel = kernel;
             State = state;
+            // A document carries no kernel state (NATIVE_KERNEL.md section 6): the loaded fight binds a fresh one, its
+            // queue empty and no hook action paused (a document stopped in the middle of a step is refused under a switch).
+            Bind();
             SeedStreams();
             // The two streams SeedStreams predates, under the names the run's own
             // RunRngSet gives them. Left null they fall back to the combat rng, which is
@@ -723,9 +727,31 @@ public static class NativeExports
     /// </summary>
     private static byte[] _lastLoadError = [];
 
-    /// <summary>Why a combat handle is refused while the engine has a kernel switch on (NATIVE_KERNEL.md pieces 2-4).</summary>
-    private const string CombatHandleRefusal =
-        "kernel_on: combat handles do not step through the kernel yet (NATIVE_KERNEL.md piece 2)";
+    /// <summary>
+    /// Why a document is refused under a kernel switch: it stops in the middle of a step, and the kernel's queue (the action
+    /// gathering the choice, or a paused hook action) is not in the document, so its answer would run outside the queue.
+    /// Serializing the queue is a later option (NATIVE_KERNEL.md section 6).
+    /// </summary>
+    internal const string StoppedStepRefusal =
+        "kernel_on: the document stops in the middle of a step and carries no kernel queue, so its answer would not reach the "
+        + "action gathering it (NATIVE_KERNEL.md section 6)";
+
+    /// <summary>Why <c>Sts2_GetStateJson</c> refuses a combat on a hook action's screen under a kernel switch.</summary>
+    internal const string HookPauseRefusal =
+        "kernel_on: the combat is stopped on a hook action's screen, and a document carries no kernel queue "
+        + "(NATIVE_KERNEL.md section 6)";
+
+    /// <summary>
+    /// A combat whose answer lives in the kernel's queue alone: a hook action gathering a choice in its queue, or a kernel
+    /// screen open (<c>KernelAction</c>, a keyed <c>HookKey</c>). Never true on the old engine.
+    /// </summary>
+    internal static bool OnHookPause(CombatState state) =>
+        state.Kernel is { AnyOn: true } k
+        && (state.PendingSelection is { KernelAction: > 0 } or { HookKey: not null }
+            || k.Queue?.All.Any(a => a is
+            {
+                Kind: Sts2Emulator.Core2.GameActionKind.Hook, State: Sts2Emulator.Core2.GameActionState.GatheringPlayerChoice,
+            }) == true);
 
     /// <summary>A refusal made outside this class (RunNativeExports), for <c>Sts2_GetLastError</c>.</summary>
     internal static void Refuse(string message) => _lastLoadError = Encoding.UTF8.GetBytes(message);
@@ -755,18 +781,18 @@ public static class NativeExports
                 return RefuseLoad("$: no document (a null pointer or a zero length)", -1);
             }
 
-            if (RunNativeExports.Engine.KernelOn)
+            var state = CombatSnapshot.Read(new ReadOnlySpan<byte>(json, len), seed, out _);
+            var engine = RunNativeExports.Engine;
+            if (engine.KernelOn && state.PendingSelection?.Replay is not null)
             {
-                // NATIVE_KERNEL.md piece 3: a loaded combat is not bound to the kernel yet.
-                return RefuseLoad("kernel_on: a loaded snapshot does not bind the kernel yet (NATIVE_KERNEL.md piece 3)", -1);
+                return RefuseLoad(StoppedStepRefusal, -1);
             }
 
-            var state = CombatSnapshot.Read(new ReadOnlySpan<byte>(json, len), seed, out _);
             for (int i = 0; i < _pool.Length; i++)
             {
                 if (_pool[i] is null)
                 {
-                    var combat = new NativeCombat(state, seed);
+                    var combat = new NativeCombat(state, seed, engine.Kernel);
                     if (obsBuf is not null)
                     {
                         WriteObs(combat.State, obsBuf);
@@ -812,6 +838,11 @@ public static class NativeExports
         if (handle < 0 || handle >= _pool.Length || _pool[handle] is not { } combat)
         {
             return -1;
+        }
+
+        if (OnHookPause(combat.State))
+        {
+            return RefuseLoad(HookPauseRefusal, -3);
         }
 
         byte[] json;

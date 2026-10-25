@@ -36,7 +36,9 @@ public static class RunNativeExports
     // v27: a run made after Sts2_SetEngine("core2") runs the Tier 1 kernel (docs/rebuild/NATIVE_KERNEL.md): Sts2Run_Step
     // and Sts2Run_StartCombat go through it; Sts2Run_Clone, Sts2Run_ForkCombat and the re-anchors refuse such a run
     // (Sts2_GetLastError, the re-anchor's message) until their pieces land. Old runs are unchanged.
-    public const int RUN_NATIVE_API_VERSION = 27;
+    // v28: under core2 Sts2Run_Clone carries the engine's kernel (the copy's fight steps through its gate) and the
+    //      re-anchors bind the anchored fight (NATIVE_KERNEL.md pieces 2-3): neither is refused any more.
+    public const int RUN_NATIVE_API_VERSION = 28;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -769,13 +771,6 @@ public static class RunNativeExports
             message = "no record";
             status = -2;
         }
-        else if (KernelOn(run))
-        {
-            // NATIVE_KERNEL.md piece 3: the anchored fight is not bound to the kernel yet, and stepped unbound it would
-            // skip the kernel's queue. Refused until the anchor binds it.
-            message = "kernel_on: the re-anchor does not bind the kernel yet (NATIVE_KERNEL.md piece 3)";
-            status = -1;
-        }
         else
         {
             status = ReanchorFight(run, new ReadOnlySpan<byte>(record, recordLen), flags, out message);
@@ -951,7 +946,11 @@ public static class RunNativeExports
             }
 
             run.State.ActiveCombat = q;
+            // The anchored fight is the run's and steps through RunEngine.Step's gate (NATIVE_KERNEL.md section 7): it carries
+            // the KernelState its clone copied (as EmuDump's re-anchor carries its clone's), bound to this run as the run's
+            // fight is (StateCloning.Clone(RunState)), or a fresh one when the fight it was anchored on had none.
             run.BindActiveCombat();
+            q.Kernel?.At(q, run.State);
             if ((flags & AnchorStreams) != 0 && game["rng"] is JsonObject streams)
             {
                 // The run's own streams stand where the fight began; the end of the fight moves them on to the combat's
