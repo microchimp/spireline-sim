@@ -142,6 +142,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--run-stop-act", type=int, default=3, help="a whole run stops after this act (3: the whole run; 1 for a short trial)")
     ap.add_argument("--procs", type=int, default=8, help="processes for the corpus check")
     ap.add_argument("--mutants", type=int, default=150)
+    ap.add_argument("--presort-gap-min", type=float, default=60.0, metavar="MINUTES",
+                    help="a presort for a main that moved waits until the last one ended this long ago (the other jobs keep running on "
+                         "the presorted tree meanwhile); 0: presort on every move; --once presort ignores it")
     ap.add_argument("--idle-seconds", type=float, default=60.0, help="user input within this many seconds stops the lab")
     ap.add_argument("--load-pct", type=float, default=50.0, help="other processes' CPU share that pauses the lab ...")
     ap.add_argument("--load-window", type=float, default=120.0, help="... when sustained over this many seconds")
@@ -157,7 +160,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ---------------------------------------------------------------- lab folder, state, job records
 
 DEFAULT_STATE: dict[str, Any] = {
-    "version": 1, "last_presorted_sha": None, "tree_sha": None, "rotation": 0, "next_start": 1, "next_run_start": 1000, "bad_shas": {},
+    "version": 1, "last_presorted_sha": None, "tree_sha": None, "last_presort_end": None, "rotation": 0, "next_start": 1, "next_run_start": 1000, "bad_shas": {},
     "backoff": {}, "strategy_cpu": {},  # strategy -> CPU seconds its finished jobs spent (the mix schedules on it)
     "counters": {"jobs_started": {}, "jobs_done": {}, "fights": 0, "runs": 0, "interrupts": {}, "active_seconds": 0},
 }
@@ -303,6 +306,7 @@ class Runner:
                                     clock=clock, load=self.load, prune=self.prune_some,
                                     parent_pid=os.getppid() if a.exit_with_parent else None, stay=a.always_on)
         self.next_strategy: str | None = None  # the strategy choose() picked for the job new_run() makes next
+        self.defer_sha: str | None = None  # set by choose() when a presort is deferred: the presorted tree's sha the picked job runs on
         self.last_mix_note = ""
         self.last_loop_note = ""
         self.code_digest0 = code_digest()  # the lab sources this process loaded; a later change on disk is not in this process
@@ -423,6 +427,9 @@ class Runner:
     def choose(self, sha: str | None) -> tuple[str, Run | None, str]:
         """(job type, a run to resume or None, why). job '' when there is nothing to run."""
         st, a = self.state, self.a
+        self.defer_sha = None
+        tree_at = self.deferred_tree(sha) if sha else None  # the presorted tree the jobs run on while main's presort waits
+        here = {x for x in (sha, tree_at) if x}  # the shas a job may resume on
         cur = self.lab.runs_without_done()
         for d in reversed(cur):
             run = Run.load(d)
@@ -431,7 +438,7 @@ class Runner:
             if a.once and run.job != a.once:
                 continue
             age_h = (time.time() - (d / "job.json").stat().st_mtime) / 3600
-            if sha is None or run.data.get("main_sha") != sha or age_h > RESUME_HOURS:
+            if sha is None or run.data.get("main_sha") not in here or age_h > RESUME_HOURS:
                 if not a.dry_run:
                     self.record(run, 3)
                     run.finish(3, "superseded: main moved or the job was idle too long")
@@ -445,9 +452,15 @@ class Runner:
         if a.once == "presort":
             return "presort", None, "--once presort"
         if st["last_presorted_sha"] != sha or st["tree_sha"] != sha:
-            if a.once is None:
+            if a.once is not None:
+                return "", None, f"--once {a.once} needs the tree presorted at {sha[:7]} first (--once presort)"
+            if tree_at is None:
                 return "presort", None, f"main moved to {sha[:7]}"
-            return "", None, f"--once {a.once} needs the tree presorted at {sha[:7]} first (--once presort)"
+            job, why = self.pick_other(tree_at)  # main moved, but the last presort is recent: its tree still has work to do
+            if not job:
+                return "presort", None, f"main moved to {sha[:7]}; no other job can run on the tree at {tree_at[:7]}"
+            self.defer_sha = tree_at
+            return job, None, f"{why} on the tree at {tree_at[:7]}; presort of {sha[:7]} deferred (gap {a.presort_gap_min:g} min)"
         if a.once:
             if a.once == "fights":
                 picked, strategy = self.pick_fights(sha)
@@ -459,10 +472,17 @@ class Runner:
             if why is not None:
                 self.log(f"{a.once}: not runnable ({why})")
             return (a.once, None, "--once") if why is None else ("", None, why)
+        job, why = self.pick_other(sha)
+        return job, None, why
+
+    def pick_other(self, sha: str) -> tuple[str, str]:
+        """(job type, why) of the job after presort: the ladder's, else the fights rotation's, else the self-play filler.
+        sha is the tree the job runs on (a presorted tree behind main while a presort is deferred). ("", why) when none can run."""
+        st = self.state
         job = self.ladder_top(sha)
         if job:
             self.next_strategy = None
-            return job, None, f"ladder: {job} (priority {jobs.PRIORITY[job]})"
+            return job, f"ladder: {job} (priority {jobs.PRIORITY[job]})"
         for k in range(len(ROTATION)):
             job = ROTATION[(st["rotation"] + k) % len(ROTATION)]
             strategy = None
@@ -476,12 +496,31 @@ class Runner:
             if why is None:
                 st["rotation"] = (st["rotation"] + k + 1) % len(ROTATION)
                 self.next_strategy = strategy if job == "fights" else None
-                return job, None, "rotation" + (f", {strategy}" if strategy else "")
+                return job, "rotation" + (f", {strategy}" if strategy else "")
             self.log(f"{job}: not runnable ({why})")
         if self.kind_ready("selfplay", sha):  # the filler: nothing above it could run
             self.next_strategy = None
-            return "selfplay", None, "ladder: selfplay (filler, nothing else ready)"
-        return "", None, "no job is runnable"
+            return "selfplay", "ladder: selfplay (filler, nothing else ready)"
+        return "", "no job is runnable"
+
+    def last_presort_end(self) -> float:
+        """Epoch seconds the last presort ended: the state's note, else the newest finished presort folder, else 0 (long ago)."""
+        t = self.state.get("last_presort_end")
+        if t:
+            return float(t)
+        ends = [(d / "done.rc").stat().st_mtime for d in (self.lab.runs.glob("*-presort") if self.lab.runs.is_dir() else [])
+                if (d / "done.rc").exists()]
+        return max(ends, default=0.0)
+
+    def deferred_tree(self, sha: str) -> str | None:
+        """The sha of the presorted tree the other jobs may run on, while main's presort waits for the gap since the last one to pass
+        (--presort-gap-min): None when main has not moved, the tree is not a good presorted one, the gap has passed, or a
+        --once run asks (--once presort ignores the gap; any other --once keeps needing the tree at main)."""
+        st, a = self.state, self.a
+        tree = st["tree_sha"]
+        if a.once is not None or a.presort_gap_min <= 0 or not tree or st["last_presorted_sha"] != tree or tree == sha:
+            return None
+        return tree if time.time() - self.last_presort_end() < a.presort_gap_min * 60 else None
 
     def kind_ready(self, kind: str, sha: str) -> bool:
         why = self.unavailable(kind, sha)
@@ -661,6 +700,7 @@ class Runner:
         c = st["counters"]
         if run.job == "presort":
             sha = run.data["main_sha"]
+            st["last_presort_end"] = time.time()
             if rc == 0:
                 st["last_presorted_sha"], st["tree_sha"] = sha, sha
                 st["bad_shas"].pop(sha, None)
@@ -992,7 +1032,7 @@ class Runner:
             return None
         assert sha
         if run is None:
-            run = self.new_run(job, sha)
+            run = self.new_run(job, self.defer_sha if job != "presort" and self.defer_sha else sha)
         else:
             run.data["resumed"] += 1
             run.save()
@@ -1051,14 +1091,15 @@ class Runner:
             return 0
         print(f"next job: {job} ({why})")
         params = run.data["params"] if run else self.default_params(job)
-        c = self.ctx(run, job, sha or "", params)
+        at = self.defer_sha if job != "presort" and self.defer_sha else sha  # the tree sha while a presort is deferred
+        c = self.ctx(run, job, at or "", params)
         try:
             steps = plans.plan(job, c)
         except plans.Unavailable as e:
             print(f"  not runnable: {e}")
             return 0
         print(f"  params: {json.dumps(params)}")
-        tree_ready = plans.git_head(self.tree) == sha
+        tree_ready = plans.git_head(self.tree) == at
         for s in steps:
             print(f"  step {s.name} [{s.mode}{', required' if s.required else ''}]")
             for cmd in s.cmds:
