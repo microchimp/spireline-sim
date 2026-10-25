@@ -604,7 +604,8 @@ def train_cmd(a: argparse.Namespace) -> int:
     cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
                                      max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
                                      retrain=retrain, policy_target=a.policy_target,  # a retrain draws on the larger window
-                                     exclude_prior_paths=exclude_prior_paths(getattr(a, "exclude_prior_paths", None)))
+                                     exclude_prior_paths=exclude_prior_paths(getattr(a, "exclude_prior_paths", None)),
+                                     seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else [])  # the lab's generated E-blocks too
     print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": gen + 1}))
     if a.promote:
         if not (a.emu_python and a.seeds_file):
@@ -788,7 +789,9 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--promote", action="store_true", help="then run `promote` against the current champion in the emulator venv")
     t.add_argument("--emu-python", help="the emulator venv's python for --promote")
     t.add_argument("--seeds-file", help="the E-block for --promote; with {k} (and {date}) the block of the candidate's "
-                   "generation, created if it does not exist, e.g. referee/seeds/E{k}-{date}.json")
+                   "generation, created if it does not exist. Put it under the lab folder (LAB/seeds/E{k}-{date}.json), "
+                   "not in the checkout: a file written into the tree makes the presort's refset score refuse it. "
+                   "Committed blocks (referee/seeds) are reused and checked whichever folder the template names")
     t.add_argument("--procs", type=int, default=16)
     t.add_argument("--lib")
     t.add_argument("--lab")
