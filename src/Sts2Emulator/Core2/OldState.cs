@@ -249,7 +249,10 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     /// <summary>The play's target as the creature it is (game: CardPlay.Target, CardModel.CurrentTarget), set by
     /// <see cref="Aiming" /> for the length of a play that was given one; null with no play or none given. The old step
     /// holds the target as a roster index, which names another creature once the kernel removes a corpse in front of it
-    /// (the F08 review, 1.3 B). Not detectable when missing.</summary>
+    /// (the F08 review, 1.3 B). Not detectable when missing. The mark is the play's, not the combat's: only
+    /// <see cref="Aiming" />'s scope sets and clears it, and <see cref="CopyFrom" /> never carries it, so no copy taken
+    /// inside a play (a snapshot, a fork) keeps that play's target after the play, and an in-place restore inside a play
+    /// keeps the open play's (R7h: a potion four steps after a Strike read the Strike's target on a copy).</summary>
     public EnemyState? Aimed { get; private set; }
 
     /// <summary>Marks <paramref name="target" /> (null: none) as the play's target until the scope is disposed; a play
@@ -358,7 +361,7 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         Scaling = from?.Scaling;
         Moving = null;
         MoverDied = from?.MoverDied ?? false;
-        Aimed = null;
+        // Aimed is left as it stands: the play's mark (game: CardPlay.Target), owned by the scope open on this world.
         if (from is null)
             return;
         var roster = from.Combat?.Enemies;
@@ -366,12 +369,6 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         {
             int at = roster?.FindIndex(x => ReferenceEquals(x, moving)) ?? -1;
             Moving = at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : moving;
-        }
-        // A target the roster no longer holds stays the old object: the copy's roster does not hold it either.
-        if (from.Aimed is { } aimed)
-        {
-            int at = roster?.FindIndex(x => ReferenceEquals(x, aimed)) ?? -1;
-            Aimed = at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : aimed;
         }
         foreach (var dying in from._dying)
         {
