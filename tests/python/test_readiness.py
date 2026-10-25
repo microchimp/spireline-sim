@@ -75,6 +75,27 @@ class BenchPreservedTest(unittest.TestCase):
             self.assertEqual(json.loads(out.read_text())["bench"], {"emu": {"date": "2026-10-22"}})
 
 
+class NightlyPreservedTest(unittest.TestCase):
+    def test_regenerating_the_json_keeps_the_nightly_key_and_prints_its_numbers(self):
+        nightly = {"date": "2026-10-25", "agents": {"g3": {"runs": 20, "win_rate": 0.0, "mean_floor": 12.5, "boss_kills": 1,
+                                                          "divergence_rate": 0.003, "crashes": 1}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "referee"
+            fixture(root)
+            out = Path(tmp) / "readiness.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                rd.main(["--referee", str(root), "--json", str(out)])
+            doc = json.loads(out.read_text())
+            self.assertNotIn("nightly", doc)
+            out.write_text(json.dumps({**doc, "nightly": nightly}, indent=1))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rd.main(["--referee", str(root), "--json", str(out)])
+            self.assertEqual(nightly, json.loads(out.read_text())["nightly"])
+            r = json.loads(out.read_text())
+            self.assertIn("g3: 20 runs", "\n".join(rd.render(r).splitlines()))
+
+
 class T(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.TemporaryDirectory()

@@ -620,6 +620,11 @@ def _open_score_window(c: Ctx) -> None:
     (c.lab / "score" / "active").write_text("1\n")
 
 
+def _open_nightly_window(c: Ctx) -> None:
+    (c.lab / "nightly").mkdir(parents=True, exist_ok=True)
+    (c.lab / "nightly" / "active").write_text("1\n")
+
+
 def plan_kind(kind: str, c: Ctx) -> list[Step]:
     """One command: the kind's configured command (params `cmd`, `cwd`, `timeout_min`, `needs`), core and required. Whether the
     kind is ready to run (marker, schedule, switch) is decided before the job is made (runner.unavailable), not here, so a
@@ -634,6 +639,9 @@ def plan_kind(kind: str, c: Ctx) -> list[Step]:
     if kind == "score-real":  # the window marker keeps other fights runners off the game while it is open
         cmd.pre = _open_score_window
         cmd.after_cleanup = ["{lab}/score/active"]
+    if kind == "nightly-real":  # the marker the next pick reads (jobs.nightly_blocked); the driver's own ranking replaces rank_score_real
+        cmd.pre = _open_nightly_window
+        cmd.after_cleanup = ["{lab}/nightly/active"]
     return [Step(kind, [cmd], mode="serial", required=True)]
 
 

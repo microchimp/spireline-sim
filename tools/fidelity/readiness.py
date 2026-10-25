@@ -531,6 +531,13 @@ def render(r: dict) -> str:
             return f"boss damage {f(a['boss_damage_mean'])}, skip rate {f(a['skip_rate'])}, cards/run {f(a['cards_taken_per_run'], 2)}"
         rows.append(("agent latest block", f"{ag['block']} ({ag['decision']}): candidate {cell(ag['arms']['cand'])}; "
                      f"incumbent {cell(ag['arms']['base'])}", ag["source"], ag["date"]))
+    nt = r.get("nightly")
+    if nt and nt.get("agents"):
+        def ncell(g, a):
+            f = lambda v, nd=3: "n/a" if v is None else f"{v:.{nd}f}"  # noqa: E731
+            return (f"{g}: {a.get('runs')} runs, win {f(a.get('win_rate'))}, floor {f(a.get('mean_floor'), 2)}, boss kills {a.get('boss_kills')}, "
+                    f"divergence {f(a.get('divergence_rate'), 4)}, {a.get('crashes')} crashes")
+        rows.append(("agent nightly (real game)", "; ".join(ncell(g, a) for g, a in sorted(nt["agents"].items())), "lab/nightly", nt.get("date")))
     w = max((len(x[0]) for x in rows), default=0)
     for a, v, s, dt in rows:
         L.append(f"{a:<{w}}  {v}  [{s}, {dt}]")
@@ -555,6 +562,11 @@ def main(argv=None) -> int:
     ap.add_argument("--days", type=int, default=UTIL_DAYS, help="days the lab utilisation is measured over (default: 7; 2 for the last 48 hours)")
     a = ap.parse_args(argv)
     r = build(a.referee, a.top, cores=a.cores, days=max(1, a.days))
+    if a.json and a.json.exists():  # `nightly` is written by the lab's nightly-real job (tools/lab/jobs.py), not derived: keep it and show it
+        with contextlib.suppress(ValueError, OSError):
+            old = json.loads(a.json.read_text(encoding="utf-8")).get("nightly")
+            if old:
+                r["nightly"] = old
     print(render(r))
     if a.json:
         a.json.parent.mkdir(parents=True, exist_ok=True)
