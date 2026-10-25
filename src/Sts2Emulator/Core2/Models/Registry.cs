@@ -84,6 +84,7 @@ public static class Registry
         VigorPower.Register,
         TankPower.Register,
         ColossusPower.Register,
+        DiamondDiademPower.Register,
         ShriekPower.Register,
     ];
 
@@ -128,6 +129,7 @@ public static class Registry
         StrikeDummy.Register,
         PenNib.Register,
         GremlinHorn.Register,
+        UndyingSigil.Register,
         MiniatureCannon.Register,
         MysticLighter.Register,
         FakeStrikeDummy.Register,
