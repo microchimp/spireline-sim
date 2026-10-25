@@ -413,7 +413,7 @@ class TrainingStepTests(unittest.TestCase):
             return float(-(torch.from_numpy(targets) * log_p).sum(dim=1).mean())
 
         before = loss()
-        config = train.TrainConfig(epochs=30, batch=8, patience=30, lr=3e-3)
+        config = train.TrainConfig(epochs=30, batch=8, patience=30, lr=3e-3, rows_per_run=0)  # this hand-built data has no run_index
         train.train_value_net(net, data, config, torch.Generator().manual_seed(1))
         self.assertLess(loss(), 0.6 * before)
 

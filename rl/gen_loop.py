@@ -54,6 +54,8 @@ BOOT_B = 20000
 ENV_GEN_DIR = "SPIRELINE_GEN_DIR"
 REVIEW_GUARD_FLAG = "SPIRELINE_REVIEW_GUARD"  # tools/lab/promotion_guard.FLAG: the review's guard decides when set; off by default
 REVIEW_GUARD_ON_VALUES = ("1", "on", "true", "yes")  # tools/lab/promotion_guard.ON_VALUES (a test keeps them equal)
+MACRO_VRUN_FLAG = "SPIRELINE_MACRO_VRUN"  # the macro fence: V_run plays macro only when this is on too (VRUN_SWEEP.md 1.5); off
+MACRO_SWITCH_NOTE = ("the switch waits for a paired rules-against-vrun A/B and an owner decision (VRUN_SWEEP.md 1.5)")
 # which prior produced a run's decisions: the row, the record and the npz part (an int8 per run) all carry it
 PRIOR_PATHS = ("none", "cpu", "server", "mixed")
 PRIOR_PATH_CODES = {"none": 0, "cpu": 1, "server": 2, "mixed": 3}  # -1: unknown (a part written before the field)
@@ -846,10 +848,25 @@ def export_all(out: Path, probe_tokens=None) -> dict[str, Any]:
     return res
 
 
-def macro_for(keep_doc: dict[str, Any] | None, cand: Path) -> str:
-    """`vrun` when the V_run keep record passes every computable condition and the candidate holds its export, else `rules`."""
-    ok = bool(keep_doc and keep_doc.get("all_computable_pass"))
-    return "vrun" if ok and (Path(cand) / "run_value.npz").is_file() else "rules"
+def vrun_keep_passed(keep_doc: dict[str, Any] | None, cand: Path) -> bool:
+    """Whether the V_run keep record passes every computable condition and the candidate holds its export."""
+    return bool(keep_doc and keep_doc.get("all_computable_pass")) and (Path(cand) / "run_value.npz").is_file()
+
+
+def macro_vrun_on(flag: bool | None = None) -> bool:
+    """Whether the macro switch is on: `flag` when given, else the SPIRELINE_MACRO_VRUN variable (off by default)."""
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get(MACRO_VRUN_FLAG, "").strip().lower() in REVIEW_GUARD_ON_VALUES
+
+
+def macro_for(keep_doc: dict[str, Any] | None, cand: Path, enabled: bool | None = None) -> str:
+    """`vrun` when the keep record passes (`vrun_keep_passed`) and the macro switch is on (`macro_vrun_on(enabled)`), else `rules`.
+
+    The switch is the macro fence of VRUN_SWEEP.md 1.5: a V_run fit that passes the keep conditions does not by itself
+    make the candidate play V_run's macro, since that would judge the prior and V_run together without DESIGN 5.3's Tier-B
+    regret and battery conditions."""
+    return "vrun" if vrun_keep_passed(keep_doc, cand) and macro_vrun_on(enabled) else "rules"
 
 
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
@@ -902,11 +919,15 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     # outside fights. The record sits in train.json under vrun_keep; the agent.json macro follows its verdict.
     keep_doc = (doc.get("run_value", {}).get("value") or {}).pop("keep", None)
     doc["vrun_keep"] = keep_doc if keep_doc is not None else {"status": "not_run", "all_computable_pass": False}
-    macro = macro_for(doc["vrun_keep"], cand)
+    passed, enabled = vrun_keep_passed(doc["vrun_keep"], cand), macro_vrun_on()
+    macro = macro_for(doc["vrun_keep"], cand, enabled)
+    doc["vrun_keep"]["macro_switch"] = {"passed": passed, "enabled": enabled, "note": MACRO_SWITCH_NOTE}
     doc["vrun_keep"]["note"] = vrun_keep_note(macro)
     write_json(cand / "agent.json", {"generation": gen + 1, "macro": macro, "trained_from": gen, "written": utc_now(),
                                      "note": ("V_run passed every computable DESIGN 5.3 keep condition (Tier-B regret and the battery "
-                                              "are not computed): it picks macro options" if macro == "vrun" else
+                                              "are not computed) and the macro switch is on: it picks macro options" if macro == "vrun" else
+                                              f"V_run passed the computable keep conditions; the macro switch ({MACRO_VRUN_FLAG}) is "
+                                              "off, so macro stays rules" if passed else
                                               "macro stays rules until V_run passes DESIGN 5.3 (Brier vs base rate and V0, ECE)")})
     write_json(cand / "train.json", doc)
     shutil_rmtree(cand / "work")
