@@ -608,6 +608,7 @@ class EmuLock:
     _hidden: dict | None = None  # the game's hidden state at the current decision (take_anchor_state)
     anchored_with: str | None = None  # "hidden", "observation" or "streams": what the last re-anchor used; None: none of them
     walk: dict | None = None  # the last re-anchor's walk to the map: {"walks", "floors", "picks", "fights"}, else None
+    deck_order: str | None = None  # the last hidden fight-start re-anchor's run-deck order: "set", "same", "other_deck", "unknown_id", else None
     streams: dict | None = None  # the last room-entry stream anchor: {"named", "moved", "unmoved", "unmoved_names"}, else None
 
     def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None, character: str = "IRONCLAD"):
@@ -965,7 +966,41 @@ class EmuLock:
         if status < 0:
             self.fail = f"anchor:{why}"[:60]
             return False
+        if self.anchored_with == "hidden":
+            self._order_deck(obs)
         return True
+
+    def _order_deck(self, obs: dict) -> None:
+        """Put the emulator's run deck in the game's order (obs["deck"] is the game's `Deck.Cards` order). The next fight's
+        opening shuffle is position based, so two decks that hold the same cards in another order draw different hands;
+        the comparer holds the deck as a multiset and cannot see it, and the draw pile alone (above) is only this fight's.
+        Only an order difference is put right: a deck holding other cards than the game's (a content difference) stays as
+        it is, for the comparer and the room-entry re-anchor to report as they always did. Each card keeps its own
+        enchantment. `Sts2Run_DebugSetPlayer` with the cards alone sets `State.Deck` and nothing else (hp, gold, relics, potions
+        and the fight in progress are left alone). `self.deck_order` says what happened: "set", "same", "other_deck" or
+        "unknown_id" (None: the observation has no deck)."""
+        self.deck_order = None
+        deck = obs.get("deck")
+        if not deck:
+            return
+        want = [(self.ids["cards"].get(c[0]), bool(c[1])) for c in deck]
+        if any(w[0] is None for w in want):
+            self.deck_order = "unknown_id"
+            return
+        have = list(self.F.engine_deck(self.s.env))  # State.Deck order (the view sorts it)
+        pool: dict = {}
+        for c in have:
+            pool.setdefault((c.card_id, bool(c.upgraded)), []).append(c)
+        if sorted(pool) != sorted(set(want)) or any(len(pool[k]) != want.count(k) for k in pool):
+            self.deck_order = "other_deck"
+            return
+        ordered = [pool[w].pop(0) for w in want]
+        if ordered == have:
+            self.deck_order = "same"
+            return
+        self.native.run_debug_set_player(self.s.handle, self._obs(),
+                                         cards=[(c.card_id, int(c.upgraded), c.enchantment, c.enchant_amount) for c in ordered])
+        self.deck_order = "set"
 
     def reanchor(self, plan: str, msg: dict) -> bool:
         try:
@@ -978,6 +1013,7 @@ class EmuLock:
         self.anchored_with = None
         self.streams = None
         self.walk = None
+        self.deck_order = None
         obs = msg.get("obs", {})
         if plan == "room_entry":
             if not self._to_map(obs.get("floor")):

@@ -157,8 +157,8 @@ internal static class Env
     }
 
     /// <summary>
-    /// Choose `count` of `labels.Count` items as `count` single picks from what is left (ascending indices). The
-    /// seeded fallback's ascending indices map to picks at index[k] - k of the remaining list.
+    /// Choose `count` of `labels.Count` items as `count` single picks from what is left, returned in pick order. The seeded
+    /// fallback's ascending indices map to picks at index[k] - k of the remaining list.
     /// </summary>
     internal static List<int> DecideMany(string kind, IReadOnlyList<JsonNode> labels, int count, Func<List<int>> fallback,
         bool allowNone = false, int minSelect = 0, int maxSelect = -1)
@@ -187,25 +187,14 @@ internal static class Env
             return idx;
         }
 
-        var left = Enumerable.Range(0, labels.Count).ToList();
-        var picked = new List<int>();
-        for (int k = 0; k < cap && left.Count > 0; k++)
-        {
-            var now = left.ToList();
-            bool none = full ? k >= minSelect : allowNone && k == 0;  // "done" (full) or "none" (the screen allows choosing 0 cards) is the last action
-            int a = Decide(kind, now.Count + (none ? 1 : 0), () =>
+        // The cards go back to the game in the order picked, as the game's own screens hand them back (see PickLoop.cs).
+        return PickLoop.Run(labels.Count, cap, full, minSelect, allowNone, (now, none, k) =>
+            Decide(kind, now.Count + (none ? 1 : 0), () =>
                 {
                     var arr = new JsonArray(now.Select(i => labels[i].DeepClone()).ToArray());
                     if (none) arr.Add(full ? "done" : "none");
                     return arr;
-                }, () => 0, () => new JsonObject { ["pick"] = k + 1, ["of"] = cap });
-            if (a >= now.Count) break;
-            picked.Add(now[a]);
-            left.Remove(now[a]);
-        }
-
-        if (!full) picked.Sort();  // full: the cards go back in the order picked, the order the emulator's screen takes them
-        return picked;
+                }, () => 0, () => new JsonObject { ["pick"] = k + 1, ["of"] = cap }));
     }
 
     /// <summary>The potion actions offered with the current decision outside a fight: (use|discard, slot, potion).</summary>

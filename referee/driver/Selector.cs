@@ -25,7 +25,7 @@
 // Full selects. Spec key "full_select" (absent: off, and every output is as it always was) gives a combat card screen its
 // real range: the agent picks cards one at a time up to the screen's max, with a "done" action once the min is met, as an
 // "up to N" screen (Neow's Fury, Gambling Chip) lets a player. Off, the answer is exactly one card (or the min). Env.DecideMany
-// does the asking; the cards go back to the game in the order they were picked.
+// does the asking; the cards go back to the game in the order they were picked, full select or not (PickLoop.cs).
 //
 // Edge answers. Spec key "choice_edges" (absent: off, and every output is as it always was) makes the
 // answers probe the counts and the eligibility of a screen rather than take its first card: "none" (the
@@ -61,7 +61,7 @@ public sealed class FirstChoiceSelector : ICardSelector
     /// <summary>"ui" (default): turn-start screens are answered where the UI would show them; "instant": at once.</summary>
     internal static string PickTiming = "ui";
 
-    /// <summary>Set inside a whole run with an agent channel or a trace (Env.cs): which of the list to pick, ascending.</summary>
+    /// <summary>Set inside a whole run with an agent channel or a trace (Env.cs): which of the list to pick, in pick order (the seeded chooser's are ascending).</summary>
     internal static Func<List<CardModel>, int, bool, int, int, List<int>>? PickHook;  // (options, n, the screen allows choosing 0, its min, its max)
 
     /// <summary>As PickHook, for a card reward offered inside a fight.</summary>

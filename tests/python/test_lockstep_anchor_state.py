@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import unittest
+from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -185,6 +186,98 @@ class EmuLockAnchorTests(unittest.TestCase):
         self.assertTrue(e.reanchor("room_entry", {"obs": {"floor": 4}}))
 
 
+class DeckOrderTests(unittest.TestCase):
+    """The hidden fight-start re-anchor also puts the emulator's run deck in the game's order (obs["deck"], `Deck.Cards`
+    order): the next fight's opening shuffle is position based and the comparer holds the deck as a multiset (F11 mechanism A)."""
+
+    Card = namedtuple("Card", "card_id upgraded enchantment enchant_amount")
+    GAME = EmuLockAnchorTests.GAME
+    RECORD = EmuLockAnchorTests.RECORD
+    IDS = {"A": 1, "B": 2, "C": 3}
+
+    def c(self, name, up=False, ench=0, amount=0):
+        return self.Card(self.IDS[name], up, ench, amount)
+
+    def emu(self, deck, hidden=GAME):
+        """A fake session whose State.Deck is `deck`; Sts2Run_DebugSetPlayer replaces it with the cards it is handed."""
+        e = bare_emu(hidden)
+        e.ids = {"cards": dict(self.IDS)}
+        state, calls = {"deck": list(deck)}, []
+        e.F = SimpleNamespace(engine_deck=lambda env: tuple(state["deck"]))
+        e._obs = lambda: "obs"
+
+        def set_player(handle, buf, *, cards=None, **kw):
+            calls.append((handle, buf, cards, kw))
+            state["deck"] = [self.Card(*x) for x in cards]
+
+        e.native.run_debug_set_player = set_player
+        e.native.run_reanchor_fight_hidden = lambda h, rec, buf: (4, "moves=same;patched=draw")
+        e.native.run_reanchor_fight = lambda h, rec, buf: (1, "moves=same;patched=hand")
+        return e, state, calls
+
+    def anchor(self, e, deck):
+        obs = {"floor": 3, "combat": self.RECORD}
+        if deck is not None:
+            obs["deck"] = deck
+        return e._anchor_fight(obs)
+
+    def test_a_deck_in_another_order_is_put_in_the_games_order(self):
+        e, state, calls = self.emu([self.c("A"), self.c("B"), self.c("C")])
+        self.assertTrue(self.anchor(e, [["A", 0], ["C", 0], ["B", 0]]))
+        self.assertEqual(state["deck"], [self.c("A"), self.c("C"), self.c("B")])
+        self.assertEqual(e.deck_order, "set")
+        self.assertEqual(len(calls), 1)
+        handle, buf, cards, kw = calls[0]
+        self.assertEqual((handle, buf), (3, "obs"))
+        self.assertEqual(kw, {})  # the cards alone: hp, gold, relics and potions are left as they are
+
+    def test_each_card_keeps_its_own_upgrade_and_enchantment(self):
+        e, state, _ = self.emu([self.c("A"), self.c("A", up=True), self.c("B", ench=5, amount=2), self.c("A", ench=7, amount=1)])
+        self.assertTrue(self.anchor(e, [["B", 0], ["A", 0], ["A", 1], ["A", 0]]))
+        self.assertEqual(state["deck"], [self.c("B", ench=5, amount=2), self.c("A"), self.c("A", up=True), self.c("A", ench=7, amount=1)])
+
+    def test_a_deck_already_in_that_order_is_left_alone(self):
+        e, state, calls = self.emu([self.c("A"), self.c("B"), self.c("C")])
+        self.assertTrue(self.anchor(e, [["A", 0], ["B", 0], ["C", 0]]))
+        self.assertEqual((e.deck_order, calls), ("same", []))
+
+    def test_another_deck_is_not_the_re_anchors_to_set(self):
+        # A card more, fewer, or another upgrade state is a content difference: the comparer reports it as it always did.
+        for obs_deck in ([["A", 0], ["C", 0], ["C", 0]], [["A", 0], ["B", 0]], [["A", 0], ["B", 1], ["C", 0]]):
+            e, state, calls = self.emu([self.c("A"), self.c("B"), self.c("C")])
+            self.assertTrue(self.anchor(e, obs_deck))
+            self.assertEqual((e.deck_order, calls, state["deck"][1]), ("other_deck", [], self.c("B")), obs_deck)
+
+    def test_no_deck_in_the_observation_or_an_unknown_card_sets_nothing(self):
+        e, state, calls = self.emu([self.c("A"), self.c("B")])
+        self.assertTrue(self.anchor(e, None))
+        self.assertEqual((e.deck_order, calls), (None, []))
+        self.assertTrue(self.anchor(e, [["B", 0], ["ZZZ", 0]]))
+        self.assertEqual((e.deck_order, calls), ("unknown_id", []))
+
+    def test_without_the_hidden_state_the_deck_is_left_alone(self):
+        e, state, calls = self.emu([self.c("A"), self.c("B"), self.c("C")], hidden=None)
+        self.assertTrue(self.anchor(e, [["A", 0], ["C", 0], ["B", 0]]))
+        self.assertEqual((e.anchored_with, e.deck_order, calls), ("observation", None, []))
+
+    def test_a_failed_anchor_sets_nothing(self):
+        e, state, calls = self.emu([self.c("A"), self.c("B"), self.c("C")])
+        e.native.run_reanchor_fight_hidden = lambda h, rec, buf: (-4, "unknown card")
+        self.assertFalse(self.anchor(e, [["A", 0], ["C", 0], ["B", 0]]))
+        self.assertEqual(calls, [])
+
+    def test_the_fight_start_plan_reaches_it_and_the_room_entry_plan_does_not(self):
+        e, state, calls = self.emu([self.c("A"), self.c("B"), self.c("C")])
+        e.E = SimpleNamespace(rc=SimpleNamespace(PHASE_COMBAT=7))
+        e.s.phase, e.s.view = 7, lambda: SimpleNamespace(floor=3)
+        obs = {"floor": 3, "combat": self.RECORD, "deck": [["A", 0], ["C", 0], ["B", 0]]}
+        self.assertTrue(e.reanchor("fight_start", {"obs": obs}))
+        self.assertEqual(state["deck"], [self.c("A"), self.c("C"), self.c("B")])
+        e._order_deck = lambda obs: self.fail("the room-entry path reorders the deck")
+        e._to_map, e._set_player, e._set_streams, e._decision = (lambda floor=None: True), (lambda o: True), (lambda: True), (lambda: object())
+        self.assertTrue(e.reanchor("room_entry", {"obs": obs}))
+
+
 class StreamsMovedTests(unittest.TestCase):
     """Review 1.3: a room-entry stream anchor says how many streams the game named and how many the native call moved; a call
     that moved none is not reported as a stream anchor."""
@@ -253,7 +346,7 @@ class NativeFirewallTests(unittest.TestCase):
         finally:
             native.destroy(h)
 
-    def anchor(self, e):
+    def anchor(self, e, deck=None):
         """Anchor the fight on the game's hidden state: the draw pile in an order of its own, and streams at counters of its own."""
         h = native.run_fork_combat(e.s.handle, False, 0, (native.ctypes.c_int * native.RUN_OBS_SIZE)())
         try:
@@ -283,7 +376,8 @@ class NativeFirewallTests(unittest.TestCase):
                  "CombatPotionGeneration", "Niche", "MonsterAi")
         hidden = {"draw": pile(draw), "rng": {n: {"seed": 700 + i, "counter": 11 + i} for i, n in enumerate(names)}}
         e.take_anchor_state(hidden)
-        self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": view.floor, "combat": public}}), e.fail)
+        obs = {"floor": view.floor, "combat": public, **({"deck": deck} if deck is not None else {})}
+        self.assertTrue(e.reanchor("fight_start", {"obs": obs}), e.fail)
         self.assertEqual(e.anchored_with, "hidden")
         self.assertIsNone(e._hidden, "the hidden state is cleared once the re-anchor has used it")
         return draw
@@ -329,6 +423,17 @@ class NativeFirewallTests(unittest.TestCase):
         self.assertGreaterEqual(self.spread(run_orders), 0.9)
         self.assertLessEqual(sum(o == base for o in run_orders), 5)
         self.assertEqual(self.piles(e.s.handle), list(game_order), "cloning does not move the lockstep state")
+
+    def test_a_fight_start_puts_the_run_deck_in_the_games_order(self):
+        e = self.e
+        before = list(e.F.engine_deck(e.s.env))
+        game = before[::-1]  # the game's deck: the same cards the other way round
+        self.assertNotEqual(before, game)
+        draw = self.anchor(e, deck=[[e.slug["cards"][c.card_id], int(c.upgraded)] for c in game])
+        self.assertEqual(e.deck_order, "set")
+        self.assertEqual(list(e.F.engine_deck(e.s.env)), game, "State.Deck is in the game's order")
+        self.assertEqual(self.piles(e.s.handle), list(draw), "the fight in progress is left as the re-anchor put it")
+        self.assertEqual(sorted(map(str, e.s.view().deck)), sorted(map(str, before)), "the same cards")
 
     def test_the_search_is_handed_no_hidden_state(self):
         e = self.e
