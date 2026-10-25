@@ -154,15 +154,54 @@ the block's decisions per second within 5% of the 9.1 figure. If either moves, t
 lab's shards and the current generation's checkpoint; it never touches `jobs.json`, `current.json`, `promotions.tsv` or a
 `genN/` folder.
 
-## 5. The report
+## 5. The report: measured 2026-10-25 (cache `756c32dd`, generation 3's window)
 
-One table, every arm a row: arm, adoptable, seeds, best epoch, validation loss, S Brier skill vs base rate and vs V0
-(mean and spread), log-loss, ECE with every bin, fit minutes. A second table for the confirmed arms (`lab` and the one or
-two pre-declared): pooled out-of-fold Brier skill vs base rate and vs V0 with CIs, log-loss, ECE and its bins, the
-expected-floor MAE against V0 + floor's, pass or fail on the rule of section 1.5. Plus the parity row, the logistic
-diagnostic, the data curve (`sub25` to `lab`) and the ensemble's variance share. Then the verdict: the adopted recipe, or
-"none passes" with the per-hypothesis reading (which of H1-H5 the tables support) and the data lever's size read off the
-curve.
+**Data.** 10 closed blocks of generations 1-3: 19,048 records, **15,298 runs after deduplication by seed** (3,750 copies, all
+in block `20261024T0432-selfplay`), 421,893 rows, 411 Act-1 kill runs, 106,688 fights (under the lab's 400k cap, so FightNet
+sees the lab's data). S (hash in [0.2, 0.3)): 1,529 runs, 38 kills, 41,589 head rows. Outside S: 13,769 runs, 373 kills,
+370,829 head rows, in five folds of 58-95 kills. Cache build 5.5 min at 2 threads, peak RSS 1.6 GB. A V fit takes 0.1-0.4
+GPU-minutes (4.1x faster than the CPU fit of the same recipe); FightNet plus the H fill ~0.55 min per seed or fold.
+
+**S ranking (every arm, 3 seeds; Brier skill on S, mean and seed range).** The lab recipe: -0.011 (-0.039..+0.007), best
+epoch 1 in every seed (the CPU fit of the same recipe -0.004: the parity gap is inside the seed spread). Every H1 arm stays at
+or below +0.003: `lr3e-4` -0.016, `lr1e-4` -0.003 (best epoch 12, still no skill), `wd1e-3` -0.012, `wd1e-2` -0.015, `do0.3`
+-0.010, `do0.5` -0.009, `h64` -0.014, `h128` -0.015, `h512` +0.003. **H2: `rows4` +0.030 (+0.028..+0.032), best epoch 10;
+`rows8` +0.021 (+0.012..+0.026), best epoch 7; `rows4+h512` +0.030 (+0.029..+0.031).** Diagnostics: `bce-act1` +0.050
+(+0.049..+0.051); `logit-v0h` +0.039 (+0.034..+0.042): a logistic model on V0's inputs, the floor and H has more skill on S
+than the lab's net; `noH` -0.001 (H carries nothing for the lab fit); the data curve `sub25` -0.049, `sub50` -0.086, `sub75`
+-0.024, `lab` -0.011. The pre-declared confirmation arms, from this ranking: `rows4` and `rows8` (`rows4+h512` ties `rows4`
+and adds nothing).
+
+**Confirmation (5-fold cross-fit over the 13,769 non-S runs, FightNet and H refit per fold, early stopping on S, pooled
+out-of-fold floor <= 16 rows; base rate per fold's training rows; V0 calibrated per fold):**
+
+| arm | BSS vs base rate [CI] | BSS vs V0 [CI] | log-loss model / base | ECE (eligible bins) | expected-floor MAE model / V0+floor | best epoch per fold | rule 1.5 |
+|---|---|---|---|---|---|---|---|
+| `lab` | +0.027 [+0.002, +0.051] | +0.025 [+0.001, +0.049] | 0.1495 / 0.1661 | 1.0 pp (8) | 2.699 / 3.215 | 1, 1, 2, 1, 2 | fail (S seeds -0.039..+0.007) |
+| **`rows4`** | **+0.044 [+0.028, +0.060]** | **+0.042 [+0.026, +0.058]** | 0.1526 / 0.1661 | 1.6 pp (7) | 2.702 / 3.215 | 17, 8, 13, 9, 20 | **PASS** |
+| `rows8` | +0.042 [+0.026, +0.059] | +0.040 [+0.024, +0.057] | 0.1521 / 0.1661 | 1.6 pp (7) | 2.705 / 3.215 | 7, 5, 4, 8, 10 | PASS |
+
+**Reading.** (1) **V_run has a small, real pre-kill skill once the duplicates are gone and the evaluation is large
+enough**: even the lab's recipe clears 0 out of fold (+0.027, lower bound +0.002); the week-3 failure (0.048, CI crossing 0)
+was a 38-kill evaluation on a duplicated window, not evidence of no skill. (2) **H2 holds**: sampling four rows per run per
+epoch moves the skill to +0.044 against both baselines (lower bounds +0.028 and +0.026), moves the best epoch from 1-2 to
+8-20 (the fit learns instead of memorising the long runs), and every one of its three S seeds is positive. (3) **H1 does
+not**: no learning rate, weight decay, dropout or width changes the S skill. (4) **H3 is rejected for this data**: the input
+carries signal (the logistic diagnostic +0.039, the direct binary head +0.050 on S), and (5) **H4 is partly supported**: the
+direct kill target still finds more than the 53-class floor target does, so the keep condition's event is not what the net is
+best at; the policy's own quantity, the expected floor, is nevertheless better than the V0 + floor regression (MAE 2.70
+against 3.22, a 16% reduction) for every recipe. (6) **H5**: the data curve is steep and noisy (sub25 -0.049 to lab -0.011
+on S); more runs will help, and the confirmation's 13.7k runs are what made the verdict possible.
+
+**Verdict: `rows4` is adopted** under rule 1.5 (both out-of-fold CIs clear 0, log-loss and ECE pass, three positive S seeds):
+`TrainConfig.rows_per_run` defaults to 4 in the adoption commit. The macro stays `rules`: the switch to `vrun` is behind an
+explicit setting (`SPIRELINE_MACRO_VRUN`, default off) and waits for a paired rules-against-vrun A/B on one E-block and an
+owner decision (the Tier-B regret and battery conditions of DESIGN 5.3 are still not computed). The lab's own keep test on
+its tenth (~37 kills) will keep reading a CI that crosses 0 at this skill size; the out-of-fold table above is the evidence.
+
+**Not measured.** The `beside` check of section 4 (a fit beside a running self-play block): no self-play job ran during the
+sweep (the lab was in presort). It stays a precondition for running fits while self-play plays; the sweep's fits ran with the
+GPU otherwise idle.
 
 ## 6. Risks
 
