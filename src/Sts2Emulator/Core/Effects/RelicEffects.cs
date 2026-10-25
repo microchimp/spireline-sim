@@ -1621,12 +1621,16 @@ public static class RelicEffects
     )
     {
         bool noBlock = heldNoBlock ?? state.PlayerBlock == 0;
+        // F08+F10 on: Lunar Pastry and Parrying Shield (AfterSideTurnEnd) run in the game's `Hook.AfterTurnEnd`, after
+        // `FlushPlayerHand` (ApplyAfterEndOfPlayerTurnShared); here, before the Ethereal exhaust and the discard, a card
+        // their turn-end kill draws (Gremlin Horn) was flushed.
+        bool afterFlush = Core2.Kernel.If(Core2.Switch.F08, state) is not null;
 
         // `LunarPastry.AfterSideTurnEnd`: StarsVar(1) whenever the player's side turn
         // ends. Through `GainStars` rather than `Stars +=`, so Black Hole sees it.
-        if (HasRelic(state, LunarPastry))
+        if (!afterFlush && HasRelic(state, LunarPastry))
         {
-            CardEffects.GainStars(state, 1);
+            LunarPastryAfterSideTurnEnd(state);
         }
 
         if (HasRelic(state, Orichalcum) && noBlock)
@@ -1659,13 +1663,27 @@ public static class RelicEffects
         }
 
         // AfterSideTurnEnd rather than Before, so it sees the block the three above added.
-        if (HasRelic(state, ParryingShield) && state.PlayerBlock >= 10)
+        if (!afterFlush && HasRelic(state, ParryingShield))
         {
-            var target = CardEffects.RandomLivingEnemy(state, rng);
-            if (target != null)
-            {
-                CardEffects.DealUnpoweredDamageToEnemy(state, target, 6);
-            }
+            ParryingShieldAfterSideTurnEnd(state, rng);
+        }
+    }
+
+    /// <summary>game: LunarPastry.AfterSideTurnEnd, the player's side.</summary>
+    private static void LunarPastryAfterSideTurnEnd(CombatState state) => CardEffects.GainStars(state, 1);
+
+    /// <summary>game: ParryingShield.AfterSideTurnEnd, the player's side: block 10 or more hits a random enemy for 6.</summary>
+    private static void ParryingShieldAfterSideTurnEnd(CombatState state, Random? rng)
+    {
+        if (state.PlayerBlock < 10)
+        {
+            return;
+        }
+
+        var target = CardEffects.RandomLivingEnemy(state, rng);
+        if (target != null)
+        {
+            CardEffects.DealUnpoweredDamageToEnemy(state, target, 6);
         }
     }
 
@@ -2004,6 +2022,32 @@ public static class RelicEffects
     /// </remarks>
     internal static void ApplyAfterEndOfPlayerTurnShared(CombatState state, Random? rng, bool fold = true)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is not null)
+        {
+            // F08+F10 on: the relics' AfterSideTurnEnd in the obtain order (game: Hook.AfterTurnEnd), Lunar Pastry and
+            // Parrying Shield with Joss Paper; `fold` is the pass's gate, asked once as it starts.
+            int exhausts = state.EtherealExhaustsThisTurn;
+            for (int i = 0; i < state.Relics.Count && fold; i++)
+            {
+                switch (state.Relics[i].DefId)
+                {
+                    case JossPaper when exhausts > 0:
+                        AddJossPaperExhausts(state, i, exhausts, rng);
+                        exhausts = 0;
+                        break;
+                    case ParryingShield:
+                        ParryingShieldAfterSideTurnEnd(state, rng);
+                        break;
+                    case LunarPastry:
+                        LunarPastryAfterSideTurnEnd(state);
+                        break;
+                }
+            }
+
+            state.EtherealExhaustsThisTurn = 0;
+            return;
+        }
+
         int index = state.Relics.FindIndex(relic => relic.DefId == JossPaper);
         if (index >= 0 && state.EtherealExhaustsThisTurn > 0 && fold)
         {
