@@ -17,6 +17,10 @@ Status 2026-10-24 evening: `cloud/run-flow-1` (PR 7) and `cloud/combat-core-1` (
 Probe-first, not yet batched (the eight synthetic trace fights of 2026-10-24 showed no difference for the F08 candidates C, D and E in isolation; the exact-fight trace tool is the week-4 item): `Gc44f78e430` (player hp at the reward screen after an enemy-phase fight end), `G1162c5de18` (re-run two seeds
 first; likely the residue of a fixed lockstep artefact), `Gda7c3abc9d` (the emulator did not enter the chest room; probe).
 
+## Week 4 (2026-10-25)
+
+`PenNibStrength.md`: from the first live run of the exact-fight trace tool (`referee/lockstep_trace.py`) on `FTV3HZZPFE` #135, the F08 "mechanism C" root. The run record reads as the Pen Nib doubling applied before Strength on the old engine path (game 16, emulator 14); the kit's scenario test under both switch states decides whether the switch-on Core2 path is already right (then old path only, low priority) or the fold order is the rebuild lane's F08 item.
+
 ## Local fixes (not cloud work): `local/`
 
 Measurement artefacts of the lockstep comparer in `referee/lockstep.py`, fixed on the PC and re-measured there:
