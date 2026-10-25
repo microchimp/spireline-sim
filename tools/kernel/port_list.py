@@ -13,7 +13,8 @@ and the batch it is ported in. Batches are per kind (power, relic, card, monster
 Pseudo-hooks (``PSEUDO_HOOKS``) are the kill sequence's model calls that are not AbstractModel hooks (a MonsterModel
 or PowerModel virtual, or the creature's ``Died`` event a monster subscribes to); they are listed like hooks of their
 family so their models are ported in the same batches. ``--gate`` exits 1 while any listed (model, hook) pair has
-no Core2 handler and is not ``not_modelled``: a registered pair (the old engine has a location for it) is unported until
+no Core2 handler and is not ``not_modelled``, and lists the ``--unreached`` pairs too (round R7g: a model no record
+reaches still plays under the switch, as Diamond Diadem did, so its pairs count): a registered pair (the old engine has a location for it) is unported until
 its handler is in the HandlerTable. A handler counts when ``EmuDump kernel-handlers`` (the built EmuDump.dll, ``--emudump``)
 lists it: the table with every switch on, not the source text; a handler marked ``[StubHandler]`` does not count. That is
 the switch-on gate of the migration.
@@ -306,10 +307,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--emudump", type=Path, default=DEFAULT_DLL, help="the built EmuDump.dll whose kernel-handlers lists the handlers")
     ap.add_argument("--unreached", action="store_true", help="also list a model no record reaches that the old engine names "
                     "at a family hook (registered or open)")
-    ap.add_argument("--gate", action="store_true", help="exit 1 while any pair has no Core2 handler and is not not_modelled")
+    ap.add_argument("--gate", action="store_true", help="exit 1 while any pair has no Core2 handler and is not not_modelled; "
+                    "implies --unreached")
     a = ap.parse_args(argv)
     try:
-        doc = make(a.families, a.size, a.manifest, a.decompiled, a.exclude_hooks, a.emudump, unreached=a.unreached)
+        doc = make(a.families, a.size, a.manifest, a.decompiled, a.exclude_hooks, a.emudump,
+                   unreached=a.unreached or a.gate)
     except HandlerListError as e:
         sys.stderr.write(f"port_list: {e}\n")
         return 2

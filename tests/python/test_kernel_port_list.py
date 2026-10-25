@@ -259,3 +259,34 @@ class GateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GateCountsUnreachedTests(unittest.TestCase):
+    """Round R7g: ``--gate`` lists the ``--unreached`` pairs too, so a model no record reaches counts against the gate."""
+
+    def _run(self, argv):
+        seen = {}
+
+        def fake_make(families, size, manifest, decompiled, exclude, dll, unreached=False):
+            seen["unreached"] = unreached
+            return {"families": families, "excluded": [], "items": [], "unmatched": [], "summary": {}, "batches": [],
+                    "unported": [["power:X_POWER", "AfterDamageGiven", "registered"]] if unreached else []}
+
+        old = pl.make
+        pl.make = fake_make
+        try:
+            with open(Path(tempfile.gettempdir()) / "port_list_gate_test.md", "w", encoding="utf-8"):
+                pass
+            rc = pl.main(argv + ["--md", str(Path(tempfile.gettempdir()) / "port_list_gate_test.md")])
+        finally:
+            pl.make = old
+        return rc, seen["unreached"]
+
+    def test_gate_implies_unreached(self):
+        self.assertEqual(self._run(["--families", "F08", "F10", "--gate"]), (1, True))
+
+    def test_list_alone_keeps_the_reached_models(self):
+        self.assertEqual(self._run(["--families", "F08", "F10"]), (0, False))
+
+    def test_unreached_without_gate_lists_but_passes(self):
+        self.assertEqual(self._run(["--families", "F08", "F10", "--unreached"]), (0, True))
