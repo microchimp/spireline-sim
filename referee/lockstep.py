@@ -354,6 +354,7 @@ class Lockstep:
             self.prev_act = {"type": act_type(kind, labels[choice]), "kind": kind, "label": labels[choice]}
             if kind == "map" and isinstance(labels[choice], list) and len(labels[choice]) > 2:
                 self.room_type = labels[choice][2]
+            self.fields.real_macro(kind, labels[choice], (msg.get("obs") or {}).get("floor"))
         return choice
 
     def _take_hidden(self, msg: dict) -> dict:

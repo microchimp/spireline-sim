@@ -130,7 +130,7 @@ def result_json(runs: list[dict], wall_s: float, generation: int = 0) -> dict:
             "crashes": t["crashes"]}
 
 
-RUN_FIELD_KEYS = ("boss_damage", "boss_damage_acts")  # rl/run_fields.py: what an envproto end event adds to its row
+RUN_FIELD_KEYS = ("boss_damage", "boss_damage_acts", "cards", "nodes", "rests")  # rl/run_fields.py: what an envproto end event adds to its row
 
 
 def real_runs(runs_jsonl: str | Path) -> list[dict]:
@@ -218,7 +218,8 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
         rec = gen_loop.RunRecorder(seed, agent.generation, rules.describe(), cfg.sims, cfg.c, ascension)
     s = engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims), **session_kwargs(agent, character))
     decisions = assumed = k = sims_spent = 0
-    fields = run_fields.RunFields()  # the row's boss damage (and what else the run record keeps)
+    fields = run_fields.RunFields()  # the row's boss damage, card choices, map nodes and rest choices
+    slugs = run_fields.card_slugs()
     fight_boss: bool | None = None  # None: no fight open; else whether the open fight is a boss fight
     end = "?"
     try:
@@ -242,6 +243,7 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 pick = rules.pick(view, d, explore)
                 if rec is not None:
                     rec.decision(view, d, pick)
+                fields.emu_macro(view.floor, d.options[pick.index], slugs)
                 s.apply(d.options[pick.index])
                 decisions += 1
                 continue

@@ -29,13 +29,17 @@ def boss_msg(act: int, hps: list[int], kind: str = "combat") -> dict:
         "round": 1, "enemies": [{"name": f"E{i}", "hp": hp, "max_hp": 100} for i, hp in enumerate(hps)]}}}
 
 
+def boss(row: dict) -> dict:
+    return {k: row[k] for k in run_fields.BOSS_KEYS}
+
+
 def lockstep_run(msgs: list[dict], outcome: dict) -> dict:
     """A Lockstep with no emulator side (the fallback plays) fed a scripted stream; its record fields."""
     ls = lockstep.Lockstep(None, lambda m: 0, "seed")
     for m in msgs:
         ls.decide(m)
     ls.finish(outcome)
-    return ls.fields.row()
+    return boss(ls.fields.row())
 
 
 MAP_BOSS = {"kind": "map", "actions": [[3, 15, "Boss"]], "obs": {"act": 0, "floor": 16}}
@@ -50,7 +54,7 @@ class BossDamageTests(unittest.TestCase):
         f.boss_enemies(0, [(0, 70, 100)])
         f.boss_enemies(0, [(0, 40, 100)])
         f.boss_enemies(0, [(0, 55, 100)])  # healed back up: the lowest HP it reached counts
-        self.assertEqual(f.row(), {"boss_damage": 0.6, "boss_damage_acts": [[0, 0.6]]})  # the run stopped in the fight
+        self.assertEqual(boss(f.row()), {"boss_damage": 0.6, "boss_damage_acts": [[0, 0.6]]})  # the run stopped in the fight
 
     def test_a_won_fight_is_full_damage_and_an_unreached_boss_is_zero_not_absent(self):
         f = run_fields.RunFields()
@@ -58,7 +62,7 @@ class BossDamageTests(unittest.TestCase):
         f.boss_enemies(0, [(0, 20, 100)])
         f.boss_over(won=True)
         self.assertEqual(f.row()["boss_damage"], 1.0)
-        none = run_fields.RunFields().row()
+        none = boss(run_fields.RunFields().row())
         self.assertEqual(none, {"boss_damage": 0.0, "boss_damage_acts": []})
 
     def test_later_bosses_are_listed_and_a_summoned_minion_changes_nothing(self):
@@ -68,7 +72,7 @@ class BossDamageTests(unittest.TestCase):
         f.boss_over(won=False)
         f.boss_enemies(1, [(0, 200, 200)])
         f.boss_over(won=True)
-        self.assertEqual(f.row(), {"boss_damage": 0.75, "boss_damage_acts": [[0, 0.75], [1, 1.0]]})
+        self.assertEqual(boss(f.row()), {"boss_damage": 0.75, "boss_damage_acts": [[0, 0.75], [1, 1.0]]})
 
     def test_the_readers_of_the_two_sides(self):
         obs = [0] * 40
@@ -96,12 +100,14 @@ class BossDamageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "runs.jsonl"
             end = {"ev": "end", "seed": "a", "end": "death", "floor": 17, "s": 3.0, "stats": {"decisions": 9},
-                   **lockstep_run([MAP_BOSS, boss_msg(0, [100]), boss_msg(0, [50])], {"class": "death"})}
+                   **lockstep_run([MAP_BOSS, boss_msg(0, [100]), boss_msg(0, [50])], {"class": "death"}), "cards": [[2, "BASH"]]}
             old = {"ev": "end", "seed": "b", "end": "death", "floor": 7, "s": 3.0, "stats": {"decisions": 9}}
             p.write_text("\n".join(json.dumps(e) for e in (end, old)), encoding="utf-8")
             rows = gen0.real_runs(p)
         self.assertEqual((rows[0]["boss_damage"], rows[0]["boss_damage_acts"]), (0.5, [[0, 0.5]]))
         self.assertNotIn("boss_damage", rows[1])  # an older row: unknown, not 0
+        self.assertEqual(rows[0]["cards"], [[2, "BASH"]])
+        self.assertNotIn("cards", rows[1])
 
     def test_the_guard_fires_on_rows_that_carry_the_field_and_stays_inert_without(self):
         seeds = [f"S{i}" for i in range(300)]
@@ -121,6 +127,41 @@ class BossDamageTests(unittest.TestCase):
         old = pg.from_rows(arm(lambda i: 0.0, with_field=False), arm(lambda i: 0.0, with_field=False))
         self.assertEqual(old[2:], (None, None))
         self.assertEqual(pg.damage_guard(*old[2:])["available"], False)  # inert: not fired, not zero
+
+
+def reward(floor: int, labels: list, pick: int) -> dict:
+    return {"kind": "card_reward", "actions": labels, "pick": pick, "obs": {"act": 0, "floor": floor}}
+
+
+class CardsPerFloorTests(unittest.TestCase):
+    def test_the_emulator_side_records_the_macro_decisions_by_floor(self):
+        from types import SimpleNamespace as NS
+
+        f = run_fields.RunFields()
+        slugs = {7: "BASH", 9: "ANGER"}
+        f.emu_macro(1, NS(kind="map.node", node=(0, 1, 1)), slugs)
+        f.emu_macro(2, NS(kind="card.take", card=NS(card_id=7, upgraded=False)), slugs)
+        f.emu_macro(3, NS(kind="map.node", node=(0, 2, 3)), slugs)
+        f.emu_macro(3, NS(kind="rest.smith"), slugs)
+        f.emu_macro(3, NS(kind="rest.leave"), slugs)  # leaving is not a choice recorded
+        f.emu_macro(4, NS(kind="card.skip"), slugs)
+        f.emu_macro(5, NS(kind="card.take", card=NS(card_id=9, upgraded=True)), slugs)
+        f.emu_macro(5, NS(kind="card.reroll"), slugs)
+        r = f.row()
+        self.assertEqual(r["cards"], [[2, "BASH"], [4, "skip"], [5, "ANGER+"]])
+        self.assertEqual((r["nodes"], r["rests"]), ("MR", [[3, "smith"]]))
+        self.assertEqual(run_fields.RunFields().row()["cards"], [])  # a run that decided none: an empty list, not absent
+
+    def test_the_real_side_records_the_same_from_the_lockstep(self):
+        ls = lockstep.Lockstep(None, lambda m: m.get("pick", 0), "seed")
+        for m in (MAP_MONSTER, reward(5, [["BASH", 0], ["ANGER", 0], "skip"], 1), reward(6, [["BASH", 0], "skip"], 1),
+                  reward(7, [["ANGER", 1], "alt:relic"], 1), {"kind": "rest", "actions": ["HEAL", "SMITH"], "pick": 1, "obs": {"floor": 8}},
+                  {"kind": "map", "actions": [[1, 9, "RestSite"], [2, 9, "Unknown"]], "pick": 1, "obs": {"floor": 8}}):
+            ls.decide(m)
+        ls.finish({"class": "death"})
+        r = ls.fields.row()
+        self.assertEqual(r["cards"], [[5, "ANGER"], [6, "skip"]])  # the alternative at floor 7 is neither
+        self.assertEqual((r["nodes"], r["rests"]), ("M?", [[8, "smith"]]))
 
 
 if __name__ == "__main__":
