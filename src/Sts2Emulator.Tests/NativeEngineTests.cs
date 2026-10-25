@@ -112,7 +112,7 @@ public unsafe class NativeEngineTests
             var obs = new int[RunConstants.RunObsSize + 64];
             fixed (int* o = obs)
             {
-                Assert.Equal(-1, RunNativeExports.Sts2Run_Clone(handle, 0, 0, o));
+                Assert.Equal(-3, RunNativeExports.Sts2Run_Clone(handle, 0, 0, o));
                 Assert.StartsWith("kernel_on: Sts2Run_Clone", LastError());
                 delegate* unmanaged<int, int, int, int*, int> fork = &NativeExports.Sts2Run_ForkCombat;
                 Assert.Equal(-3, fork(handle, 0, 0, o));

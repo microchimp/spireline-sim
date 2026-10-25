@@ -143,8 +143,10 @@ public static class RunNativeExports
     /// which for a tree search is an oracle. See docs/agent-interface.md.
     /// </summary>
     /// <returns>
-    /// The new handle, or -1 if the source is unknown or the pool is full, or when the run's engine has a kernel switch
-    /// on (<c>Sts2_GetLastError</c> says why): <see cref="RunEngine.Clone" /> does not carry the engine's kernel yet.
+    /// The new handle, -1 if the source is unknown or the pool is full, or -3 when the run's engine has a kernel switch on
+    /// (<c>Sts2_GetLastError</c> says why): <see cref="RunEngine.Clone" /> does not carry the engine's kernel yet. -3 is
+    /// <see cref="Sts2Run_ForkCombat" />'s code for the same refusal, so a caller tells it from a bad handle without
+    /// reading an error text that may be an older refusal's.
     /// </returns>
     public static unsafe int Sts2Run_Clone(
         int handle,
@@ -163,7 +165,7 @@ public static class RunNativeExports
             // NATIVE_KERNEL.md piece 2: the copy's states keep their KernelState but its engine has no kernel, so its
             // combat steps would skip the kernel's queue. Refused until the clone carries the kernel.
             NativeExports.Refuse("kernel_on: Sts2Run_Clone does not carry the kernel yet (NATIVE_KERNEL.md piece 2)");
-            return -1;
+            return -3;
         }
 
         var copy = run.Clone(resampleHidden != 0 ? resampleSeed : null);

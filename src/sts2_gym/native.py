@@ -46,6 +46,15 @@ def _build_hint() -> str:
     )
 
 
+# The data files the library embeds (the EmbeddedResource items of src/Sts2Emulator/Sts2Emulator.csproj; a test holds the
+# two lists equal): an edit to one changes the library's behaviour like an edit to a .cs file does.
+_EMBEDDED_DATA_FILES = (
+    "tools/fidelity/migrated_families.json",
+    "data/id_map.json",
+    "tools/fidelity/power_aliases.json",
+)
+
+
 def _native_source_paths(repo_root: Path) -> list[Path]:
     source_root = repo_root / "src" / "Sts2Emulator"
     paths = [
@@ -54,6 +63,7 @@ def _native_source_paths(repo_root: Path) -> list[Path]:
         if "bin" not in path.parts and "obj" not in path.parts
     ]
     paths.extend(source_root.rglob("*.csproj"))
+    paths.extend(path for name in _EMBEDDED_DATA_FILES if (path := repo_root / name).is_file())
     return paths
 
 
@@ -1426,12 +1436,15 @@ def run_clone(
     is an oracle -- see docs/agent-interface.md.
 
     Raises:
-        RuntimeError: If the source handle is unknown or the handle pool is full.
+        RuntimeError: If the source handle is unknown or the handle pool is full, or (-3) the run's engine has a kernel
+            switch on (`STS2_ENGINE=core2`) and the copy cannot carry the kernel yet; the message is `Sts2_GetLastError`'s.
 
     """
     handle_out = int(
         _lib.Sts2Run_Clone(handle, 1 if resample_hidden else 0, resample_seed, obs_buf),
     )
+    if handle_out == -3:
+        raise RuntimeError(f"Sts2Run_Clone refused: {_get_last_error()}")
     if handle_out < 0:
         raise RuntimeError("Sts2Run_Clone failed: unknown handle or the pool is full.")
     return handle_out

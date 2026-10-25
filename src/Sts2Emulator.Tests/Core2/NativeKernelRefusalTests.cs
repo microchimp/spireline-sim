@@ -42,7 +42,7 @@ public class NativeKernelRefusalTests
             fixed (byte* r = rec)
             fixed (byte* m = msg)
             {
-                Assert.Equal(-1, RunNativeExports.Sts2Run_Clone(handle, 0, 0, o));
+                Assert.Equal(-3, RunNativeExports.Sts2Run_Clone(handle, 0, 0, o));
                 Assert.Equal(-1, RunNativeExports.Sts2Run_ReanchorFight(handle, r, rec.Length, m, msg.Length, o));
                 Assert.StartsWith("kernel_on", Encoding.UTF8.GetString(msg, 0, Array.IndexOf(msg, (byte)0)));
                 Assert.Equal(-1, RunNativeExports.Sts2Run_ReanchorFightHidden(handle, r, rec.Length, 3, m, msg.Length, o));
