@@ -1,7 +1,7 @@
 # The Tier 1 kernel in the native library (step N1, owner decision D31)
 
 **Size: fits.** Five pieces in 5-6 reviewed rounds (section 12), inside the 4-6 of the plan (HANDOFF, 2026-10-25 06:00Z).
-Piece 1 is built with this note; pieces 2-5 are later rounds.
+Piece 1 is built with this note; pieces 2-4 landed in R2 (native API v38, run API v28: section 14); piece 5 is a later round.
 
 The native library (`out/Sts2Emulator.dll`, NativeAOT; `src/sts2_gym/native.py` loads it) is what the agent's search,
 the lab's self-play and the lockstep scorer run. Today it is the old engine only: `RunNativeExports` builds `RunEngine`
@@ -142,3 +142,28 @@ re-anchors at every fight.
 
 R1 (Sonnet-sized; piece 1), R2 (Opus; piece 2), R3 (Opus; piece 3), R4 (Opus; piece 4), R5 (parity, fork safety,
 speed), R6 if needed (the smoke and review fixes): 5-6 reviewed rounds, about 7-9 units, as the plan said.
+
+## 14. Pieces 2-4 as built (R2)
+
+- **The gate.** `Core/Run/KernelGate.cs`: `KernelGate.Step(kernel, combat, rng, action, target)` (a combat on its own) and
+  `KernelGate.Run` (the queue run). `RunEngine.Step` (the run's fight, its body `StepInner`), `RunEngine.StepCombat`
+  (EmuDump's re-anchor) and `NativeExports.StepOrRefuse` (every combat handle) all step through it. No switch on:
+  `CombatEngine.Step`, old bytes.
+- **Handles.** `NativeCombat` holds its engine's `Kernel`. `Sts2_Create` and every reset bind a fresh `KernelState` before
+  `CombatFactory.Reset` (after `Wipe`). `Sts2_Clone` copies the kernel reference; the state's `KernelState` is copied with
+  the combat. `Sts2Run_ForkCombat` takes the run's kernel; the fork's `KernelState` binds to no run and reads the frozen deck.
+  `RunEngine.Clone` copies `_kernel`; the copy's fight is bound to the copy (`StateCloning.Clone(RunState)`).
+- **Snapshots.** A loaded fight binds a fresh `KernelState`. Under a switch, a document with a `stopped_step` is refused
+  (`StoppedStepRefusal`): the document carries no kernel queue, so its answer would run outside the action gathering it.
+  `Sts2_GetStateJson` refuses (-3, `HookPauseRefusal`) a combat on a hook action's screen (`OnHookPause`).
+- **Re-anchor.** The anchored fight keeps the `KernelState` its clone copied (as EmuDump's re-anchor keeps its clone's),
+  bound to the run (`At`), and is stepped through `RunEngine.Step`'s gate. The `kernel_on` refusal is gone.
+- **Answers.** On a handle, an old screen's answer resumes the action gathering it (`ActionQueueSet.Resume`, a new id, the
+  first id kept; its replay holds the keyed answers) and a kernel screen's answer goes to `KernelState.Answer`.
+- **Still refused under core2:** loading a document stopped in the middle of a step, and writing one on a hook action's
+  screen. Serializing the queue would lift both.
+- **Tests.** `NativeKernelHandleTests` (fork step = run step with the live fight untouched; the run clone carries the kernel;
+  a turn-start hook choice answered on a fork resumes its action and equals the run's answer; load then step = step from
+  the start; a stopped-step document is refused). `RunForkCombatCore2Tests` and `DeterminizedStopCore2Tests` run those
+  suites with the engine on core2. `test_native_engine.py` walks a run under `STS2_ENGINE=core2` with clones, forks and a
+  combat handle, nothing refused.

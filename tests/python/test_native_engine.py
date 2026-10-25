@@ -36,15 +36,42 @@ out["reset"] = native.run_reset(h, "QS2GYXRKWN", obs, 10)
 # A walk of first legal actions into and through the first fights: under core2 every combat step goes through the
 # kernel, whose ids and handler table come from the files embedded in the library.
 rew, term, trunc = (ctypes.c_float * 1)(), (ctypes.c_int * 1)(), (ctypes.c_int * 1)()
-combat_steps, refused = 0, 0
-for _ in range(300):
+# At every combat step the run is also cloned (resampled) and its fight forked (resampled) and both copies take the
+# same step: the search's paths, which carry the kernel (piece 2) and refuse nothing.
+combat_steps, refused, forks = 0, 0, 0
+cobs = (ctypes.c_int * native.OBS_SIZE)()
+MAXA = 32
+crew = (ctypes.c_float * 1)()
+for i in range(300):
     mask = native.run_action_mask(h, native.RUN_MAX_ACTIONS)
-    legal = [i for i in range(native.RUN_MAX_ACTIONS) if mask[i]]
+    legal = [a for a in range(native.RUN_MAX_ACTIONS) if mask[a]]
     if not legal or term[0]:
         break
-    combat_steps += native.run_phase(h) == 0
+    in_combat = native.run_phase(h) == 0
+    combat_steps += in_combat
+    if in_combat and i % 3 == 0:
+        c = native.run_clone(h, True, i, (ctypes.c_int * native.RUN_OBS_SIZE)())
+        refused += native.run_step(c, legal[0], -1, (ctypes.c_int * native.RUN_OBS_SIZE)(), rew, term, trunc) < 0
+        term[0] = 0
+        native.run_destroy(c)
+        f = native.run_fork_combat(h, True, i, cobs)
+        fmask = native.valid_actions(f, MAXA)
+        native.step(f, [a for a in range(MAXA) if fmask[a]][0], cobs, crew)
+        native.destroy(f)
+        forks += 1
     refused += native.run_step(h, legal[0], -1, obs, rew, term, trunc) < 0
-out["combat_steps"], out["refused"] = combat_steps, refused
+out["combat_steps"], out["refused"], out["forks"] = combat_steps, refused, forks
+# A combat handle of its own, through its fight's end or 200 steps.
+ch, handle_steps = out["create"], 0
+if ch >= 0:
+    native.reset(ch, cobs)
+    for _ in range(200):
+        cmask = native.valid_actions(ch, MAXA)
+        legal = [a for a in range(MAXA) if cmask[a]]
+        handle_steps += 1
+        if not legal or native.step(ch, legal[0], cobs, crew):
+            break
+out["handle_steps"] = handle_steps
 print(json.dumps(out))
 """
 
@@ -71,16 +98,21 @@ class LibraryEngineTests(unittest.TestCase):
         self.assertGreaterEqual(doc["create"], 0)
         self.assertGreaterEqual(doc["run"], 0)
         self.assertGreater(doc["combat_steps"], 0)
+        self.assertGreater(doc["forks"], 0)
+        self.assertEqual(doc["refused"], 0)
 
-    def test_core2_builds_the_shipped_kernel_and_refuses_combat_handles(self):
+    def test_core2_builds_the_shipped_kernel_and_runs_handles_clones_and_forks(self):
         r = _probe("core2")
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         doc = json.loads(r.stdout.strip().splitlines()[-1])
         shipped = json.loads((ROOT / "tools" / "fidelity" / "migrated_families.json").read_text(encoding="utf-8"))["migrated"]
         self.assertEqual(doc["engine"], "core2:" + ",".join(shipped))
-        self.assertEqual(doc["create"], -1)  # a combat handle does not step through the kernel yet (piece 2)
+        self.assertGreaterEqual(doc["create"], 0)  # a combat handle steps through the kernel's gate (piece 2)
+        self.assertGreater(doc["handle_steps"], 0)
         self.assertGreaterEqual(doc["run"], 0)
         self.assertGreater(doc["combat_steps"], 0)
+        self.assertGreater(doc["forks"], 0)
+        self.assertEqual(doc["refused"], 0)
 
     def test_a_refused_spec_fails_the_import(self):
         r = _probe("core3")

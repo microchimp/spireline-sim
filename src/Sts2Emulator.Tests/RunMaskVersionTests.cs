@@ -202,7 +202,7 @@ public class RunMaskVersionTests
             var mask = new int[RunConstants.MaxActions];
             run.WriteActionMask(mask);
             Assert.NotEqual(0, mask[RunConstants.DiscardPotionAction]);
-            Assert.Equal(28, RunNativeExports.RUN_NATIVE_API_VERSION);
+            Assert.Equal(29, RunNativeExports.RUN_NATIVE_API_VERSION);
         }
         finally
         {

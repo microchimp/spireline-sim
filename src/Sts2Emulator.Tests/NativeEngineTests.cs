@@ -103,7 +103,7 @@ public unsafe class NativeEngineTests
     }
 
     [Fact]
-    public void ThePathsLaterPiecesCoverStillRefuseACore2Run()
+    public void ACore2RunsCloneForkReanchorAndCombatHandlesAreNotRefused()
     {
         int handle = RunNativeExports.CreateWith(NativeEngine.Parse("core2"));
         try
@@ -112,42 +112,53 @@ public unsafe class NativeEngineTests
             var obs = new int[RunConstants.RunObsSize + 64];
             fixed (int* o = obs)
             {
-                Assert.Equal(-3, RunNativeExports.Sts2Run_Clone(handle, 0, 0, o));
-                Assert.StartsWith("kernel_on: Sts2Run_Clone", LastError());
+                // Pieces 2-3: the run's clone carries the kernel, the fork its KernelState, and a re-anchor binds the fight
+                // it anchors, so none is refused for the kernel (a re-anchor with no tables handed over has its own code).
+                int copy = RunNativeExports.Sts2Run_Clone(handle, 1, 3, o);
+                Assert.True(copy >= 0, LastError());
+                RunNativeExports.Sts2Run_Destroy(copy);
                 delegate* unmanaged<int, int, int, int*, int> fork = &NativeExports.Sts2Run_ForkCombat;
-                Assert.Equal(-3, fork(handle, 0, 0, o));
-                Assert.StartsWith("kernel_on: combat handles", LastError());
+                int f = fork(handle, 1, 3, o);
+                Assert.True(f >= 0, LastError());
+                delegate* unmanaged<int, void> destroy = &NativeExports.Sts2_Destroy;
+                destroy(f);
                 byte[] record = Encoding.UTF8.GetBytes("{}");
                 var msg = new byte[256];
                 fixed (byte* r = record)
                 fixed (byte* m = msg)
                 {
-                    Assert.Equal(-1, RunNativeExports.Sts2Run_ReanchorFight(handle, r, record.Length, m, msg.Length, o));
-                    Assert.Equal(-1, RunNativeExports.Sts2Run_ReanchorFightHidden(handle, r, record.Length, 1, m, msg.Length, o));
+                    RunNativeExports.Sts2Run_ReanchorFight(handle, r, record.Length, m, msg.Length, o);
+                    Assert.DoesNotContain("kernel_on", Encoding.UTF8.GetString(msg).TrimEnd('\0'));
+                    RunNativeExports.Sts2Run_ReanchorFightHidden(handle, r, record.Length, 1, m, msg.Length, o);
+                    Assert.DoesNotContain("kernel_on", Encoding.UTF8.GetString(msg).TrimEnd('\0'));
                 }
-
-                Assert.StartsWith("kernel_on: the re-anchor", Encoding.UTF8.GetString(msg).TrimEnd('\0'));
             }
 
-            // The process-wide option: with core2 set, a combat handle and a snapshot load refuse; back on old they work.
+            // The process-wide option: with core2 set, a combat handle is made bound and a document loads.
             Assert.Equal(0, SetEngine("core2"));
             Assert.Equal("core2:F08,F10", GetEngine());
             delegate* unmanaged<int, int> create = &NativeExports.Sts2_Create;
-            Assert.Equal(-1, create(7));
-            Assert.StartsWith("kernel_on: combat handles", LastError());
-            byte[] doc = Encoding.UTF8.GetBytes("{}");
+            int combat = create(7);
+            Assert.True(combat >= 0, LastError());
+            Assert.NotNull(NativeExports.StateOf(combat)!.Kernel);
+            byte[] doc = CombatSnapshot.Write(NativeExports.StateOf(combat)!);
             delegate* unmanaged<byte*, int, int, int*, int> load = &NativeExports.LoadCombatSnapshot;
+            int loaded;
             fixed (byte* d = doc)
             {
-                Assert.Equal(-1, load(d, doc.Length, 7, null));
+                loaded = load(d, doc.Length, 7, null);
             }
 
-            Assert.StartsWith("kernel_on: a loaded snapshot", LastError());
+            Assert.True(loaded >= 0, LastError());
+            Assert.NotNull(NativeExports.StateOf(loaded)!.Kernel);
+            delegate* unmanaged<int, void> drop = &NativeExports.Sts2_Destroy;
+            drop(loaded);
+            drop(combat);
             Assert.Equal(0, SetEngine("old"));
-            int combat = create(7);
+            combat = create(7);
             Assert.True(combat >= 0);
-            delegate* unmanaged<int, void> destroy = &NativeExports.Sts2_Destroy;
-            destroy(combat);
+            Assert.Null(NativeExports.StateOf(combat)!.Kernel);  // the old engine binds nothing
+            drop(combat);
         }
         finally
         {
