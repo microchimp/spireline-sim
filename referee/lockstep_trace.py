@@ -268,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     a = parser().parse_args(argv)
     try:
         rec = find_record(a.block, a.seed, a.decision)
-        work = a.work or Path(f"lockstep-trace-{a.seed}-{a.decision}")
+        work = (a.work or Path(f"lockstep-trace-{a.seed}-{a.decision}")).resolve()  # the game writes run.json: an absolute path
         work.mkdir(parents=True, exist_ok=True)
         if not locks_ok(a):
             raise UsageError(f"QUIET.lock and lab/PAUSE are not both in {a.referee_dir}: take them first (or --no-lock-check)")
