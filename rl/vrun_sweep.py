@@ -563,7 +563,9 @@ def resolve_arm(name: str) -> Arm:
 
 
 def arm_config(arm: Arm, device: str) -> train.TrainConfig:
-    return dataclasses.replace(train.TrainConfig(threads=THREADS), device=arm.device or device, **arm.delta)
+    # every arm is a change against the lab's recipe as the sweep measured it (rows_per_run=0), whatever TrainConfig's default has become
+    base = train.TrainConfig(threads=THREADS, rows_per_run=0)
+    return dataclasses.replace(base, device=arm.device or device, **arm.delta)
 
 
 # --------------------------------------------------------------------------------------

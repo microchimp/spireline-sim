@@ -292,8 +292,10 @@ def trained_candidate() -> tuple[Path, Path, Path]:
             for i in range(6):
                 sink.add(fake_record(f"S{g}{i:08d}"[:10], g), fake_run_arrays(rng, 3, 5))
             sink.close()
-        cand = gen_loop.train_generation(1, root / "runs", root / "agent", device="cpu", epochs=2, max_fights=20, threads=2,
-                                         vrun=False)
+        with mock.patch.dict(os.environ):
+            os.environ.pop(gen_loop.MACRO_VRUN_FLAG, None)  # the macro switch is off, as by default
+            cand = gen_loop.train_generation(1, root / "runs", root / "agent", device="cpu", epochs=2, max_fights=20, threads=2,
+                                             vrun=False)
         _FIXTURE.update(runs=root / "runs", agents=root / "agent", cand=cand)
     return _FIXTURE["runs"], _FIXTURE["agents"], _FIXTURE["cand"]
 
@@ -315,6 +317,9 @@ class TrainTests(unittest.TestCase):
         self.assertEqual(len(t["combat"]["curves"]), 2)
         self.assertGreater(t["combat"]["cpu_min"], 0)
         self.assertEqual(json.loads((c / "agent.json").read_text())["generation"], 2)
+        switch = t["vrun_keep"]["macro_switch"]  # the macro fence: off unless SPIRELINE_MACRO_VRUN is set
+        self.assertEqual((switch["passed"], switch["enabled"]), (False, False))
+        self.assertIn("owner decision", switch["note"])
 
     def test_onnx_is_written_and_read_back_or_the_reason_is_recorded(self):
         c = self.cand

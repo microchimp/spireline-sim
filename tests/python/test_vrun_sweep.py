@@ -23,12 +23,12 @@ GOLDEN = Path(__file__).resolve().parent / "fixtures" / "vrun_golden.npz"
 
 
 class GoldenTests(unittest.TestCase):
-    """`fixtures/vrun_golden.npz` was written by the code before the GPU path existed; the defaults must reproduce it exactly."""
+    """`fixtures/vrun_golden.npz` was written by the code before the GPU path existed; the old path (`rows_per_run=0`, the CPU) must reproduce it exactly."""
 
-    def test_the_default_config_refits_the_golden_checkpoint_bit_for_bit(self):
+    def test_the_old_path_refits_the_golden_checkpoint_bit_for_bit(self):
         with np.load(GOLDEN) as golden:
             expected = {key: golden[key] for key in golden.files}
-        refit = vrun_golden.golden_fit()
+        refit = vrun_golden.golden_fit(train.TrainConfig(**vrun_golden.GOLDEN_CONFIG, rows_per_run=0))  # the fixture is the old path's
         self.assertEqual(sorted(refit), sorted(expected))
         for key, value in expected.items():
             with self.subTest(key=key):
@@ -39,7 +39,8 @@ class GoldenTests(unittest.TestCase):
 
     def test_the_new_settings_default_to_the_labs_and_the_checkpoint_records_them(self):
         config = train.TrainConfig()
-        self.assertEqual((config.device, config.hidden, config.dropout, config.rows_per_run), ("cpu", 256, 0.1, 0))
+        self.assertEqual((config.device, config.hidden, config.dropout), ("cpu", 256, 0.1))
+        self.assertEqual(config.rows_per_run, 4)  # adopted from the sweep (VRUN_SWEEP.md 1.5); the fixture's old path is rows_per_run=0
         with tempfile.TemporaryDirectory() as tmp:
             records = [train_tests.BufferTests.record(hp, 0) for hp in (20, 21, 22, 23)]
             paths = []
@@ -617,6 +618,8 @@ class SweepRunTests(unittest.TestCase):
         self.assertGreaterEqual(record["fit_min"], 0.0)
         self.assertEqual((record["config"]["hidden"], record["config"]["rows_per_run"], record["adoptable"]), (256, 0, True))
         self.assertTrue((self.folder / "fits" / "lab-s0.npz").is_file())
+        rows4 = json.loads((self.folder / "fits" / "rows4-s0.json").read_text(encoding="utf-8"))
+        self.assertEqual(rows4["config"]["rows_per_run"], 4)  # the lab arm stays the recipe the sweep measured against; rows4 is the change
         self.assertEqual(record["s"]["head_rows"], int(head["rows"]))
 
     def test_every_arm_wrote_a_fit_and_a_rerun_skips_them(self):

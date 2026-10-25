@@ -79,11 +79,12 @@ class TrainConfig:
     patience: int = 3  # epochs without a better validation loss before stopping
     validation: float = 0.1  # of runs, held out whole: their decisions and fights
     threads: int = 2
-    # Beyond the lab's recipe (docs/rl/VRUN_SWEEP.md 3); the defaults are the lab's, and the "cpu" path is unchanged bit for bit.
+    # Beyond the lab's old recipe (docs/rl/VRUN_SWEEP.md 3); with rows_per_run=0 the "cpu" path is unchanged bit for bit.
     device: str = "cpu"  # anything else ("cuda", "cuda:1"; "cpu:0" too, which tests use) trains with the rows resident on it
     hidden: int = 256  # RunValueNet's width, both layers
     dropout: float = 0.1  # RunValueNet's, before the second layer
-    rows_per_run: int = 0  # k > 0: each epoch samples k rows of every run (fewer if it has fewer); 0: every row, every epoch
+    # rows_per_run 4: the sweep (VRUN_SWEEP.md 1.5) measured out-of-fold Brier skill 0.044 against 0.027 for 0, best epoch 9-20 against 1-2
+    rows_per_run: int = 4  # k > 0: each epoch samples k rows of every run (fewer if it has fewer); 0: every row, every epoch
 
 
 # --------------------------------------------------------------------------------------
