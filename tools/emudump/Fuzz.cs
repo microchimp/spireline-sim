@@ -26,8 +26,8 @@ static class Fuzz
         return 0;
     }
 
-    /// <summary>One spec's fight. The spec's <c>fuzz</c> block: seed (the player's), max_steps (80), p_end (0.1), p_decline (0.25), roster (write the opening enemies as `roster`).</summary>
-    internal static JsonObject Play(JsonObject rec, bool fields)
+    /// <summary>One spec's fight. The spec's <c>fuzz</c> block: seed (the player's), max_steps (80), p_end (0.1), p_decline (0.25), roster (write the opening enemies as `roster`). <paramref name="make"/> makes the engine (default: the process's <c>--engine</c>); tests use it to pick the core2 switches explicitly.</summary>
+    internal static JsonObject Play(JsonObject rec, bool fields, Func<IEngine>? make = null)
     {
         var fz = rec["fuzz"] as JsonObject ?? new JsonObject();
         var rng = new Mix((ulong)((long?)fz["seed"] ?? 1));
@@ -41,7 +41,7 @@ static class Fuzz
         outp["choices"] = choices;
         try
         {
-            var e = EngineFactory.Create();
+            var e = (make ?? (() => EngineFactory.Create()))();
             e.StartFight(new FightSpec(rec), outp);
             if ((bool?)fz["roster"] == true)
             {
