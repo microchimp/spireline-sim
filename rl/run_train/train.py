@@ -363,6 +363,7 @@ def eligible_records(
     generation: int,
     combat_budget: CombatBudget | int,
     ascension: int,
+    dedupe: bool = True,
 ) -> Iterator[tuple[int, int, RunRecord]]:
     """Yield (shard order, line, record) of every run record that counts for generation `generation` (5.4).
 
@@ -393,9 +394,10 @@ def eligible_records(
                 or not _in_era(record, budget, ascension)
             ):
                 continue
-            if (played, seed) in seen:  # the same rule as load_buffers: one record per (generation, seed)
-                continue
-            seen.add((played, seed))
+            if dedupe:  # the same rule as load_buffers: one record per (generation, seed); off for a census of the copies
+                if (played, seed) in seen:
+                    continue
+                seen.add((played, seed))
             yield order, line, record
 
 

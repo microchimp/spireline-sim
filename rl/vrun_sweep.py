@@ -301,8 +301,8 @@ def build_cache(lab: Path, agent_root: Path, out: Path, *, closed_after_min: flo
                      for d, m, why in blocks])
     value, chunks, seeds = train._ValueBuilder(), [], []  # noqa: SLF001
     config = train.TrainConfig(threads=THREADS)
-    for order, line, record in train.eligible_records(paths, generation=generation,
-                                                      combat_budget=CombatBudget(budget, budget), ascension=ascension):
+    for order, line, record in train.eligible_records(paths, generation=generation,  # dedupe off: the census counts the copies
+                                                      combat_budget=CombatBudget(budget, budget), ascension=ascension, dedupe=False):
         if not census.see(block_of[order], record["seed"]):
             continue
         if rows := train.fight_rows(record):
