@@ -2,7 +2,7 @@
   "name": "rounding-order/intangible-colossus-halves-a-vulnerable-4-to-1",
   "source": "game: Hook.ModifyDamage (one decimal through the additive and multiplicative modifiers, the caps after, one int cast)",
   "doc": "4 x 0.5 = 2, capped to 1.",
-  "xfail_engines": {"old": "old applies the INTANGIBLE_POWER cap before the halving multipliers instead of after (fix/rounding-order 2935e9ff not landed).", "core2": "old applies the INTANGIBLE_POWER cap before the halving multipliers instead of after (fix/rounding-order 2935e9ff not landed); core2 runs old's rules until its family switch is on (migrated_families.json), so it fails the same way."},
+  "xfail_engines": {"old": "old applies the INTANGIBLE_POWER cap before the halving multipliers instead of after (fix/rounding-order 2935e9ff not landed)."},
   "setup": {
     "character": "IRONCLAD",
     "ascension": 10,

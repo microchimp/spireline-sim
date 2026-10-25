@@ -102,18 +102,24 @@ incoming hit is the lone Nibbit's first attack (13 at A10 for the seed) with `ST
 `block`, `enemy_hp` and `enemy_block` existed and stay as converted; `regression/block-absorbs-first-and-zero-hp-kills` is the
 setters' own cover (an enemy set to 8 HP and 4 block takes two Strikes: the first breaks the block and leaves 6 HP, the second kills).
 
-| family | scenarios | old | core2 (no switch) |
+| family | scenarios | old | core2 (F08+F10 on, as checked in) |
 |---|---|---|---|
 | `exhaust-order/` (ExhaustListenerOrderTests) | juggernaut-from-feel-no-pain-kills-before-forgotten-soul, juggernaut-picks-before-charons-ashes-kills | xfail (2) | xfail (2) |
 | `victory-heal/` (VictoryHealOrderTests) | meat-at-threshold-then-burning-blood, ...-black-blood (xfail); meat-above-threshold-does-not-heal, meat-below-threshold-then-burning-blood (pass) | 2 xfail, 2 pass | 2 xfail, 2 pass |
-| `rounding-order/` (RoundingOrderTests) | slow-joins-the-multiplicative-chain, slow-is-decimal-exact-90x3, intangible-caps-a-halved-30-to-1 and -3-to-1, intangible-colossus-halves-a-vulnerable-4-to-1 (xfail); slow-is-decimal-exact-30x9, hard-to-kill-cap-runs-after-slow, diadem-halves-15-to-7, intangible-cap-leaves-a-halved-1-at-0, intangible-colossus-halves-a-vulnerable-1-to-0, halving-truncates-once (pass) | 5 xfail, 6 pass | 5 xfail, 6 pass |
+| `rounding-order/` (RoundingOrderTests) | slow-joins-the-multiplicative-chain, slow-is-decimal-exact-90x3, intangible-caps-a-halved-30-to-1 and -3-to-1, intangible-colossus-halves-a-vulnerable-4-to-1 (xfail); slow-is-decimal-exact-30x9, hard-to-kill-cap-runs-after-slow, diadem-halves-15-to-7, intangible-cap-leaves-a-halved-1-at-0, intangible-colossus-halves-a-vulnerable-1-to-0, halving-truncates-once (pass) | 5 xfail, 6 pass | 11 pass (the F08+F10 switch fixes them) |
 | `regression/` | strike-damages-the-enemy-and-costs-1, vulnerable-multiplies-by-1-5, strength-adds-before-vulnerable-multiplies, weak-truncates-once, feel-no-pain-blocks-per-exhaust, burning-blood-heals-6-after-victory, block-absorbs-first-and-zero-hp-kills | pass (7) | pass (7) |
 
 Slow's multiplier is `1 + 0.1 x SlowAmount`, and SlowAmount is a separate count of the cards played this turn (zero when the power lands, reset when its owner's side turn starts), not the power's amount. `SLOW_POWER` applied with an amount N therefore multiplies by 1 in the game too, so the four Slow scenarios apply it with amount 1 and play the cards (`DEFEND_IRONCLAD`) before the hit; the hand holds at most 10, so the count tops out at 9.
 
-core2 with no family switch on runs old's rules (`migrated_families.json`), so it fails what old fails; its xfail rows say so and are
-the ones P1's kernel work must turn into passes (the "ExhaustListenerOrder, VictoryHealOrder and RoundingOrder pass on Core2" line of
-rebuild-plan section 3). When a switch makes one pass, the runner reports it as an XPASS and the row comes out.
+`xfail_engines` is the per-engine expectation: it names an engine only while that engine fails the scenario, so a scenario the
+switch fixes lists old alone. core2 reads `migrated_families.json` beside the DLL (F08+F10 as checked in), so under the switch the
+five `rounding-order` rows above pass on core2 and old keeps its 9 xfails; core2 lists only its 4 remaining ones (the F11 and F17 rows,
+whose families are not switched). When a switch makes one more pass, the runner reports it as an XPASS and its core2 row comes out.
+
+A test about core2 with no switch must say so itself and not lean on the repository's file: a `KernelOptions.None` engine in C#, a scratch
+build whose `migrated_families.json` is `{"migrated": []}` (`fuzz_core2.dll_for(dll, [], work)`) in Python, or `--switches none` where a
+tool takes it. With no switch core2 runs old's rules, so it fails what old fails (the five rows above then show as plain fails, since
+core2 no longer lists them); `tests/python/test_scenario_runner.py` checks both views.
 
 Not converted: `RoundingOrderTests.HalvingMultipliersTruncateOnce`'s second half, which passes a Doom-style extra multiplier straight to
 the damage function (no game action reaches it with the setup members); and the direct-call forms in the other tests (a fight built by

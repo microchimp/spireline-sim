@@ -65,7 +65,6 @@
     }
   ],
   "xfail_engines": {
-    "old": "old truncates the Vulnerable result to an int (5 x 1.5 = 7) before it applies Slow, so the hit is 7 where the game's one decimal chain gives 5 x 1.5 x 1.1 = 8.25, which truncates to 8 (fix/rounding-order 2935e9ff not landed).",
-    "core2": "old truncates the Vulnerable result to an int (5 x 1.5 = 7) before it applies Slow, so the hit is 7 where the game's one decimal chain gives 5 x 1.5 x 1.1 = 8.25, which truncates to 8 (fix/rounding-order 2935e9ff not landed). core2 runs old's rules until its family switch is on (migrated_families.json), so it fails the same way."
+    "old": "old truncates the Vulnerable result to an int (5 x 1.5 = 7) before it applies Slow, so the hit is 7 where the game's one decimal chain gives 5 x 1.5 x 1.1 = 8.25, which truncates to 8 (fix/rounding-order 2935e9ff not landed)."
   }
 }

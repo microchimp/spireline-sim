@@ -16,11 +16,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from tools.fidelity import fuzz_core2 as F  # noqa: E402
 from tools.fidelity import scenarios as S  # noqa: E402
 
 BUILT = S.DEFAULT_DLL.is_file() and shutil.which("dotnet")
 REGRESSION = S.DEFAULT_DIR / "regression" / "strike-damages-the-enemy-and-costs-1.json"
 SETTERS = "regression/block-absorbs-first-and-zero-hp-kills"  # the scenario that sets the enemy's HP and block (SCENARIOS.md)
+# The scenarios old xfails and core2 passes under the checked-in switch (F08+F10): the rounding-order rows (their xfail_engines
+# list old only). Take a name out as its family joins the switch, never put one back.
+SWITCH_FIXES = {"rounding-order/" + n for n in (
+    "slow-joins-the-multiplicative-chain", "slow-is-decimal-exact-90x3", "intangible-caps-a-halved-30-to-1",
+    "intangible-caps-a-halved-3-to-1", "intangible-colossus-halves-a-vulnerable-4-to-1")}
 
 
 class Rendering(unittest.TestCase):
@@ -56,10 +62,33 @@ class CheckedInScenarios(unittest.TestCase):
             self.assertGreaterEqual(len(reg), 3)
             self.assertTrue(all(r["status"] == "pass" for r in reg), engine)
 
-    def test_what_old_fails_core2_fails_too_while_no_switch_is_on(self):
-        """core2 with no family switch runs old's rules (migrated_families.json): the two engines' outcomes agree."""
-        a, b = (sorted((r["name"], r["status"]) for r in self.reports[e]["results"]) for e in S.ENGINES)
-        self.assertEqual(a, b)
+    def test_with_the_checked_in_switch_core2_passes_what_the_switch_fixes_and_fails_the_rest_like_old(self):
+        """The default core2 runs the families migrated_families.json lists (F08+F10): the rounding-order rows old xfails on the
+        multiplicative chain pass there, every other outcome is old's; core2 lists only the xfails
+        it still has."""
+        old, core2 = ({r["name"]: r["status"] for r in self.reports[e]["results"]} for e in S.ENGINES)
+        self.assertEqual(old.keys(), core2.keys())
+        fixed = {n for n in old if old[n] == "xfail" and core2[n] == "pass"}
+        self.assertEqual(fixed, SWITCH_FIXES)
+        self.assertEqual({n: s for n, s in old.items() if n not in fixed}, {n: s for n, s in core2.items() if n not in fixed})
+        self.assertEqual(len(S.by_status(self.reports["old"], "xfail")), 9)
+        self.assertEqual(len(S.by_status(self.reports["core2"], "xfail")), 4)
+
+    def test_with_no_switch_chosen_core2_fails_what_old_fails(self):
+        """core2 built with migrated_families.json `{"migrated": []}` (a scratch build, whatever the repository lists) runs old's
+        rules: it fails every scenario old fails. The five rows core2 no longer lists as xfail show as plain fails there."""
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work, True)
+        dll = F.dll_for(S.DEFAULT_DLL, [], work)
+        self.addCleanup(F.drop_build, dll, S.DEFAULT_DLL)
+        self.assertEqual(json.loads((dll.parent / "migrated_families.json").read_text(encoding="utf-8")), {"migrated": []})
+        bare = S.run_dir(S.DEFAULT_DIR, "core2", dll)
+        old = {r["name"]: r["status"] for r in self.reports["old"]["results"]}
+        core2 = {r["name"]: r["status"] for r in bare["results"]}
+        self.assertEqual(old.keys(), core2.keys())
+        self.assertEqual({n for n, s in core2.items() if s in ("fail", "xfail")}, {n for n, s in old.items() if s == "xfail"})
+        self.assertEqual({n for n, s in core2.items() if s == "fail"}, SWITCH_FIXES)  # listed no more: unexpected without the switch
+        self.assertEqual({n: s for n, s in old.items() if s == "pass"}, {n: s for n, s in core2.items() if s == "pass"})
 
     def test_the_scenario_that_sets_enemy_hp_and_block_passes_on_both_engines(self):
         for engine, rep in self.reports.items():
