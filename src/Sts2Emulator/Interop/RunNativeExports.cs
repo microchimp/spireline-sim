@@ -33,7 +33,9 @@ public static class RunNativeExports
     // v26: Sts2Run_ResetAs starts a run as any of the five characters; the run's action mask carries a discard action
     // per held potion (RunConstants.DiscardPotionAction) beside the use actions; Sts2Run_PotionActionReason says why a
     // use or discard action is refused (referee/lockstep.py maps the referee's potion labels onto them).
-    public const int RUN_NATIVE_API_VERSION = 26;
+    // v27: Sts2Run_SetMaskVersion picks the run's action-mask version (default 1, today's mask; version 2 adds the potion
+    // discard actions on the card reward, deck-select, bundle-select and Crystal Sphere screens; RunEngine.MaskVersion).
+    public const int RUN_NATIVE_API_VERSION = 27;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -202,6 +204,29 @@ public static class RunNativeExports
     }
 
     /// <summary>
+    /// Pick the version of the action mask this run writes (<see cref="RunEngine.MaskVersion" />): 1 is the default and the
+    /// mask as it was before the versions; 2 also offers the potion discard on the card reward, deck-select,
+    /// bundle-select and Crystal Sphere screens. The setting belongs to the handle: <c>Sts2Run_Reset*</c> keeps it, and
+    /// <c>Sts2Run_Clone</c> copies it.
+    /// </summary>
+    /// <returns>0, -1 for an unknown handle, -2 for a version the mask does not have.</returns>
+    public static int Sts2Run_SetMaskVersion(int handle, int version)
+    {
+        if (!TryGet(handle, out var run))
+        {
+            return -1;
+        }
+
+        if (version is < RunConstants.MaskVersion1 or > RunConstants.MaxMaskVersion)
+        {
+            return -2;
+        }
+
+        run.MaskVersion = version;
+        return 0;
+    }
+
+    /// <summary>
     /// Why the use or discard potion <paramref name="action" /> is refused on this run right now (UTF-8, no terminator).
     /// </summary>
     /// <returns>
@@ -220,7 +245,7 @@ public static class RunNativeExports
             return -2;
         }
 
-        byte[] reason = Encoding.UTF8.GetBytes(RunPotionUse.Refusal(run.State, action) ?? "");
+        byte[] reason = Encoding.UTF8.GetBytes(RunPotionUse.Refusal(run.State, action, run.MaskVersion) ?? "");
         if (reason.Length > bufLen)
         {
             return -3;
