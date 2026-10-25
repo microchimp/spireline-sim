@@ -237,6 +237,33 @@ class BufferTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, f"{seed}.*{path.name}"):
                         self.load([self.record(20, 0), leak], generation=0)
 
+    def test_a_seed_recorded_twice_in_a_generation_is_one_run(self):
+        # A self-play block the lab resumed once wrote every replayed run again: same generation, same seed. The first copy
+        # trains, the others are dropped and counted, for FightNet and V alike.
+        first = self.record(20, 1)
+        copies = [self.record(21, 1, seed=first["seed"]), self.record(22, 1, seed=first["seed"].lower())]
+        fights, values = self.load([first, self.record(30, 1), *copies], generation=1)
+        self.assertEqual(self.hps(fights), [20, 30])
+        self.assertEqual(self.hps(values), [20, 30])
+        self.assertEqual(values.runs, 2)
+        self.assertEqual(values.duplicates_dropped, 2)
+        _, clean = self.load([first, self.record(30, 1)], generation=1)
+        self.assertEqual(clean.duplicates_dropped, 0)
+
+    def test_a_complete_copy_stands_in_for_a_truncated_one(self):
+        cut = self.record(20, 1, truncated=True)
+        whole = self.record(21, 1, seed=cut["seed"])
+        fights, values = self.load([cut, whole], generation=1)
+        self.assertEqual(self.hps(fights), [21])
+        self.assertEqual(self.hps(values), [21])
+        self.assertEqual(values.duplicates_dropped, 0)  # the truncated copy is left out, not a duplicate
+
+    def test_the_same_seed_in_two_generations_is_two_runs(self):
+        a = self.record(20, 1)
+        fights, values = self.load([a, self.record(21, 2, seed=a["seed"])], generation=2)
+        self.assertEqual(self.hps(fights), [20, 21])
+        self.assertEqual(values.duplicates_dropped, 0)
+
     def test_the_cap_keeps_a_runs_latest_fights(self):
         run = self.record(30, 5)
         first = run["fights"][0]

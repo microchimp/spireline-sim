@@ -276,6 +276,7 @@ class ValueData:
     fight_block: np.ndarray | None = None
     runs: int = 0
     generations: tuple[int, ...] = ()
+    duplicates_dropped: int = 0  # records `load_buffers` left out because their (generation, seed) was already read
     # What the keep conditions (`keep.evaluate_value_net`) read, one entry per row: the run's final floor, the run's index,
     # the row's own floor, and V0's inputs (HP fraction, potions held, act index)
     final_floor: np.ndarray | None = None
@@ -364,6 +365,10 @@ def load_buffers(
     (`deckfights.pair_records`): FightNet rows only. V keeps the decisions of the last
     `value_generations` generations; FightNet keeps every fight, capped at the newest
     `fight_cap` (newest by generation, then by the order the shards are given in).
+    A (generation, seed) is one run: shards that hold a seed more than once (a self-play block
+    the lab resumed before its writer was idempotent) give the first copy that counts, so a
+    truncated copy never stands in for a complete one, and the later copies are dropped and
+    counted in `ValueData.duplicates_dropped`.
 
     Raises:
         ValueError: If any record, of any era, is a run of an eval or final-test seed:
@@ -374,6 +379,8 @@ def load_buffers(
     reserved = _reserved_seeds()
     fights: list[_FightChunk] = []
     value = _ValueBuilder()
+    seen: set[tuple[int, str]] = set()
+    duplicates = 0
     for order, path in enumerate(shards):
         for line, record in enumerate(read_shard(Path(path))):
             seed = canonicalize(record["seed"])
@@ -390,6 +397,10 @@ def load_buffers(
                 or not _in_era(record, budget, ascension)
             ):
                 continue
+            if (played, seed) in seen:
+                duplicates += 1
+                continue
+            seen.add((played, seed))
             if rows := fight_rows(record):
                 key = (played, order, line)
                 fights.append(_FightChunk.of(key, record["seed"], rows))
@@ -410,7 +421,9 @@ def load_buffers(
                 # After the generation's own runs: the newest fights of that generation.
                 key = (played, 1_000_000 + order, line)
                 fights.append(_FightChunk.of(key, record["seed"], rows))
-    return _fight_data(fights, config), value.finish(config)
+    values = value.finish(config)
+    values.duplicates_dropped = duplicates
+    return _fight_data(fights, config), values
 
 
 @dataclass(frozen=True)
@@ -720,6 +733,7 @@ def fit(
                     **value_stats,
                     "runs": values.runs,
                     "generations": list(values.generations),
+                    "duplicates_dropped": values.duplicates_dropped,
                 },
                 "config": asdict(config),
             },
