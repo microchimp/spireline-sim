@@ -394,7 +394,7 @@ def hyp_score(root: Path):
             "lab_mix_weight": weight, "lab_mix_notes": [n for n in mix_notes if not labmix.is_idle_note(n)]}, None  # the idle share is in lab.utilisation
 
 
-def build(root: Path, top: int = 5, now: float | None = None, cores: int | None = None) -> dict:
+def build(root: Path, top: int = 5, now: float | None = None, cores: int | None = None, days: int = UTIL_DAYS) -> dict:
     notes = {}
     out = {}
     for name, fn in (("codex", codex_score), ("corpus", corpus_score), ("data", data_score), ("hypotheses", hyp_score)):
@@ -406,7 +406,7 @@ def build(root: Path, top: int = 5, now: float | None = None, cores: int | None 
     out["lab"] = lab
     if n:
         notes["lab"] = n["note"]
-    util, un = lab_utilisation(root, now, cores)
+    util, un = lab_utilisation(root, now, cores, days)
     if lab is not None:
         lab["utilisation"] = util
     elif util is not None:
@@ -516,8 +516,9 @@ def main(argv=None) -> int:
     ap.add_argument("--json", type=Path, help="write the result as JSON here")
     ap.add_argument("--top", type=int, default=5)
     ap.add_argument("--cores", type=int, default=None, help="logical cores the lab's CPU minutes are measured against (default: this machine's)")
+    ap.add_argument("--days", type=int, default=UTIL_DAYS, help="days the lab utilisation is measured over (default: 7; 2 for the last 48 hours)")
     a = ap.parse_args(argv)
-    r = build(a.referee, a.top, cores=a.cores)
+    r = build(a.referee, a.top, cores=a.cores, days=max(1, a.days))
     print(render(r))
     if a.json:
         a.json.parent.mkdir(parents=True, exist_ok=True)
