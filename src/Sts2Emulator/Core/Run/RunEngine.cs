@@ -7,6 +7,33 @@ public sealed class RunEngine : Core2.ICombatEndHost
 {
     public RunState State { get; private set; } = new();
 
+    private int _maskVersion = RunConstants.MaskVersion1;
+
+    /// <summary>
+    /// The version of the action mask this run writes and the discard actions it accepts: <see cref="RunConstants.MaskVersion1" />
+    /// (the default; the mask as it was before the versions) or <see cref="RunConstants.MaskVersion2" /> (adds the potion
+    /// discard on the card reward, deck-select, bundle-select and Crystal Sphere screens). A setting of the handle, like
+    /// <see cref="Kernel" />: <see cref="Reset" /> keeps it and <see cref="Clone" /> copies it. It changes the mask and
+    /// what a step accepts, never a run's state.
+    /// </summary>
+    public int MaskVersion
+    {
+        get => _maskVersion;
+        set
+        {
+            if (value is < RunConstants.MaskVersion1 or > RunConstants.MaxMaskVersion)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    value,
+                    $"The run mask has versions {RunConstants.MaskVersion1} to {RunConstants.MaxMaskVersion}."
+                );
+            }
+
+            _maskVersion = value;
+        }
+    }
+
     private Core2.Kernel? _kernel;
 
     /// <summary>
@@ -540,7 +567,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 SetMask(mask, RunConstants.UsePotionAction + slot);
             }
 
-            if (RunPotionUse.CanDiscard(State, slot))
+            if (RunPotionUse.CanDiscard(State, slot, MaskVersion))
             {
                 SetMask(mask, RunConstants.DiscardPotionAction + slot);
             }
@@ -897,6 +924,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
             State = State.Clone(
                 resampleSeed is null ? null : ResampledSeedString(resampleSeed.Value)
             ),
+            MaskVersion = MaskVersion,
         };
         if (resampleSeed is not null)
         {
@@ -1468,7 +1496,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
             && RunPotionUse.DiscardSlotOf(action) is var discardedSlot and >= 0
         )
         {
-            return RunPotionUse.Discard(State, discardedSlot) ? 0 : -1;
+            return RunPotionUse.Discard(State, discardedSlot, MaskVersion) ? 0 : -1;
         }
 
         if (State.Phase == RunPhase.Ancient)

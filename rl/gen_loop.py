@@ -86,6 +86,11 @@ def read_json(path: Path) -> Any:
 # ------------------------------------------------------------------ the agent a generation directory names
 
 
+# The run mask version (native.RUN_MASK_VERSIONS) a candidate written by `train_generation` carries in its agent.json;
+# an agent.json without the key is version 1 (generations 0-3 and every candidate saved before the key existed).
+CANDIDATE_MASK_VERSION = 2
+
+
 @dataclass(frozen=True)
 class Agent:
     """What plays: the combat prior (if the directory has one) and the macro policy outside fights."""
@@ -102,6 +107,9 @@ class Agent:
     # server's endpoint and this job's key (docs/rl/GPU_INFERENCE.md). Set by `gen0.run_block` after it started the server.
     prior_server: str | None = None
     prior_authkey: bytes | None = field(default=None, repr=False)
+    # the version of the run action mask this agent's runs are built with (agent.json `mask_version`, absent: 1); it only
+    # changes what the mask carries, never what the agent chooses (run_train.engine._legal hides the potion actions)
+    mask_version: int = 1
 
     def search_extra(self) -> dict[str, Any]:
         """`live_search.search_live` keyword arguments that switch the tree to PUCT with the prior; {} for none.
@@ -172,8 +180,11 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
     npz = p / "run_value.npz"
     if mode == "vrun" and not npz.is_file():
         raise FileNotFoundError(f"macro vrun needs run_value.npz in {p.name}")
+    mask_version = meta.get("mask_version", 1)
+    if isinstance(mask_version, bool) or mask_version not in (1, 2):
+        raise ValueError(f"{p.name}/agent.json: mask_version {mask_version!r} is not 1 or 2")
     return Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" else None,
-                 float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)))
+                 float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version))
 
 
 def active_agent_extra() -> dict[str, Any]:
@@ -925,6 +936,7 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     doc["vrun_keep"]["macro_switch"] = {"passed": passed, "enabled": enabled, "note": MACRO_SWITCH_NOTE}
     doc["vrun_keep"]["note"] = vrun_keep_note(macro)
     write_json(cand / "agent.json", {"generation": gen + 1, "macro": macro, "trained_from": gen, "written": utc_now(),
+                                     "mask_version": CANDIDATE_MASK_VERSION,
                                      "note": ("V_run passed every computable DESIGN 5.3 keep condition (Tier-B regret and the battery "
                                               "are not computed) and the macro switch is on: it picks macro options" if macro == "vrun" else
                                               f"V_run passed the computable keep conditions; the macro switch ({MACRO_VRUN_FLAG}) is "

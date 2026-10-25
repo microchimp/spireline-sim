@@ -317,6 +317,7 @@ class TrainTests(unittest.TestCase):
         self.assertEqual(len(t["combat"]["curves"]), 2)
         self.assertGreater(t["combat"]["cpu_min"], 0)
         self.assertEqual(json.loads((c / "agent.json").read_text())["generation"], 2)
+        self.assertEqual(json.loads((c / "agent.json").read_text())["mask_version"], 2)  # D32: new candidates carry the versioned mask
         switch = t["vrun_keep"]["macro_switch"]  # the macro fence: off unless SPIRELINE_MACRO_VRUN is set
         self.assertEqual((switch["passed"], switch["enabled"]), (False, False))
         self.assertIn("owner decision", switch["note"])

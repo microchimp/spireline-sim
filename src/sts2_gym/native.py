@@ -16,7 +16,7 @@ _LIB_NAMES = {
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
 _REQUIRED_NATIVE_API_VERSION = 37
-_REQUIRED_RUN_NATIVE_API_VERSION = 27
+_REQUIRED_RUN_NATIVE_API_VERSION = 28
 # The engine this process runs (docs/rebuild/NATIVE_KERNEL.md section 3): read once, when the library loads, and passed
 # to Sts2_SetEngine before any handle exists. Unset or "old": the old engine. "core2": the Tier 1 kernel of
 # tools/fidelity/migrated_families.json. Inherited by every spawn worker, so one flag on the parent reaches them all.
@@ -560,6 +560,12 @@ _lib.Sts2Run_PotionActionReason.argtypes = [
     ctypes.c_int,
     ctypes.POINTER(ctypes.c_ubyte),
     ctypes.c_int,
+]
+
+_lib.Sts2Run_SetMaskVersion.restype = ctypes.c_int
+_lib.Sts2Run_SetMaskVersion.argtypes = [
+    ctypes.c_int,
+    ctypes.c_int,  # mask version (RUN_MASK_VERSIONS)
 ]
 
 _lib.Sts2Run_Step.restype = ctypes.c_int
@@ -1524,6 +1530,13 @@ RUN_USE_POTION_ACTION: int = 242
 RUN_DISCARD_POTION_ACTION: int = 248
 RUN_POTION_SLOTS: int = 6
 
+# The run action mask has versions (D32), a setting of the run handle. Version 1 is the default and the mask as it was;
+# version 2 also lists the discard actions on the card reward, deck-select, bundle-select and Crystal Sphere screens
+# (the belt stays closed for a use there). `run_set_mask_version` picks one; `Sts2RunEnv(mask_version=...)` does it per env.
+RUN_MASK_VERSION_DEFAULT: int = 1
+RUN_MASK_VERSION_OPEN_DISCARD: int = 2
+RUN_MASK_VERSIONS: tuple[int, ...] = (1, 2)
+
 
 def run_character_index(character: str) -> int:
     """The `Sts2Run_ResetAs` index of a character id ("SILENT", or "CHARACTER.SILENT"; any case).
@@ -1567,6 +1580,18 @@ def run_reset_character(
             obs_buf,
         ),
     )
+
+
+def run_set_mask_version(handle: int, version: int) -> None:
+    """Pick the version of the action mask this run handle writes (`RUN_MASK_VERSIONS`); `run_reset*` keeps it.
+
+    Raises:
+        ValueError: for an unknown handle or a version the mask does not have.
+
+    """
+    status = int(_lib.Sts2Run_SetMaskVersion(handle, int(version)))
+    if status != 0:
+        raise ValueError(f"Sts2Run_SetMaskVersion({handle}, {version}) failed with status {status}")
 
 
 def run_potion_action_reason(handle: int, action: int) -> str:

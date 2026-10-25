@@ -29,7 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
-EMU = ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll"
+EMU = Path(os.environ.get("EMUDUMP_DLL") or ROOT / "tools/emudump/bin/Release/net9.0/EmuDump.dll")  # EMUDUMP_DLL: a build in another tree
 sys.path.insert(0, str(ROOT))
 from tools.fidelity.rng_diff import LABELLED_FLAGS, NO_INLINING  # noqa: E402
 

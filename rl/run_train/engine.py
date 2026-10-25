@@ -170,14 +170,15 @@ class CombatBudget:
         )
 
 
-def new_run_env(seed: str, ascension: int, character: str = "IRONCLAD") -> Sts2RunEnv:
+def new_run_env(seed: str, ascension: int, character: str = "IRONCLAD", mask_version: int = 1) -> Sts2RunEnv:
     """Return a run env at `ascension` (run API 20), the level passed straight through.
 
     The run engine plays the game's 0-10 (`Ascension.MaxRunLevel`), A10's second boss on
     the last act included, and the env's `reset` raises for a level outside that range.
     """
     return Sts2RunEnv(seed=seed, max_episode_steps=10**9, ascension=ascension,
-                      **({} if character == "IRONCLAD" else {"character": character}))
+                      **({} if character == "IRONCLAD" else {"character": character}),
+                      **({} if mask_version == 1 else {"mask_version": mask_version}))
 
 
 # --------------------------------------------------------------------------------------
@@ -1009,14 +1010,18 @@ class RunSession:
         ascension: int = 0,
         budget: CombatBudget | int = CombatBudget(120, 500),  # noqa: B008 -- frozen
         character: str = "IRONCLAD",
+        mask_version: int = 1,
     ):
         self.seed = seed
         self.character = character
+        # The run mask's version (D32): 1 is the mask as it was, 2 also lists the potion discard on the closed-belt screens.
+        # It only changes what the mask carries: `_legal` hides 242..253, so every policy sees the same screens either way.
+        self.mask_version = mask_version
         self.ascension = ascension
         self.budget = CombatBudget.of(budget)
         self.stats = SessionStats()
         self.steps = 0
-        self.env = new_run_env(seed, ascension, character)
+        self.env = new_run_env(seed, ascension, character, mask_version)
         self.env.reset()
         # What the engine does not export, kept per room visit (reset on every map move).
         self.visit = VisitTracker()
