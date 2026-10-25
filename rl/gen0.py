@@ -34,6 +34,7 @@ Z = 1.959964
 
 # ------------------------------------------------------------------ seeds
 
+import run_fields  # noqa: E402 -- rl/ is on sys.path whenever gen0 is imported
 
 def e_block(name: str, n: int) -> list[str]:
     """`n` game seeds, a pure function of the block's name: sha256("<name>:<i>") mapped onto 10 characters."""
@@ -101,10 +102,14 @@ def engine_block(runs: list[dict]) -> dict:
     dec = sum(r["decisions"] for r in runs)
     wall = sum(r["wall"] for r in runs)
     lo, hi = wilson(wins, n)
-    return {"runs": n, "wins": wins, "win_rate": wins / n if n else None, "win_lo": lo, "win_hi": hi,
-            "floor": mean_ci([r["floor"] for r in runs]), "crashes": crashes, "decisions": dec,
-            "decisions_per_s_per_proc": dec / wall if wall else None, "run_wall_s": wall,
-            "ai_state_assumed": sum(r.get("ai_state_assumed") or 0 for r in runs)}
+    out = {"runs": n, "wins": wins, "win_rate": wins / n if n else None, "win_lo": lo, "win_hi": hi,
+           "floor": mean_ci([r["floor"] for r in runs]), "crashes": crashes, "decisions": dec,
+           "decisions_per_s_per_proc": dec / wall if wall else None, "run_wall_s": wall,
+           "ai_state_assumed": sum(r.get("ai_state_assumed") or 0 for r in runs)}
+    fields = run_fields.aggregate(runs)  # mean boss damage, card choices by floor, skip rate: only for rows that carry them
+    if fields:
+        out["run_fields"] = fields
+    return out
 
 
 def compare(emu: list[dict], real: list[dict], real_summary: dict | None = None) -> dict:
@@ -718,7 +723,9 @@ def score_real(a: argparse.Namespace) -> int:
     res["emu_arm"] = arm
     (out / "result.json").write_text(json.dumps(res), encoding="utf-8")
     if summ:
-        (out / "summary.json").write_text(json.dumps({**summ, "emu_arm": arm}, indent=1), encoding="utf-8")
+        agg = run_fields.aggregate(rows)
+        (out / "summary.json").write_text(json.dumps({**summ, "emu_arm": arm, **({"run_fields": agg} if agg else {})}, indent=1),
+                                          encoding="utf-8")
     if rows and not only:
         emu = [json.loads(x) for x in (emu_dir / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
         (out / "compare.json").write_text(json.dumps({**compare(emu, rows, summ), "emu_arm": arm}, indent=1), encoding="utf-8")

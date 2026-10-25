@@ -15,6 +15,7 @@ the end, from the newest refset score that has a codex walk. Sub-scores, each wi
               lab.utilisation: CPU minutes the lab's jobs used over the wall minutes the owner left it (last 7 days,
               minus the runner's user / PAUSE / HALT / main.lock spans, per core), against the 90% target, by strategy
   data        differences between the game export and the emulator tables (newest audit/data-checks table-check text)
+  agent       the newest agent block's per-arm boss damage, skip rate and cards taken (promotion.json; n/a for rows older than the fields)
   hypotheses  audit setups confirmed / refuted / not testable / open (LAB/hypotheses.json; setups with no verdict are open)
 Blockers: the Codex stop causes by the runs they ended (measured), and the open lab groups by the runs that hold their
 ingredients (an estimate of exposure, not of stops). Missing inputs give a null sub-score and a note, never a guess.
@@ -198,6 +199,32 @@ def corpus_score(root: Path):
     return {"source": _rel(p, root), "date": (d.get("made") or _day(p))[:10], "commit": d.get("commit"),
             "fights": t["fights"], "identical": t.get("identical", 0), "identical_pct": pct(t.get("identical", 0), t["fights"]),
             "steps_verified_pct": pct(t.get("reanchor_matched", 0), t.get("reanchored", 0))}, None
+
+
+def agent_score(root: Path):
+    """The newest agent block (the latest promotion.json under agent/gen*/*/): its two arms' runs, mean boss damage, skip rate, cards
+    taken per run and the cards taken by floor, from the per-arm run_fields the tables carry. None where the block's rows predate
+    the fields (unknown, not 0); no agent folder: no section and no note."""
+    docs = []
+    for p in sorted((root / "agent").glob("gen*/*/promotion.json")):
+        d = _load(p)
+        if isinstance(d, dict) and isinstance(d.get("cand"), dict):
+            docs.append((str(d.get("written") or ""), str(p), p, d))
+    if not docs:
+        return None, None
+    written, _, p, d = max(docs, key=lambda x: x[:2])
+    arms = {}
+    for name in ("cand", "base"):
+        s = (d.get(name) or {}).get("summary") or {}
+        rf = s.get("run_fields") or {}
+        bd, cd = rf.get("boss_damage") or {}, rf.get("cards") or {}
+        arms[name] = {"runs": s.get("runs"), "boss_damage_mean": bd.get("mean"), "boss_damage_n": bd.get("n"),
+                      "skip_rate": cd.get("skip_rate"), "cards_taken_per_run": cd.get("taken_per_run"),
+                      "cards_taken_by_floor": cd.get("taken_by_floor")}
+    known = any(a["boss_damage_mean"] is not None or a["skip_rate"] is not None for a in arms.values())
+    return ({"source": _rel(p, root), "date": written[:10] or _day(p), "block": d.get("seed_block"), "decision": d.get("decision"),
+             "arms": arms},
+            None if known else {"note": "the latest agent block's rows predate the boss_damage and cards fields"})
 
 
 def lab_score(root: Path):
@@ -397,11 +424,13 @@ def hyp_score(root: Path):
 def build(root: Path, top: int = 5, now: float | None = None, cores: int | None = None, days: int = UTIL_DAYS) -> dict:
     notes = {}
     out = {}
-    for name, fn in (("codex", codex_score), ("corpus", corpus_score), ("data", data_score), ("hypotheses", hyp_score)):
+    for name, fn in (("codex", codex_score), ("corpus", corpus_score), ("data", data_score), ("hypotheses", hyp_score), ("agent", agent_score)):
         v, n = fn(root)
         out[name] = v
         if n:
             notes[name] = n["note"]
+    if out.get("agent") is None:
+        out.pop("agent", None)  # no agent block yet: no section, as before
     lab, groups, n = lab_score(root)
     out["lab"] = lab
     if n:
@@ -495,6 +524,13 @@ def render(r: dict) -> str:
     if y:
         rows.append(("audit hypotheses", f"{y['confirmed']} confirmed, {y['refuted']} refuted, {y['not_testable']} not testable, "
                      f"{y['open']} open of {y['total']}", y["source"], y["date"]))
+    ag = r.get("agent")
+    if ag:
+        def cell(a):
+            f = lambda v, nd=3: "n/a" if v is None else f"{v:.{nd}f}"  # noqa: E731
+            return f"boss damage {f(a['boss_damage_mean'])}, skip rate {f(a['skip_rate'])}, cards/run {f(a['cards_taken_per_run'], 2)}"
+        rows.append(("agent latest block", f"{ag['block']} ({ag['decision']}): candidate {cell(ag['arms']['cand'])}; "
+                     f"incumbent {cell(ag['arms']['base'])}", ag["source"], ag["date"]))
     w = max((len(x[0]) for x in rows), default=0)
     for a, v, s, dt in rows:
         L.append(f"{a:<{w}}  {v}  [{s}, {dt}]")

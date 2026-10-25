@@ -164,5 +164,60 @@ class CardsPerFloorTests(unittest.TestCase):
         self.assertEqual((r["nodes"], r["rests"]), ("M?", [[8, "smith"]]))
 
 
+def row(seed: str, **kw) -> dict:
+    return {"seed": seed, "win": False, "floor": 17, "decisions": 10, "wall": 1.0, "crash": False, **kw}
+
+
+class TableTests(unittest.TestCase):
+    ROWS = [row("a", boss_damage=0.5, cards=[[2, "BASH"], [3, "skip"], [4, "ANGER"]]), row("b", boss_damage=1.0, cards=[[2, "skip"]]),
+            row("c")]  # an older row: no fields
+
+    def test_the_aggregates_count_only_the_rows_that_carry_the_fields(self):
+        a = run_fields.aggregate(self.ROWS)
+        self.assertEqual(a["boss_damage"], {"n": 2, "mean": 0.75})
+        c = a["cards"]
+        self.assertEqual((c["runs"], c["taken"], c["skipped"], c["skip_rate"], c["taken_per_run"]), (2, 2, 2, 0.5, 1.0))
+        self.assertEqual((c["taken_by_floor"], c["skipped_by_floor"]), ({"2": 1, "4": 1}, {"2": 1, "3": 1}))
+        self.assertEqual(run_fields.aggregate([row("c"), row("d")]), {})  # none carry them: unknown, no zeros
+        self.assertEqual(run_fields.aggregate([row("e", boss_damage=0.0)]), {"boss_damage": {"n": 1, "mean": 0.0}})
+
+    def test_summary_compare_and_promotion_tables_carry_them_and_old_rows_load(self):
+        import gen_loop
+
+        self.assertEqual(gen0.engine_block(self.ROWS)["run_fields"]["boss_damage"]["mean"], 0.75)
+        self.assertEqual(gen_loop.arm_summary(self.ROWS)["run_fields"]["cards"]["skip_rate"], 0.5)  # promotion.json's cand/base summary
+        old = [row("c"), row("d")]
+        self.assertNotIn("run_fields", gen0.engine_block(old))
+        self.assertNotIn("run_fields", gen_loop.arm_summary(old))
+        cmp = gen0.compare(self.ROWS, [row("a", boss_damage=0.25), row("c")])
+        self.assertEqual(cmp["emu"]["run_fields"]["boss_damage"], {"n": 1, "mean": 0.5})  # the shared seeds only
+        self.assertEqual(cmp["real"]["run_fields"]["boss_damage"], {"n": 1, "mean": 0.25})
+
+    def test_readiness_agent_section_shows_the_latest_block_and_n_a_for_old_rows(self):
+        from tools.fidelity import readiness as rd
+
+        def promo(root: Path, gen: int, written: str, fields: bool) -> None:
+            arm = {"summary": {"runs": 2000, **({"run_fields": gen0.engine_block(self.ROWS)["run_fields"]} if fields else {})}}
+            p = root / "agent" / f"gen{gen}" / "candidate" / "promotion.json"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"written": written, "seed_block": f"E{gen}", "decision": "rejected", "cand": arm, "base": arm}), encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.assertEqual(rd.agent_score(root), (None, None))  # no agent folder: no section, no note
+            promo(root, 1, "2026-10-20T00:00:00Z", fields=True)
+            promo(root, 2, "2026-10-24T00:00:00Z", fields=False)  # the newest block predates the fields
+            sec, note = rd.agent_score(root)
+            self.assertEqual((sec["block"], sec["arms"]["cand"]["boss_damage_mean"], sec["arms"]["cand"]["skip_rate"]), ("E2", None, None))
+            self.assertIn("predate", note["note"])
+            promo(root, 3, "2026-10-25T00:00:00Z", fields=True)
+            sec, note = rd.agent_score(root)
+            self.assertIsNone(note)
+            self.assertEqual((sec["block"], sec["arms"]["cand"]["boss_damage_mean"], sec["arms"]["base"]["skip_rate"]), ("E3", 0.75, 0.5))
+            self.assertEqual(sec["arms"]["cand"]["cards_taken_by_floor"], {"2": 1, "4": 1})
+            self.assertEqual(rd.build(root)["agent"]["block"], "E3")
+            self.assertIn("agent latest block", rd.render(rd.build(root)))
+
+
 if __name__ == "__main__":
     unittest.main()

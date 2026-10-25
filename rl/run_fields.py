@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import functools
 import json
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -146,3 +147,27 @@ class RunFields:
         first = next((frac for act, frac in self.bosses if act == 0), 0.0)
         return {"boss_damage": first, "boss_damage_acts": [list(b) for b in self.bosses],
                 "cards": [list(c) for c in self.cards], "nodes": "".join(self.nodes), "rests": [list(r) for r in self.rests]}
+
+
+def aggregate(rows: Iterable[dict]) -> dict:
+    """The tables' per-arm numbers from runs.jsonl rows: mean boss damage over the rows that carry it, and the card reward
+    choices (taken per run, taken and skipped by floor, skip rate) over the rows that carry `cards`. A key is absent when no
+    row has its field (an older block): absent is unknown, never 0."""
+    rows = list(rows)
+    out: dict = {}
+    dmg = [float(r["boss_damage"]) for r in rows if r.get("boss_damage") is not None]
+    if dmg:
+        out["boss_damage"] = {"n": len(dmg), "mean": round(sum(dmg) / len(dmg), 4)}
+    lists = [r["cards"] for r in rows if isinstance(r.get("cards"), list)]
+    if lists:
+        taken: Counter = Counter()
+        skipped: Counter = Counter()
+        for cards in lists:
+            for floor, what in cards:
+                (skipped if what == SKIP else taken)[int(floor)] += 1
+        t, s = sum(taken.values()), sum(skipped.values())
+        out["cards"] = {"runs": len(lists), "decisions": t + s, "taken": t, "skipped": s,
+                        "skip_rate": round(s / (t + s), 4) if t + s else None, "taken_per_run": round(t / len(lists), 3),
+                        "taken_by_floor": {str(f): taken[f] for f in sorted(taken)},
+                        "skipped_by_floor": {str(f): skipped[f] for f in sorted(skipped)}}
+    return out
