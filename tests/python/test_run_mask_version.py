@@ -28,7 +28,7 @@ BELT = ("BLOCK_POTION", "BLOOD_POTION", "FRUIT_JUICE")
 @unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 27)")
 class MaskVersionBindingTests(unittest.TestCase):
     def test_the_binding_requires_api_27_and_names_the_versions(self):
-        self.assertEqual(native._REQUIRED_RUN_NATIVE_API_VERSION, 27)
+        self.assertEqual(native._REQUIRED_RUN_NATIVE_API_VERSION, 28)
         self.assertEqual((native.RUN_MASK_VERSION_DEFAULT, native.RUN_MASK_VERSIONS), (1, (1, 2)))
 
     def test_an_unknown_handle_or_version_is_refused(self):

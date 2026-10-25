@@ -670,10 +670,22 @@ def select_runs(seeds: list, runs: int, only: str | None) -> tuple[list, list]:
     return [seeds[i] for i in ids], ids
 
 
+def select_engine(engine: str) -> None:
+    """Set the emulator engine of this process and the workers it spawns.
+
+    STS2_ENGINE, read by sts2_gym.native when it loads: "old" clears it, whatever the environment said.
+    """
+    if engine == "old":
+        os.environ.pop("STS2_ENGINE", None)
+    else:
+        os.environ["STS2_ENGINE"] = engine
+
+
 def play(a) -> int:
     """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator."""
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    select_engine(getattr(a, "engine", "old"))  # before the workers spawn: each loads the library on it
     import lockstep  # noqa: PLC0415
 
     lockstep.require_character(a.character)  # the emulator side must be able to start it: exit before any game boots
@@ -728,7 +740,7 @@ def play(a) -> int:
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
-    summary = {"agent_seed": agent_seed, "character": a.character, "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+    summary = {"agent_seed": agent_seed, "character": a.character, "engine": getattr(a, "engine", "old"), "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / wall, 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -806,6 +818,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--ascension", type=int, default=10)
     ap.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     ap.add_argument("--step-timeout", type=float, default=180)
+    ap.add_argument("--engine", choices=["old", "core2"], default="old",
+                    help="play: the emulator's engine in the lockstep (docs/rebuild/NATIVE_KERNEL.md); every other mode runs old")
     ap.add_argument("--extra-actions", action="store_true", help="record: record with the extra actions on (replay uses the stored flag)")
     ap.add_argument("--full-select", action="store_true", help="record: record with fight card screens at their real min..max (replay uses the stored flag)")
     ap.add_argument("--max-runs", type=int, default=0, help="bench: stop after this many runs in all (0: run for --seconds)")
@@ -815,6 +829,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     a = parser().parse_args()
+    select_engine(a.engine if a.mode == "play" else "old")
     return {"smoke": smoke, "bench": bench, "record": record, "replay": replay, "play": play}[a.mode](a)
 
 

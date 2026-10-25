@@ -378,8 +378,9 @@ parts, skipped entries counted), which a pause records. `Core2/Listeners.cs` bui
     engine's step). OldReanchor's every step (the action, the answers to its screens, the finish of a stopped step) goes
     through it, so with a switch on (`reanchor --engine core2`) it steps only bound combats and no step skips the queue
     (`ReanchorKernelGateTests`); OldHookProbe binds its scenario combats to the engine's kernel and `EmuDump kernel-order`
-    takes `--engine`; the native run API refuses a switched-on kernel; `RunEngine.Step` throws when a switch is on and
-    the combat about to be stepped has no KernelState. A test plays a whole run with a test switch on beside the old
+    takes `--engine`; the native library runs the kernel as its engine option core2 (docs/rebuild/NATIVE_KERNEL.md)
+    and refuses the paths not bound yet; `RunEngine.Step` throws when a switch is on and the combat about to be stepped
+    has no KernelState. A test plays a whole run with a test switch on beside the old
     engine: the same masks, results and HP at every step, a KernelState on every combat step.
   - **G2891c25e0d** (a dead enemy at a mid-fight card selection): the game removes it inside
     `CreatureCmd.KillWithoutCheckingWinCondition` (AfterDeath, a per-listener dispatch that does not wait, then

@@ -86,9 +86,14 @@ class FamilyMap(unittest.TestCase):
         left = [h for h in ht.hook_names(str(d)) if h not in fam["hooks"] and h not in fam["unassigned"]]
         self.assertEqual(left, [])
 
-    def test_migrated_file_starts_empty(self):
-        self.assertEqual(json.loads(mf.MIGRATED.read_text(encoding="utf-8")), {"migrated": []})
-        self.assertEqual(mf.migrated_families(), [])
+    def test_migrated_file_lists_known_families_and_is_read_as_it_is(self):
+        # The switched-on families as the file holds them (F08+F10 since the switch-on): known family names, no repeat, and
+        # migrated_families() reads exactly that list.
+        listed = json.loads(mf.MIGRATED.read_text(encoding="utf-8"))["migrated"]
+        fam = mf.load_families()
+        self.assertEqual(len(listed), len(set(listed)))
+        self.assertEqual(set(listed) - set(fam["families"]), set())
+        self.assertEqual(mf.migrated_families(), listed)
 
     def test_snake_ids(self):
         self.assertEqual(mf.snake("StrikeIronclad"), "STRIKE_IRONCLAD")

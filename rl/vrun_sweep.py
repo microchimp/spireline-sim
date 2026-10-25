@@ -17,6 +17,11 @@ relative to the cache folder, never absolute paths.
 
 from __future__ import annotations
 
+import os as _os  # noqa: E402
+
+if __name__ == "__main__":  # D31: run as a command this is self-play, promotion or training: old engine, whatever STS2_ENGINE says
+    _os.environ.pop("STS2_ENGINE", None)  # sts2_gym.native reads it once, when the imports below load it (NATIVE_KERNEL.md section 3)
+
 import os
 
 for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):

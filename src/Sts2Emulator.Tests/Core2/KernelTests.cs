@@ -90,6 +90,35 @@ public class KernelTests
         Assert.Throws<ArgumentException>(() => KernelOptions.FromFamilies(["F99"]));
     }
 
+    [Theory]
+    [InlineData("8")]
+    [InlineData("200")]
+    [InlineData("0")]
+    [InlineData("F8")]
+    [InlineData("F00")]
+    [InlineData("None")]
+    [InlineData("f08")]
+    [InlineData(" F08")]
+    [InlineData("F08\n")]
+    [InlineData("F")]
+    [InlineData("")]
+    public void OnlyADefinedFNameIsAFamily(string name)
+    {
+        // Enum.TryParse takes "8" and "200" as numbers (a Switch value, defined or not), so "core2:8" would have switched
+        // F08 on by its number and "core2:200" would have made an undefined switch.
+        var ex = Assert.Throws<ArgumentException>(() => KernelOptions.FromFamilies([name]));
+        Assert.Contains("unknown family", ex.Message);
+    }
+
+    [Fact]
+    public void ADefinedFNameIsAFamily()
+    {
+        var shared = SwitchGroups.Groups.First(g => g.Length > 1);
+        var names = shared.Select(s => s.ToString()).ToList();
+        Assert.All(names, n => Assert.Matches("^F[0-9]+$", n));
+        Assert.Equal(shared.ToHashSet(), KernelOptions.FromFamilies(names).Switches.ToHashSet());
+    }
+
     [Fact]
     public void TheDamageAndDeathFamiliesSwitchTogetherAndApartFromTheOthers()
     {

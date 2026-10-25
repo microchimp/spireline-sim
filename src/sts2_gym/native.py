@@ -15,8 +15,12 @@ _LIB_NAMES = {
     "darwin": "Sts2Emulator.dylib",
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
-_REQUIRED_NATIVE_API_VERSION = 36
-_REQUIRED_RUN_NATIVE_API_VERSION = 27
+_REQUIRED_NATIVE_API_VERSION = 37
+_REQUIRED_RUN_NATIVE_API_VERSION = 28
+# The engine this process runs (docs/rebuild/NATIVE_KERNEL.md section 3): read once, when the library loads, and passed
+# to Sts2_SetEngine before any handle exists. Unset or "old": the old engine. "core2": the Tier 1 kernel of
+# tools/fidelity/migrated_families.json. Inherited by every spawn worker, so one flag on the parent reaches them all.
+_ENGINE_ENV = "STS2_ENGINE"
 
 
 def _repo_root() -> Path:
@@ -42,6 +46,15 @@ def _build_hint() -> str:
     )
 
 
+# The data files the library embeds (the EmbeddedResource items of src/Sts2Emulator/Sts2Emulator.csproj; a test holds the
+# two lists equal): an edit to one changes the library's behaviour like an edit to a .cs file does.
+_EMBEDDED_DATA_FILES = (
+    "tools/fidelity/migrated_families.json",
+    "data/id_map.json",
+    "tools/fidelity/power_aliases.json",
+)
+
+
 def _native_source_paths(repo_root: Path) -> list[Path]:
     source_root = repo_root / "src" / "Sts2Emulator"
     paths = [
@@ -50,6 +63,7 @@ def _native_source_paths(repo_root: Path) -> list[Path]:
         if "bin" not in path.parts and "obj" not in path.parts
     ]
     paths.extend(source_root.rglob("*.csproj"))
+    paths.extend(path for name in _EMBEDDED_DATA_FILES if (path := repo_root / name).is_file())
     return paths
 
 
@@ -860,6 +874,47 @@ def _get_last_error() -> str:
         capacity = length
 
 
+_lib.Sts2_SetEngine.restype = ctypes.c_int
+_lib.Sts2_SetEngine.argtypes = [ctypes.c_char_p, ctypes.c_int]
+_lib.Sts2_GetEngine.restype = ctypes.c_int
+_lib.Sts2_GetEngine.argtypes = [ctypes.POINTER(ctypes.c_ubyte), ctypes.c_int]
+
+
+def set_engine(spec: str) -> str:
+    """Make the handles created after this call on engine `spec` ("old", "core2", "core2:F08,F10"); returns its name.
+
+    A handle keeps the engine it was made with.
+
+    Raises:
+        RuntimeError: For a spec the library refuses (the engine unchanged).
+
+    """
+    raw = spec.encode("utf-8")
+    if int(_lib.Sts2_SetEngine(raw, len(raw))) != 0:
+        raise RuntimeError(f"Sts2_SetEngine({spec!r}) refused: {_get_last_error()}")
+    return engine()
+
+
+def engine() -> str:
+    """Return the engine new handles are made with, as the library names it: "old" or "core2:<families>"."""
+    capacity = 64
+    while True:
+        buf = (ctypes.c_ubyte * capacity)()
+        length = int(_lib.Sts2_GetEngine(buf, capacity))
+        if length <= capacity:
+            return bytes(buf[:length]).decode("utf-8")
+        capacity = length
+
+
+def _apply_engine_env() -> None:
+    spec = os.environ.get(_ENGINE_ENV, "").strip()
+    if spec and spec != "old":
+        set_engine(spec)  # refused: raise at import, so no block starts on the wrong engine
+
+
+_apply_engine_env()
+
+
 def load_combat_snapshot(doc: dict | str | bytes, seed: int) -> int:
     """Build a combat from an `sts2-emu-snapshot/1` document.
 
@@ -1387,12 +1442,15 @@ def run_clone(
     is an oracle -- see docs/agent-interface.md.
 
     Raises:
-        RuntimeError: If the source handle is unknown or the handle pool is full.
+        RuntimeError: If the source handle is unknown or the handle pool is full, or (-3) the run's engine has a kernel
+            switch on (`STS2_ENGINE=core2`) and the copy cannot carry the kernel yet; the message is `Sts2_GetLastError`'s.
 
     """
     handle_out = int(
         _lib.Sts2Run_Clone(handle, 1 if resample_hidden else 0, resample_seed, obs_buf),
     )
+    if handle_out == -3:
+        raise RuntimeError(f"Sts2Run_Clone refused: {_get_last_error()}")
     if handle_out < 0:
         raise RuntimeError("Sts2Run_Clone failed: unknown handle or the pool is full.")
     return handle_out
@@ -1426,6 +1484,8 @@ def run_fork_combat(
     )
     if handle_out == -2:
         raise RuntimeError("Sts2Run_ForkCombat failed: the combat handle pool is full.")
+    if handle_out == -3:
+        raise RuntimeError(f"Sts2Run_ForkCombat refused: {_get_last_error()}")
     if handle_out < 0:
         raise RuntimeError("Sts2Run_ForkCombat failed: unknown run, or not in a fight.")
     return handle_out
