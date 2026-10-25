@@ -510,7 +510,35 @@ order). The first diverging floor is that of the first search that differs, else
 statistics are the ones above: the 90% interval the rule reads, the 95% interval, the standard error and the point estimate for
 information, the two-sided exact McNemar on Act-1 boss kills, the two ratios, and the verdict on conditions (a) to (e).
 
-### 9.4 One generation through the judge: pending (the block runs after 2026-10-25 01:15Z)
+### 9.4 One generation through the judge: the block measured, PASS; the judge's verdict follows the lab's next train
+
+**The block (2026-10-25 01:16Z-01:36Z, lab paused, `QUIET.lock` held, tag `gpu-lane`):** 2,000 seeds of stream `gpu-lane-94`,
+generation 3 (`candidate-r1`), 20 workers on the server, recorded into the lab's shards (`LAB/runs/20261025T0116-selfplay-gpu`,
+2,000 runs, 162,002 combat samples, every run tagged `server`).
+
+| statistic | value | rule |
+|---|---|---|
+| runs / wall | 2,000 / 19.7 min (6,076 runs/h, 216.5 decisions/s) | runs/h at or above the 9.1 A/B (6,024): pass |
+| crashes | 0 | 0: pass |
+| runs tagged `server` | 2,000 of 2,000 | >= 99%: pass |
+| client call latency p50 / p99 / worst process p99 | 1.81 / 5.81 / 6.78 ms (1.86 M calls) | p99 under 20 ms: pass |
+| server restarts; `prior_server_degraded` | 0; false | |
+| server: calls, batches, mean batch, host CPU | 1,861,579; 1,116,935; 1.67; 710 s of 1,190 s uptime (0.6 of a logical CPU, ~3.7% of 16) | |
+| server timings (per batch): queue wait / replay / total, p50 | 0.30 / 0.86 / 1.28 ms (p99 1.23 / 1.67 / 2.55) | |
+| token census | 16-93 tokens; 884 calls over the 64-token graphs (0.05%, eager forward) | under 1%: the default stays 64 |
+| mean floor (95% CI) | 12.51 (12.30-12.73) | information (other blocks of this agent: 12.56-12.62) |
+
+**The judge.** The lab's `train` job for marker `ready-3-r1` (issued before this block, not yet run at 01:36Z: the lab had
+been paused by the day's windows) trains generation 4's `candidate-r1` from the generation 1-3 window, which now holds these
+2,000 server-path runs beside the CPU-path ones, and promotes it on a fresh E-block under the usual rule and guard. Its
+verdict, whichever way, is the "normally judged generation" of the acceptance; it is recorded in `promotions.tsv` and in
+HANDOFF when it lands.
+
+**Lab config, decided here:** `jobs.json` `selfplay` gains `--prior-server auto --gpu-python <venv-gpu python>
+--server-procs 20` (the 20 of 9.1; the fallback RAM finding of 9.1 is accepted with the kill file `LAB/GPU_OFF` as the
+brake and the memory-aware fallback queued), and `train` gains the same flags so the promotion arms play on the server, both
+arms on one transport (9.3). With `auto`, a missing GPU interpreter, a kill file or a server that fails to start twice
+leaves the job on the CPU path at `--procs 16`, exactly as today.
 
 A 2,000-run self-play block on the server, recorded into the lab's shards with the lab paused for the block
 (`LAB/PAUSE` carrying `gpu-lane <UTC>` and `QUIET.lock` with the owner and UTC line, written and removed by this lane;
