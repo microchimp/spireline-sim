@@ -160,14 +160,6 @@ public static class RunNativeExports
             return -1;
         }
 
-        if (KernelOn(run))
-        {
-            // NATIVE_KERNEL.md piece 2: the copy's states keep their KernelState but its engine has no kernel, so its
-            // combat steps would skip the kernel's queue. Refused until the clone carries the kernel.
-            NativeExports.Refuse("kernel_on: Sts2Run_Clone does not carry the kernel yet (NATIVE_KERNEL.md piece 2)");
-            return -3;
-        }
-
         var copy = run.Clone(resampleHidden != 0 ? resampleSeed : null);
         for (int i = 0; i < _pool.Length; i++)
         {

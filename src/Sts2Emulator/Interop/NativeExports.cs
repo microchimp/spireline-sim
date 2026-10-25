@@ -89,7 +89,13 @@ public static class NativeExports
     //      the old engine with the Tier 1 kernel of tools/fidelity/migrated_families.json (docs/rebuild/NATIVE_KERNEL.md).
     //      With a kernel switch on, Sts2_Create, Sts2_LoadCombatSnapshot and Sts2Run_ForkCombat refuse (Sts2_GetLastError
     //      says why): a combat handle does not step through the kernel yet.
-    public const int NATIVE_API_VERSION = 37;
+    // v38: under core2 the combat handles step through the kernel's entry gate (Core/Run/KernelGate.cs, the code path of
+    //      RunEngine.Step and EmuDump's re-anchor; NATIVE_KERNEL.md pieces 2-4): Sts2_Create and the resets bind the fight
+    //      before its setup, Sts2_Clone and Sts2Run_ForkCombat carry its KernelState and the engine, a screen's answer
+    //      resumes the action gathering it, and Sts2_LoadCombatSnapshot binds a fresh KernelState. Still refused under core2,
+    //      with the reason in Sts2_GetLastError: a document stopped in the middle of a step (the kernel's queue is not in the
+    //      document), and Sts2_GetStateJson (-3) of a combat on a hook action's screen.
+    public const int NATIVE_API_VERSION = 38;
 
     /// <summary>
     /// The plain resets' deck: the start of a run at the default level, from the one
@@ -103,6 +109,25 @@ public static class NativeExports
         public readonly int Seed;
         public readonly CombatState State = new();
         public CountingRandom Rng { get; private set; }
+
+        /// <summary>
+        /// The engine's kernel (NATIVE_KERNEL.md section 5), or null: the old engine. A handle keeps the kernel it was made
+        /// with; with a switch on its fight carries a KernelState and every step goes through <see cref="KernelGate" />.
+        /// </summary>
+        public readonly Sts2Emulator.Core2.Kernel? Kernel;
+
+        /// <summary>
+        /// With a switch on, binds a fresh KernelState to the fight before it is set up (as the run's
+        /// <c>StartCombatWithDeck</c> does: turn one's start and the pre-play phase run under the switches). A no-op on the
+        /// old engine.
+        /// </summary>
+        private void Bind()
+        {
+            if (Kernel is { AnyOn: true } kernel)
+            {
+                kernel.Bind(State);
+            }
+        }
 
         /// <summary>
         /// A fork of <paramref name="source" />, for tree search.
@@ -121,6 +146,7 @@ public static class NativeExports
         public NativeCombat(NativeCombat source, int? resampleSeed)
         {
             Seed = source.Seed;
+            Kernel = source.Kernel;  // the state's KernelState is copied with it (CombatState.Clone), bound to the copy
             State = source.State.Clone(resampleSeed);
             Rng = source.Rng.Reseeded(resampleSeed)!;
             LastPlayerWon = source.LastPlayerWon;
@@ -133,11 +159,13 @@ public static class NativeExports
 
         public bool LastPlayerWon { get; set; }
 
-        public NativeCombat(int seed)
+        public NativeCombat(int seed, Sts2Emulator.Core2.Kernel? kernel)
         {
             Seed = seed;
+            Kernel = kernel;
             Rng = new CountingRandom(seed);
             UseDefaultLevel();
+            Bind();
             CombatFactory.Reset(State, Rng);
             // Every build in this class is followed by the pre-play phase, because every
             // one of them is followed by a `WriteObs` -- and an observation taken before
@@ -183,9 +211,10 @@ public static class NativeExports
         /// runs, because the position is mid-fight and its streams are already the run's.
         /// <paramref name="seed" /> is only what a later reset of this handle seeds from.
         /// </summary>
-        public NativeCombat(CombatState state, CountingRandom rng, int seed)
+        public NativeCombat(CombatState state, CountingRandom rng, int seed, Sts2Emulator.Core2.Kernel? kernel)
         {
             Seed = seed;
+            Kernel = kernel;  // the run's: the fork's KernelState was copied with the fight (ForkActiveCombat)
             State = state;
             Rng = rng;
         }
@@ -263,6 +292,7 @@ public static class NativeExports
         public void Reset()
         {
             Wipe();
+            Bind();
             UseDefaultLevel();
             SeedStreams();
             CombatFactory.Reset(State, Rng);
@@ -272,6 +302,7 @@ public static class NativeExports
         public void Reset(ReadOnlySpan<int> deckIds)
         {
             Wipe();
+            Bind();
             UseDefaultLevel();
             SeedStreams();
             CombatFactory.Reset(State, Rng, deckIds);
@@ -296,6 +327,7 @@ public static class NativeExports
         )
         {
             Wipe();
+            Bind();
             State.AscensionLevel = ascension;
             // Set BEFORE the reset, for the reason the run engine gives where it hands a
             // fight its belt: `ApplyCombatStart` procures into the first free slot.
@@ -335,6 +367,7 @@ public static class NativeExports
         )
         {
             Wipe();
+            Bind();
             UseDefaultLevel();
             SeedStreams();
             CombatFactory.Reset(
@@ -378,6 +411,7 @@ public static class NativeExports
         )
         {
             Wipe();
+            Bind();
             // The enchantment arrays run parallel to the deck and may be empty, which
             // reads as Enchantment.None on every card. An id list alone cannot carry
             // them, and ACT 1 hands them out: Self-Help Book, Stone of All Time and
@@ -592,12 +626,7 @@ public static class NativeExports
     [UnmanagedCallersOnly(EntryPoint = "Sts2_Create")]
     public static int Sts2_Create(int seed)
     {
-        if (RunNativeExports.Engine.KernelOn)
-        {
-            return RefuseLoad(CombatHandleRefusal, -1);
-        }
-
-        var combat = new NativeCombat(seed);
+        var combat = new NativeCombat(seed, RunNativeExports.Engine.Kernel);
         for (int i = 0; i < _pool.Length; i++)
         {
             if (_pool[i] is null)
@@ -668,17 +697,12 @@ public static class NativeExports
             return -1;
         }
 
-        if (RunNativeExports.KernelOn(run))
-        {
-            return RefuseLoad(CombatHandleRefusal, -3);
-        }
-
         if (run.ForkActiveCombat(resampleHidden != 0 ? resampleSeed : null) is not { } fight)
         {
             return -1;
         }
 
-        var combat = new NativeCombat(fight.Combat, fight.Rng, resampleSeed);
+        var combat = new NativeCombat(fight.Combat, fight.Rng, resampleSeed, run.Kernel);
         for (int i = 0; i < _pool.Length; i++)
         {
             if (_pool[i] is null)
@@ -1207,7 +1231,17 @@ public static class NativeExports
         StepResult result;
         try
         {
-            result = CombatEngine.Step(combat.State, action, combat.Rng, target);
+            // The entry gate (NATIVE_KERNEL.md section 5): the combat engine's step on the old engine; with a switch on the
+            // action is enqueued and drained, and an answer resumes the action gathering it or the paused hook action.
+            result = KernelGate.Step(combat.Kernel, combat.State, combat.Rng, action, target);
+        }
+        catch (InvalidOperationException e) when (e.Message == KernelGate.Unbound)
+        {
+            // Never thrown across the boundary: every handle binds its fight where it is built.
+            _lastLoadError = Encoding.UTF8.GetBytes("kernel_on: " + e.Message);
+            WriteObs(combat.State, obsBuf);
+            *rewardOut = 0f;
+            return -1;
         }
         catch (StoppedStepMismatch e)
         {
