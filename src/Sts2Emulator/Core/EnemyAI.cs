@@ -347,6 +347,13 @@ public static class EnemyAI
                 // table was corrected to real base values. It announced 21 and dealt 15.
                 int baseDamage = enemy.CurrentIntent.Magnitude;
 
+                // F08 on: game: a move's body runs in its own order (WaterfallGiant.StompMove: the attack, then Weak, then
+                // Steam Eruption), whatever a death inside the attack does to the move machine: SteamEruptionPower.AfterDeath
+                // (TriggerAboutToBlowState, SetMoveImmediate) runs inside the hit and only changes the NEXT move. The old
+                // riders below read the move from MoveIndex, which that death has already set to ABOUT_TO_BLOW, so they read
+                // the move chosen before the hit. Off, the death is answered after the riders and MoveIndex is read live.
+                int moveBeforeHit = enemy.MoveIndex;
+
                 // Hits, not one: the riders below belong to the attack as a whole, and a
                 // multi-hit intent used to break out above them -- which is how Punch
                 // Construct's FAST_PUNCH lost the Frail its DebuffIntent declares.
@@ -354,7 +361,14 @@ public static class EnemyAI
 
                 if (enemy.DefId == KE.GasBomb)
                 {
-                    enemy.Hp = 0;
+                    if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                    {
+                        Core2.OldEntry.Kill(core2, Core2.OldCreature.Of(enemy));
+                    }
+                    else
+                    {
+                        enemy.Hp = 0;
+                    }
                 }
 
                 // EXPLODE_MOVE: the attack above, then `CreatureCmd.Kill(base.Creature)`. The
@@ -362,7 +376,14 @@ public static class EnemyAI
                 // the giant leaves the fight for good.
                 if (IsExploding(enemy))
                 {
-                    enemy.Hp = 0;
+                    if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                    {
+                        Core2.OldEntry.Kill(core2, Core2.OldCreature.Of(enemy));
+                    }
+                    else
+                    {
+                        enemy.Hp = 0;
+                    }
                 }
 
                 if (enemy.DefId == KE.ThievingHopper && enemy.MoveIndex == 0)
@@ -463,7 +484,14 @@ public static class EnemyAI
                 // is why a flat 3 showed up as a growing error rather than a fixed one.
                 if (enemy.DefId == KE.KnowledgeDemon && KnowledgeDemonPhase(enemy.MoveIndex) == 3)
                 {
-                    enemy.Hp = Math.Min(enemy.MaxHp, enemy.Hp + 30);
+                    if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                    {
+                        Core2.CreatureCmd.Heal(core2, Core2.OldCreature.Of(enemy), 30);
+                    }
+                    else
+                    {
+                        enemy.Hp = Math.Min(enemy.MaxHp, enemy.Hp + 30);
+                    }
                     BuffSystem.Apply(
                         enemy.Buffs,
                         BuffId.Strength,
@@ -579,17 +607,18 @@ public static class EnemyAI
 
                 // The ring's riders, and only the ring's: EXPLODE is a bare attack that banks
                 // no Steam and applies no Weak, and its index would read as a STOMP here.
+                int giantMove = Core2.Kernel.If(Core2.Switch.F08, state) is not null ? moveBeforeHit : enemy.MoveIndex;
                 bool inGiantRing =
                     enemy.DefId == KE.WaterfallGiant
-                    && enemy.MoveIndex > 0
-                    && enemy.MoveIndex < WaterfallGiantAboutToBlowMove;
+                    && giantMove > 0
+                    && giantMove < WaterfallGiantAboutToBlowMove;
 
                 if (inGiantRing)
                 {
                     BuffSystem.Apply(enemy.Buffs, BuffId.SteamEruption, 3);
                 }
 
-                if (inGiantRing && (enemy.MoveIndex - 1) % 5 == 0)
+                if (inGiantRing && (giantMove - 1) % 5 == 0)
                 {
                     BuffSystem.Apply(state.PlayerBuffs, BuffId.Weak, 1);
                 }
@@ -788,9 +817,16 @@ public static class EnemyAI
         // same turn by construction -- five moves, a timer that starts at five.
         if (enemy.DefId == KE.ThievingHopper && enemy.MoveIndex >= 4 && !enemy.Escaped)
         {
-            enemy.Hp = 0;
-            enemy.Escaped = true;
-            state.EscapedEnemies++;
+            if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+            {
+                Core2.OldEntry.Escape(core2, enemy);
+            }
+            else
+            {
+                enemy.Hp = 0;
+                enemy.Escaped = true;
+                state.EscapedEnemies++;
+            }
         }
 
         // `FatGremlin.FLEE_MOVE`: it runs off with whatever it is holding. Zeroing the HP
@@ -800,9 +836,16 @@ public static class EnemyAI
         // `ApplyBuffIntent` because the flee is not a buff and is no longer announced as one.
         if (enemy.DefId == KE.FatGremlin && enemy.MoveIndex > 0 && !enemy.Escaped)
         {
-            enemy.Hp = 0;
-            enemy.Escaped = true;
-            state.EscapedEnemies++;
+            if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+            {
+                Core2.OldEntry.Escape(core2, enemy);
+            }
+            else
+            {
+                enemy.Hp = 0;
+                enemy.Escaped = true;
+                state.EscapedEnemies++;
+            }
             state.FatGremlinEscaped = true;
         }
 
@@ -886,6 +929,15 @@ public static class EnemyAI
             enemy.MoveIndex = 0;
         }
 
+        // F08+F10 on: a creature that died in its own move (the player's Thorns on its attack) had its death answered
+        // inside the hit (CreatureCmd.Damage's Kill), and the game's move ends with it: no MoveIndex step, Ritual, Vigor
+        // refund or Strength restore, so a forced move the death set (the Waterfall Giant's ABOUT_TO_BLOW,
+        // SetMoveImmediate with forceTransition) stands (MIGRATION_F08.md R7 checks, the in-move death).
+        if (Core2.Kernel.If(Core2.Switch.F08, state)?.World is { } moved && moved.IsPerformingMove(enemy) && moved.MoverDied)
+        {
+            return;
+        }
+
         enemy.MoveIndex++;
 
         // Ritual: gain Strength at end of each enemy turn except the turn it was applied.
@@ -924,8 +976,15 @@ public static class EnemyAI
         // turn in between and nothing after it.
         BuffSystem.Remove(state.PlayerBuffs, BuffId.DiamondDiadem);
 
-        foreach (var enemy in state.Enemies.Where(enemy => enemy.Hp > 0))
+        // Over the roster as the pass began (game: the hook's listeners are listed once): with F08+F10 on, a Demise kill
+        // removes its enemy from the roster inside the pass (CreatureCmd.Kill's RemoveCreature).
+        foreach (var enemy in state.Enemies.ToArray())
         {
+            if (enemy.Hp <= 0)
+            {
+                continue;
+            }
+
             ApplyHighVoltageEndOfEnemyTurn(enemy);
             ApplyDemiseEndOfEnemyTurn(state, enemy);
         }
@@ -947,7 +1006,8 @@ public static class EnemyAI
         int demise = BuffSystem.Get(enemy.Buffs, BuffId.Demise);
         if (demise > 0)
         {
-            Effects.CardEffects.DealUnblockableUnpoweredDamageToEnemy(state, enemy, demise);
+            // DemisePower's Damage passes no dealer and no source.
+            Effects.CardEffects.DealUnblockableUnpoweredDamageToEnemy(state, enemy, demise, noDealer: true);
         }
     }
 
@@ -4058,7 +4118,14 @@ public static class EnemyAI
                 }
                 else
                 {
-                    enemy.Hp = Math.Min(enemy.MaxHp, enemy.Hp + enemy.CurrentIntent.Magnitude);
+                    if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                    {
+                        Core2.CreatureCmd.Heal(core2, Core2.OldCreature.Of(enemy), enemy.CurrentIntent.Magnitude);
+                    }
+                    else
+                    {
+                        enemy.Hp = Math.Min(enemy.MaxHp, enemy.Hp + enemy.CurrentIntent.Magnitude);
+                    }
                     BuffSystem.Apply(enemy.Buffs, BuffId.SteamEruption, 3);
                 }
 
@@ -4092,8 +4159,7 @@ public static class EnemyAI
                     Ascension.Value(state.AscensionLevel, Ascension.ToughEnemies, 20, 19),
                     Ascension.Value(state.AscensionLevel, Ascension.ToughEnemies, 23, 22)
                 );
-                enemy.Hp = hatchlingHp;
-                enemy.MaxHp = hatchlingHp;
+                SetUpHatchling(enemy, hatchlingHp);
                 break;
             }
         }
@@ -4347,7 +4413,17 @@ public static class EnemyAI
                 break;
 
             case KE.SlitheringStrangler:
+                // F08+F10 on: the power's Applier (ConstrictPower.AfterDeath's test) is the Strangler whose Apply
+                // created it; a later Apply stacks onto it and keeps it. With the switch off nothing is recorded.
+                bool constrictApplier = Core2.Kernel.If(Core2.Switch.F08, state) is not null
+                    && BuffSystem.Get(state.PlayerBuffs, BuffId.Constrict) <= 0;
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Constrict, 3);
+                if (constrictApplier && BuffSystem.Get(state.PlayerBuffs, BuffId.Constrict) > 0)
+                {
+                    foreach (var other in state.Enemies)
+                        other.AppliedPlayersConstrict = ReferenceEquals(other, enemy);
+                }
+
                 break;
 
             case KE.HauntedShip:
@@ -4360,6 +4436,13 @@ public static class EnemyAI
                 Effects.CardEffects.AddCardToDrawPileRandomly(state, ST.Dazed, 1, rng);
                 break;
         }
+    }
+
+    /// <summary>A spawned hatchling's HP: creature setup (the game's Add), not an HP change.</summary>
+    private static void SetUpHatchling(EnemyState enemy, int hp)
+    {
+        enemy.Hp = hp;
+        enemy.MaxHp = hp;
     }
 
     /// <summary>
@@ -4375,6 +4458,13 @@ public static class EnemyAI
     /// </remarks>
     private static void DealAttack(EnemyState enemy, CombatState state, int baseDamage, int hits)
     {
+        // F08+F10 on: the monster's attack is AttackCmd; the post-loop bodies (F06's AfterAttack) run once as its bridge.
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.OldEntry.EnemyAttack(core2, enemy, baseDamage, hits, n => AfterEnemyAttack(enemy, state, n));
+            return;
+        }
+
         int landed = 0;
         for (int i = 0; i < hits; i++)
         {
@@ -4392,6 +4482,12 @@ public static class EnemyAI
             }
         }
 
+        AfterEnemyAttack(enemy, state, landed);
+    }
+
+    /// <summary>A monster attack's AfterAttack bodies (Suck, Painful Stabs) with the hits that landed.</summary>
+    private static void AfterEnemyAttack(EnemyState enemy, CombatState state, int landed)
+    {
         TriggerSuck(enemy, landed);
 
         // PainfulStabsPower: `Amount` Wounds into the player's discard for each hit that
@@ -4427,6 +4523,12 @@ public static class EnemyAI
     internal static void TheGambit_AfterDamageReceived(CombatState state)
     {
         BuffSystem.Remove(state.PlayerBuffs, BuffId.TheGambitPower);
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.OldEntry.Kill(core2, Core2.OldCreature.Player);
+            return;
+        }
+
         state.PlayerHp = 0;
     }
 
@@ -4436,6 +4538,12 @@ public static class EnemyAI
     /// </summary>
     internal static void PaperCuts_AfterDamageGiven(CombatState state, int paperCuts)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.CreatureCmd.LoseMaxHp(core2, Core2.OldCreature.Player, paperCuts, isFromCard: false);
+            return;
+        }
+
         // No hook: `CreatureCmd.SetMaxHp` does not dispatch
         // `AfterCurrentHpChanged`, so a shrinking maximum does not re-ask Red
         // Skull's question even though it moves the threshold.
@@ -4459,6 +4567,11 @@ public static class EnemyAI
         bool triggerSuck = true
     )
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            return Core2.OldEntry.EnemyHit(core2, enemy, baseDamage);
+        }
+
         int damage = BuffSystem.IncomingDamage(
             baseDamage,
             enemy.Buffs,
@@ -4608,7 +4721,7 @@ public static class EnemyAI
     /// separate from this one and is not addressed here.
     /// </para>
     /// </remarks>
-    private static void ApplyPlayerFlameBarrier(EnemyState enemy, CombatState state)
+    internal static void ApplyPlayerFlameBarrier(EnemyState enemy, CombatState state)
     {
         int flameBarrier = BuffSystem.Get(state.PlayerBuffs, BuffId.FlameBarrier);
         if (flameBarrier <= 0 || state.PlayerHp <= 0)
@@ -4647,7 +4760,7 @@ public static class EnemyAI
         Effects.CardEffects.DealUnpoweredDamageToEnemy(state, enemy, blocked);
     }
 
-    private static void ApplyPlayerThorns(EnemyState enemy, CombatState state)
+    internal static void ApplyPlayerThorns(EnemyState enemy, CombatState state)
     {
         int thorns = BuffSystem.Get(state.PlayerBuffs, BuffId.Thorns);
         if (thorns <= 0)
@@ -4947,7 +5060,7 @@ public static class EnemyAI
     /// No stream is read: the HP is set, not rolled, and the forced move is not a branch.
     /// </remarks>
     /// <returns>Whether this was such a death.</returns>
-    internal static bool TriggerAboutToBlow(EnemyState enemy)
+    internal static bool TriggerAboutToBlow(EnemyState enemy, CombatState? state = null)
     {
         if (!DiedHoldingSteamEruption(enemy))
         {
@@ -4955,8 +5068,15 @@ public static class EnemyAI
         }
 
         enemy.Buffs.RemoveAll(buff => buff.Id != BuffId.SteamEruption);
-        enemy.MaxHp = WaterfallGiantAboutToBlowHp;
-        enemy.Hp = WaterfallGiantAboutToBlowHp;
+        if (state is not null && Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.CreatureCmd.SetMaxAndCurrentHp(core2, Core2.OldCreature.Of(enemy), WaterfallGiantAboutToBlowHp);
+        }
+        else
+        {
+            enemy.MaxHp = WaterfallGiantAboutToBlowHp;
+            enemy.Hp = WaterfallGiantAboutToBlowHp;
+        }
         enemy.MoveIndex = WaterfallGiantAboutToBlowMove;
         // `SetMoveImmediate` refreshes the readout at once: the StunIntent, not whatever the
         // giant had announced before it died.

@@ -482,8 +482,9 @@ public class ActionQueueTests
     [Fact]
     public void WithASwitchOnEveryCombatSteppedCarriesItsKernelStateAndPlaysAsTheOldEngine()
     {
-        // The queue path with nothing migrated is the old engine's step; the guard refuses a combat without a state.
-        var kernel = new Kernel(new KernelOptions([Switch.F10], TestGroups), () => Ids, []);
+        // The queue path with nothing migrated is the old engine's step; the guard refuses a combat without a state. F05
+        // (since R4 the F08+F10 sites are rerouted onto Core2, so a switch of that group no longer plays as the old engine).
+        var kernel = new Kernel(new KernelOptions([Switch.F05], TestGroups), () => Ids, []);
         var old = new RunEngine();
         var core2 = new RunEngine { Kernel = kernel };
         old.Reset("PRB00058", ascension: 8);

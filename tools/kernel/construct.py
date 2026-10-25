@@ -112,7 +112,7 @@ def commands(a) -> int:
     bad = bool(problems or stray)
     print(f"commands: {'FAIL' if bad else 'ok'}: {len(cm.COMMANDS)} commands, {len(problems)} differences; "
           f"{len(stray)} Core2 writes outside Commands; old HP/block writes with the switch on (R4's list): {len(old)} "
-          f"({fam['F08']} F08 HP, {fam['F09']} F09 block) in {files} files")
+          f"({fam['F08']} F08 HP and absorbed block, {fam['F09']} F09 block) in {files} files")
     return 1 if bad else 0
 
 

@@ -58,7 +58,7 @@ sets only; the gate fails when the list is not empty. `struct_compare.waived_tot
 
 ## Allowed rows (tools/fidelity/allowed_diff.json)
 
-16 rows. Each lists the `engines` it applies to: `old` for rows that exist only because of the old engine's limits, `*` for the rows
+17 rows. Each lists the `engines` it applies to: `old` for rows that exist only because of the old engine's limits, `*` for the rows
 that state the record's own representation or integrity. `struct_compare --engine E` (default `old`; `compare_fight(engine=)`)
 applies only the rows of E and of the engine whose state E runs over (`struct_compare.ENGINE_BASE`: core2 is old's state with the
 kernel attached, so it has old's limits and is judged by old's rows; an engine with a state of its own is judged without them),
@@ -87,6 +87,7 @@ old always keeps all its rows, an engine with a state of its own none of them.
 | settle | after-last-checksum | * | a net path the record's own snapshot shows changed after the step's last checksum is judged by the snapshot |
 | surplus | kernel-sequencing (1) | core2 | the engine-written paths `net.last_action` and `net.last_hook` (the kernel's own queue counters, under the game's field names) are taken out of both sides, listed in the census as `surplus`, never compared: the game's action ids come from its synchronizer, which numbers actions the emulator does not run, and its HookId is `ActionQueueSynchronizer._nextHookId` (0-based, the turn start flow action numbered too) while core2 writes `RecordedHookAction.Id` (1-based, 0 for the flow action), so neither can match a record. Where the engine writes none the record's side stays under net-sequencing |
 | late_steps | late-steps | * | record integrity: the net shape is not compared from a step recorded before the game finished it. The limit applies only when the row is present, and each skipped step is counted under the row |
+| ignore | holder-tallies (F08) | core2 | the relic tallies TookUnblockedDamage (Lava Lamp) and UnblockedDamageThisTurn (Beating Remnant) are waived on core2: the game, and core2 with F08 on, keep them only for a holder, old counts them for every player; their only readers check the relic first |
 
 Each row's `legacy` field names the fight_compare / netstate_diff rule it replaces.
 
@@ -150,10 +151,57 @@ added), 300 fights: 3300 fight-mode pairs identical, 0 differ; the whole corpus 
 always skips them) in fight, netstate, game-view, game-view-netstate and state-hash: 21505 pairs identical, 0 differ. C# suites
 at the commit: Sts2Emulator.Tests 6748 passed, 7 skipped, 0 failed; tools/emudump.Tests 242 passed, 0 failed.
 
+## Core2 on the traced set with F08+F10 on (rebuild lane O2, 2026-10-24, main with no reroutes)
+
+`struct_calibrate traced --engine core2 --switches F08,F10 --gate-against <old output>` (the F08 review's recommendation 5). The switch set
+is a scratch copy of the EmuDump build whose `migrated_families.json` (read from beside the DLL) holds the set, made by
+`fuzz_core2.dll_for` as the fuzzer does and removed afterwards; struct_compare judges core2 with the set as `migrated`, so F10's two rows
+(fight-lost, after-fight-turn-state) are no longer inherited and what they waived is compared. Each fight is then measured against
+the game next to the old engine's run of the same fight: better, same or worse by the first step struct_compare flags (then by how
+many fields differ there) and by the first step netstate_diff flags. The verdict reads the run judged with old's rows (`sc_shared`:
+the same rows old was judged by), so the stricter F10 rows cannot make a fight look worse; the fights the stricter rows flag earlier
+are counted apart ("exposed"). The gate fails on a fight compared on fewer fields, on a worse fight, or on a missing one.
+
+Commands (two worker processes; no switch, `--switches none`, is the control):
+
+    struct_calibrate.py traced --emudump <EmuDump.dll> --out <old.json> --procs 2 --limit 77 <six traced.out.json>
+    struct_calibrate.py traced --engine core2 --switches F08,F10 --gate-against <old.json> --emudump <EmuDump.dll> --out <core2.json> --procs 2 --limit 77 <same files>
+
+The traced set is again the first 77 fights (with an ascension and net states) of the six newest `traced.out.json` files, which are
+newer than the calibration's, so the old table below is a new baseline, not the 2026-10-24 morning one.
+
+| run (77 traced fights) | vs fight_compare: same step / struct earlier / struct later / legacy only / struct only | vs netstate_diff: same step / struct earlier / struct later / legacy only / struct only | struct crash |
+|---|---|---|---|
+| old | 63 / 14 / 0 / 0 / 0 | 61 / 6 / 1 / 0 / 9 | 0 |
+| core2, F08+F10 | 63 / 14 / 0 / 0 / 0 | 61 / 6 / 1 / 0 / 9 | 0 |
+| core2, no switch | 63 / 14 / 0 / 0 / 0 | 61 / 6 / 1 / 0 / 9 | 0 |
+
+Against the game, core2 relative to old, per fight:
+
+| core2 run | struct_compare better / same / worse | netstate_diff better / same / worse | flagged earlier by the migrated rows | compared on fewer fields |
+|---|---|---|---|---|
+| F08+F10 | 0 / 77 / 0 | 0 / 77 / 0 | 0 of 77 | 0 of 77 |
+| no switch | 0 / 77 / 0 | 0 / 77 / 0 | 0 of 77 | 0 of 77 |
+
+Main has no reroutes, so the switch changes no fight: all 77 are the same, as expected. Waived schema paths summed over the fights: 225
+on old and on core2. With the set on, the allowed rows after-fight-turn-state (20 firings on old) and fight-lost (3) no longer fire
+(compared instead; none of the 77 first differences moves because of them), and the kernel's `net.last_action` and `private.kernel.*`
+appear as surplus. This is the baseline: a reroute commit must keep "worse" at 0 and move fights to "better".
+
+The step test (recommendation 1) is `src/Sts2Emulator.Tests/Core2/StepApiKillTests.cs`: the traced Headbutt and Twin Strike fights
+(ids and numbers of the trace only) played through the old step API, with the game's HP, roster after the killing hit and order of the
+death hooks pinned. The fixture and every value that holds in the old order and the new alike run as plain assertions; only what
+differs by order is a strict expected failure (`Pinned`): at the Headbutt stop the roster, the survivor's Strength, the kernel's kill
+count and the event order, and for Twin Strike the kill count and the event order (its end state matches the game even in the old
+order, so its switch-off test is an ordinary pin). The survivor's Stunned state and intent are in the trace only in the state at the
+end of the step, so they are pinned there; Gremlin Horn, which the review names, is not in the traced fights. Switched on (F08+F10
+bound, the real Registry plus a logging observer) the expected failures stay until R4 and the handlers these fights run through
+(at least Ravenous's AfterDeath and Strength's damage fold, batch power-1) have landed and `RerouteLanded` is set; R4 alone does not
+flip them. `STS2_STEP_TEST=strict` runs the switched-on assertions plain.
+
 ## Left for the next round
 
 - The run layer (`run_compare2`) on the same shapes (rows, `--engine`, census, self check).
-- Core2 on the traced set (`struct_calibrate traced --engine core2`), and the census gate there.
 - Fields old could write natively and does not yet: RNG seeds, the enemy's game move id, the game's relic props. Each one removes
   an `old`-only unmodelled row.
 - The legacy comparers keep running on old only, as the calibration reference and the history line; the corpus check

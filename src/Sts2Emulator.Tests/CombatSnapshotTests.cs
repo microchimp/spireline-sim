@@ -326,6 +326,22 @@ public class CombatSnapshotTests
                 continue;
             }
 
+            // A per-combat card uid (docs/rebuild/CARD_UID.md): documents carry no uids and a read renumbers the cards, so a
+            // load leaves it 0, and an armed Curl Up then pays at the next card's end, as the old flag did.
+            if (field.Name == nameof(EnemyState.CurlUpCardUid))
+            {
+                Assert.Equal(0, enemy.CurlUpCardUid);
+                continue;
+            }
+
+            // The Applier of the player's Constrict, recorded under the F08 switch (R7b2): documents carry no Applier, so a
+            // load leaves it false and ConstrictPower.AfterDeath falls back to the old site's test (any Strangler).
+            if (field.Name == nameof(EnemyState.AppliedPlayersConstrict))
+            {
+                Assert.False(enemy.AppliedPlayersConstrict);
+                continue;
+            }
+
             Assert.False(
                 SameContent(field.GetValue(enemy), field.GetValue(new EnemyState())),
                 $"EnemyState.{field.Name} is not carried by the snapshot"

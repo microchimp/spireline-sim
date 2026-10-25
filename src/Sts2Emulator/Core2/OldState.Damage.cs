@@ -1,9 +1,8 @@
 // The old state's damage history (docs/rebuild/MIGRATION_F08.md, "Fixes after R2's review"): the counters the old damage
 // sites kept and old code still reads, owned by Core2's commands at the game's points. Each is the old field of a game
-// history query or of a listener's tally; a ported model's handler takes its line over. Game code is cited by class and
-// method only.
+// history query; the AfterDamageReceived listeners' tallies and the old player-side body are their handlers' (batch L2).
+// Game code is cited by class and method only.
 using Sts2Emulator.Core;
-using Sts2Emulator.Core.Effects;
 
 namespace Sts2Emulator.Core2;
 
@@ -43,32 +42,6 @@ public static partial class OldCreatures
                  && s.PlayerTurn)
         {
             enemy.PoweredHitsThisTurn++;
-        }
-    }
-
-    /// <summary>
-    /// The old state of the AfterDamageReceived listeners, for a result whose receiver was not killed: Beating
-    /// Remnant's turn tally (<c>UnblockedDamageThisTurn</c>, held relic or not: the old field is global), Lava Lamp's
-    /// latch (<c>TookUnblockedDamage</c>: unblocked &gt; 0, not Unblockable), Hardened Shell's tally on its owner, and the
-    /// old player-side body (<c>CardEffects.AfterPlayerDamageReceived</c>: Rupture, Inferno, Centennial Puzzle,
-    /// Self-Forming Clay, Demon Tongue, Red Skull) with Rupture's fromPlayedCard as the game reads it: the damage's
-    /// card source is the card being played, on the player's turn.
-    /// </summary>
-    public static void AfterDamageReceived(OldWorld w, DamageResult r, ValueProp props, CardHandle? card)
-    {
-        var s = w.Combat!;
-        if (r.Receiver.Kind == CreatureKind.Player)
-        {
-            s.UnblockedDamageThisTurn += r.UnblockedDamage;
-            if (r.UnblockedDamage > 0 && !props.Has(ValueProps.Unblockable))
-                s.TookUnblockedDamage = true;
-            bool fromPlayedCard = card is { } h && w.InFlight is { } flying && flying.Uid == h.Uid && s.PlayerTurn;
-            CardEffects.AfterPlayerDamageReceived(s, r.UnblockedDamage, fromPlayedCard);
-        }
-        else if (r.Receiver.Enemy is { } enemy && !r.WasFullyBlocked
-                 && BuffSystem.Get(enemy.Buffs, BuffId.HardenedShell) > 0)
-        {
-            enemy.HardenedShellDamageThisTurn += r.UnblockedDamage;
         }
     }
 

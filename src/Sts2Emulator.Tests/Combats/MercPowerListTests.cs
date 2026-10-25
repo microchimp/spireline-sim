@@ -23,7 +23,7 @@ public class MercPowerListTests
 {
     private static CombatState MercFight(int ascension = 10)
     {
-        var engine = new RunEngine();
+        var engine = TestSwitches.Run(new RunEngine());
         engine.Reset("QS2GYXRKWN", ascension);
         engine.StartCombat(
             RunConstants.StarterDeckIds,
@@ -81,7 +81,7 @@ public class MercPowerListTests
         state.Hand.Add(new CardInstance(IC.StrikeIronclad, false));
         state.Energy = 3;
 
-        CombatEngine.Step(state, 0, new Random(0));
+        TestSwitches.Step(state, 0, new Random(0));
         return state;
     }
 
@@ -128,7 +128,7 @@ public class MercPowerListTests
         BuffSystem.Apply(state.PlayerBuffs, BuffId.FlameBarrier, 4);
         state.Hand.Clear();
 
-        CombatEngine.Step(state, 0, new Random(0));
+        TestSwitches.Step(state, 0, new Random(0));
 
         Assert.Equal(99, state.PlayerGold);
         var fat = state.Enemies.Single(enemy => enemy.DefId == 28 && enemy.Hp > 0);
@@ -178,7 +178,7 @@ public class MercPowerListTests
         state.Hand.Add(new CardInstance(IC.StrikeIronclad, false));
         state.Energy = 3;
 
-        CombatEngine.Step(state, 0, new Random(0), targetEnemyIndex: state.Enemies.IndexOf(fat));
+        TestSwitches.Step(state, 0, new Random(0), targetEnemyIndex: state.Enemies.IndexOf(fat));
 
         Assert.Equal(40, state.StolenBackGold);
         Assert.Equal(0, fat.HeistGold);

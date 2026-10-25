@@ -236,17 +236,16 @@ public class CombatEndTests
     }
 
     [Fact]
-    public void FinishCombatRunsOncePerCombatThroughTheHandOffAndTheRunPlaysAsTheOldEngine()
+    public void FinishCombatRunsOncePerCombatThroughTheHandOff()
     {
-        // The F17 hand-off: with F08+F10 on, the old step's end of a fight goes to Core2's CheckWinCondition, which calls
-        // the run engine's FinishCombat once, after IsInProgress went false: a victory (victory heal, rewards, counters)
-        // and, as the old engine does, a loss. The whole run is the old engine's: same masks, results, HP and phase.
+        // The F17 hand-off: with F08+F10 on, the end of a fight is Core2's CheckWinCondition (at the boundary and at the
+        // old step's points, R4), which calls the run engine's FinishCombat once, after IsInProgress went false: a
+        // victory (victory heal, rewards, counters) and, as the old engine does, a loss. Since R4 the damage is Core2's
+        // with no model handler, so the run is not the old engine's any more (the port gate measures that); it is
+        // played on its own, first legal action each step.
         var kernel = new Kernel(new KernelOptions(DamageOnly), () => Ids, []);
-        var old = new RunEngine();
         var core2 = new RunEngine { Kernel = kernel };
-        old.Reset("PRB00058", ascension: 8);
         core2.Reset("PRB00058", ascension: 8);
-        var mask = new int[RunConstants.MaxActions];
         var mask2 = new int[RunConstants.MaxActions];
         bool terminal = false;
         CombatState? fight = null;
@@ -254,21 +253,16 @@ public class CombatEndTests
         var seen = new List<string>();
         for (int step = 0; !terminal && step < 20_000; step++)
         {
-            old.WriteActionMask(mask);
             core2.WriteActionMask(mask2);
-            Assert.Equal(mask, mask2);
-            int action = Array.IndexOf(mask, 1);
+            int action = Array.IndexOf(mask2, 1);
             fight = core2.State.Phase == RunPhase.Combat ? core2.State.ActiveCombat : null;
-            int s1 = old.Step(action, -1, out float r1, out terminal, out _);
-            int s2 = core2.Step(action, -1, out float r2, out bool t2, out _);
-            Assert.Equal((s1, r1, terminal), (s2, r2, t2));
-            Assert.Equal((old.State.PlayerHp, old.State.Gold, old.State.Phase), (core2.State.PlayerHp, core2.State.Gold, core2.State.Phase));
-            Assert.Equal(old.FinishCombatCalls, core2.FinishCombatCalls);
+            core2.Step(action, -1, out _, out terminal, out _);
+            bool t2 = terminal;
             if (fight is not null && (core2.State.Phase != RunPhase.Combat || !ReferenceEquals(core2.State.ActiveCombat, fight)))
             {
                 var p = fight.Kernel!.Progress;
                 Assert.Equal((1, false), (p.HandOffs, p.InProgress));
-                Assert.Equal(old.State.LastPlayerWon, p.PlayerWon);
+                Assert.Equal(core2.State.LastPlayerWon, p.PlayerWon);
                 if (p.PlayerWon == true)
                     won++;
                 else

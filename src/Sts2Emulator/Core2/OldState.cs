@@ -82,6 +82,7 @@ public sealed class OldModelIds : IModelIds
         var foldMembers = aliases["folds"]!.AsObject().SelectMany(kv => kv.Value!.AsArray().Select(x => (string)x!))
             .ToHashSet();
         OstyModelId = (int)idMap["enemies"]!["Osty"]!;
+        DieForYouModelId = Resolve(ListenerKind.Power, "DieForYouPower");
         foreach (var id in Enum.GetValues<BuffId>())
         {
             string key = PowerKey(id.ToString());
@@ -119,6 +120,9 @@ public sealed class OldModelIds : IModelIds
 
     /// <summary>Osty's monster id (data/id_map.json "enemies").</summary>
     public int OstyModelId { get; }
+
+    /// <summary>DieForYouPower's power id (data/id_map.json), the one power the old state's Osty holds.</summary>
+    public int DieForYouModelId { get; }
 
     // The id_map.json section of each kind whose listener model id is id_map's number (TIER1_KERNEL.md section 3).
     private static readonly (ListenerKind Kind, string Section)[] Sections =
@@ -177,6 +181,19 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     public RunState? Run { get; set; } = run;
     public OldModelIds Ids { get; } = ids;
 
+    // A combat's clone (a fork of RunEngine.ForkActiveCombat, a snapshot, a probe) binds to no run. The old engine's fork
+    // carries the fight and its own streams, and its combat step never reads the run (the deck's changes are the run's,
+    // made as the combat ends). So the clone keeps the deck its source read, as it stood at the copy: a frozen list of
+    // the same card values, which nothing writes, so a fork reads the run deck's listeners and cards as the live fight
+    // does and reaches neither the live run's list nor any of its streams (KernelState.CopyTo takes the copy).
+    internal List<CardInstance>? ForkDeck { get; set; }
+
+    /// <summary>The run deck this world reads: the run's when it is bound to one, else the frozen copy a combat's clone
+    /// took of its source's (null: no run deck known, a DeckWithoutRun gap). Read only.</summary>
+    public IReadOnlyList<CardInstance>? Deck => DeckList;
+
+    internal List<CardInstance>? DeckList => Run?.Deck ?? ForkDeck;
+
     private readonly HashSet<EnemyState> _dying = new(ReferenceEqualityComparer.Instance);
 
     // The marks below are what only the kernel's own sites know. Each has a scoped setter (a K3 obligation: the site
@@ -208,12 +225,40 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     /// <summary>Whether <paramref name="enemy" /> is performing its move (<see cref="Moving" />).</summary>
     public bool IsPerformingMove(EnemyState enemy) => ReferenceEquals(Moving, enemy);
 
+    /// <summary>Whether the monster performing its move died during it (CreatureCmd.Kill's death of <see cref="Moving" />,
+    /// noted by <see cref="NoteDeath" />): the game's move ends there, so the old move body's post-attack bookkeeping must
+    /// not run (MIGRATION_F08.md R7 checks, the in-move death). Reset by each <see cref="PerformingMove" />.</summary>
+    public bool MoverDied { get; private set; }
+
+    /// <summary>Notes a death the kill sequence answered: the mover's sets <see cref="MoverDied" />.</summary>
+    internal void NoteDeath(EnemyState enemy)
+    {
+        if (IsPerformingMove(enemy))
+            MoverDied = true;
+    }
+
     /// <summary>Marks <paramref name="enemy" /> as performing its move until the scope is disposed.</summary>
     public IDisposable PerformingMove(EnemyState enemy)
     {
-        var before = Moving;
+        var before = (Moving, MoverDied);
         Moving = enemy;
-        return new Scope(() => Moving = before);
+        MoverDied = false;
+        return new Scope(() => (Moving, MoverDied) = before);
+    }
+
+    /// <summary>The play's target as the creature it is (game: CardPlay.Target, CardModel.CurrentTarget), set by
+    /// <see cref="Aiming" /> for the length of a play that was given one; null with no play or none given. The old step
+    /// holds the target as a roster index, which names another creature once the kernel removes a corpse in front of it
+    /// (the F08 review, 1.3 B). Not detectable when missing.</summary>
+    public EnemyState? Aimed { get; private set; }
+
+    /// <summary>Marks <paramref name="target" /> (null: none) as the play's target until the scope is disposed; a play
+    /// nested in another sets its own and hands the outer one back.</summary>
+    public IDisposable Aiming(EnemyState? target)
+    {
+        var before = Aimed;
+        Aimed = target;
+        return new Scope(() => Aimed = before);
     }
 
     /// <summary>Marks <paramref name="card" /> as the Play pile's card until the scope is disposed.</summary>
@@ -256,6 +301,10 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         return new Scope(() => { });
     }
 
+    /// <summary>game: Player.ActivateHooks, from Creature.HealInternal when a heal brings the dead player back: the hooks
+    /// are active again (the Deactivated mark lifted, so a later Keep scope scopes as before any death).</summary>
+    public void ActivatePlayerHooks() => PlayerHooks = PlayerHooks.Active;
+
     /// <summary>Declares the player's hooks still active until the scope is disposed: the death passes of the player's
     /// own kill (death prevention, AfterDeath) run before DeactivateHooks, with the player at 0 HP. Does nothing when the
     /// hooks are already deactivated (a second kill of a dead player: its BeforeDeath and ShouldDie passes skip the player
@@ -295,10 +344,11 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
     /// matched to the copy's roster by index (the old engine keeps a dying enemy in it). A scope opened on the other world
     /// restores that world, never this one.
     /// </summary>
-    internal void CopyFrom(OldWorld? from, CombatState? combat, RunState? run)
+    internal void CopyFrom(OldWorld? from, CombatState? combat, RunState? run, List<CardInstance>? forkDeck)
     {
         Combat = combat;
         Run = run;
+        ForkDeck = forkDeck;
         _dying.Clear();
         Modifiers.Clear();
         Badges.Clear();
@@ -307,6 +357,8 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         PlayerHooks = from?.PlayerHooks ?? default;
         Scaling = from?.Scaling;
         Moving = null;
+        MoverDied = from?.MoverDied ?? false;
+        Aimed = null;
         if (from is null)
             return;
         var roster = from.Combat?.Enemies;
@@ -314,6 +366,12 @@ public sealed class OldWorld(CombatState? combat, RunState? run, OldModelIds ids
         {
             int at = roster?.FindIndex(x => ReferenceEquals(x, moving)) ?? -1;
             Moving = at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : moving;
+        }
+        // A target the roster no longer holds stays the old object: the copy's roster does not hold it either.
+        if (from.Aimed is { } aimed)
+        {
+            int at = roster?.FindIndex(x => ReferenceEquals(x, aimed)) ?? -1;
+            Aimed = at >= 0 && combat is not null && at < combat.Enemies.Count ? combat.Enemies[at] : aimed;
         }
         foreach (var dying in from._dying)
         {
@@ -388,8 +446,13 @@ public static partial class OldState
         c++;
         if (s.OstyMaxHp > 0)
         {
-            // A pet: its powers (the old state holds none), then, having no player, its monster.
+            // A pet: its powers, then, having no player, its monster. The old state holds none but Die For You, which the
+            // game applies once when OstyCmd.Summon first adds the pet and never removes (ShouldPowerBeRemovedAfterOwnerDeath),
+            // so the Osty a combat holds has it, dead, alive or revived (the revive re-adds the same creature); any other
+            // power on Osty is the gap.
             gaps.Add(new(NotModelledKind.OstyPowers, ListenerKind.Power, c, 0, "Osty"));
+            into.Add(new(new((int)ListenerKind.Power, w.Ids.DieForYouModelId, PowerInstance(c, 0)), c, 0, OldPile.None,
+                default, null));
             into.Add(new(new((int)ListenerKind.Monster, w.Ids.OstyModelId, c), c, 0, OldPile.None, default, null));
             c++;
         }
@@ -416,7 +479,7 @@ public static partial class OldState
     /// </summary>
     public static void Run(OldWorld w, List<OldListener> into, List<OldGap> gaps, bool withRunItems)
     {
-        if (w.Run is not { } r)
+        if (w.Deck is not { } deck)
         {
             gaps.Add(new(NotModelledKind.DeckWithoutRun, ListenerKind.Card, 0, 0, "deck"));
             gaps.Add(new(NotModelledKind.DeckWithoutRun, ListenerKind.Enchantment, 0, 0, "deck"));
@@ -429,9 +492,9 @@ public static partial class OldState
             return;
         }
 
-        for (int i = 0; i < r.Deck.Count; i++)
+        for (int i = 0; i < deck.Count; i++)
         {
-            var card = r.Deck[i];
+            var card = deck[i];
             int inst = DeckInstance(i);
             into.Add(new(new((int)ListenerKind.Card, card.DefId, inst), 0, i, OldPile.Deck, default, null));
             if (card.Enchantment != Enchantment.None)
@@ -441,7 +504,8 @@ public static partial class OldState
             }
         }
 
-        if (!withRunItems)
+        // A world with a deck and no run is a combat's clone, which always has its combat, so never lists run items.
+        if (!withRunItems || w.Run is not { } r)
         {
             return;
         }
@@ -661,13 +725,13 @@ public static partial class OldState
                 {
                     // Deck cards are matched by index: a removal shifts the later entries. The pass reports NotModelled at
                     // the first deck entry visited after any change to the deck list.
-                    if (view?.Deck is { } deckProbe && deckProbe.Changed(w.Run?.Deck))
+                    if (view?.Deck is { } deckProbe && deckProbe.Changed(w.DeckList))
                     {
                         view.Note(new(NotModelledKind.DeckChangedMidPass, e.Kind, 0, who.ModelId, "run deck"));
                     }
 
                     int i = -who.Instance - 1;
-                    if (w.Run?.Deck is not { } deck || i >= deck.Count)
+                    if (w.Deck is not { } deck || i >= deck.Count)
                     {
                         return false;
                     }
@@ -814,9 +878,9 @@ public sealed class PassView
             Orbs = new ChangeProbe<OrbState>(c.Orbs);
         }
 
-        if (deck && w.Run is { } r)
+        if (deck && w.DeckList is { } d)
         {
-            Deck = new ChangeProbe<CardInstance>(r.Deck);
+            Deck = new ChangeProbe<CardInstance>(d);
         }
     }
 
@@ -986,6 +1050,16 @@ public static partial class OldCreatures
         _ => c.Enemy!.MaxHp,
     };
 
+    public static void SetMaxHp(CombatState s, OldCreature c, int max)
+    {
+        switch (c.Kind)
+        {
+            case CreatureKind.Player: s.PlayerMaxHp = max; break;
+            case CreatureKind.Osty: s.OstyMaxHp = max; break;
+            default: c.Enemy!.MaxHp = max; break;
+        }
+    }
+
     /// <summary>The creature's own buffs (Osty has none in the old state).</summary>
     public static List<BuffState>? Buffs(CombatState s, OldCreature c) => c.Kind switch
     {
@@ -1005,11 +1079,15 @@ public static partial class OldCreatures
     }
 
     /// <summary>game: Creature.IsSecondaryEnemy: an enemy carrying a power whose OwnerIsSecondaryEnemy is true (in
-    /// v0.107.1 only MinionPower overrides it), read over the old buffs through the power mapping.</summary>
+    /// v0.107.1 only MinionPower overrides it), read over the old buffs through the power mapping. An Illusion holder
+    /// counts: the game's IllusionPower.AfterApplied applies MinionPower to its owner (when it has none), which the old
+    /// state does not hold, so the Fogmog's Eye With Teeth is a minion and the Fogmog's death ends the fight
+    /// (MIGRATION_F08.md R7 checks, one ending; the F08 review, 1.3 D).</summary>
     public static bool IsSecondaryEnemy(OldWorld w, OldCreature c) =>
         c.Kind == CreatureKind.Enemy && c.Enemy!.Buffs.Exists(b =>
             w.Ids.Power(b.Id) is { Kind: PowerMapKind.Game or PowerMapKind.Piece } m
-            && m.ModelId == w.Ids.Resolve(ListenerKind.Power, "MinionPower"));
+            && (m.ModelId == w.Ids.Resolve(ListenerKind.Power, "MinionPower")
+                || m.ModelId == w.Ids.Resolve(ListenerKind.Power, "IllusionPower")));
 
     /// <summary>game: Creature.IsPrimaryEnemy.</summary>
     public static bool IsPrimaryEnemy(OldWorld w, OldCreature c) =>

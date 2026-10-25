@@ -224,6 +224,53 @@ class WriteScanTests(unittest.TestCase):
         self.assertIn("state.PlayerHp = 0;", got)
         self.assertEqual(got.count("enemy.Hp -= 3;"), 2)
 
+    def test_the_damage_block_absorption_is_f08(self):
+        src = textwrap.dedent("""\
+            static void DealDamageToPlayer(CombatState state, int a)
+            {
+                state.PlayerBlock -= a;
+            }
+            static void GainBlock(CombatState state, int a)
+            {
+                state.PlayerBlock += a;
+            }
+            """)
+        got = [(w.method, w.family) for w in cm.scan_writes(src, "Core/Effects/CardEffects.cs")]
+        self.assertEqual(got, [("DealDamageToPlayer", "F08"), ("GainBlock", "F09")])
+        got = [(w.method, w.family) for w in cm.scan_writes(src, "Core/Other.cs")]
+        self.assertEqual(got, [("DealDamageToPlayer", "F09"), ("GainBlock", "F09")])
+
+    def test_a_gated_early_return_gates_the_rest_of_its_block(self):
+        src = textwrap.dedent("""\
+            static int Hit(CombatState state, EnemyState enemy)
+            {
+                if (Kernel.If(Switch.F08, state) is { } k)
+                {
+                    return Core2.OldEntry.Hit(k, enemy);
+                }
+                enemy.Hp -= 3;
+                return 3;
+            }
+            static void Heal(CombatState state)
+            {
+                if (Kernel.If(Switch.F08, state) is { } k)
+                {
+                    Core2.OldEntry.Heal(k);
+                }
+                state.PlayerHp += 1;
+            }
+            static void Other(CombatState state, EnemyState enemy)
+            {
+                if (Other.If(Switch.F08, state) is { } k)
+                {
+                    return;
+                }
+                enemy.Hp = 0;
+            }
+            """)
+        got = [(w.method, w.text) for w in cm.scan_writes(src, "Core/Old.cs")]
+        self.assertEqual(got, [("Heal", "state.PlayerHp += 1;"), ("Other", "enemy.Hp = 0;")])
+
     def test_core2_writes_outside_commands_and_oldstate_fail(self):
         with tempfile.TemporaryDirectory() as d:
             eng = Path(d)
@@ -242,7 +289,7 @@ class RealCommandsTests(unittest.TestCase):
         with redirect_stdout(out):
             code = construct.main(["commands"])
         self.assertEqual(code, 0, out.getvalue())
-        self.assertIn("6 commands, 0 differences", out.getvalue())
+        self.assertIn("12 commands, 0 differences", out.getvalue())
 
     def test_a_reordered_core2_command_fails_on_the_real_decompile(self):
         with tempfile.TemporaryDirectory() as d:

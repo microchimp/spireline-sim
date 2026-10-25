@@ -75,7 +75,7 @@ public class ListenerOrderTests
         var got = OldListeners.Enumerate(new OldWorld(s, null, Ids), HookIterator.CombatDirect, gaps).Select(Show);
         Assert.Equal(new[]
         {
-            $"Power:{P(BuffId.Strength)}@0", $"Monster:{Ids.OstyModelId}@1",
+            $"Power:{P(BuffId.Strength)}@0", $"Power:{Ids.DieForYouModelId}@1", $"Monster:{Ids.OstyModelId}@1",
             $"Power:{P(BuffId.Weak)}@2", $"Power:{P(BuffId.Strength)}@2", $"Power:{P(BuffId.Vulnerable)}@2",
             "Monster:16@2", $"Power:{P(BuffId.Dexterity)}@3", "Monster:17@3",
         }, got);

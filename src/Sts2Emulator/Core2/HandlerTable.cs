@@ -54,6 +54,7 @@ public sealed class HandlerTable : IHandlerSource
     private readonly Dictionary<(ListenerKind Kind, int Model), string> _names = new();
     private readonly HashSet<(HookId Hook, ListenerKind Kind)> _kinds = new();
     private readonly HashSet<(HookId Hook, ListenerKind Kind, int Model)> _stubs = new();
+    private readonly Dictionary<(ListenerKind Kind, int Model), List<string>> _inheritors = new();
     private readonly bool[] _any = new bool[Words * 64];
 
     /// <param name="ids">The game-model to old-id resolution (OldModelIds).</param>
@@ -125,12 +126,29 @@ public sealed class HandlerTable : IHandlerSource
     public string? GameId(ListenerKind kind, int modelId) => _names.GetValueOrDefault((kind, modelId));
 
     /// <summary>
-    /// Every registered (model, hook) pair, in kind, name, hook order, with whether the handler is a stub. This is what
+    /// Declares game models that inherit every override of the model registered under <paramref name="model" /> and that
+    /// the old state lists under that model's id (the three Decimillipede segments are one old enemy id; the game's logic is
+    /// in their base class). Their listeners are the base's for dispatch; <see cref="Registered" /> names each of them too.
+    /// </summary>
+    internal void AddInheritors(ListenerKind kind, int model, IEnumerable<string> gameIds)
+    {
+        if (!_inheritors.TryGetValue((kind, model), out var names))
+            _inheritors[(kind, model)] = names = new();
+        foreach (var g in gameIds)
+            if (!names.Contains(g))
+                names.Add(g);
+    }
+
+    /// <summary>
+    /// Every registered (model, hook) pair, in kind, name, hook order, with whether the handler is a stub; a model's
+    /// inheritors (<see cref="AddInheritors" />) are listed with each of its pairs. This is what
     /// tools/kernel/port_list.py reads (EmuDump kernel-handlers): the table itself, not the source text.
     /// </summary>
     public IReadOnlyList<RegisteredHandler> Registered() =>
         _handlers.Keys
-            .Select(k => new RegisteredHandler(k.Kind, _names[(k.Kind, k.Model)], k.Hook, _stubs.Contains(k)))
+            .SelectMany(k => new[] { _names[(k.Kind, k.Model)] }
+                .Concat(_inheritors.GetValueOrDefault((k.Kind, k.Model)) ?? [])
+                .Select(name => new RegisteredHandler(k.Kind, name, k.Hook, _stubs.Contains(k))))
             .OrderBy(r => r.Kind).ThenBy(r => r.GameId, StringComparer.Ordinal).ThenBy(r => r.Hook.ToString(), StringComparer.Ordinal)
             .ToList();
 }
@@ -157,6 +175,14 @@ public readonly struct ModelRegistration(HandlerTable table, ListenerKind kind, 
     public ModelRegistration On(HookId hook, Delegate handler)
     {
         table.Add(kind, gameId, model, hook, handler);
+        return this;
+    }
+
+    /// <summary>The game models that inherit this model's overrides and that the old state does not tell apart from it
+    /// (one old id): each is listed as handled by this model's handlers (<see cref="HandlerTable.AddInheritors" />).</summary>
+    public ModelRegistration InheritedBy(params string[] gameIds)
+    {
+        table.AddInheritors(kind, model, gameIds);
         return this;
     }
 }

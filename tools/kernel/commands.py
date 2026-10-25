@@ -18,7 +18,10 @@ both ways. A declaration missing, a call only on one side, a label or an order t
 The write scan lists every write of an HP or block field of the old state (``PlayerHp``, ``PlayerMaxHp``, ``PlayerBlock``,
 ``OstyHp``, ``OstyMaxHp``, ``OstyBlock``, an enemy's ``.Hp``, ``.MaxHp``, ``.Block``) in ``Core/`` that runs with the F08+F10
 switch on: outside the else branch of a site gated with ``Kernel.If(Switch.F08/F10 ...)`` and outside the setup allow-list
-(``SETUP``, each with its reason). Those are the sites R4 reroutes (a block write is reported under F09). A write in
+(``SETUP``, each with its reason). Those are the sites R4 reroutes (a block write is reported under F09, but the damage's
+own block absorption, ``ABSORBED``, under F08: it moves with the HP write, or the block is taken twice). A gated ``if``
+whose block ends in ``return`` or ``throw`` gates the rest of its enclosing block too (the old code after a switch-on
+early return). A write in
 ``Core2/`` outside ``Core2/Commands`` and the OldState adapter (``Core2/OldState*.cs``) fails.
 """
 
@@ -60,6 +63,7 @@ class Command:
 
 
 _CMD = "MegaCrit.Sts2.Core.Commands/CreatureCmd.cs"
+_HP = "Core2/Commands/CreatureCmd.Hp.cs"
 _KILL_CALLS = (
     (r"\bInvokeDiedEvent\s*\(", "Died"),
     (r"CombatManager\.Instance\.RemoveCreature\s*\(", "RemoveCreature"),
@@ -127,6 +131,42 @@ COMMANDS: dict[str, Command] = {
              ((r"\bProcessPendingLoss\(k\b", "ProcessPendingLoss"),
               (r"\bIsEnding\(k\)", Inline(r"public static bool IsEnding\(KernelState k")),
               (r"\bEndCombatInternal\(k\b", "EndCombatInternal"))),
+    ),
+    # Item 9, the HP commands (batch L1): each game method's internal setter and the commands it awaits, in order.
+    "CreatureCmd.Heal": Command(
+        Side(_CMD, r"public static async Task Heal\(Creature creature, decimal amount",
+             ((r"\.HealInternal\s*\(", "HealInternal"),)),
+        Side(_HP, r"public static int Heal\(KernelState k", ((r"\bHealInternal\(k\b", "HealInternal"),)),
+    ),
+    "CreatureCmd.SetCurrentHp": Command(
+        Side(_CMD, r"public static async Task SetCurrentHp\(Creature creature, decimal amount\)",
+             ((r"\.SetCurrentHpInternal\s*\(", "SetCurrentHpInternal"), (r"\bawait Kill\s*\(", "Kill"))),
+        Side(_HP, r"public static void SetCurrentHp\(KernelState k",
+             ((r"\bSetCurrentHpInternal\(s\b", "SetCurrentHpInternal"), (r"(?<![\w.])Kill\(k\b", "Kill"))),
+    ),
+    "CreatureCmd.SetMaxHp": Command(
+        Side(_CMD, r"public static async Task<decimal> SetMaxHp\(Creature creature, decimal amount\)",
+             ((r"\.SetMaxHpInternal\s*\(", "SetMaxHpInternal"), (r"\bawait Kill\s*\(", "Kill"))),
+        Side(_HP, r"public static int SetMaxHp\(KernelState k",
+             ((r"\bSetMaxHpInternal\(s\b", "SetMaxHpInternal"), (r"(?<![\w.])Kill\(k\b", "Kill"))),
+    ),
+    "CreatureCmd.SetMaxAndCurrentHp": Command(
+        Side(_CMD, r"public static async Task SetMaxAndCurrentHp\(Creature creature, decimal amount\)",
+             ((r"\bawait SetMaxHp\s*\(", "SetMaxHp"), (r"\bawait SetCurrentHp\s*\(", "SetCurrentHp"))),
+        Side(_HP, r"public static void SetMaxAndCurrentHp\(KernelState k",
+             ((r"(?<![\w.])SetMaxHp\(k\b", "SetMaxHp"), (r"(?<![\w.])SetCurrentHp\(k\b", "SetCurrentHp"))),
+    ),
+    "CreatureCmd.GainMaxHp": Command(
+        Side(_CMD, r"public static async Task GainMaxHp\(Creature creature, decimal amount\)",
+             ((r"\bawait SetMaxHp\s*\(", "SetMaxHp"), (r"\bawait Heal\s*\(", "Heal"))),
+        Side(_HP, r"public static void GainMaxHp\(KernelState k",
+             ((r"(?<![\w.])SetMaxHp\(k\b", "SetMaxHp"), (r"(?<![\w.])Heal\(k\b", "Heal"))),
+    ),
+    "CreatureCmd.LoseMaxHp": Command(
+        Side(_CMD, r"public static async Task LoseMaxHp\(PlayerChoiceContext choiceContext, Creature creature",
+             ((r"\bawait Damage\s*\(", "Damage"), (r"\bawait SetMaxHp\s*\(", "SetMaxHp"))),
+        Side(_HP, r"public static void LoseMaxHp\(KernelState k",
+             ((r"(?<![\w.])Damage\(k\b", "Damage"), (r"(?<![\w.])SetMaxHp\(k\b", "SetMaxHp"))),
     ),
 }
 
@@ -316,7 +356,7 @@ WRITE = re.compile(rf"(?:(?<![\w.])(?:\w+\.)*?\b(?P<f>{_F})|\.(?P<m>{_M}))\b{_AS
                    rf"|(?:\+\+|--)\s*[\w.\[\]]*?(?:\b(?P<f2>{_F})|\.(?P<m2>{_M}))\b")
 METHOD = re.compile(r"^\s*(?:(?:public|private|internal|protected|static|override|virtual|sealed|async|unsafe|partial|"
                     r"readonly|extern|new)\s+)+[\w<>\[\],.? ]+?\s+(\w+)\s*(?:<[^>]*>)?\s*\(")
-GATE = re.compile(r"Kernel\.If\(\s*Switch\.F(?:08|10)\b")
+GATE = re.compile(r"Kernel\.If\(\s*(?:Core2\.)?Switch\.F(?:08|10)\b")
 
 # Setup and the run layer: writes that build a combat or carry the run, not a combat's HP change (doc section 4).
 SETUP: dict[str, str] = {
@@ -325,7 +365,32 @@ SETUP: dict[str, str] = {
     "FightAnchor*.cs": "anchoring a fight to a capture (setup)",
     "Run*.cs": "the run layer, outside a combat",
     "method:CreateEnemy": "creature setup",
+    "method:SetUpHatchling": "a spawned hatchling's HP: creature setup (the game's Add), not an HP change",
+    "method:ApplyAfterRoomEntered": "run-level heals on entering a room (RunState, outside a combat; F01's)",
+    "method:ApplyBeforeBossCombat": "a run-level heal before the boss combat starts (RunState, outside a combat; F01's)",
 }
+
+# Lines the write pattern matches that write no combat HP or block (file name, the stripped line): each with its reason.
+NOT_WRITES: dict[tuple[str, str], str] = {
+    ("CombatEngine.cs", "PlayerHp = state.PlayerHp;"): "Baseline's constructor copying the HP into its own field (a read)",
+}
+
+
+# The damage's block absorption (game: CreatureCmd.Damage's DamageBlockInternal): a block write inside the old damage
+# entry points that moves with their HP write, so F08's (doc section 4; the three sites R3b's review named).
+ABSORBED: dict[tuple[str, str], str] = {
+    ("CardEffects.cs", "DealDamageToPlayer"): "the player's block absorbing a hit",
+    ("CardEffects.cs", "LandDamageOnEnemy"): "an enemy's block absorbing a card's hit",
+    ("EnemyAI.cs", "DealAttackDamage"): "the player's block absorbing an enemy's attack",
+}
+TERMINAL = re.compile(r"^(?:return|throw)\b")
+
+
+def family(rel: str, method: str, f: str) -> str:
+    """F08 for an HP field and for the damage's block absorption (ABSORBED), else F09 (block)."""
+    if "Block" not in f or (Path(rel).name, method) in ABSORBED:
+        return "F08"
+    return "F09"
 
 
 @dataclass
@@ -369,6 +434,7 @@ def scan_writes(text: str, rel: str) -> list[Write]:
     stack: list[tuple[str, bool, bool]] = []  # (kind, an old branch of a gate, the if chain is gated)
     closed: dict[int, bool] = {}  # depth -> the if chain whose block just closed there was gated
     pending: tuple[str, bool, bool] | None = None
+    last_return: dict[int, bool] = {}  # depth -> the block's last statement there returns or throws
     for no, raw in enumerate(text.splitlines(), 1):
         c = _clean(raw)
         s = c.strip()
@@ -392,11 +458,12 @@ def scan_writes(text: str, rel: str) -> list[Write]:
                 pending = (kind, False, False)
         elif not s.startswith("}") and not s.startswith("{"):
             closed[len(stack)] = False
+            last_return[len(stack)] = bool(TERMINAL.match(s))
         old = any(o for _, o, _ in stack) or (pending is not None and pending[1] and not s.endswith("{") and hm is None)
-        if not old and not _allowed(rel, method):
+        if not old and not _allowed(rel, method) and (Path(rel).name, s) not in NOT_WRITES:
             for m in WRITE.finditer(c):
                 f = m.group("f") or m.group("m") or m.group("f2") or m.group("m2")
-                out.append(Write(rel, no, method, f, "F09" if "Block" in f else "F08", s))
+                out.append(Write(rel, no, method, f, family(rel, method, f), s))
         for ch in _block_braces(s):
             if ch == "{":
                 stack.append(pending or ("block", False, False))
@@ -404,6 +471,11 @@ def scan_writes(text: str, rel: str) -> list[Write]:
             elif ch == "}" and stack:
                 kind, _, chain = stack.pop()
                 closed[len(stack)] = chain if kind == "if" else False
+                if kind == "if" and chain and last_return.pop(len(stack) + 1, False) and stack:
+                    # a switch-on early return: the rest of the enclosing block is the old path
+                    k0, _, c0 = stack[-1]
+                    stack[-1] = (k0, True, c0)
+                last_return.pop(len(stack) + 1, None)
     return out
 
 

@@ -107,7 +107,6 @@ missing SlothPower.BeforeSideTurnStart  # power; CombatEngine.ApplyChosenCurse, 
 missing VoidFormPower.BeforeSideTurnStart  # power; CardEffects.ApplyGeneratedCardApproximation, CombatEngine.IsFreeUnderVoidForm, CombatEngine.ResolvePlay
 missing FeralPower.ModifyCardPlayResultPileTypeAndPosition  # power; CardEffects.ApplyDefectCard, CombatEngine.ResolvePlay
 missing HardToKillPower.ModifyDamageCap  # power; CardEffects.DealDamageToEnemy, CardEffects.DealUnpoweredDamageToEnemy, CombatFactory.CreateExoskeleton
-missing HangPower.ModifyDamageMultiplicative  # power; CardEffects.ApplyNecrobinderCard
 missing SlowPower.ModifyDamageMultiplicative  # power; CardEffects.DealDamageToEnemy, CombatEngine.ApplyAfterCardPlayedPowers, CombatFactory.ApplyIntrinsicEnemyPowers
 missing DieForYouPower.ModifyUnblockedDamageTarget  # power; named nowhere in Core
 missing LanternKey.ModifyUnknownMapPointRoomTypes  # card; RunEngine.StepEvent

@@ -250,7 +250,11 @@ public static class CardEffects
                 {
                     // Block is what actually landed plus overkill, not the printed number
                     // -- so a Vulnerable target pays out more and a blocked one less.
-                    int dealt = DealDamageToEnemy(state, target, Dmg(state, def, upgraded, card));
+                    // F08+F10 on: game: Fisticuffs.OnPlay blocks for its results' TotalDamage + OverkillDamage.
+                    int dealt = CardAttackOn(state, target, Dmg(state, def, upgraded, card)) is { } punch
+                        ? punch.Results.SelectMany(results => results)
+                            .Sum(r => r.BlockedDamage + r.UnblockedDamage + r.OverkillDamage)
+                        : DealDamageToEnemy(state, target, Dmg(state, def, upgraded, card));
                     GainBlock(state, dealt, rng);
                 }
 
@@ -516,8 +520,14 @@ public static class CardEffects
                 if (feedTarget != null)
                 {
                     bool feedFatal = TriggersFatal(state, feedTarget);
-                    DealDamageToEnemy(state, feedTarget, Dmg(state, def, upgraded, card));
-                    if (feedFatal && feedTarget.Hp <= 0)
+                    // F08+F10 on: game: Feed.OnPlay reads its AttackCommand's results (one that killed its target).
+                    var feedAttack = CardAttackOn(state, feedTarget, Dmg(state, def, upgraded, card));
+                    if (feedAttack is null)
+                    {
+                        DealDamageToEnemy(state, feedTarget, Dmg(state, def, upgraded, card));
+                    }
+
+                    if (feedFatal && (feedAttack is null ? feedTarget.Hp <= 0 : KilledAny(feedAttack)))
                     {
                         // `CreatureCmd.GainMaxHp`, which heals as well as raising the cap.
                         GainMaxHp(state, upgraded ? 4 : 3);
@@ -1131,8 +1141,16 @@ public static class CardEffects
                 {
                     int hpBefore = target.Hp;
                     bool greedFatal = TriggersFatal(state, target);
-                    DealDamageToEnemy(state, target, upgraded ? 25 : 20);
-                    if (target.Hp <= 0 && hpBefore > 0 && greedFatal)
+                    // F08+F10 on: game: HandOfGreed.OnPlay reads its AttackCommand's results.
+                    var greedAttack = CardAttackOn(state, target, upgraded ? 25 : 20);
+                    if (greedAttack is null)
+                    {
+                        DealDamageToEnemy(state, target, upgraded ? 25 : 20);
+                    }
+
+                    if (greedAttack is null
+                            ? target.Hp <= 0 && hpBefore > 0 && greedFatal
+                            : greedFatal && KilledAny(greedAttack))
                     {
                         GainGold(state, upgraded ? 25 : 20);
                     }
@@ -1514,6 +1532,12 @@ public static class CardEffects
                 // The volleys are the hits of ONE `AttackContext`, whose `AfterAttack` runs
                 // when the card disposes it -- after the last volley.
                 int damage = Dmg(state, def, upgraded, card);
+                if (Core2.Kernel.If(Core2.Switch.F08, state) is { } echoCore2)
+                {
+                    EchoingSlashVolleys(state, echoCore2, damage);
+                    break;
+                }
+
                 int volleys = 1;
                 var slash = default(AttackOutcome);
                 while (volleys > 0)
@@ -1966,6 +1990,12 @@ public static class CardEffects
                 //
                 // The damage never upgrades. `RepeatVar(4)` does: 4 hits, 5 upgraded.
                 int damage = Dmg(state, def, upgraded, card);
+                if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                {
+                    CardAttack(state, core2, damage, upgraded ? 5 : 4, AttackTargets.Random, rng: rng);
+                    break;
+                }
+
                 var ricochet = default(AttackOutcome);
                 for (int i = 0; i < (upgraded ? 5 : 4); i++)
                 {
@@ -2107,8 +2137,14 @@ public static class CardEffects
                 if (quarry != null)
                 {
                     bool huntFatal = TriggersFatal(state, quarry);
-                    DealDamageToEnemy(state, quarry, Dmg(state, def, upgraded, card));
-                    if (huntFatal && quarry.Hp <= 0)
+                    // F08+F10 on: game: TheHunt.OnPlay reads its AttackCommand's results.
+                    var huntAttack = CardAttackOn(state, quarry, Dmg(state, def, upgraded, card));
+                    if (huntAttack is null)
+                    {
+                        DealDamageToEnemy(state, quarry, Dmg(state, def, upgraded, card));
+                    }
+
+                    if (huntFatal && (huntAttack is null ? quarry.Hp <= 0 : KilledAny(huntAttack)))
                     {
                         state.ExtraCardRewards++;
                         BuffSystem.Apply(state.PlayerBuffs, BuffId.TheHunt, 1);
@@ -2817,7 +2853,15 @@ public static class CardEffects
     /// </remarks>
     private static int ShivDamage(CombatState state, CardDef def, bool upgraded, CardInstance card)
     {
-        int dmg = Dmg(state, def, upgraded, card) + Accuracy_ModifyDamageAdditive(state);
+        int dmg = Dmg(state, def, upgraded, card);
+        // F08+F10 on: Accuracy's and Phantom Blades' ModifyDamageAdditive are their handlers' folds in Core2's damage
+        // command (the Shiv in flight is the card source), so the base goes on without them.
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is not null)
+        {
+            return dmg;
+        }
+
+        dmg += Accuracy_ModifyDamageAdditive(state);
         if (def.Name == "Shiv" && state.ShivsPlayedThisTurn == 0)
         {
             dmg += PhantomBlades_ModifyDamageAdditive(state);
@@ -2974,7 +3018,7 @@ public static class CardEffects
     /// `cardSource is SovereignBlade`. The card-source gate is why it is applied at the
     /// blade rather than in `BuffSystem.IncomingDamage`, which cannot see the card.
     /// </summary>
-    private static int ConqueredDamage(EnemyState target, int amount) =>
+    internal static int ConqueredDamage(EnemyState target, int amount) =>
         BuffSystem.Get(target.Buffs, BuffId.Conqueror) > 0 ? amount * 2 : amount;
 
     /// <summary>
@@ -3624,6 +3668,14 @@ public static class CardEffects
             return;
         }
 
+        // F08+F10 on: game: SpeedsterPower makes ONE CreatureCmd.Damage over CombatState.HittableEnemies, so every enemy
+        // is hit before any of their deaths resolves (MIGRATION_F08.md, R4's second review).
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } speedsterCore2)
+        {
+            Core2.OldEntry.HitEnemies(speedsterCore2, speedster, Core2.OldEntry.Unpowered, Core2.OldCreature.Player, null);
+            return;
+        }
+
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToArray())
         {
             DealUnpoweredDamageToEnemy(state, enemy, speedster);
@@ -3979,8 +4031,20 @@ public static class CardEffects
             .DefaultIfEmpty(0)
             .Max();
 
-    public static void DealDamageToPlayer(CombatState state, int amount)
+    /// <summary>
+    /// Unpowered, blockable damage on the player. <paramref name="dealer" /> is the creature that deals it, where the game's
+    /// Damage call names one: an enemy-owned Thorns' owner, or the player itself (Constrict and Disintegration pass their
+    /// owner); it is read only under the F08 switch, where it reaches CreatureCmd.Damage as the dealer. The old path below
+    /// does not read it.
+    /// </summary>
+    public static void DealDamageToPlayer(CombatState state, int amount, Core2.OldCreature? dealer = null)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.OldEntry.HitPlayer(core2, amount, Core2.OldEntry.Unpowered, dealer);
+            return;
+        }
+
         amount = BuffSystem.CapIncomingDamage(amount, state.PlayerBuffs);
         int absorbed = Math.Min(state.PlayerBlock, amount);
         state.PlayerBlock -= absorbed;
@@ -4041,6 +4105,11 @@ public static class CardEffects
     /// </remarks>
     internal static int LosePlayerHp(CombatState state, int hpLoss)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            return Core2.OldEntry.HitPlayer(core2, hpLoss, Core2.OldEntry.HpLoss);
+        }
+
         // `ModifyHpLostAfterOsty`, in `CombatState.IterateHookListeners` order: the
         // creature's powers (Intangible) before its player's relics (Tungsten Rod, Beating
         // Remnant, in the order held).
@@ -4208,6 +4277,12 @@ public static class CardEffects
 
     public static void DealDamageToAll(CombatState state, int amount)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            CardAttack(state, core2, amount, 1, AttackTargets.AllOpponents);
+            return;
+        }
+
         // One command with every enemy as a target.
         var attack = default(AttackOutcome);
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
@@ -4238,6 +4313,16 @@ public static class CardEffects
     public static void DealDamageMultiHit(CombatState state, int amount, int hits, Random rng)
     {
         var target = FirstEnemy(state);
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            if (target is not null)
+            {
+                CardAttack(state, core2, amount, hits, AttackTargets.Single, target);
+            }
+
+            return;
+        }
+
         var attack = default(AttackOutcome);
         for (int i = 0; i < hits; i++)
         {
@@ -4288,6 +4373,12 @@ public static class CardEffects
     // Deals `amount` to every living enemy, repeated `hits` times.
     public static void DealDamageToAllMultiHit(CombatState state, int amount, int hits)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            CardAttack(state, core2, amount, hits, AttackTargets.AllOpponents);
+            return;
+        }
+
         var attack = default(AttackOutcome);
         for (int i = 0; i < hits; i++)
         {
@@ -5063,13 +5154,19 @@ public static class CardEffects
         return targetRng == null ? living[0] : living[targetRng.Next(living.Count)];
     }
 
-    private static void DealDamageToRandomEnemiesMultiHit(
+    internal static void DealDamageToRandomEnemiesMultiHit(
         CombatState state,
         int amount,
         int hits,
         Random rng
     )
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            CardAttack(state, core2, amount, hits, AttackTargets.Random, rng: rng);
+            return;
+        }
+
         var attack = default(AttackOutcome);
         for (int i = 0; i < hits; i++)
         {
@@ -5114,11 +5211,91 @@ public static class CardEffects
         out int totalDamage
     )
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            var hit = CardAttack(state, core2, amount, 1, AttackTargets.Single, target);
+            int lost = 0;
+            totalDamage = 0;
+            foreach (var r in hit.Results.SelectMany(results => results))
+            {
+                if (ReferenceEquals(r.Receiver.Enemy, target))
+                {
+                    lost += r.UnblockedDamage;
+                    totalDamage += r.BlockedDamage + r.UnblockedDamage;
+                }
+            }
+
+            return lost;
+        }
+
         var attack = default(AttackOutcome);
         int hpLoss = DealDamageToEnemy(state, target, amount, out totalDamage, ref attack);
         attack.Finish(state);
         return hpLoss;
     }
+
+    /// <summary>The targets of a card's attack (game: AttackCommand's Targeting, TargetingAllOpponents, TargetingRandomOpponents).</summary>
+    private enum AttackTargets
+    {
+        Single,
+        AllOpponents,
+        Random,
+    }
+
+    /// <summary>
+    /// F08+F10 on: a card's attack as ONE <see cref="Core2.AttackCmd" /> (game: AttackCommand.Execute). The player is the
+    /// attacker and the card in flight the source; each of the <paramref name="hits" /> hits is one CreatureCmd.Damage
+    /// over every live target with one Kill after it, so a death resolves after the whole hit; the amount per hit is
+    /// <paramref name="calculate" />'s when given (the CalculatedDamageVar); the command writes the history's
+    /// CreatureAttacked entry; and the card attack's own AfterAttack point (<see cref="AttackOutcome.Finish" />,
+    /// Skittish) runs once, after the last hit, as the command's F06 bridge. Random targets draw the CombatTargets
+    /// stream (<c>TargetRng</c>) once per hit over the live enemies; with no stream, the card's <paramref name="rng" />
+    /// as the old <see cref="RandomLivingEnemy" /> falls back.
+    /// </summary>
+    private static Core2.AttackCmd CardAttack(
+        CombatState state,
+        Core2.KernelState core2,
+        int amount,
+        int hits,
+        AttackTargets targets,
+        EnemyState? target = null,
+        Random? rng = null,
+        Func<Core2.OldCreature?, decimal>? calculate = null
+    )
+    {
+        bool random = targets == AttackTargets.Random;
+        Random? fallback = random && state.TargetRng is null ? rng : null;
+        var cmd = new Core2.AttackCmd(Core2.OldCreature.Player, amount, hits)
+        {
+            SingleTarget =
+                targets == AttackTargets.Single && target is not null ? Core2.OldCreature.Of(target) : null,
+            AllOpponents = targets == AttackTargets.AllOpponents,
+            RandomlyTargeted = random,
+            RandomPick = fallback is null ? null : valid => valid[fallback.Next(valid.Count)],
+            Calculate = calculate,
+            CardSource = Core2.OldEntry.InFlight(core2),
+            Bridge = CardAttackBridge(state),
+        };
+        return cmd.Execute(core2);
+    }
+
+    /// <summary>The card attack's own AfterAttack point (Skittish, <see cref="AttackOutcome.Finish" />) as the F06 bridge.</summary>
+    private static Core2.AttackBridge CardAttackBridge(CombatState state) =>
+        new(AfterAttack: a => AttackOutcome.Of(a).Finish(state));
+
+    /// <summary>
+    /// F08+F10 on: a card's one-hit attack on <paramref name="target" /> as its AttackCmd, for a play effect that reads
+    /// the command's results (game: <c>DamageCmd.Attack(...).Targeting(target).Execute(...)).Results</c>); null with the
+    /// switch off, when nothing ran and the caller takes its old path.
+    /// </summary>
+    private static Core2.AttackCmd? CardAttackOn(CombatState state, EnemyState target, int amount) =>
+        Core2.Kernel.If(Core2.Switch.F08, state) is { } core2
+            ? CardAttack(state, core2, amount, 1, AttackTargets.Single, target)
+            : null;
+
+    /// <summary>game: <c>attackCommand.Results.SelectMany(r => r).Any(r => r.WasTargetKilled)</c>.</summary>
+    private static bool KilledAny(Core2.AttackCmd attack) =>
+        attack.Results.SelectMany(results => results).Any(r => r.WasTargetKilled);
 
     /// <summary>
     /// One hit of the `AttackCommand` that <paramref name="attack" /> collects the results of.
@@ -5142,6 +5319,19 @@ public static class CardEffects
         {
             totalDamage = 0;
             return 0;
+        }
+
+        // F08+F10 on: the base amount goes to the game-shaped command; the fold, Thorns and the after-damage bodies
+        // are its hooks' (MIGRATION_F08.md section 4).
+        // Osty's swings (Necrobinder) are not one AttackCmd yet: each hit is one Damage call, noted here so the caller's
+        // Finish runs Skittish once after its last hit. Omnislice, Echoing Slash and Seeking Edge's sweep take the game's
+        // shape under the switch before reaching here.
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            int hit = Core2.OldEntry.HitEnemy(core2, target, amount, Core2.ValueProps.PoweredAttack,
+                Core2.OldCreature.Player, Core2.OldEntry.InFlight(core2), out totalDamage);
+            attack.Note(target, hit);
+            return hit;
         }
 
         // `CreatureCmd.Damage` runs `Hook.ModifyDamage` for the hit FIRST and only then
@@ -5205,6 +5395,21 @@ public static class CardEffects
     private struct AttackOutcome
     {
         private List<(EnemyState Enemy, int HpLost)>? _firstResults;
+
+        /// <summary>A Core2 attack command's results, in order, noted as the old hits note theirs.</summary>
+        public static AttackOutcome Of(Core2.AttackCmd attack)
+        {
+            var outcome = default(AttackOutcome);
+            foreach (var r in attack.Results.SelectMany(results => results))
+            {
+                if (r.Receiver.Enemy is { } enemy)
+                {
+                    outcome.Note(enemy, r.UnblockedDamage);
+                }
+            }
+
+            return outcome;
+        }
 
         /// <summary>
         /// A result of this command against <paramref name="enemy" />: the HP the hit took off
@@ -5411,6 +5616,14 @@ public static class CardEffects
         if (target.Hp <= 0)
         {
             return 0;
+        }
+
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            // A powered hit is a card's attack (its source the card in flight); the unpowered card hits take their own
+            // F08 branch in DealUnpoweredDamageToEnemy, so an unpowered one here has no card source.
+            return Core2.OldEntry.HitEnemy(core2, target, damage, Core2.OldEntry.Props(powered, unblockable),
+                Core2.OldCreature.Player, powered ? Core2.OldEntry.InFlight(core2) : null, out _);
         }
 
         int blockBefore = target.Block;
@@ -5776,7 +5989,7 @@ public static class CardEffects
     /// it rather than asking after the damage: for a segment the answer changes the moment
     /// the board does.
     /// </summary>
-    private static bool TriggersFatal(CombatState state, EnemyState target) =>
+    internal static bool TriggersFatal(CombatState state, EnemyState target) =>
         !BuffSystem.Has(target.Buffs, BuffId.Minion)
         && !(
             BuffSystem.Get(target.Buffs, BuffId.Reattach) > 0
@@ -5807,6 +6020,14 @@ public static class CardEffects
         {
             // `CreatureCmd.Damage(..., ValueProp.Unpowered, ...)`, so Strength stays out
             // of it -- and `HittableEnemies`, so a dead one is not hit again.
+            // F08+F10 on: game: BlackHolePower makes ONE CreatureCmd.Damage over CombatState.HittableEnemies, so every enemy
+            // is hit before any of their deaths resolves (MIGRATION_F08.md, R4's second review).
+            if (Core2.Kernel.If(Core2.Switch.F08, state) is { } holeCore2)
+            {
+                Core2.OldEntry.HitEnemies(holeCore2, blackHole, Core2.OldEntry.Unpowered, Core2.OldCreature.Player, null);
+                return;
+            }
+
             foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
             {
                 DealUnpoweredDamageToEnemy(state, enemy, blackHole);
@@ -5905,6 +6126,12 @@ public static class CardEffects
             return;
         }
 
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.CreatureCmd.Heal(core2, Core2.OldCreature.Player, amount);
+            return;
+        }
+
         int before = state.PlayerHp;
         state.PlayerHp = Math.Min(state.PlayerMaxHp, state.PlayerHp + amount);
         if (state.PlayerHp != before)
@@ -5920,6 +6147,12 @@ public static class CardEffects
     /// </summary>
     public static void GainMaxHp(CombatState state, int amount)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.CreatureCmd.GainMaxHp(core2, Core2.OldCreature.Player, amount);
+            return;
+        }
+
         state.PlayerMaxHp += amount;
         // The `Heal(creature, num)` half of the command, so this dispatches like any heal.
         HealPlayer(state, amount);
@@ -5938,6 +6171,12 @@ public static class CardEffects
     {
         if (amount <= 0)
         {
+            return;
+        }
+
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.CreatureCmd.LoseMaxHp(core2, Core2.OldCreature.Player, amount, isFromCard: core2.World?.InFlight is not null);
             return;
         }
 
@@ -5962,6 +6201,13 @@ public static class CardEffects
     /// </param>
     public static void LoseHp(CombatState state, int amount, bool fromPlayedCard = false)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.OldEntry.HitPlayer(core2, amount, Core2.OldEntry.HpLoss, null,
+                fromPlayedCard ? Core2.OldEntry.InFlight(core2) : null);
+            return;
+        }
+
         int lost = LosePlayerHp(state, amount);
         state.PlayerHpLostThisTurn += lost;
         AfterPlayerDamageReceived(state, lost, fromPlayedCard);
@@ -6614,8 +6860,14 @@ public static class CardEffects
                 if (target != null)
                 {
                     int hpBefore = target.Hp;
-                    DealDamageToEnemy(state, target, Dmg(state, def, upgraded, card));
-                    if (hpBefore > 0 && target.Hp == 0)
+                    // F08+F10 on: game: Sunder.OnPlay reads its AttackCommand's results.
+                    var sunderAttack = CardAttackOn(state, target, Dmg(state, def, upgraded, card));
+                    if (sunderAttack is null)
+                    {
+                        DealDamageToEnemy(state, target, Dmg(state, def, upgraded, card));
+                    }
+
+                    if (sunderAttack is null ? hpBefore > 0 && target.Hp == 0 : KilledAny(sunderAttack))
                     {
                         GainEnergy(state, 3);
                     }
@@ -7048,7 +7300,14 @@ public static class CardEffects
                 SummonOsty(state, upgraded ? 5 : 3);
                 if (state.OstyHp > 0)
                 {
-                    state.OstyHp = Math.Min(state.OstyMaxHp, state.OstyHp + (upgraded ? 7 : 5));
+                    if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                    {
+                        Core2.CreatureCmd.Heal(core2, Core2.OldCreature.Osty, upgraded ? 7 : 5);
+                    }
+                    else
+                    {
+                        state.OstyHp = Math.Min(state.OstyMaxHp, state.OstyHp + (upgraded ? 7 : 5));
+                    }
                 }
 
                 return true;
@@ -7354,7 +7613,7 @@ public static class CardEffects
                     var spirited = FirstEnemy(state);
                     if (spirited != null)
                     {
-                        DealUnblockableUnpoweredDamageToEnemy(state, spirited, upgraded ? 4 : 3);
+                        DealUnblockableUnpoweredDamageToEnemy(state, spirited, upgraded ? 4 : 3, fromPlayedCard: true);
                     }
                 }
 
@@ -7458,7 +7717,10 @@ public static class CardEffects
                 // multiplier is gated on `cardSource is Hang`, and that function attacks
                 // with no idea which card it is holding. The pipeline ends in a single
                 // `(int)dmg`, so multiplying the base is the same arithmetic.
-                DealDamage(state, Dmg(state, def, upgraded, card) * Math.Max(1, stacks));
+                // F08+F10 on: HangPower.ModifyDamageMultiplicative is Core2's fold (Core2/Models/Powers/HangPower.cs) and the
+                // base goes to the damage command unmultiplied, so the factor is applied once.
+                int hangFactor = Core2.Kernel.If(Core2.Switch.F08, state) is null ? Math.Max(1, stacks) : 1;
+                DealDamage(state, Dmg(state, def, upgraded, card) * hangFactor);
 
                 // `Math.Max(2, amount)`, clamped so the counter cannot pass 999999999.
                 int add = Math.Min(Math.Max(2, stacks), Math.Max(0, 999999999 - stacks));
@@ -7943,8 +8205,16 @@ public static class CardEffects
                 // The emulator dealt damage scaled by the player's BLOCK and forged nothing.
                 var shaped = FirstEnemy(state);
                 int hitsBefore = shaped?.PoweredHitsThisTurn ?? 0;
-                DealDamage(state, Dmg(state, def, upgraded, card));
                 int per = upgraded ? 7 : 5;
+                if (shaped is not null && CardAttackOn(state, shaped, Dmg(state, def, upgraded, card)) is { } shape)
+                {
+                    // F08+F10 on: game: BeatIntoShape.OnPlay. CalculatedForge on the target after the attack (its powered
+                    // hits this turn from the history, this attack's included) less the attack's own hits (Results.Count).
+                    Forge(state, per + per * shaped.PoweredHitsThisTurn - per * shape.Hits);
+                    return true;
+                }
+
+                DealDamage(state, Dmg(state, def, upgraded, card));
                 Forge(state, per + per * hitsBefore);
                 return true;
             }
@@ -8078,8 +8348,14 @@ public static class CardEffects
                 if (target != null)
                 {
                     int hpBefore = target.Hp;
-                    DealDamageToEnemy(state, target, Dmg(state, def, upgraded, card));
-                    if (hpBefore > 0 && target.Hp == 0)
+                    // F08+F10 on: game: KnockoutBlow.OnPlay reads its AttackCommand's results.
+                    var knockoutAttack = CardAttackOn(state, target, Dmg(state, def, upgraded, card));
+                    if (knockoutAttack is null)
+                    {
+                        DealDamageToEnemy(state, target, Dmg(state, def, upgraded, card));
+                    }
+
+                    if (knockoutAttack is null ? hpBefore > 0 && target.Hp == 0 : KilledAny(knockoutAttack))
                     {
                         GainStars(state, 5);
                     }
@@ -8364,7 +8640,21 @@ public static class CardEffects
                 // The emulator hit once for the printed ten and then DOUBLED the player's
                 // block, which is not an effect this card has.
                 int bladeDamage = Dmg(state, def, upgraded, card) + card.BonusDamage;
-                if (BuffSystem.Get(state.PlayerBuffs, BuffId.SeekingEdge) > 0)
+                if (Core2.Kernel.If(Core2.Switch.F08, state) is { } bladeCore2)
+                {
+                    // F08+F10 on: game: SovereignBlade.OnPlay. ONE AttackCommand of the base amount from the card, at
+                    // every opponent under Seeking Edge (one Damage over all of them per hit), else at the target.
+                    // Conqueror's doubling is its ModifyDamageMultiplicative hook's, not the amount's.
+                    if (BuffSystem.Get(state.PlayerBuffs, BuffId.SeekingEdge) > 0)
+                    {
+                        CardAttack(state, bladeCore2, bladeDamage, 1, AttackTargets.AllOpponents);
+                    }
+                    else if (FirstEnemy(state) is { } bladeAim)
+                    {
+                        CardAttack(state, bladeCore2, bladeDamage, 1, AttackTargets.Single, bladeAim);
+                    }
+                }
+                else if (BuffSystem.Get(state.PlayerBuffs, BuffId.SeekingEdge) > 0)
                 {
                     // `ConquerorPower.ModifyDamageMultiplicative` is gated on
                     // `cardSource is SovereignBlade`, so it lives here rather than in
@@ -9439,8 +9729,27 @@ public static class CardEffects
     /// it does to a printed number. Seventeen of them were passing their computed total
     /// straight to <c>DealDamage</c>, which skipped the lot: a Sharp Body Slam hit for
     /// its block and nothing more.
+    ///
+    /// F08+F10 on: the base itself. The game's attack hands the card's DamageVar or
+    /// CalculatedDamageVar value to the damage command, and Hook.ModifyDamage folds the
+    /// enchantment and every ModifyDamage listener onto it once, per hit; Core2's command
+    /// does that (the EnchantAdd and EnchantMul steps, the relic and Gigantification
+    /// handlers), so folding them here as well counted each twice once the card source
+    /// resolved (docs/rebuild/MIGRATION_F08.md, "Damage terms applied twice").
     /// </remarks>
-    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card)
+    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card) =>
+        Core2.Kernel.If(Core2.Switch.F08, state) is null
+            ? ModifiedCardDamage(state, baseDamage, def, card)
+            : baseDamage;
+
+    /// <summary>
+    /// The old engine's Hook.ModifyDamage for a card source: the base with the card's
+    /// enchantment and the card-reading relic and power terms folded on. The play path
+    /// reaches it through <see cref="DmgFrom" /> with the switch off; Thrash reads it for the
+    /// card it eats either way, since that is a value the game reads, not an amount the
+    /// damage command folds.
+    /// </summary>
+    private static int ModifiedCardDamage(CombatState state, int baseDamage, CardDef def, CardInstance card)
     {
         // The card's enchantment (game: EnchantmentModel.EnchantDamageAdditive, then
         // EnchantDamageMultiplicative, both first in Hook.ModifyDamage); Core2's EnchantAdd and
@@ -9508,6 +9817,14 @@ public static class CardEffects
 
     private static EnemyState? FirstEnemy(CombatState state)
     {
+        // F08+F10 on: the play's target is the creature (`CardModel.CurrentTarget`), held by reference for the length of
+        // the play, and none once it is dead or removed: the game's later targeted effect hits nobody (C5-F15). The index
+        // would name the creature that moved into the slot of a corpse the kernel removed (the F08 review, 1.3 B).
+        if (Core2.Kernel.If(Core2.Switch.F08, state)?.World is { Aimed: { } aimed })
+        {
+            return state.Enemies.Contains(aimed) && EnemyAI.IsTargetable(aimed) ? aimed : null;
+        }
+
         int idx = state.TargetEnemyIndex;
         if (idx >= 0 && idx < state.Enemies.Count && EnemyAI.IsTargetable(state.Enemies[idx]))
         {
@@ -9569,9 +9886,12 @@ public static class CardEffects
     {
         var def = GeneratedData.Cards.Get(eaten.DefId);
         int? calculated = CalculatedAttackDamage(state, def, eaten);
-        return calculated is { } value
-            ? DmgFrom(state, value, def, eaten)
-            : Dmg(state, def, eaten.Upgraded, eaten);
+        return ModifiedCardDamage(
+            state,
+            calculated ?? (eaten.Upgraded ? def.BaseDamage + def.UpgradeDamage : def.BaseDamage),
+            def,
+            eaten
+        );
     }
 
     /// <summary>
@@ -9863,6 +10183,19 @@ public static class CardEffects
             return;
         }
 
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            if (state.OstyHp > 0)
+            {
+                Core2.CreatureCmd.GainMaxHp(core2, Core2.OldCreature.Osty, amount);
+            }
+            else
+            {
+                Core2.CreatureCmd.SetMaxAndCurrentHp(core2, Core2.OldCreature.Osty, amount);
+            }
+            return;
+        }
+
         if (state.OstyHp > 0)
         {
             state.OstyMaxHp += amount;
@@ -9888,6 +10221,12 @@ public static class CardEffects
     {
         if (amount <= 0 || state.OstyHp <= 0)
         {
+            return;
+        }
+
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.OldEntry.HitOsty(core2, amount);
             return;
         }
 
@@ -9920,6 +10259,12 @@ public static class CardEffects
 
     private static void KillOsty(CombatState state)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.OldEntry.Kill(core2, Core2.OldCreature.Osty);
+            return;
+        }
+
         state.OstyHp = 0;
         state.OstyMaxHp = 0;
     }
@@ -10323,7 +10668,14 @@ public static class CardEffects
             int doom = BuffSystem.Get(enemy.Buffs, BuffId.Doom);
             if (doom > 0 && enemy.Hp <= doom)
             {
-                enemy.Hp = 0;
+                if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                {
+                    Core2.OldEntry.Kill(core2, Core2.OldCreature.Of(enemy));
+                }
+                else
+                {
+                    enemy.Hp = 0;
+                }
                 // `Powers.All(p => p.ShouldOwnerDeathTriggerFatal())`, the same gate every
                 // "if this kills" payout reads -- a Minion and an attached Decimillipede
                 // segment do not count towards Book Repair Knife's heal.
@@ -10352,17 +10704,55 @@ public static class CardEffects
         // `CreatureCmd.Damage(HittableEnemies, Amount, Unpowered, Owner)`: the player's own
         // damage, so it lands like any other -- a burst that kills a Shrinker Beetle lifts
         // the Shrink, one that empties a block trips Hand Drill.
+        // F08+F10 on: game: InfernoPower makes ONE CreatureCmd.Damage over CombatState.HittableEnemies, so every enemy
+        // is hit before any of their deaths resolves (MIGRATION_F08.md, R4's second review).
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } infernoCore2)
+        {
+            Core2.OldEntry.HitEnemies(infernoCore2, inferno, Core2.OldEntry.Unpowered, Core2.OldCreature.Player, null);
+            return;
+        }
+
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
         {
             DealUnpoweredDamageToEnemy(state, enemy, inferno);
         }
     }
 
+    /// <summary>game: Omnislice's splash props, <c>ValueProp.Unpowered | ValueProp.Move</c>.</summary>
+    private static readonly Core2.ValueProp OmnisliceSplash = new(Core2.ValueProps.Unpowered | Core2.ValueProps.Move);
+
     private static void DealOmnislice(CombatState state, int amount)
     {
         var target = FirstEnemy(state);
         if (target is null)
         {
+            return;
+        }
+
+        // F08+F10 on: game: Omnislice.OnPlay. One AttackContext; the aimed hit is one Damage (Move) on the target; the
+        // splash is ONE Damage over the receiver's other hittable teammates, for the first result's TotalDamage +
+        // OverkillDamage, with Unpowered | Move and the card as source. So every splashed enemy is hit before any of their
+        // deaths resolves, and Thorns (which answers a powered attack or an Omnislice) sees the game's props and source.
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } sliceCore2)
+        {
+            using var context = new Core2.OldEntry.AttackContext(sliceCore2, CardAttackBridge(state));
+            var aimed = Core2.OldCreature.Of(target);
+            var first = context.AddHit(Core2.CreatureCmd.Damage(sliceCore2, [aimed], amount, Core2.ValueProps.PoweredAttack,
+                Core2.OldCreature.Player, Core2.OldEntry.InFlight(sliceCore2)));
+            if (first.Count == 0)
+            {
+                return;
+            }
+
+            var others = Core2.OldCreatures.HittableEnemies(sliceCore2.World!).Where(c => !c.Equals(aimed)).ToList();
+            if (others.Count != 0)
+            {
+                var r = first[0];
+                context.AddHit(Core2.CreatureCmd.Damage(sliceCore2, others,
+                    r.BlockedDamage + r.UnblockedDamage + r.OverkillDamage, OmnisliceSplash, Core2.OldCreature.Player,
+                    Core2.OldEntry.InFlight(sliceCore2)));
+            }
+
             return;
         }
 
@@ -10477,11 +10867,15 @@ public static class CardEffects
     /// the target's BLOCK touches it. Unpowered and Unblockable are different props and
     /// the pair has to be asked for explicitly -- Strangle is both.
     /// </summary>
+    /// <param name="fromPlayedCard">The card in flight is the damage's source (a card's own hit: Capture Spirit); false
+    /// for a power, relic or monster caller, whose game Damage passes no card.</param>
     internal static void DealUnblockableUnpoweredDamageToEnemy(
         CombatState state,
         EnemyState target,
-        int amount
-    ) => DealUnpoweredDamageToEnemy(state, target, amount, triggerThorns: false, unblockable: true);
+        int amount,
+        bool fromPlayedCard = false,
+        bool noDealer = false
+    ) => DealUnpoweredDamageToEnemy(state, target, amount, triggerThorns: false, unblockable: true, fromPlayedCard, noDealer);
 
     /// <summary>
     /// Unpowered damage the player's side deals one enemy: `Hook.ModifyDamage` without
@@ -10494,9 +10888,22 @@ public static class CardEffects
         EnemyState target,
         int amount,
         bool triggerThorns,
-        bool unblockable = false
+        bool unblockable = false,
+        bool fromPlayedCard = false,
+        bool noDealer = false
     )
     {
+        // F08+F10 on: the base amount goes to the game-shaped command before any old body (the Intangible and Hard to
+        // Kill caps are ModifyDamage's hooks, Thorns BeforeDamageReceived's; CreatureCmd.Damage skips a dead target).
+        // The source is the card in flight only for a card's own hit: the game's power, relic, orb and potion Damage
+        // calls pass none (MIGRATION_F08.md, R4c's source sweep). The dealer is the player but for the damage-over-time
+        // powers whose game call passes none (noDealer: Poison, Strangle, Haunt, Demise; the dealer sweep beside it).
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            return Core2.OldEntry.HitEnemy(core2, target, amount, Core2.OldEntry.Props(false, unblockable),
+                noDealer ? null : Core2.OldCreature.Player, fromPlayedCard ? Core2.OldEntry.InFlight(core2) : null, out _);
+        }
+
         // A target already dead is skipped before anything runs, as on the powered path
         // (`DealDamageToEnemy`): an Omnislice splash or an Inferno burst over the enemies it
         // saw at the start runs no Thorns of one that died on the way.
@@ -10649,7 +11056,7 @@ public static class CardEffects
     /// <summary>`GlassOrb._passiveVal = 4m`, before Focus and before any decay.</summary>
     private const int GlassBasePassiveValue = 4;
 
-    private static void TriggerEnemyThorns(CombatState state, EnemyState target)
+    internal static void TriggerEnemyThorns(CombatState state, EnemyState target)
     {
         int thorns = BuffSystem.Get(target.Buffs, BuffId.Thorns);
         if (thorns <= 0)
@@ -10667,7 +11074,7 @@ public static class CardEffects
         // reached half its call sites: the underdocks sweep found it as a ONE point gap on
         // a single Toadpole capture -- the player held 1 block, which ate 1 of the 2
         // Thorns, and the emulator charged both to HP.
-        DealDamageToPlayer(state, thorns);
+        DealDamageToPlayer(state, thorns, dealer: Core2.OldCreature.Of(target));
     }
 
     private static void ApplyEnemyDebuff(CombatState state, BuffId id, int magnitude, Random rng)
@@ -10691,7 +11098,7 @@ public static class CardEffects
     /// <c>SteamEruptionPower</c>: <c>ShouldCreatureBeRemovedFromCombatAfterDeath</c> is false)
     /// still receives, and the <c>Hp &lt;= 0</c> test below does not model that.
     /// </summary>
-    private static void ApplyEnemyDebuffToTarget(
+    internal static void ApplyEnemyDebuffToTarget(
         CombatState state,
         EnemyState? target,
         BuffId id,
@@ -10770,6 +11177,14 @@ public static class CardEffects
         }
 
         BuffSystem.Remove(state.PlayerBuffs, BuffId.OutbreakCounter);
+        // F08+F10 on: game: OutbreakPower makes ONE CreatureCmd.Damage over CombatState.HittableEnemies, so every enemy
+        // is hit before any of their deaths resolves (MIGRATION_F08.md, R4's second review).
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } outbreakCore2)
+        {
+            Core2.OldEntry.HitEnemies(outbreakCore2, outbreak, Core2.OldEntry.Unpowered, Core2.OldCreature.Player, null);
+            return;
+        }
+
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToArray())
         {
             DealUnpoweredDamageToEnemy(state, enemy, outbreak);
@@ -10798,7 +11213,7 @@ public static class CardEffects
     /// `TemporaryStrengthPower` with `IsPositive => false`: Strength down now, handed back
     /// at the end of the owner's side turn. It is a Debuff, so Artifact eats it whole.
     /// </summary>
-    private static void ApplyTemporaryStrengthDownTo(EnemyState target, int amount)
+    internal static void ApplyTemporaryStrengthDownTo(EnemyState target, int amount)
     {
         if (BuffSystem.TryConsumeArtifact(target.Buffs))
         {
@@ -11098,8 +11513,19 @@ public static class CardEffects
         }
     }
 
-    public static void DealUnpoweredDamageToAll(CombatState state, int amount)
+    /// <param name="fromPlayedCard">The card in flight is the source (a card's own list); false for the power, relic, orb
+    /// and potion lists, whose game Damage passes no card.</param>
+    public static void DealUnpoweredDamageToAll(CombatState state, int amount, bool fromPlayedCard = false)
     {
+        // F08+F10 on: game: each list-damage body that calls this (Hailstorm, Panache, Smokestack, The Bomb, the relics and potions) makes ONE CreatureCmd.Damage over CombatState.HittableEnemies, so every enemy
+        // is hit before any of their deaths resolves (MIGRATION_F08.md, R4's second review).
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } allCore2)
+        {
+            Core2.OldEntry.HitEnemies(allCore2, amount, Core2.OldEntry.Unpowered, Core2.OldCreature.Player,
+                fromPlayedCard ? Core2.OldEntry.InFlight(allCore2) : null);
+            return;
+        }
+
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0).ToList())
         {
             DealUnpoweredDamageToEnemy(state, enemy, amount, triggerThorns: false);
@@ -11222,6 +11648,24 @@ public static class CardEffects
                 }
             );
             NoteGeneratedCard(state);
+        }
+    }
+
+    /// <summary>
+    /// F08+F10 on: game: EchoingSlash.OnPlay. One AttackContext; each volley is ONE CreatureCmd.Damage over
+    /// CombatState.HittableEnemies (the card's Damage var: Move, the card as source), and the volleys left grow by the
+    /// results that killed their target (<c>WasTargetKilled</c>), read from that call's results.
+    /// </summary>
+    private static void EchoingSlashVolleys(CombatState state, Core2.KernelState core2, int damage)
+    {
+        using var context = new Core2.OldEntry.AttackContext(core2, CardAttackBridge(state));
+        int volleys = 1;
+        while (volleys > 0)
+        {
+            volleys--;
+            var hit = context.AddHit(Core2.CreatureCmd.Damage(core2, Core2.OldCreatures.HittableEnemies(core2.World!),
+                damage, Core2.ValueProps.PoweredAttack, Core2.OldCreature.Player, Core2.OldEntry.InFlight(core2)));
+            volleys += hit.Count(r => r.WasTargetKilled);
         }
     }
 

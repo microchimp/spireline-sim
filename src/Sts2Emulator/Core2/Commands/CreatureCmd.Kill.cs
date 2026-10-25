@@ -101,6 +101,8 @@ public static partial class CreatureCmd
             if (force || OldCreatures.MaxHp(s, c) <= 0 || Hooks.ShouldDie(k, new ShouldDieArgs(R(w, c)), out preventer))
             {
                 Died(k, c);
+                if (c.Enemy is { } died)
+                    w.NoteDeath(died);
                 bool remove = Hooks.ShouldCreatureBeRemovedFromCombatAfterDeath(k,
                     new ShouldCreatureBeRemovedFromCombatAfterDeathArgs(R(w, c)), out _);
                 Hooks.AfterDeath(k, new AfterDeathArgs(R(w, c), false, 0f));

@@ -312,20 +312,19 @@ def compare_shape(rec, eng, shape: str, rows: list, rec_snap: dict, fired: dict,
                 break
             if node not in other_nodes:
                 break
-        if missing_entry:
+        # A record-only path is a difference unless an unmodelled row lists it, inside an entry the engine lacks as
+        # anywhere else: the census counts a path the engine writes, not one compared only because the entry is missing.
+        # The missing entry stays a difference through its container's #len and its other fields.
+        sp = schema(p)
+        unmod = next((r["id"] for r in unmod_rows if any(rx.match(sp) for rx in r["_re"])), None) if p in g else None
+        if unmod is not None:
+            fired[unmod] = fired.get(unmod, 0) + 1
+            unmodelled.add(sp)
+        elif missing_entry or p in g:
             compared.add(p)
             raw.append((p, g.get(p), e.get(p)))
-        elif p in g:
-            sp = schema(p)
-            if any(rx.match(sp) for r in unmod_rows for rx in r["_re"]):
-                fired_id = next(r["id"] for r in unmod_rows if any(rx.match(sp) for rx in r["_re"]))
-                fired[fired_id] = fired.get(fired_id, 0) + 1
-                unmodelled.add(sp)
-            else:
-                compared.add(p)
-                raw.append((p, g[p], None))
         else:
-            unjudged.add(schema(p))
+            unjudged.add(sp)
     ignored = [rx for r in active if r["kind"] == "ignore" for rx in r["_re"]]
     waived |= {p for p in compared if any(rx.match(schema(p)) for rx in ignored)}  # the row stands for the comparison
     diffs = []

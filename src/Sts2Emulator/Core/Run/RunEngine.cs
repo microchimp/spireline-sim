@@ -1380,13 +1380,13 @@ public sealed class RunEngine : Core2.ICombatEndHost
             Ran = true;
             if (bare is not null)
             {
+                if (combat.Kernel is { } kEnd)
+                {
+                    kEnd.EndHost = this;
+                }
                 var r = Sts2Emulator.Core.CombatEngine.Step(combat, action, bare, target);
                 Result = r;
                 (Reward, Terminal) = (r.Reward, r.Terminal);
-                if (r.Terminal && combat.Kernel is { } k && k.On(Core2.Switch.F10))
-                {
-                    Core2.CombatEnd.OldStepEnded(k, r.PlayerWon, this);
-                }
             }
             else
             {
@@ -1587,6 +1587,11 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 return -1;
             }
 
+            if (State.ActiveCombat.Kernel is { } kEnd)
+            {
+                kEnd.EndHost = this;
+            }
+
             var result =
                 targetEnemyIndex >= 0
                     ? CombatEngine.Step(
@@ -1607,13 +1612,11 @@ public sealed class RunEngine : Core2.ICombatEndHost
             }
             if (result.Terminal)
             {
-                // With F10 on the combat's end is Core2's (CombatEnd.CheckWinCondition), which hands it back to
-                // FinishCombat once (the F17 hand-off). Until R4 reroutes the old in-step check, its point stands for the
-                // game's (CombatEnd.OldStepEnded).
+                // With F10 on the combat's end is Core2's (CombatEnd.CheckWinCondition at the old step's points), which
+                // handed it back to FinishCombat once (the F17 hand-off) through the kernel state's end host.
                 if (State.ActiveCombat?.Kernel is { } k && k.On(Core2.Switch.F10))
                 {
                     terminal = false;
-                    Core2.CombatEnd.OldStepEnded(k, result.PlayerWon, this);
                     return TakeHandOff(0, ref terminal);
                 }
                 return FinishCombat(result.PlayerWon, out terminal);

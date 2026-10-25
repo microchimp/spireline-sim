@@ -29,6 +29,9 @@ public class OldEngine : IEngine
 
     public bool CombatOpen => Combat != null;
 
+    /// <summary>The old engine has one ending predicate: none to disagree.</summary>
+    public virtual string? EndingDisagreement() => null;
+
     public OpenScreen? Screen => OldChoices.ScreenOf(Combat);
 
     public void Pick(int candidate) => Step(candidate, -1);

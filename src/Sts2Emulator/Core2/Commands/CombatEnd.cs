@@ -1,8 +1,8 @@
 // game: CombatManager.CheckWinCondition, IsEnding, IsOverOrEnding, IsInProgress, IsAboutToLose, LoseCombat,
 // ProcessPendingLoss and EndCombatInternal's start, over the kernel's per-combat progress (docs/rebuild/MIGRATION_F08.md
-// section 3 item 7 and section 2's F17 hand-off). Round R3b: the check is called at the game's points that exist in Core2
-// (the executor's boundary through IActionHost.CheckWin, the turn start's two points through ITurnStartFlow.CheckWin) and
-// exposed for the turn-flow points the old CombatEngine.EndTurn still owns (R4 reroutes them). F17 (AfterCombatEnd,
+// section 3 item 7 and section 2's F17 hand-off). Round R3b: the check is called at the executor's boundary (through
+// IActionHost.CheckWin) and exposed for the turn start's two points (ITurnStartFlow.CheckWin); R4 calls it from the old
+// turn flow's points (CombatEngine.CheckWinCondition, ExecuteEnemyTurn, EndEnemyTurn) through KernelState.EndHost. F17 (AfterCombatEnd,
 // AfterCombatVictoryEarly, AfterCombatVictory) is not migrated: the combat's end hands off to the old engine's
 // RunEngine.FinishCombat through ICombatEndHost, once. Game code is cited by class and method only.
 using Sts2Emulator.Core;
@@ -192,20 +192,14 @@ public static class CombatEnd
     /// <summary>game: CombatManager.EndPlayerTurnPhaseOneInternal at its end, after BeforeFlush.</summary>
     public static bool EndPlayerTurnPhaseOne(KernelState k, ICombatEndHost host) => CheckWinCondition(k, host);
 
-    // ------------------------------------------------------------------------------- R4's bridge
+    /// <summary>The end's host when none is set (a test stepping the old engine directly): the end is kept in the
+    /// progress only.</summary>
+    public static readonly ICombatEndHost NoHost = new NoEndHost();
 
-    /// <summary>
-    /// The old step's in-step win check (CombatEngine.CheckWinCondition's callers) found the fight over, with the F10
-    /// switch on: until R4 reroutes those sites to the points above and the player's death through CreatureCmd.Kill, the
-    /// old check point stands for the game's point it copies. A loss is the old death answered (LoseCombat), then
-    /// CheckWinCondition runs there. R4 deletes this.
-    /// </summary>
-    public static void OldStepEnded(KernelState k, bool playerWon, ICombatEndHost host)
+    private sealed class NoEndHost : ICombatEndHost
     {
-        if (!IsInProgress(k))
-            return;
-        if (!playerWon)
-            LoseCombat(k);
-        CheckWinCondition(k, host);
+        public void EndCombat(KernelState k, bool playerWon)
+        {
+        }
     }
 }

@@ -678,6 +678,8 @@ public static class CombatEngine
         // `OnPlayWrapper`'s `target`, the `Target` of every repetition's `CardPlay`: the
         // creature, which a repetition's death check can move by sweeping a corpse.
         var target = PlayTarget.Of(state);
+        // F08+F10 on: the effects' FirstEnemy reads the target by reference for the whole play (the F08 review, 1.3 B).
+        using var aim = Core2.Kernel.If(Core2.Switch.F08, state)?.World?.Aiming(target.Creature);
 
         // The play's first repetition (`CardPlay.IsFirstInSeries`), the only one Echo Form
         // counts; every repetition, this one included, starts a play (`StartPlayRepetition`).
@@ -958,6 +960,10 @@ public static class CombatEngine
             oblivionBefore[i] = BuffSystem.Get(state.Enemies[i].Buffs, BuffId.Oblivion);
         }
 
+        // F08+F10 on: the holders by reference, as the game's per-instance OblivionPower is: the kernel removes a corpse
+        // inside the card, so a roster position after it names another creature at AfterCardPlayed (the F08 review, 1.3 A).
+        EnemyState[]? oblivionHolders = Core2.Kernel.If(Core2.Switch.F08, state) is null ? null : [.. state.Enemies];
+
         // Read here, with Burst and Serpent Form, for the same reason all three are:
         // the power records what it was worth when the play STARTED.
         CaptureBeforePlayPowers(state);
@@ -965,7 +971,10 @@ public static class CombatEngine
         CombatTrace.At("play", card.DefId, state);
 
         ApplyEnchantmentOnPlay(state, card, rng);
-        Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
+        using (Core2.Kernel.Marks.Flying(state, card))
+        {
+            Effects.CardEffects.Apply(def, card.Upgraded, state, rng, card);
+        }
         Effects.RelicEffects.ApplyAfterEachPlay(state, def, rng);
 
         // `cardSource.CurrentPlayIndex > 0` returns 1m: a repeat of the same play gets no
@@ -1090,11 +1099,25 @@ public static class CombatEngine
         // recorded, as Doom on the enemy carrying it. Paying the SNAPSHOT is what keeps
         // Oblivion off the card that applied it -- at BeforeCardPlayed the enemy does not
         // have the power yet, so there is nothing recorded for that play.
-        for (int i = 0; i < state.Enemies.Count && i < oblivionBefore.Length; i++)
+        if (oblivionHolders is not null)
         {
-            if (oblivionBefore[i] > 0 && state.Enemies[i].Hp > 0)
+            for (int i = 0; i < oblivionHolders.Length && i < oblivionBefore.Length; i++)
             {
-                BuffSystem.Apply(state.Enemies[i].Buffs, BuffId.Doom, oblivionBefore[i]);
+                var holder = oblivionHolders[i];
+                if (oblivionBefore[i] > 0 && holder.Hp > 0 && state.Enemies.Contains(holder))
+                {
+                    BuffSystem.Apply(holder.Buffs, BuffId.Doom, oblivionBefore[i]);
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < state.Enemies.Count && i < oblivionBefore.Length; i++)
+            {
+                if (oblivionBefore[i] > 0 && state.Enemies[i].Hp > 0)
+                {
+                    BuffSystem.Apply(state.Enemies[i].Buffs, BuffId.Doom, oblivionBefore[i]);
+                }
             }
         }
 
@@ -1116,10 +1139,12 @@ public static class CombatEngine
             var hauntTarget = Effects.CardEffects.RandomLivingEnemy(state, rng);
             if (hauntTarget != null)
             {
+                // HauntPower's Damage passes no dealer and no source.
                 Effects.CardEffects.DealUnblockableUnpoweredDamageToEnemy(
                     state,
                     hauntTarget,
-                    haunt
+                    haunt,
+                    noDealer: true
                 );
             }
         }
@@ -1148,7 +1173,7 @@ public static class CombatEngine
         // played, so the copy inherits its upgrade and its enchantment.
         Effects.RelicEffects.ApplyMusicBox(state, card, def);
 
-        ApplyAfterCardPlayedPowers(state, def, rng, energySpent);
+        ApplyAfterCardPlayedPowers(state, def, rng, energySpent, card);
         Effects.RelicEffects.ApplyAfterCardPlayedRares(state, def, rng);
         // The Lamp's latch closes when the card that claimed it finishes resolving.
         Effects.RelicEffects.FinishUnsettlingLampCard(state);
@@ -1688,7 +1713,14 @@ public static class CombatEngine
         int regen = BuffSystem.Get(state.PlayerBuffs, BuffId.Regen);
         if (regen > 0 && state.PlayerHp > 0)
         {
-            state.PlayerHp = Math.Min(state.PlayerMaxHp, state.PlayerHp + regen);
+            if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+            {
+                Core2.CreatureCmd.Heal(core2, Core2.OldCreature.Player, regen);
+            }
+            else
+            {
+                state.PlayerHp = Math.Min(state.PlayerMaxHp, state.PlayerHp + regen);
+            }
             BuffSystem.Apply(state.PlayerBuffs, BuffId.Regen, -1);
         }
 
@@ -1906,7 +1938,8 @@ public static class CombatEngine
         int constrict = BuffSystem.Get(state.PlayerBuffs, BuffId.Constrict);
         if (constrict > 0 && afterTurnEndOpen)
         {
-            Effects.CardEffects.DealDamageToPlayer(state, constrict);
+            // game: ConstrictPower's turn-end damage names its owner, the player, as the dealer.
+            Effects.CardEffects.DealDamageToPlayer(state, constrict, Core2.OldCreature.Player);
         }
 
         // `NoDrawPower.AfterSideTurnEnd` -- Battle Trance's and Bullet Time's gag, lifted
@@ -1931,7 +1964,8 @@ public static class CombatEngine
         int disintegration = BuffSystem.Get(state.PlayerBuffs, BuffId.Disintegration);
         if (disintegration > 0 && !IsOverOrEnding(state))
         {
-            Effects.CardEffects.DealDamageToPlayer(state, disintegration);
+            // game: DisintegrationPower's late turn-end damage names its owner, the player, as the dealer.
+            Effects.CardEffects.DealDamageToPlayer(state, disintegration, Core2.OldCreature.Player);
         }
 
         // `DoomPower.BeforeSideTurnEnd` kills a doomed enemy at the end of the ENEMY side's
@@ -1990,6 +2024,14 @@ public static class CombatEngine
 
             state.ExecutedThisEnemyTurn.Clear();
 
+            // game: CombatManager.StartTurn, the enemy side: CheckWinCondition before ExecuteEnemyTurn (F08+F10 on).
+            // The game's AfterSideTurnStart (PoisonPower's tick) is before this check; the old engine ticks poison in the
+            // per-enemy loop below, after it, so a poison kill is not caught here (an R7 check, MIGRATION_F08).
+            if (StartTurnWinCheck(state, playerSide: false, turnEndStart) is { } enemyStartResult)
+            {
+                return enemyStartResult;
+            }
+
             // A reviving illusion is at 0 HP and still takes its turn -- that turn IS the
             // revive. It has to stay in the roster's own order while it does, so it comes back
             // where it stood rather than at one end.
@@ -2035,13 +2077,20 @@ public static class CombatEngine
                     BuffSystem.Remove(enemy.Buffs, BuffId.Reviving);
                     if (enemy.DefId == KE.TestSubject)
                     {
-                        RespawnTestSubject(enemy, state.AscensionLevel);
+                        RespawnTestSubject(enemy, state.AscensionLevel, state);
                         continue;
                     }
 
                     int reattach = BuffSystem.Get(enemy.Buffs, BuffId.Reattach);
-                    enemy.Hp =
-                        reattach > 0 ? Math.Min(enemy.MaxHp, enemy.Hp + reattach) : enemy.MaxHp;
+                    int reattachHp = reattach > 0 ? Math.Min(enemy.MaxHp, enemy.Hp + reattach) : enemy.MaxHp;
+                    if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                    {
+                        Core2.CreatureCmd.SetCurrentHp(core2, Core2.OldCreature.Of(enemy), reattachHp);
+                    }
+                    else
+                    {
+                        enemy.Hp = reattachHp;
+                    }
                     // REATTACH_MOVE's FollowUpState is the machine's RandomBranchState, not
                     // the cycle -- so a segment that comes back ROLLS its next move rather
                     // than resuming where it fell. The Fogmog's eye returns to the move it was
@@ -2075,10 +2124,12 @@ public static class CombatEngine
                     for (int tick = 0; tick < triggers && enemy.Hp > 0; tick++)
                     {
                         int amount = BuffSystem.Get(enemy.Buffs, BuffId.Poison);
+                        // PoisonPower's tick passes no dealer and no source.
                         Effects.CardEffects.DealUnblockableUnpoweredDamageToEnemy(
                             state,
                             enemy,
-                            amount
+                            amount,
+                            noDealer: true
                         );
                         if (enemy.Hp > 0)
                         {
@@ -2109,7 +2160,15 @@ public static class CombatEngine
                         // `CreatureCmd.Kill(creature, force: true)`, and `force` is
                         // documented as blocking death prevention -- so no hook, and Lizard
                         // Tail and Fairy in a Bottle do not save the player from a Sandpit.
-                        state.PlayerHp = 0;
+                        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                        {
+                            Core2.OldEntry.Kill(core2, Core2.OldCreature.Player, force: true);
+                            Core2.CombatEnd.CheckWinCondition(core2, core2.EndHost);
+                        }
+                        else
+                        {
+                            state.PlayerHp = 0;
+                        }
                         return new StepResult(Terminal: true, PlayerWon: false, Reward: -1f);
                     }
                 }
@@ -2125,6 +2184,19 @@ public static class CombatEngine
                 state.ExecutedThisEnemyTurn.Add(deckBefore);
 
                 CombatTrace.At("move", enemy.DefId, state);
+                if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2Move)
+                {
+                    // game: MonsterModel.PerformMove (IsPerformingMove), then ExecuteEnemyTurn's CheckWinCondition.
+                    Core2.CreatureCmd.PerformMove(core2Move, Core2.OldCreature.Of(enemy),
+                        () => EnemyAI.ExecuteIntent(enemy, state, rng));
+                    CombatTrace.At("moved", enemy.DefId, state);
+                    state.ExecutedThisEnemyTurn.Add(PlayerCardCount(state));
+                    if (!Core2.CombatEnd.AfterEnemyTakesTurn(core2Move, core2Move.EndHost))
+                    {
+                        return EndedByCore2(state, core2Move, turnEndStart);
+                    }
+                    continue;
+                }
                 EnemyAI.ExecuteIntent(enemy, state, rng);
                 CombatTrace.At("moved", enemy.DefId, state);
 
@@ -2134,7 +2206,10 @@ public static class CombatEngine
             // A Gas Bomb kills itself as it explodes and leaves the roster. Left in place at
             // zero HP it kept announcing an intent every turn, so a Living Fog fight grew an
             // extra attacker per Bloat where the live game shows one bomb appear and go.
-            state.RemoveDepartedEnemies(e => e.Hp <= 0 && e.DefId == KE.GasBomb);
+            if (Core2.Kernel.If(Core2.Switch.F08, state) is null)
+            {
+                state.RemoveDepartedEnemies(e => e.Hp <= 0 && e.DefId == KE.GasBomb);
+            }
 
             // Before the duration tick, and over every LIVING enemy rather than the ones that
             // acted: `HighVoltagePower.AfterSideTurnEnd` pays each PARTICIPANT, which includes
@@ -2161,7 +2236,15 @@ public static class CombatEngine
             // Phrog Parasite wrigglers both arrive there -- so the check belongs after it.
             bool playerDeadAfterEnemyTurn = PlayerIsDead(state);
             bool allDeadAfterEnemyTurn = NoPrimaryEnemyLeft(state);
-            if (playerDeadAfterEnemyTurn || allDeadAfterEnemyTurn)
+            if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2Turn)
+            {
+                // game: CombatManager.EndEnemyTurn's CheckWinCondition (Core2's), in place of the old reading.
+                if (!Core2.CombatEnd.EndEnemyTurn(core2Turn, core2Turn.EndHost) || !Core2.CombatEnd.IsInProgress(core2Turn))
+                {
+                    return EndedByCore2(state, core2Turn, turnEndStart);
+                }
+            }
+            else if (playerDeadAfterEnemyTurn || allDeadAfterEnemyTurn)
             {
                 return new StepResult(
                     Terminal: true,
@@ -2272,9 +2355,16 @@ public static class CombatEngine
 
                 // Zeroing the HP is how the emulator takes a creature out of a fight; the
                 // flag is what tells the event this was an escape and not a kill.
-                enemy.Hp = 0;
-                enemy.Escaped = true;
-                state.EscapedEnemies++;
+                if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+                {
+                    Core2.OldEntry.Escape(core2, enemy);
+                }
+                else
+                {
+                    enemy.Hp = 0;
+                    enemy.Escaped = true;
+                    state.EscapedEnemies++;
+                }
                 state.BattlewornDummyRanOutOfTime = true;
             }
         }
@@ -2700,6 +2790,11 @@ public static class CombatEngine
             // The side's turn start, taken by a screen, killed the player: the combat ended
             // with the screen unanswered and the rest of the setup never ran.
             state.PendingSelection = null;
+            if (StartTurnWinCheck(state, playerSide: true, turnEndStart) is { } overResult)
+            {
+                return overResult;
+            }
+
             return new StepResult(
                 Terminal: true,
                 PlayerWon: false,
@@ -2713,6 +2808,11 @@ public static class CombatEngine
 
         if (!sideTurnStart.Ran && SideTurnStart(state, rng, extraTurn))
         {
+            if (StartTurnWinCheck(state, playerSide: true, turnEndStart) is { } sideStartResult)
+            {
+                return sideStartResult;
+            }
+
             return new StepResult(
                 Terminal: true,
                 PlayerWon: false,
@@ -2736,6 +2836,12 @@ public static class CombatEngine
         AutoPlayMayhemCards(state, rng);
         AutoPlayHistoryCourseDupe(state, rng);
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+
+        // game: CombatManager.StartTurn, the player side: CheckWinCondition after the auto-pre-play phase (F08+F10 on).
+        if (StartTurnWinCheck(state, playerSide: true, turnEndStart) is { } startTurnResult)
+        {
+            return startTurnResult;
+        }
 
         return Settle(state, turnEndStart);
     }
@@ -3261,6 +3367,13 @@ public static class CombatEngine
     internal static void FairyInABottle_AfterPreventingDeath(CombatState state, int slot)
     {
         state.PotionSlots[slot] = 0;
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            // game: FairyInABottle.OnUse heals (CreatureCmd.Heal) by max(max HP x 0.3, 1), from 0 HP.
+            Core2.CreatureCmd.Heal(core2, Core2.OldCreature.Player, Math.Max(state.PlayerMaxHp * 0.3m, 1m));
+            return;
+        }
+
         state.PlayerHp = Math.Max((int)(state.PlayerMaxHp * 0.3m), 1);
         // Thirty percent is under half, so the revive is exactly when Red Skull arms.
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
@@ -3278,6 +3391,12 @@ public static class CombatEngine
     /// </remarks>
     private static bool PlayerIsDead(CombatState state)
     {
+        // F08+F10 on: death prevention is the kill's ShouldDie (Core2); this only reads the HP.
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            return state.PlayerHp <= 0;
+        }
+
         if (state.PlayerHp > 0)
         {
             return false;
@@ -4426,6 +4545,12 @@ public static class CombatEngine
         CorpseSweep sweep = CorpseSweep.All
     )
     {
+        // F08+F10 on: every death was answered inside its CreatureCmd.Damage / Kill (MIGRATION_F08.md section 3 item 6).
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            return;
+        }
+
         List<EnemyState>? dead = null;
         for (int i = 0; i < state.Enemies.Count && i < enemyHpsBefore.Length; i++)
         {
@@ -4571,28 +4696,40 @@ public static class CombatEngine
     /// <summary>
     /// game: RavenousPower.AfterDeath
     /// Extracted from CombatEngine.AnswerDeaths; the caller keeps the condition.
-    /// Every living creature carrying the power reacts to the death, whoever died.
+    /// Every living creature carrying the power reacts to the death, whoever died: each one's part is
+    /// <see cref="Ravenous_AfterDeathOf" />, which the Core2 handler (Core2/Models/Powers/RavenousPower.cs) calls for its
+    /// own owner alone, so the switch-off path is the old one.
     /// </summary>
     internal static void Ravenous_AfterDeath(CombatState state)
     {
         foreach (var enemy in state.Enemies.Where(e => e.Hp > 0))
         {
-            int ravenous = BuffSystem.Get(enemy.Buffs, BuffId.Ravenous);
-            if (ravenous <= 0)
-            {
-                continue;
-            }
-
-            BuffSystem.Apply(enemy.Buffs, BuffId.Strength, ravenous);
-            BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
-            // The readout changes the moment the ally dies: a live capture shows the
-            // surviving slug announcing a Stun, not the attack it was going to make.
-            // Leaving the old intent up told an agent to expect 12 damage from a
-            // creature that is about to sit the turn out. Unknown is what a stunned
-            // enemy already announces elsewhere (TerrorEel does it this way).
-            enemy.CurrentIntent = new Intent(IntentType.Unknown, 0);
-            enemy.SecondaryIntent = null;
+            Ravenous_AfterDeathOf(enemy);
         }
+    }
+
+    /// <summary>
+    /// game: RavenousPower.AfterDeath, one holder's part (the game runs the hook once per power): a living holder with
+    /// Ravenous above 0 gains Strength by its amount and one Stun, and announces Unknown. The callers keep the
+    /// condition (a death that was not prevented, the holder alive).
+    /// </summary>
+    internal static void Ravenous_AfterDeathOf(EnemyState enemy)
+    {
+        int ravenous = BuffSystem.Get(enemy.Buffs, BuffId.Ravenous);
+        if (ravenous <= 0)
+        {
+            return;
+        }
+
+        BuffSystem.Apply(enemy.Buffs, BuffId.Strength, ravenous);
+        BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        // The readout changes the moment the ally dies: a live capture shows the
+        // surviving slug announcing a Stun, not the attack it was going to make.
+        // Leaving the old intent up told an agent to expect 12 damage from a
+        // creature that is about to sit the turn out. Unknown is what a stunned
+        // enemy already announces elsewhere (TerrorEel does it this way).
+        enemy.CurrentIntent = new Intent(IntentType.Unknown, 0);
+        enemy.SecondaryIntent = null;
     }
 
     /// <summary>
@@ -4611,6 +4748,11 @@ public static class CombatEngine
         CorpseSweep sweep
     )
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            return;
+        }
+
         foreach (var fallen in dead ?? [])
         {
             // The same guard the walk by index made as it reached each creature.
@@ -4688,7 +4830,7 @@ public static class CombatEngine
             {
                 continue;
             }
-            else if (TryRespawnAxebot(fallen, rng, state.AscensionLevel))
+            else if (TryRespawnAxebot(fallen, rng, state.AscensionLevel, state))
             {
                 continue;
             }
@@ -4738,7 +4880,7 @@ public static class CombatEngine
             // -- Gremlin Horn and Melancholy included -- and the power's own AfterDeath is
             // simply one more listener. The corpse sweep below keeps the giant, which is
             // standing again.
-            EnemyAI.TriggerAboutToBlow(fallen);
+            EnemyAI.TriggerAboutToBlow(fallen, state);
         }
 
         // MIRROR THE GAME: a creature that died leaves the roster unless a power vetoes.
@@ -4884,6 +5026,11 @@ public static class CombatEngine
     /// </remarks>
     internal static void AnswerDeathsHoldingTheFightOpen(CombatState state, Random rng)
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            return;
+        }
+
         List<EnemyState>? dead = null;
         foreach (var enemy in state.Enemies)
         {
@@ -5026,6 +5173,11 @@ public static class CombatEngine
         CorpseSweep sweep = CorpseSweep.All
     )
     {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            return;
+        }
+
         List<EnemyState>? dead = null;
         foreach (var enemy in state.Enemies)
         {
@@ -5089,6 +5241,18 @@ public static class CombatEngine
     /// </remarks>
     private static StepResult? CheckWinCondition(CombatState state, in Baseline baseline)
     {
+        // F08+F10 on: the game's CombatManager.CheckWinCondition (Core2) at this old point, which the old turn flow
+        // already places at the game's (EndPlayerTurnPhaseOneInternal's two, the auto-play and orb passes); the end is
+        // handed off once through the kernel state's end host.
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            if (Core2.CombatEnd.IsInProgress(core2))
+            {
+                Core2.CombatEnd.CheckWinCondition(core2, core2.EndHost);
+            }
+            return Core2.CombatEnd.IsInProgress(core2) ? null : EndedByCore2(state, core2, baseline);
+        }
+
         if (PlayerIsDead(state))
         {
             return new StepResult(
@@ -5108,6 +5272,42 @@ public static class CombatEngine
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// game: CombatManager.StartTurn's CheckWinCondition, the player side's (after the auto-pre-play phase) or the enemy
+    /// side's (before ExecuteEnemyTurn), with F08+F10 on; null with them off or while the combat goes on. The old turn start
+    /// read the end off the HP (Settle), which under F10 is not the combat's end: without this point a kill or a loss in the
+    /// turn start (Inferno, a power's damage, a pending loss) or after the turn end's last check (a Doom kill) left the combat
+    /// in progress with nothing standing. Not poison: the old engine ticks the enemies' poison in the per-enemy loop, after the
+    /// enemy side's check, where the game ticks it in AfterSideTurnStart, before it (an R7 check, MIGRATION_F08).
+    /// </summary>
+    private static StepResult? StartTurnWinCheck(CombatState state, bool playerSide, in Baseline baseline)
+    {
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is not { } core2)
+        {
+            return null;
+        }
+
+        if (Core2.CombatEnd.IsInProgress(core2))
+        {
+            _ = playerSide
+                ? Core2.CombatEnd.StartPlayerTurn(core2, core2.EndHost)
+                : Core2.CombatEnd.StartEnemyTurn(core2, core2.EndHost);
+        }
+
+        return Core2.CombatEnd.IsInProgress(core2) ? null : EndedByCore2(state, core2, baseline);
+    }
+
+    /// <summary>The old step's terminal result for a combat Core2 ended (F08+F10 on): won or lost as Core2 decided.</summary>
+    private static StepResult EndedByCore2(CombatState state, Core2.KernelState k, in Baseline baseline)
+    {
+        bool won = k.Progress.PlayerWon == true;
+        return new StepResult(
+            Terminal: true,
+            PlayerWon: won,
+            Reward: baseline.Reward(state, playerDead: !won, allDead: NoPrimaryEnemyLeft(state))
+        );
     }
 
     /// <summary>
@@ -5150,8 +5350,15 @@ public static class CombatEngine
             return;
         }
 
-        state.PlayerHp = 0;
-        Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+        if (Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.OldEntry.Kill(core2, Core2.OldCreature.Player);
+        }
+        else
+        {
+            state.PlayerHp = 0;
+            Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
+        }
     }
 
     /// <summary>
@@ -5180,7 +5387,23 @@ public static class CombatEngine
     /// (`IsStarting`, which the game exempts) asks nothing: no setup step reaches a gate.
     /// </remarks>
     internal static bool IsOverOrEnding(CombatState state) =>
-        NoPrimaryEnemyLeft(state) || IsAboutToLose(state);
+        Core2.Kernel.If(Core2.Switch.F08, state) is { } core2
+            ? Core2.CombatEnd.IsOverOrEnding(core2)
+            : OldIsOverOrEnding(state);
+
+    /// <summary>
+    /// The old engine's own reading of <see cref="IsOverOrEnding" /> (no primary enemy left, or the player about to lose),
+    /// whatever the switch: F08 and F10 switch together, so with them on the one predicate is Core2's
+    /// (<c>CombatEnd.IsOverOrEnding</c>), and <c>EmuDump fuzz</c> reports each step where this one disagrees with it
+    /// (<c>ending_disagree</c>: a report, not yet an assertion; MIGRATION_F08.md R7 checks, one ending, and R7 acceptance).
+    /// </summary>
+    internal static bool OldIsOverOrEnding(CombatState state) =>
+        NoPrimaryEnemyLeft(state)
+        || (
+            state.PlayerHp <= 0
+            && Array.IndexOf(state.PotionSlots, FairyInABottlePotionId) < 0
+            && !Effects.RelicEffects.LizardTailUnspent(state)
+        );
 
     /// <summary>
     /// `CombatManager.IsAboutToLose`: the player is dead and nothing will stand them back up,
@@ -5194,7 +5417,9 @@ public static class CombatEngine
     /// losing: the game refuses the death inside the same `Kill`.
     /// </remarks>
     internal static bool IsAboutToLose(CombatState state) =>
-        state.PlayerHp <= 0
+        Core2.Kernel.If(Core2.Switch.F08, state) is { } core2
+            ? Core2.CombatEnd.IsAboutToLose(core2)
+            : state.PlayerHp <= 0
         && Array.IndexOf(state.PotionSlots, FairyInABottlePotionId) < 0
         && !Effects.RelicEffects.LizardTailUnspent(state);
 
@@ -5223,7 +5448,7 @@ public static class CombatEngine
     /// read): everything but the Stock the respawn reads and the Reviving bookkeeping. Shared with the kernel's kill.</summary>
     internal static bool AxebotDeathStrips(BuffId id) => id is not (BuffId.Stock or BuffId.Reviving);
 
-    private static bool TryReviveIllusion(EnemyState enemy)
+    internal static bool TryReviveIllusion(EnemyState enemy)
     {
         if (BuffSystem.Get(enemy.Buffs, BuffId.Illusion) <= 0)
         {
@@ -5270,7 +5495,7 @@ public static class CombatEngine
             && (other.Hp > 0 || BuffSystem.Get(other.Buffs, BuffId.Reviving) > 0)
         );
 
-    private static bool TryReattachSegment(CombatState state, EnemyState enemy)
+    internal static bool TryReattachSegment(CombatState state, EnemyState enemy)
     {
         if (BuffSystem.Get(enemy.Buffs, BuffId.Reattach) <= 0)
         {
@@ -5335,14 +5560,30 @@ public static class CombatEngine
     {
         foreach (var queen in state.Enemies)
         {
-            if (queen.DefId != KE.Queen || queen.Hp <= 0 || queen.LastMove != QueenBurnBrightMove)
+            if (queen.DefId != KE.Queen || queen.Hp <= 0)
             {
                 continue;
             }
 
-            queen.LastMove = QueenEnrageMove;
-            queen.CurrentIntent = new Intent(IntentType.Buff, 2);
+            Queen_AfterDeath(queen);
         }
+    }
+
+    /// <summary>
+    /// game: Queen.AfterDeath, one Queen's part (the game runs the hook once per Queen model): the amalgam is dead and
+    /// this Queen alive (the callers' check), so the move she has announced, when it is BURN_BRIGHT_FOR_ME, is replaced
+    /// by the enrage there and then (SetMoveImmediate). The old loop above and the Core2 handler
+    /// (Core2/Models/Monsters/Queen.cs) both call it, so the switch-off path is the old one.
+    /// </summary>
+    internal static void Queen_AfterDeath(EnemyState queen)
+    {
+        if (queen.LastMove != QueenBurnBrightMove)
+        {
+            return;
+        }
+
+        queen.LastMove = QueenEnrageMove;
+        queen.CurrentIntent = new Intent(IntentType.Buff, 2);
     }
 
     /// <summary>The Queen's own move numbering, as <c>EnemyAI.SelectIntent</c> assigns it.</summary>
@@ -5350,7 +5591,7 @@ public static class CombatEngine
 
     private const int QueenEnrageMove = 5;
 
-    private static bool TryEnrageCrabPartner(CombatState state, EnemyState dead)
+    internal static bool TryEnrageCrabPartner(CombatState state, EnemyState dead)
     {
         if (BuffSystem.Get(dead.Buffs, BuffId.CrabRage) <= 0)
         {
@@ -5369,18 +5610,27 @@ public static class CombatEngine
                 continue;
             }
 
-            BuffSystem.Apply(other.Buffs, BuffId.Strength, Run.RunConstants.CrabRageStrength);
-            // BlockVar(99, ValueProp.Unpowered): Dexterity does not touch it.
-            other.Block += Run.RunConstants.CrabRageBlock;
-            // `PowerCmd.Remove(this)` -- the rage is spent on the partner it mourned. With
-            // exactly two crabs there is no third death to reach it, so this changes no
-            // reachable outcome; it is here so the power cannot fire twice if one ever
-            // joins them.
-            BuffSystem.Remove(other.Buffs, BuffId.CrabRage);
+            EnrageCrab(other);
             enraged = true;
         }
 
         return enraged;
+    }
+
+    /// <summary>
+    /// game: CrabRagePower.AfterDeath's body for one holder: Strength, Block, the power removed. Extracted from
+    /// TryEnrageCrabPartner (R7b2) for the Core2 handler, which calls it with the game's condition; the caller keeps it.
+    /// </summary>
+    internal static void EnrageCrab(EnemyState crab)
+    {
+        BuffSystem.Apply(crab.Buffs, BuffId.Strength, Run.RunConstants.CrabRageStrength);
+        // BlockVar(99, ValueProp.Unpowered): Dexterity does not touch it.
+        crab.Block += Run.RunConstants.CrabRageBlock;
+        // `PowerCmd.Remove(this)` -- the rage is spent on the partner it mourned. With
+        // exactly two crabs there is no third death to reach it, so this changes no
+        // reachable outcome; it is here so the power cannot fire twice if one ever
+        // joins them.
+        BuffSystem.Remove(crab.Buffs, BuffId.CrabRage);
     }
 
     /// <summary>
@@ -5468,7 +5718,7 @@ public static class CombatEngine
     /// the 1.5x away from it, and it is why the multiplier cannot be a constant baked
     /// into the announced damage.
     /// </remarks>
-    private static void TurnPlayerToFaceSurvivor(CombatState state)
+    internal static void TurnPlayerToFaceSurvivor(CombatState state)
     {
         int facing = BuffSystem.Get(state.PlayerBuffs, BuffId.Surrounded);
         if (facing == 0)
@@ -5492,7 +5742,7 @@ public static class CombatEngine
         }
     }
 
-    private static bool TryRespawnAxebot(EnemyState enemy, Random rng, int ascension)
+    private static bool TryRespawnAxebot(EnemyState enemy, Random rng, int ascension, CombatState? state = null)
     {
         if (enemy.DefId != KE.Axebot)
         {
@@ -5505,10 +5755,64 @@ public static class CombatEngine
             return false;
         }
 
+        int respawnHp = RollAxebotRespawnHp(rng, ascension);
+        if (state is not null && Core2.Kernel.If(Core2.Switch.F08, state) is { } core2)
+        {
+            Core2.CreatureCmd.SetMaxAndCurrentHp(core2, Core2.OldCreature.Of(enemy), respawnHp);
+        }
+        else
+        {
+            enemy.Hp = respawnHp;
+            enemy.MaxHp = enemy.Hp;
+        }
+        StartRespawnedAxebot(enemy, stock, ascension);
+        return true;
+    }
+
+    /// <summary>
+    /// The HP a respawned Axebot rolls: a flat draw over its band off the stream handed in (the old in-place respawn's
+    /// draw). game: CombatState.CreateCreature rolls the new Axebot's HP with SetUniqueMonsterHpValue on the run's Niche
+    /// stream (docs/rebuild/MIGRATION_F08.md, batch L3b's R7 checks).
+    /// </summary>
+    internal static int RollAxebotRespawnHp(Random rng, int ascension)
+    {
         var def = GeneratedData.Enemies.Get(KE.Axebot);
         var band = def.HpBand(ascension);
-        enemy.Hp = rng.Next(band.Min, band.Max + 1);
-        enemy.MaxHp = enemy.Hp;
+        return rng.Next(band.Min, band.Max + 1);
+    }
+
+    /// <summary>
+    /// The HP of a NEW Axebot as CreatureCmd.Add creates it (game: CombatState.CreateCreature, SetUniqueMonsterHpValue on
+    /// the run's Niche stream): a value of its band that no creature on the enemy side has as its max HP, else any value of
+    /// the band. The side is the living enemies and the dying one (the game removes the dead creature after its AfterDeath,
+    /// and the old roster keeps corpses the game has removed). Core2's StockPower draws it on HookCtx.Niche; the old respawn
+    /// keeps <see cref="RollAxebotRespawnHp" />.
+    /// </summary>
+    internal static int RollAddedAxebotHp(CombatState state, Random niche, EnemyState? dying, int ascension)
+    {
+        var band = GeneratedData.Enemies.Get(KE.Axebot).HpBand(ascension);
+        var available = Enumerable.Range(band.Min, band.Max - band.Min + 1).ToHashSet();
+        available.ExceptWith(state.Enemies.Where(e => e.Hp > 0 || ReferenceEquals(e, dying)).Select(e => e.MaxHp));
+        return available.Count == 0
+            ? niche.Next(band.Min, band.Max + 1)
+            : available.ElementAt(niche.Next(0, available.Count));
+    }
+
+    /// <summary>
+    /// game: StockPower.AfterDeath's new Axebot (StockAmount = Amount - 1), as the old state holds one: a fresh creature
+    /// at <paramref name="hp" /> in the state the old in-place respawn leaves the revived bot in
+    /// (<see cref="StartRespawnedAxebot" />). Core2's Stock handler lists it with CreatureCmd.Add.
+    /// </summary>
+    internal static EnemyState NewRespawnedAxebot(int stock, int hp, int ascension)
+    {
+        var bot = new EnemyState { DefId = KE.Axebot, Hp = hp, MaxHp = hp, Buffs = [] };
+        StartRespawnedAxebot(bot, stock, ascension);
+        return bot;
+    }
+
+    /// <summary>What a respawned Axebot starts from, given the <paramref name="stock" /> its predecessor held.</summary>
+    private static void StartRespawnedAxebot(EnemyState enemy, int stock, int ascension)
+    {
         enemy.Block = 0;
         enemy.MoveIndex = 0;
         // `StockPower.AfterDeath` adds a NEW Axebot in the slot -- `ModelDb.Monster<Axebot>()
@@ -5530,8 +5834,6 @@ public static class CombatEngine
         {
             BuffSystem.Apply(enemy.Buffs, BuffId.Stock, stock - 1);
         }
-
-        return true;
     }
 
     /// <summary>
@@ -5542,7 +5844,7 @@ public static class CombatEngine
     /// after, which handed the player neither the free turn nor the readout the game gives
     /// them. It is the Fogmog illusion's shape, and it uses the same machinery.
     /// </summary>
-    private static bool TryRespawnTestSubject(EnemyState enemy)
+    internal static bool TryRespawnTestSubject(EnemyState enemy)
     {
         if (enemy.DefId != KE.TestSubject || BuffSystem.Get(enemy.Buffs, BuffId.Adaptable) <= 0)
         {
@@ -5568,13 +5870,20 @@ public static class CombatEngine
     /// Nemesis, and drops both of the earlier powers — which is what ends the second
     /// form's climbing Multi Claw.
     /// </summary>
-    private static void RespawnTestSubject(EnemyState enemy, int ascension)
+    private static void RespawnTestSubject(EnemyState enemy, int ascension, CombatState? state = null)
     {
         if (BuffSystem.Get(enemy.Buffs, BuffId.PainfulStabs) <= 0)
         {
             int second = Ascension.Value(ascension, Ascension.ToughEnemies, 212, 200);
-            enemy.Hp = second;
-            enemy.MaxHp = second;
+            if (state is not null && Core2.Kernel.If(Core2.Switch.F08, state) is { } k2)
+            {
+                Core2.CreatureCmd.SetMaxAndCurrentHp(k2, Core2.OldCreature.Of(enemy), second);
+            }
+            else
+            {
+                enemy.Hp = second;
+                enemy.MaxHp = second;
+            }
             enemy.Block = 0;
             // MULTI_CLAW, whose hit count is read off MoveIndex - 2.
             enemy.MoveIndex = 2;
@@ -5583,8 +5892,15 @@ public static class CombatEngine
         }
 
         int third = Ascension.Value(ascension, Ascension.ToughEnemies, 313, 300);
-        enemy.Hp = third;
-        enemy.MaxHp = third;
+        if (state is not null && Core2.Kernel.If(Core2.Switch.F08, state) is { } k3)
+        {
+            Core2.CreatureCmd.SetMaxAndCurrentHp(k3, Core2.OldCreature.Of(enemy), third);
+        }
+        else
+        {
+            enemy.Hp = third;
+            enemy.MaxHp = third;
+        }
         enemy.Block = 0;
         // PHASE3_LACERATE, the head of the third form's three-cycle.
         enemy.MoveIndex = 4;
@@ -6268,8 +6584,11 @@ public static class CombatEngine
     /// it gains the power's amount as Unpowered block and the power goes (decompiled
     /// CurlUpPower.cs). Armed by <c>CardEffects.DealDamageToEnemy</c>.
     /// </summary>
-    private static void PayCurlUp(CombatState state)
+    private static void PayCurlUp(CombatState state, CardInstance? played = null)
     {
+        // F08+F10 on: game: CurlUpPower.AfterCardPlayed pays only when the card played is the one it remembered
+        // (`EnemyState.CurlUpCardUid`, set by the Core2 handler); the old flag paid at the next card's end, whichever.
+        bool byCard = played is not null && Core2.Kernel.If(Core2.Switch.F08, state) is not null;
         foreach (var enemy in state.Enemies)
         {
             if (!enemy.CurlUpArmed)
@@ -6277,7 +6596,13 @@ public static class CombatEngine
                 continue;
             }
 
+            if (byCard && enemy.CurlUpCardUid != 0 && enemy.CurlUpCardUid != played.Value.Uid)
+            {
+                continue;
+            }
+
             enemy.CurlUpArmed = false;
+            enemy.CurlUpCardUid = 0;
             int curlUp = BuffSystem.Get(enemy.Buffs, BuffId.CurlUp);
             if (curlUp > 0 && enemy.Hp > 0)
             {
@@ -6307,11 +6632,12 @@ public static class CombatEngine
         CombatState state,
         CardDef def,
         Random? rng,
-        int energySpent = 0
+        int energySpent = 0,
+        CardInstance? played = null
     )
     {
         Effects.RelicEffects.ApplyAfterCardPlayed(state, def, rng, energySpent);
-        PayCurlUp(state);
+        PayCurlUp(state, played);
         PayRupture(state);
         Effects.RelicEffects.FinishBlockDoublingCard(state);
 
@@ -6363,10 +6689,12 @@ public static class CombatEngine
             int owed = state.StrangleBeforePlay[i];
             if (owed > 0 && state.Enemies[i].Hp > 0)
             {
+                // StranglePower's Damage passes no dealer and no source.
                 Effects.CardEffects.DealUnblockableUnpoweredDamageToEnemy(
                     state,
                     state.Enemies[i],
-                    owed
+                    owed,
+                    noDealer: true
                 );
             }
         }
@@ -6887,6 +7215,9 @@ public static class CombatEngine
 
         /// <summary>Whether there is one: an AnyEnemy auto-play handed none rolls one.</summary>
         public bool IsGiven => _given;
+
+        /// <summary>The creature, when one was given (null for none, or an index that named no creature).</summary>
+        public EnemyState? Creature => _creature;
 
         /// <summary>
         /// Where it is now: -1 for none, and for a creature the roster no longer holds, which

@@ -321,6 +321,36 @@ class Triage(unittest.TestCase):
         s = self.fuzz(self.explained("state:ActiveCombat.Hand", doc="docs/rebuild/M.md: item 3"))
         self.assertEqual(F.exit_code(s), 0)
 
+    def ending_fuzz(self, readings="old open, core2 ending", at=5):
+        """No hash difference; core2's output lists one ending disagreement on the fight at `at`."""
+        def runner(engine, specs):
+            out = [result(s) for s in specs]
+            for s, r in zip(specs, out):
+                if engine == "core2" and s["tag"].endswith(f":{at}"):
+                    r["ending_disagree"] = [{"step": 1, "readings": readings}]
+            return out
+        return F.run_fuzz(options(str(self.dir / "out")), self.cat, runner, self.fakes()[1])
+
+    def test_an_ending_disagreement_outside_the_expected_list_exits_1(self):
+        self.assertEqual(F.EXPECTED_ENDING_DISAGREE, ())  # at switch-on every held-open corpse has its handler
+        s = self.ending_fuzz()
+        self.assertEqual((s["differing_fights"], s["untriaged"], s["ending_disagree"], s["ending_unexpected"]), (0, 0, 1, 1))
+        self.assertEqual(F.exit_code(s), 1)
+        self.assertEqual({k: s["ending_first"][0][k] for k in ("index", "step", "readings")},
+                         {"index": 5, "step": 1, "readings": "old open, core2 ending"})
+        s = self.fuzz(bend_index=99)
+        self.assertEqual((s["ending_disagree"], s["ending_unexpected"], F.exit_code(s)), (0, 0, 0))
+
+    def test_an_expected_ending_disagreement_needs_its_power_and_its_readings(self):
+        specs = [{"tag": "t:0", "setup": [{"cmd": "power", "id": "ADAPTABLE_POWER"}]}, {"tag": "t:1", "setup": []}]
+        outs = [{"ending_disagree": [{"step": 2, "readings": "old open, core2 ending"}]}] * 2
+        expected = (("ADAPTABLE_POWER", "old open, core2 ending"),)
+        got = F.ending_disagreements([0, 1], specs, outs, expected)
+        self.assertEqual([e["expected"] for e in got], [True, False])  # the second fight placed no holder
+        other = F.ending_disagreements([0], specs, [{"ending_disagree": [{"step": 2, "readings": "old ending, core2 open"}]}], expected)
+        self.assertEqual([e["expected"] for e in other], [False])
+        self.assertEqual(F.exit_code({"untriaged": 0, "failed_batches": [], "ending_unexpected": 0}), 0)
+
     def test_a_triage_entry_for_another_signature_does_not_explain_it(self):
         self.assertEqual(F.exit_code(self.fuzz(self.explained("state:RunState.*"))), 1)
         self.assertEqual(F.exit_code(self.fuzz(self.explained("action"))), 1)

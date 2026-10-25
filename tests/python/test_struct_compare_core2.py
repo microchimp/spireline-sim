@@ -85,7 +85,7 @@ class Migrated(unittest.TestCase):
 
     def test_rows_that_could_hide_a_rule_list_their_families(self):
         by = {r["id"]: r.get("families") for r in ROWS}
-        self.assertEqual({k: v for k, v in by.items() if v}, {"fight-lost": ["F10"], "after-fight-turn-state": ["F10"], "cost-outside-hand": ["F07"]})
+        self.assertEqual({k: v for k, v in by.items() if v}, {"fight-lost": ["F10"], "after-fight-turn-state": ["F10"], "cost-outside-hand": ["F07"], "holder-tallies": ["F08"]})
 
     def test_a_migrated_family_drops_its_rows_and_only_those(self):
         every = self.ids([])

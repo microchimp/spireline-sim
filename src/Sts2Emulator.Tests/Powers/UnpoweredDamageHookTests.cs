@@ -82,6 +82,9 @@ public class UnpoweredDamageHookTests
             .Enemy(hp: 5, defId: KE.Toadpole, buffs: new BuffState(BuffId.Thorns, 2, 0))
             .PlayerHp(60)
             .PlayerBuff(BuffId.Inferno, 6);
+        // A uid, as every card of a game combat has (CardUids.Fresh): the kernel resolves the hit's card source by it,
+        // and Thorns answers the Omnislice splash only when it sees that source.
+        fight.State.Hand[0] = fight.State.Fresh(fight.State.Hand[0]);
         var struck = fight.State.Enemies[0];
         var thorny = fight.State.Enemies[1];
         var burnt = fight.State.Enemies[2];

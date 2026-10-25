@@ -83,9 +83,11 @@ public class DamageCounterTests
     [Fact]
     public void TookUnblockedDamageIsLavaLampsLatchAndRefusesUnblockable()
     {
-        // game: LavaLamp.AfterDamageReceived: the owner, UnblockedDamage > 0, and not ValueProp.Unblockable.
+        // game: LavaLamp.AfterDamageReceived: the owner, UnblockedDamage > 0, and not ValueProp.Unblockable (its handler,
+        // batch L2: only a held lamp latches).
         var s = Combat(30);
-        var k = K(s);
+        s.Relics.Add(new RelicInstance(RelicEffects.LavaLamp));
+        var k = K(s, Sts2Emulator.Core2.Models.Relics.LavaLamp.Register);
         Hit(k, OldCreature.Player, 3m, OldCreature.Player, SelfCost);
         Assert.False(s.TookUnblockedDamage);
         s.PlayerBlock = 9;
@@ -98,9 +100,11 @@ public class DamageCounterTests
     [Fact]
     public void UnblockedDamageThisTurnIsBeatingRemnantsTally()
     {
-        // game: BeatingRemnant.AfterDamageReceived adds the result's UnblockedDamage on any damage to its owner.
+        // game: BeatingRemnant.AfterDamageReceived adds the result's UnblockedDamage on any damage to its owner (its
+        // handler, batch L2: only a held relic tallies).
         var s = Combat(30);
-        var k = K(s);
+        s.Relics.Add(new RelicInstance(RelicEffects.BeatingRemnant));
+        var k = K(s, Sts2Emulator.Core2.Models.Relics.BeatingRemnant.Register);
         Hit(k, OldCreature.Player, 3m, E(s));
         Hit(k, OldCreature.Player, 4m, OldCreature.Player, SelfCost);
         Assert.Equal(7, s.UnblockedDamageThisTurn);
@@ -112,7 +116,7 @@ public class DamageCounterTests
         // game: HardenedShellPower.AfterDamageReceived (target its owner, not fully blocked): += UnblockedDamage.
         var s = Combat(60, 60);
         s.Enemies[0].Buffs.Add(new BuffState(BuffId.HardenedShell, 20));
-        var k = K(s);
+        var k = K(s, Sts2Emulator.Core2.Models.Powers.HardenedShellPower.Register);
         Hit(k, E(s, 0), 6m, OldCreature.Player);
         Hit(k, E(s, 1), 7m, OldCreature.Player);
         s.Enemies[0].Block = 10;
@@ -120,7 +124,8 @@ public class DamageCounterTests
         Assert.Equal(6, s.Enemies[0].HardenedShellDamageThisTurn);
         Assert.Equal(0, s.Enemies[1].HardenedShellDamageThisTurn);
         Hit(k, E(s, 0), 20m, OldCreature.Player);
-        Assert.Equal(6 + 18, s.Enemies[0].HardenedShellDamageThisTurn);
+        // 18 got through the block; the power's cap (ModifyHpLostBeforeOstyLate) holds the turn's loss at its 20.
+        Assert.Equal(20, s.Enemies[0].HardenedShellDamageThisTurn);
     }
 
     [Fact]
@@ -183,7 +188,7 @@ public class DamageCounterTests
         var s = Combat(30);
         s.PlayerBuffs.Add(new BuffState(BuffId.RupturePower, 2));
         var card = s.Fresh(new CardInstance(IC.StrikeIronclad, false));
-        var k = K(s);
+        var k = K(s, Sts2Emulator.Core2.Models.Powers.RupturePower.Register);
         using (k.World!.Flying(card))
             Hit(k, OldCreature.Player, 3m, OldCreature.Player, SelfCost, new CardHandle(card.Uid));
         Assert.Equal(2, s.RuptureOwed);

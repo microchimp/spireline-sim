@@ -39,9 +39,8 @@ public static partial class CreatureCmd
     /// A creature this call kills stays in the combat (<see cref="OldWorld.MarkDying" />) from its HP loss until
     /// <see cref="Kill" /> returns, as the game keeps it listed until CreatureCmd.Kill removes it. The old state's
     /// damage history is owned here, through <see cref="OldCreatures" />: the counters its readers keep (the History.DamageReceived
-    /// entry at the game's point in the first loop, the tallies the AfterDamageReceived listeners keep after the hook
-    /// dispatch, and the old player-side AfterDamageReceived body with Rupture's fromPlayedCard; MIGRATION_F08.md, "Fixes
-    /// after R2's review"). Not in the old state: the run statistics (the player's damage-dealt counter, the map point's
+    /// entry at the game's point in the first loop; MIGRATION_F08.md, "Fixes after R2's review"). The AfterDamageReceived
+    /// listeners' tallies and the old player-side body are their handlers' (batch L2). Not in the old state: the run statistics (the player's damage-dealt counter, the map point's
     /// damage taken) and the visuals.
     /// </remarks>
     public static IReadOnlyList<DamageResult> Damage(KernelState k, IReadOnlyList<OldCreature> targets, decimal amount,
@@ -74,6 +73,16 @@ public static partial class CreatureCmd
                     st => Hooks.AfterModifyingDamageAmountResume(k, amountArgs, st));
                 var before = new BeforeDamageReceivedArgs(ctx, to, modified, props, by, cardSource);
                 Settle(k, Hooks.BeforeDamageReceived(k, before), st => Hooks.BeforeDamageReceivedResume(k, before, st));
+                // game: the loop goes on with a target the hooks above killed (an enemy's Thorns hits the dealer, whose Inferno
+                // burst kills it): it has no HP left to lose, so its result is a zero one (not killed), kept in the results as
+                // the game keeps it. One that kill took out of the combat has no position to name, so it is not lost from here
+                // on and its hook passes are skipped in the results loop; the game also notes that zero result in
+                // History.DamageReceived, which this does not (an R7 check) (R7e).
+                if (!OldCreatures.InCombat(w, original))
+                {
+                    results.Add(new DamageResult(original, props));
+                    continue;
+                }
 
                 decimal blocked = DamageBlock(s, OldCreatures.PetOwner(original) ?? original, modified, props);
                 decimal unblocked = Hooks.ModifyHpLost(k, new ModifyHpLostArgs(R(w, original),
@@ -145,8 +154,6 @@ public static partial class CreatureCmd
                 {
                     var a = new AfterDamageReceivedArgs(ctx, R(w, r.Receiver), rr, props, By(w, dealer), cardSource);
                     Settle(k, Hooks.AfterDamageReceived(k, a), st => Hooks.AfterDamageReceivedResume(k, a, st));
-                    // The old listeners' state for this point (a ported model's handler takes its line over).
-                    OldCreatures.AfterDamageReceived(w, r, props, cardSource);
                 }
                 else
                 {

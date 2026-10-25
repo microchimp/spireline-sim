@@ -350,7 +350,16 @@ public class CombatEndingGateTests
 
         Assert.True(result.Terminal && result.PlayerWon);
         Assert.Equal(targets, fight.State.TargetRng!.CallCount);
-        Assert.Equal(20, minion.Hp);
+        if (TestSwitches.On(Sts2Emulator.Core2.Switch.F08, Sts2Emulator.Core2.Switch.F10))
+        {
+            // game: CreatureCmd.KillWithoutCheckingWinCondition kills a dying primary's living teammates when every
+            // one is secondary (MinionPower), so the minion dies with the leader.
+            Assert.Equal(0, minion.Hp);
+        }
+        else
+        {
+            Assert.Equal(20, minion.Hp);
+        }
     }
 
     /// <summary>
@@ -452,13 +461,17 @@ public class CombatEndingGateTests
         var fight = Fight.Hand(Card(ST.Dazed)).Enemy(hp: 2, defId: thief).PlayerHp(60, 80);
         fight.State.Relics = [new RelicInstance(RelicEffects.CharonsAshes)];
         var stolen = Card(IC.StrikeIronclad, upgraded: true);
+        // Each theft as the engine leaves it: the field and the power whose BeforeDeath gives it back (the Hopper's
+        // Thievery applies Swipe 1 with the card; the Merc's death hands the Fat Gremlin Heist with the gold).
         if (thief == KE.ThievingHopper)
         {
             fight.Enemy0.StolenCard = stolen;
+            BuffSystem.Apply(fight.Enemy0.Buffs, BuffId.Swipe, 1);
         }
         else
         {
             fight.Enemy0.HeistGold = 40;
+            BuffSystem.Apply(fight.Enemy0.Buffs, BuffId.Heist, 40);
         }
 
         var result = fight.EndTurn();
@@ -558,7 +571,7 @@ public class CombatEndingGateTests
     /// Inside the one pass the player's powers go in the order they were applied, and Doom asks
     /// the gate itself: a Bomb applied ahead of it that kills the last enemy spares the player
     /// (won), while a Doom applied first kills before the Bomb goes off, and the Bomb's kill
-    /// comes after the pending loss (lost).
+    /// comes after the pending loss (lost). With the switch on the Bomb behind Doom does not land at all, as in the game.
     /// </summary>
     [Theory]
     [InlineData(true, true)]
@@ -577,11 +590,23 @@ public class CombatEndingGateTests
             fight.PlayerBuff(BuffId.TheBombPower, 1, data: 40);
         }
 
+        // Held by reference: the Bomb's kill removes the corpse from the roster (CreatureCmd.Kill's removal).
+        var enemy = fight.Enemy0;
+
         var result = fight.EndTurn();
 
         Assert.True(result.Terminal);
         Assert.Equal(won, result.PlayerWon);
-        Assert.Equal(0, fight.Enemy0.Hp);
+        if (!bombFirst && TestSwitches.On(Sts2Emulator.Core2.Switch.F08, Sts2Emulator.Core2.Switch.F10))
+        {
+            // game: CreatureCmd.Damage returns with no damage when its dealer is dead, and the Bomb's dealer is its
+            // owner, the player Doom has just killed: the blow does not land.
+            Assert.Equal(20, enemy.Hp);
+        }
+        else
+        {
+            Assert.Equal(0, enemy.Hp);
+        }
     }
 
     /// <summary>
@@ -662,7 +687,16 @@ public class CombatEndingGateTests
 
         Assert.True(result.Terminal && result.PlayerWon);
         Assert.Equal(rolls, fight.State.TargetRng!.CallCount);
-        Assert.Equal(50 - 3 * (rolls - 1), minion.Hp);
+        if (TestSwitches.On(Sts2Emulator.Core2.Switch.F08, Sts2Emulator.Core2.Switch.F10))
+        {
+            // game: CreatureCmd.KillWithoutCheckingWinCondition kills a dying primary's living teammates when every
+            // one is secondary (MinionPower), so the minion dies with the leader.
+            Assert.Equal(0, minion.Hp);
+        }
+        else
+        {
+            Assert.Equal(50 - 3 * (rolls - 1), minion.Hp);
+        }
     }
 
     /// <summary>
