@@ -629,7 +629,8 @@ class Runner:
                 return v
             if paused != v.kind:
                 paused = v.kind
-                self.log(f"paused: {v}")
+                tag = guards.pause_tag(self.lab.root) if v.kind == "pause" else ""
+                self.log(f"paused: {v}" + (f" ({tag})" if tag else ""))  # the tag names the session that paused, to split pause time
             self.status(f"paused({v.kind})", v.detail)
             time.sleep(self.a.wait_poll)
 

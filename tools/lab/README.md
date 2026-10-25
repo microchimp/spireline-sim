@@ -177,7 +177,7 @@ status (pending|running|done|failed|skipped), interrupted, started_utc, finished
 corpus run's results), `fights` (verdicts), `runs` (`runs.json`), `probes`, `mutation_reach`, `metamorphic`, `invariants`.
 `done.rc`: 0 ok, 1 required step failed or every core command failed, 3 superseded.
 
-`PAUSE` and `HALT` are read whoever wrote them: PowerShell's `echo now > PAUSE` writes UTF-16 with a BOM.
+`PAUSE` and `HALT` are read whoever wrote them: PowerShell's `echo now > PAUSE` writes UTF-16 with a BOM. A tag in it (its first word after an optional `now`, e.g. `echo "w4-macro 2026-10-25T07:01:00Z" > PAUSE`) is logged on the `paused:` line, `paused: pause (LAB/PAUSE) (w4-macro)`, so pause time can be split by session.
 
 ## The Windows task
 

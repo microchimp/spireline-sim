@@ -70,6 +70,16 @@ class GuardsTest(unittest.TestCase):
         (self.lab / "PAUSE").unlink()
         self.assertTrue(g.poll().ok)
 
+    def test_the_pause_tag_is_the_first_word_after_an_optional_now(self):
+        pause = self.lab / "PAUSE"
+        self.assertEqual(gd.pause_tag(self.lab), "")  # no file
+        for text, tag in (("", ""), ("now\n", ""), ("w4-macro 2026-10-25T07:01:00Z\n", "w4-macro"), ("NOW w4-macro\n", "w4-macro"),
+                          ("now\r\nsecond line\n", ""), ("a/b\\c:d" + "x" * 80, "abc:d" + "x" * 35)):
+            pause.write_text(text, encoding="utf-8")
+            self.assertEqual(gd.pause_tag(self.lab), tag, text)
+        pause.write_bytes("now w4-macro\n".encode("utf-16"))  # PowerShell 5.1 writes UTF-16 with a BOM
+        self.assertEqual(gd.pause_tag(self.lab), "w4-macro")
+
     def test_main_lock_pauses(self):
         g = self.guards()
         self.lock.write_text("", encoding="utf-8")
@@ -769,6 +779,20 @@ class RunnerCase(unittest.TestCase):
         self.assertEqual(r.choose("bbb")[0], "presort")  # that was long ago
         os.utime(d / "done.rc")
         self.assertEqual(r.choose("bbb")[0], "fights")  # that was just now
+
+    def test_the_paused_line_carries_the_pause_files_tag(self):
+        r = self.runner()
+        (r.lab.root / "PAUSE").write_text("w4-macro 2026-10-25T07:01:00Z\n", encoding="utf-8")
+        t = threading.Thread(target=r.gate)
+        t.start()
+        deadline = time.time() + 20
+        read = lambda: r.lab.log_path.read_text(encoding="utf-8") if r.lab.log_path.exists() else ""  # noqa: E731
+        while "paused:" not in read() and time.time() < deadline:
+            time.sleep(0.05)
+        (r.lab.root / "PAUSE").unlink()
+        t.join(20)
+        self.assertFalse(t.is_alive())
+        self.assertIn("paused: pause (LAB/PAUSE) (w4-macro)\n", read())
 
     def test_pause_now_stops_the_command_and_it_restarts_from_scratch_when_released(self):
         marker = self.tmp / "runs.txt"
