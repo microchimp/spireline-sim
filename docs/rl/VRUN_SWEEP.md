@@ -209,7 +209,8 @@ Owner decision D33 moved the V_run keep test to the out-of-fold measure. `run_tr
 the seed-hash fifths of the whole deduplicated window, FightNet on the other four folds' fights, fills H, fits V on the other
 four folds' rows (stopping on one run in ten of them), and predicts the held fold; the pooled out-of-fold rows are judged like the
 tenth's (Act-1 head on floor <= 16 rows, each row against its own fold's training base rate and V0 table). **Kept when the 95%
-paired-bootstrap interval of the Brier skill against the base rate is above zero.** Skill against V0, log-loss and ECE are in the
+paired-bootstrap interval of the Brier skill against the base rate is above zero.** A head gates only with at least 30 positive runs out of fold (the DESIGN 5.3 bin rule); with fewer it is reported with `gating: false` and
+the reason (`no_positives`, `positive_runs_below_30`). Skill against V0, log-loss and ECE are in the
 record with their pass flags (`all_conditions_pass`) and do not gate. The held-out tenth (about 37 kill runs) is still computed
 and sits in the record under `held_out_tenth` (`gating: false`), and so in the candidate's `train.json`. The fits run on the train
 job's `--device`; five more FightNet and V fits cost about five times the single fit (the A6 fit took 7.9 min on the GPU).

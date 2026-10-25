@@ -592,13 +592,18 @@ def train_cmd(a: argparse.Namespace) -> int:
     _setup()
     import gen_loop  # noqa: PLC0415
 
-    gen, retrain = a.gen, 0
+    gen, retrain, target = a.gen, 0, getattr(a, "candidate_generation", None)
     if a.marker_dir:
         marks = gen_loop.ready_markers(Path(a.marker_dir))
         if not marks:
             print("no ready-<gen> marker", file=sys.stderr)
             return 2
         gen, retrain = marks[0][0], gen_loop.marker_parts(marks[0][1])[1]
+        named = gen_loop.marker_target(marks[0][1])  # ready-<gen>-g<target> names the candidate generation
+        if named is not None and target is not None and target != named:
+            print(f"--candidate-generation {target} contradicts the marker {marks[0][1].name}", file=sys.stderr)
+            return 2
+        target = named if named is not None else target
     if gen is None:
         print("--gen or --marker-dir is needed", file=sys.stderr)
         return 2
@@ -607,13 +612,14 @@ def train_cmd(a: argparse.Namespace) -> int:
                                      retrain=retrain, policy_target=a.policy_target,  # a retrain draws on the larger window
                                      exclude_prior_paths=exclude_prior_paths(getattr(a, "exclude_prior_paths", None)),
                                      seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else [],  # the lab's generated E-blocks too
-                                     vrun_seed=getattr(a, "vrun_seed", None))
-    print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": gen + 1}))
+                                     vrun_seed=getattr(a, "vrun_seed", None), candidate_generation=target)
+    target = gen + 1 if target is None else target
+    print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": target}))
     if a.promote:
         if not (a.emu_python and a.seeds_file):
             print("--promote needs --emu-python and --seeds-file", file=sys.stderr)
             return 2
-        seeds_file = gen_loop.resolve_e_block(a.seeds_file, gen + 1, tsv=Path(a.agent_root) / "promotions.tsv",
+        seeds_file = gen_loop.resolve_e_block(a.seeds_file, target, tsv=Path(a.agent_root) / "promotions.tsv",
                                                 cand_sha=json.loads((cand / "model.json").read_text())["policy_sha256"]) \
             if "{k}" in a.seeds_file else Path(a.seeds_file)
         import prior_launch  # noqa: PLC0415
@@ -805,6 +811,9 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--policy-target", choices=("visits", "completed_q"), default="visits",
                    help="the combat policy's target: root visits, or the completed-Q softmax (train_combat)")
     t.add_argument("--marker-dir", help="LAB/train: take the lowest ready-<gen> marker instead of --gen")
+    t.add_argument("--candidate-generation", type=int, default=None,
+                   help="the candidate's generation number (default gen + 1); a number that skips ones writes gen<N>/candidate with a "
+                   "lineage note and starts its own promotion attempt count. A ready-<gen>-g<N> marker names it too")
     t.add_argument("--shards-root", required=True)
     t.add_argument("--agent-root", required=True)
     t.add_argument("--device", default=None, help="cuda or cpu (default: cuda when torch sees one)")

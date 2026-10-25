@@ -115,6 +115,22 @@ class LadderTest(Base):
         (self.lab_dir / "train" / "ready-4-r1").unlink()
         self.assertEqual("12", r.default_params("train")["generation"])
 
+    def test_a_target_marker_passes_the_candidate_generation_and_is_consumed_like_the_others(self):
+        self.config()
+        self.nothing_else()
+        r = self.runner()
+        self.marker("train/ready-3-g5")
+        self.marker("train/ready-12")
+        p = r.default_params("train")
+        self.assertEqual((p["marker"], p["generation"], p["candidate_generation"]), ("ready-3-g5", "3", 5))
+        run = r.new_run("train", "abc")
+        r.execute(run)
+        self.assertFalse((self.lab_dir / "train" / "ready-3-g5").exists())
+        self.assertTrue((self.lab_dir / "train" / "done-3-g5").exists())
+        p = r.default_params("train")  # the next marker is an old form: no candidate generation is passed
+        self.assertEqual((p["marker"], p["generation"]), ("ready-12", "12"))
+        self.assertNotIn("candidate_generation", p)
+
     def test_train_only_when_its_marker_exists(self):
         self.config()
         self.nothing_else()

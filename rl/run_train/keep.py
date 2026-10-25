@@ -212,19 +212,27 @@ def early_stop_runs(hashes: np.ndarray) -> np.ndarray:
 
 def keep_record_oof(heads: dict[str, dict | None], validation: dict[str, Any], tenth: dict[str, Any] | None) -> dict[str, Any]:
     """The `vrun_keep` record under D33: a head is kept on the Brier skill against the base rate alone; its other conditions carry
-    `pass` flags (`all_conditions_pass`) without gating; `tenth` (`evaluate_value_net`'s record) is reported, never gating."""
+    `pass` flags (`all_conditions_pass`) without gating; `tenth` (`evaluate_value_net`'s record) is reported, never gating.
+    A head gates only with at least `MIN_POSITIVES` (30) positive runs out of fold (the DESIGN 5.3 bin rule); below that it is
+    reported with `gating: false` and the reason (`no_positives`, or `positive_runs_below_30`), and its `pass` does not count."""
     out: dict[str, Any] = {"rule": OOF_RULE, "validation": validation, "heads": {}}
     judged = []
     for name, h in heads.items():
         if h is None or h["positives"] == 0:
-            out["heads"][name] = {"status": "no_positives", "positives": 0, "rows": 0 if h is None else int(h["rows"])}
+            out["heads"][name] = {"status": "no_positives", "positives": 0, "rows": 0 if h is None else int(h["rows"]),
+                                  "gating": False, "reason": "no_positives"}
             continue
         h["all_conditions_pass"] = passes(h)
         h["pass"] = bool(h["brier_skill_vs_base_rate"]["pass"])
+        h["gating"] = bool(h["positive_runs"] >= MIN_POSITIVES)
+        if h["gating"]:
+            judged.append(h["pass"])
+        else:
+            h["reason"] = f"positive_runs_below_{MIN_POSITIVES}"
         out["heads"][name] = h
-        judged.append(h["pass"])
     out["all_computable_pass"] = bool(judged) and all(judged)
     out["gating"] = "brier_skill_vs_base_rate"
+    out["min_positive_runs"] = MIN_POSITIVES
     out["held_out_tenth"] = {"gating": False, "all_computable_pass": None if tenth is None else tenth.get("all_computable_pass"),
                              "record": tenth}
     out["not_computed"] = ["tier_b_regret_vs_v0", "battery_gain"]
