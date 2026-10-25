@@ -282,23 +282,31 @@ def _prior_counts(agent) -> dict | None:
 def prior_path_of(agent, before: dict | None, after: dict | None) -> tuple[str, dict, dict | None]:
     """(prior_path, prior_calls, latency) of one run from the client counters read before and after it. "none": the agent has
     no prior. "cpu": the in-process prior, or every call fell back. "server": every call was answered by the server (a run that
-    made none counts as server unless the process had already fallen back). "mixed": both. `latency` is the process's
-    reservoir (cumulative over its runs) with its pid, or None."""
+    made none counts as server unless the process had already fallen back). "mixed": both server and cpu answers. "uniform":
+    any call at all was answered by the uniform prior of the memory floor (`prior_client`), whatever else answered the run: the
+    run's tag is its weakest prior, which is what the training set's exclude switch needs; the counts show the split, and a
+    run that made none follows a process that had already fallen to uniform. `prior_calls` has a "uniform" count only on a
+    run with uniform calls. `latency` is the process's reservoir (cumulative over its runs) with its pid, or None."""
     if not agent.prior_dir:
         return "none", {"server": 0, "cpu": 0}, None
     if before is None or after is None:
         return "cpu", {"server": 0, "cpu": None}, None
     srv, cpu = after["server"] - before["server"], after["cpu"] - before["cpu"]
-    if srv and cpu:
+    uni = after.get("uniform", 0) - before.get("uniform", 0)
+    if uni:
+        path = "uniform"
+    elif srv and cpu:
         path = "mixed"
     elif cpu:
         path = "cpu"
     elif srv:
         path = "server"
+    elif after.get("uniform"):
+        path = "uniform"
     else:
         path = "cpu" if after.get("fallback_reason") else "server"
     lat = after.get("latency_ms")
-    return path, {"server": srv, "cpu": cpu}, ({**lat, "pid": os.getpid()} if lat else None)
+    return path, {"server": srv, "cpu": cpu, **({"uniform": uni} if uni else {})}, ({**lat, "pid": os.getpid()} if lat else None)
 
 
 def aggregate_latency(rows: list[dict]) -> dict:
@@ -337,9 +345,14 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     agent's generation.
 
     With `prior_server` (a started `prior_launch.ServerHandle`, see `run_block_served`) the workers' combat prior is that
-    server: the pool has `server_procs` workers (default `procs`), a dead server is restarted once on the same endpoint and
-    then left (the workers fall back to the CPU path), and the server is stopped at the end. summary.json then carries the
-    server's stats, the client latency and `prior_server_degraded`."""
+    server: the pool has `server_procs` workers (default `procs`), a dead server is restarted once on the same endpoint, and the
+    server is stopped at the end. summary.json then carries the server's stats, the client latency and `prior_server_degraded`.
+    When the restarted server dies too (the second death) the block drains and shrinks: it stops dispatching, waits for the runs
+    in flight (their workers fall back as `prior_client` decides: the CPU prior, or a uniform one under the memory floor),
+    terminates that pool and goes on, on a fresh pool of `procs` plain CPU-path workers whose agent has no server. Nothing is
+    replayed or skipped: the next seed is the next in the stream. summary.json then has `pool_shrunk` = {"from", "to",
+    "at_run", "drained_s"}: the two pool widths, the runs finished when the second death was seen (the ones in flight then
+    finish after it) and the seconds the drain took; `procs` is the width the block started with."""
     _setup()
     import gen_loop  # noqa: PLC0415
 
@@ -370,21 +383,16 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
         resumed = {"runs_held": len(sink.done), "seeds_skipped": len(seeds) - len(todo)}
         print(f"resume: the shards hold {resumed['runs_held']} runs; {resumed['seeds_skipped']} of the {len(seeds)} seeds are not "
               "played again", file=sys.stderr, flush=True)
+    pool_shrunk = None
+    later_pools: list = []  # the pool that replaces the first one when the block shrinks (the first one is the `with`'s)
     try:
         with ctx.Pool(nprocs, initializer=_init_worker, maxtasksperchild=20) as pool, open(runs_file, "a", encoding="utf-8") as fh:
             pending: list = []
             nxt = 0
-            while nxt < len(todo) or pending:
-                if prior_server is not None and not gave_up and not prior_server.alive() and not prior_server.restart_once():
-                    gave_up = True  # the second death: the workers are on the CPU path from their next call
-                    print("prior-server: the server is gone and cannot be restarted; the block goes on on the CPU path",
-                          file=sys.stderr, flush=True)
-                while nxt < len(todo) and len(pending) < nprocs and (deadline is None or time.time() < deadline):
-                    ix, seed = todo[nxt]
-                    pending.append(pool.apply_async(_run_safe, (seed, ix, sims, ascension, agent, record, character)))
-                    nxt += 1
-                if deadline is not None and time.time() >= deadline:
-                    nxt = len(todo)
+
+            def harvest() -> None:
+                """Write the finished runs out and keep the ones still in flight."""
+                nonlocal pending
                 still = []
                 for p in pending:
                     if p.ready():
@@ -398,8 +406,36 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                     else:
                         still.append(p)
                 pending = still
+
+            while nxt < len(todo) or pending:
+                if prior_server is not None and not gave_up and not prior_server.alive() and not prior_server.restart_once():
+                    gave_up = True  # the second death: drain, then go on with plain CPU-path workers
+                    print("prior-server: the server is gone and cannot be restarted; the block drains its runs in flight and goes "
+                          f"on, on {procs} CPU-path workers", file=sys.stderr, flush=True)
+                    at_run, t_drain = len(rows), time.time()
+                    while pending:  # no new tasks; the workers in flight fall back under prior_client's memory floor
+                        harvest()
+                        if pending:
+                            time.sleep(0.5)
+                    drained_s = round(time.time() - t_drain, 1)
+                    pool.terminate()
+                    pool.join()
+                    agent = dataclasses.replace(agent, prior_server=None, prior_authkey=None)
+                    pool_shrunk = {"from": nprocs, "to": procs, "at_run": at_run, "drained_s": drained_s}
+                    nprocs = procs
+                    pool = ctx.Pool(nprocs, initializer=_init_worker, maxtasksperchild=20)
+                    later_pools.append(pool)
+                while nxt < len(todo) and len(pending) < nprocs and (deadline is None or time.time() < deadline):
+                    ix, seed = todo[nxt]
+                    pending.append(pool.apply_async(_run_safe, (seed, ix, sims, ascension, agent, record, character)))
+                    nxt += 1
+                if deadline is not None and time.time() >= deadline:
+                    nxt = len(todo)
+                harvest()
                 time.sleep(0.5)
     finally:
+        for later in later_pools:
+            later.terminate()  # what leaving a `with` pool does
         if prior_server is not None:
             prior_server.stop()  # close its stdin, wait 5 s, terminate
     wall = time.time() - t0
@@ -416,11 +452,13 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     summary["prior_paths"] = dict(sorted(Counter(tags).items()))
     if prior_server is not None:
         lat = aggregate_latency(rows)
-        summary["procs"] = nprocs
+        summary["procs"] = pool_shrunk["from"] if pool_shrunk else nprocs  # the width the block started with
+        if pool_shrunk:
+            summary["pool_shrunk"] = pool_shrunk
         summary["prior_server"] = {"kind": prior_server.kind, "restarts": prior_server.restarts, "stats": prior_server.read_stats()}
         summary["prior_latency_ms"] = lat
-        summary["prior_server_degraded"] = bool(tags) and (tags.count("server") < 0.99 * len(tags)
-                                                           or (lat["p99"] is not None and lat["p99"] > latency_p99_ms))
+        summary["prior_server_degraded"] = pool_shrunk is not None or (bool(tags) and (
+            tags.count("server") < 0.99 * len(tags) or (lat["p99"] is not None and lat["p99"] > latency_p99_ms)))
     (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     (out / "result.json").write_text(json.dumps({**result_json(rows, wall, agent.generation), "character": character}),
                                      encoding="utf-8")
@@ -713,7 +751,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--max-fights", type=int, default=6400)
     t.add_argument("--threads", type=int, default=6)
     t.add_argument("--no-vrun", action="store_true")
-    t.add_argument("--exclude-prior-paths", help="comma list of prior paths (none, cpu, server, mixed) whose runs the training set drops")
+    t.add_argument("--exclude-prior-paths", help="comma list of prior paths (none, cpu, server, mixed, uniform) whose runs the training set drops")
     add_prior_server_flags(t)  # passed through to --promote's subprocess; the promotion arms are CPU unless these say otherwise
     t.add_argument("--promote", action="store_true", help="then run `promote` against the current champion in the emulator venv")
     t.add_argument("--emu-python", help="the emulator venv's python for --promote")

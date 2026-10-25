@@ -350,6 +350,18 @@ class PriorPathOfTests(unittest.TestCase):
         self.assertEqual(gen0.prior_path_of(self.A, before, self.counts(10, 9, "eof"))[:2], ("cpu", {"server": 0, "cpu": 5}))
         self.assertEqual(gen0.prior_path_of(self.A, before, self.counts(12, 9, "eof"))[:2], ("mixed", {"server": 2, "cpu": 5}))
 
+    def test_any_uniform_call_makes_the_run_uniform_and_the_counts_show_the_split(self):
+        def counts(server, cpu, uniform, reason=None):
+            return {**self.counts(server, cpu, reason), "uniform": uniform}
+
+        before = counts(10, 4, 0)
+        self.assertEqual(gen0.prior_path_of(self.A, before, counts(12, 4, 5, "memory floor"))[:2],
+                         ("uniform", {"server": 2, "cpu": 0, "uniform": 5}))  # served, then fell under the floor: still uniform
+        self.assertEqual(gen0.prior_path_of(self.A, before, counts(10, 4, 3, "memory floor"))[:2],
+                         ("uniform", {"server": 0, "cpu": 0, "uniform": 3}))
+        self.assertEqual(gen0.prior_path_of(self.A, counts(0, 0, 3, "x"), counts(0, 0, 3, "x"))[0], "uniform")  # no calls: the state
+        self.assertEqual(gen0.prior_path_of(self.A, counts(0, 0, 0), counts(5, 0, 0))[:2], ("server", {"server": 5, "cpu": 0}))
+
     def test_a_run_with_no_calls_follows_the_process_fallback_state(self):
         self.assertEqual(gen0.prior_path_of(self.A, self.counts(3, 0), self.counts(3, 0))[0], "server")
         self.assertEqual(gen0.prior_path_of(self.A, self.counts(0, 3, "x"), self.counts(0, 3, "x"))[0], "cpu")
@@ -376,6 +388,8 @@ class SchemaTests(unittest.TestCase):
         validator.validate(synthetic_record())  # a record from before the fields
         for path in ("none", "cpu", "server", "mixed"):
             validator.validate(synthetic_record(prior_path=path, prior_calls={"server": 3, "cpu": 0}))
+        validator.validate(synthetic_record(prior_path="uniform", prior_calls={"server": 2, "cpu": 0, "uniform": 7}))
+        self.assertFalse(validator.is_valid(synthetic_record(prior_path="uniform", prior_calls={"server": 2, "cpu": 0, "uniform": -1})))
         validator.validate(synthetic_record(prior_path="cpu", prior_calls={"server": 0, "cpu": None}))
         self.assertFalse(validator.is_valid(synthetic_record(prior_path="gpu")))
         self.assertFalse(validator.is_valid(synthetic_record(prior_calls={"server": 1})))
@@ -412,6 +426,21 @@ class PartTests(unittest.TestCase):
         np.testing.assert_array_equal(new["visits"], old["visits"])
         with tempfile.TemporaryDirectory() as d, self.assertRaises(ValueError):
             gen_loop.write_part(Path(d) / "x.npz", runs, 2, ["cpu"])
+
+    def test_a_part_round_trips_the_uniform_code(self):
+        rng = np.random.default_rng(3)
+        runs = [("AAAAAAAAAA", fake_run_arrays(rng)), ("BBBBBBBBBB", fake_run_arrays(rng, 2, 3))]
+        self.assertEqual(gen_loop.PRIOR_PATH_CODES["uniform"], 4)
+        self.assertIn("uniform", gen_loop.PRIOR_PATHS)
+        with tempfile.TemporaryDirectory() as d:
+            gen_loop.write_part(Path(d) / "u.npz", runs, 2, ["uniform", "server"])
+            part = gen_loop.read_part(Path(d) / "u.npz")
+            sink = gen_loop.ShardSink(Path(d) / "job", 0, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=2)
+            for i, tag in enumerate(["uniform", "uniform"]):
+                sink.add({**fake_record(f"U{i:09d}", 0), "prior_path": tag}, fake_run_arrays(rng))
+            man = sink.close()
+        self.assertEqual(part["prior_path"].tolist(), [4, 2])
+        self.assertEqual(man["prior_paths"], {"uniform": 2})
 
     def test_the_sink_counts_runs_by_path_in_the_manifest(self):
         rng = np.random.default_rng(2)
@@ -455,6 +484,15 @@ class ExclusionTests(unittest.TestCase):
         np.testing.assert_array_equal(data["visits"], everything["visits"][keep])
         np.testing.assert_array_equal(data["qvals"], everything["qvals"][keep])
 
+    def test_uniform_runs_can_be_excluded(self):
+        with tempfile.TemporaryDirectory() as d:
+            mans = self.build(Path(d), ["uniform", "server", "uniform"])
+            everything = gen_loop.build_training_set(mans, max_fights=1000)
+            data = gen_loop.build_training_set(mans, max_fights=1000, exclude_prior_paths=("uniform",))
+        self.assertEqual(everything["lengths"].size, 19)
+        self.assertEqual(data["lengths"].size, 8)  # the server run's samples
+        self.assertEqual(int(data["_samples_excluded"][0]), 11)
+
     def test_a_part_from_before_the_field_is_never_dropped(self):
         with tempfile.TemporaryDirectory() as d:
             mans = self.build(Path(d), ["server", "server", "server"])
@@ -463,7 +501,7 @@ class ExclusionTests(unittest.TestCase):
                     blob = gen_loop.read_part(man_dir / name)
                     blob.pop("prior_path")
                     np.savez_compressed(man_dir / name, **blob)
-            data = gen_loop.build_training_set(mans, max_fights=1000, exclude_prior_paths=("server", "cpu", "mixed", "none"))
+            data = gen_loop.build_training_set(mans, max_fights=1000, exclude_prior_paths=("server", "cpu", "mixed", "none", "uniform"))
         self.assertEqual(data["lengths"].size, 19)
 
     def test_dropping_every_run_or_naming_an_unknown_path_is_an_error(self):
@@ -518,6 +556,13 @@ class FakeHandle:
         return {"batches": 7}
 
 
+class DeadTwiceHandle(FakeHandle):
+    """A server that dies and cannot be restarted: the second death."""
+
+    def restart_once(self) -> bool:
+        return False
+
+
 def stable(row: dict) -> dict:
     return {k: v for k, v in row.items() if k not in ("wall", "prior_latency_ms")}
 
@@ -557,6 +602,44 @@ class BlockTests(unittest.TestCase):
         self.assertNotIn("fake-key", json.dumps(summ))
         self.assertEqual(summ["prior_paths"], {"none": 1})
         self.assertTrue(summ["prior_server_degraded"])  # no run was served
+
+    def shrunk_block(self, server_procs: int, name: str):
+        """The two-seed block on a prior that points at a server that is not there and is dead twice, with the headroom faked
+        to 1 GiB: the workers in flight fall back to a uniform prior (no torch), the workers of the shrunk pool run the CPU prior."""
+        h = DeadTwiceHandle(die_after=1)
+        agent = gen_loop.load_agent(fixture_prior())
+        with mock.patch.dict(os.environ, {"SPIRELINE_FAKE_MEM_HEADROOM_GB": "1"}):  # the spawn workers inherit it
+            summ = gen0.run_block(SEEDS, FLAT_SIMS, 2, self.root / name, agent=agent, prior_server=h, server_procs=server_procs)
+        return h, summ, read_rows(self.root / name)
+
+    def test_a_server_dead_twice_drains_and_shrinks_the_pool_to_procs(self):
+        h, summ, rows = self.shrunk_block(3, "shrunk3")  # both seeds are in flight when the second death is seen
+        self.assertEqual(sorted(r["seed"] for r in rows), sorted(SEEDS))  # every seed once
+        self.assertEqual(sorted(r["ix"] for r in rows), [0, 1])
+        self.assertEqual(h.stopped, 1)
+        shrunk = summ["pool_shrunk"]
+        self.assertEqual((shrunk["from"], shrunk["to"]), (3, 2))
+        self.assertEqual(set(shrunk), {"from", "to", "at_run", "drained_s"})
+        self.assertTrue(0 <= shrunk["at_run"] <= len(rows) and shrunk["drained_s"] >= 0)
+        self.assertEqual(summ["procs"], 3)  # the width it started with
+        self.assertEqual(summ["runs"], 2)
+        self.assertEqual(summ["prior_paths"], {"uniform": 2})  # the drained runs fell back under the floor
+        self.assertEqual(sorted(r["prior_path"] for r in rows), ["uniform", "uniform"])
+        self.assertTrue(all(r["prior_calls"]["uniform"] > 0 and r["prior_calls"]["server"] == 0 for r in rows))
+        self.assertTrue(summ["prior_server_degraded"])
+        self.assertNotIn("fake-endpoint", json.dumps(summ))
+
+    def test_the_seed_stream_goes_on_after_the_shrink_on_plain_cpu_path_workers(self):
+        _, summ, rows = self.shrunk_block(1, "shrunk1")  # one in flight; the second seed starts after the shrink
+        self.assertEqual([r["seed"] for r in rows], SEEDS)  # in stream order, none replayed, none skipped
+        self.assertEqual([r["ix"] for r in rows], [0, 1])
+        self.assertEqual(summ["pool_shrunk"]["from"], 1)
+        self.assertEqual(summ["pool_shrunk"]["to"], 2)
+        self.assertEqual(summ["pool_shrunk"]["at_run"], 0)
+        self.assertEqual([r["prior_path"] for r in rows], ["uniform", "cpu"])  # the new pool's agent has no server
+        self.assertEqual(summ["prior_paths"], {"cpu": 1, "uniform": 1})
+        self.assertEqual(rows[1]["prior_calls"], {"server": 0, "cpu": None})
+        self.assertTrue(summ["prior_server_degraded"])
 
     @unittest.skipUnless(HAVE_SERVER and HAVE_CLIENT, "rl/prior_server.py and rl/prior_client.py are not in this worktree yet (integration)")
     def test_a_block_through_a_cpu_device_server_reproduces_the_cpu_path_and_tags_server(self):

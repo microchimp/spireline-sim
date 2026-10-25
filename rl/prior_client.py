@@ -12,7 +12,10 @@ torch (`docs/rl/GPU_INFERENCE.md` sections 2, 3 and 6).
 What it must not do: import torch (only a process that falls back pays for it, through `combat_prior`), call `recv()` or
 `send()` (they unpickle; frames travel as bytes), raise out of a prior call because of the transport, or retry: the first
 failure of any kind (connect, auth, HELLO refused, timeout, EOF, bad frame, wrong request id) makes this process use the
-in-process CPU prior for the rest of its life, with one stderr line carrying the exception type and message only.
+in-process CPU prior for the rest of its life, with one stderr line carrying the exception type and message only. The one
+exception is the memory floor: a process that must fall back first reads `memory_headroom_gb()`, and under
+`SPIRELINE_FALLBACK_MIN_FREE_GB` (default 3) it does not import torch at all but serves a uniform prior over the legal
+actions for the rest of its life (`docs/rl/GPU_INFERENCE.md` section 6), counted as "uniform" in `stats()`.
 """
 
 from __future__ import annotations
@@ -38,11 +41,16 @@ import prior_protocol as proto
 from prior_protocol import legal_weights
 
 RESERVOIR = 4096
+FLOOR_ENV = "SPIRELINE_FALLBACK_MIN_FREE_GB"  # the headroom a falling-back process needs to load torch (GiB)
+DEFAULT_FLOOR_GB = 3.0
+FAKE_HEADROOM_ENV = "SPIRELINE_FAKE_MEM_HEADROOM_GB"  # tests: the headroom to report, when set
+_GIB = float(1 << 30)
 
 _LOCK = threading.RLock()
 _CONNS: dict[tuple[int, str], connection.Connection] = {}
-_COUNTS = {"server": 0, "cpu": 0}
+_COUNTS = {"server": 0, "cpu": 0, "uniform": 0}
 _FALLBACK: list[str | None] = [None]
+_UNIFORM = [False]  # this process fell back under the memory floor: it serves uniform weights, torch never loaded
 _LATENCY: list[float] = []
 _LATENCY_SEEN = [0]
 _RNG = random.Random(0)
@@ -51,12 +59,54 @@ _LOCAL: dict[tuple[str, bool], object] = {}
 _HASHES: list[tuple[str, str] | None] = [None]
 
 
+class _MemoryStatusEx(ctypes.Structure):
+    _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32), ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64), ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+
+def memory_headroom_gb() -> float:
+    """What a new torch import can still take, in GiB: the smaller of the available physical memory and the available commit
+    (`GlobalMemoryStatusEx` on Windows, where the commit limit is what ran out; `MemAvailable` elsewhere; infinity when the
+    machine cannot say). `SPIRELINE_FAKE_MEM_HEADROOM_GB`, when set to a number, is returned instead (tests)."""
+    fake = os.environ.get(FAKE_HEADROOM_ENV)
+    if fake is not None and fake.strip():
+        try:
+            return float(fake)
+        except ValueError:
+            pass
+    try:
+        if sys.platform == "win32":
+            status = _MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+                return min(status.ullAvailPhys, status.ullAvailPageFile) / _GIB
+            return float("inf")
+        for line in Path("/proc/meminfo").read_text(encoding="ascii", errors="replace").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024 / _GIB
+    except (OSError, ValueError, IndexError, AttributeError):
+        pass
+    return float("inf")
+
+
+def fallback_floor_gb() -> float:
+    """The headroom floor of the fallback: `SPIRELINE_FALLBACK_MIN_FREE_GB`, default 3 GiB (an unreadable value is the default)."""
+    try:
+        return float(os.environ.get(FLOOR_ENV, DEFAULT_FLOOR_GB))
+    except ValueError:
+        return DEFAULT_FLOOR_GB
+
+
 def stats() -> dict:
-    """Calls answered by the server and by the CPU fallback, why this process fell back (None if it has not), latency in ms."""
+    """Calls answered by the server, by the CPU fallback and by the uniform prior of the memory floor, why this process fell
+    back (None if it has not), latency in ms."""
     with _LOCK:
         samples = np.array(_LATENCY, dtype=np.float64)
         seen = _LATENCY_SEEN[0]
-        out = {"server": _COUNTS["server"], "cpu": _COUNTS["cpu"], "fallback_reason": _FALLBACK[0]}
+        out = {"server": _COUNTS["server"], "cpu": _COUNTS["cpu"], "uniform": _COUNTS["uniform"],
+               "fallback_reason": _FALLBACK[0]}
     if samples.size:
         p50, p99 = (round(float(x), 3) for x in np.percentile(samples, [50, 99]))
     else:
@@ -68,7 +118,7 @@ def stats() -> dict:
 def reset_stats() -> None:
     """Zero the counters and the latency samples (the sticky fallback and the connections are kept)."""
     with _LOCK:
-        _COUNTS["server"] = _COUNTS["cpu"] = 0
+        _COUNTS["server"] = _COUNTS["cpu"] = _COUNTS["uniform"] = 0
         _LATENCY.clear()
         _LATENCY_SEEN[0] = 0
 
@@ -80,6 +130,7 @@ def reset_state() -> None:
             _close(conn)
         _CONNS.clear()
         _FALLBACK[0] = None
+        _UNIFORM[0] = False
         _LOCAL.clear()
     reset_stats()
 
@@ -107,8 +158,15 @@ def _fall_back(error: BaseException) -> None:
     reason = proto.describe_error(error)
     with _LOCK:
         if _FALLBACK[0] is None:
-            _FALLBACK[0] = reason
-            print(f"prior_client: using the CPU prior from now on ({reason})", file=sys.stderr, flush=True)
+            floor, headroom = fallback_floor_gb(), memory_headroom_gb()  # once per process, at the moment of the fallback
+            if headroom < floor:  # loading torch here could take the machine down: no torch, a uniform prior, a tagged run
+                _UNIFORM[0] = True
+                _FALLBACK[0] = f"memory floor: {headroom:.1f} GiB of headroom under the {floor:g} GiB floor ({reason})"
+                print(f"prior falls back to a uniform prior: {headroom:.1f} GiB of headroom under the {floor:g} GiB floor",
+                      file=sys.stderr, flush=True)
+            else:
+                _FALLBACK[0] = reason
+                print(f"prior_client: using the CPU prior from now on ({reason})", file=sys.stderr, flush=True)
         for conn in _CONNS.values():
             _close(conn)
         _CONNS.clear()
@@ -250,6 +308,11 @@ class RemotePrior:
                 with _LOCK:
                     _COUNTS["server"] += 1
                 return legal_weights(row, list(legal))
+        if _UNIFORM[0]:  # equal weight per legal action, as `legal_weights` does when no logit is usable
+            weights = np.full(len(legal), 1.0 / max(1, len(legal)))
+            with _LOCK:
+                _COUNTS["uniform"] += 1
+            return weights
         weights = _local(self)(handle, legal)
         with _LOCK:
             _COUNTS["cpu"] += 1

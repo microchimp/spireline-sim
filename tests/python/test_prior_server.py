@@ -20,6 +20,7 @@ import time
 import unittest
 from multiprocessing import connection
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -250,6 +251,116 @@ class ProcutilTests(unittest.TestCase):
         )
         out = subprocess.run([sys.executable, "-c", code, str(ROOT / "src")], capture_output=True, text=True, check=True)  # noqa: S603
         self.assertEqual(out.stdout.split(), [str(procutil.BELOW_NORMAL_PRIORITY_CLASS), str(procutil.NORMAL_PRIORITY_CLASS)])
+
+
+class MemoryFloorTests(unittest.TestCase):
+    """The memory floor of the fallback (docs/rl/GPU_INFERENCE.md section 6): no server, and a headroom under the floor."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.policy = export_prior(Path(cls.tmp.name)) / combat_prior.POLICY
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(pc.FAKE_HEADROOM_ENV, None)
+        os.environ.pop(pc.FLOOR_ENV, None)
+        pc.reset_state()
+        self.addCleanup(pc.reset_state)
+
+    def endpoint(self):
+        return f"spireline-test-nomem-{os.getpid()}" if IS_WINDOWS else str(Path(self.tmp.name) / "none.sock")
+
+    def remote(self):
+        return pc.RemotePrior(str(self.policy), False, self.endpoint(), b"k" * 16, "0" * 64, timeout_s=2.0)
+
+    def call(self, prior):
+        combat = toadpoles(1)
+        err = io.StringIO()
+        try:
+            legal = combat.legal()
+            with contextlib.redirect_stderr(err):
+                got = prior(combat.handle, legal)
+            want = combat_prior.LivePrior(str(self.policy), False)(combat.handle, legal)
+        finally:
+            combat.close()
+        return got, want, legal, err.getvalue()
+
+    def test_the_headroom_is_a_positive_number_and_the_override_wins(self):
+        real = pc.memory_headroom_gb()
+        print(f"memory_headroom_gb on this machine: {real:.1f} GiB")
+        self.assertIsInstance(real, float)
+        self.assertTrue(0 < real < float("inf"))
+        os.environ[pc.FAKE_HEADROOM_ENV] = "1.5"
+        self.assertEqual(pc.memory_headroom_gb(), 1.5)
+        os.environ[pc.FAKE_HEADROOM_ENV] = "not a number"  # an unreadable override is ignored
+        self.assertTrue(0 < pc.memory_headroom_gb() < float("inf"))
+
+    def test_the_floor_is_3_gib_unless_the_environment_says_otherwise(self):
+        self.assertEqual(pc.fallback_floor_gb(), 3.0)
+        os.environ[pc.FLOOR_ENV] = "5"
+        self.assertEqual(pc.fallback_floor_gb(), 5.0)
+        os.environ[pc.FLOOR_ENV] = "junk"
+        self.assertEqual(pc.fallback_floor_gb(), 3.0)
+
+    def test_under_the_floor_the_fallback_is_uniform_and_imports_no_torch(self):
+        script = (
+            "import sys, json, ctypes\nrl, src, args = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])\n"
+            "sys.path[:0] = [rl, src]\nfrom sts2_gym import native\nimport prior_client as pc\n"
+            "h = native.create(0)\nobs = (ctypes.c_int * native.OBS_SIZE)()\n"
+            "native.reset_arena(h, args['deck'], obs, encounter_id=args['enc'])\n"
+            "mask = native.valid_actions(h, 32)\nlegal = [a for a in range(32) if mask[a]]\n"
+            "p = pc.RemotePrior(args['policy'], False, args['ep'], bytes.fromhex(args['key']), args['sha'])\n"
+            "w = p(h, legal)\nw2 = p(h, legal)\n"
+            "print(json.dumps({'torch': 'torch' in sys.modules, 'w': w.tolist(), 'w2': w2.tolist(), 'n': len(legal),\n"
+            "                  'stats': pc.stats()}))\n"
+        )
+        args = {"deck": DECK, "enc": TOADPOLES, "policy": str(self.policy), "ep": self.endpoint(), "key": "6b" * 16, "sha": "0" * 64}
+        env = {**os.environ, pc.FAKE_HEADROOM_ENV: "1"}
+        out = subprocess.run([sys.executable, "-c", script, str(ROOT / "rl"), str(ROOT / "src"), json.dumps(args)],  # noqa: S603
+                             capture_output=True, text=True, check=True, env=env)
+        got = json.loads(out.stdout.strip().splitlines()[-1])
+        n = got["n"]
+        self.assertGreater(n, 1)
+        self.assertFalse(got["torch"])  # the process that fell back never loaded torch
+        for weights in (got["w"], got["w2"]):
+            self.assertEqual(len(weights), n)
+            self.assertAlmostEqual(sum(weights), 1.0)
+            self.assertEqual(set(weights), {1.0 / n})  # equal weight per legal action
+        stats = got["stats"]
+        self.assertEqual((stats["server"], stats["cpu"], stats["uniform"]), (0, 0, 2))
+        self.assertIn("memory floor", stats["fallback_reason"])
+        self.assertIn("1.0 GiB of headroom under the 3 GiB floor", stats["fallback_reason"])
+        lines = out.stderr.strip().splitlines()
+        self.assertEqual(lines, ["prior falls back to a uniform prior: 1.0 GiB of headroom under the 3 GiB floor"])
+
+    def test_the_floor_variable_moves_the_line_and_the_counts_are_in_process(self):
+        os.environ[pc.FAKE_HEADROOM_ENV] = "4"
+        os.environ[pc.FLOOR_ENV] = "5"
+        got, _, legal, err = self.call(self.remote())
+        np.testing.assert_array_equal(got, np.full(len(legal), 1.0 / len(legal)))
+        stats = pc.stats()
+        self.assertEqual((stats["server"], stats["cpu"], stats["uniform"]), (0, 0, 1))
+        self.assertIn("4.0 GiB of headroom under the 5 GiB floor", err)
+        self.assertEqual(len(err.strip().splitlines()), 1)
+        pc.reset_stats()  # the counters reset; the process stays uniform, as it stays on the CPU prior today
+        self.call(self.remote())
+        self.assertEqual(pc.stats()["uniform"], 1)
+
+    def test_over_the_floor_it_falls_back_to_the_cpu_prior_as_before(self):
+        os.environ[pc.FAKE_HEADROOM_ENV] = "100"
+        got, want, _, err = self.call(self.remote())
+        self.assertTrue(np.array_equal(got, want))
+        stats = pc.stats()
+        self.assertEqual((stats["server"], stats["cpu"], stats["uniform"]), (0, 1, 0))
+        self.assertNotIn("memory floor", stats["fallback_reason"])
+        self.assertIn("using the CPU prior", err)
 
 
 class ServerTests(unittest.TestCase):
