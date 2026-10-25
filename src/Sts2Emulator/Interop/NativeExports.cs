@@ -85,7 +85,11 @@ public static class NativeExports
     //      top where it had not played, or Foregone Conclusion had picked it.
     // v36: Sts2_AiStateAssumed and Sts2Run_AiStateAssumed say whether a resampled fork kept the
     //      true hidden AI state (DESIGN.md 1.1's ai_state_assumed).
-    public const int NATIVE_API_VERSION = 36;
+    // v37: Sts2_SetEngine and Sts2_GetEngine: the engine of the handles made after the call, old by default, or core2,
+    //      the old engine with the Tier 1 kernel of tools/fidelity/migrated_families.json (docs/rebuild/NATIVE_KERNEL.md).
+    //      With a kernel switch on, Sts2_Create, Sts2_LoadCombatSnapshot and Sts2Run_ForkCombat refuse (Sts2_GetLastError
+    //      says why): a combat handle does not step through the kernel yet.
+    public const int NATIVE_API_VERSION = 37;
 
     /// <summary>
     /// The plain resets' deck: the start of a run at the default level, from the one
@@ -536,9 +540,63 @@ public static class NativeExports
     [UnmanagedCallersOnly(EntryPoint = "Sts2_NativeApiVersion")]
     public static int Sts2_NativeApiVersion() => NATIVE_API_VERSION;
 
+    /// <summary>
+    /// The engine of the handles made after this call (UTF-8 spec, no terminator): "old" (the default), "core2" (the
+    /// families of the shipped migrated_families.json) or "core2:F08,F10" (docs/rebuild/NATIVE_KERNEL.md section 3). A
+    /// handle keeps the engine it was made with. The library never reads the environment; sts2_gym.native calls this
+    /// once per process, from STS2_ENGINE.
+    /// </summary>
+    /// <returns>0, or -1 for a refused spec (the engine unchanged; <c>Sts2_GetLastError</c> says why).</returns>
+    [UnmanagedCallersOnly(EntryPoint = "Sts2_SetEngine")]
+    public static unsafe int Sts2_SetEngine(byte* spec, int len)
+    {
+        try
+        {
+            if (spec is null || len <= 0)
+            {
+                return RefuseLoad("no engine spec (a null pointer or a zero length)", -1);
+            }
+
+            string? why = RunNativeExports.SetEngine(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(spec, len)));
+            if (why is not null)
+            {
+                return RefuseLoad(why, -1);
+            }
+
+            _lastLoadError = [];
+            return 0;
+        }
+        catch (Exception e)
+        {
+            // An exception must not cross this boundary (a missing embedded file, a bad family list).
+            return RefuseLoad($"internal error while building the engine: {e.Message}", -1);
+        }
+    }
+
+    /// <summary>The engine new handles are made with, canonical ("old", "core2:F08,F10"), UTF-8; size-and-retry.</summary>
+    /// <returns>The name's length in bytes.</returns>
+    [UnmanagedCallersOnly(EntryPoint = "Sts2_GetEngine")]
+    public static unsafe int Sts2_GetEngine(byte* buf, int cap)
+    {
+        byte[] name = Encoding.UTF8.GetBytes(RunNativeExports.Engine.Name);
+        if (buf is not null && cap >= name.Length)
+        {
+            name.CopyTo(new Span<byte>(buf, cap));
+        }
+
+        return name.Length;
+    }
+
+    /// <returns>The new handle; -1 when the pool is exhausted, or when the engine has a kernel switch on
+    /// (<c>Sts2_GetLastError</c>): a combat handle does not step through the kernel yet (NATIVE_KERNEL.md piece 2).</returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_Create")]
     public static int Sts2_Create(int seed)
     {
+        if (RunNativeExports.Engine.KernelOn)
+        {
+            return RefuseLoad(CombatHandleRefusal, -1);
+        }
+
         var combat = new NativeCombat(seed);
         for (int i = 0; i < _pool.Length; i++)
         {
@@ -595,7 +653,7 @@ public static class NativeExports
     /// </summary>
     /// <returns>
     /// The new combat handle; -1 if the run is unknown or not in a fight; -2 if the combat
-    /// handle pool is full.
+    /// handle pool is full; -3 if the run's engine has a kernel switch on (<c>Sts2_GetLastError</c>).
     /// </returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2Run_ForkCombat")]
     public static unsafe int Sts2Run_ForkCombat(
@@ -608,6 +666,11 @@ public static class NativeExports
         if (!RunNativeExports.TryGetRun(runHandle, out var run))
         {
             return -1;
+        }
+
+        if (RunNativeExports.KernelOn(run))
+        {
+            return RefuseLoad(CombatHandleRefusal, -3);
         }
 
         if (run.ForkActiveCombat(resampleHidden != 0 ? resampleSeed : null) is not { } fight)
@@ -632,9 +695,16 @@ public static class NativeExports
     /// <summary>
     /// Why the last refusal was made, as UTF-8: a <c>Sts2_LoadCombatSnapshot</c> (empty after a
     /// successful load), a <c>Sts2_GetStateJson</c> that returned -3, a <c>Sts2_Step</c> that
-    /// returned -1.
+    /// returned -1, a <c>Sts2_SetEngine</c>, or an export refused under a kernel switch.
     /// </summary>
     private static byte[] _lastLoadError = [];
+
+    /// <summary>Why a combat handle is refused while the engine has a kernel switch on (NATIVE_KERNEL.md pieces 2-4).</summary>
+    private const string CombatHandleRefusal =
+        "kernel_on: combat handles do not step through the kernel yet (NATIVE_KERNEL.md piece 2)";
+
+    /// <summary>A refusal made outside this class (RunNativeExports), for <c>Sts2_GetLastError</c>.</summary>
+    internal static void Refuse(string message) => _lastLoadError = Encoding.UTF8.GetBytes(message);
 
     /// <summary>
     /// Build a combat from an `sts2-emu-snapshot/1` document (UTF-8 JSON), so a search can
@@ -659,6 +729,12 @@ public static class NativeExports
             if (json is null || len <= 0)
             {
                 return RefuseLoad("$: no document (a null pointer or a zero length)", -1);
+            }
+
+            if (RunNativeExports.Engine.KernelOn)
+            {
+                // NATIVE_KERNEL.md piece 3: a loaded combat is not bound to the kernel yet.
+                return RefuseLoad("kernel_on: a loaded snapshot does not bind the kernel yet (NATIVE_KERNEL.md piece 3)", -1);
             }
 
             var state = CombatSnapshot.Read(new ReadOnlySpan<byte>(json, len), seed, out _);

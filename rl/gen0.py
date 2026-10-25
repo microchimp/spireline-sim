@@ -581,18 +581,34 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
     return 0
 
 
-def emu_arm_match(emu_dir: str | Path | None, agent: dict) -> tuple[bool, str]:
-    """Whether a finished emulator arm in `emu_dir` was played by `agent` (an `Agent.describe()` dict): its summary.json names the
-    same generation, combat-prior sha and macro policy. Returns (matches, why); a missing dir, runs file, summary or agent name is a mismatch."""
+def select_engine(engine: str) -> None:
+    """Set the emulator engine of this process and every process it starts.
+
+    STS2_ENGINE, read by sts2_gym.native when it loads (docs/rebuild/NATIVE_KERNEL.md section 3): "old" clears it, whatever
+    the environment said, so a command that did not ask for core2 runs old.
+    """
+    if engine == "old":
+        os.environ.pop("STS2_ENGINE", None)
+    else:
+        os.environ["STS2_ENGINE"] = engine
+
+
+def emu_arm_match(emu_dir: str | Path | None, agent: dict, engine: str = "old") -> tuple[bool, str]:
+    """Whether a finished emulator arm in `emu_dir` was played by `agent` (an `Agent.describe()` dict) on `engine`: its summary.json
+    names the same generation, combat-prior sha and macro policy, and the same engine (none named: old). Returns (matches, why); a
+    missing dir, runs file, summary or agent name is a mismatch."""
     if not emu_dir:
         return False, "no emulator dir given"
     d = Path(emu_dir)
     if not (d / "runs.jsonl").is_file() or not (d / "summary.json").is_file():
         return False, "no finished emulator arm in the dir"
     try:
-        named = json.loads((d / "summary.json").read_text(encoding="utf-8")).get("agent")
+        summ = json.loads((d / "summary.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False, "unreadable summary.json"
+    named = summ.get("agent")
+    if summ.get("engine", "old") != engine:
+        return False, f"played on another engine ({summ.get('engine', 'old')!r}, scored {engine!r})"
     if not isinstance(named, dict):
         return False, "summary.json names no agent"
     named = {"macro": "rules", **named}  # a summary from before the macro switch was played by the rules
@@ -606,8 +622,14 @@ def play_emu_arm(a: argparse.Namespace, agent, out: Path) -> dict:
     """Play the scored agent on the emulator over the real block's seeds, config and process count into `out`."""
     if a.lib:
         os.environ["STS2_LIB_PATH"] = a.lib
+    engine = getattr(a, "engine", "old")
+    select_engine(engine)  # the arm's spawn workers load the library on this engine
     seeds = load_seeds(a.seeds_file)[: a.runs]
-    return run_block(seeds, a.config or a.sims, a.procs, out, ascension=a.ascension, character=a.character, agent=agent)
+    summ = run_block(seeds, a.config or a.sims, a.procs, out, ascension=a.ascension, character=a.character, agent=agent)
+    if engine != "old":  # an old arm's summary stays as every self-play block writes it
+        summ = {**summ, "engine": engine}
+        (out / "summary.json").write_text(json.dumps(summ, indent=1), encoding="utf-8")
+    return summ
 
 
 def score_real(a: argparse.Namespace) -> int:
@@ -625,16 +647,17 @@ def score_real(a: argparse.Namespace) -> int:
 
     agent = gen_loop.load_agent(getattr(a, "gen_dir", None) or None)
     only = getattr(a, "only", None)
+    engine = getattr(a, "engine", "old")
     if only:  # a probe of chosen seeds: the game's side only, no emulator arm to pair with
         ok, why, emu_dir = True, "only: no emulator arm", None
     else:
-        ok, why = emu_arm_match(a.emu_dir, agent.describe())
+        ok, why = emu_arm_match(a.emu_dir, agent.describe(), engine)
         emu_dir = Path(a.emu_dir) if ok else out.with_name(out.name + "-emu")
         if not ok:
             print(f"emulator arm: {why}; playing it into {emu_dir.name}", file=sys.stderr)
             play_emu_arm(a, agent, emu_dir)
     arm = {"dir": None if only else emu_dir.name if not ok else str(a.emu_dir).replace("\\", "/"), "played": not ok, "agent": agent.describe(),
-           "reason": "played: " + why if not ok else why}
+           "reason": "played: " + why if not ok else why, "engine": engine}
     env = dict(os.environ)
     if a.lib:
         env["STS2_LIB_PATH"] = a.lib
@@ -643,7 +666,7 @@ def score_real(a: argparse.Namespace) -> int:
         env["SPIRELINE_GEN_DIR"] = str(a.gen_dir)  # search_configs adds the generation's prior to every search
     cmd = [sys.executable, str(ROOT / "referee" / "envproto.py"), "play", "--game", a.game, "--out", str(out), "--procs", str(a.procs),
            "--runs", str(a.runs), "--sims", a.config or str(a.sims), "--seeds-file", a.seeds_file, "--agent-seed", str(AGENT_SEED),
-           "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h), "--character", a.character]
+           "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h), "--character", a.character, "--engine", engine]
     if only:
         cmd += ["--only", only]
     rc = subprocess.run(cmd, env=env, check=False).returncode
@@ -652,6 +675,7 @@ def score_real(a: argparse.Namespace) -> int:
     res = result_json(rows, float(summ.get("wall_s") or 0.0)) if rows else {"runs": 0}
     res["divergences"] = summ.get("diverged_decisions")
     res["character"] = a.character
+    res["engine"] = engine
     res["emu_arm"] = arm
     (out / "result.json").write_text(json.dumps(res), encoding="utf-8")
     if summ:
@@ -768,6 +792,8 @@ def build_parser() -> argparse.ArgumentParser:
                     "run index (the agent's RNG is [agent seed, index]); the game's side only, no emulator arm")
     sc.add_argument("--gen-dir", help="play this generation's combat prior (SPIRELINE_GEN_DIR for the search configs)")
     sc.add_argument("--out", required=True)
+    sc.add_argument("--engine", choices=("old", "core2"), default="old",
+                    help="the emulator's engine, for the lockstep and the emulator arm (docs/rebuild/NATIVE_KERNEL.md); default old")
     for name in ("bench-env", "bench-emu"):
         b = sub.add_parser(name)
         b.add_argument("--game", default="")
@@ -785,6 +811,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
+    # D31: core2 only where it is asked for (score --engine core2); every other command runs old, whatever the environment
+    # says, so the lab's self-play, the promotion arms and the train job stay on the old engine.
+    select_engine(getattr(a, "engine", "old") if a.cmd == "score" else "old")
     if a.cmd in ("score", "emu") and a.character != "IRONCLAD":
         sys.path.insert(0, str(ROOT / "referee"))
         import lockstep  # noqa: PLC0415

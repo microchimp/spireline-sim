@@ -33,7 +33,10 @@ public static class RunNativeExports
     // v26: Sts2Run_ResetAs starts a run as any of the five characters; the run's action mask carries a discard action
     // per held potion (RunConstants.DiscardPotionAction) beside the use actions; Sts2Run_PotionActionReason says why a
     // use or discard action is refused (referee/lockstep.py maps the referee's potion labels onto them).
-    public const int RUN_NATIVE_API_VERSION = 26;
+    // v27: a run made after Sts2_SetEngine("core2") runs the Tier 1 kernel (docs/rebuild/NATIVE_KERNEL.md): Sts2Run_Step
+    // and Sts2Run_StartCombat go through it; Sts2Run_Clone, Sts2Run_ForkCombat and the re-anchors refuse such a run
+    // (Sts2_GetLastError, the re-anchor's message) until their pieces land. Old runs are unchanged.
+    public const int RUN_NATIVE_API_VERSION = 27;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -86,9 +89,40 @@ public static class RunNativeExports
         return RUN_OBS_LAYOUT_SIZE;
     }
 
-    public static int Sts2Run_Create()
+    /// <summary>
+    /// The engine new handles are made with (<see cref="NativeEngine" />, docs/rebuild/NATIVE_KERNEL.md section 3): old
+    /// unless <c>Sts2_SetEngine</c> said otherwise. A handle keeps the engine it was made with.
+    /// </summary>
+    internal static NativeEngine Engine { get; private set; } = NativeEngine.Old;
+
+    /// <summary>
+    /// <c>Sts2_SetEngine</c>: the engine of the handles made after this call ("old", "core2", "core2:F08,F10"). Returns
+    /// null, or why the spec is refused (the engine is then unchanged).
+    /// </summary>
+    internal static string? SetEngine(string spec)
+    {
+        try
+        {
+            Engine = NativeEngine.Parse(spec);
+            return null;
+        }
+        catch (ArgumentException e)
+        {
+            return e.Message;
+        }
+    }
+
+    public static int Sts2Run_Create() => CreateWith(Engine);
+
+    /// <summary>A new run handle on <paramref name="engine" /> (the test seam of <see cref="Sts2Run_Create" />).</summary>
+    internal static int CreateWith(NativeEngine engine)
     {
         var run = new RunEngine();
+        if (engine.Kernel is { } kernel)
+        {
+            run.Kernel = kernel;  // bound to the run's state now and to every state Reset makes and combat it starts
+        }
+
         for (int i = 0; i < _pool.Length; i++)
         {
             if (_pool[i] is null)
@@ -108,7 +142,10 @@ public static class RunNativeExports
     /// <paramref name="resampleSeed" />. A clone taken without it is a faithful copy,
     /// which for a tree search is an oracle. See docs/agent-interface.md.
     /// </summary>
-    /// <returns>The new handle, or -1 if the source is unknown or the pool is full.</returns>
+    /// <returns>
+    /// The new handle, or -1 if the source is unknown or the pool is full, or when the run's engine has a kernel switch
+    /// on (<c>Sts2_GetLastError</c> says why): <see cref="RunEngine.Clone" /> does not carry the engine's kernel yet.
+    /// </returns>
     public static unsafe int Sts2Run_Clone(
         int handle,
         int resampleHidden,
@@ -118,6 +155,14 @@ public static class RunNativeExports
     {
         if (!TryGet(handle, out var run))
         {
+            return -1;
+        }
+
+        if (KernelOn(run))
+        {
+            // NATIVE_KERNEL.md piece 2: the copy's states keep their KernelState but its engine has no kernel, so its
+            // combat steps would skip the kernel's queue. Refused until the clone carries the kernel.
+            NativeExports.Refuse("kernel_on: Sts2Run_Clone does not carry the kernel yet (NATIVE_KERNEL.md piece 2)");
             return -1;
         }
 
@@ -231,10 +276,20 @@ public static class RunNativeExports
     }
 
     /// <summary>
-    /// True when the run's engine has a Tier 1 kernel switch on (TIER1_KERNEL.md section 5). The native API carries no
-    /// kernel state, so every export that builds or steps a combat refuses such a run rather than run it old, silently.
+    /// True when the run's engine has a Tier 1 kernel switch on (TIER1_KERNEL.md section 5; the engine option core2,
+    /// docs/rebuild/NATIVE_KERNEL.md). The run's own steps and the combats it starts go through the kernel
+    /// (<see cref="RunEngine.Step" />'s entry gate, <c>StartCombatWithDeck</c>'s bind); every export whose combat would
+    /// skip the kernel (a clone, a fork, a re-anchor, a combat handle, a snapshot) refuses such a run rather than run it
+    /// old, silently, until its piece lands.
     /// </summary>
-    private static bool KernelOn(RunEngine run) => run.Kernel is { AnyOn: true };
+    internal static bool KernelOn(RunEngine run) => run.Kernel is { AnyOn: true };
+
+    /// <summary>
+    /// With a switch on, a fight the run stands in that carries no KernelState: <see cref="RunEngine.Step" /> would throw
+    /// (its kernel guard), and a throw across the native boundary aborts the host, so the export refuses first.
+    /// </summary>
+    private static bool UnboundFight(RunEngine run) =>
+        KernelOn(run) && run.State.Phase == RunPhase.Combat && run.State.ActiveCombat is { Kernel: null };
 
     public static unsafe int Sts2Run_Step(
         int handle,
@@ -251,9 +306,9 @@ public static class RunNativeExports
             return -1;
         }
 
-        if (KernelOn(run))
+        if (UnboundFight(run))
         {
-            // The native API carries no kernel state yet (TIER1_KERNEL.md section 5): a switched-on kernel is refused.
+            NativeExports.Refuse("kernel_on: the fight carries no KernelState (bind it where the combat was built)");
             return -1;
         }
 
@@ -292,11 +347,7 @@ public static class RunNativeExports
             return -1;
         }
 
-        if (KernelOn(run))
-        {
-            return -1;  // as Sts2Run_Step: a combat built here would carry no KernelState
-        }
-
+        // A switched-on kernel binds the combat StartCombatWithDeck builds, before its setup, as for any combat of the run.
         // The same rule as every combat reset: [0,3) keeps the weak encounter, anything
         // else (a negative count included, which this export used to clamp to 0, the weak
         // fight) is the normal one.
@@ -726,8 +777,9 @@ public static class RunNativeExports
         }
         else if (KernelOn(run))
         {
-            // As Sts2Run_Step: a fight anchored here would be stepped through this API, which refuses a switched-on kernel.
-            message = "kernel_on";
+            // NATIVE_KERNEL.md piece 3: the anchored fight is not bound to the kernel yet, and stepped unbound it would
+            // skip the kernel's queue. Refused until the anchor binds it.
+            message = "kernel_on: the re-anchor does not bind the kernel yet (NATIVE_KERNEL.md piece 3)";
             status = -1;
         }
         else
