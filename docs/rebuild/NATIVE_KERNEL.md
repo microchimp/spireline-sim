@@ -48,7 +48,16 @@ re-anchors at every fight.
   `envproto play`'s subprocess, so one flag on the parent reaches every process that loads the library.
 - **Front ends:** `envproto.py play --engine {old,core2}` sets `STS2_ENGINE` before its workers spawn and records the
   engine in `summary.json`; `gen0.py score --engine` passes it to envproto, sets it for the emulator arm it plays, records
-  it, and pairs only with an `--emu-dir` arm played on the same engine. Every other command keeps old.
+  it, and pairs only with an `--emu-dir` arm played on the same engine; `gen0.py bench-emu --engine` and `rl/bench_emu.py --engine`
+  (default old) do the same for the benchmark. Every other command keeps old, and they pin it themselves, because
+  `STS2_ENGINE` is inherited: `rl/run_train/cli.py` (the lab's self-play and train jobs, pinned before its first import, which
+  loads `native`), `rl/bench_emu.py`, and the hand-run self-play, promotion and training mains (`rl/train.py`,
+  `train_combat.py`, `evaluate.py`, `vrun_sweep.py`, `run_train/{evaluate,smoke,probe_throughput,prior_check}.py`,
+  `prior_loop/coach_check.py`, each when run as `__main__`) clear the variable before the import that loads `native`. A new
+  entry point that loads `native` does the same (`sts2_gym.engine_select.select_engine`, which loads no library);
+  `tests/python/test_native_entry_pins.py` runs each with the variable set and fails on one that loads core2.
+- **Refusals:** a kernel-on `Sts2Run_Clone` returns -3 with the reason in `Sts2_GetLastError` (as `Sts2Run_ForkCombat`), so
+  `native.run_clone` reports it as a refusal and not as an unknown handle or a full pool (-1).
 
 ## 4. The kernel build in the library (piece 1)
 
@@ -106,8 +115,10 @@ re-anchors at every fight.
 
 ## 10. Speed benchmark (piece 5)
 
-- `rl/gen0.py bench-emu` (the gpu lane's harness) with `STS2_ENGINE=old` and `core2` on the same seconds and procs:
-  decisions/s, and the per-step dispatch cost from `Prof`. Reported, not gated, unless core2 is more than 10% slower,
+- `rl/gen0.py bench-emu --engine old` and `--engine core2` (the gpu lane's harness) on the same seconds and procs. The flag is
+  the only way in: `bench-emu` clears `STS2_ENGINE` like every command, and the default is old. `bench.json` records the
+  engine. Under core2 the clone and sim metrics need piece 2 (`Sts2Run_Clone`), so until then `rl/bench_emu.py --engine core2
+  --metrics steps` is the run that works: decisions/s, and the per-step dispatch cost from `Prof`. Reported, not gated, unless core2 is more than 10% slower,
   which sends it to the speed lane before any switch of the lab.
 
 ## 11. The 200-seed smoke (piece 5, R6)

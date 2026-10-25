@@ -31,10 +31,16 @@ from pathlib import Path
 from typing import Any
 
 from sts2_gym import procutil
+from sts2_gym.engine_select import select_engine
 
-from . import loop, selfplay
-from .engine import CombatBudget
-from .policy import STRATEGY_MODEL_DIR
+# D31 (docs/rebuild/NATIVE_KERNEL.md section 3): self-play and the train job run the old engine, whatever STS2_ENGINE says in
+# the environment they were started from. sts2_gym.native reads it once, when it loads, and the imports below load it
+# (engine.py), so the pin comes first; main() pins again, for the processes it starts, if native was loaded before this module.
+select_engine("old")
+
+from . import loop, selfplay  # noqa: E402
+from .engine import CombatBudget  # noqa: E402
+from .policy import STRATEGY_MODEL_DIR  # noqa: E402
 
 __all__ = ["build_parser", "configure", "export_dest", "main", "running_pid"]
 
@@ -121,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    select_engine("old")  # the loop's processes inherit this one's environment
     args = build_parser().parse_args(argv)
     return args.handler(args)
 

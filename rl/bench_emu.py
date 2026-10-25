@@ -28,6 +28,7 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent / "src"))
 
 from sts2_gym import procutil  # noqa: E402
+from sts2_gym.engine_select import select_engine  # noqa: E402
 
 METRICS = ("steps", "clones", "sims")
 SETTINGS = {"sims": 150, "depth": 8, "rollout": 12, "ascension": 8, "advance_steps": 10}
@@ -149,9 +150,15 @@ def main(argv=None) -> int:
     ap.add_argument("--n", type=int, nargs="+", default=[1])
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--metrics", nargs="+", choices=METRICS, default=list(METRICS))
+    ap.add_argument("--engine", default="old", help="the emulator engine of the workers: old (default), core2 or core2:F08,F10 "
+                    "(docs/rebuild/NATIVE_KERNEL.md section 10); the environment's STS2_ENGINE is ignored")
     a = ap.parse_args(argv)
+    # D31: the workers load the library, and each reads STS2_ENGINE then; set it here, before the pool spawns, and only from
+    # --engine, so an inherited core2 never reaches a benchmark that did not ask for it.
+    select_engine(a.engine)
     rows = [bench(n, a.seconds, tuple(a.metrics)) for n in a.n]
-    print(json.dumps({"settings": SETTINGS, "python": f"{sys.version_info.major}.{sys.version_info.minor}", "runs": rows}, indent=1))
+    print(json.dumps({"settings": SETTINGS, "engine": a.engine, "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+                      "runs": rows}, indent=1))
     return 0
 
 

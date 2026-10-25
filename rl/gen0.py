@@ -499,7 +499,8 @@ def bench_cmd(a: argparse.Namespace) -> int:
         summ = out / "summary.json"
         res = env_bench_result(json.loads(summ.read_text(encoding="utf-8"))) if summ.exists() else {}
     else:
-        cmd = [sys.executable, str(ROOT / "rl" / "bench_emu.py"), "--n", str(a.procs), "--seconds", str(a.seconds)]
+        cmd = [sys.executable, str(ROOT / "rl" / "bench_emu.py"), "--n", str(a.procs), "--seconds", str(a.seconds),
+               "--engine", a.engine]  # bench_emu.py takes its engine from the flag alone, so the environment never picks it
         p = subprocess.run(cmd, env=env, check=False, capture_output=True, text=True)
         rc = p.returncode
         try:
@@ -802,6 +803,9 @@ def build_parser() -> argparse.ArgumentParser:
         b.add_argument("--recycle", type=int, default=0)
         b.add_argument("--lib")
         b.add_argument("--out", required=True)
+        if name == "bench-emu":
+            b.add_argument("--engine", choices=("old", "core2"), default="old",
+                           help="the emulator's engine for the workers (docs/rebuild/NATIVE_KERNEL.md section 10); default old")
     r = sub.add_parser("report")
     r.add_argument("--emu", action="append", required=True, help="DIR:LABEL, e.g. out/emu60:60")
     r.add_argument("--real", required=True)
@@ -811,9 +815,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
-    # D31: core2 only where it is asked for (score --engine core2); every other command runs old, whatever the environment
-    # says, so the lab's self-play, the promotion arms and the train job stay on the old engine.
-    select_engine(getattr(a, "engine", "old") if a.cmd == "score" else "old")
+    # D31: core2 only where it is asked for (score and bench-emu with --engine core2); every other command runs old, whatever
+    # the environment says, so the lab's self-play, the promotion arms and the train job stay on the old engine.
+    select_engine(getattr(a, "engine", "old") if a.cmd in ("score", "bench-emu") else "old")
     if a.cmd in ("score", "emu") and a.character != "IRONCLAD":
         sys.path.insert(0, str(ROOT / "referee"))
         import lockstep  # noqa: PLC0415
