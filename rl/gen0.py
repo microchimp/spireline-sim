@@ -744,6 +744,8 @@ def score_real(a: argparse.Namespace) -> int:
     cmd = [sys.executable, str(ROOT / "referee" / "envproto.py"), "play", "--game", a.game, "--out", str(out), "--procs", str(a.procs),
            "--runs", str(a.runs), "--sims", a.config or str(a.sims), "--seeds-file", a.seeds_file, "--agent-seed", str(AGENT_SEED),
            "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h), "--character", a.character, "--engine", engine]
+    if getattr(a, "recycle", 0):
+        cmd += ["--recycle", str(a.recycle)]
     if only:
         cmd += ["--only", only]
     rc = subprocess.run(cmd, env=env, check=False).returncode
@@ -882,6 +884,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--out", required=True)
     sc.add_argument("--engine", choices=("old", "core2"), default="old",
                     help="the emulator's engine, for the lockstep and the emulator arm (docs/rebuild/NATIVE_KERNEL.md); default old")
+    sc.add_argument("--recycle", type=int, default=0, help="restart each game process after this many runs (0: never)")
     for name in ("bench-env", "bench-emu"):
         b = sub.add_parser(name)
         b.add_argument("--game", default="")

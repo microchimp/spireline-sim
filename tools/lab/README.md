@@ -8,7 +8,7 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 |---|---|
 | `runner.py` | CLI, lab folder, job records, the main loop, supervising child processes |
 | `plans.py` | the jobs as data: steps and symbolic commands (`{tree}`, `{lab}`, `{job}` ...), one plan per strategy |
-| `jobs.py` | the agent-era job kinds (selfplay, train, score-real, bench-env, bench-emu): defaults, `LAB/jobs.json`, markers |
+| `jobs.py` | the agent-era job kinds (selfplay, train, score-real, nightly-real, bench-env, bench-emu): defaults, `LAB/jobs.json`, markers |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
 | `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict` |
 | `promotion_guard.py` | the review's promotion guard (McNemar at 0.05, boss damage, lineage drift, retry cap) and its power tables; `rl/gen_loop.py` calls it behind `SPIRELINE_REVIEW_GUARD` (off), see `docs/PROMOTION_GUARD.md` |
@@ -150,8 +150,11 @@ older) means self-play first, and the runner log says so; the log also says the 
 | `selfplay` | 6 | `enabled` (filler; `share` > 0 puts it ahead of the rotation until the loop has used that share of the last 7 days' CPU, see below) | off; placeholder command | yield: runs, decisions, decisions_s, generation |
 | `train` | 3 | `LAB/train/ready-<gen>` exists (oldest first; renamed `done-<gen>` on success); 60 min cap | on, marker-gated | yield: generation, promoted, loss |
 | `score-real` | 2 | `LAB/score/pending` exists, or `weekly` and 7 days since `LAB/score/last-ok`; 240 min cap | on, marker-gated; weekly off | yield: runs, wins, mean_floor, crashes, decisions_s, divergences. `LAB/score/active` exists while it runs; fights and runs jobs are not started then (a marker older than 5 h is ignored) |
+| `nightly-real` | 2 | `enabled`, `every_h` (20) since `LAB/nightly/last-ok`; held (reason in runner.log) while `LAB/HALT` or `LAB/PAUSE` exists, `LAB/nightly/active` or `LAB/score/active` is fresh, or the last try was skipped under 1 h ago; 600 min cap | off; placeholder command | runs `rl/nightly_real.py`: per night a fresh 2,000-seed block (`N-<date>[-<agent>]` in `LAB/seeds/`) for the incumbent and each generation promoted since the last night, the lockstep with the emulator arm on `--engine core2`, `--recycle 60`, under `QUIET.lock` (`lab-nightly <UTC>`, refreshed while it runs; waits up to 2 h, then skips). Folder `LAB/nightly/<date>/<agent>/` (+ sibling `<agent>-emu/`); summary.json `nightly` counts a crash as a loss; readiness.json `nightly`; yield: runs, wins, mean_floor, crashes, divergences |
 | `bench-env` | 7 | `enabled` and `every_h` (20) since `LAB/bench-env/last-ok` | off | yield: dec_s, crashes, mem_mb_per_run; readiness.json `bench.env` (next to LAB) |
 | `bench-emu` | 7 | same; needs `{tree}/rl/bench_emu.py` | off | yield: steps_s, clones_s, sims_s; readiness.json `bench.emu` |
+
+Ranking input of the nightly blocks (each folder is already ranked in place; to rank one again or join its arm by hand): `python tools/lab/rank.py LAB/nightly/<date>/<agent> --out <dir> --emu-dir LAB/nightly/<date>/<agent>-emu` (by_family.md/json are written beside top20.md; weights unchanged).
 
 A command reports through `{job}/result.json` (an object; keys named like the yield columns). All guards (PAUSE, HALT, main.lock,
 user input, load, disk, parent) apply to these kinds as to every job, between steps and while the command runs. The runner is

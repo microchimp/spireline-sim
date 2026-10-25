@@ -1,4 +1,4 @@
-"""The agent-era job kinds of the CPU schedule (docs/PLAN.md section 7): selfplay, train, score-real, bench-env, bench-emu.
+"""The agent-era job kinds of the CPU schedule (docs/PLAN.md section 7): selfplay, train, score-real, nightly-real, bench-env, bench-emu.
 
 Each kind is data: a default command, a limit, whether it is on, and the input that makes it ready. ``LAB/jobs.json``
 (optional, read at every choice, keys starting with "_" are notes) overrides any of it per kind:
@@ -10,7 +10,12 @@ score-real are on but only ever ready when their marker file exists (LAB/train/r
 
 Priority ladder (lower number first; what the runner's choose() does with it is in runner.py):
 
-  1 presort   2 score-real   3 train   4 aimed fights   5 runs / rank   6 selfplay   7 the rest, bench-* nightly
+  1 presort   2 score-real, nightly-real   3 train   4 aimed fights   5 runs / rank   6 selfplay   7 the rest, bench-* nightly
+
+nightly-real is a kind of its own (D8, D33 addendum 2): score-real is one command on one marker, the nightly block is a driver
+(rl/nightly_real.py) that plays several agents under the QUIET.lock, so the due rule and the window markers sit here and the
+work sits in the driver. Due: LAB/nightly/last-ok older than `every_h` (20); skipped, with the reason, while LAB/HALT or
+LAB/PAUSE is up, LAB/nightly/active is fresh (the last block has not finished) or LAB/score/active is fresh.
 
 A job's command may write ``<job>/result.json`` (an object); its keys named in mix.YIELD_COLUMNS become the job's
 yield.tsv columns, and the bench kinds also store it under readiness.json ``bench.env`` / ``bench.emu``.
@@ -25,15 +30,18 @@ import time
 from pathlib import Path
 from typing import Any
 
-NEW_KINDS = ("selfplay", "train", "score-real", "bench-env", "bench-emu")
+NEW_KINDS = ("selfplay", "train", "score-real", "nightly-real", "bench-env", "bench-emu")
 BENCHES = ("bench-env", "bench-emu")
 # The kinds that exist only because self-play does: self-play, the training (and the promotion it runs) of what it recorded, and the
 # real-game score of what training promoted. `selfplay.share` is judged on their CPU together (mix.loop_cpu), not on self-play alone.
-LOOP_KINDS = ("selfplay", "train", "score-real")
-PRIORITY = {"presort": 1, "score-real": 2, "train": 3, "fights-aimed": 4, "runs": 5, "selfplay": 6, "rest": 7,
+LOOP_KINDS = ("selfplay", "train", "score-real")  # nightly-real is outside the loop share: it scores the incumbent whether or not self-play ran (D29 accounting)
+PRIORITY = {"presort": 1, "score-real": 2, "nightly-real": 2, "train": 3, "fights-aimed": 4, "runs": 5, "selfplay": 6, "rest": 7,
             "bench-env": 7, "bench-emu": 7}
 SCORE_WINDOW_H = 4.0  # the longest a score-real window may run
 ACTIVE_STALE_H = SCORE_WINDOW_H + 1.0  # an `active` marker older than this is a crash's leftover
+NIGHTLY_WINDOW_H = 10.0  # the longest a nightly block may run (all agents)
+NIGHTLY_ACTIVE_STALE_H = NIGHTLY_WINDOW_H + 1.0
+NIGHTLY_RETRY_H = 1.0  # after a block that was skipped (the QUIET.lock never freed), the next try is this much later
 
 
 def _placeholder(kind: str, entry: str) -> list[str]:
@@ -48,6 +56,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
               "needs": []},
     "score-real": {"enabled": True, "cmd": _placeholder("score-real", "rl/score_real.py"), "cwd": "{tree}", "timeout_min": 240,
                    "procs": 14, "weekly": False, "weekly_days": 7.0, "needs": []},
+    "nightly-real": {"enabled": False, "cmd": _placeholder("nightly-real", "rl/nightly_real.py"), "cwd": "{tree}", "timeout_min": 600,
+                     "procs": 12, "every_h": 20.0, "needs": []},
     "bench-env": {"enabled": False, "cmd": _placeholder("bench-env", "the envproto bench on branch env/leak-probe"), "cwd": "{tree}",
                   "timeout_min": 40, "procs": 12, "every_h": 20.0, "needs": []},
     "bench-emu": {"enabled": False, "cmd": ["{python}", "rl/bench_emu.py"], "cwd": "{tree}", "timeout_min": 30, "every_h": 20.0,
@@ -106,6 +116,25 @@ def due(lab: Path, kind: str, every_h: float) -> bool:
     return a is None or a >= every_h
 
 
+def nightly_blocked(lab: Path) -> str | None:
+    """Why a due nightly block must wait (None: it may start). The runner's guards (PAUSE, HALT, main.lock, load, disk) stop every job
+    alike; they are named here too so the skip carries its reason in runner.log, and so a test can state the rule."""
+    lab = Path(lab)
+    if (lab / "HALT").exists():
+        return "LAB/HALT is up"
+    if (lab / "PAUSE").exists():
+        return "LAB/PAUSE is up"
+    a = _age_h(lab / "nightly" / "active")
+    if a is not None and a < NIGHTLY_ACTIVE_STALE_H:
+        return "the previous nightly block has not finished (LAB/nightly/active is fresh)"
+    if score_active(lab):
+        return "a score-real window is open (LAB/score/active)"
+    s = _age_h(lab / "nightly" / "last-skip")
+    if s is not None and s < NIGHTLY_RETRY_H:
+        return f"the last nightly attempt was skipped (the QUIET.lock stayed taken); next try {NIGHTLY_RETRY_H:g} h after it"
+    return None
+
+
 def unready(kind: str, lab: Path, cfg: dict[str, Any]) -> str | None:
     """None when the kind's input is ready, else why not. The guards are separate (they apply to every kind alike)."""
     if not cfg.get("enabled"):
@@ -120,6 +149,10 @@ def unready(kind: str, lab: Path, cfg: dict[str, Any]) -> str | None:
         if cfg.get("weekly") and due(lab, "score", 24 * float(cfg.get("weekly_days", 7.0))):
             return None
         return "no LAB/score/pending marker and the weekly block is not due"
+    if kind == "nightly-real":
+        if not due(lab, "nightly", float(cfg.get("every_h", 20.0))):
+            return "ran within the last night"
+        return nightly_blocked(lab)
     if kind in BENCHES:
         return None if due(lab, kind, float(cfg.get("every_h", 20.0))) else "ran within the last night"
     return f"unknown kind {kind}"
@@ -165,6 +198,14 @@ def store_bench(readiness: Path, kind: str, result: dict[str, Any]) -> None:
     _atomic(readiness, json.dumps(doc, indent=1))
 
 
+def store_nightly(readiness: Path, result: dict[str, Any]) -> None:
+    """readiness.json `nightly` = the last block's numbers per agent, with the date; every other key stays."""
+    doc = read_lenient(readiness)
+    doc = doc if isinstance(doc, dict) else {}
+    doc["nightly"] = {k: result[k] for k in ("date", "engine", "runs_per_agent", "agents") if k in result}
+    _atomic(readiness, json.dumps(doc, indent=1))
+
+
 def finish(kind: str, lab: Path, job_dir: Path, params: dict[str, Any]) -> str | None:
     """After the command succeeded: consume the input marker, stamp the night, store the bench. A problem string or None."""
     lab = Path(lab)
@@ -177,6 +218,15 @@ def finish(kind: str, lab: Path, job_dir: Path, params: dict[str, Any]) -> str |
         elif kind == "score-real":
             (lab / "score" / "pending").unlink(missing_ok=True)
             _atomic(lab / "score" / "last-ok", stamp)
+        elif kind == "nightly-real":
+            res = read_result(job_dir)
+            if res.get("skipped"):  # the QUIET.lock never freed: not a night; try again later
+                _atomic(lab / "nightly" / "last-skip", stamp)
+            else:
+                if res.get("agents"):
+                    store_nightly(lab.parent / "readiness.json", res)
+                _atomic(lab / "nightly" / "last-ok", stamp)
+                (lab / "nightly" / "last-skip").unlink(missing_ok=True)
         elif kind in BENCHES:
             res = read_result(job_dir)
             if res:

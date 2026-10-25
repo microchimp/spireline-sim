@@ -528,6 +528,8 @@ class Runner:
             self.log(f"{kind}: not runnable ({why})")
         return why is None
 
+    last_nightly_note = ""
+
     def ladder_top(self, sha: str) -> str:
         """The agent-era kinds that outrank the fights rotation (docs/PLAN.md section 7), highest priority first: score-real (2),
         train (3), selfplay when the loop (selfplay + train + score-real) has not yet used its configured share of the last 7 days' CPU
@@ -536,8 +538,13 @@ class Runner:
         train came first). Presort (1) is decided before, aimed fights (4), runs and rank (5) and the rest (7) by the rotation and the
         mix. A kind that is off or not ready is passed over quietly (its reason is only logged when it was due)."""
         cfg = jobs.load_config(self.lab.root)
-        for kind in ("score-real", "train"):
-            if jobs.unready(kind, self.lab.root, cfg[kind]) is None and self.kind_ready(kind, sha):
+        for kind in ("score-real", "train", "nightly-real"):
+            why = jobs.unready(kind, self.lab.root, cfg[kind])
+            if kind == "nightly-real" and why and cfg[kind].get("enabled") and jobs.due(self.lab.root, "nightly", float(cfg[kind].get("every_h", 20.0))):
+                if why != self.last_nightly_note:  # due but held: say why once, not at every pick
+                    self.last_nightly_note = why
+                    self.log(f"nightly-real: skipped, {why}")
+            if why is None and self.kind_ready(kind, sha):
                 return kind
         share = float(cfg["selfplay"].get("share") or 0)
         if share > 0 and cfg["selfplay"].get("enabled"):

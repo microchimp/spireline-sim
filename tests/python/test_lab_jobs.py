@@ -475,5 +475,90 @@ class YieldColumnsTest(Base):
         self.assertNotIn("extra", row)
 
 
+class NightlyKindTest(Base):
+    """The nightly-real kind (D8): due once per night, held with a reason, marked while it runs, stamped and stored when it ends."""
+
+    RESULT = {"date": "2026-10-25", "engine": "core2", "runs_per_agent": 20,
+              "agents": {"g3": {"date": "2026-10-25", "runs": 20, "win_rate": 0.0, "mean_floor": 12.5, "boss_kills": 1,
+                                "divergence_rate": 0.003, "crashes": 1}}}
+    SEES_ACTIVE = ["{python}", "-c", "import sys, json, os; r = json.loads(sys.argv[3]); r['saw_active'] = os.path.exists(sys.argv[2]); "
+                   "open(sys.argv[1] + '/result.json', 'w').write(json.dumps(r))", "{job}", "{lab}/nightly/active"]
+
+    def nightly(self, result=None, **kw):
+        self.config()
+        self.nothing_else()
+        doc = json.loads((self.lab_dir / "jobs.json").read_text(encoding="utf-8"))
+        doc["nightly-real"] = {"enabled": True, "cwd": "{lab}", "cmd": self.SEES_ACTIVE + [json.dumps(result or self.RESULT)], "needs": [],
+                               "every_h": 20, **kw}
+        (self.lab_dir / "jobs.json").write_text(json.dumps(doc), encoding="utf-8")
+        return self.runner()
+
+    def unready(self):
+        return jb.unready("nightly-real", self.lab_dir, jb.load_config(self.lab_dir)["nightly-real"])
+
+    def test_off_until_jobs_json_turns_it_on(self):
+        self.assertIn("is off", jb.unready("nightly-real", self.lab_dir, jb.load_config(self.lab_dir)["nightly-real"]))
+
+    def test_due_once_per_night(self):
+        self.nightly()
+        self.assertIsNone(self.unready())  # never ran
+        last = self.marker("nightly/last-ok")
+        self.assertEqual("ran within the last night", self.unready())
+        old = time.time() - 21 * 3600
+        os.utime(last, (old, old))
+        self.assertIsNone(self.unready())
+
+    def test_held_with_its_reason_while_halt_pause_or_a_window_is_up(self):
+        self.nightly()
+        for rel, word in (("HALT", "HALT"), ("PAUSE", "PAUSE"), ("nightly/active", "nightly block has not finished"),
+                          ("score/active", "score-real window")):
+            m = self.marker(rel)
+            self.assertIn(word, self.unready(), rel)
+            m.unlink()
+        self.assertIsNone(self.unready())
+
+    def test_a_stale_active_marker_is_a_crashs_leftover(self):
+        self.nightly()
+        m = self.marker("nightly/active")
+        old = time.time() - (jb.NIGHTLY_ACTIVE_STALE_H + 1) * 3600
+        os.utime(m, (old, old))
+        self.assertIsNone(self.unready())
+
+    def test_the_ladder_picks_it_after_train_and_before_self_play_and_says_why_when_it_is_held(self):
+        r = self.nightly()
+        self.marker("PAUSE")
+        self.assertNotEqual("nightly-real", r.choose("abc")[0])
+        self.assertTrue(any("nightly-real: skipped, LAB/PAUSE is up" in x for x in (self.lab_dir / "runner.log").read_text().splitlines()))
+        (self.lab_dir / "PAUSE").unlink()
+        self.marker("train/ready-3")
+        self.assertEqual("train", r.choose("abc")[0])
+        (self.lab_dir / "train" / "ready-3").unlink()
+        self.assertEqual("nightly-real", r.choose("abc")[0])
+
+    def test_a_run_marks_its_window_then_stamps_the_night_and_stores_readiness(self):
+        r = self.nightly()
+        ready = self.lab_dir.parent / "readiness.json"
+        ready.write_text(json.dumps({"bench": {"env": {"dec_s": 1}}, "other": 1}), encoding="utf-8")
+        r.execute(r.new_run("nightly-real", "abc"))
+        self.assertTrue((self.lab_dir / "nightly" / "last-ok").exists())
+        self.assertFalse((self.lab_dir / "nightly" / "active").exists())
+        res = json.loads(next(self.lab_dir.glob("runs/*-nightly-real/result.json")).read_text(encoding="utf-8"))
+        self.assertTrue(res["saw_active"])  # the marker was up while the command ran
+        doc = json.loads(ready.read_text(encoding="utf-8"))
+        self.assertEqual(("2026-10-25", 20, 1), (doc["nightly"]["date"], doc["nightly"]["agents"]["g3"]["runs"], doc["nightly"]["agents"]["g3"]["boss_kills"]))
+        self.assertEqual((1, {"env": {"dec_s": 1}}), (doc["other"], doc["bench"]))
+        self.assertEqual("ran within the last night", self.unready())
+
+    def test_a_skipped_block_is_not_a_night(self):
+        r = self.nightly({"skipped": "QUIET.lock stayed taken", "agents": {}})
+        r.execute(r.new_run("nightly-real", "abc"))
+        self.assertFalse((self.lab_dir / "nightly" / "last-ok").exists())
+        self.assertIn("skipped", self.unready())  # tried again after NIGHTLY_RETRY_H, not at once
+        self.assertFalse((self.lab_dir.parent / "readiness.json").exists())
+
+    def test_the_loop_share_counts_it(self):
+        self.assertNotIn("nightly-real", jb.LOOP_KINDS)  # outside the self-play loop share (D29 accounting)
+
+
 if __name__ == "__main__":
     unittest.main()
