@@ -578,16 +578,20 @@ def _torch_nets() -> dict[str, type]:
             return self.out(torch.relu(self.hidden2(hidden)))
 
     class RunValueNet(nn.Module):
-        """V: an afterstate's final-floor logits and its end-HP fraction."""
+        """V: an afterstate's final-floor logits and its end-HP fraction.
 
-        def __init__(self) -> None:
+        `hidden` is the width of both layers and `dropout` the rate before the second: the lab's 256 and 0.1 by default.
+        The numpy export reads the width off the weights (`NumpyValueNet`), so any width plays as the policy reads it.
+        """
+
+        def __init__(self, hidden: int = 256, dropout: float = 0.1) -> None:
             super().__init__()
             self.embed = Embeddings()
-            self.hidden1 = nn.Linear(VALUE_DENSE + EMBED, 256)
-            self.dropout = nn.Dropout(0.1)
-            self.hidden2 = nn.Linear(256, 256)
-            self.floor_head = nn.Linear(256, FLOOR_CLASSES)
-            self.end_hp_head = nn.Linear(256, 1)
+            self.hidden1 = nn.Linear(VALUE_DENSE + EMBED, hidden)
+            self.dropout = nn.Dropout(dropout)
+            self.hidden2 = nn.Linear(hidden, hidden)
+            self.floor_head = nn.Linear(hidden, FLOOR_CLASSES)
+            self.end_hp_head = nn.Linear(hidden, 1)
 
         def forward(
             self,
@@ -677,7 +681,7 @@ def load_torch(
     """
     import torch  # noqa: PLC0415 -- numpy-only processes never import torch (5.1)
 
-    state = torch.load(pt, weights_only=True)
+    state = torch.load(pt, map_location="cpu", weights_only=True)
     meta = _checked(state["meta"], pt)
     fight.load_state_dict(state["fight"])
     value.load_state_dict(state["value"])
