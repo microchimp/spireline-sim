@@ -5989,7 +5989,7 @@ public static class CardEffects
     /// it rather than asking after the damage: for a segment the answer changes the moment
     /// the board does.
     /// </summary>
-    private static bool TriggersFatal(CombatState state, EnemyState target) =>
+    internal static bool TriggersFatal(CombatState state, EnemyState target) =>
         !BuffSystem.Has(target.Buffs, BuffId.Minion)
         && !(
             BuffSystem.Get(target.Buffs, BuffId.Reattach) > 0
@@ -11098,7 +11098,7 @@ public static class CardEffects
     /// <c>SteamEruptionPower</c>: <c>ShouldCreatureBeRemovedFromCombatAfterDeath</c> is false)
     /// still receives, and the <c>Hp &lt;= 0</c> test below does not model that.
     /// </summary>
-    private static void ApplyEnemyDebuffToTarget(
+    internal static void ApplyEnemyDebuffToTarget(
         CombatState state,
         EnemyState? target,
         BuffId id,
@@ -11213,7 +11213,7 @@ public static class CardEffects
     /// `TemporaryStrengthPower` with `IsPositive => false`: Strength down now, handed back
     /// at the end of the owner's side turn. It is a Debuff, so Artifact eats it whole.
     /// </summary>
-    private static void ApplyTemporaryStrengthDownTo(EnemyState target, int amount)
+    internal static void ApplyTemporaryStrengthDownTo(EnemyState target, int amount)
     {
         if (BuffSystem.TryConsumeArtifact(target.Buffs))
         {

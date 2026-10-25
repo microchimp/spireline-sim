@@ -26,6 +26,26 @@ internal static class DieForYouPower
         return me;
     }
 
+    /// <summary>game: DieForYouPower.ShouldAllowHitting: the creature is alive (any creature, not only the owner). No
+    /// Core2 command asks the hook yet; the old targeting (OldCreatures.HittableEnemies) already takes only the living.</summary>
+    internal static bool ShouldAllowHitting(HookCtx c, ListenerRef self, in ShouldAllowHittingArgs a) => c.IsAlive(a.Creature);
+
+    /// <summary>game: DieForYouPower.ShouldCreatureBeRemovedFromCombatAfterDeath: false for the owner (Osty), true for
+    /// another creature. The old engine keeps a dead Osty (OstyHp 0, its max kept) to be summoned again.</summary>
+    internal static bool ShouldCreatureBeRemovedFromCombatAfterDeath(HookCtx c, ListenerRef self,
+        in ShouldCreatureBeRemovedFromCombatAfterDeathArgs a) => c.Owner(self) is not { } me || a.Creature != me;
+
+    /// <summary>game: DieForYouPower.ShouldPowerBeRemovedAfterOwnerDeath: false (a revived Osty holds it again).</summary>
+    internal static bool ShouldPowerBeRemovedAfterOwnerDeath(HookCtx c, ListenerRef self, in PowerDeathArgs a) => false;
+
+    /// <summary>Round R7g: the three pairs `port_list --unreached` listed, in block R7g (R7a's block keeps the fold).</summary>
+    internal static void RegisterDeath(HandlerTable t) =>
+        t.Model(ListenerKind.Power, "DieForYouPower")
+            .On(HookId.ShouldAllowHitting, (HookPredicate<ShouldAllowHittingArgs>)ShouldAllowHitting)
+            .On(HookId.ShouldCreatureBeRemovedFromCombatAfterDeath,
+                (HookPredicate<ShouldCreatureBeRemovedFromCombatAfterDeathArgs>)ShouldCreatureBeRemovedFromCombatAfterDeath)
+            .On(HookId.ShouldPowerBeRemovedAfterOwnerDeath, (HookPredicate<PowerDeathArgs>)ShouldPowerBeRemovedAfterOwnerDeath);
+
     internal static void Register(HandlerTable t) =>
         t.Model(ListenerKind.Power, "DieForYouPower")
             .On(HookId.ModifyUnblockedDamageTarget,

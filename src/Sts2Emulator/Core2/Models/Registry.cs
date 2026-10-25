@@ -166,6 +166,20 @@ public static class Registry
         UndyingSigil.Register,
     ];
 
+    /// <summary>R7g: the F08/F10 pairs of models no record reaches (port_list --unreached, which the gate now counts).</summary>
+    public static readonly IReadOnlyList<Action<HandlerTable>> R7g =
+    [
+        EnvenomPower.Register,
+        MonarchsGazePower.Register,
+        NecroMasteryPower.Register,
+        ReaperFormPower.Register,
+        ReflectPower.Register,
+        SwordSagePower.Register,
+        DieForYouPower.RegisterDeath,
+        BookRepairKnife.Register,
+        EmotionChip.Register,
+    ];
+
     // Declare every block above All: static fields initialise in textual order, so a block below All is still null when
     // All spreads it.
     /// <summary>Every migrated model's registration, one block per batch, in no particular order (the table is keyed,
@@ -186,5 +200,6 @@ public static class Registry
         .. L3a,
         .. R7a,
         .. R7f,
+        .. R7g,
     ];
 }
