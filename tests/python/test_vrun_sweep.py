@@ -14,7 +14,7 @@ for _p in (ROOT, ROOT / "rl", ROOT / "src", Path(__file__).resolve().parent):
     sys.path.insert(0, str(_p))
 
 import vrun_golden  # noqa: E402
-from test_run_train_train import A9, BufferTests  # noqa: E402
+import test_run_train_train as train_tests  # noqa: E402  (the module, so its TestCases are not collected twice)
 
 from rl.run_train import models, shards, train  # noqa: E402
 from rl.run_train.engine import CombatBudget  # noqa: E402
@@ -41,7 +41,7 @@ class GoldenTests(unittest.TestCase):
         config = train.TrainConfig()
         self.assertEqual((config.device, config.hidden, config.dropout, config.rows_per_run), ("cpu", 256, 0.1, 0))
         with tempfile.TemporaryDirectory() as tmp:
-            records = [BufferTests.record(hp, 0) for hp in (20, 21, 22, 23)]
+            records = [train_tests.BufferTests.record(hp, 0) for hp in (20, 21, 22, 23)]
             paths = []
             for i, record in enumerate(records):
                 path = Path(tmp) / f"r{i:04d}.jsonl.gz"
@@ -53,7 +53,7 @@ class GoldenTests(unittest.TestCase):
                 Path(tmp) / "w.pt",
                 generation=0,
                 combat_budget=CombatBudget(120, 500),
-                ascension=A9,
+                ascension=train_tests.A9,
                 config=train.TrainConfig(epochs=1, batch=8, hidden=32, dropout=0.3),
             )
             meta = torch.load(out, map_location="cpu", weights_only=True)
@@ -193,6 +193,20 @@ class DevicePathTests(unittest.TestCase):
         self.assertFalse(stats["resident"])
         self.assertTrue(np.isfinite(stats["history"][0]["train"]))
 
+    def test_the_batch_fallback_trains_the_same_nets_as_the_resident_rows(self):
+        config = train.TrainConfig(**vrun_golden.GOLDEN_CONFIG, device="cpu:0")
+        resident = vrun_golden.golden_fit(config)
+        original = train._resident
+        train._resident = lambda *args, **kwargs: None
+        try:
+            fallback = vrun_golden.golden_fit(config)
+        finally:
+            train._resident = original
+        self.assertEqual(sorted(fallback), sorted(resident))
+        for key, value in resident.items():
+            with self.subTest(key=key):
+                np.testing.assert_allclose(fallback[key], value, rtol=1e-6, atol=1e-6)  # FightNet and V, the same values batch by batch
+
 
 class WidthTests(unittest.TestCase):
     def test_a_128_wide_export_plays_as_the_policy_reads_it(self):
@@ -314,6 +328,7 @@ class SweepCacheTests(unittest.TestCase):
         self.assertEqual([b["manifest"].split("/")[1] for b in self.manifest["blocks"]], ["20261001T0000-selfplay", "20261002T0000-selfplay"])
         self.assertEqual(len(self.manifest["skipped_blocks"]), 1)
         self.assertIn("selfplay-gpu", self.manifest["skipped_blocks"][0]["manifest"])
+        self.assertEqual((self.manifest["fight_cap"], self.manifest["fights_exceed_cap"]), (400_000, False))
 
     def test_the_first_record_per_seed_is_kept(self):
         seeds = list(self.cache.run_seeds)
@@ -492,6 +507,68 @@ class SweepMathTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sweep.resolve_arm("do0.3+noH")  # a diagnostic is never part of an adoptable recipe
 
+    def test_a_block_is_closed_by_done_rc_or_by_ten_quiet_minutes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lab, now = Path(tmp), time.time()
+
+            def block(name: str, age_s: float, done: bool):
+                job = lab / "runs" / name
+                directory = job / "shards"
+                directory.mkdir(parents=True)
+                manifest = directory / "shards.json"
+                manifest.write_text("{}", encoding="utf-8")
+                os.utime(manifest, (now - age_s, now - age_s))
+                if done:
+                    (job / "done.rc").write_text("0", encoding="utf-8")
+                return directory, {"generation": 3, "run_shards": []}
+
+            blocks = [block("a-done", 30, True), block("b-quiet", 601, False), block("c-writing", 599, False), block("d-fresh", 60, False)]
+            kept, skipped = sweep.closed_blocks(blocks, lab, now=now)
+            self.assertEqual([(d.parent.name, why) for d, _, why in kept], [("a-done", "done.rc"), ("b-quiet", "age")])
+            self.assertEqual([s["manifest"].split("/")[1] for s in skipped], ["c-writing", "d-fresh"])
+            kept, _ = sweep.closed_blocks(blocks, lab, now=now, closed_after_s=30 * 60)
+            self.assertEqual([d.parent.name for d, _, _ in kept], ["a-done"])
+
+    def test_at_most_two_arms_besides_lab_are_ever_confirmed(self):
+        sweep.check_predeclared(set(), ["lab", "do0.3", "wd1e-3"])
+        sweep.check_predeclared({"lab", "do0.3"}, ["lab", "do0.3"])  # finishing or re-reading a confirmation is not a new arm
+        with self.assertRaises(SystemExit):
+            sweep.check_predeclared({"lab", "do0.3", "wd1e-3"}, ["h64"])
+        with self.assertRaises(SystemExit):
+            sweep.check_predeclared(set(), ["lab", "do0.3", "wd1e-3", "rows4"])
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "confirm").mkdir()
+            for name in ("lab.json", "do0.3.json", "do0.3-fold0.json", "lr3e-4-fold2.json", "lr3e-4-fold2.npz"):
+                (Path(tmp) / "confirm" / name).write_text("{}", encoding="utf-8")
+            self.assertEqual(sweep.confirmed_names(Path(tmp)), {"lab", "do0.3", "lr3e-4"})
+
+    def test_joined_arms_may_not_set_one_setting_twice(self):
+        for name in ("h64+h128", "lr3e-4+lr1e-4", "do0.3+do0.5"):
+            with self.assertRaises(ValueError, msg=name):
+                sweep.resolve_arm(name)
+        self.assertEqual(sweep.resolve_arm("lr3e-4+lr3e-4").delta, sweep.ARMS["lr3e-4"].delta)
+
+    def test_a_failed_priority_drop_is_said_not_swallowed(self):
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+
+        from sts2_gym import procutil  # noqa: PLC0415
+
+        original = procutil.lower_priority
+
+        def broken(*_args):
+            raise OSError("denied")
+
+        procutil.lower_priority = broken
+        captured = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(captured):
+                sweep._lower_priority()  # noqa: SLF001
+        finally:
+            procutil.lower_priority = original
+        self.assertIn("could not lower the process priority", captured.getvalue())
+        self.assertIn("denied", captured.getvalue())
+
     def test_the_selfplay_job_is_the_newest_folder_without_a_done_marker_and_a_fresh_stats_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             lab = Path(tmp)
@@ -574,6 +651,75 @@ class SweepRunTests(unittest.TestCase):
         self.assertEqual(mae["w"], 53.0)
         self.assertEqual(len(doc["folds"]), sweep.FOLDS)
 
+    def test_a_fit_on_a_cpu_device_takes_the_resident_path_and_the_hook(self):
+        cache = sweep.load_cache(self.folder)
+        h = sweep.fit_fightnet_h(cache, "s0", 0, None, "cpu")
+        record, p = sweep.s_phase_fit(cache, h, sweep.ARMS["lab"], 0, "cpu:0", n_boot=50)
+        reference = json.loads((self.folder / "fits" / "lab-s0.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["device"], record["resident"], record["gpu_peak_mb"]), ("cpu:0", True, None))
+        self.assertEqual(len(p), record["s"]["head_rows"])
+        self.assertTrue(all("s_brier" in e for e in record["history"]))
+        for ours, theirs in zip(record["history"][:3], reference["history"][:3], strict=False):
+            self.assertAlmostEqual(ours["train"], theirs["train"], delta=1e-3 * abs(theirs["train"]))
+            self.assertAlmostEqual(ours["validation"], theirs["validation"], delta=1e-3 * abs(theirs["validation"]))
+
+    def test_the_logistic_diagnostic_reads_v0s_three_inputs_the_floor_and_the_eight_h_numbers(self):
+        record = json.loads((self.folder / "fits" / "logit-v0h-s0.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["features"], ["hp_fraction", "potions_held", "act_index", "floor", *[f"h{i}" for i in range(8)]])
+
+    def test_the_confirmation_base_rate_is_each_folds_own_training_rate(self):
+        cache = sweep.load_cache(self.folder)
+        doc = json.loads((self.folder / "confirm" / "lab.json").read_text(encoding="utf-8"))
+        head = doc["keep"]["act1_boss_kill"]
+        p_all, y_all, b_all = [], [], []
+        for fold in range(sweep.FOLDS):
+            train_rows = np.flatnonzero((cache.fold != fold) & ~cache.is_s)
+            rate = sweep.HeadRows.of(cache, train_rows).y.mean()
+            self.assertAlmostEqual(doc["fold_base_rates"][fold], rate, places=12)
+            with np.load(self.folder / "confirm" / f"lab-fold{fold}.npz") as z:
+                rows, kill = z["rows"], z["kill"]
+            is_head = cache.head_rows[rows]
+            p_all.append(kill[is_head])
+            y_all.append(cache.kill[rows][is_head])
+            b_all.append(np.full(int(is_head.sum()), rate))
+        p, y, b = np.concatenate(p_all), np.concatenate(y_all), np.concatenate(b_all)
+        self.assertAlmostEqual(head["brier_skill_vs_base_rate"]["value"], 1.0 - ((p - y) ** 2).sum() / ((b - y) ** 2).sum(), places=12)
+        self.assertAlmostEqual(head["log_loss_vs_base_rate"]["base_rate"], keep.log_loss(b, y), places=12)
+        self.assertAlmostEqual(head["base_rate"], b.mean(), places=12)
+        self.assertIn("per fold", doc["base_rate"])
+
+    def test_a_third_extra_confirmation_is_refused_before_any_fit(self):
+        before = sorted(p.name for p in (self.folder / "confirm").glob("*"))
+        with self.assertRaises(SystemExit):
+            sweep.main(["confirm", "--cache", str(self.folder), "--arms", "lab,do0.3,wd1e-3", "--seeds", "1", "--device", "cpu"])
+        self.assertEqual(sorted(p.name for p in (self.folder / "confirm").glob("*")), before)
+
+    def test_beside_reads_the_servers_p99_while_a_fit_runs_and_gives_a_verdict(self):
+        lab = self.root / "lab_beside"
+        empty = lab / "runs" / "20261029T0000-selfplay"
+        empty.mkdir(parents=True)
+        (empty / "done.rc").write_text("0", encoding="utf-8")
+        argv = ["beside", "--cache", str(self.folder), "--lab", str(lab), "--device", "cpu", "--before-s", "0.3", "--every-s", "0.05"]
+        self.assertEqual(sweep.main(argv), 0)  # nothing is playing: skipped
+        self.assertFalse((self.folder / "beside.json").exists())
+        for name, p99, under in (("20261030T0000-selfplay-gpu", 2.5, True), ("20261031T0000-selfplay-gpu", 25.0, False)):
+            job = lab / "runs" / name
+            job.mkdir(parents=True)
+            (job / "prior_server_stats.json").write_text(
+                json.dumps({"calls": 100, "uptime_s": 10.0, "total_ms": {"p99": p99}}), encoding="utf-8")
+            self.assertEqual(sweep.main(argv), 0)
+            doc = json.loads((self.folder / "beside.json").read_text(encoding="utf-8"))
+            self.assertEqual(doc["job"], name)
+            self.assertIsNone(doc["gpu_peak_mb"])  # no CUDA call on a CPU device
+            self.assertGreaterEqual(doc["before"]["samples"], 1)
+            self.assertGreaterEqual(doc["during"]["samples"], 1)
+            self.assertEqual(doc["during"]["p99_ms_max"], p99)
+            self.assertIs(doc["verdict"]["server_p99_under_bound"], under)
+            self.assertIsNone(doc["verdict"]["client_p99_under_bound"])
+            self.assertIsNone(doc["verdict"]["decisions_per_s"])
+            self.assertIn("not measurable live", doc["verdict"]["decisions_per_s_note"])
+            self.assertGreater(doc["fit_min"], 0)
+
     def test_a_diagnostic_arm_is_refused_for_confirmation(self):
         for arm in ("noH", "bce-act1", "sub25", "lab-cpu"):
             with self.assertRaises(SystemExit):
@@ -581,7 +727,7 @@ class SweepRunTests(unittest.TestCase):
 
     def test_the_report_has_both_tables_and_the_parity_row_and_no_path(self):
         text = (self.folder / "report.md").read_text(encoding="utf-8")
-        for needle in ("## S table", "| lab | yes |", "| bce-act1 | no |", "## Confirmation table", "| lab |", "Parity", "Data curve", "Ensemble ens5-lab"):
+        for needle in ("FightNet data: 120 fights against the lab's cap of 400000", "## S table", "| lab | yes |", "| bce-act1 | no |", "## Confirmation table", "| lab |", "Parity", "Data curve", "Ensemble ens5-lab"):
             self.assertIn(needle, text)
         files = [p for p in self.folder.rglob("*") if p.suffix in {".json", ".md"}]
         self.assertGreater(len(files), 20)

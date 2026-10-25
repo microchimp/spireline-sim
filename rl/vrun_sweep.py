@@ -157,10 +157,13 @@ def peak_rss_mb() -> float | None:
 
 
 def _lower_priority() -> None:
-    with contextlib.suppress(Exception):
+    try:
         from sts2_gym import procutil  # noqa: PLC0415
 
         procutil.lower_priority()
+    except Exception as error:  # noqa: BLE001 -- a failed drop must not stop a fit, but it must not pass unseen either
+        print(f"vrun_sweep: could not lower the process priority ({type(error).__name__}: {error}); running at normal priority",
+              file=sys.stderr)
 
 
 # --------------------------------------------------------------------------------------
@@ -325,7 +328,8 @@ def build_cache(lab: Path, agent_root: Path, out: Path, *, closed_after_min: flo
         "format": CACHE_FORMAT, "key": key, "generation": generation, "base_sims": budget, "ascension": ascension,
         "blocks": census.blocks, "skipped_blocks": skipped, "census": census.summary(),
         "counts": split_counts(values), "bases_width": values.bases.width, "rows": len(values.targets), "runs": values.runs,
-        "fights": int(len(arrays["f_labels"])), "generations": list(values.generations),
+        "fights": int(len(arrays["f_labels"])), "fight_cap": config.fight_cap,
+        "fights_exceed_cap": bool(len(arrays["f_labels"]) > config.fight_cap), "generations": list(values.generations),
         "query_views": [{"state": shards.view_to_json(v, 0), "map": shards.map_to_json(v)} for v in values.query_views],
         "built": gen_loop.utc_now(),
         "build": {"wall_min": round((time.perf_counter() - t0) / 60, 2), "peak_rss_mb": peak_rss_mb()},
@@ -550,7 +554,10 @@ def resolve_arm(name: str) -> Arm:
     if len(parts) > 1 and all(part in ARMS and ARMS[part].adoptable and ARMS[part].kind == "v" for part in parts):
         delta: dict[str, Any] = {}
         for part in parts:
-            delta.update(ARMS[part].delta)
+            for key, value in ARMS[part].delta.items():
+                if key in delta and delta[key] != value:
+                    raise ValueError(f"{name!r} sets {key} twice ({delta[key]!r} and {value!r}); join arms that change different settings")
+                delta[key] = value
         return Arm(name, delta, True)
     raise ValueError(f"unknown arm {name!r}; arms: {', '.join(ARMS)}, or adoptable arms joined with +")
 
@@ -565,9 +572,10 @@ def arm_config(arm: Arm, device: str) -> train.TrainConfig:
 
 
 def _fit_logit(cache: Cache, h: np.ndarray, train_rows: np.ndarray, ev_rows: np.ndarray) -> tuple[np.ndarray, dict]:
-    """Logistic regression of the kill label on V0's score, the floor and H (ridge 1e-3, Newton steps)."""
+    """Logistic regression of the kill label on V0's three inputs (HP fraction, potions held, act index), the floor and the 8 H
+    numbers (ridge 1e-3, Newton steps)."""
     def features(rows: np.ndarray) -> np.ndarray:
-        return np.column_stack([cache.v0_score[rows], cache.values.floor[rows], h[rows]]).astype(np.float64)
+        return np.column_stack([cache.values.v0[rows], cache.values.floor[rows], h[rows]]).astype(np.float64)
 
     x_train, y = features(train_rows), cache.kill[train_rows]
     mean, scale = x_train.mean(axis=0), x_train.std(axis=0) + 1e-9
@@ -582,7 +590,7 @@ def _fit_logit(cache: Cache, h: np.ndarray, train_rows: np.ndarray, ev_rows: np.
         if np.abs(step).max() < 1e-8:
             break
     z = np.column_stack([(features(ev_rows) - mean) / scale, np.ones(len(ev_rows))]) @ w
-    return 1.0 / (1.0 + np.exp(-z)), {"features": ["v0_score", "floor", *[f"h{i}" for i in range(h.shape[1])]]}
+    return 1.0 / (1.0 + np.exp(-z)), {"features": ["hp_fraction", "potions_held", "act_index", "floor", *[f"h{i}" for i in range(h.shape[1])]]}
 
 
 def _fit_bce(cache: Cache, h: np.ndarray, train_rows: np.ndarray, ev_rows: np.ndarray, config: train.TrainConfig,
@@ -606,6 +614,7 @@ def _fit_bce(cache: Cache, h: np.ndarray, train_rows: np.ndarray, ev_rows: np.nd
         return torch.nn.functional.binary_cross_entropy_with_logits(net(x[index]).squeeze(1), y[index])
 
     stats = train._optimise(net, loss_of, sub.validation, config, generator)  # noqa: SLF001
+    net.eval()
     with torch.no_grad():
         p = torch.sigmoid(net(x[len(train_rows):]).squeeze(1)).double().cpu().numpy()
     del x
@@ -781,12 +790,14 @@ def _confirm_fold(cache: Cache, h: np.ndarray, arm: Arm, fold: int, device: str)
 def pooled_confirmation(cache: Cache, arm: Arm, fold_info: list[dict], *, n_boot: int = keep.BOOTSTRAP) -> dict[str, Any]:
     """Pool the out-of-fold predictions of `arm`: the keep table on the floor <= 16 rows, and the expected-floor error."""
     v, kill = cache.values, cache.kill
-    rows_all, p_all, e_all, v0p_all, v0fp_all, base_all = [], [], [], [], [], []
+    rows_all, p_all, e_all, v0p_all, v0fp_all, base_all, rate_all, fold_rates = [], [], [], [], [], [], [], []
     for fold in range(FOLDS):
         with np.load(cache.folder / "confirm" / f"{arm.name}-fold{fold}.npz", allow_pickle=False) as z:
             rows, p, e = z["rows"], z["kill"], z["efloor"]
         train_rows = np.flatnonzero((cache.fold != fold) & ~cache.is_s)
         tr = HeadRows.of(cache, train_rows)
+        fold_rates.append(float(tr.y.mean()))
+        rate_all.append(np.full(len(rows), fold_rates[-1]))
         head = cache.head_rows[rows]
         v0_rows, floor_rows = cache.v0_score[rows], v.floor[rows].astype(np.float64)
         v0p = keep.v0_probability(tr.v0, tr.y, v0_rows)
@@ -803,8 +814,14 @@ def pooled_confirmation(cache: Cache, arm: Arm, fold_info: list[dict], *, n_boot
     v0p, v0fp, baseline = np.concatenate(v0p_all), np.concatenate(v0fp_all), np.concatenate(base_all)
     head = cache.head_rows[rows]
     y, run = kill[rows][head], v.run_index[rows][head]
-    train_y = kill[(~cache.is_s) & cache.head_rows]  # the base rate over every row outside S (the folds' own rows included)
-    table = keep.head_conditions(p[head], y, run, train_y, v0p[head], n_boot=n_boot)
+    base_rows = np.concatenate(rate_all)[head]  # each out-of-fold row's base rate is its fold's training rate
+    table = keep.head_conditions(p[head], y, run, base_rows, v0p[head], n_boot=n_boot)  # (the base entries are replaced below)
+    vs_base = keep.paired_bootstrap_skill(keep.brier_terms(p[head], y), keep.brier_terms(base_rows, y), run, n_boot)
+    vs_base["pass"] = bool(vs_base["ci"][0] > 0.0 and vs_base["value"] > 0.0)
+    ll_model, ll_base = keep.log_loss(p[head], y), keep.log_loss(base_rows, y)
+    table["brier_skill_vs_base_rate"] = vs_base
+    table["log_loss_vs_base_rate"] = {"model": ll_model, "base_rate": ll_base, "pass": bool(ll_model < ll_base)}
+    table["base_rate"] = float(base_rows.mean())
     table["brier_skill_vs_v0_floor_informational"] = {
         **keep.paired_bootstrap_skill(keep.brier_terms(p[head], y), keep.brier_terms(v0fp[head], y), run, n_boot), "gated": False,
         "baseline": "V0 + floor / 17, through each fold's training-row quantile table"}
@@ -816,7 +833,26 @@ def pooled_confirmation(cache: Cache, arm: Arm, fold_info: list[dict], *, n_boot
                       "skill_vs_baseline": keep.paired_bootstrap_skill(model_err[mask], base_err[mask], v.run_index[rows][mask], n_boot)}
     return {"arm": arm.name, "adoptable": arm.adoptable, "cache_key": cache.manifest["key"], "folds": fold_info,
             "oof_rows": int(len(rows)), "oof_runs": int(len(np.unique(v.run_index[rows]))), "keep": {"act1_boss_kill": table},
-            "expected_floor_mae": mae, "base_rate_rows": "every row outside S"}
+            "expected_floor_mae": mae, "fold_base_rates": fold_rates,
+            "base_rate": "per fold: the rate over that fold's training rows (outside S and the fold, floor <= 16), one constant for each "
+                         "out-of-fold row of the fold"}
+
+
+MAX_OTHER_CONFIRMED = 2  # besides `lab`: the arms pre-declared from the S ranking (VRUN_SWEEP 1.2)
+
+
+def confirmed_names(folder: Path) -> set[str]:
+    """The arms with any confirmation output (a pooled JSON or a fold's) in the cache."""
+    directory = Path(folder) / "confirm"
+    return {path.stem.rsplit("-fold", 1)[0] for path in directory.glob("*.json")} if directory.is_dir() else set()
+
+
+def check_predeclared(existing: set[str], requested: list[str]) -> None:
+    """Refuse a confirmation that would leave more than `lab` plus two other arms confirmed in this cache."""
+    others = (set(existing) | set(requested)) - {"lab"}
+    if len(others) > MAX_OTHER_CONFIRMED:
+        raise SystemExit(f"only lab and {MAX_OTHER_CONFIRMED} other arms are confirmed (VRUN_SWEEP 1.2); this would confirm "
+                         f"{', '.join(sorted(others))}")
 
 
 def cmd_confirm(args: argparse.Namespace) -> int:
@@ -829,6 +865,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
             raise SystemExit(f"{arm.name} is not adoptable; only lab and the adoptable arms are confirmed")
         if arm.kind != "v" or arm.device:
             raise SystemExit(f"{arm.name} is not a V fit")
+    check_predeclared(confirmed_names(cache.folder), [arm.name for arm in arms])
     info: dict[str, list[dict]] = {arm.name: [] for arm in arms}
     for fold in range(FOLDS):
         pending = [a for a in arms if not (cache.folder / "confirm" / f"{a.name}-fold{fold}.json").is_file()]
@@ -908,8 +945,12 @@ def build_report(cache: Cache) -> str:
         by_arm.setdefault(record["arm"], []).append(record)
     order = {name: i for i, name in enumerate(ARMS)}
     names = sorted(by_arm, key=lambda n: (order.get(n, len(order)), n))
+    cap, fights = cache.manifest.get("fight_cap", train.TrainConfig().fight_cap), cache.manifest["fights"]
+    fight_note = (f"FightNet data: {fights} fights against the lab's cap of {cap}: "
+                  + ("the same fights the lab trains FightNet on (the cap drops none)" if fights <= cap
+                     else "above the cap, so the lab drops the oldest and this sweep does not"))
     lines = ["# Report (numbers only)", "", f"cache {cache.folder.name}, generation {cache.manifest['generation']}, "
-             f"{cache.manifest['runs']} runs, {cache.manifest['rows']} rows", "",
+             f"{cache.manifest['runs']} runs, {cache.manifest['rows']} rows", "", fight_note, "",
              "## S table (selection split, hash in [0.2, 0.3); head = floor <= 16 rows; skill = Brier skill, mean (min..max) over seeds)", "",
              "| arm | adoptable | seeds | best epoch | val loss | BSS vs base rate | BSS vs V0 | log-loss model / base | ECE (eligible bins) | fit min |",
              "|---|---|---|---|---|---|---|---|---|---|"]
@@ -1016,22 +1057,36 @@ def cmd_beside(args: argparse.Namespace) -> int:
         while not stop.is_set():
             if (s := read_server_stats(stats_path)) is not None:
                 samples.append({**s, "phase": phase["name"]})
-            stop.wait(5.0)
+            stop.wait(args.every_s)
 
     thread = threading.Thread(target=sample, daemon=True)
     thread.start()
     time.sleep(args.before_s)
     phase["name"] = "during"
-    torch.cuda.reset_peak_memory_stats()
+    on_cuda = torch.device(args.device).type == "cuda"
+    if on_cuda:
+        torch.cuda.reset_peak_memory_stats()
     record, _ = s_phase_fit(cache, h, ARMS["lab"], 0, args.device)
-    peak_mb = torch.cuda.max_memory_allocated() / 2**20
+    peak_mb = torch.cuda.max_memory_allocated() / 2**20 if on_cuda else None
     phase["name"] = "after"
     stop.set()
     thread.join()
-    doc = {"job": job.name, "device": args.device, "fit_min": record["fit_min"], "gpu_peak_mb": round(peak_mb, 1),
-           "before": summarise_samples([s for s in samples if s["phase"] == "before"]),
-           "during": summarise_samples([s for s in samples if s["phase"] == "during"]),
-           "p99_bound_ms": 20.0, "samples": [{k: v for k, v in s.items() if k != "t"} for s in samples]}
+    before = summarise_samples([s for s in samples if s["phase"] == "before"])
+    during = summarise_samples([s for s in samples if s["phase"] == "during"])
+    bound = 20.0
+    doc = {"job": job.name, "device": args.device, "fit_min": record["fit_min"],
+           "gpu_peak_mb": None if peak_mb is None else round(peak_mb, 1), "before": before, "during": during,
+           "p99_bound_ms": bound,
+           "verdict": {
+               "server_p99_under_bound": bool(during["p99_ms_max"] < bound) if during.get("samples") else None,
+               "server_p99_max_during_ms": during.get("p99_ms_max"),
+               "client_p99_under_bound": None,
+               "client_p99_note": "not measurable live: the server's stats hold no client latency; read the block's summary.json "
+                                  "when it ends (the client latency and prior_server_degraded at the 20 ms bound)",
+               "decisions_per_s": None,
+               "decisions_per_s_note": "not measurable live: the server's calls per second (before and during above) is only a proxy; "
+                                       "compare the block's decisions per second in its summary.json against the 9.1 reference"},
+           "samples": [{k: v for k, v in s.items() if k != "t"} for s in samples]}
     save_json(cache.folder / "beside.json", doc)
     print(json.dumps({k: v for k, v in doc.items() if k != "samples"}, indent=1))
     return 0
@@ -1090,6 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lab", required=True)
     p.add_argument("--device", default="cuda")
     p.add_argument("--before-s", type=float, default=20.0)
+    p.add_argument("--every-s", type=float, default=5.0, help="seconds between reads of the server's stats file")
     p.set_defaults(func=cmd_beside)
     args = parser.parse_args(argv)
     _lower_priority()
