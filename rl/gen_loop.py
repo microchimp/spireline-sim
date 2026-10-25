@@ -57,8 +57,9 @@ REVIEW_GUARD_ON_VALUES = ("1", "on", "true", "yes")  # tools/lab/promotion_guard
 MACRO_VRUN_FLAG = "SPIRELINE_MACRO_VRUN"  # the macro fence: V_run plays macro only when this is on too (VRUN_SWEEP.md 1.5); off
 MACRO_SWITCH_NOTE = ("the switch waits for a paired rules-against-vrun A/B and an owner decision (VRUN_SWEEP.md 1.5)")
 # which prior produced a run's decisions: the row, the record and the npz part (an int8 per run) all carry it
-PRIOR_PATHS = ("none", "cpu", "server", "mixed")
-PRIOR_PATH_CODES = {"none": 0, "cpu": 1, "server": 2, "mixed": 3}  # -1: unknown (a part written before the field)
+# "uniform": at least one call was answered by the uniform prior of the memory floor (prior_client), whatever else answered
+PRIOR_PATHS = ("none", "cpu", "server", "mixed", "uniform")
+PRIOR_PATH_CODES = {"none": 0, "cpu": 1, "server": 2, "mixed": 3, "uniform": 4}  # -1: unknown (a part written before the field)
 PRIOR_SEARCH = {"c_puct": 0.2, "prior_min_visits": 3}  # prior_loop's PriorConfig defaults
 
 TOKEN_KEYS = ("types", "ids", "owners", "feats")
@@ -198,7 +199,7 @@ def active_agent_extra() -> dict[str, Any]:
 
 def replay_note(prior_path: str | None, what: str) -> bool:
     """Log one line (never fail) when a run or sample that is being replayed was not played on the CPU path: a replay always
-    uses the in-process prior, so a `server` or `mixed` run may not be reproduced decision for decision. True when noted."""
+    uses the in-process prior, so a `server`, `mixed` or `uniform` run may not be reproduced decision for decision. True when noted."""
     if prior_path in (None, "cpu", "none"):
         return False
     print(f"replay: {what} was played with prior_path {prior_path!r}; the CPU replay may not be exact", file=sys.stderr, flush=True)
@@ -339,7 +340,7 @@ class RunRecorder:
 
     def finish(self, session, moves: int, won: bool, steps_cap_hit: bool = False, prior_path: str | None = None,
                prior_calls: dict | None = None) -> dict[str, Any]:
-        """The run's RunRecord. `prior_path` ("none", "cpu", "server" or "mixed") and `prior_calls` say which prior played it."""
+        """The run's RunRecord. `prior_path` ("none", "cpu", "server", "mixed" or "uniform") and `prior_calls` say which prior played it."""
         from run_train import FEATURE_VERSION, shards  # noqa: PLC0415
         from run_train.vocab import WON_FLOOR  # noqa: PLC0415
 
@@ -374,7 +375,7 @@ def prior_path_code(tag: str | None) -> int:
 def write_part(path: Path, runs: list[tuple[str, dict | None]], generation: int, prior_paths: list[str | None] | None = None) -> int:
     """Write the combat samples of `runs` (seed, arrays-or-None) as one npz in `prior_loop`'s layout; return the sample count.
     `fights` is the run's index in the part (so a split by that column is a split by run). With `prior_paths` (one tag per run)
-    the part also holds `prior_path`, an int8 per run aligned with `seeds` (0 none, 1 cpu, 2 server, 3 mixed, -1 unknown)."""
+    the part also holds `prior_path`, an int8 per run aligned with `seeds` (0 none, 1 cpu, 2 server, 3 mixed, 4 uniform, -1 unknown)."""
     path = Path(path)
     have = [(i, a) for i, (_, a) in enumerate(runs) if a is not None]
     out: dict[str, np.ndarray] = {}

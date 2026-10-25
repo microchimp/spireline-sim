@@ -502,13 +502,15 @@ RUN_RECORD_SCHEMA: dict[str, Any] = {
             "additionalProperties": False,
         },
         # Which combat prior played the run (docs/rl/GPU_INFERENCE.md section 5): "cpu" (in-process), "server" (the batched
-        # prior server), "mixed" (a fallback mid-run), "none" (no prior). Optional: records from before the field have neither.
-        "prior_path": {"enum": ["none", "cpu", "server", "mixed"]},
-        # Prior calls the run made by path; "cpu" is null on the in-process path, which does not count its calls.
+        # prior server), "mixed" (a fallback mid-run), "uniform" (at least one call answered by the uniform prior of the memory
+        # floor), "none" (no prior). Optional: records from before the field have neither.
+        "prior_path": {"enum": ["none", "cpu", "server", "mixed", "uniform"]},
+        # Prior calls the run made by path; "cpu" is null on the in-process path, which does not count its calls. "uniform"
+        # is present only on a run that made uniform calls.
         "prior_calls": {
             "type": "object",
             "required": ["server", "cpu"],
-            "properties": {"server": _COUNT, "cpu": {"anyOf": [_COUNT, {"type": "null"}]}},
+            "properties": {"server": _COUNT, "cpu": {"anyOf": [_COUNT, {"type": "null"}]}, "uniform": _COUNT},
             "additionalProperties": False,
         },
     },
