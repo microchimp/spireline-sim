@@ -1,6 +1,6 @@
 // Round R7f (docs/rebuild/MIGRATION_F08.md, "R7f"): the R7 proof's worse corpus fights. Two F08 damage folds the port list
 // left out (no record in its manifest reaches the models themselves): Diamond Diadem's and Undying Sigil's halving of an
-// enemy's attack. And a potion's target: under the switch the effect read the aim a play left on a copy of the world.
+// enemy's attack.
 // Game code is cited by class and method only.
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
@@ -45,19 +45,5 @@ public class R7fTests
         // game: UndyingSigil.ModifyDamageMultiplicative: an attacker whose HP is at or below its Doom deals half.
         var fight = Fight.WithRelics(RelicEffects.UndyingSigil).Enemy(hp: 5, buffs: new BuffState(BuffId.Doom, doom));
         Assert.Equal(doom > 0 ? 5 : 11, HpAfterHit(fight, core2, 11));
-    }
-
-    [Fact]
-    public void APotionLandsOnItsOwnTargetWhateverAimAnEarlierPlayLeft()
-    {
-        // game: PotionModel.OnUseWrapper hands the potion its target; Beetle Juice puts Shrink on it. An aim a copy of the
-        // world kept from an earlier play (Aimed) is not the potion's.
-        var fight = Fight.Hand(new CardInstance(IC.StrikeIronclad, false)).Enemy(hp: 20).Enemy(hp: 20).Enemy(hp: 20);
-        fight.State.PotionSlots[0] = Potions.FindId("BeetleJuice")!.Value;
-        var k = Bind(fight.State);
-        k.World!.Aiming(fight.State.Enemies[0]);  // left open, as on a copy made inside a play
-        CombatEngine.Step(fight.State, fight.State.Hand.Count + 1, new Random(1), 2);
-        Assert.Equal(0, BuffSystem.Get(fight.State.Enemies[0].Buffs, BuffId.Shrink));
-        Assert.Equal(4, BuffSystem.Get(fight.State.Enemies[2].Buffs, BuffId.Shrink));
     }
 }

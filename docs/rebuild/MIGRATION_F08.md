@@ -1040,6 +1040,30 @@ Illusion enemy as primary (the game's MinionPower-only `IsPrimaryEnemy`), the ol
 corpus fights with an Illusion enemy are read against the game for the win point (the fight ends when only Illusions
 are left, or not), and the old rule's users are listed and either follow the game or carry the difference.
 
+### R7 proof rerun after R7f (2026-10-25): not passed, nothing switched on
+
+R7f: the struct_compare census applies the unmodelled rows in the missing-entry branch (a record-only field no row lists is
+still a difference); Diamond Diadem's and Undying Sigil's damage folds (F08) had no handler because the port list skipped models
+no record in its manifest reaches (`564797d1d47ddfb9` fixed); `port_list --unreached` lists such models. Run with F08+F10 on:
+
+| check | after R7e | after R7f | gate |
+|---|---|---|---|
+| O1: fail only switched on | 0 | 0 | pass |
+| traced (77): better / same / worse; fewer fields | 8 / 69 / 0; 3 | 8 / 69 / 0; 1 | fail (fewer 1) |
+| corpus (4,392): better / same / worse; fewer fields | 63 / 4,326 / 3; 8 | 63 / 4,327 / 2; 0 | fail (worse 2) |
+| step test, strict | 4 of 4 | 4 of 4 | pass |
+| fuzz (300): differing / ending disagreements | 291 / 0 | 291 / 0 | report |
+| port gate (manifest-reached) / `--unreached` pairs without a handler | 0 / - | 0 / 11 | fail (11) |
+
+Open, before the switch:
+- `2b49779387ccd8b9`: Shrink on enemies[0] where the game has it on enemies[2] at step 4 (the reanchored step is right, the full
+  replay is not; an aim left on a world copy was suspected, a potion-aim change did not move it and was reverted).
+- `7171bcd6dd0b0bd6`: Gremlin Horn's AfterDeath pays an extra draw and energy for an egg Parrying Shield kills at turn end.
+- The traced fight on fewer fields (one left after the census fix).
+- 11 F08/F10 pairs of models no record reaches have no handler (`port_list --unreached`: Die For You's other pair, Envenom,
+  Monarch's Gaze, Necro Mastery, Reaper Form, Reflect, Sword Sage, Book Repair Knife, Emotion Chip, ...): under the switch the
+  old fold returns early for them, so they would silently drop, as Diamond Diadem did. Port them; the gate counts them.
+
 ### R7 proof rerun after R7d and R7e (2026-10-25): not passed, nothing switched on
 
 R7d added the game's two turn-start win checks (CombatManager.StartTurn; under F10 the old turn start never checked, so a
