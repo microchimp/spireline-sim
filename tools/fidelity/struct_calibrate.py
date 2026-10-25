@@ -244,6 +244,11 @@ def main(argv: list | None = None) -> int:
 def run(a: argparse.Namespace, work: Path, built: Path, switches: list[str] | None) -> int:
     emudump = str(built)
     jobs = []
+    if switches is None and a.engine == "core2":
+        # No --switches: the build's own migrated_families.json stands, and core2 is judged with it as the migrated families,
+        # read here so that the verdict against old is also taken with the shared rows (like with like), as with --switches.
+        own = built.parent / "migrated_families.json"
+        switches = sc.load_migrated(own) if own.exists() else sc.load_migrated()
     if a.mode == "corpus":
         c = C.Corpus(a.corpus)
         metas = c.load_index()["fights"][: a.limit or None]
