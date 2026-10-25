@@ -111,6 +111,105 @@ class ShardTests(unittest.TestCase):
         self.assertTrue(np.isnan(q[0]))
 
 
+class ResumeWriterTests(unittest.TestCase):
+    """A self-play block the lab interrupts and resumes replays its seed stream from the start; the writer must not append
+    a seed it already holds (a run record and its combat part) and the manifest must count the distinct seeds."""
+
+    SEEDS = [f"RESUME{i:04d}" for i in range(7)]
+
+    @staticmethod
+    def _records(directory: Path) -> list[dict]:
+        from run_train import shards
+
+        return [r for p in shards.shard_paths(Path(directory) / "shards") for r in shards.read_shard(p)]
+
+    def _sink(self, d: str, generation: int = 2) -> "gen_loop.ShardSink":
+        return gen_loop.ShardSink(Path(d), generation, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=2)
+
+    def test_replayed_stream_writes_each_seed_once(self):
+        rng = np.random.default_rng(5)
+        with tempfile.TemporaryDirectory() as d:
+            first = self._sink(d)
+            for s in self.SEEDS[:5]:  # two parts of two runs reach the disk; the fifth run is still buffered when it is killed
+                first.add(fake_record(s, 2), fake_run_arrays(rng))
+            for _ in range(2):  # resumed twice: the stream restarts at its first seed each time
+                sink = self._sink(d)
+                for s in self.SEEDS:
+                    sink.add(fake_record(s, 2), fake_run_arrays(rng))
+                man = sink.close()
+            seeds = [r["seed"] for r in self._records(d)]
+            self.assertEqual(sorted(seeds), sorted(self.SEEDS))  # one run record per seed
+            part_seeds = [str(x) for n in man["combat_parts"] for x in gen_loop.read_part(Path(d) / "shards" / n)["seeds"]]
+            self.assertEqual(sorted(part_seeds), sorted(self.SEEDS))  # one combat part row per seed
+            self.assertEqual(man["runs"], len(self.SEEDS))
+            self.assertEqual(man["samples"], sum(int(gen_loop.read_part(Path(d) / "shards" / n)["lengths"].size) for n in man["combat_parts"]))
+            self.assertEqual(sum(man["prior_paths"].values()), len(self.SEEDS))
+
+    def test_resumed_sink_names_the_seeds_it_holds_and_continues_the_parts(self):
+        rng = np.random.default_rng(6)
+        with tempfile.TemporaryDirectory() as d:
+            first = self._sink(d)
+            for s in self.SEEDS[:4]:
+                first.add(fake_record(s, 2), fake_run_arrays(rng))
+            first.flush()
+            sink = self._sink(d)
+            self.assertEqual(sink.done, set(self.SEEDS[:4]))
+            self.assertEqual(sink.runs, 4)
+            self.assertEqual(len(sink.parts), 2)
+            sink.add(fake_record(self.SEEDS[4], 2), fake_run_arrays(rng))
+            sink.add(fake_record(self.SEEDS[5], 2), fake_run_arrays(rng))
+            man = sink.close()
+            self.assertEqual(len(set(man["combat_parts"])), 3)  # the resume numbers on: it overwrote no part
+            self.assertEqual(man["runs"], 6)
+
+    def test_run_block_plays_only_the_seeds_not_yet_recorded(self):
+        rng = np.random.default_rng(7)
+        played: list[str] = []
+
+        def fake_run_safe(seed, ix, sims, ascension, agent=None, record=False, character="IRONCLAD"):
+            played.append(seed)
+            return {"seed": seed, "ix": ix, "win": False, "floor": 5, "end": "death", "decisions": 3, "wall": 0.1,
+                    "ai_state_assumed": 0,
+                    "_shard": {"record": fake_record(seed, gen_loop.Agent().generation), "samples": fake_run_arrays(rng)}}
+
+        class Ready:
+            def __init__(self, value):
+                self.value = value
+
+            def ready(self):
+                return True
+
+            def get(self):
+                return self.value
+
+        class Pool:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def apply_async(self, fn, args):
+                return Ready(fn(*args))
+
+        ctx = SimpleNamespace(Pool=Pool)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(gen0, "_run_safe", fake_run_safe), \
+                mock.patch.object(gen0.mp, "get_context", return_value=ctx), mock.patch.object(gen0.time, "sleep"):
+            gen0.run_block(self.SEEDS[:4], "a3-v1", 2, Path(d), record=True)  # the first attempt
+            played.clear()
+            summ = gen0.run_block(self.SEEDS, "a3-v1", 2, Path(d), record=True)  # the resume replays the whole stream
+            self.assertEqual(sorted(played), sorted(self.SEEDS[4:]))
+            self.assertEqual(summ["shards"]["runs"], len(self.SEEDS))
+            self.assertEqual(sorted(r["seed"] for r in self._records(d)), sorted(self.SEEDS))
+            played.clear()
+            gen0.run_block(self.SEEDS, "a3-v1", 2, Path(d), record=True)  # a third attempt finds nothing left to play
+            self.assertEqual(played, [])
+            self.assertEqual(len(self._records(d)), len(self.SEEDS))
+
+
 _FIXTURE: dict = {}
 
 

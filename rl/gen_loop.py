@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import time
+import zipfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -390,10 +391,28 @@ def read_part(path: Path) -> dict[str, np.ndarray]:
         return {k: blob[k] for k in blob.files}
 
 
+def shard_run_seeds(directory: Path, generation: int) -> set[str]:
+    """The seeds of `generation`'s run records in the run shards of `directory`."""
+    from run_train import shards  # noqa: PLC0415
+
+    return {str(r["seed"]) for p in shards.shard_paths(Path(directory)) for r in shards.read_shard(p)
+            if r.get("generation") == generation}
+
+
+_PRIOR_TAGS = {code: tag for tag, code in PRIOR_PATH_CODES.items()}
+
+
 class ShardSink:
     """The main process's writer for one self-play block: run shards (RunRecords) and combat parts, and `shards.json`,
     which names the generation that played them. The manifest is rewritten at every flush, so an interrupted block is
-    still readable."""
+    still readable.
+
+    The writer is idempotent on a resume. The lab resumes an interrupted job in the same directory and the job replays its
+    seed stream from the first seed, so a sink that finds the block's run shards holds those seeds as `done`: `add` ignores
+    a record of a `done` seed, `gen0.run_block` does not play it, the combat parts that cover them are kept and the new
+    parts are numbered on from them, and `runs`, `samples` and `prior_paths` start from what is on disk. A flush writes the
+    combat part, then the run shard, then the manifest, so a kill leaves either nothing of a part's runs in the shards
+    (they are replayed) or the part beside them (it is adopted here)."""
 
     def __init__(self, out_dir: Path, generation: int, *, config: str, base_sims: int, ascension: int, agent: dict,
                  part_runs: int = PART_RUNS) -> None:
@@ -404,17 +423,50 @@ class ShardSink:
         self.generation, self.part_runs = generation, part_runs
         self.meta = {"kind": "selfplay-shards", "generation": generation, "config": config, "base_sims": base_sims,
                      "ascension": ascension, "agent": agent}
-        self.writer = shards.ShardWriter(self.dir, part_runs)
+        self.writer = shards.ShardWriter(self.dir, 1 << 30)  # only `flush` writes a run shard, after the combat part
         self.pending: list[tuple[str, dict | None]] = []
         self.pending_paths: list[str | None] = []
         self.parts: list[str] = []
         self.runs = self.samples = 0
         self.prior_paths: dict[str, int] = {}  # runs by the prior that played them ("unknown": a record without the field)
+        self.done: set[str] = set()  # the seeds this block holds: written to a run shard, or pending
+        self.duplicates_skipped = 0  # records `add` ignored because their seed was `done`
+        self._resume()
+        self.resumed_runs = self.runs
+
+    def _resume(self) -> None:
+        """Take over what an interrupted block of this generation left in the directory (nothing on disk is rewritten)."""
+        self.done = shard_run_seeds(self.dir, self.generation)
+        covered: set[str] = set()
+        while self.done:
+            path = self.dir / f"combat-g{self.generation}-{len(self.parts):04d}.npz"
+            try:
+                blob = read_part(path)
+            except (OSError, ValueError, EOFError, zipfile.BadZipFile):
+                break
+            seeds = [str(s) for s in blob["seeds"]]
+            if (int(blob["generation"][0]) != self.generation or not set(seeds) <= self.done or covered & set(seeds)
+                    or len(set(seeds)) != len(seeds)):
+                break  # a stale part (its runs are not in the shards, or another part holds them) is overwritten, not adopted
+            covered.update(seeds)
+            self.parts.append(path.name)
+            self.samples += int(blob["lengths"].size) if "lengths" in blob else 0
+            codes = blob["prior_path"].tolist() if "prior_path" in blob else [-1] * len(seeds)
+            for code in codes:
+                tag = _PRIOR_TAGS.get(int(code), "unknown")
+                self.prior_paths[tag] = self.prior_paths.get(tag, 0) + 1
+        self.runs = len(self.done)
+        if self.runs > len(covered):  # run records whose combat samples were not kept (a block from before this writer)
+            self.prior_paths["unknown"] = self.prior_paths.get("unknown", 0) + self.runs - len(covered)
 
     def add(self, record: dict, arrays: dict | None) -> None:
         if record["generation"] != self.generation:
             raise ValueError(f"a shard is tagged with the generation that played it: {record['generation']} in a "
                              f"generation {self.generation} block")
+        if str(record["seed"]) in self.done:  # a replayed seed: its run record and combat part are already held
+            self.duplicates_skipped += 1
+            return
+        self.done.add(str(record["seed"]))
         self.writer.add(record)
         self.pending.append((record["seed"], arrays))
         tag = record.get("prior_path")
@@ -437,6 +489,7 @@ class ShardSink:
         from run_train import shards  # noqa: PLC0415
 
         write_json(self.dir / "shards.json", {**self.meta, "runs": self.runs, "samples": self.samples,
+                                              "resumed_runs": self.resumed_runs, "duplicates_skipped": self.duplicates_skipped,
                                               "prior_paths": dict(sorted(self.prior_paths.items())),
                                               "run_shards": [p.name for p in shards.shard_paths(self.dir)],
                                               "combat_parts": list(self.parts), "written": utc_now()})
