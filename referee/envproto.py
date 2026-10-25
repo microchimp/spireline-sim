@@ -591,23 +591,32 @@ def _fields_row(ls: Any) -> dict:
 
 
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
-                agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD") -> None:
-    """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py)."""
+                agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD",
+                recycle: int = 0) -> None:
+    """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py). `recycle` > 0 restarts the game
+    after that many runs (a long block's game process otherwise grows; 0: never)."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
     env = None
     restarts = 0
+    runs_here = 0
     for n_seed, seed in enumerate(seeds):
         if stop_at and time.time() > stop_at:  # the block's time limit: no new run; a worker's seeds go in order, so the
             break  # runs done are a prefix of each worker's share and stay paired with the emulator's
         run_ix = run_ids[n_seed] if run_ids else n_seed
+        if recycle and env is not None and runs_here >= recycle:  # a fresh game process every `recycle` runs
+            q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
+            env.close()
+            env, restarts, runs_here = None, restarts + 1, 0
         if env is None:
+            runs_here = 0
             try:
                 env = GameEnv(Path(game), Path(out) / "scratch" / f"p{wid:02d}r{restarts}", install=False)
             except Exception as e:  # boot failure
                 q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(e)[:300]})
                 restarts += 1
                 continue
+        runs_here += 1
         t0 = time.time()
         try:
             m, ls = lockstep.play_run(_Timed(env, step_timeout, character), seed, ascension=ascension, sims=sims,
@@ -706,7 +715,7 @@ def play(a) -> int:
     stop_at = time.time() + a.stop_after_h * 3600 if a.stop_after_h else 0.0
     live = open(out / "runs.jsonl", "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, run_ids[w::a.procs], stop_at, a.character))
+                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, a.recycle))
              for w in range(a.procs)]
     t0 = time.time()
     for p in procs:
@@ -823,7 +832,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--extra-actions", action="store_true", help="record: record with the extra actions on (replay uses the stored flag)")
     ap.add_argument("--full-select", action="store_true", help="record: record with fight card screens at their real min..max (replay uses the stored flag)")
     ap.add_argument("--max-runs", type=int, default=0, help="bench: stop after this many runs in all (0: run for --seconds)")
-    ap.add_argument("--recycle", type=int, default=0, help="bench: restart each game after this many runs (0: never)")
+    ap.add_argument("--recycle", type=int, default=0, help="bench, play: restart each game after this many runs (0: never)")
     return ap
 
 
