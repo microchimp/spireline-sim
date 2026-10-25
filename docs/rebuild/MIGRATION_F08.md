@@ -1040,6 +1040,29 @@ Illusion enemy as primary (the game's MinionPower-only `IsPrimaryEnemy`), the ol
 corpus fights with an Illusion enemy are read against the game for the win point (the fight ends when only Illusions
 are left, or not), and the old rule's users are listed and either follow the game or carry the difference.
 
+### R7i: the turn-one corpse (branch `rebuild/f08-r7i`, on R7h's `259ca01b`): nothing switched on
+
+- **The kernel's state is bound before the setup.** `RunEngine.StartCombatWithDeck` bound the combat's KernelState after
+  `CombatFactory.Reset` and the pre-play phase, so everything turn one's start does (the combat-start relics, the hand draw,
+  `AfterPlayerTurnStart`'s Festive Popper, Mercury Hourglass and Mr Struggles, Imbued's and Whispering Earring's plays) ran
+  the old code: its kills never reached `CreatureCmd.Kill` (no removal, no death hooks there), and the old deferred answer
+  (`AnswerDeathsSince` / `HandleEnemyDeaths`, whose corpse sweep would have removed them at the first step) returns early
+  under F08. `2b49779387ccd8b9`'s Twig Slime S, killed by Festive Popper, stayed listed at 0 HP at index 2 for the whole
+  fight. Bound before `Reset` (game: the combat's hooks are live from `CombatManager.SetUpCombat` on), every setup and
+  turn-one kill goes through the switch's Kill. Sweep: `RunEngine` is the one place a combat's state is bound
+  after a setup (`BindCombat` and EmuDump's re-anchor bind a combat read from a document, which runs no setup; KernelOrder
+  and HookProbe bind before `Reset`). Test: `R7iTests` (Festive Popper and Mercury Hourglass kill the Twig Slime S at
+  turn one's start: the roster holds the living slimes only, as the old engine's after its sweep).
+- **The turn end's relic pass asks each relic with the player's hooks active** (R7h review). Under the switch
+  `ApplyAfterEndOfPlayerTurnShared`'s relic loop stops once a kill earlier in the pass (Constrict, in the player's powers
+  before the relics) deactivated the player's hooks, as the game's pass visits no listener of a dead player. Test: a
+  Constrict kill at the turn end, then Lunar Pastry pays no star. Sites: RelicEffects.cs's split hash re-recorded (the Fur
+  Coat body unchanged).
+- **R7 checks** (turn-end effects outside the flush order, none flush-visible): a player-held Ritual's Strength
+  (`CombatEngine`'s turn end, before the flush; game `RitualPower` after it: no flush effect reads Strength); Art of War's
+  bookkeeping (the attacks-played count its next turn start reads; the flush plays no card); Kusarigama's (its every-third
+  counter, which only plays move).
+
 ### R7h: the last R7 gates (branch `rebuild/f08-r7h`, on R7g's `95877506`): not passed, nothing switched on
 
 - **The aim is the play's.** `OldWorld.CopyFrom` no longer carries `Aimed`: only `Aiming`'s scope sets and clears it, so a new

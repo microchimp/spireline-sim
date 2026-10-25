@@ -2029,6 +2029,13 @@ public static class RelicEffects
             int exhausts = state.EtherealExhaustsThisTurn;
             for (int i = 0; i < state.Relics.Count && fold; i++)
             {
+                // game: the pass visits no listener of a player whose hooks a kill earlier in it deactivated (Constrict's
+                // turn-end damage, in the player's powers before the relics): each relic is asked with the player alive.
+                if (Core2.Kernel.If(Core2.Switch.F08, state)?.World is { PlayerHooks: Core2.PlayerHooks.Deactivated })
+                {
+                    break;
+                }
+
                 switch (state.Relics[i].DefId)
                 {
                     case JossPaper when exhausts > 0:
