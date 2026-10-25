@@ -378,7 +378,9 @@ def compare_fight(g: dict, e: dict, rows: list | None = None, engine: str = "old
         elif nets and rec_snap.get("in_combat"):
             last = nets[-1]["state"]
             if view.get("net") is None:
-                parts.append({"diffs": [("net", "(state)", None)], "compared": {"net"}, "waived": set(), "n": 1, "unmodelled": set(), "unjudged": set()})
+                # The engine wrote no net view: a difference, and no field compared (the census counts a path the engine
+                # writes, as compare_shape's missing-entry rule does), so an engine that writes the view is not short of it.
+                parts.append({"diffs": [("net", "(state)", None)], "compared": set(), "waived": set(), "n": 1, "unmodelled": set(), "unjudged": set()})
             else:
                 parts.append(compare_shape(last, view["net"], "net", rows, rec_snap, fired, moved(rec_snap, last)))
         for part in parts:

@@ -243,6 +243,15 @@ class NetShape(unittest.TestCase):
     def test_missing_engine_net_in_combat(self):
         self.assertEqual(paths(self.run_net(net(), None)), ["net"])
 
+    def test_a_missing_engine_net_is_no_census_field(self):
+        # R7h, the traced fight on fewer fields: an engine with no net view at a step compared nothing on net there, so
+        # an engine that writes the view at that step is not compared on fewer fields than it.
+        missing, written = self.run_net(net(), None), self.run_net(net(), net())
+        self.assertNotIn("net", missing["census"])
+        self.assertFalse(any(p.startswith("net") for p in missing["census"]))
+        self.assertEqual(sc.census_gate({"f": missing}, {"f": written}), {})
+        self.assertIn("f", sc.census_gate({"f": written}, {"f": missing}))
+
     def test_late_steps_stop_the_net_shape(self):
         g, e = fight([snap(), snap()], [snap(), snap()], rec_nets=[net(), net()], eng_nets=[net(), net()])
         g["steps"][1]["net"][0]["state"]["players"][0]["gold"] = 99  # a field only the record has, not unmodelled: a diff
