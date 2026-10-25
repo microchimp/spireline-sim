@@ -6,7 +6,7 @@ Each kind is data: a default command, a limit, whether it is on, and the input t
   {"selfplay": {"enabled": true, "cmd": ["{python}", "rl/run_train/cli.py", "..."], "share": 0.5, "timeout_min": 60}}
 
 The shipped defaults change nothing for a lab that has no jobs.json: selfplay and the benches are off, and train and
-score-real are on but only ever ready when their marker file exists (LAB/train/ready-<gen> or ready-<gen>-r<n> for a retrain after a rejection, LAB/score/pending).
+score-real are on but only ever ready when their marker file exists (LAB/train/ready-<gen>, ready-<gen>-r<n> for a retrain after a rejection or ready-<gen>-g<target> for a candidate that is generation <target>, LAB/score/pending).
 
 Priority ladder (lower number first; what the runner's choose() does with it is in runner.py):
 
@@ -81,10 +81,13 @@ def _age_h(p: Path) -> float | None:
         return None
 
 
-def gen_key(name: str) -> tuple[int, str]:
-    """Marker order: by generation, then retrain index (``ready-4`` < ``ready-4-r1`` < ``ready-12``)."""
-    m = re.search(r"-(\d+)(?:-r(\d+))?$", name)
-    return (int(m.group(1)) * 1000 + int(m.group(2) or 0) if m else 1 << 30, name)
+def gen_key(name: str) -> tuple[int, int, int, str]:
+    """Marker order: by generation, then the plain and retrain forms by index, then the target forms by target
+    (``ready-4`` < ``ready-4-r1`` < ``ready-4-g6`` < ``ready-12``)."""
+    m = re.search(r"-(\d+)(?:-r(\d+)|-g(\d+))?$", name)
+    if not m:
+        return (1 << 30, 0, 0, name)
+    return (int(m.group(1)), 1 if m.group(3) else 0, int(m.group(3) or m.group(2) or 0), name)
 
 
 def train_markers(lab: Path) -> list[Path]:
@@ -132,6 +135,9 @@ def params_for(kind: str, lab: Path, cfg: dict[str, Any]) -> dict[str, Any]:
         ms = train_markers(lab)
         p["marker"] = ms[0].name if ms else ""
         p["generation"] = p["marker"].removeprefix("ready-")
+        target = re.fullmatch(r"ready-(\d+)-g(\d+)", p["marker"])
+        if target:  # `ready-<gen>-g<target>`: the shards of <gen> train a candidate that is generation <target> (D33 addendum (b))
+            p["generation"], p["candidate_generation"] = target.group(1), int(target.group(2))
     return p
 
 

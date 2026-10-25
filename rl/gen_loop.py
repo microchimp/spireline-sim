@@ -55,8 +55,17 @@ BOOT_B = 20000
 ENV_GEN_DIR = "SPIRELINE_GEN_DIR"
 REVIEW_GUARD_FLAG = "SPIRELINE_REVIEW_GUARD"  # tools/lab/promotion_guard.FLAG: the review's guard decides when set; off by default
 REVIEW_GUARD_ON_VALUES = ("1", "on", "true", "yes")  # tools/lab/promotion_guard.ON_VALUES (a test keeps them equal)
-MACRO_VRUN_FLAG = "SPIRELINE_MACRO_VRUN"  # the macro fence: V_run plays macro only when this is on too (VRUN_SWEEP.md 1.5); off
-MACRO_SWITCH_NOTE = ("the switch waits for a paired rules-against-vrun A/B and an owner decision (VRUN_SWEEP.md 1.5)")
+# D33 (2026-10-25): the paired rules-against-vrun A/B (VRUN_SWEEP.md 1.5) was decided, so the value-head macro is the macro of every new
+# candidate whose V_run is kept, with no environment variable. SPIRELINE_MACRO_VRUN stays as an explicit opt-out: "rules" (or off, 0,
+# false, no) makes `train_generation` write macro rules; anything else, or unset, leaves the default.
+MACRO_VRUN_FLAG = "SPIRELINE_MACRO_VRUN"
+# A candidate written under a generation number that skips ones (`ready-<gen>-g<target>`) says so in train.json and agent.json (D33 addendum (b)).
+LINEAGE_DECISION = "D33 addendum (b)"
+LINEAGE_DIFFERENCE = "macro {macro} with {fit} (D33, 2026-10-25); generation 4's two attempts were rules-macro candidates"
+LINEAGE_FIT_TEXT = {"seed": "the A/B's V_run fit", "new": "its own new V_run fit", "none": "no V_run fit"}
+MACRO_OPT_OUT_VALUES = ("rules", "off", "0", "false", "no")
+MACRO_SWITCH_NOTE = ("D33 (2026-10-25): the macro switch is on by default after the paired rules-against-vrun A/B "
+                     "(VRUN_SWEEP.md 1.5); SPIRELINE_MACRO_VRUN=rules opts a candidate out")
 # which prior produced a run's decisions: the row, the record and the npz part (an int8 per run) all carry it
 # "uniform": at least one call was answered by the uniform prior of the memory floor (prior_client), whatever else answered
 PRIOR_PATHS = ("none", "cpu", "server", "mixed", "uniform")
@@ -695,8 +704,10 @@ def write_prior_model_json(out: Path, generation: int, probe: bool = False) -> d
     return doc
 
 
-def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base_sims: int, ascension: int, threads: int = 6) -> dict:
-    """Fit FightNet and V_run (DMC target, `run_train.train.fit`) on the window's run records."""
+def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base_sims: int, ascension: int, threads: int = 6,
+                    device: str | None = None) -> dict:
+    """Fit FightNet and V_run (DMC target, `run_train.train.fit`) on the window's run records, then the 5-fold out-of-fold fits
+    the keep verdict rests on (D33, `keep.cross_fit_keep`). `device` (the train job's) puts the fits there; none: the CPU."""
     import torch  # noqa: PLC0415
     from run_train import keep  # noqa: PLC0415
     from run_train import train as rt  # noqa: PLC0415
@@ -705,7 +716,8 @@ def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base
     t0, c0 = time.perf_counter(), time.process_time()
     pt = Path(out) / "run_value.pt"
     rt.fit(shard_paths, None, pt, generation=generation, combat_budget=CombatBudget(base_sims, base_sims), ascension=ascension,
-           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads), evaluate=keep.evaluate_value_net)
+           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads, **({"device": device} if device else {})),
+           evaluate=keep.evaluate_value_net, cross_fit=keep.cross_fit_keep)
     meta = torch.load(pt, map_location="cpu", weights_only=True)["meta"]
     value = dict(meta.get("value") or {})
     return {"wall_min": (time.perf_counter() - t0) / 60, "cpu_min": (time.process_time() - c0) / 60,
@@ -867,28 +879,99 @@ def vrun_keep_passed(keep_doc: dict[str, Any] | None, cand: Path) -> bool:
 
 
 def macro_vrun_on(flag: bool | None = None) -> bool:
-    """Whether the macro switch is on: `flag` when given, else the SPIRELINE_MACRO_VRUN variable (off by default)."""
+    """Whether the macro switch is on: `flag` when given, else on unless SPIRELINE_MACRO_VRUN opts out (`MACRO_OPT_OUT_VALUES`)."""
     if flag is not None:
         return bool(flag)
-    return os.environ.get(MACRO_VRUN_FLAG, "").strip().lower() in REVIEW_GUARD_ON_VALUES
+    return os.environ.get(MACRO_VRUN_FLAG, "").strip().lower() not in MACRO_OPT_OUT_VALUES
 
 
 def macro_for(keep_doc: dict[str, Any] | None, cand: Path, enabled: bool | None = None) -> str:
     """`vrun` when the keep record passes (`vrun_keep_passed`) and the macro switch is on (`macro_vrun_on(enabled)`), else `rules`.
 
-    The switch is the macro fence of VRUN_SWEEP.md 1.5: a V_run fit that passes the keep conditions does not by itself
-    make the candidate play V_run's macro, since that would judge the prior and V_run together without DESIGN 5.3's Tier-B
-    regret and battery conditions."""
+    The switch is on by default since D33 (2026-10-25); SPIRELINE_MACRO_VRUN=rules is the opt-out. A candidate that plays
+    V_run's macro is judged with its prior and V_run together; that is the decision (VRUN_SWEEP.md 1.5), and the E-block's
+    rule (floor, boss-kill guard, F7 audit) is unchanged."""
     return "vrun" if vrun_keep_passed(keep_doc, cand) and macro_vrun_on(enabled) else "rules"
+
+
+def file_sha256(path: Path | str) -> str:
+    import hashlib  # noqa: PLC0415
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def oof_numbers(keep_doc: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The out-of-fold numbers of a keep record's Act 1 head, for the manifest (none: the record has no judged head)."""
+    head = ((keep_doc or {}).get("heads") or {}).get("act1_boss_kill") or {}
+    if "brier_skill_vs_base_rate" not in head:
+        return None
+    return {"rows": head.get("rows"), "positive_runs": head.get("positive_runs"),
+            "brier_skill_vs_base_rate": {k: head["brier_skill_vs_base_rate"].get(k) for k in ("value", "ci", "runs", "pass")},
+            "brier_skill_vs_v0": {k: head["brier_skill_vs_v0"].get(k) for k in ("value", "ci", "pass")},
+            "log_loss_pass": head["log_loss_vs_base_rate"]["pass"], "ece_pass": head["ece_bins_ge_30_positives"]["pass"]}
+
+
+def carry_vrun_fit(cand: Path, keep_doc: dict[str, Any] | None, seed: Path | str | None) -> dict[str, Any]:
+    """Which V_run fit the candidate carries (D33). A new fit that passes the keep test is the candidate's `run_value.npz`; one that
+    fails is moved aside (`rejected-fit/`) and the seed fit (the A/B's, `train_generation(vrun_seed=)`) takes its place; with neither
+    the candidate carries no kept fit. Returns the manifest entry: source (new / seed / none), kept, sha256 of the carried file, the
+    out-of-fold numbers of the new fit, and the seed's path, sha256 and its sidecar record (`<stem>.keep.json`) when there is one."""
+    import shutil  # noqa: PLC0415
+
+    cand, npz = Path(cand), Path(cand) / "run_value.npz"
+    passed = vrun_keep_passed(keep_doc, cand)
+    seed_info = None
+    if seed is not None and Path(seed).is_file():
+        seed_info = {"path": Path(seed).as_posix(), "sha256": file_sha256(seed)}
+        sidecar = Path(seed).with_name(Path(seed).stem + ".keep.json")
+        if sidecar.is_file():
+            seed_info["record"] = read_json(sidecar)
+    entry: dict[str, Any] = {"rule": "a later fit replaces the seed fit only when it passes the keep test (D33)",
+                             "new_fit_passed_keep": passed, "new_fit_oof": oof_numbers(keep_doc), "seed": seed_info}
+    if passed:
+        return {**entry, "source": "new", "kept": True, "sha256": file_sha256(npz)}
+    if seed_info is not None:
+        rejected = cand / "rejected-fit"
+        rejected.mkdir(exist_ok=True)
+        moved = {}
+        for name in ("run_value.npz", "run_value.pt", "run_value.onnx"):
+            if (cand / name).is_file():
+                moved[name] = file_sha256(cand / name)
+                shutil.move(str(cand / name), str(rejected / name))
+        shutil.copyfile(seed, npz)
+        return {**entry, "source": "seed", "kept": True, "sha256": file_sha256(npz), "rejected_fit": {"dir": rejected.name, "sha256": moved}}
+    return {**entry, "source": "none", "kept": False, "sha256": file_sha256(npz) if npz.is_file() else None}
+
+
+def lineage_note(gen: int, target: int, macro: str, fit_source: str) -> dict[str, Any] | None:
+    """The lineage of a candidate written as generation `target` from generation `gen`'s shards: None for the ordinary gen + 1.
+    `skips` are the generation numbers in between (their candidates were other policies and keep their own attempt counts)."""
+    if target == gen + 1:
+        return None
+    return {"from_generation": gen, "skips": list(range(gen + 1, target)),
+            "difference": LINEAGE_DIFFERENCE.format(macro=macro, fit=LINEAGE_FIT_TEXT.get(fit_source, LINEAGE_FIT_TEXT["none"])),
+            "decision": LINEAGE_DECISION}
 
 
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
                      max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
                      seed_dir: Path | None = None, retrain: int = 0, policy_target: str = "visits",
-                     exclude_prior_paths: tuple[str, ...] = (), seed_dirs: Sequence[Path | str] = ()) -> Path:
-    """Train generation `gen`'s candidate (the next generation's) from the last GEN_WINDOW generations' shards. `seed_dirs`
-    are further folders of E-blocks (the lab's generated ones) that no training seed may belong to."""
+                     exclude_prior_paths: tuple[str, ...] = (), seed_dirs: Sequence[Path | str] = (),
+                     vrun_seed: Path | str | None = None, candidate_generation: int | None = None) -> Path:
+    """Train generation `gen`'s candidate (the next generation's, or `candidate_generation`'s) from the last GEN_WINDOW generations' shards. `seed_dirs`
+    are further folders of E-blocks (the lab's generated ones) that no training seed may belong to. `vrun_seed` is a V_run fit
+    (`run_value.npz`) the candidate carries unless its own new fit passes the keep test (`carry_vrun_fit`, D33). `candidate_generation`
+    names the candidate's generation number when it is not gen + 1 (a new policy skipping the numbers between: it is written as
+    gen<target>/candidate, its attempt count starts at zero, and train.json / agent.json carry a `lineage` note)."""
     from run_train import shards as rs  # noqa: PLC0415
+
+    target = gen + 1 if candidate_generation is None else int(candidate_generation)
+    if target <= gen:
+        raise ValueError(f"a candidate trained from generation {gen} cannot be generation {target}")
 
     mans = window_manifests(shards_root, gen)
     if not mans:
@@ -896,12 +979,12 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     window_seeds = [str(x) for d, m in mans for name in m.get("combat_parts", []) for x in read_part(d / name)["seeds"]]
     check_disjoint(window_seeds, known_seed_sets(seed_dir or COMMITTED_SEEDS, None, "", seed_dirs))  # no benchmark seed trains
     # a retrain after a rejection keeps the rejected candidate (and its promotion.json) where it is
-    cand = Path(agent_root) / f"gen{gen + 1}" / ("candidate" if retrain == 0 else f"candidate-r{retrain}")
+    cand = Path(agent_root) / f"gen{target}" / ("candidate" if retrain == 0 else f"candidate-r{retrain}")
     cand.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     data = build_training_set(mans, max_fights=max_fights, seed=gen, exclude_prior_paths=exclude_prior_paths)
     doc: dict[str, Any] = {
-        "generation_trained_from": gen, "candidate_generation": gen + 1, "window": GEN_WINDOW,
+        "generation_trained_from": gen, "candidate_generation": target, "window": GEN_WINDOW,
         "blocks": len(mans), "runs": sum(int(m["runs"]) for _, m in mans),
         "runs_by_generation": {str(g): sum(int(m["runs"]) for _, m in mans if int(m["generation"]) == g)
                                for g in sorted({int(m["generation"]) for _, m in mans})},
@@ -916,12 +999,12 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         "build_s": round(time.perf_counter() - t0, 1)}
     doc["combat"] = train_combat_prior(data, cand, device=device, epochs=epochs, threads=threads, seed=gen,
                                        policy_target=policy_target)
-    write_prior_model_json(cand, gen + 1)
+    write_prior_model_json(cand, target)
     base_sims = int(mans[0][1]["base_sims"])
     if vrun:
         paths = [d / n for d, m in mans for n in m.get("run_shards", [])]
         doc["run_value"] = train_run_value(paths, cand, generation=gen, base_sims=base_sims,
-                                           ascension=int(mans[0][1]["ascension"]), threads=threads)
+                                           ascension=int(mans[0][1]["ascension"]), threads=threads, device=device)
         doc["dedup"]["run_records_dropped"] = int(doc["run_value"]["value"].get("duplicates_dropped", 0))
         doc["dedup"]["run_records_distinct"] = int(doc["run_value"]["value"].get("runs", 0))
     del rs
@@ -929,21 +1012,27 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         doc["onnx"] = export_all(cand)
     doc["cpu_min_total"] = round(doc["combat"]["cpu_min"] + doc.get("run_value", {}).get("cpu_min", 0.0), 2)
     doc["wall_min_total"] = round(doc["combat"]["wall_min"] + doc.get("run_value", {}).get("wall_min", 0.0), 2)
-    # V_run drives macro choices only once its DESIGN 5.3 keep conditions are shown (run_train.keep); until then the rules play
-    # outside fights. The record sits in train.json under vrun_keep; the agent.json macro follows its verdict.
+    # V_run drives macro choices once its keep conditions are shown (run_train.keep) and the switch is not opted out (D33); the
+    # rules play outside fights otherwise. The record sits in train.json under vrun_keep; the agent.json macro follows its verdict.
     keep_doc = (doc.get("run_value", {}).get("value") or {}).pop("keep", None)
     doc["vrun_keep"] = keep_doc if keep_doc is not None else {"status": "not_run", "all_computable_pass": False}
     passed, enabled = vrun_keep_passed(doc["vrun_keep"], cand), macro_vrun_on()
-    macro = macro_for(doc["vrun_keep"], cand, enabled)
-    doc["vrun_keep"]["macro_switch"] = {"passed": passed, "enabled": enabled, "note": MACRO_SWITCH_NOTE}
+    fit = doc["vrun_fit"] = carry_vrun_fit(cand, doc["vrun_keep"], vrun_seed) if vrun else {"source": "none", "kept": False, "sha256": None}
+    macro = macro_for({"all_computable_pass": fit["kept"]}, cand, enabled)  # a kept fit (new or seed) and the export decide
+    doc["vrun_keep"]["macro_switch"] = {"passed": passed, "enabled": enabled, "carried": fit["source"], "note": MACRO_SWITCH_NOTE}
     doc["vrun_keep"]["note"] = vrun_keep_note(macro)
-    write_json(cand / "agent.json", {"generation": gen + 1, "macro": macro, "trained_from": gen, "written": utc_now(),
-                                     "mask_version": CANDIDATE_MASK_VERSION,
-                                     "note": ("V_run passed every computable DESIGN 5.3 keep condition (Tier-B regret and the battery "
-                                              "are not computed) and the macro switch is on: it picks macro options" if macro == "vrun" else
-                                              f"V_run passed the computable keep conditions; the macro switch ({MACRO_VRUN_FLAG}) is "
-                                              "off, so macro stays rules" if passed else
-                                              "macro stays rules until V_run passes DESIGN 5.3 (Brier vs base rate and V0, ECE)")})
+    lineage = lineage_note(gen, target, macro, fit["source"])
+    if lineage:
+        doc["lineage"] = lineage
+    write_json(cand / "agent.json", {"generation": target, "macro": macro, "trained_from": gen, "written": utc_now(),
+                                     **({"lineage": lineage} if lineage else {}),
+                                     "mask_version": CANDIDATE_MASK_VERSION, "vrun_fit": {"source": fit["source"], "sha256": fit["sha256"]},
+                                     "note": ("V_run passed the computable keep conditions (Tier-B regret and the battery are not "
+                                              "computed) and the macro switch is on (D33): it picks macro options" if macro == "vrun" and fit["source"] == "new" else
+                                              "the seed V_run fit (the A/B's) is carried: the new fit did not pass the keep test (D33)" if macro == "vrun" else
+                                              f"V_run passed the computable keep conditions; {MACRO_VRUN_FLAG}=rules opts "
+                                              "out, so macro stays rules" if passed else
+                                              "macro stays rules: V_run did not pass the keep conditions")})
     write_json(cand / "train.json", doc)
     shutil_rmtree(cand / "work")
     return cand
@@ -968,18 +1057,39 @@ def shutil_rmtree(p: Path) -> None:
 
 
 _MARKER = re.compile(r"(ready|done)-(\d+)(?:-r(\d+))?")
+_MARKER_TARGET = re.compile(r"(ready|done)-(\d+)-g(\d+)")  # names the candidate generation; not counted as a budget by mark_ready
 
 
 def marker_parts(path: Path | str) -> tuple[int, int] | None:
-    """(generation, retrain index) of `ready-<gen>` (index 0) or `ready-<gen>-r<n>`; None for anything else."""
-    m = _MARKER.fullmatch(Path(path).name)
-    return (int(m[2]), int(m[3] or 0)) if m and m[1] == "ready" else None
+    """(generation, retrain index) of `ready-<gen>` (index 0), `ready-<gen>-r<n>` or `ready-<gen>-g<target>` (index 0: it is
+    written as gen<target>/candidate); None for anything else. `marker_target` gives the `-g` form's target."""
+    name = Path(path).name
+    m = _MARKER.fullmatch(name)
+    if m and m[1] == "ready":
+        return int(m[2]), int(m[3] or 0)
+    t = _MARKER_TARGET.fullmatch(name)
+    return (int(t[2]), 0) if t and t[1] == "ready" else None
+
+
+def marker_target(path: Path | str) -> int | None:
+    """The candidate generation a `ready-<gen>-g<target>` marker names; None for the other forms."""
+    t = _MARKER_TARGET.fullmatch(Path(path).name)
+    return int(t[3]) if t and t[1] == "ready" else None
+
+
+def marker_key(path: Path | str) -> tuple[int, int, int] | None:
+    """Marker order: generation, then the plain and `-r<n>` forms by retrain index, then the `-g<target>` forms by target."""
+    parts = marker_parts(path)
+    if parts is None:
+        return None
+    target = marker_target(path)
+    return (parts[0], 0, parts[1]) if target is None else (parts[0], 1, target)
 
 
 def ready_markers(train_dir: Path) -> list[tuple[int, Path]]:
-    """`LAB/train/ready-<gen>[-r<n>]` markers, lowest generation (then retrain index) first."""
+    """`LAB/train/ready-<gen>[-r<n>|-g<target>]` markers, lowest generation first, within one: the plain, the `-r<n>`, the `-g<target>`."""
     d = Path(train_dir)
-    found = [(marker_parts(p), p) for p in (d.glob("ready-*") if d.is_dir() else [])]
+    found = [(marker_key(p), p) for p in (d.glob("ready-*") if d.is_dir() else [])]
     return [(k[0], p) for k, p in sorted(((k, p) for k, p in found if k), key=lambda x: x[0])]
 
 

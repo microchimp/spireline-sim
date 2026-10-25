@@ -114,7 +114,7 @@ class KeepMathTests(unittest.TestCase):
 
 
 class MacroSwitchTests(unittest.TestCase):
-    """The macro fence (VRUN_SWEEP.md 1.5): `vrun` needs a passed keep record, the export and SPIRELINE_MACRO_VRUN on; off by default."""
+    """D33: `vrun` needs a passed keep record and the export; the switch is on without any variable, and SPIRELINE_MACRO_VRUN=rules opts out."""
 
     def setUp(self):
         env = mock.patch.dict(os.environ)
@@ -122,38 +122,35 @@ class MacroSwitchTests(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop(gen_loop.MACRO_VRUN_FLAG, None)
 
-    def test_agent_json_gets_vrun_only_when_every_computable_condition_passes_the_export_exists_and_the_switch_is_on(self):
+    def test_agent_json_gets_vrun_when_every_computable_condition_passes_and_the_export_exists_with_no_variable_set(self):
         with tempfile.TemporaryDirectory() as tmp:
             cand = Path(tmp) / "gen4" / "candidate"
             cand.mkdir(parents=True)
             passed, failed = {"all_computable_pass": True}, {"all_computable_pass": False}
-            os.environ[gen_loop.MACRO_VRUN_FLAG] = "1"
             self.assertEqual(gen_loop.macro_for(passed, cand), "rules")  # no run_value.npz yet
             (cand / "run_value.npz").write_bytes(b"x")
-            self.assertEqual(gen_loop.macro_for(passed, cand), "vrun")  # passed, exported, switch on
+            self.assertEqual(gen_loop.macro_for(passed, cand), "vrun")  # passed, exported, no variable
             self.assertEqual(gen_loop.macro_for(failed, cand), "rules")
             self.assertEqual(gen_loop.macro_for(None, cand), "rules")
             self.assertEqual(gen_loop.macro_for({"status": "no_split", "all_computable_pass": False}, cand), "rules")
-            del os.environ[gen_loop.MACRO_VRUN_FLAG]
-            self.assertEqual(gen_loop.macro_for(passed, cand), "rules")  # a passing record with the variable unset
-            self.assertEqual(gen_loop.macro_for(passed, cand, enabled=True), "vrun")  # an explicit flag beats the variable
+            self.assertEqual(gen_loop.macro_for(passed, cand, enabled=False), "rules")  # an explicit flag beats the variable
             # load_agent reads the macro the way the next promotion's E-block does
             (cand / "agent.json").write_text(json.dumps({"generation": 4, "macro": "vrun"}), encoding="utf-8")
             agent = gen_loop.load_agent(cand)
             self.assertEqual((agent.macro, agent.generation), ("vrun", 4))
             self.assertTrue(agent.macro_npz.endswith("run_value.npz"))
 
-    def test_the_switch_reads_the_review_guards_values_and_nothing_else(self):
+    def test_the_variable_is_an_opt_out_that_reads_rules_off_0_false_no_and_nothing_else(self):
         with tempfile.TemporaryDirectory() as tmp:
             cand = Path(tmp)
             (cand / "run_value.npz").write_bytes(b"x")
             passed = {"all_computable_pass": True}
-            for value in gen_loop.REVIEW_GUARD_ON_VALUES + (" ON ", "True"):
-                with self.subTest(value=value), mock.patch.dict(os.environ, {gen_loop.MACRO_VRUN_FLAG: value}):
-                    self.assertEqual(gen_loop.macro_for(passed, cand), "vrun")
-            for value in ("", "0", "off", "false", "no", "2"):
+            for value in ("rules", " RULES ", "off", "0", "false", "no"):
                 with self.subTest(value=value), mock.patch.dict(os.environ, {gen_loop.MACRO_VRUN_FLAG: value}):
                     self.assertEqual(gen_loop.macro_for(passed, cand), "rules")
+            for value in ("", "1", "on", "true", "yes", "vrun", "2"):  # the old on-values and anything else leave the default
+                with self.subTest(value=value), mock.patch.dict(os.environ, {gen_loop.MACRO_VRUN_FLAG: value}):
+                    self.assertEqual(gen_loop.macro_for(passed, cand), "vrun")
 
 
 if __name__ == "__main__":
