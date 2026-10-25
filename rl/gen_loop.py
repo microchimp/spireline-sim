@@ -890,12 +890,67 @@ def macro_for(keep_doc: dict[str, Any] | None, cand: Path, enabled: bool | None 
     return "vrun" if vrun_keep_passed(keep_doc, cand) and macro_vrun_on(enabled) else "rules"
 
 
+def file_sha256(path: Path | str) -> str:
+    import hashlib  # noqa: PLC0415
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def oof_numbers(keep_doc: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The out-of-fold numbers of a keep record's Act 1 head, for the manifest (none: the record has no judged head)."""
+    head = ((keep_doc or {}).get("heads") or {}).get("act1_boss_kill") or {}
+    if "brier_skill_vs_base_rate" not in head:
+        return None
+    return {"rows": head.get("rows"), "positive_runs": head.get("positive_runs"),
+            "brier_skill_vs_base_rate": {k: head["brier_skill_vs_base_rate"].get(k) for k in ("value", "ci", "runs", "pass")},
+            "brier_skill_vs_v0": {k: head["brier_skill_vs_v0"].get(k) for k in ("value", "ci", "pass")},
+            "log_loss_pass": head["log_loss_vs_base_rate"]["pass"], "ece_pass": head["ece_bins_ge_30_positives"]["pass"]}
+
+
+def carry_vrun_fit(cand: Path, keep_doc: dict[str, Any] | None, seed: Path | str | None) -> dict[str, Any]:
+    """Which V_run fit the candidate carries (D33). A new fit that passes the keep test is the candidate's `run_value.npz`; one that
+    fails is moved aside (`rejected-fit/`) and the seed fit (the A/B's, `train_generation(vrun_seed=)`) takes its place; with neither
+    the candidate carries no kept fit. Returns the manifest entry: source (new / seed / none), kept, sha256 of the carried file, the
+    out-of-fold numbers of the new fit, and the seed's path, sha256 and its sidecar record (`<stem>.keep.json`) when there is one."""
+    import shutil  # noqa: PLC0415
+
+    cand, npz = Path(cand), Path(cand) / "run_value.npz"
+    passed = vrun_keep_passed(keep_doc, cand)
+    seed_info = None
+    if seed is not None and Path(seed).is_file():
+        seed_info = {"path": Path(seed).as_posix(), "sha256": file_sha256(seed)}
+        sidecar = Path(seed).with_name(Path(seed).stem + ".keep.json")
+        if sidecar.is_file():
+            seed_info["record"] = read_json(sidecar)
+    entry: dict[str, Any] = {"rule": "a later fit replaces the seed fit only when it passes the keep test (D33)",
+                             "new_fit_passed_keep": passed, "new_fit_oof": oof_numbers(keep_doc), "seed": seed_info}
+    if passed:
+        return {**entry, "source": "new", "kept": True, "sha256": file_sha256(npz)}
+    if seed_info is not None:
+        rejected = cand / "rejected-fit"
+        rejected.mkdir(exist_ok=True)
+        moved = {}
+        for name in ("run_value.npz", "run_value.pt", "run_value.onnx"):
+            if (cand / name).is_file():
+                moved[name] = file_sha256(cand / name)
+                shutil.move(str(cand / name), str(rejected / name))
+        shutil.copyfile(seed, npz)
+        return {**entry, "source": "seed", "kept": True, "sha256": file_sha256(npz), "rejected_fit": {"dir": rejected.name, "sha256": moved}}
+    return {**entry, "source": "none", "kept": False, "sha256": file_sha256(npz) if npz.is_file() else None}
+
+
 def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: str | None = None, epochs: int = 16,
                      max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
                      seed_dir: Path | None = None, retrain: int = 0, policy_target: str = "visits",
-                     exclude_prior_paths: tuple[str, ...] = (), seed_dirs: Sequence[Path | str] = ()) -> Path:
+                     exclude_prior_paths: tuple[str, ...] = (), seed_dirs: Sequence[Path | str] = (),
+                     vrun_seed: Path | str | None = None) -> Path:
     """Train generation `gen`'s candidate (the next generation's) from the last GEN_WINDOW generations' shards. `seed_dirs`
-    are further folders of E-blocks (the lab's generated ones) that no training seed may belong to."""
+    are further folders of E-blocks (the lab's generated ones) that no training seed may belong to. `vrun_seed` is a V_run fit
+    (`run_value.npz`) the candidate carries unless its own new fit passes the keep test (`carry_vrun_fit`, D33)."""
     from run_train import shards as rs  # noqa: PLC0415
 
     mans = window_manifests(shards_root, gen)
@@ -942,13 +997,15 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     keep_doc = (doc.get("run_value", {}).get("value") or {}).pop("keep", None)
     doc["vrun_keep"] = keep_doc if keep_doc is not None else {"status": "not_run", "all_computable_pass": False}
     passed, enabled = vrun_keep_passed(doc["vrun_keep"], cand), macro_vrun_on()
-    macro = macro_for(doc["vrun_keep"], cand, enabled)
-    doc["vrun_keep"]["macro_switch"] = {"passed": passed, "enabled": enabled, "note": MACRO_SWITCH_NOTE}
+    fit = doc["vrun_fit"] = carry_vrun_fit(cand, doc["vrun_keep"], vrun_seed) if vrun else {"source": "none", "kept": False, "sha256": None}
+    macro = macro_for({"all_computable_pass": fit["kept"]}, cand, enabled)  # a kept fit (new or seed) and the export decide
+    doc["vrun_keep"]["macro_switch"] = {"passed": passed, "enabled": enabled, "carried": fit["source"], "note": MACRO_SWITCH_NOTE}
     doc["vrun_keep"]["note"] = vrun_keep_note(macro)
     write_json(cand / "agent.json", {"generation": gen + 1, "macro": macro, "trained_from": gen, "written": utc_now(),
-                                     "mask_version": CANDIDATE_MASK_VERSION,
+                                     "mask_version": CANDIDATE_MASK_VERSION, "vrun_fit": {"source": fit["source"], "sha256": fit["sha256"]},
                                      "note": ("V_run passed the computable keep conditions (Tier-B regret and the battery are not "
-                                              "computed) and the macro switch is on (D33): it picks macro options" if macro == "vrun" else
+                                              "computed) and the macro switch is on (D33): it picks macro options" if macro == "vrun" and fit["source"] == "new" else
+                                              "the seed V_run fit (the A/B's) is carried: the new fit did not pass the keep test (D33)" if macro == "vrun" else
                                               f"V_run passed the computable keep conditions; {MACRO_VRUN_FLAG}=rules opts "
                                               "out, so macro stays rules" if passed else
                                               "macro stays rules: V_run did not pass the keep conditions")})

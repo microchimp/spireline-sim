@@ -1,6 +1,7 @@
 """A8 (D33): the promotion arms play each agent's own macro; the out-of-fold keep test; the shipped seed fit."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -167,6 +168,82 @@ class CrossFitFitTests(unittest.TestCase):
             self.assertIs(record["held_out_tenth"]["record"], seen["tenth"])
             meta = train.models.load_numpy(train.models.npz_for(out)).meta
             self.assertEqual(meta["value"]["keep"]["rule"], keep.OOF_RULE)
+
+
+class SeedFitTests(unittest.TestCase):
+    """D33: the first vrun candidate ships with the A/B's fit; a later fit replaces it only when it passes the keep test."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import test_gen_loop
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        rng = np.random.default_rng(3)
+        for g in (0, 1):
+            sink = gen_loop.ShardSink(root / "runs" / f"job{g}", g, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=3)
+            for i in range(6):
+                sink.add(test_gen_loop.fake_record(f"S{g}{i:08d}"[:10], g), test_gen_loop.fake_run_arrays(rng, 3, 5))
+            sink.close()
+        cls.root = root
+        cls.seed = root / "seedfit" / "run_value.npz"
+        cls.seed.parent.mkdir()
+        cls.seed.write_bytes(b"SEEDFIT")
+        (cls.seed.parent / "run_value.keep.json").write_text(json.dumps({"recipe_out_of_fold": {"value": 0.044}}))
+        cls.count = 0
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def train(self, new_passes: bool, seed, env=None):
+        """train_generation with the V fit stubbed: it writes run_value.npz (b"NEWFIT") and a keep record that passes or fails."""
+        type(self).count += 1
+        head = {"positives": 40, "positive_runs": 40, "rows": 900, "pass": new_passes,
+                "brier_skill_vs_base_rate": {"value": 0.04 if new_passes else -0.01, "ci": [0.01, 0.07] if new_passes else [-0.03, 0.01],
+                                             "runs": 900, "pass": new_passes},
+                "brier_skill_vs_v0": {"value": 0.03, "ci": [0.0, 0.06], "pass": True},
+                "log_loss_vs_base_rate": {"pass": True}, "ece_bins_ge_30_positives": {"pass": True}}
+
+        def fake_fit(paths, out, **kw):
+            Path(out, "run_value.npz").write_bytes(b"NEWFIT")
+            Path(out, "run_value.pt").write_bytes(b"PT")
+            return {"wall_min": 0.0, "cpu_min": 0.0, "fight": None, "config": None, "value": {
+                "runs": 12, "duplicates_dropped": 0, "keep": {"all_computable_pass": new_passes, "heads": {"act1_boss_kill": head}}}}
+
+        with mock.patch.dict(os.environ, env or {}), mock.patch.object(gen_loop, "train_run_value", fake_fit):
+            os.environ.pop(gen_loop.MACRO_VRUN_FLAG, None) if not env else None
+            return gen_loop.train_generation(1, self.root / "runs", self.root / "agent", device="cpu", epochs=1, max_fights=20,
+                                             threads=2, vrun=True, export=False, retrain=self.count, vrun_seed=seed)
+
+    def test_a_failing_new_fit_keeps_the_seed_fit_and_a_passing_one_replaces_it(self):
+        failing = self.train(False, self.seed)
+        self.assertEqual((failing / "run_value.npz").read_bytes(), b"SEEDFIT")
+        self.assertEqual((failing / "rejected-fit" / "run_value.npz").read_bytes(), b"NEWFIT")
+        t = json.loads((failing / "train.json").read_text())
+        self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["kept"], t["vrun_keep"]["macro_switch"]["carried"]), ("seed", True, "seed"))
+        self.assertEqual(t["vrun_fit"]["sha256"], gen_loop.file_sha256(self.seed))
+        self.assertEqual(t["vrun_fit"]["seed"]["record"], {"recipe_out_of_fold": {"value": 0.044}})
+        self.assertEqual(t["vrun_fit"]["new_fit_oof"]["brier_skill_vs_base_rate"]["ci"], [-0.03, 0.01])
+        meta = json.loads((failing / "agent.json").read_text())
+        self.assertEqual((meta["macro"], meta["vrun_fit"]["source"]), ("vrun", "seed"))
+        self.assertEqual(gen_loop.load_agent(failing).macro, "vrun")
+        passing = self.train(True, self.seed)
+        self.assertEqual((passing / "run_value.npz").read_bytes(), b"NEWFIT")
+        self.assertFalse((passing / "rejected-fit").exists())
+        t = json.loads((passing / "train.json").read_text())
+        self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["sha256"]), ("new", gen_loop.file_sha256(passing / "run_value.npz")))
+        self.assertEqual(t["vrun_fit"]["new_fit_oof"]["brier_skill_vs_base_rate"]["ci"], [0.01, 0.07])
+        self.assertEqual(json.loads((passing / "agent.json").read_text())["macro"], "vrun")
+
+    def test_without_a_seed_a_failing_fit_leaves_the_rules_macro_and_the_opt_out_still_wins(self):
+        none = self.train(False, None)
+        self.assertEqual(json.loads((none / "agent.json").read_text())["macro"], "rules")
+        self.assertEqual(json.loads((none / "train.json").read_text())["vrun_fit"]["source"], "none")
+        opted_out = self.train(True, self.seed, env={gen_loop.MACRO_VRUN_FLAG: "rules"})
+        self.assertEqual(json.loads((opted_out / "agent.json").read_text())["macro"], "rules")
+        self.assertEqual(json.loads((opted_out / "train.json").read_text())["vrun_keep"]["macro_switch"]["enabled"], False)
 
 
 if __name__ == "__main__":

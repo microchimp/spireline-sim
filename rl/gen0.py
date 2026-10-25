@@ -606,7 +606,8 @@ def train_cmd(a: argparse.Namespace) -> int:
                                      max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
                                      retrain=retrain, policy_target=a.policy_target,  # a retrain draws on the larger window
                                      exclude_prior_paths=exclude_prior_paths(getattr(a, "exclude_prior_paths", None)),
-                                     seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else [])  # the lab's generated E-blocks too
+                                     seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else [],  # the lab's generated E-blocks too
+                                     vrun_seed=getattr(a, "vrun_seed", None))
     print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": gen + 1}))
     if a.promote:
         if not (a.emu_python and a.seeds_file):
@@ -811,6 +812,8 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--max-fights", type=int, default=6400)
     t.add_argument("--threads", type=int, default=6)
     t.add_argument("--no-vrun", action="store_true")
+    t.add_argument("--vrun-seed", help="a V_run fit (run_value.npz) the candidate carries unless its own new fit passes the keep test "
+                   "(the A/B's fit for the first vrun candidate; <stem>.keep.json beside it is recorded in train.json)")
     t.add_argument("--exclude-prior-paths", help="comma list of prior paths (none, cpu, server, mixed, uniform) whose runs the training set drops")
     add_prior_server_flags(t)  # passed through to --promote's subprocess; the promotion arms are CPU unless these say otherwise
     t.add_argument("--promote", action="store_true", help="then run `promote` against the current champion in the emulator venv")
