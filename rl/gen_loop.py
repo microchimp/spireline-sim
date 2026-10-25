@@ -522,14 +522,20 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
                        exclude_prior_paths: tuple[str, ...] = ()) -> dict[str, Any]:
     """Merge the combat parts of the window with `prior_loop.loop.merge_datasets` and sample at most `max_fights` fights.
     Returns the arrays plus counts per generation. `exclude_prior_paths` (tags of `PRIOR_PATHS`) drops the runs a part's
-    `prior_path` codes tag so; a part from before the field has none and is never dropped."""
+    `prior_path` codes tag so; a part from before the field has none and is never dropped.
+
+    A (generation, seed) counts once: a block that was resumed before `ShardSink` was idempotent holds its replayed runs again,
+    so the first part to name a seed keeps its rows and the later copies' rows are dropped (`_runs_dropped`, `_runs_distinct`
+    and `_samples_dedup_dropped` say how many)."""
     from prior_loop.loop import merge_datasets  # noqa: PLC0415
 
     bad = [t for t in exclude_prior_paths if t not in PRIOR_PATH_CODES]
     if bad:
         raise ValueError(f"unknown prior path {bad[0]!r}; one of {', '.join(PRIOR_PATHS)}")
     excluded = np.array([PRIOR_PATH_CODES[t] for t in exclude_prior_paths], dtype=np.int8)
-    sources, per_gen, ixs, qs, keeps = [], {}, [], [], []
+    sources, per_gen, ixs, qs, keeps, firsts = [], {}, [], [], [], []
+    seen: set[tuple[int, str]] = set()
+    runs_dropped = 0
     for d, m in manifests:
         for name in m.get("combat_parts", []):
             blob = read_part(d / name)
@@ -541,8 +547,16 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
             keep = np.ones(blob["lengths"].size, dtype=bool)
             if excluded.size and "prior_path" in blob:  # `fights` is the run's index in the part, the index of its code
                 keep = ~np.isin(blob["prior_path"][blob["fights"]], excluded)
+            first = np.ones(len(blob["seeds"]), dtype=bool)  # per run in the part: its seed is not an earlier part's
+            for i, s in enumerate(blob["seeds"]):
+                if (g, str(s)) in seen:
+                    first[i] = False
+                seen.add((g, str(s)))
+            runs_dropped += int((~first).sum())
+            fresh = first[blob["fights"]]  # `fights` is the run's index in the part
             keeps.append(keep)
-            per_gen[g] = per_gen.get(g, 0) + int(keep.sum())
+            firsts.append(fresh)
+            per_gen[g] = per_gen.get(g, 0) + int((keep & fresh).sum())
             ixs.append(blob["fight_ix"])
             qs.append(blob.get("qvals"))
             sources.append((len(sources), d / name))
@@ -552,9 +566,10 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     if all(q is not None for q in qs):  # merge_datasets keeps prior_loop's keys; the completed-Q target needs these
         merged["qvals"] = np.concatenate(qs)
     ix_all = np.concatenate(ixs)
-    keep_all = np.concatenate(keeps)
-    n_excluded = int(keep_all.size - keep_all.sum())
-    if n_excluded:
+    prior_keep, fresh_all = np.concatenate(keeps), np.concatenate(firsts)
+    keep_all = prior_keep & fresh_all
+    n_excluded = int((~prior_keep & fresh_all).sum())
+    if not keep_all.all():
         if not keep_all.any():
             raise ValueError("no combat samples in the window after excluding prior paths " + ",".join(exclude_prior_paths))
         merged = _take_rows(merged, keep_all)
@@ -570,6 +585,9 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     else:
         kept = n_all
     merged["_samples_excluded"] = np.array([n_excluded])
+    merged["_runs_dropped"] = np.array([runs_dropped])
+    merged["_runs_distinct"] = np.array([len(seen)])
+    merged["_samples_dedup_dropped"] = np.array([int((~fresh_all).sum())])
     merged["_fights_available"] = np.array([n_all])
     merged["_fights_kept"] = np.array([kept])
     merged["_samples_by_generation"] = np.array(sorted(per_gen.items()))
@@ -860,6 +878,8 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         "fights_available": int(data["_fights_available"][0]), "fights_kept": int(data["_fights_kept"][0]),
         **({"excluded_prior_paths": list(exclude_prior_paths), "samples_excluded": int(data["_samples_excluded"][0])}
            if exclude_prior_paths else {}),
+        "dedup": {"combat_runs_distinct": int(data["_runs_distinct"][0]), "combat_runs_dropped": int(data["_runs_dropped"][0]),
+                  "combat_samples_dropped": int(data["_samples_dedup_dropped"][0])},
         "samples_trained": int(data["lengths"].size), "target": "root visits (live search has no Gumbel root)" if policy_target == "visits" else policy_target,
         "validation": "by run (train_combat splits on the `fights` column, which holds the run index)",
         "build_s": round(time.perf_counter() - t0, 1)}
@@ -871,6 +891,8 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         paths = [d / n for d, m in mans for n in m.get("run_shards", [])]
         doc["run_value"] = train_run_value(paths, cand, generation=gen, base_sims=base_sims,
                                            ascension=int(mans[0][1]["ascension"]), threads=threads)
+        doc["dedup"]["run_records_dropped"] = int(doc["run_value"]["value"].get("duplicates_dropped", 0))
+        doc["dedup"]["run_records_distinct"] = int(doc["run_value"]["value"].get("runs", 0))
     del rs
     if export:
         doc["onnx"] = export_all(cand)

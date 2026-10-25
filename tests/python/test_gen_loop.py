@@ -210,6 +210,71 @@ class ResumeWriterTests(unittest.TestCase):
             self.assertEqual(len(self._records(d)), len(self.SEEDS))
 
 
+class DedupeReaderTests(unittest.TestCase):
+    """Blocks written before the writer was idempotent hold a seed up to 8 times; the readers keep one copy per (generation, seed)."""
+
+    SEEDS = [f"READER{i:04d}" for i in range(6)]
+
+    @staticmethod
+    def _block(root: Path, name: str, seeds: list[str], rng: np.random.Generator, generation: int = 2) -> dict:
+        sink = gen_loop.ShardSink(root / name, generation, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=2)
+        arrays = {}
+        for s in seeds:
+            arrays[s] = fake_run_arrays(rng)  # a copy differs from the first record so the test can tell which one was read
+            sink.add(fake_record(s, generation), arrays[s])
+        sink.close()
+        return arrays
+
+    def _window(self, root: Path, rng: np.random.Generator) -> tuple[dict, dict]:
+        a = self._block(root, "job-a", self.SEEDS[:4], rng)
+        b = self._block(root, "job-b", self.SEEDS[2:6], rng)  # replays the last two seeds of a, then two new ones
+        return a, b
+
+    def test_build_training_set_keeps_the_first_copy_of_each_run(self):
+        rng = np.random.default_rng(8)
+        with tempfile.TemporaryDirectory() as d:
+            a, b = self._window(Path(d), rng)
+            data = gen_loop.build_training_set(gen_loop.window_manifests(Path(d), 2), max_fights=10**6)
+        kept = [a[s] for s in self.SEEDS[:4]] + [b[s] for s in self.SEEDS[4:6]]
+        self.assertEqual(int(data["lengths"].size), sum(int(x["lengths"].size) for x in kept))
+        self.assertEqual(int(data["_fights_available"][0]), sum(len(np.unique(x["fight_ix"])) for x in kept))
+        self.assertAlmostEqual(float(data["visits"].sum()), float(sum(x["visits"].sum() for x in kept)), places=3)
+        self.assertEqual(int(data["_runs_dropped"][0]), 2)
+        self.assertEqual(int(data["_samples_dedup_dropped"][0]), sum(int(b[s]["lengths"].size) for s in self.SEEDS[2:4]))
+        self.assertEqual(int(data["_samples_by_generation"][0][1]), int(data["lengths"].size))
+        self.assertEqual(len(np.unique(data["fights"])), 6)  # six distinct runs
+
+    def test_a_window_without_copies_drops_nothing(self):
+        rng = np.random.default_rng(9)
+        with tempfile.TemporaryDirectory() as d:
+            self._block(Path(d), "job-a", self.SEEDS[:3], rng)
+            self._block(Path(d), "job-b", self.SEEDS[3:], rng)
+            data = gen_loop.build_training_set(gen_loop.window_manifests(Path(d), 2), max_fights=10**6)
+        self.assertEqual(int(data["_runs_dropped"][0]), 0)
+        self.assertEqual(int(data["_samples_dedup_dropped"][0]), 0)
+
+    def test_the_same_seed_in_two_generations_is_two_runs(self):
+        rng = np.random.default_rng(10)
+        with tempfile.TemporaryDirectory() as d:
+            self._block(Path(d), "job-a", self.SEEDS[:2], rng, generation=1)
+            self._block(Path(d), "job-b", self.SEEDS[:2], rng, generation=2)
+            data = gen_loop.build_training_set(gen_loop.window_manifests(Path(d), 2), max_fights=10**6)
+        self.assertEqual(int(data["_runs_dropped"][0]), 0)
+        self.assertEqual(len(np.unique(data["fights"])), 4)
+
+    def test_train_json_reports_the_duplicates_dropped(self):
+        rng = np.random.default_rng(11)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._window(root / "runs", rng)
+            cand = gen_loop.train_generation(2, root / "runs", root / "agent", device="cpu", epochs=1, max_fights=20, threads=2,
+                                             vrun=False, export=False)
+            doc = json.loads((cand / "train.json").read_text(encoding="utf-8"))
+        self.assertEqual(doc["dedup"]["combat_runs_dropped"], 2)
+        self.assertGreater(doc["dedup"]["combat_samples_dropped"], 0)
+        self.assertEqual(doc["dedup"]["combat_runs_distinct"], 6)
+
+
 _FIXTURE: dict = {}
 
 
