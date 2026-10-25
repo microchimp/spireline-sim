@@ -1062,6 +1062,17 @@ are left, or not), and the old rule's users are listed and either follow the gam
   (`CombatEngine`'s turn end, before the flush; game `RitualPower` after it: no flush effect reads Strength); Art of War's
   bookkeeping (the attacks-played count its next turn start reads; the flush plays no card); Kusarigama's (its every-third
   counter, which only plays move).
+- **Proof rerun** (F08+F10 on; byte proofs against main `bcb64c9b`: 0 differ, old vs core2: 0 differ). `2b49779387ccd8b9`
+  is no longer worse.
+
+| check | after R7h | after R7i | gate |
+|---|---|---|---|
+| O1: fail only switched on | 0 | 0 | pass |
+| traced (77): better / same / worse; fewer fields | 8 / 69 / 0; 0 | 8 / 69 / 0; 0 | pass |
+| corpus (4,392): better / same / worse; fewer fields | 70 / 4,321 / 1; 0 | 71 / 4,321 / 0; 0 | pass |
+| step test, strict | 4 of 4 | 4 of 4 | pass |
+| fuzz (300): differing / ending disagreements | 291 / 0 | 291 / 0 | report |
+| port gate, unreached pairs counted | 0 | 0 | pass |
 
 ### R7h: the last R7 gates (branch `rebuild/f08-r7h`, on R7g's `95877506`): not passed, nothing switched on
 
