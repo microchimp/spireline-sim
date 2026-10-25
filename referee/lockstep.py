@@ -555,6 +555,12 @@ def _event_names() -> dict[int, str]:
     return out
 
 
+# The run mask version of the emulator side (D32): version 2 lists the potion discard on the card reward, deck-select,
+# bundle-select and Crystal Sphere screens, so the referee's discard_potion there is stepped, not a gap. It is the
+# lockstep's own setting, whatever the agent's: the mask only carries the option, and `engine._legal` hides it from the rules.
+MASK_VERSION = 2
+
+
 class EmuLock:
     """The real emulator side: a RunSession from the referee's seed, the rules policy, IS-MCTS in fights.
 
@@ -588,7 +594,7 @@ class EmuLock:
         self.position_of = search_configs.position_of
         self.E, self.F, self.V, self.ls, self.native = engine, features, vocab, live_search, native
         self.seed, self.sims = seed, sims
-        self.s = engine.RunSession(seed, ascension, engine.CombatBudget(self.cfg.sims, self.cfg.sims),
+        self.s = engine.RunSession(seed, ascension, engine.CombatBudget(self.cfg.sims, self.cfg.sims), mask_version=MASK_VERSION,
                                    **({} if character == "IRONCLAD" else {"character": character}))
         self.rules = macro_policy()  # the scored agent's (SPIRELINE_GEN_DIR); the rules for generation 0
         # the agent's RNG is seeded from the agent seed alone, never from the game seed (DESIGN 3.2)
