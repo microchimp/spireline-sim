@@ -194,8 +194,10 @@ def _load_native_without_a_library():
     """sts2_gym/native.py imported under another name against a stand-in library (a mock that answers the version checks), so its
     pure parts run on a machine with no build."""
     lib = mock.MagicMock()
-    lib.Sts2_NativeApiVersion.return_value = 37
-    lib.Sts2Run_NativeApiVersion.return_value = 27
+    # The versions native.py requires, read from its source so the stub never drifts from the module it stands in for.
+    src = NATIVE_PY.read_text(encoding="utf-8")
+    lib.Sts2_NativeApiVersion.return_value = int(re.search(r"^_REQUIRED_NATIVE_API_VERSION = (\d+)", src, re.M).group(1))
+    lib.Sts2Run_NativeApiVersion.return_value = int(re.search(r"^_REQUIRED_RUN_NATIVE_API_VERSION = (\d+)", src, re.M).group(1))
     lib.Sts2Run_ObsLayout.return_value = 13  # the layout block's length
     spec = importlib.util.spec_from_file_location("native_under_test", NATIVE_PY)
     assert spec is not None
