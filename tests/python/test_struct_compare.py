@@ -264,6 +264,30 @@ class CensusGate(unittest.TestCase):
         self.assertEqual(sc.census_gate(a, {}), {"f1": ["(no result)"]})
         self.assertEqual(sc.census_gate(b, a), {})
 
+    def test_missing_entry_keeps_the_unmodelled_rows(self):
+        # The record lists an enemy the engine lacks. Its move id (enemy-move-id, unmodelled) is not compared there either:
+        # it leaves the census as it does for an entry both sides have. Its other fields and the roster's #len stay
+        # differences (a record-only field is a difference unless a row lists it), so the step still differs.
+        slug = {"name": "CORPSE_SLUG", "hp": 20, "max_hp": 28, "block": 0, "powers": [], "intents": [["Attack", 6, 1]]}
+        rec = snap(enemies=[dict(slug, move="BITE"), dict(slug, name="TWIG_SLIME_S", move="TACKLE")])
+        r = sc.compare_fight(*fight([rec], [snap(enemies=[slug])]), ROWS)
+        self.assertEqual(r["first"], 0)
+        self.assertIn("snap.enemies#len", paths(r))
+        self.assertIn("snap.enemies[1].hp", paths(r))
+        self.assertNotIn("snap.enemies[1].move", paths(r))
+        self.assertNotIn("snap.enemies[*].move", r["census"])
+        self.assertIn("snap.enemies[*].hp", r["census"])
+        self.assertIn("snap.enemies[*].move", r["unmodelled"])
+        self.assertEqual(r["allowed"].get("enemy-move-id"), 2)  # both enemies' move ids, the missing entry's included
+
+    def test_missing_entry_on_the_engine_side_is_compared(self):
+        # An entry only the engine has: its fields are the engine's and are compared (no unmodelled row applies to a
+        # path the engine writes).
+        slug = {"name": "CORPSE_SLUG", "hp": 20, "max_hp": 28, "block": 0, "powers": [], "intents": [["Attack", 6, 1]]}
+        r = sc.compare_fight(*fight([snap(enemies=[slug])], [snap(enemies=[slug, dict(slug, move="BITE")])]), ROWS)
+        self.assertIn("snap.enemies[1].move", paths(r))
+        self.assertIn("snap.enemies[*].move", r["census"])
+
 
 class Calibration(unittest.TestCase):
     def test_contingency_table(self):
