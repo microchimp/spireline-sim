@@ -151,6 +151,13 @@ def real_runs(runs_jsonl: str | Path) -> list[dict]:
 # ------------------------------------------------------------------ the emulator driver
 
 
+def session_kwargs(agent, character: str = "IRONCLAD") -> dict:
+    """The `RunSession` keyword arguments of an agent's run: its character and the mask version its agent.json names
+    (nothing for version 1, so a version-1 run is built exactly as it always was)."""
+    return {**({} if character == "IRONCLAD" else {"character": character}),
+            **({} if agent.mask_version == 1 else {"mask_version": agent.mask_version})}
+
+
 def _setup() -> None:
     lib = os.environ.get("STS2_LIB_PATH")
     if not lib:
@@ -205,8 +212,7 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
         from combat_tokens import encode  # noqa: PLC0415
 
         rec = gen_loop.RunRecorder(seed, agent.generation, rules.describe(), cfg.sims, cfg.c, ascension)
-    s = engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims),
-                          **({} if character == "IRONCLAD" else {"character": character}))
+    s = engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims), **session_kwargs(agent, character))
     decisions = assumed = k = sims_spent = 0
     end = "?"
     try:
