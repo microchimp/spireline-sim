@@ -686,7 +686,7 @@ public static class CardEffects
                 // DamageVar by DynamicVar("Increase", 5m), OnUpgrade +4. The growth lives
                 // on the copy, so it survives into the discard pile and comes back around
                 // with it; a second Rampage in the deck grows on its own schedule.
-                DealDamage(state, Dmg(state, def, upgraded, card) + card.BonusDamage);
+                DealDamage(state, Dmg(state, def, upgraded, card, card.BonusDamage));
                 state.PlayedCardBonusDamage += upgraded ? 9 : 5;
                 break;
 
@@ -702,7 +702,7 @@ public static class CardEffects
                 // field is growth this COPY has banked, and Dmg only reads it for Momentum.
                 DealDamageMultiHit(
                     state,
-                    Dmg(state, def, upgraded, card) + card.BonusDamage,
+                    Dmg(state, def, upgraded, card, card.BonusDamage),
                     2,
                     rng
                 );
@@ -2853,21 +2853,21 @@ public static class CardEffects
     /// </remarks>
     private static int ShivDamage(CombatState state, CardDef def, bool upgraded, CardInstance card)
     {
-        int dmg = Dmg(state, def, upgraded, card);
         // F08+F10 on: Accuracy's and Phantom Blades' ModifyDamageAdditive are their handlers' folds in Core2's damage
         // command (the Shiv in flight is the card source), so the base goes on without them.
         if (Core2.Kernel.If(Core2.Switch.F08, state) is not null)
         {
-            return dmg;
+            return Dmg(state, def, upgraded, card);
         }
 
-        dmg += Accuracy_ModifyDamageAdditive(state);
+        // Off: both are card-level additive terms, passed under the card multipliers (Pen Nib, Gigantification).
+        int additive = Accuracy_ModifyDamageAdditive(state);
         if (def.Name == "Shiv" && state.ShivsPlayedThisTurn == 0)
         {
-            dmg += PhantomBlades_ModifyDamageAdditive(state);
+            additive += PhantomBlades_ModifyDamageAdditive(state);
         }
 
-        return dmg;
+        return Dmg(state, def, upgraded, card, additive);
     }
 
     /// <summary>
@@ -6685,8 +6685,7 @@ public static class CardEffects
             case "Claw":
                 DealDamage(
                     state,
-                    Dmg(state, def, upgraded, card)
-                        + BuffSystem.Get(state.PlayerBuffs, BuffId.ClawDamage)
+                    Dmg(state, def, upgraded, card, BuffSystem.Get(state.PlayerBuffs, BuffId.ClawDamage))
                 );
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.ClawDamage, upgraded ? 3 : 2);
                 return true;
@@ -7320,7 +7319,7 @@ public static class CardEffects
                 {
                     DealDamageToAll(
                         state,
-                        OstyAttackDamage(state, Dmg(state, def, upgraded, card))
+                        OstyCardDamage(state, def, upgraded, card)
                     );
                     GainBlock(state, Blk(def, upgraded, card), rng);
                     KillOsty(state);
@@ -7668,7 +7667,7 @@ public static class CardEffects
                 // only if the copy is recovered -- but `BuffFromPlay` is also called on
                 // `DeckVersion`, so the growth is meant to persist for the whole RUN.
                 // Combat does not write back to the deck here, so that half is still owed.
-                DealDamage(state, DmgFrom(state, 13, def, card) + card.BonusDamage);
+                DealDamage(state, DmgFrom(state, 13, def, card, card.BonusDamage));
                 state.PlayedCardBonusDamage += upgraded ? 5 : 4;
                 return true;
             case "TimesUp":
@@ -8018,7 +8017,7 @@ public static class CardEffects
                 {
                     DealDamageToAll(
                         state,
-                        OstyAttackDamage(state, Dmg(state, def, upgraded, card))
+                        OstyCardDamage(state, def, upgraded, card)
                     );
                     ApplyAllEnemyDebuff(state, BuffId.Vulnerable, upgraded ? 3 : 2, rng);
                 }
@@ -8069,7 +8068,7 @@ public static class CardEffects
                 {
                     DealDamageToRandomEnemiesMultiHit(
                         state,
-                        OstyAttackDamage(state, Dmg(state, def, upgraded, card)),
+                        OstyCardDamage(state, def, upgraded, card),
                         1,
                         rng
                     );
@@ -8340,7 +8339,7 @@ public static class CardEffects
                 // 8/10 printed, plus whatever this COPY has grown by from being drawn --
                 // see GrowKinglyCardOnDraw. The emulator scaled it by the cards played this
                 // combat, which is a player-wide counter on a per-copy effect.
-                DealDamage(state, Dmg(state, def, upgraded, card) + card.BonusDamage);
+                DealDamage(state, Dmg(state, def, upgraded, card, card.BonusDamage));
                 return true;
             case "KnockoutBlow":
             {
@@ -8476,7 +8475,7 @@ public static class CardEffects
                 // is why this cannot ride `PlayedCardBonusDamage` alone.
                 DealDamageMultiHit(
                     state,
-                    Dmg(state, def, upgraded, card) + card.BonusDamage,
+                    Dmg(state, def, upgraded, card, card.BonusDamage),
                     2,
                     rng
                 );
@@ -8639,7 +8638,7 @@ public static class CardEffects
                 //
                 // The emulator hit once for the printed ten and then DOUBLED the player's
                 // block, which is not an effect this card has.
-                int bladeDamage = Dmg(state, def, upgraded, card) + card.BonusDamage;
+                int bladeDamage = Dmg(state, def, upgraded, card, card.BonusDamage);
                 if (Core2.Kernel.If(Core2.Switch.F08, state) is { } bladeCore2)
                 {
                     // F08+F10 on: game: SovereignBlade.OnPlay. ONE AttackCommand of the base amount from the card, at
@@ -9602,16 +9601,10 @@ public static class CardEffects
         Random? rng
     )
     {
-        int dmg = Dmg(state, def, upgraded, card);
-        if (def.Name == "Claw")
-        {
-            dmg += BuffSystem.Get(state.PlayerBuffs, BuffId.ClawDamage);
-        }
-
-        if (def.Name is "Shiv" or "HiddenDaggers")
-        {
-            dmg = ShivDamage(state, def, upgraded, card);
-        }
+        // Claw's accumulated damage is a card-level additive term, so it goes in under the card multipliers.
+        int dmg = def.Name is "Shiv" or "HiddenDaggers"
+            ? ShivDamage(state, def, upgraded, card)
+            : Dmg(state, def, upgraded, card, def.Name == "Claw" ? BuffSystem.Get(state.PlayerBuffs, BuffId.ClawDamage) : 0);
 
         int blk = Blk(def, upgraded, card);
         if (dmg > 0)
@@ -9642,8 +9635,8 @@ public static class CardEffects
     /// tenth Attack" -- none of which the buff chokepoint can see, because it takes buff
     /// lists and not a card.
     /// </remarks>
-    private static int Dmg(CombatState state, CardDef def, bool upgraded, CardInstance card) =>
-        DmgFrom(state, upgraded ? def.BaseDamage + def.UpgradeDamage : def.BaseDamage, def, card);
+    private static int Dmg(CombatState state, CardDef def, bool upgraded, CardInstance card, int cardAdditive = 0) =>
+        DmgFrom(state, upgraded ? def.BaseDamage + def.UpgradeDamage : def.BaseDamage, def, card, cardAdditive);
 
     /// <summary>
     /// The damage a card's enchantment adds to its powered attack (game: Sharp, Vigorous, TezcatarasEmber,
@@ -9737,10 +9730,17 @@ public static class CardEffects
     /// handlers), so folding them here as well counted each twice once the card source
     /// resolved (docs/rebuild/MIGRATION_F08.md, "Damage terms applied twice").
     /// </remarks>
-    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card) =>
+    private static int DmgFrom(CombatState state, int baseDamage, CardDef def, CardInstance card, int cardAdditive = 0) =>
         Core2.Kernel.If(Core2.Switch.F08, state) is null
-            ? ModifiedCardDamage(state, baseDamage, def, card, BuffSystem.AttackerDamageAdditive(state.PlayerBuffs))
-            : baseDamage;
+            ? ModifiedCardDamage(
+                state,
+                baseDamage,
+                def,
+                card,
+                BuffSystem.AttackerDamageAdditive(state.PlayerBuffs),
+                cardAdditive
+            )
+            : baseDamage + cardAdditive;
 
     /// <summary>
     /// The old engine's Hook.ModifyDamage for a card source: the base with the card's
@@ -9754,7 +9754,8 @@ public static class CardEffects
         int baseDamage,
         CardDef def,
         CardInstance card,
-        int creatureAdditive = 0
+        int creatureAdditive = 0,
+        int cardAdditive = 0
     )
     {
         // The card's enchantment (game: EnchantmentModel.EnchantDamageAdditive, then
@@ -9767,6 +9768,11 @@ public static class CardEffects
             damage = (int)(damage * enchantFactor);
         }
 
+        // The card's own ModifyDamageAdditive terms (game: AccuracyPower and PhantomBladesPower for a Shiv, Claw's
+        // counter, the card model's bonus damage, CalcifyPower for an Osty attack), passed in by the call sites that
+        // have them: additive listeners, so they sit with the other additive terms, after the enchantment's own
+        // steps and under the multipliers below.
+        damage += cardAdditive;
         damage += RelicEffects.CardDamageBonus(state, def, card.Upgraded);
         // `MysticLighter.ModifyDamageAdditive`: 9 more from a powered attack played off an
         // ENCHANTED card, whatever the enchantment is.
@@ -9795,8 +9801,8 @@ public static class CardEffects
         }
 
         // Hook.ModifyDamage folds EVERY additive term before the first multiplicative one, so the three multipliers
-        // above (Pen Nib, Vitruvian Minion, Gigantification) land on the card's total PLUS the creature-level additive
-        // terms. Those terms (the attacker's Strength and Vigor) are added later, by BuffSystem.IncomingDamage on the
+        // above (Pen Nib, Vitruvian Minion, Gigantification) land on the card's total, which holds the card-level
+        // additive terms (`cardAdditive`, summed into `damage` above), PLUS the creature-level additive terms. Those terms (the attacker's Strength and Vigor) are added later, by BuffSystem.IncomingDamage on the
         // amount this returns, so the caller passes them in as `creatureAdditive`: the multiplier is applied to the sum
         // and the sum's own share is taken back out, and IncomingDamage's addition then restores it (B*f + S*(f-1) + S =
         // (B+S)*f). With no multiplier (f = 1) or no such term this is `damage` unchanged. Thrash's read of an eaten
@@ -10310,12 +10316,31 @@ public static class CardEffects
     /// </summary>
     internal static int OstyAttackDamage(CombatState state, int amount)
     {
-        // Every Osty attack is costed here, so this is also where "the pet has swung this
-        // turn" is recorded -- `AfterAttack` with `command.Attacker == Owner.Osty`, which
-        // Flatten watches for.
+        OstyAttackCosted(state);
+        return amount + Calcify_ModifyDamageAdditive(state);
+    }
+
+    /// <summary>
+    /// Every Osty attack is costed here, so this is also where "the pet has swung this
+    /// turn" is recorded -- `AfterAttack` with `command.Attacker == Owner.Osty`, which
+    /// Flatten watches for.
+    /// </summary>
+    private static void OstyAttackCosted(CombatState state)
+    {
         state.OstyAttacksThisTurn++;
         RelicEffects.ApplyAfterOstyAttack(state, rng: null);
-        return amount + Calcify_ModifyDamageAdditive(state);
+    }
+
+    /// <summary>
+    /// An Osty card's damage: Calcify's additive rides inside the card's base (a card-level additive term, so the card
+    /// multipliers see it) and the swing is costed as in <see cref="OstyAttackDamage" />. Same value as
+    /// <c>OstyAttackDamage(state, Dmg(...))</c> when no multiplier is up.
+    /// </summary>
+    private static int OstyCardDamage(CombatState state, CardDef def, bool upgraded, CardInstance card)
+    {
+        int damage = Dmg(state, def, upgraded, card, Calcify_ModifyDamageAdditive(state));
+        OstyAttackCosted(state);
+        return damage;
     }
 
     /// <summary>
