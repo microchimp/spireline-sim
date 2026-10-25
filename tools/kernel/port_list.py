@@ -49,6 +49,8 @@ PSEUDO_HOOKS = {
 }
 # The one status that needs no Core2 handler: no state change to port, or multiplayer only (hook_unmodelled.json).
 NO_HANDLER = "not_modelled"
+# The statuses for which the old engine names the model at the hook: such a model is reachable whatever the manifest counts.
+MODELLED = ("registered", "open")
 # A value hook (Modify*, Should*) only reads its model; a location whose statement writes the model's buff is where the
 # old engine applies the power (EnemyAI.TriggerSuck applying Strength), not where it folds it in.
 BUFF_WRITE = re.compile(r"BuffSystem\.(?:Apply|Remove)\(|\bBuffs\[[^\]]*\]\s*[-+*]?=(?!=)")
@@ -179,11 +181,13 @@ def batch_kind(kind: str) -> str:
     return kind if kind in BATCH_KINDS else "other"
 
 
-def build(rows: list, models: dict, hooks: dict[str, str]) -> dict:
+def build(rows: list, models: dict, hooks: dict[str, str], unreached: bool = False) -> dict:
     """The port list from classify rows, the manifest's models (key -> entry) and the families' hooks.
 
     A model is listed when its manifest entry overrides one of the hooks (combat_hooks), or a pseudo-hook row names it,
-    and any source reaches it. Rows
+    and any source reaches it, or (``unreached``, ``--unreached``) the old engine names it at one of those hooks: the
+    manifest counts a model's own records, so a power another model applies (Diamond Diadem's) or a relic no record holds
+    yet reads 0 there while the old engine plays it. Rows
     are matched to manifest entries by (kind, class); a reached model with a family hook and no row (the decompile and
     the manifest disagree) is listed under ``unmatched``, never dropped."""
     by_class: dict[tuple[str, str], list] = {}
@@ -194,9 +198,9 @@ def build(rows: list, models: dict, hooks: dict[str, str]) -> dict:
     for key, m in sorted(models.items()):
         pseudo = {r.hook for r in by_class.get((m["kind"], m["class"]), []) if r.hook in PSEUDO_HOOKS}
         mine = sorted({h for h in m.get("combat_hooks", []) if h in hooks} | pseudo)
-        if not mine or not any(reach(m)):
-            continue
         got = {r.hook: r for r in by_class.get((m["kind"], m["class"]), [])}
+        if not mine or not (any(reach(m)) or unreached and any(got[h].status in MODELLED for h in mine if h in got)):
+            continue
         if not got:
             unmatched.append(key)
         per_hook = []
@@ -272,7 +276,8 @@ def render_md(doc: dict) -> str:
     return "\n".join(L) + "\n"
 
 
-def make(families: list[str], size: int, manifest_path: Path, decompiled: str, exclude=(), dll: Path = DEFAULT_DLL) -> dict:
+def make(families: list[str], size: int, manifest_path: Path, decompiled: str, exclude=(), dll: Path = DEFAULT_DLL,
+         unreached: bool = False) -> dict:
     fam_doc = json.loads(FAMILIES.read_text(encoding="utf-8"))
     hooks = family_hooks(fam_doc, families, exclude)
     engine = ht.Engine.load(ht.ENGINE)
@@ -280,7 +285,7 @@ def make(families: list[str], size: int, manifest_path: Path, decompiled: str, e
     rows = ht.classify(decompiled, engine, ht.load_json(ht.DISPATCH), ht.load_json(ht.UNMODELLED), open_keys)
     rows = drop_buff_writes(rows, engine) + pseudo_rows(decompiled, engine)
     models = json.loads(Path(manifest_path).read_text(encoding="utf-8"))["models"]
-    got = build(rows, models, hooks)
+    got = build(rows, models, hooks, unreached=unreached)
     got["families"] = list(families)
     got["excluded"] = sorted(exclude)
     got["unported"] = [list(p) for p in unported_pairs(got["items"], ported(dll))]
@@ -299,10 +304,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", type=Path)
     ap.add_argument("--exclude-hooks", nargs="*", default=[], help="hooks to leave out of the list")
     ap.add_argument("--emudump", type=Path, default=DEFAULT_DLL, help="the built EmuDump.dll whose kernel-handlers lists the handlers")
+    ap.add_argument("--unreached", action="store_true", help="also list a model no record reaches that the old engine names "
+                    "at a family hook (registered or open)")
     ap.add_argument("--gate", action="store_true", help="exit 1 while any pair has no Core2 handler and is not not_modelled")
     a = ap.parse_args(argv)
     try:
-        doc = make(a.families, a.size, a.manifest, a.decompiled, a.exclude_hooks, a.emudump)
+        doc = make(a.families, a.size, a.manifest, a.decompiled, a.exclude_hooks, a.emudump, unreached=a.unreached)
     except HandlerListError as e:
         sys.stderr.write(f"port_list: {e}\n")
         return 2
