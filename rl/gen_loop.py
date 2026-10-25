@@ -700,8 +700,10 @@ def write_prior_model_json(out: Path, generation: int, probe: bool = False) -> d
     return doc
 
 
-def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base_sims: int, ascension: int, threads: int = 6) -> dict:
-    """Fit FightNet and V_run (DMC target, `run_train.train.fit`) on the window's run records."""
+def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base_sims: int, ascension: int, threads: int = 6,
+                    device: str | None = None) -> dict:
+    """Fit FightNet and V_run (DMC target, `run_train.train.fit`) on the window's run records, then the 5-fold out-of-fold fits
+    the keep verdict rests on (D33, `keep.cross_fit_keep`). `device` (the train job's) puts the fits there; none: the CPU."""
     import torch  # noqa: PLC0415
     from run_train import keep  # noqa: PLC0415
     from run_train import train as rt  # noqa: PLC0415
@@ -710,7 +712,8 @@ def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base
     t0, c0 = time.perf_counter(), time.process_time()
     pt = Path(out) / "run_value.pt"
     rt.fit(shard_paths, None, pt, generation=generation, combat_budget=CombatBudget(base_sims, base_sims), ascension=ascension,
-           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads), evaluate=keep.evaluate_value_net)
+           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads, **({"device": device} if device else {})),
+           evaluate=keep.evaluate_value_net, cross_fit=keep.cross_fit_keep)
     meta = torch.load(pt, map_location="cpu", weights_only=True)["meta"]
     value = dict(meta.get("value") or {})
     return {"wall_min": (time.perf_counter() - t0) / 60, "cpu_min": (time.process_time() - c0) / 60,
@@ -926,7 +929,7 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     if vrun:
         paths = [d / n for d, m in mans for n in m.get("run_shards", [])]
         doc["run_value"] = train_run_value(paths, cand, generation=gen, base_sims=base_sims,
-                                           ascension=int(mans[0][1]["ascension"]), threads=threads)
+                                           ascension=int(mans[0][1]["ascension"]), threads=threads, device=device)
         doc["dedup"]["run_records_dropped"] = int(doc["run_value"]["value"].get("duplicates_dropped", 0))
         doc["dedup"]["run_records_distinct"] = int(doc["run_value"]["value"].get("runs", 0))
     del rs

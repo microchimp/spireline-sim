@@ -263,6 +263,7 @@ class FightData:
     weak: np.ndarray  # float32
     labels: np.ndarray  # int64, `models.fight_class`
     validation: np.ndarray  # bool: the fights of the held-out tenth of runs
+    hashes: np.ndarray | None = None  # float64: each fight's run hash (`keep.cross_fit_keep` folds the fights by it)
 
 
 @dataclass
@@ -538,6 +539,7 @@ def _fight_data(chunks: list[_FightChunk], config: TrainConfig) -> FightData:
         weak=joined("weak", np.float32),
         labels=joined("labels", np.int64),
         validation=_held_out(joined("hashes", np.float64), config.validation),
+        hashes=joined("hashes", np.float64),
     )
 
 
@@ -913,6 +915,7 @@ def fit(
     ascension: int,
     config: TrainConfig = TrainConfig(),  # noqa: B008 -- frozen
     evaluate: Callable[[ValueData, torch.nn.Module], dict[str, Any]] | None = None,
+    cross_fit: Callable[[FightData, ValueData, TrainConfig, dict[str, Any] | None], dict[str, Any]] | None = None,
 ) -> Path:
     """Train FightNet then V on the buffers of generation `generation`; write `out` (5.3).
 
@@ -955,8 +958,11 @@ def fit(
         fight_stats = train_fight_net(fight_net, fights, config, generator)
         values.fill_fight_block(models.NumpyFightNet(models.numpy_params(fight_net)))
         value_stats = train_value_net(value_net, values, config, generator)
-        if evaluate is not None:  # the keep conditions on the held-out runs (keep.evaluate_value_net)
-            value_stats = {**value_stats, "keep": evaluate(values, value_net)}
+        keep_doc = evaluate(values, value_net) if evaluate is not None else None  # the held-out tenth (keep.evaluate_value_net)
+        if cross_fit is not None:  # D33: the out-of-fold fits the keep verdict rests on; it gets the tenth's record to report
+            keep_doc = cross_fit(fights, values, config, keep_doc)
+        if keep_doc is not None:
+            value_stats = {**value_stats, "keep": keep_doc}
         models.save(
             out,
             fight_net,
