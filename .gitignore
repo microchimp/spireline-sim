@@ -25,3 +25,4 @@ rl/data/
 
 # Stage-2 training runs: shards, checkpoints, evaluations, status (rl/run_train/DESIGN.md 5.7).
 runs/
+!docs/runs/
