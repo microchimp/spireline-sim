@@ -24,8 +24,8 @@ import run_fields  # noqa: E402
 from tools.lab import promotion_guard as pg  # noqa: E402
 
 
-def boss_msg(act: int, hps: list[int], kind: str = "combat") -> dict:
-    return {"kind": kind, "actions": [["end"]], "obs": {"act": act, "floor": 17, "combat": {
+def boss_msg(act: int, hps: list[int], kind: str = "combat", floor: int = 17) -> dict:
+    return {"kind": kind, "actions": [["end"]], "obs": {"act": act, "floor": floor, "combat": {
         "round": 1, "enemies": [{"name": f"E{i}", "hp": hp, "max_hp": 100} for i, hp in enumerate(hps)]}}}
 
 
@@ -90,7 +90,7 @@ class BossDamageTests(unittest.TestCase):
         self.assertEqual(won["boss_damage"], 1.0)  # the next screen outside the fight: it was won
         final = lockstep_run([MAP_BOSS, boss_msg(2, [100]), boss_msg(2, [10])], {"class": "win", "end": "win", "floor": 51})
         self.assertEqual(final, {"boss_damage": 0.0, "boss_damage_acts": [[2, 1.0]]})  # the Act 3 boss: act 1's field stays 0
-        normal = lockstep_run([MAP_MONSTER, boss_msg(0, [100]), boss_msg(0, [1])], {"class": "death", "end": "death", "floor": 4})
+        normal = lockstep_run([MAP_MONSTER, boss_msg(0, [100], floor=4), boss_msg(0, [1], floor=4)], {"class": "death", "end": "death", "floor": 4})
         self.assertEqual(normal, {"boss_damage": 0.0, "boss_damage_acts": []})  # a fight that is not the boss's is not recorded
 
     def test_the_rows_of_both_arms_and_the_real_block_carry_the_fields(self):

@@ -1,0 +1,44 @@
+[referee] run decision 0 start 
+[referee] run decision 23 rest "HEAL"
+[referee] run decision 24 rest "proceed"
+[referee] run decision 56 rest "HEAL"
+[referee] run decision 57 rest "proceed"
+[INFO] Creating NCombatRoom with mode=ActiveCombat encounter=WATERFALL_GIANT_BOSS.
+[referee] run NM33ZQ74P6 ended: death after 60 decisions, floor 17
+[referee] run decision 0 start 
+[referee] run decision 35 rest "HEAL"
+[referee] run decision 36 rest "proceed"
+[referee] run decision 44 rest "HEAL"
+[referee] run decision 45 rest "proceed"
+[referee] run decision 55 rest "HEAL"
+[referee] run decision 56 rest "proceed"
+[INFO] Creating NCombatRoom with mode=ActiveCombat encounter=CEREMONIAL_BEAST_BOSS.
+[referee] run 7F6VP7A5N8 ended: death after 59 decisions, floor 17
+[referee] run decision 0 start 
+[referee] run decision 27 rest "HEAL"
+[referee] run decision 28 rest "proceed"
+[referee] run XT7VH5S46D ended: death after 46 decisions, floor 14
+[referee] run decision 0 start 
+[referee] run decision 50 rest "HEAL"
+[referee] run decision 51 rest "proceed"
+[INFO] Creating NCombatRoom with mode=ActiveCombat encounter=THE_KIN_BOSS.
+[referee] run ZBXDPRJ83Z ended: death after 79 decisions, floor 22
+[referee] run decision 0 start 
+[referee] run decision 25 rest "HEAL"
+[referee] run decision 26 rest "proceed"
+[referee] run decision 32 rest "HEAL"
+[referee] run decision 33 rest "proceed"
+[referee] run VDB6F43NMT ended: death after 42 decisions, floor 12
+[referee] run decision 0 start 
+[referee] run decision 23 rest "HEAL"
+[referee] run decision 24 rest "proceed"
+[referee] run decision 37 rest "HEAL"
+[referee] run decision 38 rest "proceed"
+[referee] run decision 56 rest "HEAL"
+[referee] run decision 57 rest "proceed"
+[INFO] Creating NCombatRoom with mode=ActiveCombat encounter=VANTOM_BOSS.
+[referee] run F9PUG2QUTW ended: death after 60 decisions, floor 17
+[referee] run decision 0 start 
+[referee] run 5FYLNJDEZ7 ended: death after 28 decisions, floor 8
+[referee] run decision 0 start 
+[referee] run L9JFLAHUW8 ended: treasure_without_relic_picking after 31 decisions, floor 10
