@@ -44,6 +44,12 @@ public class DrawModelTests
 
         var macro = ByKey(model.MacroDraw(k, room));
         var sequential = ByKey(model.SequentialDraw(k, room));
+        var after = model.SequentialDraw(k, room).ToDictionary(o => string.Join(",", o.Drawn), o => Describe(o.After));
+        foreach (var (drawn, post, _) in model.MacroDraw(k, room))
+        {
+            Assert.Equal(after[string.Join(",", drawn)], Describe(post));
+        }
+
         Assert.Equal(sequential.Keys.Order(), macro.Keys.Order());
         foreach (var (key, p) in sequential)
         {
@@ -131,7 +137,7 @@ public class DrawModelTests
         return state;
     }
 
-    private static void AssertEngineDraws(string what, List<(int[] Drawn, double P)> odds, Func<int, List<CardInstance>> engine)
+    private static void AssertEngineDraws(string what, List<(int[] Drawn, DrawModel<int> After, double P)> odds, Func<int, List<CardInstance>> engine)
     {
         var exact = ByKey(odds);
         var counts = new Dictionary<string, int>();
@@ -154,10 +160,33 @@ public class DrawModelTests
         }
     }
 
-    private static Dictionary<string, double> ByKey(List<(int[] Drawn, double P)> odds)
+    private static string Describe(DrawModel<int> m) =>
+        $"top {string.Join(",", m.Top)} middle {string.Join(",", m.Middle.Select(kv => $"{kv.Key}x{kv.Value}"))} "
+        + $"bottom {string.Join(",", m.Bottom)} discard {string.Join(",", m.Discard.Select(kv => $"{kv.Key}x{kv.Value}"))}";
+
+    [Fact]
+    public void PerfectFitCardsOfOneValueTopTheReshuffleAndOfTwoValuesRefuse()
+    {
+        var model = DrawModel<int>.Shuffled([], [1, 2, 9, 9, 3], fitted: v => v == 9);
+        Assert.Equal([(9, 1d)], model.NextDraw());
+        var after = model.AfterDraw(9);
+        Assert.Equal([9], after.Top);
+        Assert.Equal(3, after.MiddleCount);
+        var macro = model.MacroDraw(3);
+        Assert.Equal(3, macro.Count);
+        Assert.All(macro, o => Assert.Equal(1d / 3, o.P, 12));
+        Assert.All(macro, o => Assert.Equal(2, o.Drawn.Count(v => v == 9)));
+        Assert.All(macro, o => Assert.Equal(2, o.After.MiddleCount));
+
+        var two = DrawModel<int>.Shuffled([], [1, 8, 9], fitted: v => v >= 8);
+        Assert.Throws<InvalidOperationException>(() => two.NextDraw());
+        Assert.Throws<InvalidOperationException>(() => two.MacroDraw(2));
+    }
+
+    private static Dictionary<string, double> ByKey(List<(int[] Drawn, DrawModel<int> After, double P)> odds)
     {
         var by = new Dictionary<string, double>();
-        foreach (var (drawn, p) in odds)
+        foreach (var (drawn, _, p) in odds)
         {
             string key = string.Join("|", drawn.Order());
             by[key] = by.GetValueOrDefault(key) + p;

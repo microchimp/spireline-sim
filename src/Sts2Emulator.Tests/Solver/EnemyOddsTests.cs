@@ -71,11 +71,14 @@ public class EnemyOddsTests
                     return;
                 }
 
-                if (state.PendingSelection is null && leaves.All(l => l.Result.PendingSelection is null))
+                // A leaf left on a screen is answered once the hook is off (the first valid action), as
+                // a sampled copy is: the replay to the screen gives the rolled answers again.
+                if (state.PendingSelection is null)
                 {
                     var exact = new Dictionary<string, double>();
                     foreach (var leaf in leaves)
                     {
+                        Answer(leaf.Result, rng.Copy());
                         string key = Joint(leaf.Result);
                         exact[key] = exact.GetValueOrDefault(key) + leaf.P;
                     }
@@ -85,7 +88,9 @@ public class EnemyOddsTests
                     {
                         var copy = state.Clone();
                         copy.AiRng = new CountingRandom(seed * 7 + 1);
-                        CombatEngine.Step(copy, endTurn, rng.Copy());
+                        var r = rng.Copy();
+                        CombatEngine.Step(copy, endTurn, r);
+                        Answer(copy, r);
                         string key = Joint(copy);
                         counts[key] = counts.GetValueOrDefault(key) + 1;
                     }
@@ -144,6 +149,57 @@ public class EnemyOddsTests
         }
 
         AssertClose(name, exact, counts);
+    }
+
+    private static void Answer(CombatState state, CountingRandom rng)
+    {
+        while (state.PendingSelection is not null && !CombatEngine.IsOverOrEnding(state))
+        {
+            CombatEngine.Step(state, CombatEngine.ValidActions(state)[0], rng);
+        }
+    }
+
+    [Fact]
+    public void AConditionalBranchFollowsTheStateItReads()
+    {
+        void Check(string name, List<EnemyState> roster, int[] moves, double[] odds)
+        {
+            var got = EnemyOdds.Next(roster, 0, turn: 3, Ascension.DefaultLevel, e => e.LastMove).OrderBy(o => o.Move).ToList();
+            Assert.True(moves.SequenceEqual(got.Select(o => o.Move)), $"{name}: moves {string.Join(",", got.Select(o => o.Move))}");
+            for (int i = 0; i < moves.Length; i++)
+            {
+                Assert.Equal(odds[i], got[i].P, 6);
+            }
+
+            AssertMatchesSampling(name, roster, turn: 3);
+        }
+
+        EnemyState Rat(int lastMove, params BuffState[] buffs)
+        {
+            var rat = Enemy(KE.TwoTailedRat, lastMove, false);
+            rat.Buffs.AddRange(buffs);
+            return rat;
+        }
+
+        EnemyState Knight(int hp, bool charged)
+        {
+            var knight = Enemy(KE.FrogKnight, 2, charged);
+            knight.Hp = hp;
+            return knight;
+        }
+
+        // Two-Tailed Rat after scratch: call-for-backup weighs in only while it can summon (a power, the
+        // backup count, a free slot, no other rat calling); otherwise bite and screech share the roll.
+        Check("rat able to summon", [Rat(0)], [1, 2, 3], [1d / 11, 1d / 11, 9d / 11]);
+        Check("rat on summon cooldown", [Rat(0, new BuffState(BuffId.SummonCooldown, 2))], [1, 2], [0.5, 0.5]);
+        Check("rat with three backups", [Rat(0, new BuffState(BuffId.BackupCount, 3))], [1, 2], [0.5, 0.5]);
+        Check("rat with no free slot", [Rat(0), Rat(1), Rat(1), Rat(1), Rat(1)], [1, 2], [0.5, 0.5]);
+        Check("rat while another calls", [Rat(0), Rat(3)], [1, 2], [0.5, 0.5]);
+
+        // Frog Knight after For the Queen: Beetle Charge below half HP if it has not charged, else Tongue Lash.
+        Check("knight below half HP", [Knight(29, false)], [3], [1]);
+        Check("knight at half HP", [Knight(30, false)], [0], [1]);
+        Check("knight below half HP, charged", [Knight(10, true)], [0], [1]);
     }
 
     private static string Joint(CombatState state) =>
