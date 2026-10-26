@@ -591,7 +591,7 @@ def _event_names() -> dict[int, str]:
 # The run mask version of the emulator side (D32): version 2 lists the potion discard on the card reward, deck-select,
 # bundle-select and Crystal Sphere screens, so the referee's discard_potion there is stepped, not a gap. It is the
 # lockstep's own setting, whatever the agent's: the mask only carries the option, and `engine._legal` hides it from the rules.
-MASK_VERSION = 2
+MASK_VERSION = 3
 
 
 class EmuLock:
