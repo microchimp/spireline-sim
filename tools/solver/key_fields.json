@@ -445,6 +445,7 @@
      "type": "List<CardInstance>",
      "class": "multiset",
      "ordered_when": [
+      "DiscardOrdered",
       "SelectionOpen"
      ]
     },
@@ -452,6 +453,7 @@
      "type": "List<CardInstance>",
      "class": "multiset",
      "ordered_when": [
+      "ExhaustOrdered",
       "SelectionOpen"
      ]
     },

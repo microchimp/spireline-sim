@@ -10,14 +10,47 @@ namespace Sts2Emulator.Solver;
 
 internal static partial class StateKeyCodec
 {
-    internal const string FieldsSha256 = "9b81cb7dfa0f361fdc210b508595a565e6a4bdda2d7bf87a9dbb97978fcb5559";
+    internal const string FieldsSha256 = "962342e54dcf16a754f1cdb072c24a8cb93507a678fbda934beb55ec610b90bf";
 
-    internal static readonly string[] HandPositionCards = ["Acrobatics", "Prepared", "DaggerThrow", "Survivor", "Reboot", "CalculatedGamble", "ShadowStep", "StormOfSteel", "Eidolon", "FiendFire"];
+    internal static readonly string[] HandPositionCards = ["Acrobatics", "Anticipate", "CalculatedGamble", "DaggerThrow", "Eidolon", "FiendFire", "Prepared", "Reboot", "ShadowStep", "StormOfSteel", "Survivor"];
+    internal static readonly string[] HandPositionRelics = ["WhisperingEarring"];
+    internal static readonly string[] HandPositionPotions = [];
     internal const bool HandPositionAlways = false;
+    internal static readonly string[] DiscardPositionCards = ["AllForOne", "Dredge", "Hologram", "MakeItSo", "Reanimate", "RightHandHand", "SovereignBlade", "SummonForth"];
+    internal static readonly string[] DiscardPositionRelics = [];
+    internal static readonly string[] DiscardPositionPotions = [];
+    internal const bool DiscardPositionAlways = false;
+    internal static readonly string[] ExhaustPositionCards = ["MakeItSo", "SovereignBlade", "SummonForth"];
+    internal static readonly string[] ExhaustPositionRelics = [];
+    internal static readonly string[] ExhaustPositionPotions = ["KingsCourage"];
+    internal const bool ExhaustPositionAlways = false;
     internal static readonly string[] PotionSlotCards = [];
+    internal static readonly string[] PotionSlotRelics = [];
+    internal static readonly string[] PotionSlotPotions = [];
     internal const bool PotionSlotAlways = false;
     internal static readonly string[] EnemyOrderCards = [];
+    internal static readonly string[] EnemyOrderRelics = [];
+    internal static readonly string[] EnemyOrderPotions = [];
     internal const bool EnemyOrderAlways = true;
+
+    /// <summary>order_readers.json's categories: the pile each keeps ordered, its holders and what it implies.</summary>
+    internal static readonly (string Name, string Pile, string[] Cards, string[] Relics, string[] Potions, bool Always, string[] Implies)[] Categories =
+    [
+        ("hand_position", "Hand", HandPositionCards, HandPositionRelics, HandPositionPotions, HandPositionAlways, []),
+        ("discard_position", "DiscardPile", DiscardPositionCards, DiscardPositionRelics, DiscardPositionPotions, DiscardPositionAlways, ["hand_position"]),
+        ("exhaust_position", "ExhaustPile", ExhaustPositionCards, ExhaustPositionRelics, ExhaustPositionPotions, ExhaustPositionAlways, ["hand_position"]),
+        ("potion_slot", "PotionSlots", PotionSlotCards, PotionSlotRelics, PotionSlotPotions, PotionSlotAlways, []),
+        ("enemy_order", "Enemies", EnemyOrderCards, EnemyOrderRelics, EnemyOrderPotions, EnemyOrderAlways, []),
+    ];
+
+    /// <summary>Whether a held relic's order read can still fire (order_readers.json's active_when).</summary>
+    internal static bool RelicActive(string name, CombatState s) => name switch
+    {
+        "WhisperingEarring" => !s.WhisperingEarringSpent && s.Turn == 0,
+        _ => true,
+    };
+
+    internal static readonly string[] HindsightOrdered = ["Hand", "DiscardPile", "ExhaustPile", "PotionSlots"];
 
     internal static void Enc_CombatState(KeyWriter w, CombatState x)
     {
@@ -126,8 +159,8 @@ internal static partial class StateKeyCodec
         if (x.Kernel is null) w.Has(false); else { w.Has(true); Enc_KernelState(w, x.Kernel); }
         if (w.HandOrdered || w.SelectionOpen) w.Seq(x.Hand, static (w1, e1) => { w1.Card(e1); }); else w.Bag(x.Hand, static (w1, e1) => { w1.Card(e1); });
         w.Regions(x.DrawPile, x.KnownTopCount, x.KnownBottomCount);
-        if (w.SelectionOpen) w.Seq(x.DiscardPile, static (w1, e1) => { w1.Card(e1); }); else w.Bag(x.DiscardPile, static (w1, e1) => { w1.Card(e1); });
-        if (w.SelectionOpen) w.Seq(x.ExhaustPile, static (w1, e1) => { w1.Card(e1); }); else w.Bag(x.ExhaustPile, static (w1, e1) => { w1.Card(e1); });
+        if (w.DiscardOrdered || w.SelectionOpen) w.Seq(x.DiscardPile, static (w1, e1) => { w1.Card(e1); }); else w.Bag(x.DiscardPile, static (w1, e1) => { w1.Card(e1); });
+        if (w.ExhaustOrdered || w.SelectionOpen) w.Seq(x.ExhaustPile, static (w1, e1) => { w1.Card(e1); }); else w.Bag(x.ExhaustPile, static (w1, e1) => { w1.Card(e1); });
         w.Seq(x.ReturnToHandBeforeDraw, static (w1, e1) => { w1.Card(e1); });
         w.Seq(x.CopiesToHandBeforeDraw, static (w1, e1) => { w1.Card(e1); });
         w.Seq(x.AutoPlayQueue, static (w1, e1) => { w1.Card(e1); });

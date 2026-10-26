@@ -5,9 +5,13 @@
 // tools/solver/gen_key.py); this half holds the writer and the canonical forms:
 //
 //   multisets  the hand, discard and exhaust piles and the potion slots are written as their elements' encodings sorted,
-//              so the order of equal-rule cards and a card's uid never reach the key; the hand and the slots stay ordered
-//              while the combat holds an order reader (tools/solver/order_readers.json), and every pile stays ordered
-//              while a screen is open (its candidates are pile indices);
+//              so the order of equal-rule cards and a card's uid never reach the key; a pile stays ordered while the
+//              combat holds a reader of its category (tools/solver/order_readers.json: a card in any pile, queue or
+//              screen, or an active relic; a category that implies another turns that one on too, as the end of turn
+//              carries the hand's order into the discard pile), every pile stays ordered while a screen is open (its
+//              candidates are pile indices), and in hindsight mode every pile a roll indexes stays ordered (the
+//              streams are keyed, so a roll lands on a fixed position). tools/solver/scan_order_reads.py finds the
+//              reads and KeyFieldCoverageTests fails on one without a class;
 //   regions    the draw pile is its known top (ordered), its unknown middle (a multiset) and its known bottom (ordered);
 //              in hindsight mode it is written whole, in order;
 //   card_ref   a field holding a card uid (EnemyState.CurlUpCardUid) is written as the pile the card is in, and the card
@@ -80,11 +84,20 @@ public static class StateKey
         return new UInt128(BitConverter.ToUInt64(h[..8]), BitConverter.ToUInt64(h[8..16]));
     }
 
-    /// <summary>Whether the hand keeps its order in this position's key (an order reader, or an open screen).</summary>
-    public static bool HandOrdered(CombatState state) => state.PendingSelection is not null || Readers.Holds(state, Readers.Hand);
+    /// <summary>Whether the hand keeps its order in this position's key (an order reader, hindsight, or an open screen).</summary>
+    public static bool HandOrdered(CombatState state, KeyMode mode = KeyMode.Expected) => IsOrdered(state, mode, "Hand");
 
-    /// <summary>Whether the potion slots keep their order (a slot reader, or an open screen).</summary>
-    public static bool PotionOrdered(CombatState state) => state.PendingSelection is not null || Readers.Holds(state, Readers.Potion);
+    /// <summary>Whether the discard pile keeps its order (a discard-position reader, hindsight, or an open screen).</summary>
+    public static bool DiscardOrdered(CombatState state, KeyMode mode = KeyMode.Expected) => IsOrdered(state, mode, "DiscardPile");
+
+    /// <summary>Whether the exhaust pile keeps its order (an exhaust-position reader, hindsight, or an open screen).</summary>
+    public static bool ExhaustOrdered(CombatState state, KeyMode mode = KeyMode.Expected) => IsOrdered(state, mode, "ExhaustPile");
+
+    /// <summary>Whether the potion slots keep their order (a slot reader, hindsight, or an open screen).</summary>
+    public static bool PotionOrdered(CombatState state, KeyMode mode = KeyMode.Expected) => IsOrdered(state, mode, "PotionSlots");
+
+    static bool IsOrdered(CombatState state, KeyMode mode, string pile) =>
+        state.PendingSelection is not null || Readers.OrderedPiles(state, mode).Contains(pile);
 
     /// <summary>
     /// Interchangeable enemies (FIGHT_SOLVER.md section 5): for each enemy, the lowest index of an enemy whose state is
@@ -123,20 +136,61 @@ public static class StateKey
         return classes;
     }
 
-    /// <summary>order_readers.json's cards by id, resolved once.</summary>
+    /// <summary>order_readers.json's categories with their cards and relics by id, resolved once.</summary>
     internal static class Readers
     {
-        internal static readonly HashSet<int> Hand = Resolve(StateKeyCodec.HandPositionCards);
-        internal static readonly HashSet<int> Potion = Resolve(StateKeyCodec.PotionSlotCards);
+        internal sealed record Category(string Name, string Pile, HashSet<int> Cards, (int Id, string Name)[] Relics, HashSet<int> Potions, bool Always, string[] Implies);
+
+        internal static readonly Category[] All =
+        [
+            .. StateKeyCodec.Categories.Select(c => new Category(
+                c.Name, c.Pile, Resolve(c.Cards), [.. c.Relics.Select(n => (GeneratedData.Relics.FindId(n) ?? -1, n))],
+                [.. c.Potions.Select(GeneratedData.Potions.FindId).Where(i => i is not null).Select(i => i!.Value)], c.Always, c.Implies)),
+        ];
+
         internal static readonly HashSet<int> Enemy = Resolve(StateKeyCodec.EnemyOrderCards);
 
-        /// <summary>Names that name no card (KeyFieldCoverageTests requires none).</summary>
+        /// <summary>Card and relic names that name nothing (KeyFieldCoverageTests requires none).</summary>
         internal static IEnumerable<string> Unresolved() =>
-            StateKeyCodec.HandPositionCards.Concat(StateKeyCodec.PotionSlotCards).Concat(StateKeyCodec.EnemyOrderCards)
-                .Where(n => GeneratedData.Cards.FindId(n) is null);
+            StateKeyCodec.Categories.SelectMany(c => c.Cards.Where(n => GeneratedData.Cards.FindId(n) is null)
+                .Concat(c.Relics.Where(n => GeneratedData.Relics.FindId(n) is null).Select(n => $"relic {n}"))
+                .Concat(c.Potions.Where(n => GeneratedData.Potions.FindId(n) is null).Select(n => $"potion {n}")));
 
         static HashSet<int> Resolve(string[] names) =>
             [.. names.Select(GeneratedData.Cards.FindId).Where(i => i is not null).Select(i => i!.Value)];
+
+        /// <summary>Whether a category's read can fire in this combat: always, a card or potion it names, or an active relic.</summary>
+        internal static bool On(CombatState s, Category c)
+        {
+            if (c.Always || Holds(s, c.Cards)) return true;
+            if (c.Potions.Count > 0 && s.PotionSlots.Any(c.Potions.Contains)) return true;
+            foreach (var (id, name) in c.Relics)
+            {
+                if (id >= 0 && s.Relics.Exists(r => r.DefId == id) && StateKeyCodec.RelicActive(name, s)) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>The piles this position's key writes in order (an open screen aside): the categories on, closed under
+        /// their implications, plus every pile hindsight mode keeps ordered.</summary>
+        internal static HashSet<string> OrderedPiles(CombatState s, KeyMode mode)
+        {
+            var on = All.Where(c => On(s, c)).Select(c => c.Name).ToHashSet();
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (var c in All)
+                {
+                    if (!on.Contains(c.Name)) continue;
+                    foreach (var d in c.Implies) grew |= on.Add(d);
+                }
+            }
+
+            var piles = All.Where(c => on.Contains(c.Name)).Select(c => c.Pile).ToHashSet();
+            if (mode == KeyMode.Hindsight) piles.UnionWith(StateKeyCodec.HindsightOrdered);
+            return piles;
+        }
 
         internal static bool Holds(CombatState s, HashSet<int> ids)
         {
@@ -200,6 +254,8 @@ public sealed class KeyWriter
     {
         public required CombatState State;
         public required bool HandOrdered;
+        public required bool DiscardOrdered;
+        public required bool ExhaustOrdered;
         public required bool PotionOrdered;
         public required bool SelectionOpen;
         public required int[] Refs;  // the uids card_ref fields point at, in field order (0 is none)
@@ -226,6 +282,8 @@ public sealed class KeyWriter
 
     public bool Hindsight => _mode == KeyMode.Hindsight;
     public bool HandOrdered => _frame?.HandOrdered ?? true;
+    public bool DiscardOrdered => _frame?.DiscardOrdered ?? true;
+    public bool ExhaustOrdered => _frame?.ExhaustOrdered ?? true;
     public bool PotionOrdered => _frame?.PotionOrdered ?? true;
     public bool SelectionOpen => _frame?.SelectionOpen ?? true;
 
@@ -390,11 +448,14 @@ public sealed class KeyWriter
             throw new StateKeyRefusedException("kernel-queue-busy");
         var refs = new int[s.Enemies.Count];
         for (int i = 0; i < refs.Length; i++) refs[i] = s.Enemies[i].CurlUpCardUid;
+        var ordered = StateKey.Readers.OrderedPiles(s, _mode);
         _frame = new Frame
         {
             State = s,
-            HandOrdered = StateKey.HandOrdered(s),
-            PotionOrdered = StateKey.PotionOrdered(s),
+            HandOrdered = ordered.Contains("Hand"),
+            DiscardOrdered = ordered.Contains("DiscardPile"),
+            ExhaustOrdered = ordered.Contains("ExhaustPile"),
+            PotionOrdered = ordered.Contains("PotionSlots"),
             SelectionOpen = s.PendingSelection is not null,
             Refs = refs,
             Outer = _frame,

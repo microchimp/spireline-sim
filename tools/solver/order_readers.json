@@ -1,28 +1,754 @@
 {
- "about": "Rules that read hand position, potion-slot position or enemy order (docs/rebuild/FIGHT_SOLVER.md section 2). While a combat holds none of a category's cards (in any pile, queue or screen), the state key uses the canonical form for it: the hand and the potion slots as multisets, equal enemies as interchangeable (StateKey.EnemyClasses). Found by a scan of src/Sts2Emulator (Hand[0], Hand.First/Last, leftmost or first-card helpers, Enemies.First*, PotionSlots[i] reads) on main 08882f79. A card generated into the combat later is scanned when it is in the state: a keyed node decides its forms from what it holds. The equal-value harness (S3) checks the canonical forms on positions with and without readers.",
+ "about": "The pile-order rules the state key obeys (docs/rebuild/FIGHT_SOLVER.md section 2). tools/solver/scan_order_reads.py finds every read of a pile's index or position in CardEffects, RelicEffects, PotionEffects, BuffSystem, CombatEngine and EnemyAI (order_reads.json); this file classes each read of a pile the key writes as a multiset (hand, discard, exhaust, potion slots): by kind through 'rules', else in 'sites' as reader (its category's cards, relics or potions keep the pile ordered), roll (hindsight mode keeps the pile ordered), flow (carries the hand's order into another pile: see 'implies'), free (with why) or dead (no caller). KeyFieldCoverageTests fails on an unclassed read, a stale class, a scan older than the sources, a reader whose holders are not its category's, or a dead method with a caller. A category is on while the combat holds one of its cards (any pile, queue or screen) or an active relic, or always; 'implies' turns on the categories whose order flows into it.",
  "readers": {
   "hand_position": {
+   "pile": "Hand",
    "cards": [
-    {"name": "Acrobatics", "why": "its generated-card form discards the first card of the hand (DiscardFirstCardsFromHand)"},
-    {"name": "Prepared", "why": "as Acrobatics"},
-    {"name": "DaggerThrow", "why": "as Acrobatics"},
-    {"name": "Survivor", "why": "as Acrobatics"},
-    {"name": "Reboot", "why": "its generated-card form walks the hand from the first card"},
-    {"name": "CalculatedGamble", "why": "discards the hand from the first card: per-card discard triggers fire in hand order"},
-    {"name": "ShadowStep", "why": "as CalculatedGamble"},
-    {"name": "StormOfSteel", "why": "as CalculatedGamble"},
-    {"name": "Eidolon", "why": "exhausts from the first card of the hand (ExhaustFirstCardsFromHand)"},
-    {"name": "FiendFire", "why": "exhausts the hand from Hand[0]: per-card exhaust triggers fire in hand order"}
+    {
+     "name": "Acrobatics",
+     "why": "its generated-card form discards the first card of the hand (DiscardFirstCardsFromHand)"
+    },
+    {
+     "name": "Anticipate",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "CalculatedGamble",
+     "why": "discards the hand from the first card: per-card discard triggers fire in hand order"
+    },
+    {
+     "name": "DaggerThrow",
+     "why": "as Acrobatics"
+    },
+    {
+     "name": "Eidolon",
+     "why": "exhausts from the first card of the hand (ExhaustFirstCardsFromHand)"
+    },
+    {
+     "name": "FiendFire",
+     "why": "exhausts the hand from Hand[0]: per-card exhaust triggers fire in hand order"
+    },
+    {
+     "name": "Prepared",
+     "why": "as Acrobatics"
+    },
+    {
+     "name": "Reboot",
+     "why": "its generated-card form walks the hand from the first card"
+    },
+    {
+     "name": "ShadowStep",
+     "why": "as CalculatedGamble"
+    },
+    {
+     "name": "StormOfSteel",
+     "why": "as CalculatedGamble"
+    },
+    {
+     "name": "Survivor",
+     "why": "as Acrobatics"
+    }
+   ],
+   "relics": [
+    {
+     "name": "WhisperingEarring",
+     "active_when": "!s.WhisperingEarringSpent && s.Turn == 0",
+     "why": "plays Hand.FindIndex's first playable card in the pre-play phase of turn zero, then is spent (CombatEngine.RunWhisperingEarringAutoPlay)"
+    }
+   ],
+   "implies": [],
+   "potions": []
+  },
+  "discard_position": {
+   "pile": "DiscardPile",
+   "cards": [
+    {
+     "name": "AllForOne",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "Dredge",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "Hologram",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "MakeItSo",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "Reanimate",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "RightHandHand",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "SovereignBlade",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "SummonForth",
+     "why": "holds a read classed reader for this category (sites)"
+    }
+   ],
+   "relics": [],
+   "implies": [
+    "hand_position"
+   ],
+   "why": "the end of turn and every whole-hand discard carry the hand's order into the discard pile",
+   "potions": []
+  },
+  "exhaust_position": {
+   "pile": "ExhaustPile",
+   "cards": [
+    {
+     "name": "MakeItSo",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "SovereignBlade",
+     "why": "holds a read classed reader for this category (sites)"
+    },
+    {
+     "name": "SummonForth",
+     "why": "holds a read classed reader for this category (sites)"
+    }
+   ],
+   "relics": [],
+   "implies": [
+    "hand_position"
+   ],
+   "why": "ethereal and whole-hand exhausts carry the hand's order into the exhaust pile",
+   "potions": [
+    {
+     "name": "KingsCourage",
+     "why": "found by KeyBisimulationTests, not by the scan: on core2 (F08, F10) using it from a position whose exhaust pile is permuted steps to another key; the read is outside the six scanned files, so the potion is a reader until it is found"
+    }
    ]
   },
   "potion_slot": {
+   "pile": "PotionSlots",
    "cards": [],
-   "why": "the scan found no rule that reads a potion's slot index beyond the action's own slot argument"
+   "relics": [],
+   "implies": [],
+   "why": "the scan found no rule that reads a potion's slot beyond the action's own slot argument and the first empty slot",
+   "potions": []
   },
   "enemy_order": {
    "always": true,
    "cards": [],
-   "why": "acting order is slot order, and an untargeted effect takes the first targetable enemy (CombatEngine's default target, CardEffects' FirstOrDefault(IsTargetable) sites): every combat has a reader until the S3 harness shows which positions do not, so EnemyClasses keeps every enemy distinct"
+   "why": "acting order is slot order, and an untargeted effect takes the first targetable enemy (CombatEngine's default target, CardEffects' FirstOrDefault(IsTargetable) sites): every combat has a reader until the S3 harness shows which positions do not, so EnemyClasses keeps every enemy distinct",
+   "pile": "Enemies",
+   "relics": [],
+   "implies": [],
+   "potions": []
+  }
+ },
+ "hindsight_ordered": {
+  "piles": [
+   "Hand",
+   "DiscardPile",
+   "ExhaustPile",
+   "PotionSlots"
+  ],
+  "why": "hindsight mode keys the streams, so a roll's index lands on a fixed position: every pile a roll indexes (class or kind roll) stays ordered, and every pile whose order flows into one (implies); that is all four multiset piles"
+ },
+ "rules": {
+  "screen": {
+   "class": "free",
+   "why": "a screen's candidates are pile indices, and the key keeps every pile ordered while a screen is open"
+  },
+  "roll": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  }
+ },
+ "sites": {
+  "CardEffects:AddGeneratedCardsToHand:for Hand": {
+   "class": "free",
+   "why": "adds cards until the hand is full: it stops on the hand's size and reads no hand card"
+  },
+  "CardEffects:AddRandomRegentCardsToHand:for Hand": {
+   "class": "free",
+   "why": "adds cards until the hand is full: it stops on the hand's size and reads no hand card"
+  },
+  "CardEffects:AddZeroCostCardsToHand:for Hand": {
+   "class": "free",
+   "why": "adds cards until the hand is full: it stops on the hand's size and reads no hand card"
+  },
+  "CardEffects:ApplyCore:ExhaustPile.IndexOf": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:ApplyCore:ExhaustPile[at]": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:ApplyCore:Hand[0]": {
+   "class": "reader",
+   "category": "hand_position",
+   "holders": [
+    "FiendFire"
+   ],
+   "why": "exhausts from Hand[0], one card at a time"
+  },
+  "CardEffects:ApplyCore:for Hand": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:ApplyCore:for Hand#2": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:ApplyCore:for Hand#3": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:ApplyCore:for Hand#4": {
+   "class": "free",
+   "why": "adds cards until the hand is full: it stops on the hand's size and reads no hand card"
+  },
+  "CardEffects:ApplyCore:foreach ExhaustPile": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:ApplyCore:foreach Hand": {
+   "class": "flow",
+   "why": "moves the whole hand card by card (discard or exhaust, one trigger each): the same cards fire the same triggers in any order, and the order reaches the destination pile, so discard_position and exhaust_position imply hand_position"
+  },
+  "CardEffects:ApplyCore:foreach Hand#2": {
+   "class": "flow",
+   "why": "moves the whole hand card by card (discard or exhaust, one trigger each): the same cards fire the same triggers in any order, and the order reaches the destination pile, so discard_position and exhaust_position imply hand_position"
+  },
+  "CardEffects:ApplyDefectCard:AddRange(Hand)": {
+   "class": "free",
+   "why": "puts the hand into the draw pile and shuffles it: the draw pile's middle is a multiset (and is sorted before the roll)"
+  },
+  "CardEffects:ApplyDefectCard:Hand.LastIndexOf": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:ApplyDefectCard:Hand[at]": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:ApplyGeneratedCardApproximation:for Hand": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:ApplyGeneratedCardApproximation:for Hand#2": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:ApplyGeneratedCardApproximation:for Hand#3": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:ApplyNecrobinderCard:for Hand": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:ApplyNecrobinderCard:for Hand#2": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:ApplyNecrobinderCard:for Hand#3": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:ApplyRegentCard:for Hand": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:ApplyRegentCard:for Hand#2": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:AutoPlayAttacksFromDiscard:DiscardPile[i]": {
+   "class": "free",
+   "why": "the shuffle sorts the cards by a key of their values before it rolls (StableShuffle), so the input order is not read"
+  },
+  "CardEffects:AutoPlayAttacksFromDiscard:DiscardPile[i]#2": {
+   "class": "free",
+   "why": "the shuffle sorts the cards by a key of their values before it rolls (StableShuffle), so the input order is not read"
+  },
+  "CardEffects:CountCardsOfTypeInHand:foreach Hand": {
+   "class": "free",
+   "why": "counts or tests cards: the result does not depend on order"
+  },
+  "CardEffects:DiscardFirstCardsFromHand:Hand[0]": {
+   "class": "reader",
+   "category": "hand_position",
+   "holders": [
+    "Acrobatics",
+    "Prepared",
+    "DaggerThrow",
+    "Survivor",
+    "Reboot",
+    "CalculatedGamble",
+    "ShadowStep",
+    "StormOfSteel",
+    "Anticipate"
+   ],
+   "why": "discards from Hand[0]"
+  },
+  "CardEffects:DiscardFirstCardsFromHand:for Hand": {
+   "class": "reader",
+   "category": "hand_position",
+   "holders": [
+    "Acrobatics",
+    "Prepared",
+    "DaggerThrow",
+    "Survivor",
+    "Reboot",
+    "CalculatedGamble",
+    "ShadowStep",
+    "StormOfSteel",
+    "Anticipate"
+   ],
+   "why": "discards from Hand[0]"
+  },
+  "CardEffects:DiscardMovedCards:DiscardPile.LastIndexOf": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:DuplicateFirstCardInHand:Hand[0]": {
+   "class": "dead",
+   "why": "no call site in src/Sts2Emulator: the method name appears only at its declaration (KeyFieldCoverageTests checks this)"
+  },
+  "CardEffects:DuplicateFirstCardInHand:for Hand": {
+   "class": "dead",
+   "why": "no call site in src/Sts2Emulator: the method name appears only at its declaration (KeyFieldCoverageTests checks this)"
+  },
+  "CardEffects:ExhaustFirstCardsFromHand:Hand[0]": {
+   "class": "reader",
+   "category": "hand_position",
+   "holders": [
+    "Eidolon"
+   ],
+   "why": "exhausts from Hand[0]"
+  },
+  "CardEffects:ExhaustFirstCardsFromHand:for Hand": {
+   "class": "reader",
+   "category": "hand_position",
+   "holders": [
+    "Eidolon"
+   ],
+   "why": "exhausts from Hand[0]"
+  },
+  "CardEffects:FindPileHolding:foreach DiscardPile": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:FindPileHolding:foreach ExhaustPile": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:FindPileHolding:foreach Hand": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:MakeHandFreeThisTurn:for Hand": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:MoveDiscardCardsToHand:DiscardPile[0]": {
+   "class": "reader",
+   "category": "discard_position",
+   "holders": [
+    "Dredge",
+    "Hologram",
+    "Reanimate"
+   ],
+   "why": "moves DiscardPile[0] to the hand, no screen"
+  },
+  "CardEffects:MoveDiscardCardsToHand:for DiscardPile": {
+   "class": "reader",
+   "category": "discard_position",
+   "holders": [
+    "Dredge",
+    "Hologram",
+    "Reanimate"
+   ],
+   "why": "moves DiscardPile[0] to the hand, no screen"
+  },
+  "CardEffects:MoveDiscardedAttacksToHandForAggression:DiscardPile[index]": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "CardEffects:MoveDiscardedAttacksToHandForAggression:for DiscardPile": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:MoveFirstHandCardToTopOfDrawPile:Hand[0]": {
+   "class": "dead",
+   "why": "no call site in src/Sts2Emulator: the method name appears only at its declaration (KeyFieldCoverageTests checks this)"
+  },
+  "CardEffects:MoveZeroCostDiscardCardsToHand:for DiscardPile": {
+   "class": "reader",
+   "category": "discard_position",
+   "holders": [
+    "AllForOne"
+   ],
+   "why": "walks the discard pile from the first card and stops when the hand is full"
+  },
+  "CardEffects:MoveZeroCostDiscardCardsToHand:for Hand": {
+   "class": "free",
+   "why": "adds cards until the hand is full: it stops on the hand's size and reads no hand card"
+  },
+  "CardEffects:OpenDualWieldSelection:Hand[i]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CardEffects:OpenPutBackSelection:for Hand": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:PrimeRocketPunches:foreach DiscardPile": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:PrimeRocketPunches:foreach Hand": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:PullSovereignBladesToHand:foreach DiscardPile": {
+   "class": "reader",
+   "category": "discard_position",
+   "holders": [
+    "SummonForth",
+    "SovereignBlade"
+   ],
+   "why": "walks the pile from the last card and stops taking when the hand is full; the copies can differ (upgrade, enchantment)"
+  },
+  "CardEffects:PullSovereignBladesToHand:foreach ExhaustPile": {
+   "class": "reader",
+   "category": "exhaust_position",
+   "holders": [
+    "SummonForth",
+    "SovereignBlade"
+   ],
+   "why": "walks the pile from the last card and stops taking when the hand is full; the copies can differ (upgrade, enchantment)"
+  },
+  "CardEffects:RerollHandCostsForCombat:for Hand": {
+   "class": "free",
+   "why": "rolls one independent value per card in pile order: in expected mode the values are fresh and equally likely for each card, so the order moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "CardEffects:ReturnMakeItSosToHand:foreach DiscardPile": {
+   "class": "reader",
+   "category": "discard_position",
+   "holders": [
+    "MakeItSo"
+   ],
+   "why": "walks the pile from the last card and stops taking when the hand is full; the copies can differ (upgrade, enchantment)"
+  },
+  "CardEffects:ReturnMakeItSosToHand:foreach ExhaustPile": {
+   "class": "reader",
+   "category": "exhaust_position",
+   "holders": [
+    "MakeItSo"
+   ],
+   "why": "walks the pile from the last card and stops taking when the hand is full; the copies can differ (upgrade, enchantment)"
+  },
+  "CardEffects:ReturnRightHandHandsFromDiscard:for DiscardPile": {
+   "class": "reader",
+   "category": "discard_position",
+   "holders": [
+    "RightHandHand"
+   ],
+   "why": "walks the pile from the last card and stops taking when the hand is full; the copies can differ (upgrade, enchantment)"
+  },
+  "CardEffects:ShuffleDiscardIntoDraw:foreach DiscardPile": {
+   "class": "free",
+   "why": "the shuffle sorts the cards by a key of their values before it rolls (StableShuffle), so the input order is not read"
+  },
+  "CardEffects:TransformHandCardToRandom:Hand[handIndex]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CardEffects:TransformHandCardToRandom:Hand[handIndex]#2": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CardEffects:TransformStatusesInHandToFuel:for Hand": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:UpgradeAllCardsInHand:for Hand": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:UpgradeDiscardCards:DiscardPile[index]": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "CardEffects:UpgradeDiscardCards:DiscardPile[index]#2": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "CardEffects:UpgradeDiscardCards:for DiscardPile": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CardEffects:UpgradeFirstCardInHand:for Hand": {
+   "class": "dead",
+   "why": "no call site in src/Sts2Emulator: the method name appears only at its declaration (KeyFieldCoverageTests checks this)"
+  },
+  "CombatEngine:AwaitRetainSelection:for Hand": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CombatEngine:EndTurn:foreach Hand": {
+   "class": "flow",
+   "why": "moves the whole hand card by card (discard or exhaust, one trigger each): the same cards fire the same triggers in any order, and the order reaches the destination pile, so discard_position and exhaust_position imply hand_position"
+  },
+  "CombatEngine:EndTurn:foreach Hand#2": {
+   "class": "flow",
+   "why": "moves the whole hand card by card (discard or exhaust, one trigger each): the same cards fire the same triggers in any order, and the order reaches the destination pile, so discard_position and exhaust_position imply hand_position"
+  },
+  "CombatEngine:EndTurn:foreach Hand#3": {
+   "class": "flow",
+   "why": "moves the whole hand card by card (discard or exhaust, one trigger each): the same cards fire the same triggers in any order, and the order reaches the destination pile, so discard_position and exhaust_position imply hand_position"
+  },
+  "CombatEngine:FairyInABottle_AfterPreventingDeath:PotionSlots[slot]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:PlacePlayedCard:DiscardPile[^1]": {
+   "class": "free",
+   "why": "the card this step just appended: its position is fixed by the step, not by the pile's order"
+  },
+  "CombatEngine:PlacePlayedCard:ExhaustPile[^1]": {
+   "class": "free",
+   "why": "the card this step just appended: its position is fixed by the step, not by the pile's order"
+  },
+  "CombatEngine:PlayAsVakuu:Hand.FindIndex": {
+   "class": "reader",
+   "category": "hand_position",
+   "relics": [
+    "WhisperingEarring"
+   ],
+   "why": "plays the hand's first playable card, only while the relic is unspent on turn zero (RunWhisperingEarringAutoPlay returns on WhisperingEarringSpent or Turn != 0): the spent flag alone does not cover a turn-zero position before the pre-play phase, so the relic is a reader while active_when holds"
+  },
+  "CombatEngine:PlayAsVakuu:Hand[index]": {
+   "class": "free",
+   "why": "the index the relic's FindIndex chose (classed there)"
+  },
+  "CombatEngine:PlayAsVakuu:Hand[index]#2": {
+   "class": "free",
+   "why": "the index the relic's FindIndex chose (classed there)"
+  },
+  "CombatEngine:PlayCard:Hand[handIndex]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:PlayEarringCard:Hand[handIndex]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:DiscardPile[index]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:DiscardPile[index]#2": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:DiscardPile[index]#3": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#10": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#11": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#12": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#13": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#14": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#15": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#16": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#17": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#18": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#19": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#2": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#20": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#21": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#22": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#3": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#4": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#5": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#6": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#7": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#8": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:Hand[index]#9": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ResolveCardSelection:for Hand": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CombatEngine:ResolveCardSelection:for Hand#2": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "CombatEngine:StepCore:Hand[action]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:UsePotion:PotionSlots[slot]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:UsePotion:PotionSlots[slot]#2": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:UsePotion:PotionSlots[slot]#3": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:UsePotion:PotionSlots[slot]#4": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ValidActions:PotionSlots[s]": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ValidActions:PotionSlots[s]#2": {
+   "class": "free",
+   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
+  },
+  "CombatEngine:ValidActions:for Hand": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "EnemyAI:StealDrawOrDiscardCard:DiscardPile[c.Index]": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "EnemyAI:StealDrawOrDiscardCard:for DiscardPile": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "PotionEffects:Apply:AddRange(Hand)": {
+   "class": "free",
+   "why": "puts the hand into the draw pile and shuffles it: the draw pile's middle is a multiset (and is sorted before the roll)"
+  },
+  "PotionEffects:Apply:for Hand": {
+   "class": "free",
+   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
+  },
+  "PotionEffects:Apply:foreach Hand": {
+   "class": "flow",
+   "why": "moves the whole hand card by card (discard or exhaust, one trigger each): the same cards fire the same triggers in any order, and the order reaches the destination pile, so discard_position and exhaust_position imply hand_position"
+  },
+  "PotionEffects:FirstOpenPotionSlot:PotionSlots[i]": {
+   "class": "free",
+   "why": "the first empty potion slot: empty slots are equal, so which one fills changes no multiset"
+  },
+  "PotionEffects:TryToProcure:PotionSlots[slot]": {
+   "class": "free",
+   "why": "the first empty potion slot: empty slots are equal, so which one fills changes no multiset"
+  },
+  "RelicEffects:ApplyAfterFlush:Hand[i]": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "RelicEffects:ApplyAfterFlush:Hand[i]#2": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "RelicEffects:ApplyAfterPlayerTurnStart:for Hand": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "RelicEffects:ApplyFirstTurnAfterSideTurnStart:for Hand": {
+   "class": "free",
+   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "RelicEffects:MakeRandomHandCardFree:Hand[i]": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "RelicEffects:MakeRandomHandCardFree:Hand[i]#2": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "RelicEffects:MakeRandomHandCardFree:Hand[i]#3": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "RelicEffects:MakeRandomHandCardFree:Range(Hand)": {
+   "class": "roll",
+   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
   }
  }
 }

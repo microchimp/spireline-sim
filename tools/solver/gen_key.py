@@ -134,11 +134,37 @@ class Gen:
             f'    internal const string FieldsSha256 = "{digest}";',
             "",
         ]
-        for cat in ("hand_position", "potion_slot", "enemy_order"):
-            r = readers["readers"][cat]
+        cats = readers["readers"]
+        pascal = {cat: "".join(p.title() for p in cat.split("_")) for cat in cats}
+        for cat, r in cats.items():
             names = ", ".join(f'"{c["name"]}"' for c in r.get("cards", []))
-            L.append(f"    internal static readonly string[] {''.join(p.title() for p in cat.split('_'))}Cards = [{names}];")
-            L.append(f"    internal const bool {''.join(p.title() for p in cat.split('_'))}Always = {str(bool(r.get('always'))).lower()};")
+            relics = ", ".join(f'"{c["name"]}"' for c in r.get("relics", []))
+            L.append(f"    internal static readonly string[] {pascal[cat]}Cards = [{names}];")
+            L.append(f"    internal static readonly string[] {pascal[cat]}Relics = [{relics}];")
+            potions = ", ".join(f'"{c["name"]}"' for c in r.get("potions", []))
+            L.append(f"    internal static readonly string[] {pascal[cat]}Potions = [{potions}];")
+            L.append(f"    internal const bool {pascal[cat]}Always = {str(bool(r.get('always'))).lower()};")
+        L.append("")
+        L.append("    /// <summary>order_readers.json's categories: the pile each keeps ordered, its holders and what it implies.</summary>")
+        L.append("    internal static readonly (string Name, string Pile, string[] Cards, string[] Relics, string[] Potions, bool Always, string[] Implies)[] Categories =")
+        L.append("    [")
+        for cat, r in cats.items():
+            imp = ", ".join(f'"{i}"' for i in r.get("implies", []))
+            L.append(f'        ("{cat}", "{r["pile"]}", {pascal[cat]}Cards, {pascal[cat]}Relics, {pascal[cat]}Potions, {pascal[cat]}Always, [{imp}]),')
+        L.append("    ];")
+        L.append("")
+        L.append("    /// <summary>Whether a held relic's order read can still fire (order_readers.json's active_when).</summary>")
+        L.append("    internal static bool RelicActive(string name, CombatState s) => name switch")
+        L.append("    {")
+        for r in cats.values():
+            for c in r.get("relics", []):
+                if c.get("active_when"):
+                    L.append(f'        "{c["name"]}" => {c["active_when"]},')
+        L.append("        _ => true,")
+        L.append("    };")
+        L.append("")
+        hs = ", ".join(f'"{p}"' for p in readers["hindsight_ordered"]["piles"])
+        L.append(f"    internal static readonly string[] HindsightOrdered = [{hs}];")
         L.append("")
         for tname, tspec in self.types.items():
             ns = tspec.get("cs", tname)
