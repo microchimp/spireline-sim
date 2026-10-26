@@ -10,7 +10,7 @@ namespace Sts2Emulator.Solver;
 
 internal static partial class StateKeyCodec
 {
-    internal const string FieldsSha256 = "25180d386fec75c51776aaf76aaafab79caaf9a52f72198bdb00c2800d74ca96";
+    internal const string FieldsSha256 = "610bba62ae28d7211234c1b98175b10111f1f83d2e8dbe828f772488833a43c3";
 
     internal static readonly string[] HandPositionCards = ["Acrobatics", "Anticipate", "CalculatedGamble", "DaggerThrow", "Eidolon", "FiendFire", "Prepared", "Reboot", "ShadowStep", "StormOfSteel", "Survivor"];
     internal static readonly string[] HandPositionRelics = ["WhisperingEarring"];
@@ -312,6 +312,7 @@ internal static partial class StateKeyCodec
         w.Seq(x.Taken, static (w1, e1) => { w1.Card(e1); });
         w.Seq(x.Screens, static (w1, e1) => { if (e1 is null) w1.Has(false); else { w1.Has(true); Enc_StepScreen(w1, e1); } });
         w.Seq(x.Peeks, static (w1, e1) => { w1.P(e1); });
+        w.Seq(x.Chance, static (w1, e1) => { Enc_ChanceAnswer(w1, e1); });
     }
 
     internal static void Enc_StepAnswer(KeyWriter w, in StepAnswer x)
@@ -390,6 +391,13 @@ internal static partial class StateKeyCodec
         w.P(x.Kind);
         w.P(x.ModelId);
         w.P(x.Instance);
+    }
+
+    internal static void Enc_ChanceAnswer(KeyWriter w, in ChanceAnswer x)
+    {
+        w.P(x.Stream);
+        w.P(x.Index);
+        w.P(x.Value);
     }
 
 }

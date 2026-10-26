@@ -991,6 +991,10 @@
     "Peeks": {
      "type": "IReadOnlyList<bool>",
      "class": "plain"
+    },
+    "Chance": {
+     "type": "IReadOnlyList<ChanceAnswer>",
+     "class": "plain"
     }
    }
   },
@@ -1231,6 +1235,23 @@
      "class": "plain"
     },
     "Instance": {
+     "type": "int",
+     "class": "plain"
+    }
+   }
+  },
+  "ChanceAnswer": {
+   "kind": "struct",
+   "fields": {
+    "Stream": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Index": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Value": {
      "type": "int",
      "class": "plain"
     }
