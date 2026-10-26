@@ -64,7 +64,7 @@ class Sts2RunEnv(gym.Env):
     ):
         super().__init__()
         # The run action mask's version (native.RUN_MASK_VERSIONS): set on every handle `reset` creates. Version 2 lists the
-        # potion discard on the closed-belt screens; `action_masks` hides it from a policy all the same.
+        # potion discard on the closed-belt screens and version 3 the use of the AnyTime potions there; `action_masks` hides it from a policy all the same.
         self._mask_version = int(mask_version)
         self._character = character  # the game's character id; the native run API starts Ironclad unless it exports run_reset_character
         self._seed = seed

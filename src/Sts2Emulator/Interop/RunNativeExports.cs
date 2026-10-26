@@ -40,7 +40,9 @@ public static class RunNativeExports
     // (Sts2_GetLastError, the re-anchor's message) until their pieces land. Old runs are unchanged.
     // v29: under core2 Sts2Run_Clone carries the engine's kernel (the copy's fight steps through its gate) and the
     //      re-anchors bind the anchored fight (NATIVE_KERNEL.md pieces 2-3): neither is refused any more.
-    public const int RUN_NATIVE_API_VERSION = 29;
+    // v30: mask version 3 (Sts2Run_SetMaskVersion accepts 1..3): also the use actions of the AnyTime potions (Blood Potion,
+    //      Fruit Juice, Entropic Brew) on the card reward, deck-select, bundle-select and Crystal Sphere screens (D34).
+    public const int RUN_NATIVE_API_VERSION = 30;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;

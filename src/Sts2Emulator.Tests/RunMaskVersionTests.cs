@@ -145,6 +145,147 @@ public class RunMaskVersionTests
         Assert.Contains("belt is closed", RunPotionUse.Refusal(engine.State, RunConstants.DiscardPotionAction, 2)!);
     }
 
+    // ---- version 3 (D34): the use of the AnyTime potions on the four overlay screens
+
+    private static int Slot(string potion) => RunNonCombatEffects.NamedPotion(potion);
+
+    [Theory]
+    [MemberData(nameof(Closed))]
+    public void VersionThreeAddsExactlyTheUseSlotsOfTheAnyTimePotionsToVersionTwosMask(RunPhase phase)
+    {
+        string[] belt = ["BlockPotion", "BloodPotion", "FruitJuice"];
+        var v2 = RunMaskGoldenTests.Mask(V(2, phase, belt));
+        var v3 = RunMaskGoldenTests.Mask(V(3, phase, belt));
+        var expected = (int[])v2.Clone();
+        expected[RunConstants.UsePotionAction + 1] = 1; // Blood Potion
+        expected[RunConstants.UsePotionAction + 2] = 1; // Fruit Juice; the Block Potion is CombatOnly
+        Assert.Equal(expected, v3);
+
+        // Entropic Brew is AnyTime too; the Foul Potion wants the merchant's room, a Fire Potion is CombatOnly
+        string[] other = ["EntropicBrew", "FoulPotion", "FirePotion"];
+        var o2 = RunMaskGoldenTests.Mask(V(2, phase, other));
+        var o3 = RunMaskGoldenTests.Mask(V(3, phase, other));
+        var expectedOther = (int[])o2.Clone();
+        expectedOther[RunConstants.UsePotionAction] = 1;
+        Assert.Equal(expectedOther, o3);
+    }
+
+    [Theory]
+    [MemberData(nameof(Closed))]
+    public void VersionThreeOffersNothingExtraOnAnEmptyBeltAndKeepsTheOtherVersionsAsTheyWere(RunPhase phase)
+    {
+        Assert.Equal(RunMaskGoldenTests.Mask(V(2, phase)), RunMaskGoldenTests.Mask(V(3, phase)));
+        Assert.Equal(RunMaskGoldenTests.Mask(V(1, phase)), RunMaskGoldenTests.Mask(V(3, phase)));
+        // versions 1 and 2 still list no use on these screens even for a belt of AnyTime potions
+        foreach (int version in new[] { 1, 2 })
+        {
+            var mask = RunMaskGoldenTests.Mask(V(version, phase, "BloodPotion", "FruitJuice", "EntropicBrew"));
+            Assert.All(mask.Skip(RunConstants.UsePotionAction).Take(RunConstants.PotionSlotCapacity), v => Assert.Equal(0, v));
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(Open))]
+    public void VersionThreeChangesNothingOnTheScreensWhoseBeltWasAlreadyOpen(RunPhase phase)
+    {
+        string[] belt = ["BlockPotion", "BloodPotion", "FruitJuice"];
+        Assert.Equal(RunMaskGoldenTests.Mask(V(2, phase, belt)), RunMaskGoldenTests.Mask(V(3, phase, belt)));
+        Assert.Equal(RunMaskGoldenTests.Mask(V(1, phase, belt)), RunMaskGoldenTests.Mask(V(3, phase, belt)));
+    }
+
+    [Theory]
+    [MemberData(nameof(Closed))]
+    public void ABloodPotionUsedOnTheseScreensHealsAndLeavesTheBeltAndNothingElseChanges(RunPhase phase)
+    {
+        var engine = V(3, phase, "BlockPotion", "BloodPotion");
+        engine.State.PlayerMaxHp = 80;
+        engine.State.PlayerHp = 30;
+        int gold = engine.State.Gold;
+        int deck = engine.State.Deck.Count;
+        Assert.Null(RunPotionUse.Refusal(engine.State, RunConstants.UsePotionAction + 1, 3));
+        Assert.Equal(0, engine.Step(RunConstants.UsePotionAction + 1, -1, out _, out _, out _));
+        Assert.Equal(46, engine.State.PlayerHp); // 20% of the max hp (BloodPotion.OnUse)
+        Assert.Equal(0, engine.State.PotionSlots[1]);
+        Assert.Equal(Slot("BlockPotion"), engine.State.PotionSlots[0]);
+        Assert.Equal((gold, deck, phase), (engine.State.Gold, engine.State.Deck.Count, engine.State.Phase));
+        Assert.Equal(-1, engine.Step(RunConstants.UsePotionAction + 1, -1, out _, out _, out _)); // the slot is empty now
+        Assert.Contains("empty", RunPotionUse.Refusal(engine.State, RunConstants.UsePotionAction + 1, 3)!);
+    }
+
+    [Theory]
+    [MemberData(nameof(Closed))]
+    public void AFruitJuiceAddsMaxHpAndAnEntropicBrewFillsTheBeltFromTheSameStreamAsAtAShop(RunPhase phase)
+    {
+        var juice = V(3, phase, "FruitJuice");
+        int max = juice.State.PlayerMaxHp;
+        Assert.Equal(0, juice.Step(RunConstants.UsePotionAction, -1, out _, out _, out _));
+        Assert.Equal(max + 5, juice.State.PlayerMaxHp);
+        Assert.Equal(0, juice.State.PotionSlots[0]);
+
+        // The brew empties its own slot first and rolls a potion for every open slot: the same belt as at a shop (version 1).
+        var brew = V(3, phase, "EntropicBrew", "BlockPotion");
+        Assert.Equal(0, brew.Step(RunConstants.UsePotionAction, -1, out _, out _, out _));
+        var atShop = RunMaskGoldenTests.At(RunPhase.Shop, "EntropicBrew", "BlockPotion");
+        Assert.Equal(0, atShop.Step(RunConstants.UsePotionAction, -1, out _, out _, out _));
+        Assert.Equal(atShop.State.PotionSlots.Take(3), brew.State.PotionSlots.Take(3));
+        Assert.Equal(Slot("BlockPotion"), brew.State.PotionSlots[1]);
+        Assert.All(brew.State.PotionSlots.Take(3), id => Assert.NotEqual(0, id));
+        Assert.Equal(phase, brew.State.Phase);
+    }
+
+    [Theory]
+    [MemberData(nameof(Closed))]
+    public void ACombatOnlyPotionAndTheFoulPotionAreRefusedWithTheGamesReasonAndAUseUnderVersionTwoIsStillRefused(
+        RunPhase phase
+    )
+    {
+        var engine = V(3, phase, "BlockPotion", "FoulPotion", "BloodPotion");
+        engine.State.Gold = 10;
+        engine.State.PlayerHp = 10;
+        Assert.Equal(-1, engine.Step(RunConstants.UsePotionAction, -1, out _, out _, out _));
+        Assert.Contains("Usage", RunPotionUse.Refusal(engine.State, RunConstants.UsePotionAction, 3)!);
+        Assert.Equal(-1, engine.Step(RunConstants.UsePotionAction + 1, -1, out _, out _, out _));
+        Assert.Contains("merchant's room", RunPotionUse.Refusal(engine.State, RunConstants.UsePotionAction + 1, 3)!);
+        Assert.Equal((10, 10), (engine.State.Gold, engine.State.PlayerHp));
+        Assert.Equal(
+            (Slot("BlockPotion"), Slot("FoulPotion"), Slot("BloodPotion")),
+            (engine.State.PotionSlots[0], engine.State.PotionSlots[1], engine.State.PotionSlots[2])
+        );
+
+        var two = V(2, phase, "BloodPotion");
+        two.State.PlayerHp = 10;
+        Assert.Equal(-1, two.Step(RunConstants.UsePotionAction, -1, out _, out _, out _));
+        Assert.Contains("thrown away", RunPotionUse.Refusal(two.State, RunConstants.UsePotionAction, 2)!);
+        Assert.Equal(10, two.State.PlayerHp);
+    }
+
+    [Theory]
+    [InlineData(RunPhase.CardReward, RunConstants.EventTheFutureOfPotions)]
+    [InlineData(RunPhase.TransformSelect, RunConstants.EventStoneOfAllTime)]
+    [InlineData(RunPhase.TransformSelect, RunConstants.EventRanwidTheElder)]
+    [InlineData(RunPhase.CardReward, RunConstants.EventRanwidTheElder)]
+    public void TheEventsThatHoldTheBeltKeepTheUseShutToo(RunPhase phase, int eventId)
+    {
+        var engine = V(3, phase, "BloodPotion");
+        engine.State.EventId = eventId;
+        engine.State.PlayerHp = 10;
+        Assert.Equal(0, RunMaskGoldenTests.Mask(engine)[RunConstants.UsePotionAction]);
+        Assert.Equal(-1, engine.Step(RunConstants.UsePotionAction, -1, out _, out _, out _));
+        Assert.Equal(10, engine.State.PlayerHp);
+        Assert.Contains("belt is closed", RunPotionUse.Refusal(engine.State, RunConstants.UsePotionAction, 3)!);
+    }
+
+    [Fact]
+    public void ACombatAndAFinishedRunStayClosedForTheUseInVersionThree()
+    {
+        foreach (var phase in new[] { RunPhase.Combat, RunPhase.Complete })
+        {
+            var engine = V(3, phase, "BloodPotion");
+            Assert.False(RunPotionUse.CanUse(engine.State, 0, 3));
+            Assert.False(RunPotionUse.CanDiscard(engine.State, 0, 3));
+        }
+    }
+
     [Fact]
     public void ACombatAndAFinishedRunStayClosedInVersionTwo()
     {
@@ -161,7 +302,9 @@ public class RunMaskVersionTests
         var engine = new RunEngine();
         Assert.Equal(1, engine.MaskVersion);
         Assert.Throws<ArgumentOutOfRangeException>(() => engine.MaskVersion = 0);
-        Assert.Throws<ArgumentOutOfRangeException>(() => engine.MaskVersion = 3);
+        Assert.Throws<ArgumentOutOfRangeException>(() => engine.MaskVersion = 4);
+        engine.MaskVersion = 3;
+        Assert.Equal(3, engine.MaskVersion);
         engine.MaskVersion = 2;
         engine.Reset("ABCDEF");
         Assert.Equal(2, engine.MaskVersion);
@@ -178,7 +321,7 @@ public class RunMaskVersionTests
         {
             Assert.Equal(-1, RunNativeExports.Sts2Run_SetMaskVersion(255, 2));
             Assert.Equal(-2, RunNativeExports.Sts2Run_SetMaskVersion(handle, 0));
-            Assert.Equal(-2, RunNativeExports.Sts2Run_SetMaskVersion(handle, 3));
+            Assert.Equal(-2, RunNativeExports.Sts2Run_SetMaskVersion(handle, 4));
             Assert.True(RunNativeExports.TryGetRun(handle, out var run));
             Assert.Equal(1, run.MaskVersion);
             run.Reset("ABCDEF");
@@ -202,7 +345,30 @@ public class RunMaskVersionTests
             var mask = new int[RunConstants.MaxActions];
             run.WriteActionMask(mask);
             Assert.NotEqual(0, mask[RunConstants.DiscardPotionAction]);
-            Assert.Equal(29, RunNativeExports.RUN_NATIVE_API_VERSION);
+            Assert.Equal(30, RunNativeExports.RUN_NATIVE_API_VERSION);
+
+            // version 3: the reason for a use there follows the version too
+            run.State.PotionSlots[1] = RunNonCombatEffects.NamedPotion("BloodPotion");
+            fixed (byte* p = buf)
+            {
+                Assert.Contains(
+                    "thrown away",
+                    System.Text.Encoding.UTF8.GetString(
+                        buf,
+                        0,
+                        RunNativeExports.Sts2Run_PotionActionReason(handle, RunConstants.UsePotionAction + 1, p, buf.Length)
+                    )
+                );
+                Assert.Equal(0, RunNativeExports.Sts2Run_SetMaskVersion(handle, 3));
+                Assert.Equal(
+                    0,
+                    RunNativeExports.Sts2Run_PotionActionReason(handle, RunConstants.UsePotionAction + 1, p, buf.Length)
+                );
+            }
+
+            run.WriteActionMask(mask);
+            Assert.NotEqual(0, mask[RunConstants.UsePotionAction + 1]);
+            Assert.Equal(0, mask[RunConstants.UsePotionAction]); // the Block Potion is combat-only
         }
         finally
         {

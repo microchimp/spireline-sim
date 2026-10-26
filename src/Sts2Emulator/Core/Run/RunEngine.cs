@@ -10,9 +10,10 @@ public sealed class RunEngine : Core2.ICombatEndHost
     private int _maskVersion = RunConstants.MaskVersion1;
 
     /// <summary>
-    /// The version of the action mask this run writes and the discard actions it accepts: <see cref="RunConstants.MaskVersion1" />
-    /// (the default; the mask as it was before the versions) or <see cref="RunConstants.MaskVersion2" /> (adds the potion
-    /// discard on the card reward, deck-select, bundle-select and Crystal Sphere screens). A setting of the handle, like
+    /// The version of the action mask this run writes and the potion actions it accepts: <see cref="RunConstants.MaskVersion1" />
+    /// (the default; the mask as it was before the versions), <see cref="RunConstants.MaskVersion2" /> (adds the potion
+    /// discard on the card reward, deck-select, bundle-select and Crystal Sphere screens) or
+    /// <see cref="RunConstants.MaskVersion3" /> (also the use of the AnyTime potions there). A setting of the handle, like
     /// <see cref="Kernel" />: <see cref="Reset" /> keeps it and <see cref="Clone" /> copies it. It changes the mask and
     /// what a step accepts, never a run's state.
     /// </summary>
@@ -562,7 +563,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
         WritePhaseActionMask(mask);
         for (int slot = 0; slot < RunConstants.PotionSlotCapacity; slot++)
         {
-            if (RunPotionUse.CanUse(State, slot))
+            if (RunPotionUse.CanUse(State, slot, MaskVersion))
             {
                 SetMask(mask, RunConstants.UsePotionAction + slot);
             }
@@ -1380,7 +1381,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
         // fight's own action ids are the combat engine's.
         if (State.Phase != RunPhase.Combat && RunPotionUse.SlotOf(action) is var usedSlot and >= 0)
         {
-            return RunPotionUse.Use(State, usedSlot) ? 0 : -1;
+            return RunPotionUse.Use(State, usedSlot, MaskVersion) ? 0 : -1;
         }
 
         // A potion thrown away from the belt, on the same screens (`DiscardPotionGameAction`).

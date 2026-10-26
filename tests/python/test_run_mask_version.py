@@ -1,5 +1,6 @@
-"""D32: the run action mask has versions (Sts2Run_SetMaskVersion, run API 27). Version 1, the default, is today's mask;
-version 2 adds the potion discard on the card reward, deck-select, bundle-select and Crystal Sphere screens. The C# tests
+"""D32/D34: the run action mask has versions (Sts2Run_SetMaskVersion, run API 30). Version 1, the default, is today's mask;
+version 2 adds the potion discard on the card reward, deck-select, bundle-select and Crystal Sphere screens; version 3 adds the
+use of the AnyTime potions there. The C# tests
 (RunMaskVersionTests, RunMaskGoldenTests) cover every screen; these drive a real run to a card reward through the binding."""
 
 import sys
@@ -25,18 +26,19 @@ except Exception:  # noqa: BLE001
 BELT = ("BLOCK_POTION", "BLOOD_POTION", "FRUIT_JUICE")
 
 
-@unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 27)")
+@unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 30)")
 class MaskVersionBindingTests(unittest.TestCase):
-    def test_the_binding_requires_api_27_and_names_the_versions(self):
-        self.assertEqual(native._REQUIRED_RUN_NATIVE_API_VERSION, 29)
-        self.assertEqual((native.RUN_MASK_VERSION_DEFAULT, native.RUN_MASK_VERSIONS), (1, (1, 2)))
+    def test_the_binding_requires_api_30_and_names_the_versions(self):
+        self.assertEqual(native._REQUIRED_RUN_NATIVE_API_VERSION, 30)
+        self.assertEqual((native.RUN_MASK_VERSION_DEFAULT, native.RUN_MASK_VERSIONS), (1, (1, 2, 3)))
 
     def test_an_unknown_handle_or_version_is_refused(self):
         h = native.run_create()
         try:
+            native.run_set_mask_version(h, 3)
             native.run_set_mask_version(h, 2)
             native.run_set_mask_version(h, 1)
-            for bad in (0, 3, -1):
+            for bad in (0, 4, -1):
                 with self.assertRaises(ValueError):
                     native.run_set_mask_version(h, bad)
         finally:
@@ -60,6 +62,24 @@ class MaskVersionBindingTests(unittest.TestCase):
             self.assertEqual(two, expected)
             native.run_set_mask_version(s.handle, 1)
             self.assertEqual(mask_screens.run_mask(s.handle), one)
+        finally:
+            s.close()
+
+    def test_version_three_adds_exactly_the_use_slots_of_the_usable_potions_to_version_twos_mask(self):
+        s = engine.RunSession("D34MASK1", 0, engine.CombatBudget(4, 4))
+        try:
+            mask_screens.to_card_reward(s)
+            mask_screens.hold_belt(s, *BELT)
+            native.run_set_mask_version(s.handle, 2)
+            two = mask_screens.run_mask(s.handle)
+            native.run_set_mask_version(s.handle, 3)
+            three = mask_screens.run_mask(s.handle)
+            expected = list(two)
+            expected[native.RUN_USE_POTION_ACTION + 1] = 1  # Blood Potion
+            expected[native.RUN_USE_POTION_ACTION + 2] = 1  # Fruit Juice (the Block Potion is combat-only)
+            self.assertEqual(three, expected)
+            # the gym's mask still hides every potion action from a policy
+            self.assertFalse(s.env.action_masks()[native.RUN_USE_POTION_ACTION:].any())
         finally:
             s.close()
 

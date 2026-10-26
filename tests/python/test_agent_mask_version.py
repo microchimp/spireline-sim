@@ -1,5 +1,5 @@
-"""D32: agent.json carries mask_version (absent: 1, so generations 0-3 and every saved candidate); a candidate written by
-train_generation has 2 (test_gen_loop pins that); the run an agent plays is built with it, and the version only changes
+"""D32/D34: agent.json carries mask_version (absent: 1, so generations 0-5 and every saved candidate; 2 and 3 are read as
+they are); a candidate written by train_generation has 3 (test_gen_loop pins that); the run an agent plays is built with it, and the version only changes
 what the run's mask carries."""
 
 import json
@@ -37,7 +37,7 @@ def agent_dir(tmp: str, meta: dict | None) -> Path:
     return d
 
 
-@unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 27)")
+@unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 30)")
 class AgentMaskVersionTests(unittest.TestCase):
     def test_an_agent_without_the_key_is_version_one_and_the_key_is_read(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -46,13 +46,16 @@ class AgentMaskVersionTests(unittest.TestCase):
             self.assertEqual(gen_loop.load_agent(agent_dir(tmp, None)).mask_version, 1)
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(gen_loop.load_agent(agent_dir(tmp, {"generation": 4, "mask_version": 2})).mask_version, 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(gen_loop.load_agent(agent_dir(tmp, {"generation": 6, "mask_version": 3})).mask_version, 3)
         self.assertEqual(gen_loop.Agent().mask_version, 1)
-        for bad in (0, 3, "2", True):
+        for bad in (0, 4, "2", "3", True):
             with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
                 gen_loop.load_agent(agent_dir(tmp, {"generation": 4, "mask_version": bad}))
 
-    def test_a_candidates_version_constant_is_two(self):
-        self.assertEqual(gen_loop.CANDIDATE_MASK_VERSION, 2)
+    def test_a_candidates_version_constant_is_three_and_the_accepted_versions_are_the_bindings(self):
+        self.assertEqual(gen_loop.CANDIDATE_MASK_VERSION, 3)
+        self.assertEqual(gen_loop.AGENT_MASK_VERSIONS, tuple(native.RUN_MASK_VERSIONS))
 
     def test_a_version_one_agents_run_is_built_as_it_always_was_and_its_card_reward_mask_is_todays(self):
         self.assertEqual(gen0.session_kwargs(gen_loop.Agent()), {})
@@ -79,6 +82,23 @@ class AgentMaskVersionTests(unittest.TestCase):
             mask = mask_screens.run_mask(s.handle)
             self.assertEqual([i for i, v in enumerate(mask) if v], [0, 1, 2, 3, 248, 249, 250])
             self.assertEqual(engine._legal(s.handle), [0, 1, 2, 3])  # the rules and the lookahead still see today's screen
+            self.assertEqual([o.action for o in s.decision().options], [o.action for o in d.options])
+        finally:
+            s.close()
+
+    def test_a_version_three_agents_run_has_the_use_of_the_anytime_potions_on_the_mask_and_plays_the_same_screen(self):
+        agent = gen_loop.Agent(mask_version=3)
+        self.assertEqual(gen0.session_kwargs(agent), {"mask_version": 3})
+        s = engine.RunSession("D34AGENT1", 0, engine.CombatBudget(4, 4), **gen0.session_kwargs(agent))
+        try:
+            self.assertEqual(s.mask_version, 3)
+            d = mask_screens.to_card_reward(s)
+            mask_screens.hold_belt(s, *BELT)
+            mask = mask_screens.run_mask(s.handle)
+            # Blood Potion (slot 1) and Fruit Juice (slot 2) can be used; the Block Potion is combat-only
+            self.assertEqual([i for i, v in enumerate(mask) if v], [0, 1, 2, 3, 243, 244, 248, 249, 250])
+            self.assertEqual(engine._legal(s.handle), [0, 1, 2, 3])  # the policies still hide 242..253
+            self.assertFalse(s.env.action_masks()[native.RUN_USE_POTION_ACTION:].any())
             self.assertEqual([o.action for o in s.decision().options], [o.action for o in d.options])
         finally:
             s.close()
