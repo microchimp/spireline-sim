@@ -1,0 +1,1272 @@
+{
+ "about": "The fight solver's state key, field by field (docs/rebuild/FIGHT_SOLVER.md section 2). Every field the full-state walk reaches from CombatState through a keyed field is classed here; KeyFieldCoverageTests fails on one that is not. Classes: plain, multiset (ordered_when: KeyWriter flags that keep the order), regions, card_ref, stream (hindsight only), excluded (reason). After an edit run python tools/solver/gen_key.py.",
+ "enums": [
+  "PlayerCharacter",
+  "Enchantment",
+  "CardType",
+  "TinkerRider",
+  "IntentType",
+  "BuffId",
+  "OrbType",
+  "CardSelectionKind",
+  "HookId"
+ ],
+ "types": {
+  "CombatState": {
+   "kind": "class",
+   "fields": {
+    "PlayerHp": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayerMaxHp": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayerBlock": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Energy": {
+     "type": "int",
+     "class": "plain"
+    },
+    "MaxEnergy": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayerGold": {
+     "type": "int",
+     "class": "plain"
+    },
+    "StolenBackGold": {
+     "type": "int",
+     "class": "plain"
+    },
+    "RoyaltiesGold": {
+     "type": "int",
+     "class": "plain"
+    },
+    "EscapedEnemies": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PaelsLegionCooldown": {
+     "type": "int",
+     "class": "plain"
+    },
+    "AfterimageBeforePlay": {
+     "type": "int",
+     "class": "plain"
+    },
+    "StormBeforePlay": {
+     "type": "int",
+     "class": "plain"
+    },
+    "SubroutineBeforePlay": {
+     "type": "int",
+     "class": "plain"
+    },
+    "StatusCardsDrawnThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayedCardCostForCombat": {
+     "type": "int",
+     "class": "plain"
+    },
+    "OrbCapacity": {
+     "type": "int",
+     "class": "plain"
+    },
+    "BaseOrbSlots": {
+     "type": "int",
+     "class": "plain"
+    },
+    "OstyHp": {
+     "type": "int",
+     "class": "plain"
+    },
+    "OstyMaxHp": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Stars": {
+     "type": "int",
+     "class": "plain"
+    },
+    "MaxPotionSlots": {
+     "type": "int",
+     "class": "plain"
+    },
+    "EncounterId": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayedCardBonusDamage": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayedCardBonusBlock": {
+     "type": "int",
+     "class": "plain"
+    },
+    "EnergySpentThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "EtherealExhaustsThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "UnblockedDamageThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "RainbowRingAttacks": {
+     "type": "int",
+     "class": "plain"
+    },
+    "RainbowRingSkills": {
+     "type": "int",
+     "class": "plain"
+    },
+    "RainbowRingPowers": {
+     "type": "int",
+     "class": "plain"
+    },
+    "GamblingChipDiscarded": {
+     "type": "int",
+     "class": "plain"
+    },
+    "TurnStartHeldPhase": {
+     "type": "int",
+     "class": "plain"
+    },
+    "TurnStartHeldRelic": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayerHitTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayerHitTurnBefore": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayedCardCostBump": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Turn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardsPlayedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardPlaysStartedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardPlaySeriesStartedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "AttackCardsPlayedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "AttackOrSkillCardsPlayedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardPlaysThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardsPlayedThisCombat": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardsDrawnThisCombat": {
+     "type": "int",
+     "class": "plain"
+    },
+    "ShivsPlayedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "ExtraCardRewards": {
+     "type": "int",
+     "class": "plain"
+    },
+    "BlockGainsThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayerHpLostThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardsExhaustedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "LightningOrbsChanneledThisCombat": {
+     "type": "int",
+     "class": "plain"
+    },
+    "EtherealExhaustCount": {
+     "type": "int",
+     "class": "plain"
+    },
+    "EtherealCardPlaysThisCombat": {
+     "type": "int",
+     "class": "plain"
+    },
+    "SkillCardsPlayedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "BoundCardsThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardPlaysLastTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "ExtraCardsDrawnThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "OstyAttacksThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "StarsGainedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PlayedCardStarsSpent": {
+     "type": "int",
+     "class": "plain"
+    },
+    "VoidFormCardsPlayedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CardsGeneratedThisCombat": {
+     "type": "int",
+     "class": "plain"
+    },
+    "TenderCardsPlayedThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "RuptureOwed": {
+     "type": "int",
+     "class": "plain"
+    },
+    "UnblockedDamageHitCount": {
+     "type": "int",
+     "class": "plain"
+    },
+    "KnownTopCount": {
+     "type": "int",
+     "class": "plain"
+    },
+    "KnownBottomCount": {
+     "type": "int",
+     "class": "plain"
+    },
+    "AscensionLevel": {
+     "type": "int",
+     "class": "plain"
+    },
+    "FatGremlinEscaped": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "BattlewornDummyRanOutOfTime": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "PaelsLegionCard": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "MercGoldWasStolen": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "EndTurnAwaitingSelection": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "ResolvingDefendCard": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "HeldPlayedCardExhausts": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "IsEliteCombat": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "AutoPlaying": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "PenNibArmed": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "VambraceSpent": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "VambraceCard": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "RainbowRingPaidThisTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "UnsettlingLampSpent": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "UnsettlingLampCard": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "BurningSticksUsed": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "BeltBuckleApplied": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "IsEliteRoom": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "TookUnblockedDamage": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "PlayedCardEnchantSpent": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "PlayedCardEnchantGrew": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "WhisperingEarringSpent": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "PlayerTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "SkillPlayedWhileSmoggy": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "LethalAttackPlay": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "BoundCardPlayedThisTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "MusicBoxUsedThisTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "FurCoatBites": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "DoomAppliedThisTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "EndTurnAfterPlay": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "Character": {
+     "type": "PlayerCharacter",
+     "class": "plain"
+    },
+    "Unlocks": {
+     "type": "UnlockState",
+     "class": "excluded",
+     "reason": "the run's profile: immutable input fixed for the whole fight, and a solver table is bound to one fight (FIGHT_SOLVER.md section 5)"
+    },
+    "DepartedEnemyDefIds": {
+     "type": "List<int>",
+     "class": "plain"
+    },
+    "LastCardUid": {
+     "type": "int",
+     "class": "excluded",
+     "reason": "identity only: the uid counter (CARD_UID.md); outcomes read card values, references are card_ref"
+    },
+    "Kernel": {
+     "type": "KernelState",
+     "class": "plain"
+    },
+    "Hand": {
+     "type": "List<CardInstance>",
+     "class": "multiset",
+     "ordered_when": [
+      "HandOrdered",
+      "SelectionOpen"
+     ]
+    },
+    "DrawPile": {
+     "type": "List<CardInstance>",
+     "class": "regions"
+    },
+    "DiscardPile": {
+     "type": "List<CardInstance>",
+     "class": "multiset",
+     "ordered_when": [
+      "SelectionOpen"
+     ]
+    },
+    "ExhaustPile": {
+     "type": "List<CardInstance>",
+     "class": "multiset",
+     "ordered_when": [
+      "SelectionOpen"
+     ]
+    },
+    "ReturnToHandBeforeDraw": {
+     "type": "List<CardInstance>",
+     "class": "plain"
+    },
+    "CopiesToHandBeforeDraw": {
+     "type": "List<CardInstance>",
+     "class": "plain"
+    },
+    "AutoPlayQueue": {
+     "type": "List<CardInstance>",
+     "class": "plain"
+    },
+    "StolenCards": {
+     "type": "List<CardInstance>",
+     "class": "plain"
+    },
+    "StolenBackCards": {
+     "type": "List<CardInstance>",
+     "class": "plain"
+    },
+    "HeldPlayedCard": {
+     "type": "CardInstance?",
+     "class": "plain"
+    },
+    "LastAttackOrSkillThisTurn": {
+     "type": "CardInstance?",
+     "class": "plain"
+    },
+    "LastAttackOrSkillLastTurn": {
+     "type": "CardInstance?",
+     "class": "plain"
+    },
+    "Orbs": {
+     "type": "List<OrbState>",
+     "class": "plain"
+    },
+    "StrangleBeforePlay": {
+     "type": "List<int>",
+     "class": "plain"
+    },
+    "PotionSlots": {
+     "type": "int[]",
+     "class": "multiset",
+     "ordered_when": [
+      "PotionOrdered",
+      "SelectionOpen"
+     ]
+    },
+    "Relics": {
+     "type": "List<RelicInstance>",
+     "class": "plain"
+    },
+    "PlayerBuffs": {
+     "type": "List<BuffState>",
+     "class": "plain"
+    },
+    "PlayerDebuffsAtRoundStart": {
+     "type": "List<BuffState>",
+     "class": "plain"
+    },
+    "Enemies": {
+     "type": "List<EnemyState>",
+     "class": "plain"
+    },
+    "ShuffleRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "chance in expected mode: fresh at each chance node, and the player cannot see seeds; (seed, position) in hindsight mode"
+    },
+    "TargetRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "chance in expected mode: fresh at each chance node, and the player cannot see seeds; (seed, position) in hindsight mode"
+    },
+    "CardSelectionRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "chance in expected mode: fresh at each chance node, and the player cannot see seeds; (seed, position) in hindsight mode"
+    },
+    "CardGenerationRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "chance in expected mode: fresh at each chance node, and the player cannot see seeds; (seed, position) in hindsight mode"
+    },
+    "PotionGenerationRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "chance in expected mode: fresh at each chance node, and the player cannot see seeds; (seed, position) in hindsight mode"
+    },
+    "NicheHpRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "chance in expected mode: fresh at each chance node, and the player cannot see seeds; (seed, position) in hindsight mode"
+    },
+    "EnergyCostRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "chance in expected mode: fresh at each chance node, and the player cannot see seeds; (seed, position) in hindsight mode"
+    },
+    "OrbGenerationRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "chance in expected mode: fresh at each chance node, and the player cannot see seeds; (seed, position) in hindsight mode"
+    },
+    "AiRng": {
+     "type": "Random",
+     "class": "stream",
+     "reason": "as the other streams"
+    },
+    "LastIntentRoll": {
+     "type": "IntentRoll",
+     "class": "excluded",
+     "reason": "a record for a resampled fork to roll the pass again; the solver's chance nodes replace it (FIGHT_SOLVER.md section 2)"
+    },
+    "AiStateAssumed": {
+     "type": "bool",
+     "class": "excluded",
+     "reason": "provenance of a re-anchor, carried in the result (ai_state_assumed) instead (FIGHT_SOLVER.md section 2)"
+    },
+    "PendingSelection": {
+     "type": "PendingCardSelection",
+     "class": "plain"
+    },
+    "ExecutedThisEnemyTurn": {
+     "type": "List<int>",
+     "class": "excluded",
+     "reason": "differential-testing introspection that nothing in play reads (LifecycleTests: Unread; CombatSnapshotTests.NotCarried)"
+    },
+    "TargetEnemyIndex": {
+     "type": "int",
+     "class": "excluded",
+     "reason": "the step's own argument, overwritten on entry to every Step before anything reads it (LifecycleTests: StepArgument)"
+    }
+   }
+  },
+  "CardInstance": {
+   "kind": "struct",
+   "fields": {
+    "DefId": {
+     "type": "int",
+     "class": "plain"
+    },
+    "EnchantAmount": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CostBump": {
+     "type": "int",
+     "class": "plain"
+    },
+    "ReplayCount": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CostForCombat": {
+     "type": "int",
+     "class": "plain"
+    },
+    "BonusDamage": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CostThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "BonusBlock": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Upgraded": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "FreeThisTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "Retain": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "EnchantSpent": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "PlayedThisTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "SlyThisTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "SlyForCombat": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "EtherealForCombat": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "RetainForCombat": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "DampenedUpgrade": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "Bound": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "RetainThisTurn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "FreeUntilPlayed": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "Enchantment": {
+     "type": "Enchantment",
+     "class": "plain"
+    },
+    "TinkerType": {
+     "type": "CardType",
+     "class": "plain"
+    },
+    "TinkerRider": {
+     "type": "TinkerRider",
+     "class": "plain"
+    },
+    "_uid": {
+     "type": "CardUidSlot",
+     "class": "excluded",
+     "reason": "identity only ([IdentityOnly], CARD_UID.md): outcomes read card values; a field pointing at a card is a card_ref"
+    }
+   }
+  },
+  "EnemyState": {
+   "kind": "class",
+   "fields": {
+    "DefId": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Hp": {
+     "type": "int",
+     "class": "plain"
+    },
+    "MaxHp": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Block": {
+     "type": "int",
+     "class": "plain"
+    },
+    "LastSpawnedDefId": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PoweredHitsThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "HardenedShellDamageThisTurn": {
+     "type": "int",
+     "class": "plain"
+    },
+    "MoveIndex": {
+     "type": "int",
+     "class": "plain"
+    },
+    "LastMove": {
+     "type": "int",
+     "class": "plain"
+    },
+    "LastMoveRepeats": {
+     "type": "int",
+     "class": "plain"
+    },
+    "StarterMove": {
+     "type": "int",
+     "class": "plain"
+    },
+    "StolenGold": {
+     "type": "int",
+     "class": "plain"
+    },
+    "HeistGold": {
+     "type": "int",
+     "class": "plain"
+    },
+    "LastBranch": {
+     "type": "int",
+     "class": "plain"
+    },
+    "RepeatStreak": {
+     "type": "int",
+     "class": "plain"
+    },
+    "BranchCooldown": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Slot": {
+     "type": "int",
+     "class": "plain"
+    },
+    "OnceOnlyMoveUsed": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "StartsOnBranch": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "RollsNextMove": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "CurlUpArmed": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "AppliedPlayersConstrict": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "NemesisIntangibleOn": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "Escaped": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "OffBalance": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "CurrentIntent": {
+     "type": "Intent",
+     "class": "plain"
+    },
+    "SecondaryIntent": {
+     "type": "Intent?",
+     "class": "plain"
+    },
+    "Buffs": {
+     "type": "List<BuffState>",
+     "class": "plain"
+    },
+    "MoveHistory": {
+     "type": "List<int>",
+     "class": "plain"
+    },
+    "CurlUpCardUid": {
+     "type": "int",
+     "class": "card_ref"
+    },
+    "StolenCard": {
+     "type": "CardInstance?",
+     "class": "plain"
+    }
+   }
+  },
+  "Intent": {
+   "kind": "struct",
+   "fields": {
+    "Type": {
+     "type": "IntentType",
+     "class": "plain"
+    },
+    "Magnitude": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Hits": {
+     "type": "int",
+     "class": "plain"
+    },
+    "CarriesDamage": {
+     "type": "bool",
+     "class": "plain"
+    }
+   }
+  },
+  "BuffState": {
+   "kind": "struct",
+   "fields": {
+    "Id": {
+     "type": "BuffId",
+     "class": "plain"
+    },
+    "Magnitude": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Data": {
+     "type": "int",
+     "class": "plain"
+    }
+   }
+  },
+  "RelicInstance": {
+   "kind": "struct",
+   "fields": {
+    "DefId": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Counter": {
+     "type": "int",
+     "class": "plain"
+    }
+   }
+  },
+  "OrbState": {
+   "kind": "struct",
+   "fields": {
+    "Type": {
+     "type": "OrbType",
+     "class": "plain"
+    },
+    "EvokeValue": {
+     "type": "int",
+     "class": "plain"
+    },
+    "PassiveValue": {
+     "type": "int",
+     "class": "plain"
+    }
+   }
+  },
+  "PendingCardSelection": {
+   "kind": "class",
+   "fields": {
+    "Kind": {
+     "type": "CardSelectionKind",
+     "class": "plain"
+    },
+    "Candidates": {
+     "type": "List<int>",
+     "class": "plain"
+    },
+    "SourceCardDefId": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Amount": {
+     "type": "int",
+     "class": "plain"
+    },
+    "GeneratedCandidates": {
+     "type": "List<int>",
+     "class": "plain"
+    },
+    "AfterSelectionToHand": {
+     "type": "List<CardInstance>",
+     "class": "plain"
+    },
+    "Skippable": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "GeneratedUpgraded": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "GeneratedRetained": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "Replay": {
+     "type": "HookChoiceReplay",
+     "class": "plain"
+    },
+    "HookKey": {
+     "type": "HookAnswerKey?",
+     "class": "plain"
+    },
+    "KernelAction": {
+     "type": "uint",
+     "class": "plain"
+    }
+   }
+  },
+  "HookChoiceReplay": {
+   "kind": "class",
+   "fields": {
+    "Before": {
+     "type": "CombatState",
+     "class": "plain"
+    },
+    "RngBefore": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "as CombatState's streams"
+    },
+    "Action": {
+     "type": "int",
+     "class": "plain"
+    },
+    "TargetEnemyIndex": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Answers": {
+     "type": "IReadOnlyList<StepAnswer>",
+     "class": "plain"
+    },
+    "Hidden": {
+     "type": "IReadOnlyList<ScreenHiddenState>",
+     "class": "plain"
+    },
+    "Keyed": {
+     "type": "IReadOnlyList<KeyedAnswer>",
+     "class": "plain"
+    },
+    "Taken": {
+     "type": "IReadOnlyList<CardInstance>",
+     "class": "plain"
+    },
+    "Screens": {
+     "type": "IReadOnlyList<StepScreen>",
+     "class": "plain"
+    },
+    "Peeks": {
+     "type": "IReadOnlyList<bool>",
+     "class": "plain"
+    }
+   }
+  },
+  "StepAnswer": {
+   "kind": "struct",
+   "fields": {
+    "Index": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Pick": {
+     "type": "CardInstance?",
+     "class": "plain"
+    }
+   }
+  },
+  "ScreenHiddenState": {
+   "kind": "class",
+   "fields": {
+    "Whole": {
+     "type": "CombatState",
+     "class": "plain"
+    },
+    "Streams": {
+     "type": "CountingRandom[]",
+     "class": "stream",
+     "reason": "as CombatState's streams"
+    },
+    "StepRng": {
+     "type": "CountingRandom",
+     "class": "stream",
+     "reason": "as CombatState's streams"
+    },
+    "DrawPile": {
+     "type": "CardInstance[]",
+     "class": "plain"
+    },
+    "Candidates": {
+     "type": "int[]",
+     "class": "plain"
+    }
+   }
+  },
+  "StepScreen": {
+   "kind": "class",
+   "fields": {
+    "Kind": {
+     "type": "CardSelectionKind",
+     "class": "plain"
+    },
+    "Source": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Count": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Taken": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Cards": {
+     "type": "CardInstance[]",
+     "class": "plain"
+    },
+    "Generated": {
+     "type": "int[]",
+     "class": "plain"
+    }
+   }
+  },
+  "KeyedAnswer": {
+   "kind": "class",
+   "fields": {
+    "Key": {
+     "type": "HookAnswerKey",
+     "class": "plain"
+    },
+    "Answer": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Hidden": {
+     "type": "ScreenHiddenState",
+     "class": "plain"
+    }
+   }
+  },
+  "HookAnswerKey": {
+   "kind": "struct",
+   "fields": {
+    "Dispatcher": {
+     "type": "HookId",
+     "class": "plain"
+    },
+    "Who": {
+     "type": "ListenerRef",
+     "class": "plain"
+    },
+    "Site": {
+     "type": "string",
+     "class": "plain"
+    },
+    "Seq": {
+     "type": "int",
+     "class": "plain"
+    }
+   }
+  },
+  "KernelState": {
+   "kind": "class",
+   "fields": {
+    "_actions": {
+     "type": "List<RecordedHookAction>",
+     "class": "excluded",
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+    },
+    "_stops": {
+     "type": "List<PauseSite>",
+     "class": "excluded",
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+    },
+    "_waits": {
+     "type": "List<WaitPoint>",
+     "class": "excluded",
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+    },
+    "_nextAction": {
+     "type": "long",
+     "class": "excluded",
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+    },
+    "_combat": {
+     "type": "CombatState",
+     "class": "excluded",
+     "reason": "the back-reference to the combat being keyed"
+    },
+    "_run": {
+     "type": "RunState",
+     "class": "excluded",
+     "reason": "the back-reference to the run; a solver's combat copy is bound to none"
+    },
+    "_world": {
+     "type": "OldWorld",
+     "class": "excluded",
+     "reason": "a view built lazily from the combat it is bound to (derived)"
+    },
+    "_forkDeck": {
+     "type": "List<CardInstance>",
+     "class": "excluded",
+     "reason": "a frozen copy of the run deck: fixed for the whole fight, and a solver table is bound to one fight"
+    },
+    "_listeners": {
+     "type": "OldListeners",
+     "class": "excluded",
+     "reason": "the listener cursor, built lazily from the world and the handler table (derived)"
+    },
+    "_queue": {
+     "type": "ActionQueueSet",
+     "class": "excluded",
+     "reason": "a keyed node requires an idle queue: StateKey refuses a busy one (FIGHT_SOLVER.md section 1)"
+    },
+    "_commands": {
+     "type": "CommandLog",
+     "class": "excluded",
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+    },
+    "_progress": {
+     "type": "CombatProgress",
+     "class": "plain",
+     "via": "Progress"
+    },
+    "_seq": {
+     "type": "Dictionary<ValueTuple<HookId,ListenerRef,string>,int>",
+     "class": "excluded",
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+    },
+    "_endHost": {
+     "type": "ICombatEndHost",
+     "class": "excluded",
+     "reason": "where a combat end goes, set by the step's caller and not copied with the state"
+    },
+    "Shared": {
+     "type": "Kernel",
+     "class": "excluded",
+     "reason": "the engine's shared immutable part (switches, handler table, ids); a solver table is bound to one engine and rules build"
+    },
+    "ExecutorPaused": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "WinChecks": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Answers": {
+     "type": "IKernelAnswers",
+     "class": "excluded",
+     "reason": "set by a step for its own duration; none at a keyed node"
+    }
+   }
+  },
+  "CombatProgress": {
+   "kind": "class",
+   "fields": {
+    "HandOffs": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Checks": {
+     "type": "int",
+     "class": "plain"
+    },
+    "InProgress": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "PendingLoss": {
+     "type": "bool",
+     "class": "plain"
+    },
+    "PlayerWon": {
+     "type": "bool?",
+     "class": "plain"
+    }
+   }
+  },
+  "ListenerRef": {
+   "kind": "struct",
+   "fields": {
+    "Kind": {
+     "type": "int",
+     "class": "plain"
+    },
+    "ModelId": {
+     "type": "int",
+     "class": "plain"
+    },
+    "Instance": {
+     "type": "int",
+     "class": "plain"
+    }
+   }
+  }
+ },
+ "census": {
+  "about": "The game view's schema paths (tools/emudump/Engines/Old/OldGameView.cs, what struct_compare's census counts) and the key field each is in. KeyFieldCoverageTests fails on a row whose field is not kept (stream rows are kept in hindsight mode).",
+  "paths": {
+   "snapshot.player.hp": "CombatState.PlayerHp",
+   "snapshot.player.max_hp": "CombatState.PlayerMaxHp",
+   "snapshot.player.block": "CombatState.PlayerBlock",
+   "snapshot.player.energy": "CombatState.Energy",
+   "snapshot.player.powers{*}": "CombatState.PlayerBuffs",
+   "snapshot.player.gold": "CombatState.PlayerGold",
+   "snapshot.hand[*]": "CombatState.Hand",
+   "snapshot.draw[*]": "CombatState.DrawPile",
+   "snapshot.discard[*]": "CombatState.DiscardPile",
+   "snapshot.exhaust[*]": "CombatState.ExhaustPile",
+   "snapshot.*[*].id": "CardInstance.DefId",
+   "snapshot.*[*].upgrades": "CardInstance.Upgraded",
+   "snapshot.*[*].cost": "CardInstance.CostThisTurn",
+   "snapshot.*[*].enchantment": "CardInstance.Enchantment",
+   "snapshot.*[*].keywords": "CardInstance.RetainThisTurn",
+   "snapshot.enemies[*].name": "EnemyState.DefId",
+   "snapshot.enemies[*].hp": "EnemyState.Hp",
+   "snapshot.enemies[*].max_hp": "EnemyState.MaxHp",
+   "snapshot.enemies[*].block": "EnemyState.Block",
+   "snapshot.enemies[*].powers{*}": "EnemyState.Buffs",
+   "snapshot.enemies[*].intents": "EnemyState.CurrentIntent",
+   "snapshot.rng.*": "CombatState.ShuffleRng",
+   "snapshot.potions": "CombatState.PotionSlots",
+   "snapshot.relics": "CombatState.Relics",
+   "snapshot.round": "CombatState.Turn",
+   "net.creatures[*]": "CombatState.Enemies",
+   "net.players[*].piles": "CombatState.Hand",
+   "net.players[*].relics": "CombatState.Relics",
+   "net.creatures[*].powers{*}": "EnemyState.Buffs"
+  }
+ }
+}

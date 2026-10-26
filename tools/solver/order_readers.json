@@ -1,0 +1,28 @@
+{
+ "about": "Rules that read hand position, potion-slot position or enemy order (docs/rebuild/FIGHT_SOLVER.md section 2). While a combat holds none of a category's cards (in any pile, queue or screen), the state key uses the canonical form for it: the hand and the potion slots as multisets, equal enemies as interchangeable (StateKey.EnemyClasses). Found by a scan of src/Sts2Emulator (Hand[0], Hand.First/Last, leftmost or first-card helpers, Enemies.First*, PotionSlots[i] reads) on main 08882f79. A card generated into the combat later is scanned when it is in the state: a keyed node decides its forms from what it holds. The equal-value harness (S3) checks the canonical forms on positions with and without readers.",
+ "readers": {
+  "hand_position": {
+   "cards": [
+    {"name": "Acrobatics", "why": "its generated-card form discards the first card of the hand (DiscardFirstCardsFromHand)"},
+    {"name": "Prepared", "why": "as Acrobatics"},
+    {"name": "DaggerThrow", "why": "as Acrobatics"},
+    {"name": "Survivor", "why": "as Acrobatics"},
+    {"name": "Reboot", "why": "its generated-card form walks the hand from the first card"},
+    {"name": "CalculatedGamble", "why": "discards the hand from the first card: per-card discard triggers fire in hand order"},
+    {"name": "ShadowStep", "why": "as CalculatedGamble"},
+    {"name": "StormOfSteel", "why": "as CalculatedGamble"},
+    {"name": "Eidolon", "why": "exhausts from the first card of the hand (ExhaustFirstCardsFromHand)"},
+    {"name": "FiendFire", "why": "exhausts the hand from Hand[0]: per-card exhaust triggers fire in hand order"}
+   ]
+  },
+  "potion_slot": {
+   "cards": [],
+   "why": "the scan found no rule that reads a potion's slot index beyond the action's own slot argument"
+  },
+  "enemy_order": {
+   "always": true,
+   "cards": [],
+   "why": "acting order is slot order, and an untargeted effect takes the first targetable enemy (CombatEngine's default target, CardEffects' FirstOrDefault(IsTargetable) sites): every combat has a reader until the S3 harness shows which positions do not, so EnemyClasses keeps every enemy distinct"
+  }
+ }
+}
