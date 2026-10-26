@@ -98,7 +98,10 @@ def read_json(path: Path) -> Any:
 
 # The run mask version (native.RUN_MASK_VERSIONS) a candidate written by `train_generation` carries in its agent.json;
 # an agent.json without the key is version 1 (generations 0-3 and every candidate saved before the key existed).
-CANDIDATE_MASK_VERSION = 2
+CANDIDATE_MASK_VERSION = 3
+# The versions `load_agent` accepts (native.RUN_MASK_VERSIONS; not imported here, the library loads lazily): 1 is the mask
+# as it was, 2 adds the discard actions (D32), 3 the AnyTime potions' use actions (D34) on the closed-belt screens.
+AGENT_MASK_VERSIONS = (1, 2, 3)
 
 
 @dataclass(frozen=True)
@@ -191,8 +194,8 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
     if mode == "vrun" and not npz.is_file():
         raise FileNotFoundError(f"macro vrun needs run_value.npz in {p.name}")
     mask_version = meta.get("mask_version", 1)
-    if isinstance(mask_version, bool) or mask_version not in (1, 2):
-        raise ValueError(f"{p.name}/agent.json: mask_version {mask_version!r} is not 1 or 2")
+    if isinstance(mask_version, bool) or mask_version not in AGENT_MASK_VERSIONS:
+        raise ValueError(f"{p.name}/agent.json: mask_version {mask_version!r} is not one of {list(AGENT_MASK_VERSIONS)}")
     return Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" else None,
                  float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version))
 
