@@ -24,6 +24,8 @@ def emu(options, deck=()):
     # An empty belt: a potion label outside a fight is then a named gap ("the emulator's belt holds no ..."), never a step.
     e.native = NS(run_state_list=lambda handle, which, n: [0] * n, run_action_mask=lambda handle, n: [0] * n,
                   run_potion_action_reason=lambda handle, action: "the belt slot is empty")
+    e.took = []
+    e.s.visit = NS(took=e.took.append)  # the engine session's visit tracker (rest_option_taken ...)
     e._msg = {}
     e.rq = []
     e._flush_rewards = lambda: None
@@ -107,6 +109,79 @@ class PotionOutsideFightTest(unittest.TestCase):
         self.assertEqual(e.rq, [])  # the reward queue the emulator mirrors is untouched
         self.assertEqual(e.applied, [])
 
+
+
+FX = Path(__file__).resolve().parent / "fixtures"
+REST_SCREEN = ["HEAL", "SMITH"]  # the real game's rest screen (the labels of generation 5's S3 block, fixtures/real_s3_log_excerpt.txt)
+
+
+class RestSmithTest(unittest.TestCase):
+    """A12: the real rest screen asks SMITH (no card) and the emulator offers one rest.smith per upgradable card. The referee's
+    SMITH pairs with the smith option the policy picked, not the first one; the card follows on the referee's select_cards."""
+
+    def screen(self, pick, labels=REST_SCREEN):
+        """A rest site with three upgradable cards (STRIKE, DEFEND, ANGER) and a policy that picks option `pick`."""
+        e = emu([opt("rest.heal", 0), opt("rest.smith", 1, deck_index=0), opt("rest.smith", 1, deck_index=1),
+                 opt("rest.smith", 1, deck_index=2)], deck=[card(1), card(2), card(3)])
+        e.rules, e.rng = NS(pick=lambda view, dec, rng: NS(index=pick)), None
+        return e, labels
+
+    def play(self, e, labels, floor=8):
+        """One rest decision through the lockstep (the emulator side agrees with the referee's view; the fallback is the real one)."""
+        o = {"act": 0, "floor": floor, "hp": 70, "max_hp": 80, "gold": 99, "deck": [["STRIKE", 0]], "relics": [], "potions": []}
+        side = NS(sync=lambda kind, labs, msg=None: None, view=lambda: lockstep.ref_view(o), choose=e.choose, apply=e.apply,
+                  reanchor=lambda plan, msg: False)
+        ls = lockstep.Lockstep(side, lockstep.referee_only_policy)
+        return ls, ls.decide({"t": "decide", "kind": "rest", "obs": o, "actions": labels, "h": "abc"})
+
+    def test_the_fixture_screens_labels_are_the_ones_used_here(self):
+        log = (FX / "real_s3_log_excerpt.txt").read_text(encoding="utf-8")
+        self.assertIn(' rest "HEAL"', log)
+        self.assertEqual(lockstep.EmuLock.REST["SMITH"], "smith")
+
+    def test_smith_pairs_with_the_smith_option_the_policy_picked_not_the_first(self):
+        for pick in (1, 2, 3):  # any of the three smith options
+            with self.subTest(pick=pick):
+                e, labels = self.screen(pick)
+                self.assertEqual(e.choose("rest", labels, {}), 1)  # SMITH; before the fix only pick 1 (the first) did, else None
+
+    def test_the_lockstep_plays_smith_and_steps_the_action_only_so_the_card_screen_follows(self):
+        e, labels = self.screen(2)
+        ls, choice = self.play(e, labels)
+        self.assertEqual(choice, 1)  # SMITH; before the fix the fallback played the first action, HEAL
+        self.assertEqual(e.applied, [("step", 1)])  # the screen's action; not Session.apply(option), which takes the option's card
+        self.assertEqual(e.took, ["rest.smith"])  # the visit tracker is told, as Session.apply tells it
+        self.assertEqual(ls.fields.rests, [[8, "smith"]])
+        self.assertEqual(ls.stats["ranked"], 1)
+
+    def test_every_smith_option_is_stepped_by_its_action_alone(self):
+        for k in (1, 2, 3):
+            with self.subTest(option=k):
+                e, labels = self.screen(k)
+                self.assertIsNone(e.apply("rest", labels, 1))
+                self.assertEqual(e.applied, [("step", 1)])  # the first smith option's card is not taken inside the step either
+
+    def test_a_heal_pick_pairs_as_before(self):
+        e, labels = self.screen(0)
+        self.assertEqual(e._pair("rest", labels), [0, 1])
+        self.assertEqual(e.choose("rest", labels, {}), 0)
+        ls, choice = self.play(e, labels)
+        self.assertEqual(choice, 0)
+        self.assertEqual([getattr(a, "kind", a) for a in e.applied], ["rest.heal"])  # Session.apply(option)
+        self.assertEqual(ls.fields.rests, [[8, "heal"]])
+
+    def test_a_label_of_a_kind_the_policy_did_not_pick_keeps_its_old_answer(self):
+        e, labels = self.screen(2, ["HEAL", "LIFT"])  # no SMITH on the referee's screen: nothing to take the smith pick
+        self.assertIsNone(e.choose("rest", labels, {}))
+        e, labels = self.screen(2, ["LIFT", "HEAL"])
+        self.assertIsNone(e.choose("rest", labels, {}))
+
+    def test_a_referee_label_with_no_emulator_option_still_answers_through_the_fallback(self):
+        e, labels = self.screen(2, ["TOKE", "HEAL"])  # TOKE: the emulator has no option
+        self.assertIsNone(e.choose("rest", labels, {}))
+        ls, choice = self.play(e, labels)
+        self.assertEqual(choice, 0)  # the first action
+        self.assertTrue(ls.lost and ls.lost.startswith("apply:no_emulator_option:rest"), ls.lost)
 
 
 class FakeScreen:
