@@ -1,6 +1,7 @@
 namespace Sts2Emulator.Core;
 
 using Rng;
+using Sts2Emulator.Solver;
 
 /// <summary>
 /// Wraps the game's deterministic RNG and counts calls so the caller can sync
@@ -56,7 +57,7 @@ public sealed class CountingRandom : Random
         new(seed, MegaRandom.FromLanes(lanes), callCount);
 
     /// <summary>An exact copy at the same position, in O(1) (see <see cref="GameRng.Copy" />).</summary>
-    public CountingRandom Copy() => new(Seed, _rng.Copy(), CallCount);
+    public CountingRandom Copy() => new(Seed, _rng.Copy(), CallCount) { Chance = Chance, ChanceStream = ChanceStream };
 
     /// <summary>
     /// Moves this stream back to exactly <paramref name="other" />'s position, in place -- for a
@@ -98,8 +99,33 @@ public sealed class CountingRandom : Random
         CallCount = counter;
     }
 
+    /// <summary>
+    /// The chance hook (docs/rebuild/FIGHT_SOLVER.md section 4): null everywhere outside the
+    /// solver, and then every call below is the draw it always was, behind one null check. Set on a
+    /// solver's copy, each call is put to the source as a <see cref="ChanceCall" /> (this stream,
+    /// the call's index, its range or branch weights) and answered by it. A copy of the stream
+    /// (<see cref="Copy" />) keeps the source, so a hooked combat's clones stay hooked; moving a
+    /// stream (<see cref="RestoreFrom" />, <see cref="Become" />) keeps the receiver's own.
+    /// </summary>
+    internal IChanceSource? Chance { get; private set; }
+
+    /// <summary>The stream's index in <c>StateCloning.StreamNames</c> while hooked; -1 for a step's own stream.</summary>
+    internal int ChanceStream { get; private set; } = -1;
+
+    /// <summary>Hooks this stream to <paramref name="source" /> (null unhooks it) as stream <paramref name="stream" />.</summary>
+    internal void SetChance(IChanceSource? source, int stream)
+    {
+        Chance = source;
+        ChanceStream = stream;
+    }
+
     public override int Next(int maxValue)
     {
+        if (Chance is not null)
+        {
+            return Hooked(ChanceKind.Next, 0, maxValue);
+        }
+
         CallCount++;
         CombatTrace.OnRng(this);
         return _rng.Next(maxValue);
@@ -107,6 +133,11 @@ public sealed class CountingRandom : Random
 
     public override int Next()
     {
+        if (Chance is not null)
+        {
+            return Hooked(ChanceKind.Next, 0, int.MaxValue);
+        }
+
         CallCount++;
         CombatTrace.OnRng(this);
         return _rng.Next(int.MaxValue);
@@ -114,6 +145,11 @@ public sealed class CountingRandom : Random
 
     public override int Next(int minValue, int maxValue)
     {
+        if (Chance is not null)
+        {
+            return Hooked(ChanceKind.Next, minValue, maxValue);
+        }
+
         CallCount++;
         CombatTrace.OnRng(this);
         return _rng.Next(minValue, maxValue);
@@ -121,8 +157,61 @@ public sealed class CountingRandom : Random
 
     public override double NextDouble()
     {
+        if (Chance is { } chance)
+        {
+            // A raw float roll has no odds the solver could give it; the source refuses it
+            // (`unlisted-roll`) or, observing only, lets the stream answer.
+            var call = new ChanceCall(ChanceStream, CallCount, ChanceKind.RawDouble, 0, 0, null, null);
+            if (chance.Answer(in call) is not null)
+            {
+                throw new InvalidOperationException("a chance source cannot answer a raw NextDouble");
+            }
+
+            CallCount++;
+            CombatTrace.OnRng(this);
+            double d = _rng.NextDouble();
+            chance.Drawn(in call, -1);
+            return d;
+        }
+
         CallCount++;
         CombatTrace.OnRng(this);
         return _rng.NextDouble();
+    }
+
+    /// <summary>
+    /// A weighted branch (<see cref="Roll.Branch" />): one float draw, mapped to a branch by
+    /// <paramref name="decide" />, exactly the inline code it replaced; hooked, the source answers the
+    /// branch index from the weights. The stream moves by one draw either way.
+    /// </summary>
+    internal int Branch(string site, double[] weights, Func<double, int> decide)
+    {
+        if (Chance is not { } chance)
+        {
+            return decide(NextDouble());
+        }
+
+        var call = new ChanceCall(ChanceStream, CallCount, ChanceKind.Branch, 0, weights.Length, weights, site);
+        int? answer = chance.Answer(in call);
+        CallCount++;
+        CombatTrace.OnRng(this);
+        double d = _rng.NextDouble();
+        int value = answer ?? decide(d);
+        chance.Drawn(in call, value);
+        return value;
+    }
+
+    /// <summary>A uniform call put to the source; the stream still takes its one draw, so its position is the unhooked one.</summary>
+    private int Hooked(ChanceKind kind, int minValue, int maxValue)
+    {
+        var chance = Chance!;
+        var call = new ChanceCall(ChanceStream, CallCount, kind, minValue, maxValue, null, null);
+        int? answer = chance.Answer(in call);
+        CallCount++;
+        CombatTrace.OnRng(this);
+        int drawn = minValue == 0 ? _rng.Next(maxValue) : _rng.Next(minValue, maxValue);
+        int value = answer ?? drawn;
+        chance.Drawn(in call, value);
+        return value;
     }
 }

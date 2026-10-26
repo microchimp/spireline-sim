@@ -106,7 +106,7 @@ static class OldTrace
         {
             var m = f.GetMethod();
             var t = m?.DeclaringType;
-            if (m == null || t == null || t == typeof(CountingRandom) || t == typeof(OldTrace) || t == typeof(CombatTrace)
+            if (m == null || t == null || t == typeof(CountingRandom) || t == typeof(Sts2Emulator.Core.Rng.Roll) || t == typeof(OldTrace) || t == typeof(CombatTrace)
                 || (t.Namespace ?? "").StartsWith("System", StringComparison.Ordinal))
             {
                 continue;
