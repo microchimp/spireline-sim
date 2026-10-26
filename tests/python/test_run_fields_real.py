@@ -90,3 +90,57 @@ class RealRestLogTests(unittest.TestCase):
     def test_the_games_log_of_the_block_holds_heal_and_proceed_only_in_the_excerpt(self):
         labels = {ln.split('rest "')[1].rstrip('"') for ln in (FX / "real_s3_log_excerpt.txt").read_text(encoding="utf-8").splitlines() if ' rest "' in ln}
         self.assertEqual(labels, {"HEAL", "proceed"})
+
+
+class BackfillTests(unittest.TestCase):
+    """rl/run_fields_backfill on an excerpt of one real worker log (8 runs) and those runs' stored rows."""
+
+    @classmethod
+    def setUpClass(cls):
+        import run_fields_backfill as bf  # noqa: PLC0415
+
+        cls.bf = bf
+        cls.log = (FX / "real_s3_log_excerpt.txt").read_text(encoding="utf-8").splitlines()
+        cls.rows = [json.loads(x) for x in (FX / "real_s3_rows_excerpt.jsonl").read_text(encoding="utf-8").splitlines()]
+        cls.info = bf.parse_log(cls.log)
+
+    def test_the_log_gives_every_run_its_rests_and_boss_rooms(self):
+        self.assertEqual(len(self.info), 8)
+        self.assertEqual(self.info["NM33ZQ74P6"], {"rests": ["heal", "heal"], "bosses": ["WATERFALL_GIANT_BOSS"]})
+        self.assertEqual(self.info["XT7VH5S46D"]["bosses"], [])
+
+    def test_a_boss_lost_has_no_logged_damage_a_boss_won_is_one_and_an_unreached_boss_is_zero(self):
+        by = {r["seed"]: self.bf.backfill_row(r, self.info[r["seed"]])[0] for r in self.rows}
+        self.assertEqual((by["NM33ZQ74P6"]["boss_damage"], by["NM33ZQ74P6"]["boss_damage_acts"]), (None, [[0, None]]))  # died on floor 17
+        self.assertEqual((by["ZBXDPRJ83Z"]["boss_damage"], by["ZBXDPRJ83Z"]["boss_damage_acts"]), (1.0, [[0, 1.0]]))  # died on floor 22
+        self.assertEqual((by["XT7VH5S46D"]["boss_damage"], by["XT7VH5S46D"]["boss_damage_acts"]), (0.0, []))  # died on floor 14
+        for r in self.rows:  # the stored rests are what the log says; floors kept
+            self.assertEqual(by[r["seed"]]["rests"], r["rests"])
+
+    def test_a_rest_kind_comes_from_the_log_when_the_counts_agree(self):
+        row = next(r for r in self.rows if r["seed"] == "NM33ZQ74P6")
+        new, note = self.bf.backfill_row(row, {"rests": ["smith", "heal"], "bosses": []})
+        self.assertEqual((new["rests"], note["rests"]), ([[7, "smith"], [16, "heal"]], "changed"))
+        new, note = self.bf.backfill_row(row, {"rests": ["smith"], "bosses": []})
+        self.assertEqual((new["rests"], note["rests"]), (row["rests"], "kept"))  # a count that differs: the row's own
+
+    def test_a_block_is_rewritten_with_a_backup_and_its_tables_rebuilt(self):
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d)
+            (b / "scratch" / "p00r0").mkdir(parents=True)
+            (b / "scratch" / "p00r0" / "game-stdout.log").write_text("\n".join(self.log) + "\n", encoding="utf-8")
+            old = "".join(json.dumps(r) + "\n" for r in self.rows)
+            (b / "runs.jsonl").write_text(old, encoding="utf-8")
+            tbl = {"run_fields": {"boss_damage": {"n": 8, "mean": 0.0}, "cards": {"runs": 8}}}
+            (b / "summary.json").write_text(json.dumps(tbl), encoding="utf-8")
+            (b / "compare.json").write_text(json.dumps({"real": tbl, "emu": {}}), encoding="utf-8")
+            stats = self.bf.backfill_block(b)
+            self.assertEqual((b / "runs.jsonl.pre-a11.bak").read_text(encoding="utf-8"), old)
+            self.assertEqual((stats["logged"], stats["rests_same"], stats["rests_changed"]), (8, 8, 0))
+            want = {"runs": 8, "reached": 4, "won": 1, "kill_rate": 0.25}
+            for doc in (json.loads((b / "summary.json").read_text(encoding="utf-8")), json.loads((b / "compare.json").read_text(encoding="utf-8"))["real"]):
+                self.assertEqual(doc["run_fields"]["boss_act1"], want)
+                self.assertEqual(doc["run_fields"]["boss_damage"], {"n": 5, "mean": None, "unknown": 3})  # 4 never reached + 1 won known; 3 lost
+                self.assertEqual(doc["run_fields"]["cards"], {"runs": 8})  # the other tables are left alone
