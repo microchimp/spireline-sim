@@ -42,6 +42,13 @@ public readonly record struct ChanceCall(int Stream, int Index, ChanceKind Kind,
         switch (Kind)
         {
             case ChanceKind.Next:
+                if ((long)Max <= Min)
+                {
+                    // The stream throws on an empty range (MegaRandom.Next): no outcome, and never a
+                    // node whose leaves lose its probability.
+                    throw new ChanceRefused("empty-range", this);
+                }
+
                 double p = 1d / ((long)Max - Min);
                 for (long v = Min; v < Max; v++)
                 {
@@ -112,11 +119,28 @@ public static class ChanceHook
 {
     /// <summary>
     /// Hooks every stream of <paramref name="state" /> (and the step's own <paramref name="stepRng" />) to
-    /// <paramref name="source" />; null unhooks them. A field that falls back to a plain Random is not
-    /// a stream and stays as it is.
+    /// <paramref name="source" />; null unhooks them. A combat with a stream unset (or a plain Random)
+    /// refuses a source (<c>null-stream</c>): the engine's <c>?? new Random(0)</c> fallbacks would roll
+    /// there unseen by the hook, and the fight would be solved silently wrong.
     /// </summary>
     public static void Attach(CombatState state, Random? stepRng, IChanceSource? source)
     {
+        if (source is not null)
+        {
+            if (stepRng is not null and not CountingRandom)
+            {
+                throw new ChanceRefused("null-stream", new ChanceCall(-1, 0, ChanceKind.Next, 0, 0, null, null));
+            }
+
+            for (int i = 0; i < StateCloning.StreamCount; i++)
+            {
+                if (StateCloning.Stream(state, i) is null)
+                {
+                    throw new ChanceRefused("null-stream", new ChanceCall(i, 0, ChanceKind.Next, 0, 0, null, null));
+                }
+            }
+        }
+
         (stepRng as CountingRandom)?.SetChance(source, -1);
         for (int i = 0; i < StateCloning.StreamCount; i++)
         {
@@ -145,6 +169,82 @@ public static class ChanceHook
         }
 
         return "?";
+    }
+}
+
+/// <summary>An answer a chance source gave inside a step: the stream, the call's index on it, the value.</summary>
+public readonly record struct ChanceAnswer(int Stream, int Index, int Value);
+
+/// <summary>
+/// A stopped step's chance answers given again on its replay (a screen's answer runs the step again from
+/// its start, <c>CombatEngine.Step</c>): each recorded answer, in order, to the call at its stream and
+/// index; every other call goes to the source the stream had (<see cref="Inner" />), or draws. So a
+/// step a source steered to a screen replays the same way after the source is detached, on the
+/// combat's own streams, and the source is never asked twice for one answer.
+/// </summary>
+internal sealed class RecordedChance(IReadOnlyList<ChanceAnswer> record, int[] cursor, IChanceSource? inner) : IChanceSource
+{
+    private bool _fromRecord;
+
+    public IChanceSource? Inner { get; } = inner;
+
+    public int? Answer(in ChanceCall call)
+    {
+        int n = cursor[0];
+        if (n < record.Count && record[n].Stream == call.Stream && record[n].Index == call.Index && call.Kind != ChanceKind.RawDouble)
+        {
+            cursor[0] = n + 1;
+            _fromRecord = true;
+            return record[n].Value;
+        }
+
+        _fromRecord = false;
+        return Inner?.Answer(in call);
+    }
+
+    public void Drawn(in ChanceCall call, int value)
+    {
+        if (!_fromRecord)
+        {
+            Inner?.Drawn(in call, value);
+        }
+
+        _fromRecord = false;
+    }
+
+    /// <summary>Puts <paramref name="record" /> in front of every stream of <paramref name="state" /> and <paramref name="stepRng" />, over each one's own source when <paramref name="keepInner" />.</summary>
+    internal static void Install(CombatState state, Random? stepRng, IReadOnlyList<ChanceAnswer> record, bool keepInner)
+    {
+        var cursor = new int[1];
+        if (stepRng is CountingRandom step)
+        {
+            step.SetChance(new RecordedChance(record, cursor, keepInner ? step.Chance : null), -1);
+        }
+
+        for (int i = 0; i < StateCloning.StreamCount; i++)
+        {
+            if (StateCloning.Stream(state, i) is { } s)
+            {
+                s.SetChance(new RecordedChance(record, cursor, keepInner ? s.Chance : null), i);
+            }
+        }
+    }
+
+    /// <summary>Takes the record off the streams in <paramref name="state" />'s slots and <paramref name="stepRng" />: each answers to its own source again.</summary>
+    internal static void Remove(CombatState state, Random? stepRng)
+    {
+        if (stepRng is CountingRandom { Chance: RecordedChance rs } step)
+        {
+            step.SetChance(rs.Inner, step.ChanceStream);
+        }
+
+        for (int i = 0; i < StateCloning.StreamCount; i++)
+        {
+            if (StateCloning.Stream(state, i) is { Chance: RecordedChance r } s)
+            {
+                s.SetChance(r.Inner, s.ChanceStream);
+            }
+        }
     }
 }
 

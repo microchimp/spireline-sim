@@ -99,6 +99,17 @@ public sealed class HookChoiceReplay
     /// </summary>
     [field: IdentityOnly]
     public IReadOnlyList<Sts2Emulator.Core2.KeyedAnswer> Keyed { get; init; } = new List<Sts2Emulator.Core2.KeyedAnswer>();
+
+    /// <summary>
+    /// The answers a chance source gave the step's random calls before the screen (the solver's hook,
+    /// FIGHT_SOLVER.md section 4), in call order: the replay gives them again
+    /// (<see cref="Sts2Emulator.Solver.RecordedChance" />), so it reaches the screen the source steered
+    /// the step to whether or not a source is still attached. Empty outside the solver. Left out of the
+    /// state walk like <see cref="Keyed" /> (empty unhooked, so the state hash is unchanged); the
+    /// snapshot does not write it yet (S3).
+    /// </summary>
+    [field: IdentityOnly]
+    public IReadOnlyList<Sts2Emulator.Solver.ChanceAnswer> Chance { get; init; } = new List<Sts2Emulator.Solver.ChanceAnswer>();
     /// <summary>
     /// Whether <see cref="Before" /> is the step's start as the agent's document gave it (public,
     /// in the loaded copy's world), not the true one: its replay reaches the screen's place in the
@@ -249,6 +260,9 @@ internal sealed class StepInProgress : Sts2Emulator.Core2.IKernelAnswers
 
     /// <summary>What this run's looks at the draw pile decided, in order (<see cref="HookChoiceReplay.Peeks" />).</summary>
     public List<bool> Peeks { get; } = [];
+
+    /// <summary>The chance answers given so far (<see cref="HookChoiceReplay.Chance" />).</summary>
+    public List<Sts2Emulator.Solver.ChanceAnswer> Chance { get; } = [];
 
     /// <summary>
     /// Whether this run is still on its way to a screen <see cref="Record" /> reached, and so held to
@@ -523,6 +537,7 @@ internal sealed class StepInProgress : Sts2Emulator.Core2.IKernelAnswers
             Answers = [.. Answers],
             Hidden = [.. Hidden],
             Keyed = [.. Keyed],
+            Chance = [.. Chance],
             Taken = [.. Taken],
             Screens = [.. Screens],
             Peeks = [.. Peeks],

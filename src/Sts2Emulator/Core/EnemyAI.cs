@@ -3738,13 +3738,7 @@ public static class EnemyAI
         // hides it, which is why it took seven turns to surface.
         //
         // The draw and the walk are Roll.Walk's, the solver's door to the weights.
-        var weights = new float[branches.Count];
-        for (int i = 0; i < weights.Length; i++)
-        {
-            weights[i] = branches[i].Weight;
-        }
-
-        return branches[Roll.Walk(rng, "EnemyAI.PickWeightedBranch", weights)].Move;
+        return branches[Roll.Walk(rng, "EnemyAI.PickWeightedBranch", branches, static branch => branch.Weight)].Move;
     }
 
     // Branch weights the weighted sites name for the solver (Roll.Branch); never written.
@@ -5675,9 +5669,12 @@ public static class EnemyAI
             // same single MegaRandom step either way -- `Next(maxValue)` is
             // `(long)(NextDouble() * maxValue)` -- so this is about WHETHER it happens.
             double chewWeight = enemy.RepeatStreak >= 2 ? 0d : 1d;
-            next = Roll.Branch(rng, "EnemyAI.ScrollOfBiting", [1d, chewWeight], d => d * (1d + chewWeight) - 1d <= 0d ? 0 : 1) == 0
-                ? chomp
-                : chew;
+            // Chew weighs 1 or 0, so each case has static weights and arithmetic: the unhooked roll
+            // allocates nothing.
+            int branch = chewWeight > 0d
+                ? Roll.Branch(rng, "EnemyAI.ScrollOfBiting", EvenBranchWeights, static d => d * 2d - 1d <= 0d ? 0 : 1)
+                : Roll.Branch(rng, "EnemyAI.ScrollOfBiting", FirstBranchOnly, static d => d * 1d - 1d <= 0d ? 0 : 1);
+            next = branch == 0 ? chomp : chew;
         }
 
         enemy.RepeatStreak = next == enemy.LastBranch ? enemy.RepeatStreak + 1 : 1;

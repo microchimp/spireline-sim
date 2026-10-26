@@ -422,7 +422,8 @@ public static class StateCloning
             return existing;
         }
 
-        return source?.Clone();
+        // A stream that replaces the slot's keeps the slot's chance hook, as RestoreFrom does.
+        return source?.Clone().TakeChanceOf(existing);
     }
 
     /// <summary>

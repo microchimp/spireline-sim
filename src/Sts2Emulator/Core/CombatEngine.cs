@@ -19,6 +19,7 @@ public static class CombatEngine
     {
         StepInProgress? run;
         (CombatState State, CountingRandom? Rng)? atScreen = null;
+        bool recorded = false;
         if (state.PendingSelection is { Replay: { } stopped } open)
         {
             // The open screen was raised in the middle of a step: its answer runs that step
@@ -47,7 +48,7 @@ public static class CombatEngine
                 // the answering copy's, and the screen puts the copy back as it stood.
                 for (int i = 0; i < StateCloning.StreamCount; i++)
                 {
-                    StateCloning.SetStream(state, i, hidden.Streams[i]?.Copy());
+                    StateCloning.SetStream(state, i, hidden.Streams[i]?.Copy().TakeChanceOf(StateCloning.Stream(state, i)));
                 }
             }
             else if (rng is CountingRandom live)
@@ -78,6 +79,12 @@ public static class CombatEngine
             // EmuDump's trace (tools/emudump/Trace.cs) drops what the stopped run marked here:
             // the replay marks the step again.
             CombatTrace.At("replay", -1, state);
+            if (stopped.Chance.Count > 0)
+            {
+                // The chance answers that steered the step here are given again, ahead of any source.
+                Sts2Emulator.Solver.RecordedChance.Install(state, rng, stopped.Chance, keepInner: true);
+                recorded = true;
+            }
         }
         else
         {
@@ -131,6 +138,10 @@ public static class CombatEngine
         finally
         {
             _running = outer;
+            if (recorded)
+            {
+                Sts2Emulator.Solver.RecordedChance.Remove(state, rng);
+            }
         }
     }
 
@@ -175,6 +186,12 @@ public static class CombatEngine
             Hidden = [.. stopped.Hidden],
             Record = stopped,
         };
+        if (stopped.Chance.Count > 0)
+        {
+            // The probe follows the step's chance answers and asks no live source.
+            Sts2Emulator.Solver.RecordedChance.Install(probe, run.Rng, stopped.Chance, keepInner: false);
+        }
+
         var outer = _running;
         _running = run;
         using var quiet = CombatTrace.Quiet();
@@ -220,6 +237,9 @@ public static class CombatEngine
     /// </summary>
     internal static bool PeekDrawPile(CombatState state, int index, Func<CardInstance, bool> decides) =>
         _running is { } run && ReferenceEquals(run.State, state) ? run.OnPeek(index, decides) : decides(state.DrawPile[index]);
+
+    /// <summary>An answer a chance source gave inside the running step (CountingRandom): kept in the step's record.</summary>
+    internal static void OnChanceAnswered(Sts2Emulator.Solver.ChanceAnswer answer) => _running?.Chance.Add(answer);
 
     /// <summary>The step running on this thread, if it can be replayed (see <see cref="Step" />).</summary>
     [ThreadStatic]

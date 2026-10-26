@@ -56,8 +56,12 @@ public sealed class CountingRandom : Random
     internal static CountingRandom FromLanes(int seed, int callCount, (ulong S0, ulong S1, ulong S2, ulong S3) lanes) =>
         new(seed, MegaRandom.FromLanes(lanes), callCount);
 
-    /// <summary>An exact copy at the same position, in O(1) (see <see cref="GameRng.Copy" />).</summary>
-    public CountingRandom Copy() => new(Seed, _rng.Copy(), CallCount) { Chance = Chance, ChanceStream = ChanceStream };
+    /// <summary>
+    /// An exact copy at the same position, in O(1) (see <see cref="GameRng.Copy" />). The copy has no
+    /// chance source: a hook belongs to whoever attached it to this object, and a copy kept past a
+    /// detach (a step's start, a screen's hidden state) must not answer to a dead source.
+    /// </summary>
+    public CountingRandom Copy() => new(Seed, _rng.Copy(), CallCount);
 
     /// <summary>
     /// Moves this stream back to exactly <paramref name="other" />'s position, in place -- for a
@@ -104,8 +108,11 @@ public sealed class CountingRandom : Random
     /// solver, and then every call below is the draw it always was, behind one null check. Set on a
     /// solver's copy, each call is put to the source as a <see cref="ChanceCall" /> (this stream,
     /// the call's index, its range or branch weights) and answered by it. A copy of the stream
-    /// (<see cref="Copy" />) keeps the source, so a hooked combat's clones stay hooked; moving a
-    /// stream (<see cref="RestoreFrom" />, <see cref="Become" />) keeps the receiver's own.
+    /// (<see cref="Copy" />) has none: the solver attaches one to a copy explicitly
+    /// (<c>ChanceHook.Attach</c>). Moving a stream (<see cref="RestoreFrom" />, <see cref="Become" />)
+    /// keeps the receiver's own, and a stream that replaces another in the same slot takes the
+    /// replaced one's (<see cref="TakeChanceOf" />). An answer the source gives inside a step is kept
+    /// in the step's record, so a screen's replay gives it again (<c>RecordedChance</c>).
     /// </summary>
     internal IChanceSource? Chance { get; private set; }
 
@@ -117,6 +124,17 @@ public sealed class CountingRandom : Random
     {
         Chance = source;
         ChanceStream = stream;
+    }
+
+    /// <summary>This stream, put in <paramref name="replaced" />'s slot, answers to its source (none when it had none).</summary>
+    internal CountingRandom TakeChanceOf(CountingRandom? replaced)
+    {
+        if (replaced?.Chance is { } source)
+        {
+            SetChance(source, replaced.ChanceStream);
+        }
+
+        return this;
     }
 
     public override int Next(int maxValue)
@@ -197,6 +215,11 @@ public sealed class CountingRandom : Random
         CombatTrace.OnRng(this);
         double d = _rng.NextDouble();
         int value = answer ?? decide(d);
+        if (answer is not null)
+        {
+            CombatEngine.OnChanceAnswered(new ChanceAnswer(ChanceStream, call.Index, value));
+        }
+
         chance.Drawn(in call, value);
         return value;
     }
@@ -204,6 +227,13 @@ public sealed class CountingRandom : Random
     /// <summary>A uniform call put to the source; the stream still takes its one draw, so its position is the unhooked one.</summary>
     private int Hooked(ChanceKind kind, int minValue, int maxValue)
     {
+        // An empty range throws unhooked (MegaRandom.Next), so it throws hooked, before the source
+        // is asked: it has no outcome to branch on.
+        if (maxValue <= minValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxValue), maxValue, "maxValue must be > minValue");
+        }
+
         var chance = Chance!;
         var call = new ChanceCall(ChanceStream, CallCount, kind, minValue, maxValue, null, null);
         int? answer = chance.Answer(in call);
@@ -211,6 +241,11 @@ public sealed class CountingRandom : Random
         CombatTrace.OnRng(this);
         int drawn = minValue == 0 ? _rng.Next(maxValue) : _rng.Next(minValue, maxValue);
         int value = answer ?? drawn;
+        if (answer is not null)
+        {
+            CombatEngine.OnChanceAnswered(new ChanceAnswer(ChanceStream, call.Index, value));
+        }
+
         chance.Drawn(in call, value);
         return value;
     }

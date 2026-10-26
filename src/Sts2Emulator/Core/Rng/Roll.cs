@@ -31,23 +31,42 @@ public static class Roll
     /// <c>RandomBranchState.GetNextState</c>'s walk over float weights: draw <c>NextFloat(sum)</c>, then
     /// subtract in order until the remainder is not positive (the first branch when every weight is 0).
     /// </summary>
-    public static int Walk(Random rng, string site, float[] weights)
+    public static int Walk(Random rng, string site, float[] weights) => Walk(rng, site, weights, static w => w);
+
+    /// <summary>
+    /// <see cref="Walk(Random, string, float[])" /> over <paramref name="items" /> weighed by
+    /// <paramref name="weight" />. Unhooked it is the draw and the walk with nothing allocated (a
+    /// static <paramref name="weight" /> is cached); the weights are copied out for the source only.
+    /// </summary>
+    public static int Walk<T>(Random rng, string site, IReadOnlyList<T> items, Func<T, float> weight)
     {
-        float total = 0f;
+        // Enumerable.Sum over floats accumulates in double and casts once: the same total.
         double sum = 0d;
-        var odds = new double[weights.Length];
-        for (int i = 0; i < weights.Length; i++)
+        for (int i = 0; i < items.Count; i++)
         {
-            odds[i] = weights[i];
-            sum += weights[i];
+            sum += weight(items[i]);
         }
 
-        // Enumerable.Sum over floats accumulates in double and casts once: the same total.
-        total = (float)sum;
-        return Branch(rng, site, odds, d => WalkIndex(d, total, weights));
+        float total = (float)sum;
+        return rng is CountingRandom { Chance: not null } hooked
+            ? HookedWalk(hooked, site, items, weight, total)
+            : WalkIndex(rng.NextDouble(), total, items, weight);
     }
 
-    private static int WalkIndex(double draw, float total, float[] weights)
+    // Apart from Walk, so its closure is allocated only when hooked: a lambda capturing Walk's
+    // parameters would allocate its display class on every call.
+    private static int HookedWalk<T>(CountingRandom hooked, string site, IReadOnlyList<T> items, Func<T, float> weight, float total)
+    {
+        var odds = new double[items.Count];
+        for (int i = 0; i < odds.Length; i++)
+        {
+            odds[i] = weight(items[i]);
+        }
+
+        return hooked.Branch(site, odds, d => WalkIndex(d, total, items, weight));
+    }
+
+    private static int WalkIndex<T>(double draw, float total, IReadOnlyList<T> items, Func<T, float> weight)
     {
         if (total <= 0f)
         {
@@ -55,16 +74,16 @@ public static class Roll
         }
 
         float roll = (float)(draw * total);
-        for (int i = 0; i < weights.Length; i++)
+        for (int i = 0; i < items.Count; i++)
         {
-            roll -= weights[i];
+            roll -= weight(items[i]);
             if (roll <= 0f)
             {
                 return i;
             }
         }
 
-        return weights.Length - 1;
+        return items.Count - 1;
     }
 
     /// <summary>A uniform pick of one of <paramref name="n" />: <c>Next(n)</c>, which hooked is a chance node of n equal branches.</summary>
