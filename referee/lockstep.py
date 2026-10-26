@@ -1119,6 +1119,14 @@ class EmuLock:
         for ref_i, emu_j in enumerate(pair):
             if emu_j == pick:
                 return ref_i
+        if kind == "rest" and 0 <= pick < len(self.dec.options):
+            # The emulator offers one rest.smith per upgradable card; the referee's SMITH carries no card (the game asks for it on
+            # its next screen, a select_cards the lockstep matches), and `_pair` pairs it with the first of them only. SMITH is
+            # the agent's choice when the policy picked any rest.smith: the card follows on the select screen.
+            want = self.dec.options[pick].kind
+            for ref_i, emu_j in enumerate(pair):
+                if emu_j is not None and self.dec.options[emu_j].kind == want:
+                    return ref_i
         return None
 
     def apply(self, kind: str, labels: list, idx: int) -> str | None:
@@ -1139,8 +1147,11 @@ class EmuLock:
         if j is None:
             return f"no_emulator_option:{kind}:{json.dumps(labels[idx])[:60]}"
         o = self.dec.options[j]
-        if o.kind == "rest.smith" and o.deck_index is None:
-            self.s._step(o.action)  # the referee's select_cards follows
+        if o.kind == "rest.smith":
+            # The action alone, whichever card the option names: the referee's select_cards follows and picks the card (a step
+            # through `Session.apply` would take the option's card here and skip that screen).
+            self.s._step(o.action)
+            self.s.visit.took(o.kind)
             return None
         self.s.apply(o)
         return None
