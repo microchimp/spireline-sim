@@ -33,6 +33,11 @@ ROW_KEYS = BOSS_KEYS + MACRO_KEYS
 SKIP = "skip"
 # The map node types, one letter each, as the referee names them (MapPointType) and as the emulator numbers them (vocab.NODE_*).
 NODE_CODES = {"Monster": "M", "Elite": "E", "RestSite": "R", "Shop": "S", "Treasure": "T", "Boss": "B", "Unknown": "?", "Ancient": "A"}
+# The floor of each act's boss, counted across acts (obs.floor, the game's TotalFloor): ActModel.GetNumberOfFloors is rooms + 2 (the ancient
+# floor and the boss), 17 / 16 / 15 floors for the three acts (tools/fidelity/readiness.ACT_ENDS holds the same numbers, a test checks it).
+ACT_BOSS_FLOORS = (17, 33, 48)
+# Words the referee uses for leaving a screen: not a choice of the screen.
+LEAVE_LABELS = ("leave", "proceed")
 EMU_NODE_CODES = {1: "M", 2: "E", 3: "R", 4: "S", 5: "T", 6: "B", 7: "?", 8: "A"}
 
 
@@ -53,6 +58,15 @@ def obs_enemies(obs: Sequence[int], offset: int, slot_size: int, slots: int) -> 
         if int(obs[base + 1]) > 0:
             out.append((slot, int(obs[base]), int(obs[base + 1])))
     return out
+
+
+def is_boss_floor(act: Any, floor: Any) -> bool:
+    """Whether `floor` of act `act` (0-based; the referee's obs.act and obs.floor) is the boss floor of that act or past it (act 3's
+    second boss sits one floor on). The real stream asks no map decision when the boss is the only node left, so the last map label
+    cannot name the boss fight; the observation does."""
+    if not isinstance(act, int) or not isinstance(floor, int) or not 0 <= act < len(ACT_BOSS_FLOORS):
+        return False
+    return ACT_BOSS_FLOORS[act] <= floor <= ACT_BOSS_FLOORS[act] + (1 if act == len(ACT_BOSS_FLOORS) - 1 else 0)
 
 
 def real_enemies(combat: dict) -> list[tuple[Any, int, int]]:
@@ -138,7 +152,9 @@ class RunFields:
                 self.skip(floor)
         elif kind == "map" and isinstance(label, list) and len(label) > 2:
             self.nodes.append(NODE_CODES.get(str(label[2]), "x"))
-        elif kind == "rest" and isinstance(label, str) and label.lower() != "leave":
+        elif kind == "rest" and isinstance(label, str) and label.lower() not in LEAVE_LABELS:
+            # The referee's label (HEAL, SMITH, LIFT, DIG, TOKE, ...) in lower case is the emulator's kind (lockstep.EmuLock.REST); a
+            # label this table lacks is recorded as its own text, never as a heal.
             self.rests.append([floor, label.lower()])
 
     def row(self) -> dict:
@@ -156,8 +172,18 @@ def aggregate(rows: Iterable[dict]) -> dict:
     rows = list(rows)
     out: dict = {}
     dmg = [float(r["boss_damage"]) for r in rows if r.get("boss_damage") is not None]
-    if dmg:
-        out["boss_damage"] = {"n": len(dmg), "mean": round(sum(dmg) / len(dmg), 4)}
+    unknown = sum(1 for r in rows if "boss_damage" in r and r["boss_damage"] is None)  # a backfilled lost fight: its damage was not logged
+    if dmg or unknown:
+        out["boss_damage"] = {"n": len(dmg), "mean": round(sum(dmg) / len(dmg), 4) if dmg and not unknown else None}
+        if unknown:
+            out["boss_damage"]["unknown"] = unknown
+    acts = [r["boss_damage_acts"] for r in rows if isinstance(r.get("boss_damage_acts"), list)]
+    if acts:
+        fights = [next((f for a, f in b if a == 0), "none") for b in acts]
+        reached = [f for f in fights if f != "none"]
+        won = sum(1 for f in reached if f == 1.0)
+        out["boss_act1"] = {"runs": len(acts), "reached": len(reached), "won": won,
+                            "kill_rate": round(won / len(reached), 4) if reached else None}
     lists = [r["cards"] for r in rows if isinstance(r.get("cards"), list)]
     if lists:
         taken: Counter = Counter()

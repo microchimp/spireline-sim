@@ -392,13 +392,16 @@ class Lockstep:
         self._ref_now = _ref_energy(c) if c and kind in COMBAT_KINDS else None
 
     def _boss_fight(self, kind: str, combat: dict | None, msg: dict) -> None:
-        """The boss fight's enemy HP into the run's record fields: the fight is the one the last map choice named a Boss node;
-        any decision outside a fight (and outside its card screens) ends it as won, the run's end (`finish`) as the run's outcome."""
+        """The boss fight's enemy HP into the run's record fields: the fight is the one on the act's boss floor (the observation's act
+        and floor), or the one the last map choice named a Boss node. The real stream asks no map decision when the boss is the only
+        node left, so `room_type` is stale at the boss and the floor is what names it. Any decision outside a fight (and outside its
+        card screens) ends it as won, the run's end (`finish`) as the run's outcome."""
         import run_fields  # noqa: PLC0415
 
         if kind in COMBAT_KINDS and combat:
-            if self.room_type == "Boss":
-                self._fields("boss_enemies", (msg.get("obs") or {}).get("act") or 0, lambda: run_fields.real_enemies(combat))
+            obs = msg.get("obs") or {}
+            if self.room_type == "Boss" or run_fields.is_boss_floor(obs.get("act"), obs.get("floor")):
+                self._fields("boss_enemies", obs.get("act") or 0, lambda: run_fields.real_enemies(combat))
         elif self.fields.in_boss_fight:
             self._fields("boss_over", won=True)
 

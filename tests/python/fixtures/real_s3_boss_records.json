@@ -1,0 +1,233 @@
+{
+ "source": "agent/gen5/real-s3-core2/divergences.jsonl, floor-17 combat records with a numeric enemy_hp diff (referee HP, emulator HP); room_type is the lockstep's last map label as recorded",
+ "records": [
+  {
+   "encounter": "LAGAVULIN_MATRIARCH",
+   "turn": 4,
+   "room_type": "Monster",
+   "ref_hp": [
+    208
+   ],
+   "emu_hp": [
+    218
+   ]
+  },
+  {
+   "encounter": "LAGAVULIN_MATRIARCH",
+   "turn": 6,
+   "room_type": "RestSite",
+   "ref_hp": [
+    56
+   ],
+   "emu_hp": [
+    68
+   ]
+  },
+  {
+   "encounter": "KIN_FOLLOWER+KIN_FOLLOWER+KIN_PRIEST",
+   "turn": 2,
+   "room_type": "Shop",
+   "ref_hp": [
+    27,
+    51,
+    181
+   ],
+   "emu_hp": [
+    27,
+    54,
+    184
+   ]
+  },
+  {
+   "encounter": "LAGAVULIN_MATRIARCH",
+   "turn": 4,
+   "room_type": "Unknown",
+   "ref_hp": [
+    227
+   ],
+   "emu_hp": [
+    233
+   ]
+  },
+  {
+   "encounter": "LAGAVULIN_MATRIARCH",
+   "turn": 5,
+   "room_type": "Unknown",
+   "ref_hp": [
+    190
+   ],
+   "emu_hp": [
+    200
+   ]
+  },
+  {
+   "encounter": "CEREMONIAL_BEAST",
+   "turn": 3,
+   "room_type": "Monster",
+   "ref_hp": [
+    196
+   ],
+   "emu_hp": [
+    215
+   ]
+  },
+  {
+   "encounter": "CEREMONIAL_BEAST",
+   "turn": 2,
+   "room_type": "RestSite",
+   "ref_hp": [
+    256
+   ],
+   "emu_hp": [
+    250
+   ]
+  },
+  {
+   "encounter": "VANTOM",
+   "turn": 6,
+   "room_type": "Unknown",
+   "ref_hp": [
+    102
+   ],
+   "emu_hp": [
+    104
+   ]
+  },
+  {
+   "encounter": "WATERFALL_GIANT",
+   "turn": 5,
+   "room_type": "Unknown",
+   "ref_hp": [
+    191
+   ],
+   "emu_hp": [
+    219
+   ]
+  },
+  {
+   "encounter": "KIN_FOLLOWER+KIN_FOLLOWER+KIN_PRIEST",
+   "turn": 4,
+   "room_type": "Unknown",
+   "ref_hp": [
+    31,
+    51,
+    187
+   ],
+   "emu_hp": [
+    37,
+    57,
+    193
+   ]
+  },
+  {
+   "encounter": "LAGAVULIN_MATRIARCH",
+   "turn": 4,
+   "room_type": "Monster",
+   "ref_hp": [
+    227
+   ],
+   "emu_hp": [
+    233
+   ]
+  },
+  {
+   "encounter": "SOUL_FYSH",
+   "turn": 2,
+   "room_type": "Monster",
+   "ref_hp": [
+    179
+   ],
+   "emu_hp": [
+    193
+   ]
+  },
+  {
+   "encounter": "CEREMONIAL_BEAST",
+   "turn": 3,
+   "room_type": "Elite",
+   "ref_hp": [
+    192
+   ],
+   "emu_hp": [
+    195
+   ]
+  },
+  {
+   "encounter": "WATERFALL_GIANT",
+   "turn": 7,
+   "room_type": "Unknown",
+   "ref_hp": [
+    70
+   ],
+   "emu_hp": [
+    64
+   ]
+  },
+  {
+   "encounter": "LAGAVULIN_MATRIARCH",
+   "turn": 4,
+   "room_type": "Unknown",
+   "ref_hp": [
+    230
+   ],
+   "emu_hp": [
+    233
+   ]
+  },
+  {
+   "encounter": "LAGAVULIN_MATRIARCH",
+   "turn": 4,
+   "room_type": "RestSite",
+   "ref_hp": [
+    227
+   ],
+   "emu_hp": [
+    233
+   ]
+  },
+  {
+   "encounter": "SOUL_FYSH",
+   "turn": 5,
+   "room_type": "Elite",
+   "ref_hp": [
+    161
+   ],
+   "emu_hp": [
+    162
+   ]
+  },
+  {
+   "encounter": "LAGAVULIN_MATRIARCH",
+   "turn": 5,
+   "room_type": "Unknown",
+   "ref_hp": [
+    221
+   ],
+   "emu_hp": [
+    231
+   ]
+  },
+  {
+   "encounter": "WATERFALL_GIANT",
+   "turn": 2,
+   "room_type": "Shop",
+   "ref_hp": [
+    213
+   ],
+   "emu_hp": [
+    222
+   ]
+  },
+  {
+   "encounter": "CEREMONIAL_BEAST",
+   "turn": 5,
+   "room_type": "Unknown",
+   "ref_hp": [
+    151
+   ],
+   "emu_hp": [
+    180
+   ]
+  }
+ ]
+}
