@@ -9,13 +9,17 @@ could: in CardEffects, RelicEffects, PotionEffects, BuffSystem, CombatEngine and
 of a pile (``[0]``, ``[^1]``, ``[i]``, ``First``, ``Last``, ``Find``, ``FindIndex``, ``IndexOf``, ``ElementAt``,
 ``Take``, ``Skip``, ``GetRange``), every walk (``for`` over a pile's count, ``foreach`` over a pile, with or without an
 early stop), every index set (``Enumerable.Range`` over a pile's count), every shuffle and every order-keeping copy
-(``AddRange``) of a pile, also through a local alias of the pile. Each read gets the pile, a kind, the method it is in
+(``AddRange``) of a pile, also through a local alias of the pile (one pile, one of two by a condition, or a loop variable over
+an array of piles). Each read gets the pile, a kind, the method it is in
 and its holders: the card, relic, potion, buff or enemy whose ``case`` label the read sits under, else the holders of
 every place the method is named (a call graph over the six files), else ``engine`` (always reachable).
 
 order_readers.json classes the reads: by kind through ``rules`` where the syntax decides (a screen's candidates, a
 roll), else per read in ``sites``. KeyFieldCoverageTests fails on an unclassed read, on a classed read the scan no
-longer finds, and on a scan older than the engine sources (their sha256 is in order_reads.json). Reads of piles the key
+longer finds, and on a scan older than the engine sources (their sha256 is in order_reads.json). A potion's ``case`` label is its id: the
+holder is the name Generated/Potions.g.cs gives that id, so a helper a potion calls is classed by that potion. Every other engine
+file whose code names a pile is in ``scope``; order_readers.json ``files`` classes each one the scan does not read out, with why,
+and ``--check`` fails on a file it does not know or whose count of such lines changed. Reads of piles the key
 writes in order (key_fields.json class ``plain`` or ``regions``) are counted, not classed: the key keeps their order.
 """
 
@@ -40,6 +44,9 @@ FILES = {
 OUT = ROOT / "tools" / "solver" / "order_reads.json"
 READERS = ROOT / "tools" / "solver" / "order_readers.json"
 FIELDS = ROOT / "tools" / "solver" / "key_fields.json"
+SCOPE = ROOT / "src" / "Sts2Emulator"
+POTION_DEFS = SCOPE / "Generated" / "Potions.g.cs"
+PILE_ACCESS = re.compile(r"\b(?:Hand|DrawPile|DiscardPile|ExhaustPile|PotionSlots)\b")
 HOLDER_KIND = {"CardEffects": "card", "RelicEffects": "relic", "PotionEffects": "potion", "BuffSystem": "buff", "EnemyAI": "enemy", "CombatEngine": "card"}
 POS_OPS = r"First|FirstOrDefault|Last|LastOrDefault|Find|FindLast|FindIndex|FindLastIndex|IndexOf|LastIndexOf|ElementAt|ElementAtOrDefault|Take|TakeLast|TakeWhile|Skip|SkipLast|SkipWhile|GetRange"
 ROLL = re.compile(r"\.Next\w*\(|\bNextItem\b|\bNextInt\b|\bShuffle\w*\(|\bRoll\w*\(")
@@ -110,6 +117,17 @@ def methods(lines: list[str]) -> list[tuple[str, int, int]]:
 CASE = re.compile(r"\bcase\s+([^:]+?)\s*:(?!:)")
 
 
+_POTIONS: dict[int, str] = {}
+
+
+def potion_names() -> dict[int, str]:
+    """The potions' ids and names (Generated/Potions.g.cs): PotionEffects labels its cases by id."""
+    if not _POTIONS:
+        for m in re.finditer(r'new PotionDef\(Id: (\d+), Name: "(\w+)"', norm(POTION_DEFS.read_bytes()).decode("utf-8")):
+            _POTIONS[int(m.group(1))] = m.group(2)
+    return _POTIONS
+
+
 def holder_labels(label: str, kind: str) -> list[str]:
     """The holders a case label names: card, relic, potion, buff or enemy names; [] for any other switch."""
     out = []
@@ -118,6 +136,8 @@ def holder_labels(label: str, kind: str) -> list[str]:
         p = part.strip().strip("()")
         if m := re.fullmatch(r'"(\w+)"', p):
             out.append(f"{kind}:{m.group(1)}")
+        elif kind == "potion" and re.fullmatch(r"\d+", p) and int(p) in potion_names():
+            out.append(f"potion:{potion_names()[int(p)]}")
         elif m := re.fullmatch(r"(?:\w+\.)*IC\.(\w+)", p):
             out.append(f"card:{m.group(1)}")
         elif m := re.fullmatch(r"(?:\w+\.)*BuffId\.(\w+)", p):
@@ -203,16 +223,21 @@ def scan() -> dict:
             for m in re.finditer(rf"\b(?:var|List<CardInstance>|int\[\])\s+(\w+)\s*=\s*([^;]*?)\.({pn})\b([^;]*);", body):
                 rest = m.group(4)
                 if re.fullmatch(r"\s*(\.ToList\(\)|\.ToArray\(\)|\.Where\(.*\)(\.ToList\(\)|\.ToArray\(\))?)?\s*\]?\s*(:.*)?", rest, re.S):
-                    aliases[m.group(1)] = m.group(3)
+                    aliases.setdefault(m.group(1), []).append(m.group(3))
+            # a local that is one of two piles by a condition, and a loop variable over an array of piles
+            for m in re.finditer(rf"\b(?:var|List<CardInstance>|int\[\])\s+(\w+)\s*=\s*[^;?]*\?\s*[\w.]*\.({pn})\s*:\s*[\w.]*\.({pn})\s*;", body):
+                aliases.setdefault(m.group(1), []).extend([m.group(2), m.group(3)])
+            for m in re.finditer(r"\bforeach\s*\(\s*(?:var|List<CardInstance>)\s+(\w+)\s+in\s+new\s*(?:List<CardInstance>)?\s*\[\s*\]\s*\{([^}]*)\}", body):
+                aliases.setdefault(m.group(1), []).extend(re.findall(rf"\.({pn})\b", m.group(2)))
             loops = []  # (pile, var, first line, last line)
             for ln in range(a, b + 1):
                 t = f.bare[ln]
                 found = []
                 for m in ref.finditer(t): found.append((m.group(1), m.end()))
-                for al, p in aliases.items():
+                for al, ps in aliases.items():
                     for m in re.finditer(rf"(?<![.\w]){al}\b", t):
                         if not re.match(r"\s*=[^=]", t[m.end():]) and not re.search(r"\b(var|List<CardInstance>|int\[\])\s*$", t[:m.start()]):
-                            found.append((p, m.end()))
+                            found.extend((p, m.end()) for p in dict.fromkeys(ps))
                 for pile, end in found:
                     rest = t[end:]
                     kind = read = None
@@ -257,9 +282,14 @@ def scan() -> dict:
         seen[base] = seen.get(base, 0) + 1
         s["id"] = base if seen[base] == 1 else f"{base}#{seen[base]}"
     digest = hashlib.sha256(b"".join(norm(p.read_bytes()) for p in FILES.values())).hexdigest()
+    scope = {}  # every engine file whose code (comments and strings blanked) names a pile, with the number of such lines
+    for path in sorted(SCOPE.rglob("*.cs")):
+        if {"obj", "bin", "Solver"} & set(path.parts) or path.name.endswith(".g.cs"): continue
+        n = sum(1 for t in blank(norm(path.read_bytes()).decode("utf-8"))[1].split("\n") if PILE_ACCESS.search(t))
+        if n: scope[path.relative_to(ROOT).as_posix()] = n
     ordered = {p: c for p, c in piles.items() if c != "multiset"}
     return {"about": "Written by tools/solver/scan_order_reads.py; do not edit. Every index or position read of a pile in the six engine files; order_readers.json classes those on multiset piles.",
-            "sources_sha256": digest, "multiset_piles": sorted(p for p, c in piles.items() if c == "multiset"), "ordered_piles": ordered,
+            "sources_sha256": digest, "scope": scope, "multiset_piles": sorted(p for p, c in piles.items() if c == "multiset"), "ordered_piles": ordered,
             "sites": sorted(sites, key=lambda s: s["id"])}
 
 
@@ -290,6 +320,13 @@ def classify(result: dict) -> list[str]:
             probs.append(f'unclassed: {s["id"]} ({s["kind"]}, line {s["line"]}, holders {",".join(s["holders"])})')
     for i in classed:
         if i not in ids: probs.append(f"stale: {i}")
+    files, scanned = readers.get("files", {}), {f.relative_to(ROOT).as_posix() for f in FILES.values()}
+    for rel, n in result["scope"].items():
+        if rel in scanned: continue
+        if rel not in files: probs.append(f"unclassed file: {rel} ({n} lines name a pile): scan it or class it out in order_readers.json files")
+        elif files[rel].get("accesses") != n or not files[rel].get("reason"): probs.append(f"stale file class: {rel} ({n} lines now, classed at {files[rel].get('accesses')})")
+    for rel in files:
+        if rel not in result["scope"] or rel in scanned: probs.append(f"stale file class: {rel}")
     return probs
 
 

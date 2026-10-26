@@ -199,4 +199,37 @@ public class OrderReadTests
         a.Turn = 1;
         Assert.False(StateKey.HandOrdered(a));
     }
+
+    [Fact]
+    public void EveryEngineFileThatNamesAPileIsScannedOrClassedOut()
+    {
+        // The scan reads six files. Any other engine file whose code names a pile is in the scan's scope and is classed
+        // out in order_readers.json ("files"), with why; a new file naming a pile, or one the scan does not know, fails
+        // here until it is scanned or classed, and so does a classed-out file without a reason.
+        var repo = KeyFieldCoverageTests.Repo();
+        var scope = (JsonObject)KeyFieldCoverageTests.Json("order_reads.json")["scope"]!;
+        var files = (JsonObject)KeyFieldCoverageTests.Json("order_readers.json")["files"]!;
+        var scanned = Sources.Select(s => s.Replace('\\', '/')).ToHashSet();
+        var pile = new System.Text.RegularExpressions.Regex(@"\b(Hand|DrawPile|DiscardPile|ExhaustPile|PotionSlots)\b");
+        var blank = new System.Text.RegularExpressions.Regex(@"//[^\n]*|/\*.*?\*/|""(\\.|[^""\\])*""", System.Text.RegularExpressions.RegexOptions.Singleline);
+        var unknown = new List<string>();
+        foreach (var path in Directory.GetFiles(Path.Combine(repo, "src", "Sts2Emulator"), "*.cs", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(repo, path).Replace('\\', '/');
+            var parts = rel.Split('/');
+            if (parts.Contains("obj") || parts.Contains("bin") || parts.Contains("Solver") || rel.EndsWith(".g.cs")) continue;
+            if (pile.IsMatch(blank.Replace(File.ReadAllText(path), " ")) && !scope.ContainsKey(rel)) unknown.Add(rel);
+        }
+
+        Assert.True(unknown.Count == 0, "engine files naming a pile that the scan's scope does not know (run python tools/solver/scan_order_reads.py): " + string.Join(", ", unknown));
+        foreach (var (rel, n) in scope)
+        {
+            if (scanned.Contains(rel)) continue;
+            Assert.True(files.ContainsKey(rel), $"{rel} names a pile in {n} lines and is neither scanned nor classed out in order_readers.json files");
+            Assert.False(string.IsNullOrWhiteSpace((string?)files[rel]!["reason"]), $"{rel} is classed out without a reason");
+            Assert.True((int?)files[rel]!["accesses"] == (int?)n, $"{rel} names a pile in {n} lines now: review it and update its class");
+        }
+
+        Assert.True(files.All(kv => scope.ContainsKey(kv.Key) && !scanned.Contains(kv.Key)), "a classed-out file is gone from the scope or is now scanned");
+    }
 }

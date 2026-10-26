@@ -126,7 +126,7 @@
    "potions": [
     {
      "name": "KingsCourage",
-     "why": "found by KeyBisimulationTests, not by the scan: on core2 (F08, F10) using it from a position whose exhaust pile is permuted steps to another key; the read is outside the six scanned files, so the potion is a reader until it is found"
+     "why": "found by KeyBisimulationTests, not by a per-site read: on core2 (F08, F10) using it from a position whose exhaust pile is permuted steps to another key. The scan now reaches Forge from this potion (holder potion:KingsCourage) and the walks there are classed free, so the difference is in core2 code that Forge reaches, which the scan classes out by file (Core2/OldState.cs builds the kernel card table by walking the piles in order): the potion stays a reader until that read is classed per site"
     }
    ]
   },
@@ -248,6 +248,18 @@
    "class": "free",
    "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
   },
+  "CardEffects:ApplyGeneratedCardApproximation:foreach DiscardPile": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing (cards with a star cost)"
+  },
+  "CardEffects:ApplyGeneratedCardApproximation:foreach ExhaustPile": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing (cards with a star cost)"
+  },
+  "CardEffects:ApplyGeneratedCardApproximation:foreach Hand": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing (cards with a star cost)"
+  },
   "CardEffects:ApplyNecrobinderCard:for Hand": {
    "class": "free",
    "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
@@ -276,9 +288,57 @@
    "class": "free",
    "why": "the shuffle sorts the cards by a key of their values before it rolls (StableShuffle), so the input order is not read"
   },
+  "CardEffects:CheapenMelancholyForDeath:for DiscardPile": {
+   "class": "free",
+   "why": "a per-card update over the four piles (the cost of a Melancholy), not a pick by position"
+  },
+  "CardEffects:CheapenMelancholyForDeath:for ExhaustPile": {
+   "class": "free",
+   "why": "a per-card update over the four piles (the cost of a Melancholy), not a pick by position"
+  },
+  "CardEffects:CheapenMelancholyForDeath:for Hand": {
+   "class": "free",
+   "why": "a per-card update over the four piles (the cost of a Melancholy), not a pick by position"
+  },
+  "CardEffects:ClearPlayedThisTurn:for DiscardPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing (clears a flag)"
+  },
+  "CardEffects:ClearPlayedThisTurn:for ExhaustPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing (clears a flag)"
+  },
+  "CardEffects:ClearPlayedThisTurn:for Hand": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing (clears a flag)"
+  },
   "CardEffects:CountCardsOfTypeInHand:foreach Hand": {
    "class": "free",
    "why": "counts or tests cards: the result does not depend on order"
+  },
+  "CardEffects:CountOtherOstyAttacks:foreach DiscardPile": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing"
+  },
+  "CardEffects:CountOtherOstyAttacks:foreach ExhaustPile": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing"
+  },
+  "CardEffects:CountOtherOstyAttacks:foreach Hand": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing"
+  },
+  "CardEffects:CountStrikeCards:foreach DiscardPile": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing"
+  },
+  "CardEffects:CountStrikeCards:foreach ExhaustPile": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing"
+  },
+  "CardEffects:CountStrikeCards:foreach Hand": {
+   "class": "free",
+   "why": "a count over the piles: the order picks nothing"
   },
   "CardEffects:DiscardFirstCardsFromHand:Hand[0]": {
    "class": "reader",
@@ -340,6 +400,18 @@
    ],
    "why": "exhausts from Hand[0]"
   },
+  "CardEffects:FindPileHolding:DiscardPile.IndexOf": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:FindPileHolding:ExhaustPile.IndexOf": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:FindPileHolding:Hand.IndexOf": {
+   "class": "free",
+   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
   "CardEffects:FindPileHolding:foreach DiscardPile": {
    "class": "free",
    "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
@@ -351,6 +423,74 @@
   "CardEffects:FindPileHolding:foreach Hand": {
    "class": "free",
    "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
+  },
+  "CardEffects:Forge:DiscardPile[last]": {
+   "class": "free",
+   "why": "reads the card AddGeneratedCardToHand just put last in the hand or the discard pile (the blade)"
+  },
+  "CardEffects:Forge:DiscardPile[last]#2": {
+   "class": "free",
+   "why": "reads the card AddGeneratedCardToHand just put last in the hand or the discard pile (the blade)"
+  },
+  "CardEffects:Forge:DiscardPile[last]#3": {
+   "class": "free",
+   "why": "reads the card AddGeneratedCardToHand just put last in the hand or the discard pile (the blade)"
+  },
+  "CardEffects:Forge:DiscardPile[last]#4": {
+   "class": "free",
+   "why": "reads the card AddGeneratedCardToHand just put last in the hand or the discard pile (the blade)"
+  },
+  "CardEffects:Forge:Hand[last]": {
+   "class": "free",
+   "why": "reads the card AddGeneratedCardToHand just put last in the hand or the discard pile (the blade)"
+  },
+  "CardEffects:Forge:Hand[last]#2": {
+   "class": "free",
+   "why": "reads the card AddGeneratedCardToHand just put last in the hand or the discard pile (the blade)"
+  },
+  "CardEffects:Forge:Hand[last]#3": {
+   "class": "free",
+   "why": "reads the card AddGeneratedCardToHand just put last in the hand or the discard pile (the blade)"
+  },
+  "CardEffects:Forge:Hand[last]#4": {
+   "class": "free",
+   "why": "reads the card AddGeneratedCardToHand just put last in the hand or the discard pile (the blade)"
+  },
+  "CardEffects:Forge:for DiscardPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing (raises every Sovereign Blade)"
+  },
+  "CardEffects:Forge:for ExhaustPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing (raises every Sovereign Blade)"
+  },
+  "CardEffects:Forge:for Hand": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing (raises every Sovereign Blade)"
+  },
+  "CardEffects:GiveSovereignBladesReplays:for DiscardPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing"
+  },
+  "CardEffects:GiveSovereignBladesReplays:for ExhaustPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing"
+  },
+  "CardEffects:GiveSovereignBladesReplays:for Hand": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing"
+  },
+  "CardEffects:GrowEveryCopy:for DiscardPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing"
+  },
+  "CardEffects:GrowEveryCopy:for ExhaustPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing"
+  },
+  "CardEffects:GrowEveryCopy:for Hand": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing"
   },
   "CardEffects:MakeHandFreeThisTurn:for Hand": {
    "class": "free",
@@ -408,6 +548,14 @@
    "class": "free",
    "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
   },
+  "CardEffects:PrimeRocketPunches:for DiscardPile": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing"
+  },
+  "CardEffects:PrimeRocketPunches:for Hand": {
+   "class": "free",
+   "why": "the same per-card update to every matching card of every pile: the order picks nothing"
+  },
   "CardEffects:PrimeRocketPunches:foreach DiscardPile": {
    "class": "free",
    "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
@@ -415,6 +563,14 @@
   "CardEffects:PrimeRocketPunches:foreach Hand": {
    "class": "free",
    "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
+  },
+  "CardEffects:PullSovereignBladesToHand:for DiscardPile": {
+   "class": "free",
+   "why": "moves copies of one card (Sovereign Blades or Make It So) into the hand until it is full: copies are equal in the key unless an effect changed one alone, and the exhaust pile's readers (SummonForth, MakeItSo) keep that pile ordered"
+  },
+  "CardEffects:PullSovereignBladesToHand:for ExhaustPile": {
+   "class": "free",
+   "why": "moves copies of one card (Sovereign Blades or Make It So) into the hand until it is full: copies are equal in the key unless an effect changed one alone, and the exhaust pile's readers (SummonForth, MakeItSo) keep that pile ordered"
   },
   "CardEffects:PullSovereignBladesToHand:foreach DiscardPile": {
    "class": "reader",
@@ -437,6 +593,14 @@
   "CardEffects:RerollHandCostsForCombat:for Hand": {
    "class": "free",
    "why": "rolls one independent value per card in pile order: in expected mode the values are fresh and equally likely for each card, so the order moves no probability (hindsight mode keeps the pile ordered)"
+  },
+  "CardEffects:ReturnMakeItSosToHand:for DiscardPile": {
+   "class": "free",
+   "why": "moves copies of one card (Sovereign Blades or Make It So) into the hand until it is full: copies are equal in the key unless an effect changed one alone, and the exhaust pile's readers (SummonForth, MakeItSo) keep that pile ordered"
+  },
+  "CardEffects:ReturnMakeItSosToHand:for ExhaustPile": {
+   "class": "free",
+   "why": "moves copies of one card (Sovereign Blades or Make It So) into the hand until it is full: copies are equal in the key unless an effect changed one alone, and the exhaust pile's readers (SummonForth, MakeItSo) keep that pile ordered"
   },
   "CardEffects:ReturnMakeItSosToHand:foreach DiscardPile": {
    "class": "reader",
@@ -749,6 +913,100 @@
   "RelicEffects:MakeRandomHandCardFree:Range(Hand)": {
    "class": "roll",
    "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
+  }
+ },
+ "files": {
+  "src/Sts2Emulator/Core/CardUid.cs": {
+   "accesses": 4,
+   "reason": "uid bookkeeping: finds or renumbers a card by its uid, which is unique"
+  },
+  "src/Sts2Emulator/Core/CombatFactory.cs": {
+   "accesses": 11,
+   "reason": "QueueImbuedFrom walks the hand and the draw pile from the last index at the start of a combat (QueueCombatStartAutoPlays, called once from the combat's opening, before the first position) and queues the Imbued cards in that order; the queue is in the key in order"
+  },
+  "src/Sts2Emulator/Core/CombatObservation.cs": {
+   "accesses": 6,
+   "reason": "builds the observation the host reads: copies the piles out, decides nothing"
+  },
+  "src/Sts2Emulator/Core/CombatState.cs": {
+   "accesses": 15,
+   "reason": "the state's own members (Clone, TopDeck, the known top and bottom counts of the draw pile); the key writes those itself"
+  },
+  "src/Sts2Emulator/Core/FightAnchor.cs": {
+   "accesses": 15,
+   "reason": "re-anchors a combat to a recorded fight between steps and replaces whole piles from the record; not part of CombatEngine.Step"
+  },
+  "src/Sts2Emulator/Core/GameState.cs": {
+   "accesses": 1,
+   "reason": "run-level state holding the combat; no rule reads a pile here"
+  },
+  "src/Sts2Emulator/Core/HookChoiceReplay.cs": {
+   "accesses": 11,
+   "reason": "replays a recorded choice on an open screen; the key keeps every pile ordered while a screen is open (rules, screen)"
+  },
+  "src/Sts2Emulator/Core/PendingCardSelection.cs": {
+   "accesses": 3,
+   "reason": "names the pile a screen's candidates index by the screen's kind; a screen's candidates are pile indices and the key keeps every pile ordered while it is open (rules, screen)"
+  },
+  "src/Sts2Emulator/Core/Run/KernelGate.cs": {
+   "accesses": 2,
+   "reason": "run-level code between fights, outside CombatEngine.Step"
+  },
+  "src/Sts2Emulator/Core/Run/RunEngine.cs": {
+   "accesses": 35,
+   "reason": "run-level code between fights (deck and combat setup), outside CombatEngine.Step"
+  },
+  "src/Sts2Emulator/Core/Run/RunNonCombatEffects.cs": {
+   "accesses": 10,
+   "reason": "run-level effects outside a fight, outside CombatEngine.Step"
+  },
+  "src/Sts2Emulator/Core/Run/RunPotionUse.cs": {
+   "accesses": 9,
+   "reason": "potion use on the run's screens outside a fight, outside CombatEngine.Step"
+  },
+  "src/Sts2Emulator/Core/Run/RunRewardGenerator.cs": {
+   "accesses": 8,
+   "reason": "run-level reward generation outside a fight, outside CombatEngine.Step"
+  },
+  "src/Sts2Emulator/Core/Run/RunState.cs": {
+   "accesses": 2,
+   "reason": "run-level state; no rule reads a pile here"
+  },
+  "src/Sts2Emulator/Core/StateCloning.cs": {
+   "accesses": 11,
+   "reason": "copies the piles whole, in order"
+  },
+  "src/Sts2Emulator/Core2/Models/Cards/Melancholy.cs": {
+   "accesses": 2,
+   "reason": "Cheapen finds the card by its uid in each of the four piles and lowers its cost: the card is unique, so the order picks nothing"
+  },
+  "src/Sts2Emulator/Core2/Models/Relics/MiniatureCannon.cs": {
+   "accesses": 4,
+   "reason": "reads the pile at the index the card's own uid lookup returned (OldState.Models): the same card whatever the order"
+  },
+  "src/Sts2Emulator/Core2/Models/Relics/MysticLighter.cs": {
+   "accesses": 4,
+   "reason": "reads the pile at the index the card's own uid lookup returned (OldState.Models): the same card whatever the order"
+  },
+  "src/Sts2Emulator/Core2/OldState.Models.cs": {
+   "accesses": 11,
+   "reason": "the bridge's locate-by-uid (IndexOf of a uid in each pile) and slot lookups; core2 positions (F08, F10) are checked by KeyBisimulationTests, which found KingsCourage here (exhaust_position)"
+  },
+  "src/Sts2Emulator/Core2/OldState.cs": {
+   "accesses": 12,
+   "reason": "the bridge from CombatState to the hook kernel: uid and slot lookups and the walks that build its card table; core2 positions (F08, F10) are checked by KeyBisimulationTests, which found KingsCourage here (exhaust_position)"
+  },
+  "src/Sts2Emulator/Interop/CombatSnapshot.cs": {
+   "accesses": 22,
+   "reason": "marshals a combat to and from the host, piles whole and in order; decides nothing"
+  },
+  "src/Sts2Emulator/Interop/NativeExports.cs": {
+   "accesses": 5,
+   "reason": "host entry points; copies piles in or out, decides nothing"
+  },
+  "src/Sts2Emulator/Interop/RunNativeExports.cs": {
+   "accesses": 2,
+   "reason": "host entry points of the run; copies piles in or out, decides nothing"
   }
  }
 }
