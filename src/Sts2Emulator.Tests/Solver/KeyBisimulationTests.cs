@@ -7,8 +7,12 @@
 // uid counter with them), the hand, discard and exhaust piles and the potion slots permuted where no reader keeps them
 // ordered. A permutation moves which card a roll over the pile lands on, so the comparison is of distributions: the
 // step's chance tree is enumerated (every stream cleared, each roll answered over all its outcomes) to the deepest roll
-// count both sides fit in a leaf budget, which is the whole tree for most steps; no step is excused. Hindsight mode is
-// checked strictly: equal hindsight keys must step to equal hindsight keys under the same streams.
+// count both sides fit in a leaf budget, which is the whole tree for most steps. Where a tree is larger, the rolls past
+// the cut are answered alike on both sides, which compares unlike things when the next roll shuffles a permuted pile
+// (the same fixed answer lands on different cards of a differently ordered pile). So a cut step is compared to its cut
+// with the shared tail and, where that differs, up to the first roll past the cut (the state there, the draw pile's
+// order forgotten), which both sides reach by the same rolls. No step is excused and none is tolerated. Hindsight mode
+// is checked strictly: equal hindsight keys must step to equal hindsight keys under the same streams.
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Sts2Emulator.Core;
@@ -275,10 +279,10 @@ public class KeyBisimulationTests(ITestOutputHelper output)
 
     sealed class Tally
     {
-        public int Pairs, Steps, Positions, Exact, Truncated, Leaves;
+        public int Pairs, Steps, Positions, Exact, Truncated, UpToCut, Leaves;
         public readonly Dictionary<string, int> PerChange = new();
         public readonly List<string> Failures = [];
-        public readonly List<string> Inconclusive = [];
+        public readonly List<string> UpToCutSteps = [];
     }
 
     // ------------------------------------------------------------------------------------------------ chance, exactly
@@ -292,6 +296,9 @@ public class KeyBisimulationTests(ITestOutputHelper output)
     sealed class ChanceRandom(int[] prefix, int depth) : Random
     {
         readonly Random _tail = new(1234567);
+
+        /// <summary>The first roll past the depth throws <see cref="CutReached" /> instead of answering from the tail.</summary>
+        public bool StopAtCut;
         public readonly List<int> Ranges = [];
         public readonly List<int> Answers = [];
         public double P = 1;
@@ -304,6 +311,7 @@ public class KeyBisimulationTests(ITestOutputHelper output)
             if (k >= depth)
             {
                 Truncated = true;
+                if (StopAtCut) throw new CutReached();
                 return _tail.Next(maxValue);
             }
 
@@ -326,6 +334,9 @@ public class KeyBisimulationTests(ITestOutputHelper output)
         public override void NextBytes(Span<byte> buffer) => _tail.NextBytes(buffer);
     }
 
+    /// <summary>Thrown by a <see cref="ChanceRandom" /> that stops at its cut: the step is left where it stood.</summary>
+    sealed class CutReached : Exception;
+
     static void ClearStreams(CombatState s)
     {
         s.ShuffleRng = null;
@@ -340,8 +351,10 @@ public class KeyBisimulationTests(ITestOutputHelper output)
     }
 
     /// <summary>The successor distribution of one step: (result, successor key) to probability over the chance tree's
-    /// first <paramref name="depth" /> branching rolls; null past <paramref name="budget" /> leaves.</summary>
-    static Dictionary<string, double>? Distribution(CombatState s0, int act, int target, int depth, int budget, out bool truncated)
+    /// first <paramref name="depth" /> branching rolls; null past <paramref name="budget" /> leaves. With
+    /// <paramref name="stopAtCut" />, a step that reaches a roll past the depth ends there and its outcome is the state it
+    /// stood in (its draw pile's order forgotten: a shuffle may be half done).</summary>
+    static Dictionary<string, double>? Distribution(CombatState s0, int act, int target, int depth, int budget, out bool truncated, bool stopAtCut = false)
     {
         var dist = new Dictionary<string, double>();
         truncated = false;
@@ -351,12 +364,18 @@ public class KeyBisimulationTests(ITestOutputHelper output)
             if (leaves > budget) return null;
             var s = s0.Clone();
             ClearStreams(s);
-            var cr = new ChanceRandom(prefix, depth);
+            var cr = new ChanceRandom(prefix, depth) { StopAtCut = stopAtCut };
             string outcome;
             try
             {
                 var res = CombatEngine.Step(s, act, cr, target);
                 outcome = $"{res}|{Outcome(s, 3)}";
+            }
+            catch (CutReached)
+            {
+                var at = s.Clone();
+                at.ForgetDrawOrder();
+                outcome = $"cut|{Outcome(at, 3)}";
             }
             catch (Exception e)
             {
@@ -437,8 +456,9 @@ public class KeyBisimulationTests(ITestOutputHelper output)
     /// Steps <paramref name="a" /> and its equal-key partner <paramref name="b" /> by every legal action of a (b's action is
     /// the one on the same card, found by uid where the change kept uids, else by index) and compares the successor
     /// distributions: the chance tree enumerated to the deepest roll count both sides fit in the leaf budget (whole, for
-    /// most steps), the rest of the rolls answered alike. A uid-renumbered pair is also stepped on the state's own streams
-    /// and must match there. No step is excused.
+    /// most steps), the rest of the rolls answered alike; where that differs (a shuffle of a permuted pile past the cut),
+    /// the two are compared up to the first roll past the cut instead. A uid-renumbered pair is also stepped on the
+    /// state's own streams and must match there. No step is excused.
     /// </summary>
     static void CheckSuccessors(Position p, CombatState a, CombatState b, string change, Func<CombatState, CombatState, int, int> mapAction, Tally t)
     {
@@ -456,6 +476,7 @@ public class KeyBisimulationTests(ITestOutputHelper output)
             t.Steps++;
             Dictionary<string, double>? da = null, db = null;
             bool cut = false;
+            int used = 0;
             for (int depth = Depth(a, act, target, Budget); depth >= 0; depth--)
             {
                 da = Distribution(a, act, target, depth, Budget, out var ca);
@@ -463,6 +484,7 @@ public class KeyBisimulationTests(ITestOutputHelper output)
                 db = Distribution(b, actB, target, depth, Budget, out var cb);
                 if (db is null) continue;
                 cut = ca || cb;
+                used = depth;
                 break;
             }
 
@@ -471,11 +493,13 @@ public class KeyBisimulationTests(ITestOutputHelper output)
             t.Leaves += da?.Count ?? 0;
             if (da is not null && db is not null && cut && !SameDistribution(da, db))
             {
-                // the tree is larger than the budget: the rolls past the depth are answered alike on both sides, which
-                // is not the same distribution when one of them indexes the permuted pile (a reshuffle, a random pick);
-                // counted and listed, not passed silently
-                t.Inconclusive.Add($"{p.Engine} {p.Source} turn {a.Turn} {change}: {Describe(a, act)}");
-                continue;
+                // the tree is larger than the budget, and the rolls past the cut, answered alike, land on different cards
+                // of the differently ordered pile (a reshuffle, a random pick of its cards): an artefact of the cut, not of
+                // the key. Both sides reach the first roll past the cut by the same rolls, so they are compared there.
+                da = Distribution(a, act, target, used, Budget, out _, stopAtCut: true);
+                db = Distribution(b, actB, target, used, Budget, out _, stopAtCut: true);
+                t.UpToCut++;
+                t.UpToCutSteps.Add($"{p.Engine} {p.Source} turn {a.Turn} {change}: {Describe(a, act)}");
             }
 
             if (da is null || db is null || !SameDistribution(da, db))
@@ -557,9 +581,8 @@ public class KeyBisimulationTests(ITestOutputHelper output)
 
         output.WriteLine($"positions {t.Positions} ({string.Join(", ", sources.Select(kv => $"{kv.Key} {kv.Value}"))}; multi-enemy {multiEnemy}, open screens {screens}, mid-turn {midTurn}, "
             + $"relics {withRelics}, potions {withPotions}, an order reader {ordered}), equal-key pairs {t.Pairs} ({string.Join(", ", t.PerChange.Select(kv => $"{kv.Key} {kv.Value}"))}), "
-            + $"successor steps {t.Steps} (chance enumerated whole {t.Exact}, to a depth {t.Truncated}; outcomes {t.Leaves}), failures {t.Failures.Count}, "
-            + $"over-budget trees that differ at the cut {t.Inconclusive.Count} ({string.Join("; ", t.Inconclusive.Take(8))})");
-        Assert.True(t.Inconclusive.Count * 100 <= t.Truncated, $"{t.Inconclusive.Count} over-budget differences in {t.Truncated} cut steps");
+            + $"successor steps {t.Steps} (chance enumerated whole {t.Exact}, to a depth {t.Truncated}, of those compared up to the first roll past the cut {t.UpToCut}; "
+            + $"outcomes {t.Leaves}), failures {t.Failures.Count}, tolerated 0 ({string.Join("; ", t.UpToCutSteps.Take(6))})");
         foreach (var f in t.Failures.Take(60)) output.WriteLine(f);
         Assert.True(t.Pairs >= 1000, $"only {t.Pairs} equal-key pairs");
         Assert.True(multiEnemy > 50 && screens > 10 && midTurn > 200 && withPotions > 50, "the positions are not varied enough");
