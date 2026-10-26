@@ -1,5 +1,7 @@
 namespace Sts2Emulator.Core.Effects;
 
+using Sts2Emulator.Core.Rng;
+
 public static class PotionEffects
 {
     /// <summary>`Clarity`'s `PowerVar&lt;ClarityPower&gt;(3)` -- TURNS, one card each.</summary>
@@ -679,15 +681,19 @@ public static class PotionEffects
         GeneratedData.Potions.Get(potionId).Name
             is not ("FairyInABottle" or "FruitJuice" or "RegenPotion");
 
+    // Rare, uncommon, common: the thresholds' widths, for the solver (Roll.Branch); never written.
+    private static readonly double[] PotionRarityWeights = [0.1, 0.25, 0.65];
+
     private static int RollPotion(CombatState state, Random stream, bool inCombat)
     {
         // `Rng.NextFloat()` is `(float)(NextDouble() * (1 - 0) + 0)`, compared against
         // float thresholds.
-        float roll = (float)stream.NextDouble();
-        var rarity =
-            roll <= 0.1f ? PotionRarity.Rare
-            : roll <= 0.35f ? PotionRarity.Uncommon
-            : PotionRarity.Common;
+        var rarity = Roll.Branch(stream, "PotionEffects.RollPotion", PotionRarityWeights, static d => (float)d <= 0.1f ? 0 : (float)d <= 0.35f ? 1 : 2) switch
+        {
+            0 => PotionRarity.Rare,
+            1 => PotionRarity.Uncommon,
+            _ => PotionRarity.Common,
+        };
         var options = Run
             .RunRewardGenerator.PotionRewardPool(state.Character)
             .Where(potionId =>

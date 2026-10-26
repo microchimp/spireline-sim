@@ -1,6 +1,7 @@
 namespace Sts2Emulator.Core;
 
 using Effects;
+using Rng;
 
 public static class EnemyAI
 {
@@ -3114,7 +3115,9 @@ public static class EnemyAI
                     swipeRandom => headbutt,
                     headbutt => swipe,
                     // After SWIPE the machine rolls: 0.4 for another swipe, 0.6 headbutt.
-                    _ => rng.NextDouble() <= 0.4 ? swipeRandom : headbutt,
+                    _ => Roll.Branch(rng, "EnemyAI.Fogmog", FogmogBranchWeights, static d => d <= 0.4 ? 0 : 1) == 0
+                        ? swipeRandom
+                        : headbutt,
                 };
                 enemy.LastMove = move;
                 return move switch
@@ -3245,11 +3248,17 @@ public static class EnemyAI
                 // Attacks are LeafSlimeS.TackleDamage.
                 // Both branches CannotRepeat → strictly alternating, but RandomBranchState
                 // always consumes 1 RNG call (even on initialization and forced transitions).
-                double pick = rng.NextDouble();
+                // Branch 0 is the attack, 1 the debuff, at weight 1 each unless the last move blocks it.
+                int pick = Roll.Branch(
+                    rng,
+                    "EnemyAI.LeafSlimeS",
+                    enemy.LastMove switch { -1 => EvenBranchWeights, 0 => SecondBranchOnly, _ => FirstBranchOnly },
+                    enemy.LastMove switch { -1 => static d => d < 0.5 ? 0 : 1, 0 => static _ => 1, _ => static _ => 0 }
+                );
                 if (enemy.LastMove == -1)
                 {
                     // Initialization: 50/50 (both available in empty StateLog).
-                    if (pick < 0.5)
+                    if (pick == 0)
                     {
                         enemy.LastMove = 0;
                         return new Intent(
@@ -3299,8 +3308,13 @@ public static class EnemyAI
                     return new Intent(IntentType.Debuff, 1);
                 }
 
-                // RandomBranchState always consumes 1 RNG call.
-                double pick = rng.NextDouble();
+                // RandomBranchState always consumes 1 RNG call. Branch 0 attacks, 1 is Sticky Shot.
+                int pick = Roll.Branch(
+                    rng,
+                    "EnemyAI.TwigSlimeM",
+                    enemy.LastMove switch { -1 or 1 => FirstBranchOnly, 2 => SecondBranchOnly, _ => EvenBranchWeights },
+                    enemy.LastMove switch { -1 or 1 => static _ => 0, 2 => static _ => 1, _ => static d => d < 0.5 ? 0 : 1 }
+                );
                 // LastMove -1: round-2 call after initial Sticky Shot (CannotRepeat) → force Attack.
                 // LastMove  1: last chosen move was Sticky Shot (CannotRepeat) → force Attack.
                 if (enemy.LastMove is -1 or 1)
@@ -3318,7 +3332,7 @@ public static class EnemyAI
                     return new Intent(IntentType.Debuff, 1);
                 }
                 // LastMove 0: one consecutive attack → 50/50.
-                if (pick < 0.5)
+                if (pick == 0)
                 {
                     enemy.LastMove = 2;
                     return new Intent(
@@ -3712,8 +3726,6 @@ public static class EnemyAI
     /// </summary>
     private static int PickWeightedBranch(List<(int Move, float Weight)> branches, Random rng)
     {
-        float total = branches.Sum(branch => branch.Weight);
-
         // `RandomBranchState.GetNextState` when EVERY branch is blocked: `NextFloat(0)`
         // still increments the counter -- it is `Counter++` before the draw, unconditional
         // -- and the walk then subtracts zero and returns on the FIRST entry. So the game
@@ -3724,24 +3736,17 @@ public static class EnemyAI
         // The Flyconid is where it shows -- all three of its moves can be blocked at once,
         // by CannotRepeat and two cooldowns -- and a turn where only one branch is eligible
         // hides it, which is why it took seven turns to surface.
-        if (total <= 0f)
-        {
-            rng.NextDouble();
-            return branches[0].Move;
-        }
-
-        float roll = (float)(rng.NextDouble() * total);
-        foreach (var branch in branches)
-        {
-            roll -= branch.Weight;
-            if (roll <= 0f)
-            {
-                return branch.Move;
-            }
-        }
-
-        return branches[^1].Move;
+        //
+        // The draw and the walk are Roll.Walk's, the solver's door to the weights.
+        return branches[Roll.Walk(rng, "EnemyAI.PickWeightedBranch", branches, static branch => branch.Weight)].Move;
     }
+
+    // Branch weights the weighted sites name for the solver (Roll.Branch); never written.
+    private static readonly double[] FogmogBranchWeights = [0.4, 0.6];
+    private static readonly double[] EvenBranchWeights = [1, 1];
+    private static readonly double[] FirstBranchOnly = [1, 0];
+    private static readonly double[] SecondBranchOnly = [0, 1];
+    private static readonly double[] RatSummonWeights = [0.75, 0.25];
 
     private static Intent? SecondaryIntentFor(EnemyState enemy)
     {
@@ -5664,8 +5669,12 @@ public static class EnemyAI
             // same single MegaRandom step either way -- `Next(maxValue)` is
             // `(long)(NextDouble() * maxValue)` -- so this is about WHETHER it happens.
             double chewWeight = enemy.RepeatStreak >= 2 ? 0d : 1d;
-            double roll = rng.NextDouble() * (1d + chewWeight);
-            next = roll - 1d <= 0d ? chomp : chew;
+            // Chew weighs 1 or 0, so each case has static weights and arithmetic: the unhooked roll
+            // allocates nothing.
+            int branch = chewWeight > 0d
+                ? Roll.Branch(rng, "EnemyAI.ScrollOfBiting", EvenBranchWeights, static d => d * 2d - 1d <= 0d ? 0 : 1)
+                : Roll.Branch(rng, "EnemyAI.ScrollOfBiting", FirstBranchOnly, static d => d * 1d - 1d <= 0d ? 0 : 1);
+            next = branch == 0 ? chomp : chew;
         }
 
         enemy.RepeatStreak = next == enemy.LastBranch ? enemy.RepeatStreak + 1 : 1;
@@ -5747,7 +5756,7 @@ public static class EnemyAI
     {
         return BuffSystem.Get(enemy.Buffs, BuffId.SummonCooldown) <= 0
             && BuffSystem.Get(enemy.Buffs, BuffId.BackupCount) < 3
-            && rng.NextDouble() < 0.75;
+            && Roll.Branch(rng, "EnemyAI.CanRatSummon", RatSummonWeights, static d => d < 0.75 ? 0 : 1) == 0;
     }
 
     private static void TickRatSummonCooldown(EnemyState enemy)
