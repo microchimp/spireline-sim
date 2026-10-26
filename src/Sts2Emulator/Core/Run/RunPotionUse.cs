@@ -69,7 +69,8 @@ public static class RunPotionUse
     /// of All Time's enchant selection are screens of those events). `NPotionPopup` enables its discard button behind
     /// `Owner.CanRemovePotions` alone; its `InACardSelectScreen` test only gates the use button of a `CombatOnly`
     /// potion, and the popup closes itself on an overlay change only for that usage. A use is NOT opened here: the
-    /// owner approved the discard only (D32).
+    /// owner approved the discard only (D32); version 3 opens
+    /// the use of the AnyTime potions on the same screens (<see cref="UseBeltIsOpen" />, D34).
     /// </summary>
     public static bool DiscardBeltIsOpen(RunState state, int maskVersion = RunConstants.MaskVersion1)
     {
@@ -78,24 +79,56 @@ public static class RunPotionUse
             return true;
         }
 
-        return maskVersion >= RunConstants.MaskVersion2
-            && state.Phase
-                is RunPhase.CardReward
-                    or RunPhase.TransformSelect
-                    or RunPhase.BundleSelect
-                    or RunPhase.CrystalSphere
-            && !EventHoldsBelt(state.EventId);
+        return maskVersion >= RunConstants.MaskVersion2 && OnAnOverlayScreen(state);
     }
 
-    /// <summary>Whether the potion in <paramref name="slot" /> can be used right now.</summary>
-    public static bool CanUse(RunState state, int slot)
+    /// <summary>
+    /// Whether a potion can be used on this screen under the given mask version (D34). Version 1 and 2: wherever
+    /// <see cref="BeltIsOpen" />. Version 3 adds the same four overlay screens as <see cref="DiscardBeltIsOpen" />, on
+    /// the same conditions: `NPotionPopup` enables the use button of an `AnyTime` potion with no overlay test (its
+    /// `InACardSelectScreen` only gates a `CombatOnly` potion in a fight), behind `Owner.CanRemovePotions` and the
+    /// potion's own `PassesCustomUsabilityCheck`. Which potions pass is <see cref="CanUse" />'s question.
+    /// </summary>
+    public static bool UseBeltIsOpen(RunState state, int maskVersion = RunConstants.MaskVersion1)
+    {
+        if (BeltIsOpen(state))
+        {
+            return true;
+        }
+
+        return maskVersion >= RunConstants.MaskVersion3 && OnAnOverlayScreen(state);
+    }
+
+    /// <summary>
+    /// The screens that sit on the overlay stack over the run -- the card reward, a deck selection
+    /// (<see cref="RunPhase.TransformSelect" />), the bundle choice and the Crystal Sphere -- unless one of the three
+    /// events that hold the belt (`CanRemovePotions` false) is running.
+    /// </summary>
+    private static bool OnAnOverlayScreen(RunState state) =>
+        state.Phase
+            is RunPhase.CardReward
+                or RunPhase.TransformSelect
+                or RunPhase.BundleSelect
+                or RunPhase.CrystalSphere
+        && !EventHoldsBelt(state.EventId);
+
+    /// <summary>
+    /// Whether the potion in <paramref name="slot" /> can be used right now. Away from a fight the game offers the use
+    /// button only for a `PotionUsage.AnyTime` potion (a targeted potion -- `TargetType.AnyEnemy` and the like -- is
+    /// `CombatOnly` and has no button outside a fight). The four AnyTime potions are Blood Potion (`TargetType.AnyPlayer`),
+    /// Fruit Juice (`AnyPlayer`), Entropic Brew (`Self`) and Foul Potion, whose `PassesCustomUsabilityCheck` wants the
+    /// merchant's room; none of the four overlay screens of mask version 3 is a shop, so Foul Potion stays unusable there
+    /// (a deck selection the shop's removal service opened is the one overlay inside a MerchantRoom; the run state does
+    /// not tell it from an event's, so that throw is not offered).
+    /// </summary>
+    public static bool CanUse(RunState state, int slot, int maskVersion = RunConstants.MaskVersion1)
     {
         if ((uint)slot >= (uint)state.PotionSlots.Length || state.PotionSlots[slot] == 0)
         {
             return false;
         }
 
-        if (!BeltIsOpen(state))
+        if (!UseBeltIsOpen(state, maskVersion))
         {
             return false;
         }
@@ -157,19 +190,14 @@ public static class RunPotionUse
             return "the belt slot is empty";
         }
 
-        if (!BeltIsOpen(state))
+        if (useSlot >= 0 ? !UseBeltIsOpen(state, maskVersion) : !DiscardBeltIsOpen(state, maskVersion))
         {
-            if (useSlot < 0 && DiscardBeltIsOpen(state, maskVersion))
-            {
-                return null;
-            }
-
             return useSlot >= 0 && DiscardBeltIsOpen(state, maskVersion)
                 ? "a potion can only be thrown away on this screen, not used (mask version 2 opens the discard alone)"
                 : "the belt is closed on this screen (a fight, a card choice, or an event that holds the belt)";
         }
 
-        if (useSlot < 0 || CanUse(state, slot))
+        if (useSlot < 0 || CanUse(state, slot, maskVersion))
         {
             return null;
         }
@@ -186,9 +214,9 @@ public static class RunPotionUse
     /// `PotionModel.OnUseWrapper`: the potion leaves the belt FIRST (`RemoveBeforeUse`), then
     /// its `OnUse` runs. Returns false when the slot cannot be used.
     /// </summary>
-    public static bool Use(RunState state, int slot)
+    public static bool Use(RunState state, int slot, int maskVersion = RunConstants.MaskVersion1)
     {
-        if (!CanUse(state, slot))
+        if (!CanUse(state, slot, maskVersion))
         {
             return false;
         }

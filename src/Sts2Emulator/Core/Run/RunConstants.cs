@@ -131,13 +131,17 @@ public static class RunConstants
     /// The run action mask's version, a setting of the run handle (<see cref="RunEngine.MaskVersion" />). Version 1 is the
     /// mask as it was before the versions existed and the default of every run. Version 2 adds the discard actions
     /// (<see cref="DiscardPotionAction" />) on the card reward, deck-select, bundle-select and Crystal Sphere screens
-    /// (<see cref="RunPotionUse.DiscardBeltIsOpen" />) and changes nothing else.
+    /// (<see cref="RunPotionUse.DiscardBeltIsOpen" />) and changes nothing else. Version 3 (D34) also lists the use
+    /// actions (<see cref="UsePotionAction" />) of the AnyTime potions held, on the same four screens
+    /// (<see cref="RunPotionUse.UseBeltIsOpen" />).
     /// </summary>
     public const int MaskVersion1 = 1;
 
     public const int MaskVersion2 = 2;
 
-    public const int MaxMaskVersion = MaskVersion2;
+    public const int MaskVersion3 = 3;
+
+    public const int MaxMaskVersion = MaskVersion3;
     public const int MapWidth = 7;
 
     /// <summary>

@@ -16,7 +16,7 @@ _LIB_NAMES = {
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
 _REQUIRED_NATIVE_API_VERSION = 38
-_REQUIRED_RUN_NATIVE_API_VERSION = 29
+_REQUIRED_RUN_NATIVE_API_VERSION = 30
 # The engine this process runs (docs/rebuild/NATIVE_KERNEL.md section 3): read once, when the library loads, and passed
 # to Sts2_SetEngine before any handle exists. Unset or "old": the old engine. "core2": the Tier 1 kernel of
 # tools/fidelity/migrated_families.json. Inherited by every spawn worker, so one flag on the parent reaches them all.
@@ -1531,11 +1531,13 @@ RUN_DISCARD_POTION_ACTION: int = 248
 RUN_POTION_SLOTS: int = 6
 
 # The run action mask has versions (D32), a setting of the run handle. Version 1 is the default and the mask as it was;
-# version 2 also lists the discard actions on the card reward, deck-select, bundle-select and Crystal Sphere screens
-# (the belt stays closed for a use there). `run_set_mask_version` picks one; `Sts2RunEnv(mask_version=...)` does it per env.
+# version 2 also lists the discard actions on the card reward, deck-select, bundle-select and Crystal Sphere screens;
+# version 3 (D34) also lists the use actions of the AnyTime potions there (Blood Potion, Fruit Juice, Entropic Brew).
+# `run_set_mask_version` picks one; `Sts2RunEnv(mask_version=...)` does it per env.
 RUN_MASK_VERSION_DEFAULT: int = 1
 RUN_MASK_VERSION_OPEN_DISCARD: int = 2
-RUN_MASK_VERSIONS: tuple[int, ...] = (1, 2)
+RUN_MASK_VERSION_OPEN_USE: int = 3
+RUN_MASK_VERSIONS: tuple[int, ...] = (1, 2, 3)
 
 
 def run_character_index(character: str) -> int:
