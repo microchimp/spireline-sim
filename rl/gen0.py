@@ -823,7 +823,11 @@ def score_real(a: argparse.Namespace) -> int:
 
     The block is paired with an emulator arm of the same agent (`--gen-dir`): `--emu-dir` is used as given when its summary.json
     names that agent, otherwise the arm is played first on the same seeds, config and process count into `<out>-emu/`. The
-    real summary.json and compare.json record which arm paired and whether it was played."""
+    real summary.json and compare.json record which arm paired and whether it was played.
+
+    With `resume` (a stopped block rerun into the same folder) the folder is left as it is and envproto play gets `--resume` and the
+    agent's description for its identity file: it keeps the finished rows and plays the missing seeds, so the summary, result.json and
+    compare.json below are computed over every row of the block. The emulator arm resumes in either case (play_emu_arm)."""
     import subprocess  # noqa: PLC0415
 
     out = Path(a.out)
@@ -857,6 +861,8 @@ def score_real(a: argparse.Namespace) -> int:
         cmd += ["--recycle", str(a.recycle)]
     if only:
         cmd += ["--only", only]
+    if getattr(a, "resume", False):
+        cmd += ["--resume", "--agent-identity", json.dumps(agent.describe())]
     rc = subprocess.run(cmd, env=env, check=False).returncode
     rows = real_runs(out / "runs.jsonl") if (out / "runs.jsonl").exists() else []
     summ = json.loads((out / "summary.json").read_text(encoding="utf-8")) if (out / "summary.json").exists() else {}
@@ -999,6 +1005,9 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--engine", choices=("old", "core2"), default="old",
                     help="the emulator's engine, for the lockstep and the emulator arm (docs/rebuild/NATIVE_KERNEL.md); default old")
     sc.add_argument("--recycle", type=int, default=0, help="restart each game process after this many runs (0: never)")
+    sc.add_argument("--resume", action="store_true",
+                    help="a stopped block rerun into OUT keeps the real game's finished rows (envproto play --resume) and plays the "
+                    "seeds it has no row for; the emulator arm resumes either way")
     for name in ("bench-env", "bench-emu"):
         b = sub.add_parser(name)
         b.add_argument("--game", default="")

@@ -138,5 +138,67 @@ class ScoreOnlyTest(unittest.TestCase):
         self.assertEqual(a.only, "A,B")
 
 
+class ScoreResumeTest(unittest.TestCase):
+    """N3: `score --resume` leaves the real block's folder alone, hands envproto play `--resume` with the agent's identity, and
+    computes summary.json and compare.json over every row of the block (the kept ones and the new)."""
+
+    def block(self, resume):
+        import shutil
+        from types import SimpleNamespace
+        from unittest import mock
+
+        gen0._setup()
+        import gen_loop
+
+        agent = gen_loop.load_agent(None).describe()
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        emu, out = tmp / "emu", tmp / "real"
+        emu.mkdir()
+        out.mkdir()
+        (emu / "summary.json").write_text(json.dumps({"agent": agent}), encoding="utf-8")
+        (emu / "runs.jsonl").write_text("".join(json.dumps({"seed": s, "win": s == "S0", "floor": 9, "decisions": 50, "wall": 1.0}) + "\n"
+                                                for s in ("S0", "S1")), encoding="utf-8")
+        end = lambda s, floor: {"ev": "end", "seed": s, "end": "death", "floor": floor, "s": 2.0, "stats": {"decisions": 80}}  # noqa: E731
+        (out / "runs.jsonl").write_text(json.dumps(end("S1", 6)) + "\n", encoding="utf-8")  # the stopped session's row
+        (out / "keep.txt").write_text("x", encoding="utf-8")
+        a = SimpleNamespace(out=str(out), game="G", seeds_file="F.json", runs=2, procs=4, sims=60, config="a3-v1", ascension=10,
+                            character="IRONCLAD", stop_after_h=1.0, lib=None, emu_dir=str(emu), gen_dir=None, only=None, resume=resume)
+        cmds, seen = [], []
+
+        def fake_run(cmd, **kw):  # what envproto play leaves: the kept row and the new one, and the summary over both
+            cmds.append(cmd)
+            seen.append((out / "keep.txt").is_file() and (out / "runs.jsonl").is_file())
+            (out / "runs.jsonl").write_text(json.dumps(end("S1", 6)) + "\n" + json.dumps(end("S0", 12)), encoding="utf-8")
+            (out / "summary.json").write_text(json.dumps({"runs": 2, "wall_s": 30.0, "resumed_rows": 1, "diverged_decisions": 0}), encoding="utf-8")
+            return SimpleNamespace(returncode=0)
+
+        with mock.patch("subprocess.run", fake_run), mock.patch.object(gen0, "play_emu_arm", side_effect=AssertionError("arm played")):
+            gen0.score_real(a)
+        return agent, cmds[0], seen, out
+
+    def test_resume_passes_the_flag_with_the_agent_and_keeps_the_folder(self):
+        agent, cmd, seen, out = self.block(True)
+        self.assertIn("--resume", cmd)
+        self.assertEqual(agent, json.loads(cmd[cmd.index("--agent-identity") + 1]))
+        self.assertEqual([True], seen)  # the folder and its rows were still there when envproto started
+        summ = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual((1, 30.0), (summ["resumed_rows"], summ["wall_s"]))  # envproto's keys stay
+        self.assertFalse(summ["emu_arm"]["played"])
+        cmp = json.loads((out / "compare.json").read_text(encoding="utf-8"))
+        self.assertEqual((2, 2, 2), (cmp["paired_seeds"], cmp["real"]["runs"], cmp["emu"]["runs"]))  # every row of the block
+        self.assertEqual((2, 30.0), (json.loads((out / "result.json").read_text(encoding="utf-8"))["runs"], summ["wall_s"]))
+
+    def test_without_resume_the_command_is_what_it_was(self):
+        _agent, cmd, _seen, _out = self.block(False)
+        self.assertNotIn("--resume", cmd)
+        self.assertNotIn("--agent-identity", cmd)
+
+    def test_the_parser_takes_resume(self):
+        base = ["score", "--game", "G", "--seeds-file", "F", "--out", "O"]
+        self.assertTrue(gen0.build_parser().parse_args([*base, "--resume"]).resume)
+        self.assertFalse(gen0.build_parser().parse_args(base).resume)
+
+
 if __name__ == "__main__":
     unittest.main()
