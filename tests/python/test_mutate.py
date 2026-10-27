@@ -225,6 +225,33 @@ class SchemataTest(unittest.TestCase):
         self.assertIn("MutCov.Remember(", out)
 
 
+# The two project files as they stand: the engine embeds three files from outside its folder (the switch-on table
+# tools/fidelity/migrated_families.json was the one the scratch copy missed), EmuDump links them and compiles the invariants in.
+ENGINE_CSPROJ = r"""<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <InternalsVisibleTo Include="EmuDump" />
+    <TrimmerRootDescriptor Include="ILLink.Roots.xml" />
+    <EmbeddedResource Include="..\..\tools\fidelity\migrated_families.json" LogicalName="Sts2Emulator.migrated_families.json" />
+    <EmbeddedResource Include="..\..\data\id_map.json" LogicalName="Sts2Emulator.id_map.json" />
+    <EmbeddedResource Include="..\..\tools\fidelity\power_aliases.json" LogicalName="Sts2Emulator.power_aliases.json" />
+  </ItemGroup>
+</Project>
+"""
+EMUDUMP_CSPROJ = r"""<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <None Include="..\..\data\id_map.json" Link="id_map.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fidelity\power_aliases.json" Link="power_aliases.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fidelity\migrated_families.json" Link="migrated_families.json" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="..\..\src\Sts2Emulator.Tests\Support\Invariants\*.cs" LinkBase="Invariants" />
+    <ProjectReference Include="..\..\src\Sts2Emulator\Sts2Emulator.csproj" />
+  </ItemGroup>
+</Project>
+"""
+
+
+NEW_ITEM = r'<EmbeddedResource Include="..\..\tools\newthing\table.json" />'
+
+
 class ScratchCopyTest(unittest.TestCase):
     """make_copy builds the tree a mutant is compiled in: EmuDump compiles the invariant sources in and links two data files."""
 
@@ -235,6 +262,8 @@ class ScratchCopyTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, True)
         src, dst = tmp / "src", tmp / "dst"
         files = {"src/Sts2Emulator/Core/A.cs": "a", "tools/emudump/Program.cs": "p",
+                 "src/Sts2Emulator/Sts2Emulator.csproj": ENGINE_CSPROJ, "tools/emudump/EmuDump.csproj": EMUDUMP_CSPROJ,
+                 "tools/fidelity/migrated_families.json": "{}", "tools/fidelity/refset_score.py": "not copied",
                  "src/Sts2Emulator.Tests/Support/Invariants/Metamorphic.cs": "m", "data/id_map.json": "{}",
                  "tools/fidelity/power_aliases.json": "{}", "src/Sts2Emulator/obj/junk.cs": "x", "tools/emudump/bin/junk.dll": "x",
                  "src/Sts2Emulator.Tests/Other.cs": "not copied"}
@@ -244,9 +273,41 @@ class ScratchCopyTest(unittest.TestCase):
         mu.make_copy(src, dst)
         got = sorted(p.relative_to(dst).as_posix() for p in dst.rglob("*") if p.is_file())
         self.assertEqual(["data/id_map.json", "src/Sts2Emulator.Tests/Support/Invariants/Metamorphic.cs", "src/Sts2Emulator/Core/A.cs",
-                          "tools/emudump/Program.cs", "tools/fidelity/power_aliases.json"], got)
+                          "src/Sts2Emulator/Sts2Emulator.csproj", "tools/emudump/EmuDump.csproj", "tools/emudump/Program.cs",
+                          "tools/fidelity/migrated_families.json", "tools/fidelity/power_aliases.json"], got)
         (dst / "src/Sts2Emulator/Core/A.cs").write_text("edited", encoding="utf-8")  # a mutant's edit is put back by the next copy
         mu.make_copy(src, dst)
         self.assertEqual("a", (dst / "src/Sts2Emulator/Core/A.cs").read_text(encoding="utf-8"))
         (src / "tools/fidelity/power_aliases.json").unlink()  # a tree without an optional file still copies
         mu.make_copy(src, tmp / "dst2")
+
+    def test_the_copy_list_holds_every_file_a_csproj_item_names_and_follows_a_new_one(self):
+        """Fail-before for the lab's mutation job (CS1566 since 2026-10-26): the engine embeds tools/fidelity/migrated_families.json,
+        the list was a fixed pair of files, and the scratch tree lacked it. The list is now read from the csproj items."""
+        import shutil
+        import tempfile
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        files = {"src/Sts2Emulator/Core/A.cs": "a", "src/Sts2Emulator/Sts2Emulator.csproj": ENGINE_CSPROJ,
+                 "tools/emudump/EmuDump.csproj": EMUDUMP_CSPROJ, "tools/fidelity/migrated_families.json": "{}",
+                 "tools/fidelity/power_aliases.json": "{}", "data/id_map.json": "{}", "tools/fidelity/refset_score.py": "x"}
+        for rel, text in files.items():
+            (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / rel).write_text(text, encoding="utf-8")
+        got = mu.copy_list(tmp)
+        self.assertIn("tools/fidelity/migrated_families.json", got)
+        self.assertNotIn("tools/fidelity/refset_score.py", got)
+        # the next embedded file, in a folder nobody listed, comes along with no edit to mutate.py
+        (tmp / "tools/newthing").mkdir()
+        (tmp / "tools/newthing/table.json").write_text("{}", encoding="utf-8")
+        (tmp / "src/Sts2Emulator/Sts2Emulator.csproj").write_text(
+            ENGINE_CSPROJ.replace(
+                "</ItemGroup>", NEW_ITEM + "</ItemGroup>"),
+            encoding="utf-8")
+        self.assertIn("tools/newthing/table.json", mu.copy_list(tmp))
+
+    def test_every_file_the_real_projects_embed_or_link_is_in_the_copy_list(self):
+        got = set(mu.copy_list(ROOT))
+        for rel in ("tools/fidelity/migrated_families.json", "tools/fidelity/power_aliases.json", "data/id_map.json"):
+            self.assertIn(rel, got)
+        self.assertEqual([], [r for r in mu.project_inputs(ROOT) if not (ROOT / r).is_file()])
