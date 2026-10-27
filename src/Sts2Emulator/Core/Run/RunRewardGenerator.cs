@@ -2421,8 +2421,18 @@ public static partial class RunRewardGenerator
             RarityUncommon => 75,
             _ => 50,
         };
-        return RoundPositive(baseCost * NextDouble(rng, 0.95, 1.05));
+        return PotionPrice(baseCost, rng);
     }
+
+    /// <summary>
+    /// <c>MerchantPotionEntry.CalcCost</c>, the jittered part: the rarity's base times
+    /// <c>Rng.NextFloat(0.95f, 1.05f)</c>, multiplied in float and rounded by
+    /// <c>Mathf.Round</c> -- half to even, like the card and relic rows. It was a double
+    /// product rounded half up, which is a gold off whenever the float product lands on a
+    /// midpoint or within a float step of one.
+    /// </summary>
+    internal static int PotionPrice(int baseCost, GameRng rng) =>
+        RoundToEven(baseCost * NextFloat(rng, 0.95f, 1.05f));
 
     private static double NextDouble(GameRng rng, double min, double max) =>
         min + rng.NextDouble() * (max - min);
