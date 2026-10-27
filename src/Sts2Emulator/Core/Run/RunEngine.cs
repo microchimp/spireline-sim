@@ -3539,8 +3539,17 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 if (action == 0)
                 {
                     HealPlayer(9);
-                    RunNonCombatEffects.BeginDeckSelection(State, DeckSelection.Upgrade, 0);
-                    return 0;
+                    // `SapphireSeed.Eat` awaits the upgrade selection, upgrades only if the
+                    // pick is not null, and calls `SetEventFinished` either way. A deck with
+                    // nothing left to upgrade gets an empty selection, so the event ends
+                    // here -- returning with the page still up offered Eat again, and an
+                    // agent that took it looped on the same screen until its run cap.
+                    if (RunNonCombatEffects.BeginDeckSelection(State, DeckSelection.Upgrade, 0))
+                    {
+                        return 0;
+                    }
+
+                    break;
                 }
 
                 if (action == 1)
