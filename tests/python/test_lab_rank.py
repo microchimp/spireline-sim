@@ -44,6 +44,11 @@ HP = [[".combat.enemy_hp", [17, 10], [23, 10]]]
 RUN_HP = [[".hp", 59, 61]]
 SAME_SIZE = hand_diff(["BASH", "STRIKE_IRONCLAD"], ["BASH", "DEFEND_IRONCLAD"])
 BIGGER = hand_diff(["BASH"], ["BASH", "DEFEND_IRONCLAD"])
+# Cut from a real nightly record (an Ascender's Bane in an opening hand: the game keeps it at 0, the emulator had upgraded it).
+# The same five cards on both sides; only the upgrade bit of the curse differs.
+BANE_BIT = [[".combat.hand",
+             ['["ASCENDERS_BANE", 0]', '["HEMOKINESIS", 1]', '["INFERNO", 1]', '["STAMPEDE", 1]', '["UPPERCUT", 1]'],
+             ['["ASCENDERS_BANE", 1]', '["HEMOKINESIS", 1]', '["INFERNO", 1]', '["STAMPEDE", 1]', '["UPPERCUT", 1]']]]
 
 
 class RankTest(unittest.TestCase):
@@ -54,6 +59,21 @@ class RankTest(unittest.TestCase):
     def doc(self, divs, decisions=1000):
         write_records(self.tmp / "in", divs, decisions)
         return rank.rank(self.tmp / "in")
+
+    def test_same_cards_with_a_different_attribute_is_a_single_site(self):
+        # An upgrade bit (or cost) that differs on the same cards is no shuffle, draw or roll: not rng_stream.
+        self.assertEqual("single_site", rank.classify(rec(61, 14, BANE_BIT)))
+        g = self.doc([rec(61, 14, BANE_BIT), rec(70, 9, BANE_BIT)])["groups"]
+        self.assertEqual([("single_site", "single_site")], [(x["tag"], x["class"]) for x in g])
+
+    def test_other_pile_differences_keep_their_class(self):
+        # different cards at equal size: still a stream; the same ids in another order (a shuffle) too; a size change: queue
+        self.assertEqual("rng_stream", rank.classify(rec(1, 5, SAME_SIZE)))
+        order = [[".combat.draw", [card("BASH"), card("STRIKE_IRONCLAD")], [card("STRIKE_IRONCLAD"), card("BASH")]]]
+        self.assertEqual("rng_stream", rank.classify(rec(1, 5, order)))
+        self.assertEqual("action_queue", rank.classify(rec(1, 5, BIGGER)))
+        # an attribute-only pile diff beside a real one does not hide the real one
+        self.assertEqual("rng_stream", rank.classify(rec(1, 5, BANE_BIT + SAME_SIZE)))
 
     def test_order_weights_and_tags(self):
         divs = [rec(1, 40, HP), rec(2, 5, SAME_SIZE), rec(3, 5, SAME_SIZE, span=9), rec(5, 3, [[".combat.powers", 1, 2]])]

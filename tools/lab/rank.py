@@ -40,7 +40,8 @@ top20.md, by_family.md) says which one was used; a run the arm lacks falls back 
 
 Tag: architectural when the diff matches a class of the audits (referee/design/game-shaped-dispatch.md, architecture-survey.md):
   rng_stream             a pile (hand, draw, discard, exhaust) holds different cards at equal size; or card reward / potion
-                         contents differ in a reward screen
+                         contents differ in a reward screen. The same cards in the same order that differ only in an attribute
+                         (an upgrade bit, a cost) are no stream: they fall through, to single_site when nothing else differs
   action_queue           a pile differs in size (a card created, exhausted, drawn or played in a different order of actions)
   listener_order         powers, buffs, relics or energy of the combat block differ in a combat decision (no pile differs); the
                          run's relic holding (`.relics`) is carried state like `.deck`, not an order of triggers: single_site
@@ -137,11 +138,17 @@ def entities(diff: list) -> list[str]:
     return sorted(out)[:3]
 
 
+def _same_cards(a: Any, b: Any) -> bool:
+    """Two pile listings that hold the same card ids in the same order: whatever differs is an attribute of a card (its upgrade
+    bit, its cost), a state bug at one site, not a different draw, shuffle or roll."""
+    return isinstance(a, list) and isinstance(b, list) and len(a) == len(b) and _ids(a) == _ids(b)
+
+
 def classify(rec: dict) -> str:
     """One of CLASSES, or single_site."""
     ents = _entries(rec.get("diff"))
     paths = [p for p, _, _ in ents]
-    piles = [(p, a, b) for p, a, b in ents if any(f".{w}" in p for w in PILES)]
+    piles = [(p, a, b) for p, a, b in ents if any(f".{w}" in p for w in PILES) and not _same_cards(a, b)]
     if piles:
         same = all(isinstance(a, list) and isinstance(b, list) and len(a) == len(b) for _, a, b in piles)
         return "rng_stream" if same else "action_queue"
