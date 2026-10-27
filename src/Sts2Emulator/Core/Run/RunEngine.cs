@@ -3554,13 +3554,22 @@ public sealed class RunEngine : Core2.ICombatEndHost
 
                 if (action == 1)
                 {
-                    return RunNonCombatEffects.BeginDeckSelection(
-                        State,
-                        DeckSelection.Enchant,
-                        (int)Enchantment.Sown
+                    // `SapphireSeed.Plant` has no lock: it awaits the selection over the cards
+                    // Sown can enchant and calls `SetEventFinished` whether or not one was
+                    // picked, so a deck with none ends the event rather than refusing the
+                    // step (the mask offers the option, there being no case for it).
+                    if (
+                        RunNonCombatEffects.BeginDeckSelection(
+                            State,
+                            DeckSelection.Enchant,
+                            (int)Enchantment.Sown
+                        )
                     )
-                        ? 0
-                        : -1;
+                    {
+                        return 0;
+                    }
+
+                    break;
                 }
 
                 if (action != RunConstants.EventSkipAction)
