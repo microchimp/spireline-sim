@@ -734,8 +734,15 @@ def _card_select(ctx: _Context) -> _Screen:
     """
     offer = native.run_state_list(ctx.handle, 17, 16)
     if offer:
+        # List 23 (`PendingOfferUpgraded`) is the shown grid's own upgrade flags, one per card
+        # in list 17's order: a card the offer rolled upgraded is a different card to take.
+        upgraded = native.run_state_list(ctx.handle, 23, 16)
         options = [
-            Option("select.offer", action, card=CardRef(offer[action], False))
+            Option(
+                "select.offer",
+                action,
+                card=CardRef(offer[action], action < len(upgraded) and bool(upgraded[action])),
+            )
             for action in ctx.legal
             if action < len(offer)
         ]

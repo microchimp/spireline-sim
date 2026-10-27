@@ -837,5 +837,36 @@ class AutoScreenTests(unittest.TestCase):
         self.fail("no seed reached a treasure room")
 
 
+class OfferGridUpgradedFlagTests(unittest.TestCase):
+    """An offer grid (Room Full of Cheese's eight, Brain Leech's five) keeps what its cards rolled.
+
+    The run state keeps `PendingOfferUpgraded` (list 23) next to the grid (list 17); the reader built every
+    `select.offer` card with `upgraded` False, so the referee's `[TWIN_STRIKE, 1]` could never equal the emulator's
+    `[TWIN_STRIKE, 0]` (the 96th select record, seed NRBMFG74JL decision 84, floor 11).
+    """
+
+    TWIN_STRIKE = 7
+    LISTS = {17: (3, TWIN_STRIKE, 9), 23: (0, 1, 0)}
+
+    def _screen(self, lists):
+        def run_state_list(handle, list_id, capacity=256, **kw):
+            return lists.get(list_id, ())
+
+        ctx = mock.Mock(handle=1, legal=[0, 1, 2, 3])
+        with mock.patch.object(engine.native, "run_state_list", run_state_list):
+            return engine._card_select(ctx).decision
+
+    def test_a_card_the_offer_rolled_upgraded_is_read_upgraded(self):
+        offers = {o.action: o.card for o in self._screen(self.LISTS).options if o.kind == "select.offer"}
+        self.assertEqual(offers[1], features.CardRef(self.TWIN_STRIKE, True))
+        self.assertEqual(offers[0], features.CardRef(3, False))
+        self.assertEqual(offers[2], features.CardRef(9, False))
+
+    def test_a_grid_with_no_flags_listed_reads_every_card_plain(self):
+        decision = self._screen({17: self.LISTS[17]})
+        cards = [o.card.upgraded for o in decision.options if o.kind == "select.offer"]
+        self.assertEqual(cards, [False, False, False])
+
+
 if __name__ == "__main__":
     unittest.main()

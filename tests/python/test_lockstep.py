@@ -1352,3 +1352,22 @@ class WoodCarvingsPairingTests(unittest.TestCase):
                                                                   _opt("select.offer", 1, card=_card(6))), view=None)
         self.e.s.view = lambda: SimpleNamespace(deck=self.deck)
         self.assertEqual(self.e._pair("select_cards", [["DEFEND_IRONCLAD", 0], ["ANGER", 0]]), [1, 0])
+
+
+class UpgradedCardRewardPairingTests(unittest.TestCase):
+    """The 14 upgraded `apply:no_emulator_option:card_reward` records (Silver Crucible runs, `["TWIN_STRIKE", 1]` and its
+    kind): the referee's take is `[card, 1]` and pairs only with an emulator take of the same card OFFERED upgraded."""
+
+    def setUp(self):
+        self.e = stub_emu(FakeRun("cards", {}, {}))
+        self.e.dec = SimpleNamespace(
+            type="card_reward",
+            options=(_opt("card.take", 0, card=_card(8, up=True)), _opt("card.take", 1, card=_card(7)), _opt("card.skip", 3)),
+            view=None)
+
+    def test_an_upgraded_take_pairs_with_the_upgraded_offer(self):
+        self.assertEqual(self.e._pair("card_reward", [["ANGER", 1], ["BASH", 0], "skip"]), [0, 1, 2])
+
+    def test_an_upgraded_take_does_not_pair_with_the_plain_offer(self):
+        self.assertEqual(self.e._pair("card_reward", [["ANGER", 0], ["BASH", 1]]), [None, None])
+
