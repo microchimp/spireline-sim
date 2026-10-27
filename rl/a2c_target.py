@@ -190,7 +190,8 @@ def _mean_or(xs: list, empty: float = 0.0) -> float:
     return float(np.mean(xs)) if xs else empty
 
 
-def report(a) -> None:
+def report(a, base: str = BASE) -> dict:
+    """Population-weighted means and paired bootstrap intervals of `a.out`/devset.jsonl, each arm against `base`."""
     import a3_devset as ad  # noqa: PLC0415
 
     out = Path(a.out)
@@ -213,10 +214,11 @@ def report(a) -> None:
            "encounter_unknown": sum(int(r.get("encounter", 0)) <= 0 for r in rows), "paired_vs_visits": {}}
     for k in per:
         kind, n, m = k.split("/")
-        if n != BASE and f"{kind}/{BASE}/{m}" in per:
-            doc["paired_vs_visits"][k] = ad.paired_boot(per[k], per[f"{kind}/{BASE}/{m}"], w)
+        if n != base and f"{kind}/{base}/{m}" in per:
+            doc["paired_vs_visits"][k] = ad.paired_boot(per[k], per[f"{kind}/{base}/{m}"], w)
     gen_loop.write_json(out / "report.json", doc)
     print(json.dumps(doc, indent=1))
+    return doc
 
 
 def main(argv=None) -> int:

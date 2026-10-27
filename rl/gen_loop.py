@@ -608,6 +608,7 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
         pick = np.random.default_rng(seed).permutation(n_all)[:max_fights]
         keep = np.isin(inv, pick)
         merged = _take_rows(merged, keep)
+        ix_all = ix_all[keep]
         kept = int(np.unique(key[keep]).size)
     else:
         kept = n_all
@@ -617,6 +618,7 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     merged["_samples_dedup_dropped"] = np.array([int((~fresh_all).sum())])
     merged["_fights_available"] = np.array([n_all])
     merged["_fights_kept"] = np.array([kept])
+    merged["_fight_ix"] = ix_all  # each row's fight index within its run (an underscore key: saved sets do not carry it)
     merged["_samples_by_generation"] = np.array(sorted(per_gen.items()))
     return merged
 
