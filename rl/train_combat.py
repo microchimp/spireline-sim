@@ -35,6 +35,7 @@ if __name__ == "__main__":  # D31: run as a command this is self-play, promotion
 import argparse
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -231,7 +232,9 @@ def report(
     print(f"    TV(mean pdf, empirical) {tv:.3f}  (controls win this by construction)")
 
 
-def train(args: argparse.Namespace) -> None:
+def train(args: argparse.Namespace, epoch_end: Callable[[int, dict[str, float]], None] | None = None) -> None:
+    """Fit the heads. `epoch_end(epoch, stats)`, when given, is called after each epoch's checkpoint and log line with that epoch's
+    losses (`value_train`, `value_val`, `policy_train`, `policy_val`); it may raise to stop the fit. Without it nothing changes."""
     # Without this every run initialises differently, and the spread between two runs
     # of the SAME config is wider than the gap between most configs -- which makes any
     # single-run A/B meaningless.
@@ -433,6 +436,8 @@ def train(args: argparse.Namespace) -> None:
             f"  epoch {epoch:3d}  value {tr:.4f}/{va:.4f}  "
             f"policy {tr_pol:.4f}/{va_pol:.4f}{flag:<3}  (train/val)",
         )
+        if epoch_end is not None:
+            epoch_end(epoch, {"value_train": tr, "value_val": va, "policy_train": tr_pol, "policy_val": va_pol})
 
     def over_val(fn) -> None:
         with torch.no_grad():

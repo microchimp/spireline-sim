@@ -70,5 +70,57 @@ class GenLoopPassesTheTargetTests(unittest.TestCase):
                 self.assertEqual(tg.call_args.kwargs["policy_target"], "completed_q")
 
 
+class EpochEndHookTests(unittest.TestCase):
+    """`train_combat.train(epoch_end=...)`: None by default, the loop and every number unchanged without it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root, rng = Path(self._tmp.name), np.random.default_rng(5)
+        sink = gen_loop.ShardSink(root / "runs" / "job0", 0, config="a3-v1", base_sims=30, ascension=10, agent={}, part_runs=3)
+        for i in range(8):
+            sink.add(fake_record(f"H0{i:08d}"[:10], 0), fake_run_arrays(rng, 3, 4))
+        sink.close()
+        self.data = gen_loop.build_training_set(gen_loop.window_manifests(root / "runs", 0), max_fights=1000)
+        self.root = root
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def fit(self, name, **kw):
+        return gen_loop.train_combat_prior(self.data, self.root / name, device="cpu", epochs=3, d_model=16, layers=1, threads=1, seed=3, **kw)
+
+    def test_a_no_op_hook_leaves_the_fit_unchanged_and_sees_every_epoch(self):
+        import torch
+
+        calls = []
+        plain = self.fit("plain")
+        hooked = self.fit("hooked", epoch_end=lambda epoch, stats: calls.append((epoch, dict(stats))))
+        self.assertEqual([c[0] for c in calls], [1, 2, 3])
+        self.assertEqual(sorted(calls[0][1]), ["policy_train", "policy_val", "value_train", "value_val"])
+        self.assertEqual([c["policy_val"] for c in plain["curves"]], [round(s["policy_val"], 4) for _, s in calls])  # the log line's numbers
+        self.assertEqual(plain["curves"], hooked["curves"])
+        self.assertEqual(plain["report"], hooked["report"])
+        for name in ("combat_policy.pt", "combat_net.pt"):
+            a = torch.load(self.root / "plain" / name, map_location="cpu", weights_only=True)
+            b = torch.load(self.root / "hooked" / name, map_location="cpu", weights_only=True)
+            self.assertEqual(sorted(a["model"]), sorted(b["model"]))
+            for key in a["model"]:
+                self.assertTrue(torch.equal(a["model"][key], b["model"][key]), key)
+
+    def test_a_hook_that_raises_stops_the_fit_and_the_trainer_restores_its_paths(self):
+        before = (train_combat.DATASET, train_combat.CHECKPOINT, train_combat.POLICY_CHECKPOINT)
+
+        def stop(epoch, _stats):
+            if epoch == 2:
+                raise RuntimeError("stop")
+
+        with self.assertRaises(RuntimeError):
+            self.fit("stopped", epoch_end=stop)
+        self.assertEqual((train_combat.DATASET, train_combat.CHECKPOINT, train_combat.POLICY_CHECKPOINT), before)
+        log = (self.root / "stopped" / "work" / "train_combat.log").read_text(encoding="utf-8")
+        self.assertIn("epoch   2", log)
+        self.assertNotIn("epoch   3", log)
+
+
 if __name__ == "__main__":
     unittest.main()

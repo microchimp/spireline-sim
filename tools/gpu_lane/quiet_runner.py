@@ -10,10 +10,13 @@ The window is open when `LAB/GPU_OFF` is absent, the lab's `status.txt` names no
 status is `paused(pause)` or `paused(lock)`, or (quiet with consent) `QUIET.lock` carries a tag other than `gpu-lane` and the first
 line of `REFEREE/GPU_OK` names that tag. The files are read afresh at every check.
 
-The queue is a JSON list of jobs `{"name", "args", "state", "attempts"}`. The runner takes the first `queued` or `interrupted` job,
-runs `<gpu python> rl/vrun_sweep.py run <args> --device cuda --stop-file <path>` from the repo at BelowNormal with two CPU threads,
-and marks it `done` (exit 0), `interrupted` (the stop-file exit code, attempts + 1, retried in a later window) or `failed` (any other
-exit; not retried). When a condition fails while a job runs the runner touches the stop file at once, waits for the process (120 s,
+The queue is a JSON list of jobs `{"name", "args", "state", "attempts"}` and optionally `"tool"` and `"cpu_procs"`. The runner takes the
+first `queued` or `interrupted` job it may run, runs `<gpu python> rl/vrun_sweep.py run <args> --device cuda --stop-file <path>` (tool
+`vrun_sweep`, the default) or `<gpu python> rl/prior_sweep.py <args> --device cuda --stop-file <path>` (tool `prior_sweep`: its args name
+the subcommand) from the repo at BelowNormal with two CPU threads, and marks it `done` (exit 0), `interrupted` (the stop-file exit code, attempts + 1, retried in a later window) or `failed` (any other
+exit; not retried). A job with `cpu_procs` above 2 (default 2) needs the CPU and runs only in a window opened by rule 3's first branch
+(reason "quiet..."), never under consent; a consent window takes the first job of 2 processes or fewer, and a wide job that is running
+when the window turns to consent is stopped. When a condition fails while a job runs the runner touches the stop file at once, waits for the process (120 s,
 then terminates its own child), deletes the stop file and goes back to watching. The log holds one line per transition and no paths.
 """
 
@@ -45,6 +48,9 @@ BARRED_STATES = ("paused(user)", "paused(load)", "paused(halt)", "running")  # r
 QUIET_STATES = ("paused(pause)", "paused(lock)")  # rule 3, quiet without a claim
 STATES = ("queued", "running", "done", "interrupted", "failed")
 RUNNABLE = ("queued", "interrupted")
+TOOLS = ("vrun_sweep", "prior_sweep")  # the modules under rl/ a job may name; vrun_sweep is the default
+DEFAULT_CPU_PROCS = 2
+QUIET_PREFIX = "quiet"  # a window reason that starts so is rule 3's first branch (no QUIET.lock): the CPU is free for wide jobs
 STOP_WAIT_S = 120.0
 STOP_NAME = "quiet.stop"
 LOG_LINE_CAP = 200
@@ -113,10 +119,26 @@ def window_open(status_text: str | None, quiet_lock_text: str | None, gpu_ok_tex
 # --------------------------------------------------------------------------------------
 
 
-def next_job(queue: list[dict[str, Any]]) -> int | None:
-    """Index of the first `queued` or `interrupted` job in file order, else None."""
+def cpu_procs_of(job: dict[str, Any]) -> float:
+    """The CPU processes a job needs (default 2); a value that is not a positive integer counts as unbounded, so the job waits for a quiet window."""
+    value = job.get("cpu_procs", DEFAULT_CPU_PROCS)
+    return float(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else float("inf")
+
+
+def tool_of(job: dict[str, Any]) -> str:
+    return str(job.get("tool", TOOLS[0]))
+
+
+def wide_allowed(reason: str) -> bool:
+    """Whether a window opened for `reason` leaves the CPU free for jobs of more than 2 processes (quiet without a claim only)."""
+    return reason.startswith(QUIET_PREFIX)
+
+
+def next_job(queue: list[dict[str, Any]], wide: bool = True) -> int | None:
+    """Index of the first `queued` or `interrupted` job in file order that may run, else None. With `wide` false (a consent window)
+    a job needing more than 2 CPU processes is passed over."""
     for index, job in enumerate(queue):
-        if job.get("state") in RUNNABLE:
+        if job.get("state") in RUNNABLE and (wide or cpu_procs_of(job) <= DEFAULT_CPU_PROCS):
             return index
     return None
 
@@ -197,6 +219,7 @@ class QuietRunner:
         self.idle_s, self.busy_s = float(a.idle_s), float(a.busy_s)
         self.stop_wait_s = float(getattr(a, "stop_wait_s", STOP_WAIT_S))
         self.job_script = Path(a.job_script) if getattr(a, "job_script", None) else self.repo / "rl" / "vrun_sweep.py"
+        self.script_override = bool(getattr(a, "job_script", None))
         self.stop_path = self.queue_path.parent / STOP_NAME
         self.sleep = sleep
         self.was_open: bool | None = None
@@ -262,10 +285,16 @@ class QuietRunner:
                 self.log(f"job interrupted: {job.get('name')} (the previous runner ended while it ran)")
 
     # ---- one job
+    def script_for(self, job: dict[str, Any]) -> Path:
+        """The script a job runs: the test override, else rl/<tool>.py in the repo."""
+        return self.job_script if self.script_override else self.repo / "rl" / f"{tool_of(job)}.py"
+
     def command(self, job: dict[str, Any]) -> list[str]:
+        tail = ["--device", "cuda", "--stop-file", str(self.stop_path)]
+        if tool_of(job) == "prior_sweep":  # its args start with the subcommand (run, search); it has no sweep cache
+            return [self.gpu_python, str(self.script_for(job)), *map(str, job["args"]), *tail]
         cache = ["--cache", str(self.cache)] if self.cache else []
-        return [self.gpu_python, str(self.job_script), "run", *cache, *map(str, job["args"]), "--device", "cuda",
-                "--stop-file", str(self.stop_path)]
+        return [self.gpu_python, str(self.script_for(job)), "run", *cache, *map(str, job["args"]), *tail]
 
     def environment(self) -> dict[str, str]:
         env = dict(os.environ)  # STS2_LIB_PATH and the rest pass through from the runner's own environment
@@ -282,11 +311,19 @@ class QuietRunner:
         job = queue[index]
         name = str(job.get("name", f"job{index}"))
         attempt = int(job.get("attempts", 0)) + 1
+        problem = None
         if not isinstance(job.get("args"), list):
+            problem = "the queue entry has no args list"
+        elif tool_of(job) not in TOOLS:
+            problem = f"unknown tool {tool_of(job)[:40]!r}"
+        elif not self.script_for(job).is_file():
+            problem = f"the {tool_of(job)} script is missing"
+        if problem:
             mark(queue, index, "failed")
             save_queue(self.queue_path, queue)
-            self.log(f"job failed: {name}: the queue entry has no args list")
+            self.log(f"job failed: {name}: {problem}")
             return "failed"
+        wide = cpu_procs_of(job) > DEFAULT_CPU_PROCS
         self.stop_path.unlink(missing_ok=True)  # one left by a runner that died would stop the job at its first epoch
         mark(queue, index, "running")
         save_queue(self.queue_path, queue)
@@ -328,6 +365,9 @@ class QuietRunner:
                 if not opened:
                     closing = reason
                     break
+                if wide and not wide_allowed(reason):  # the lock came back with a consent: the CPU is the lane's, not the job's
+                    closing = f"window turned to {reason.split(',')[0]}; {cpu_procs_of(job):g} processes need a quiet one"
+                    break
         except KeyboardInterrupt:
             closing, interrupt = "runner interrupted", True
         terminated = False
@@ -368,11 +408,11 @@ class QuietRunner:
     # ---- the loop
     def step(self) -> str | None:
         """One check; with the window open and a job queued, run that job. Returns the job's new state, or None when none ran."""
-        opened, _ = self.check()
+        opened, reason = self.check()
         if not opened:
             return None
         queue = self.read_queue()
-        index = None if queue is None else next_job(queue)
+        index = None if queue is None else next_job(queue, wide_allowed(reason))
         return None if index is None else self.run_job(index)
 
     def run(self, once: bool = False) -> None:

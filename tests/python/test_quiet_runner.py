@@ -3,6 +3,7 @@
 No GPU and no lab: the open-window predicate on synthetic text, the queue's state machine, the runner against a fake job script in
 a temp folder, and the stop file on the synthetic sweep cache the vrun_sweep tests build (CPU, a few seconds)."""
 
+import argparse
 import contextlib
 import io
 import json
@@ -458,6 +459,93 @@ class RunnerTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(qr.main([*argv, "--gpu-python", str(self.root / "nope"), "--job-script", str(self.script)]), 2)
             self.assertEqual(qr.main([*argv, "--gpu-python", sys.executable]), 2)  # no rl/vrun_sweep.py under the empty repo
+
+    # ---- tools and wide jobs (PRIOR_SWEEP.md section 6)
+    def wide_job(self, name: str, mode: str, procs: object = 8) -> dict:
+        return {**self.job(name, mode), "tool": "prior_sweep", "cpu_procs": procs}
+
+    def consent(self) -> None:
+        (self.referee / "QUIET.lock").write_text(LOCK_W4, encoding="utf-8")
+        (self.referee / "GPU_OK").write_text("w4-x\n", encoding="utf-8")
+
+    def test_cpu_procs_defaults_to_two_and_a_value_that_is_not_a_positive_integer_counts_as_wide(self):
+        self.assertEqual(qr.cpu_procs_of({}), 2)
+        self.assertEqual(qr.cpu_procs_of({"cpu_procs": 8}), 8)
+        for bad in ("8", 0, -1, True, None, 2.5):
+            self.assertEqual(qr.cpu_procs_of({"cpu_procs": bad}), float("inf"), bad)
+        queue = [{"state": "queued", "cpu_procs": 8}, {"state": "queued"}, {"state": "queued", "cpu_procs": 2}]
+        self.assertEqual(qr.next_job(queue), 0)
+        self.assertEqual(qr.next_job(queue, wide=False), 1)  # the consent branch passes the wide job over
+        self.assertIsNone(qr.next_job([{"state": "queued", "cpu_procs": "x"}], wide=False))
+        self.assertTrue(qr.wide_allowed("quiet, lab paused(pause)"))
+        self.assertTrue(qr.wide_allowed("quiet, lab paused(lock)"))
+        self.assertFalse(qr.wide_allowed("consent, tag w4-x"))
+
+    def test_under_consent_only_jobs_of_two_processes_or_fewer_run_and_the_wide_one_waits(self):
+        self.consent()
+        self.write_queue([self.wide_job("a", "ok"), self.job("b", "ok")])
+        self.run_once()
+        self.assertEqual(self.states(), [("a", "queued", 0), ("b", "done", 0)])
+        self.assertFalse((self.root / "a.marker").exists())
+        self.assertEqual(self.log_lines(), ["window opened: consent, tag w4-x", "job started: b (attempt 1)", "job done: b exit 0"])
+
+    def test_in_a_quiet_window_the_wide_job_runs_in_queue_order(self):
+        self.write_queue([self.wide_job("a", "ok"), self.job("b", "ok")])
+        self.run_once()
+        self.assertEqual(self.states(), [("a", "done", 0), ("b", "done", 0)])
+        self.assertEqual([line for line in self.log_lines() if line.startswith("job started")], ["job started: a (attempt 1)", "job started: b (attempt 1)"])
+
+    def test_a_wide_job_is_stopped_when_the_window_turns_to_consent_and_is_not_restarted_under_it(self):
+        self.write_queue([self.wide_job("a", "wait")])
+        marker = self.root / "a.marker"
+
+        def turn() -> None:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not marker.exists():
+                time.sleep(0.02)
+            time.sleep(0.1)
+            self.consent()
+
+        thread = threading.Thread(target=turn, daemon=True)
+        thread.start()
+        t0 = time.monotonic()
+        self.run_once()
+        thread.join()
+        self.assertLess(time.monotonic() - t0, 30)
+        self.assertEqual(self.states(), [("a", "interrupted", 1)])
+        self.assertTrue(any(line.startswith("job interrupted: a exit 3") for line in self.log_lines()))
+        self.run_once()  # the consent window is still open: a job of 8 processes does not start
+        self.assertEqual(self.states(), [("a", "interrupted", 1)])
+        self.assertEqual(sum(line.startswith("job started") for line in self.log_lines()), 1)
+
+    def test_the_tool_picks_the_script_and_the_command_line(self):
+        (self.repo / "rl").mkdir()
+        for name in ("vrun_sweep.py", "prior_sweep.py"):
+            (self.repo / "rl" / name).write_text("", encoding="utf-8")
+        args = argparse.Namespace(lab=str(self.lab), referee_dir=str(self.referee), repo=str(self.repo), gpu_python="py", queue=str(self.queue_path),
+                                  log=str(self.log_path), cache="CACHE", idle_s=1, busy_s=1)
+        runner = qr.QuietRunner(args)
+        tail = ["--device", "cuda", "--stop-file", str(self.lane / "quiet.stop")]
+        old = {"name": "v", "args": ["--arms", "lab"]}  # no tool: vrun_sweep, args after `run`, the cache prepended
+        self.assertEqual(runner.command(old), ["py", str(self.repo / "rl" / "vrun_sweep.py"), "run", "--cache", "CACHE", "--arms", "lab", *tail])
+        new = {"name": "p", "tool": "prior_sweep", "args": ["search", "--out", "X"], "cpu_procs": 8}  # args start with the subcommand; no cache
+        self.assertEqual(runner.command(new), ["py", str(self.repo / "rl" / "prior_sweep.py"), "search", "--out", "X", *tail])
+        self.assertEqual(runner.command({**old, "tool": "vrun_sweep"}), runner.command(old))
+
+    def test_an_unknown_tool_or_a_missing_script_fails_the_job_and_the_next_one_runs(self):
+        (self.repo / "rl").mkdir()
+        (self.repo / "rl" / "vrun_sweep.py").write_text("", encoding="utf-8")  # no prior_sweep.py in this repo
+        self.write_queue([{**self.job("x", "ok"), "tool": "evil"}, self.wide_job("y", "ok", 2), {"name": "z", "args": "no", "state": "queued", "attempts": 0}])
+        args = argparse.Namespace(lab=str(self.lab), referee_dir=str(self.referee), repo=str(self.repo), gpu_python=sys.executable,
+                                  queue=str(self.queue_path), log=str(self.log_path), cache=None, idle_s=0.1, busy_s=0.1)
+        runner = qr.QuietRunner(args)
+        with contextlib.redirect_stdout(io.StringIO()):
+            runner.run(once=True)
+        self.assertEqual(self.states(), [("x", "failed", 0), ("y", "failed", 0), ("z", "failed", 0)])
+        lines = self.log_lines()
+        self.assertIn("job failed: x: unknown tool 'evil'", lines)
+        self.assertIn("job failed: y: the prior_sweep script is missing", lines)
+        self.assertIn("job failed: z: the queue entry has no args list", lines)
 
 
 class StopFileTests(unittest.TestCase):

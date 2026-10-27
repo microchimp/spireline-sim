@@ -608,6 +608,7 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
         pick = np.random.default_rng(seed).permutation(n_all)[:max_fights]
         keep = np.isin(inv, pick)
         merged = _take_rows(merged, keep)
+        ix_all = ix_all[keep]
         kept = int(np.unique(key[keep]).size)
     else:
         kept = n_all
@@ -617,6 +618,7 @@ def build_training_set(manifests: list[tuple[Path, dict]], *, max_fights: int = 
     merged["_samples_dedup_dropped"] = np.array([int((~fresh_all).sum())])
     merged["_fights_available"] = np.array([n_all])
     merged["_fights_kept"] = np.array([kept])
+    merged["_fight_ix"] = ix_all  # each row's fight index within its run (an underscore key: saved sets do not carry it)
     merged["_samples_by_generation"] = np.array(sorted(per_gen.items()))
     return merged
 
@@ -652,8 +654,9 @@ def _device(requested: str | None) -> str:
 
 def train_combat_prior(data: dict[str, np.ndarray], out: Path, *, device: str | None = None, epochs: int = 16, d_model: int = 128,
                        layers: int = 2, threads: int = 6, seed: int = 0, policy_target: str = "visits",
-                       q_temperature: float | None = None) -> dict[str, Any]:
-    """Fit the policy and value heads with `train_combat.train` (prior_loop's trainer, its settings and its checkpoints)."""
+                       q_temperature: float | None = None, epoch_end: Any = None) -> dict[str, Any]:
+    """Fit the policy and value heads with `train_combat.train` (prior_loop's trainer, its settings and its checkpoints).
+    `epoch_end(epoch, stats)` is `train_combat.train`'s hook (the prior sweep's stop file); None leaves the call as it was."""
     import argparse  # noqa: PLC0415
 
     import torch  # noqa: PLC0415
@@ -678,7 +681,10 @@ def train_combat_prior(data: dict[str, np.ndarray], out: Path, *, device: str | 
         train_combat.DATASET, train_combat.CHECKPOINT = npz, out / "combat_net.pt"
         train_combat.POLICY_CHECKPOINT = out / "combat_policy.pt"
         with contextlib.redirect_stdout(cap):
-            train_combat.train(args)
+            if epoch_end is None:
+                train_combat.train(args)
+            else:
+                train_combat.train(args, epoch_end=epoch_end)
     finally:
         (work / "train_combat.log").write_text(cap.getvalue(), encoding="utf-8")
         for n, v in saved.items():

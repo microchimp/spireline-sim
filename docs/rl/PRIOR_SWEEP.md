@@ -125,3 +125,46 @@ within a target level; two seeds per cell resolve main effects, not cells, which
   fits added (4); what the E-block A/B needs recorded now (5); the temporary-folder fit for the stop file, `threads=2`, the
   dev-set search kept out of consent windows (6); T = 3 instead of T = 0.5, the 15% split, the disk figure (7). The
   sample count is now the deduplicated one from `train.json`; the GPU-hours figure is replaced by timing the first fits.
+
+## 9. Implementation notes (2026-10-28)
+
+`rl/prior_sweep.py` (`build`, `run`, `search`, `table`, `queue`), `train_combat.train`'s `epoch_end` hook (passed through
+`gen_loop.train_combat_prior`), and the runner's `tool` / `cpu_procs` fields are in; `tests/python/test_prior_sweep.py` covers them.
+Where the code makes a choice the sections above leave open:
+
+- **Build.** The window is the closed blocks of generations 5-7's window (`vrun_sweep.closed_blocks`). The combat parts are split by
+  run (`_unit_hash` of the seed in [0.0, 0.1) is the evaluation set) into two sets of copies before `build_training_set` runs, so its
+  dedupe by (generation, seed) acts on whole seeds on either side. The two build seeds of the `lab-bs<N>` cells (8 and 9) are built
+  together with the shared sets (`build --build-seeds`), so `run` never needs the lab. `build_training_set` now also returns
+  `_fight_ix` (an underscore key: the saved sets do not carry it) for the evaluation set's fight ids.
+- **Seeds.** The torch seed is the fit's `--seeds` entry; the `lab-bs<N>` cells are fit at torch seed 0 so the build-seed spread
+  (torch seed 0 at build seeds 7, 8, 9) is not mixed with the torch-seed spread (build seed 7 at torch seeds 0-3). The lab's own rule
+  moves both at once (`seed = gen`). Every `measures.json` records both rules.
+- **Error model.** Codes are centred indicators (a two-level factor reads second level minus first, averaged over the other factors;
+  target reads each completed-Q level minus visits). The residual is the between-seed variance pooled over the cells of the model:
+  the 24 cells and the lab's extra seeds (26 df) for measure 2, the 8 cells of the level (8 df, 11 for visits) for measure 1.
+  Two-way interactions are in when the means leave a spare degree of freedom.
+- **The chosen cell** (5.2): the target level with a measure-2 effect below -2 SE (the lower), and each other factor's second level
+  when its measure-2 effect is below -2 SE; a factor that measure 1 within the chosen target level contradicts beyond 2 SE stays at
+  the lab's level, with a note. The confirmation reads measure 1 only when the chosen cell keeps the lab's target (across targets it
+  is not comparable); the dev-set check is a paired bootstrap over positions of the seed-mean net-alone regret, "worse" meaning the
+  interval of chosen minus lab lies above 0.
+- **Search.** `search --arms auto` takes the lab's cell, the chosen cell and the best target level's cell from `table`'s logic. The
+  server's milliseconds per call (`--selftest`) is not measured by this tool.
+- **Runner.** A prior_sweep job's args start with its subcommand; a job with `cpu_procs` above 2 runs only in a window whose reason
+  starts with "quiet", and is stopped like a closed window when the window turns to consent. `run` needs `STS2_LIB_PATH` in the
+  runner's environment (measure 3 loads the emulator) and exits 2 before any fit without it.
+
+Timing fits (generation 7 window, 16 epochs, torch seed 0, 2 CPU threads, BelowNormal, one RTX 3080), minutes include the data write:
+
+| cell | fit min | GPU peak MB | eval top-1 | eval expected | dev top-1 | dev expected |
+|---|---|---|---|---|---|---|
+| visits-16-128-2 | 3.54 | 707 | 5.587 | 7.997 | 0.329 | 1.377 |
+| visits-16-256-2 | 3.51 | 842 | 5.621 | 7.913 | 0.278 | 1.302 |
+| visits-16-128-4 | 4.47 | 807 | 5.621 | 7.955 | 0.262 | 1.314 |
+| visits-16-256-4 | 5.34 | 1047 | 5.647 | 7.870 | 0.198 | 1.322 |
+
+Width costs almost nothing at 2 CPU threads and depth costs about a minute per two layers. Scaling the 16-epoch minutes by the epochs,
+the 48 factorial fits come to about 5 hours, and the whole sweep (54 fits, then 6 confirmation fits) to about 5.5 hours of quiet
+windows. The lab's recorded 2.6-2.7 minutes for its cell is on another timing basis (these include the data write and the
+evaluation passes); the difference was not investigated.
