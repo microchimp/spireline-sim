@@ -138,5 +138,134 @@ class ScoreOnlyTest(unittest.TestCase):
         self.assertEqual(a.only, "A,B")
 
 
+class ScoreResumeTest(unittest.TestCase):
+    """N3: `score --resume` leaves the real block's folder alone, hands envproto play `--resume` with the agent's identity, and
+    computes summary.json and compare.json over every row of the block (the kept ones and the new)."""
+
+    def block(self, resume):
+        import shutil
+        from types import SimpleNamespace
+        from unittest import mock
+
+        gen0._setup()
+        import gen_loop
+
+        agent = gen_loop.load_agent(None).describe()
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        emu, out = tmp / "emu", tmp / "real"
+        emu.mkdir()
+        out.mkdir()
+        (emu / "summary.json").write_text(json.dumps({"agent": agent}), encoding="utf-8")
+        (emu / "runs.jsonl").write_text("".join(json.dumps({"seed": s, "win": s == "S0", "floor": 9, "decisions": 50, "wall": 1.0}) + "\n"
+                                                for s in ("S0", "S1")), encoding="utf-8")
+        end = lambda s, floor: {"ev": "end", "seed": s, "end": "death", "floor": floor, "s": 2.0, "stats": {"decisions": 80}}  # noqa: E731
+        (out / "runs.jsonl").write_text(json.dumps(end("S1", 6)) + "\n", encoding="utf-8")  # the stopped session's row
+        (out / "keep.txt").write_text("x", encoding="utf-8")
+        a = SimpleNamespace(out=str(out), game="G", seeds_file="F.json", runs=2, procs=4, sims=60, config="a3-v1", ascension=10,
+                            character="IRONCLAD", stop_after_h=1.0, lib=None, emu_dir=str(emu), gen_dir=None, only=None, resume=resume)
+        cmds, seen = [], []
+
+        def fake_run(cmd, **kw):  # what envproto play leaves: the kept row and the new one, and the summary over both
+            cmds.append(cmd)
+            seen.append((out / "keep.txt").is_file() and (out / "runs.jsonl").is_file())
+            (out / "runs.jsonl").write_text(json.dumps(end("S1", 6)) + "\n" + json.dumps(end("S0", 12)), encoding="utf-8")
+            (out / "summary.json").write_text(json.dumps({"runs": 2, "wall_s": 30.0, "resumed_rows": 1, "diverged_decisions": 0}), encoding="utf-8")
+            return SimpleNamespace(returncode=0)
+
+        with mock.patch("subprocess.run", fake_run), mock.patch.object(gen0, "play_emu_arm", side_effect=AssertionError("arm played")):
+            gen0.score_real(a)
+        return agent, cmds[0], seen, out
+
+    def test_resume_passes_the_flag_with_the_agent_and_keeps_the_folder(self):
+        agent, cmd, seen, out = self.block(True)
+        self.assertIn("--resume", cmd)
+        self.assertEqual(agent, json.loads(cmd[cmd.index("--agent-identity") + 1]))
+        self.assertEqual([True], seen)  # the folder and its rows were still there when envproto started
+        summ = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual((1, 30.0), (summ["resumed_rows"], summ["wall_s"]))  # envproto's keys stay
+        self.assertFalse(summ["emu_arm"]["played"])
+        cmp = json.loads((out / "compare.json").read_text(encoding="utf-8"))
+        self.assertEqual((2, 2, 2), (cmp["paired_seeds"], cmp["real"]["runs"], cmp["emu"]["runs"]))  # every row of the block
+        self.assertEqual((2, 30.0), (json.loads((out / "result.json").read_text(encoding="utf-8"))["runs"], summ["wall_s"]))
+
+    def test_without_resume_the_command_is_what_it_was(self):
+        _agent, cmd, _seen, _out = self.block(False)
+        self.assertNotIn("--resume", cmd)
+        self.assertNotIn("--agent-identity", cmd)
+
+    def test_the_parser_takes_resume(self):
+        base = ["score", "--game", "G", "--seeds-file", "F", "--out", "O"]
+        self.assertTrue(gen0.build_parser().parse_args([*base, "--resume"]).resume)
+        self.assertFalse(gen0.build_parser().parse_args(base).resume)
+
+
+class GpuOkTest(unittest.TestCase):
+    """The GPU lane's window: `score --gpu-ok-tag TAG` keeps the line TAG first in the GPU_OK file exactly while the game's side
+    plays (never during the emulator arm) and removes it however the play ends; without the option nothing is touched."""
+
+    def run_score(self, tag, initial, fail=False, **extra):
+        import shutil
+        from types import SimpleNamespace
+        from unittest import mock
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        gpu = tmp / "GPU_OK"
+        if initial is not None:
+            gpu.write_text(initial, encoding="utf-8")
+        read = lambda: gpu.read_text(encoding="utf-8") if gpu.is_file() else None  # noqa: E731
+        self.gpu, self.during_arm, self.during_play = gpu, [], []
+
+        def fake_arm(*args, **kw):
+            self.during_arm.append(read())
+
+        def fake_run(cmd, **kw):
+            self.during_play.append(read())
+            if fail:
+                raise RuntimeError("the play died")
+            return SimpleNamespace(returncode=0)
+
+        a = SimpleNamespace(out=str(tmp / "real"), game="G", seeds_file="F.json", runs=2, procs=4, sims=60, config="a3-v1", ascension=10,
+                            character="IRONCLAD", stop_after_h=1.0, lib=None, emu_dir=None, gen_dir=None, only=None, gpu_ok_file=str(gpu),
+                            **({"gpu_ok_tag": tag} if tag else {}), **extra)
+        with mock.patch("subprocess.run", fake_run), mock.patch.object(gen0, "play_emu_arm", fake_arm):
+            if fail:
+                with self.assertRaises(RuntimeError):
+                    gen0.score_real(a)
+            else:
+                gen0.score_real(a)
+        return read()
+
+    def test_the_line_is_first_exactly_while_the_play_runs(self):
+        after = self.run_score("lab-nightly", "other-lane\nlab-nightly\n")
+        self.assertEqual(["other-lane\nlab-nightly\n"], self.during_arm)  # not written before the emulator arm has returned
+        self.assertEqual(["lab-nightly\nother-lane\n"], self.during_play)  # first; the older equal line is gone, the other kept
+        self.assertEqual("other-lane\n", after)
+
+    def test_the_line_is_removed_when_the_play_raises(self):
+        after = self.run_score("lab-nightly", "other-lane\n", fail=True)
+        self.assertEqual(["lab-nightly\nother-lane\n"], self.during_play)
+        self.assertEqual("other-lane\n", after)
+
+    def test_an_absent_file_is_created_for_the_play_and_deleted_when_nothing_else_is_in_it(self):
+        after = self.run_score("lab-nightly", None)
+        self.assertEqual(([None], ["lab-nightly\n"], None), (self.during_arm, self.during_play, after))
+        self.assertFalse(self.gpu.exists())
+
+    def test_without_the_option_nothing_is_written(self):
+        after = self.run_score(None, "other-lane\n")
+        self.assertEqual((["other-lane\n"], ["other-lane\n"], "other-lane\n"), (self.during_arm, self.during_play, after))
+        self.assertIsNone(self.run_score(None, None))
+        self.assertEqual(([None], [None]), (self.during_arm, self.during_play))
+
+    def test_the_parser_takes_the_options(self):
+        base = ["score", "--game", "G", "--seeds-file", "F", "--out", "O"]
+        a = gen0.build_parser().parse_args([*base, "--gpu-ok-tag", "lab-nightly", "--gpu-ok-file", "X"])
+        self.assertEqual(("lab-nightly", "X"), (a.gpu_ok_tag, a.gpu_ok_file))
+        b = gen0.build_parser().parse_args(base)
+        self.assertEqual((None, gen0.GPU_OK_FILE), (b.gpu_ok_tag, b.gpu_ok_file))
+
+
 if __name__ == "__main__":
     unittest.main()

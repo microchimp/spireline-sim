@@ -8,7 +8,11 @@ LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen
 N-<date>-<agent> for the others, written to LAB/seeds/, checked disjoint from every known block, E and S blocks included) is played
 by `gen0.py score` in lockstep with the emulator arm on `--engine core2`. The block's folder is LAB/nightly/<date>/<agent>/ (the
 real game's runs.jsonl, divergences.jsonl, summary.json, compare.json; the emulator arm is its sibling <agent>-emu/), ranked in
-place by tools/lab/rank.py (ranked.json, top20.md, by_family.*).
+place by tools/lab/rank.py (ranked.json, top20.md, by_family.*). A block a stopped job left unfinished is resumed in place (`gen0.py
+score --resume`): its folder is not cleared and only the seeds without a row are played; a block with the finished mark is skipped.
+
+GPU_OK: `gen0.py score --gpu-ok-tag lab-nightly` keeps the line `lab-nightly` first in the GPU_OK file while the real-game arm plays
+(the GPU lane may fit beside it), never during the emulator arm; every start of this driver first removes any such line.
 
 summary.json keeps the envproto summary and gains `nightly`: the numbers counted with a crashed run as a loss. That is
 gen0.real_runs(): a crash row becomes {win: False, floor: 0, crash: True}, which gen0.engine_block counts as a run with floor 0 and
@@ -222,6 +226,12 @@ def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: 
             "counted": "a crashed run is a loss: floor 0, no win, no boss kill"}
 
 
+def gpu_ok_default() -> str:
+    import gen0  # noqa: PLC0415
+
+    return gen0.GPU_OK_FILE
+
+
 def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir: Path) -> dict[str, Any]:
     from tools.lab import rank  # noqa: PLC0415
 
@@ -236,10 +246,12 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
     seeds_file, seeds = make_block(Path(a.lab), name, a.runs, [Path(p) for p in a.seeds_also])
     cmd = [sys.executable, str(ROOT / "rl" / "gen0.py"), "score", "--game", a.game, "--seeds-file", str(seeds_file), "--runs", str(a.runs),
            "--procs", str(a.procs), "--config", a.config, "--stop-after-h", str(a.stop_after_h), "--lib", a.lib,
-           "--gen-dir", agent["dir"], "--out", str(folder), "--engine", a.engine, "--recycle", str(a.recycle)]
-    # a stopped, unfinished block is replayed whole, except that its emulator arm resumes: the seeds it already has a row for
-    # are kept (gen0.run_block resume; the arm's identity file keeps rows of another agent or setting out)
-    shutil.rmtree(folder, ignore_errors=True)
+           "--gen-dir", agent["dir"], "--out", str(folder), "--engine", a.engine, "--recycle", str(a.recycle), "--resume",
+           # the GPU lane may fit beside the real-game arm (not the emulator arm, which plays through the prior server on the GPU)
+           "--gpu-ok-tag", TAG, "--gpu-ok-file", str(getattr(a, "gpu_ok_file", None) or gpu_ok_default())]
+    # a stopped, unfinished block is resumed in its folder, real arm and emulator arm alike: the seeds that already have a row are
+    # kept (envproto play --resume and gen0.run_block resume; each arm's identity file keeps rows of another agent or setting out),
+    # so the lab stopping a 7-9 hour block on the owner's input, on load or on a landing costs only the runs in flight
     print(f"[{utc_now()}] {agent['label']} ({agent['role']}, generation {agent['generation']}): {name}, {len(seeds)} seeds", flush=True)
     rc = subprocess.run(cmd, check=False).returncode
     shutil.rmtree(folder / "scratch", ignore_errors=True)  # the game processes' working copies
@@ -270,16 +282,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--date", help="the night's folder and block name (default: the newest unfinished night under 36 h old, else today)")
     ap.add_argument("--quiet-lock", default="D:/spireline/referee/QUIET.lock", help="the shared QUIET.lock file")
     ap.add_argument("--tag", default=TAG)
+    ap.add_argument("--gpu-ok-file", default=None, help="the GPU_OK file (default: gen0.GPU_OK_FILE): `gen0.py score` keeps the line "
+                    "lab-nightly in it while the real-game arm plays; a stale one is removed at every start")
     ap.add_argument("--wait-h", type=float, default=2.0)
     ap.add_argument("--no-lock", action="store_true", help="the caller holds the QUIET.lock (the dry run)")
     ap.add_argument("--seeds-also", action="append", default=[], help="another folder of seed blocks to stay disjoint from (read only)")
     ap.add_argument("--since", help="UTC time (default: LAB/nightly/last-ok's): promotions after it are scored too")
     a = ap.parse_args(argv)
+    import gen0  # noqa: PLC0415
+
+    a.gpu_ok_file = a.gpu_ok_file or gen0.GPU_OK_FILE
+    gen0.gpu_ok_remove(a.gpu_ok_file, TAG)  # first of all: a line a killed job left must not cover this start's emulator arm
     lab = Path(a.lab)
     if a.date is None:
         a.date = unfinished_night(lab)
         if a.date is not None:
-            print(f"[{utc_now()}] resuming the unfinished night {a.date} (its emulator arms keep their rows)", flush=True)
+            print(f"[{utc_now()}] resuming the unfinished night {a.date} (both arms of each block keep their rows)", flush=True)
         else:
             a.date = time.strftime("%Y-%m-%d")
     out = Path(a.out) if a.out else lab / "nightly"
