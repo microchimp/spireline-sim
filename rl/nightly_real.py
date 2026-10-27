@@ -91,7 +91,7 @@ class QuietLock:
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(f"{self.tag} {utc_now(self.clock())}\n", encoding="utf-8")
+        self.path.write_text(f"{self.tag} {utc_now(self.clock())} pid={os.getpid()}\n", encoding="utf-8")  # the runner clears a line whose pid is gone
 
     def acquire(self) -> bool:
         deadline = self.clock() + self.wait_h * 3600
@@ -202,8 +202,9 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
     cmd = [sys.executable, str(ROOT / "rl" / "gen0.py"), "score", "--game", a.game, "--seeds-file", str(seeds_file), "--runs", str(a.runs),
            "--procs", str(a.procs), "--config", a.config, "--stop-after-h", str(a.stop_after_h), "--lib", a.lib,
            "--gen-dir", agent["dir"], "--out", str(folder), "--engine", a.engine, "--recycle", str(a.recycle)]
-    for stale in (folder, emu):  # a stopped, unfinished block is replayed whole: its emulator arm pairs with the same seeds only
-        shutil.rmtree(stale, ignore_errors=True)
+    # a stopped, unfinished block is replayed whole, except that its emulator arm resumes: the seeds it already has a row for
+    # are kept (gen0.run_block resume; the arm's identity file keeps rows of another agent or setting out)
+    shutil.rmtree(folder, ignore_errors=True)
     print(f"[{utc_now()}] {agent['label']} ({agent['role']}, generation {agent['generation']}): {name}, {len(seeds)} seeds", flush=True)
     rc = subprocess.run(cmd, check=False).returncode
     shutil.rmtree(folder / "scratch", ignore_errors=True)  # the game processes' working copies

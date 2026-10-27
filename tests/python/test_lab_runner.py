@@ -1065,3 +1065,82 @@ class HiddenConsoleTest(unittest.TestCase):
         si = kw["startupinfo"]
         self.assertTrue(si.dwFlags & subprocess.STARTF_USESHOWWINDOW)
         self.assertEqual(0, si.wShowWindow)
+
+
+class StaleLockAndLogTest(unittest.TestCase):
+    """N1: a `lab-*` QUIET.lock line whose holder is gone is cleared before the next pick; a restarted nightly appends to its log."""
+
+    setUp, runner, py = RunnerCase.setUp, RunnerCase.runner, RunnerCase.py
+
+    def lock(self, line: str) -> Path:
+        f = self.tmp / "QUIET.lock"  # next to the lab folder (tmp/lab)
+        f.write_text(line + "\n")
+        return f
+
+    def test_a_stale_lab_line_with_a_dead_pid_is_cleared_with_a_log_line(self):
+        r = self.runner()
+        r.lab.root.mkdir(parents=True, exist_ok=True)
+        f = self.lock(f"lab-nightly {rn.utc(time.time() - 4000)} pid=99999999")
+        with unittest.mock.patch.object(winsys, "parent_alive", return_value=False) as alive:
+            self.assertTrue(r.clear_stale_quiet_lock())
+        alive.assert_called_once_with(99999999)
+        self.assertFalse(f.exists())
+        self.assertIn("QUIET.lock: cleared the stale line 'lab-nightly", r.lab.log_path.read_text(encoding="utf-8"))
+        self.assertIn("process 99999999 is gone", r.lab.log_path.read_text(encoding="utf-8"))
+
+    def test_a_line_with_no_pid_that_is_old_is_cleared_and_a_young_one_is_not(self):
+        r = self.runner()
+        r.lab.root.mkdir(parents=True, exist_ok=True)
+        f = self.lock(f"lab-nightly {rn.utc(time.time() - 1500)}")  # under three refreshes: live
+        self.assertFalse(r.clear_stale_quiet_lock())
+        self.assertTrue(f.exists())
+        f = self.lock(f"lab-nightly {rn.utc(time.time() - 3000)}")  # over 3 x 15 minutes
+        self.assertTrue(r.clear_stale_quiet_lock())
+        self.assertFalse(f.exists())
+
+    def test_a_live_pid_another_sessions_line_and_a_missing_file_are_left_alone(self):
+        r = self.runner()
+        r.lab.root.mkdir(parents=True, exist_ok=True)
+        old = rn.utc(time.time() - 7200)
+        f = self.lock(f"lab-nightly {old} pid={os.getpid()}")
+        with unittest.mock.patch.object(winsys, "parent_alive", return_value=True):
+            self.assertFalse(r.clear_stale_quiet_lock())
+        self.assertTrue(f.exists())
+        f = self.lock(f"w3-blocks {old}")
+        self.assertFalse(r.clear_stale_quiet_lock())
+        self.assertTrue(f.exists())
+        f.unlink()
+        self.assertFalse(r.clear_stale_quiet_lock())
+
+    def test_the_pick_clears_the_stale_line_first(self):
+        r = self.runner("--once", "presort")
+        f = self.lock(f"lab-nightly {rn.utc(time.time() - 4000)} pid=99999999")
+        with unittest.mock.patch.object(winsys, "parent_alive", return_value=False), \
+                unittest.mock.patch.object(r, "choose", return_value=("", None, "test: nothing")):
+            r.one_pass()
+        self.assertFalse(f.exists())
+
+    def test_a_restarted_command_appends_to_its_log_after_a_marker_and_others_start_afresh(self):
+        pl.PLANS["fights"] = lambda c: [pl.Step("a", [self.py("keep", "print('attempt', open('n.txt').read())", append_log=True),
+                                                      self.py("fresh", "print('attempt', open('n.txt').read())")], mode="serial")]
+        r = self.runner()
+        run = r.new_run("fights", "abc")
+        for attempt in ("one", "two"):
+            (r.lab.root / "n.txt").write_text(attempt)
+            again = rn.Run.load(run.dir)
+            again.rec("a")["status"] = "pending"
+            again.data["done"] = False
+            again.save()
+            for name in ("keep", "fresh"):
+                (run.dir / "logs" / f"{name}.rc").unlink(missing_ok=True)
+            (run.dir / "done.rc").unlink(missing_ok=True)
+            self.assertIsNone(r.execute(again))
+        keep = (run.dir / "logs" / "keep.log").read_text(encoding="utf-8")
+        fresh = (run.dir / "logs" / "fresh.log").read_text(encoding="utf-8")
+        self.assertIn("attempt one", keep)
+        self.assertIn("attempt two", keep)
+        self.assertEqual(1, keep.count("---- restart"))
+        self.assertLess(keep.index("attempt one"), keep.index("---- restart"))
+        self.assertLess(keep.index("---- restart"), keep.index("attempt two"))
+        self.assertNotIn("attempt one", fresh)
+        self.assertNotIn("---- restart", fresh)

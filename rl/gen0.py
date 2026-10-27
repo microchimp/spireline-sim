@@ -14,6 +14,7 @@ The pure parts (seed derivation, Wilson and paired intervals, the result writer)
 from __future__ import annotations
 
 import argparse
+import collections
 import dataclasses
 import hashlib
 import json
@@ -30,11 +31,14 @@ ROOT = Path(__file__).resolve().parents[1]
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 AGENT_SEED = 20261023  # the base agent seed of generation 0's blocks (an agent seed, never a game seed)
 RUN_WALL_CAP_S = 1800.0
+RUN_TIMEOUT_S = RUN_WALL_CAP_S + 300.0  # the dispatcher's wall limit per run: the in-run cap, then 5 minutes for its last decision to end
+WORKER_RECYCLE = 20  # a worker process is replaced after this many finished runs (between runs only)
 Z = 1.959964
 
 # ------------------------------------------------------------------ seeds
 
 import run_fields  # noqa: E402 -- rl/ is on sys.path whenever gen0 is imported
+import spawn_pool  # noqa: E402
 
 def e_block(name: str, n: int) -> list[str]:
     """`n` game seeds, a pure function of the block's name: sha256("<name>:<i>") mapped onto 10 characters."""
@@ -102,10 +106,13 @@ def engine_block(runs: list[dict]) -> dict:
     dec = sum(r["decisions"] for r in runs)
     wall = sum(r["wall"] for r in runs)
     lo, hi = wilson(wins, n)
+    lost = sum(1 for r in runs if r.get("lost"))
     out = {"runs": n, "wins": wins, "win_rate": wins / n if n else None, "win_lo": lo, "win_hi": hi,
            "floor": mean_ci([r["floor"] for r in runs]), "crashes": crashes, "decisions": dec,
            "decisions_per_s_per_proc": dec / wall if wall else None, "run_wall_s": wall,
            "ai_state_assumed": sum(r.get("ai_state_assumed") or 0 for r in runs)}
+    if lost:
+        out["lost"] = lost  # seeds whose worker died or timed out on every attempt: counted as losses on floor 0
     fields = run_fields.aggregate(runs)  # mean boss damage, card choices by floor, skip rate: only for rows that carry them
     if fields:
         out["run_fields"] = fields
@@ -366,11 +373,65 @@ def _run_safe(seed: str, ix: int, sims: int | str, ascension: int, agent=None, r
                 "boss_damage": 0.0}  # a crash is a loss on floor 0: the boss was not reached
 
 
+def lost_row(seed: str, ix: int, status: str, reason: str, attempts: int, wall: float) -> dict:
+    """The row of a seed whose worker died or timed out on every attempt: a loss on floor 0 (like a crash), marked `lost`."""
+    return {"seed": seed, "ix": ix, "win": False, "floor": 0, "end": "lost", "decisions": 0, "wall": wall, "ai_state_assumed": 0,
+            "lost": True, "lost_status": status, "lost_reason": reason[:200], "attempts": attempts, "boss_damage": 0.0}
+
+
+def resume_rows(out: Path, stamp: dict, seeds: list[str]) -> list[dict]:
+    """The rows of `out/runs.jsonl` that a rerun of the block keeps: one per seed of `seeds` (the first), a half-written last line
+    dropped. The file is rewritten with just those rows. `out/resume.json` holds the block's identity (agent, config, ascension,
+    character, engine): rows written under another identity are not kept, and the file starts empty. A file with no identity
+    (written before this existed) is kept when all its seeds belong to `seeds`."""
+    out.mkdir(parents=True, exist_ok=True)
+    runs_file, stamp_file = out / "runs.jsonl", out / "resume.json"
+    want = json.loads(json.dumps(stamp))
+    kept: list[dict] = []
+    if runs_file.is_file():
+        try:
+            have = json.loads(stamp_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            have = None
+        raw = []
+        for line in runs_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue  # a line cut by the stop
+            if isinstance(r, dict) and r.get("seed") is not None:
+                raw.append(r)
+        wanted = set(seeds)
+        if have == want or (have is None and raw and all(r["seed"] in wanted for r in raw)):
+            seen: set[str] = set()
+            for r in raw:
+                if r["seed"] in wanted and r["seed"] not in seen:
+                    seen.add(r["seed"])
+                    kept.append(r)
+        elif raw:
+            print("resume: runs.jsonl was written for another agent or setting; it starts empty", file=sys.stderr, flush=True)
+    tmp = runs_file.with_name("runs.jsonl.tmp")
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in kept), encoding="utf-8")
+    os.replace(tmp, runs_file)
+    stamp_file.write_text(json.dumps(want), encoding="utf-8")
+    return kept
+
+
 def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascension: int = 10, character: str = "IRONCLAD",
               block_min: float | None = None, start_ix: int = 0, agent=None, record: bool = False,
-              prior_server=None, server_procs: int | None = None, latency_p99_ms: float = 20.0) -> dict:
-    """Play the seeds on a spawn pool of `procs` single-emulator processes. With `block_min`, stop starting runs after that
-    many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended to runs.jsonl.
+              prior_server=None, server_procs: int | None = None, latency_p99_ms: float = 20.0,
+              run_timeout_s: float | None = RUN_TIMEOUT_S, recycle: int = WORKER_RECYCLE, resume: bool = False,
+              resume_key: dict | None = None, task=None, initializer=_init_worker) -> dict:
+    """Play the seeds on a spawn pool of `procs` single-emulator processes (`spawn_pool.SupervisedPool`). With `block_min`, stop
+    starting runs after that many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended
+    to runs.jsonl.
+
+    No seed is lost with its worker. A run that is still going after `run_timeout_s` (None: no limit) has its worker killed; a
+    worker that exits mid-run is replaced; either way the seed is run again once, then written as a row with `end: "lost"`,
+    `lost: true`, floor 0 and no win, so the block always ends with one row per seed. A worker is replaced after `recycle`
+    runs, only between runs. With `resume`, runs.jsonl is kept (see `resume_rows`) and its seeds are not played again; the
+    summary then has `resumed_rows`. `resume_key` adds to the identity a resumed file must match (the engine). `task` and
+    `initializer` are what a worker runs and starts with (tests replace them; both must be importable in the worker).
     With `record`, the finished runs' records and combat samples go to `out/shards` (`gen_loop.ShardSink`), tagged with the
     agent's generation.
 
@@ -386,6 +447,7 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     _setup()
     import gen_loop  # noqa: PLC0415
 
+    task = task or _run_safe  # looked up now, so a test can replace gen0._run_safe
     agent = agent or gen_loop.Agent()
     nprocs = server_procs if (prior_server is not None and server_procs) else procs
     if prior_server is not None:
@@ -404,76 +466,119 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     t0 = time.time()
     deadline = t0 + block_min * 60 if block_min else None
     runs_file = out / "runs.jsonl"
-    runs_file.write_text("", encoding="utf-8")
+    stamp = {"agent": agent.describe(), "sims": sims, "ascension": ascension, "character": character, **(resume_key or {})}
+    held = resume_rows(out, stamp, seeds) if resume else []  # the rows a rerun keeps (and writes back); else the file starts empty
+    if not resume:
+        runs_file.write_text("", encoding="utf-8")
+    rows.extend(held)
     gave_up = False
-    todo = list(enumerate(seeds, start_ix))  # (index in the stream, seed)
+    held_seeds = {r["seed"] for r in held}
+    todo = [(ix, s) for ix, s in enumerate(seeds, start_ix) if s not in held_seeds]  # (index in the stream, seed)
+    if held:
+        print(f"resume: {runs_file.name} holds {len(held)} rows; those {len(held)} seeds are not played again", file=sys.stderr, flush=True)
     resumed = None
     if sink is not None and sink.done:  # a resumed block: the job replays its stream; the seeds its shards hold are not played again
+        before = len(todo)
         todo = [(ix, s) for ix, s in todo if s not in sink.done]
-        resumed = {"runs_held": len(sink.done), "seeds_skipped": len(seeds) - len(todo)}
+        resumed = {"runs_held": len(sink.done), "seeds_skipped": before - len(todo)}
         print(f"resume: the shards hold {resumed['runs_held']} runs; {resumed['seeds_skipped']} of the {len(seeds)} seeds are not "
               "played again", file=sys.stderr, flush=True)
     pool_shrunk = None
-    later_pools: list = []  # the pool that replaces the first one when the block shrinks (the first one is the `with`'s)
+    pool = None
+    attempts: dict[int, int] = {}  # run index -> failed attempts so far (a died or timed-out worker)
+    retry: collections.deque = collections.deque()  # (index, seed) to run again, before any new seed
+    counts = {"retried": 0, "lost": 0, "fails_in_a_row": 0}
+    fail_limit = max(8, 2 * nprocs)  # this many failed attempts with no success between: the pool itself is broken, not the seeds
+    new_decisions = 0
+    pools_stats: list[dict] = []
+
+    def new_pool(width: int) -> spawn_pool.SupervisedPool:
+        return spawn_pool.SupervisedPool(ctx, width, initializer=initializer, recycle=recycle, run_timeout_s=run_timeout_s)
+
     try:
-        with ctx.Pool(nprocs, initializer=_init_worker, maxtasksperchild=20) as pool, open(runs_file, "a", encoding="utf-8") as fh:
-            pending: list = []
+        pool = new_pool(nprocs)
+        with open(runs_file, "a", encoding="utf-8") as fh:
+
+            def write_row(r: dict) -> None:
+                nonlocal new_decisions
+                shard = r.pop("_shard", None)
+                if sink is not None and shard is not None:
+                    sink.add(shard["record"], shard["samples"])
+                rows.append(r)
+                new_decisions += r.get("decisions") or 0
+                fh.write(json.dumps(r) + "\n")
+                fh.flush()
+
+            def settle(d: spawn_pool.Done) -> None:
+                """One task's end: the row of a finished run; a died or timed-out one is run again once, then written as `lost`."""
+                ix, seed = d.key
+                if d.status == "ok":
+                    counts["fails_in_a_row"] = 0
+                    write_row(d.value)
+                    return
+                counts["fails_in_a_row"] += 1
+                attempts[ix] = attempts.get(ix, 0) + 1
+                again = attempts[ix] < 2
+                print(f"run {seed} (index {ix}): {d.status} after {d.wall_s:g} s ({d.value}); "
+                      + ("run again" if again else "written as lost"), file=sys.stderr, flush=True)
+                if again:
+                    counts["retried"] += 1
+                    retry.append((ix, seed))
+                else:
+                    counts["lost"] += 1
+                    write_row(lost_row(seed, ix, d.status, str(d.value), attempts[ix], d.wall_s))
+                if counts["fails_in_a_row"] >= fail_limit:
+                    raise RuntimeError(f"the pool failed {fail_limit} attempts in a row with no run finishing between: last {d.status}: "
+                                       f"{d.value}; stopped instead of writing lost rows for the rest of the block")
+
             nxt = 0
-
-            def harvest() -> None:
-                """Write the finished runs out and keep the ones still in flight."""
-                nonlocal pending
-                still = []
-                for p in pending:
-                    if p.ready():
-                        r = p.get()
-                        shard = r.pop("_shard", None)
-                        if sink is not None and shard is not None:
-                            sink.add(shard["record"], shard["samples"])
-                        rows.append(r)
-                        fh.write(json.dumps(r) + "\n")
-                        fh.flush()
-                    else:
-                        still.append(p)
-                pending = still
-
-            while nxt < len(todo) or pending:
+            while nxt < len(todo) or retry or pool.inflight():
                 if prior_server is not None and not gave_up and not prior_server.alive() and not prior_server.restart_once():
                     gave_up = True  # the second death: drain, then go on with plain CPU-path workers
                     print("prior-server: the server is gone and cannot be restarted; the block drains its runs in flight and goes "
                           f"on, on {procs} CPU-path workers", file=sys.stderr, flush=True)
                     at_run, t_drain = len(rows), time.time()
-                    while pending:  # no new tasks; the workers in flight fall back under prior_client's memory floor
-                        harvest()
-                        if pending:
-                            time.sleep(0.5)
+                    while pool.inflight():  # no new tasks; the workers in flight fall back under prior_client's memory floor
+                        for d in pool.collect():
+                            settle(d)
+                        if pool.inflight():
+                            pool.wait(0.5)
                     drained_s = round(time.time() - t_drain, 1)
+                    pools_stats.append(pool.stats)
                     pool.terminate()
-                    pool.join()
                     agent = dataclasses.replace(agent, prior_server=None, prior_authkey=None)
                     pool_shrunk = {"from": nprocs, "to": procs, "at_run": at_run, "drained_s": drained_s}
                     nprocs = procs
-                    pool = ctx.Pool(nprocs, initializer=_init_worker, maxtasksperchild=20)
-                    later_pools.append(pool)
-                while nxt < len(todo) and len(pending) < nprocs and (deadline is None or time.time() < deadline):
-                    ix, seed = todo[nxt]
-                    pending.append(pool.apply_async(_run_safe, (seed, ix, sims, ascension, agent, record, character)))
-                    nxt += 1
+                    pool = new_pool(nprocs)
+                while pool.free() and (retry or (nxt < len(todo) and (deadline is None or time.time() < deadline))):
+                    if retry:
+                        ix, seed = retry.popleft()
+                    else:
+                        ix, seed = todo[nxt]
+                        nxt += 1
+                    pool.submit((ix, seed), task, (seed, ix, sims, ascension, agent, record, character))
                 if deadline is not None and time.time() >= deadline:
                     nxt = len(todo)
-                harvest()
-                time.sleep(0.5)
+                for d in pool.collect():
+                    settle(d)
+                pool.wait(0.5)
+        pools_stats.append(pool.stats)
     finally:
-        for later in later_pools:
-            later.terminate()  # what leaving a `with` pool does
+        if pool is not None:
+            pool.terminate()  # a pool that ended its work has no live worker left to stop; one that failed does
         if prior_server is not None:
             prior_server.stop()  # close its stdin, wait 5 s, terminate
     wall = time.time() - t0
     shard_doc = sink.close() if sink is not None else None
+    pool_stats = {k: sum(st[k] for st in pools_stats) for k in pools_stats[0]} if pools_stats else {}
     summary = {"sims": sims, "procs": procs, "ascension": ascension, "character": character, "agent_seed": AGENT_SEED,
                "wall_s": round(wall, 1),
                "config": cfg0.name if cfg0 else (sims if isinstance(sims, str) else f"flat-{sims}"), "agent": agent.describe(),
-               **engine_block(rows), "decisions_per_s": round(sum(r["decisions"] for r in rows) / wall, 2) if wall else None}
+               **engine_block(rows), "decisions_per_s": round(new_decisions / wall, 2) if wall else None}
+    summary["run_timeout_s"] = run_timeout_s
+    summary["pool"] = {**pool_stats, "retried": counts["retried"], "lost": counts["lost"]}
+    if held:
+        summary["resumed_rows"] = len(held)
     if shard_doc is not None:
         summary["shards"] = {"runs": shard_doc["runs"], "samples": shard_doc["samples"], "generation": shard_doc["generation"]}
     if resumed is not None:
@@ -702,7 +807,11 @@ def play_emu_arm(a: argparse.Namespace, agent, out: Path) -> dict:
     engine = getattr(a, "engine", "old")
     select_engine(engine)  # the arm's spawn workers load the library on this engine
     seeds = load_seeds(a.seeds_file)[: a.runs]
-    summ = run_block(seeds, a.config or a.sims, a.procs, out, ascension=a.ascension, character=a.character, agent=agent)
+    # resume: a stopped arm is rerun into the same folder and keeps its finished seeds (the identity file guards the agent, the
+    # config and the engine); run_timeout_s None (not given) is the dispatcher's default, the run cap plus 5 minutes
+    timeout = getattr(a, "run_timeout_s", None)
+    summ = run_block(seeds, a.config or a.sims, a.procs, out, ascension=a.ascension, character=a.character, agent=agent, resume=True,
+                     resume_key={"engine": engine}, **({"run_timeout_s": timeout} if timeout else {}))
     if engine != "old":  # an old arm's summary stays as every self-play block writes it
         summ = {**summ, "engine": engine}
         (out / "summary.json").write_text(json.dumps(summ, indent=1), encoding="utf-8")
@@ -797,6 +906,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--ascension", type=int, default=10)
     e.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     e.add_argument("--block-min", type=float, default=None)
+    e.add_argument("--run-timeout-s", type=float, default=RUN_TIMEOUT_S,
+                   help="a run still going after this many seconds has its worker killed and is run once more, then written as lost")
     e.add_argument("--out", required=True)
     e.add_argument("--lib", help="directory of the native library (STS2_LIB_PATH)")
     e.add_argument("--gen-dir", help="a generation directory (or a current.json) whose combat prior and macro policy play")
@@ -876,6 +987,9 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--ascension", type=int, default=10)
     sc.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     sc.add_argument("--stop-after-h", type=float, default=3.5)
+    sc.add_argument("--run-timeout-s", type=float, default=None,
+                    help="the emulator arm's wall limit per run (default: the run cap plus 5 minutes); past it the worker is killed, "
+                    "the seed run once more, then written as lost")
     sc.add_argument("--lib")
     sc.add_argument("--emu-dir", help="an emulator arm to pair with, used only when its summary.json names the agent scored (--gen-dir); otherwise the arm is played first into OUT-emu")
     sc.add_argument("--only", help="play only these seeds of the file (comma-separated), each keeping its place in the full file as its "
@@ -944,10 +1058,11 @@ def main(argv: list[str] | None = None) -> int:
         opts = prior_launch.ServerOpts.from_args(a)
         if opts.mode == "off":
             summ = run_block(seeds, a.config or a.sims, a.procs, Path(a.out), ascension=a.ascension, character=a.character,
-                             block_min=a.block_min, agent=agent, record=a.record)
+                             block_min=a.block_min, agent=agent, record=a.record, run_timeout_s=a.run_timeout_s)
         else:
             summ = run_block_served(seeds, a.config or a.sims, a.procs, Path(a.out), opts=opts, ascension=a.ascension,
-                                    character=a.character, block_min=a.block_min, agent=agent, record=a.record)
+                                    character=a.character, block_min=a.block_min, agent=agent, record=a.record,
+                                    run_timeout_s=a.run_timeout_s)
         if a.record and a.lab and a.shards_root:
             gen_loop.mark_ready(Path(a.lab), agent.generation if agent else 0, Path(a.shards_root), a.budget_runs,
                                 tsv=Path(a.agent_root) / "promotions.tsv" if a.agent_root else None)

@@ -59,6 +59,7 @@ DEFAULTS = {
 FORBIDDEN = ("D:/spireline/src",)  # the reviewed upstream checkout: never a lab, tree or game path
 RESUME_HOURS = 24.0
 CHILD_ENV = {"PYTHONDONTWRITEBYTECODE": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1", "PYTHONIOENCODING": "utf-8"}
+STALE_LOCK_S = 3 * 900.0  # a `lab-*` QUIET.lock line is refreshed every 15 minutes; three missed refreshes make it stale
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_CONSOLE = 0x00000010
 
@@ -115,6 +116,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--fork", default=str(ROOT), help="the fork's main checkout (read only: its local branch names the sha)")
     ap.add_argument("--branch", default="main")
     ap.add_argument("--backlog-dir", default=d["backlog_dir"], help="holds main.lock, backlog-*.json, packets/")
+    ap.add_argument("--quiet-lock", default=None, help="the shared QUIET.lock (default: next to the lab folder)")
     ap.add_argument("--backlog", default=None, help="backlog json to use (default: the newest backlog-*.json)")
     ap.add_argument("--codex", default=d["codex"])
     ap.add_argument("--decompiled", default=d["decompiled"])
@@ -864,14 +866,22 @@ class Runner:
             keep = [p for p in env.get("PATH", "").split(os.pathsep) if p and "usr" + os.sep + "bin" not in p.lower().replace("/", os.sep)]
             env["PATH"] = os.pathsep.join([ctx.expand("{vs_installer}").replace("/", os.sep), *keep])
         logs.mkdir(parents=True, exist_ok=True)
-        out = open(ctx.path(cmd.stdout) if cmd.stdout else logs / f"{cmd.name}.log", "wb")  # noqa: SIM115
+        log_path = ctx.path(cmd.stdout) if cmd.stdout else logs / f"{cmd.name}.log"
+        marker = f"\n# ---- restart {utc()}: the lines above are an earlier attempt's ----\n".encode()
+        had = cmd.append_log and log_path.is_file() and log_path.stat().st_size > 0
+        out = open(log_path, "ab" if cmd.append_log else "wb")  # noqa: SIM115
         files = [out]
+        if had:
+            out.write(marker)
         out.write(f"# {cmd.symbolic()}\n# started {utc()}\n".encode())
         out.flush()
         if cmd.stderr:
             p_err = ctx.path(cmd.stderr)
             p_err.parent.mkdir(parents=True, exist_ok=True)
-            err = open(p_err, "wb")  # noqa: SIM115
+            err_had = cmd.append_log and p_err.is_file() and p_err.stat().st_size > 0
+            err = open(p_err, "ab" if cmd.append_log else "wb")  # noqa: SIM115
+            if err_had:
+                err.write(marker)
             files.append(err)
         else:
             err = subprocess.STDOUT
@@ -1021,12 +1031,48 @@ class Runner:
                 return code
             crashes = 0
 
+    def quiet_lock_path(self) -> Path:
+        return Path(self.a.quiet_lock) if self.a.quiet_lock else self.lab.root.parent / "QUIET.lock"
+
+    def clear_stale_quiet_lock(self) -> bool:
+        """Remove a stale `lab-*` line from the shared QUIET.lock; True when it did. Called between jobs, when this runner (the
+        only one of its lab) has no job running, so a `lab-*` line is a holder that is gone unless its process is alive. Stale:
+        older than STALE_LOCK_S (three refresh intervals; its time, else the file's) and either naming no process or naming one
+        that is gone (`pid=<n>`, written by rl/nightly_real.py). Other sessions' lines (`w3-blocks`, ...) are never touched."""
+        path = self.quiet_lock_path()
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            mtime = path.stat().st_mtime
+        except OSError:
+            return False
+        parts = (text.strip().splitlines() or [""])[0].split()
+        if not parts or not parts[0].startswith("lab-"):
+            return False
+        try:
+            t = dt.datetime.strptime(parts[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC).timestamp() if len(parts) > 1 else mtime
+        except ValueError:
+            t = mtime
+        age = time.time() - t
+        pid = next((int(x[4:]) for x in parts[2:] if x.startswith("pid=") and x[4:].isdigit()), None)
+        if age < STALE_LOCK_S or (pid is not None and winsys.parent_alive(pid)):
+            return False
+        try:
+            if path.read_text(encoding="utf-8", errors="replace") != text:
+                return False  # rewritten while we looked: it is live
+            path.unlink()
+        except OSError:
+            return False
+        self.log(f"QUIET.lock: cleared the stale line '{' '.join(parts)}' ({age / 60:.0f} min old; "
+                 + (f"process {pid} is gone" if pid is not None else "no process named, none of this lab's jobs is running") + ")")
+        return True
+
     def one_pass(self) -> int | None:
         """Wait out any pause, pick a job, run it. An exit code when the runner should end, else None."""
         a = self.a
         v = self.gate()
         if v:
             return self.leave(v)
+        self.clear_stale_quiet_lock()
         sha = self.main_sha()
         job, run, why = self.choose(sha)
         if not job:

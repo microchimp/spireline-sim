@@ -99,6 +99,7 @@ class Cmd:
     post: Callable[[Ctx], str | None] | None = None  # a problem; "HALT: ..." stops the lab (a safety check failed)
     core: bool = False  # real work of its job: a job with no runnable core command is not run at all
     counts: dict[str, int] = dataclasses.field(default_factory=dict)  # added to the lab's counters when it succeeds (fights played)
+    append_log: bool = False  # a restarted command adds to its log (after a restart marker line) instead of replacing it
 
     def skip_reason(self, c: Ctx, step: str = "") -> str | None:
         for pre in c.skip:
@@ -640,6 +641,7 @@ def plan_kind(kind: str, c: Ctx) -> list[Step]:
         cmd.pre = _open_score_window
         cmd.after_cleanup = ["{lab}/score/active"]
     if kind == "nightly-real":  # the marker the next pick reads (jobs.nightly_blocked); the driver's own ranking replaces rank_score_real
+        cmd.append_log = True  # the night's story must survive a restart (a stuck first attempt's log was once overwritten)
         cmd.pre = _open_nightly_window
         cmd.after_cleanup = ["{lab}/nightly/active"]
     return [Step(kind, [cmd], mode="serial", required=True)]
