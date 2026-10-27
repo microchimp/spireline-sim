@@ -68,4 +68,67 @@ public class SilverCrucibleTests
         RunRewardGenerator.PopulateCardReward(engine.State);
         Assert.All(engine.State.RewardUpgraded, upgraded => Assert.False(upgraded));
     }
+
+    // ---- Lost Coffer ----------------------------------------------------------------------
+
+    private static RunEngine AtBonesCrucibleThenCoffer(string seed)
+    {
+        var engine = new RunEngine();
+        engine.Reset(seed);
+        engine.State.Phase = RunPhase.Ancient;
+        engine.State.NeowOptions[0] = RunConstants.RelicNeowsBones;
+        // Choose the Bones, then claim the two relics it offers: on this seed the Crucible, then the Coffer.
+        engine.Step(0, -1, out _, out _, out _);
+        engine.Step(0, -1, out _, out _, out _);
+        engine.Step(0, -1, out _, out _, out _);
+        return engine;
+    }
+
+    /// <summary>
+    /// Lost Coffer's card reward is a CardReward like any other: IsCardReward is on, so the Crucible's late hook
+    /// upgrades it and counts a use. It used to be rolled by a path of its own that never asked the hook (run
+    /// referee, W4CHJP64E3: the game's first card of the run was BLOOD_WALL+).
+    /// </summary>
+    [Fact]
+    public void ALostCoffersCardRewardTakesTheCruciblesUse()
+    {
+        var state = AtBonesCrucibleThenCoffer("W4CHJP64E3").State;
+
+        Assert.Contains(state.Relics, relic => relic.DefId == RunConstants.RelicLostCoffer);
+        Assert.True(state.RewardCardPending);
+        Assert.All(state.RewardUpgraded, upgraded => Assert.True(upgraded));
+        Assert.Equal(
+            2,
+            state.Relics.Single(relic => relic.DefId == RunConstants.RelicSilverCrucible).Counter
+        );
+    }
+
+    private static string CoffersOffer(string seed, bool egg)
+    {
+        var engine = new RunEngine();
+        engine.Reset(seed);
+        if (egg)
+        {
+            engine.State.Relics.Add(new RelicInstance(RunConstants.RelicMoltenEgg));
+        }
+
+        RunRewardGenerator.OfferLostCofferRewards(engine.State);
+        var s = engine.State;
+        // The offer, the potion, and the next value of the rewards stream: the draws are part of the contract.
+        return string.Join(",", s.RewardCards)
+            + "|" + string.Join(",", s.RewardUpgraded.Select(u => u ? 1 : 0))
+            + "|" + s.RewardPotion
+            + "|" + s.PlayerRng.Rewards.NextFloat().ToString("R");
+    }
+
+    /// <summary>With no Crucible (and no Wing Charm) the coffer's cards, upgrades, potion and stream position are what they were.</summary>
+    [Theory]
+    [InlineData("RRRR6WR3C4", false, "517,189,50|0,0,0|5|0.41242906")]
+    [InlineData("J09SPL8Y3V", false, "349,238,404|0,0,0|6|0.84741414")]
+    [InlineData("NXV45HW43K", false, "538,155,358|0,0,0|53|0.7359883")]
+    [InlineData("J09SPL8Y3V", true, "349,238,404|1,0,0|6|0.84741414")]
+    public void APlainCoffersOfferIsUnchanged(string seed, bool egg, string expected)
+    {
+        Assert.Equal(expected, CoffersOffer(seed, egg));
+    }
 }

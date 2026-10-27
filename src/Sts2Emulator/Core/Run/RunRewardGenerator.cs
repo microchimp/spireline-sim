@@ -1106,39 +1106,21 @@ public static partial class RunRewardGenerator
     /// </param>
     /// <summary>
     /// A three-card CardReward made with <c>CardCreationSource.Other</c> and RegularEncounter
-    /// odds and no flags -- Lost Coffer's. Per card: the rarity off the BASE odds (only an
-    /// Encounter source reads or grows the rare offset, CardFactory.RollForRarity), the card,
-    /// then the upgrade roll (no NoUpgradeRoll flag): three draws on PlayerRng.Rewards.
+    /// odds and no flags of its own -- Lost Coffer's. A <c>CardReward</c> adds IsCardReward to
+    /// its options, so this is <see cref="CreateForReward" /> like every other set: per card the
+    /// rarity off the BASE odds (only an Encounter source reads or grows the rare offset), the
+    /// card, then the upgrade roll (three draws on PlayerRng.Rewards), and then the hooks over
+    /// the finished set -- Silver Crucible's late upgrade (and its use), the eggs, and Wing
+    /// Charm's one draw off Rng.Niche. The coffer used to roll the cards itself and ask only the
+    /// eggs, so a run holding the Crucible saw plain cards and kept a use the game had spent
+    /// (run referee, W4CHJP64E3: the game's first card of the run was BLOOD_WALL+). The draws on
+    /// the rewards stream are the same as before; only a held Crucible or Wing Charm changes
+    /// anything.
     /// </summary>
     public static CardOffer RollOtherSourceCardOffer(RunState state)
     {
-        // No NoCardPoolModifications flag: ModifyCardRewardCreationOptions widens it the way it
-        // widens a combat reward's.
-        int[] pool = CardRewardPool(
-            state.Character,
-            Effects.RelicEffects.AddsColourlessToCardRewards(state),
-            Effects.RelicEffects.WidensCardRewardsToEveryPool(state),
-            state.Unlocks
-        );
-        var cards = new int[CardRewardSize];
-        var upgraded = new bool[CardRewardSize];
-        var blacklist = new List<int>();
-        for (int i = 0; i < cards.Length; i++)
-        {
-            int rarity = RollCardRarity(
-                state,
-                RegularEncounterCardOdds(state),
-                mutateOffset: false,
-                state.PlayerRng.Rewards,
-                useOffset: false
-            );
-            cards[i] = ChooseCardWithRarity(pool, rarity, blacklist, state.PlayerRng.Rewards);
-            blacklist.Add(cards[i]);
-            upgraded[i] = RollCardUpgrade(state, cards[i], state.PlayerRng.Rewards)
-                || RunNonCombatEffects.UpgradedByEggs(state, new CardInstance(cards[i], Upgraded: false)).Upgraded;
-        }
-
-        return new CardOffer(cards, upgraded);
+        const CardCreationFlags flags = CardCreationFlags.IsCardReward;
+        return CreateForReward(state, CardRewardSize, OwnRewardPool(state, flags), flags);
     }
 
     private const int CardRewardSize = 3;
