@@ -274,5 +274,20 @@ class DriverTest(Tmp):
         self.assertTrue(lock.read_text().startswith("w4-readout"))
 
 
+class StallNumbersTest(Tmp):
+    def test_the_nights_numbers_list_the_stalled_runs(self):
+        rows = [end("A", 20), {**end("B", 4), "streak": {"n": 700, "screen": "event", "action": 0}},
+                {**end("C", 9), "end": "timeout"}, {"ev": "net", "w": 0, "conns": []}]
+        (self.tmp / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", {"label": "g3", "generation": 3, "role": "incumbent"}, "N-2026-10-25", 3, "core2")
+        self.assertEqual(["B", "C"], [s["seed"] for s in n["stalls"]])
+        self.assertEqual({"n": 700, "screen": "event", "action": 0}, n["stalls"][0]["streak"])
+
+    def test_a_clean_night_has_an_empty_list(self):
+        (self.tmp / "runs.jsonl").write_text(json.dumps(end("A", 20)))
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", {"label": "g3", "generation": 3, "role": "incumbent"}, "N-2026-10-25", 1, "core2")
+        self.assertEqual([], n["stalls"])
+
+
 if __name__ == "__main__":
     unittest.main()

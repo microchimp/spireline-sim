@@ -591,6 +591,18 @@ def _fields_row(ls: Any) -> dict:
     return row
 
 
+def _row_extra(env, restarts: int, timed: _Timed | None = None) -> dict:
+    """What an end or crash row of a play worker adds: `t_end` (epoch seconds, to join to the machine sampler's lines), `boot_s` (the
+    game process's start-to-ready seconds, for the process that played the run), `restarts` (how often this worker has restarted its
+    game so far) and `streak` (the run's longest identical (screen, action) run, see _Timed)."""
+    row: dict = {"t_end": round(time.time(), 1), "restarts": restarts}
+    if env is not None:
+        row["boot_s"] = round(env.boot_s, 1) if isinstance(getattr(env, "boot_s", None), (int, float)) else None
+    if timed is not None:
+        row["streak"] = dict(timed.streak)
+    return row
+
+
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
                 agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD",
                 recycle: int = 0) -> None:
@@ -614,17 +626,18 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
             try:
                 env = GameEnv(Path(game), Path(out) / "scratch" / f"p{wid:02d}r{restarts}", install=False)
             except Exception as e:  # boot failure
-                q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(e)[:300]})
+                q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(e)[:300], **_row_extra(None, restarts)})
                 restarts += 1
                 continue
         runs_here += 1
         t0 = time.time()
+        timed = _Timed(env, step_timeout, character)
         try:
-            m, ls = lockstep.play_run(_Timed(env, step_timeout, character), seed, ascension=ascension, sims=sims,
+            m, ls = lockstep.play_run(timed, seed, ascension=ascension, sims=sims,
                                  agent_seed=[agent_seed, run_ix], character=character)
             ev = {"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
-                  "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **_fields_row(ls)}
+                  "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **_fields_row(ls), **_row_extra(env, restarts, timed)}
             if m.get("stale"):
                 q.put(ev)
                 q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
@@ -632,13 +645,13 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                 env, restarts = None, restarts + 1
                 continue
         except (TimeoutError, GameDied, ValueError) as e:
-            ev = {"ev": "crash", "w": wid, "seed": seed, "error": f"{type(e).__name__}: {e}"[:300], "s": round(time.time() - t0, 1), "agent_seed": [agent_seed, run_ix],
+            ev = {"ev": "crash", "w": wid, "seed": seed, "error": f"{type(e).__name__}: {e}"[:300], "s": round(time.time() - t0, 1), "agent_seed": [agent_seed, run_ix], **_row_extra(env, restarts, timed),
                   "divergences": getattr(getattr(e, "lockstep", None), "log", None) and e.lockstep.log.records or []}
             env.close()
             env, restarts = None, restarts + 1
         except Exception as e:  # noqa: BLE001 -- an agent/emulator bug is a crash of that run, reported
             ev = {"ev": "crash", "w": wid, "seed": seed, "where": "agent", "error": f"{type(e).__name__}: {e}"[:300],
-                  "s": round(time.time() - t0, 1), "agent_seed": [agent_seed, run_ix],
+                  "s": round(time.time() - t0, 1), "agent_seed": [agent_seed, run_ix], **_row_extra(env, restarts, timed),
                   "divergences": getattr(getattr(e, "lockstep", None), "log", None) and e.lockstep.log.records or []}
             env.close()  # the game is mid-run; a fresh one for the next seed
             env, restarts = None, restarts + 1
@@ -650,18 +663,28 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
 
 
 class _Timed:
-    """A GameEnv whose reset and step carry the play mode's step timeout."""
+    """A GameEnv whose reset and step carry the play mode's step timeout. It also counts, for the run it plays, the longest run of
+    identical consecutive (screen kind, action) pairs: a run-layer loop that answers one screen the same way again and again shows as
+    a streak of hundreds where a normal run has a handful."""
 
     def __init__(self, env, timeout, character: str = "IRONCLAD"):
         self.env, self.timeout, self.character = env, timeout, character
+        self._pair, self._n = None, 0
+        self.streak: dict = {"n": 0, "screen": None, "action": None}
 
     def reset(self, *a, **k):
         k.setdefault("character", self.character)
         k.setdefault("extra_actions", True)  # play runs in lockstep with the extra actions on
         k.setdefault("full_select", True)  # and with fight card screens at their real min..max (driver/Selector.cs)
+        self._pair, self._n, self.streak = None, 0, {"n": 0, "screen": None, "action": None}
         return self.env.reset(*a, timeout=self.timeout, **k)
 
     def step(self, a):
+        pair = ((getattr(self.env, "last", None) or {}).get("kind"), int(a))  # the screen this action answers, and the action
+        self._n = self._n + 1 if pair == self._pair else 1
+        self._pair = pair
+        if self._n > self.streak["n"]:
+            self.streak = {"n": self._n, "screen": pair[0], "action": pair[1]}
         return self.env.step(a, timeout=self.timeout)
 
 

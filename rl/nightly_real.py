@@ -217,11 +217,14 @@ def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: 
     summ = json.loads((folder / "summary.json").read_text(encoding="utf-8")) if (folder / "summary.json").is_file() else {}
     boss = sum(bool(gen_loop.boss_kill(r)) for r in rows)
     mean = t["floor"]["mean"]
+    from tools.lab import rank  # noqa: PLC0415
+
+    stalls = rank.stalls_of(folder / "runs.jsonl")  # timeouts and runs that answered one screen the same way over 50 times
     return {"date": date, "agent": agent["label"], "generation": agent["generation"], "role": agent["role"], "seed_block": seed_block,
             "engine": engine, "runs_planned": planned, "runs": t["runs"], "wins": t["wins"], "win_rate": t["win_rate"],
             "mean_floor": None if mean is None else round(mean, 3), "boss_kills": boss,
             "boss_kill_rate": boss / t["runs"] if t["runs"] else None, "crashes": t["crashes"],
-            "divergence_rate": summ.get("divergence_rate"), "diverged_decisions": summ.get("diverged_decisions"),
+            "stalls": stalls, "divergence_rate": summ.get("divergence_rate"), "diverged_decisions": summ.get("diverged_decisions"),
             "reanchors": summ.get("reanchors"), "reanchor_failed": summ.get("reanchor_failed"), "wall_s": summ.get("wall_s"),
             "counted": "a crashed run is a loss: floor 0, no win, no boss kill"}
 
