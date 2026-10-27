@@ -818,6 +818,40 @@ def play_emu_arm(a: argparse.Namespace, agent, out: Path) -> dict:
     return summ
 
 
+GPU_OK_FILE = "D:/spireline/referee/GPU_OK"  # the lines of the lanes that allow a fit on the GPU beside the real-game arm
+
+
+def gpu_ok_add(path: str | Path, tag: str) -> None:
+    """Put the line `tag` first in the file `path` (created if absent): the other lines stay, an older line equal to `tag` goes.
+    Best effort: a file that cannot be written costs the GPU lane its window, never the block."""
+    p = Path(path)
+    try:
+        have = p.read_text(encoding="utf-8").splitlines() if p.is_file() else []
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text("".join(x + "\n" for x in [tag, *(h for h in have if h.strip() and h.strip() != tag)]), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError as e:
+        print(f"gpu ok: {p.name} not written ({type(e).__name__})", file=sys.stderr, flush=True)
+
+
+def gpu_ok_remove(path: str | Path, tag: str) -> None:
+    """Remove the lines equal to `tag` from the file `path`, the other lines kept; the file is deleted when nothing else is left in it."""
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return
+        rest = [h for h in p.read_text(encoding="utf-8").splitlines() if h.strip() and h.strip() != tag]
+        if not rest:
+            p.unlink()
+            return
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text("".join(x + "\n" for x in rest), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError as e:
+        print(f"gpu ok: {p.name} not cleaned ({type(e).__name__})", file=sys.stderr, flush=True)
+
+
 def score_real(a: argparse.Namespace) -> int:
     """The real-game block: envproto `play` (lockstep on) over the seed block, then result.json with the yield keys.
 
@@ -827,7 +861,10 @@ def score_real(a: argparse.Namespace) -> int:
 
     With `resume` (a stopped block rerun into the same folder) the folder is left as it is and envproto play gets `--resume` and the
     agent's description for its identity file: it keeps the finished rows and plays the missing seeds, so the summary, result.json and
-    compare.json below are computed over every row of the block. The emulator arm resumes in either case (play_emu_arm)."""
+    compare.json below are computed over every row of the block. The emulator arm resumes in either case (play_emu_arm).
+
+    With `gpu_ok_tag` the line TAG is first in the GPU_OK file (`gpu_ok_file`) exactly while the game's side plays: written after the
+    emulator arm has returned (the arm plays through the prior server on the GPU) and removed when the subprocess ends, however it ends."""
     import subprocess  # noqa: PLC0415
 
     out = Path(a.out)
@@ -863,7 +900,14 @@ def score_real(a: argparse.Namespace) -> int:
         cmd += ["--only", only]
     if getattr(a, "resume", False):
         cmd += ["--resume", "--agent-identity", json.dumps(agent.describe())]
-    rc = subprocess.run(cmd, env=env, check=False).returncode
+    tag, gpu_file = getattr(a, "gpu_ok_tag", None), getattr(a, "gpu_ok_file", None) or GPU_OK_FILE
+    if tag:
+        gpu_ok_add(gpu_file, tag)
+    try:
+        rc = subprocess.run(cmd, env=env, check=False).returncode
+    finally:
+        if tag:
+            gpu_ok_remove(gpu_file, tag)
     rows = real_runs(out / "runs.jsonl") if (out / "runs.jsonl").exists() else []
     summ = json.loads((out / "summary.json").read_text(encoding="utf-8")) if (out / "summary.json").exists() else {}
     res = result_json(rows, float(summ.get("wall_s") or 0.0)) if rows else {"runs": 0}
@@ -1005,6 +1049,10 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--engine", choices=("old", "core2"), default="old",
                     help="the emulator's engine, for the lockstep and the emulator arm (docs/rebuild/NATIVE_KERNEL.md); default old")
     sc.add_argument("--recycle", type=int, default=0, help="restart each game process after this many runs (0: never)")
+    sc.add_argument("--gpu-ok-tag", default=None,
+                    help="while the game's side plays (never during the emulator arm) keep this line first in the GPU_OK file: "
+                    "the GPU lane may run fits beside it; removed when the play ends")
+    sc.add_argument("--gpu-ok-file", default=GPU_OK_FILE, help="the file --gpu-ok-tag writes to")
     sc.add_argument("--resume", action="store_true",
                     help="a stopped block rerun into OUT keeps the real game's finished rows (envproto play --resume) and plays the "
                     "seeds it has no row for; the emulator arm resumes either way")

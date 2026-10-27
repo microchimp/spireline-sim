@@ -200,5 +200,72 @@ class ScoreResumeTest(unittest.TestCase):
         self.assertFalse(gen0.build_parser().parse_args(base).resume)
 
 
+class GpuOkTest(unittest.TestCase):
+    """The GPU lane's window: `score --gpu-ok-tag TAG` keeps the line TAG first in the GPU_OK file exactly while the game's side
+    plays (never during the emulator arm) and removes it however the play ends; without the option nothing is touched."""
+
+    def run_score(self, tag, initial, fail=False, **extra):
+        import shutil
+        from types import SimpleNamespace
+        from unittest import mock
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        gpu = tmp / "GPU_OK"
+        if initial is not None:
+            gpu.write_text(initial, encoding="utf-8")
+        read = lambda: gpu.read_text(encoding="utf-8") if gpu.is_file() else None  # noqa: E731
+        self.gpu, self.during_arm, self.during_play = gpu, [], []
+
+        def fake_arm(*args, **kw):
+            self.during_arm.append(read())
+
+        def fake_run(cmd, **kw):
+            self.during_play.append(read())
+            if fail:
+                raise RuntimeError("the play died")
+            return SimpleNamespace(returncode=0)
+
+        a = SimpleNamespace(out=str(tmp / "real"), game="G", seeds_file="F.json", runs=2, procs=4, sims=60, config="a3-v1", ascension=10,
+                            character="IRONCLAD", stop_after_h=1.0, lib=None, emu_dir=None, gen_dir=None, only=None, gpu_ok_file=str(gpu),
+                            **({"gpu_ok_tag": tag} if tag else {}), **extra)
+        with mock.patch("subprocess.run", fake_run), mock.patch.object(gen0, "play_emu_arm", fake_arm):
+            if fail:
+                with self.assertRaises(RuntimeError):
+                    gen0.score_real(a)
+            else:
+                gen0.score_real(a)
+        return read()
+
+    def test_the_line_is_first_exactly_while_the_play_runs(self):
+        after = self.run_score("lab-nightly", "other-lane\nlab-nightly\n")
+        self.assertEqual(["other-lane\nlab-nightly\n"], self.during_arm)  # not written before the emulator arm has returned
+        self.assertEqual(["lab-nightly\nother-lane\n"], self.during_play)  # first; the older equal line is gone, the other kept
+        self.assertEqual("other-lane\n", after)
+
+    def test_the_line_is_removed_when_the_play_raises(self):
+        after = self.run_score("lab-nightly", "other-lane\n", fail=True)
+        self.assertEqual(["lab-nightly\nother-lane\n"], self.during_play)
+        self.assertEqual("other-lane\n", after)
+
+    def test_an_absent_file_is_created_for_the_play_and_deleted_when_nothing_else_is_in_it(self):
+        after = self.run_score("lab-nightly", None)
+        self.assertEqual(([None], ["lab-nightly\n"], None), (self.during_arm, self.during_play, after))
+        self.assertFalse(self.gpu.exists())
+
+    def test_without_the_option_nothing_is_written(self):
+        after = self.run_score(None, "other-lane\n")
+        self.assertEqual((["other-lane\n"], ["other-lane\n"], "other-lane\n"), (self.during_arm, self.during_play, after))
+        self.assertIsNone(self.run_score(None, None))
+        self.assertEqual(([None], [None]), (self.during_arm, self.during_play))
+
+    def test_the_parser_takes_the_options(self):
+        base = ["score", "--game", "G", "--seeds-file", "F", "--out", "O"]
+        a = gen0.build_parser().parse_args([*base, "--gpu-ok-tag", "lab-nightly", "--gpu-ok-file", "X"])
+        self.assertEqual(("lab-nightly", "X"), (a.gpu_ok_tag, a.gpu_ok_file))
+        b = gen0.build_parser().parse_args(base)
+        self.assertEqual((None, gen0.GPU_OK_FILE), (b.gpu_ok_tag, b.gpu_ok_file))
+
+
 if __name__ == "__main__":
     unittest.main()

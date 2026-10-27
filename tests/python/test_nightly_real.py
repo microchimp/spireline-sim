@@ -178,6 +178,8 @@ class DriverTest(Tmp):
             out = Path(cmd[cmd.index("--out") + 1])
             out.mkdir(parents=True, exist_ok=True)
             self.at_start = {p.name: p.read_text(encoding="utf-8") for p in out.iterdir() if p.is_file()}  # the folder as the block found it
+            gpu = self.tmp / "GPU_OK"
+            self.gpu_at_play = gpu.read_text(encoding="utf-8") if gpu.is_file() else None  # the file as the block's play would find it
             (out / "scratch").mkdir(exist_ok=True)
             (out / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in [end("A", 20), {"ev": "crash", "seed": "B", "s": 1.0}]))
             (out / "divergences.jsonl").write_text("")
@@ -186,7 +188,7 @@ class DriverTest(Tmp):
 
         job = self.tmp / "job"
         argv = ["--lab", str(lab), "--agent-root", str(agent), "--game", "G", "--lib", "L", "--out", str(job), "--runs", "20",
-                *(["--date", date] if date else []), "--quiet-lock", str(lock), *extra]
+                *(["--date", date] if date else []), "--quiet-lock", str(lock), "--gpu-ok-file", str(self.tmp / "GPU_OK"), *extra]
         with unittest.mock.patch.object(nr.subprocess, "run", side_effect=fake_run), \
                 unittest.mock.patch.object(nr.shutil, "rmtree", wraps=nr.shutil.rmtree):
             rc = nr.main(argv)
@@ -224,6 +226,22 @@ class DriverTest(Tmp):
         self.assertIn("--resume", seen[0])
         self.assertEqual((row + "\n", '{"agent_seed": 1}'), (self.at_start["runs.jsonl"], self.at_start["resume.json"]))  # not cleared
         self.assertFalse((lab / "nightly" / "2026-10-25" / "g3" / "scratch").exists())  # the game copies still go after the run
+
+    def test_the_command_carries_the_gpu_tag_and_a_stale_line_is_removed_at_start(self):
+        gpu = self.tmp / "GPU_OK"
+        gpu.write_text("lab-nightly\nw3-blocks 2026-10-28\nlab-nightly\n", encoding="utf-8")  # a killed job's line, and another lane's
+        rc, seen, lab, job, lock = self.run_driver()
+        self.assertEqual("lab-nightly", seen[0][seen[0].index("--gpu-ok-tag") + 1])
+        self.assertEqual(str(gpu), seen[0][seen[0].index("--gpu-ok-file") + 1])
+        self.assertEqual("w3-blocks 2026-10-28\n", self.gpu_at_play)  # gone before the first play (and so before any emulator arm)
+        self.assertEqual("w3-blocks 2026-10-28\n", gpu.read_text(encoding="utf-8"))
+
+    def test_a_stale_line_is_removed_even_when_the_night_is_skipped(self):
+        gpu = self.tmp / "GPU_OK"
+        gpu.write_text("lab-nightly\n", encoding="utf-8")
+        rc, seen, lab, job, lock = self.run_driver(f"w4-readout {nr.utc_now()}", "--wait-h", "0")
+        self.assertEqual((0, []), (rc, seen))
+        self.assertFalse(gpu.exists())  # only that line was in it
 
     def test_a_finished_block_is_not_played_again(self):
         def finished(folder):
