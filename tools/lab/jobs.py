@@ -111,6 +111,32 @@ def score_active(lab: Path) -> bool:
     return a is not None and a < ACTIVE_STALE_H
 
 
+GPU_OK_FILE = "D:/spireline/referee/GPU_OK"  # rl/gen0.py GPU_OK_FILE: the lines of the lanes that allow a GPU fit beside the real-game arm
+CONSENT_TAG = "lab-nightly"  # rl/nightly_real.py TAG: the line a nightly-real job keeps first in GPU_OK while its real-game arm plays
+
+
+def clear_consent(path: str | Path, tag: str = CONSENT_TAG) -> bool:
+    """Remove the lines equal to `tag` from the GPU_OK file `path`, the other lines kept and the file deleted when nothing else is left
+    in it (the rule of gen0.gpu_ok_remove, which the runner does not import). True when a line was removed; best effort."""
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return False
+        have = [h for h in p.read_text(encoding="utf-8").splitlines() if h.strip()]
+        rest = [h for h in have if h.strip() != tag]
+        if len(rest) == len(have):
+            return False
+        if not rest:
+            p.unlink()
+            return True
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text("".join(x + "\n" for x in rest), encoding="utf-8")
+        os.replace(tmp, p)
+        return True
+    except OSError:
+        return False
+
+
 def due(lab: Path, kind: str, every_h: float) -> bool:
     a = _age_h(Path(lab) / kind / "last-ok")
     return a is None or a >= every_h

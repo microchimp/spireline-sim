@@ -489,7 +489,7 @@ class NightlyKindTest(Base):
         self.nothing_else()
         doc = json.loads((self.lab_dir / "jobs.json").read_text(encoding="utf-8"))
         doc["nightly-real"] = {"enabled": True, "cwd": "{lab}", "cmd": self.SEES_ACTIVE + [json.dumps(result or self.RESULT)], "needs": [],
-                               "every_h": 20, **kw}
+                               "every_h": 20, "gpu_ok_file": str(self.tmp / "GPU_OK"), **kw}
         (self.lab_dir / "jobs.json").write_text(json.dumps(doc), encoding="utf-8")
         return self.runner()
 
@@ -556,8 +556,101 @@ class NightlyKindTest(Base):
         self.assertIn("skipped", self.unready())  # tried again after NIGHTLY_RETRY_H, not at once
         self.assertFalse((self.lab_dir.parent / "readiness.json").exists())
 
+    # ---- L3: the consent line is removed whenever a nightly-real job stops
+
+    def gpu(self, text="lab-nightly\nother-lane\n"):
+        p = self.tmp / "GPU_OK"
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_a_finished_job_removes_the_line_and_keeps_the_others(self):
+        gpu = self.gpu()
+        r = self.nightly()
+        r.execute(r.new_run("nightly-real", "abc"))
+        self.assertEqual("other-lane\n", gpu.read_text(encoding="utf-8"))
+
+    def test_the_file_is_deleted_when_the_line_was_alone_in_it(self):
+        gpu = self.gpu("lab-nightly\n")
+        r = self.nightly()
+        r.execute(r.new_run("nightly-real", "abc"))
+        self.assertFalse(gpu.exists())
+
+    def test_a_job_that_fails_removes_it_too(self):
+        gpu = self.gpu()
+        r = self.nightly(cmd=["{python}", "-c", "import sys; sys.exit(3)"])
+        run = r.new_run("nightly-real", "abc")
+        r.execute(run)
+        self.assertEqual("other-lane\n", gpu.read_text(encoding="utf-8"))
+
+    def test_a_job_stopped_by_an_interrupt_removes_it_and_stays_open(self):
+        gpu = self.gpu()
+        r = self.nightly()
+        run = r.new_run("nightly-real", "abc")
+        with unittest.mock.patch.object(r, "_execute", return_value="a verdict"):  # the guards stopped it: no finally in the job ran
+            self.assertEqual("a verdict", r.execute(run))
+        self.assertFalse((run.dir / "done.rc").exists())
+        self.assertEqual("other-lane\n", gpu.read_text(encoding="utf-8"))
+
+    def test_a_job_that_raises_removes_it(self):
+        gpu = self.gpu()
+        r = self.nightly()
+        run = r.new_run("nightly-real", "abc")
+        with unittest.mock.patch.object(r, "_execute", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                r.execute(run)
+        self.assertEqual("other-lane\n", gpu.read_text(encoding="utf-8"))
+
+    def test_a_superseded_job_removes_it(self):
+        gpu = self.gpu()
+        r = self.nightly()
+        run = r.new_run("nightly-real", "abc")  # opened, never finished: the runner was killed with its job object
+        r.choose("zzz")  # main moved: the open job is closed with rc 3
+        self.assertEqual(3, rn.read_rc(run.dir / "done.rc"))
+        self.assertEqual("other-lane\n", gpu.read_text(encoding="utf-8"))
+
+    def test_another_kind_stopping_leaves_the_file_alone(self):
+        gpu = self.gpu()
+        self.config()
+        self.nothing_else()
+        r = self.runner()
+        r.execute(r.new_run("selfplay", "abc"))
+        self.assertEqual("lab-nightly\nother-lane\n", gpu.read_text(encoding="utf-8"))
+
+    def test_the_path_is_the_jobs_configs_else_the_default(self):
+        self.assertEqual("D:/spireline/referee/GPU_OK", jb.GPU_OK_FILE)
+        self.config()
+        self.assertEqual(jb.GPU_OK_FILE, self.runner().gpu_ok_path())
+        r = self.nightly()
+        self.assertEqual(str(self.tmp / "GPU_OK"), r.gpu_ok_path())
+
     def test_the_loop_share_counts_it(self):
         self.assertNotIn("nightly-real", jb.LOOP_KINDS)  # outside the self-play loop share (D29 accounting)
+
+
+class ClearConsentTest(Base):
+    """L3: jobs.clear_consent is the rule of gen0.gpu_ok_remove for the runner (which does not import rl/gen0.py)."""
+
+    CASES = ["lab-nightly\n", "lab-nightly\nother\n", "other\nlab-nightly\nlab-nightly\n", "other\n", "", "lab-nightly\n\n  \nx\n"]
+
+    def test_the_same_files_as_the_drivers_helper(self):
+        sys.path.insert(0, str(ROOT / "rl"))
+        import gen0
+
+        for text in self.CASES:
+            a, b = self.tmp / "a", self.tmp / "b"
+            a.write_text(text, encoding="utf-8")
+            b.write_text(text, encoding="utf-8")
+            removed = jb.clear_consent(a)
+            gen0.gpu_ok_remove(b, "lab-nightly")
+            self.assertEqual(b.exists(), a.exists(), repr(text)) if text.strip() else None
+            if a.exists() and b.exists():
+                self.assertEqual(b.read_text(encoding="utf-8"), a.read_text(encoding="utf-8"), repr(text))
+            self.assertEqual("lab-nightly" in [x.strip() for x in text.splitlines()], removed, repr(text))
+            a.unlink(missing_ok=True)
+            b.unlink(missing_ok=True)
+
+    def test_an_absent_file_is_nothing_to_do(self):
+        self.assertFalse(jb.clear_consent(self.tmp / "none"))
 
 
 if __name__ == "__main__":

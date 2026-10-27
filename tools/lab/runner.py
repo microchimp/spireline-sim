@@ -444,6 +444,7 @@ class Runner:
                 if not a.dry_run:
                     self.record(run, 3)
                     run.finish(3, "superseded: main moved or the job was idle too long")
+                    self.release_nightly_consent(run.job)
                 continue
             return run.job, run, f"resume {run.name}"
         if sha is None:
@@ -662,6 +663,7 @@ class Runner:
         try:
             return self._execute(run)
         finally:
+            self.release_nightly_consent(run.job)  # however the job stopped (finished, interrupted, an exception): its games are gone
             if not (run.dir / "done.rc").exists():  # stopped, not finished: what it used so far is kept for the next stretch
                 self.account(run)
                 run.save()
@@ -695,6 +697,23 @@ class Runner:
         failed_all = bool(core) and "done" not in core and "failed" in core  # every core command that ran failed
         self.finish_job(run, 1 if stopped or failed_all else 0, ctx)
         return None
+
+    def gpu_ok_path(self) -> str:
+        """The GPU_OK file the nightly's consent line is in: `gpu_ok_file` of the nightly-real entry in LAB/jobs.json, else the default."""
+        return str((jobs.load_config(self.lab.root).get("nightly-real") or {}).get("gpu_ok_file") or jobs.GPU_OK_FILE)
+
+    def release_nightly_consent(self, job: str) -> None:
+        """A nightly-real job that stops leaves no `lab-nightly` line in GPU_OK. The driver removes it in a finally, but a job the
+        runner kills (job-object terminate) or loses runs no finally, and the line would stand until the next nightly starts, telling
+        the GPU lane it may fit beside a real-game arm that is not running. Called after every stop of such a job; never fails the job."""
+        if job != "nightly-real":
+            return
+        try:
+            path = self.gpu_ok_path()
+            if jobs.clear_consent(path):
+                self.log(f"GPU_OK: removed the {jobs.CONSENT_TAG} line of the stopped nightly-real job ({Path(path).name})")
+        except Exception:  # noqa: BLE001
+            self.log("GPU_OK not cleaned: " + traceback.format_exc()[-300:])
 
     def collect_outputs(self, run: Run, steps: list[plans.Step], ctx: plans.Ctx) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
