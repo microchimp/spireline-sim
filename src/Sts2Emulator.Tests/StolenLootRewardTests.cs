@@ -103,7 +103,31 @@ public class StolenLootRewardTests
 
         Assert.Empty(engine.State.RewardSpecialCards);
         Assert.Equal(copies, engine.State.Deck.Count(c => c == card));
+        // CardPileCmd.Add appends: the returned card is the deck's last, as the record's
+        // claim puts it (deck 19 -> 20 with the card at the end).
+        Assert.Equal(card, engine.State.Deck[^1]);
         Assert.Equal(gold + 15, engine.State.Gold);
+    }
+
+    /// <summary>
+    /// A fight that is resolved without being played keeps the steal it already holds: the
+    /// native export hands no stolen lists, and a lockstep walk out of a suspended Thieving
+    /// Hopper fight resolves it that way. The lists it did not give are not "none" -- the
+    /// card the Hopper took is out of the deck and its death's row is on the screen.
+    /// </summary>
+    [Fact]
+    public void AResolvedFightKeepsTheStealItHolds()
+    {
+        var engine = AtFirstCombat();
+        var card = engine.State.Deck[^1];
+        int copies = engine.State.Deck.Count(c => c == card);
+        engine.State.ActiveCombat!.StolenCards.Add(card);
+        engine.State.ActiveCombat!.StolenBackCards.Add(card);
+
+        Assert.Equal(0, engine.DebugResolveCombat());
+
+        Assert.Equal(new[] { card }, engine.State.RewardSpecialCards);
+        Assert.Equal(copies - 1, engine.State.Deck.Count(c => c == card));
     }
 
     /// <summary>Left on the screen, the card is gone: the deck lost it at the steal.</summary>
