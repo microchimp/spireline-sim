@@ -251,6 +251,11 @@ order, marks it `running`, runs `<gpu python> rl/vrun_sweep.py run <args> --devi
 with at most 2 CPU threads at BelowNormal, and marks it `done` on exit 0, `interrupted` (attempts + 1, retried in a later
 window) on the stop-file exit code, `failed` on any other exit (not retried; the log has the type and message).
 
+**Tools and wide jobs (PRIOR_SWEEP.md section 6):** a job may carry `"tool"` (`vrun_sweep`, the default, whose args follow `run`; or
+`prior_sweep`, whose args start with its subcommand) and `"cpu_procs"` (default 2). Under the consent branch only jobs with `cpu_procs`
+of 2 or fewer run; a job with more runs only when the window opened by the no-lock branch (reason "quiet..."), and one running when the
+window turns to consent is stopped like a closed window.
+
 **Stopping a fit between epochs:** `vrun_sweep.py run --stop-file PATH` checks the path at every epoch end (the hook that
 logs the S Brier) and at every fit boundary; when it exists the fit raises, the arm's JSON and npz are not written, the
 partial npz of the fit is removed, and the process exits with code 3. The runner touches the stop file within one second of
