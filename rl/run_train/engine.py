@@ -538,12 +538,15 @@ def _card_reward(ctx: _Context) -> _Screen:
 def _rewards(ctx: _Context) -> _Screen:
     """Read the rewards screen (DESIGN.md 1.2).
 
-    Items sit in the order gold, potion, relic, card items (list 6;
-    `WriteRewardActionMask`, `RunEngine.cs:5803-5834`). Gold is claimed and
-    card items opened without asking; a potion is offered only into a free usable slot
-    (v1 never swaps, 1.5.4); the proceed is auto once nothing else is left.
+    Items sit in the order gold, potion, relic, card items, special card rows (list 6;
+    `WriteRewardActionMask`). Gold is claimed, then the special rows (a Thieving Hopper's
+    stolen card, the Lantern Key), and card items opened, all without asking: the
+    referee's driver takes gold and every `SpecialCardReward` unasked, in that order, so the
+    returned card is the deck's last when the card offer opens (`SpecialCardReward.OnSelect`
+    appends it). A potion is offered only into a free usable slot (v1 never swaps, 1.5.4);
+    the proceed is auto once nothing else is left.
     """
-    gold, potion, relic, cards = native.run_state_list(ctx.handle, 6, 4)
+    gold, potion, relic, cards, special = native.run_state_list(ctx.handle, 6, 5)
     view = ctx.view
     free_slot = len(view.potions) < view.max_potion_slots
     index = 1 if gold else 0
@@ -555,7 +558,13 @@ def _rewards(ctx: _Context) -> _Screen:
     if relic:
         options.append(Option("reward.relic", index, relic=relic))
         index += 1
-    auto = 0 if gold else (index if cards else None)
+    if gold:
+        auto = 0
+    elif special:
+        # Past the potion, relic and card items the mask lists first (gold already taken).
+        auto = index + cards
+    else:
+        auto = index if cards else None
     if not options:
         stat = "potion_left_full_belt" if potion and auto is None else None
         return _Screen(
