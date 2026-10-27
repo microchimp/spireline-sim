@@ -267,6 +267,10 @@ a temp folder (every rule above, incl. a consent file naming another tag); the q
 done / interrupted / failed, retry order); the stop file through a fake job script that exits 3 when it sees the file; and
 `vrun_sweep.py run --stop-file` on a synthetic cache (the fit aborts between epochs, writes nothing, exits 3).
 
+**Start it:** `python tools/gpu_lane/quiet_runner.py --lab <lab folder> --referee-dir <folder holding QUIET.lock and GPU_OK> --repo <fork root> --gpu-python <GPU python> --queue <queue.json> --log <quiet.log> [--cache <sweep cache folder>] [--idle-s 15] [--busy-s 5]`; the stop file (`quiet.stop`) and each job's output (`job-<name>.log`, paths scrubbed) sit beside the queue, a job left `running` by a runner that died counts as `interrupted`, and `--once` is one pass for tests.
+
+**Consent:** a lane that holds `QUIET.lock` and does not mind the GPU being used writes its `<tag>` (the tag of its lock) as the first line of `<referee dir>/GPU_OK` for the duration of its window, then removes the file; no file, or another tag, and the runner stays out.
+
 ## 8. Budget
 
 Design and review ~2.5 Opus-equivalent rounds (spent); one Sonnet implementation round and its review ~1.5; the sweep is
