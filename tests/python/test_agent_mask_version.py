@@ -37,7 +37,7 @@ def agent_dir(tmp: str, meta: dict | None) -> Path:
     return d
 
 
-@unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 30)")
+@unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 31)")
 class AgentMaskVersionTests(unittest.TestCase):
     def test_an_agent_without_the_key_is_version_one_and_the_key_is_read(self):
         with tempfile.TemporaryDirectory() as tmp:

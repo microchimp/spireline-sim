@@ -16,7 +16,7 @@ _LIB_NAMES = {
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
 _REQUIRED_NATIVE_API_VERSION = 38
-_REQUIRED_RUN_NATIVE_API_VERSION = 30
+_REQUIRED_RUN_NATIVE_API_VERSION = 31
 # The engine this process runs (docs/rebuild/NATIVE_KERNEL.md section 3): read once, when the library loads, and passed
 # to Sts2_SetEngine before any handle exists. Unset or "old": the old engine. "core2": the Tier 1 kernel of
 # tools/fidelity/migrated_families.json. Inherited by every spawn worker, so one flag on the parent reaches them all.

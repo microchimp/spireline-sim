@@ -130,6 +130,37 @@ public class RunMaskGoldenTests
         "Event/0=8665dce34ae37f89:0,1,2,3\n" +
         "Event/3=b5795657b23a25f8:0,1,2,3,243,244,248,249,250";
 
+    // Welcome to Wongos (D34): the page's whole mask at four purses (50 buys nothing, 100 the bargain bin, 250 also the featured item,
+    // 300 also the mystery box), with no belt and with the three-potion belt. The Leave (action 3) is on the native mask at every
+    // version: versions 1, 2, 3 and 4 are the same four lines (version 4 only tells the policy-side reader to show Leave).
+    private const string GoldenWongos =
+        "Wongos/50/0=9df37c724a089f22:3\n" +
+        "Wongos/50/3=6ee002fde2b1f8b3:3,243,244,248,249,250\n" +
+        "Wongos/100/0=536800a5ef15cb27:0,3\n" +
+        "Wongos/100/3=827b7a1a566c7196:0,3,243,244,248,249,250\n" +
+        "Wongos/250/0=2ae1de2f4b7f1c9c:0,1,3\n" +
+        "Wongos/250/3=fbce64bae428762d:0,1,3,243,244,248,249,250\n" +
+        "Wongos/300/0=8665dce34ae37f89:0,1,2,3\n" +
+        "Wongos/300/3=b5795657b23a25f8:0,1,2,3,243,244,248,249,250";
+
+    private static string WongosTable(int version)
+    {
+        var lines = new List<string>();
+        foreach (int purse in new[] { 50, 100, 250, 300 })
+        {
+            foreach (var belt in Belts)
+            {
+                var engine = At(RunPhase.Event, belt);
+                engine.State.Gold = purse;
+                RunNonCombatEffects.BeginEvent(engine.State, RunConstants.EventWelcomeToWongos);
+                engine.MaskVersion = version;
+                lines.Add($"Wongos/{purse}/{belt.Length}={Describe(Mask(engine))}");
+            }
+        }
+
+        return string.Join('\n', lines);
+    }
+
     private static string Table(int version)
     {
         var lines = new List<string>();
@@ -158,6 +189,25 @@ public class RunMaskGoldenTests
     {
         string actual = Table(2);
         Assert.True(actual == GoldenVersionTwo, "actual masks:\n" + actual);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void TheWongosPageCarriesItsLeaveOnTheMaskInEveryVersion(int version)
+    {
+        string actual = WongosTable(version);
+        Assert.True(actual == GoldenWongos, "actual masks:\n" + actual);
+    }
+
+    [Fact]
+    public void VersionFourIsByteIdenticalToVersionThreeOnEveryScreenAndOnTheWongosPage()
+    {
+        Assert.Equal(Table(3), Table(4));
+        Assert.Equal(WongosTable(3), WongosTable(4));
+        Assert.True(Table(4) == GoldenVersionThree, "actual masks:\n" + Table(4));
     }
 
     [Fact]

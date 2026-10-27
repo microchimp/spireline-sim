@@ -302,7 +302,9 @@ public class RunMaskVersionTests
         var engine = new RunEngine();
         Assert.Equal(1, engine.MaskVersion);
         Assert.Throws<ArgumentOutOfRangeException>(() => engine.MaskVersion = 0);
-        Assert.Throws<ArgumentOutOfRangeException>(() => engine.MaskVersion = 4);
+        Assert.Throws<ArgumentOutOfRangeException>(() => engine.MaskVersion = 5);
+        engine.MaskVersion = 4;
+        Assert.Equal(4, engine.MaskVersion);
         engine.MaskVersion = 3;
         Assert.Equal(3, engine.MaskVersion);
         engine.MaskVersion = 2;
@@ -321,7 +323,9 @@ public class RunMaskVersionTests
         {
             Assert.Equal(-1, RunNativeExports.Sts2Run_SetMaskVersion(255, 2));
             Assert.Equal(-2, RunNativeExports.Sts2Run_SetMaskVersion(handle, 0));
-            Assert.Equal(-2, RunNativeExports.Sts2Run_SetMaskVersion(handle, 4));
+            Assert.Equal(-2, RunNativeExports.Sts2Run_SetMaskVersion(handle, 5));
+            Assert.Equal(0, RunNativeExports.Sts2Run_SetMaskVersion(handle, 4));
+            Assert.Equal(0, RunNativeExports.Sts2Run_SetMaskVersion(handle, 1));
             Assert.True(RunNativeExports.TryGetRun(handle, out var run));
             Assert.Equal(1, run.MaskVersion);
             run.Reset("ABCDEF");
@@ -345,7 +349,7 @@ public class RunMaskVersionTests
             var mask = new int[RunConstants.MaxActions];
             run.WriteActionMask(mask);
             Assert.NotEqual(0, mask[RunConstants.DiscardPotionAction]);
-            Assert.Equal(30, RunNativeExports.RUN_NATIVE_API_VERSION);
+            Assert.Equal(31, RunNativeExports.RUN_NATIVE_API_VERSION);
 
             // version 3: the reason for a use there follows the version too
             run.State.PotionSlots[1] = RunNonCombatEffects.NamedPotion("BloodPotion");
