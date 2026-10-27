@@ -43,6 +43,7 @@ for _p in (str(ROOT), str(ROOT / "rl")):
 
 TAG = "lab-nightly"
 STALE_H = 2.0  # another's lock line under this old is live
+RESUME_NIGHT_H = 36.0  # an unfinished night whose newest row is under this old is resumed under its own date
 UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -166,6 +167,40 @@ def make_block(lab: Path, name: str, n: int, extra_seed_dirs: list[Path]) -> tup
     return seeds_dir / f"{name}.json", seeds
 
 
+def unfinished_night(lab: Path, now: float | None = None, max_age_h: float = RESUME_NIGHT_H) -> str | None:
+    """The date of the newest LAB/nightly/<date> folder that holds a started agent block without its finished mark (the agent's
+    summary.json with `nightly`): an emulator arm (`<agent>-emu/runs.jsonl`) or a real folder that a stopped job left behind,
+    when its newest runs.jsonl is under `max_age_h` old. None: every night is finished or too old, so a fresh one starts.
+
+    The runner supersedes a stopped job once main has moved, and the next nightly job would start a fresh night under today's
+    date, leaving the old emulator arm's rows orphaned; resuming the old date instead keeps them (gen0.run_block resume) and
+    plays the real arm the night was for."""
+    root = Path(lab) / "nightly"
+    t = time.time() if now is None else now
+    try:
+        dates = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+    except OSError:
+        return None
+    for d in dates:
+        try:
+            dt.datetime.strptime(d.name, "%Y-%m-%d")
+        except ValueError:
+            continue
+        labels = {p.name[:-4] if p.name.endswith("-emu") else p.name for p in d.iterdir() if p.is_dir()}
+        newest = max((f.stat().st_mtime for f in d.glob("*/runs.jsonl")), default=None)
+        if not labels or newest is None or t - newest > max_age_h * 3600:
+            continue
+        for label in labels:
+            done = d / label / "summary.json"
+            try:
+                finished = "nightly" in json.loads(done.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                finished = False
+            if not finished:
+                return d.name
+    return None
+
+
 # ---------------------------------------------------------------- one agent's block
 
 def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: str, planned: int, engine: str) -> dict[str, Any]:
@@ -232,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", default="a3-v1")
     ap.add_argument("--engine", choices=("old", "core2"), default="core2")
     ap.add_argument("--stop-after-h", type=float, default=4.0, help="per agent: no new run after this many hours")
-    ap.add_argument("--date", default=time.strftime("%Y-%m-%d"))
+    ap.add_argument("--date", help="the night's folder and block name (default: the newest unfinished night under 36 h old, else today)")
     ap.add_argument("--quiet-lock", default="D:/spireline/referee/QUIET.lock", help="the shared QUIET.lock file")
     ap.add_argument("--tag", default=TAG)
     ap.add_argument("--wait-h", type=float, default=2.0)
@@ -241,6 +276,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--since", help="UTC time (default: LAB/nightly/last-ok's): promotions after it are scored too")
     a = ap.parse_args(argv)
     lab = Path(a.lab)
+    if a.date is None:
+        a.date = unfinished_night(lab)
+        if a.date is not None:
+            print(f"[{utc_now()}] resuming the unfinished night {a.date} (its emulator arms keep their rows)", flush=True)
+        else:
+            a.date = time.strftime("%Y-%m-%d")
     out = Path(a.out) if a.out else lab / "nightly"
     out.mkdir(parents=True, exist_ok=True)
     lock = QuietLock(Path(a.quiet_lock), a.tag, wait_h=a.wait_h)

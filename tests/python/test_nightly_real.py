@@ -119,6 +119,34 @@ def end(seed: str, floor: int, kind: str = "death") -> dict:
     return {"ev": "end", "seed": seed, "end": kind, "floor": floor, "s": 1.0, "stats": {"decisions": 10}}
 
 
+class UnfinishedNightTest(Tmp):
+    def night(self, date: str, *folders: str, finished: bool = False, age_h: float = 1.0) -> Path:
+        d = self.tmp / "nightly" / date
+        for f in folders:
+            (d / f).mkdir(parents=True)
+            (d / f / "runs.jsonl").write_text(json.dumps(end("A", 5)) + "\n")
+            os.utime(d / f / "runs.jsonl", (time.time() - age_h * 3600,) * 2)
+        if finished:
+            (d / folders[0].removesuffix("-emu")).mkdir(parents=True, exist_ok=True)
+            (d / folders[0].removesuffix("-emu") / "summary.json").write_text(json.dumps({"nightly": {"runs": 1}}))
+        return d
+
+    def test_the_newest_night_whose_block_has_no_finished_mark_is_resumed(self):
+        self.night("2026-10-26", "g5", "g5-emu", finished=True)
+        self.night("2026-10-27", "g7-emu")  # the arm has rows, the real block never ran (a job the runner superseded)
+        (self.tmp / "nightly" / "last-ok").write_text("x")
+        (self.tmp / "nightly" / "scratch").mkdir()
+        self.assertEqual("2026-10-27", nr.unfinished_night(self.tmp))
+
+    def test_a_finished_or_old_night_starts_a_fresh_one(self):
+        self.night("2026-10-26", "g5", "g5-emu", finished=True)
+        self.assertIsNone(nr.unfinished_night(self.tmp))
+        self.night("2026-10-27", "g7-emu", age_h=40.0)  # abandoned longer than RESUME_NIGHT_H ago
+        self.assertIsNone(nr.unfinished_night(self.tmp))
+        self.assertEqual("2026-10-27", nr.unfinished_night(self.tmp, max_age_h=48.0))
+        self.assertIsNone(nr.unfinished_night(self.tmp / "none"))  # no nightly folder yet
+
+
 class NumbersTest(Tmp):
     def test_a_crash_is_a_loss_at_floor_zero_with_no_win_and_no_boss_kill(self):
         rows = [end("A", 20), end("B", 10), {"ev": "crash", "seed": "C", "error": "GameDied", "s": 2.0}]
@@ -134,7 +162,7 @@ class NumbersTest(Tmp):
 class DriverTest(Tmp):
     """The whole driver with `gen0.py score` replaced by a function that leaves the files a real block leaves."""
 
-    def run_driver(self, lock_line: str | None = None, *extra: str):
+    def run_driver(self, lock_line: str | None = None, *extra: str, date: str | None = "2026-10-25"):
         lab, agent = self.tmp / "lab", self.tmp / "agent"
         (agent / "gen3" / "c").mkdir(parents=True)
         (agent / "current.json").write_text(json.dumps({"generation": 3, "dir": str(agent / "gen3" / "c")}))
@@ -155,7 +183,7 @@ class DriverTest(Tmp):
 
         job = self.tmp / "job"
         argv = ["--lab", str(lab), "--agent-root", str(agent), "--game", "G", "--lib", "L", "--out", str(job), "--runs", "20",
-                "--date", "2026-10-25", "--quiet-lock", str(lock), *extra]
+                *(["--date", date] if date else []), "--quiet-lock", str(lock), *extra]
         with unittest.mock.patch.object(nr.subprocess, "run", side_effect=fake_run), \
                 unittest.mock.patch.object(nr.shutil, "rmtree", wraps=nr.shutil.rmtree):
             rc = nr.main(argv)
@@ -178,6 +206,21 @@ class DriverTest(Tmp):
         self.assertEqual(["g3"], list(res["agents"]))
         self.assertEqual("2026-10-25", res["date"])
         self.assertFalse(lock.exists())  # taken and removed
+
+    def test_without_a_date_the_newest_unfinished_night_is_resumed_else_today(self):
+        lab = self.tmp / "lab"
+        emu = lab / "nightly" / "2026-10-24" / "g3-emu"
+        emu.mkdir(parents=True)
+        (emu / "runs.jsonl").write_text(json.dumps(end("A", 9)) + "\n")  # a stopped night: the arm has rows, the real block never ran
+        rc, seen, lab, job, lock = self.run_driver(date=None)
+        self.assertEqual(0, rc)
+        self.assertEqual(str(lab / "seeds" / "N-2026-10-24.json"), seen[0][seen[0].index("--seeds-file") + 1])
+        self.assertEqual("2026-10-24", json.loads((job / "result.json").read_text())["date"])
+        self.assertTrue((emu / "runs.jsonl").is_file())  # the arm's rows are left for gen0.run_block's resume
+        shutil.rmtree(job)
+        shutil.rmtree(self.tmp / "agent")
+        rc, seen, lab, job, lock = self.run_driver(date=None)  # that night is finished now: a fresh one under today's date
+        self.assertEqual(time.strftime("%Y-%m-%d"), json.loads((job / "result.json").read_text())["date"])
 
     def test_skips_with_a_reason_when_the_lock_stays_taken(self):
         rc, seen, lab, job, lock = self.run_driver(f"w4-readout {nr.utc_now()}", "--wait-h", "0")
