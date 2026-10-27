@@ -378,3 +378,34 @@ class ShopRemovalTest(unittest.TestCase):
     def test_a_removal_at_another_price_is_still_a_gap(self):
         e = emu([opt("shop.remove", 13, deck_index=0, price=75)], deck=[card(1)])
         self.assertEqual(e._pair("shop", [["remove", 0, 100]]), [None])
+
+
+class WongosLeaveTest(unittest.TestCase):
+    """Welcome to Wongos (seed LT5CC6LVQ3, decision 153): the page lists the buys the purse allows and Leave. The engine's event
+    reader hides action 3 (the emulator-only leave), so the referee's labels outnumbered the options by one and the whole page
+    went unpaired; the Leave label pairs with action 3 where the mask has it."""
+
+    LEAVE = "WELCOME_TO_WONGOS.pages.INITIAL.options.LEAVE"
+
+    def _emu(self, legal_leave=True):
+        e = emu([opt("event.option", 0)])
+        mask = [0] * 256
+        mask[0] = 1
+        mask[3] = int(legal_leave)
+        e.native.run_action_mask = lambda handle, n: mask[:n]
+        return e
+
+    def test_the_bargain_bin_pairs_and_so_does_leave(self):
+        bin_label = _label_of("wongos_bargain_bin_pick.json", "event")
+        labels = [bin_label, self.LEAVE]
+        e = self._emu()
+        self.assertEqual(e._pair("event", labels), [0, lockstep.EVENT_LEAVE])
+        self.assertIsNone(e.apply("event", labels, 0))
+        self.assertEqual(e.applied[-1].action, 0)
+        self.assertIsNone(e.apply("event", labels, 1))
+        self.assertEqual(e.applied[-1], ("step", 3))
+        self.assertEqual(e.took, ["event.option"])
+
+    def test_without_the_leave_on_the_mask_the_page_stays_a_gap(self):
+        e = self._emu(legal_leave=False)
+        self.assertEqual(e._pair("event", ["WELCOME_TO_WONGOS.pages.INITIAL.options.BARGAIN_BIN", self.LEAVE]), [None, None])

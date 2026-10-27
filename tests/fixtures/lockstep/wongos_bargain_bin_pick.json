@@ -1,0 +1,8 @@
+{
+  "note": "One lockstep record (the Welcome to Wongos page where the referee took the bargain bin), cut to the fields the pairing reads. The reason carries the referee's option key; the page also offers the Leave option.",
+  "seed": "LT5CC6LVQ3",
+  "decision": 153,
+  "floor": 20,
+  "type": "event",
+  "reason": "apply:no_emulator_option:event:\"WELCOME_TO_WONGOS.pages.INITIAL.options.BARGAIN_BIN\""
+}

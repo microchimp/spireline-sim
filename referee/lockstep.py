@@ -592,6 +592,10 @@ def _event_names() -> dict[int, str]:
 # bundle-select and Crystal Sphere screens, so the referee's discard_potion there is stepped, not a gap. It is the
 # lockstep's own setting, whatever the agent's: the mask only carries the option, and `engine._legal` hides it from the rules.
 MASK_VERSION = 3
+# The emulator's event leave (run action 3) and the pairing sentinel for the referee label that takes it.
+EVENT_SKIP_ACTION = 3
+EVENT_LEAVE = -2
+WONGOS_LEAVE = "WELCOME_TO_WONGOS.pages.INITIAL.options.LEAVE"
 
 
 class EmuLock:
@@ -1081,6 +1085,11 @@ class EmuLock:
             # actions in action order: paired by position, and only when the counts agree (a locked option the two sides
             # count differently is a gap, not a guess).
             order = sorted(range(len(opts)), key=lambda j: opts[j].action)
+            if len(order) + 1 == len(labels) and labels[-1] == WONGOS_LEAVE and self._leave_is_legal():
+                # Welcome to Wongos: the page lists the buys the purse allows and Leave. The engine's event reader hides action 3
+                # (the emulator-only leave), so the referee's labels outnumber the options by exactly that one, and the whole page
+                # went unpaired -- the bargain bin included. Leave is a real option here (it downgrades a card): action 3.
+                return [*order, EVENT_LEAVE]
             return list(order) if len(order) == len(labels) else [None] * len(labels)
         out: list[int | None] = []
         for lab in labels:
@@ -1126,6 +1135,10 @@ class EmuLock:
             out.append(hit)
         return out
 
+    def _leave_is_legal(self) -> bool:
+        """Whether the emulator's mask offers the event leave (action 3)."""
+        return bool(self.native.run_action_mask(self.s.handle, EVENT_SKIP_ACTION + 1)[EVENT_SKIP_ACTION])
+
     def choose(self, kind: str, labels: list, msg: dict) -> int | None:
         if kind in COMBAT_KINDS:
             return self._choose_combat(kind, labels, msg)
@@ -1165,6 +1178,10 @@ class EmuLock:
         j = self._pair(kind, labels)[idx]
         if j is None:
             return f"no_emulator_option:{kind}:{json.dumps(labels[idx])[:60]}"
+        if j == EVENT_LEAVE:
+            self.s._step(EVENT_SKIP_ACTION)
+            self.s.visit.took("event.option")
+            return None
         o = self.dec.options[j]
         if o.kind in ("rest.smith", "shop.remove"):
             # The action alone, whichever card the option names: the referee's select_cards follows and picks the card (a step
