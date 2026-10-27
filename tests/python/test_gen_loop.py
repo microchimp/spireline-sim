@@ -172,32 +172,33 @@ class ResumeWriterTests(unittest.TestCase):
                     "ai_state_assumed": 0,
                     "_shard": {"record": fake_record(seed, gen_loop.Agent().generation), "samples": fake_run_arrays(rng)}}
 
-        class Ready:
-            def __init__(self, value):
-                self.value = value
+        class InlinePool:  # gen0.run_block's SupervisedPool (rl/spawn_pool.py) with every task run in this process, at once
+            stats = {"started": 0, "recycled": 0, "died": 0, "timed_out": 0, "raised": 0}
 
-            def ready(self):
-                return True
+            def __init__(self, ctx, size, **kw):
+                self.size, self.ended = size, []
 
-            def get(self):
-                return self.value
+            def free(self):
+                return self.size - len(self.ended)
 
-        class Pool:
-            def __init__(self, *a, **k):
+            def inflight(self):
+                return len(self.ended)
+
+            def submit(self, key, fn, args=()):
+                self.ended.append(gen0.spawn_pool.Done(key, "ok", fn(*args)))
+
+            def collect(self):
+                out, self.ended = self.ended, []
+                return out
+
+            def wait(self, timeout):
                 pass
 
-            def __enter__(self):
-                return self
+            def terminate(self):
+                pass
 
-            def __exit__(self, *a):
-                return False
-
-            def apply_async(self, fn, args):
-                return Ready(fn(*args))
-
-        ctx = SimpleNamespace(Pool=Pool)
         with tempfile.TemporaryDirectory() as d, mock.patch.object(gen0, "_run_safe", fake_run_safe), \
-                mock.patch.object(gen0.mp, "get_context", return_value=ctx), mock.patch.object(gen0.time, "sleep"):
+                mock.patch.object(gen0.spawn_pool, "SupervisedPool", InlinePool):
             gen0.run_block(self.SEEDS[:4], "a3-v1", 2, Path(d), record=True)  # the first attempt
             played.clear()
             summ = gen0.run_block(self.SEEDS, "a3-v1", 2, Path(d), record=True)  # the resume replays the whole stream
