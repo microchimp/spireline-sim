@@ -243,7 +243,11 @@ fit between epochs the moment a window closes.
    **or quiet with consent:** `QUIET.lock` is present with a tag other than `gpu-lane` **and** the consent file
    `D:/spireline/referee/GPU_OK` names that tag on its first line (the lane that holds the quiet window writes it; a quiet
    lock without it is that lane's quiet machine, and the runner stays out, whatever the tag).
-4. Never while the status reads `paused(user)` (the owner at the PC), `paused(load)`, `paused(halt)` or `running`.
+4. Never while the status reads `paused(user)` (the owner at the PC), `paused(load)` or `paused(halt)`; never while it
+   reads `running` without consent. **Rule 4b (D36, week 4):** under consent a `running` lab opens the window too, unless
+   its step is `selfplay`, `train` or a promotion (the steps that always run the prior server); for every other step the
+   consent's timing is trusted, so a lock's owner writes `GPU_OK` only while its own work leaves the GPU free (the nightly
+   driver writes `lab-nightly` when its real-game arm starts and removes it when that arm ends, never during its emulator arm).
 
 **The queue:** `agent/gpu-lane/queue.json`, a list of jobs `{"name": str, "args": [vrun_sweep.py `run` arguments], "state":
 "queued" | "running" | "done" | "interrupted", "attempts": int}`; the runner takes the first `queued` or `interrupted` job in
