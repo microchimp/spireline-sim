@@ -251,25 +251,28 @@ def run_ends(runs: list[dict]) -> dict[str, dict]:
 STALL_STREAK = 50  # a run whose longest identical (screen, action) run is longer than this answered one screen the same way over and over
 
 
-def stalls(runs: list[dict], min_streak: int = STALL_STREAK) -> list[dict]:
-    """The run rows of a stall, in file order: an end row whose `end` is "timeout", and an end or crash row whose `streak.n` (the
-    longest run of identical consecutive (screen, action) pairs, written by referee/envproto.py play_worker) is over `min_streak`.
-    Each: seed, ev, end, floor, streak ({"n", "screen", "action"} or None for a row from before the field) and why (the reasons)."""
+def stalls(runs: list[dict], min_streak: int = STALL_STREAK, arm: str = "real") -> list[dict]:
+    """The run rows of a stall, in file order. The real arm's rows (`arm="real"`, envproto's: they carry `ev`): an end row whose `end` is
+    "timeout", and an end or crash row whose `streak.n` (the longest run of identical consecutive (screen, action) pairs, written by
+    referee/envproto.py play_worker) is over `min_streak`. The emulator arm's rows (`arm="emu"`, gen0.run_block's: no `ev` key): a row
+    whose `end` is "timeout", the wall cap of rl/gen0.py, which is a run-layer loop. Each: seed, ev, end, floor, streak ({"n", "screen",
+    "action"} or None), arm and why (the reasons)."""
     out = []
     for r in runs:
-        if r.get("ev") not in ("end", "crash"):
+        ev = r.get("ev")
+        if (ev not in ("end", "crash")) if arm == "real" else (ev is not None):
             continue
         st = r.get("streak") if isinstance(r.get("streak"), dict) else None
-        why = (["timeout"] if r.get("ev") == "end" and r.get("end") == "timeout" else []) + (
+        why = (["timeout"] if ev != "crash" and r.get("end") == "timeout" else []) + (
             ["streak"] if st and isinstance(st.get("n"), (int, float)) and st["n"] > min_streak else [])
         if why:
-            out.append({"seed": r.get("seed"), "ev": r["ev"], "end": r.get("end"), "floor": r.get("floor"), "streak": st, "why": why})
+            out.append({"seed": r.get("seed"), "ev": ev, "end": r.get("end"), "floor": r.get("floor"), "streak": st, "arm": arm, "why": why})
     return out
 
 
-def stalls_of(runs_jsonl: Path, min_streak: int = STALL_STREAK) -> list[dict]:
-    """`stalls` over a runs.jsonl (the night's numbers, rl/nightly_real.py)."""
-    return stalls(_read_jsonl(runs_jsonl), min_streak)
+def stalls_of(runs_jsonl: Path, min_streak: int = STALL_STREAK, emu_jsonl: Path | None = None) -> list[dict]:
+    """`stalls` over a runs.jsonl (the night's numbers, rl/nightly_real.py), then the emulator arm's runs.jsonl when given."""
+    return stalls(_read_jsonl(runs_jsonl), min_streak) + (stalls(_read_jsonl(emu_jsonl), min_streak, "emu") if emu_jsonl is not None else [])
 
 
 def weigh(rec: dict, ends: dict[str, dict]) -> tuple:
@@ -338,7 +341,7 @@ def rank(folder: Path, emu_dir: Path | None = None) -> dict:
         "arch_share": round(arch / tw, 4) if tw else 0.0,
         "state_divergence_rate": round(fid / total, 5) if total else None,
         "outcome_confirmed": sum(g["outcome_changing_confirmed"] for g in out), "outcome_proxy": sum(g["outcome_changing_proxy"] for g in out),
-        "gap_reasons": dict(gap_reasons), "stalls": stalls(runs),
+        "gap_reasons": dict(gap_reasons), "stalls": stalls(runs) + (stalls(_read_jsonl(Path(emu_dir) / "runs.jsonl"), arm="emu") if emu_dir is not None else []),
         "weights": "affected * (1 + (50 - min(floor, 50)) / 50) * (1.5 if outcome-changing confirmed else 1)"},
         "groups": out}
     if emu_dir is not None:
@@ -362,7 +365,7 @@ def top_md(doc: dict, n: int = 20) -> str:
         lines[4:4] = [f"Outcome weighting: {s['outcome_rule']}.", ""]
     if s.get("stalls"):
         lines[4:4] = ["Stalled runs (timeout, or one screen answered the same way over 50 times in a row): " + "; ".join(
-            f"{x['seed']} floor {x['floor']} " + (f"{x['streak']['screen']}/{x['streak']['action']} x{x['streak']['n']}" if x["streak"] else x["why"][0])
+            f"{x.get('arm', 'real')} {x['seed']} floor {x['floor']} " + (f"{x['streak']['screen']}/{x['streak']['action']} x{x['streak']['n']}" if x["streak"] else x["why"][0])
             for x in s["stalls"]) + ".", ""]
     for g in doc["groups"][:n]:
         k = g["display"]

@@ -699,8 +699,9 @@ class Runner:
         return None
 
     def gpu_ok_path(self) -> str:
-        """The GPU_OK file the nightly's consent line is in: `gpu_ok_file` of the nightly-real entry in LAB/jobs.json, else the default."""
-        return str((jobs.load_config(self.lab.root).get("nightly-real") or {}).get("gpu_ok_file") or jobs.GPU_OK_FILE)
+        """The GPU_OK file the nightly's consent line is in: the `--gpu-ok-file` of the nightly-real entry's cmd in LAB/jobs.json (the
+        file the driver writes), else its `gpu_ok_file` key, else the default (jobs.consent_path)."""
+        return jobs.consent_path(jobs.load_config(self.lab.root).get("nightly-real"))
 
     def release_nightly_consent(self, job: str) -> None:
         """A nightly-real job that stops leaves no `lab-nightly` line in GPU_OK. The driver removes it in a finally, but a job the

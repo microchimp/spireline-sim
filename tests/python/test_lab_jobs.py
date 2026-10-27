@@ -623,6 +623,16 @@ class NightlyKindTest(Base):
         r = self.nightly()
         self.assertEqual(str(self.tmp / "GPU_OK"), r.gpu_ok_path())
 
+    def test_a_gpu_ok_file_in_the_commands_arguments_is_the_one_cleared(self):
+        other = self.gpu()  # tmp/GPU_OK: the entry's gpu_ok_file key
+        custom = self.tmp / "custom_GPU_OK"
+        custom.write_text("lab-nightly\nother-lane\n", encoding="utf-8")
+        r = self.nightly(cmd=self.SEES_ACTIVE + [json.dumps(self.RESULT), "--gpu-ok-file", str(custom)])
+        self.assertEqual(str(custom), r.gpu_ok_path())
+        r.execute(r.new_run("nightly-real", "abc"))
+        self.assertEqual("other-lane\n", custom.read_text(encoding="utf-8"))
+        self.assertEqual("lab-nightly\nother-lane\n", other.read_text(encoding="utf-8"))  # the command named the other path
+
     def test_the_loop_share_counts_it(self):
         self.assertNotIn("nightly-real", jb.LOOP_KINDS)  # outside the self-play loop share (D29 accounting)
 
@@ -651,6 +661,18 @@ class ClearConsentTest(Base):
 
     def test_an_absent_file_is_nothing_to_do(self):
         self.assertFalse(jb.clear_consent(self.tmp / "none"))
+
+
+class ConsentPathTest(unittest.TestCase):
+    def test_the_command_flag_then_the_key_then_the_default(self):
+        cp = jb.consent_path
+        self.assertEqual("X/G", cp({"cmd": ["{python}", "rl/nightly_real.py", "--gpu-ok-file", "X/G"], "gpu_ok_file": "K"}))
+        self.assertEqual("X/G", cp({"cmd": ["a", "--gpu-ok-file=X/G"]}))
+        self.assertEqual("X/G", cp({"cmd": "python rl/nightly_real.py --gpu-ok-file X/G"}))
+        self.assertEqual("K", cp({"cmd": ["a"], "gpu_ok_file": "K"}))
+        self.assertEqual(jb.GPU_OK_FILE, cp({"cmd": ["a", "--gpu-ok-file"]}))  # a flag with no value
+        self.assertEqual(jb.GPU_OK_FILE, cp({"cmd": ["a", "--gpu-ok-file", "{lab}/G"]}))  # a token the runner has not expanded: not a path
+        self.assertEqual(jb.GPU_OK_FILE, cp(None))
 
 
 if __name__ == "__main__":

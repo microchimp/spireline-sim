@@ -219,7 +219,8 @@ def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: 
     mean = t["floor"]["mean"]
     from tools.lab import rank  # noqa: PLC0415
 
-    stalls = rank.stalls_of(folder / "runs.jsonl")  # timeouts and runs that answered one screen the same way over 50 times
+    stalls = rank.stalls_of(folder / "runs.jsonl", emu_jsonl=folder.parent / (folder.name + "-emu") / "runs.jsonl")  # the real arm: timeouts and
+    # runs that answered one screen the same way over 50 times; the sibling emulator arm: its timeouts (the wall cap), L2's run-layer loops
     return {"date": date, "agent": agent["label"], "generation": agent["generation"], "role": agent["role"], "seed_block": seed_block,
             "engine": engine, "runs_planned": planned, "runs": t["runs"], "wins": t["wins"], "win_rate": t["win_rate"],
             "mean_floor": None if mean is None else round(mean, 3), "boss_kills": boss,

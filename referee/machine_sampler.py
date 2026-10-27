@@ -36,9 +36,14 @@ FIELDS = ("cpu_pct", "tree_cpu_pct", "avail_mb", "mem_load_pct", "pages_input_pe
 class MachineSampler:
     """Appends `probes.read()` + the time + `runs_done()` to `path` every `interval` seconds on a daemon thread until `stop()`."""
 
-    def __init__(self, path: Path, interval: float, probes: Any, runs_done: Callable[[], int] = lambda: 0,
-                 clock: Callable[[], float] = time.time, log: Callable[[str], None] | None = None):
+    def __init__(self, path: Path, interval: float, probes: Any = None, runs_done: Callable[[], int] = lambda: 0,
+                 clock: Callable[[], float] = time.time, log: Callable[[str], None] | None = None,
+                 make_probes: Callable[[], Any] | None = None, stop_wait: float = 5.0):
+        """`probes` (anything with read(), and close() if it holds handles) or `make_probes`, a factory the sampler's own thread calls
+        once, so that a PerfLib that hangs while the counters open holds that thread and never the block. `stop()` waits `stop_wait`
+        seconds for the thread and closes the probes."""
         self.path, self.interval, self.probes, self.runs_done, self.clock = Path(path), float(interval), probes, runs_done, clock
+        self.make_probes, self.stop_wait, self._abandoned = make_probes, float(stop_wait), False
         self._log = log or (lambda m: print(m, file=sys.stderr, flush=True))
         self._logged: set[str] = set()
         self._stop = threading.Event()
@@ -66,22 +71,49 @@ class MachineSampler:
             return None
         return row
 
+    def _close(self) -> None:
+        close = getattr(self.probes, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as e:  # noqa: BLE001
+                self._once("close", e)
+
     def _run(self) -> None:
+        if self.probes is None and self.make_probes is not None:
+            try:
+                self.probes = self.make_probes()  # built here, not on the caller's thread
+            except Exception as e:  # noqa: BLE001
+                self._once("probes", e)
+                return
+            if self._stop.is_set():  # the block was over while this was being built
+                if self._abandoned:  # stop() gave up waiting and left the closing to this thread
+                    self._close()
+                return
         try:
             self.probes.read()  # the rates start from this reading
         except Exception as e:  # noqa: BLE001
             self._once("first read", e)
         while not self._stop.wait(self.interval):
             self.sample_once()
+        if self._abandoned:
+            self._close()
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="machine-sampler", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        """Ask the thread to end, wait `stop_wait` seconds for it, and close the probes (their PDH query). A thread still inside a
+        reading or still building the probes after that wait is left to close them itself when it comes back: its handles are not
+        touched from here."""
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(5)
+            self._thread.join(self.stop_wait)
+            if self._thread.is_alive():
+                self._abandoned = True
+                return
+        self._close()
 
 
 # ---------------------------------------------------------------- the Windows readings (ctypes only)
@@ -144,6 +176,7 @@ class WinProbes:
             pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
             pdh.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
             pdh.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+            pdh.PdhCloseQuery.argtypes = [ctypes.c_void_p]
             pdh.PdhGetFormattedCounterValue.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(_PdhValue)]
             q = ctypes.c_void_p()
             if pdh.PdhOpenQueryW(None, None, ctypes.byref(q)) != 0:
@@ -158,6 +191,14 @@ class WinProbes:
                 self._counters[field] = h
             else:
                 self._once(field, "counter not found")
+
+    def close(self) -> None:
+        """Close the PDH query (and with it every counter added to it); safe to call twice. A closed probe still reads, counters None.
+        The other handles are opened and closed inside each reading."""
+        pdh, query = self._pdh, getattr(self, "_query", None)
+        self._pdh, self._counters = None, {}
+        if pdh is not None and query is not None:
+            pdh.PdhCloseQuery(query)
 
     def _pdh_read(self) -> dict:
         out: dict[str, float | None] = {k: None for k in ("pages_input_per_s", "disk_queue", "disk_read_bps", "disk_write_bps", "disk_latency_ms")}

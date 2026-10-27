@@ -471,7 +471,8 @@ class SampleMachineFlagTest(unittest.TestCase):
         made = []
 
         class FakeSampler:
-            def __init__(self, path, interval, probes, runs_done=lambda: 0, **k):
+            def __init__(self, path, interval, probes=None, runs_done=lambda: 0, **k):
+                self.probes, self.kw = probes, k
                 self.args, self.runs_done, self.started, self.stopped = (Path(path), interval), runs_done, False, False
                 made.append(self)
 
@@ -504,6 +505,8 @@ class SampleMachineFlagTest(unittest.TestCase):
         (s,) = made
         self.assertEqual((h.out.resolve() / "machine.jsonl", 30.0), s.args)
         self.assertEqual((True, True), (s.started, s.stopped))
+        self.assertIsNone(s.probes)  # the readings are built by the sampler's own thread, through this factory
+        self.assertTrue(callable(s.kw["make_probes"]))
         self.assertEqual(6, s.runs_done())  # the runs finished so far: the fake workers played all six
         self.assertEqual(6, summary["runs"])
 

@@ -291,6 +291,16 @@ class StallNumbersTest(Tmp):
         self.assertEqual(["B", "C"], [s["seed"] for s in n["stalls"]])
         self.assertEqual({"n": 700, "screen": "event", "action": 0}, n["stalls"][0]["streak"])
 
+    def test_the_sibling_emulator_arm_is_read_too(self):
+        (self.tmp / "runs.jsonl").write_text(json.dumps({**end("B", 4), "streak": {"n": 700, "screen": "event", "action": 0}}))
+        emu = self.tmp.with_name(self.tmp.name + "-emu")  # <agent>-emu beside <agent>
+        emu.mkdir()
+        self.addCleanup(shutil.rmtree, emu, True)
+        (emu / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in [
+            {"seed": "E1", "win": False, "floor": 4, "end": "timeout"}, {"seed": "E2", "win": False, "floor": 12, "end": "death"}]))
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", {"label": "g3", "generation": 3, "role": "incumbent"}, "N-2026-10-25", 1, "core2")
+        self.assertEqual([("real", "B", 4), ("emu", "E1", 4)], [(s["arm"], s["seed"], s["floor"]) for s in n["stalls"]])
+
     def test_a_clean_night_has_an_empty_list(self):
         (self.tmp / "runs.jsonl").write_text(json.dumps(end("A", 20)))
         n = nr.nightly_numbers(self.tmp, "2026-10-25", {"label": "g3", "generation": 3, "role": "incumbent"}, "N-2026-10-25", 1, "core2")

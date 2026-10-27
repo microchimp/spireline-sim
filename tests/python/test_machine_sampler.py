@@ -106,5 +106,110 @@ class WinProbesTest(unittest.TestCase):
         self.assertGreater(r["timer_ms"], 0)
 
 
+class ClosingProbes(FakeProbes):
+    def __init__(self):
+        super().__init__()
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
+class ThreadAndCloseTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.path = self.tmp / "machine.jsonl"
+
+    def test_the_probes_are_built_on_the_samplers_thread_and_stop_closes_them(self):
+        built = []
+
+        def make():
+            built.append((threading.current_thread(), ClosingProbes()))
+            return built[-1][1]
+
+        s = ms.MachineSampler(self.path, 0.01, make_probes=make, log=lambda m: None)
+        s.start()
+        end = time.time() + 10
+        while (not built or built[0][1].calls < 3) and time.time() < end:
+            time.sleep(0.01)
+        s.stop()
+        thread, probes = built[0]
+        self.assertIsNot(thread, threading.main_thread())
+        self.assertEqual("machine-sampler", thread.name)
+        self.assertEqual(1, probes.closed)
+        self.assertFalse(s._thread.is_alive())
+        s.stop()  # a second stop closes nothing twice over a dead thread? (WinProbes.close is idempotent; this one counts)
+        self.assertGreaterEqual(probes.closed, 1)
+
+    def test_a_probe_factory_that_hangs_never_delays_the_block_and_its_probes_are_closed_when_it_returns(self):
+        gate, probes = threading.Event(), ClosingProbes()
+        s = ms.MachineSampler(self.path, 0.01, make_probes=lambda: (gate.wait(30), probes)[1], stop_wait=0.2, log=lambda m: None)
+        t0 = time.time()
+        s.start()
+        s.stop()
+        self.assertLess(time.time() - t0, 3)  # start returned at once, stop waited the 0.2 s and gave up
+        self.assertEqual(0, probes.closed)  # not touched from this thread while the other still holds it
+        gate.set()
+        s._thread.join(10)
+        self.assertEqual(1, probes.closed)  # the thread closes what it built after the block was gone
+        self.assertFalse(self.path.exists())
+
+    def test_a_factory_that_raises_is_logged_once_and_the_thread_ends(self):
+        logs = []
+
+        def boom():
+            raise OSError("PerfLib")
+
+        s = ms.MachineSampler(self.path, 0.01, make_probes=boom, log=logs.append)
+        s.start()
+        s._thread.join(10)
+        s.stop()
+        self.assertEqual(1, len(logs))
+        self.assertFalse(self.path.exists())
+
+
+class FakePdh:
+    def __init__(self):
+        self.closed = []
+
+    def PdhCloseQuery(self, q):  # noqa: N802
+        self.closed.append(q.value)
+        return 0
+
+
+@unittest.skipUnless(sys.platform == "win32", "the readings are Windows counters")
+class WinProbesCloseTest(unittest.TestCase):
+    def probes(self, pdh):
+        import ctypes
+        from unittest import mock
+
+        def fake_open(self_, drive):
+            self_._pdh, self_._query = pdh, ctypes.c_void_p(77)
+
+        with mock.patch.object(ms.WinProbes, "_pdh_open", fake_open):
+            return ms.WinProbes(None, log=lambda m: None)
+
+    def test_close_closes_the_pdh_query_once(self):
+        pdh = FakePdh()
+        p = self.probes(pdh)
+        p.close()
+        p.close()
+        self.assertEqual([77], pdh.closed)
+        self.assertIsNone(p.read()["disk_queue"])  # a closed probe still reads, with the counters None
+
+    def test_the_samplers_stop_closes_the_query(self):
+        pdh = FakePdh()
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        s = ms.MachineSampler(tmp / "m.jsonl", 0.01, make_probes=lambda: self.probes(pdh), log=lambda m: None)
+        s.start()
+        end = time.time() + 10
+        while not (tmp / "m.jsonl").exists() and time.time() < end:
+            time.sleep(0.01)
+        s.stop()
+        self.assertEqual([77], pdh.closed)
+
+
 if __name__ == "__main__":
     unittest.main()

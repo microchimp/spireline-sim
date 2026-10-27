@@ -259,7 +259,7 @@ class StallsTest(unittest.TestCase):
         got = rank.stalls(self.ROWS)
         self.assertEqual(["B", "C", "D", "F"], [s["seed"] for s in got])
         self.assertEqual({"seed": "B", "ev": "end", "end": "death", "floor": 4, "streak": {"n": 412, "screen": "event", "action": 0},
-                          "why": ["streak"]}, got[0])
+                          "arm": "real", "why": ["streak"]}, got[0])
         self.assertEqual((["timeout"], None), (got[1]["why"], got[1]["streak"]))  # a row from before the field has no streak
         self.assertEqual((["streak"], None), (got[2]["why"], got[2]["floor"]))
         self.assertEqual(["timeout", "streak"], got[3]["why"])
@@ -267,6 +267,28 @@ class StallsTest(unittest.TestCase):
     def test_no_stall_is_an_empty_list_and_the_threshold_is_a_parameter(self):
         self.assertEqual([], rank.stalls([self.ROWS[0], self.ROWS[5]]))
         self.assertEqual(["A", "B", "C", "D", "F"], [s["seed"] for s in rank.stalls(self.ROWS, min_streak=49)])
+
+    EMU = [{"seed": "E1", "win": False, "floor": 4, "end": "timeout"}, {"seed": "E2", "win": False, "floor": 12, "end": "death"},
+           {"seed": "E3", "win": False, "floor": 0, "crash": True, "end": "?"}]  # gen0.run_block rows: no `ev` key
+
+    def test_the_emulator_arms_timeouts_are_listed_with_their_arm(self):
+        self.assertEqual([{"seed": "E1", "ev": None, "end": "timeout", "floor": 4, "streak": None, "arm": "emu", "why": ["timeout"]}],
+                         rank.stalls(self.EMU, arm="emu"))
+        self.assertEqual([], rank.stalls(self.EMU))  # a row without ev is not a real-arm row
+        self.assertEqual([], rank.stalls(self.ROWS, arm="emu"))  # and a real-arm row is not an emulator row
+        self.assertEqual({"real"}, {s["arm"] for s in rank.stalls(self.ROWS)})
+
+    def test_the_summary_adds_the_paired_emulator_arms_stalls(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        write_records(d / "in", [])
+        (d / "in" / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in self.ROWS), encoding="utf-8")
+        (d / "emu").mkdir()
+        (d / "emu" / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in self.EMU), encoding="utf-8")
+        got = rank.rank(d / "in", d / "emu")["summary"]["stalls"]
+        self.assertEqual([("real", "B"), ("real", "C"), ("real", "D"), ("real", "F"), ("emu", "E1")], [(s["arm"], s["seed"]) for s in got])
+        self.assertIn("emu E1 floor 4", rank.top_md(rank.rank(d / "in", d / "emu")))
+        self.assertEqual(["B", "C", "D", "F"], [s["seed"] for s in rank.rank(d / "in")["summary"]["stalls"]])  # no arm given: real only
 
     def test_the_ranking_summary_lists_the_stalls(self):
         d = Path(tempfile.mkdtemp())

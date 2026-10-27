@@ -805,8 +805,9 @@ def _start_sampler(a, out: Path, events: list, resume: bool):
 
         if not resume:
             (out / "machine.jsonl").unlink(missing_ok=True)
-        s = machine_sampler.MachineSampler(out / "machine.jsonl", every, machine_sampler.WinProbes(out.drive or None),
-                                           runs_done=lambda: sum(1 for e in list(events) if e["ev"] in ("end", "crash")))
+        s = machine_sampler.MachineSampler(out / "machine.jsonl", every, None,  # the readings are opened by the sampler's own thread
+                                           runs_done=lambda: sum(1 for e in list(events) if e["ev"] in ("end", "crash")),
+                                           make_probes=lambda: machine_sampler.WinProbes(out.drive or None))
         s.start()
         return s
     except Exception as e:  # noqa: BLE001
