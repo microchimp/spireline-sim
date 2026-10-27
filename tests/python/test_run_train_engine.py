@@ -158,6 +158,7 @@ class ConstantsTests(unittest.TestCase):
             "FakeMerchantThrowAction": engine.FAKE_MERCHANT_THROW_ACTION,
             "FakeMerchantLeaveAction": engine.FAKE_MERCHANT_LEAVE_ACTION,
             "EventResultPending": engine.EVENT_RESULT_PENDING,
+            "EventWelcomeToWongos": engine.EVENT_WELCOME_TO_WONGOS,
             "CardRewardOptionCount": engine.CARD_REWARD_OPTION_COUNT,
             "TreasureTakeRelicAction": engine.TREASURE_TAKE_RELIC_ACTION,
             "NodeNormal": vocab.NODE_MONSTER,
@@ -790,6 +791,54 @@ class HopperReturnedCardTests(unittest.TestCase):
         self.assertEqual(screen.deck, decisions[61]["deck"])
         self.assertEqual(screen.deck[-1], ["CARD.FIGHT_ME", 0])
         self.assertEqual(screen.deck, decisions[62]["deck"][:-1])
+
+
+class WongosLeaveVisibilityTests(unittest.TestCase):
+    """D34 (owner, 2026-10-27): Welcome to Wongos' Leave (action 3) is shown to the policies from mask version 4.
+
+    The reader dropped action 3 on every event page because it is the emulator-only leave everywhere but here: Wongos is the
+    one event with a real fourth option. Versions 1-3 read the page as they always did; version 4 lists Leave after the
+    purchases the purse allows. No other page changes.
+    """
+
+    @staticmethod
+    def _page(event_id, legal, mask_version, event_step=0):
+        import types
+
+        env = types.SimpleNamespace(_mask_version=mask_version)
+        ctx = engine._Context(env, 0, list(legal), None, event_step, False)
+        with mock.patch.object(engine.native, "run_info", return_value=[0] * 9 + [event_id]):
+            return engine._event(ctx)
+
+    def test_versions_one_to_three_show_three_options_and_version_four_shows_four(self):
+        for version in (1, 2, 3):
+            with self.subTest(version=version):
+                screen = self._page(engine.EVENT_WELCOME_TO_WONGOS, [0, 1, 2, 3], version)
+                self.assertEqual([o.action for o in screen.decision.options], [0, 1, 2])
+        screen = self._page(engine.EVENT_WELCOME_TO_WONGOS, [0, 1, 2, 3], 4)
+        self.assertEqual([o.action for o in screen.decision.options], [0, 1, 2, 3])
+        leave = screen.decision.options[3]
+        self.assertEqual((leave.kind, leave.event), ("event.option", (engine.EVENT_WELCOME_TO_WONGOS, 3, 0)))
+
+    def test_a_thin_purse_loses_only_the_purchases_it_cannot_make(self):
+        self.assertEqual([o.action for o in self._page(41, [0, 3], 3).decision.options], [0])
+        self.assertEqual([o.action for o in self._page(41, [0, 3], 4).decision.options], [0, 3])
+
+    def test_a_page_with_only_leave_is_not_a_decision_in_any_version(self):
+        for version in (1, 2, 3, 4):
+            with self.subTest(version=version):
+                screen = self._page(41, [3], version)
+                self.assertIsNone(screen.decision)
+                self.assertEqual((screen.auto, screen.auto_stat), (3, "forced_skip/event"))
+
+    def test_no_other_event_page_shows_action_three_in_any_version(self):
+        for event_id in range(0, 80):
+            if event_id == engine.EVENT_WELCOME_TO_WONGOS:
+                continue
+            for version in (1, 2, 3, 4):
+                with self.subTest(event_id=event_id, version=version):
+                    screen = self._page(event_id, [0, 1, 3], version)
+                    self.assertEqual([o.action for o in screen.decision.options], [0, 1])
 
 
 class AutoScreenTests(unittest.TestCase):
