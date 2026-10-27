@@ -1094,7 +1094,10 @@ class EmuLock:
                         hit = j
                 elif kind == "select_cards":
                     deck = (self.dec.view or self.s.view()).deck
-                    card = o.card if o.card is not None else (deck[o.deck_index] if o.deck_index is not None else None)
+                    # The card a deck selection takes is the deck's, `deck[deck_index]`; an offer (select.offer) has no deck
+                    # index and names its own card. A transform-to option (Wood Carvings' Peck and Toric Toughness, Claws)
+                    # carries BOTH, and its `card` is what the transform makes: matching on it never paired a starter.
+                    card = deck[o.deck_index] if o.deck_index is not None else o.card
                     if card is not None and self._card(card) == [lab[0], int(lab[1])]:
                         hit = j
                 elif kind == "shop":

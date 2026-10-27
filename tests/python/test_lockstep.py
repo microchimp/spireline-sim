@@ -1253,3 +1253,51 @@ class OutcomeTests(unittest.TestCase):
         rec = cx.exception.lockstep.log.records[0]
         self.assertEqual(rec["outcome"]["class"], "crash")
         self.assertEqual(rec["not_ranked_span"]["count"], 1)
+
+
+class WoodCarvingsPairingTests(unittest.TestCase):
+    """The 95 `apply:no_emulator_option:select_cards` records after a Wood Carvings page: the referee picked a starter, the
+    emulator's selection listed it, and the pairing looked at the wrong card. A transform-to option's `card` is the card the
+    transform makes (Peck, Toric Toughness); the card the option takes out of the deck is `deck[deck_index]`."""
+
+    FIXTURE = ROOT / "tests" / "fixtures" / "lockstep" / "wood_carvings_torus_pick.json"
+    TORIC = 9  # the stub's card id for TORIC_TOUGHNESS
+
+    def setUp(self):
+        import json
+
+        self.rec = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
+        self.label = json.loads(self.rec["reason"].split("select_cards:", 1)[1])
+        # the starter deck as the engine's sorted view has it: 2 Strike, 1 Defend, Bash (ids 5, 5, 6, 7), plus an Anger (8)
+        # the game's Basic-and-transformable rule does not admit, so the engine's screen does not list it
+        self.deck = [_card(5), _card(5), _card(6), _card(7), _card(8)]
+        e = stub_emu(FakeRun("select", {}, {("select", "select.transform_to"): "event"}))
+        e.slug["cards"][self.TORIC] = "TORIC_TOUGHNESS"
+        # one option per distinct candidate, as engine._card_select builds them: the action is the deck index, the
+        # deck_index the first entry equal to the card, the card the result of the transform
+        e.dec = SimpleNamespace(
+            type="card_select",
+            options=tuple(_opt("select.transform_to", a, deck_index=d, arg=self.TORIC, card=_card(self.TORIC))
+                          for a, d in ((0, 0), (2, 2), (3, 3))),
+            view=SimpleNamespace(deck=self.deck))
+        self.e = e
+
+    def test_fixture_is_the_torus_record(self):
+        self.assertEqual((self.rec["seed"], self.rec["decision"], self.rec["floor"]), ("DYC9LDPXTE", 40, 6))
+        self.assertTrue(self.rec["acted"]["label"].endswith("options.TORUS"))
+        self.assertEqual(self.label, ["STRIKE_IRONCLAD", 0])
+
+    def test_the_referees_starter_pick_pairs_and_is_stepped(self):
+        self.assertEqual(self.e._pair("select_cards", [self.label]), [0])
+        self.assertIsNone(self.e.apply("select_cards", [self.label], 0))  # was "no_emulator_option:select_cards:[...]"
+        self.assertEqual(self.e.s.taken, ["select.transform_to"])
+
+    def test_each_listed_card_pairs_with_its_own_option_and_an_unlisted_one_does_not(self):
+        labels = [["BASH", 0], ["DEFEND_IRONCLAD", 0], ["STRIKE_IRONCLAD", 0], ["ANGER", 0], ["STRIKE_IRONCLAD", 1]]
+        self.assertEqual(self.e._pair("select_cards", labels), [2, 1, 0, None, None])
+
+    def test_the_card_of_an_offer_option_is_still_the_card_it_names(self):
+        self.e.dec = SimpleNamespace(type="card_select", options=(_opt("select.offer", 0, card=_card(8)),
+                                                                  _opt("select.offer", 1, card=_card(6))), view=None)
+        self.e.s.view = lambda: SimpleNamespace(deck=self.deck)
+        self.assertEqual(self.e._pair("select_cards", [["DEFEND_IRONCLAD", 0], ["ANGER", 0]]), [1, 0])
