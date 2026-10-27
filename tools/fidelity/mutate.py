@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import glob
 import json
 import math
 import os
@@ -397,28 +398,69 @@ def sample(cands: list, k: int, rng: random.Random) -> list:
 
 
 COPIED_TREES = (ENGINE, "tools/emudump", "src/Sts2Emulator.Tests/Support/Invariants")  # EmuDump.csproj compiles the last one in
-COPIED_FILES = ("data/id_map.json", "tools/fidelity/power_aliases.json")  # and links these two
+ROOT_PROJECTS = ("tools/emudump/EmuDump.csproj",)  # the project the scratch copy is built from; its ProjectReferences are followed
+FILE_ITEMS = ("EmbeddedResource", "Content", "None", "Compile", "AdditionalFiles", "EmbeddedFiles")  # items that name a file the build reads
+
+
+def project_inputs(src: Path, projects: tuple = ROOT_PROJECTS) -> list:
+    """The files the projects (and the projects they reference) embed, link or compile from outside the trees that are
+    copied whole: what the csproj items say, so the next embedded file is picked up without an edit here. Paths are
+    relative to src, posix style; an item that does not resolve (a `$(Property)`) or does not exist is skipped."""
+    from xml.etree import ElementTree  # noqa: PLC0415
+    got, seen, todo = set(), set(), [src / p for p in projects]
+    while todo:
+        proj = todo.pop()
+        if proj in seen or not proj.is_file():
+            continue
+        seen.add(proj)
+        try:
+            tree = ElementTree.parse(proj)
+        except ElementTree.ParseError:
+            continue
+        for el in tree.iter():
+            inc = el.get("Include")
+            if not inc or "$(" in inc:
+                continue
+            for part in filter(None, (x.strip() for x in inc.split(";"))):
+                pattern = os.path.normpath(os.path.join(proj.parent, part.replace("\\", "/")))
+                if el.tag == "ProjectReference":
+                    todo.append(Path(pattern))
+                    continue
+                if el.tag not in FILE_ITEMS:
+                    continue
+                for hit in glob.glob(pattern, recursive=True):
+                    h = Path(hit)
+                    try:
+                        rel = h.resolve().relative_to(src.resolve())
+                    except ValueError:
+                        continue  # outside the tree: nothing to copy into the scratch tree
+                    if h.is_file() and not any(part_ in ("bin", "obj") for part_ in rel.parts):
+                        got.add(rel.as_posix())
+    return sorted(got)
+
+
+def copy_list(src: Path) -> list:
+    """Every source file the scratch copy holds, relative to src (posix): the whole trees minus bin/obj, then the
+    csproj inputs outside them."""
+    rels = set()
+    for rel in COPIED_TREES:
+        if (src / rel).is_dir():
+            for p in (src / rel).rglob("*"):
+                r = p.relative_to(src)
+                if p.is_file() and not any(part in ("bin", "obj") for part in r.parts):
+                    rels.add(r.as_posix())
+    return sorted(rels | set(project_inputs(src)))
 
 
 def make_copy(src: Path, dst: Path) -> None:
-    """The engine, EmuDump, the invariant sources it compiles in and the data files it links, in dst (sources only;
-    dst keeps its own bin/obj between runs)."""
-    for rel in COPIED_TREES:
-        if not (src / rel).is_dir():
+    """Everything the build of EmuDump reads, in dst (sources only; dst keeps its own bin/obj between runs): the
+    engine, EmuDump, the invariant sources it compiles in, and the files the csproj items embed or link."""
+    for rel in copy_list(src):
+        p, t = src / rel, dst / rel
+        if t.exists() and t.stat().st_size == p.stat().st_size and t.read_bytes() == p.read_bytes():
             continue
-        for p in (src / rel).rglob("*"):
-            r = p.relative_to(src)
-            if any(part in ("bin", "obj") for part in r.parts) or p.is_dir():
-                continue
-            t = dst / r
-            if t.exists() and t.stat().st_size == p.stat().st_size and t.read_bytes() == p.read_bytes():
-                continue
-            t.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, t)
-    for rel in COPIED_FILES:
-        if (src / rel).is_file():
-            (dst / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src / rel, dst / rel)
+        t.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, t)
 
 
 def dotnet_env() -> dict:

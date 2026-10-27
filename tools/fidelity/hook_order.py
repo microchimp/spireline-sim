@@ -35,12 +35,12 @@ import collections
 import json
 import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import hook_table as ht
+from . import mutate as mu
 
 PROBE_CS = """// Written by tools/fidelity/hook_order.py into its scratch copy of the engine only.
 namespace Sts2Emulator;
@@ -326,27 +326,9 @@ def apply_probes(texts: dict[str, str], masked: dict[str, str], points: dict, dr
 
 
 def make_copy(src_root: Path, dst: Path) -> None:
-    """The engine, EmuDump and the two data files it links, in dst (sources only; bin/obj kept)."""
-    for rel in ("src/Sts2Emulator", "tools/emudump"):
-        for p in (src_root / rel).rglob("*"):
-            r = p.relative_to(src_root)
-            if any(part in ("bin", "obj") for part in r.parts) or p.is_dir():
-                continue
-            t = dst / r
-            if t.exists() and t.stat().st_size == p.stat().st_size and t.read_bytes() == p.read_bytes():
-                continue
-            t.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, t)
-    for rel in ("data/id_map.json", "tools/fidelity/power_aliases.json"):
-        (dst / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_root / rel, dst / rel)
-    # The invariant sources EmuDump compiles in.
-    inv = src_root / "src/Sts2Emulator.Tests/Support/Invariants"
-    if inv.exists():
-        for p in inv.glob("*.cs"):
-            t = dst / p.relative_to(src_root)
-            t.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, t)
+    """The scratch tree EmuDump is built in (sources only; bin/obj kept): the one mutate.make_copy builds, whose file list
+    is read from the csproj items, so a file the engine newly embeds is copied here too."""
+    mu.make_copy(src_root, dst)
 
 
 def dotnet_env() -> dict:
