@@ -132,6 +132,53 @@ public static class DrawSteer
 
         return (order, rest, branches);
     }
+
+    /// <summary>
+    /// A card of the draw pile that ties another one on <c>ShuffleSortKey</c> but not on value, when at least two cards
+    /// of <paramref name="rest" /> (the canonically laid-out part) are still in the pile; null when there is none (see
+    /// <c>SolverChance.CheckTie</c>).
+    /// </summary>
+    internal static CardInstance? LayoutTie(CombatState s, HashSet<int> rest)
+    {
+        var pile = s.DrawPile;
+        int inRest = 0;
+        foreach (var c in pile)
+        {
+            inRest += rest.Contains(c.Uid) ? 1 : 0;
+        }
+
+        if (inRest < 2)
+        {
+            return null;
+        }
+
+        var groups = new Dictionary<long, CardInstance>();
+        HashSet<long>? tied = null;
+        foreach (var c in pile)
+        {
+            long k = Sts2Emulator.Core.Effects.CardEffects.ShuffleSortKey(c);
+            if (!groups.TryAdd(k, c))
+            {
+                (tied ??= []).Add(k);
+            }
+        }
+
+        if (tied is null)
+        {
+            return null;
+        }
+
+        foreach (var c in pile)
+        {
+            long k = Sts2Emulator.Core.Effects.CardEffects.ShuffleSortKey(c);
+            if (tied.Contains(k) && !CardValue(s, groups[k]).AsSpan().SequenceEqual(CardValue(s, c)))
+            {
+                return c;
+            }
+        }
+
+        return null;
+    }
 }
 
 /// <summary>The step took a card of the rest of epoch <see cref="Epoch" />: the next position branches.</summary>
@@ -168,6 +215,7 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
         }
 
         CheckRest();
+        CheckTie(call);
         if (call.Kind == ChanceKind.RawDouble)
         {
             throw new ChanceRefused("unlisted-roll", call);
@@ -249,10 +297,47 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
     }
 
     /// <summary>
+    /// A uniform pick over the draw pile (Uproar, Catastrophe, a draw-pile sample screen) goes through
+    /// <c>CardEffects.StableShuffle</c>, which sorts by <c>ShuffleSortKey</c> (id, upgraded) before its Fisher-Yates. The
+    /// sort puts cards of different sort keys in an order their values fix, but which of two tied cards comes first is
+    /// the pile's order (the runtime's sort is not stable at three cards or past sixteen, so any tie in the pile can
+    /// move with the rest's layout). When two cards of the pile tie there and differ in their key value (a grown
+    /// Rampage beside a fresh one), the value picked depends on the rest's order, which the canonical layout fixes and
+    /// the front's branch does not average: Uproar over the two Rampages came out 1/4 and 3/4, not 1/2 each. The order
+    /// left behind is not uniform either, so the multiset model cannot carry the pick: the whole solve is refused.
+    /// Without such a tie the picked value is the same in every layout, so the canonical one is exact.
+    /// </summary>
+    void CheckTie(in ChanceCall call)
+    {
+        if (call.Kind != ChanceKind.Next || call.Min != 0 || call.Max < 2 || DrawSteer.LayoutTie(state, Rest) is not { } tie || !FromStableShuffle())
+        {
+            return;
+        }
+
+        throw new SolveRefused($"draw-tie: {Cards.Get(Math.Abs(tie.DefId)).Name} ties another draw-pile card of another value in a sorted pick");
+    }
+
+    static bool FromStableShuffle()
+    {
+        foreach (var f in new StackTrace(2, false).GetFrames())
+        {
+            var m = f.GetMethod();
+            if (m?.DeclaringType == typeof(Sts2Emulator.Core.Effects.CardEffects) && m.Name == nameof(Sts2Emulator.Core.Effects.CardEffects.StableShuffle))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Throws <see cref="DrawPending" /> when the rest's front card has left the draw pile: the next position of the
-    /// unknown middle was taken, so its value branches. Conditioning on that position is exact whatever took it (a draw
-    /// off the top, or a uniform pick that landed there); a card of the rest taken from further down by a uniform pick
-    /// or a screen's choice leaves the rest's order unread, so it does not branch.
+    /// unknown middle was taken, so its value branches at count / size. That is exact for a draw off the top, and for a
+    /// sorted pick that landed there when the picked value does not depend on the rest's layout (<see cref="CheckTie" />
+    /// refuses the case where it does): every layout then picks that value, and the branches only split the rest's
+    /// order, uniformly. A card of the rest taken from further down by such a pick, or by a screen's choice, leaves the
+    /// rest's order unread, so it does not branch.
     /// </summary>
     public void CheckRest()
     {

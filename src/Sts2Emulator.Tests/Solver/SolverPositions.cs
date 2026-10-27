@@ -10,11 +10,14 @@ namespace Sts2Emulator.Tests.Solver;
 /// <summary>
 /// The harness's small positions, built from tests/fixtures/solver/positions.jsonl (written by tools/solver/harness.py):
 /// a corpus fixture's deck, relics and potions or self-play's default deck, seeded random play into the fight, the cut
-/// (enemy HP capped, draw and discard piles trimmed), the steps after it (to open screens and mid-turn positions).
+/// (enemy HP capped, draw and discard piles trimmed), the steps after it (to open screens and mid-turn positions), the
+/// card played last to stand on its screen. A recipe may name its fight (<c>encounter</c>), the corpus file whose deck
+/// it takes (<c>fixture</c>) and a buff the player waits for, ending turns, before the cut (<c>until</c>: <c>player:Tender</c>,
+/// <c>enemy:Thorns</c>).
 /// </summary>
 internal static class SolverPositions
 {
-    public sealed record Recipe(int Id, string Source, string Engine, int Seed, int Setup, int Steps, int EnemyHp, int DrawKeep, int DiscardKeep, string[] Mix, int After, int Horizon);
+    public sealed record Recipe(int Id, string Source, string Engine, int Seed, int Setup, int Steps, int EnemyHp, int DrawKeep, int DiscardKeep, string[] Mix, int After, int Horizon, string Play, string Encounter, string Until, string Fixture);
 
     public sealed record Position(Recipe Recipe, CombatState State, CountingRandom Rng);
 
@@ -29,12 +32,12 @@ internal static class SolverPositions
         engine == "core2" ? new Kernel(KernelOptions.FromFamilies(["F08", "F10"]), () => Sts2Emulator.Tests.Core2.ListenerOrderTests.Ids, Sts2Emulator.Core2.Models.Registry.All) : null;
 
     /// <summary>A fight on <paramref name="engine" /> with every stream a CountingRandom, its pre-play phase resolved.</summary>
-    public static (CombatState State, CountingRandom Rng) Fight(string engine, int seed, int[] deck, int[] relics, int[] potions, int hp = 80)
+    public static (CombatState State, CountingRandom Rng) Fight(string engine, int seed, int[] deck, int[] relics, int[] potions, int hp = 80, int? encounter = null)
     {
         var s = new CombatState();
         KernelFor(engine)?.Bind(s);
         var rng = new CountingRandom(seed * 101);
-        CombatFactory.Reset(s, rng, deck, null, relics, hp, 80, potions, 0);
+        CombatFactory.Reset(s, rng, deck, encounter, relics, hp, 80, potions, 0);
         for (int i = 0; i < StateCloning.StreamCount; i++)
         {
             if (StateCloning.Stream(s, i) is not CountingRandom)
@@ -51,7 +54,17 @@ internal static class SolverPositions
     {
         int[] mix = [.. r.Mix.Select(Cards.FindId).Where(x => x is not null).Select(x => x!.Value)];
         int[] deck, relics = [], potions = [];
-        if (r.Source == "corpus" && corpus.Count > 0)
+        if (r.Fixture.Length > 0)
+        {
+            var c = corpus.Find(x => x.Name == r.Fixture);
+            if (c.Deck is null)
+            {
+                return null;
+            }
+
+            (deck, relics, potions) = (c.Deck, c.Relics, c.Potions);
+        }
+        else if (r.Source == "corpus" && corpus.Count > 0)
         {
             var c = corpus[r.Setup % corpus.Count];
             (deck, relics, potions) = (c.Deck, c.Relics, c.Potions);
@@ -63,11 +76,20 @@ internal static class SolverPositions
 
         try
         {
-            var (s, rng) = Fight(r.Engine, r.Seed, [.. deck, .. mix], relics, potions);
+            int? encounter = r.Encounter.Length > 0 ? (int)Enum.Parse<CombatFactory.ActOneEncounter>(r.Encounter) : null;
+            var (s, rng) = Fight(r.Engine, r.Seed, [.. deck, .. mix], relics, potions, encounter: encounter);
             var policy = new Random(r.Seed * 7919);
             for (int i = 0; i < r.Steps; i++)
             {
                 if (!Play(s, rng, policy, endTurn: true))
+                {
+                    return null;
+                }
+            }
+
+            for (int i = 0; r.Until.Length > 0 && !Reached(s, r.Until); i++)
+            {
+                if (i >= 40 || !Pass(s, rng, policy))
                 {
                     return null;
                 }
@@ -86,12 +108,40 @@ internal static class SolverPositions
                 }
             }
 
+            if (r.Play.Length > 0 && s.PendingSelection is null && Cards.FindId(r.Play) is int play)
+            {
+                int at = s.Hand.FindIndex(c => Math.Abs(c.DefId) == play);
+                var m = Actions.Legal(s, Pruning.None).Where(x => at >= 0 && x.Action == at).Take(1).ToList();
+                if (m.Count > 0 && Successors.Step(s, rng, m[0]).Terminal)
+                {
+                    return null;
+                }
+            }
+
             return new Position(r, s, rng);
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
             return null;  // a setup the engine does not take: no position from it
         }
+    }
+
+    /// <summary>The player ends the turn (a screen in the way is answered at random): the enemies act, nothing of theirs is killed on the way.</summary>
+    static bool Pass(CombatState s, CountingRandom rng, Random policy)
+    {
+        var moves = Actions.Legal(s, Pruning.None);
+        var m = s.PendingSelection is null ? moves.First(x => Actions.EndsTurn(s, x)) : moves[policy.Next(moves.Count)];
+        return !Successors.Step(s, rng, m).Terminal;
+    }
+
+    /// <summary>The player (<c>player:Name</c>) or a living enemy (<c>enemy:Name</c>) holds the buff, on the player's turn with no screen open.</summary>
+    static bool Reached(CombatState s, string until)
+    {
+        var parts = until.Split(':');
+        var id = Enum.Parse<BuffId>(parts[1]);
+        return s.PendingSelection is null && (parts[0] == "player"
+            ? BuffSystem.Get(s.PlayerBuffs, id) > 0
+            : s.Enemies.Exists(e => e.Hp > 0 && BuffSystem.Get(e.Buffs, id) > 0));
     }
 
     /// <summary>One seeded random legal move (end turn only when allowed or alone); false when the fight ended.</summary>

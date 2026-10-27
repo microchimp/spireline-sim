@@ -10,6 +10,23 @@ core2 with F08 and F10), the seeded random-policy steps played into the fight, t
 screens, draws and rolls, so each kind is met), the steps played after the cut (which
 reach open screens and mid-turn positions) and the turn horizon.
 
+The horizon is drawn from its own hash of the recipe's index, apart from every other field,
+so horizon-1 positions fall on both engines, both sources and every enemy HP. Three groups
+follow the 400 mixed recipes:
+
+- screens: a card that opens a screen is mixed in and played last (`play`), so the position
+  stands on the open screen, draw-pile choices (Seeker Strike's sample, Cleanse, Wish) among
+  them, which is what runs the solver's keep path;
+- order-dependence (the owner's check): Hunter Killer once its TENDERIZING_GOOP has put Tender
+  on the player (each play costs Strength and Dexterity until the turn ends, so Strike then
+  Defend and Defend then Strike reach different states), and the corpus's Toadpoles fight once
+  a Toadpole has Thorns (each attack into it hits back; the corpus files of that fight record no
+  deck, so it is played with the starter deck);
+  `encounter` names the fight, `until` the buff the player waits for, ending turns (`player:`
+  or `enemy:`), `fixture` the corpus file whose deck it uses; enemy HP is capped at 30, so the
+  turn cannot end the fight. L0 reads the player's HP only, so Tender's order shows in the
+  value at horizon 1 (the enemy's attack meets the block), Thorns' within the turn.
+
     python tools/solver/harness.py          # write the list
     python tools/solver/harness.py --check  # fail if the list on disk differs
 """
@@ -17,6 +34,7 @@ reach open screens and mid-turn positions) and the turn horizon.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -39,28 +57,87 @@ MIX = [
     ["Cleave", "Thunderclap"],
 ]
 
+# Cards played last to stand on their screen: draw-pile choices first, then hand and discard choices.
+SCREEN_PLAYS = ["SeekerStrike", "Cleanse", "Wish", "BurningPact", "Headbutt", "Armaments", "TrueGrit"]
+
 COUNT = 400
+SCREEN_COUNT = 8  # recipes per screen card
+
+# The owner's order-dependence positions: (encounter, until, corpus fixture or "" for the starter deck).
+ORDER = [
+    ("HunterKiller", "player:Tender", ""),
+    ("Toadpoles", "enemy:Thorns", ""),
+]
+ORDER_COUNT = 6  # recipes per fight: both engines, three seeds
+
+
+def horizon(i: int) -> int:
+    """1 for about one recipe in six, by a sha256 of the index alone."""
+    return 1 if hashlib.sha256(f"horizon {i}".encode()).digest()[0] % 6 == 0 else 0
+
+
+def base(i: int, **kw) -> dict:
+    r = {
+        "id": i,
+        "source": "corpus" if i % 2 == 0 else "selfplay",
+        "engine": "old" if (i // 2) % 2 == 0 else "core2",
+        "seed": 5000 + i,
+        "setup": i // 4,
+        "steps": (i * 7) % 9,
+        "enemy_hp": [2, 5, 9, 14][i % 4],
+        "draw_keep": (i * 3 + i // 7) % 5,
+        "discard_keep": (i + i // 2) % 3,
+        "mix": MIX[(i // 3) % len(MIX)],
+        "after": (i // 5) % 3,
+        "horizon": horizon(i),
+        "play": "",
+        "encounter": "",
+        "until": "",
+        "fixture": "",
+    }
+    r.update(kw)
+    return r
 
 
 def recipes() -> list[dict]:
-    out = []
-    for i in range(COUNT):
-        out.append(
-            {
-                "id": i,
-                "source": "corpus" if i % 2 == 0 else "selfplay",
-                "engine": "old" if (i // 2) % 2 == 0 else "core2",
-                "seed": 5000 + i,
-                "setup": i // 4,
-                "steps": (i * 7) % 9,
-                "enemy_hp": [2, 5, 9, 14][i % 4],
-                "draw_keep": (i * 3 + i // 7) % 5,
-                "discard_keep": (i + i // 2) % 3,
-                "mix": MIX[(i // 3) % len(MIX)],
-                "after": (i // 5) % 3,
-                "horizon": 1 if i % 8 == 3 else 0,
-            }
-        )
+    out = [base(i) for i in range(COUNT)]
+    i = COUNT
+    for card in SCREEN_PLAYS:
+        for j in range(SCREEN_COUNT):
+            out.append(
+                base(
+                    i,
+                    steps=j % 3,
+                    enemy_hp=[9, 14][j % 2],
+                    draw_keep=3 + j % 2,
+                    discard_keep=1 + j % 2,
+                    mix=[card],
+                    after=0,
+                    horizon=0,
+                    play=card,
+                )
+            )
+            i += 1
+    for encounter, until, fixture in ORDER:
+        for j in range(ORDER_COUNT):
+            out.append(
+                base(
+                    i,
+                    source="corpus" if fixture else "selfplay",
+                    engine="old" if j % 2 == 0 else "core2",
+                    steps=0,
+                    enemy_hp=30,
+                    draw_keep=1,
+                    discard_keep=1,
+                    mix=["StrikeIronclad", "DefendIronclad"],
+                    after=0,
+                    horizon=1 if encounter == "HunterKiller" and j >= ORDER_COUNT - 2 else 0,
+                    encounter=encounter,
+                    until=until,
+                    fixture=fixture,
+                )
+            )
+            i += 1
     return out
 
 

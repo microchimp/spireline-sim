@@ -5,9 +5,14 @@ using Sts2Emulator.Core;
 /// <summary>
 /// The reference solver (FIGHT_SOLVER.md section 6): plain tree expectimax over full labelled states for small fights.
 /// No table, no pruning: every hand index and potion slot is its own move, every targetable enemy its own target, a
-/// draw from the unknown middle branches over each card at 1 / size, and equal outcomes are separate children. It
-/// shares only the engine step, the roll odds and the utility with <see cref="Expectimax" />, so the equal-value
-/// harness holds each pruning to it, to the last bit (both compute exact rationals).
+/// draw from the unknown middle branches over each card at 1 / size, and equal outcomes are separate children.
+/// What it shares with <see cref="Expectimax" />: <see cref="Successors.Expand" /> (the engine step, the roll odds,
+/// the draw pile's layout and its branches, by card here, and every refusal it raises), <see cref="Actions.Legal" />
+/// (under <see cref="Pruning.None" />), <see cref="NodeValue" /> (the max, the horizon leaf, the exactness rule),
+/// <see cref="Utility" /> (L0 and the terminal score) and the key's refusals (<see cref="StateKey.Encode" />). It shares
+/// no table, merging or pruning, so the equal-value harness holds each pruning to it, to the last bit (both compute
+/// exact rationals); it cannot see a wrong chance model, which both would share: ChanceModelTests holds Expand to an
+/// independent count over the engine's own seeded streams.
 /// </summary>
 public static class Reference
 {
@@ -36,7 +41,7 @@ public static class Reference
             }
 
             var b = NodeValue.Max(values, state);
-            return new Result(b.Value, b.Exact, moves, c.Nodes, c.Steps, null);
+            return new Result(b.Value, b.Exact && b.Mass == Rational.One, moves, c.Nodes, c.Steps, null);
         }
         catch (SolveRefused e)
         {

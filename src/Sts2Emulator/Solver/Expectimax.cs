@@ -105,6 +105,13 @@ internal readonly record struct NodeValue(Rational Value, bool Exact, Rational M
         }
 
         bool exact = upper == b.Value && list.Exists(v => v.Exact && v.Value == b.Value);
+        if (exact)
+        {
+            // The mass is the exact move's (all of it): the first move of greatest value may be a cut one whose bound is
+            // its value (a horizon leaf at L0's maximum), whose mass is short of one.
+            b = list.First(v => v.Exact && v.Value == b.Value);
+        }
+
         return new NodeValue(b.Value, exact, b.Mass, exact ? b.Value : upper);
     }
 }
@@ -238,7 +245,7 @@ public sealed class Expectimax(SolveOptions? options = null)
 
         _path.Remove(key);
         var b = NodeValue.Max(values, state);
-        bool exact = b.Exact;
+        bool exact = b.Exact && b.Mass == Rational.One;
         Table.Put(key, b, horizon);
         return new ExpectedResult(exact ? SolveStatus.Exact : SolveStatus.Budget, null, horizon, b.Value, exact, b.Mass, moves, counters, sw.Elapsed.TotalSeconds);
     }

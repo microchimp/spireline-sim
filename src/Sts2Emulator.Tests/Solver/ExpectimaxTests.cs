@@ -211,4 +211,20 @@ public class ExpectimaxTests(ITestOutputHelper output)
         Assert.Equal(new Rational(3, 4), Rational.FromDouble(0.75));
         Assert.True(new Rational(2, 3) > new Rational(3, 5));
     }
+
+    /// <summary>
+    /// An exact max node's mass is its exact move's: a cut move first whose bound equals its value (a horizon leaf at
+    /// L0's maximum, mass 0) and an exact move of the same value make the node exact, with mass one, not the cut move's.
+    /// </summary>
+    [Fact]
+    public void AnExactMaxTakesTheMassOfItsExactMove()
+    {
+        var cut = new NodeValue(Rational.One, false, Rational.Zero, Rational.One);
+        var proved = new NodeValue(Rational.One, true, Rational.One, Rational.One);
+        var v = NodeValue.Max([cut, proved], new CombatState());
+        Assert.True(v.Exact);
+        Assert.True(v.Mass == Rational.One);
+        var open = NodeValue.Max([cut, cut], new CombatState());
+        Assert.False(open.Exact);
+    }
 }
