@@ -687,14 +687,20 @@ class EmuLock:
     def _flush_rewards(self) -> None:
         """Mirror the referee's reward answers in its order, as it gives them. RunSession.decision() opens a card reward
         before it offers the potion and relic items, so on the items screen the answer is stepped on the engine's own
-        item index (engine._rewards' layout: gold, potion, relic, cards) without going through decision()."""
+        item index (engine._rewards' layout: gold, potion, relic, cards, special rows) without going through decision().
+        The driver takes gold and every special card row (a Thieving Hopper's returned card) without asking, in the
+        game's set order: gold, potion, relic, special, card. So the special rows are claimed before the card ask, and
+        not before a potion or relic ask (the game still holds the deck without the card there)."""
         rc = self.E.rc
         for _ in range(20):
             ph = self.s.phase
             if ph == rc.PHASE_RELIC_REWARD:
-                gold, potion, relic, cards = self.native.run_state_list(self.s.handle, 6, 4)
+                gold, potion, relic, cards, special = self.native.run_state_list(self.s.handle, 6, 5)
                 if gold:
                     self.s._step(0)  # gold is taken before any question on both sides
+                    continue
+                if special and self._asking_card():
+                    self.s._step(potion + relic + cards)  # the special rows follow every other item in the mask
                     continue
                 if not self.rq:
                     return
@@ -713,6 +719,10 @@ class EmuLock:
                 return  # the referee's card_reward decision follows
             self._decision()
             self._take("card.skip")
+
+    def _asking_card(self) -> bool:
+        """True while the referee's question is the card reward's: it has already taken gold and the special rows."""
+        return (((self._msg or {}).get("ctx") or {}).get("type")) == "card"
 
     def _unasked_claim(self, d) -> bool:
         """True when the rewards screen `d` holds one relic to claim that the referee took without being asked. A screen
