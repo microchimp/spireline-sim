@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_order_reads.py; do not edit. Every index or position read of a pile in the six engine files; order_readers.json classes those on multiset piles.",
- "sources_sha256": "d2b1fc38bd637a4e92791abd6cdea2b0247cc6247c4f7410c18f2f4235b557ca",
+ "sources_sha256": "d9c34ae0366a725cb2ec4c97e8fc5126aa07b6285620be4e7730221f38cd2897",
  "scope": {
   "src/Sts2Emulator/Core/CardUid.cs": 4,
   "src/Sts2Emulator/Core/CombatEngine.cs": 168,

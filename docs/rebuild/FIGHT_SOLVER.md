@@ -506,3 +506,46 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   the sampled search is still budget-limited (if 120 beats 30, the time an exact solve saves can be re-spent on
   simulations and arm C is needed; if not, the oracle's gain must come from exactness); and the time per decision at 30
   and 120, which sets the exact layer's time budget.
+
+## 14. S3 as built
+
+- **Values are exact rationals** (`Solver/Utility.cs`: `Rational`, L0). Every odds the rules give and L0 itself are
+  rational, so the reference and the pruned solver agree to the last bit or not at all; the harness compares them with
+  `==`, not to 1e-9. `ValueDouble` is for reporting.
+- **Draws in the engine's own pile** (`Solver/Successors.cs`, `DrawSteer`). The engine draws off the top of one list, so
+  each step runs on a copy whose unknown middle is laid out by the solver: the cards drawn so far in this branch, then
+  the rest in a canonical order (by key value, then uid). A step that takes the rest's front card has taken the next
+  position of the unknown middle: it is run again once per distinct value that position can hold at count / size (the
+  reference: once per card at 1 / size); a uniform pick further down the pile needs no branch. Uniform picks over
+  the draw pile go through `StableShuffle`, which sorts by (id, upgraded) first, so the value picked is the same in
+  every layout unless two cards tie there and differ in key value (a grown Rampage beside a fresh one): then the
+  tie-break is the pile's order, the canonical layout fixes it (Uproar over the two came out 1/4 and 3/4, not 1/2
+  each, on the reference too, which shares `Successors.Expand`), and the order left behind is not uniform; the solve
+  is refused (`draw-tie`). The check runs at every
+  roll, so a draw branches before any roll that follows it. A discard shuffle inside a step is laid out the same way
+  by answering its Fisher-Yates calls. A screen's answer lays out the screen copy's pile (a draw-pile choice keeps its
+  chosen card at its index), which the replay puts back at the screen. Refused: a card that peeks at the pile's order
+  (I Am Invincible, Perfect Fit), a random placement into a known run (`hidden-branch`). The macro draw (`DrawModel.MacroDraw`) is not wired: draws are sequential, merged by value
+  and, for their successors, by key.
+- **Exact means proved.** A node carries a sound upper bound (a horizon leaf's is L0's maximum, 1); a max node is exact
+  when a move of greatest value is exact and no move's bound is above it, a chance node when every outcome is. An
+  exact max node carries its exact move's mass, and a solve is `Exact` only with the full mass. A cut
+  solve is never exact; a budget cut returns the last completed horizon as `Budget`, or `Refused` when none completed.
+- **Pruning bits** (`Pruning`): `Transposition` (values by key and turns left, equal outcomes of a chance node merged),
+  `MultisetHand`, `InterchangeableEnemies` (a no-op while every combat holds an enemy-order reader, S1's
+  `EnemyOrderAlways`), `SubtreeReuse` (the table outlives a solve), `DrawByValue`. Pick-k screens are not made
+  canonical by pick order: the table merges their equal results.
+- **Budget** (`Solver/Budget.cs`): nodes, engine steps and time per decision; iterative deepening over turns, each
+  horizon skipped before it starts when the week-3 estimate (W4-S1's formula) is over the node budget by more than the
+  slack. At the cut L0 stands in for the network (S5).
+- **Harness**: `tests/fixtures/solver/positions.jsonl` (400 recipes, `tools/solver/harness.py`) and
+  `EqualValueHarnessTests`: every pruning set against the reference, root value, every root move's value, exactness and
+  the best set. The horizon is drawn apart from the other fields; horizon-1 positions are held to a minimum per engine
+  and source, root screens per kind (draw-pile choices included, which run the keep path), and skips are reported by
+  class. Recipes past the 400 mixed ones stand on a screen card's screen, or on the owner's order-dependence fights
+  (Hunter Killer with Tender up, the corpus's Toadpoles with Thorns up), which must be solved. A second test keeps one
+  solver's table from a parent's solve into its children's and holds them to the reference (subtree reuse).
+- **Chance model** (`ChanceModelTests`, section 6): the reference shares `Successors.Expand` with the pruned solver,
+  so the harness cannot see a wrong chance model. Each harness position's first root moves are also stepped on plain
+  copies with real seeded streams and the unknown middle in a seeded uniform order, and Expand's odds by key must
+  match the count (every counted outcome in the model, every frequency within five standard errors).

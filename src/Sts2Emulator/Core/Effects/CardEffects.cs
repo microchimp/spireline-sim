@@ -3917,7 +3917,7 @@ public static class CardEffects
     /// wrong copy auto-played. <paramref name="indices" /> must come in pile order, as the
     /// game's `pile.Cards.Where(...)` list does.
     /// </remarks>
-    internal static List<int> StableShuffle(
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] internal static List<int> StableShuffle( // kept a frame: the solver's draw-tie looks for it
         List<CardInstance> pile,
         IEnumerable<int> indices,
         Random rng
@@ -3930,7 +3930,7 @@ public static class CardEffects
     }
 
     /// <summary>`CardModel.CompareTo` as one number: Entry's ordinal rank, then upgraded.</summary>
-    private static long ShuffleSortKey(CardInstance card)
+    internal static long ShuffleSortKey(CardInstance card)
     {
         int id = Math.Abs(card.DefId);
         int rank = id < EntryRank.Length ? EntryRank[id] : EntryRank.Length;
