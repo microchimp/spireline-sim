@@ -134,9 +134,26 @@ class WindowTests(unittest.TestCase):
                 self.assertIn("gpu-lane", reason)
 
     def test_consent_does_not_override_the_barred_states(self):
-        for state in ("paused(user)", "paused(load)", "paused(halt)", "running"):
+        for state in ("paused(user)", "paused(load)", "paused(halt)"):
             with self.subTest(state=state):
-                self.assertFalse(self.window(status(state, "selfplay"), LOCK_W4, "w4-x\n")[0])
+                self.assertFalse(self.window(status(state, "nightly-real"), LOCK_W4, "w4-x\n")[0])
+
+    def test_under_consent_a_running_lab_opens_unless_its_step_runs_the_prior_server(self):
+        # rule 4b: the lock's owner consents only while its own work leaves the GPU free; the lab's GPU steps are the exception
+        for step in ("nightly-real", "presort", "checks", "fights", "corpus"):
+            with self.subTest(step=step):
+                opened, reason = self.window(status("running", step), LOCK_W4, "w4-x\n")
+                self.assertTrue(opened)
+                self.assertTrue(reason.startswith("consent, tag w4-x"))
+                self.assertIn(step, reason)
+        for step in ("selfplay", "train", "promotion", "promote", "train-gpu", "selfplay-gpu"):
+            with self.subTest(step=step):
+                opened, reason = self.window(status("running", step), LOCK_W4, "w4-x\n")
+                self.assertFalse(opened)
+                self.assertIn(step, reason)
+        self.assertFalse(self.window(status("running", "nightly-real"), LOCK_W4, None)[0])  # no consent: closed as before
+        self.assertFalse(self.window(status("running", "nightly-real"))[0])  # no lock at all: rule 3 as before
+        self.assertFalse(qr.wide_allowed("consent, tag w4-x, lab running nightly-real"))  # still a consent window: 2 processes only
 
     def test_an_empty_lock_has_no_tag_and_a_missing_or_unreadable_status_is_closed(self):
         self.assertFalse(self.window(QUIET, "", "w4-x\n")[0])

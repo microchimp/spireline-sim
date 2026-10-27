@@ -44,7 +44,9 @@ from sts2_gym import procutil  # noqa: E402
 
 STOP_EXIT = 3  # vrun_sweep.STOP_EXIT: the exit code of a fit dropped at a stop file (duplicated: that module imports torch)
 OWN_TAG = "gpu-lane"  # a QUIET.lock with this tag is the lane's own quiet machine: the runner stays out
-BARRED_STATES = ("paused(user)", "paused(load)", "paused(halt)", "running")  # rule 4
+BARRED_STATES = ("paused(user)", "paused(load)", "paused(halt)")  # rule 4: barred whatever the lock
+RUNNING = "running"  # closed without a lock; under consent open unless the step runs the prior server (rule 4b)
+GPU_STEPS = ("selfplay", "train", "promot")  # step names that always run the prior server: never beside a fit
 QUIET_STATES = ("paused(pause)", "paused(lock)")  # rule 3, quiet without a claim
 STATES = ("queued", "running", "done", "interrupted", "failed")
 RUNNABLE = ("queued", "interrupted")
@@ -111,6 +113,10 @@ def window_open(status_text: str | None, quiet_lock_text: str | None, gpu_ok_tex
         return False, f"rule 3: QUIET.lock {tag} without GPU_OK"
     if first_token(gpu_ok_text) != tag:
         return False, f"rule 3: QUIET.lock {tag}, GPU_OK names another tag"
+    if state == RUNNING:  # rule 4b: the lock's owner consents only while its own work leaves the GPU free; the lab's own GPU steps never do
+        if step and any(word in step.lower() for word in GPU_STEPS):
+            return False, f"rule 4b: consent, but lab step {step} runs the prior server"
+        return True, f"consent, tag {tag}, lab running {step or 'a step'}"
     return True, f"consent, tag {tag}"
 
 
