@@ -278,6 +278,84 @@ class DeckOrderTests(unittest.TestCase):
         self.assertTrue(e.reanchor("room_entry", {"obs": obs}))
 
 
+class SetPlayerEnchantmentTests(unittest.TestCase):
+    """The room-entry re-anchor (`EmuLock._set_player`) writes the game's deck to the emulator. The game's record gives a card's id
+    and upgrade only, so it used to write `(id, upgraded, 0, 0)` and strip every card's enchantment (a Power's Swift, a
+    play-twice enchantment) at each room entry. A card the emulator's own deck already holds, matched by (id, upgraded) in
+    order as `_order_deck` does, keeps its enchantment and the enchantment's amount (the tuple's third and fourth numbers);
+    a card new to the emulator is written plain."""
+
+    Card = DeckOrderTests.Card
+    IDS = {"A": 1, "B": 2, "C": 3}
+
+    def c(self, name, up=False, ench=0, amount=0):
+        return self.Card(self.IDS[name], up, ench, amount)
+
+    def emu(self, deck):
+        e = bare_emu(None)
+        e.ids = {"cards": dict(self.IDS), "relics": {"R": 9}, "potions": {"P": 8}}
+        e.F = SimpleNamespace(engine_deck=lambda env: tuple(deck))
+        e._obs = lambda: "obs"
+        calls = []
+        e.native.run_debug_set_player = lambda handle, buf, **kw: calls.append((handle, buf, kw))
+        return e, calls
+
+    def room_entry(self, e, game_deck):
+        o = {"floor": 4, "hp": 50, "max_hp": 80, "gold": 120, "deck": game_deck, "relics": ["R"], "potions": ["P", 0]}
+        e._to_map, e._set_streams, e._decision = (lambda floor=None: True), (lambda: True), (lambda: object())
+        self.assertTrue(e.reanchor("room_entry", {"obs": o}))
+
+    def test_a_room_entry_keeps_the_enchantment_the_emulators_deck_holds(self):
+        e, calls = self.emu([self.c("A", ench=5, amount=2), self.c("B", up=True, ench=3, amount=1), self.c("C")])
+        self.room_entry(e, [["A", 0], ["B", 1], ["C", 0]])
+        (handle, buf, kw), = calls
+        self.assertEqual(kw["cards"], [(1, 0, 5, 2), (2, 1, 3, 1), (3, 0, 0, 0)])
+        # the rest of the write is as before
+        self.assertEqual((handle, buf), (3, "obs"))
+        self.assertEqual((kw["hp"], kw["max_hp"], kw["gold"], kw["relics"], kw["potions"], kw["max_potion_slots"]),
+                         (50, 80, 120, [9], [8, 0], 2))
+
+    def test_a_reorder_or_an_added_card_does_not_strip_what_the_emulator_knows(self):
+        e, calls = self.emu([self.c("A", ench=5, amount=2), self.c("B")])
+        self.room_entry(e, [["C", 0], ["B", 0], ["A", 0]])  # another order, and a card more
+        self.assertEqual(calls[0][2]["cards"], [(3, 0, 0, 0), (2, 0, 0, 0), (1, 0, 5, 2)])
+
+    def test_a_card_new_to_the_emulator_is_written_plain(self):
+        # a card the emulator does not hold, and one it holds in the other upgrade state, are both new to it
+        e, calls = self.emu([self.c("A", ench=5, amount=2), self.c("B", ench=4, amount=1)])
+        self.room_entry(e, [["A", 0], ["A", 1], ["C", 0], ["B", 1]])
+        self.assertEqual(calls[0][2]["cards"], [(1, 0, 5, 2), (1, 1, 0, 0), (3, 0, 0, 0), (2, 1, 0, 0)])
+
+    def test_duplicates_keep_the_enchantment_on_the_matched_position(self):
+        for emu_deck, want in (([self.c("A"), self.c("A", ench=7, amount=1)], [(1, 0, 0, 0), (1, 0, 7, 1)]),
+                               ([self.c("A", ench=7, amount=1), self.c("A")], [(1, 0, 7, 1), (1, 0, 0, 0)])):
+            e, calls = self.emu(emu_deck)
+            self.room_entry(e, [["A", 0], ["A", 0]])
+            self.assertEqual(calls[0][2]["cards"], want, emu_deck)
+        # fewer copies in the game's deck than the emulator's: the first ones match, in order
+        e, calls = self.emu([self.c("A", ench=7, amount=1), self.c("A"), self.c("A", ench=2, amount=2)])
+        self.room_entry(e, [["A", 0], ["A", 0]])
+        self.assertEqual(calls[0][2]["cards"], [(1, 0, 7, 1), (1, 0, 0, 0)])
+
+    def test_the_fight_start_walk_keeps_them_too(self):
+        # `_set_player` also runs on the fight-start plan when the emulator stands at an earlier floor
+        e, calls = self.emu([self.c("A", ench=5, amount=2)])
+        e.E = SimpleNamespace(rc=SimpleNamespace(PHASE_COMBAT=7))
+        e.s.phase, e.s.view = 7, lambda: SimpleNamespace(floor=1)
+        e._to_map = lambda floor=None: True
+        e._decision = lambda: SimpleNamespace(options=[object()])
+        e.s.apply, e._auto_combat = (lambda o: None), (lambda: None)
+        e._anchor_fight = lambda obs: True
+        o = {"floor": 4, "hp": 50, "max_hp": 80, "gold": 120, "deck": [["A", 0]], "relics": ["R"], "potions": []}
+        self.assertTrue(e.reanchor("fight_start", {"obs": o}))
+        self.assertEqual(calls[0][2]["cards"], [(1, 0, 5, 2)])
+
+    def test_an_unknown_card_writes_nothing(self):
+        e, calls = self.emu([self.c("A", ench=5, amount=2)])
+        self.assertFalse(e._set_player({"hp": 5, "max_hp": 80, "gold": 1, "deck": [["A", 0], ["ZZZ", 0]], "relics": [], "potions": []}))
+        self.assertEqual(calls, [])
+
+
 class StreamsMovedTests(unittest.TestCase):
     """Review 1.3: a room-entry stream anchor says how many streams the game named and how many the native call moved; a call
     that moved none is not reported as a stream anchor."""

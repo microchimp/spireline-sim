@@ -598,6 +598,22 @@ EVENT_LEAVE = -2
 WONGOS_LEAVE = "WELCOME_TO_WONGOS.pages.INITIAL.options.LEAVE"
 
 
+def _deck_pool(have) -> dict:
+    """The emulator's deck cards by (card id, upgraded), each key's cards in deck order."""
+    pool: dict = {}
+    for c in have:
+        pool.setdefault((c.card_id, bool(c.upgraded)), []).append(c)
+    return pool
+
+
+def _pair_deck(want, have) -> list:
+    """For each (card id, upgraded) of `want` (the game's deck, in its order) the emulator's own card it stands for: the
+    first not yet taken of `have` with that key, or None for a card the emulator does not hold (new to it). The one
+    matcher of `EmuLock._order_deck` (reorder) and `EmuLock._set_player` (carry what the emulator's card holds)."""
+    pool = _deck_pool(have)
+    return [pool[w].pop(0) if pool.get(w) else None for w in want]
+
+
 class EmuLock:
     """The real emulator side: a RunSession from the referee's seed, the rules policy, IS-MCTS in fights.
 
@@ -933,6 +949,13 @@ class EmuLock:
         potions = [self.ids["potions"].get(p) if p else 0 for p in belt]
         if any(c[0] is None for c in cards) or None in relics or None in potions:
             return False  # an id the emulator does not have: not re-anchorable
+        # The record gives a card's id and upgrade only. A card the emulator's own deck already holds (matched by id and
+        # upgrade in deck order, as `_order_deck` does) keeps its enchantment and the enchantment's amount (the tuple's
+        # third and fourth numbers): writing zeros stripped them at every room entry (a Power's Swift, a play-twice
+        # enchantment) and the emulator then played the card differently from the game. A card new to the emulator is
+        # written plain, as before. The deck is read from the observation the last step wrote (State.Deck order, off a fight).
+        held = _pair_deck([(c[0], bool(c[1])) for c in cards], self.F.engine_deck(self.s.env))
+        cards = [(c[0], c[1], m.enchantment, m.enchant_amount) if m is not None else c for c, m in zip(cards, held)]
         self.native.run_debug_set_player(self.s.handle, self._obs(), hp=int(obs["hp"]), max_hp=int(obs["max_hp"]),
                                          gold=int(obs["gold"]), cards=cards, relics=relics, potions=potions,
                                          max_potion_slots=len(belt))
@@ -1005,13 +1028,11 @@ class EmuLock:
             self.deck_order = "unknown_id"
             return
         have = list(self.F.engine_deck(self.s.env))  # State.Deck order (the view sorts it)
-        pool: dict = {}
-        for c in have:
-            pool.setdefault((c.card_id, bool(c.upgraded)), []).append(c)
+        pool = _deck_pool(have)
         if sorted(pool) != sorted(set(want)) or any(len(pool[k]) != want.count(k) for k in pool):
             self.deck_order = "other_deck"
             return
-        ordered = [pool[w].pop(0) for w in want]
+        ordered = _pair_deck(want, have)
         if ordered == have:
             self.deck_order = "same"
             return
