@@ -228,17 +228,48 @@ job's `--device`; five more FightNet and V fits cost about five times the single
 - **Memory beside self-play** (section 4) is measured before the sweep shares the machine with it.
 - The cache and the JSONs hold no paths or user names; results hold numbers only.
 
-## 7. Piece 3: the quiet-window runner (after this piece has a measured result)
+## 7. Piece 3: the quiet-window runner (`tools/gpu_lane/quiet_runner.py`), the spec (D36, week 4)
 
-`tools/gpu_lane/quiet_runner.py`: a loop that runs the next queued arm (`vrun_sweep.py run --arms <one>`) only while
-**another lane's quiet window is open with that lane's explicit consent**: a `QUIET.lock` whose tag is not `gpu-lane` **and**
-a line from that lane in HANDOFF (or a `GPU_OK` marker beside its lock) saying the GPU may be used in its window (a quiet
-lock is that lane's quiet machine for its measurements, not consent); the lab's status reads `paused(pause)` or
-`paused(lock)` with the window's tag (never `paused(user)`, the owner at the PC, nor `paused(load)`); no `train` step is
-running; `LAB/GPU_OFF` is absent. It checks those conditions **between epochs**, not between fits (a 100-epoch fit runs
-minutes), aborts and discards the fit when the window closes or the lab resumes, re-checks right after a fit starts, never
-takes a lock of its own, never writes `jobs.json`, logs to `agent/gpu-lane/quiet.log` and leaves a HANDOFF line per window
-used. Designed in one page after this sweep's table, reviewed, then run.
+**What it is.** A loop that runs queued GPU sweep jobs only while the machine is quiet for the lab and nobody has claimed
+it for a measurement without consenting to GPU use. It never takes a lock of its own, never writes `jobs.json`, and stops a
+fit between epochs the moment a window closes.
+
+**The window is open** when every line holds, read fresh at every check:
+
+1. `LAB/GPU_OFF` is absent (the lane's brake, as for the server).
+2. The lab's `status.txt` does not name a running `train` step (`step=train`; the GPU is the lab's then).
+3. **Quiet without a claim:** `D:/spireline/referee/QUIET.lock` is absent **and** the lab's status reads `paused(pause)` or
+   `paused(lock)` (a `LAB/PAUSE` or `main.lock` pause: the lab is idle and nobody is measuring on the machine);
+   **or quiet with consent:** `QUIET.lock` is present with a tag other than `gpu-lane` **and** the consent file
+   `D:/spireline/referee/GPU_OK` names that tag on its first line (the lane that holds the quiet window writes it; a quiet
+   lock without it is that lane's quiet machine, and the runner stays out, whatever the tag).
+4. Never while the status reads `paused(user)` (the owner at the PC), `paused(load)`, `paused(halt)` or `running`.
+
+**The queue:** `agent/gpu-lane/queue.json`, a list of jobs `{"name": str, "args": [vrun_sweep.py `run` arguments], "state":
+"queued" | "running" | "done" | "interrupted", "attempts": int}`; the runner takes the first `queued` or `interrupted` job in
+order, marks it `running`, runs `<gpu python> rl/vrun_sweep.py run <args> --device cuda --stop-file <path>` from the repo
+with at most 2 CPU threads at BelowNormal, and marks it `done` on exit 0, `interrupted` (attempts + 1, retried in a later
+window) on the stop-file exit code, `failed` on any other exit (not retried; the log has the type and message).
+
+**Stopping a fit between epochs:** `vrun_sweep.py run --stop-file PATH` checks the path at every epoch end (the hook that
+logs the S Brier) and at every fit boundary; when it exists the fit raises, the arm's JSON and npz are not written, the
+partial npz of the fit is removed, and the process exits with code 3. The runner touches the stop file within one second of
+a condition failing, waits for the process (up to 120 s, then terminates the handle's own process), deletes the stop file,
+and goes back to watching.
+
+**Cadence and logging:** conditions checked every 15 s while idle and every 5 s while a job runs; one line per transition in
+`agent/gpu-lane/quiet.log` (window opened: which rule, the tag; job started; job done, interrupted or failed with its exit
+code; window closed: which rule failed); no paths, no host or user names. The runner does not write HANDOFF; the lane
+adds one line per window used from the log.
+
+**Tests (no GPU, no lab):** the open-window predicate on synthetic `status.txt`, `QUIET.lock`, `GPU_OK`, `GPU_OFF` files in
+a temp folder (every rule above, incl. a consent file naming another tag); the queue's state machine (queued -> running ->
+done / interrupted / failed, retry order); the stop file through a fake job script that exits 3 when it sees the file; and
+`vrun_sweep.py run --stop-file` on a synthetic cache (the fit aborts between epochs, writes nothing, exits 3).
+
+**Start it:** `python tools/gpu_lane/quiet_runner.py --lab <lab folder> --referee-dir <folder holding QUIET.lock and GPU_OK> --repo <fork root> --gpu-python <GPU python> --queue <queue.json> --log <quiet.log> [--cache <sweep cache folder>] [--idle-s 15] [--busy-s 5]`; the stop file (`quiet.stop`) and each job's output (`job-<name>.log`, paths scrubbed) sit beside the queue, a job left `running` by a runner that died counts as `interrupted`, and `--once` is one pass for tests.
+
+**Consent:** a lane that holds `QUIET.lock` and does not mind the GPU being used writes its `<tag>` (the tag of its lock) as the first line of `<referee dir>/GPU_OK` for the duration of its window, then removes the file; no file, or another tag, and the runner stays out.
 
 ## 8. Budget
 

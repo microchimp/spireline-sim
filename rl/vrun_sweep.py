@@ -1,7 +1,7 @@
 """Train V_run harder on the GPU and judge it (docs/rl/VRUN_SWEEP.md; GPU piece 2).
 
     vrun_sweep.py cache   --lab LAB --agent-root AGENT --out VRUN      the deduplicated window, cached
-    vrun_sweep.py run     --cache DIR --arms a,b|all --seeds 3 --device cuda [--budget-min N]
+    vrun_sweep.py run     --cache DIR --arms a,b|all --seeds 3 --device cuda [--budget-min N] [--stop-file PATH]
     vrun_sweep.py ensemble --cache DIR --arm a                          5 seeds, probabilities averaged
     vrun_sweep.py confirm --cache DIR --arms lab,a[,b] --seeds 1 --device cuda
     vrun_sweep.py table   --cache DIR                                   the report's two tables
@@ -13,6 +13,9 @@ early-stopped and ranked on it), and the rest is cross-fitted in five folds (`co
 is refit per seed (S phase, on every run outside S) or per fold (confirmation, on the other four folds), so no run's H comes from
 a FightNet that trained on its own fights. Fits use at most 2 CPU threads at BelowNormal. Outputs hold numbers and paths
 relative to the cache folder, never absolute paths.
+
+`run --stop-file PATH` is the quiet-window runner's brake (VRUN_SWEEP.md section 7): the file is looked for at every epoch end and
+at every fit boundary, and when it exists the fit in hand is dropped (nothing of it is written) and the process exits with code 3.
 """
 
 from __future__ import annotations
@@ -62,6 +65,21 @@ THREADS = 2
 CLOSED_AFTER_MIN = 10.0  # a block whose manifest has not changed for this long, with no done marker, counts as closed
 FIRST_BOSS = models.floor_class(keep.ACT1_LAST_FLOOR + 1)  # the first floor class past the Act 1 boss
 EXPECTED_FLOOR_W = 53.0
+STOP_EXIT = 3  # `run --stop-file`: the exit code of a fit dropped because the stop file appeared
+
+
+class StopFit(Exception):
+    """The stop file exists: the fit in hand is dropped (raised at an epoch end or a fit boundary, caught by `cmd_run`)."""
+
+
+_STOP: dict[str, Path | None] = {"file": None}
+
+
+def check_stop() -> None:
+    """Raise `StopFit` when `run --stop-file` was given and that file exists; a no-op otherwise."""
+    path = _STOP["file"]
+    if path is not None and path.exists():
+        raise StopFit("the stop file exists")
 
 
 # --------------------------------------------------------------------------------------
@@ -620,7 +638,8 @@ def _fit_bce(cache: Cache, h: np.ndarray, train_rows: np.ndarray, ev_rows: np.nd
         index = torch.as_tensor(rows, device=device)
         return torch.nn.functional.binary_cross_entropy_with_logits(net(x[index]).squeeze(1), y[index])
 
-    stats = train._optimise(net, loss_of, sub.validation, config, generator)  # noqa: SLF001
+    stats = train._optimise(net, loss_of, sub.validation, config, generator,  # noqa: SLF001
+                            epoch_end=lambda _epoch, _net: check_stop() or {})
     net.eval()
     with torch.no_grad():
         p = torch.sigmoid(net(x[len(train_rows):]).squeeze(1)).double().cpu().numpy()
@@ -661,6 +680,7 @@ def s_phase_fit(cache: Cache, h: np.ndarray, arm: Arm, seed: int, device: str, *
         base = float(((base_rate - ev.y) ** 2).mean())
 
         def hook(_epoch: int, net: torch.nn.Module) -> dict[str, float]:
+            check_stop()
             brier = float(((head_p(net, dense, counts) - y_t) ** 2).mean())
             return {"s_brier": brier, "s_bss_vs_base_rate": 1.0 - brier / base}
 
@@ -696,10 +716,17 @@ def ensure_fit(cache: Cache, arm: Arm, seed: int, device: str, h_cache: dict[int
     json_path, npz_path = fit_paths(cache, arm.name, seed)
     if json_path.is_file():
         return gen_loop.read_json(json_path)
-    if seed not in h_cache:
-        h_cache.clear()  # one seed's H at a time
-        h_cache[seed] = fit_fightnet_h(cache, f"s{seed}", seed, None, device)
-    record, p = s_phase_fit(cache, h_cache[seed], arm, seed, device)
+    try:
+        check_stop()  # a fit boundary
+        if seed not in h_cache:
+            h_cache.clear()  # one seed's H at a time
+            h_cache[seed] = fit_fightnet_h(cache, f"s{seed}", seed, None, device)  # a finished FightNet stays cached: it is not the arm's fit
+            check_stop()  # the boundary between FightNet and the arm's fit
+        record, p = s_phase_fit(cache, h_cache[seed], arm, seed, device)
+    except StopFit:
+        for partial in (npz_path, npz_path.with_name(npz_path.name + ".tmp"), json_path.with_name(json_path.name + ".tmp")):
+            partial.unlink(missing_ok=True)  # the fit has no JSON (checked above), so anything under its names is a leftover
+        raise
     record["preds"] = npz_path.name
     save_npz(npz_path, p=p.astype(np.float32))
     save_json(json_path, record)
@@ -718,16 +745,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     names = [a for a in ARMS if a != "ens5"] if args.arms == "all" else [a for a in args.arms.split(",") if a]
     arms = [resolve_arm(n) for n in names]
     started, h_cache = time.perf_counter(), {}
-    for seed in range(args.seeds):
-        for arm in arms:
-            if arm.max_seeds is not None and seed >= arm.max_seeds:
-                continue
-            if fit_paths(cache, arm.name, seed)[0].is_file():
-                continue
-            if args.budget_min is not None and (time.perf_counter() - started) / 60 >= args.budget_min:
-                print(f"budget of {args.budget_min:g} min spent; stopping before {arm.name} s{seed}")
-                return 0
-            print(_summary_line(ensure_fit(cache, arm, seed, args.device, h_cache)), flush=True)
+    _STOP["file"] = Path(args.stop_file) if getattr(args, "stop_file", None) else None
+    try:
+        for seed in range(args.seeds):
+            for arm in arms:
+                if arm.max_seeds is not None and seed >= arm.max_seeds:
+                    continue
+                if fit_paths(cache, arm.name, seed)[0].is_file():
+                    continue
+                if args.budget_min is not None and (time.perf_counter() - started) / 60 >= args.budget_min:
+                    print(f"budget of {args.budget_min:g} min spent; stopping before {arm.name} s{seed}")
+                    return 0
+                print(_summary_line(ensure_fit(cache, arm, seed, args.device, h_cache)), flush=True)
+    except StopFit:
+        print(f"stop file seen: the fit in hand is dropped, nothing of it written; exit {STOP_EXIT}", flush=True)
+        return STOP_EXIT
+    finally:
+        _STOP["file"] = None
     return 0
 
 
@@ -1132,6 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seeds", type=int, default=3)
     p.add_argument("--device", default="cuda")
     p.add_argument("--budget-min", type=float, default=None)
+    p.add_argument("--stop-file", default=None, help="drop the fit in hand and exit 3 when this path exists (checked at every epoch end)")
     p.set_defaults(func=cmd_run)
     p = sub.add_parser("ensemble")
     p.add_argument("--cache", required=True)
