@@ -8,7 +8,8 @@ LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen
 N-<date>-<agent> for the others, written to LAB/seeds/, checked disjoint from every known block, E and S blocks included) is played
 by `gen0.py score` in lockstep with the emulator arm on `--engine core2`. The block's folder is LAB/nightly/<date>/<agent>/ (the
 real game's runs.jsonl, divergences.jsonl, summary.json, compare.json; the emulator arm is its sibling <agent>-emu/), ranked in
-place by tools/lab/rank.py (ranked.json, top20.md, by_family.*).
+place by tools/lab/rank.py (ranked.json, top20.md, by_family.*). A block a stopped job left unfinished is resumed in place (`gen0.py
+score --resume`): its folder is not cleared and only the seeds without a row are played; a block with the finished mark is skipped.
 
 summary.json keeps the envproto summary and gains `nightly`: the numbers counted with a crashed run as a loss. That is
 gen0.real_runs(): a crash row becomes {win: False, floor: 0, crash: True}, which gen0.engine_block counts as a run with floor 0 and
@@ -236,10 +237,10 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
     seeds_file, seeds = make_block(Path(a.lab), name, a.runs, [Path(p) for p in a.seeds_also])
     cmd = [sys.executable, str(ROOT / "rl" / "gen0.py"), "score", "--game", a.game, "--seeds-file", str(seeds_file), "--runs", str(a.runs),
            "--procs", str(a.procs), "--config", a.config, "--stop-after-h", str(a.stop_after_h), "--lib", a.lib,
-           "--gen-dir", agent["dir"], "--out", str(folder), "--engine", a.engine, "--recycle", str(a.recycle)]
-    # a stopped, unfinished block is replayed whole, except that its emulator arm resumes: the seeds it already has a row for
-    # are kept (gen0.run_block resume; the arm's identity file keeps rows of another agent or setting out)
-    shutil.rmtree(folder, ignore_errors=True)
+           "--gen-dir", agent["dir"], "--out", str(folder), "--engine", a.engine, "--recycle", str(a.recycle), "--resume"]
+    # a stopped, unfinished block is resumed in its folder, real arm and emulator arm alike: the seeds that already have a row are
+    # kept (envproto play --resume and gen0.run_block resume; each arm's identity file keeps rows of another agent or setting out),
+    # so the lab stopping a 7-9 hour block on the owner's input, on load or on a landing costs only the runs in flight
     print(f"[{utc_now()}] {agent['label']} ({agent['role']}, generation {agent['generation']}): {name}, {len(seeds)} seeds", flush=True)
     rc = subprocess.run(cmd, check=False).returncode
     shutil.rmtree(folder / "scratch", ignore_errors=True)  # the game processes' working copies
@@ -279,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.date is None:
         a.date = unfinished_night(lab)
         if a.date is not None:
-            print(f"[{utc_now()}] resuming the unfinished night {a.date} (its emulator arms keep their rows)", flush=True)
+            print(f"[{utc_now()}] resuming the unfinished night {a.date} (both arms of each block keep their rows)", flush=True)
         else:
             a.date = time.strftime("%Y-%m-%d")
     out = Path(a.out) if a.out else lab / "nightly"

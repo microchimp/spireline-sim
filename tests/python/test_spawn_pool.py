@@ -176,7 +176,7 @@ class NightlyTest(Tmp):
         lock.release()
         self.assertFalse(f.exists())
 
-    def test_a_restarted_night_keeps_the_emulator_arms_rows_and_replays_the_real_folder(self):
+    def test_a_restarted_night_keeps_both_arms_rows_and_resumes_the_real_block(self):
         lab, agent_dir = self.tmp / "lab", self.tmp / "agent"
         date_dir = lab / "nightly" / "2026-10-27"
         (date_dir / "g7-emu").mkdir(parents=True)
@@ -191,11 +191,12 @@ class NightlyTest(Tmp):
         def fake_run(cmd, **kw):
             seen["emu_rows"] = (date_dir / "g7-emu" / "runs.jsonl").is_file()
             seen["real_old"] = (date_dir / "g7" / "old.txt").exists()
+            seen["resume"] = "--resume" in cmd  # N3: the real block is resumed in its folder, not cleared and replayed
             return types.SimpleNamespace(returncode=0)
 
         with unittest.mock.patch.object(nr.subprocess, "run", side_effect=fake_run):
             nr.play_agent(a, ag, "2026-10-27", date_dir)
-        self.assertEqual({"emu_rows": True, "real_old": False}, seen)
+        self.assertEqual({"emu_rows": True, "real_old": True, "resume": True}, seen)
 
 
 if __name__ == "__main__":
