@@ -290,25 +290,37 @@ class FakeRun:
 
 
 class ItemsRun(FakeRun):
-    """The engine's rewards screen: raw item steps (gold, potion, relic, cards); decision() opens cards first."""
+    """The engine's rewards screen: raw item steps (gold, potion, relic, cards, special rows); decision() claims the
+    special rows and opens cards first."""
 
-    def __init__(self, **items):
+    def __init__(self, deck=(), rows=(), **items):
         opts = (_opt("reward.proceed", 9),)
         screens = {"cards": ("card_reward", (_opt("card.take", 0, card=_card(8)), _opt("card.skip", 1))),
                    "items": ("rewards", opts), "map": ("map", (_opt("map.node", 0, node=(1, 2)), _opt("map.node", 1, node=(3, 2))))}
         super().__init__("items", screens, {("cards", "card.take"): "items", ("cards", "card.skip"): "items",
                                            ("items", "reward.proceed"): "map"})
-        self.items = {"gold": 0, "potion": 0, "relic": 0, "card": 0, **items}
+        self.items = {"gold": 0, "potion": 0, "relic": 0, "card": 0, "special": len(rows), **items}
+        self.deck, self.rows = list(deck), list(rows)
+
+    def _claim_special(self):
+        self.items["special"] -= 1
+        self.deck.append(self.rows.pop(0))  # SpecialCardReward.OnSelect appends
 
     def decision(self):
+        while self.cur == "items" and self.items["special"]:
+            self.taken.append("auto:special")  # engine._rewards claims the special rows unasked
+            self._claim_special()
         if self.cur == "items" and self.items["card"]:
             self.items["card"], self.cur = 0, "cards"  # RunSession's auto step
         return super().decision()
 
     def _step(self, action):
         self.taken.append(f"step:{action}")
-        present = [k for k in ("gold", "potion", "relic", "card") if self.items[k]]
+        present = [k for k in ("gold", "potion", "relic", "card", "special") if self.items[k]]
         k = present[action]
+        if k == "special":
+            self._claim_special()
+            return
         self.items[k] = 0
         if k == "card":
             self.cur = "cards"
@@ -320,7 +332,8 @@ def stub_emu(run, hand=None):
     e.E = SimpleNamespace(rc=SimpleNamespace(PHASE_COMBAT=FakeRun.COMBAT, PHASE_COMPLETE=FakeRun.DONE,
                                              PHASE_RELIC_REWARD=FakeRun.ITEMS, PHASE_CARD_REWARD=FakeRun.CARDS))
     e.native = SimpleNamespace(run_action_mask=lambda h, n: [1, 1] + [0] * (n - 2),
-                               run_state_list=lambda h, k, n: [getattr(run, "items", {}).get(x, 0) for x in ("gold", "potion", "relic", "card")])
+                               run_state_list=lambda h, k, n: [getattr(run, "items", {}).get(x, 0)
+                                                               for x in ("gold", "potion", "relic", "card", "special")][:n])
     e.s, e.rq, e.dec, e._msg = run, [], None, None
     e.fail, e.event_names = None, {7: "WELLSPRING", 8: "SLIPPERY_BRIDGE"}
     e.slug = {"cards": {5: "STRIKE_IRONCLAD", 6: "DEFEND_IRONCLAD", 7: "BASH", 8: "ANGER"}, "relics": {}, "potions": {}}
@@ -373,6 +386,44 @@ class MappingTests(unittest.TestCase):
         self.assertIsNone(e.apply("card_reward", [["ANGER", 0], "skip"], 0))
         self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {}))
         self.assertEqual(run.taken, ["step:0", "step:0", "step:0", "card.take", "reward.proceed"])
+
+    def _hopper_screen(self):
+        """The recorded Hopper kill (floor 19): the rewards screen holds gold, the returned card and the card offer, the
+        deck is 19. The game's deck at the card ask is the record's next one: 20, the returned card last."""
+        import json
+
+        path = Path(__file__).resolve().parent / "fixtures" / "hopper_returned_card.json"
+        rec = {d["i"]: d for d in json.loads(path.read_text(encoding="utf-8"))["decisions"]}
+        row = tuple(next(r["card"] for r in rec[60]["offer"] if r["type"] == "special_card"))
+        return rec, ItemsRun(deck=rec[59]["deck"], rows=[[f"CARD.{row[0]}", row[1]]], gold=1, card=1)
+
+    def test_a_returned_special_card_is_claimed_after_the_gold_at_the_card_ask(self):
+        # The Thieving Hopper's kill: the driver takes the gold and the special_card row without asking, so at the
+        # referee's card-reward question its deck holds the returned card (20, last). The emulator claimed the gold only
+        # and stood at 19, a .deck record at every such ask (VK63UAFP46 floor 19, and the cluster behind it).
+        rec, run = self._hopper_screen()
+        e = stub_emu(run)
+        self.assertEqual(len(run.deck), 19)
+        self.assertIsNone(e.sync("reward", ["take", "skip"], {"ctx": {"type": "card"}}))
+        self.assertEqual(run.taken, ["step:0", "step:1"])  # gold, then the row past the card item
+        self.assertEqual(run.deck, rec[61]["deck"])
+        self.assertEqual(run.deck[-1], ["CARD.FIGHT_ME", 0])
+        self.assertIsNone(e.apply("reward", ["take", "skip"], 0))
+        self.assertEqual(run.cur, "cards")
+        self.assertEqual(run.deck, rec[61]["deck"])  # opening the offer claims nothing more
+
+    def test_a_returned_special_card_waits_for_a_potion_ask_and_is_taken_on_leaving(self):
+        # The game's set order is gold, potion, relic, special, card: at a potion question its deck is still 19, so the
+        # emulator's is too; leaving the screen (the engine's auto claim) takes the row as the driver does.
+        rec, run = self._hopper_screen()
+        run.items["potion"] = 1
+        e = stub_emu(run)
+        self.assertIsNone(e.sync("reward", ["take", "skip"], {"ctx": {"type": "potion"}}))
+        self.assertEqual(len(run.deck), 19)
+        self.assertIsNone(e.apply("reward", ["take", "skip"], 1))
+        self.assertEqual(len(run.deck), 19)
+        self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {}))
+        self.assertEqual(run.deck, rec[61]["deck"])
 
     def test_skipped_items_leave_the_screen_and_a_lone_path_enters_the_fight(self):
         # The 14 "phase:5" losses: the referee left the rewards screen and took a lone map node without asking.
