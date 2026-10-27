@@ -16,9 +16,9 @@ sys.path.insert(0, str(ROOT))
 from tools.lab import by_family as bf, rank  # noqa: E402
 from tests.python.test_lab_rank import BIGGER, HP, RUN_HP, SAME_SIZE, card, hand_diff, rec, write_records  # noqa: E402
 
-# sha256 of ranked.json and top20.md that tools/lab/rank.py (97b03d1e, before by_family) wrote for fixture_divs(), over the text with
+# sha256 of ranked.json and top20.md that tools/lab/rank.py (a0048be2: the stalls list, L3) wrote for fixture_divs(), over the text with
 # line endings normalised to LF (write_text writes CRLF on Windows; the first golden was the CRLF hash, which failed anywhere else).
-GOLDEN = {"ranked.json": "a129adeb40c1550dadffc2ab16b3e6e40f831f80b5ed166e3a6d91df607ccb0b",
+GOLDEN = {"ranked.json": "8ccbe500755a656668f4b7d3d46995d4ab0944e22df8f2eb00c5af199bf644f3",
           "top20.md": "04606dfb7e7ada85e1e09ff0b34b521ace575b6ad0bdf03678f82c8ea1868ab9"}
 
 UP = [[".combat.hand", [card("ASCENDERS_BANE")], [json.dumps(["ASCENDERS_BANE", 1])]]]
