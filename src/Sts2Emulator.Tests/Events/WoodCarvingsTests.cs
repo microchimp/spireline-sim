@@ -129,4 +129,45 @@ public class WoodCarvingsTests
             Assert.False(RunNonCombatEffects.CanSelectCard(engine.State, bane));
         }
     }
+
+    /// <summary>
+    /// The lockstep's 95 unpaired Wood Carvings picks were never an emulator gap: the
+    /// selection lists every Basic card of a starter deck (Strikes, Defends and Bash, the
+    /// game's <c>Rarity == Basic</c> and transformable test), and whichever of them is
+    /// chosen -- not just the first -- becomes the carving's own card. The unpaired
+    /// records were a referee pairing that read the option's RESULT card instead of the
+    /// deck card it takes (referee/lockstep.py).
+    /// </summary>
+    [Theory]
+    [InlineData(0, "Peck")]
+    [InlineData(2, "ToricToughness")]
+    public void EveryStarterCardIsListedAndTheChosenOneBecomesTheCarvingsCard(int option, string card)
+    {
+        var probe = AtTheCarvings();
+        int starters = probe.State.Deck.Count(c =>
+            GeneratedData.Cards.Get(c.DefId).Rarity == CardRarity.Basic
+        );
+        Assert.True(starters >= 10);
+
+        for (int pick = 0; pick < probe.State.Deck.Count; pick++)
+        {
+            var engine = AtTheCarvings();
+            Assert.Equal(0, engine.Step(option, -1, out _, out _, out _));
+            var mask = new int[RunConstants.MaxActions];
+            engine.WriteActionMask(mask);
+
+            var def = GeneratedData.Cards.Get(engine.State.Deck[pick].DefId);
+            Assert.Equal(def.Rarity == CardRarity.Basic, mask[pick] != 0);
+            Assert.Equal(starters, Enumerable.Range(0, engine.State.Deck.Count).Count(i => mask[i] != 0));
+            if (mask[pick] == 0)
+            {
+                continue;
+            }
+
+            int deckSize = engine.State.Deck.Count;
+            Assert.Equal(0, engine.Step(pick, -1, out _, out _, out _));
+            Assert.Equal(RunNonCombatEffects.NamedCard(card), engine.State.Deck[^1].DefId);
+            Assert.Equal(deckSize, engine.State.Deck.Count);
+        }
+    }
 }

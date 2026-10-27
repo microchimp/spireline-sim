@@ -1,0 +1,9 @@
+{
+  "note": "One lockstep record (the select_cards decision right after the Wood Carvings Torus page), cut to the fields the pairing reads. The reason carries the referee's pick.",
+  "seed": "DYC9LDPXTE",
+  "decision": 40,
+  "floor": 6,
+  "type": "select_cards",
+  "acted": {"type": "choice", "kind": "event", "label": "WOOD_CARVINGS.pages.INITIAL.options.TORUS"},
+  "reason": "apply:no_emulator_option:select_cards:[\"STRIKE_IRONCLAD\", 0]"
+}
