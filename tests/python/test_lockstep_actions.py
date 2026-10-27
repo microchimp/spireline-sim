@@ -347,3 +347,34 @@ class FightSelectionNoneTest(unittest.TestCase):
         e = emu([])
         self.assertIsNone(e._select_action("none"))  # was: ValueError from int("o") in the gate smoke
         self.assertTrue(e._apply_combat("select_cards_combat", [["STRIKE", 0], "none"], 1).startswith("unmapped_label"))
+
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "lockstep"
+
+
+def _label_of(record: str, kind: str):
+    """The referee's label out of a record's `reason` (`apply:no_emulator_option:<kind>:<json label>`)."""
+    import json
+
+    reason = json.loads((FIXTURES / record).read_text(encoding="utf-8"))["reason"]
+    return json.loads(reason.split(f"no_emulator_option:{kind}:", 1)[1])
+
+
+class ShopRemovalTest(unittest.TestCase):
+    """The shop's card removal (seed PXUZBTRPSL, decision 96): the emulator lists `shop.remove`, one option per removable card,
+    and the referee's `["remove", 0, price]` pairs with it by price; the card follows on the select screen."""
+
+    def test_the_referees_remove_pairs_by_price_and_steps_the_action_alone(self):
+        remove = _label_of("shop_remove_pick.json", "shop")
+        e = emu([opt("shop.card", 0, price=89), opt("shop.remove", 13, deck_index=0, price=100),
+                 opt("shop.remove", 13, deck_index=1, price=100), opt("shop.leave", 14)], deck=[card(1), card(2)])
+        labels = [["card", 0, 89], remove, ["leave"]]
+        self.assertEqual(e._pair("shop", labels), [0, 1, 3])
+        self.assertIsNone(e.apply("shop", labels, 1))
+        # The action alone: the referee's select_cards names the card, so the removal screen is left open for it.
+        self.assertEqual(e.applied, [("step", 13)])
+        self.assertEqual(e.took, ["shop.remove"])
+
+    def test_a_removal_at_another_price_is_still_a_gap(self):
+        e = emu([opt("shop.remove", 13, deck_index=0, price=75)], deck=[card(1)])
+        self.assertEqual(e._pair("shop", [["remove", 0, 100]]), [None])

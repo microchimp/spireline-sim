@@ -1116,6 +1116,10 @@ class EmuLock:
                         hit = j
                     elif lab[0] in ("card", "relic", "potion") and o.kind == "shop." + lab[0] and o.price == lab[2]:
                         hit = j
+                    elif lab[0] == "remove" and o.kind == "shop.remove" and o.price == lab[2]:
+                        # One option per removable card; the referee's label carries none (the game asks on its next screen, a
+                        # select_cards the lockstep matches), so it pairs with the first and `apply` steps the action alone.
+                        hit = j
                 elif kind == "bundle" and o.kind == "bundle.pick":
                     if sorted(self.slug["cards"].get(c.card_id, "?") for c in o.cards) == sorted(lab):
                         hit = j
@@ -1132,7 +1136,9 @@ class EmuLock:
         for ref_i, emu_j in enumerate(pair):
             if emu_j == pick:
                 return ref_i
-        if kind == "rest" and 0 <= pick < len(self.dec.options):
+        if (kind == "rest" or kind == "shop") and 0 <= pick < len(self.dec.options) and (
+            kind == "rest" or self.dec.options[pick].kind == "shop.remove"
+        ):
             # The emulator offers one rest.smith per upgradable card; the referee's SMITH carries no card (the game asks for it on
             # its next screen, a select_cards the lockstep matches), and `_pair` pairs it with the first of them only. SMITH is
             # the agent's choice when the policy picked any rest.smith: the card follows on the select screen.
@@ -1160,7 +1166,7 @@ class EmuLock:
         if j is None:
             return f"no_emulator_option:{kind}:{json.dumps(labels[idx])[:60]}"
         o = self.dec.options[j]
-        if o.kind == "rest.smith":
+        if o.kind in ("rest.smith", "shop.remove"):
             # The action alone, whichever card the option names: the referee's select_cards follows and picks the card (a step
             # through `Session.apply` would take the option's card here and skip that screen).
             self.s._step(o.action)

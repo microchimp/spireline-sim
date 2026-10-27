@@ -1,0 +1,8 @@
+{
+  "note": "One lockstep record (the shop decision where the referee bought the card removal), cut to the fields the pairing reads. The reason carries the referee's label: [kind, slot, price].",
+  "seed": "PXUZBTRPSL",
+  "decision": 96,
+  "floor": 13,
+  "type": "shop",
+  "reason": "apply:no_emulator_option:shop:[\"remove\", 0, 100]"
+}
