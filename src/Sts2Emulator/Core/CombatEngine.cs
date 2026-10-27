@@ -1071,12 +1071,11 @@ public static class CombatEngine
         // Applied here, before the placement branches, because there are four of them and
         // each one builds its own `card with { ... }`.
         if (
-            !card.Upgraded
-            && Run.RunConstants.IsRunCardUpgradable(card)
+            Effects.CardEffects.IsUpgradable(card)
             && Effects.RelicEffects.UpgradesPlayedCard(state, def)
         )
         {
-            card = card with { Upgraded = true };
+            card = Effects.CardEffects.UpgradedCopy(card);
         }
 
         // `OnPlayWrapper` moves the card to its result pile after the last repetition.
@@ -4298,11 +4297,7 @@ public static class CombatEngine
                 break;
 
             case CardSelectionKind.UpgradeInHand:
-                if (index < state.Hand.Count)
-                {
-                    state.Hand[index] = state.Hand[index] with { Upgraded = true };
-                }
-
+                Effects.CardEffects.UpgradeCard(state.Hand, index);
                 break;
 
             case CardSelectionKind.QueueHandCardCopies:

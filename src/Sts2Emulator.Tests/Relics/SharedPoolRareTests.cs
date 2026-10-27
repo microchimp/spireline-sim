@@ -150,14 +150,22 @@ public class ChandelierTests
 
 public class BellowsTests
 {
-    /// <summary>The OPENING hand is upgraded, and only the opening hand.</summary>
+    /// <summary>
+    /// The OPENING hand is upgraded, and only the opening hand. `CardCmd.Upgrade` skips a card
+    /// that is not upgradable, so the Ascender's Bane the highest difficulty puts in the deck
+    /// stays as it is.
+    /// </summary>
     [Fact]
     public void TheOpeningHandArrivesUpgraded()
     {
         var fight = Fight.WithRelics(RelicEffects.Bellows);
 
         Assert.NotEmpty(fight.State.Hand);
-        Assert.All(fight.State.Hand, c => Assert.True(c.Upgraded));
+        Assert.Contains(fight.State.Hand, c => c.Upgraded);
+        Assert.All(
+            fight.State.Hand,
+            c => Assert.Equal(CardEffects.IsUpgradable(c with { Upgraded = false }), c.Upgraded)
+        );
     }
 
     [Fact]

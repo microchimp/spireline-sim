@@ -620,13 +620,10 @@ public static class RelicEffects
                     state.DrawPile,
                     Enumerable
                         .Range(0, state.DrawPile.Count)
-                        .Where(i => RunConstants.IsRunCardUpgradable(state.DrawPile[i])),
+                        .Where(i => CardEffects.IsUpgradable(state.DrawPile[i])),
                     CardEffects.CardSelectionRngFor(state, rng)
                 );
-                foreach (int index in shuffled.Take(2))
-                {
-                    state.DrawPile[index] = state.DrawPile[index] with { Upgraded = true };
-                }
+                CardEffects.UpgradeCards(state.DrawPile, shuffled.Take(2));
             },
             // Elite rooms only: the relic's hook fires before the combat exists, so the room
             // type is handed over rather than looked up.
@@ -800,10 +797,7 @@ public static class RelicEffects
             {
                 if (SpendTeaCombat(state, BoneTea))
                 {
-                    for (int i = 0; i < state.Hand.Count; i++)
-                    {
-                        state.Hand[i] = state.Hand[i] with { Upgraded = true };
-                    }
+                    CardEffects.UpgradeAllCards(state.Hand);
                 }
             },
             [BoomingConch] = () =>
@@ -2789,11 +2783,7 @@ public static class RelicEffects
                 // `Bellows`, TurnNumber <= 1: `CardCmd.Upgrade(PileType.Hand...Cards)` -- the
                 // opening hand, and only the opening hand.
                 case Bellows when turnNumber <= 1:
-                    for (int k = 0; k < state.Hand.Count; k++)
-                    {
-                        state.Hand[k] = state.Hand[k] with { Upgraded = true };
-                    }
-
+                    CardEffects.UpgradeAllCards(state.Hand);
                     break;
 
                 // `ChoicesParadox`, TurnNumber == 1: five distinct cards off the character's own

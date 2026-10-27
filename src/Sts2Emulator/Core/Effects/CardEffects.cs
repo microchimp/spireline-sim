@@ -1768,7 +1768,7 @@ public static class CardEffects
                     // how many.
                     if (upgraded)
                     {
-                        state.ExhaustPile[at] = shiv with { Upgraded = true };
+                        UpgradeCard(state.ExhaustPile, at);
                     }
 
                     CombatEngine.AutoPlayFromPile(state, state.ExhaustPile, at, rng, source);
@@ -8791,9 +8791,9 @@ public static class CardEffects
                 // Technique, the Necrobinder's recursion), and one that comes back
                 // upgraded is a different card.
                 UpgradeAllCardsInHand(state);
-                UpgradePile(state.DrawPile);
-                UpgradePile(state.DiscardPile);
-                UpgradePile(state.ExhaustPile);
+                UpgradeAllCards(state.DrawPile);
+                UpgradeAllCards(state.DiscardPile);
+                UpgradeAllCards(state.ExhaustPile);
                 break;
             case "Apparition":
                 BuffSystem.Apply(state.PlayerBuffs, BuffId.Intangible, 1);
@@ -9948,26 +9948,17 @@ public static class CardEffects
     {
         for (int i = 0; i < state.Hand.Count; i++)
         {
-            if (!IsUpgradable(state.Hand[i]))
+            if (UpgradeCard(state.Hand, i))
             {
-                continue;
+                return;
             }
-
-            state.Hand[i] = state.Hand[i] with { Upgraded = true };
-            return;
         }
     }
 
     /// <summary>Also Blessing of the Forge's whole effect.</summary>
     internal static void UpgradeAllCardsInHand(CombatState state)
     {
-        for (int i = 0; i < state.Hand.Count; i++)
-        {
-            if (IsUpgradable(state.Hand[i]))
-            {
-                state.Hand[i] = state.Hand[i] with { Upgraded = true };
-            }
-        }
+        UpgradeAllCards(state.Hand);
     }
 
     /// <summary>
@@ -9976,6 +9967,50 @@ public static class CardEffects
     /// Curse) was the second copy, and it let the three Quest cards through.
     /// </summary>
     internal static bool IsUpgradable(CardInstance card) => Run.RunConstants.IsRunCardUpgradable(card);
+
+    /// <summary>
+    /// `CardCmd.Upgrade(card)` on one pile entry: a card that is not upgradable is skipped, any
+    /// other takes its single upgrade. True when the card changed. Every combat upgrade goes
+    /// through here, so no effect can write the flag onto a curse or a Quest card.
+    /// </summary>
+    internal static bool UpgradeCard(List<CardInstance> pile, int index)
+    {
+        if (index < 0 || index >= pile.Count || !IsUpgradable(pile[index]))
+        {
+            return false;
+        }
+
+        pile[index] = pile[index] with { Upgraded = true };
+        return true;
+    }
+
+    /// <summary>
+    /// `CardCmd.Upgrade(cards)`: the given entries in the given order, each one skipped when it
+    /// cannot be upgraded.
+    /// </summary>
+    internal static void UpgradeCards(List<CardInstance> pile, IEnumerable<int> indices)
+    {
+        foreach (int index in indices)
+        {
+            UpgradeCard(pile, index);
+        }
+    }
+
+    /// <summary>`CardCmd.Upgrade` over a whole pile, front to back.</summary>
+    internal static void UpgradeAllCards(List<CardInstance> pile)
+    {
+        for (int i = 0; i < pile.Count; i++)
+        {
+            UpgradeCard(pile, i);
+        }
+    }
+
+    /// <summary>
+    /// The upgrade for a card that is not in a pile yet (a copy on its way in): the card itself
+    /// when it cannot be upgraded.
+    /// </summary>
+    internal static CardInstance UpgradedCopy(CardInstance card) =>
+        IsUpgradable(card) ? card with { Upgraded = true } : card;
 
     internal const int MaxCardsInHand = 10;
 
@@ -10443,7 +10478,8 @@ public static class CardEffects
             {
                 if (pile[i].DampenedUpgrade)
                 {
-                    pile[i] = pile[i] with { Upgraded = true, DampenedUpgrade = false };
+                    pile[i] = pile[i] with { DampenedUpgrade = false };
+                    UpgradeCard(pile, i);
                 }
             }
         }
@@ -10619,10 +10655,7 @@ public static class CardEffects
             (upgradable[i], upgradable[j]) = (upgradable[j], upgradable[i]);
         }
 
-        foreach (int index in upgradable.Take(count))
-        {
-            state.DiscardPile[index] = state.DiscardPile[index] with { Upgraded = true };
-        }
+        UpgradeCards(state.DiscardPile, upgradable.Take(count));
     }
 
     /// <summary>
@@ -11526,9 +11559,7 @@ public static class CardEffects
                 continue;
             }
 
-            state.Hand.Add(
-                Run.RunConstants.IsRunCardUpgradable(card) ? card with { Upgraded = true } : card
-            );
+            state.Hand.Add(UpgradedCopy(card));
         }
     }
 
@@ -11952,17 +11983,6 @@ public static class CardEffects
             var handCard = state.Hand[0];
             state.Hand.RemoveAt(0);
             ExhaustCard(state, handCard, rng: rng);
-        }
-    }
-
-    private static void UpgradePile(List<CardInstance> pile)
-    {
-        for (int i = 0; i < pile.Count; i++)
-        {
-            if (IsUpgradable(pile[i]))
-            {
-                pile[i] = pile[i] with { Upgraded = true };
-            }
         }
     }
 
