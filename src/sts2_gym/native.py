@@ -1532,12 +1532,14 @@ RUN_POTION_SLOTS: int = 6
 
 # The run action mask has versions (D32), a setting of the run handle. Version 1 is the default and the mask as it was;
 # version 2 also lists the discard actions on the card reward, deck-select, bundle-select and Crystal Sphere screens;
-# version 3 (D34) also lists the use actions of the AnyTime potions there (Blood Potion, Fruit Juice, Entropic Brew).
+# version 3 (D34) also lists the use actions of the AnyTime potions there (Blood Potion, Fruit Juice, Entropic Brew);
+# version 4 (D34) is the same mask as 3 and is the setting under which the run layer shows Welcome to Wongos' Leave (action 3).
 # `run_set_mask_version` picks one; `Sts2RunEnv(mask_version=...)` does it per env.
 RUN_MASK_VERSION_DEFAULT: int = 1
 RUN_MASK_VERSION_OPEN_DISCARD: int = 2
 RUN_MASK_VERSION_OPEN_USE: int = 3
-RUN_MASK_VERSIONS: tuple[int, ...] = (1, 2, 3)
+RUN_MASK_VERSION_WONGOS_LEAVE: int = 4
+RUN_MASK_VERSIONS: tuple[int, ...] = (1, 2, 3, 4)
 
 
 def run_character_index(character: str) -> int:
