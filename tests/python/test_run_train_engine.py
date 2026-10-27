@@ -721,6 +721,77 @@ class CombatForkTests(unittest.TestCase):
             session.close()
 
 
+class HopperReturnedCardTests(unittest.TestCase):
+    """The Thieving Hopper's returned card is claimed with the gold, before the card offer.
+
+    The fixture is decisions 58-62 of a recorded run (floor 19): the deck is 20 before the
+    fight, 19 after the kill (the steal took the card out of the deck), 19 with the screen
+    gold, `special_card`, card; then 20 with the returned card last, then 21 with the pick
+    after it. The driver takes gold and the special row unasked; the run layer read only four
+    reward counts, so the row stayed on the screen and the card was lost.
+    """
+
+    FIXTURE = ROOT / "tests" / "python" / "fixtures" / "hopper_returned_card.json"
+
+    class _Screen6:
+        """List 6 and the mask layout of one rewards screen: gold, card items, special rows."""
+
+        def __init__(self, offer, deck):
+            self.gold = int(any(r["type"] == "gold" for r in offer))
+            self.cards = sum(r["type"] == "card" for r in offer)
+            self.rows = [tuple(r["card"]) for r in offer if r["type"] == "special_card"]
+            self.deck = list(deck)
+            self.steps = []
+            self.card_opened = False
+
+        def state_list(self, _handle, list_id, capacity=256):
+            assert list_id == 6
+            counts = (self.gold, 0, 0, self.cards, len(self.rows))
+            return counts[:capacity]
+
+        def step(self, action):
+            self.steps.append(action)
+            layout = ["gold"] * self.gold + ["card"] * self.cards + ["special"] * len(self.rows)
+            kind = layout[action]
+            if kind == "gold":
+                self.gold = 0
+            elif kind == "special":
+                card_id, upgraded = self.rows.pop(0)
+                self.deck.append([f"CARD.{card_id}", upgraded])
+            else:
+                self.card_opened = True
+
+    def _fixture(self):
+        import json
+
+        data = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
+        return {d["i"]: d for d in data["decisions"]}
+
+    def test_the_returned_card_is_claimed_before_the_card_offer_opens(self):
+        decisions = self._fixture()
+        screen = self._Screen6(decisions[60]["offer"], decisions[59]["deck"])
+        self.assertEqual(len(decisions[58]["deck"]), 20)
+        self.assertEqual(len(screen.deck), 19)
+        ctx = mock.Mock(handle=1)
+        ctx.view = mock.Mock(potions=(), max_potion_slots=3)
+
+        with mock.patch.object(engine.native, "run_state_list", screen.state_list):
+            for _ in range(5):
+                if screen.card_opened:
+                    break
+                step = engine._rewards(ctx)
+                self.assertIsNone(step.decision)
+                screen.step(step.auto)
+
+        # Gold, then the special row, then the card item: the driver's order.
+        self.assertEqual(screen.steps, [0, 1, 0])
+        self.assertTrue(screen.card_opened)
+        # The deck the card offer opens on is the game's: 20, the returned card last.
+        self.assertEqual(screen.deck, decisions[61]["deck"])
+        self.assertEqual(screen.deck[-1], ["CARD.FIGHT_ME", 0])
+        self.assertEqual(screen.deck, decisions[62]["deck"][:-1])
+
+
 class AutoScreenTests(unittest.TestCase):
     def test_the_treasure_room_takes_the_chest_relic(self):
         # Erratum RF1: action 0 takes the relic while it is in the chest, then 3 leaves.
