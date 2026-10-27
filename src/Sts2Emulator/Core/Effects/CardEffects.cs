@@ -9970,16 +9970,12 @@ public static class CardEffects
         }
     }
 
-    private static bool IsUpgradable(CardInstance card)
-    {
-        if (card.Upgraded)
-        {
-            return false;
-        }
-
-        var def = GeneratedData.Cards.Get(card.DefId);
-        return def.Type is not (CardType.Status or CardType.Curse);
-    }
+    /// <summary>
+    /// `CardModel.IsUpgradable`, the one rule: `CurrentUpgradeLevel &lt; MaxUpgradeLevel`. It
+    /// delegates to the run-layer rule so there is a single copy. A type test (not Status, not
+    /// Curse) was the second copy, and it let the three Quest cards through.
+    /// </summary>
+    internal static bool IsUpgradable(CardInstance card) => Run.RunConstants.IsRunCardUpgradable(card);
 
     internal const int MaxCardsInHand = 10;
 
