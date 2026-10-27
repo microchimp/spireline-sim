@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -174,6 +175,202 @@ class PlayOnlyTest(unittest.TestCase):
         # chosen seeds S2, S3, S5 sit at 2, 3, 5 of the file; two workers take every other one
         shares = [(args[3], args[9]) for _t, args in seen]
         self.assertEqual(shares, [(["S2", "S5"], [2, 5]), (["S3"], [3])])
+
+
+class PlayResumeTest(unittest.TestCase):
+    """N3: `play --resume` keeps the finished rows of an earlier session and plays only the missing seeds, each with the run id and
+    agent seed it has in a fresh block. The game workers are replaced by a function that puts the events a real worker puts."""
+
+    SEEDS = ["S0", "S1", "S2", "S3", "S4", "S5"]
+    AS = 77
+    AGENT = {"generation": 3, "dir": "gen3/c", "prior": True, "prior_sha256": "ab", "macro": "rules"}
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+        self.out = self.tmp / "block"
+        self.out.mkdir()
+        self.seeds_file = self.tmp / "block.json"
+        self.seeds_file.write_text(json.dumps({"name": "x", "seeds": self.SEEDS}), encoding="utf-8")
+        self.calls: list[tuple] = []
+        self.during: dict = {}
+
+    def stamp(self, **over):
+        s = {"agent": self.AGENT, "sims": "a3-v1", "ascension": 10, "character": "IRONCLAD", "engine": "core2", "agent_seed": self.AS}
+        s.update(over)
+        return s
+
+    def row(self, seed, ix=None, agent_seed=None, **over):
+        ix = self.SEEDS.index(seed) if ix is None else ix
+        e = {"ev": "end", "w": 0, "seed": seed, "character": "IRONCLAD", "end": "death", "floor": 10 + ix, "asked": 5, "s": 2.0,
+             "stats": {"decisions": 100, "ranked": 40, "diverged": 1, "reanchors": 0, "reanchor_failed": 0, "first_loss": None},
+             "lost": None, "divergences": [{"type": "state", "decision": 3, "floor": 1, "diff": [["hp", 1, 2]], "reason": f"old-{seed}"}],
+             "agent_seed": [self.AS if agent_seed is None else agent_seed, ix], "assumed": 0}
+        e.update(over)
+        return e
+
+    def write(self, rows, identity=True, tail="", wall=None, divergences=None):
+        (self.out / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows) + tail, encoding="utf-8")
+        if identity:
+            (self.out / "resume.json").write_text(json.dumps(self.stamp()), encoding="utf-8")
+        if wall is not None:
+            (self.out / "wall.json").write_text(json.dumps({"wall_s": wall}), encoding="utf-8")
+        if divergences is not None:
+            (self.out / "divergences.jsonl").write_text("\n".join(json.dumps(d) for d in divergences), encoding="utf-8")
+
+    def play(self, resume=True, procs=2, **over):
+        import contextlib
+        import io
+        import queue as queue_mod
+        from types import SimpleNamespace
+        from unittest import mock
+
+        test = self
+
+        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle):
+            if not test.calls and (Path(out) / "divergences.jsonl").is_file():  # what the files hold while the first worker plays
+                runs = [json.loads(x) for x in (Path(out) / "runs.jsonl").read_text(encoding="utf-8").splitlines()]
+                divs = (Path(out) / "divergences.jsonl").read_text(encoding="utf-8").splitlines()
+                test.during = {"runs": [r["seed"] for r in runs], "divs": [json.loads(x)["seed"] for x in divs if x.strip()]}
+            __import__("time").sleep(0.03)  # the clock of Windows ticks every 15 ms: a block has a wall
+            test.calls.append((wid, list(seeds), list(run_ids), agent_seed, stop_at))
+            for s, ix in zip(seeds, run_ids):
+                q.put(test.row(s, ix, agent_seed=agent_seed, w=wid, divergences=[{"type": "state", "decision": 9, "floor": 2,
+                                                                                    "diff": [["hp", 3, 4]], "reason": f"new-{s}"}]))
+            q.put({"ev": "done", "w": wid})
+
+        class FakeProc:
+            def __init__(self, target=None, args=()):
+                self.target, self.args = target, args
+
+            def start(self):
+                self.target(*self.args)
+
+            def is_alive(self):
+                return False
+
+            def join(self, timeout=None):
+                pass
+
+        ctx = SimpleNamespace(Queue=queue_mod.Queue, Process=FakeProc)
+        a = SimpleNamespace(out=str(self.out), game="G", character="IRONCLAD", runs=6, seeds_file=str(self.seeds_file), agent_seed=self.AS,
+                            stop_after_h=0, procs=procs, sims="a3-v1", step_timeout=1, ascension=10, engine="core2", only=None, recycle=0)
+        if resume:
+            a.resume, a.agent_identity = True, json.dumps(self.AGENT)
+        for k, v in over.items():
+            setattr(a, k, v)
+        err = io.StringIO()
+        with mock.patch.object(envproto.rr, "check_build", lambda g: None), mock.patch.object(envproto.rr, "install", lambda g, d: None),                 mock.patch.object(envproto.mp, "get_context", lambda _k: ctx), mock.patch.object(envproto, "play_worker", fake_worker),                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            envproto.play(a)
+        self.err = err.getvalue()
+        return json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
+
+    def final_rows(self):
+        return [json.loads(x) for x in (self.out / "runs.jsonl").read_text(encoding="utf-8").split("\n") if x.strip()]
+
+    def test_a_fresh_block_without_the_flag_writes_the_files_it_always_wrote(self):
+        summary = self.play(resume=False)
+        self.assertEqual(["divergences.jsonl", "runs.jsonl", "summary.json"], sorted(p.name for p in self.out.iterdir()))
+        events = [self.row(s, i, w=w, divergences=[{"type": "state", "decision": 9, "floor": 2, "diff": [["hp", 3, 4]], "reason": f"new-{s}"}])
+                  for w in (0, 1) for i, s in enumerate(self.SEEDS) if i % 2 == w]
+        self.assertEqual("\n".join(json.dumps(e) for e in events), (self.out / "runs.jsonl").read_text(encoding="utf-8"))  # no trailing newline
+        self.assertEqual("\n".join(json.dumps(dict(e["divergences"][0], seed=e["seed"])) for e in events),
+                         (self.out / "divergences.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(["agent_seed", "character", "engine", "sims", "runs", "crashes", "wins", "ends", "mean_floor", "decisions",
+                          "decisions_per_s", "wall_s", "ranked_share", "diverged_decisions", "divergence_rate", "reanchors", "reanchor_failed",
+                          "first_loss_by_reason", "first_divergences_by_type", "gaps", "resumed", "losses_by_reason", "reanchor_fail_reasons",
+                          "reanchor_by_plan", "anchored_with", "streams_named", "streams_moved", "streams_unmoved_names", "walk",
+                          "divergences_by_type", "run_s_total", "decisions_per_s_per_proc", "ranked_decisions_per_s_per_proc",
+                          "network_connections", "errors"], list(summary))
+        self.assertEqual([(0, ["S0", "S2", "S4"], [0, 2, 4]), (1, ["S1", "S3", "S5"], [1, 3, 5])], [c[:3] for c in self.calls])
+
+    def test_the_finished_rows_are_kept_and_only_the_missing_seeds_play_with_their_fresh_block_ids(self):
+        kept = [self.row("S1"), self.row("S4")]
+        self.write(kept, tail='{"ev": "end", "seed": "S5", "wo', divergences=[
+            {"seed": "S0", "reason": "stale"}, {"seed": "S1", "reason": "old-S1"}, {"seed": "OTHER", "reason": "stale"}])
+        summary = self.play()
+        # S0 S2 S3 S5 are missing; two workers take every other one, each seed with its place in the full list and the same agent seed
+        self.assertEqual([(0, ["S0", "S3"], [0, 3]), (1, ["S2", "S5"], [2, 5])], [c[:3] for c in self.calls])
+        self.assertEqual({self.AS}, {c[3] for c in self.calls})
+        self.assertEqual({"runs": ["S1", "S4"], "divs": ["S1", "S4"]}, self.during)  # the half line and the stale rows are gone at once
+        rows = self.final_rows()
+        self.assertEqual(["S1", "S4", "S0", "S3", "S2", "S5"], [r["seed"] for r in rows])
+        self.assertEqual(kept, rows[:2])
+        self.assertEqual([[self.AS, i] for i in (0, 3, 2, 5)], [r["agent_seed"] for r in rows[2:]])
+        divs = [json.loads(x) for x in (self.out / "divergences.jsonl").read_text(encoding="utf-8").split("\n")]
+        self.assertEqual(["old-S1", "old-S4", "new-S0", "new-S3", "new-S2", "new-S5"], [d["reason"] for d in divs])
+        self.assertEqual((6, 2), (summary["runs"], summary["resumed_rows"]))
+        self.assertEqual(600, summary["decisions"])  # all six rows count
+        self.assertEqual(json.dumps(self.stamp()), (self.out / "resume.json").read_text(encoding="utf-8"))
+
+    def test_another_identity_starts_empty_with_a_stderr_line(self):
+        self.write([self.row("S1")], wall=5000.0)
+        (self.out / "resume.json").write_text(json.dumps(self.stamp(sims="a2-v1")), encoding="utf-8")
+        summary = self.play()
+        self.assertIn("another agent or setting", self.err)
+        self.assertEqual([c[1] for c in self.calls], [["S0", "S2", "S4"], ["S1", "S3", "S5"]])
+        self.assertEqual((0, 0.0), (summary["resumed_rows"], summary["wall_s_before"]))  # the other block's seconds are not this one's
+        self.assertEqual(self.stamp(), json.loads((self.out / "resume.json").read_text(encoding="utf-8")))
+
+    def test_another_agent_seed_or_another_agent_is_another_identity(self):
+        self.write([self.row("S1")])
+        self.assertEqual(0, self.play(agent_seed=self.AS + 1)["resumed_rows"])
+        self.write([self.row("S1")])
+        self.AGENT = dict(self.AGENT, prior_sha256="cd")
+        self.assertEqual(0, self.play()["resumed_rows"])
+
+    def test_a_file_with_rows_and_no_identity_is_kept_only_when_every_seed_is_in_the_list(self):
+        self.write([self.row("S1"), self.row("S2")], identity=False)
+        self.assertEqual(2, self.play()["resumed_rows"])
+        (self.out / "resume.json").unlink()
+        self.write([self.row("S1"), self.row("ELSEWHERE", 1)], identity=False)
+        self.calls.clear()
+        self.assertEqual(0, self.play()["resumed_rows"])
+        self.assertIn("another agent or setting", self.err)
+
+    def test_a_boot_failure_or_a_row_of_another_run_id_is_played_again_and_the_first_row_of_a_seed_wins(self):
+        rows = [self.row("S0", ev="crash", where="boot", agent_seed=None), self.row("S1", agent_seed=1), self.row("S2", ev="crash", where="agent"),
+                self.row("S3"), self.row("S3", floor=1), self.row("S4", ix=2)]
+        rows[0].pop("agent_seed")
+        self.write(rows)
+        summary = self.play()
+        self.assertEqual(2, summary["resumed_rows"])  # S2's agent crash and S3 (the first of its two rows); S1 and S4 carry the wrong id
+        self.assertEqual(["S2", "S3"], [r["seed"] for r in self.final_rows()[:2]])
+        self.assertEqual(13, self.final_rows()[1]["floor"])  # the first of S3's two rows
+        self.assertEqual(sorted(self.SEEDS), sorted(r["seed"] for r in self.final_rows()))
+        self.assertEqual(4, sum(len(c[1]) for c in self.calls))
+        self.assertEqual(1, summary["crashes"])
+
+    def test_the_wall_is_the_sum_of_the_sessions_and_the_time_limit_counts_the_earlier_ones(self):
+        self.write([self.row("S1")], wall=1000.0)
+        t = __import__("time").time()
+        summary = self.play(stop_after_h=1.0)
+        self.assertEqual(1000.0, summary["wall_s_before"])
+        self.assertAlmostEqual(summary["wall_s"], summary["wall_s_before"] + summary["wall_s_session"], delta=0.11)
+        self.assertGreaterEqual(summary["wall_s"], 1000.0)
+        self.assertEqual(summary["wall_s"], json.loads((self.out / "wall.json").read_text(encoding="utf-8"))["wall_s"])
+        left = self.calls[0][4] - t  # an hour minus the 1000 s already run
+        self.assertTrue(2590 < left < 2610, left)
+
+    def test_a_block_with_every_seed_done_starts_no_worker(self):
+        self.write([self.row(s) for s in self.SEEDS])
+        summary = self.play()
+        self.assertEqual(([], 6, 6), (self.calls, summary["runs"], summary["resumed_rows"]))
+        self.assertEqual(6, len(self.final_rows()))
+
+    def test_the_stopped_sessions_game_copies_are_cleared_only_with_the_flag(self):
+        stale = self.out / "scratch" / "p00r0"
+        stale.mkdir(parents=True)
+        (stale / "game-stdout.log").write_text("x", encoding="utf-8")
+        self.play(resume=False)
+        self.assertTrue(stale.exists())
+        self.play()
+        self.assertFalse(stale.exists())
+
+    def test_the_parser_takes_resume_and_the_agent_identity(self):
+        a = envproto.parser().parse_args(["play", "--game", "G", "--out", "O", "--resume", "--agent-identity", "{}"])
+        self.assertEqual((True, "{}"), (a.resume, a.agent_identity))
+        self.assertFalse(envproto.parser().parse_args(["play", "--game", "G", "--out", "O"]).resume)
 
 
 if __name__ == "__main__":

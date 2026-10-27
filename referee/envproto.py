@@ -23,6 +23,7 @@ import multiprocessing as mp
 import os
 import queue
 import random
+import shutil
 import subprocess
 import sys
 import threading
@@ -690,8 +691,91 @@ def select_engine(engine: str) -> None:
         os.environ["STS2_ENGINE"] = engine
 
 
+def _read_rows(path: Path) -> list[dict]:
+    """The whole lines of a runs file that parse as a row with a seed; a line cut by a stop, or a blank one, is dropped."""
+    rows: list[dict] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return rows
+    for line in text.splitlines():
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("seed") is not None:
+            rows.append(r)
+    return rows
+
+
+def _divergence_rows(events: list[dict]) -> list[dict]:
+    return [dict(d, seed=e["seed"]) for e in events if e["ev"] in ("end", "crash") for d in e.get("divergences", [])]
+
+
+def resume_block(out: Path, stamp: dict, ids: dict[str, int], agent_seed: int) -> tuple[list[dict], float]:
+    """What a `play --resume` keeps of an earlier session of the block in `out`: (finished rows, wall seconds the earlier sessions ran).
+
+    A kept row is the first `end` or `crash` row of a seed of this block (`ids`: seed -> its place in the block, the run index of the
+    agent's RNG [agent seed, index]); a boot failure is no run and is played again, and so is a row whose recorded agent seed is not
+    [agent seed, that seed's index], so a kept row is always the row a fresh block would have played. `out/resume.json` holds the
+    block's identity (stamp: agent, sims or config, ascension, character, engine, agent seed). Rows written under another identity
+    are not kept (a stderr line) and the block starts empty; a file with rows and no identity (written before this existed) is kept
+    when every row's seed belongs to the block. A half-written last line is dropped. runs.jsonl and divergences.jsonl are rewritten
+    with the kept rows only; resume.json is written. `out/wall.json` holds the seconds the block has run over all its sessions."""
+    out.mkdir(parents=True, exist_ok=True)
+    runs_file, stamp_file, wall_file = out / "runs.jsonl", out / "resume.json", out / "wall.json"
+    want = json.loads(json.dumps(stamp))
+    try:
+        have = json.loads(stamp_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        have = None
+    raw = _read_rows(runs_file)
+    same = have == want or (have is None and bool(raw) and all(r["seed"] in ids for r in raw))
+    kept: list[dict] = []
+    if same:
+        seen: set[str] = set()
+        for r in raw:
+            s = r["seed"]
+            if s not in ids or s in seen or r.get("ev") not in ("end", "crash") or r.get("where") == "boot":
+                continue
+            if r.get("agent_seed", [agent_seed, ids[s]]) != [agent_seed, ids[s]]:
+                print(f"resume: the row of {s} carries another agent seed or run index; it is played again", file=sys.stderr, flush=True)
+                continue
+            seen.add(s)
+            kept.append(r)
+    elif raw or have is not None:
+        print("resume: runs.jsonl was written for another agent or setting; it starts empty", file=sys.stderr, flush=True)
+    before = 0.0
+    if same:
+        try:
+            before = float(json.loads(wall_file.read_text(encoding="utf-8"))["wall_s"])
+        except (OSError, ValueError, KeyError, TypeError):
+            before = 0.0
+    tmp = runs_file.with_name("runs.jsonl.tmp")
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in kept), encoding="utf-8")
+    os.replace(tmp, runs_file)
+    (out / "divergences.jsonl").write_text("\n".join(json.dumps(d) for d in _divergence_rows(kept)), encoding="utf-8")
+    stamp_file.write_text(json.dumps(want), encoding="utf-8")
+    write_wall(out, before)
+    return kept, before
+
+
+def write_wall(out: Path, seconds: float) -> None:
+    (out / "wall.json").write_text(json.dumps({"wall_s": round(seconds, 1)}), encoding="utf-8")
+
+
+def gen_dir_tail() -> str | None:
+    """The agent a block without an explicit identity was played by: the last two parts of the generation folder SPIRELINE_GEN_DIR
+    names (the way gen_loop.Agent.describe writes `dir`), None for generation 0."""
+    v = os.environ.get("SPIRELINE_GEN_DIR")
+    return "/".join(Path(v).parts[-2:]) if v else None
+
+
 def play(a) -> int:
-    """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator."""
+    """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator.
+
+    With `a.resume` the block keeps the finished rows of an earlier session (`resume_block`) and plays only the seeds it has no
+    row for, each with the run id and agent seed it has in a fresh block; the summary counts all rows and sums the sessions' wall."""
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     select_engine(getattr(a, "engine", "old"))  # before the workers spawn: each loads the library on it
@@ -710,18 +794,37 @@ def play(a) -> int:
         raise ValueError("--only needs --seeds-file")
     seeds, run_ids = select_runs(seeds, a.runs, getattr(a, "only", None))
     agent_seed = a.agent_seed if a.agent_seed is not None else int.from_bytes(os.urandom(6), "big")  # not a game seed
+    resume = bool(getattr(a, "resume", False))
+    held: list[dict] = []
+    wall_before = 0.0
+    if resume:  # the identity includes the agent seed: a block without --agent-seed has a new random one and starts empty
+        shutil.rmtree(out / "scratch", ignore_errors=True)  # the game working copies of the stopped session
+        raw_id = getattr(a, "agent_identity", None)
+        stamp = {"agent": json.loads(raw_id) if raw_id else gen_dir_tail(), "sims": a.sims, "ascension": a.ascension,
+                 "character": a.character, "engine": getattr(a, "engine", "old"), "agent_seed": agent_seed}
+        held, wall_before = resume_block(out, stamp, dict(zip(seeds, run_ids)), agent_seed)
+        have_rows = {r["seed"] for r in held}
+        todo = [(s, i) for s, i in zip(seeds, run_ids) if s not in have_rows]  # run ids stay those of the full seed list
+        seeds, run_ids = [s for s, _ in todo], [i for _, i in todo]
+        if held:
+            print(f"resume: runs.jsonl holds {len(held)} rows; those seeds are not played again", file=sys.stderr, flush=True)
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
-    stop_at = time.time() + a.stop_after_h * 3600 if a.stop_after_h else 0.0
-    live = open(out / "runs.jsonl", "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
+    # the time limit counts the seconds the block has already run, so an interrupted block is not given its hours again
+    stop_at = time.time() + a.stop_after_h * 3600 - wall_before if a.stop_after_h else 0.0
+    live = open(out / "runs.jsonl", "a" if resume else "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
                                        agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0)))
-             for w in range(a.procs)]
+             for w in range(a.procs) if not resume or seeds[w::a.procs]]
     t0 = time.time()
+    beat = t0
     for p in procs:
         p.start()
-    events, done, nets = [], 0, set()
+    events, done, nets = list(held), 0, set()
     while done < len(procs):
+        if resume and time.time() - beat >= 30:  # the seconds run so far, so a stop leaves the block's wall behind
+            beat = time.time()
+            write_wall(out, wall_before + beat - t0)
         try:
             e = q.get(timeout=5)
         except queue.Empty:
@@ -739,20 +842,21 @@ def play(a) -> int:
             print(json.dumps({k: v for k, v in e.items() if k != "divergences"})[:300], flush=True)
     for p in procs:
         p.join(30)
-    wall = time.time() - t0
+    session = time.time() - t0
+    wall = session + wall_before  # the block's wall: the sessions' sum (wall_before: 0.0 without --resume)
     live.close()
     (out / "runs.jsonl").write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
     ends = [e for e in events if e["ev"] == "end"]
     dec = sum(e["stats"]["decisions"] for e in ends)
     rank = sum(e["stats"]["ranked"] for e in ends)
-    divs = [dict(d, seed=e["seed"]) for e in events if e["ev"] in ("end", "crash") for d in e.get("divergences", [])]
+    divs = _divergence_rows(events)
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
     summary = {"agent_seed": agent_seed, "character": a.character, "engine": getattr(a, "engine", "old"), "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
-               "decisions_per_s": round(dec / wall, 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
+               "decisions_per_s": round(dec / max(wall, 1e-9), 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
                "diverged_decisions": sum(e["stats"]["diverged"] for e in ends),
                "divergence_rate": round(sum(e["stats"]["diverged"] for e in ends) / max(1, dec), 4),
                "reanchors": sum(e["stats"]["reanchors"] for e in ends), "reanchor_failed": sum(e["stats"]["reanchor_failed"] for e in ends),
@@ -768,6 +872,9 @@ def play(a) -> int:
                "decisions_per_s_per_proc": round(dec / max(1e-9, sum(e["s"] for e in ends)), 2),
                "ranked_decisions_per_s_per_proc": round(rank / max(1e-9, sum(e["s"] for e in ends)), 3),
                "network_connections": sorted(nets), "errors": [e for e in events if e["ev"] == "crash"][:10]}
+    if resume:
+        summary.update(resumed_rows=len(held), wall_s_before=round(wall_before, 1), wall_s_session=round(session, 1))  # wall_s: both
+        write_wall(out, wall)
     (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     (out / "divergences.jsonl").write_text("\n".join(json.dumps(d) for d in divs), encoding="utf-8")
     print(json.dumps(summary, indent=1))
@@ -821,6 +928,12 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--stop-after-h", type=float, default=0.0, help="play: start no new run after this many hours (0: no limit)")
     ap.add_argument("--seeds-file", default=None, help="play: JSON seed block (default: A1S0000...)")
     ap.add_argument("--only", default=None, help="play: only these seeds of --seeds-file (comma-separated), each keeping its place in the full file as its run index")
+    ap.add_argument("--resume", action="store_true",
+                    help="play: keep the finished rows of an earlier session of this block (same identity: agent, sims or config, ascension, "
+                         "character, engine, --agent-seed) and play only the seeds without a row, each with its fresh-block run id and agent seed")
+    ap.add_argument("--agent-identity", default=None,
+                    help="play --resume: the agent's description as JSON (gen_loop.Agent.describe) for the identity file; default: "
+                         "SPIRELINE_GEN_DIR's last two parts")
     ap.add_argument("--sims", type=lambda v: int(v) if v.isdigit() else v, default=60,
                     help="simulations per combat decision, or a search config name (rl/search_configs.py)")
     ap.add_argument("--agent-seed", type=int, default=None, help="play: the agent's own seed (default: random, recorded); never derived from a game seed")
