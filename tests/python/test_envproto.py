@@ -460,5 +460,80 @@ class RunRowTest(unittest.TestCase):
         self.assertTrue(rows[0]["t_end"] > 0)
 
 
+class SampleMachineFlagTest(unittest.TestCase):
+    """L3: `play --sample-machine SECONDS` runs the machine sampler (machine.jsonl in the out folder) for the block; off by default."""
+
+    def play(self, start_error=None, **over):
+        from unittest import mock
+
+        import machine_sampler
+
+        made = []
+
+        class FakeSampler:
+            def __init__(self, path, interval, probes, runs_done=lambda: 0, **k):
+                self.args, self.runs_done, self.started, self.stopped = (Path(path), interval), runs_done, False, False
+                made.append(self)
+
+            def start(self):
+                if start_error:
+                    raise start_error
+                self.started = True
+
+            def stop(self):
+                self.stopped = True
+
+        helper = PlayResumeTest("test_the_parser_takes_resume_and_the_agent_identity")
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        with mock.patch.object(machine_sampler, "MachineSampler", FakeSampler), mock.patch.object(machine_sampler, "WinProbes", lambda *a, **k: object()):
+            summary = helper.play(resume=False, **over)
+        return made, helper, summary
+
+    def test_the_parser_takes_the_flag_and_it_is_off_by_default(self):
+        base = ["play", "--game", "G", "--out", "O"]
+        self.assertEqual(0, envproto.parser().parse_args(base).sample_machine)
+        self.assertEqual(30.0, envproto.parser().parse_args([*base, "--sample-machine", "30"]).sample_machine)
+
+    def test_without_the_flag_no_sampler_is_made(self):
+        made, _h, _s = self.play()
+        self.assertEqual([], made)
+
+    def test_with_the_flag_one_sampler_writes_machine_jsonl_in_the_out_folder_and_stops_with_the_block(self):
+        made, h, summary = self.play(sample_machine=30.0)
+        (s,) = made
+        self.assertEqual((h.out.resolve() / "machine.jsonl", 30.0), s.args)
+        self.assertEqual((True, True), (s.started, s.stopped))
+        self.assertEqual(6, s.runs_done())  # the runs finished so far: the fake workers played all six
+        self.assertEqual(6, summary["runs"])
+
+    def test_a_sampler_that_cannot_start_does_not_stop_the_block(self):
+        made, h, summary = self.play(start_error=OSError("no counters"), sample_machine=30.0)
+        self.assertEqual((1, 6), (len(made), summary["runs"]))
+        self.assertIn("machine sampler not started", h.err)
+
+    def test_a_fresh_block_clears_an_old_machine_jsonl_and_a_resumed_one_keeps_it(self):
+        from unittest import mock
+
+        import machine_sampler
+
+        class Quiet:
+            def __init__(self, *a, **k):
+                pass
+
+            start = stop = lambda self: None  # noqa: E731
+
+        for resume, kept in ((False, False), (True, True)):
+            h = PlayResumeTest("test_the_parser_takes_resume_and_the_agent_identity")
+            h.setUp()
+            (h.out / "machine.jsonl").write_text('{"t": 1}\n', encoding="utf-8")
+            if resume:
+                h.write([h.row("S0")])
+            with mock.patch.object(machine_sampler, "MachineSampler", Quiet), mock.patch.object(machine_sampler, "WinProbes", lambda *a, **k: object()):
+                h.play(resume=resume, sample_machine=30.0)
+            self.assertEqual(kept, (h.out / "machine.jsonl").exists(), resume)
+            __import__("shutil").rmtree(h.tmp, True)
+
+
 if __name__ == "__main__":
     unittest.main()

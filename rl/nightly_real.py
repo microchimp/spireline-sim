@@ -252,6 +252,8 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
            "--gen-dir", agent["dir"], "--out", str(folder), "--engine", a.engine, "--recycle", str(a.recycle), "--resume",
            # the GPU lane may fit beside the real-game arm (not the emulator arm, which plays through the prior server on the GPU)
            "--gpu-ok-tag", TAG, "--gpu-ok-file", str(getattr(a, "gpu_ok_file", None) or gpu_ok_default())]
+    if getattr(a, "sample_machine", 0):  # the one-night sampler of the slow windows: the real arm only (`gen0.py score` hands it to envproto play)
+        cmd += ["--sample-machine", f"{a.sample_machine:g}"]
     # a stopped, unfinished block is resumed in its folder, real arm and emulator arm alike: the seeds that already have a row are
     # kept (envproto play --resume and gen0.run_block resume; each arm's identity file keeps rows of another agent or setting out),
     # so the lab stopping a 7-9 hour block on the owner's input, on load or on a landing costs only the runs in flight
@@ -287,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tag", default=TAG)
     ap.add_argument("--gpu-ok-file", default=None, help="the GPU_OK file (default: gen0.GPU_OK_FILE): `gen0.py score` keeps the line "
                     "lab-nightly in it while the real-game arm plays; a stale one is removed at every start")
+    ap.add_argument("--sample-machine", type=float, default=30.0, help="seconds between the lines of machine.jsonl in each real-game block's "
+                    "folder (referee/machine_sampler.py; the real arm only); 0: off")
     ap.add_argument("--wait-h", type=float, default=2.0)
     ap.add_argument("--no-lock", action="store_true", help="the caller holds the QUIET.lock (the dry run)")
     ap.add_argument("--seeds-also", action="append", default=[], help="another folder of seed blocks to stay disjoint from (read only)")

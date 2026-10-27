@@ -236,6 +236,14 @@ class DriverTest(Tmp):
         self.assertEqual("w3-blocks 2026-10-28\n", self.gpu_at_play)  # gone before the first play (and so before any emulator arm)
         self.assertEqual("w3-blocks 2026-10-28\n", gpu.read_text(encoding="utf-8"))
 
+    def test_the_real_arm_gets_the_machine_sampler_at_thirty_seconds_and_zero_switches_it_off(self):
+        rc, seen, lab, job, lock = self.run_driver()
+        self.assertEqual("30", seen[0][seen[0].index("--sample-machine") + 1])
+
+    def test_sample_machine_zero_leaves_the_flag_out(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--sample-machine", "0")
+        self.assertNotIn("--sample-machine", seen[0])
+
     def test_a_stale_line_is_removed_even_when_the_night_is_skipped(self):
         gpu = self.tmp / "GPU_OK"
         gpu.write_text("lab-nightly\n", encoding="utf-8")

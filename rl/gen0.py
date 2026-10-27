@@ -896,6 +896,8 @@ def score_real(a: argparse.Namespace) -> int:
            "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h), "--character", a.character, "--engine", engine]
     if getattr(a, "recycle", 0):
         cmd += ["--recycle", str(a.recycle)]
+    if getattr(a, "sample_machine", 0):
+        cmd += ["--sample-machine", str(a.sample_machine)]  # the machine sampler of envproto play (referee/machine_sampler.py)
     if only:
         cmd += ["--only", only]
     if getattr(a, "resume", False):
@@ -1049,6 +1051,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--engine", choices=("old", "core2"), default="old",
                     help="the emulator's engine, for the lockstep and the emulator arm (docs/rebuild/NATIVE_KERNEL.md); default old")
     sc.add_argument("--recycle", type=int, default=0, help="restart each game process after this many runs (0: never)")
+    sc.add_argument("--sample-machine", type=float, default=0.0,
+                    help="the game's side only: every this many seconds one line of machine readings goes to machine.jsonl in OUT (0: off)")
     sc.add_argument("--gpu-ok-tag", default=None,
                     help="while the game's side plays (never during the emulator arm) keep this line first in the GPU_OK file: "
                     "the GPU lane may run fits beside it; removed when the play ends")

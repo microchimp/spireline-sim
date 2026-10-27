@@ -794,6 +794,26 @@ def gen_dir_tail() -> str | None:
     return "/".join(Path(v).parts[-2:]) if v else None
 
 
+def _start_sampler(a, out: Path, events: list, resume: bool):
+    """The machine sampler of `--sample-machine` (referee/machine_sampler.py), started; None when off or when it cannot start: a
+    sampler fault is never the block's. A fresh block clears the file of an earlier one, a resumed block appends to it."""
+    every = float(getattr(a, "sample_machine", 0) or 0)
+    if every <= 0:
+        return None
+    try:
+        import machine_sampler  # noqa: PLC0415
+
+        if not resume:
+            (out / "machine.jsonl").unlink(missing_ok=True)
+        s = machine_sampler.MachineSampler(out / "machine.jsonl", every, machine_sampler.WinProbes(out.drive or None),
+                                           runs_done=lambda: sum(1 for e in list(events) if e["ev"] in ("end", "crash")))
+        s.start()
+        return s
+    except Exception as e:  # noqa: BLE001
+        print(f"machine sampler not started ({type(e).__name__})", file=sys.stderr, flush=True)
+        return None
+
+
 def play(a) -> int:
     """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator.
 
@@ -844,6 +864,7 @@ def play(a) -> int:
     for p in procs:
         p.start()
     events, done, nets = list(held), 0, set()
+    sampler = _start_sampler(a, out, events, resume)
     while done < len(procs):
         if resume and time.time() - beat >= 30:  # the seconds run so far, so a stop leaves the block's wall behind
             beat = time.time()
@@ -865,6 +886,8 @@ def play(a) -> int:
             print(json.dumps({k: v for k, v in e.items() if k != "divergences"})[:300], flush=True)
     for p in procs:
         p.join(30)
+    if sampler is not None:
+        sampler.stop()
     session = time.time() - t0
     wall = session + wall_before  # the block's wall: the sessions' sum (wall_before: 0.0 without --resume)
     live.close()
@@ -969,6 +992,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--full-select", action="store_true", help="record: record with fight card screens at their real min..max (replay uses the stored flag)")
     ap.add_argument("--max-runs", type=int, default=0, help="bench: stop after this many runs in all (0: run for --seconds)")
     ap.add_argument("--recycle", type=int, default=0, help="bench, play: restart each game after this many runs (0: never)")
+    ap.add_argument("--sample-machine", type=float, default=0.0,
+                    help="play: every this many seconds append one line of machine readings (cpu, memory, disk, timer, game processes, "
+                         "runs done) to machine.jsonl in --out (0: off)")
     return ap
 
 

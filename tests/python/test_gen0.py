@@ -267,5 +267,38 @@ class GpuOkTest(unittest.TestCase):
         self.assertEqual((None, gen0.GPU_OK_FILE), (b.gpu_ok_tag, b.gpu_ok_file))
 
 
+class SampleMachineTest(unittest.TestCase):
+    """L3: `score --sample-machine SECONDS` is handed to envproto play (the real arm); off unless given."""
+
+    def play_cmd(self, **extra):
+        import shutil
+        from types import SimpleNamespace
+        from unittest import mock
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            return SimpleNamespace(returncode=0)
+
+        a = SimpleNamespace(out=str(tmp / "real"), game="G", seeds_file="F.json", runs=2, procs=4, sims=60, config="a3-v1", ascension=10,
+                            character="IRONCLAD", stop_after_h=1.0, lib=None, emu_dir=None, gen_dir=None, only=None, **extra)
+        with mock.patch("subprocess.run", fake_run), mock.patch.object(gen0, "play_emu_arm", lambda *a, **k: None):
+            gen0.score_real(a)
+        return seen[0]
+
+    def test_the_play_command_carries_the_interval_only_when_given(self):
+        self.assertNotIn("--sample-machine", self.play_cmd())
+        cmd = self.play_cmd(sample_machine=30.0)
+        self.assertEqual("30.0", cmd[cmd.index("--sample-machine") + 1])
+
+    def test_the_parser_takes_the_option_off_by_default(self):
+        base = ["score", "--game", "G", "--seeds-file", "F", "--out", "O"]
+        self.assertEqual(0.0, gen0.build_parser().parse_args(base).sample_machine)
+        self.assertEqual(30.0, gen0.build_parser().parse_args([*base, "--sample-machine", "30"]).sample_machine)
+
+
 if __name__ == "__main__":
     unittest.main()
