@@ -66,6 +66,20 @@ class RankTest(unittest.TestCase):
         g = self.doc([rec(61, 14, BANE_BIT), rec(70, 9, BANE_BIT)])["groups"]
         self.assertEqual([("single_site", "single_site")], [(x["tag"], x["class"]) for x in g])
 
+    def test_a_one_way_attribute_difference_on_several_slots_is_a_single_site(self):
+        up = hand_diff([], [])
+        up[0][1:] = [['["ASCENDERS_BANE", 0]', '["CLUMSY", 0]', '["STRIKE_IRONCLAD", 1]'],
+                     ['["ASCENDERS_BANE", 1]', '["CLUMSY", 1]', '["STRIKE_IRONCLAD", 1]']]
+        self.assertEqual("single_site", rank.classify(rec(1, 5, up)))
+        down = [[up[0][0], up[0][2], up[0][1]]]  # the reverse way: the game's bit set, the emulator's clear
+        self.assertEqual("single_site", rank.classify(rec(1, 5, down)))
+
+    def test_a_two_way_attribute_mix_stays_an_rng_stream(self):
+        # the same ids with the bit on different slots is what a diverged random pick leaves (Stone Cracker, Drain Power)
+        mixed = [[".combat.hand", ['["BASH", 1]', '["STRIKE_IRONCLAD", 0]'], ['["BASH", 0]', '["STRIKE_IRONCLAD", 1]']]]
+        self.assertEqual("rng_stream", rank.classify(rec(1, 5, mixed)))
+        self.assertEqual("rng_stream", rank.classify(rec(1, 5, BANE_BIT + mixed)))
+
     def test_other_pile_differences_keep_their_class(self):
         # different cards at equal size: still a stream; the same ids in another order (a shuffle) too; a size change: queue
         self.assertEqual("rng_stream", rank.classify(rec(1, 5, SAME_SIZE)))
