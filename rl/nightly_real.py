@@ -217,11 +217,15 @@ def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: 
     summ = json.loads((folder / "summary.json").read_text(encoding="utf-8")) if (folder / "summary.json").is_file() else {}
     boss = sum(bool(gen_loop.boss_kill(r)) for r in rows)
     mean = t["floor"]["mean"]
+    from tools.lab import rank  # noqa: PLC0415
+
+    stalls = rank.stalls_of(folder / "runs.jsonl", emu_jsonl=folder.parent / (folder.name + "-emu") / "runs.jsonl")  # the real arm: timeouts and
+    # runs that answered one screen the same way over 50 times; the sibling emulator arm: its timeouts (the wall cap), L2's run-layer loops
     return {"date": date, "agent": agent["label"], "generation": agent["generation"], "role": agent["role"], "seed_block": seed_block,
             "engine": engine, "runs_planned": planned, "runs": t["runs"], "wins": t["wins"], "win_rate": t["win_rate"],
             "mean_floor": None if mean is None else round(mean, 3), "boss_kills": boss,
             "boss_kill_rate": boss / t["runs"] if t["runs"] else None, "crashes": t["crashes"],
-            "divergence_rate": summ.get("divergence_rate"), "diverged_decisions": summ.get("diverged_decisions"),
+            "stalls": stalls, "divergence_rate": summ.get("divergence_rate"), "diverged_decisions": summ.get("diverged_decisions"),
             "reanchors": summ.get("reanchors"), "reanchor_failed": summ.get("reanchor_failed"), "wall_s": summ.get("wall_s"),
             "counted": "a crashed run is a loss: floor 0, no win, no boss kill"}
 
@@ -249,6 +253,8 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
            "--gen-dir", agent["dir"], "--out", str(folder), "--engine", a.engine, "--recycle", str(a.recycle), "--resume",
            # the GPU lane may fit beside the real-game arm (not the emulator arm, which plays through the prior server on the GPU)
            "--gpu-ok-tag", TAG, "--gpu-ok-file", str(getattr(a, "gpu_ok_file", None) or gpu_ok_default())]
+    if getattr(a, "sample_machine", 0):  # the one-night sampler of the slow windows: the real arm only (`gen0.py score` hands it to envproto play)
+        cmd += ["--sample-machine", f"{a.sample_machine:g}"]
     # a stopped, unfinished block is resumed in its folder, real arm and emulator arm alike: the seeds that already have a row are
     # kept (envproto play --resume and gen0.run_block resume; each arm's identity file keeps rows of another agent or setting out),
     # so the lab stopping a 7-9 hour block on the owner's input, on load or on a landing costs only the runs in flight
@@ -284,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tag", default=TAG)
     ap.add_argument("--gpu-ok-file", default=None, help="the GPU_OK file (default: gen0.GPU_OK_FILE): `gen0.py score` keeps the line "
                     "lab-nightly in it while the real-game arm plays; a stale one is removed at every start")
+    ap.add_argument("--sample-machine", type=float, default=30.0, help="seconds between the lines of machine.jsonl in each real-game block's "
+                    "folder (referee/machine_sampler.py; the real arm only); 0: off")
     ap.add_argument("--wait-h", type=float, default=2.0)
     ap.add_argument("--no-lock", action="store_true", help="the caller holds the QUIET.lock (the dry run)")
     ap.add_argument("--seeds-also", action="append", default=[], help="another folder of seed blocks to stay disjoint from (read only)")

@@ -111,6 +111,46 @@ def score_active(lab: Path) -> bool:
     return a is not None and a < ACTIVE_STALE_H
 
 
+GPU_OK_FILE = "D:/spireline/referee/GPU_OK"  # rl/gen0.py GPU_OK_FILE: the lines of the lanes that allow a GPU fit beside the real-game arm
+CONSENT_TAG = "lab-nightly"  # rl/nightly_real.py TAG: the line a nightly-real job keeps first in GPU_OK while its real-game arm plays
+
+
+def consent_path(entry: dict | None) -> str:
+    """The GPU_OK file a nightly-real job's driver puts its consent line in, from the entry's settings: the `--gpu-ok-file` of its `cmd`
+    (as `--gpu-ok-file P` or `--gpu-ok-file=P`; a value that still holds a {token} is not a path yet), else its `gpu_ok_file` key, else
+    the default the driver uses (GPU_OK_FILE)."""
+    entry = entry or {}
+    cmd = entry.get("cmd")
+    toks = [str(x) for x in cmd] if isinstance(cmd, (list, tuple)) else str(cmd).split() if isinstance(cmd, str) else []
+    for i, t in enumerate(toks):
+        v = t.split("=", 1)[1] if t.startswith("--gpu-ok-file=") else toks[i + 1] if t == "--gpu-ok-file" and i + 1 < len(toks) else None
+        if v and "{" not in v:
+            return v
+    return str(entry.get("gpu_ok_file") or GPU_OK_FILE)
+
+
+def clear_consent(path: str | Path, tag: str = CONSENT_TAG) -> bool:
+    """Remove the lines equal to `tag` from the GPU_OK file `path`, the other lines kept and the file deleted when nothing else is left
+    in it (the rule of gen0.gpu_ok_remove, which the runner does not import). True when a line was removed; best effort."""
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return False
+        have = [h for h in p.read_text(encoding="utf-8").splitlines() if h.strip()]
+        rest = [h for h in have if h.strip() != tag]
+        if len(rest) == len(have):
+            return False
+        if not rest:
+            p.unlink()
+            return True
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text("".join(x + "\n" for x in rest), encoding="utf-8")
+        os.replace(tmp, p)
+        return True
+    except OSError:
+        return False
+
+
 def due(lab: Path, kind: str, every_h: float) -> bool:
     a = _age_h(Path(lab) / kind / "last-ok")
     return a is None or a >= every_h

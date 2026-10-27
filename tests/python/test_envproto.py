@@ -373,5 +373,170 @@ class PlayResumeTest(unittest.TestCase):
         self.assertFalse(envproto.parser().parse_args(["play", "--game", "G", "--out", "O"]).resume)
 
 
+class RunRowTest(unittest.TestCase):
+    """L3: the end and crash rows of a play worker say when the run ended, how long its game process took to boot, how often the worker
+    has restarted its game, and the longest run of identical consecutive (screen kind, action) pairs (a stalled run-layer loop)."""
+
+    def play(self, scripts, boots=(1.5, 2.5), recycle=0):
+        """Run play_worker over the seeds of `scripts` ({seed: ([(screen kind, action)...], exception or None)}) with a fake game
+        process and a fake lockstep; the end and crash rows it queues."""
+        import queue as queue_mod
+        import time
+        import types
+        from unittest import mock
+
+        booted = []
+
+        class FakeEnv:
+            def __init__(self, game, scratch, install=True):
+                n = len(booted)
+                booted.append(self)
+                if n >= len(boots) or boots[n] is None:
+                    raise envproto.GameDied("no ready")
+                self.boot_s, self.pid, self.last, self.screens = boots[n], 100 + n, None, iter(())
+
+            def reset(self, seed, timeout=0, **k):
+                self.last = {"kind": next(self.screens)}
+                return self.last, False
+
+            def step(self, a, timeout=0):
+                self.last = {"kind": next(self.screens)}
+                return self.last, False
+
+            def close(self):
+                return 0
+
+        def play_run(timed, seed, ascension, sims, agent_seed, character):
+            pairs, boom = scripts[seed]
+            env = timed.env
+            env.screens = iter([k for k, _a in pairs] + ["end"])
+            timed.reset(seed)
+            for _k, act in pairs:
+                timed.step(act)
+            if boom:
+                raise boom
+            ls = types.SimpleNamespace(stats={"decisions": len(pairs)}, lost=None, log=types.SimpleNamespace(records=[]),
+                                       agent_seed=[1, 0], assumed=[], fields=None)
+            return {"end": "death", "floor": 3, "asked": len(pairs)}, ls
+
+        q = queue_mod.Queue()
+        lock = types.ModuleType("lockstep")
+        lock.play_run = play_run
+        self.t0 = time.time()
+        with mock.patch.dict(sys.modules, {"lockstep": lock}), mock.patch.object(envproto, "GameEnv", FakeEnv), \
+                mock.patch.object(envproto, "below_normal_self", lambda: None), mock.patch.object(envproto.rr, "connections", lambda pid: []):
+            envproto.play_worker(0, "G", tempfile.mkdtemp(), list(scripts), 1, q, 1, 10, 7, None, 0.0, "IRONCLAD", recycle)
+        self.t1 = time.time()
+        rows = []
+        while not q.empty():
+            rows.append(q.get())
+        return [r for r in rows if r["ev"] in ("end", "crash")]
+
+    def test_an_end_row_carries_t_end_boot_s_restarts_and_the_longest_streak(self):
+        pairs = [("map", 0)] + [("event", 0)] * 60 + [("event", 1), ("combat", 2), ("combat", 2)]
+        (row,) = self.play({"S1": (pairs, None)})
+        self.assertEqual("end", row["ev"])
+        self.assertTrue(self.t0 - 1 <= row["t_end"] <= self.t1 + 1)
+        self.assertEqual((1.5, 0), (row["boot_s"], row["restarts"]))
+        self.assertEqual({"n": 60, "screen": "event", "action": 0}, row["streak"])
+
+    def test_the_same_action_on_another_screen_is_not_a_streak(self):
+        pairs = [("event", 0), ("map", 0), ("event", 0), ("map", 0)] * 20
+        (row,) = self.play({"S1": (pairs, None)})
+        self.assertEqual(1, row["streak"]["n"])
+
+    def test_a_crash_row_carries_them_too_and_the_next_run_has_the_restart_and_its_own_boot(self):
+        crash = ([("event", 3)] * 7 + [("map", 1)], TimeoutError("no message in 180 s"))
+        rows = self.play({"S1": crash, "S2": ([("map", 0), ("map", 0)], None)})
+        self.assertEqual(["crash", "end"], [r["ev"] for r in rows])
+        c, e = rows
+        self.assertEqual((1.5, 0, {"n": 7, "screen": "event", "action": 3}), (c["boot_s"], c["restarts"], c["streak"]))
+        self.assertTrue(c["t_end"] > 0)
+        self.assertEqual((2.5, 1, {"n": 2, "screen": "map", "action": 0}), (e["boot_s"], e["restarts"], e["streak"]))
+
+    def test_a_boot_failure_row_has_the_time_and_the_restart_count(self):
+        rows = self.play({"S1": ([], None)}, boots=(None,))
+        self.assertEqual(("crash", "boot", 0), (rows[0]["ev"], rows[0]["where"], rows[0]["restarts"]))
+        self.assertTrue(rows[0]["t_end"] > 0)
+
+
+class SampleMachineFlagTest(unittest.TestCase):
+    """L3: `play --sample-machine SECONDS` runs the machine sampler (machine.jsonl in the out folder) for the block; off by default."""
+
+    def play(self, start_error=None, **over):
+        from unittest import mock
+
+        import machine_sampler
+
+        made = []
+
+        class FakeSampler:
+            def __init__(self, path, interval, probes=None, runs_done=lambda: 0, **k):
+                self.probes, self.kw = probes, k
+                self.args, self.runs_done, self.started, self.stopped = (Path(path), interval), runs_done, False, False
+                made.append(self)
+
+            def start(self):
+                if start_error:
+                    raise start_error
+                self.started = True
+
+            def stop(self):
+                self.stopped = True
+
+        helper = PlayResumeTest("test_the_parser_takes_resume_and_the_agent_identity")
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        with mock.patch.object(machine_sampler, "MachineSampler", FakeSampler), mock.patch.object(machine_sampler, "WinProbes", lambda *a, **k: object()):
+            summary = helper.play(resume=False, **over)
+        return made, helper, summary
+
+    def test_the_parser_takes_the_flag_and_it_is_off_by_default(self):
+        base = ["play", "--game", "G", "--out", "O"]
+        self.assertEqual(0, envproto.parser().parse_args(base).sample_machine)
+        self.assertEqual(30.0, envproto.parser().parse_args([*base, "--sample-machine", "30"]).sample_machine)
+
+    def test_without_the_flag_no_sampler_is_made(self):
+        made, _h, _s = self.play()
+        self.assertEqual([], made)
+
+    def test_with_the_flag_one_sampler_writes_machine_jsonl_in_the_out_folder_and_stops_with_the_block(self):
+        made, h, summary = self.play(sample_machine=30.0)
+        (s,) = made
+        self.assertEqual((h.out.resolve() / "machine.jsonl", 30.0), s.args)
+        self.assertEqual((True, True), (s.started, s.stopped))
+        self.assertIsNone(s.probes)  # the readings are built by the sampler's own thread, through this factory
+        self.assertTrue(callable(s.kw["make_probes"]))
+        self.assertEqual(6, s.runs_done())  # the runs finished so far: the fake workers played all six
+        self.assertEqual(6, summary["runs"])
+
+    def test_a_sampler_that_cannot_start_does_not_stop_the_block(self):
+        made, h, summary = self.play(start_error=OSError("no counters"), sample_machine=30.0)
+        self.assertEqual((1, 6), (len(made), summary["runs"]))
+        self.assertIn("machine sampler not started", h.err)
+
+    def test_a_fresh_block_clears_an_old_machine_jsonl_and_a_resumed_one_keeps_it(self):
+        from unittest import mock
+
+        import machine_sampler
+
+        class Quiet:
+            def __init__(self, *a, **k):
+                pass
+
+            start = stop = lambda self: None  # noqa: E731
+
+        for resume, kept in ((False, False), (True, True)):
+            h = PlayResumeTest("test_the_parser_takes_resume_and_the_agent_identity")
+            h.setUp()
+            (h.out / "machine.jsonl").write_text('{"t": 1}\n', encoding="utf-8")
+            if resume:
+                h.write([h.row("S0")])
+            with mock.patch.object(machine_sampler, "MachineSampler", Quiet), mock.patch.object(machine_sampler, "WinProbes", lambda *a, **k: object()):
+                h.play(resume=resume, sample_machine=30.0)
+            self.assertEqual(kept, (h.out / "machine.jsonl").exists(), resume)
+            __import__("shutil").rmtree(h.tmp, True)
+
+
 if __name__ == "__main__":
     unittest.main()

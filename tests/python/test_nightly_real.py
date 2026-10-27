@@ -236,6 +236,14 @@ class DriverTest(Tmp):
         self.assertEqual("w3-blocks 2026-10-28\n", self.gpu_at_play)  # gone before the first play (and so before any emulator arm)
         self.assertEqual("w3-blocks 2026-10-28\n", gpu.read_text(encoding="utf-8"))
 
+    def test_the_real_arm_gets_the_machine_sampler_at_thirty_seconds_and_zero_switches_it_off(self):
+        rc, seen, lab, job, lock = self.run_driver()
+        self.assertEqual("30", seen[0][seen[0].index("--sample-machine") + 1])
+
+    def test_sample_machine_zero_leaves_the_flag_out(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--sample-machine", "0")
+        self.assertNotIn("--sample-machine", seen[0])
+
     def test_a_stale_line_is_removed_even_when_the_night_is_skipped(self):
         gpu = self.tmp / "GPU_OK"
         gpu.write_text("lab-nightly\n", encoding="utf-8")
@@ -272,6 +280,31 @@ class DriverTest(Tmp):
         self.assertEqual((0, []), (rc, seen))
         self.assertIn("w4-readout", json.loads((job / "result.json").read_text())["skipped"])
         self.assertTrue(lock.read_text().startswith("w4-readout"))
+
+
+class StallNumbersTest(Tmp):
+    def test_the_nights_numbers_list_the_stalled_runs(self):
+        rows = [end("A", 20), {**end("B", 4), "streak": {"n": 700, "screen": "event", "action": 0}},
+                {**end("C", 9), "end": "timeout"}, {"ev": "net", "w": 0, "conns": []}]
+        (self.tmp / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", {"label": "g3", "generation": 3, "role": "incumbent"}, "N-2026-10-25", 3, "core2")
+        self.assertEqual(["B", "C"], [s["seed"] for s in n["stalls"]])
+        self.assertEqual({"n": 700, "screen": "event", "action": 0}, n["stalls"][0]["streak"])
+
+    def test_the_sibling_emulator_arm_is_read_too(self):
+        (self.tmp / "runs.jsonl").write_text(json.dumps({**end("B", 4), "streak": {"n": 700, "screen": "event", "action": 0}}))
+        emu = self.tmp.with_name(self.tmp.name + "-emu")  # <agent>-emu beside <agent>
+        emu.mkdir()
+        self.addCleanup(shutil.rmtree, emu, True)
+        (emu / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in [
+            {"seed": "E1", "win": False, "floor": 4, "end": "timeout"}, {"seed": "E2", "win": False, "floor": 12, "end": "death"}]))
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", {"label": "g3", "generation": 3, "role": "incumbent"}, "N-2026-10-25", 1, "core2")
+        self.assertEqual([("real", "B", 4), ("emu", "E1", 4)], [(s["arm"], s["seed"], s["floor"]) for s in n["stalls"]])
+
+    def test_a_clean_night_has_an_empty_list(self):
+        (self.tmp / "runs.jsonl").write_text(json.dumps(end("A", 20)))
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", {"label": "g3", "generation": 3, "role": "incumbent"}, "N-2026-10-25", 1, "core2")
+        self.assertEqual([], n["stalls"])
 
 
 if __name__ == "__main__":

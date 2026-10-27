@@ -242,5 +242,63 @@ class JobHookTest(Base):
         self.assertEqual((2, 1), (s["outcome_confirmed"], s["emu_runs_joined"]))
 
 
+class StallsTest(unittest.TestCase):
+    """L3: the run rows' longest identical (screen, action) streak and the timeout end make a stall visible the morning after."""
+
+    ROWS = [
+        {"ev": "end", "seed": "A", "end": "death", "floor": 12, "streak": {"n": 50, "screen": "event", "action": 0}},
+        {"ev": "end", "seed": "B", "end": "death", "floor": 4, "streak": {"n": 412, "screen": "event", "action": 0}},
+        {"ev": "end", "seed": "C", "end": "timeout", "floor": 7},
+        {"ev": "crash", "seed": "D", "error": "TimeoutError", "streak": {"n": 90, "screen": "map", "action": 1}},
+        {"ev": "net", "w": 0, "conns": []},
+        {"ev": "end", "seed": "E", "end": "win", "floor": 51, "streak": {"n": 3, "screen": "map", "action": 0}},
+        {"ev": "end", "seed": "F", "end": "timeout", "floor": 4, "streak": {"n": 900, "screen": "event", "action": 0}},
+    ]
+
+    def test_streaks_over_fifty_and_timeouts_are_listed_with_the_key(self):
+        got = rank.stalls(self.ROWS)
+        self.assertEqual(["B", "C", "D", "F"], [s["seed"] for s in got])
+        self.assertEqual({"seed": "B", "ev": "end", "end": "death", "floor": 4, "streak": {"n": 412, "screen": "event", "action": 0},
+                          "arm": "real", "why": ["streak"]}, got[0])
+        self.assertEqual((["timeout"], None), (got[1]["why"], got[1]["streak"]))  # a row from before the field has no streak
+        self.assertEqual((["streak"], None), (got[2]["why"], got[2]["floor"]))
+        self.assertEqual(["timeout", "streak"], got[3]["why"])
+
+    def test_no_stall_is_an_empty_list_and_the_threshold_is_a_parameter(self):
+        self.assertEqual([], rank.stalls([self.ROWS[0], self.ROWS[5]]))
+        self.assertEqual(["A", "B", "C", "D", "F"], [s["seed"] for s in rank.stalls(self.ROWS, min_streak=49)])
+
+    EMU = [{"seed": "E1", "win": False, "floor": 4, "end": "timeout"}, {"seed": "E2", "win": False, "floor": 12, "end": "death"},
+           {"seed": "E3", "win": False, "floor": 0, "crash": True, "end": "?"}]  # gen0.run_block rows: no `ev` key
+
+    def test_the_emulator_arms_timeouts_are_listed_with_their_arm(self):
+        self.assertEqual([{"seed": "E1", "ev": None, "end": "timeout", "floor": 4, "streak": None, "arm": "emu", "why": ["timeout"]}],
+                         rank.stalls(self.EMU, arm="emu"))
+        self.assertEqual([], rank.stalls(self.EMU))  # a row without ev is not a real-arm row
+        self.assertEqual([], rank.stalls(self.ROWS, arm="emu"))  # and a real-arm row is not an emulator row
+        self.assertEqual({"real"}, {s["arm"] for s in rank.stalls(self.ROWS)})
+
+    def test_the_summary_adds_the_paired_emulator_arms_stalls(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        write_records(d / "in", [])
+        (d / "in" / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in self.ROWS), encoding="utf-8")
+        (d / "emu").mkdir()
+        (d / "emu" / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in self.EMU), encoding="utf-8")
+        got = rank.rank(d / "in", d / "emu")["summary"]["stalls"]
+        self.assertEqual([("real", "B"), ("real", "C"), ("real", "D"), ("real", "F"), ("emu", "E1")], [(s["arm"], s["seed"]) for s in got])
+        self.assertIn("emu E1 floor 4", rank.top_md(rank.rank(d / "in", d / "emu")))
+        self.assertEqual(["B", "C", "D", "F"], [s["seed"] for s in rank.rank(d / "in")["summary"]["stalls"]])  # no arm given: real only
+
+    def test_the_ranking_summary_lists_the_stalls(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        write_records(d / "in", [])
+        (d / "in" / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in self.ROWS), encoding="utf-8")
+        doc = rank.rank(d / "in")
+        self.assertEqual(["B", "C", "D", "F"], [s["seed"] for s in doc["summary"]["stalls"]])
+        self.assertIn("Stalled runs", rank.top_md(doc))
+
+
 if __name__ == "__main__":
     unittest.main()
