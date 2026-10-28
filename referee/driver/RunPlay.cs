@@ -704,7 +704,28 @@ public static partial class Driver
     {
         var sync = RunManager.Instance.TreasureRoomRelicSynchronizer;
         var relics = sync.CurrentRelics;
-        if (relics == null) return "treasure_without_relic_picking";
+        if (relics == null)
+        {
+            // The empty chest. TreasureRoomRelicSynchronizer.BeginRelicPicking (run at room entry by
+            // TreasureRoom.EnterInternal) generates a relic only while Hook.ShouldGenerateTreasure holds;
+            // SilverCrucible.ShouldGenerateTreasure is its one override (the relic's first treasure room),
+            // and with nothing generated the synchronizer ends the voting at once, so CurrentRelics is
+            // null before the chest is clicked. NTreasureRoomRelicCollection.InitializeRelics then shows
+            // the empty chest and CompleteWithNoRelics closes the picking, which the chest task waits on.
+            // A singleplayer chest with a relic cannot reach here with null (the list is set at room
+            // entry and cleared by the award or the room's exit), so this is the relic's rule, not a
+            // stop: until 2026-10-28 the run ended here as "treasure_without_relic_picking" (6% of the
+            // generation-7 night's runs, every one a Silver Crucible taken at Neow, at the Act-1 chest).
+            if (chest.IsFaulted) return "treasure_chest_error";
+            var e = log.Begin("treasure");
+            e["offer"] = new JsonArray();
+            e["choice"] = "empty";
+            try { await WaitFor(chest, "empty chest"); }
+            catch (TimeoutException) { log.End(); return "treasure_chest_timeout"; }
+            await IdleBeat();
+            log.End();
+            return null;
+        }
         var r = log.Begin("treasure");
         r["offer"] = new JsonArray((relics ?? Array.Empty<RelicModel>()).Select(x => (JsonNode)x.Id.Entry).ToArray());
         if (relics is { Count: > 0 } && Env.Decide("treasure", 2, () => new JsonArray(new JsonArray("take", relics[0].Id.Entry), "skip"),
