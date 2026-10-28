@@ -1736,7 +1736,8 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// escaped (<see cref="CombatState.EscapedEnemies" />, which cut the gold), the cards a
     /// Thieving Hopper took (<see cref="CombatState.StolenCards" />, gone from the deck) and
     /// those its death handed back (<see cref="CombatState.StolenBackCards" />, offered as
-    /// rewards).
+    /// rewards). A list left out (the native export passes none) leaves the fight's own
+    /// list as it stands; one given replaces it.
     /// Returns -1, changing nothing, when no fight is in progress.
     /// </remarks>
     public int DebugResolveCombat(
@@ -1757,8 +1758,18 @@ public sealed class RunEngine : Core2.ICombatEndHost
         combat.FatGremlinEscaped = fatGremlinEscaped;
         combat.MercGoldWasStolen = mercGoldWasStolen;
         combat.EscapedEnemies = Math.Max(0, escapedEnemies);
-        combat.StolenCards = [.. stolenCards ?? []];
-        combat.StolenBackCards = [.. stolenBackCards ?? []];
+        // A list the caller does not give is not "none": the suspended fight's own steal stands
+        // (a Thieving Hopper that has already taken its card), and only a given list replaces it.
+        if (stolenCards is not null)
+        {
+            combat.StolenCards = [.. stolenCards];
+        }
+
+        if (stolenBackCards is not null)
+        {
+            combat.StolenBackCards = [.. stolenBackCards];
+        }
+
         State.LastPlayerWon = true;
         return FinishCombat(playerWon: true, out _);
     }
