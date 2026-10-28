@@ -24,6 +24,7 @@ import multiprocessing as mp
 import os
 import queue
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -732,6 +733,46 @@ class RunDeadline:
         return row
 
 
+STACK_LINES = 80  # the most lines of a hung worker's stack a deadline row keeps
+_STACK_FRAME = re.compile(r'^\s*File "(?P<file>.*)", line (?P<line>\d+) in (?P<func>.*?)\s*$')
+_STACK_THREAD = re.compile(r"^\s*(?:Current thread|Thread)\s+(?P<id>0x[0-9a-fA-F]+)")
+
+
+def reduce_stack(text: str, limit: int = STACK_LINES) -> list[str]:
+    """The last faulthandler dump in `text` (after the last "Timeout (" marker; the whole text without one) as a list of lines that
+    hold no path: a thread header becomes `Thread <id>`, a frame `basename:line in function`; any other line is kept only if it names
+    no directory. Over `limit` lines, each thread keeps its innermost frames so that every thread still shows (the main thread's
+    frame is the one that matters and faulthandler lists it last)."""
+    _head, mark, tail = text.rpartition("Timeout (")
+    lines = tail.splitlines()[1:] if mark else text.splitlines()  # the rest of the marker line is no stack
+    threads: list[list[str]] = []
+    for raw in lines:
+        t = _STACK_THREAD.match(raw)
+        f = _STACK_FRAME.match(raw)
+        if t:
+            threads.append([f"Thread {t.group('id')}"])
+        elif f:
+            if not threads:
+                threads.append(["Thread ?"])
+            base = re.split(r'[\\/]', f.group('file'))[-1]
+            threads[-1].append(f"{base}:{f.group('line')} in {f.group('func')}")
+        elif raw.strip() and "/" not in raw and "\\" not in raw and threads:
+            threads[-1].append(raw.strip())
+    if sum(len(t) for t in threads) > limit:
+        keep = max(1, (limit - len(threads)) // max(1, len(threads)))
+        threads = [t[:1 + keep] for t in threads]
+    return [x for t in threads for x in t][:limit]
+
+
+def read_stack_dump(path: Path) -> list[str] | None:
+    """The reduced stack of the hung worker's last faulthandler dump in `path`; None when there is no file or no dump in it."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return reduce_stack(text) or None
+
+
 class _Timed:
     """A GameEnv whose reset and step carry the play mode's step timeout. It also counts, for the run it plays, the longest run of
     identical consecutive (screen kind, action) pairs: a run-layer loop that answers one screen the same way again and again shows as
@@ -949,6 +990,9 @@ def play(a) -> int:
             row = watch.close(w, time.time())
             proc_of[w].terminate()  # through its own Process object, never by name or pid
             proc_of[w].join(10)
+            stack = read_stack_dump(out / "scratch" / f"worker-{w}.stack")  # the worker's own faulthandler dump (play_worker)
+            if stack:  # the scratch folder is removed after the block, so the frame goes into the row (no directory in it)
+                row["stack"] = stack
             events.append(row)
             live.write(json.dumps(row) + chr(10))
             live.flush()

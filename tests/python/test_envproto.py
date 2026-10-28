@@ -629,11 +629,15 @@ class RunDeadlineTest(unittest.TestCase):
         if done:
             q.put({"ev": "done", "w": wid})
 
-    def hang(self, after=0, age=5000.0):
-        """Worker 0 plays `after` seeds, then begins one `age` seconds ago and never ends it (until terminated); the others play."""
+    def hang(self, after=0, age=5000.0, stack_text=None):
+        """Worker 0 plays `after` seeds, then begins one `age` seconds ago and never ends it (until terminated); the others play.
+        `stack_text`: what its faulthandler has written to out/scratch/worker-0.stack by then."""
         def behave(wid, seeds, run_ids, q):
             if wid != 0:
                 return self.normal(wid, seeds, run_ids, q)
+            if stack_text is not None:
+                (self.out / "scratch").mkdir(exist_ok=True)
+                (self.out / "scratch" / "worker-0.stack").write_text(stack_text, encoding="utf-8")
             self.normal(wid, seeds[:after], run_ids[:after], q, done=False)
             q.put({"ev": "start", "w": wid, "seed": seeds[after], "t": time.time() - age})
             self.release[wid].wait(10)  # a block without the deadline fails here by its rows, not by hanging the suite
@@ -704,8 +708,37 @@ class RunDeadlineTest(unittest.TestCase):
         self.assertTrue(5000 <= n <= 5030, c["error"])
         self.assertEqual((4, 1), (summary["runs"], summary["crashes"]))
         self.assertEqual("deadline", summary["errors"][0]["where"])
+        self.assertNotIn("stack", c)  # the worker left no stack file
         self.assertIn('"where": "deadline"', self.live_at_join)  # also in the live runs.jsonl, before the block's rewrite
         self.assertEqual(1, sum(line.startswith("worker 0: worker deadline") for line in self.stdout.splitlines()))  # one line printed
+
+    def test_the_deadline_row_carries_the_last_stack_dump_of_the_workers_file_without_any_directory(self):
+        lib = os.path.join(str(self.tmp), "lib")
+        dump = lambda *frames: "".join(f'  File "{os.path.join(lib, f)}", line {n} in {fn}\n' for f, n, fn in frames)  # noqa: E731
+        text = ("Timeout (0:28:00)!\nThread 0x0000dead (most recent call first):\n" + dump(("old.py", 1, "old")) + "\n"
+                + "Timeout (0:28:00)!\nThread 0x00001111 (most recent call first):\n" + dump(("envproto.py", 117, "_reader"))
+                + '  File "D:/elsewhere/deep/threading.py", line 9 in run\n\n'
+                + "Current thread 0x00002222 [MainThread] (most recent call first):\n"
+                + dump(("live_search.py", 511, "_step"), ("lockstep.py", 1342, "play_run"), ("<string>", 3, "<module>")))
+        self.play(self.hang(after=1, stack_text=text))
+        (c,) = [r for r in self.final_rows() if r.get("where") == "deadline"]
+        self.assertEqual(["Thread 0x00001111", "envproto.py:117 in _reader", "threading.py:9 in run",
+                          "Thread 0x00002222", "live_search.py:511 in _step", "lockstep.py:1342 in play_run", "<string>:3 in <module>"],
+                         c["stack"])
+        self.assertFalse(any("/" in x or "\\" in x for x in c["stack"]))
+        self.assertNotIn("old", " ".join(c["stack"]))  # only the last dump
+
+    def test_a_dump_without_the_timeout_marker_is_read_whole_and_a_long_one_is_cut_to_80_lines_with_every_thread_kept(self):
+        one = 'Thread 0x1 (most recent call first):\n  File "/a/b.py", line 4 in f\n'
+        self.assertEqual(["Thread 0x1", "b.py:4 in f"], envproto.reduce_stack(one))
+        many = "Timeout (0:1:00)!\n" + "".join(
+            f"Thread 0x{t:x} (most recent call first):\n" + "".join(f'  File "C:\\x\\m.py", line {i} in g{i}\n' for i in range(30))
+            for t in range(10))
+        out = envproto.reduce_stack(many)
+        self.assertEqual(80, len(out))
+        self.assertEqual(10, sum(x.startswith("Thread ") for x in out))
+        self.assertEqual("m.py:0 in g0", out[1])  # the innermost frames stay
+        self.assertEqual(80, len(envproto.reduce_stack("".join(f'  File "m.py", line {i} in g\n' for i in range(200)))))
 
     def test_a_worker_within_the_deadline_is_left_alone(self):
         def slow(wid, seeds, run_ids, q):
