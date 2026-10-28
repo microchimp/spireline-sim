@@ -1,6 +1,6 @@
 # Human reference: Ironclad at Ascension 10
 
-Corpus v0.107.1 (sha256 prefix 92b3cc4010578877), generated 2026-10-28T01:33Z by `tools/reference/codex_curve.py`. Aggregates only (D13): cells resting on fewer than 20 runs are shown as `-`; no run, seed or player is named. Shares are rounded to 0.1 point and carry no run counts; a survival floor that differs from a neighbour by under 20 runs is hidden.
+Corpus v0.107.1 (sha256 prefix 92b3cc4010578877), generated 2026-10-28T01:39Z by `tools/reference/codex_curve.py`. Aggregates only (D13): cells resting on fewer than 20 runs are shown as `-`; no run, seed or player is named. Shares are rounded to 0.1 point and carry no run counts; a survival floor that differs from a neighbour by under 20 runs is hidden.
 
 ## Runs
 
@@ -17,7 +17,7 @@ Lines read: 653733. Selection funnel:
 | abandoned | 6111 |
 | analysed | 14811 |
 
-Runs by character (first player of the run; `MULTIPLAYER` has several, `UNKNOWN` none the reader could find):
+Runs by character (the game's five; first player of the run; `MULTIPLAYER` has several, `UNKNOWN` none the reader could find; `OTHER` pools every modded character):
 
 | character | runs |
 |---|---|
@@ -28,23 +28,8 @@ Runs by character (first player of the run; `MULTIPLAYER` has several, `UNKNOWN`
 | NECROBINDER | 70586 |
 | REGENT | 63872 |
 | UNKNOWN | 9911 |
-| WATCHER | 578 |
-| HORNET_MOD_CHARACTER_HORNET_CHARACTER | 256 |
-| STS2_WINE_FOX_CHARACTER_WINE_FOX | 147 |
-| RYOSHU | 115 |
-| THE_QUEEN_CHARACTER_QUEEN_CHARACTER | 111 |
-| LUST_TRAVEL2_CHARACTER_FOX_HIME | 77 |
-| LEX_NINJA2_CHARACTER_LEX_NINJA2 | 63 |
-| HONGLU | 61 |
-| REMILIA_CHARACTER_REMILIA | 54 |
-| OVELLE_CHARACTER_OVELLE_CHARACTER | 53 |
-| VALENCINA_CHARACTER_VALENCINA | 49 |
-| MFML_CHARACTER_MFML_CHARACTER | 41 |
-| CTHULHUMIKO_CHARACTER_CTHULHUMIKO_CHARACTER | 36 |
-| FAUST | 25 |
-| PIKA_MOD_CHARACTER_PIKACHU | 22 |
-| WATCHER_V2 | 21 |
-| (other characters, each under 20 runs) | 100 characters |
+| OTHER | 2154 |
+| (listed rows under 20 runs) | 0 |
 
 Runs by ascension:
 

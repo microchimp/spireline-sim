@@ -19,7 +19,7 @@ no start time and no run duration is kept past the pass, written to a file, logg
 - `tests/python/test_codex_curve.py` builds a five-run fake corpus and checks the selection, the survival curve, the
   suppression rule and that no seed or player field reaches the output.
 
-Context counts (runs by character, by ascension, the selection funnel) are floored the same way (`<20`).
+Context counts (runs by character, by ascension, the selection funnel) are floored the same way (`<20`). The character table lists the game's five characters, multiplayer and unknown runs, and pools every modded character as `OTHER`; no third-party name is listed.
 
 ## Who is in the reference
 
@@ -74,8 +74,7 @@ sampling noise from its own seeds, which the corpus's whole-run bootstrap interv
 - The survival curve stops at the last floor with at least 20 runs. A floor shows `-` when it, or its rest, has fewer than 20 runs, or when it
   differs from a neighbour by fewer than 20 runs (the early floors and a few floors around the act boundaries). With shares rounded to 0.1 point
   and no run counts, adjacent cells cannot be differenced to a handful of runs.
-- 41 of the 14,811 runs (0.3%, `boss_kill.floor_rule_vs_act_lists_disagree`) are runs where the floor rule and the act lists disagree: 35 have an
-  Act 2 of 18 floors and 6 an Act 1 of a length other than 17 (counts from the review's pass; the tool publishes only the share). The floor rule
+- 41 of the 14,811 runs (0.3%, `boss_kill.floor_rule_vs_act_lists_disagree`) are runs where the floor rule and the act lists disagree: most have an Act 2 of 18 floors (the tool publishes only the share). The floor rule
   overstates the Act 2 kill by at most 0.24 points and the Act 1 kill by 0.04. The AI's `obs.floor` is the game's TotalFloor and shifts the same
   way, so the floor rule, which is the one `boss_kill` uses, is the one reported.
 - The mean-floor interval is the percentile bootstrap over whole runs (2,000 resamples, fixed seed). The AI's real-game interval is

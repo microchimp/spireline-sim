@@ -221,6 +221,14 @@ class CodexCurve(unittest.TestCase):
         self.assertEqual(few["rates"]["act1_kill"]["counted_as_lost"], None)  # fewer than 20 abandoned runs: no reading is shown
         self.assertEqual(few["median_floor"], None)
 
+    def test_modded_characters_are_pooled(self):
+        ctx = {"lines": 99, "by_character": {"IRONCLAD": 30, "SOMEMOD_CHARACTER": 25, "OTHERMOD": 22, "SILENT": 5}, "by_ascension": {},
+               "by_character_ascension": {"IRONCLAD|10": 30, "SOMEMOD_CHARACTER|10": 25}, "funnel": {}, "builds": {}}
+        out = cc.suppress_counts(ctx, 20)
+        self.assertEqual(out["by_character"], {"OTHER": 47, "IRONCLAD": 30, "cells_under_floor": 1})  # SILENT is under 20
+        self.assertEqual(out["by_character_ascension"], {"IRONCLAD|10": 30, "cells_under_floor": 0})
+        self.assertNotIn("MOD", json.dumps(out))
+
     def test_output_files(self):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "sub" / "ref"

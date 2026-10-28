@@ -400,7 +400,12 @@ def suppress_counts(ctx: dict, min_cell: int) -> dict:
     def mark(d):
         return {k: (v if v >= min_cell else f"<{min_cell}") for k, v in d.items()}
 
-    by_char = dict(sorted(ctx["by_character"].items(), key=lambda kv: -kv[1]))
+    keep = (*VANILLA_CHARACTERS, "MULTIPLAYER", "UNKNOWN")  # a third-party character is not named; all of them pool as OTHER
+    chars = {k: v for k, v in ctx["by_character"].items() if k in keep}
+    other = sum(v for k, v in ctx["by_character"].items() if k not in keep)
+    if other:
+        chars["OTHER"] = other
+    by_char = dict(sorted(chars.items(), key=lambda kv: -kv[1]))
     cross = {k: v for k, v in ctx["by_character_ascension"].items() if k.split("|")[0] in VANILLA_CHARACTERS}
     return {"lines": ctx["lines"], "by_character": drop(by_char), "by_ascension": drop(ctx["by_ascension"]),
             "by_character_ascension": drop(cross), "funnel": mark(ctx["funnel"]), "builds": mark(ctx["builds"])}
@@ -476,10 +481,11 @@ def render_md(doc: dict) -> str:
              "no_floors", "unreadable", "abandoned", "analysed")
     fun = ctx["funnel"]
     L += ["| step | runs |", "|---|---|"] + [f"| {k} | {fun[k]} |" for k in order if k in fun] + [""]
-    L += ["Runs by character (first player of the run; `MULTIPLAYER` has several, `UNKNOWN` none the reader could find):", "",
+    L += ["Runs by character (the game's five; first player of the run; `MULTIPLAYER` has several, `UNKNOWN` none the reader could find; "
+          "`OTHER` pools every modded character):", "",
           "| character | runs |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in ctx["by_character"].items() if k != UNDER]
-    L += [f"| (other characters, each under {h['min_cell']} runs) | {ctx['by_character'][UNDER]} characters |", ""]
+    L += [f"| (listed rows under {h['min_cell']} runs) | {ctx['by_character'][UNDER]} |", ""]
     L += ["Runs by ascension:", "", "| ascension | runs |", "|---|---|"] + [f"| {k} | {v} |" for k, v in ctx["by_ascension"].items() if k != UNDER]
     L += [f"| (other ascensions, each under {h['min_cell']} runs) | {ctx['by_ascension'][UNDER]} ascensions |", ""]
     cross = {k: v for k, v in ctx["by_character_ascension"].items() if k != UNDER}

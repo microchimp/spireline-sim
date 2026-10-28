@@ -3,7 +3,7 @@
  "header": {
   "corpus": "v0.107.1",
   "corpus_sha256_prefix": "92b3cc4010578877",
-  "generated": "2026-10-28T01:33Z",
+  "generated": "2026-10-28T01:39Z",
   "selection": {
    "character": "IRONCLAD",
    "ascension": 10,
@@ -27,23 +27,8 @@
    "NECROBINDER": 70586,
    "REGENT": 63872,
    "UNKNOWN": 9911,
-   "WATCHER": 578,
-   "HORNET_MOD_CHARACTER_HORNET_CHARACTER": 256,
-   "STS2_WINE_FOX_CHARACTER_WINE_FOX": 147,
-   "RYOSHU": 115,
-   "THE_QUEEN_CHARACTER_QUEEN_CHARACTER": 111,
-   "LUST_TRAVEL2_CHARACTER_FOX_HIME": 77,
-   "LEX_NINJA2_CHARACTER_LEX_NINJA2": 63,
-   "HONGLU": 61,
-   "REMILIA_CHARACTER_REMILIA": 54,
-   "OVELLE_CHARACTER_OVELLE_CHARACTER": 53,
-   "VALENCINA_CHARACTER_VALENCINA": 49,
-   "MFML_CHARACTER_MFML_CHARACTER": 41,
-   "CTHULHUMIKO_CHARACTER_CTHULHUMIKO_CHARACTER": 36,
-   "FAUST": 25,
-   "PIKA_MOD_CHARACTER_PIKACHU": 22,
-   "WATCHER_V2": 21,
-   "cells_under_floor": 100
+   "OTHER": 2154,
+   "cells_under_floor": 0
   },
   "by_ascension": {
    "-1": 54,
