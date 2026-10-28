@@ -5023,23 +5023,22 @@ public sealed class RunEngine : Core2.ICombatEndHost
                         return -1;
                     }
 
-                    // RemoveCardsAndProceed loses the gold AFTER the selector, but nothing
-                    // between the two can change it, and charging here keeps the cost from
-                    // outliving a selection that could not open.
+                    // RemoveCardsAndProceed loses the gold AFTER the selector, so the
+                    // selector shows it unspent: the cost rides the selection's follow-up.
                     if (
                         !RunNonCombatEffects.BeginDeckSelection(
                             State,
                             DeckSelection.Remove,
                             0,
                             count: action == 1 ? 1 : 2,
-                            eventEntry: "ZEN_WEAVER"
+                            eventEntry: "ZEN_WEAVER",
+                            followUpGoldLoss: cost
                         )
                     )
                     {
                         return -1;
                     }
 
-                    State.Gold -= cost;
                     return 0;
                 }
                 else if (action != RunConstants.EventSkipAction)

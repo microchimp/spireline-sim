@@ -73,10 +73,12 @@ public class ZenWeaverReflectionsTinkerTests
         Assert.Equal(RunPhase.TransformSelect, engine.State.Phase);
         Assert.Equal(DeckSelection.Remove, engine.State.PendingSelectionKind);
         Assert.Equal(before, engine.State.Deck.Count);
-        Assert.Equal(75, engine.State.Gold);
+        // `RemoveCardsAndProceed` removes the picked card and only then loses the gold.
+        Assert.Equal(200, engine.State.Gold);
 
         Assert.Equal(0, Choose(engine, 2));
         Assert.Equal(before - 1, engine.State.Deck.Count);
+        Assert.Equal(75, engine.State.Gold);
         Assert.Equal(RunPhase.Event, engine.State.Phase);
     }
 
@@ -88,13 +90,16 @@ public class ZenWeaverReflectionsTinkerTests
         int before = engine.State.Deck.Count;
 
         Assert.Equal(0, Choose(engine, 2));
-        Assert.Equal(0, engine.State.Gold);
+        Assert.Equal(250, engine.State.Gold);
 
         Assert.Equal(0, Choose(engine, 0));
         Assert.Equal(RunPhase.TransformSelect, engine.State.Phase);
+        // Both cards are one selection; the gold goes after it, not after the first pick.
+        Assert.Equal(250, engine.State.Gold);
         Assert.Equal(0, Choose(engine, 0));
 
         Assert.Equal(before - 2, engine.State.Deck.Count);
+        Assert.Equal(0, engine.State.Gold);
         Assert.Equal(RunPhase.Event, engine.State.Phase);
     }
 
