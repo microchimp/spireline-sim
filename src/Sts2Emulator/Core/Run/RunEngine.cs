@@ -3550,19 +3550,37 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 if (action == 0)
                 {
                     HealPlayer(9);
-                    RunNonCombatEffects.BeginDeckSelection(State, DeckSelection.Upgrade, 0);
-                    return 0;
+                    // `SapphireSeed.Eat` awaits the upgrade selection, upgrades only if the
+                    // pick is not null, and calls `SetEventFinished` either way. A deck with
+                    // nothing left to upgrade gets an empty selection, so the event ends
+                    // here -- returning with the page still up offered Eat again, and an
+                    // agent that took it looped on the same screen until its run cap.
+                    if (RunNonCombatEffects.BeginDeckSelection(State, DeckSelection.Upgrade, 0))
+                    {
+                        return 0;
+                    }
+
+                    break;
                 }
 
                 if (action == 1)
                 {
-                    return RunNonCombatEffects.BeginDeckSelection(
-                        State,
-                        DeckSelection.Enchant,
-                        (int)Enchantment.Sown
+                    // `SapphireSeed.Plant` has no lock: it awaits the selection over the cards
+                    // Sown can enchant and calls `SetEventFinished` whether or not one was
+                    // picked, so a deck with none ends the event rather than refusing the
+                    // step (the mask offers the option, there being no case for it).
+                    if (
+                        RunNonCombatEffects.BeginDeckSelection(
+                            State,
+                            DeckSelection.Enchant,
+                            (int)Enchantment.Sown
+                        )
                     )
-                        ? 0
-                        : -1;
+                    {
+                        return 0;
+                    }
+
+                    break;
                 }
 
                 if (action != RunConstants.EventSkipAction)
