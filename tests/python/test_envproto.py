@@ -228,7 +228,7 @@ class PlayResumeTest(unittest.TestCase):
 
         test = self
 
-        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0):
+        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0, wrapup_deadline_s=0.0):
             if not test.calls and (Path(out) / "divergences.jsonl").is_file():  # what the files hold while the first worker plays
                 runs = [json.loads(x) for x in (Path(out) / "runs.jsonl").read_text(encoding="utf-8").splitlines()]
                 divs = (Path(out) / "divergences.jsonl").read_text(encoding="utf-8").splitlines()
@@ -277,7 +277,7 @@ class PlayResumeTest(unittest.TestCase):
         self.assertEqual("\n".join(json.dumps(e) for e in events), (self.out / "runs.jsonl").read_text(encoding="utf-8"))  # no trailing newline
         self.assertEqual("\n".join(json.dumps(dict(e["divergences"][0], seed=e["seed"])) for e in events),
                          (self.out / "divergences.jsonl").read_text(encoding="utf-8"))
-        self.assertEqual(["agent_seed", "character", "engine", "sims", "runs", "crashes", "wins", "ends", "mean_floor", "decisions",
+        self.assertEqual(["agent_seed", "character", "engine", "sims", "runs", "crashes", "wrapup_terminated", "wins", "ends", "mean_floor", "decisions",
                           "decisions_per_s", "wall_s", "ranked_share", "diverged_decisions", "divergence_rate", "reanchors", "reanchor_failed",
                           "first_loss_by_reason", "first_divergences_by_type", "gaps", "resumed", "losses_by_reason", "reanchor_fail_reasons",
                           "reanchor_by_plan", "anchored_with", "streams_named", "streams_moved", "streams_unmoved_names", "walk",
@@ -378,7 +378,7 @@ class RunRowTest(unittest.TestCase):
     """L3: the end and crash rows of a play worker say when the run ended, how long its game process took to boot, how often the worker
     has restarted its game, and the longest run of identical consecutive (screen kind, action) pairs (a stalled run-layer loop)."""
 
-    def play(self, scripts, boots=(1.5, 2.5), recycle=0, deadline=0.0):
+    def play(self, scripts, boots=(1.5, 2.5), recycle=0, deadline=0.0, wrapup=0.0, stale=()):
         """Run play_worker over the seeds of `scripts` ({seed: ([(screen kind, action)...], exception or None)}) with a fake game
         process and a fake lockstep; the end and crash rows it queues."""
         import queue as queue_mod
@@ -418,7 +418,7 @@ class RunRowTest(unittest.TestCase):
                 raise boom
             ls = types.SimpleNamespace(stats={"decisions": len(pairs)}, lost=None, log=types.SimpleNamespace(records=[]),
                                        agent_seed=[1, 0], assumed=[], fields=None)
-            return {"end": "death", "floor": 3, "asked": len(pairs)}, ls
+            return {"end": "death", "floor": 3, "asked": len(pairs), **({"stale": True} if seed in stale else {})}, ls
 
         q = queue_mod.Queue()
         lock = types.ModuleType("lockstep")
@@ -440,7 +440,7 @@ class RunRowTest(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"lockstep": lock}), mock.patch.object(envproto, "GameEnv", FakeEnv), \
                 mock.patch.object(envproto, "faulthandler", FakeFaulthandler), \
                 mock.patch.object(envproto, "below_normal_self", lambda: None), mock.patch.object(envproto.rr, "connections", lambda pid: []):
-            envproto.play_worker(0, "G", str(self.out_dir), list(scripts), 1, q, 1, 10, 7, None, 0.0, "IRONCLAD", recycle, deadline)
+            envproto.play_worker(0, "G", str(self.out_dir), list(scripts), 1, q, 1, 10, 7, None, 0.0, "IRONCLAD", recycle, deadline, wrapup)
         self.t1 = time.time()
         rows = []
         while not q.empty():
@@ -509,6 +509,47 @@ class RunRowTest(unittest.TestCase):
         rows = self.play({"S1": ([], None)}, boots=(None,))
         self.assertEqual(("crash", "boot", 0), (rows[0]["ev"], rows[0]["where"], rows[0]["restarts"]))
         self.assertTrue(rows[0]["t_end"] > 0)
+
+    def test_the_worker_says_wrapup_after_its_last_result_and_before_the_final_close_and_done(self):
+        """N5B: the main loop's wrap-up clock (--wrapup-deadline-s) starts at the worker's wrapup event."""
+        self.play({"S1": ([("map", 0)], None), "S2": ([("map", 0)], RuntimeError("boom"))}, boots=(1.5, 2.5, 3.5))
+        self.assertEqual(["start", "end", "start", "crash", "wrapup", "done"],
+                         [r["ev"] for r in self.all_events if r["ev"] != "net"])
+        self.assertLess([r["ev"] for r in self.all_events].index("crash"), [r["ev"] for r in self.all_events].index("wrapup"))
+        (wrap,) = [r for r in self.all_events if r["ev"] == "wrapup"]
+        self.assertEqual(0, wrap["w"])
+        self.assertTrue(self.t0 - 1 <= wrap["t"] <= self.t1 + 1)
+
+    def test_a_worker_with_no_seed_to_play_still_says_wrapup_before_done(self):
+        self.play({})
+        self.assertEqual(["wrapup", "done"], [r["ev"] for r in self.all_events])
+
+    def test_a_stale_run_says_wrapup_before_its_cleanup_the_connection_listing_and_the_close(self):
+        """The stale path lists connections and closes the game after the run's row, with no run in flight: its own clock."""
+        self.play({"S1": ([("map", 0)], None), "S2": ([("map", 0)], None)}, boots=(1.5, 2.5), stale=("S1",))
+        self.assertEqual(["start", "end", "wrapup", "net", "start", "end", "wrapup", "net", "done"], [r["ev"] for r in self.all_events])
+
+    def test_the_wrapup_arms_a_stack_dump_into_the_same_file_a_minute_before_the_limit_and_cancels_it_on_done(self):
+        self.play({"S1": ([("map", 0)], None)}, deadline=1800.0, wrapup=300.0)
+        self.assertEqual(["arm", "cancel", "arm", "cancel"], [c[0] for c in self.fh])  # the run's, then the wrap-up's
+        self.assertEqual((1680.0, 240.0), (self.fh[0][1], self.fh[2][1]))
+        self.assertEqual((False, False), (self.fh[0][2], self.fh[2][2]))
+        self.assertEqual(self.fh[0][3], self.fh[2][3])  # one file for the worker
+        self.assertEqual(self.out_dir / "scratch" / "worker-0.stack", Path(self.fh[2][3].name))
+
+    def test_the_wrapup_dump_is_at_least_60_s_in_and_works_with_the_run_deadline_off(self):
+        self.play({"S1": ([("map", 0)], None)}, deadline=0.0, wrapup=100.0)
+        self.assertEqual([("arm", 60), ("cancel",)], [(c[0], *c[1:2]) for c in self.fh])  # no run dump, one wrap-up dump
+        self.assertTrue((self.out_dir / "scratch" / "worker-0.stack").exists())
+
+    def test_a_stale_runs_cleanup_dump_is_cancelled_before_the_next_run(self):
+        self.play({"S1": ([("map", 0)], None), "S2": ([("map", 0)], None)}, boots=(1.5, 2.5), stale=("S1",), deadline=0.0, wrapup=300.0)
+        self.assertEqual(["arm", "cancel", "arm", "cancel"], [c[0] for c in self.fh])  # S1's cleanup, then the final wrap-up
+
+    def test_with_the_wrapup_limit_off_the_event_is_still_sent_but_nothing_is_armed(self):
+        self.play({"S1": ([("map", 0)], None)}, deadline=0.0, wrapup=0.0)
+        self.assertEqual([], self.fh)
+        self.assertIn("wrapup", [r["ev"] for r in self.all_events])
 
 
 class SampleMachineFlagTest(unittest.TestCase):
@@ -614,6 +655,7 @@ class RunDeadlineTest(unittest.TestCase):
         self.release = collections.defaultdict(threading.Event)
         self.live_at_join = ""
         self.deadline_seen: list[float] = []
+        self.wrapup_seen: list[float] = []
 
     def row(self, seed, ix, w):
         return {"ev": "end", "w": w, "seed": seed, "character": "IRONCLAD", "end": "death", "floor": 10 + ix, "asked": 5, "s": 2.0,
@@ -627,6 +669,7 @@ class RunDeadlineTest(unittest.TestCase):
             time.sleep(pause)
             q.put(self.row(s, ix, wid))
         if done:
+            q.put({"ev": "wrapup", "w": wid, "t": time.time()})
             q.put({"ev": "done", "w": wid})
 
     def hang(self, after=0, age=5000.0, stack_text=None):
@@ -643,7 +686,17 @@ class RunDeadlineTest(unittest.TestCase):
             self.release[wid].wait(10)  # a block without the deadline fails here by its rows, not by hanging the suite
         return behave
 
-    def play(self, behave=None, procs=2, resume=False, deadline=1800.0):
+    def stuck_wrapup(self, age=1000.0):
+        """Worker 0 plays its seeds to the end, says wrapup `age` seconds ago and never says done (until terminated)."""
+        def behave(wid, seeds, run_ids, q):
+            if wid != 0:
+                return self.normal(wid, seeds, run_ids, q)
+            self.normal(wid, seeds, run_ids, q, done=False)
+            q.put({"ev": "wrapup", "w": wid, "t": time.time() - age})
+            self.release[wid].wait(10)
+        return behave
+
+    def play(self, behave=None, procs=2, resume=False, deadline=1800.0, wrapup=300.0):
         import contextlib
         import io
         import queue as queue_mod
@@ -654,9 +707,10 @@ class RunDeadlineTest(unittest.TestCase):
         test = self
         behave = behave or (lambda wid, seeds, run_ids, q: test.normal(wid, seeds, run_ids, q))
 
-        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0):
+        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0, wrapup_deadline_s=0.0):
             test.handed.append((wid, list(seeds)))
             test.deadline_seen.append(run_deadline_s)
+            test.wrapup_seen.append(wrapup_deadline_s)
             behave(wid, list(seeds), list(run_ids), q)
 
         class FakeProc:
@@ -681,15 +735,17 @@ class RunDeadlineTest(unittest.TestCase):
         ctx = SimpleNamespace(Queue=queue_mod.Queue, Process=FakeProc)
         a = SimpleNamespace(out=str(self.out), game="G", character="IRONCLAD", runs=6, seeds_file=str(self.seeds_file), agent_seed=self.AS,
                             stop_after_h=0, procs=procs, sims="a3-v1", step_timeout=1, ascension=10, engine="core2", only=None, recycle=0,
-                            run_deadline_s=deadline)
+                            run_deadline_s=deadline, wrapup_deadline_s=wrapup)
         if resume:
             a.resume, a.agent_identity = True, json.dumps(self.AGENT)
-        stdout = io.StringIO()
+        stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(envproto.rr, "check_build", lambda g: None), mock.patch.object(envproto.rr, "install", lambda g, d: None), \
                 mock.patch.object(envproto.mp, "get_context", lambda _k: ctx), mock.patch.object(envproto, "play_worker", fake_worker), \
-                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            started = time.time()
             envproto.play(a)
-        self.stdout = stdout.getvalue()
+        self.elapsed = time.time() - started
+        self.stdout, self.stderr = stdout.getvalue(), stderr.getvalue()
         return json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
 
     def final_rows(self):
@@ -785,6 +841,77 @@ class RunDeadlineTest(unittest.TestCase):
         self.assertEqual(("S2", "deadline", [self.AS, 2]), (row["seed"], row["where"], row["agent_seed"]))
         self.assertFalse(w.seen({"ev": "end", "w": 0, "seed": "S2"}, 2002.0))
         self.assertEqual([], w.overdue(10 ** 7))
+
+    def test_a_worker_stuck_in_its_wrapup_is_terminated_and_counted_with_no_crash_row_and_the_block_closes(self):
+        """N5B: the worker's last result is put, then it hangs (the connection listing, the game close): after --wrapup-deadline-s the
+        main loop stops it as it stops a hung run, writes no row (every run has one), and the block closes without waiting."""
+        summary = self.play(self.stuck_wrapup(age=1000.0))
+        self.assertEqual([0], self.terminated)  # through its own Process object, once
+        self.assertEqual([300.0, 300.0], self.wrapup_seen)  # each worker is handed the limit (it arms its stack dump from it)
+        self.assertEqual(1, summary["wrapup_terminated"])
+        self.assertEqual((6, 0), (summary["runs"], summary["crashes"]))  # all six runs have their end row, no crash row
+        self.assertEqual({"end"}, {r["ev"] for r in self.final_rows()})
+        self.assertEqual({"end"}, {json.loads(x)["ev"] for x in self.live_at_join.split("\n") if x.strip()})  # nor in the live file
+        self.assertLess(self.elapsed, 4.0)  # `done` reached the worker count: no wait for the queue to run dry
+        lines = [x for x in self.stderr.split("\n") if "wrap-up" in x]
+        self.assertEqual(1, len(lines))
+        self.assertRegex(lines[0], r"^worker 0 wrap-up deadline after 10\d\d s: terminated$")
+
+    def test_a_wrapup_that_is_over_in_time_is_left_alone(self):
+        def slow(wid, seeds, run_ids, q):
+            self.normal(wid, seeds, run_ids, q, done=False)
+            q.put({"ev": "wrapup", "w": wid, "t": time.time() - 100.0})
+            time.sleep(0.4 if wid == 0 else 0.0)
+            q.put({"ev": "done", "w": wid})
+
+        summary = self.play(slow, wrapup=300.0)
+        self.assertEqual([], self.terminated)
+        self.assertEqual((6, 0, 0), (summary["runs"], summary["crashes"], summary["wrapup_terminated"]))
+        self.assertEqual("", "".join(x for x in self.stderr.split("\n") if "wrap-up" in x))
+
+    def test_wrapup_deadline_zero_arms_nothing(self):
+        def old_but_slow(wid, seeds, run_ids, q):
+            self.normal(wid, seeds, run_ids, q, done=False)
+            q.put({"ev": "wrapup", "w": wid, "t": time.time() - 5000.0})
+            time.sleep(0.4 if wid == 0 else 0.0)
+            q.put({"ev": "done", "w": wid})
+
+        summary = self.play(old_but_slow, wrapup=0)
+        self.assertEqual([0.0, 0.0], self.wrapup_seen)
+        self.assertEqual([], self.terminated)
+        self.assertEqual((6, 0, 0), (summary["runs"], summary["crashes"], summary["wrapup_terminated"]))
+        self.assertNotIn("wrap-up", self.stderr)
+
+    def test_a_stale_runs_wrapup_clock_ends_with_the_workers_next_start(self):
+        w = envproto.RunDeadline(1800.0, self.AS, {0: {"S0": 0, "S2": 2}}, wrapup_s=300.0)
+        self.assertTrue(w.seen({"ev": "start", "w": 0, "seed": "S0", "t": 100.0}, 100.0))
+        self.assertTrue(w.seen({"ev": "end", "w": 0, "seed": "S0"}, 150.0))
+        self.assertEqual([], w.overdue_wrapup(10 ** 7))  # no wrapup said: nothing to clock
+        self.assertTrue(w.seen({"ev": "wrapup", "w": 0, "t": 160.0}, 160.0))
+        self.assertEqual([], w.overdue(10 ** 7))  # the wrap-up is not a run in flight: the run clock stays out of it
+        self.assertEqual([], w.overdue_wrapup(460.0))  # 300 s exactly is not past it
+        self.assertEqual([0], w.overdue_wrapup(461.0))
+        self.assertTrue(w.seen({"ev": "start", "w": 0, "seed": "S2", "t": 470.0}, 470.0))  # it went on to another run
+        self.assertEqual([], w.overdue_wrapup(10 ** 7))
+        self.assertEqual([0], w.overdue(2271.0))  # and that run is clocked as ever
+
+    def test_the_wrapup_clock_ends_with_done_and_a_closed_worker_is_ignored_and_gets_no_row(self):
+        w = envproto.RunDeadline(1800.0, self.AS, {0: {}, 1: {}}, wrapup_s=300.0)
+        w.seen({"ev": "wrapup", "w": 0, "t": 100.0}, 100.0)
+        w.seen({"ev": "wrapup", "w": 1, "t": 100.0}, 100.0)
+        w.seen({"ev": "done", "w": 0}, 200.0)
+        self.assertEqual([1], w.overdue_wrapup(10 ** 7))
+        self.assertEqual(901, w.close_wrapup(1, 1001.0))  # the seconds in the wrap-up; a number, no crash row
+        self.assertFalse(w.seen({"ev": "done", "w": 1}, 1002.0))
+        self.assertEqual([], w.overdue_wrapup(10 ** 7))
+        off = envproto.RunDeadline(1800.0, self.AS, {0: {}}, wrapup_s=0)
+        off.seen({"ev": "wrapup", "w": 0, "t": 1.0}, 1.0)
+        self.assertEqual([], off.overdue_wrapup(10 ** 7))
+
+    def test_the_parser_takes_the_wrapup_deadline_with_the_default_of_300(self):
+        base = ["play", "--game", "G", "--out", "O"]
+        self.assertEqual(300.0, envproto.parser().parse_args(base).wrapup_deadline_s)
+        self.assertEqual(0.0, envproto.parser().parse_args([*base, "--wrapup-deadline-s", "0"]).wrapup_deadline_s)
 
     def test_the_parser_takes_the_deadline_with_the_default_of_1800(self):
         base = ["play", "--game", "G", "--out", "O"]
