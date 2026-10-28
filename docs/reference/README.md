@@ -10,9 +10,10 @@ Codex corpus (`data/spire-codex/runs-<version>.jsonl.gz`, one JSON object per hu
 Only counts, shares, means and quartiles leave the corpus. No per-run row, no player identifier, no seed, no run hash,
 no start time and no run duration is kept past the pass, written to a file, logged or reported. The tool enforces it three ways:
 
-- every cell that rests on fewer than 20 runs (`--min-cell`) is `null` in the JSON and `-` in the Markdown. A share is
-  suppressed when its population, its group or the rest of the population is under the floor, so a small complement cannot
-  be read off a published share;
+- every cell that rests on fewer than 20 runs (`--min-cell`) is `null` in the JSON and `-` in the Markdown. A share is suppressed when its
+  population, its group or the rest of the population is under the floor. Shares are rounded to 0.1 point and no cell carries a run count.
+  The survival curve stops at the last floor with 20 runs, and a floor is hidden when it differs from a neighbour by fewer than 20 runs,
+  so adjacent cells cannot be differenced to a handful of runs; the card-reward cells follow the same share rule;
 - the writer refuses any output that holds a field from `FORBIDDEN_KEYS` (`seed`, `run_hash`, `player_token`,
   `start_time`, `run_time`, `player_id`, `players`, ...);
 - `tests/python/test_codex_curve.py` builds a five-run fake corpus and checks the selection, the survival curve, the
@@ -23,9 +24,10 @@ Context counts (runs by character, by ascension, the selection funnel) are floor
 ## Who is in the reference
 
 Ironclad, Ascension 10, single player, standard mode, no modifiers, the game's own acts and content (no mod ids),
-duplicates dropped (by the corpus's own run hash, in memory only), and abandoned runs left out of the curve (an abandoned run
-ends because the player left, not because the run was lost, so it is censored; the header and the context table count
-them, and `abandoned_sensitivity` gives the mean floor with them in).
+duplicates dropped (by the corpus's own run hash, in memory only), and abandoned runs left out of the headline. They are early quits, not losses and not statistical censoring: 29% of the selected runs,
+median floor 6, 48.5% end by floor 5, none won. The `abandoned` table gives the Act 1 kill, Act 2 kill and win rates under three readings:
+excluded (the headline: 54.6 / 29.1 / 11.3%), counted as lost at the floor they left on (43.7 / 22.0 / 8.0%) and Kaplan-Meier with them
+censored at that floor (59.7 / 33.6 / 13.9%). The mean floor with them in is 22.1.
 
 Floors are the AI's floors: map points counted across acts from 1, the ancient being floor 1, the Act 1 boss floor 17,
 the Act 2 boss 33, the Act 3 boss 48 and the second Act 3 boss (the win) 49 (`rl/run_fields.ACT_BOSS_FLOORS`). The corpus keeps the room a
@@ -50,7 +52,7 @@ The AI side is the A7 fields (`rl/run_fields.py`), the real-game end event (`rl/
 |---|---|---|---|
 | mean floor, `floor` of the end event | `runs.jsonl` end row, `summary.mean_floor` | `reference.floor` (map points in `map_point_history`, across acts) and `survival.reach` | same numbering. The AI's runs include the driver's own stops (a crash counts as floor 0); humans have none |
 | win | `win` of the end event | `boss_kill.win` (`win`) | |
-| Act 1 boss kill, `gen_loop.boss_kill` | win, or floor past 17 | `boss_kill.act1.killed_of_all` | the same rule, applied to the corpus's floors; `floor_rule_vs_act_lists_disagree_runs` counts runs where it differs from "reached the next act" |
+| Act 1 boss kill, `gen_loop.boss_kill` | win, or floor past 17 | `boss_kill.act1.killed_of_all` | the same rule, applied to the corpus's floors; `floor_rule_vs_act_lists_disagree` (a share) counts runs where it differs from "reached the next act" |
 | `boss_act1` (reached, won, kill rate) | summary `run_fields.boss_act1` | `boss_kill.act1.reached`, `killed_of_reached` | the AI's rate is among runs that reached the boss |
 | Act 2 and Act 3 boss kills | not in the A7 fields (derive from `floor`) | `boss_kill.act2`, `act3_first`, `act3_both` | the AI has no wins yet, so these are one-sided |
 | `boss_damage`, `boss_damage_acts` | fraction of the boss's starting HP dealt | none | **the corpus lacks it**: no enemy HP or damage dealt per fight. Nearest columns: `boss_hp` (the player's HP and max HP entering each boss, `player_stats.current_hp`, `max_hp` of the floor before) and `survival.ended.at_actN_boss` (died on the boss) |
@@ -63,17 +65,18 @@ The AI side is the A7 fields (`rl/run_fields.py`), the real-game end event (`rl/
 | decisions, wall time, divergences, re-anchors | lockstep and driver bookkeeping | none | AI only: a human run has no decisions count or divergence |
 | seed | the AI's seed | none | **never in the reference** (D13) |
 
-Differences that are not field gaps: humans pick their own runs to upload and 27% of the Ascension 10 Ironclad runs in the
-corpus were abandoned (left out of the curve), so the human curve is for completed runs of a self-selected, probably
-stronger-than-average group; the corpus build may differ from the build the AI played; and the AI's per-run numbers have
+Differences that are not field gaps: humans pick their own runs to upload and 29% of the selected Ascension 10 Ironclad runs were abandoned, mostly early (left out of the headline; the three readings are in the
+`abandoned` table), and humans choose what to upload, so the human curve is for a self-selected group; the corpus build may differ from the build the AI played; and the AI's per-run numbers have
 sampling noise from its own seeds, which the corpus's whole-run bootstrap interval does not cover.
 
 ## Reading the numbers
 
-- The early floors of the survival curve show `-` where fewer than 20 runs ended before the floor: a share whose rest is under the
-  floor is suppressed as well, so the table cannot be read backwards to a handful of runs.
-- 41 of the 14,811 runs have an Act 1 list that is not 17 floors long (cause not examined); the
-  floor rule and the "reached the next act" rule disagree on them (`boss_kill.floor_rule_vs_act_lists_disagree_runs`). The floor rule is
-  the one the AI's `boss_kill` uses, so it is the one reported.
+- The survival curve stops at the last floor with at least 20 runs. A floor shows `-` when it, or its rest, has fewer than 20 runs, or when it
+  differs from a neighbour by fewer than 20 runs (the early floors and a few floors around the act boundaries). With shares rounded to 0.1 point
+  and no run counts, adjacent cells cannot be differenced to a handful of runs.
+- 41 of the 14,811 runs (0.3%, `boss_kill.floor_rule_vs_act_lists_disagree`) are runs where the floor rule and the act lists disagree: 35 have an
+  Act 2 of 18 floors and 6 an Act 1 of a length other than 17 (counts from the review's pass; the tool publishes only the share). The floor rule
+  overstates the Act 2 kill by at most 0.24 points and the Act 1 kill by 0.04. The AI's `obs.floor` is the game's TotalFloor and shifts the same
+  way, so the floor rule, which is the one `boss_kill` uses, is the one reported.
 - The mean-floor interval is the percentile bootstrap over whole runs (2,000 resamples, fixed seed). The AI's real-game interval is
   over its own seeds, so the two are intervals of different populations.
