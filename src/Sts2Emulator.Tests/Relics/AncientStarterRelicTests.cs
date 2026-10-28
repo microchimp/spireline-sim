@@ -1687,11 +1687,20 @@ public class LordsParasolResumeTests
             relic => relic.DefId == RunConstants.RelicDistinguishedCape
         );
 
-        // ...and the removal is up rather than lost.
+        // ...and the removal is up rather than lost: the shop's own service, which
+        // `DoMerchantCardRemoval` counts and uses up only once the card is chosen.
         Assert.False(engine.State.ParasolSweepPending);
         Assert.Equal(DeckSelection.Remove, engine.State.PendingSelectionKind);
         Assert.Equal(1, engine.State.PendingSelectionCount);
+        Assert.True(engine.State.PendingSelectionShopRemoval);
+        Assert.False(engine.State.ShopRemovalUsedThisVisit);
+        Assert.Equal(0, engine.State.ShopRemovalsUsed);
+
+        // The pick is the purchase.
+        Assert.True(RunNonCombatEffects.ApplyDeckSelection(engine.State, 0));
+        RunNonCombatEffects.ResolveDeckSelectionFollowUp(engine.State);
         Assert.True(engine.State.ShopRemovalUsedThisVisit);
+        Assert.Equal(1, engine.State.ShopRemovalsUsed);
     }
 
     /// <summary>A shelf that asks nothing sweeps in one pass, as before.</summary>
