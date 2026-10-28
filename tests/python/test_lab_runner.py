@@ -85,6 +85,21 @@ class GuardsTest(unittest.TestCase):
         self.lock.write_text("", encoding="utf-8")
         self.assertEqual(g.poll().kind, "lock")
 
+    def test_main_lock_is_ignored_when_the_caller_says_the_running_job_is_not_a_presort(self):
+        g = self.guards()
+        self.lock.write_text("", encoding="utf-8")
+        v = g.poll(lock_stops=False)
+        self.assertTrue(v.ok)
+        self.assertTrue(g.readings["lock_ignored"])
+        self.assertEqual(g.poll().kind, "lock")  # the default is the old behaviour
+        self.assertFalse(g.readings["lock_ignored"])
+        (self.lab / "PAUSE").write_text("", encoding="utf-8")
+        self.assertEqual(g.poll(lock_stops=False).kind, "pause")  # other guards are unchanged
+        (self.lab / "PAUSE").unlink()
+        self.lock.unlink()
+        g.poll(lock_stops=False)
+        self.assertFalse(g.readings["lock_ignored"])
+
     def test_user_input_leaves_at_once_and_unknown_idle_does_not(self):
         idle = [5.0]
         g = self.guards(idle_fn=lambda: idle[0])
@@ -839,6 +854,136 @@ class RunnerCase(unittest.TestCase):
         (r.lab.root / "PAUSE").unlink()
         t.join(30)
         self.assertTrue((r.lab.root / "b").exists())
+
+    # ---- N4: main.lock stops only a running presort
+
+    def lock_file(self, r: rn.Runner) -> Path:
+        d = Path(r.a.backlog_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "main.lock"
+
+    def read_log(self, r: rn.Runner) -> str:
+        return r.lab.log_path.read_text(encoding="utf-8") if r.lab.log_path.exists() else ""
+
+    def wait_for(self, cond, secs=20.0) -> bool:
+        end = time.time() + secs
+        while not cond() and time.time() < end:
+            time.sleep(0.05)
+        return bool(cond())
+
+    LOCK_LINE = "main.lock held: {} continues (only a presort stops for it)\n"
+
+    def test_a_running_nightly_step_survives_a_main_lock_episode_and_the_next_step_starts_under_it(self):
+        marker = self.tmp / "n.txt"
+        code = f"import time; open({str(marker)!r}, 'a').write('x'); time.sleep(1.5); open({str(marker)!r}, 'a').write('done')"
+        pl.PLANS["nightly-real"] = lambda c: [pl.Step("a", [self.py("slow", code, cleanup=[])], mode="serial"),
+                                              pl.Step("b", [self.py("after", "open('b','w')")])]
+        r = self.runner()  # --grace 0: a stopping guard would end the step at once
+        run = r.new_run("nightly-real", "abc")
+        lock = self.lock_file(r)
+        t = threading.Thread(target=lambda: r.execute(run))
+        t.start()
+        self.assertTrue(self.wait_for(marker.exists))
+        lock.write_text("", encoding="utf-8")
+        self.assertTrue(self.wait_for(lambda: (r.lab.root / "b").exists()))  # step b started with the lock still up
+        self.assertTrue(lock.exists())
+        self.assertEqual(marker.read_text(), "xdone")  # one start, no kill, no restart
+        lock.unlink()
+        t.join(30)
+        self.assertFalse(t.is_alive())
+        self.assertEqual((run.dir / "done.rc").read_text().strip(), "0")
+        self.assertNotIn("lock", r.state["counters"]["interrupts"])
+        self.assertEqual(run.rec("a").get("interrupted", 0), 0)
+        log = self.read_log(r)
+        self.assertEqual(log.count("main.lock held"), 1)  # once for the episode, however many polls saw it
+        self.assertIn(self.LOCK_LINE.format(run.name), log)
+        self.assertNotIn("stopped: lock", log)
+        self.assertTrue(r.lock_stops)  # between jobs the lock holds every pick again
+
+    def test_a_running_presort_step_stops_on_main_lock_as_before(self):
+        marker = self.tmp / "p.txt"
+        code = f"import time; open({str(marker)!r}, 'a').write('x'); time.sleep(2.0); open({str(marker)!r}, 'a').write('done')"
+        pl.PLANS["presort"] = lambda c: [pl.Step("tree", [self.py("slow", code, cleanup=[])], mode="serial", required=True)]
+        r = self.runner()
+        run = r.new_run("presort", "abc")
+        lock = self.lock_file(r)
+        t = threading.Thread(target=lambda: r.execute(run))
+        t.start()
+        self.assertTrue(self.wait_for(marker.exists))
+        lock.write_text("", encoding="utf-8")
+        self.assertTrue(self.wait_for(lambda: r.state["counters"]["interrupts"].get("lock", 0) >= 1))
+        self.assertEqual(r.state["counters"]["interrupts"].get("lock"), 1)
+        self.assertFalse((run.dir / "done.rc").exists())
+        self.assertIn("step tree stopped: lock (backlog main.lock)", self.read_log(r))
+        self.assertNotIn("main.lock held", self.read_log(r))
+        lock.unlink()
+        t.join(30)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(marker.read_text(), "xxdone")  # started, stopped, started again, finished
+        self.assertEqual((run.dir / "done.rc").read_text().strip(), "0")
+
+    def test_the_status_line_shows_the_lock_while_a_non_presort_step_runs(self):
+        r = self.runner()
+        lock = self.lock_file(r)
+        r.current = ("job-1", "step-a")
+        r.lock_stops = False
+        r.status("running", "step-a")
+        self.assertNotIn("main.lock", r.lab.status_path.read_text(encoding="utf-8"))
+        lock.write_text("", encoding="utf-8")
+        self.assertTrue(r.poll().ok)  # the lock does not stop it ...
+        line = r.lab.status_path.read_text(encoding="utf-8")
+        self.assertIn("running", line)  # ... the line still says it runs, and shows the lock
+        self.assertIn("main.lock=held(job continues)", line)
+        r.status("running", "step-a")  # a later heartbeat keeps it
+        self.assertIn("main.lock=held(job continues)", r.lab.status_path.read_text(encoding="utf-8"))
+        lock.unlink()
+        self.assertTrue(r.poll().ok)
+        r.status("running", "step-a")
+        self.assertNotIn("main.lock", r.lab.status_path.read_text(encoding="utf-8"))
+
+    def test_the_continues_line_comes_once_per_lock_episode_and_the_other_guards_still_stop(self):
+        r = self.runner()
+        lock = self.lock_file(r)
+        r.current = ("job-1", "step-a")
+        r.lock_stops = False
+        lock.write_text("", encoding="utf-8")
+        for _ in range(4):
+            self.assertTrue(r.poll().ok)
+        self.assertEqual(self.read_log(r).count("main.lock held"), 1)
+        (r.lab.root / "PAUSE").write_text("", encoding="utf-8")  # PAUSE is not the lock's business: it still stops
+        self.assertEqual(r.poll().kind, "pause")
+        (r.lab.root / "PAUSE").unlink()
+        (r.lab.root / "HALT").write_text("unsafe\n", encoding="utf-8")
+        self.assertEqual(r.poll().kind, "halt")
+        (r.lab.root / "HALT").unlink()
+        lock.unlink()
+        self.assertTrue(r.poll().ok)
+        lock.write_text("", encoding="utf-8")  # a second episode
+        self.assertTrue(r.poll().ok)
+        self.assertTrue(r.poll().ok)
+        log = self.read_log(r)
+        self.assertEqual(log.count("main.lock held"), 2)
+        self.assertEqual(log.count(self.LOCK_LINE.format("job-1")), 2)
+
+    def test_no_job_of_any_kind_starts_under_the_lock(self):
+        r = self.runner()
+        lock = self.lock_file(r)
+        lock.write_text("", encoding="utf-8")
+        for job in ("presort", "fights", "nightly-real"):
+            pl.PLANS[job] = lambda c: []
+            run = r.new_run(job, "abc")
+            r.execute(run)  # the job ran its (empty) plan; afterwards the pick gate is back to holding on the lock
+            self.assertTrue(r.lock_stops)
+            self.assertEqual(r.poll().kind, "lock", job)
+        out = {}
+        t = threading.Thread(target=lambda: out.setdefault("v", r.gate()))  # the gate at the top of every pass
+        t.start()
+        self.assertTrue(self.wait_for(lambda: "paused: lock" in self.read_log(r)))
+        self.assertTrue(t.is_alive())
+        lock.unlink()
+        t.join(20)
+        self.assertFalse(t.is_alive())
+        self.assertIsNone(out["v"])
 
     def test_the_unsafe_batch_halts_the_lab(self):
         pl.PLANS["fights"] = lambda c: [pl.Step("a", [self.py("g", "print('x')", post=lambda c: "HALT: the game opened a connection")], mode="serial")]

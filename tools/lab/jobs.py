@@ -157,8 +157,9 @@ def due(lab: Path, kind: str, every_h: float) -> bool:
 
 
 def nightly_blocked(lab: Path) -> str | None:
-    """Why a due nightly block must wait (None: it may start). The runner's guards (PAUSE, HALT, main.lock, load, disk) stop every job
-    alike; they are named here too so the skip carries its reason in runner.log, and so a test can state the rule."""
+    """Why a due nightly block must wait (None: it may start). The runner's guards (PAUSE, HALT, load, disk) stop every job
+    alike; main.lock holds every new pick but stops only a running presort (a running nightly carries on under it). They are named
+    here too so the skip carries its reason in runner.log, and so a test can state the rule."""
     lab = Path(lab)
     if (lab / "HALT").exists():
         return "LAB/HALT is up"

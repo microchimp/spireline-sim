@@ -244,7 +244,9 @@ class LadderTest(Base):
 
 
 class GuardTest(Base):
-    """Every guard blocks every new kind: the command does not start while the guard holds."""
+    """Every guard blocks every new kind: the command does not start while the guard holds. The one exception is main.lock (the
+    landing lock): it guards git state only a presort touches, so a new kind's job, once running, carries on under it (N4);
+    the pick gate at the top of the runner's pass still holds every kind (test_lab_runner)."""
 
     def hold(self, r: rn.Runner, guard: str):
         """Make the guard fire; returns (release function or None for the guards that make the runner leave)."""
@@ -294,6 +296,14 @@ class GuardTest(Base):
         release = self.hold(r, guard)
         run = r.new_run(kind, "abc")
         log = run.dir / "logs" / f"{kind}.log"
+        if guard == "lock":  # not a stop for this kind: it runs to its end with the lock up, and nothing is counted as an interrupt
+            v = r.execute(run)
+            self.assertIsNone(v, f"{kind} under {guard}")
+            self.assertTrue(log.exists(), f"{kind} did not start under {guard}")
+            self.assertTrue((run.dir / "done.rc").exists())
+            self.assertNotIn("lock", r.state["counters"]["interrupts"])
+            release()
+            return
         slept = []
         real_sleep = time.sleep
 

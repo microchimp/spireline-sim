@@ -9,6 +9,10 @@
           --always-on, for the logon task) it stops the children and waits instead: nothing would start it again.
   pause   ``LAB/PAUSE`` exists, or ``backlog/main.lock``: no new step starts; a running step gets ``grace`` seconds
           to reach a safe point (its end), then is stopped. ``PAUSE`` holding the word ``now`` stops at once.
+          main.lock is the landing lock and guards git state only the presort touches (its tree step checks out the lab
+          worktree, its build steps read that tree): ``poll(lock_stops=False)``, which the runner passes while a job other
+          than the presort runs, does not return a lock verdict, so that job's steps carry on; the lock is then
+          reported in ``readings["lock_ignored"]``. Between jobs ``lock_stops`` stays True: no job of any kind starts.
   load    other processes used more than ``load_pct`` percent of the machine over the last ``load_window`` seconds.
           "Other" is the whole machine's busy time minus the CPU time of this runner's own Job Object, so the
           lab's own game servers never count against it. Stop at once, wait, resume when the window cools.
@@ -136,7 +140,7 @@ class Guards:
     def on(self, name: str) -> bool:
         return name not in self.disabled
 
-    def poll(self) -> Verdict:
+    def poll(self, lock_stops: bool = True) -> Verdict:
         lab = self.lab
         if self.load is not None and self.on("load"):
             self.load.sample()  # always, so a long pause does not leave the window stale
@@ -152,7 +156,9 @@ class Guards:
         if self.on("pause") and (lab / "PAUSE").exists():
             now = _first_line(lab / "PAUSE").strip().lower() == "now"
             return Verdict("pause", "LAB/PAUSE", grace=0.0 if now else self.grace)
-        if self.on("lock") and self.lock_file is not None and self.lock_file.exists():
+        held = self.on("lock") and self.lock_file is not None and self.lock_file.exists()
+        self.readings["lock_ignored"] = bool(held and not lock_stops)
+        if held and lock_stops:
             return Verdict("lock", "backlog main.lock", grace=self.grace)
         if self.deadline is not None and self.clock() >= self.deadline:
             return Verdict("trial", "trial time is up", grace=min(self.grace, 60.0), leave=True)
