@@ -3,7 +3,7 @@
  "header": {
   "corpus": "v0.107.1",
   "corpus_sha256_prefix": "92b3cc4010578877",
-  "generated": "2026-10-28T01:14Z",
+  "generated": "2026-10-28T01:33Z",
   "selection": {
    "character": "IRONCLAD",
    "ascension": 10,
@@ -11,7 +11,7 @@
    "standard_mode": true,
    "no_modifiers": true,
    "vanilla_content": true,
-   "abandoned_runs": "excluded",
+   "abandoned_runs": "excluded from the headline (early quits); rates under three readings in abandoned",
    "duplicates": "dropped"
   },
   "min_cell": 20,
@@ -148,333 +148,188 @@
   "survival": {
    "reach": {
     "1": {
-     "n": 14811,
-     "k": 14811,
-     "share": 1.0
+     "share": null
     },
     "2": {
-     "n": null,
-     "k": null,
      "share": null
     },
     "3": {
-     "n": null,
-     "k": null,
      "share": null
     },
     "4": {
-     "n": null,
-     "k": null,
      "share": null
     },
     "5": {
-     "n": null,
-     "k": null,
      "share": null
     },
     "6": {
-     "n": 14811,
-     "k": 14765,
-     "share": 0.9969
+     "share": 0.997
     },
     "7": {
-     "n": 14811,
-     "k": 14656,
-     "share": 0.9895
+     "share": 0.99
     },
     "8": {
-     "n": 14811,
-     "k": 13950,
-     "share": 0.9419
+     "share": 0.942
     },
     "9": {
-     "n": 14811,
-     "k": 13257,
-     "share": 0.8951
+     "share": 0.895
     },
     "10": {
-     "n": 14811,
-     "k": 12634,
      "share": 0.853
     },
     "11": {
-     "n": 14811,
-     "k": 12634,
      "share": 0.853
     },
     "12": {
-     "n": 14811,
-     "k": 12189,
      "share": 0.823
     },
     "13": {
-     "n": 14811,
-     "k": 11821,
-     "share": 0.7981
+     "share": 0.798
     },
     "14": {
-     "n": 14811,
-     "k": 11626,
      "share": 0.785
     },
     "15": {
-     "n": 14811,
-     "k": 11305,
-     "share": 0.7633
+     "share": 0.763
     },
     "16": {
-     "n": 14811,
-     "k": 10930,
      "share": 0.738
     },
     "17": {
-     "n": 14811,
-     "k": 10930,
      "share": 0.738
     },
     "18": {
-     "n": 14811,
-     "k": 8086,
-     "share": 0.5459
+     "share": null
     },
     "19": {
-     "n": 14811,
-     "k": 8083,
-     "share": 0.5457
+     "share": null
     },
     "20": {
-     "n": 14811,
-     "k": 8083,
-     "share": 0.5457
+     "share": null
     },
     "21": {
-     "n": 14811,
-     "k": 8073,
-     "share": 0.5451
+     "share": null
     },
     "22": {
-     "n": 14811,
-     "k": 7978,
-     "share": 0.5387
+     "share": 0.539
     },
     "23": {
-     "n": 14811,
-     "k": 7816,
-     "share": 0.5277
+     "share": 0.528
     },
     "24": {
-     "n": 14811,
-     "k": 7558,
-     "share": 0.5103
+     "share": 0.51
     },
     "25": {
-     "n": 14811,
-     "k": 7086,
-     "share": 0.4784
+     "share": 0.478
     },
     "26": {
-     "n": 14811,
-     "k": 6736,
-     "share": 0.4548
+     "share": 0.455
     },
     "27": {
-     "n": 14811,
-     "k": 6736,
-     "share": 0.4548
+     "share": 0.455
     },
     "28": {
-     "n": 14811,
-     "k": 6501,
-     "share": 0.4389
+     "share": 0.439
     },
     "29": {
-     "n": 14811,
-     "k": 6254,
-     "share": 0.4223
+     "share": 0.422
     },
     "30": {
-     "n": 14811,
-     "k": 6152,
-     "share": 0.4154
+     "share": 0.415
     },
     "31": {
-     "n": 14811,
-     "k": 5942,
-     "share": 0.4012
+     "share": 0.401
     },
     "32": {
-     "n": 14811,
-     "k": 5673,
      "share": 0.383
     },
     "33": {
-     "n": 14811,
-     "k": 5673,
      "share": 0.383
     },
     "34": {
-     "n": 14811,
-     "k": 4315,
-     "share": 0.2913
+     "share": null
     },
     "35": {
-     "n": 14811,
-     "k": 4314,
-     "share": 0.2913
+     "share": null
     },
     "36": {
-     "n": 14811,
-     "k": 4272,
-     "share": 0.2884
+     "share": null
     },
     "37": {
-     "n": 14811,
-     "k": 4262,
-     "share": 0.2878
+     "share": null
     },
     "38": {
-     "n": 14811,
-     "k": 4235,
-     "share": 0.2859
+     "share": 0.286
     },
     "39": {
-     "n": 14811,
-     "k": 4178,
-     "share": 0.2821
+     "share": 0.282
     },
     "40": {
-     "n": 14811,
-     "k": 4105,
-     "share": 0.2772
+     "share": 0.277
     },
     "41": {
-     "n": 14811,
-     "k": 4024,
-     "share": 0.2717
+     "share": null
     },
     "42": {
-     "n": 14811,
-     "k": 4020,
-     "share": 0.2714
+     "share": null
     },
     "43": {
-     "n": 14811,
-     "k": 3953,
-     "share": 0.2669
+     "share": 0.267
     },
     "44": {
-     "n": 14811,
-     "k": 3898,
-     "share": 0.2632
+     "share": 0.263
     },
     "45": {
-     "n": 14811,
-     "k": 3864,
-     "share": 0.2609
+     "share": 0.261
     },
     "46": {
-     "n": 14811,
-     "k": 3789,
-     "share": 0.2558
+     "share": 0.256
     },
     "47": {
-     "n": 14811,
-     "k": 3708,
-     "share": 0.2504
+     "share": null
     },
     "48": {
-     "n": 14811,
-     "k": 3707,
-     "share": 0.2503
+     "share": null
     },
     "49": {
-     "n": 14811,
-     "k": 2691,
-     "share": 0.1817
+     "share": 0.182
     },
     "50": {
-     "n": 14811,
-     "k": 79,
-     "share": 0.0053
+     "share": 0.005
     },
     "51": {
-     "n": 14811,
-     "k": 52,
-     "share": 0.0035
-    },
-    "52": {
-     "n": null,
-     "k": null,
-     "share": null
-    },
-    "53": {
-     "n": null,
-     "k": null,
-     "share": null
-    },
-    "54": {
-     "n": null,
-     "k": null,
-     "share": null
-    },
-    "55": {
-     "n": null,
-     "k": null,
-     "share": null
-    },
-    "56": {
-     "n": null,
-     "k": null,
-     "share": null
+     "share": 0.004
     }
    },
    "ended": {
     "by_act1_boss": {
-     "n": 14811,
-     "k": 6725,
-     "share": 0.4541
+     "share": 0.454
     },
     "at_act1_boss": {
-     "n": 14811,
-     "k": 2844,
      "share": 0.192
     },
     "by_act2_boss": {
-     "n": 14811,
-     "k": 10496,
-     "share": 0.7087
+     "share": 0.709
     },
     "at_act2_boss": {
-     "n": 14811,
-     "k": 1358,
-     "share": 0.0917
+     "share": 0.092
     },
     "by_act3_boss": {
-     "n": 14811,
-     "k": 12116,
      "share": 0.818
     },
     "at_act3_boss": {
-     "n": 14811,
-     "k": 1012,
-     "share": 0.0683
+     "share": 0.068
     }
    },
    "died_in_act": {
     "1": {
-     "n": 14811,
-     "k": 6729,
-     "share": 0.4543
+     "share": 0.454
     },
     "2": {
-     "n": 14811,
-     "k": 3804,
-     "share": 0.2568
+     "share": 0.257
     },
     "3": {
-     "n": 14811,
-     "k": 2605,
-     "share": 0.1759
+     "share": 0.176
     }
    }
   },
@@ -482,78 +337,54 @@
    "rule": "the run won, or ended past the boss floor (gen_loop.boss_kill at each boss floor)",
    "act1": {
     "killed_of_all": {
-     "n": 14811,
-     "k": 8086,
-     "share": 0.5459
+     "share": 0.546
     },
     "killed_of_reached": {
-     "n": 10930,
-     "k": 8086,
-     "share": 0.7398
+     "share": 0.74
     },
     "reached": {
-     "n": 14811,
-     "k": 10930,
      "share": 0.738
     }
    },
    "act2": {
     "killed_of_all": {
-     "n": 14811,
-     "k": 4315,
-     "share": 0.2913
+     "share": 0.291
     },
     "killed_of_reached": {
-     "n": 5673,
-     "k": 4315,
-     "share": 0.7606
+     "share": 0.761
     },
     "reached": {
-     "n": 14811,
-     "k": 5673,
      "share": 0.383
     }
    },
    "act3_first": {
     "killed_of_all": {
-     "n": 14811,
-     "k": 2695,
      "share": 0.182
     },
     "killed_of_reached": {
-     "n": 3707,
-     "k": 2695,
      "share": 0.727
     },
     "reached": {
-     "n": 14811,
-     "k": 3707,
-     "share": 0.2503
+     "share": 0.25
     }
    },
    "act3_both": {
     "killed_of_all": {
-     "n": 14811,
-     "k": 1673,
      "share": 0.113
     },
     "killed_of_reached": {
-     "n": 2691,
-     "k": 1673,
-     "share": 0.6217
+     "share": 0.622
     },
     "reached": {
-     "n": 14811,
-     "k": 2691,
-     "share": 0.1817
+     "share": 0.182
     }
    },
    "win": {
-    "n": 14811,
-    "k": 1673,
     "share": 0.113
    },
-   "floor_rule_vs_act_lists_disagree_runs": 41
+   "floor_rule_vs_act_lists_disagree": {
+    "share": 0.003
+   }
   },
   "floor": {
    "n": 14811,
@@ -570,7 +401,6 @@
    "boot": 2000,
    "by_outcome": {
     "died": {
-     "n": 13138,
      "mean": 24.25,
      "q1": 14.0,
      "median": 17.0,
@@ -581,734 +411,567 @@
   "deck": {
    "by_floor": {
     "1": {
-     "n": 14811,
      "mean": 11.738,
      "q1": 11.0,
      "median": 11.0,
      "q3": 13.0
     },
     "2": {
-     "n": 14810,
      "mean": 12.693,
      "q1": 12.0,
      "median": 12.0,
      "q3": 13.0
     },
     "3": {
-     "n": 14807,
      "mean": 13.383,
      "q1": 13.0,
      "median": 13.0,
      "q3": 14.0
     },
     "4": {
-     "n": 14804,
      "mean": 14.088,
      "q1": 13.0,
      "median": 14.0,
      "q3": 15.0
     },
     "5": {
-     "n": 14801,
      "mean": 14.786,
      "q1": 14.0,
      "median": 15.0,
      "q3": 16.0
     },
     "6": {
-     "n": 14765,
      "mean": 15.503,
      "q1": 14.0,
      "median": 15.0,
      "q3": 17.0
     },
     "7": {
-     "n": 14656,
      "mean": 15.896,
      "q1": 15.0,
      "median": 16.0,
      "q3": 17.0
     },
     "8": {
-     "n": 13950,
      "mean": 16.406,
      "q1": 15.0,
      "median": 16.0,
      "q3": 18.0
     },
     "9": {
-     "n": 13257,
      "mean": 16.857,
      "q1": 16.0,
      "median": 17.0,
      "q3": 18.0
     },
     "10": {
-     "n": 12634,
      "mean": 16.886,
      "q1": 16.0,
      "median": 17.0,
      "q3": 18.0
     },
     "11": {
-     "n": 12634,
      "mean": 17.288,
      "q1": 16.0,
      "median": 17.0,
      "q3": 19.0
     },
     "12": {
-     "n": 12189,
      "mean": 17.798,
      "q1": 17.0,
      "median": 18.0,
      "q3": 19.0
     },
     "13": {
-     "n": 11821,
      "mean": 18.201,
      "q1": 17.0,
      "median": 18.0,
      "q3": 20.0
     },
     "14": {
-     "n": 11626,
      "mean": 18.887,
      "q1": 18.0,
      "median": 19.0,
      "q3": 20.0
     },
     "15": {
-     "n": 11305,
      "mean": 19.588,
      "q1": 18.0,
      "median": 20.0,
      "q3": 21.0
     },
     "16": {
-     "n": 10930,
      "mean": 19.613,
      "q1": 18.0,
      "median": 20.0,
      "q3": 21.0
     },
     "17": {
-     "n": 10930,
      "mean": 20.313,
      "q1": 19.0,
      "median": 20.0,
      "q3": 22.0
     },
     "18": {
-     "n": 8086,
      "mean": 20.675,
      "q1": 19.0,
      "median": 21.0,
      "q3": 22.0
     },
     "19": {
-     "n": 8083,
      "mean": 21.38,
      "q1": 20.0,
      "median": 21.0,
      "q3": 23.0
     },
     "20": {
-     "n": 8083,
      "mean": 21.897,
      "q1": 20.0,
      "median": 22.0,
      "q3": 24.0
     },
     "21": {
-     "n": 8073,
      "mean": 22.442,
      "q1": 21.0,
      "median": 22.0,
      "q3": 24.0
     },
     "22": {
-     "n": 7978,
      "mean": 22.972,
      "q1": 21.0,
      "median": 23.0,
      "q3": 25.0
     },
     "23": {
-     "n": 7816,
      "mean": 23.53,
      "q1": 21.0,
      "median": 23.0,
      "q3": 26.0
     },
     "24": {
-     "n": 7558,
      "mean": 23.82,
      "q1": 22.0,
      "median": 24.0,
      "q3": 26.0
     },
     "25": {
-     "n": 7086,
      "mean": 24.182,
      "q1": 22.0,
      "median": 24.0,
      "q3": 26.0
     },
     "26": {
-     "n": 6736,
      "mean": 24.078,
      "q1": 22.0,
      "median": 24.0,
      "q3": 26.0
     },
     "27": {
-     "n": 6736,
      "mean": 24.385,
      "q1": 22.0,
      "median": 24.0,
      "q3": 27.0
     },
     "28": {
-     "n": 6501,
      "mean": 24.793,
      "q1": 22.0,
      "median": 25.0,
      "q3": 27.0
     },
     "29": {
-     "n": 6254,
      "mean": 25.096,
      "q1": 23.0,
      "median": 25.0,
      "q3": 27.0
     },
     "30": {
-     "n": 6152,
      "mean": 25.633,
      "q1": 23.0,
      "median": 26.0,
      "q3": 28.0
     },
     "31": {
-     "n": 5942,
      "mean": 26.19,
      "q1": 23.0,
      "median": 26.0,
      "q3": 29.0
     },
     "32": {
-     "n": 5673,
      "mean": 26.213,
      "q1": 23.0,
      "median": 26.0,
      "q3": 29.0
     },
     "33": {
-     "n": 5673,
      "mean": 26.89,
      "q1": 24.0,
      "median": 27.0,
      "q3": 29.0
     },
     "34": {
-     "n": 4315,
      "mean": 27.188,
      "q1": 24.0,
      "median": 27.0,
      "q3": 30.0
     },
     "35": {
-     "n": 4314,
      "mean": 27.767,
      "q1": 25.0,
      "median": 28.0,
      "q3": 31.0
     },
     "36": {
-     "n": 4272,
      "mean": 28.405,
      "q1": 25.0,
      "median": 28.0,
      "q3": 31.0
     },
     "37": {
-     "n": 4262,
      "mean": 29.065,
      "q1": 25.0,
      "median": 29.0,
      "q3": 32.0
     },
     "38": {
-     "n": 4235,
      "mean": 29.631,
      "q1": 26.0,
      "median": 29.0,
      "q3": 32.0
     },
     "39": {
-     "n": 4178,
      "mean": 30.244,
      "q1": 26.0,
      "median": 29.0,
      "q3": 33.0
     },
     "40": {
-     "n": 4105,
      "mean": 30.472,
      "q1": 26.0,
      "median": 30.0,
      "q3": 33.0
     },
     "41": {
-     "n": 4024,
      "mean": 30.395,
      "q1": 26.0,
      "median": 30.0,
      "q3": 33.0
     },
     "42": {
-     "n": 4020,
      "mean": 30.695,
      "q1": 26.0,
      "median": 30.0,
      "q3": 33.0
     },
     "43": {
-     "n": 3953,
      "mean": 31.099,
      "q1": 27.0,
      "median": 30.0,
      "q3": 34.0
     },
     "44": {
-     "n": 3898,
      "mean": 31.384,
      "q1": 27.0,
      "median": 30.0,
      "q3": 34.0
     },
     "45": {
-     "n": 3864,
      "mean": 31.931,
      "q1": 27.0,
      "median": 31.0,
      "q3": 35.0
     },
     "46": {
-     "n": 3789,
      "mean": 32.696,
      "q1": 28.0,
      "median": 31.0,
      "q3": 35.0
     },
     "47": {
-     "n": 3708,
      "mean": 32.747,
      "q1": 28.0,
      "median": 31.0,
      "q3": 35.0
     },
     "48": {
-     "n": 3707,
      "mean": 32.757,
      "q1": 28.0,
      "median": 31.0,
      "q3": 35.0
     },
     "49": {
-     "n": 2691,
      "mean": 32.468,
      "q1": 27.0,
      "median": 31.0,
      "q3": 35.0
     },
     "50": {
-     "n": 79,
      "mean": 30.291,
      "q1": 25.5,
      "median": 28.0,
      "q3": 34.0
     },
     "51": {
-     "n": 52,
      "mean": 30.173,
      "q1": 25.0,
      "median": 28.5,
      "q3": 34.0
-    },
-    "52": {
-     "n": null,
-     "mean": null,
-     "q1": null,
-     "median": null,
-     "q3": null
-    },
-    "53": {
-     "n": null,
-     "mean": null,
-     "q1": null,
-     "median": null,
-     "q3": null
-    },
-    "54": {
-     "n": null,
-     "mean": null,
-     "q1": null,
-     "median": null,
-     "q3": null
-    },
-    "55": {
-     "n": null,
-     "mean": null,
-     "q1": null,
-     "median": null,
-     "q3": null
-    },
-    "56": {
-     "n": null,
-     "mean": null,
-     "q1": null,
-     "median": null,
-     "q3": null
     }
    }
   },
   "cards": {
    "by_floor": {
     "1": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "2": {
-     "screens": 14741,
-     "taken": 14067,
-     "taken_per_run": 0.9498,
-     "skip_rate": 0.0457
+     "rewards_per_run": 0.995,
+     "taken_per_run": 0.95,
+     "skip_rate": 0.046
     },
     "3": {
-     "screens": 7593,
-     "taken": 7020,
-     "taken_per_run": 0.4741,
-     "skip_rate": 0.0755
+     "rewards_per_run": 0.513,
+     "taken_per_run": 0.474,
+     "skip_rate": 0.075
     },
     "4": {
-     "screens": 7900,
-     "taken": 7233,
-     "taken_per_run": 0.4886,
-     "skip_rate": 0.0844
+     "rewards_per_run": 0.534,
+     "taken_per_run": 0.489,
+     "skip_rate": 0.084
     },
     "5": {
-     "screens": 8302,
-     "taken": 7384,
-     "taken_per_run": 0.4989,
-     "skip_rate": 0.1106
+     "rewards_per_run": 0.561,
+     "taken_per_run": 0.499,
+     "skip_rate": 0.111
     },
     "6": {
-     "screens": 8572,
-     "taken": 7545,
+     "rewards_per_run": 0.581,
      "taken_per_run": 0.511,
-     "skip_rate": 0.1198
+     "skip_rate": 0.12
     },
     "7": {
-     "screens": 5254,
-     "taken": 4564,
-     "taken_per_run": 0.3114,
-     "skip_rate": 0.1313
+     "rewards_per_run": 0.358,
+     "taken_per_run": 0.311,
+     "skip_rate": 0.131
     },
     "8": {
-     "screens": 6710,
-     "taken": 5734,
+     "rewards_per_run": 0.481,
      "taken_per_run": 0.411,
-     "skip_rate": 0.1455
+     "skip_rate": 0.145
     },
     "9": {
-     "screens": 5390,
-     "taken": 4566,
-     "taken_per_run": 0.3444,
-     "skip_rate": 0.1529
+     "rewards_per_run": 0.407,
+     "taken_per_run": 0.344,
+     "skip_rate": 0.153
     },
     "10": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "11": {
-     "screens": 5075,
-     "taken": 4217,
-     "taken_per_run": 0.3338,
-     "skip_rate": 0.1691
+     "rewards_per_run": 0.402,
+     "taken_per_run": 0.334,
+     "skip_rate": 0.169
     },
     "12": {
-     "screens": 6218,
-     "taken": 5081,
-     "taken_per_run": 0.4169,
-     "skip_rate": 0.1829
+     "rewards_per_run": 0.51,
+     "taken_per_run": 0.417,
+     "skip_rate": 0.183
     },
     "13": {
-     "screens": 4591,
-     "taken": 3731,
-     "taken_per_run": 0.3156,
-     "skip_rate": 0.1873
+     "rewards_per_run": 0.388,
+     "taken_per_run": 0.316,
+     "skip_rate": 0.187
     },
     "14": {
-     "screens": 7901,
-     "taken": 6308,
-     "taken_per_run": 0.5426,
-     "skip_rate": 0.2016
+     "rewards_per_run": 0.68,
+     "taken_per_run": 0.543,
+     "skip_rate": 0.202
     },
     "15": {
-     "screens": 7739,
-     "taken": 6145,
-     "taken_per_run": 0.5436,
+     "rewards_per_run": 0.685,
+     "taken_per_run": 0.544,
      "skip_rate": 0.206
     },
     "16": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "17": {
-     "screens": 8030,
-     "taken": 7711,
-     "taken_per_run": 0.7055,
-     "skip_rate": 0.0397
+     "rewards_per_run": 0.735,
+     "taken_per_run": 0.705,
+     "skip_rate": 0.04
     },
     "18": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "19": {
-     "screens": 8049,
-     "taken": 5698,
-     "taken_per_run": 0.7049,
-     "skip_rate": 0.2921
+     "rewards_per_run": 0.996,
+     "taken_per_run": 0.705,
+     "skip_rate": 0.292
     },
     "20": {
-     "screens": 3598,
-     "taken": 2502,
-     "taken_per_run": 0.3095,
-     "skip_rate": 0.3046
+     "rewards_per_run": 0.445,
+     "taken_per_run": 0.31,
+     "skip_rate": 0.305
     },
     "21": {
-     "screens": 4010,
-     "taken": 2737,
+     "rewards_per_run": 0.497,
      "taken_per_run": 0.339,
-     "skip_rate": 0.3175
+     "skip_rate": 0.317
     },
     "22": {
-     "screens": 3873,
-     "taken": 2533,
-     "taken_per_run": 0.3175,
+     "rewards_per_run": 0.485,
+     "taken_per_run": 0.317,
      "skip_rate": 0.346
     },
     "23": {
-     "screens": 4229,
-     "taken": 2781,
-     "taken_per_run": 0.3558,
-     "skip_rate": 0.3424
+     "rewards_per_run": 0.541,
+     "taken_per_run": 0.356,
+     "skip_rate": 0.342
     },
     "24": {
-     "screens": 2406,
-     "taken": 1594,
-     "taken_per_run": 0.2109,
-     "skip_rate": 0.3375
+     "rewards_per_run": 0.318,
+     "taken_per_run": 0.211,
+     "skip_rate": 0.337
     },
     "25": {
-     "screens": 2865,
-     "taken": 1859,
-     "taken_per_run": 0.2623,
-     "skip_rate": 0.3511
+     "rewards_per_run": 0.404,
+     "taken_per_run": 0.262,
+     "skip_rate": 0.351
     },
     "26": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "27": {
-     "screens": 2216,
-     "taken": 1443,
-     "taken_per_run": 0.2142,
-     "skip_rate": 0.3488
+     "rewards_per_run": 0.329,
+     "taken_per_run": 0.214,
+     "skip_rate": 0.349
     },
     "28": {
-     "screens": 3168,
-     "taken": 2040,
-     "taken_per_run": 0.3138,
-     "skip_rate": 0.3561
+     "rewards_per_run": 0.487,
+     "taken_per_run": 0.314,
+     "skip_rate": 0.356
     },
     "29": {
-     "screens": 1974,
-     "taken": 1253,
-     "taken_per_run": 0.2004,
-     "skip_rate": 0.3652
+     "rewards_per_run": 0.316,
+     "taken_per_run": 0.2,
+     "skip_rate": 0.365
     },
     "30": {
-     "screens": 3837,
-     "taken": 2373,
-     "taken_per_run": 0.3857,
-     "skip_rate": 0.3815
+     "rewards_per_run": 0.624,
+     "taken_per_run": 0.386,
+     "skip_rate": 0.382
     },
     "31": {
-     "screens": 3865,
-     "taken": 2426,
-     "taken_per_run": 0.4083,
-     "skip_rate": 0.3723
+     "rewards_per_run": 0.65,
+     "taken_per_run": 0.408,
+     "skip_rate": 0.372
     },
     "32": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "33": {
-     "screens": 4292,
-     "taken": 3765,
-     "taken_per_run": 0.6637,
-     "skip_rate": 0.1228
+     "rewards_per_run": 0.757,
+     "taken_per_run": 0.664,
+     "skip_rate": 0.123
     },
     "34": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "35": {
-     "screens": 4254,
-     "taken": 2409,
-     "taken_per_run": 0.5584,
-     "skip_rate": 0.4337
+     "rewards_per_run": 0.986,
+     "taken_per_run": 0.558,
+     "skip_rate": 0.434
     },
     "36": {
-     "screens": 1764,
-     "taken": 939,
-     "taken_per_run": 0.2198,
-     "skip_rate": 0.4677
+     "rewards_per_run": 0.413,
+     "taken_per_run": 0.22,
+     "skip_rate": 0.468
     },
     "37": {
-     "screens": 2060,
-     "taken": 1130,
-     "taken_per_run": 0.2651,
-     "skip_rate": 0.4515
+     "rewards_per_run": 0.483,
+     "taken_per_run": 0.265,
+     "skip_rate": 0.451
     },
     "38": {
-     "screens": 2054,
-     "taken": 1079,
-     "taken_per_run": 0.2548,
-     "skip_rate": 0.4747
+     "rewards_per_run": 0.485,
+     "taken_per_run": 0.255,
+     "skip_rate": 0.475
     },
     "39": {
-     "screens": 2141,
-     "taken": 1026,
-     "taken_per_run": 0.2456,
-     "skip_rate": 0.5208
+     "rewards_per_run": 0.512,
+     "taken_per_run": 0.246,
+     "skip_rate": 0.521
     },
     "40": {
-     "screens": 1155,
-     "taken": 632,
+     "rewards_per_run": 0.281,
      "taken_per_run": 0.154,
-     "skip_rate": 0.4528
+     "skip_rate": 0.453
     },
     "41": {
-     "screens": 39,
-     "taken": 24,
-     "taken_per_run": 0.006,
-     "skip_rate": 0.3846
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
     },
     "42": {
-     "screens": 1360,
-     "taken": 734,
-     "taken_per_run": 0.1826,
-     "skip_rate": 0.4603
+     "rewards_per_run": 0.338,
+     "taken_per_run": 0.183,
+     "skip_rate": 0.46
     },
     "43": {
-     "screens": 1866,
-     "taken": 1000,
+     "rewards_per_run": 0.472,
      "taken_per_run": 0.253,
-     "skip_rate": 0.4641
+     "skip_rate": 0.464
     },
     "44": {
-     "screens": 1226,
-     "taken": 640,
-     "taken_per_run": 0.1642,
+     "rewards_per_run": 0.315,
+     "taken_per_run": 0.164,
      "skip_rate": 0.478
     },
     "45": {
-     "screens": 2352,
-     "taken": 1244,
-     "taken_per_run": 0.3219,
-     "skip_rate": 0.4711
+     "rewards_per_run": 0.609,
+     "taken_per_run": 0.322,
+     "skip_rate": 0.471
     },
     "46": {
-     "screens": 2194,
-     "taken": 1206,
-     "taken_per_run": 0.3183,
-     "skip_rate": 0.4503
+     "rewards_per_run": 0.579,
+     "taken_per_run": 0.318,
+     "skip_rate": 0.45
     },
     "47": {
-     "screens": 45,
-     "taken": 17,
-     "taken_per_run": 0.0046,
-     "skip_rate": 0.6222
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
     },
     "48": {
-     "screens": 43,
-     "taken": 24,
-     "taken_per_run": 0.0065,
-     "skip_rate": 0.4419
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
     },
     "49": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "50": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     },
     "51": {
-     "screens": null,
-     "taken": null,
-     "taken_per_run": null,
-     "skip_rate": null
-    },
-    "52": {
-     "screens": null,
-     "taken": null,
-     "taken_per_run": null,
-     "skip_rate": null
-    },
-    "53": {
-     "screens": null,
-     "taken": null,
-     "taken_per_run": null,
-     "skip_rate": null
-    },
-    "54": {
-     "screens": null,
-     "taken": null,
-     "taken_per_run": null,
-     "skip_rate": null
-    },
-    "55": {
-     "screens": null,
-     "taken": null,
-     "taken_per_run": null,
-     "skip_rate": null
-    },
-    "56": {
-     "screens": null,
-     "taken": null,
+     "rewards_per_run": null,
      "taken_per_run": null,
      "skip_rate": null
     }
@@ -1320,100 +983,73 @@
    ],
    "taken_per_run": 9.213,
    "screens_per_run": 11.816,
-   "skip_rate": 0.2203
+   "skip_rate": 0.22
   },
   "rests": {
    "1": {
     "choices": 39690,
     "smith": {
-     "n": 39690,
-     "k": 22926,
-     "share": 0.5776
+     "share": 0.578
     },
     "heal": {
-     "n": 39690,
-     "k": 16162,
-     "share": 0.4072
+     "share": 0.407
     },
     "other": {
-     "n": 39690,
-     "k": 602,
-     "share": 0.0152
+     "share": 0.015
     }
    },
    "2": {
     "choices": 20045,
     "smith": {
-     "n": 20045,
-     "k": 10297,
-     "share": 0.5137
+     "share": 0.514
     },
     "heal": {
-     "n": 20045,
-     "k": 9161,
      "share": 0.457
     },
     "other": {
-     "n": 20045,
-     "k": 587,
-     "share": 0.0293
+     "share": 0.029
     }
    },
    "3": {
     "choices": 11241,
     "smith": {
-     "n": 11241,
-     "k": 6119,
-     "share": 0.5443
+     "share": 0.544
     },
     "heal": {
-     "n": 11241,
-     "k": 4497,
-     "share": 0.4001
+     "share": 0.4
     },
     "other": {
-     "n": 11241,
-     "k": 625,
-     "share": 0.0556
+     "share": 0.056
     }
    },
    "all": {
     "choices": 70976,
     "smith": {
-     "n": 70976,
-     "k": 39342,
-     "share": 0.5543
+     "share": 0.554
     },
     "heal": {
-     "n": 70976,
-     "k": 29820,
-     "share": 0.4201
+     "share": 0.42
     },
     "other": {
-     "n": 70976,
-     "k": 1814,
-     "share": 0.0256
+     "share": 0.026
     }
    }
   },
   "boss_hp": {
    "1": {
     "hp": {
-     "n": 10928,
      "mean": 54.249,
      "q1": 43.0,
      "median": 53.0,
      "q3": 65.0
     },
     "max_hp": {
-     "n": 10928,
      "mean": 81.264,
      "q1": 80.0,
      "median": 80.0,
      "q3": 85.0
     },
     "hp_fraction": {
-     "n": 10928,
      "mean": 0.669,
      "q1": 0.54,
      "median": 0.66,
@@ -1422,21 +1058,18 @@
    },
    "2": {
     "hp": {
-     "n": 5662,
      "mean": 60.841,
      "q1": 48.0,
      "median": 60.0,
      "q3": 73.0
     },
     "max_hp": {
-     "n": 5662,
      "mean": 84.489,
      "q1": 80.0,
      "median": 80.0,
      "q3": 90.0
     },
     "hp_fraction": {
-     "n": 5662,
      "mean": 0.721,
      "q1": 0.59,
      "median": 0.72,
@@ -1445,21 +1078,18 @@
    },
    "3": {
     "hp": {
-     "n": 3705,
      "mean": 53.471,
      "q1": 35.0,
      "median": 53.0,
      "q3": 71.0
     },
     "max_hp": {
-     "n": 3705,
      "mean": 88.049,
      "q1": 80.0,
      "median": 85.0,
      "q3": 95.0
     },
     "hp_fraction": {
-     "n": 3705,
      "mean": 0.61,
      "q1": 0.41,
      "median": 0.62,
@@ -1472,67 +1102,82 @@
    "top10": [
     {
      "cause": "AEONGLASS_BOSS",
-     "n": 725,
-     "share": 0.0552
+     "share": 0.055
     },
     {
      "cause": "TEST_SUBJECT_BOSS",
-     "n": 695,
-     "share": 0.0529
+     "share": 0.053
     },
     {
      "cause": "QUEEN_BOSS",
-     "n": 614,
-     "share": 0.0467
+     "share": 0.047
     },
     {
      "cause": "KAISER_CRAB_BOSS",
-     "n": 613,
-     "share": 0.0467
+     "share": 0.047
     },
     {
      "cause": "DECIMILLIPEDE_ELITE",
-     "n": 607,
-     "share": 0.0462
+     "share": 0.046
     },
     {
      "cause": "WATERFALL_GIANT_BOSS",
-     "n": 604,
      "share": 0.046
     },
     {
      "cause": "VANTOM_BOSS",
-     "n": 577,
-     "share": 0.0439
+     "share": 0.044
     },
     {
      "cause": "SKULKING_COLONY_ELITE",
-     "n": 573,
-     "share": 0.0436
+     "share": 0.044
     },
     {
      "cause": "TERROR_EEL_ELITE",
-     "n": 556,
-     "share": 0.0423
+     "share": 0.042
     },
     {
      "cause": "THE_KIN_BOSS",
-     "n": 544,
-     "share": 0.0414
+     "share": 0.041
     }
    ],
-   "listed_share": 0.4649
+   "listed_share": 0.465
   },
   "checks": {
    "death_room_is_last_floor": {
-    "n": 13138,
-    "k": 13089,
-    "share": 0.9963
+    "share": 0.996
    }
   },
-  "abandoned_sensitivity": {
-   "abandoned_runs": 6111,
-   "mean_floor_all_with_abandoned": 22.084
+  "abandoned": {
+   "reading": "left out of the headline: early quits (the player left the run), not a loss and not a statistical censoring",
+   "share_of_selected": {
+    "share": 0.292
+   },
+   "median_floor": 6.0,
+   "ended_by_floor_5": {
+    "share": 0.485
+   },
+   "won": {
+    "share": 0.0
+   },
+   "mean_floor_with_abandoned": 22.084,
+   "rates": {
+    "act1_kill": {
+     "excluded": 0.546,
+     "counted_as_lost": 0.437,
+     "kaplan_meier": 0.597
+    },
+    "act2_kill": {
+     "excluded": 0.291,
+     "counted_as_lost": 0.22,
+     "kaplan_meier": 0.336
+    },
+    "win": {
+     "excluded": 0.113,
+     "counted_as_lost": 0.08,
+     "kaplan_meier": 0.139
+    }
+   }
   }
  }
 }

@@ -5,6 +5,7 @@ Constructed data only: a tiny gz corpus of five fake runs made here. No corpus f
 
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import sys
@@ -113,18 +114,18 @@ class CodexCurve(unittest.TestCase):
         reach = {int(k): v["share"] for k, v in self.ref["survival"]["reach"].items()}
         self.assertEqual(max(reach), 49)
         self.assertEqual((reach[1], reach[5]), (1.0, 1.0))
-        self.assertEqual((reach[6], reach[18]), (round(2 / 3, 4), round(2 / 3, 4)))
-        self.assertEqual((reach[19], reach[49]), (round(1 / 3, 4), round(1 / 3, 4)))
+        self.assertEqual((reach[6], reach[18]), (round(2 / 3, 3), round(2 / 3, 3)))
+        self.assertEqual((reach[19], reach[49]), (round(1 / 3, 3), round(1 / 3, 3)))
         ended = self.ref["survival"]["ended"]
-        self.assertEqual(ended["by_act1_boss"]["k"], 1)       # only the floor 5 run ended by the Act 1 boss
-        self.assertEqual(ended["by_act2_boss"]["k"], 2)
+        self.assertEqual(ended["by_act1_boss"]["share"], 0.333)       # only the floor 5 run ended by the Act 1 boss
+        self.assertEqual(ended["by_act2_boss"]["share"], 0.667)
         bk = self.ref["boss_kill"]
-        self.assertEqual((bk["act1"]["killed_of_all"]["k"], bk["act2"]["killed_of_all"]["k"], bk["win"]["k"]), (2, 1, 1))
+        self.assertEqual((bk["act1"]["killed_of_all"]["share"], bk["act2"]["killed_of_all"]["share"], bk["win"]["share"]), (0.667, 0.333, 0.333))
         self.assertEqual(bk["act1"]["killed_of_reached"]["share"], 1.0)  # two reached the Act 1 boss floor, both killed it
-        self.assertEqual(bk["floor_rule_vs_act_lists_disagree_runs"], 0)
+        self.assertEqual(bk["floor_rule_vs_act_lists_disagree"]["share"], 0.0)
         self.assertEqual(self.ref["floor"]["mean"], round((5 + 18 + 49) / 3, 3))
-        ends = {t["cause"]: t["n"] for t in self.ref["end_causes"]["top10"]}
-        self.assertEqual(ends, {"SLIMES": 1, "BIG_BOSS": 1})
+        ends = {t["cause"]: t["share"] for t in self.ref["end_causes"]["top10"]}
+        self.assertEqual(ends, {"SLIMES": 0.5, "BIG_BOSS": 0.5})
 
     def test_deck_cards_and_rests(self):
         s = cc.summarize(five_runs()[1])  # 10 kept + 1 gained on floor 2; 1 more, held from the start, removed on floor 4
@@ -132,19 +133,18 @@ class CodexCurve(unittest.TestCase):
         self.assertEqual(s["n"], 18)
         self.assertGreater(sum(s["screens"]), 0)
         rests = self.ref["rests"]["all"]
-        self.assertEqual(rests["smith"]["k"] + rests["heal"]["k"], rests["choices"])
-        self.assertEqual(self.ref["boss_hp"]["1"]["hp"]["n"], 2)
+        self.assertAlmostEqual(rests["smith"]["share"] + rests["heal"]["share"], 1.0, places=2)
+        self.assertEqual(self.ref["boss_hp"]["1"]["hp"]["mean"], 60.0)
 
     def test_suppression(self):
-        self.assertEqual(cc.share(25, 100, 20), {"n": 100, "k": 25, "share": 0.25})
+        self.assertEqual(cc.share(25, 100, 20), {"share": 0.25})
         for k, n, m in ((19, 100, 20), (5, 10, 20), (95, 100, 20), (1, 3, 2)):
-            self.assertEqual(cc.share(k, n, m), {"n": None, "k": None, "share": None}, (k, n, m))
+            self.assertEqual(cc.share(k, n, m), {"share": None}, (k, n, m))
         self.assertEqual(cc.share(0, 100, 20)["share"], 0.0)
         # the default floor of 20 runs hides every cell of a five run corpus
         doc = cc.build(self.path, "IRONCLAD", 10, n_boot=50, generated="x")
-        cells = list(doc["reference"]["survival"]["reach"].values())
-        self.assertTrue(all(c["share"] is None for c in cells))
-        self.assertIsNone(doc["reference"]["deck"]["by_floor"]["1"]["mean"])
+        self.assertEqual(doc["reference"]["survival"]["reach"], {})  # no floor has 20 runs
+        self.assertEqual(doc["reference"]["deck"]["by_floor"], {})
         self.assertIsNone(doc["reference"]["boss_kill"]["win"]["share"])
         self.assertEqual(doc["reference"]["end_causes"]["top10"], [])
         self.assertEqual(doc["context"]["by_character"], {"cells_under_floor": 2})  # IRONCLAD and SILENT, each under 20, are not listed
@@ -156,10 +156,70 @@ class CodexCurve(unittest.TestCase):
             self.assertNotIn(needle, blob + md)
         for key in ("seed", "run_hash", "player_token", "start_time", "run_time", "player_id", "players"):
             self.assertNotIn(f'"{key}"', blob)
+        for key in ('"k":', '"screens"', '"taken":'):  # raw run counts of a cell
+            self.assertNotIn(key, blob)
         cc.check_clean(self.doc)
         with self.assertRaises(ValueError):
             cc.check_clean({"a": [{"seed": "X"}]})
         self.assertIn("Aggregates only", cc.render_md(self.doc))
+
+    def test_cards_cells_use_the_share_rule(self):
+        sums = [cc.summarize(fake_run(10)) for _ in range(25)]
+        for s in sums[:3]:
+            s["picks"][2] = 0                        # floor 2: 22 of 25 screens taken, only 3 skipped
+        for s in sums[:8]:
+            s["screens"][7] = s["picks"][7] = 0      # floor 7: 17 screens left
+        cards = cc.aggregate(sums, 20, 20)["cards"]["by_floor"]
+        for f in ("2", "7"):
+            self.assertEqual(cards[f], {"rewards_per_run": None, "taken_per_run": None, "skip_rate": None}, f)
+        self.assertEqual(cards["4"], {"rewards_per_run": 1.0, "taken_per_run": 1.0, "skip_rate": 0.0})
+        self.assertEqual(cards["3"]["skip_rate"], 1.0)
+        self.assertIsNone(cards["5"]["skip_rate"])   # a rest floor: no screens
+        for cell in cards.values():
+            self.assertEqual(set(cell), {"rewards_per_run", "taken_per_run", "skip_rate"})
+
+    def test_survival_cells_cannot_be_differenced(self):
+        sums = [cc.summarize(fake_run(5))] * 3 + [cc.summarize(fake_run(7))] + [cc.summarize(fake_run(9))] * 3
+        reach = cc.aggregate(sums, 3, 20)["survival"]["reach"]
+        self.assertEqual(max(int(k) for k in reach), 9)              # stops at the last floor with 3 runs
+        hidden = sorted(int(k) for k, v in reach.items() if v["share"] is None)
+        self.assertEqual(hidden, [7, 8])                             # one run ended on floor 7: floors 7 and 8 differ by 1
+        self.assertEqual(reach["6"]["share"], round(4 / 7, 3))
+        long_run = [cc.summarize(fake_run(5))] * 20 + [cc.summarize(fake_run(49))]
+        self.assertEqual(max(int(k) for k in cc.aggregate(long_run, 20, 20)["survival"]["reach"]), 5)  # one run of 49 floors is not shown
+
+    def test_filters(self):
+        base = fake_run(5, i=0)
+        dup = copy.deepcopy(base)
+        modded_act, multi, mods, daily, modded_card = (copy.deepcopy(base) for _ in range(5))
+        for j, r in enumerate((modded_act, multi, mods, daily, modded_card)):
+            r["run_hash"] = f"other{j}"
+        modded_act["acts"] = ["ACT.OVERGROWTH", "ACT.MYMOD-ACT", "ACT.GLORY"]
+        multi["players"].append(copy.deepcopy(multi["players"][0]))
+        mods["modifiers"] = ["MODIFIER.HARD"]
+        daily["game_mode"] = "daily"
+        modded_card["players"][0]["deck"].append({"id": "CARD.MYMOD-STRIKE", "floor_added_to_deck": 1})
+        with tempfile.TemporaryDirectory() as d:
+            path = write_corpus(Path(d), [base, dup, modded_act, multi, mods, daily, modded_card])
+            ctx, sums, aband = cc.scan(cc.open_lines(path))
+        f = ctx["funnel"]
+        self.assertEqual((f["analysed"], f["duplicate"], f["modded_act"], f["modifiers"], f["not_standard_mode"], f["modded_content"]),
+                         (1, 1, 1, 1, 1, 1))
+        self.assertEqual(ctx["by_character"], {"IRONCLAD": 6, "MULTIPLAYER": 1})
+        self.assertEqual((len(sums), len(aband)), (1, 0))
+
+    def test_abandoned_runs_three_readings(self):
+        sums = [cc.summarize(fake_run(5)) for _ in range(20)] + [cc.summarize(fake_run(18)) for _ in range(20)]
+        aband = [cc.summarize(fake_run(3)) for _ in range(20)] + [cc.summarize(fake_run(20)) for _ in range(20)]
+        ab = cc.aggregate(sums, 20, 20, aband)["abandoned"]
+        r = ab["rates"]["act1_kill"]
+        self.assertEqual(r["excluded"], 0.5)           # 20 of 40 analysed runs got past floor 17
+        self.assertEqual(r["counted_as_lost"], 0.5)    # 40 of 80 with the quitters at the floor they left on
+        self.assertEqual(r["kaplan_meier"], 0.667)     # the 20 quitters at floor 3 leave the risk set before the 20 deaths on floor 5
+        self.assertEqual((ab["median_floor"], ab["ended_by_floor_5"]["share"], ab["won"]["share"]), (11.5, 0.5, 0.0))
+        few = cc.aggregate(sums, 20, 20, aband[:5])["abandoned"]
+        self.assertEqual(few["rates"]["act1_kill"]["counted_as_lost"], None)  # fewer than 20 abandoned runs: no reading is shown
+        self.assertEqual(few["median_floor"], None)
 
     def test_output_files(self):
         with tempfile.TemporaryDirectory() as d:

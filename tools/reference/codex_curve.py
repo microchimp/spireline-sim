@@ -141,20 +141,20 @@ def boss_killed_by_acts(s: dict) -> list[bool]:
 # ------------------------------------------------------------------ aggregation
 
 def share(k: int, n: int, min_cell: int) -> dict:
-    """A share cell: counts and the share, or suppressed (all null) when the cell would rest on fewer than ``min_cell`` runs:
-    the population n, the group k, or the rest n - k (the complement is derivable) is non-empty and below the floor.
-    """
+    """A share cell, or suppressed (``None``) when it would rest on fewer than ``min_cell`` runs: the population n, the group k or
+    the rest n - k is non-empty and below the floor.  Only the rounded share (0.1 point) is published, never n or k."""
     if n < min_cell or 0 < k < min_cell or 0 < n - k < min_cell:
-        return {"n": None, "k": None, "share": None}
-    return {"n": n, "k": k, "share": round(k / n, 4)}
+        return {"share": None}
+    return {"share": round(k / n, 3)}
 
 
 def moments(xs: list, min_cell: int) -> dict:
+    """Mean and quartiles over at least ``min_cell`` runs (the count itself is not published)."""
     if len(xs) < min_cell:
-        return {"n": None, "mean": None, "q1": None, "median": None, "q3": None}
+        return {"mean": None, "q1": None, "median": None, "q3": None}
     a = np.asarray(xs, dtype=np.float64)
     q1, med, q3 = (float(v) for v in np.percentile(a, [25, 50, 75]))
-    return {"n": int(a.size), "mean": round(float(a.mean()), 3), "q1": round(q1, 2), "median": round(med, 2), "q3": round(q3, 2)}
+    return {"mean": round(float(a.mean()), 3), "q1": round(q1, 2), "median": round(med, 2), "q3": round(q3, 2)}
 
 
 def bootstrap(floors: list, n_boot: int, seed: int = BOOT_SEED) -> dict:
@@ -178,17 +178,40 @@ def bootstrap(floors: list, n_boot: int, seed: int = BOOT_SEED) -> dict:
             "median": float(np.median(x)), "median_ci95": [round(float(mlo), 2), round(float(mhi), 2)], "boot": n_boot}
 
 
+def kaplan_meier(sums: list, aband: list) -> list:
+    """The chance of getting past the Act 1 boss, the Act 2 boss and the last boss (the win) when an abandoned run is censored at
+    the floor it left on (it is at risk up to there and never counts as a loss).  Product over floors of 1 - deaths / at risk."""
+    runs = sums + aband
+    top = max(s["n"] for s in runs)
+    risk = np.bincount(np.asarray([s["n"] for s in runs], dtype=np.int64), minlength=top + 2)[::-1].cumsum()[::-1]
+    dead = np.bincount(np.asarray([s["n"] for s in sums if not s["win"]], dtype=np.int64), minlength=top + 2)
+    surv = np.ones(top + 2)
+    for f in range(1, top + 1):
+        surv[f] = surv[f - 1] * (1.0 - dead[f] / risk[f]) if risk[f] else surv[f - 1]
+    return [float(surv[min(b, top)]) for b in (*ACT_BOSS_FLOORS[:2], WIN_FLOOR)]
+
+
 def aggregate(sums: list, min_cell: int = MIN_CELL, n_boot: int = BOOT, abandoned: list | None = None) -> dict:
-    """The tables over the summaries of the selected runs."""
+    """The tables over the summaries of the selected runs.  Every published cell is a rounded share or a moment over at least
+    ``min_cell`` runs; no run count of a cell is published, and a floor of the survival curve is hidden when it differs from
+    a neighbour by a count under ``min_cell`` (adjacent cells cannot be differenced to a handful of runs)."""
     n = len(sums)
     floors = [s["n"] for s in sums]
     out: dict = {"runs": n}
     if n == 0:
         return out
-    # (a) survival: the share of runs reaching each floor, the share ending by each act boss
-    top = min(MAX_FLOOR, max(floors))
-    cnt_ge = {f: sum(1 for x in floors if x >= f) for f in range(1, top + 1)}
-    out["survival"] = {"reach": {str(f): share(cnt_ge[f], n, min_cell) for f in range(1, top + 1)}}
+    # (a) survival: the share of runs reaching each floor (down to the last floor with enough runs), the share ending by each act boss
+    cnt_ge = {f: sum(1 for x in floors if x >= f) for f in range(1, MAX_FLOOR + 2)}
+    top = max((f for f in range(1, MAX_FLOOR + 1) if cnt_ge[f] >= min_cell), default=0)
+    reach = {}
+    for f in range(1, top + 1):
+        cell = share(cnt_ge[f], n, min_cell)
+        below = cnt_ge[f - 1] - cnt_ge[f] if f > 1 else 0
+        above = cnt_ge[f] - cnt_ge[f + 1] if f < top else 0
+        if 0 < below < min_cell or 0 < above < min_cell:
+            cell = {"share": None}
+        reach[str(f)] = cell
+    out["survival"] = {"reach": reach}
     ended = {}
     for i, b in enumerate(ACT_BOSS_FLOORS, 1):
         ended[f"by_act{i}_boss"] = share(sum(1 for s in sums if not s["win"] and s["n"] <= b), n, min_cell)
@@ -209,7 +232,7 @@ def aggregate(sums: list, min_cell: int = MIN_CELL, n_boot: int = BOOT, abandone
     wins = sum(1 for s in sums if s["win"])
     out["boss_kill"] = {"rule": "the run won, or ended past the boss floor (gen_loop.boss_kill at each boss floor)", **bk,
                         "win": share(wins, n, min_cell),
-                        "floor_rule_vs_act_lists_disagree_runs": sum(1 for a, b in zip(kills, by_act) if a[:2] != b[:2])}
+                        "floor_rule_vs_act_lists_disagree": share(sum(1 for a, b in zip(kills, by_act) if a[:2] != b[:2]), n, min_cell)}
     # (c) floor reached
     out["floor"] = bootstrap(floors, n_boot)
     out["floor"]["by_outcome"] = {"died": moments([s["n"] for s in sums if not s["win"]], min_cell)}
@@ -223,25 +246,24 @@ def aggregate(sums: list, min_cell: int = MIN_CELL, n_boot: int = BOOT, abandone
     out["deck"] = {"by_floor": {str(f): moments(deck_by[f], min_cell) for f in range(1, top + 1) if f in deck_by}}
     cards = {}
     for f in range(1, top + 1):
-        sc, pk, pop = scr_by[f], pick_by[f], len(deck_by.get(f, ()))
-        cards[str(f)] = {"screens": sc if sc >= min_cell else None, "taken": pk if sc >= min_cell else None,
-                         "taken_per_run": round(pk / pop, 4) if sc >= min_cell and pop >= min_cell else None,
-                         "skip_rate": round(1 - pk / sc, 4) if sc >= min_cell else None}
+        sc, pk = scr_by[f], pick_by[f]
+        if share(pk, sc, min_cell)["share"] is None:  # the same rule as every other cell: screens, takes and skips each 0 or >= min_cell
+            cards[str(f)] = {"rewards_per_run": None, "taken_per_run": None, "skip_rate": None}
+        else:
+            cards[str(f)] = {"rewards_per_run": round(sc / cnt_ge[f], 3), "taken_per_run": round(pk / cnt_ge[f], 3),
+                             "skip_rate": round(1 - pk / sc, 3)}
     tot_s, tot_p = sum(scr_by.values()), sum(pick_by.values())
     out["cards"] = {"by_floor": cards, "screen_rooms": list(COMBAT_ROOMS),
                     "taken_per_run": round(tot_p / n, 3), "screens_per_run": round(tot_s / n, 3),
-                    "skip_rate": round(1 - tot_p / tot_s, 4) if tot_s >= min_cell else None}
+                    "skip_rate": round(1 - tot_p / tot_s, 3) if tot_s >= min_cell else None}
     # (e) rest site choices by act
     rest = {}
-    for a in range(3):
-        c = Counter(r for s in sums for (act, r) in s["rests"] if act == a)
+    for a in [0, 1, 2, "all"]:
+        c = Counter(r for s in sums for (act, r) in s["rests"] if a == "all" or act == a)
         tot = sum(c.values())
-        rest[str(a + 1)] = ({"choices": tot, "smith": share(c["smith"], tot, min_cell), "heal": share(c["heal"], tot, min_cell),
-                             "other": share(tot - c["smith"] - c["heal"], tot, min_cell)} if tot >= min_cell else {"choices": None})
-    c = Counter(r for s in sums for (_, r) in s["rests"])
-    tot = sum(c.values())
-    rest["all"] = ({"choices": tot, "smith": share(c["smith"], tot, min_cell), "heal": share(c["heal"], tot, min_cell),
-                    "other": share(tot - c["smith"] - c["heal"], tot, min_cell)} if tot >= min_cell else {"choices": None})
+        rest["all" if a == "all" else str(a + 1)] = (
+            {"choices": tot, "smith": share(c["smith"], tot, min_cell), "heal": share(c["heal"], tot, min_cell),
+             "other": share(tot - c["smith"] - c["heal"], tot, min_cell)} if tot >= min_cell else {"choices": None})
     out["rests"] = rest
     # (f) HP entering each act boss
     hp = {}
@@ -253,16 +275,30 @@ def aggregate(sums: list, min_cell: int = MIN_CELL, n_boot: int = BOOT, abandone
     # (g) end causes
     ends = Counter(s["end"] for s in sums if s["end"])
     dead = sum(ends.values())
-    top10 = [{"cause": k, "n": v, "share": round(v / dead, 4)} for k, v in ends.most_common(40) if v >= min_cell and dead - v >= min_cell][:10]
-    out["end_causes"] = {"dead_runs": dead if dead >= min_cell else None, "top10": top10,
-                         "listed_share": round(sum(t["n"] for t in top10) / dead, 4) if dead >= min_cell else None}
+    listed = [(k, v) for k, v in ends.most_common(40) if v >= min_cell and dead - v >= min_cell][:10]
+    out["end_causes"] = {"dead_runs": dead if dead >= min_cell else None,
+                         "top10": [{"cause": k, "share": round(v / dead, 3)} for k, v in listed],
+                         "listed_share": round(sum(v for _, v in listed) / dead, 3) if dead >= min_cell else None}
     # checks that the floor numbering is the AI's
     out["checks"] = {"death_room_is_last_floor": share(sum(1 for s in sums if not s["win"] and s["killer_in_last_room"]),
                                                        sum(1 for s in sums if not s["win"]), min_cell)}
+    # the abandoned runs: left out of the headline; the rates under three readings
     if abandoned is not None:
-        out["abandoned_sensitivity"] = {"abandoned_runs": len(abandoned) if len(abandoned) >= min_cell else None,
-                                        "mean_floor_all_with_abandoned": round(float(np.mean(floors + [s["n"] for s in abandoned])), 3)
-                                        if len(abandoned) >= min_cell else None}
+        na = len(abandoned)
+        ok = na >= min_cell
+        allk = [boss_killed(s) for s in abandoned]
+        names = ("act1_kill", "act2_kill", "win")
+        excluded = [bk["act1"]["killed_of_all"]["share"], bk["act2"]["killed_of_all"]["share"], out["boss_kill"]["win"]["share"]]
+        lost = [round((sum(1 for r in kills if r[i]) + sum(1 for r in allk if r[i])) / (n + na), 3) for i in (0, 1, 3)] if ok else [None] * 3
+        km = [round(v, 3) for v in kaplan_meier(sums, abandoned)] if ok else [None] * 3
+        out["abandoned"] = {
+            "reading": "left out of the headline: early quits (the player left the run), not a loss and not a statistical censoring",
+            "share_of_selected": share(na, n + na, min_cell),
+            "median_floor": float(np.median([s["n"] for s in abandoned])) if ok else None,
+            "ended_by_floor_5": share(sum(1 for s in abandoned if s["n"] <= 5), na, min_cell),
+            "won": share(sum(1 for s in abandoned if s["win"]), na, min_cell),
+            "mean_floor_with_abandoned": round(float(np.mean(floors + [s["n"] for s in abandoned])), 3) if ok else None,
+            "rates": {nm: {"excluded": excluded[j], "counted_as_lost": lost[j], "kaplan_meier": km[j]} for j, nm in enumerate(names)}}
     return out
 
 
@@ -392,7 +428,7 @@ def build(path: Path, character: str = "IRONCLAD", ascension: int | None = 10, m
            "header": {"corpus": corpus_name(path), "corpus_sha256_prefix": sha,
                       "generated": generated or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%MZ"),
                       "selection": {"character": character, "ascension": ascension, "single_player": True, "standard_mode": True,
-                                    "no_modifiers": True, "vanilla_content": True, "abandoned_runs": "excluded",
+                                    "no_modifiers": True, "vanilla_content": True, "abandoned_runs": "excluded from the headline (early quits); rates under three readings in abandoned",
                                     "duplicates": "dropped"},
                       "min_cell": min_cell, "tool": "tools/reference/codex_curve.py"},
            "context": suppress_counts(ctx, min_cell),
@@ -425,12 +461,17 @@ def fmt(x, nd=1) -> str:
     return "-" if x is None else f"{x:.{nd}f}"
 
 
+def rate(x) -> str:
+    return "-" if x is None else f"{100 * x:.1f}%"
+
+
 def render_md(doc: dict) -> str:
     h, ref, ctx = doc["header"], doc["reference"], doc["context"]
     L = [f"# Human reference: {h['selection']['character'].title()} at Ascension {h['selection']['ascension']}", "",
          f"Corpus {h['corpus']} (sha256 prefix {h['corpus_sha256_prefix']}), generated {h['generated']} by `{h['tool']}`. "
-         f"Aggregates only (D13): cells resting on fewer than {h['min_cell']} runs are shown as `-`; no run, seed or player is named.",
-         "", "## Runs", "", f"Lines read: {ctx['lines']}. Selection funnel:", ""]
+         f"Aggregates only (D13): cells resting on fewer than {h['min_cell']} runs are shown as `-`; no run, seed or player is named. "
+         "Shares are rounded to 0.1 point and carry no run counts; a survival floor that differs from a neighbour by under "
+         f"{h['min_cell']} runs is hidden.", "", "## Runs", "", f"Lines read: {ctx['lines']}. Selection funnel:", ""]
     order = ("character_ascension", "modded_act", "not_single_player", "not_standard_mode", "modifiers", "modded_content", "duplicate",
              "no_floors", "unreadable", "abandoned", "analysed")
     fun = ctx["funnel"]
@@ -450,8 +491,8 @@ def render_md(doc: dict) -> str:
     if ref.get("runs", 0) == 0:
         return "\n".join(L) + "\nNo runs selected.\n"
     fl, bk, sv = ref["floor"], ref["boss_kill"], ref["survival"]
-    L += ["## Headline", "", f"Analysed runs: {ref['runs']} (abandoned runs excluded).", "",
-          "| metric | value |", "|---|---|",
+    L += ["## Headline", "", f"Analysed runs: {ref['runs']}. Abandoned runs are left out of this table (early quits; see the section on them "
+          "for the rates with them counted).", "", "| metric | value |", "|---|---|",
           f"| mean floor | {fmt(fl['mean'], 2)} (95% CI {fl['mean_ci95'][0]:.2f} to {fl['mean_ci95'][1]:.2f}) |",
           f"| median floor | {fmt(fl['median'])} (95% CI {fl['median_ci95'][0]:.1f} to {fl['median_ci95'][1]:.1f}) |",
           f"| win rate | {pct(bk['win'])} |"]
@@ -471,16 +512,27 @@ def render_md(doc: dict) -> str:
         b = ref["boss_hp"][a]
         L.append(f"| {a} | {fmt(b['hp']['mean'])} ({fmt(b['hp']['q1'], 0)} / {fmt(b['hp']['median'], 0)} / {fmt(b['hp']['q3'], 0)}) | "
                  f"{fmt(b['max_hp']['mean'])} | {fmt(b['hp_fraction']['mean'], 3)} |")
-    L += ["", "## End causes (top 10 of runs that did not win)", "", "| cause | runs | share |", "|---|---|---|"]
-    L += [f"| {t['cause']} | {t['n']} | {100 * t['share']:.1f}% |" for t in ref["end_causes"]["top10"]] + [""]
+    L += ["", "## End causes (top 10 of runs that did not win)", "", "| cause | share of lost runs |", "|---|---|"]
+    L += [f"| {t['cause']} | {100 * t['share']:.1f}% |" for t in ref["end_causes"]["top10"]] + [""]
+    ab = ref.get("abandoned")
+    if ab:
+        L += ["## The abandoned runs", "",
+              f"Abandoned runs are {pct(ab['share_of_selected'])} of the selected runs. They are early quits, not losses: median floor "
+              f"{fmt(ab['median_floor'], 0)}, {pct(ab['ended_by_floor_5'])} end by floor 5, {pct(ab['won'])} won. The headline leaves them out; "
+              "the rates under three readings (excluded, counted as lost at the floor they left on, and Kaplan-Meier with them censored at it):",
+              "", "| rate | excluded (headline) | counted as lost | Kaplan-Meier censored |", "|---|---|---|---|"]
+        for nm, lab in (("act1_kill", "Act 1 boss kill"), ("act2_kill", "Act 2 boss kill"), ("win", "win rate")):
+            r = ab["rates"][nm]
+            L.append(f"| {lab} | {rate(r['excluded'])} | {rate(r['counted_as_lost'])} | {rate(r['kaplan_meier'])} |")
+        L += ["", f"Mean floor with them in: {fmt(ab['mean_floor_with_abandoned'], 2)}.", ""]
     L += ["## Per floor", "", "Floors are counted across acts (ancient = 1; Act 1 boss 17, Act 2 boss 33, Act 3 boss 48, win 49). "
-          "Deck size is at the end of the floor.", "",
-          "| floor | reaching | deck mean (q1 / med / q3) | card rewards | skip rate |", "|---|---|---|---|---|"]
+          "Deck size is at the end of the floor; card rewards are the reward screens per run reaching the floor (monster, elite and boss rooms).", "",
+          "| floor | reaching | deck mean (q1 / med / q3) | card rewards per run | skip rate |", "|---|---|---|---|---|"]
     for f, cell in sv["reach"].items():
         d = ref["deck"]["by_floor"].get(f, {})
         c = ref["cards"]["by_floor"].get(f, {})
         L.append(f"| {f} | {pct(cell)} | {fmt(d.get('mean'))} ({fmt(d.get('q1'), 0)} / {fmt(d.get('median'), 0)} / {fmt(d.get('q3'), 0)}) | "
-                 f"{c.get('screens') if c.get('screens') is not None else '-'} | {pct({'share': c.get('skip_rate')})} |")
+                 f"{fmt(c.get('rewards_per_run'), 2)} | {pct({'share': c.get('skip_rate')})} |")
     return "\n".join(L) + "\n"
 
 
