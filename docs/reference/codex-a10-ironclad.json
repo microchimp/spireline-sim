@@ -1,0 +1,1168 @@
+{
+ "format": 1,
+ "header": {
+  "corpus": "v0.107.1",
+  "corpus_sha256_prefix": "92b3cc4010578877",
+  "generated": "2026-10-28T01:39Z",
+  "selection": {
+   "character": "IRONCLAD",
+   "ascension": 10,
+   "single_player": true,
+   "standard_mode": true,
+   "no_modifiers": true,
+   "vanilla_content": true,
+   "abandoned_runs": "excluded from the headline (early quits); rates under three readings in abandoned",
+   "duplicates": "dropped"
+  },
+  "min_cell": 20,
+  "tool": "tools/reference/codex_curve.py"
+ },
+ "context": {
+  "lines": 653733,
+  "by_character": {
+   "MULTIPLAYER": 251541,
+   "IRONCLAD": 94041,
+   "SILENT": 90668,
+   "DEFECT": 70960,
+   "NECROBINDER": 70586,
+   "REGENT": 63872,
+   "UNKNOWN": 9911,
+   "OTHER": 2154,
+   "cells_under_floor": 0
+  },
+  "by_ascension": {
+   "-1": 54,
+   "0": 120653,
+   "1": 66746,
+   "2": 45321,
+   "3": 38826,
+   "4": 34203,
+   "5": 38359,
+   "6": 32032,
+   "7": 30584,
+   "8": 32871,
+   "9": 64123,
+   "10": 149420,
+   "11": 191,
+   "12": 70,
+   "13": 64,
+   "14": 36,
+   "15": 22,
+   "16": 29,
+   "20": 41,
+   "23": 45,
+   "cells_under_floor": 10
+  },
+  "by_character_ascension": {
+   "DEFECT|0": 12004,
+   "DEFECT|1": 6835,
+   "DEFECT|2": 5503,
+   "DEFECT|3": 4455,
+   "DEFECT|4": 3644,
+   "DEFECT|5": 4532,
+   "DEFECT|6": 3447,
+   "DEFECT|7": 3491,
+   "DEFECT|8": 3837,
+   "DEFECT|9": 7262,
+   "DEFECT|10": 15930,
+   "IRONCLAD|0": 18170,
+   "IRONCLAD|1": 8494,
+   "IRONCLAD|2": 6451,
+   "IRONCLAD|3": 5548,
+   "IRONCLAD|4": 4598,
+   "IRONCLAD|5": 5085,
+   "IRONCLAD|6": 4548,
+   "IRONCLAD|7": 3919,
+   "IRONCLAD|8": 4907,
+   "IRONCLAD|9": 9893,
+   "IRONCLAD|10": 22301,
+   "IRONCLAD|11": 20,
+   "IRONCLAD|13": 36,
+   "IRONCLAD|23": 23,
+   "NECROBINDER|0": 15370,
+   "NECROBINDER|1": 6810,
+   "NECROBINDER|2": 5479,
+   "NECROBINDER|3": 4611,
+   "NECROBINDER|4": 3575,
+   "NECROBINDER|5": 3735,
+   "NECROBINDER|6": 3310,
+   "NECROBINDER|7": 3049,
+   "NECROBINDER|8": 3481,
+   "NECROBINDER|9": 7619,
+   "NECROBINDER|10": 13524,
+   "REGENT|0": 14902,
+   "REGENT|1": 6470,
+   "REGENT|2": 4875,
+   "REGENT|3": 3802,
+   "REGENT|4": 3431,
+   "REGENT|5": 4015,
+   "REGENT|6": 2985,
+   "REGENT|7": 2740,
+   "REGENT|8": 2868,
+   "REGENT|9": 6083,
+   "REGENT|10": 11680,
+   "SILENT|0": 16692,
+   "SILENT|1": 8446,
+   "SILENT|2": 5683,
+   "SILENT|3": 5176,
+   "SILENT|4": 4835,
+   "SILENT|5": 5049,
+   "SILENT|6": 4329,
+   "SILENT|7": 4512,
+   "SILENT|8": 4935,
+   "SILENT|9": 10267,
+   "SILENT|10": 20698,
+   "cells_under_floor": 37
+  },
+  "funnel": {
+   "character_ascension": 22301,
+   "analysed": 14811,
+   "abandoned": 6111,
+   "not_standard_mode": 472,
+   "modifiers": 529,
+   "not_single_player": 69,
+   "modded_act": 171,
+   "modded_content": 138
+  },
+  "builds": {
+   "v0.107.1": 14811
+  }
+ },
+ "reference": {
+  "runs": 14811,
+  "survival": {
+   "reach": {
+    "1": {
+     "share": null
+    },
+    "2": {
+     "share": null
+    },
+    "3": {
+     "share": null
+    },
+    "4": {
+     "share": null
+    },
+    "5": {
+     "share": null
+    },
+    "6": {
+     "share": 0.997
+    },
+    "7": {
+     "share": 0.99
+    },
+    "8": {
+     "share": 0.942
+    },
+    "9": {
+     "share": 0.895
+    },
+    "10": {
+     "share": 0.853
+    },
+    "11": {
+     "share": 0.853
+    },
+    "12": {
+     "share": 0.823
+    },
+    "13": {
+     "share": 0.798
+    },
+    "14": {
+     "share": 0.785
+    },
+    "15": {
+     "share": 0.763
+    },
+    "16": {
+     "share": 0.738
+    },
+    "17": {
+     "share": 0.738
+    },
+    "18": {
+     "share": null
+    },
+    "19": {
+     "share": null
+    },
+    "20": {
+     "share": null
+    },
+    "21": {
+     "share": null
+    },
+    "22": {
+     "share": 0.539
+    },
+    "23": {
+     "share": 0.528
+    },
+    "24": {
+     "share": 0.51
+    },
+    "25": {
+     "share": 0.478
+    },
+    "26": {
+     "share": 0.455
+    },
+    "27": {
+     "share": 0.455
+    },
+    "28": {
+     "share": 0.439
+    },
+    "29": {
+     "share": 0.422
+    },
+    "30": {
+     "share": 0.415
+    },
+    "31": {
+     "share": 0.401
+    },
+    "32": {
+     "share": 0.383
+    },
+    "33": {
+     "share": 0.383
+    },
+    "34": {
+     "share": null
+    },
+    "35": {
+     "share": null
+    },
+    "36": {
+     "share": null
+    },
+    "37": {
+     "share": null
+    },
+    "38": {
+     "share": 0.286
+    },
+    "39": {
+     "share": 0.282
+    },
+    "40": {
+     "share": 0.277
+    },
+    "41": {
+     "share": null
+    },
+    "42": {
+     "share": null
+    },
+    "43": {
+     "share": 0.267
+    },
+    "44": {
+     "share": 0.263
+    },
+    "45": {
+     "share": 0.261
+    },
+    "46": {
+     "share": 0.256
+    },
+    "47": {
+     "share": null
+    },
+    "48": {
+     "share": null
+    },
+    "49": {
+     "share": 0.182
+    },
+    "50": {
+     "share": 0.005
+    },
+    "51": {
+     "share": 0.004
+    }
+   },
+   "ended": {
+    "by_act1_boss": {
+     "share": 0.454
+    },
+    "at_act1_boss": {
+     "share": 0.192
+    },
+    "by_act2_boss": {
+     "share": 0.709
+    },
+    "at_act2_boss": {
+     "share": 0.092
+    },
+    "by_act3_boss": {
+     "share": 0.818
+    },
+    "at_act3_boss": {
+     "share": 0.068
+    }
+   },
+   "died_in_act": {
+    "1": {
+     "share": 0.454
+    },
+    "2": {
+     "share": 0.257
+    },
+    "3": {
+     "share": 0.176
+    }
+   }
+  },
+  "boss_kill": {
+   "rule": "the run won, or ended past the boss floor (gen_loop.boss_kill at each boss floor)",
+   "act1": {
+    "killed_of_all": {
+     "share": 0.546
+    },
+    "killed_of_reached": {
+     "share": 0.74
+    },
+    "reached": {
+     "share": 0.738
+    }
+   },
+   "act2": {
+    "killed_of_all": {
+     "share": 0.291
+    },
+    "killed_of_reached": {
+     "share": 0.761
+    },
+    "reached": {
+     "share": 0.383
+    }
+   },
+   "act3_first": {
+    "killed_of_all": {
+     "share": 0.182
+    },
+    "killed_of_reached": {
+     "share": 0.727
+    },
+    "reached": {
+     "share": 0.25
+    }
+   },
+   "act3_both": {
+    "killed_of_all": {
+     "share": 0.113
+    },
+    "killed_of_reached": {
+     "share": 0.622
+    },
+    "reached": {
+     "share": 0.182
+    }
+   },
+   "win": {
+    "share": 0.113
+   },
+   "floor_rule_vs_act_lists_disagree": {
+    "share": 0.003
+   }
+  },
+  "floor": {
+   "n": 14811,
+   "mean": 27.05,
+   "mean_ci95": [
+    26.812,
+    27.307
+   ],
+   "median": 24.0,
+   "median_ci95": [
+    24.0,
+    24.0
+   ],
+   "boot": 2000,
+   "by_outcome": {
+    "died": {
+     "mean": 24.25,
+     "q1": 14.0,
+     "median": 17.0,
+     "q3": 33.0
+    }
+   }
+  },
+  "deck": {
+   "by_floor": {
+    "1": {
+     "mean": 11.738,
+     "q1": 11.0,
+     "median": 11.0,
+     "q3": 13.0
+    },
+    "2": {
+     "mean": 12.693,
+     "q1": 12.0,
+     "median": 12.0,
+     "q3": 13.0
+    },
+    "3": {
+     "mean": 13.383,
+     "q1": 13.0,
+     "median": 13.0,
+     "q3": 14.0
+    },
+    "4": {
+     "mean": 14.088,
+     "q1": 13.0,
+     "median": 14.0,
+     "q3": 15.0
+    },
+    "5": {
+     "mean": 14.786,
+     "q1": 14.0,
+     "median": 15.0,
+     "q3": 16.0
+    },
+    "6": {
+     "mean": 15.503,
+     "q1": 14.0,
+     "median": 15.0,
+     "q3": 17.0
+    },
+    "7": {
+     "mean": 15.896,
+     "q1": 15.0,
+     "median": 16.0,
+     "q3": 17.0
+    },
+    "8": {
+     "mean": 16.406,
+     "q1": 15.0,
+     "median": 16.0,
+     "q3": 18.0
+    },
+    "9": {
+     "mean": 16.857,
+     "q1": 16.0,
+     "median": 17.0,
+     "q3": 18.0
+    },
+    "10": {
+     "mean": 16.886,
+     "q1": 16.0,
+     "median": 17.0,
+     "q3": 18.0
+    },
+    "11": {
+     "mean": 17.288,
+     "q1": 16.0,
+     "median": 17.0,
+     "q3": 19.0
+    },
+    "12": {
+     "mean": 17.798,
+     "q1": 17.0,
+     "median": 18.0,
+     "q3": 19.0
+    },
+    "13": {
+     "mean": 18.201,
+     "q1": 17.0,
+     "median": 18.0,
+     "q3": 20.0
+    },
+    "14": {
+     "mean": 18.887,
+     "q1": 18.0,
+     "median": 19.0,
+     "q3": 20.0
+    },
+    "15": {
+     "mean": 19.588,
+     "q1": 18.0,
+     "median": 20.0,
+     "q3": 21.0
+    },
+    "16": {
+     "mean": 19.613,
+     "q1": 18.0,
+     "median": 20.0,
+     "q3": 21.0
+    },
+    "17": {
+     "mean": 20.313,
+     "q1": 19.0,
+     "median": 20.0,
+     "q3": 22.0
+    },
+    "18": {
+     "mean": 20.675,
+     "q1": 19.0,
+     "median": 21.0,
+     "q3": 22.0
+    },
+    "19": {
+     "mean": 21.38,
+     "q1": 20.0,
+     "median": 21.0,
+     "q3": 23.0
+    },
+    "20": {
+     "mean": 21.897,
+     "q1": 20.0,
+     "median": 22.0,
+     "q3": 24.0
+    },
+    "21": {
+     "mean": 22.442,
+     "q1": 21.0,
+     "median": 22.0,
+     "q3": 24.0
+    },
+    "22": {
+     "mean": 22.972,
+     "q1": 21.0,
+     "median": 23.0,
+     "q3": 25.0
+    },
+    "23": {
+     "mean": 23.53,
+     "q1": 21.0,
+     "median": 23.0,
+     "q3": 26.0
+    },
+    "24": {
+     "mean": 23.82,
+     "q1": 22.0,
+     "median": 24.0,
+     "q3": 26.0
+    },
+    "25": {
+     "mean": 24.182,
+     "q1": 22.0,
+     "median": 24.0,
+     "q3": 26.0
+    },
+    "26": {
+     "mean": 24.078,
+     "q1": 22.0,
+     "median": 24.0,
+     "q3": 26.0
+    },
+    "27": {
+     "mean": 24.385,
+     "q1": 22.0,
+     "median": 24.0,
+     "q3": 27.0
+    },
+    "28": {
+     "mean": 24.793,
+     "q1": 22.0,
+     "median": 25.0,
+     "q3": 27.0
+    },
+    "29": {
+     "mean": 25.096,
+     "q1": 23.0,
+     "median": 25.0,
+     "q3": 27.0
+    },
+    "30": {
+     "mean": 25.633,
+     "q1": 23.0,
+     "median": 26.0,
+     "q3": 28.0
+    },
+    "31": {
+     "mean": 26.19,
+     "q1": 23.0,
+     "median": 26.0,
+     "q3": 29.0
+    },
+    "32": {
+     "mean": 26.213,
+     "q1": 23.0,
+     "median": 26.0,
+     "q3": 29.0
+    },
+    "33": {
+     "mean": 26.89,
+     "q1": 24.0,
+     "median": 27.0,
+     "q3": 29.0
+    },
+    "34": {
+     "mean": 27.188,
+     "q1": 24.0,
+     "median": 27.0,
+     "q3": 30.0
+    },
+    "35": {
+     "mean": 27.767,
+     "q1": 25.0,
+     "median": 28.0,
+     "q3": 31.0
+    },
+    "36": {
+     "mean": 28.405,
+     "q1": 25.0,
+     "median": 28.0,
+     "q3": 31.0
+    },
+    "37": {
+     "mean": 29.065,
+     "q1": 25.0,
+     "median": 29.0,
+     "q3": 32.0
+    },
+    "38": {
+     "mean": 29.631,
+     "q1": 26.0,
+     "median": 29.0,
+     "q3": 32.0
+    },
+    "39": {
+     "mean": 30.244,
+     "q1": 26.0,
+     "median": 29.0,
+     "q3": 33.0
+    },
+    "40": {
+     "mean": 30.472,
+     "q1": 26.0,
+     "median": 30.0,
+     "q3": 33.0
+    },
+    "41": {
+     "mean": 30.395,
+     "q1": 26.0,
+     "median": 30.0,
+     "q3": 33.0
+    },
+    "42": {
+     "mean": 30.695,
+     "q1": 26.0,
+     "median": 30.0,
+     "q3": 33.0
+    },
+    "43": {
+     "mean": 31.099,
+     "q1": 27.0,
+     "median": 30.0,
+     "q3": 34.0
+    },
+    "44": {
+     "mean": 31.384,
+     "q1": 27.0,
+     "median": 30.0,
+     "q3": 34.0
+    },
+    "45": {
+     "mean": 31.931,
+     "q1": 27.0,
+     "median": 31.0,
+     "q3": 35.0
+    },
+    "46": {
+     "mean": 32.696,
+     "q1": 28.0,
+     "median": 31.0,
+     "q3": 35.0
+    },
+    "47": {
+     "mean": 32.747,
+     "q1": 28.0,
+     "median": 31.0,
+     "q3": 35.0
+    },
+    "48": {
+     "mean": 32.757,
+     "q1": 28.0,
+     "median": 31.0,
+     "q3": 35.0
+    },
+    "49": {
+     "mean": 32.468,
+     "q1": 27.0,
+     "median": 31.0,
+     "q3": 35.0
+    },
+    "50": {
+     "mean": 30.291,
+     "q1": 25.5,
+     "median": 28.0,
+     "q3": 34.0
+    },
+    "51": {
+     "mean": 30.173,
+     "q1": 25.0,
+     "median": 28.5,
+     "q3": 34.0
+    }
+   }
+  },
+  "cards": {
+   "by_floor": {
+    "1": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "2": {
+     "rewards_per_run": 0.995,
+     "taken_per_run": 0.95,
+     "skip_rate": 0.046
+    },
+    "3": {
+     "rewards_per_run": 0.513,
+     "taken_per_run": 0.474,
+     "skip_rate": 0.075
+    },
+    "4": {
+     "rewards_per_run": 0.534,
+     "taken_per_run": 0.489,
+     "skip_rate": 0.084
+    },
+    "5": {
+     "rewards_per_run": 0.561,
+     "taken_per_run": 0.499,
+     "skip_rate": 0.111
+    },
+    "6": {
+     "rewards_per_run": 0.581,
+     "taken_per_run": 0.511,
+     "skip_rate": 0.12
+    },
+    "7": {
+     "rewards_per_run": 0.358,
+     "taken_per_run": 0.311,
+     "skip_rate": 0.131
+    },
+    "8": {
+     "rewards_per_run": 0.481,
+     "taken_per_run": 0.411,
+     "skip_rate": 0.145
+    },
+    "9": {
+     "rewards_per_run": 0.407,
+     "taken_per_run": 0.344,
+     "skip_rate": 0.153
+    },
+    "10": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "11": {
+     "rewards_per_run": 0.402,
+     "taken_per_run": 0.334,
+     "skip_rate": 0.169
+    },
+    "12": {
+     "rewards_per_run": 0.51,
+     "taken_per_run": 0.417,
+     "skip_rate": 0.183
+    },
+    "13": {
+     "rewards_per_run": 0.388,
+     "taken_per_run": 0.316,
+     "skip_rate": 0.187
+    },
+    "14": {
+     "rewards_per_run": 0.68,
+     "taken_per_run": 0.543,
+     "skip_rate": 0.202
+    },
+    "15": {
+     "rewards_per_run": 0.685,
+     "taken_per_run": 0.544,
+     "skip_rate": 0.206
+    },
+    "16": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "17": {
+     "rewards_per_run": 0.735,
+     "taken_per_run": 0.705,
+     "skip_rate": 0.04
+    },
+    "18": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "19": {
+     "rewards_per_run": 0.996,
+     "taken_per_run": 0.705,
+     "skip_rate": 0.292
+    },
+    "20": {
+     "rewards_per_run": 0.445,
+     "taken_per_run": 0.31,
+     "skip_rate": 0.305
+    },
+    "21": {
+     "rewards_per_run": 0.497,
+     "taken_per_run": 0.339,
+     "skip_rate": 0.317
+    },
+    "22": {
+     "rewards_per_run": 0.485,
+     "taken_per_run": 0.317,
+     "skip_rate": 0.346
+    },
+    "23": {
+     "rewards_per_run": 0.541,
+     "taken_per_run": 0.356,
+     "skip_rate": 0.342
+    },
+    "24": {
+     "rewards_per_run": 0.318,
+     "taken_per_run": 0.211,
+     "skip_rate": 0.337
+    },
+    "25": {
+     "rewards_per_run": 0.404,
+     "taken_per_run": 0.262,
+     "skip_rate": 0.351
+    },
+    "26": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "27": {
+     "rewards_per_run": 0.329,
+     "taken_per_run": 0.214,
+     "skip_rate": 0.349
+    },
+    "28": {
+     "rewards_per_run": 0.487,
+     "taken_per_run": 0.314,
+     "skip_rate": 0.356
+    },
+    "29": {
+     "rewards_per_run": 0.316,
+     "taken_per_run": 0.2,
+     "skip_rate": 0.365
+    },
+    "30": {
+     "rewards_per_run": 0.624,
+     "taken_per_run": 0.386,
+     "skip_rate": 0.382
+    },
+    "31": {
+     "rewards_per_run": 0.65,
+     "taken_per_run": 0.408,
+     "skip_rate": 0.372
+    },
+    "32": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "33": {
+     "rewards_per_run": 0.757,
+     "taken_per_run": 0.664,
+     "skip_rate": 0.123
+    },
+    "34": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "35": {
+     "rewards_per_run": 0.986,
+     "taken_per_run": 0.558,
+     "skip_rate": 0.434
+    },
+    "36": {
+     "rewards_per_run": 0.413,
+     "taken_per_run": 0.22,
+     "skip_rate": 0.468
+    },
+    "37": {
+     "rewards_per_run": 0.483,
+     "taken_per_run": 0.265,
+     "skip_rate": 0.451
+    },
+    "38": {
+     "rewards_per_run": 0.485,
+     "taken_per_run": 0.255,
+     "skip_rate": 0.475
+    },
+    "39": {
+     "rewards_per_run": 0.512,
+     "taken_per_run": 0.246,
+     "skip_rate": 0.521
+    },
+    "40": {
+     "rewards_per_run": 0.281,
+     "taken_per_run": 0.154,
+     "skip_rate": 0.453
+    },
+    "41": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "42": {
+     "rewards_per_run": 0.338,
+     "taken_per_run": 0.183,
+     "skip_rate": 0.46
+    },
+    "43": {
+     "rewards_per_run": 0.472,
+     "taken_per_run": 0.253,
+     "skip_rate": 0.464
+    },
+    "44": {
+     "rewards_per_run": 0.315,
+     "taken_per_run": 0.164,
+     "skip_rate": 0.478
+    },
+    "45": {
+     "rewards_per_run": 0.609,
+     "taken_per_run": 0.322,
+     "skip_rate": 0.471
+    },
+    "46": {
+     "rewards_per_run": 0.579,
+     "taken_per_run": 0.318,
+     "skip_rate": 0.45
+    },
+    "47": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "48": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "49": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "50": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    },
+    "51": {
+     "rewards_per_run": null,
+     "taken_per_run": null,
+     "skip_rate": null
+    }
+   },
+   "screen_rooms": [
+    "monster",
+    "elite",
+    "boss"
+   ],
+   "taken_per_run": 9.213,
+   "screens_per_run": 11.816,
+   "skip_rate": 0.22
+  },
+  "rests": {
+   "1": {
+    "choices": 39690,
+    "smith": {
+     "share": 0.578
+    },
+    "heal": {
+     "share": 0.407
+    },
+    "other": {
+     "share": 0.015
+    }
+   },
+   "2": {
+    "choices": 20045,
+    "smith": {
+     "share": 0.514
+    },
+    "heal": {
+     "share": 0.457
+    },
+    "other": {
+     "share": 0.029
+    }
+   },
+   "3": {
+    "choices": 11241,
+    "smith": {
+     "share": 0.544
+    },
+    "heal": {
+     "share": 0.4
+    },
+    "other": {
+     "share": 0.056
+    }
+   },
+   "all": {
+    "choices": 70976,
+    "smith": {
+     "share": 0.554
+    },
+    "heal": {
+     "share": 0.42
+    },
+    "other": {
+     "share": 0.026
+    }
+   }
+  },
+  "boss_hp": {
+   "1": {
+    "hp": {
+     "mean": 54.249,
+     "q1": 43.0,
+     "median": 53.0,
+     "q3": 65.0
+    },
+    "max_hp": {
+     "mean": 81.264,
+     "q1": 80.0,
+     "median": 80.0,
+     "q3": 85.0
+    },
+    "hp_fraction": {
+     "mean": 0.669,
+     "q1": 0.54,
+     "median": 0.66,
+     "q3": 0.8
+    }
+   },
+   "2": {
+    "hp": {
+     "mean": 60.841,
+     "q1": 48.0,
+     "median": 60.0,
+     "q3": 73.0
+    },
+    "max_hp": {
+     "mean": 84.489,
+     "q1": 80.0,
+     "median": 80.0,
+     "q3": 90.0
+    },
+    "hp_fraction": {
+     "mean": 0.721,
+     "q1": 0.59,
+     "median": 0.72,
+     "q3": 0.87
+    }
+   },
+   "3": {
+    "hp": {
+     "mean": 53.471,
+     "q1": 35.0,
+     "median": 53.0,
+     "q3": 71.0
+    },
+    "max_hp": {
+     "mean": 88.049,
+     "q1": 80.0,
+     "median": 85.0,
+     "q3": 95.0
+    },
+    "hp_fraction": {
+     "mean": 0.61,
+     "q1": 0.41,
+     "median": 0.62,
+     "q3": 0.82
+    }
+   }
+  },
+  "end_causes": {
+   "dead_runs": 13138,
+   "top10": [
+    {
+     "cause": "AEONGLASS_BOSS",
+     "share": 0.055
+    },
+    {
+     "cause": "TEST_SUBJECT_BOSS",
+     "share": 0.053
+    },
+    {
+     "cause": "QUEEN_BOSS",
+     "share": 0.047
+    },
+    {
+     "cause": "KAISER_CRAB_BOSS",
+     "share": 0.047
+    },
+    {
+     "cause": "DECIMILLIPEDE_ELITE",
+     "share": 0.046
+    },
+    {
+     "cause": "WATERFALL_GIANT_BOSS",
+     "share": 0.046
+    },
+    {
+     "cause": "VANTOM_BOSS",
+     "share": 0.044
+    },
+    {
+     "cause": "SKULKING_COLONY_ELITE",
+     "share": 0.044
+    },
+    {
+     "cause": "TERROR_EEL_ELITE",
+     "share": 0.042
+    },
+    {
+     "cause": "THE_KIN_BOSS",
+     "share": 0.041
+    }
+   ],
+   "listed_share": 0.465
+  },
+  "checks": {
+   "death_room_is_last_floor": {
+    "share": 0.996
+   }
+  },
+  "abandoned": {
+   "reading": "left out of the headline: early quits (the player left the run), not a loss and not a statistical censoring",
+   "share_of_selected": {
+    "share": 0.292
+   },
+   "median_floor": 6.0,
+   "ended_by_floor_5": {
+    "share": 0.485
+   },
+   "won": {
+    "share": 0.0
+   },
+   "mean_floor_with_abandoned": 22.084,
+   "rates": {
+    "act1_kill": {
+     "excluded": 0.546,
+     "counted_as_lost": 0.437,
+     "kaplan_meier": 0.597
+    },
+    "act2_kill": {
+     "excluded": 0.291,
+     "counted_as_lost": 0.22,
+     "kaplan_meier": 0.336
+    },
+    "win": {
+     "excluded": 0.113,
+     "counted_as_lost": 0.08,
+     "kaplan_meier": 0.139
+    }
+   }
+  }
+ }
+}
