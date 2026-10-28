@@ -4448,7 +4448,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 3045
+   "line": 3043
   },
   "RunEngine.RestHealAmount": {
    "hooks": [
@@ -4462,7 +4462,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 6100
+   "line": 6097
   },
   "RunEngine.RollUnknownMapPointNodeType": {
    "hooks": [
@@ -4498,7 +4498,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 3066
+   "line": 3064
   },
   "RunEngine.WritePhaseActionMask": {
    "hooks": [
@@ -4616,7 +4616,7 @@
     "F17"
    ],
    "file": "Core/Run/RunNonCombatEffects.cs",
-   "line": 3586
+   "line": 3607
   },
   "RunNonCombatEffects.CloseMawBank": {
    "hooks": [
@@ -4646,7 +4646,7 @@
     "F11"
    ],
    "file": "Core/Run/RunNonCombatEffects.cs",
-   "line": 3458
+   "line": 3479
   },
   "RunNonCombatEffects.CountEliteVictoryForSwordOfStone": {
    "hooks": [
@@ -4710,7 +4710,7 @@
     "F17"
    ],
    "file": "Core/Run/RunNonCombatEffects.cs",
-   "line": 2793
+   "line": 2814
   },
   "RunNonCombatEffects.UpgradedByEggs": {
    "hooks": [
@@ -4748,7 +4748,7 @@
     "F14"
    ],
    "file": "Core/Run/RunRewardGenerator.cs",
-   "line": 1852
+   "line": 1853
   },
   "RunRewardGenerator.AddPotionAt": {
    "hooks": [
@@ -4764,7 +4764,7 @@
     "F14"
    ],
    "file": "Core/Run/RunRewardGenerator.cs",
-   "line": 1836
+   "line": 1837
   },
   "RunRewardGenerator.ApplyObtainedRelicToWaitingCardRewards": {
    "hooks": [
