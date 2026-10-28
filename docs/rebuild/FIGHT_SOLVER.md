@@ -549,3 +549,31 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   so the harness cannot see a wrong chance model. Each harness position's first root moves are also stepped on plain
   copies with real seeded streams and the unknown middle in a seeded uniform order, and Expand's odds by key must
   match the count (every counted outcome in the model, every frequency within five standard errors).
+
+## 15. S4 as built
+
+- **One code path** (`Solver/SolverService.cs`): the native exports and EmuDump's `solve` and `hindsight` commands call
+  the same service and print or write the same fields. Native API version 39 (`NativeExports.cs`); the run API is unchanged (32 on this base).
+- **Exports** (`Interop/SolverExports.cs`): `Sts2Solver_Create/Destroy/Reset`, `Sts2_SolveExpected` (status, value,
+  exactness, mass, best move, counters; the q buffer is `maxActions` x 7 floats, column 0 for an untargeted move and
+  1 + t for target t, a merged move taking the value of the move it was merged into, NaN for none), `Sts2_SolveHindsight`
+  (`HindsightResultNative`: outcome, yes/no/unknown, best utility, completeness, the line's first 64 moves),
+  `Sts2_SolvePotionCurve`, `Sts2_SolverInfo`. The two result types share no field, in C#, across the boundary and in
+  Python. Only the L0 utility is built; `SearchHp`, `L0Priced` and the horizon leaf protocol come with S5. A native
+  handle leaves some streams unset (`Sts2_Create` shuffles on the step stream); the expected solve reads a copy with a
+  stream of its own in each unset slot (`SolverService.ExpectedView`: no value changes, and the shuffle reaches the draw
+  model on its own stream); hindsight plays the handle as it is.
+- **Hindsight** (`Solver/Hindsight.cs`): depth first over every legal move (each hand index and target), lethal first,
+  real steps on copies with the position's own streams, merged by the hindsight key plus the step stream; a line past the
+  turn cap or the budget is unknown, never a loss. Refused unless `HindsightOptions.AllowHindsight` (natively: the solver
+  made with `allowHindsight`) and unless the handle carries its own streams (`NativeCombat.TrueStreams`: false for a
+  resampled fork and for a loaded document). EmuDump refuses it on a re-anchored record, whose streams are the emulator's.
+- **Potion curve** (`Solver/PotionCurve.cs`): one expectimax per subset with the other held potions masked out
+  (`SolveOptions.AllowedPotions`, a slot empty at the root stays usable), carrying the policy's win chance, win HP and
+  per-potion held chance beside the value; the potions outside the subset stay in the copy (no table shared yet).
+- **Python** (`sts2_gym/native.py`): `solver_create(..., allow_hindsight=False)`, `solve_expected` -> `ExpectedSolve`,
+  `solve_potion_curve`, `solver_info`; `solve_hindsight` -> `HindsightBound` binds `Sts2_SolveHindsight` on its first
+  call only. `test_solver_hindsight_pins.py` runs every lab and search entry point and fails if one reads a hindsight name.
+- **Gates**: `NativeSolverTests` (native equals EmuDump's path on the harness set), `SolverLeakTests`,
+  `HindsightApartTests`, `HindsightBoundTests` (the bound is never below the expected-best policy played on the same draws,
+  and its mean is at least the mean expected value), `PotionCurveTests`, EmuDump's `SolveModeTests`.

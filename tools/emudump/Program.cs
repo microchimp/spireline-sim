@@ -36,6 +36,12 @@ if (RunReplay.Main(args))  // run-level modes (RunReplay.cs): runstart, run
     return;
 }
 
+if (args[0] == "solve" || args[0] == "hindsight")
+{
+    // The fight solver's front end (Solve.cs, docs/rebuild/FIGHT_SOLVER.md section 1): one JSON object per decision.
+    Environment.Exit(SolveMode.Run(args[0], args[1..], Console.Out));
+}
+
 if (args[0] == "hookprobe")
 {
     // EmuDump hookprobe <scenarios.json> <out.json>: listener probe order on an instrumented engine (HookProbe.cs).

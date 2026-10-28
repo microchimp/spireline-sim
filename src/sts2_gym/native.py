@@ -15,7 +15,7 @@ _LIB_NAMES = {
     "darwin": "Sts2Emulator.dylib",
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
-_REQUIRED_NATIVE_API_VERSION = 38
+_REQUIRED_NATIVE_API_VERSION = 39
 _REQUIRED_RUN_NATIVE_API_VERSION = 32
 # The engine this process runs (docs/rebuild/NATIVE_KERNEL.md section 3): read once, when the library loads, and passed
 # to Sts2_SetEngine before any handle exists. Unset or "old": the old engine. "core2": the Tier 1 kernel of
@@ -2014,3 +2014,280 @@ def run_debug_set_streams(handle: int, streams: dict | str | bytes) -> int:
 
 def run_destroy(handle: int) -> None:
     _lib.Sts2Run_Destroy(handle)
+
+
+# ── the fight solver (docs/rebuild/FIGHT_SOLVER.md sections 1 and 4a, piece S4) ────────────────────────────────────────
+#
+# Two outputs, kept apart: solve_expected returns an ExpectedSolve, the only output a label writer, the regret benchmark
+# or a grade may read; solve_hindsight returns a HindsightBound, a separate type sharing no field with it, for lost-fight
+# attribution only. Sts2_SolveHindsight is bound here on its first call and nowhere at import, so no search or lab entry
+# point binds it (tests/python/test_solver_hindsight_pins.py); the library also refuses it unless the solver was made with
+# allow_hindsight=True. The ctypes structures mirror Interop/SolverExports.cs field for field
+# (tests/python/test_solver_binding.py reads the C# to hold them alike).
+
+PRUNE_TRANSPOSITION = 1
+PRUNE_MULTISET_HAND = 2
+PRUNE_INTERCHANGEABLE_ENEMIES = 4
+PRUNE_SUBTREE_REUSE = 8
+PRUNE_DRAW_BY_VALUE = 16
+PRUNE_ALL = 31
+SOLVE_EXACT, SOLVE_BUDGET, SOLVE_ERROR, SOLVE_REFUSED = 0, 1, -1, -3
+SOLVER_Q_STRIDE = 7  # 1 + the observation's enemy slots: an untargeted move, then one entry per target
+_HINDSIGHT_LINE_CAP = 64
+_SOLVER_MAX_ACTIONS = 64
+
+
+class _SolveOptionsC(ctypes.Structure):
+    _fields_ = [
+        ("node_budget", ctypes.c_int64),
+        ("step_budget", ctypes.c_int64),
+        ("time_budget_ms", ctypes.c_int32),
+        ("max_horizon", ctypes.c_int32),
+        ("prune", ctypes.c_int32),
+        ("chance_width_cap", ctypes.c_int32),
+        ("allowed_potions", ctypes.c_int32),
+        ("utility", ctypes.c_int32),
+        ("allow_hindsight", ctypes.c_int32),
+        ("use_estimate", ctypes.c_int32),
+    ]
+
+
+class _ExpectedResultC(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("horizon", ctypes.c_int32),
+        ("exact", ctypes.c_int32),
+        ("move_count", ctypes.c_int32),
+        ("best_action", ctypes.c_int32),
+        ("best_target", ctypes.c_int32),
+        ("q_stride", ctypes.c_int32),
+        ("utility_kind", ctypes.c_int32),
+        ("value", ctypes.c_double),
+        ("exact_mass", ctypes.c_double),
+        ("seconds", ctypes.c_double),
+        ("nodes", ctypes.c_int64),
+        ("steps", ctypes.c_int64),
+        ("table_hits", ctypes.c_int64),
+        ("leaves", ctypes.c_int64),
+        ("horizon_leaves", ctypes.c_int64),
+    ]
+
+
+class _HindsightOptionsC(ctypes.Structure):
+    _fields_ = [
+        ("search_node_budget", ctypes.c_int64),
+        ("search_step_budget", ctypes.c_int64),
+        ("search_time_ms", ctypes.c_int32),
+        ("max_turns", ctypes.c_int32),
+    ]
+
+
+class _HindsightResultC(ctypes.Structure):
+    _fields_ = [
+        ("outcome", ctypes.c_int32),
+        ("win_line_exists", ctypes.c_int32),
+        ("complete", ctypes.c_int32),
+        ("line_length", ctypes.c_int32),
+        ("best_utility", ctypes.c_double),
+        ("elapsed", ctypes.c_double),
+        ("nodes_searched", ctypes.c_int64),
+        ("engine_steps", ctypes.c_int64),
+        ("line", ctypes.c_int32 * (2 * _HINDSIGHT_LINE_CAP)),
+    ]
+
+
+class _CurveEntryC(ctypes.Structure):
+    _fields_ = [
+        ("subset", ctypes.c_int32),
+        ("curve_status", ctypes.c_int32),
+        ("curve_exact", ctypes.c_int32),
+        ("curve_horizon", ctypes.c_int32),
+        ("expected_l0", ctypes.c_double),
+        ("win_chance", ctypes.c_double),
+        ("expected_win_hp", ctypes.c_double),
+        ("curve_exact_mass", ctypes.c_double),
+        ("held", ctypes.c_double * 8),
+    ]
+
+
+class SolveOptions:
+    """A solve's options (Solver/Expectimax.cs SolveOptions); a budget of 0 takes the library's default."""
+
+    __slots__ = ("node_budget", "step_budget", "time_budget_ms", "max_horizon", "prune", "chance_width_cap", "allowed_potions",
+                 "use_estimate")
+
+    def __init__(self, node_budget: int = 200_000, step_budget: int = 2_000_000, time_budget_ms: int = 0, max_horizon: int = 8,
+                 prune: int = PRUNE_ALL, chance_width_cap: int = 32, allowed_potions: int = -1, use_estimate: bool = True):
+        self.node_budget, self.step_budget, self.time_budget_ms = node_budget, step_budget, time_budget_ms
+        self.max_horizon, self.prune, self.chance_width_cap = max_horizon, prune, chance_width_cap
+        self.allowed_potions, self.use_estimate = allowed_potions, use_estimate
+
+    def _c(self, allow_hindsight: bool = False) -> _SolveOptionsC:
+        return _SolveOptionsC(self.node_budget, self.step_budget, self.time_budget_ms, self.max_horizon, self.prune,
+                              self.chance_width_cap, self.allowed_potions, 0, 1 if allow_hindsight else 0,
+                              1 if self.use_estimate else 0)
+
+
+class ExpectedSolve:
+    """The expected value of a position (Sts2_SolveExpected): the only solver output labels, regret and grades may read.
+
+    q maps (action, target) to the move's value, target -1 for none; a move with no value is left out.
+    """
+
+    __slots__ = ("status", "reason", "horizon", "value", "exact", "exact_mass", "move_count", "best_action", "best_target", "q",
+                 "nodes", "steps", "table_hits", "leaves", "horizon_leaves", "seconds")
+
+    def __init__(self, **kw):
+        for k in self.__slots__:
+            setattr(self, k, kw[k])
+
+    def __repr__(self) -> str:
+        return f"ExpectedSolve(status={self.status}, value={self.value}, exact={self.exact})"
+
+
+class HindsightBound:
+    """The hindsight bound (Sts2_SolveHindsight): an upper bound for lost-fight attribution, never a label, regret or grade."""
+
+    __slots__ = ("outcome", "refusal", "win_line_exists", "best_utility", "complete", "line", "nodes_searched", "engine_steps",
+                 "elapsed")
+
+    def __init__(self, **kw):
+        for k in self.__slots__:
+            setattr(self, k, kw[k])
+
+    def __repr__(self) -> str:
+        return f"HindsightBound(win_line_exists={self.win_line_exists}, best_utility={self.best_utility})"
+
+
+_lib.Sts2Solver_Create.restype = ctypes.c_int
+_lib.Sts2Solver_Create.argtypes = [ctypes.c_int, ctypes.POINTER(_SolveOptionsC)]
+_lib.Sts2Solver_Destroy.restype = None
+_lib.Sts2Solver_Destroy.argtypes = [ctypes.c_int]
+_lib.Sts2Solver_Reset.restype = ctypes.c_int
+_lib.Sts2Solver_Reset.argtypes = [ctypes.c_int]
+_lib.Sts2_SolveExpected.restype = ctypes.c_int
+_lib.Sts2_SolveExpected.argtypes = [
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.POINTER(_SolveOptionsC),
+    ctypes.POINTER(_ExpectedResultC),
+    ctypes.POINTER(ctypes.c_float),
+    ctypes.c_int,
+]
+_lib.Sts2_SolvePotionCurve.restype = ctypes.c_int
+_lib.Sts2_SolvePotionCurve.argtypes = [
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.POINTER(_SolveOptionsC),
+    ctypes.POINTER(_CurveEntryC),
+    ctypes.c_int,
+]
+_lib.Sts2_SolverInfo.restype = ctypes.c_int
+_lib.Sts2_SolverInfo.argtypes = [ctypes.POINTER(ctypes.c_ubyte), ctypes.c_int]
+
+
+def solver_create(handle: int, options: SolveOptions | None = None, *, allow_hindsight: bool = False) -> int:
+    """A solver for the fight of a combat handle; its table answers the fight's later decisions (subtree reuse).
+
+    allow_hindsight is for the lost-fight attribution tool only (FIGHT_SOLVER.md section 4a): without it the library refuses
+    Sts2_SolveHindsight.
+    """
+    opts = (options or SolveOptions())._c(allow_hindsight)
+    out = int(_lib.Sts2Solver_Create(handle, ctypes.byref(opts)))
+    if out < 0:
+        raise RuntimeError(f"Sts2Solver_Create failed ({out}): {_get_last_error()}")
+    return out
+
+
+def solver_destroy(solver: int) -> None:
+    _lib.Sts2Solver_Destroy(solver)
+
+
+def solver_reset(solver: int) -> None:
+    _lib.Sts2Solver_Reset(solver)
+
+
+def _q_values(q, max_actions: int, stride: int) -> dict:
+    values = {}
+    for i in range(max_actions * stride):
+        v = float(q[i])
+        if v == v:  # not NaN
+            values[(i // stride, i % stride - 1)] = v
+    return values
+
+
+def solve_expected(solver: int, handle: int, options: SolveOptions | None = None, max_actions: int = _SOLVER_MAX_ACTIONS) -> ExpectedSolve:
+    """The expected value of the combat's position: exact (status 0), budget-limited (1) or refused (-3, with the reason)."""
+    res = _ExpectedResultC()
+    q = (ctypes.c_float * (max_actions * SOLVER_Q_STRIDE))()
+    opts = options._c() if options is not None else None
+    status = int(_lib.Sts2_SolveExpected(solver, handle, ctypes.byref(opts) if opts is not None else None, ctypes.byref(res), q,
+                                         max_actions))
+    if status == SOLVE_ERROR:
+        raise RuntimeError(f"Sts2_SolveExpected failed: {_get_last_error()}")
+    return ExpectedSolve(
+        status=status, reason=_get_last_error() if status == SOLVE_REFUSED else None, horizon=int(res.horizon), value=float(res.value),
+        exact=bool(res.exact), exact_mass=float(res.exact_mass), move_count=int(res.move_count), best_action=int(res.best_action),
+        best_target=int(res.best_target), q=_q_values(q, max_actions, SOLVER_Q_STRIDE), nodes=int(res.nodes), steps=int(res.steps),
+        table_hits=int(res.table_hits), leaves=int(res.leaves), horizon_leaves=int(res.horizon_leaves), seconds=float(res.seconds),
+    )
+
+
+def solve_potion_curve(solver: int, handle: int, options: SolveOptions | None = None, max_subsets: int = 64) -> list[dict]:
+    """The potion value curve (FIGHT_SOLVER.md section 8): one entry per subset of the potions held, the empty one first."""
+    buf = (_CurveEntryC * max_subsets)()
+    opts = options._c() if options is not None else None
+    n = int(_lib.Sts2_SolvePotionCurve(solver, handle, ctypes.byref(opts) if opts is not None else None, buf, max_subsets))
+    if n < 0:
+        raise RuntimeError(f"Sts2_SolvePotionCurve failed ({n}): {_get_last_error()}")
+    out = []
+    for e in buf[: min(n, max_subsets)]:
+        held = {slot: float(e.held[slot]) for slot in range(8) if e.held[slot] == e.held[slot]}
+        out.append({"subset": int(e.subset), "status": int(e.curve_status), "exact": bool(e.curve_exact), "horizon": int(e.curve_horizon),
+                    "expected_l0": float(e.expected_l0), "win_chance": float(e.win_chance),
+                    "expected_win_hp": float(e.expected_win_hp), "exact_mass": float(e.curve_exact_mass), "held": held})
+    return out
+
+
+def solver_info() -> dict:
+    """The solver's version, pruning bits and utilities (Sts2_SolverInfo)."""
+    n = int(_lib.Sts2_SolverInfo(None, 0))
+    buf = (ctypes.c_ubyte * max(1, n))()
+    n = int(_lib.Sts2_SolverInfo(buf, n))
+    return json.loads(bytes(buf[:n]).decode("utf-8"))
+
+
+_hindsight_export = None
+
+
+def _bind_hindsight():
+    """Sts2_SolveHindsight, bound on the first call to solve_hindsight and never at import."""
+    global _hindsight_export
+    if _hindsight_export is None:
+        f = _lib.Sts2_SolveHindsight
+        f.restype = ctypes.c_int
+        f.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(_HindsightOptionsC), ctypes.POINTER(_HindsightResultC)]
+        _hindsight_export = f
+    return _hindsight_export
+
+
+def solve_hindsight(solver: int, handle: int, *, node_budget: int = 0, step_budget: int = 0, time_ms: int = 0,
+                    max_turns: int = 0) -> HindsightBound:
+    """The hindsight bound of the combat's position with its own draws and rolls fixed, for lost-fight attribution only.
+
+    Refused (outcome -3, with the reason) unless the solver was made with allow_hindsight=True and the handle carries the
+    record's own streams (not a resampled clone, not a loaded document).
+    """
+    res = _HindsightResultC()
+    opts = _HindsightOptionsC(node_budget, step_budget, time_ms, max_turns)
+    outcome = int(_bind_hindsight()(solver, handle, ctypes.byref(opts), ctypes.byref(res)))
+    if outcome == SOLVE_ERROR:
+        raise RuntimeError(f"Sts2_SolveHindsight failed: {_get_last_error()}")
+    n = min(int(res.line_length), _HINDSIGHT_LINE_CAP)
+    verdict = {1: "yes", 0: "no"}.get(int(res.win_line_exists), "unknown")
+    return HindsightBound(
+        outcome=outcome, refusal=_get_last_error() if outcome == SOLVE_REFUSED else None, win_line_exists=verdict,
+        best_utility=float(res.best_utility), complete=bool(res.complete),
+        line=[(int(res.line[2 * i]), int(res.line[2 * i + 1])) for i in range(n)], nodes_searched=int(res.nodes_searched),
+        engine_steps=int(res.engine_steps), elapsed=float(res.elapsed),
+    )

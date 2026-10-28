@@ -39,6 +39,12 @@ public sealed record SolveOptions
     public double EstimateSlack { get; init; } = 1.0;
 
     public bool UseEstimate { get; init; } = true;
+
+    /// <summary>
+    /// The potion slots whose potion may be used (bit i: slot i; -1 every slot): the potion curve's subsets
+    /// (FIGHT_SOLVER.md section 8). The table key holds it through the table: one table per mask.
+    /// </summary>
+    public int AllowedPotions { get; init; } = -1;
 }
 
 /// <summary>A root move's value.</summary>
@@ -124,14 +130,15 @@ internal readonly record struct NodeValue(Rational Value, bool Exact, Rational M
 /// rationals. The table lives in the solver for the fight (subtree reuse). The position given is never changed:
 /// every step runs on a copy.
 /// </summary>
-public sealed class Expectimax(SolveOptions? options = null)
+public sealed class Expectimax(SolveOptions? options = null, TranspositionTable? table = null)
 {
     readonly HashSet<UInt128> _path = [];
     SolveCounters _c = new();
 
     public SolveOptions Options { get; } = options ?? new SolveOptions();
 
-    public TranspositionTable Table { get; } = new();
+    /// <summary>The table, the solver's own or one a native solver handle keeps for the fight (one per potion mask).</summary>
+    public TranspositionTable Table { get; } = table ?? new();
 
     bool On(Pruning p) => (Options.Prune & p) != 0;
 
@@ -236,7 +243,7 @@ public sealed class Expectimax(SolveOptions? options = null)
         _path.Add(key);
         var moves = new List<MoveValue>();
         var values = new List<NodeValue>();
-        foreach (var m in Actions.Legal(state, Options.Prune))
+        foreach (var m in Actions.Legal(state, Options.Prune, Options.AllowedPotions))
         {
             var v = MoveValueOf(state, rng, m, horizon);
             moves.Add(new MoveValue(m, v.Value, v.Exact));
@@ -284,7 +291,7 @@ public sealed class Expectimax(SolveOptions? options = null)
         }
 
         var values = new List<NodeValue>();
-        foreach (var m in Actions.Legal(s, Options.Prune))
+        foreach (var m in Actions.Legal(s, Options.Prune, Options.AllowedPotions))
         {
             values.Add(MoveValueOf(s, rng, m, remaining));
         }

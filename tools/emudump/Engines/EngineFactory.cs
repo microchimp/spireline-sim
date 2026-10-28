@@ -11,7 +11,7 @@ static class EngineFactory
     internal static readonly string[] Known = ["old", "core2"];
 
     /// <summary>The modes that make their engine here, and so take <c>--engine</c>.</summary>
-    internal static readonly string[] Modes = ["fight", "reanchor", "hookprobe", "setupinfo", "fuzz", "scenario"];
+    internal static readonly string[] Modes = ["fight", "reanchor", "hookprobe", "setupinfo", "fuzz", "scenario", "solve", "hindsight"];
 
     /// <summary>The engine <see cref="Create"/> makes without a name.</summary>
     internal static string Selected = "old";

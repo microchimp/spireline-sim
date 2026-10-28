@@ -95,7 +95,12 @@ public static class NativeExports
     //      resumes the action gathering it, and Sts2_LoadCombatSnapshot binds a fresh KernelState. Still refused under core2,
     //      with the reason in Sts2_GetLastError: a document stopped in the middle of a step (the kernel's queue is not in the
     //      document), and Sts2_GetStateJson (-3) of a combat on a hook action's screen.
-    public const int NATIVE_API_VERSION = 38;
+    // v39: the fight solver's exports (Interop/SolverExports.cs, docs/rebuild/FIGHT_SOLVER.md section 1, piece S4):
+    //      Sts2Solver_Create/Destroy/Reset, Sts2_SolveExpected (the expected value, the only source of labels and regret),
+    //      Sts2_SolveHindsight (the hindsight bound, a separate call with a separate result type, refused unless the
+    //      solver was made with allowHindsight and the handle carries the record's own streams), Sts2_SolvePotionCurve
+    //      and Sts2_SolverInfo. Nothing else changed.
+    public const int NATIVE_API_VERSION = 39;
 
     /// <summary>
     /// The plain resets' deck: the start of a run at the default level, from the one
@@ -150,6 +155,7 @@ public static class NativeExports
             State = source.State.Clone(resampleSeed);
             Rng = source.Rng.Reseeded(resampleSeed)!;
             LastPlayerWon = source.LastPlayerWon;
+            TrueStreams = source.TrueStreams && resampleSeed is null;
             if (resampleSeed is not null)
             {
                 State.ReshuffleUnknownDrawOrder(State.ShuffleRng ?? Rng);
@@ -159,11 +165,19 @@ public static class NativeExports
 
         public bool LastPlayerWon { get; set; }
 
+        /// <summary>
+        /// Whether the streams are the fight's own (the hindsight bound's precondition, FIGHT_SOLVER.md section 9): true for a
+        /// fight this handle dealt or a run handed over as it stands, and for a faithful clone of one; false for a resampled
+        /// fork (its streams are a determinization) and for a loaded document (its streams are invented).
+        /// </summary>
+        public bool TrueStreams { get; set; }
+
         public NativeCombat(int seed, Sts2Emulator.Core2.Kernel? kernel)
         {
             Seed = seed;
             Kernel = kernel;
             Rng = new CountingRandom(seed);
+            TrueStreams = true;
             UseDefaultLevel();
             Bind();
             CombatFactory.Reset(State, Rng);
@@ -193,6 +207,7 @@ public static class NativeExports
             // queue empty and no hook action paused (a document stopped in the middle of a step is refused under a switch).
             Bind();
             SeedStreams();
+            TrueStreams = false;  // the document carries no stream: these are new, not the position's
             // The two streams SeedStreams predates, under the names the run's own
             // RunRngSet gives them. Left null they fall back to the combat rng, which is
             // the silent desync every other stream here was wired up to end.
@@ -215,12 +230,13 @@ public static class NativeExports
         /// runs, because the position is mid-fight and its streams are already the run's.
         /// <paramref name="seed" /> is only what a later reset of this handle seeds from.
         /// </summary>
-        public NativeCombat(CombatState state, CountingRandom rng, int seed, Sts2Emulator.Core2.Kernel? kernel)
+        public NativeCombat(CombatState state, CountingRandom rng, int seed, Sts2Emulator.Core2.Kernel? kernel, bool trueStreams = true)
         {
             Seed = seed;
             Kernel = kernel;  // the run's: the fork's KernelState was copied with the fight (ForkActiveCombat)
             State = state;
             Rng = rng;
+            TrueStreams = trueStreams;
         }
 
         /// <summary>
@@ -267,6 +283,7 @@ public static class NativeExports
                 new Sts2Emulator.Core.Rng.GameRng((uint)Seed, "combat_potion_generation").RawSeed
             );
             LastPlayerWon = false;
+            TrueStreams = true;  // a reset deals its own fight: the snapshot constructor clears this after the call
         }
 
         /// <summary>
@@ -497,6 +514,73 @@ public static class NativeExports
     internal static CombatState? StateOf(int handle) =>
         handle >= 0 && handle < _pool.Length ? _pool[handle]?.State : null;
 
+    /// <summary>The fight behind a handle for the solver's exports (SolverExports.cs): its state, its step stream, its kernel and whether its streams are its own.</summary>
+    internal static bool TryGetCombat(int handle, out CombatState state, out CountingRandom rng, out bool trueStreams)
+    {
+        if (handle >= 0 && handle < _pool.Length && _pool[handle] is { } c)
+        {
+            (state, rng, trueStreams) = (c.State, c.Rng, c.TrueStreams);
+            return true;
+        }
+
+        (state, rng, trueStreams) = (null!, null!, false);
+        return false;
+    }
+
+    /// <summary>
+    /// Puts a position in the pool as a handle (the suite's way to hand the native solver a test position; nothing native
+    /// reaches it): the state and stream are taken as they are, with their kernel. -1 when the pool is full.
+    /// </summary>
+    internal static int Adopt(CombatState state, CountingRandom rng, bool trueStreams)
+    {
+        var combat = new NativeCombat(state, rng, 0, state.Kernel?.Shared, trueStreams);
+        for (int i = 0; i < _pool.Length; i++)
+        {
+            if (_pool[i] is null)
+            {
+                _pool[i] = combat;
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// The fight EmuDump's <c>solve &lt;ascension&gt; &lt;seed&gt;</c> starts from, dealt by this class's own code: the fight of
+    /// <c>Sts2_Create(seed)</c> at the default level with no potions and the default HP, otherwise that of
+    /// <c>Sts2_ResetArena</c> with the starting deck, HP and belt of a run at <paramref name="ascension" />, the seeded
+    /// first combat and the given potions and HP. The handle's kernel is <paramref name="kernel" /> (null: the old engine).
+    /// </summary>
+    internal static (CombatState State, CountingRandom Rng) DealFight(int seed, int ascension, Sts2Emulator.Core2.Kernel? kernel, int[] potions, int hp)
+    {
+        var c = new NativeCombat(seed, kernel);
+        if (ascension != Ascension.DefaultLevel || potions.Length > 0 || hp > 0)
+        {
+            c.ResetArena(RunConstants.StartingDeckIds(ascension), [], [], -1, [], potions, hp > 0 ? hp : RunEngine.StartingHp(ascension),
+                RunConstants.StartingMaxHp, 0, -1, ascension, 1, 0);
+        }
+
+        return (c.State, c.Rng);
+    }
+
+    /// <summary>
+    /// The fight <c>Sts2_LoadCombatSnapshot(json, seed)</c> puts in a handle, by the same reader and constructor (EmuDump's
+    /// <c>solve --snapshot</c>, the JIT side of the solver's native-against-EmuDump gate). Throws <c>SnapshotException</c> on
+    /// a refused document.
+    /// </summary>
+    internal static (CombatState State, CountingRandom Rng) LoadFight(ReadOnlySpan<byte> json, int seed, Sts2Emulator.Core2.Kernel? kernel)
+    {
+        var state = CombatSnapshot.Read(json, seed, out _);
+        if (kernel is { AnyOn: true } && state.PendingSelection?.Replay is not null)
+        {
+            throw new InvalidOperationException(StoppedStepRefusal);
+        }
+
+        var c = new NativeCombat(state, seed, kernel);
+        return (c.State, c.Rng);
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "Sts2_ObsSize")]
     public static int Sts2_ObsSize() => OBS_SIZE;
 
@@ -706,7 +790,7 @@ public static class NativeExports
             return -1;
         }
 
-        var combat = new NativeCombat(fight.Combat, fight.Rng, resampleSeed, run.Kernel);
+        var combat = new NativeCombat(fight.Combat, fight.Rng, resampleSeed, run.Kernel, trueStreams: resampleHidden == 0);
         for (int i = 0; i < _pool.Length; i++)
         {
             if (_pool[i] is null)

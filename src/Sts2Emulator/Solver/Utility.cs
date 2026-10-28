@@ -97,6 +97,10 @@ public readonly struct Rational : IComparable<Rational>, IEquatable<Rational>
 
     public static bool operator >(Rational a, Rational b) => a.CompareTo(b) > 0;
 
+    public static bool operator <=(Rational a, Rational b) => a.CompareTo(b) <= 0;
+
+    public static bool operator >=(Rational a, Rational b) => a.CompareTo(b) >= 0;
+
     public static bool operator ==(Rational a, Rational b) => a.Equals(b);
 
     public static bool operator !=(Rational a, Rational b) => !a.Equals(b);

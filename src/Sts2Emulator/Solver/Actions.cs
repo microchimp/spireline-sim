@@ -62,9 +62,10 @@ public static class Actions
     /// Every legal move in action order. With <see cref="Pruning.MultisetHand" /> a card whose key value
     /// equals an earlier hand card's (and a potion equal to an earlier slot's) is left out where the key
     /// holds that pile as a multiset; with <see cref="Pruning.InterchangeableEnemies" /> only the first
-    /// enemy of each class is a target.
+    /// enemy of each class is a target. A potion whose slot's bit is clear in <paramref name="potionMask" />
+    /// is not used (the potion curve's subsets; -1 allows every slot).
     /// </summary>
-    public static List<Move> Legal(CombatState s, Pruning prune)
+    public static List<Move> Legal(CombatState s, Pruning prune, int potionMask = -1)
     {
         int[] valid = CombatEngine.ValidActions(s);
         var moves = new List<Move>(valid.Length + 4);
@@ -114,7 +115,13 @@ public static class Actions
             }
             else
             {
-                int potion = s.PotionSlots[a - hand - 1];
+                int slot = a - hand - 1;
+                int potion = s.PotionSlots[slot];
+                if (slot < 31 && (potionMask & (1 << slot)) == 0)
+                {
+                    continue;
+                }
+
                 if (potionSet && !seenPotions.Add(potion))
                 {
                     continue;
