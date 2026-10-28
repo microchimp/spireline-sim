@@ -161,6 +161,9 @@ public sealed class ActionQueueSet
 
     public bool IsEmpty => _queues.All(q => q.Actions.Count == 0);
 
+    /// <summary>Resumptions that arrived before their action paused (the solver's key refuses a state holding one).</summary>
+    internal int PendingResumptions => _waitingForResumption.Count;
+
     private Queue Q(int owner) =>
         _queues.FirstOrDefault(q => q.Owner == owner) ?? throw new InvalidOperationException($"no action queue for player {owner}");
 

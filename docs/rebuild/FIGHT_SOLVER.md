@@ -34,8 +34,10 @@ Section 4a lists the consumers allowed to read each output and how that is enfor
   keeps the engine it was made with, NATIVE_KERNEL.md section 3). It adds no engine of its own and never mixes engines in
   one table: the transposition table is per solver handle and the handle is bound to one engine and one rules build. The
   result records `Sts2_GetEngine`'s canonical name and the solver version for provenance. Under core2 a position whose
-  kernel queue holds a paused hook action is solved from the screen (section 3); a queue that is busy at a keyed node is
-  refused with a reason, never solved on old rules (D31's "no silent old").
+  kernel queue holds a paused hook action is solved from the screen (section 3). A screen inside a card play or a potion
+  pauses that player action in the queue (gathering the choice; executing in the stopped step's start): the key writes the
+  queued player actions as plain data (section 2); a queued hook action is refused with a reason, never solved on old
+  rules (D31's "no silent old").
 - **Native exports** (new file `Interop/SolverExports.cs`, `NATIVE_API_VERSION` 38 to 39; the run API is unchanged at 30,
   because a run's fight is solved through `Sts2Run_ForkCombat` and a combat handle):
   - `Sts2Solver_Create(combatHandle, const SolveOptions*)` returns a solver handle that owns a transposition table bound
@@ -127,7 +129,7 @@ nodes.
 | the middle region's order (expected mode) | the player cannot see it; draws from it are chance nodes |
 | `LastIntentRoll` | a record for a resampled fork to roll the pass again; the solver's chance nodes replace it |
 | `AiStateAssumed` | provenance of a re-anchor; carried in the result (`ai_state_assumed`) instead |
-| the kernel's hook-action log, command log and action counter | sequencing (the comparer's `kernel-sequencing` surplus); a keyed node requires an idle queue |
+| the kernel's hook-action log, command log and action counter; the queue's ids and id counter | sequencing (the comparer's `kernel-sequencing` surplus); the queued actions themselves are keyed (`KeyWriter.KernelQueue`: per queue its flags, per action its kind, type, owner, state, step and answer), and a queued hook action or an early resumption is refused (`kernel-queue-busy: ...`) |
 
 **The checklist.** Two lists and two tests make the key's coverage checkable:
 
@@ -488,7 +490,7 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   `Prof`. A chance-heavy step (an enemy turn with several rolls) replays its prefix once per chance point.
 - **The switched-on families.** The solver must run on the handle's engine: core2's F08+F10 change who is targetable and
   when a fight is over, which changes values. The chance hook sits on the streams, so kernel commands are covered; the
-  key needs an idle queue at keyed nodes and solves screens through keyed answers; S1 to S4 gate on both engines. Each
+  key writes the queued player actions (a screen inside a play or a potion) and solves screens through keyed answers; S1 to S4 gate on both engines. Each
   later family that switches on changes rules: tables never persist across processes, and the result records the engine.
 - **Hidden information.** A branch on an outcome the player cannot see would make the solver clairvoyant. The
   information rule (section 4), the leak tests and S4's sanity check (the hindsight bound never below what the
@@ -525,7 +527,7 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   roll, so a draw branches before any roll that follows it. A discard shuffle inside a step is laid out the same way
   by answering its Fisher-Yates calls. A screen's answer lays out the screen copy's pile (a draw-pile choice keeps its
   chosen card at its index), which the replay puts back at the screen. Refused: a card that peeks at the pile's order
-  (I Am Invincible, Perfect Fit), a random placement into a known run (`hidden-branch`). Refusals left: `draw-peek`, `draw-tie`, `hidden-branch`, `draw-order`, `card-uid`, `unlisted-roll`, `empty-range`, `cycle`, `table-engine`, `engine-error`, `macro-draw-mismatch` (section 17), a busy kernel queue (the key's refusal) and `budget` (no horizon completed). A roll wider than the width cap (default 32) is not refused since the baseline round (section 16): its branch is a horizon leaf. Since the macro-draw round (section 17) a run of plain draws is one node over the sub-multisets drawn where no draw observer is present; otherwise draws are sequential, merged by value
+  (I Am Invincible, Perfect Fit), a random placement into a known run (`hidden-branch`). Refusals left: `draw-peek`, `draw-tie`, `hidden-branch`, `draw-order`, `card-uid`, `unlisted-roll`, `empty-range`, `cycle`, `table-engine`, `engine-error`, `macro-draw-mismatch` (section 17), a queued hook action or an early resumption (`kernel-queue-busy: ...`, the key's refusal) and `budget` (no horizon completed). A roll wider than the width cap (default 32) is not refused since the baseline round (section 16): its branch is a horizon leaf. Since the macro-draw round (section 17) a run of plain draws is one node over the sub-multisets drawn where no draw observer is present; otherwise draws are sequential, merged by value
   and, for their successors, by key.
 - **Exact means proved.** A node carries a sound upper bound (a horizon leaf's is L0's maximum, 1); a max node is exact
   when a move of greatest value is exact and no move's bound is above it, a chance node when every outcome is. An

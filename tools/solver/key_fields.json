@@ -1111,22 +1111,22 @@
     "_actions": {
      "type": "List<RecordedHookAction>",
      "class": "excluded",
-     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey writes the queued actions themselves (KeyWriter.KernelQueue)"
     },
     "_stops": {
      "type": "List<PauseSite>",
      "class": "excluded",
-     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey writes the queued actions themselves (KeyWriter.KernelQueue)"
     },
     "_waits": {
      "type": "List<WaitPoint>",
      "class": "excluded",
-     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey writes the queued actions themselves (KeyWriter.KernelQueue)"
     },
     "_nextAction": {
      "type": "long",
      "class": "excluded",
-     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey writes the queued actions themselves (KeyWriter.KernelQueue)"
     },
     "_combat": {
      "type": "CombatState",
@@ -1156,12 +1156,12 @@
     "_queue": {
      "type": "ActionQueueSet",
      "class": "excluded",
-     "reason": "a keyed node requires an idle queue: StateKey refuses a busy one (FIGHT_SOLVER.md section 1)"
+     "reason": "written by KeyWriter.KernelQueue as plain data (each queued action's kind, type, owner, state, step and answer; ids are sequencing); a queued hook action is refused (FIGHT_SOLVER.md section 2)"
     },
     "_commands": {
      "type": "CommandLog",
      "class": "excluded",
-     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey writes the queued actions themselves (KeyWriter.KernelQueue)"
     },
     "_progress": {
      "type": "CombatProgress",
@@ -1171,7 +1171,7 @@
     "_seq": {
      "type": "Dictionary<ValueTuple<HookId,ListenerRef,string>,int>",
      "class": "excluded",
-     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed node requires an idle queue and StateKey refuses a busy one"
+     "reason": "sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey writes the queued actions themselves (KeyWriter.KernelQueue)"
     },
     "_endHost": {
      "type": "ICombatEndHost",

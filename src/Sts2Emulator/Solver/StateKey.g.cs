@@ -10,7 +10,7 @@ namespace Sts2Emulator.Solver;
 
 internal static partial class StateKeyCodec
 {
-    internal const string FieldsSha256 = "a066ba3a048d5250d1a68626e10deb9aa7eb210e0a7228c6b9e5b9a91082fee7";
+    internal const string FieldsSha256 = "46e6b81e6698f4a106479395e7070d2d0405119d806a8fd1ff9ca2f57969988a";
 
     internal static readonly string[] HandPositionCards = ["Acrobatics", "Anticipate", "CalculatedGamble", "DaggerThrow", "Eidolon", "FiendFire", "Prepared", "Reboot", "ShadowStep", "StormOfSteel", "Survivor"];
     internal static readonly string[] HandPositionRelics = ["WhisperingEarring"];
@@ -357,19 +357,19 @@ internal static partial class StateKeyCodec
 
     internal static void Enc_KernelState(KeyWriter w, KernelState x)
     {
-        // _actions: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed )
-        // _stops: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed )
-        // _waits: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed )
-        // _nextAction: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed )
+        // _actions: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey)
+        // _stops: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey)
+        // _waits: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey)
+        // _nextAction: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey)
         // _combat: excluded (the back-reference to the combat being keyed)
         // _run: excluded (the back-reference to the run; a solver's combat copy is bound to none)
         // _world: excluded (a view built lazily from the combat it is bound to (derived))
         // _forkDeck: excluded (a frozen copy of the run deck: fixed for the whole fight, and a solver table is bound to o)
         // _listeners: excluded (the listener cursor, built lazily from the world and the handler table (derived))
-        // _queue: excluded (a keyed node requires an idle queue: StateKey refuses a busy one (FIGHT_SOLVER.md section )
-        // _commands: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed )
+        // _queue: excluded (written by KeyWriter.KernelQueue as plain data (each queued action's kind, type, owner, st)
+        // _commands: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey)
         if (x.Progress is null) w.Has(false); else { w.Has(true); Enc_CombatProgress(w, x.Progress); }
-        // _seq: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); a keyed )
+        // _seq: excluded (sequencing (FIGHT_SOLVER.md section 2: the comparer's kernel-sequencing surplus); StateKey)
         // _endHost: excluded (where a combat end goes, set by the step's caller and not copied with the state)
         // Shared: excluded (the engine's shared immutable part (switches, handler table, ids); a solver table is bound)
         w.P(x.ExecutorPaused);

@@ -451,11 +451,11 @@ public sealed class KeyWriter
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_queue")]
     static extern ref ActionQueueSet? QueueOf(KernelState kernel);
 
-    /// <summary>Opens <paramref name="s" />'s frame: its forms and card references, after the idle-queue check.</summary>
+    /// <summary>Opens <paramref name="s" />'s frame: its forms and card references, after its kernel queue.</summary>
     internal void Enter(CombatState s)
     {
-        if (s.Kernel is { AnyOn: true } k && QueueOf(k) is { IsEmpty: false })
-            throw new StateKeyRefusedException("kernel-queue-busy");
+        if (s.Kernel is { AnyOn: true } k)
+            KernelQueue(QueueOf(k));
         var refs = new int[s.Enemies.Count];
         for (int i = 0; i < refs.Length; i++) refs[i] = s.Enemies[i].CurlUpCardUid;
         var ordered = StateKey.Readers.OrderedPiles(s, _mode);
@@ -470,6 +470,48 @@ public sealed class KeyWriter
             Refs = refs,
             Outer = _frame,
         };
+    }
+
+    /// <summary>
+    /// The kernel's action queues under a switch (old states write nothing here), as plain data: the number of queued
+    /// actions, then per queue its flags and per action its kind, type, owner, state, step encoding and pending answer. A
+    /// queue is not idle at a screen inside a card play or a potion: the game pauses that action for the player's choice
+    /// (ActionQueueSet.PauseActionForPlayerChoice), and the stopped step's Before holds it executing; the screen is a decision
+    /// node (FIGHT_SOLVER.md section 3), keyed with its action. Ids, the id counter and the last executed ids are sequencing:
+    /// no rule reads them (a resumed action takes the next id, whatever it is). Refused (<c>kernel-queue-busy</c>): a hook
+    /// action in a queue (its resume record is code, not data) and a resumption waiting for its action.
+    /// </summary>
+    void KernelQueue(ActionQueueSet? q)
+    {
+        int n = 0;
+        for (int i = 0; q is not null && i < q.QueueCount; i++) n += q.QueueOf(i).Count;
+        P(n);
+        if (n == 0) return;
+        if (q!.PendingResumptions > 0) throw new StateKeyRefusedException("kernel-queue-busy: a resumption waits for its action");
+        P(q.InCombat);
+        P(q.QueueCount);
+        for (int i = 0; i < q.QueueCount; i++)
+        {
+            var (playCard, playerDriven, combat) = q.Cancelling(i);
+            P(q.IsPaused(i));
+            P(playCard);
+            P(playerDriven);
+            P(combat);
+            var actions = q.QueueOf(i);
+            P(actions.Count);
+            foreach (var a in actions)
+            {
+                if (a.Kind == GameActionKind.Hook) throw new StateKeyRefusedException("kernel-queue-busy: a hook action is queued");
+                P((byte)a.Kind);
+                P((byte)a.Type);
+                P(a.Owner);
+                P((byte)a.State);
+                P(a.Action);
+                P(a.Target);
+                Has(a.Answer is not null);
+                if (a.Answer is { } answer) P(answer);
+            }
+        }
     }
 
     /// <summary>A whole combat in its own frame.</summary>

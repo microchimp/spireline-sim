@@ -153,15 +153,17 @@ speed), R6 if needed (the smoke and review fixes): 5-6 reviewed rounds, about 7-
   `CombatFactory.Reset` (after `Wipe`). `Sts2_Clone` copies the kernel reference; the state's `KernelState` is copied with
   the combat. `Sts2Run_ForkCombat` takes the run's kernel; the fork's `KernelState` binds to no run and reads the frozen deck.
   `RunEngine.Clone` copies `_kernel`; the copy's fight is bound to the copy (`StateCloning.Clone(RunState)`).
-- **Snapshots.** A loaded fight binds a fresh `KernelState`. Under a switch, a document with a `stopped_step` is refused
-  (`StoppedStepRefusal`): the document carries no kernel queue, so its answer would run outside the action gathering it.
+- **Snapshots.** A loaded fight binds a fresh `KernelState`. Under a switch, a document with a `stopped_step` gets what the
+  queue held at its screen put back (`KernelGate.PausedFromDocument`): the step's start binds a `KernelState` of its own,
+  and a card play's or a potion's action is enqueued, executing in the step's start and gathering at the screen, as the
+  executor leaves it; a turn end's screen holds none (its action finished before the turn end ran). Until the
+  2026-10-29 engine round such a document was refused (`StoppedStepRefusal`).
   `Sts2_GetStateJson` refuses (-3, `HookPauseRefusal`) a combat on a hook action's screen (`OnHookPause`).
 - **Re-anchor.** The anchored fight keeps the `KernelState` its clone copied (as EmuDump's re-anchor keeps its clone's),
   bound to the run (`At`), and is stepped through `RunEngine.Step`'s gate. The `kernel_on` refusal is gone.
 - **Answers.** On a handle, an old screen's answer resumes the action gathering it (`ActionQueueSet.Resume`, a new id, the
   first id kept; its replay holds the keyed answers) and a kernel screen's answer goes to `KernelState.Answer`.
-- **Still refused under core2:** loading a document stopped in the middle of a step, and writing one on a hook action's
-  screen. Serializing the queue would lift both.
+- **Still refused under core2:** writing a document on a hook action's screen (its resume record is code, not data).
 - **Tests.** `NativeKernelHandleTests` (fork step = run step with the live fight untouched; the run clone carries the kernel;
   a turn-start hook choice answered on a fork resumes its action and equals the run's answer; load then step = step from
   the start; a stopped-step document is refused). `RunForkCombatCore2Tests` and `DeterminizedStopCore2Tests` run those

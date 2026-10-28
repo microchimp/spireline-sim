@@ -32,6 +32,43 @@ public static class KernelGate
         return host.Result ?? StepResult.Invalid;
     }
 
+    /// <summary>
+    /// A combat read from a document stopped in the middle of a step (its <c>stopped_step</c>), with a fresh KernelState
+    /// bound (a switch is on). A document carries no queue, so what the queue held at the screen is put back as the game
+    /// holds it: the step's start gets a KernelState of its own (the replay restores the step from there), and for a card
+    /// play or a potion that action is enqueued, executing in the step's start and gathering the player's choice at the
+    /// screen (game: PauseActionForPlayerChoice), as the executor leaves it (<see cref="Core2.ActionExecutor" />). The turn's
+    /// end holds none (EndPlayerTurnAction finishes before the turn end runs), so its screen's answer is the old step's, as
+    /// on a live combat. A combat that is not on a stopped step is left as it is.
+    /// </summary>
+    internal static void PausedFromDocument(CombatState combat)
+    {
+        if (combat.Kernel is not { AnyOn: true } k || combat.PendingSelection?.Replay is not { } stopped)
+        {
+            return;
+        }
+
+        var before = stopped.Before;
+        var start = before.Kernel ?? k.Shared.Bind(before);
+        if (!k.Queue!.IsEmpty || !start.Queue!.IsEmpty)
+        {
+            throw new InvalidOperationException("a document's fight holds a kernel queue before its paused action is put back");
+        }
+
+        int action = stopped.Action;
+        if (action == before.Hand.Count)
+        {
+            return;
+        }
+
+        var kind = action < before.Hand.Count ? Core2.GameActionKind.PlayCard : Core2.GameActionKind.UsePotion;
+        var executing = start.Queue.Enqueue(new Core2.GameActionRec(kind, Core2.GameActionRec.TypeOf(kind)) { Action = action, Target = stopped.TargetEnemyIndex });
+        start.Queue.Start(executing);
+        var paused = k.Queue.Enqueue(new Core2.GameActionRec(kind, Core2.GameActionRec.TypeOf(kind)) { Action = action, Target = stopped.TargetEnemyIndex });
+        k.Queue.Start(paused);
+        k.Queue.PauseForChoice(paused);
+    }
+
     /// <summary>The queue run of one step on <paramref name="host" /> (only with a switch on).</summary>
     internal static void Run(CombatState combat, Core2.KernelState k, Host host, int action, int target)
     {

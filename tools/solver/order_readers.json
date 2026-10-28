@@ -917,8 +917,8 @@
    "reason": "names the pile a screen's candidates index by the screen's kind; a screen's candidates are pile indices and the key keeps every pile ordered while it is open (rules, screen)"
   },
   "src/Sts2Emulator/Core/Run/KernelGate.cs": {
-   "accesses": 2,
-   "reason": "run-level code between fights, outside CombatEngine.Step"
+   "accesses": 4,
+   "reason": "run-level code between fights, outside CombatEngine.Step: the hand's count tells a card play from the turn end and a potion (the action encoding), for a step and for a document's paused action"
   },
   "src/Sts2Emulator/Core/Run/RunEngine.cs": {
    "accesses": 35,

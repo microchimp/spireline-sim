@@ -204,8 +204,14 @@ public static class NativeExports
             Kernel = kernel;
             State = state;
             // A document carries no kernel state (NATIVE_KERNEL.md section 6): the loaded fight binds a fresh one, its
-            // queue empty and no hook action paused (a document stopped in the middle of a step is refused under a switch).
+            // queue empty and no hook action paused, but for a document stopped in the middle of a card play or a potion,
+            // whose paused action is put back (KernelGate.PausedFromDocument).
             Bind();
+            if (Kernel is { AnyOn: true })
+            {
+                KernelGate.PausedFromDocument(State);
+            }
+
             SeedStreams();
             TrueStreams = false;  // the document carries no stream: these are new, not the position's
             // The two streams SeedStreams predates, under the names the run's own
@@ -572,11 +578,6 @@ public static class NativeExports
     internal static (CombatState State, CountingRandom Rng) LoadFight(ReadOnlySpan<byte> json, int seed, Sts2Emulator.Core2.Kernel? kernel)
     {
         var state = CombatSnapshot.Read(json, seed, out _);
-        if (kernel is { AnyOn: true } && state.PendingSelection?.Replay is not null)
-        {
-            throw new InvalidOperationException(StoppedStepRefusal);
-        }
-
         var c = new NativeCombat(state, seed, kernel);
         return (c.State, c.Rng);
     }
@@ -811,15 +812,6 @@ public static class NativeExports
     /// </summary>
     private static byte[] _lastLoadError = [];
 
-    /// <summary>
-    /// Why a document is refused under a kernel switch: it stops in the middle of a step, and the kernel's queue (the action
-    /// gathering the choice, or a paused hook action) is not in the document, so its answer would run outside the queue.
-    /// Serializing the queue is a later option (NATIVE_KERNEL.md section 6).
-    /// </summary>
-    internal const string StoppedStepRefusal =
-        "kernel_on: the document stops in the middle of a step and carries no kernel queue, so its answer would not reach the "
-        + "action gathering it (NATIVE_KERNEL.md section 6)";
-
     /// <summary>Why <c>Sts2_GetStateJson</c> refuses a combat on a hook action's screen under a kernel switch.</summary>
     internal const string HookPauseRefusal =
         "kernel_on: the combat is stopped on a hook action's screen, and a document carries no kernel queue "
@@ -867,11 +859,6 @@ public static class NativeExports
 
             var state = CombatSnapshot.Read(new ReadOnlySpan<byte>(json, len), seed, out _);
             var engine = RunNativeExports.Engine;
-            if (engine.KernelOn && state.PendingSelection?.Replay is not null)
-            {
-                return RefuseLoad(StoppedStepRefusal, -1);
-            }
-
             for (int i = 0; i < _pool.Length; i++)
             {
                 if (_pool[i] is null)

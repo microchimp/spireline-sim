@@ -15,7 +15,7 @@
   "src/Sts2Emulator/Core/GameState.cs": 1,
   "src/Sts2Emulator/Core/HookChoiceReplay.cs": 11,
   "src/Sts2Emulator/Core/PendingCardSelection.cs": 3,
-  "src/Sts2Emulator/Core/Run/KernelGate.cs": 2,
+  "src/Sts2Emulator/Core/Run/KernelGate.cs": 4,
   "src/Sts2Emulator/Core/Run/RunEngine.cs": 35,
   "src/Sts2Emulator/Core/Run/RunNonCombatEffects.cs": 10,
   "src/Sts2Emulator/Core/Run/RunPotionUse.cs": 9,
