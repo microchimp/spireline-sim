@@ -258,6 +258,49 @@ STATE_RULES: dict[tuple[str, str], tuple] = {
     ("SILVER_CRUCIBLE", "TimesUsed"): ("card_rewards", 3), ("SILVER_CRUCIBLE", "TreasureRoomsEntered"): ("treasures",),
     ("SILKEN_TRESS", "IsUsed"): ("card_rewards", 1),
 }
+# The emulator's `RelicInstance.Counter` for a relic's saved game property, as the driver's anchor_state carries it
+# ("relics": [{"id", "ints": {name: value}, "bools": {name: value}}]; the game's names, bools as 0 or 1). One entry per relic whose
+# emulator state is that Counter, with the unit change (RunSnap.RelicProps in tools/emudump is the same table the other way,
+# and a test holds the two together). The function returns None to leave the emulator's value alone. Left out because the
+# emulator keeps them elsewhere than in Counter: SILVER_CRUCIBLE TreasureRoomsEntered (a RunState field), LAVA_LAMP
+# TookDamageThisCombat, LAVA_ROCK HasTriggered and LIZARD_TAIL WasUsed. A property the game saves only when it is not the
+# type's default (JOSS_PAPER) is absent from the message at its default: read as 0.
+def _same(v: int) -> int:
+    return int(v)
+
+
+COUNTER_MAP: dict[str, tuple[str, object]] = {
+    "PEN_NIB": ("AttacksPlayed", _same), "JOSS_PAPER": ("CardsExhausted", _same), "NUNCHAKU": ("AttacksPlayed", _same),
+    "TUNING_FORK": ("SkillsPlayed", _same), "HAPPY_FLOWER": ("TurnsSeen", _same), "FAKE_HAPPY_FLOWER": ("TurnsSeen", _same),
+    "PENDULUM": ("TurnsSeen", _same),
+    # The game zeroes TurnsSeen as the bonus draw lands; the emulator holds 4 until the next tick restarts it at 1: from 0 both tick to 1.
+    "POLLINOUS_CORE": ("TurnsSeen", _same),
+    "IRON_CLUB": ("CardsPlayed", _same), "BOOK_OF_FIVE_RINGS": ("CardsAdded", _same), "FISHING_ROD": ("CombatsSeen", _same),
+    "LASTING_CANDY": ("CombatsSeen", _same), "TOY_BOX": ("CombatsSeen", _same), "PUMPKIN_CANDLE": ("KindleCount", _same),
+    "SWORD_OF_STONE": ("ElitesDefeated", _same), "PAELS_WING": ("RewardsSacrificed", _same), "GIRYA": ("TimesLifted", _same),
+    "WINGED_BOOTS": ("TimesUsed", _same), "BONE_TEA": ("CombatsLeft", _same), "TEA_OF_DISCOURTESY": ("CombatsLeft", _same),
+    "EMBER_TEA": ("CombatsLeft", _same),
+    "SILVER_CRUCIBLE": ("TimesUsed", lambda v: 3 - int(v)),  # the emulator's Counter counts DOWN from the three uses
+    "VENERABLE_TEA_SET": ("GainEnergyInNextCombat", lambda v: 1 if v else 0),  # armed at a rest site, spent by the next fight
+    "FAKE_VENERABLE_TEA_SET": ("GainEnergyInNextCombat", lambda v: 1 if v else 0),
+    "SILKEN_TRESS": ("IsUsed", lambda v: None if v else 0),  # 1 (screen built) and 2 (answered) both read as used: not told apart
+}
+
+
+def relic_counter_writes(relics) -> list[tuple[str, int]]:
+    """[(relic entry, emulator Counter)] for the held relics of the driver's anchor_state "relics" list that COUNTER_MAP covers."""
+    out: list[tuple[str, int]] = []
+    for r in relics if isinstance(relics, list) else []:
+        if not isinstance(r, dict) or r.get("id") not in COUNTER_MAP:
+            continue
+        name, conv = COUNTER_MAP[r["id"]]
+        props = {**(r.get("ints") or {}), **{k: int(bool(v)) for k, v in (r.get("bools") or {}).items()}}
+        value = conv(props.get(name, 0))
+        if value is not None:
+            out.append((r["id"], int(value)))
+    return out
+
+
 # Items with saved state: one held before F that left the run before its end has no end value to rebuild from.
 STATEFUL = {item for item, _ in STATE_RULES if item != "*"} | {"TUNING_FORK", "PAELS_TOOTH", "GENETIC_ALGORITHM", "THE_SCYTHE"}
 # The fresh value of a property saved under each kind.

@@ -606,6 +606,14 @@ def _deck_pool(have) -> dict:
     return pool
 
 
+# The emulator's `Enchantment` enum by ordinal (src/Sts2Emulator/Core/Card.cs; a test holds the two together) under the game's
+# enchantment entries, which the driver's anchor_state names a card's enchantment by.
+ENCHANTMENTS = ("NONE", "SHARP", "NIMBLE", "SWIFT", "STEADY", "SPIRAL", "SOWN", "CORRUPTED", "SLITHER", "VIGOROUS", "IMBUED",
+                "CLONE", "GOOPY", "TEZCATARAS_EMBER", "INKY", "ADROIT", "MOMENTUM", "ROYALLY_APPROVED", "PERFECT_FIT",
+                "SOULS_POWER", "INSTINCT", "GLAM")
+ENCHANTMENT_ORDINAL = {name: i for i, name in enumerate(ENCHANTMENTS) if i}
+
+
 def _pair_deck(want, have) -> list:
     """For each (card id, upgraded) of `want` (the game's deck, in its order) the emulator's own card it stands for: the
     first not yet taken of `have` with that key, or None for a card the emulator does not hold (new to it). The one
@@ -631,6 +639,7 @@ class EmuLock:
     _hidden: dict | None = None  # the game's hidden state at the current decision (take_anchor_state)
     anchored_with: str | None = None  # "hidden", "observation" or "streams": what the last re-anchor used; None: none of them
     walk: dict | None = None  # the last re-anchor's walk to the map: {"walks", "floors", "picks", "fights"}, else None
+    relic_counters: int | None = None  # the last re-anchor's relic counters put on the game's (the driver's anchor_state), else None
     deck_order: str | None = None  # the last hidden fight-start re-anchor's run-deck order: "set", "same", "other_deck", "unknown_id", else None
     streams: dict | None = None  # the last room-entry stream anchor: {"named", "moved", "unmoved", "unmoved_names"}, else None
 
@@ -942,6 +951,17 @@ class EmuLock:
             self.s.apply(o)
         return False
 
+    _defer_counters = False  # `_set_player` leaves the relic counters to `_anchor_fight` (the fight_start walk)
+
+    def _set_player_deferring_counters(self, obs: dict) -> bool:
+        """`_set_player` without the relic counters: on the fight_start walk the emulator has not entered the fight yet, and
+        entering it ticks its own counters (a Pendulum wrap draws a card) on top of the game's already-ticked ones."""
+        self._defer_counters = True
+        try:
+            return self._set_player(obs)
+        finally:
+            self._defer_counters = False
+
     def _set_player(self, obs: dict) -> bool:
         cards = [(self.ids["cards"].get(c[0]), int(c[1]), 0, 0) for c in obs.get("deck", [])]
         relics = [self.ids["relics"].get(r) for r in obs.get("relics", [])]
@@ -956,10 +976,56 @@ class EmuLock:
         # written plain, as before. The deck is read from the observation the last step wrote (State.Deck order, off a fight).
         held = _pair_deck([(c[0], bool(c[1])) for c in cards], self.F.engine_deck(self.s.env))
         cards = [(c[0], c[1], m.enchantment, m.enchant_amount) if m is not None else c for c, m in zip(cards, held)]
+        # The driver's anchor_state, when it carries the game's own per-card data (take_anchor_state), wins over that guess; its
+        # absence (or a deck that is not this observation's) leaves the guess. The relics' counters go with the write.
+        cards, extra = self._game_cards(obs, cards)
+        written = [] if self._defer_counters else self._relic_counters()
+        if written:
+            extra["relic_counters"] = written
+            self.relic_counters = len(written)
         self.native.run_debug_set_player(self.s.handle, self._obs(), hp=int(obs["hp"]), max_hp=int(obs["max_hp"]),
                                          gold=int(obs["gold"]), cards=cards, relics=relics, potions=potions,
-                                         max_potion_slots=len(belt))
+                                         max_potion_slots=len(belt), **extra)
         return True
+
+    def _game_cards(self, obs: dict, cards: list) -> tuple[list, dict]:
+        """`cards` ((id, upgraded, enchantment, amount) in the game's deck order) with the driver's per-card data put over the
+        emulator-side guess: the game's own enchantment and amount (a card the driver names plain is written plain), and, when a
+        Mad Science is in the deck, `card_tinker` for the native write. Returns (cards, extra keyword arguments). The data
+        counts only when it lines up with the observation's deck card by card (same id and upgrade); an enchantment the emulator
+        has no ordinal for keeps the guess. No data: (cards, {})."""
+        game = (self._hidden or {}).get("deck")
+        deck = obs.get("deck") or []
+        if not isinstance(game, list) or len(game) != len(deck) or len(deck) != len(cards):
+            return cards, {}
+        for g, c in zip(game, deck):
+            if not isinstance(g, dict) or g.get("id") != c[0] or int(g.get("up", 0)) != int(c[1]):
+                return cards, {}
+        out = []
+        for c, g in zip(cards, game):
+            ench = g.get("ench")
+            if ench is None:
+                out.append((c[0], c[1], 0, 0))
+            elif ench in ENCHANTMENT_ORDINAL:
+                out.append((c[0], c[1], ENCHANTMENT_ORDINAL[ench], int(g.get("amount", 0))))
+            else:
+                out.append(c)
+        extra = {}
+        if any("tinker_type" in g for g in game):
+            extra["card_tinker"] = [(int(g.get("tinker_type", -1)), int(g.get("tinker_rider", 0))) for g in game]
+        return out, extra
+
+    def _relic_counters(self) -> list[tuple[int, int]]:
+        """[(emulator relic id, Counter)] from the driver's anchor_state relics (refset.COUNTER_MAP), or [] without them."""
+        relics = (self._hidden or {}).get("relics")
+        if not relics:
+            return []
+        try:
+            from referee import refset  # noqa: PLC0415
+        except ImportError:
+            import refset  # noqa: PLC0415
+        ids = self.ids.get("relics", {})
+        return [(ids[r], v) for r, v in refset.relic_counter_writes(relics) if r in ids]
 
     def take_anchor_state(self, hidden: dict | None) -> None:
         """The game's hidden state at this decision, or None (driver spec "anchor_state"; `Lockstep._take_hidden`): its
@@ -1008,6 +1074,12 @@ class EmuLock:
             return False
         if self.anchored_with == "hidden":
             self._order_deck(obs)
+        # The game's relic counters (its post-tick values) go in once the emulator is in the fight, whatever the anchor used:
+        # the native call sets the fight's own relics too, so the emulator's turn-1 tick is replaced, not added to.
+        counters = self._relic_counters()
+        if counters:
+            self.native.run_debug_set_player(self.s.handle, self._obs(), relic_counters=counters)
+            self.relic_counters = len(counters)
         return True
 
     def _order_deck(self, obs: dict) -> None:
@@ -1033,11 +1105,12 @@ class EmuLock:
             self.deck_order = "other_deck"
             return
         ordered = _pair_deck(want, have)
-        if ordered == have:
+        target = [(c.card_id, int(c.upgraded), c.enchantment, c.enchant_amount) for c in ordered]
+        target, extra = self._game_cards(obs, target)  # the driver's per-card data, where it has it, over the emulator's
+        if target == [(c.card_id, int(c.upgraded), c.enchantment, c.enchant_amount) for c in have] and not extra:
             self.deck_order = "same"
             return
-        self.native.run_debug_set_player(self.s.handle, self._obs(),
-                                         cards=[(c.card_id, int(c.upgraded), c.enchantment, c.enchant_amount) for c in ordered])
+        self.native.run_debug_set_player(self.s.handle, self._obs(), cards=target, **extra)
         self.deck_order = "set"
 
     def reanchor(self, plan: str, msg: dict) -> bool:
@@ -1052,6 +1125,7 @@ class EmuLock:
         self.streams = None
         self.walk = None
         self.deck_order = None
+        self.relic_counters = None
         obs = msg.get("obs", {})
         if plan == "room_entry":
             if not self._to_map(obs.get("floor")):
@@ -1073,7 +1147,9 @@ class EmuLock:
                 return self._anchor_fight(obs)
             if not self._to_map(None if floor is None else floor - 1):
                 self.fail = "to_map"
-            elif not self._set_player(obs):
+            elif not self._set_player_deferring_counters(obs):
+                # The relics' counters are the game's AFTER its fight-start tick; entering the fight ticks the emulator's own
+                # (a Pendulum wrap draws a card), so they are written once, by `_anchor_fight`, after the emulator is in it.
                 self.fail = "set_player:unknown_id"
             else:
                 d = self._decision()

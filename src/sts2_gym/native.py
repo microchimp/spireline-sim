@@ -16,7 +16,7 @@ _LIB_NAMES = {
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
 _REQUIRED_NATIVE_API_VERSION = 38
-_REQUIRED_RUN_NATIVE_API_VERSION = 31
+_REQUIRED_RUN_NATIVE_API_VERSION = 32
 # The engine this process runs (docs/rebuild/NATIVE_KERNEL.md section 3): read once, when the library loads, and passed
 # to Sts2_SetEngine before any handle exists. Unset or "old": the old engine. "core2": the Tier 1 kernel of
 # tools/fidelity/migrated_families.json. Inherited by every spawn worker, so one flag on the parent reaches them all.
@@ -663,6 +663,20 @@ _lib.Sts2Run_DebugSetPlayer.argtypes = [
     ctypes.c_int,
     ctypes.POINTER(ctypes.c_int),
 ]
+
+try:  # run API 32; a library without it is refused by the version check unless STS2_ALLOW_STALE_NATIVE is set
+    _lib.Sts2Run_DebugSetPlayerEx.restype = ctypes.c_int
+    _lib.Sts2Run_DebugSetPlayerEx.argtypes = [
+        *_lib.Sts2Run_DebugSetPlayer.argtypes[:11],  # handle .. max_potion_slots, as above
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    _HAS_DEBUG_SET_PLAYER_EX = True
+except AttributeError:
+    _HAS_DEBUG_SET_PLAYER_EX = False
 
 _lib.Sts2Run_SetAnchorTables.restype = ctypes.c_int
 _lib.Sts2Run_SetAnchorTables.argtypes = [ctypes.c_char_p, ctypes.c_int]
@@ -1849,12 +1863,19 @@ def run_debug_set_player(
     relics=None,
     potions=None,
     max_potion_slots: int = -1,
+    card_tinker=None,
+    relic_counters=None,
 ) -> None:
     """Replay-only: set the player's holdings where a real run had them.
 
     ``cards`` is ``[(id, upgraded, enchantment, amount), ...]``; ``relics`` and
     ``potions`` are ids (a potion list is by slot, 0 for empty). ``None`` or a negative
     scalar leaves that holding alone. No pickup effect runs.
+
+    Run API 32: ``card_tinker`` is ``[(type, rider), ...]`` per card in the order of ``cards``,
+    Mad Science's Tinker Time type and rider as the GAME's enum values (-1 for no type);
+    ``relic_counters`` is ``[(relic id, counter), ...]`` for held relics, put on the run's copy
+    and the open fight's. With neither, the original export is called, as before.
 
     Raises:
         RuntimeError: if the handle is not a live run.
@@ -1864,20 +1885,46 @@ def run_debug_set_player(
     card_buf, card_len = _int_array(flat)
     relic_buf, relic_len = _int_array(None if relics is None else list(relics))
     potion_buf, potion_len = _int_array(None if potions is None else list(potions))
-    status = _lib.Sts2Run_DebugSetPlayer(
-        handle,
-        int(hp),
-        int(max_hp),
-        int(gold),
-        card_buf,
-        card_len,
-        relic_buf,
-        relic_len,
-        potion_buf,
-        potion_len,
-        int(max_potion_slots),
-        obs_buf,
-    )
+    if card_tinker is None and relic_counters is None:
+        status = _lib.Sts2Run_DebugSetPlayer(
+            handle,
+            int(hp),
+            int(max_hp),
+            int(gold),
+            card_buf,
+            card_len,
+            relic_buf,
+            relic_len,
+            potion_buf,
+            potion_len,
+            int(max_potion_slots),
+            obs_buf,
+        )
+    else:
+        if not _HAS_DEBUG_SET_PLAYER_EX:
+            raise RuntimeError("the native library has no Sts2Run_DebugSetPlayerEx (run API 32)")
+        tinker_buf, tinker_len = _int_array(None if card_tinker is None else [int(v) for pair in card_tinker for v in pair])
+        counter_buf, counter_len = _int_array(
+            None if relic_counters is None else [int(v) for pair in relic_counters for v in pair]
+        )
+        status = _lib.Sts2Run_DebugSetPlayerEx(
+            handle,
+            int(hp),
+            int(max_hp),
+            int(gold),
+            card_buf,
+            card_len,
+            relic_buf,
+            relic_len,
+            potion_buf,
+            potion_len,
+            int(max_potion_slots),
+            tinker_buf,
+            tinker_len,
+            counter_buf,
+            counter_len,
+            obs_buf,
+        )
     if status != 0:
         raise RuntimeError("Sts2Run_DebugSetPlayer failed")
 

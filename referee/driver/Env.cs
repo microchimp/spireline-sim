@@ -60,7 +60,9 @@ internal static class Env
     /// <summary>
     /// Reset spec "anchor_state" (default false): a decision at a re-anchor point (a map choice, the first decision of a
     /// fight) carries "anchor_state", the game's hidden state for the lockstep's emulator side: its stream counters
-    /// ({name: {seed, counter}}, the run's and the player's) and, in a fight, the draw pile in order. Nothing else reads it
+    /// ({name: {seed, counter}}, the run's and the player's) and, in a fight, the draw pile in order. It also carries the
+    /// deck's per-card enchantment and Mad Science tinker fields and the relics' saved counters (DeckHoldings, RelicHoldings), which
+    /// the observation's (id, upgraded) deck and bare relic ids leave out. Nothing else reads it
     /// (referee/lockstep.py takes it off the message before the agent sees the decision), and it is not part of "obs".
     /// </summary>
     internal static bool AnchorState;
@@ -311,11 +313,36 @@ internal static class Env
         var rng = new JsonObject();
         foreach (var set in new object[] { s.Rng, p.PlayerRng })
             foreach (var kv in Driver.RngCounters(set)) rng[kv.Key] = kv.Value?.DeepClone();
-        var o = new JsonObject { ["rng"] = rng };
+        var o = new JsonObject { ["rng"] = rng, ["deck"] = DeckHoldings(p), ["relics"] = RelicHoldings(p) };
         if (CombatManager.Instance.IsInProgress && Driver.CombatSnap(s, p)["draw"] is JsonArray draw)
             o["draw"] = draw.DeepClone();
         return o;
     }
+
+    /// <summary>
+    /// The deck in Deck.Cards order (the order of Obs()'s "deck"), each card with what the observation's (id, upgraded)
+    /// leaves out: its enchantment (CardModel.Enchantment: Id.Entry, Amount) and, on a Mad Science, the Tinker Time type and
+    /// rider it saves (MadScience.TinkerTimeType, TinkerTimeRider, as their enum values).
+    /// </summary>
+    private static JsonArray DeckHoldings(Player p) => new(p.Deck.Cards.Select(c =>
+    {
+        var tinker = c as MegaCrit.Sts2.Core.Models.Cards.MadScience;
+        return (JsonNode)AnchorHoldings.DeckCard(c.Id.Entry, c.IsUpgraded, c.Enchantment?.Id.Entry, c.Enchantment?.Amount ?? 0,
+            tinker == null ? null : (int)tinker.TinkerTimeType, tinker == null ? null : (int)tinker.TinkerTimeRider);
+    }).ToArray());
+
+    /// <summary>
+    /// The relics in Relics order, each with the integer and boolean properties the game saves on it (RelicModel.ToSerializable
+    /// then Props.ints and Props.bools: Pendulum's and Pollinous Core's TurnsSeen, the Silver Crucible's TimesUsed, Pen Nib's
+    /// AttacksPlayed and the rest), by the game's property names. The lockstep maps them onto the emulator's relic counters.
+    /// </summary>
+    private static JsonArray RelicHoldings(Player p) => new(p.Relics.Select(r =>
+    {
+        var props = r.ToSerializable().Props;
+        return (JsonNode)AnchorHoldings.Relic(r.Id.Entry,
+            props?.ints?.Select(x => new KeyValuePair<string, int>(x.name, x.value)),
+            props?.bools?.Select(x => new KeyValuePair<string, bool>(x.name, x.value)));
+    }).ToArray());
 
     /// <summary>Leak probe (env/leak-probe): Godot node counts, GC, memory and CPU of this process, and system memory load.</summary>
     internal static JsonObject Probe(int runs)

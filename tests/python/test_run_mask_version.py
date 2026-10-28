@@ -26,10 +26,10 @@ except Exception:  # noqa: BLE001
 BELT = ("BLOCK_POTION", "BLOOD_POTION", "FRUIT_JUICE")
 
 
-@unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 31)")
+@unittest.skipUnless(HAVE_NATIVE, "needs the native library (run API 32)")
 class MaskVersionBindingTests(unittest.TestCase):
-    def test_the_binding_requires_api_31_and_names_the_versions(self):
-        self.assertEqual(native._REQUIRED_RUN_NATIVE_API_VERSION, 31)
+    def test_the_binding_requires_api_32_and_names_the_versions(self):
+        self.assertEqual(native._REQUIRED_RUN_NATIVE_API_VERSION, 32)
         self.assertEqual((native.RUN_MASK_VERSION_DEFAULT, native.RUN_MASK_VERSIONS), (1, (1, 2, 3, 4)))
 
     def test_an_unknown_handle_or_version_is_refused(self):

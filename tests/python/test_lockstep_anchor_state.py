@@ -530,5 +530,178 @@ class NativeFirewallTests(unittest.TestCase):
         self.assertNotIn("draw", repr(sorted(e.cfg.search_kwargs(None).keys())))
 
 
+import re as _re  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+_REPO = _Path(__file__).resolve().parents[2]
+
+
+class GameCardAndRelicStateTests(unittest.TestCase):
+    """D11F2: the driver's anchor_state carries each deck card's enchantment and Mad Science's tinker fields and each relic's saved
+    counters (referee/driver/AnchorHoldings.cs). The room-entry and fight-start re-anchors write them over D11F1's emulator-side
+    guess, which stays the fallback where the message has none (`SetPlayerEnchantmentTests`)."""
+
+    Card = DeckOrderTests.Card
+    IDS = {"A": 1, "INFERNO": 2, "MAD_SCIENCE": 3}
+    RELICS = {"R": 9, "PENDULUM": 10, "SILVER_CRUCIBLE": 11, "JOSS_PAPER": 12, "POLLINOUS_CORE": 13}
+
+    def c(self, name, up=False, ench=0, amount=0):
+        return self.Card(self.IDS[name], up, ench, amount)
+
+    def emu(self, deck, hidden):
+        e = bare_emu(None)
+        e.ids = {"cards": dict(self.IDS), "relics": dict(self.RELICS), "potions": {"P": 8}}
+        e.F = SimpleNamespace(engine_deck=lambda env: tuple(deck))
+        e._obs = lambda: "obs"
+        calls = []
+        e.native.run_debug_set_player = lambda handle, buf, **kw: calls.append((handle, buf, kw))
+        e._hidden = hidden
+        return e, calls
+
+    def room_entry(self, e, game_deck, relics=("R",)):
+        o = {"floor": 4, "hp": 50, "max_hp": 80, "gold": 120, "deck": game_deck, "relics": list(relics), "potions": ["P"]}
+        e._to_map, e._set_streams, e._decision = (lambda floor=None: True), (lambda: True), (lambda: object())
+        hidden = e._hidden
+        self.assertTrue(e.reanchor("room_entry", {"obs": o}))
+        e._hidden = hidden
+
+    def test_an_enchantment_the_emulator_never_held_is_set(self):
+        e, calls = self.emu([self.c("INFERNO"), self.c("A")], {"deck": [{"id": "INFERNO", "up": 0, "ench": "SWIFT", "amount": 2}, {"id": "A", "up": 0}]})
+        self.room_entry(e, [["INFERNO", 0], ["A", 0]])
+        self.assertEqual(calls[0][2]["cards"], [(2, 0, 3, 2), (1, 0, 0, 0)])  # Swift is ordinal 3
+        self.assertNotIn("card_tinker", calls[0][2])  # no Mad Science: the original call shape
+        self.assertNotIn("relic_counters", calls[0][2])
+
+    def test_the_game_names_the_right_copy_among_duplicates_and_a_plain_one_stays_plain(self):
+        # D11F1 would pair the emulator's enchanted first copy; the game says the second copy is the enchanted one
+        e, calls = self.emu([self.c("A", ench=7, amount=1), self.c("A"), self.c("INFERNO", ench=3, amount=1)],
+                            {"deck": [{"id": "A", "up": 0}, {"id": "A", "up": 0, "ench": "VIGOROUS", "amount": 1}, {"id": "INFERNO", "up": 0}]})
+        self.room_entry(e, [["A", 0], ["A", 0], ["INFERNO", 0]])
+        self.assertEqual(calls[0][2]["cards"], [(1, 0, 0, 0), (1, 0, 9, 1), (2, 0, 0, 0)])  # Vigorous is 9; the emulator's Swift is gone
+
+    def test_mad_sciences_tinker_fields_go_with_the_cards_in_their_order(self):
+        e, calls = self.emu([self.c("A"), self.c("MAD_SCIENCE")],
+                            {"deck": [{"id": "A", "up": 0}, {"id": "MAD_SCIENCE", "up": 1, "tinker_type": 2, "tinker_rider": 5}]})
+        self.room_entry(e, [["A", 0], ["MAD_SCIENCE", 1]])
+        self.assertEqual(calls[0][2]["card_tinker"], [(-1, 0), (2, 5)])
+
+    def test_an_unknown_enchantment_or_a_deck_that_does_not_line_up_keeps_d11f1s_guess(self):
+        for deck in ([{"id": "INFERNO", "up": 0, "ench": "SLUMBERING_ESSENCE", "amount": 1}],  # no ordinal for it
+                     [{"id": "A", "up": 0, "ench": "SWIFT", "amount": 2}],  # another card at the position
+                     [{"id": "INFERNO", "up": 1, "ench": "SWIFT", "amount": 2}],  # another upgrade
+                     [{"id": "INFERNO", "up": 0}, {"id": "A", "up": 0}]):  # another length
+            e, calls = self.emu([self.c("INFERNO", ench=5, amount=2)], {"deck": deck})
+            self.room_entry(e, [["INFERNO", 0]])
+            self.assertEqual(calls[0][2]["cards"], [(2, 0, 5, 2)], deck)
+
+    def test_without_the_drivers_data_it_is_d11f1s_write_unchanged(self):
+        for hidden in (None, {"rng": {}}, {"deck": None, "relics": None}):
+            e, calls = self.emu([self.c("INFERNO", ench=5, amount=2)], hidden)
+            self.room_entry(e, [["INFERNO", 0]])
+            self.assertEqual(calls[0][2]["cards"], [(2, 0, 5, 2)])
+            self.assertNotIn("relic_counters", calls[0][2])
+            self.assertNotIn("card_tinker", calls[0][2])
+
+    def test_the_pendulum_counter_is_set_at_a_room_entry(self):
+        relics = [{"id": "R"}, {"id": "PENDULUM", "ints": {"TurnsSeen": 2}}, {"id": "SILVER_CRUCIBLE", "ints": {"TimesUsed": 1}},
+                  {"id": "JOSS_PAPER"}, {"id": "POLLINOUS_CORE", "ints": {"TurnsSeen": 0}}]
+        e, calls = self.emu([self.c("A")], {"relics": relics})
+        self.room_entry(e, [["A", 0]], relics=["R", "PENDULUM", "SILVER_CRUCIBLE", "JOSS_PAPER", "POLLINOUS_CORE"])
+        # Pendulum 2; the crucible counts down from three uses (3 - 1); Joss Paper's absent property is its default 0; the core 0
+        self.assertEqual(calls[0][2]["relic_counters"], [(10, 2), (11, 2), (12, 0), (13, 0)])
+        self.assertEqual(e.relic_counters, 4)
+
+    def test_the_fight_start_anchor_sets_the_counters_on_the_open_fight(self):
+        hidden = {**EmuLockAnchorTests.GAME, "relics": [{"id": "PENDULUM", "ints": {"TurnsSeen": 1}}]}
+        e, calls = self.emu([self.c("A")], hidden)
+        e.native.run_reanchor_fight_hidden = lambda h, rec, buf: (4, "moves=same;patched=draw")
+        self.assertTrue(e._anchor_fight({"floor": 3, "combat": EmuLockAnchorTests.RECORD}))
+        self.assertEqual([kw for _, _, kw in calls], [{"relic_counters": [(10, 1)]}])  # counters alone: nothing else is touched
+        # the observation-only anchor (no hidden state) and a hidden state without relics write none
+        for h in (None, dict(EmuLockAnchorTests.GAME)):
+            e, calls = self.emu([self.c("A")], h)
+            e.native.run_reanchor_fight_hidden = lambda hd, rec, buf: (4, "x")
+            e.native.run_reanchor_fight = lambda hd, rec, buf: (1, "x")
+            self.assertTrue(e._anchor_fight({"floor": 3, "combat": EmuLockAnchorTests.RECORD}))
+            self.assertEqual(calls, [])
+
+    def test_the_fight_start_reorder_carries_the_games_enchantments_too(self):
+        hidden = {**EmuLockAnchorTests.GAME, "deck": [{"id": "A", "up": 0, "ench": "SWIFT", "amount": 1}, {"id": "INFERNO", "up": 0}]}
+        e, calls = self.emu([self.c("A"), self.c("INFERNO")], hidden)  # the same order, but the game's Swift is new to the emulator
+        e.native.run_reanchor_fight_hidden = lambda h, rec, buf: (4, "x")
+        self.assertTrue(e._anchor_fight({"floor": 3, "combat": EmuLockAnchorTests.RECORD, "deck": [["A", 0], ["INFERNO", 0]]}))
+        self.assertEqual((e.deck_order, calls[0][2]["cards"]), ("set", [(1, 0, 3, 1), (2, 0, 0, 0)]))
+
+    def walk(self, hidden):
+        """The fight_start plan on the walk path (the emulator is not in the fight yet): `_set_player`, the map step that enters
+        the fight, then the anchor. Entering the fight ticks the emulator's Pendulum, as the game's own turn-1 tick already
+        did in the counter the driver carries (2)."""
+        e, calls = self.emu([self.c("A")], hidden)
+        state = {"counter": None}
+
+        def set_player(handle, buf, **kw):
+            calls.append(kw)
+            for _relic, value in kw.get("relic_counters", []):
+                state["counter"] = value
+
+        def enter_fight(option):
+            state["counter"] = (state["counter"] or 0) + 1  # the emulator's own fight-start tick
+            e.s.phase = 7
+
+        e.native.run_debug_set_player = set_player
+        e.native.run_reanchor_fight = lambda h, rec, buf: (1, "x")
+        e.native.run_reanchor_fight_hidden = lambda h, rec, buf: (4, "x")
+        e.E = SimpleNamespace(rc=SimpleNamespace(PHASE_COMBAT=7))
+        e.s.phase, e.s.view, e.s.apply = 1, (lambda: SimpleNamespace(floor=3)), enter_fight
+        e._to_map, e._decision, e._auto_combat = (lambda floor=None: True), (lambda: SimpleNamespace(options=[object()])), (lambda: None)
+        obs = {"floor": 4, "hp": 50, "max_hp": 80, "gold": 120, "deck": [["A", 0]], "relics": ["PENDULUM"], "potions": ["P"],
+               "combat": EmuLockAnchorTests.RECORD}
+        self.assertTrue(e.reanchor("fight_start", {"obs": obs}))
+        return state, calls, e
+
+    def test_the_walk_path_ends_with_the_games_counter_not_one_more(self):
+        relics = [{"id": "PENDULUM", "ints": {"TurnsSeen": 2}}]
+        for name, hidden in (("observation", {"relics": relics}), ("hidden", {**EmuLockAnchorTests.GAME, "relics": relics})):
+            state, calls, e = self.walk(hidden)
+            self.assertEqual(state["counter"], 2, name)  # written once, after the fight was entered (not 3)
+            self.assertEqual([("relic_counters" in kw) for kw in calls], [False, True], name)  # the player write carries none
+            self.assertEqual(calls[-1], {"relic_counters": [(10, 2)]}, name)
+            self.assertEqual(e.relic_counters, 1, name)
+
+    def test_the_mapping_of_the_games_relic_properties(self):
+        refset = _import_refset()
+        relics = [{"id": "VENERABLE_TEA_SET", "bools": {"GainEnergyInNextCombat": True}}, {"id": "SILKEN_TRESS", "bools": {"IsUsed": True}},
+                  {"id": "BONE_TEA", "ints": {"CombatsLeft": 2}}, {"id": "BURNING_BLOOD"}, {"id": "SILVER_CRUCIBLE", "ints": {"TimesUsed": 3}}]
+        self.assertEqual(refset.relic_counter_writes(relics),
+                         [("VENERABLE_TEA_SET", 1), ("BONE_TEA", 2), ("SILVER_CRUCIBLE", 0)])  # Silken Tress used: left alone
+        self.assertEqual(refset.relic_counter_writes([{"id": "SILKEN_TRESS"}]), [("SILKEN_TRESS", 0)])
+        self.assertEqual(refset.relic_counter_writes(None), [])
+
+    def test_the_tables_agree_with_the_emulators_source(self):
+        # the enchantment ordinals are Card.cs's enum order
+        src = (_REPO / "src/Sts2Emulator/Core/Card.cs").read_text(encoding="utf-8")
+        body = _re.search(r"public enum Enchantment\s*\{(.*?)\n\}", src, _re.S).group(1)
+        body = _re.sub(r"//.*", "", body)
+        names = [_re.sub(r"(?<!^)(?=[A-Z])", "_", n).upper() for n in _re.findall(r"\b([A-Z][A-Za-z]*)\s*(?:=\s*\d+)?\s*,", body)]
+        mod = __import__(type(bare_emu(None)).__module__, fromlist=["ENCHANTMENTS"])
+        self.assertEqual(tuple(names), mod.ENCHANTMENTS)
+        # every relic property the emulator's snapshot compares (RunSnap.RelicProps) is mapped, or is state outside Counter
+        refset = _import_refset()
+        snap = (_REPO / "tools/emudump/RunSnap.cs").read_text(encoding="utf-8")
+        props = set(_re.findall(r'new\("([A-Z_]+)", "(?:ints|bools)", "(\w+)"', snap))
+        outside = {("SILVER_CRUCIBLE", "TreasureRoomsEntered"), ("LAVA_LAMP", "TookDamageThisCombat"), ("LAVA_ROCK", "HasTriggered"),
+                   ("LIZARD_TAIL", "WasUsed")}
+        mapped = {(relic, name) for relic, (name, _) in refset.COUNTER_MAP.items()}
+        self.assertEqual(props, mapped | outside)
+
+
+def _import_refset():
+    try:
+        from referee import refset  # noqa: PLC0415
+    except ImportError:
+        import refset  # noqa: PLC0415
+    return refset
+
+
 if __name__ == "__main__":
     unittest.main()
