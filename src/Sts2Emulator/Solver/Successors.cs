@@ -61,6 +61,21 @@ public sealed class SolveCounters
     /// <summary>Branches cut at a roll wider than the width cap (valued as horizon leaves).</summary>
     public long WideRollLeaves;
 
+    /// <summary>Macro draw nodes (a run of two or more plain draws taken as one node over the sub-multisets drawn).</summary>
+    public long MacroNodes;
+
+    /// <summary>Sequential draw levels the macro nodes stood in for: the cards each took, less one, summed.</summary>
+    public long MacroDrawsAvoided;
+
+    /// <summary>Draw nodes with the macro draw on that took one card (the front alone was drawn, or not by a plain draw).</summary>
+    public long DrawNodesSingle;
+
+    /// <summary>Draw nodes taken one card at a time because the macro draw was off, by reason (hand-ordered, observer:Name).</summary>
+    public readonly Dictionary<string, long> MacroOff = [];
+
+    /// <summary>Why the macro draw was off at the solve's root (<c>on</c> when it was on; <c>pruning-off</c> without the bit).</summary>
+    public string MacroRoot = "";
+
     /// <summary>Refusals by reason class (the reason up to its first colon).</summary>
     public readonly Dictionary<string, long> Refusals = [];
 
@@ -235,26 +250,69 @@ public static class DrawSteer
     }
 }
 
-/// <summary>The step took a card of the rest of epoch <see cref="Epoch" />: the next position branches.</summary>
-internal sealed class DrawPending(int epoch, List<(int Uid, int Count)> branches, int size) : Exception("draw pending")
+/// <summary>
+/// The step took a card of the rest of epoch <see cref="Epoch" />: the next position branches, or, when <see cref="Take" />
+/// is two or more, the next <see cref="Take" /> positions as one node over the sub-multisets taken (the macro draw).
+/// </summary>
+internal sealed class DrawPending(int epoch, List<(int Uid, int Count)> branches, int size, int take = 1, int[]? rest = null, int call = 0) : Exception("draw pending")
 {
     public int Epoch { get; } = epoch;
 
     public List<(int Uid, int Count)> Branches { get; } = branches;
 
     public int Size { get; } = size;
+
+    /// <summary>The rest's cards one draw call's loop took in a row from the front, before the check: 1 for the front alone.</summary>
+    public int Take { get; } = take;
+
+    /// <summary>The rest's uids in layout order (<see cref="Branches" />' counts split it into its values).</summary>
+    public int[] Rest { get; } = rest ?? [];
+
+    /// <summary>The chance calls the run had seen at the check (<see cref="MacroBlock.Call" />).</summary>
+    public int Call { get; } = call;
 }
 
 /// <summary>The chance source of one run of a step: the rolls answered from a list, the draw pile's layout steered.</summary>
-internal sealed class SolverChance(CombatState state, int[] answers, List<List<int>> drawn, bool byCard, int widthCap) : IChanceSource
+internal sealed class SolverChance(CombatState state, int[] answers, List<List<int>> drawn, bool byCard, int widthCap, bool macro = false, IReadOnlyList<MacroBlock>? blocks = null)
+    : IChanceSource
 {
     int _next;
     int _steerNext;
     List<CardInstance>? _target;
 
+    /// <summary>The chance calls seen (each runs the rest check first): a take's place between two of them.</summary>
+    int _calls;
+
+    /// <summary>This run's takes off the draw pile: the card, its draw call's number when the draw loop took it (else 0), and the calls seen before it.</summary>
+    readonly List<(int Uid, long Action, int Call)> _takes = [];
+
+    readonly IReadOnlyList<MacroBlock> _blocks = blocks ?? [];
+
+    int _verified;
+
     public int Epoch;
     public HashSet<int> Rest = [];
     public List<(int Uid, int Count)> Branches = [];
+
+    /// <summary>The rest's uids in layout order, front first.</summary>
+    public List<int> RestOrder = [];
+
+    /// <summary>Why the macro draw was off at the last pending that could have taken it (an observer met in the step).</summary>
+    public string? MacroOff;
+
+    long _drawCalls;
+
+    /// <summary>The draw watch (<c>CombatEngine.DrawWatch</c>): numbers each draw call on this run's pile from 1 (0 for another pile's).</summary>
+    public long OnDraw(CombatState s) => ReferenceEquals(s, state) ? ++_drawCalls : 0;
+
+    /// <summary>The take watch (<c>CombatEngine.TakeWatch</c>): records each take off this run's pile.</summary>
+    public void OnTake(CombatState s, int index)
+    {
+        if (ReferenceEquals(s, state) && index >= 0 && index < s.DrawPile.Count)
+        {
+            _takes.Add((s.DrawPile[index].Uid, Sts2Emulator.Core.Effects.CardEffects.PlainTake, _calls));
+        }
+    }
 
     /// <summary>The rest's first card in the layout: the next card a draw off the top of the unknown middle takes.</summary>
     public int Front;
@@ -282,6 +340,7 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
         }
 
         CheckRest();
+        _calls++;
         CheckTie(call);
         if (call.Kind == ChanceKind.RawDouble)
         {
@@ -305,6 +364,7 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
 
                 var (order, rest, branches) = DrawSteer.Layout(state, state.DrawPile, drawn[Epoch], byCard);
                 (_target, Rest, Branches) = (order, rest, branches);
+                RestOrder = [.. order.Skip(drawn[Epoch].Count).Select(c => c.Uid)];
                 Front = rest.Count > 0 ? order[drawn[Epoch].Count].Uid : 0;
                 _steerNext = call.Max;
                 return Steer(call);
@@ -384,8 +444,9 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
     /// order, uniformly. A card of the rest taken from further down by such a pick, or by a screen's choice, leaves the
     /// rest's order unread, so it does not branch.
     /// </summary>
-    public void CheckRest()
+    public void CheckRest(bool end = false)
     {
+        VerifyBlocks(end);
         if (Front == 0)
         {
             return;
@@ -399,7 +460,86 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
             }
         }
 
-        throw new DrawPending(Epoch, Branches, Rest.Count);
+        int take = macro ? PlainRun() : 1;
+        if (take >= 2 && DrawObservers.Off(state) is { } off)
+        {
+            MacroOff = off;
+            take = 1;
+        }
+
+        throw new DrawPending(Epoch, Branches, Rest.Count, take, [.. RestOrder], _calls);
+    }
+
+    /// <summary>
+    /// How many of the rest's cards, from the front in layout order, one draw call's loop took in a row since the last
+    /// check (1 when the front was not such a take). A front taken right after a macro block by the same loop between the
+    /// same checks means the replay drew more than the block's run did: the count drawn depended on the cards.
+    /// </summary>
+    int PlainRun()
+    {
+        int i = _takes.FindIndex(x => x.Uid == Front && x.Call == _calls);
+        if (i < 0 || _takes[i].Action == 0)
+        {
+            return 1;
+        }
+
+        var (_, action, call) = _takes[i];
+        if (i > 0 && _takes[i - 1].Action == action && _takes[i - 1].Call == call && EndsBlock(_takes[i - 1].Uid, call))
+        {
+            throw new SolveRefused("macro-draw-mismatch: a replay drew past a macro draw's cards in the same run of draws");
+        }
+
+        int j = 1;
+        while (j < RestOrder.Count && i + j < _takes.Count && _takes[i + j].Uid == RestOrder[j] && _takes[i + j].Action == action && _takes[i + j].Call == call)
+        {
+            j++;
+        }
+
+        return j;
+    }
+
+    bool EndsBlock(int uid, int call)
+    {
+        foreach (var b in _blocks)
+        {
+            if (b.Epoch == Epoch && b.Call == call && b.Uids[^1] == uid)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Each macro block is taken again as its run took it: at the check it was found at, every card of it taken, in its
+    /// order, by one draw call's loop, between the same two checks. Otherwise the replay drew a different count, which
+    /// the hypergeometric node cannot carry: refused (an observer the registry does not know).
+    /// </summary>
+    void VerifyBlocks(bool end)
+    {
+        while (_verified < _blocks.Count && _blocks[_verified].Call <= _calls)
+        {
+            var b = _blocks[_verified];
+            int i = _takes.FindIndex(x => x.Uid == b.Uids[0] && x.Call == b.Call);
+            bool ok = i >= 0 && _takes[i].Action != 0 && i + b.Uids.Length <= _takes.Count;
+            for (int r = 1; ok && r < b.Uids.Length; r++)
+            {
+                ok = _takes[i + r].Uid == b.Uids[r] && _takes[i + r].Action == _takes[i].Action && _takes[i + r].Call == b.Call;
+            }
+
+            if (!ok)
+            {
+                throw new SolveRefused($"macro-draw-mismatch: a replay did not draw a macro draw's cards as its run did (block [{string.Join(",", b.Uids)}] at check {b.Call}; takes [{string.Join(" ", _takes.Take(16).Select(x => $"{x.Uid}/{x.Action}/{x.Call}"))}])");
+            }
+
+            _verified++;
+        }
+
+        if (end && _verified < _blocks.Count)
+        {
+            throw new SolveRefused("macro-draw-mismatch: a replay ended before a macro draw's cards were drawn");
+        }
     }
 }
 
@@ -417,43 +557,95 @@ public static class Successors
     public static StepResult Step(CombatState s, CountingRandom rng, Move m) =>
         s.Kernel is { AnyOn: true } k ? KernelGate.Step(k.Shared, s, rng, m.Action, m.Target) : CombatEngine.Step(s, m.Action, rng, m.Target);
 
-    public static List<Outcome> Expand(CombatState state, CountingRandom rng, Move move, bool byCard, int widthCap, SolveCounters counters)
+    /// <summary>Every outcome of the move at once (the reference, the tests): <see cref="Stream" /> collected.</summary>
+    public static List<Outcome> Expand(CombatState state, CountingRandom rng, Move move, bool byCard, int widthCap, SolveCounters counters, bool macro = false) =>
+        [.. Stream(state, rng, move, byCard, widthCap, counters, macro)];
+
+    /// <summary>
+    /// The outcomes of the move one at a time, each produced on demand: a caller that solves an outcome's children before
+    /// asking for the next keeps one outcome's copy alive per expansion, not all of them (the expansion itself holds only
+    /// its pending answer lists). <paramref name="macro" />: a run of plain draws from the unknown middle is one node over
+    /// the sub-multisets drawn (FIGHT_SOLVER.md section 17), unless the hand is kept in order or a draw observer is present.
+    /// </summary>
+    public static IEnumerable<Outcome> Stream(CombatState state, CountingRandom rng, Move move, bool byCard, int widthCap, SolveCounters counters, bool macro = false)
     {
+        var kind = SolveCounters.KindOf(state, move);
+        counters.MovesByKind[(int)kind]++;
         int prof = SolverProf.Enter(Phase.Chance);
         try
         {
-            var kind = SolveCounters.KindOf(state, move);
-            counters.MovesByKind[(int)kind]++;
-            var outcomes = ExpandCore(state, rng, move, byCard, widthCap, counters, kind);
-            if (kind == MoveKind.EndTurn)
+            foreach (var c in StateKey.AllCards(state))
             {
-                counters.EndTurnLeaves += outcomes.Count;
+                if (OrderPeekers.Contains(Math.Abs(c.DefId)))
+                {
+                    throw new SolveRefused($"draw-peek: {Cards.Get(Math.Abs(c.DefId)).Name} reads the draw pile's order");
+                }
             }
 
-            return outcomes;
         }
         finally
         {
             SolverProf.Exit(prof);
         }
-    }
 
-    static List<Outcome> ExpandCore(CombatState state, CountingRandom rng, Move move, bool byCard, int widthCap, SolveCounters counters, MoveKind kind)
-    {
-        foreach (var c in StateKey.AllCards(state))
-        {
-            if (OrderPeekers.Contains(Math.Abs(c.DefId)))
-            {
-                throw new SolveRefused($"draw-peek: {Cards.Get(Math.Abs(c.DefId)).Name} reads the draw pile's order");
-            }
-        }
-
-        var outcomes = new List<Outcome>();
-        var stack = new Stack<(int[] Answers, List<List<int>> Drawn, Rational P)>();
-        stack.Push(([], [[]], Rational.One));
+        bool useMacro = macro && !byCard;
+        // An open screen's answer replays its step from the start, and the pile after the screen is the screen's own copy:
+        // the takes there need not follow the layout, so the macro draw is off (the replay's takes refused it: #424 of the harness).
+        var gate = new ParentGate(state, state.PendingSelection is not null ? "screen-answer" : null);
+        var stack = new Stack<(int[] Answers, List<List<int>> Drawn, List<MacroBlock> Blocks, Rational P)>();
+        stack.Push(([], [[]], [], Rational.One));
         while (stack.Count > 0)
         {
-            var (answers, drawn, p) = stack.Pop();
+            Outcome? produced;
+            prof = SolverProf.Enter(Phase.Chance);
+            try
+            {
+                produced = Run(state, rng, move, byCard, widthCap, counters, kind, stack, useMacro, gate);
+            }
+            finally
+            {
+                SolverProf.Exit(prof);
+            }
+
+            if (produced is not null)
+            {
+                if (kind == MoveKind.EndTurn)
+                {
+                    counters.EndTurnLeaves++;
+                }
+
+                yield return produced;
+            }
+        }
+    }
+
+    /// <summary>Why the macro draw is off at the expansion's position (<see cref="DrawObservers.Off" />), asked once, at its first run of plain draws.</summary>
+    sealed class ParentGate(CombatState state, string? preset)
+    {
+        bool _done = preset is not null;
+        string? _reason = preset;
+
+        public string? Reason
+        {
+            get
+            {
+                if (!_done)
+                {
+                    (_done, _reason) = (true, DrawObservers.Off(state));
+                }
+
+                return _reason;
+            }
+        }
+    }
+
+    /// <summary>One run of the step off the stack: its outcome, or null when it stopped at a roll or a draw (its branches pushed).</summary>
+    static Outcome? Run(
+        CombatState state, CountingRandom rng, Move move, bool byCard, int widthCap, SolveCounters counters, MoveKind kind,
+        Stack<(int[] Answers, List<List<int>> Drawn, List<MacroBlock> Blocks, Rational P)> stack, bool macro, ParentGate gate)
+    {
+        {
+            var (answers, drawn, blocks, p) = stack.Pop();
             counters.Steps++;
             counters.RunsByKind[(int)kind]++;
             long levels = answers.Length;
@@ -482,6 +674,7 @@ public static class Successors
             }
 
             var (order, rest, branches) = DrawSteer.Layout(copy, middle, drawn[0], byCard);
+            List<int> restOrder = [.. order.Skip(drawn[0].Count).Select(c => c.Uid)];
             int front = rest.Count > 0 ? order[drawn[0].Count].Uid : 0;
             if (kept is { } k)
             {
@@ -502,36 +695,87 @@ public static class Successors
                 }
             }
 
-            var source = new SolverChance(copy, answers, [.. drawn.Select(d => d.ToList())], byCard, widthCap) { Rest = rest, Branches = branches, Front = front };
+            var source = new SolverChance(copy, answers, [.. drawn.Select(d => d.ToList())], byCard, widthCap, macro, blocks)
+            {
+                Rest = rest, Branches = branches, Front = front, RestOrder = restOrder,
+            };
             try
             {
                 ChanceHook.Attach(copy, r, source);
                 StepResult result;
                 int stepProf = SolverProf.Enter(Phase.Step);
+                CombatEngine.TakeWatch = source.OnTake;
+                CombatEngine.DrawWatch = source.OnDraw;
                 try
                 {
                     result = Step(copy, r, move);
-                    source.CheckRest();
+                    source.CheckRest(end: true);
                 }
                 finally
                 {
+                    CombatEngine.TakeWatch = null;
+                    CombatEngine.DrawWatch = null;
                     SolverProf.Exit(stepProf);
                     ChanceHook.Attach(copy, r, null);
                 }
 
                 CheckLayout(copy, source, known);
-                outcomes.Add(new Outcome(copy, r, result, p));
+                return new Outcome(copy, r, result, p);
             }
             catch (ChancePending pending)
             {
                 var odds = Odds(pending.Call);
                 for (int i = odds.Count - 1; i >= 0; i--)
                 {
-                    stack.Push(([.. answers, odds[i].Value], drawn, p * odds[i].P));
+                    stack.Push(([.. answers, odds[i].Value], drawn, blocks, p * odds[i].P));
                 }
             }
             catch (DrawPending d)
             {
+                if (d.Take >= 2 && gate.Reason is null)
+                {
+                    counters.MacroNodes++;
+                    counters.MacroDrawsAvoided += d.Take - 1;
+                    var sizes = d.Branches.Select(b => b.Count).ToArray();
+                    var parts = MacroDraw.Parts(sizes, d.Take);
+                    for (int x = parts.Count - 1; x >= 0; x--)
+                    {
+                        var (counts, q) = parts[x];
+                        var uids = new List<int>(d.Take);
+                        int off0 = 0;
+                        for (int g = 0; g < sizes.Length; g++)
+                        {
+                            for (int c = 0; c < counts[g]; c++)
+                            {
+                                uids.Add(d.Rest[off0 + c]);
+                            }
+
+                            off0 += sizes[g];
+                        }
+
+                        var next = drawn.Select(y => y.ToList()).ToList();
+                        while (next.Count <= d.Epoch)
+                        {
+                            next.Add([]);
+                        }
+
+                        next[d.Epoch].AddRange(uids);
+                        stack.Push((answers, next, [.. blocks, new MacroBlock(d.Epoch, [.. uids], d.Call)], p * q));
+                    }
+
+                    return null;
+                }
+
+                string? why = source.MacroOff ?? (d.Take >= 2 ? gate.Reason : null);
+                if (why is not null)
+                {
+                    counters.MacroOff[why] = counters.MacroOff.GetValueOrDefault(why) + 1;
+                }
+                else if (macro)
+                {
+                    counters.DrawNodesSingle++;
+                }
+
                 for (int b = d.Branches.Count - 1; b >= 0; b--)
                 {
                     var next = drawn.Select(x => x.ToList()).ToList();
@@ -541,14 +785,14 @@ public static class Successors
                     }
 
                     next[d.Epoch].Add(d.Branches[b].Uid);
-                    stack.Push((answers, next, p * new Rational(d.Branches[b].Count, d.Size)));
+                    stack.Push((answers, next, blocks, p * new Rational(d.Branches[b].Count, d.Size)));
                 }
             }
             catch (WideRollLeaf)
             {
                 // A roll wider than the cap: this branch (probability p) is a horizon leaf at the move's position.
                 counters.WideRollLeaves++;
-                outcomes.Add(new Outcome(state, rng, default!, p, WideRoll: true));
+                return new Outcome(state, rng, default!, p, WideRoll: true);
             }
             catch (ChanceRefused e)
             {
@@ -572,7 +816,7 @@ public static class Successors
             }
         }
 
-        return outcomes;
+        return null;
     }
 
     /// <summary>

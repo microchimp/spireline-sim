@@ -8,6 +8,8 @@
     python tools/solver/coverage.py speed   --out OUT --n 60 --budget 100000          (one process, a quiet machine)
     python tools/solver/coverage.py speed-jit --out OUT                                  (the same decisions through EmuDump)
     python tools/solver/coverage.py curve   --out OUT [--second-name solves_1e7.jsonl]
+    python tools/solver/coverage.py memory  --out OUT --ids-file IDS --step-cap N   (one solve per process: peak working set)
+    python tools/solver/coverage.py macro-ab --out OUT --n 120                        (EmuDump, macro draw on against off)
 
 Where the decisions come from. The real game's nightly block (envproto play) keeps no fight positions: its `runs.jsonl` and
 `divergences.jsonl` hold seeds, outcomes and the diverged decisions' hand and energy only, so no real-game decision can be
@@ -48,7 +50,8 @@ NODE_BUDGETS = (10**3, 10**4, 10**5, 10**6, 10**7)
 TIME_BUDGETS = (0.01, 0.1, 1.0, 10.0)
 ESTIMATE_SLACK = 1.0  # SolveOptions.EstimateSlack
 NODE_MONSTER, NODE_ELITE, NODE_BOSS = 1, 2, 6  # rl/run_train/vocab.py
-STEP_CAP = 100_000  # engine runs per solve: bounds the live clones (an expansion holds every outcome while its children are solved)
+STEP_CAP = 10**9  # engine runs per solve: dropped (the wall bounds a solve). The baseline used 10**5 to bound memory while an expansion
+# held every outcome's clone; the streamed expansion keeps one per level (85-118 MB per worker at 3 x 10**5 runs, 0.1-2.3 GB before)
 MAX_HORIZON = 20
 PHASES = ("step", "clone", "key_encode", "key_hash", "rational", "table", "chance", "bound", "remainder")
 
@@ -394,7 +397,8 @@ def cmd_dump(a) -> int:
     return 0
 
 
-def _init_solver(engine: str, flags: int) -> None:
+def _init_solver(engine: str, flags: int, prune: int | None = None) -> None:
+    global PRUNE
     _below_normal()
     _setup_paths()
     import gen0  # noqa: PLC0415
@@ -403,6 +407,34 @@ def _init_solver(engine: str, flags: int) -> None:
     from sts2_gym import native  # noqa: PLC0415
 
     native.solver_debug(flags)
+    PRUNE = prune
+
+
+def peak_working_set_mb() -> float | None:
+    """This process's peak working set in MB (GetProcessMemoryInfo), None off Windows."""
+    if sys.platform != "win32":
+        return None
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t), ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t), ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+
+    c = Counters()
+    c.cb = ctypes.sizeof(Counters)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    if not psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+        return None
+    return round(c.PeakWorkingSetSize / 2**20, 1)
+
+
+PRUNE = None  # the solve's prunings (native.PRUNE_ALL when None); set per worker by _init_solver
 
 
 def _solve(task: tuple) -> dict:
@@ -416,7 +448,8 @@ def _solve(task: tuple) -> dict:
                 "reason": f"snapshot-load: {type(e).__name__}: {str(e)[:160]}", "exact": False, "horizon": -1, "wall_s": 0.0,
                 "censored": False, "stats": {"horizons": []}}
     try:
-        opts = native.SolveOptions(node_budget=int(cap), step_budget=int(step_cap), time_budget_ms=int(wall_s * 1000), max_horizon=MAX_HORIZON)
+        opts = native.SolveOptions(node_budget=int(cap), step_budget=int(step_cap), time_budget_ms=int(wall_s * 1000), max_horizon=MAX_HORIZON,
+                                   prune=native.PRUNE_ALL if PRUNE is None else PRUNE)
         solver = native.solver_create(h, opts)
         try:
             t0 = time.perf_counter()
@@ -430,7 +463,7 @@ def _solve(task: tuple) -> dict:
     hz = st.get("horizons") or []
     censored = bool(hz) and hz[-1]["end"] == "budget" and hz[-1]["nodes"] <= cap and not any(x["exact"] for x in hz)
     return {"id": pid, "cap": cap, "wall_cap_s": wall_s, "step_cap": step_cap, "status": r.status, "reason": r.reason, "exact": bool(r.exact),
-            "horizon": r.horizon, "wall_s": round(wall, 4), "censored": censored, "stats": st}
+            "horizon": r.horizon, "wall_s": round(wall, 4), "censored": censored, "stats": st, "peak_ws_mb": peak_working_set_mb()}
 
 
 def _engine_of(out: Path) -> str:
@@ -455,7 +488,7 @@ def cmd_solve(a) -> int:
     tasks = [(i, pos[i], a.cap, a.wall_s, a.step_cap) for i in ids if i not in done]
     print(f"solving {len(tasks)} decisions (cap {a.cap} nodes, wall {a.wall_s} s, {a.procs} workers)", flush=True)
     ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=min(12, max(1, a.procs)), initializer=_init_solver, initargs=(_engine_of(out), a.debug_flags), maxtasksperchild=4) as pool, \
+    with ctx.Pool(processes=min(12, max(1, a.procs)), initializer=_init_solver, initargs=(_engine_of(out), a.debug_flags, a.prune), maxtasksperchild=4) as pool, \
             open(target, "a", encoding="utf-8") as fh:
         for n, r in enumerate(pool.imap_unordered(_solve, tasks), 1):
             fh.write(json.dumps(r) + "\n")
@@ -513,7 +546,10 @@ def cmd_speed(a) -> int:
     if (out / a.prev_name).is_file():  # the decisions the coverage run solved (not refused), when it has run
         pool = sorted(r["id"] for r in read_jsonl(out / a.prev_name) if r["status"] != -3)
     ids = sorted(rnd.sample(pool, min(a.n, len(pool))))
-    _init_solver(_engine_of(out), 0)
+    if a.ids_from:  # another run's speed.json: its decisions and budget, for a before/after on the same subset
+        prev = json.loads(Path(a.ids_from).read_text(encoding="utf-8"))
+        ids, a.budget = prev["ids"], prev["budget"]
+    _init_solver(_engine_of(out), 0, a.prune)
     res = {}
     for name, flags in (("off", 0), ("timers", 1), ("off2", 0), ("timers2", 1)) if not a.audit_only else ():
         t0 = time.perf_counter()
@@ -628,6 +664,68 @@ def cmd_speed_jit(a) -> int:
     return 0
 
 
+def _memory(task: tuple) -> dict:
+    r = _solve(task)
+    return {k: r[k] for k in ("id", "status", "reason", "exact", "horizon", "wall_s", "peak_ws_mb")} | {
+        "nodes": r["stats"].get("nodes"), "steps": r["stats"].get("engine_steps"), "step_cap": task[4], "cap": task[2]}
+
+
+def cmd_memory(a) -> int:
+    """One solve per worker process (a fresh process each): the process's peak working set after the solve."""
+    out = Path(a.out)
+    pos = {p["id"]: p["doc"] for p in read_jsonl(out / "positions.jsonl")}
+    ids = [x.strip() for x in Path(a.ids_file).read_text(encoding="utf-8").splitlines() if x.strip()]
+    tasks = [(i, pos[i], a.cap, a.wall_s, a.step_cap) for i in ids]
+    ctx = mp.get_context("spawn")
+    rows = []
+    with ctx.Pool(processes=min(6, max(1, a.procs)), initializer=_init_solver, initargs=(_engine_of(out), 0, a.prune), maxtasksperchild=1) as pool:
+        for r in pool.imap(_memory, tasks):
+            rows.append(r)
+            print(f"  {r['id'][-24:]} status {r['status']} steps {r['steps']} nodes {r['nodes']} {r['wall_s']} s peak {r['peak_ws_mb']} MB", flush=True)
+    write_jsonl(out / a.out_name, rows)
+    return 0
+
+
+def cmd_macro_ab(a) -> int:
+    """The macro draw on against off, pruned against pruned, through EmuDump (exact rationals): every root move's value and the
+    root value must be equal wherever both solves finished the same horizon."""
+    import subprocess  # noqa: PLC0415
+
+    out = Path(a.out)
+    pos = {p["id"]: p["doc"] for p in read_jsonl(out / "positions.jsonl")}
+    pool = sorted(r["id"] for r in read_jsonl(Path(a.prev_name)) if r["status"] != -3 and exact_within_nodes(r["stats"].get("horizons") or [], a.budget))
+    ids = sorted(random.Random(a.seed).sample(pool, min(a.n, len(pool))))
+    docs = out / "macro_ab_docs.jsonl"
+    write_jsonl(docs, [{"id": i, "doc": pos[i]} for i in ids])
+    res = {}
+    for name, prune in (("on", "all"), ("off", "-MacroDraw")):
+        p = subprocess.run(["dotnet", a.emudump, "solve", "--snapshot", str(docs), "--engine", _engine_of(out), "--budget-nodes", str(a.budget * 10),
+                            "--budget-steps", str(a.step_cap), "--budget-ms", str(int(a.wall_s * 1000)), "--horizon", str(MAX_HORIZON), "--prune", prune],
+                           capture_output=True, text=True, check=True, cwd=str(out))
+        res[name] = {json.loads(x)["id"]: json.loads(x) for x in p.stdout.splitlines()}
+    rows, diffs = [], []
+    for i in ids:
+        on, off = res["on"][i].get("expected") or {}, res["off"][i].get("expected") or {}
+        same_h = on.get("horizon") == off.get("horizon") and on.get("status") == off.get("status") and on.get("status") in ("exact", "budget")
+        d = []
+        if same_h:
+            if on.get("value") != off.get("value"):
+                d.append("value")
+            mv = {(m["action"], m["target"]): m["value"] for m in off.get("moves") or []}
+            d += [f"move {m['action']}/{m['target']}" for m in on.get("moves") or [] if mv.get((m["action"], m["target"])) != m["value"]]
+        st_on, st_off = res["on"][i].get("stats") or {}, res["off"][i].get("stats") or {}
+        rows.append({"id": i, "compared": same_h, "status": on.get("status"), "horizon": on.get("horizon"), "diffs": d,
+                     "steps_on": st_on.get("engine_steps"), "steps_off": st_off.get("engine_steps"), "macro_nodes": st_on.get("macro_nodes"),
+                     "macro_root": st_on.get("macro_root")})
+        diffs += [f"{i}: {x}" for x in d]
+    write_jsonl(out / "macro_ab.jsonl", rows)
+    rep = {"decisions": len(rows), "compared": sum(r["compared"] for r in rows), "differences": len(diffs), "first": diffs[:10],
+           "steps_on": sum(r["steps_on"] or 0 for r in rows if r["compared"]), "steps_off": sum(r["steps_off"] or 0 for r in rows if r["compared"])}
+    (out / "macro_ab.json").write_text(json.dumps(rep, indent=1), encoding="utf-8")
+    print(json.dumps(rep, indent=1))
+    return 0 if not diffs else 1
+
+
 def cmd_curve(a) -> int:
     out = Path(a.out)
     dec = read_jsonl(out / "decisions.jsonl")
@@ -651,7 +749,7 @@ def cmd_curve(a) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("collect", "sample", "dump", "solve", "check", "speed", "speed-jit", "curve"):
+    for name in ("collect", "sample", "dump", "solve", "check", "speed", "speed-jit", "curve", "memory", "macro-ab"):
         p = sub.add_parser(name)
         p.add_argument("--out", required=True)
         p.add_argument("--seed", type=int, default=20261028)
@@ -670,6 +768,9 @@ def main(argv=None) -> int:
         p.add_argument("--budgets", default="10000,100000,1000000")
         p.add_argument("--budget", type=int, default=100000)
         p.add_argument("--step-cap", type=int, default=STEP_CAP)
+        p.add_argument("--prune", type=int, default=None, help="the prunings' bits (native.PRUNE_*); all when absent")
+        p.add_argument("--ids-from", default="", help="speed: another run's speed.json, whose decisions and budget are taken")
+        p.add_argument("--ids-file", default="", help="memory: one decision id per line")
         p.add_argument("--debug-flags", type=int, default=0)
         p.add_argument("--audit", action="store_true")
         p.add_argument("--audit-only", action="store_true")
@@ -678,7 +779,7 @@ def main(argv=None) -> int:
     if a.cmd == "speed" and a.out_name == "solves.jsonl":
         a.out_name = "speed.json"
     return {"collect": cmd_collect, "sample": cmd_sample, "dump": cmd_dump, "solve": cmd_solve, "check": cmd_check,
-            "speed": cmd_speed, "speed-jit": cmd_speed_jit, "curve": cmd_curve}[a.cmd](a)
+            "speed": cmd_speed, "speed-jit": cmd_speed_jit, "curve": cmd_curve, "memory": cmd_memory, "macro-ab": cmd_macro_ab}[a.cmd](a)
 
 
 if __name__ == "__main__":

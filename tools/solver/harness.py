@@ -25,7 +25,11 @@ follow the 400 mixed recipes:
   `encounter` names the fight, `until` the buff the player waits for, ending turns (`player:`
   or `enemy:`), `fixture` the corpus file whose deck it uses; enemy HP is capped at 30, so the
   turn cannot end the fight. L0 reads the player's HP only, so Tender's order shows in the
-  value at horizon 1 (the enemy's attack meets the block), Thorns' within the turn.
+  value at horizon 1 (the enemy's attack meets the block), Thorns' within the turn;
+- macro draw (FIGHT_SOLVER.md section 17): a five-card draw over six distinct values (mid-turn through Expertise, and
+  the turn start's draw at horizon 1 with cards too dear to play twice), one crossing a reshuffle, and one per draw
+  observer and per reason the macro draw switches off (`macro` names it), each on both engines: the position is set
+  after the cut (`hand`, `draw_pile`, `discard_pile`, the player's `buff` as Name:amount, `energy`).
 
     python tools/solver/harness.py          # write the list
     python tools/solver/harness.py --check  # fail if the list on disk differs
@@ -70,6 +74,25 @@ ORDER = [
 ]
 ORDER_COUNT = 6  # recipes per fight: both engines, three seeds
 
+# The macro draw's positions: (macro, hand, draw pile, discard pile, buff, energy, horizon).
+MACRO_PILE = ["Anger", "Whirlwind", "Bash", "Uppercut", "Impervious", "Thunderclap"]
+TURN_PILE = ["Bash", "Bludgeon", "Impervious", "Uppercut", "Barricade", "DemonForm"]
+EXPERTISE = ["Expertise", "DefendIronclad"]
+MACRO = [
+    ("draw5-mid", EXPERTISE, MACRO_PILE, [], "", 1, 0),
+    ("draw5-turn", ["DefendIronclad"], TURN_PILE, [], "", 0, 1),
+    ("reshuffle", EXPERTISE, MACRO_PILE[:3], MACRO_PILE[3:], "", 1, 0),
+    ("hand-ordered", EXPERTISE, MACRO_PILE, ["CalculatedGamble"], "", 1, 0),
+    ("observer:Hellraiser", EXPERTISE, ["StrikeIronclad", *MACRO_PILE[:5]], [], "Hellraiser:1", 1, 0),
+    ("observer:ChainsOfBinding", EXPERTISE, MACRO_PILE, [], "ChainsOfBinding:2", 1, 0),
+    ("observer:Speedster", EXPERTISE, MACRO_PILE, [], "Speedster:3", 1, 0),
+    ("observer:Iteration", EXPERTISE, ["Wound", *MACRO_PILE[:5]], [], "Iteration:1", 1, 0),
+    ("observer:Pagestorm", EXPERTISE, ["Dazed", *MACRO_PILE[:5]], [], "Pagestorm:1", 1, 0),
+    ("observer:Stratagem", EXPERTISE, MACRO_PILE, [], "StratagemPower:1", 1, 0),
+    ("observer:Pillage", ["Pillage", "DefendIronclad"], MACRO_PILE, [], "", 1, 0),
+    ("observer:Scrape", ["Scrape", "DefendIronclad"], MACRO_PILE, [], "", 1, 0),
+]
+
 
 def horizon(i: int) -> int:
     """1 for about one recipe in six, by a sha256 of the index alone."""
@@ -94,6 +117,12 @@ def base(i: int, **kw) -> dict:
         "encounter": "",
         "until": "",
         "fixture": "",
+        "macro": "",
+        "hand": [],
+        "draw_pile": [],
+        "discard_pile": [],
+        "buff": "",
+        "energy": -1,
     }
     r.update(kw)
     return r
@@ -135,6 +164,29 @@ def recipes() -> list[dict]:
                     encounter=encounter,
                     until=until,
                     fixture=fixture,
+                )
+            )
+            i += 1
+    for macro, hand, draw, discard, buff, energy, h in MACRO:
+        for engine in ("old", "core2"):
+            out.append(
+                base(
+                    i,
+                    source="selfplay",
+                    engine=engine,
+                    steps=0,
+                    enemy_hp=9,
+                    draw_keep=0,
+                    discard_keep=0,
+                    mix=[],
+                    after=0,
+                    horizon=h,
+                    macro=macro,
+                    hand=hand,
+                    draw_pile=draw,
+                    discard_pile=discard,
+                    buff=buff,
+                    energy=energy,
                 )
             )
             i += 1

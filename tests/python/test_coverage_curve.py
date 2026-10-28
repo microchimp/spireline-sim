@@ -137,5 +137,23 @@ class CurveTests(unittest.TestCase):
         self.assertEqual(r["ratio_median"], 0.75)
 
 
+class MemoryTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "GetProcessMemoryInfo is Windows only")
+    def test_the_peak_working_set_is_read_and_never_falls(self):
+        a = cov.peak_working_set_mb()
+        block = bytearray(64 * 2**20)  # touch 64 MB
+        block[:: 4096] = b"x" * len(block[:: 4096])
+        b = cov.peak_working_set_mb()
+        self.assertGreater(a, 0)
+        self.assertGreaterEqual(b, a + 32)
+        del block
+        self.assertGreaterEqual(cov.peak_working_set_mb(), b)
+
+    def test_the_new_subcommands_parse(self):
+        for cmd in ("memory", "macro-ab"):
+            with self.assertRaises(SystemExit):
+                cov.main([cmd, "--help"])
+
+
 if __name__ == "__main__":
     unittest.main()

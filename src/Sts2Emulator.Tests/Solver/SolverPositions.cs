@@ -17,7 +17,9 @@ namespace Sts2Emulator.Tests.Solver;
 /// </summary>
 internal static class SolverPositions
 {
-    public sealed record Recipe(int Id, string Source, string Engine, int Seed, int Setup, int Steps, int EnemyHp, int DrawKeep, int DiscardKeep, string[] Mix, int After, int Horizon, string Play, string Encounter, string Until, string Fixture);
+    public sealed record Recipe(
+        int Id, string Source, string Engine, int Seed, int Setup, int Steps, int EnemyHp, int DrawKeep, int DiscardKeep, string[] Mix, int After, int Horizon,
+        string Play, string Encounter, string Until, string Fixture, string Macro, string[] Hand, string[] DrawPile, string[] DiscardPile, string Buff, int Energy);
 
     public sealed record Position(Recipe Recipe, CombatState State, CountingRandom Rng);
 
@@ -98,6 +100,7 @@ internal static class SolverPositions
             if (s.PendingSelection is null)
             {
                 Cut(s, r, mix);
+                Set(s, r);
             }
 
             for (int i = 0; i < r.After; i++)
@@ -197,6 +200,43 @@ internal static class SolverPositions
         Trim(s.DiscardPile, r.DiscardKeep, pointed);
         s.KnownTopCount = Math.Clamp(s.KnownTopCount, 0, s.DrawPile.Count);
         s.KnownBottomCount = Math.Clamp(s.KnownBottomCount, 0, s.DrawPile.Count - s.KnownTopCount);
+    }
+
+    /// <summary>A macro-draw recipe's position: its hand, draw and discard piles of fresh cards, the player's buff and energy.</summary>
+    static void Set(CombatState s, Recipe r)
+    {
+        List<CardInstance> Fresh(string[]? names) =>
+            [.. (names ?? []).Select(Cards.FindId).Where(x => x is not null).Select(x => s.Fresh(new CardInstance(x!.Value, false)))];
+        if (r.Hand is { Length: > 0 })
+        {
+            s.Hand.Clear();
+            s.Hand.AddRange(Fresh(r.Hand));
+        }
+
+        if (r.DrawPile is { Length: > 0 })
+        {
+            s.DrawPile.Clear();
+            s.DrawPile.AddRange(Fresh(r.DrawPile));
+            s.KnownTopCount = 0;
+            s.KnownBottomCount = 0;
+        }
+
+        if (r.DiscardPile is { Length: > 0 })
+        {
+            s.DiscardPile.Clear();
+            s.DiscardPile.AddRange(Fresh(r.DiscardPile));
+        }
+
+        if (r.Buff is { Length: > 0 } buff)
+        {
+            var parts = buff.Split(':');
+            BuffSystem.Apply(s.PlayerBuffs, Enum.Parse<BuffId>(parts[0]), int.Parse(parts[1]));
+        }
+
+        if (r.Energy >= 0)
+        {
+            s.Energy = r.Energy;
+        }
     }
 
     static void Trim(List<CardInstance> pile, int keep, HashSet<int> pointed)

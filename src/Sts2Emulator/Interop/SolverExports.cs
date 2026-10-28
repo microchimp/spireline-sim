@@ -510,7 +510,7 @@ public static class SolverExports
         foreach (var (name, bit) in new[]
         {
             ("Transposition", Pruning.Transposition), ("MultisetHand", Pruning.MultisetHand), ("InterchangeableEnemies", Pruning.InterchangeableEnemies),
-            ("SubtreeReuse", Pruning.SubtreeReuse), ("DrawByValue", Pruning.DrawByValue),
+            ("SubtreeReuse", Pruning.SubtreeReuse), ("DrawByValue", Pruning.DrawByValue), ("MacroDraw", Pruning.MacroDraw),
         })
         {
             prunings[name] = (int)bit;

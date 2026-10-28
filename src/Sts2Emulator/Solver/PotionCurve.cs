@@ -324,12 +324,12 @@ public static class PotionCurve
                 return Leaf(s);
             }
 
-            var outcomes = Successors.Expand(s, rng, m, byCard: !On(Pruning.DrawByValue), options.ChanceWidthCap, _c);
+            // One outcome at a time, its children solved before the next is made (Expectimax.MoveValueOf).
+            var outcomes = Successors.Stream(s, rng, m, byCard: !On(Pruning.DrawByValue), options.ChanceWidthCap, _c, macro: On(Pruning.MacroDraw));
             var acc = new Acc(_ids.Length);
             if (On(Pruning.Transposition))
             {
-                var groups = new Dictionary<UInt128, (Outcome First, Rational P)>();
-                var order = new List<UInt128>();
+                var children = new Dictionary<UInt128, Stats>();
                 foreach (var o in outcomes)
                 {
                     if (o.WideRoll)
@@ -346,21 +346,13 @@ public static class PotionCurve
                     }
 
                     var k = Key(o.State);
-                    if (groups.TryGetValue(k, out var g))
+                    if (!children.TryGetValue(k, out var child))
                     {
-                        groups[k] = (g.First, g.P + o.P);
+                        child = Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn));
+                        children[k] = child;
                     }
-                    else
-                    {
-                        groups[k] = (o, o.P);
-                        order.Add(k);
-                    }
-                }
 
-                foreach (var k in order)
-                {
-                    var (o, p) = groups[k];
-                    acc.Add(p, Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn)));
+                    acc.Add(o.P, child);
                 }
             }
             else

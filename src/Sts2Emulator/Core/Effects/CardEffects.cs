@@ -2685,6 +2685,7 @@ public static class CardEffects
             return;
         }
 
+        long action = CombatEngine.DrawWatch?.Invoke(state) ?? 0;
         for (int i = 0; i < count; i++)
         {
             // `CardPileCmd.Draw` STOPS at a full hand -- `if (num <= 0) break`, and again on
@@ -2716,7 +2717,17 @@ public static class CardEffects
             // `HellraiserPower.AfterCardDrawnEarly`, the one EARLY draw hook: a drawn Strike
             // is auto-played there and then -- before every `AfterCardDrawn` hook (Chains of
             // Binding, Confused and the rest below) and before the next card is drawn.
-            var top = state.RemoveFromDrawPileAt(0);
+            CardInstance top;
+            PlainTake = action;
+            try
+            {
+                top = state.RemoveFromDrawPileAt(0);
+            }
+            finally
+            {
+                PlainTake = 0;
+            }
+
             bool hellraised =
                 BuffSystem.Get(state.PlayerBuffs, BuffId.Hellraiser) > 0
                 && IsStrikeCard(top.DefId);
@@ -3802,6 +3813,14 @@ public static class CardEffects
     /// only: they touch no state and no stream, and are balanced on every exit, a pending chance or screen included.
     /// </summary>
     [ThreadStatic] internal static int DiscardShuffleDepth;
+
+    /// <summary>
+    /// While the draw loop of <see cref="DrawCards(CombatState, int, Random, List{CardInstance}?, bool)" /> takes its card
+    /// off the top, the number the fight solver's draw watch gave that draw call (<c>CombatEngine.DrawWatch</c>), else 0:
+    /// what the macro draw reads to know which takes of the draw pile were one draw's plain draws (FIGHT_SOLVER.md
+    /// section 17). Read nowhere in the engine, 0 outside a solver run, and back to 0 after every take.
+    /// </summary>
+    [ThreadStatic] internal static long PlainTake;
 
     /// <inheritdoc cref="DiscardShuffleDepth" />
     [ThreadStatic] internal static int StableShuffleDepth;

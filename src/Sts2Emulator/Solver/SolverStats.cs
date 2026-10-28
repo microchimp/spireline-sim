@@ -266,6 +266,17 @@ public static class SolverStatsJson
             });
         }
 
+        static JsonObject MacroOffJson(SolveCounters c)
+        {
+            var o = new JsonObject();
+            foreach (var (k, v) in c.MacroOff.OrderBy(x => x.Key, StringComparer.Ordinal))
+            {
+                o[k] = v;
+            }
+
+            return o;
+        }
+
         var refusals = new JsonObject();
         foreach (var (k, v) in c.Refusals.OrderBy(x => x.Key, StringComparer.Ordinal))
         {
@@ -289,6 +300,11 @@ public static class SolverStatsJson
             ["terminal_leaves"] = c.Leaves,
             ["horizon_leaves"] = c.HorizonLeaves,
             ["wide_roll_leaves"] = c.WideRollLeaves,
+            ["macro_nodes"] = c.MacroNodes,
+            ["macro_draws_avoided"] = c.MacroDrawsAvoided,
+            ["draw_nodes_single"] = c.DrawNodesSingle,
+            ["macro_off"] = MacroOffJson(c),
+            ["macro_root"] = c.MacroRoot,
             ["screens"] = c.Screens,
             ["refusals"] = refusals,
             ["wall_seconds"] = r.Seconds,

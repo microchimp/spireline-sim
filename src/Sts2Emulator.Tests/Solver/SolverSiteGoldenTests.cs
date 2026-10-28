@@ -77,7 +77,7 @@ public class SolverSiteGoldenTests(ITestOutputHelper output)
         Play(trace, r, rr, 7, 60);
         var corpus = SolverPositions.Corpus();
         int built = 0;
-        foreach (var recipe in SolverPositions.Recipes().Where(x => x.Id % 23 == 0))
+        foreach (var recipe in SolverPositions.Recipes().Where(x => x.Id % 23 == 0 && x.Macro.Length == 0))
         {
             if (SolverPositions.Build(recipe, corpus) is { } pos)
             {

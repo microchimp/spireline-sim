@@ -525,7 +525,7 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   roll, so a draw branches before any roll that follows it. A discard shuffle inside a step is laid out the same way
   by answering its Fisher-Yates calls. A screen's answer lays out the screen copy's pile (a draw-pile choice keeps its
   chosen card at its index), which the replay puts back at the screen. Refused: a card that peeks at the pile's order
-  (I Am Invincible, Perfect Fit), a random placement into a known run (`hidden-branch`). Refusals left: `draw-peek`, `draw-tie`, `hidden-branch`, `draw-order`, `card-uid`, `unlisted-roll`, `empty-range`, `cycle`, `table-engine`, `engine-error`, a busy kernel queue (the key's refusal) and `budget` (no horizon completed). A roll wider than the width cap (default 32) is not refused since the baseline round (section 16): its branch is a horizon leaf. The macro draw (`DrawModel.MacroDraw`) is not wired: draws are sequential, merged by value
+  (I Am Invincible, Perfect Fit), a random placement into a known run (`hidden-branch`). Refusals left: `draw-peek`, `draw-tie`, `hidden-branch`, `draw-order`, `card-uid`, `unlisted-roll`, `empty-range`, `cycle`, `table-engine`, `engine-error`, `macro-draw-mismatch` (section 17), a busy kernel queue (the key's refusal) and `budget` (no horizon completed). A roll wider than the width cap (default 32) is not refused since the baseline round (section 16): its branch is a horizon leaf. Since the macro-draw round (section 17) a run of plain draws is one node over the sub-multisets drawn where no draw observer is present; otherwise draws are sequential, merged by value
   and, for their successors, by key.
 - **Exact means proved.** A node carries a sound upper bound (a horizon leaf's is L0's maximum, 1); a max node is exact
   when a move of greatest value is exact and no move's bound is above it, a chance node when every outcome is. An
@@ -644,3 +644,51 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   prunings, node cap and wall cap, engine steps uncapped) and the coverage at each node and time budget is read from the
   horizons of that run, with the size estimate's skip rule applied at the budget read; `check` holds a direct solve at a
   budget to the reading. Results go under the lab's results directory, never committed.
+
+## 17. The macro draw and the streamed expansion as built (optimisation review change 3)
+
+- **The macro draw** (`Pruning.MacroDraw`, bit 32, in `All`; `Solver/MacroDraw.cs`, `Successors.cs`). A run of plain draws
+  from the unknown middle is one chance node over the distinct sub-multisets drawn, at the multivariate hypergeometric
+  odds prod C(c_v, x_v) / C(n, k) in exact `Rational`, instead of k sequential nodes. It is wired as a k-prefix layout in
+  `DrawSteer`: the run is stepped once with the rest laid out canonically; the chance source watches every take off the
+  draw pile (`CombatEngine.TakeWatch`) and numbers every draw call (`CombatEngine.DrawWatch`), and the draw loop marks its
+  own takes with its call's number (`CardEffects.PlainTake`; thread-statics the engine reads nowhere, null or 0 outside a
+  solver run, so a step is unchanged: the corpus byte proof holds it); at the next check (a
+  chance call or the step's end) `DrawPending` reports how many cards of the rest, from the front in layout order, one
+  draw call's loop took in a row (`Take`). With two or more, each sub-multiset of that size is laid out at the front in
+  canonical order (by value, then uid) and the step is run again. The reshuffle epoch is kept: a draw that runs the old
+  rest out takes all of it as one outcome of probability 1, the reshuffle is steered as before, and the new epoch's
+  draws are a node of their own, so Exact keeps the full mass. A take that is not the draw loop's (a top-card play, a
+  pick, a screen's choice) or a chance call between draws (Confused, Slither) ends the run: those positions branch one
+  at a time, as before. Hindsight keeps its sequential draws (its piles are ordered); the reference draws by card.
+- **Off** where the hand is kept in order (a hand-position reader in the combat, `OrderedPiles` holding `Hand`) or a draw
+  observer can act (`DrawObservers.All`): Hellraiser, Chains of Binding (binds the first cards drawn each turn),
+  Speedster when ten of its hits can kill a living enemy, Iteration, Pagestorm, Stratagem (its pick inside the
+  reshuffle), Pillage (draws until a non-Attack), Scrape (discards what it drew in draw order) and any kernel listener on
+  `AfterCardDrawn` or `AfterCardDrawnEarly`. Checked at the expansion's position and again on the step's copy at each
+  pending run. Off too for an open screen's answer (`screen-answer`): the answer replays the step from its start and the
+  pile after the screen is the screen's own copy, so the takes there need not follow the layout (the harness's Burning
+  Pact screens took the laid-out cards in another order and were refused, `macro-draw-mismatch`, before this rule). The list is a scanned registry: `tools/solver/scan_draw_observers.py` writes `draw_observers.json` from the
+  draw loop's per-card calls, the callers that read a draw's result list, the engine's `X.AfterCardDrawn` hook names, the
+  Core2 models registering on either hook and the kernel's hook ids, each classed in `draw_observer_classes.json`
+  (observer, with the name of its test, or safe, with why); `--check` fails on an unclassed entry, a stale class, a scan
+  older than the sources, or an observer the C# table does not hold, and `DrawObserverTests` holds the table to the file.
+- **A replay that draws otherwise is refused** (`macro-draw-mismatch`): each macro block must be taken again by one draw
+  call's loop, card for card, between the same two checks, and the loop must not take the next card of the rest right
+  after it there. It fires only if the registry misses an observer whose count drawn depends on the cards.
+- **Counters** (`SolveCounters`, the stats JSON): `macro_nodes`, `macro_draws_avoided` (the cards each macro node took,
+  less one, summed), `draw_nodes_single` (draw nodes with the macro draw on that took one card), `macro_off` (draw nodes
+  taken one card at a time because it was off, by reason) and `macro_root` (`on`, `hand-ordered`, `observer:Name`, or
+  `pruning-off`).
+- **The streamed expansion** (the memory fix). `Successors.Stream` yields one outcome at a time; `Expectimax.MoveValueOf`
+  and the potion curve solve an outcome's child before the next outcome's copy is made, keeping each child's value by key
+  for the later outcomes that merge into it. An expansion then holds one live copy (plus its pending answer lists), not
+  every outcome's; the sums are exact rationals, so values, bounds, mass and table entries are unchanged.
+  `Successors.Expand` (the reference, the tests) collects the stream.
+- **Tests.** Harness recipes past the order-dependence ones (`macro` names them, both engines): a five-card draw over six
+  values mid-turn (Expertise) and at the turn start (horizon 1, cards too dear to play twice), a draw across the
+  reshuffle, the ordered hand and one per observer; the harness checks that the observers and the ordered hand switch it
+  off at the root and the five-card draws take it, and adds the `no-macro-draw` configuration. `ChanceModelTests` holds
+  the macro model equal to the sequential model and to the independent count on every harness move, and on draws past the
+  reference (five of eight over six values at a turn start, five of seven over seven, a turn start across the
+  reshuffle).

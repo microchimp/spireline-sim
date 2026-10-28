@@ -30,7 +30,13 @@ public enum Pruning
     /// <summary>A draw from the unknown middle branches over its distinct values at count / size, not over each card.</summary>
     DrawByValue = 16,
 
-    All = Transposition | MultisetHand | InterchangeableEnemies | SubtreeReuse | DrawByValue,
+    /// <summary>
+    /// A run of plain draws from the unknown middle is one chance node over the sub-multisets drawn, hypergeometric
+    /// (FIGHT_SOLVER.md section 17): off where the hand is kept in order or a draw observer is present. Needs <see cref="DrawByValue" />.
+    /// </summary>
+    MacroDraw = 32,
+
+    All = Transposition | MultisetHand | InterchangeableEnemies | SubtreeReuse | DrawByValue | MacroDraw,
 }
 
 /// <summary>

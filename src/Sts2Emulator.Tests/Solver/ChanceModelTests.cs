@@ -24,7 +24,7 @@ public class ChanceModelTests(ITestOutputHelper output)
     public void ExpandMatchesAnIndependentCountOnTheHarnessPositions()
     {
         var corpus = SolverPositions.Corpus();
-        int positions = 0, moves = 0, refused = 0, branching = 0, screens = 0, wide = 0;
+        int positions = 0, moves = 0, refused = 0, branching = 0, screens = 0, wide = 0, macroMoves = 0;
         var bad = new List<string>();
         foreach (var recipe in SolverPositions.Recipes())
         {
@@ -38,11 +38,13 @@ public class ChanceModelTests(ITestOutputHelper output)
             int k = 0;
             foreach (var m in Actions.Legal(pos.State, Pruning.None).Take(6))
             {
-                Dictionary<string, Rational> byValue, byCard;
+                Dictionary<string, Rational> byValue, byCard, macro;
+                var macroCounters = new SolveCounters();
                 try
                 {
                     byValue = Model(pos.State, pos.Rng, m, byCard: false);
                     byCard = Model(pos.State, pos.Rng, m, byCard: true);
+                    macro = Model(pos.State, pos.Rng, m, byCard: false, macro: true, macroCounters);
                 }
                 catch (SolveRefused)
                 {
@@ -64,12 +66,18 @@ public class ChanceModelTests(ITestOutputHelper output)
                     bad.Add($"#{recipe.Id} move {m}: by value and by card differ");
                 }
 
+                macroMoves += macroCounters.MacroNodes > 0 ? 1 : 0;
+                if (!Same(macro, byValue))
+                {
+                    bad.Add($"#{recipe.Id} move {m}: the macro draw and the sequential draw differ");
+                }
+
                 var count = Count(pos.State, m, Samples, unchecked(recipe.Id * 31 + k++));
                 bad.AddRange(Compare(byValue, count, Samples).Select(x => $"#{recipe.Id} move {m}: {x}"));
             }
         }
 
-        output.WriteLine($"positions {positions}, moves counted {moves} ({branching} with more than one outcome, {screens} on an open screen), {Samples} samples each; refused {refused}, with a wide-roll leaf {wide}");
+        output.WriteLine($"positions {positions}, moves counted {moves} ({branching} with more than one outcome, {screens} on an open screen, {macroMoves} on the macro path), {Samples} samples each; refused {refused}, with a wide-roll leaf {wide}");
         foreach (var d in bad.Take(30))
         {
             output.WriteLine(d);
@@ -77,7 +85,73 @@ public class ChanceModelTests(ITestOutputHelper output)
 
         Assert.Empty(bad);
         Assert.True(moves >= 1000 && branching >= 200, $"only {moves} moves, {branching} branching");
+        Assert.True(macroMoves >= 8, $"only {macroMoves} moves on the macro path");
     }
+
+    /// <summary>
+    /// The macro draw on draws past the reference's reach (FIGHT_SOLVER.md section 17): a turn start drawing five of eight
+    /// cards over six values, Expertise drawing five of seven over seven, and a turn start whose draw crosses the
+    /// reshuffle. The hypergeometric node must equal the sequential draw merged by key, exactly, and the independent count.
+    /// </summary>
+    [Fact]
+    public void TheMacroDrawEqualsTheSequentialDrawAndTheCount()
+    {
+        var cases = new (string Name, string[] Hand, string[] Draw, string[] Discard, int Energy, bool EndTurn)[]
+        {
+            ("turn start, 5 of 8 over 6 values", ["DefendIronclad"], ["Bash", "Bludgeon", "Impervious", "Uppercut", "Barricade", "DemonForm", "Bash", "Uppercut"], [], 0, true),
+            ("Expertise, 5 of 7 over 7 values", ["Expertise", "DefendIronclad"], ["Anger", "Whirlwind", "Bash", "Uppercut", "Impervious", "Thunderclap", "Inflame"], [], 1, false),
+            ("turn start across the reshuffle", ["DefendIronclad"], ["Bash", "Bludgeon", "Uppercut"], ["Impervious", "Barricade", "DemonForm", "Inflame", "Anger"], 0, true),
+        };
+        int seed = 41;
+        foreach (var c in cases)
+        {
+            var (s, rng) = Position(c.Hand, c.Draw, c.Discard, c.Energy);
+            int expertise = Cards.FindId("Expertise")!.Value;
+            var m = Actions.Legal(s, Pruning.None).First(x => c.EndTurn ? Actions.EndsTurn(s, x) : x.Action < s.Hand.Count && Math.Abs(s.Hand[x.Action].DefId) == expertise);
+            var mc = new SolveCounters();
+            var sc = new SolveCounters();
+            var macro = Model(s, rng, m, byCard: false, macro: true, mc);
+            var sequential = Model(s, rng, m, byCard: false, macro: false, sc);
+            Assert.True(mc.MacroNodes > 0, $"{c.Name}: no macro node");
+            Assert.True(Same(macro, sequential), $"{c.Name}: the macro draw ({macro.Count} outcomes) and the sequential draw ({sequential.Count}) differ");
+            const int n = 4000;
+            var count = Count(s, m, n, seed++);
+            var bad = Compare(macro, count, n);
+            output.WriteLine($"{c.Name}: {macro.Count} outcomes; engine runs macro {mc.Steps}, sequential {sc.Steps}; macro nodes {mc.MacroNodes}, draws avoided {mc.MacroDrawsAvoided}; counted {count.Count} labels over {n}; {bad.Count} off");
+            Assert.Empty(bad);
+        }
+    }
+
+    /// <summary>A fight with this hand, draw pile (unknown order) and discard, fresh uids, enemies too strong to die, seeded streams.</summary>
+    static (CombatState State, CountingRandom Rng) Position(string[] hand, string[] draw, string[] discard, int energy)
+    {
+        CardInstance[] Of(string[] names) => [.. names.Select(x => new CardInstance(Cards.FindId(x)!.Value, false))];
+        var state = Fight.Hand(Of(hand)).Energy(energy).Draw(Of(draw)).Discard(Of(discard)).State;
+        foreach (var pile in new[] { state.Hand, state.DrawPile, state.DiscardPile })
+        {
+            for (int i = 0; i < pile.Count; i++)
+            {
+                pile[i] = pile[i].Uid == 0 ? state.Fresh(pile[i]) : pile[i];
+            }
+        }
+
+        state.KnownTopCount = 0;
+        state.KnownBottomCount = 0;
+        foreach (var e in state.Enemies)
+        {
+            e.Hp = Math.Max(e.Hp, 200);
+        }
+
+        for (int i = 0; i < StateCloning.StreamCount; i++)
+        {
+            StateCloning.SetStream(state, i, new CountingRandom(500 + i));
+        }
+
+        return (state, new CountingRandom(13));
+    }
+
+    static bool Same(Dictionary<string, Rational> a, Dictionary<string, Rational> b) =>
+        a.Count == b.Count && a.All(kv => b.TryGetValue(kv.Key, out var v) && v == kv.Value);
 
     /// <summary>
     /// Uproar picks one of the draw pile's Attacks through StableShuffle, which sorts by (id, upgraded) first: two
@@ -174,10 +248,10 @@ public class ChanceModelTests(ITestOutputHelper output)
     /// <summary>Expand's odds by label.</summary>
     sealed class WideRollMet : Exception;
 
-    static Dictionary<string, Rational> Model(CombatState s, CountingRandom rng, Move m, bool byCard)
+    static Dictionary<string, Rational> Model(CombatState s, CountingRandom rng, Move m, bool byCard, bool macro = false, SolveCounters? counters = null)
     {
         var d = new Dictionary<string, Rational>();
-        foreach (var o in Successors.Expand(s, rng, m, byCard, 32, new SolveCounters()))
+        foreach (var o in Successors.Expand(s, rng, m, byCard, 32, counters ?? new SolveCounters(), macro))
         {
             if (o.WideRoll)
             {

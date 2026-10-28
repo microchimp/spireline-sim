@@ -23,7 +23,7 @@
   {
    "file": "Core/Effects/CardEffects.cs",
    "method": "DrawCards",
-   "anchor": "var top = state.RemoveFromDrawPileAt(0);",
+   "anchor": "top = state.RemoveFromDrawPileAt(0);",
    "kind": "draw-top"
   },
   {

@@ -290,6 +290,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
     ExpectedResult Iterate(CombatState state, CountingRandom rng, int horizon, SolveCounters counters, Stopwatch sw)
     {
         _c = counters;
+        counters.MacroRoot = !On(Pruning.MacroDraw) || !On(Pruning.DrawByValue) ? "pruning-off" : DrawObservers.Off(state) ?? "on";
         _path.Clear();
         Table.Bind(EngineOf(state));
         var key = Key(state);
@@ -387,16 +388,18 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
             MergeAudit.Record(s, _c);
         }
 
-        var outcomes = Successors.Expand(s, rng, m, byCard: !On(Pruning.DrawByValue), Options.ChanceWidthCap, _c);
+        // One outcome at a time: its children are solved before the next outcome's copy is made, so an expansion keeps one
+        // copy alive, not every outcome's (the sums are exact rationals, so the order they are added in changes nothing).
+        var outcomes = Successors.Stream(s, rng, m, byCard: !On(Pruning.DrawByValue), Options.ChanceWidthCap, _c, macro: On(Pruning.MacroDraw));
         var value = Rational.Zero;
         var mass = Rational.Zero;
         var upper = Rational.Zero;
         bool exact = true;
         if (On(Pruning.Transposition))
         {
-            // Equal outcomes are one child: terminal ones by their score, the rest by key.
-            var groups = new Dictionary<UInt128, (Outcome First, Rational P)>();
-            var order = new List<UInt128>();
+            // Equal outcomes are one child: terminal ones by their score, the rest by key (solved at its first outcome, in
+            // the order the outcomes come, and its value reused for the later ones).
+            var children = new Dictionary<UInt128, NodeValue>();
             foreach (var o in outcomes)
             {
                 if (o.WideRoll)
@@ -419,25 +422,19 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 }
 
                 var k = Key(o.State);
-                if (groups.TryGetValue(k, out var g))
+                if (children.TryGetValue(k, out var v))
                 {
                     _c.Merged++;
-                    groups[k] = (g.First, g.P + o.P);
                 }
                 else
                 {
-                    groups[k] = (o, o.P);
-                    order.Add(k);
+                    v = Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn));
+                    children[k] = v;
                 }
-            }
 
-            foreach (var k in order)
-            {
-                var (o, p) = groups[k];
-                var v = Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn));
-                value += p * v.Value;
-                mass += p * v.Mass;
-                upper += p * v.Upper;
+                value += o.P * v.Value;
+                mass += o.P * v.Mass;
+                upper += o.P * v.Upper;
                 exact &= v.Exact;
             }
         }

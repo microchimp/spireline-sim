@@ -1,0 +1,294 @@
+{
+ "about": "Written by tools/solver/scan_draw_observers.py; do not edit. Everything that acts on drawn cards (the draw loop's per-card calls, the draw-result readers, the AfterCardDrawn listeners), each classed in draw_observer_classes.json: an observer turns the macro draw off while its test in DrawObservers.All holds (FIGHT_SOLVER.md section 17).",
+ "sources_sha256": "41358da1deeab37488bb72dbe3ba8cd15bcb0c3958ed308efed4322940eee6fe",
+ "observers": [
+  "ChainsOfBinding",
+  "Hellraiser",
+  "Iteration",
+  "Pagestorm",
+  "Pillage",
+  "Scrape",
+  "Speedster",
+  "Stratagem",
+  "kernel-listener"
+ ],
+ "entries": {
+  "draw-loop:Add": {
+   "kind": "draw-loop",
+   "holder": "Add",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "the drawn card lands in hand and in the draw's result list in draw order; the hand's order is read only where the key keeps the hand in order, and the macro draw is off there (hand-ordered); result readers are classed as draw-result"
+  },
+  "draw-loop:AutoPlayDrawnCard": {
+   "kind": "draw-loop",
+   "holder": "AutoPlayDrawnCard",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Hellraiser",
+   "why": "plays a drawn Strike inside the draw (HellraiserPower.AfterCardDrawnEarly): what is played, and whether the rest is drawn, follow the order"
+  },
+  "draw-loop:BindOnDraw": {
+   "kind": "draw-loop",
+   "holder": "BindOnDraw",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "ChainsOfBinding",
+   "why": "binds the first cards drawn in the owner's turn, up to the power's amount (BoundCardsThisTurn): which cards are Bound follows the order"
+  },
+  "draw-loop:ConfuseCostOnDraw": {
+   "kind": "draw-loop",
+   "holder": "ConfuseCostOnDraw",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "Confused re-rolls a drawn card's cost on its own stream, independently per card; the roll is a chance call between draws, so a run of plain draws ends at it"
+  },
+  "draw-loop:CountDrawnCardForAutomation": {
+   "kind": "draw-loop",
+   "holder": "CountDrawnCardForAutomation",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "Automation counts the cards drawn; the count, not the order, decides its energy"
+  },
+  "draw-loop:DamageAllForSpeedster": {
+   "kind": "draw-loop",
+   "holder": "DamageAllForSpeedster",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Speedster",
+   "why": "hits every enemy per card drawn mid-turn: a kill stops the draw at a fight's end, and a death's effects see the hand drawn so far"
+  },
+  "draw-loop:DrawForIteration": {
+   "kind": "draw-loop",
+   "holder": "DrawForIteration",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Iteration",
+   "why": "the first Status card drawn this turn draws more: the count drawn depends on the values, and where the extra cards land on the order"
+  },
+  "draw-loop:DrawForPagestorm": {
+   "kind": "draw-loop",
+   "holder": "DrawForPagestorm",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Pagestorm",
+   "why": "an Ethereal card drawn draws more: the count drawn depends on the values"
+  },
+  "draw-loop:Get": {
+   "kind": "draw-loop",
+   "holder": "Get",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "BuffSystem.Get: reads a buff for the Hellraiser test (classed with AutoPlayDrawnCard and IsStrikeCard)"
+  },
+  "draw-loop:GrowKinglyCardOnDraw": {
+   "kind": "draw-loop",
+   "holder": "GrowKinglyCardOnDraw",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "Kingly Kick and Kingly Punch grow per copy as they are drawn: the same for any order"
+  },
+  "draw-loop:IsOverOrEnding": {
+   "kind": "draw-loop",
+   "holder": "IsOverOrEnding",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "the fight-end check before each card: the fight ends inside a draw only through an observer (Hellraiser's play, Speedster's hit); the safe effects here cannot kill"
+  },
+  "draw-loop:IsStrikeCard": {
+   "kind": "draw-loop",
+   "holder": "IsStrikeCard",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Hellraiser",
+   "why": "Hellraiser's test of the drawn card"
+  },
+  "draw-loop:Max": {
+   "kind": "draw-loop",
+   "holder": "Max",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "a drawn Void's energy loss, Math.Max(0, energy - 1): the same total for any order"
+  },
+  "draw-loop:PoisonAllForCorrosiveWave": {
+   "kind": "draw-loop",
+   "holder": "PoisonAllForCorrosiveWave",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "Corrosive Wave poisons every hittable enemy per card drawn: the same total for any order; poison does not hit until it ticks"
+  },
+  "draw-loop:ReferenceEquals": {
+   "kind": "draw-loop",
+   "holder": "ReferenceEquals",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "where a Hellraiser-played card came to rest (the Hellraiser path, an observer)"
+  },
+  "draw-loop:RemoveFromDrawPileAt": {
+   "kind": "draw-loop",
+   "holder": "RemoveFromDrawPileAt",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "the take off the top: the draw itself, which the solver watches"
+  },
+  "draw-loop:RollSlitherCost": {
+   "kind": "draw-loop",
+   "holder": "RollSlitherCost",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "Slither re-rolls a drawn card's cost on its own stream, independently per card; the roll is a chance call, so a run of plain draws ends at it"
+  },
+  "draw-loop:ShuffleIfNecessary": {
+   "kind": "draw-loop",
+   "holder": "ShuffleIfNecessary",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Stratagem",
+   "why": "a reshuffle inside the draw runs AfterShuffle, where Stratagem's pick opens a screen and puts a card of the player's choice in hand mid-draw; the reshuffle itself is safe (it comes at a count that does not depend on the order, and the solver keeps the reshuffle epoch)"
+  },
+  "draw-result:DrawUntilNonAttack": {
+   "kind": "draw-result",
+   "holder": "DrawUntilNonAttack",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Pillage",
+   "why": "Pillage draws until it draws a non-Attack: the count drawn depends on the values and their order"
+  },
+  "draw-result:EscapePlan": {
+   "kind": "draw-result",
+   "holder": "EscapePlan",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "draws one card and reads its type: a one-card draw is never a macro node"
+  },
+  "draw-result:Scrape": {
+   "kind": "draw-result",
+   "holder": "Scrape",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Scrape",
+   "why": "discards the cards it drew that do not cost 0, in draw order, through the discard command: discard triggers and Sly plays fire in that order"
+  },
+  "hook:AutomationPower": {
+   "kind": "hook",
+   "holder": "AutomationPower",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "safe",
+   "why": "as draw-loop:CountDrawnCardForAutomation"
+  },
+  "hook:ChainsOfBindingPower": {
+   "kind": "hook",
+   "holder": "ChainsOfBindingPower",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "observer",
+   "observer": "ChainsOfBinding",
+   "why": "as draw-loop:BindOnDraw"
+  },
+  "hook:ConfusedPower": {
+   "kind": "hook",
+   "holder": "ConfusedPower",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "safe",
+   "why": "as draw-loop:ConfuseCostOnDraw"
+  },
+  "hook:CorrosiveWavePower": {
+   "kind": "hook",
+   "holder": "CorrosiveWavePower",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "safe",
+   "why": "as draw-loop:PoisonAllForCorrosiveWave"
+  },
+  "hook:HellraiserPower": {
+   "kind": "hook",
+   "holder": "HellraiserPower",
+   "file": "src/Sts2Emulator/Core/CombatEngine.cs",
+   "hooks": [
+    "AfterCardDrawnEarly"
+   ],
+   "class": "observer",
+   "observer": "Hellraiser",
+   "why": "as draw-loop:AutoPlayDrawnCard"
+  },
+  "hook:IterationPower": {
+   "kind": "hook",
+   "holder": "IterationPower",
+   "file": "src/Sts2Emulator/Core/BuffState.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "observer",
+   "observer": "Iteration",
+   "why": "as draw-loop:DrawForIteration"
+  },
+  "hook:PagestormPower": {
+   "kind": "hook",
+   "holder": "PagestormPower",
+   "file": "src/Sts2Emulator/Core/BuffState.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "observer",
+   "observer": "Pagestorm",
+   "why": "as draw-loop:DrawForPagestorm"
+  },
+  "hook:Slither": {
+   "kind": "hook",
+   "holder": "Slither",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "safe",
+   "why": "as draw-loop:RollSlitherCost"
+  },
+  "hook:SpeedsterPower": {
+   "kind": "hook",
+   "holder": "SpeedsterPower",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "observer",
+   "observer": "Speedster",
+   "why": "as draw-loop:DamageAllForSpeedster"
+  },
+  "hook:Void": {
+   "kind": "hook",
+   "holder": "Void",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "hooks": [
+    "AfterCardDrawn"
+   ],
+   "class": "safe",
+   "why": "as draw-loop:Max"
+  },
+  "kernel-hook:AfterCardDrawn": {
+   "kind": "kernel-hook",
+   "holder": "AfterCardDrawn",
+   "file": "src/Sts2Emulator/Core2/HookId.g.cs",
+   "class": "observer",
+   "observer": "kernel-listener",
+   "why": "a listener a switched-on kernel family (F11) registers on a drawn card: the kernel's listeners are not classed one by one, so while any is registered the draws are sequential"
+  },
+  "kernel-hook:AfterCardDrawnEarly": {
+   "kind": "kernel-hook",
+   "holder": "AfterCardDrawnEarly",
+   "file": "src/Sts2Emulator/Core2/HookId.g.cs",
+   "class": "observer",
+   "observer": "kernel-listener",
+   "why": "as kernel-hook:AfterCardDrawn"
+  }
+ }
+}

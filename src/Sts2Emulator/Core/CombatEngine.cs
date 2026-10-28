@@ -226,7 +226,23 @@ public static class CombatEngine
         {
             run.OnTake(index);
         }
+
+        TakeWatch?.Invoke(state, index);
     }
+
+    /// <summary>
+    /// The fight solver's watch on this thread's draw-pile takes (null outside a solver run): called at each take, after a
+    /// replay put the step's card at <c>index</c>, before the card leaves (FIGHT_SOLVER.md section 17).
+    /// </summary>
+    [ThreadStatic]
+    internal static Action<CombatState, int>? TakeWatch;
+
+    /// <summary>
+    /// The fight solver's watch on this thread's draw calls (null outside a solver run): called as a draw call's loop
+    /// begins, it numbers the call; the loop marks its takes with the number (<c>CardEffects.PlainTake</c>).
+    /// </summary>
+    [ThreadStatic]
+    internal static Func<CombatState, long>? DrawWatch;
 
     /// <summary>
     /// A look at the card at <paramref name="index" /> of the draw pile that decides what the step

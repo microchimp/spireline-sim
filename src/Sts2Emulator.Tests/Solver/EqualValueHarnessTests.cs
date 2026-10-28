@@ -25,7 +25,11 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
         ("no-interchangeable", Pruning.All & ~Pruning.InterchangeableEnemies),
         ("no-reuse", Pruning.All & ~Pruning.SubtreeReuse),
         ("no-draw-by-value", Pruning.All & ~Pruning.DrawByValue),
+        ("no-macro-draw", Pruning.All & ~Pruning.MacroDraw),
     ];
+
+    /// <summary>The macro draw's recipes: the reference gets more room there (a five-card draw by card is 720 runs).</summary>
+    const long MacroReferenceCap = 400_000;
 
     const long ReferenceCap = 25_000;
 
@@ -53,20 +57,33 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
         var named = new List<string>();
         var namedSolved = new List<int>();
         int namedRecipes = SolverPositions.Recipes().Count(r => r.Encounter.Length > 0);
+        int macroRecipes = SolverPositions.Recipes().Count(r => r.Macro.Length > 0);
+        var macroSolved = new List<string>();
+        long macroNodes = 0;
         foreach (var recipe in SolverPositions.Recipes())
         {
             var pos = SolverPositions.Build(recipe, corpus);
             if (pos is null)
             {
+                if (recipe.Macro.Length > 0)
+                {
+                    output.WriteLine($"#{recipe.Id} {recipe.Macro} {recipe.Engine}: not built");
+                }
+
                 continue;
             }
 
             built++;
             var before = CombatSnapshot.Write(pos.State);
-            var reference = Reference.Solve(pos.State, pos.Rng, recipe.Horizon, recipe.Encounter.Length > 0 ? NamedReferenceCap : ReferenceCap);
+            var reference = Reference.Solve(pos.State, pos.Rng, recipe.Horizon, recipe.Encounter.Length > 0 ? NamedReferenceCap : recipe.Macro.Length > 0 ? MacroReferenceCap : ReferenceCap);
             if (reference.Refused is { } why && why.StartsWith("budget", StringComparison.Ordinal))
             {
                 skipped++;
+                if (recipe.Macro.Length > 0)
+                {
+                    output.WriteLine($"#{recipe.Id} {recipe.Macro} {recipe.Engine}: over the reference cap");
+                }
+
                 string cls = $"{recipe.Engine}/{recipe.Source}/h{recipe.Horizon}";
                 skippedBy[cls] = skippedBy.GetValueOrDefault(cls) + 1;
                 continue;
@@ -87,6 +104,19 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
                     prunedSteps += got.Counters.Steps;
                     prunedSeconds += got.Seconds;
                     namedNodes = got.Counters.Nodes;
+                    macroNodes += got.Counters.MacroNodes;
+                    if (recipe.Macro.Length > 0 && got.Status != SolveStatus.Refused)
+                    {
+                        // The observers and the ordered hand switch it off at the root; the five-card draws take it.
+                        bool off = recipe.Macro.StartsWith("observer:", StringComparison.Ordinal) || recipe.Macro == "hand-ordered";
+                        string seen = $"{got.Counters.MacroRoot}, macro nodes {got.Counters.MacroNodes}, off {string.Join(" ", got.Counters.MacroOff.Select(kv => $"{kv.Key} {kv.Value}"))}";
+                        if (off ? got.Counters.MacroRoot != recipe.Macro || got.Counters.MacroNodes != 0 : got.Counters.MacroRoot != "on" || got.Counters.MacroNodes == 0)
+                        {
+                            diffs.Add($"#{recipe.Id} {recipe.Macro} {recipe.Engine}: macro draw {seen}");
+                        }
+
+                        macroSolved.Add($"#{recipe.Id} {recipe.Macro} {recipe.Engine}: {seen}, nodes {got.Counters.Nodes}, steps {got.Counters.Steps}");
+                    }
                 }
 
                 if (reference.Refused is not null || got.Status == SolveStatus.Refused)
@@ -165,10 +195,12 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
         output.WriteLine($"positions built {built}, compared {compared} (open screen at the root {screens}, screens in the tree {screenTrees}, horizon 1 {horizon1}, exact {exact}), refused alike {refusedAlike} [{string.Join(", ", refusals.Select(kv => $"{kv.Key} {kv.Value}"))}], skipped over the reference cap {skipped}; compared with a wide-roll leaf {wideRoll}");
         output.WriteLine($"horizon 1 compared by engine and source: {string.Join(", ", horizon1By.Select(kv => $"{kv.Key} {kv.Value}"))}; skipped by class: {string.Join(", ", skippedBy.Select(kv => $"{kv.Key} {kv.Value}"))}");
         output.WriteLine($"open screens at the root by kind: {string.Join(", ", screenKinds.Select(kv => $"{kv.Key} {kv.Value}"))}");
-        foreach (var n in named)
+        foreach (var n in named.Concat(macroSolved))
         {
             output.WriteLine(n);
         }
+
+        output.WriteLine($"macro draw nodes (all) {macroNodes}; macro recipes compared {macroSolved.Count} of {macroRecipes}");
 
         output.WriteLine($"reference nodes {refNodes}; pruned (all) nodes {prunedNodes}, engine steps {prunedSteps}, {prunedSeconds:0.00} s, {prunedNodes / Math.Max(1e-9, prunedSeconds):0} nodes/s, {prunedSteps / Math.Max(1e-9, prunedSeconds):0} steps/s");
         foreach (var d in diffs.Take(30))
@@ -191,6 +223,7 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
         }
 
         Assert.True(namedSolved.Count == namedRecipes && namedRecipes >= 2, $"order-dependence positions solved {namedSolved.Count} of {namedRecipes}");
+        Assert.True(macroSolved.Count == macroRecipes && macroRecipes >= 24, $"macro-draw positions compared {macroSolved.Count} of {macroRecipes}");
     }
 
     /// <summary>

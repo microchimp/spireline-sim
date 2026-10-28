@@ -25,7 +25,7 @@ public unsafe class NativeSolverTests(ITestOutputHelper output)
         Assert.Equal(39, (int)info["native_api_version"]!);
         Assert.Equal(SolverService.Version, (string)info["solver_version"]!);
         Assert.Equal((int)Pruning.All, (int)info["prune_all"]!);
-        Assert.Equal(5, info["prunings"]!.AsObject().Count);
+        Assert.Equal(6, info["prunings"]!.AsObject().Count);
         Assert.Equal(SolverService.QStride, (int)info["q_stride"]!);
     }
 
