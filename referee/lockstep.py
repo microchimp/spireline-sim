@@ -1107,7 +1107,7 @@ class EmuLock:
             # count differently is a gap, not a guess).
             order = sorted(range(len(opts)), key=lambda j: opts[j].action)
             if len(order) + 1 == len(labels) and labels[-1] == WONGOS_LEAVE and self._leave_is_legal():
-                # Welcome to Wongos: the page lists the buys the purse allows and Leave. The engine's event reader hides action 3
+                # Welcome to Wongos: the page lists the buys the purse allows and Leave. Under mask versions 1-3 the engine's event reader hides action 3 (under 4 the page lists Leave when a purchase is on it, so this branch fires only for the Leave-only page)
                 # (the emulator-only leave), so the referee's labels outnumber the options by exactly that one, and the whole page
                 # went unpaired -- the bargain bin included. Leave is a real option here (it downgrades a card): action 3.
                 return [*order, EVENT_LEAVE]
