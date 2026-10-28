@@ -184,10 +184,6 @@
    "class": "free",
    "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
   },
-  "CardEffects:ApplyCore:ExhaustPile[at]": {
-   "class": "free",
-   "why": "finds one card by its value, uid included: the card is unique, so the pile's order picks nothing"
-  },
   "CardEffects:ApplyCore:Hand[0]": {
    "class": "reader",
    "category": "hand_position",
@@ -642,18 +638,6 @@
    "class": "free",
    "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
   },
-  "CardEffects:UpgradeAllCardsInHand:for Hand": {
-   "class": "free",
-   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
-  },
-  "CardEffects:UpgradeDiscardCards:DiscardPile[index]": {
-   "class": "roll",
-   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
-  },
-  "CardEffects:UpgradeDiscardCards:DiscardPile[index]#2": {
-   "class": "roll",
-   "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
-  },
   "CardEffects:UpgradeDiscardCards:for DiscardPile": {
    "class": "free",
    "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
@@ -778,14 +762,6 @@
    "class": "free",
    "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
   },
-  "CombatEngine:ResolveCardSelection:Hand[index]#21": {
-   "class": "free",
-   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
-  },
-  "CombatEngine:ResolveCardSelection:Hand[index]#22": {
-   "class": "free",
-   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
-  },
   "CombatEngine:ResolveCardSelection:Hand[index]#3": {
    "class": "free",
    "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
@@ -889,14 +865,6 @@
   "RelicEffects:ApplyAfterFlush:Hand[i]#2": {
    "class": "roll",
    "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
-  },
-  "RelicEffects:ApplyAfterPlayerTurnStart:for Hand": {
-   "class": "free",
-   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
-  },
-  "RelicEffects:ApplyFirstTurnAfterSideTurnStart:for Hand": {
-   "class": "free",
-   "why": "changes every card it visits in place, independently of the others, with no early stop, trigger or roll that sees another card"
   },
   "RelicEffects:MakeRandomHandCardFree:Hand[i]": {
    "class": "roll",
