@@ -632,6 +632,42 @@ class GameCardAndRelicStateTests(unittest.TestCase):
         self.assertTrue(e._anchor_fight({"floor": 3, "combat": EmuLockAnchorTests.RECORD, "deck": [["A", 0], ["INFERNO", 0]]}))
         self.assertEqual((e.deck_order, calls[0][2]["cards"]), ("set", [(1, 0, 3, 1), (2, 0, 0, 0)]))
 
+    def walk(self, hidden):
+        """The fight_start plan on the walk path (the emulator is not in the fight yet): `_set_player`, the map step that enters
+        the fight, then the anchor. Entering the fight ticks the emulator's Pendulum, as the game's own turn-1 tick already
+        did in the counter the driver carries (2)."""
+        e, calls = self.emu([self.c("A")], hidden)
+        state = {"counter": None}
+
+        def set_player(handle, buf, **kw):
+            calls.append(kw)
+            for _relic, value in kw.get("relic_counters", []):
+                state["counter"] = value
+
+        def enter_fight(option):
+            state["counter"] = (state["counter"] or 0) + 1  # the emulator's own fight-start tick
+            e.s.phase = 7
+
+        e.native.run_debug_set_player = set_player
+        e.native.run_reanchor_fight = lambda h, rec, buf: (1, "x")
+        e.native.run_reanchor_fight_hidden = lambda h, rec, buf: (4, "x")
+        e.E = SimpleNamespace(rc=SimpleNamespace(PHASE_COMBAT=7))
+        e.s.phase, e.s.view, e.s.apply = 1, (lambda: SimpleNamespace(floor=3)), enter_fight
+        e._to_map, e._decision, e._auto_combat = (lambda floor=None: True), (lambda: SimpleNamespace(options=[object()])), (lambda: None)
+        obs = {"floor": 4, "hp": 50, "max_hp": 80, "gold": 120, "deck": [["A", 0]], "relics": ["PENDULUM"], "potions": ["P"],
+               "combat": EmuLockAnchorTests.RECORD}
+        self.assertTrue(e.reanchor("fight_start", {"obs": obs}))
+        return state, calls, e
+
+    def test_the_walk_path_ends_with_the_games_counter_not_one_more(self):
+        relics = [{"id": "PENDULUM", "ints": {"TurnsSeen": 2}}]
+        for name, hidden in (("observation", {"relics": relics}), ("hidden", {**EmuLockAnchorTests.GAME, "relics": relics})):
+            state, calls, e = self.walk(hidden)
+            self.assertEqual(state["counter"], 2, name)  # written once, after the fight was entered (not 3)
+            self.assertEqual([("relic_counters" in kw) for kw in calls], [False, True], name)  # the player write carries none
+            self.assertEqual(calls[-1], {"relic_counters": [(10, 2)]}, name)
+            self.assertEqual(e.relic_counters, 1, name)
+
     def test_the_mapping_of_the_games_relic_properties(self):
         refset = _import_refset()
         relics = [{"id": "VENERABLE_TEA_SET", "bools": {"GainEnergyInNextCombat": True}}, {"id": "SILKEN_TRESS", "bools": {"IsUsed": True}},

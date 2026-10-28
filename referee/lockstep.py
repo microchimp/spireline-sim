@@ -951,6 +951,17 @@ class EmuLock:
             self.s.apply(o)
         return False
 
+    _defer_counters = False  # `_set_player` leaves the relic counters to `_anchor_fight` (the fight_start walk)
+
+    def _set_player_deferring_counters(self, obs: dict) -> bool:
+        """`_set_player` without the relic counters: on the fight_start walk the emulator has not entered the fight yet, and
+        entering it ticks its own counters (a Pendulum wrap draws a card) on top of the game's already-ticked ones."""
+        self._defer_counters = True
+        try:
+            return self._set_player(obs)
+        finally:
+            self._defer_counters = False
+
     def _set_player(self, obs: dict) -> bool:
         cards = [(self.ids["cards"].get(c[0]), int(c[1]), 0, 0) for c in obs.get("deck", [])]
         relics = [self.ids["relics"].get(r) for r in obs.get("relics", [])]
@@ -968,10 +979,10 @@ class EmuLock:
         # The driver's anchor_state, when it carries the game's own per-card data (take_anchor_state), wins over that guess; its
         # absence (or a deck that is not this observation's) leaves the guess. The relics' counters go with the write.
         cards, extra = self._game_cards(obs, cards)
-        counters = self._relic_counters()
-        if counters:
-            extra["relic_counters"] = counters
-            self.relic_counters = len(counters)
+        written = [] if self._defer_counters else self._relic_counters()
+        if written:
+            extra["relic_counters"] = written
+            self.relic_counters = len(written)
         self.native.run_debug_set_player(self.s.handle, self._obs(), hp=int(obs["hp"]), max_hp=int(obs["max_hp"]),
                                          gold=int(obs["gold"]), cards=cards, relics=relics, potions=potions,
                                          max_potion_slots=len(belt), **extra)
@@ -1063,10 +1074,12 @@ class EmuLock:
             return False
         if self.anchored_with == "hidden":
             self._order_deck(obs)
-            counters = self._relic_counters()  # the fight's own relics hold the game's counters too (the native call sets both)
-            if counters:
-                self.native.run_debug_set_player(self.s.handle, self._obs(), relic_counters=counters)
-                self.relic_counters = len(counters)
+        # The game's relic counters (its post-tick values) go in once the emulator is in the fight, whatever the anchor used:
+        # the native call sets the fight's own relics too, so the emulator's turn-1 tick is replaced, not added to.
+        counters = self._relic_counters()
+        if counters:
+            self.native.run_debug_set_player(self.s.handle, self._obs(), relic_counters=counters)
+            self.relic_counters = len(counters)
         return True
 
     def _order_deck(self, obs: dict) -> None:
@@ -1134,7 +1147,9 @@ class EmuLock:
                 return self._anchor_fight(obs)
             if not self._to_map(None if floor is None else floor - 1):
                 self.fail = "to_map"
-            elif not self._set_player(obs):
+            elif not self._set_player_deferring_counters(obs):
+                # The relics' counters are the game's AFTER its fight-start tick; entering the fight ticks the emulator's own
+                # (a Pendulum wrap draws a card), so they are written once, by `_anchor_fight`, after the emulator is in it.
                 self.fail = "set_player:unknown_id"
             else:
                 d = self._decision()
