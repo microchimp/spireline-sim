@@ -171,6 +171,10 @@ class WinProbes:
             d = drive.upper()
             paths.update(disk_queue=rf"\LogicalDisk({d})\Current Disk Queue Length", disk_read_bps=rf"\LogicalDisk({d})\Disk Read Bytes/sec",
                          disk_write_bps=rf"\LogicalDisk({d})\Disk Write Bytes/sec", disk_latency_ms=rf"\LogicalDisk({d})\Avg. Disk sec/Transfer")
+        # Adding a LogicalDisk counter loads its provider into this process, which sets SEM_NOALIGNMENTFAULTEXCEPT on
+        # the process error mode, and Windows ignores every later attempt to clear that bit. A game started by a play
+        # process after a sample inherits it (harmless on x64; the launcher adds GAME_ERROR_MODE on top either way); a
+        # test that reads this process's error mode measures against the base `SetErrorMode(0)` reaches.
         try:
             pdh = ctypes.WinDLL("pdh")
             pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]

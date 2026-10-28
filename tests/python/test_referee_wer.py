@@ -9,6 +9,10 @@ may pass CREATE_DEFAULT_ERROR_MODE. The second line of defence lists any WerFaul
 These tests never crash a process in the default error mode. The one that crashes a child on purpose does it
 through `launch`, and the child checks its own error mode first: if the mode is not there it exits with 99
 instead of crashing, so a regression of the fix cannot send a crash report.
+
+The error-mode assertions measure against the base this process can reach, not 0: SEM_NOALIGNMENTFAULTEXCEPT
+sticks once set (the machine sampler's LogicalDisk counters set it, and test_machine_sampler runs earlier in
+the suite's one process), so `default_error_mode` yields that base and the launcher must put it back exactly.
 """
 
 from __future__ import annotations
@@ -59,16 +63,19 @@ def get_error_mode() -> int:
 
 @contextlib.contextmanager
 def default_error_mode():
-    """This test process with the error mode a lab runner has (0), whatever the harness that started the tests
-    set: the fix must not depend on what the launcher inherited. Only the test process; a game process is
-    still started by `launch`."""
+    """This test process with the error mode a lab runner has (0, or as near as this process can get), whatever
+    the harness that started the tests set: the fix must not depend on what the launcher inherited. Yields the
+    base `SetErrorMode(0)` leaves: SEM_NOALIGNMENTFAULTEXCEPT (0x4) stays once anything set it (Windows ignores
+    every attempt to clear it), and the machine sampler's LogicalDisk counters set it (`referee/machine_sampler.py`,
+    `WinProbes._pdh_open`), so in the suite's one process the base is 0x4 after test_machine_sampler. The
+    assertions measure against that base. Only the test process; a game process is still started by `launch`."""
     import ctypes
 
     k32 = ctypes.WinDLL("kernel32")
     before = k32.GetErrorMode()
     k32.SetErrorMode(0)
     try:
-        yield
+        yield k32.GetErrorMode()
     finally:
         k32.SetErrorMode(before)
 
@@ -97,16 +104,17 @@ class LaunchFlagsTest(unittest.TestCase):
 
     @unittest.skipUnless(WINDOWS, "Windows error modes")
     def test_the_game_is_spawned_inside_the_error_mode_and_the_launchers_own_is_put_back(self):
-        with default_error_mode():
+        with default_error_mode() as base:
             seen = self.launch_recorded(below_normal=True)
-            self.assertEqual(seen["mode"], rr.GAME_ERROR_MODE)
-            self.assertEqual(get_error_mode(), 0)
-        with default_error_mode():  # a launcher that already has some bits keeps them
+            self.assertEqual(seen["mode"], rr.GAME_ERROR_MODE | base)
+            self.assertEqual(get_error_mode(), base)
+        with default_error_mode() as base:  # a launcher that already has some bits keeps them
             import ctypes
 
-            ctypes.WinDLL("kernel32").SetErrorMode(0x0004)
-            self.assertEqual(self.launch_recorded()["mode"], rr.GAME_ERROR_MODE | 0x0004)
-            self.assertEqual(get_error_mode(), 0x0004)
+            # 0x4 is the one bit outside GAME_ERROR_MODE; it sticks, so this process carries it from here on.
+            ctypes.WinDLL("kernel32").SetErrorMode(base | 0x0004)
+            self.assertEqual(self.launch_recorded()["mode"], rr.GAME_ERROR_MODE | base | 0x0004)
+            self.assertEqual(get_error_mode(), base | 0x0004)
 
     def test_extra_args_go_last_on_the_command_line(self):
         plain = self.launch_recorded()["args"]
@@ -118,10 +126,10 @@ class LaunchFlagsTest(unittest.TestCase):
 
     @unittest.skipUnless(WINDOWS, "Windows error modes")
     def test_the_error_mode_is_put_back_when_the_spawn_fails(self):
-        with default_error_mode(), mock.patch.object(rr.subprocess, "Popen", side_effect=OSError("no such file")):
+        with default_error_mode() as base, mock.patch.object(rr.subprocess, "Popen", side_effect=OSError("no such file")):
             with self.assertRaises(OSError):
                 rr.popen_no_wer(["nothing"])
-            self.assertEqual(get_error_mode(), 0)
+            self.assertEqual(get_error_mode(), base)
 
     def test_no_launch_passes_create_default_error_mode(self):
         for kw in ({}, {"below_normal": True}, {"windowed": True}):
@@ -261,13 +269,13 @@ class PoolWerTest(unittest.TestCase):
 @unittest.skipUnless(WINDOWS, "Windows Error Reporting")
 class CrashTest(unittest.TestCase):
     def test_a_crashing_game_process_never_reaches_windows_error_reporting(self):
-        with tempfile.TemporaryDirectory() as t, default_error_mode():
+        with tempfile.TemporaryDirectory() as t, default_error_mode() as base:
             tmp = Path(t)
             (tmp / "job.json").write_text("{}", encoding="utf-8")
             t0 = time.time()
             proc, log = rr.launch(tmp, tmp, tmp / "job.json", below_normal=True, command=[PYTHON, "-c", CRASH_CHILD])
             pid = proc.pid
-            self.assertEqual(get_error_mode(), 0, "the launcher's own error mode is put back")
+            self.assertEqual(get_error_mode(), base, "the launcher's own error mode is put back")
             connections: set[str] = set()
             wer: set[str] = set()
             children: set[int] = set()
