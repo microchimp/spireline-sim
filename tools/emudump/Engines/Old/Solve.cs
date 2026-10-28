@@ -22,14 +22,16 @@
 using System.Text.Json.Nodes;
 using EmuDump.Engine;
 using EmuDump.Engines;
-using EmuDump.Engines.Old;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 using Sts2Emulator.GeneratedData;
 using Sts2Emulator.Interop;
 using Sts2Emulator.Solver;
 
-static class SolveMode
+namespace EmuDump.Engines.Old;
+
+/// <summary>Under Engines/Old: the solver searches the old engine's CombatState, so it lives with the old engine's binding.</summary>
+internal static class SolveMode
 {
     /// <summary>The parsed command line.</summary>
     internal sealed record Args(

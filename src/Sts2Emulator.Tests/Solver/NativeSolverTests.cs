@@ -1,7 +1,7 @@
 // The native exports against EmuDump's code path (piece S4, docs/rebuild/FIGHT_SOLVER.md section 1): on the equal-value
 // harness's positions (tests/fixtures/solver/positions.jsonl), Sts2_SolveExpected called through its unmanaged entry point
 // gives what EmuDump's `solve` prints for the same position (SolverService.SolveExpected and SolverService.ExpectedJson,
-// which tools/emudump/Solve.cs writes and nothing else), field for field and move for move, the q buffer included. EmuDump's
+// which tools/emudump/Engines/Old/Solve.cs writes and nothing else), field for field and move for move, the q buffer included. EmuDump's
 // own command is held to the native handle on its seed fights in tools/emudump.Tests/SolveModeTests.cs. Both run in this
 // JIT host: the gate that sets the published NativeAOT library against `dotnet EmuDump.dll` is
 // tests/python/test_solver_aot_sites.py (the harness documents come from AotSiteFixtureTests).

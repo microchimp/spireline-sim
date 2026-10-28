@@ -5,7 +5,7 @@ using Sts2Emulator.Core;
 
 /// <summary>
 /// The one code path behind the solver's front ends (FIGHT_SOLVER.md section 1, piece S4): the native exports
-/// (<c>Interop/SolverExports.cs</c>) and EmuDump's <c>solve</c> and <c>hindsight</c> commands (<c>tools/emudump/Solve.cs</c>)
+/// (<c>Interop/SolverExports.cs</c>) and EmuDump's <c>solve</c> and <c>hindsight</c> commands (<c>tools/emudump/Engines/Old/Solve.cs</c>)
 /// both call these, so they answer alike on any position (<c>NativeSolverTests</c>, EmuDump's <c>SolveModeTests</c>).
 /// The expected solve and the hindsight bound are separate calls with separate result types, and the hindsight call
 /// refuses without its flag, without the record's own streams, or with a stream unset (section 4a). A refused result

@@ -1,10 +1,11 @@
-// EmuDump's `solve` and `hindsight` commands (tools/emudump/Solve.cs, piece S4) against the native exports on the same
+// EmuDump's `solve` and `hindsight` commands (tools/emudump/Engines/Old/Solve.cs, piece S4) against the native exports on the same
 // fights: a native handle made by Sts2_Create(seed) and stepped through Sts2_Step with the command's seeded policy reaches
 // the command's position, and Sts2_SolveExpected and Sts2_SolveHindsight answer as the command prints. The command prints the
 // expected result or the hindsight bound, never both, and its hindsight refuses without --allow-hindsight and on a fight
 // with an unset stream (the seed form: hindsight-unset-streams, as the native export says on the same handle); on a run's
 // fight (--run: every stream set, the fight's own) it is the native bound on the same fork.
 using System.Text.Json.Nodes;
+using EmuDump.Engines.Old;
 using Sts2Emulator.Core.Run;
 using Sts2Emulator.Interop;
 using Xunit;
