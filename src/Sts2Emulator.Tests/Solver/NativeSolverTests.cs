@@ -15,7 +15,7 @@ using Xunit.Abstractions;
 
 namespace Sts2Emulator.Tests.Solver;
 
-public class NativeSolverTests(ITestOutputHelper output)
+public unsafe class NativeSolverTests(ITestOutputHelper output)
 {
     [Fact]
     public void TheApiVersionSaysTheSolverExportsAreThere()
@@ -118,6 +118,7 @@ public class NativeSolverTests(ITestOutputHelper output)
         output.WriteLine($"native vs emudump: {compared} positions ({exact} exact, {budget} budget, {refused} refused), {qEntries} q entries, {diffs.Count} differences");
         Assert.True(compared >= 300, $"only {compared} harness positions built");
         Assert.True(exact >= 50, $"only {exact} exact solves");
+        Assert.True(compared - refused >= 250, $"only {compared - refused} solved: equal refusals would carry the comparison");
         Assert.Empty(diffs);
     }
 
@@ -160,6 +161,73 @@ public class NativeSolverTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void TheFilledStreamsOfTheExpectedViewChangeNoValue()
+    {
+        // The slots Sts2_Create leaves unset, nulled on harness positions (whose streams are all set): the expected solve
+        // reads the view (each unset slot a stream of its own) and must give the value and the root moves of the original.
+        delegate* unmanaged<int, int> create = &NativeExports.Sts2_Create;
+        int probe = create(11);
+        var unset = SolverService.UnsetStreamsOf(NativeExports.StateOf(probe)!);
+        NativeSolverCalls.DestroyCombat(probe);
+        Assert.NotEmpty(unset);
+        var corpus = SolverPositions.Corpus();
+        int compared = 0, solved = 0;
+        var diffs = new List<string>();
+        foreach (var recipe in SolverPositions.Recipes().Where(r => r.Id % 7 == 0))
+        {
+            if (compared >= 50 || SolverPositions.Build(recipe, corpus) is not { } pos)
+            {
+                continue;
+            }
+
+            var opts = HarnessOptions(recipe.Horizon);
+            var nulled = pos.State.Clone();
+            foreach (int i in unset)
+            {
+                StateCloning.SetStream(nulled, i, null);
+            }
+
+            Assert.NotSame(nulled, SolverService.ExpectedView(nulled));
+            var a = SolverService.SolveExpected(pos.State, pos.Rng, opts);
+            var b = SolverService.SolveExpected(nulled, pos.Rng, opts);
+            compared++;
+            solved += a.Status == SolveStatus.Refused ? 0 : 1;
+            if (a.Status != b.Status || a.Value != b.Value || a.Exact != b.Exact || a.ExactMass != b.ExactMass || a.Reason != b.Reason
+                || !a.Moves.SequenceEqual(b.Moves))
+            {
+                diffs.Add($"#{recipe.Id}: {a.Status} {a.Value} vs {b.Status} {b.Value}");
+            }
+        }
+
+        output.WriteLine($"expected view: {compared} positions with slots {string.Join(",", unset)} nulled, {solved} solved, {diffs.Count} differences");
+        Assert.True(compared >= 50 && solved >= 30, $"{compared} compared, {solved} solved");
+        Assert.Empty(diffs);
+    }
+
+    [Fact]
+    public void ARefusedSolveCarriesNoValue()
+    {
+        // The draw-tie position is refused: NaN natively and null in EmuDump's object, never the 0 of a certain loss.
+        var (s, rng) = SolverSiteTests.DrawTie();
+        int handle = NativeSolverCalls.Adopt(s, rng);
+        int solver = NativeSolverCalls.Create(handle, NativeSolverCalls.Options(new SolveOptions { MaxHorizon = 0 }));
+        var (status, r, q) = NativeSolverCalls.Expected(solver, handle, null);
+        string reason = NativeSolverCalls.LastError();
+        NativeSolverCalls.Destroy(solver);
+        NativeSolverCalls.DestroyCombat(handle);
+        Assert.Equal(-3, status);
+        Assert.StartsWith("draw-tie", reason);
+        Assert.True(double.IsNaN(r.Value) && double.IsNaN(r.ExactMass), $"value {r.Value}, mass {r.ExactMass}");
+        Assert.All(q, v => Assert.True(float.IsNaN(v)));
+        var lib = SolverService.SolveExpected(s, rng, new SolveOptions { MaxHorizon = 0 });
+        var json = SolverService.ExpectedJson(s, lib);
+        Assert.Equal("refused", (string)json["status"]!);
+        Assert.Null(json["value"]);
+        Assert.Null(json["value_f"]);
+        Assert.Null(json["exact_mass_f"]);
+    }
+
+    [Fact]
     public void BadOptionsAndHandlesAreRefusedNotThrown()
     {
         var (s, rng) = SolverPositions.Fight("old", 22, TestDeck.StarterDeckIds.ToArray(), [], []);
@@ -172,6 +240,21 @@ public class NativeSolverTests(ITestOutputHelper output)
         Assert.True(solver >= 0);
         Assert.Equal(-1, NativeSolverCalls.Expected(solver, 255, null).Status);
         Assert.Equal(-1, NativeSolverCalls.Expected(-1, handle, null).Status);
+        // A full pool is -2, as Sts2Run_ForkCombat's; every handle claimed is distinct.
+        var claimed = new List<int> { solver };
+        int next;
+        while ((next = NativeSolverCalls.Create(handle, null)) >= 0)
+        {
+            claimed.Add(next);
+        }
+
+        Assert.Equal(-2, next);
+        Assert.Equal(claimed.Count, claimed.Distinct().Count());
+        foreach (int c in claimed.Skip(1))
+        {
+            NativeSolverCalls.Destroy(c);
+        }
+
         NativeSolverCalls.Destroy(solver);
         NativeSolverCalls.DestroyCombat(handle);
     }

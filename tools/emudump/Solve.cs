@@ -2,20 +2,23 @@
 // Usage: EmuDump solve <ascension> <seed> [--at <step>] [--potions A,B] [--hp N] [options] > solve.jsonl
 //        EmuDump solve --record <referee out.json> --decision <i> [options]
 //        EmuDump solve --snapshot <doc.json | docs.jsonl> [--load-seed S] [options]   (one line per document)
-//        EmuDump hindsight <ascension> <seed> [--at <step>] --allow-hindsight [--max-turns T] [options]
+//        EmuDump hindsight <ascension> <seed> --run [--at <step>] --allow-hindsight [--max-turns T] [options]
 // options: --engine old|core2, --budget-nodes N, --budget-steps N, --budget-ms M, --horizon H, --prune all|none|<names,...>
 //          (a name with a leading '-' switches that pruning off from all), --curve, --mode expected|hindsight.
 //
 // One JSON object per decision: the expected result under "expected" (with the potion curve under "curve" when asked) or
 // the hindsight bound under "hindsight", never both in one object, plus counters. The seed form starts from the fight the
 // native handle deals (NativeExports.DealFight: Sts2_Create's at the default level, Sts2_ResetArena's otherwise) and plays
-// <step> seeded random legal moves through the native step's own gate; the record form re-anchors through the reanchor path
+// <step> seeded random legal moves through the native step's own gate; with --run the fight is instead a run's first one
+// (Sts2Run_Reset, Sts2Run_StartCombat with the starting deck against the Slithering Strangler, Sts2Run_ForkCombat as it
+// stands), whose streams are all set and its own; the record form re-anchors through the reanchor path
 // (Reanchor.cs) up to the record's decision <i>; the snapshot form loads `sts2-emu-snapshot/1` documents as
 // Sts2_LoadCombatSnapshot does (NativeExports.LoadFight), each line of a .jsonl file a document or an object with "doc"
 // (and "id", copied to the output). Under `dotnet EmuDump.dll` this is the JIT side of the solver's AOT-against-JIT gate
 // (tests/python/test_solver_aot_sites.py). All forms solve through Sts2Emulator.Solver.SolverService, the code the native
-// exports run, so the two answer alike. Hindsight refuses without --allow-hindsight, and on a re-anchored record, whose
-// streams are the emulator's and not the game's.
+// exports run, so the two answer alike. Hindsight refuses without --allow-hindsight, on a re-anchored record or a loaded
+// document, whose streams are the emulator's and not the game's, and on a fight with an unset stream (the plain seed form:
+// hindsight-unset-streams), so its one accepted form is --run.
 using System.Text.Json.Nodes;
 using EmuDump.Engine;
 using EmuDump.Engines;
@@ -31,7 +34,7 @@ static class SolveMode
     /// <summary>The parsed command line.</summary>
     internal sealed record Args(
         string Mode, int Ascension, int Seed, int At, int[] Potions, int Hp, string? Record, int Decision,
-        SolveOptions Options, bool Curve, bool AllowHindsight, int MaxTurns, string? Snapshot = null, int LoadSeed = 0);
+        SolveOptions Options, bool Curve, bool AllowHindsight, int MaxTurns, string? Snapshot = null, int LoadSeed = 0, bool RunForm = false);
 
     public static int Run(string command, string[] args, TextWriter output)
     {
@@ -68,6 +71,7 @@ static class SolveMode
         int asc = Ascension.DefaultLevel, seed = 0, at = 0, hp = 0, decision = 0, maxTurns = new HindsightOptions().MaxTurns;
         int[] potions = [];
         string? record = null, snapshot = null;
+        bool runForm = false;
         int loadSeed = 0;
         var opts = new SolveOptions();
         bool curve = false, allow = false;
@@ -92,6 +96,7 @@ static class SolveMode
                 case "--no-estimate": opts = opts with { UseEstimate = false }; break;
                 case "--curve": curve = true; break;
                 case "--allow-hindsight": allow = true; break;
+                case "--run": runForm = true; break;
                 case "--max-turns": maxTurns = int.Parse(Next()); break;
                 case "--mode":
                     mode = Next();
@@ -120,7 +125,8 @@ static class SolveMode
         }
 
         if (curve && mode == "hindsight") throw new ArgumentException("--curve is an expected-mode output");
-        return new Args(mode, asc, seed, at, potions, hp, record, decision, opts, curve, allow, maxTurns, snapshot, loadSeed);
+        if (runForm && (record is not null || snapshot is not null)) throw new ArgumentException("--run is a form of <ascension> <seed>");
+        return new Args(mode, asc, seed, at, potions, hp, record, decision, opts, curve, allow, maxTurns, snapshot, loadSeed, runForm);
     }
 
     static int PotionId(string name) =>
@@ -150,6 +156,39 @@ static class SolveMode
     {
         var kernel = EngineFactory.Selected == "core2" ? NativeEngine.Parse("core2").Kernel : null;
         var (state, rng) = NativeExports.DealFight(a.Seed, a.Ascension, kernel, a.Potions, a.Hp);
+        return Walk(kernel, state, rng, a);
+    }
+
+    /// <summary>
+    /// The run form's position: a run at the seed (its decimal string) and the ascension starts a fight with the starting deck
+    /// against the Slithering Strangler (Sts2Run_StartCombat's normal fight), forked as it stands (Sts2Run_ForkCombat without a
+    /// resample: every stream set and the fight's own), then <c>at</c> moves as in the seed form.
+    /// </summary>
+    internal static (CombatState State, CountingRandom Rng, string? Error) RunPosition(Args a)
+    {
+        var kernel = EngineFactory.Selected == "core2" ? NativeEngine.Parse("core2").Kernel : null;
+        var run = new RunEngine();
+        if (kernel is not null)
+        {
+            run.Kernel = kernel;
+        }
+
+        run.Reset($"{a.Seed}", a.Ascension);
+        int status = run.StartCombat(RunConstants.StarterDeckIds, WeakContext.Resolve(RunConstants.SlitheringStranglerEncounterId, RunStartRooms),
+            [], a.Hp > 0 ? a.Hp : RunEngine.StartingHp(a.Ascension), RunConstants.StartingMaxHp, a.Potions, 0);
+        if (status != 0 || run.ForkActiveCombat(null) is not { } fight)
+        {
+            return (null, null, $"the run did not start its fight (status {status})");
+        }
+
+        return Walk(run.Kernel, fight.Combat, fight.Rng, a);
+    }
+
+    /// <summary>The rooms cleared before the run form's fight: past the weak encounters, so the fight is the normal one.</summary>
+    internal const int RunStartRooms = 99;
+
+    static (CombatState State, CountingRandom Rng, string? Error) Walk(Sts2Emulator.Core2.Kernel? kernel, CombatState state, CountingRandom rng, Args a)
+    {
         var policy = new Random(a.Seed);
         for (int i = 0; i < a.At; i++)
         {
@@ -238,7 +277,7 @@ static class SolveMode
     }
 
     internal static JsonObject Decision(Args a) =>
-        Decision(a, new JsonObject(), () => a.Record is null ? SeedPosition(a) : RecordPosition(a));
+        Decision(a, new JsonObject(), () => a.Record is not null ? RecordPosition(a) : a.RunForm ? RunPosition(a) : SeedPosition(a));
 
     internal static JsonObject Decision(Args a, JsonObject header, Func<(CombatState? State, CountingRandom? Rng, string? Error)> position)
     {
@@ -262,6 +301,7 @@ static class SolveMode
             o["ascension"] = a.Ascension;
             o["seed"] = a.Seed;
             o["at"] = a.At;
+            o["run"] = a.RunForm;
         }
         else
         {
@@ -303,7 +343,7 @@ static class SolveMode
         }
 
         var r = SolverService.SolveExpected(state, rng, a.Options);
-        o["expected"] = SolverService.ExpectedJson(state, r);
+        o["expected"] = SolverService.ExpectedJson(state, r, a.Options.AllowedPotions);
         o["counters"] = SolverService.CountersJson(r.Counters, r.Seconds);
         if (a.Curve)
         {

@@ -93,7 +93,7 @@ class SolverBindingTests(unittest.TestCase):
         def fake(solver, handle, opts, res, q, max_actions):
             r = res._obj
             r.status, r.horizon, r.exact, r.move_count, r.best_action, r.best_target, r.q_stride = 0, 1, 1, 2, 0, 1, 7
-            r.value, r.exact_mass, r.nodes = 0.75, 1.0, 42
+            r.value, r.exact_mass, r.nodes, r.allowed_potions = 0.75, 1.0, 42, -1
             for i in range(max_actions * 7):
                 q[i] = float("nan")
             q[0 * 7 + 2] = 0.75  # action 0 at target 1
@@ -104,15 +104,25 @@ class SolverBindingTests(unittest.TestCase):
         with mock.patch.object(n, "_lib", lib):
             out = n.solve_expected(1, 2, n.SolveOptions(node_budget=10))
         self.assertEqual((out.status, out.value, out.exact, out.best_action, out.best_target, out.nodes), (0, 0.75, True, 0, 1, 42))
+        self.assertEqual(out.allowed_potions, -1)
         self.assertEqual(out.q, {(0, 1): 0.75, (3, -1): 0.5})
         self.assertIsNone(out.reason)
 
     def test_a_refusal_carries_its_reason_and_an_error_raises(self):
         n = self.native
         lib = mock.MagicMock()
-        lib.Sts2_SolveExpected.return_value = -3
+
+        def refused(solver, handle, opts, res, q, max_actions):
+            res._obj.value, res._obj.exact_mass = float("nan"), float("nan")
+            return -3
+
+        lib.Sts2_SolveExpected.side_effect = refused
         with mock.patch.object(n, "_lib", lib), mock.patch.object(n, "_get_last_error", return_value="draw-peek: x"):
-            self.assertEqual(n.solve_expected(1, 2).reason, "draw-peek: x")
+            out = n.solve_expected(1, 2)
+            self.assertEqual(out.reason, "draw-peek: x")
+            self.assertIsNone(out.value)  # no value, never the 0 of a certain loss
+            self.assertIsNone(out.exact_mass)
+            lib.Sts2_SolveExpected.side_effect = None
             lib.Sts2_SolveExpected.return_value = -1
             with self.assertRaisesRegex(RuntimeError, "Sts2_SolveExpected failed: draw-peek"):
                 n.solve_expected(1, 2)
@@ -132,6 +142,45 @@ class SolverBindingTests(unittest.TestCase):
             n.solver_create(1, n.SolveOptions(), allow_hindsight=True)
         self.assertEqual(seen, [0, 1])
 
+    def test_the_potion_mask_crosses_as_its_complement(self):
+        # A zeroed native struct forbids nothing; Python's slot mask of allowed potions is complemented on the way.
+        n = self.native
+        self.assertEqual(n._SolveOptionsC().forbidden_potions, 0)
+        self.assertEqual(n.SolveOptions()._c().forbidden_potions, 0)
+        self.assertEqual(n.SolveOptions(allowed_potions=~0b101)._c().forbidden_potions, 0b101)
+
+    def test_reset_raises_on_an_unknown_solver_and_open_solver_destroys_its_handle(self):
+        n = self.native
+        lib = mock.MagicMock()
+        lib.Sts2Solver_Reset.return_value = -1
+        lib.Sts2Solver_Create.return_value = 7
+        with mock.patch.object(n, "_lib", lib), mock.patch.object(n, "_get_last_error", return_value="unknown solver handle"):
+            with self.assertRaisesRegex(RuntimeError, "unknown solver handle"):
+                n.solver_reset(9)
+            with self.assertRaises(KeyError), n.open_solver(1) as s:
+                self.assertEqual(s, 7)
+                raise KeyError("inside")
+        lib.Sts2Solver_Destroy.assert_called_once_with(7)
+
+    def test_a_refused_curve_entry_has_no_numbers(self):
+        n = self.native
+        lib = mock.MagicMock()
+
+        def fake(solver, handle, opts, buf, max_subsets):
+            for i, (status, value) in enumerate([(-3, float("nan")), (0, 0.5)]):
+                e = buf[i]
+                e.subset, e.curve_status, e.allowed_potions = i, status, -1 if i else ~1
+                e.expected_l0 = e.win_chance = e.curve_exact_mass = e.expected_win_hp = value
+                for slot in range(8):
+                    e.held[slot] = float("nan")
+            return 2
+
+        lib.Sts2_SolvePotionCurve.side_effect = fake
+        with mock.patch.object(n, "_lib", lib):
+            refused, solved = n.solve_potion_curve(1, 2, max_subsets=2)
+        self.assertEqual((refused["expected_l0"], refused["win_chance"], refused["held"], refused["allowed_potions"]), (None, None, {}, ~1))
+        self.assertEqual((solved["expected_l0"], solved["allowed_potions"]), (0.5, -1))
+
     def test_solve_hindsight_binds_on_first_call_and_decodes_the_line(self):
         n = self.native
         lib = mock.MagicMock()
@@ -150,6 +199,20 @@ class SolverBindingTests(unittest.TestCase):
             self.assertEqual(len(lib.Sts2_SolveHindsight.argtypes), 4)
         self.assertEqual((b.win_line_exists, b.best_utility, b.complete, b.line), ("yes", 0.9, True, [(0, 0), (5, -1)]))
 
+    def test_a_cut_or_refused_hindsight_has_no_bound(self):
+        n = self.native
+        for outcome in (1, -3):
+            lib = mock.MagicMock()
+
+            def fake(solver, handle, opts, res, outcome=outcome):
+                res._obj.outcome, res._obj.best_utility = outcome, float("nan")
+                return outcome
+
+            lib.Sts2_SolveHindsight.side_effect = fake
+            with mock.patch.object(n, "_lib", lib), mock.patch.object(n, "_hindsight_export", None), \
+                    mock.patch.object(n, "_get_last_error", return_value="hindsight-unset-streams: x"):
+                self.assertIsNone(n.solve_hindsight(1, 2).best_utility, outcome)
+
 
 def _real_library():
     lib = Path(os.environ.get("STS2_LIB_PATH", ROOT / "out")) / "Sts2Emulator.dll"
@@ -159,6 +222,10 @@ def _real_library():
 @unittest.skipUnless(_real_library(), "no native library built")
 class SolverBindingLiveTests(unittest.TestCase):
     def test_a_small_fight_end_to_end(self):
+        import sys  # noqa: PLC0415
+
+        if str(ROOT / "src") not in sys.path:
+            sys.path.insert(0, str(ROOT / "src"))
         from sts2_gym import native  # noqa: PLC0415
 
         obs = (ctypes.c_int * native._lib.Sts2_ObsSize())()
@@ -172,6 +239,13 @@ class SolverBindingLiveTests(unittest.TestCase):
             self.assertIn((e.best_action, e.best_target), e.q)
             self.assertEqual(native.solve_hindsight(s, h).outcome, -3)  # made without the flag
             self.assertEqual(native.solver_info()["native_api_version"], 39)
+            # With the flag, a handle from create() and reset() is still refused: some of its streams are unset.
+            with native.open_solver(h, allow_hindsight=True) as flagged:
+                b = native.solve_hindsight(flagged, h, node_budget=2_000)
+            self.assertEqual(b.outcome, -3)
+            self.assertTrue(b.refusal.startswith("hindsight-unset-streams"), b.refusal)
+            self.assertIsNone(b.best_utility)
+            native.solver_reset(s)
         finally:
             native.solver_destroy(s)
             native.destroy(h)

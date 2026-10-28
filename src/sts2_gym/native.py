@@ -1,5 +1,6 @@
 """ctypes bindings to the NativeAOT-compiled Sts2Emulator native library."""
 
+import contextlib
 import ctypes
 import json
 import os
@@ -2020,10 +2021,13 @@ def run_destroy(handle: int) -> None:
 #
 # Two outputs, kept apart: solve_expected returns an ExpectedSolve, the only output a label writer, the regret benchmark
 # or a grade may read; solve_hindsight returns a HindsightBound, a separate type sharing no field with it, for lost-fight
-# attribution only. Sts2_SolveHindsight is bound here on its first call and nowhere at import, so no search or lab entry
-# point binds it (tests/python/test_solver_hindsight_pins.py); the library also refuses it unless the solver was made with
-# allow_hindsight=True. The ctypes structures mirror Interop/SolverExports.cs field for field
-# (tests/python/test_solver_binding.py reads the C# to hold them alike).
+# attribution only. The gate is the library's: Sts2_SolveHindsight refuses unless the solver was made with
+# allow_hindsight=True, on a handle whose streams are not the record's, and on a handle with an unset stream
+# (hindsight-unset-streams). Binding the export lazily adds nothing (ctypes resolves an export on attribute access);
+# tests/python/test_solver_hindsight_pins.py keeps the lab and the search from naming it. A refused result carries no
+# number: its values are None here (NaN in the native structs). The ctypes structures mirror Interop/SolverExports.cs field
+# for field (tests/python/test_solver_binding.py reads the C# to hold them alike). One solver handle serves one thread at a
+# time; open_solver() destroys its handle on exit.
 
 PRUNE_TRANSPOSITION = 1
 PRUNE_MULTISET_HAND = 2
@@ -2045,7 +2049,7 @@ class _SolveOptionsC(ctypes.Structure):
         ("max_horizon", ctypes.c_int32),
         ("prune", ctypes.c_int32),
         ("chance_width_cap", ctypes.c_int32),
-        ("allowed_potions", ctypes.c_int32),
+        ("forbidden_potions", ctypes.c_int32),
         ("utility", ctypes.c_int32),
         ("allow_hindsight", ctypes.c_int32),
         ("use_estimate", ctypes.c_int32),
@@ -2070,6 +2074,7 @@ class _ExpectedResultC(ctypes.Structure):
         ("table_hits", ctypes.c_int64),
         ("leaves", ctypes.c_int64),
         ("horizon_leaves", ctypes.c_int64),
+        ("allowed_potions", ctypes.c_int32),
     ]
 
 
@@ -2107,11 +2112,16 @@ class _CurveEntryC(ctypes.Structure):
         ("expected_win_hp", ctypes.c_double),
         ("curve_exact_mass", ctypes.c_double),
         ("held", ctypes.c_double * 8),
+        ("allowed_potions", ctypes.c_int32),
     ]
 
 
 class SolveOptions:
-    """A solve's options (Solver/Expectimax.cs SolveOptions); a budget of 0 takes the library's default."""
+    """A solve's options (Solver/Expectimax.cs SolveOptions); a budget of 0 takes the library's default.
+
+    allowed_potions is a slot mask (bit i: the potion in slot i may be used; -1 every slot). The native struct carries its
+    complement (forbidden_potions), so a zeroed struct from any C caller leaves every potion usable.
+    """
 
     __slots__ = ("node_budget", "step_budget", "time_budget_ms", "max_horizon", "prune", "chance_width_cap", "allowed_potions",
                  "use_estimate")
@@ -2123,19 +2133,21 @@ class SolveOptions:
         self.allowed_potions, self.use_estimate = allowed_potions, use_estimate
 
     def _c(self, allow_hindsight: bool = False) -> _SolveOptionsC:
+        forbidden = ctypes.c_int32(~int(self.allowed_potions)).value
         return _SolveOptionsC(self.node_budget, self.step_budget, self.time_budget_ms, self.max_horizon, self.prune,
-                              self.chance_width_cap, self.allowed_potions, 0, 1 if allow_hindsight else 0,
-                              1 if self.use_estimate else 0)
+                              self.chance_width_cap, forbidden, 0, 1 if allow_hindsight else 0, 1 if self.use_estimate else 0)
 
 
 class ExpectedSolve:
     """The expected value of a position (Sts2_SolveExpected): the only solver output labels, regret and grades may read.
 
-    q maps (action, target) to the move's value, target -1 for none; a move with no value is left out.
+    q maps (action, target) to the move's value, target -1 for none; a move with no value is left out. A refused solve
+    (status -3) has no value: value and exact_mass are None, never a 0 that reads as a certain loss. allowed_potions is the
+    potion slot mask the solve used (-1: every slot).
     """
 
     __slots__ = ("status", "reason", "horizon", "value", "exact", "exact_mass", "move_count", "best_action", "best_target", "q",
-                 "nodes", "steps", "table_hits", "leaves", "horizon_leaves", "seconds")
+                 "nodes", "steps", "table_hits", "leaves", "horizon_leaves", "seconds", "allowed_potions")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -2146,7 +2158,11 @@ class ExpectedSolve:
 
 
 class HindsightBound:
-    """The hindsight bound (Sts2_SolveHindsight): an upper bound for lost-fight attribution, never a label, regret or grade."""
+    """The hindsight bound (Sts2_SolveHindsight): an upper bound for lost-fight attribution, never a label, regret or grade.
+
+    best_utility is the bound only when the search was complete (outcome 0); it is None when the search was cut (its best
+    line is a lower bound on the bound, not the bound) or refused.
+    """
 
     __slots__ = ("outcome", "refusal", "win_line_exists", "best_utility", "complete", "line", "nodes_searched", "engine_steps",
                  "elapsed")
@@ -2203,8 +2219,26 @@ def solver_destroy(solver: int) -> None:
     _lib.Sts2Solver_Destroy(solver)
 
 
+@contextlib.contextmanager
+def open_solver(handle: int, options: SolveOptions | None = None, *, allow_hindsight: bool = False):
+    """solver_create as a context manager: the solver handle is destroyed on exit."""
+    solver = solver_create(handle, options, allow_hindsight=allow_hindsight)
+    try:
+        yield solver
+    finally:
+        solver_destroy(solver)
+
+
 def solver_reset(solver: int) -> None:
-    _lib.Sts2Solver_Reset(solver)
+    """Forgets the solver's tables (a new fight on the same solver); raises for an unknown solver handle."""
+    if int(_lib.Sts2Solver_Reset(solver)) < 0:
+        raise RuntimeError(f"Sts2Solver_Reset failed: {_get_last_error()}")
+
+
+def _number(x: float):
+    """A native double, None for NaN (a refused or cut result's value)."""
+    x = float(x)
+    return None if x != x else x
 
 
 def _q_values(q, max_actions: int, stride: int) -> dict:
@@ -2226,15 +2260,22 @@ def solve_expected(solver: int, handle: int, options: SolveOptions | None = None
     if status == SOLVE_ERROR:
         raise RuntimeError(f"Sts2_SolveExpected failed: {_get_last_error()}")
     return ExpectedSolve(
-        status=status, reason=_get_last_error() if status == SOLVE_REFUSED else None, horizon=int(res.horizon), value=float(res.value),
-        exact=bool(res.exact), exact_mass=float(res.exact_mass), move_count=int(res.move_count), best_action=int(res.best_action),
+        status=status, reason=_get_last_error() if status == SOLVE_REFUSED else None, horizon=int(res.horizon),
+        value=None if status == SOLVE_REFUSED else _number(res.value), exact=bool(res.exact),
+        exact_mass=None if status == SOLVE_REFUSED else _number(res.exact_mass), move_count=int(res.move_count), best_action=int(res.best_action),
         best_target=int(res.best_target), q=_q_values(q, max_actions, SOLVER_Q_STRIDE), nodes=int(res.nodes), steps=int(res.steps),
         table_hits=int(res.table_hits), leaves=int(res.leaves), horizon_leaves=int(res.horizon_leaves), seconds=float(res.seconds),
+        allowed_potions=int(res.allowed_potions),
     )
 
 
 def solve_potion_curve(solver: int, handle: int, options: SolveOptions | None = None, max_subsets: int = 64) -> list[dict]:
-    """The potion value curve (FIGHT_SOLVER.md section 8): one entry per subset of the potions held, the empty one first."""
+    """The potion value curve (FIGHT_SOLVER.md section 8): one entry per subset of the potions held, the empty one first.
+
+    "subset" is a bit set over the held potions in slot order (bit j: the j-th held potion usable); "allowed_potions" is the
+    same subset as a slot mask (bit i: slot i usable), the convention of SolveOptions.allowed_potions. Every entry has the
+    curve's one horizon. A refused entry's numbers are None and its held map is empty.
+    """
     buf = (_CurveEntryC * max_subsets)()
     opts = options._c() if options is not None else None
     n = int(_lib.Sts2_SolvePotionCurve(solver, handle, ctypes.byref(opts) if opts is not None else None, buf, max_subsets))
@@ -2244,8 +2285,8 @@ def solve_potion_curve(solver: int, handle: int, options: SolveOptions | None = 
     for e in buf[: min(n, max_subsets)]:
         held = {slot: float(e.held[slot]) for slot in range(8) if e.held[slot] == e.held[slot]}
         out.append({"subset": int(e.subset), "status": int(e.curve_status), "exact": bool(e.curve_exact), "horizon": int(e.curve_horizon),
-                    "expected_l0": float(e.expected_l0), "win_chance": float(e.win_chance),
-                    "expected_win_hp": float(e.expected_win_hp), "exact_mass": float(e.curve_exact_mass), "held": held})
+                    "allowed_potions": int(e.allowed_potions), "expected_l0": _number(e.expected_l0), "win_chance": _number(e.win_chance),
+                    "expected_win_hp": _number(e.expected_win_hp), "exact_mass": _number(e.curve_exact_mass), "held": held})
     return out
 
 
@@ -2261,7 +2302,7 @@ _hindsight_export = None
 
 
 def _bind_hindsight():
-    """Sts2_SolveHindsight, bound on the first call to solve_hindsight and never at import."""
+    """Sts2_SolveHindsight with its signature, set on the first call to solve_hindsight (the library's flag is the gate)."""
     global _hindsight_export
     if _hindsight_export is None:
         f = _lib.Sts2_SolveHindsight
@@ -2276,7 +2317,8 @@ def solve_hindsight(solver: int, handle: int, *, node_budget: int = 0, step_budg
     """The hindsight bound of the combat's position with its own draws and rolls fixed, for lost-fight attribution only.
 
     Refused (outcome -3, with the reason) unless the solver was made with allow_hindsight=True and the handle carries the
-    record's own streams (not a resampled clone, not a loaded document).
+    record's own streams (not a resampled clone, not a loaded document) with none unset (a handle from create() and reset()
+    has unset streams: hindsight-unset-streams). best_utility is None unless the search was complete (outcome 0).
     """
     res = _HindsightResultC()
     opts = _HindsightOptionsC(node_budget, step_budget, time_ms, max_turns)
@@ -2287,7 +2329,7 @@ def solve_hindsight(solver: int, handle: int, *, node_budget: int = 0, step_budg
     verdict = {1: "yes", 0: "no"}.get(int(res.win_line_exists), "unknown")
     return HindsightBound(
         outcome=outcome, refusal=_get_last_error() if outcome == SOLVE_REFUSED else None, win_line_exists=verdict,
-        best_utility=float(res.best_utility), complete=bool(res.complete),
+        best_utility=_number(res.best_utility) if outcome == SOLVE_EXACT else None, complete=bool(res.complete),
         line=[(int(res.line[2 * i]), int(res.line[2 * i + 1])) for i in range(n)], nodes_searched=int(res.nodes_searched),
         engine_steps=int(res.engine_steps), elapsed=float(res.elapsed),
     )

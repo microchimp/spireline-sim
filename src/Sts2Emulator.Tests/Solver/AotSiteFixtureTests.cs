@@ -1,9 +1,10 @@
 // The documents the solver's AOT-against-JIT gate solves (tests/python/test_solver_aot_sites.py): the published native
 // library (NativeAOT) through the Python binding against `dotnet EmuDump.dll solve --snapshot` (the JIT), on the same
 // `sts2-emu-snapshot/1` documents. tests/fixtures/solver/aot_sites.jsonl holds the reshuffle and draw-tie positions of
-// SolverSiteTests (the two the stack-walk defect broke under NativeAOT); this test keeps it current
-// (STS2_WRITE_SOLVER_FIXTURES=1 rewrites it) and holds the loaded documents to the positions' own behaviour under the JIT.
-// With STS2_SOLVER_DOCS set to a file path, the harness set's documents are written there for the same gate (not committed).
+// SolverSiteTests (the two the stack-walk defect broke under NativeAOT) and a sample of the equal-value harness's positions
+// (every 40th recipe), so that the gate compares the native library with EmuDump on harness positions in every run of
+// tools/build_and_test.sh, from documents in the repo. This test keeps the file current (STS2_WRITE_SOLVER_FIXTURES=1
+// rewrites it) and holds the two named documents to the positions' own behaviour under the JIT.
 using System.Text;
 using System.Text.Json.Nodes;
 using Sts2Emulator.Core;
@@ -32,7 +33,28 @@ public class AotSiteFixtureTests(ITestOutputHelper output)
     {
         var (r, _) = SolverSiteTests.Reshuffle();
         var (t, _) = SolverSiteTests.DrawTie();
-        return string.Join("\n", Line("reshuffle", "old", 1, r).ToJsonString(), Line("draw-tie", "old", 0, t).ToJsonString()) + "\n";
+        var lines = new List<string> { Line("reshuffle", "old", 1, r).ToJsonString(), Line("draw-tie", "old", 0, t).ToJsonString() };
+        var corpus = SolverPositions.Corpus();
+        foreach (var recipe in SolverPositions.Recipes().Where(x => x.Id % 40 == 0))
+        {
+            if (SolverPositions.Build(recipe, corpus) is not { } pos)
+            {
+                continue;
+            }
+
+            try
+            {
+                var line = Line($"harness-{recipe.Id}", recipe.Engine, recipe.Horizon, pos.State);
+                line["id"] = recipe.Id;
+                lines.Add(line.ToJsonString());
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // a position the document cannot hold: not in the sample
+            }
+        }
+
+        return string.Join("\n", lines) + "\n";
     }
 
     [Fact]
@@ -45,7 +67,9 @@ public class AotSiteFixtureTests(ITestOutputHelper output)
         }
 
         Assert.Equal(fresh, File.ReadAllText(FixturePath).Replace("\r\n", "\n"));
-        foreach (var line in fresh.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        var all = fresh.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.True(all.Length >= 10, $"only {all.Length} documents");
+        foreach (var line in all.Take(2))
         {
             var o = JsonNode.Parse(line)!.AsObject();
             var (s, rng) = NativeExports.LoadFight(Encoding.UTF8.GetBytes(o["doc"]!.ToJsonString()), LoadSeed, null);
@@ -61,39 +85,5 @@ public class AotSiteFixtureTests(ITestOutputHelper output)
                 Assert.NotEqual(SolveStatus.Refused, r.Status);
             }
         }
-    }
-
-    [Fact]
-    public void ExportTheHarnessDocumentsWhenAsked()
-    {
-        if (Environment.GetEnvironmentVariable("STS2_SOLVER_DOCS") is not { Length: > 0 } path)
-        {
-            return;
-        }
-
-        var corpus = SolverPositions.Corpus();
-        var lines = new List<string>();
-        int skipped = 0;
-        foreach (var recipe in SolverPositions.Recipes())
-        {
-            if (SolverPositions.Build(recipe, corpus) is not { } pos)
-            {
-                continue;
-            }
-
-            try
-            {
-                var line = Line($"harness-{recipe.Id}", recipe.Engine, recipe.Horizon, pos.State);
-                line["id"] = recipe.Id;
-                lines.Add(line.ToJsonString());
-            }
-            catch (Exception e) when (e is not OutOfMemoryException)
-            {
-                skipped++;
-            }
-        }
-
-        File.WriteAllText(path, string.Join("\n", lines) + "\n");
-        output.WriteLine($"wrote {lines.Count} harness documents, {skipped} not writable");
     }
 }

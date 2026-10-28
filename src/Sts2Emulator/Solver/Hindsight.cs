@@ -17,10 +17,13 @@ public enum WinLine
 /// <summary>How a hindsight search ended (the native status codes of <c>Sts2_SolveHindsight</c>).</summary>
 public enum HindsightOutcome
 {
-    /// <summary>Every line was searched to the fight's end: the best utility is the bound.</summary>
+    /// <summary>Every line was searched to the fight's end: the best line found is the bound.</summary>
     Searched = 0,
 
-    /// <summary>The budget or the turn cap cut the search: the best utility is the best line found, a lower bound on the bound.</summary>
+    /// <summary>
+    /// The budget or the turn cap cut the search: the best line found is a lower bound on the bound, not the bound, so no
+    /// export carries it as one (NaN natively, null in EmuDump, None in Python).
+    /// </summary>
     Cut = 1,
 
     /// <summary>Not searched: the flag was not set, the streams are not the record's, or the position was refused.</summary>
@@ -50,20 +53,37 @@ public sealed record HindsightOptions
 /// The hindsight bound (<c>SolveHindsight</c>, FIGHT_SOLVER.md sections 4a and 9): the same fight with the record's draw
 /// order and rolls fixed, an OR over lines. An upper bound on the losses better play could have avoided, read by lost-fight
 /// attribution only: never a label, a regret or a grade. It shares no field with <see cref="ExpectedResult" />
-/// (<c>HindsightApartTests</c>).
+/// (<c>HindsightApartTests</c>). <see cref="BestFound" /> is the best line's utility, which is the bound only when the
+/// search was <see cref="HindsightOutcome.Searched" />: read <see cref="Bound" /> or <see cref="UpperBound" />.
 /// </summary>
 public sealed record HindsightResult(
     HindsightOutcome Outcome,
     string? Refusal,
     WinLine WinLineExists,
-    Rational BestUtility,
+    Rational BestFound,
     bool Complete,
     IReadOnlyList<Move> Line,
     long NodesSearched,
     long EngineSteps,
     double Elapsed)
 {
-    public double BestUtilityDouble => BestUtility.ToDouble();
+    /// <summary>The bound: the best utility over every line when the search was complete; null when cut or refused.</summary>
+    public Rational? Bound => Outcome == HindsightOutcome.Searched ? BestFound : null;
+
+    /// <summary>
+    /// A sound upper bound on the bound: the bound when searched; L0's maximum when cut, since a line the search did not
+    /// finish may still win at full score (the expected mode bounds a horizon leaf the same way); null when refused. Every
+    /// policy's outcome on the record's draws is at most this (<c>HindsightBoundTests</c>).
+    /// </summary>
+    public Rational? UpperBound => Outcome switch
+    {
+        HindsightOutcome.Searched => BestFound,
+        HindsightOutcome.Cut => Utility.Max,
+        _ => null,
+    };
+
+    /// <summary>The bound as a double, NaN unless searched: what the native result carries.</summary>
+    public double BoundDouble => Bound is { } b ? b.ToDouble() : double.NaN;
 }
 
 /// <summary>

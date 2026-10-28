@@ -11,7 +11,10 @@ using Sts2Emulator.Core;
 /// <see cref="ExpectedWinHp" /> the expected HP at the end of a won fight (NaN when no win), and <see cref="Held" /> for
 /// each potion of the subset the chance it is still held at the end (by potion: the k-th copy of an id is held when
 /// at least k are). A horizon leaf counts as no win and holds what it holds at the cut, so with
-/// <see cref="ExactMass" /> below one the win chance and the held chances are those of the cut tree.
+/// <see cref="ExactMass" /> below one the win chance and the held chances are those of the cut tree. The win chance, the
+/// win HP and the held chances follow the first move of greatest value, so among moves of equal value they depend on the
+/// move order (the tie-break); the value does not. Every entry of one curve is solved at the same <see cref="Horizon" />.
+/// A refused entry's numbers are zero here beside its status and cross the boundary as NaN (null, None).
 /// </summary>
 public sealed record CurveEntry(
     int Subset,
@@ -31,7 +34,12 @@ public sealed record CurveEntry(
 /// usable in every subset). The potions outside S stay in the copy (the always-valid form of section 8: the subsets share
 /// no table; removing them where no rule reads potions held is a later saving). Each subset is the expected solve's
 /// expectimax with its iterative deepening and budget, carrying the policy's statistics beside the value; its value
-/// equals <see cref="Expectimax.SolveExpected" />'s under the same mask (<c>PotionCurveTests</c>).
+/// equals <see cref="Expectimax.SolveAt" />'s under the same mask at the curve's horizon (<c>PotionCurveTests</c>).
+/// One horizon per curve: every subset is solved at horizon 0, 1, ... in turn, and the curve is the deepest horizon that
+/// every subset finished within its budget (each subset's budget counts across its horizons, as an expected solve's does),
+/// so V(S + p) - V(S) always compares two trees cut alike, and an entry never falls below a subset of it (section 8's
+/// monotonicity holds between entries of one curve). When no horizon was finished by every subset, the curve is cut: every
+/// entry is refused with a <c>budget:</c> reason.
 /// </summary>
 public static class PotionCurve
 {
@@ -66,15 +74,81 @@ public static class PotionCurve
         return mask;
     }
 
-    /// <summary>Every subset in bit order, the empty one (the base) first; at most <paramref name="maxSubsets" />.</summary>
+    /// <summary>Every subset in bit order, the empty one (the base) first; at most <paramref name="maxSubsets" />; one horizon for all.</summary>
     public static List<CurveEntry> Solve(CombatState state, CountingRandom rng, SolveOptions options, int maxSubsets = 64)
     {
         var held = HeldSlots(state);
         int n = Math.Min(1 << held.Count, Math.Max(0, maxSubsets));
-        var entries = new List<CurveEntry>(n);
-        for (int subset = 0; subset < n; subset++)
+        var solvers = new CurveSolver[n];
+        var refused = new string?[n];
+        for (int i = 0; i < n; i++)
         {
-            entries.Add(new CurveSolver(options with { AllowedPotions = MaskOf(held, subset) }, state, held).Run(state, rng, subset));
+            solvers[i] = new CurveSolver(options with { AllowedPotions = MaskOf(held, i) }, state, held);
+        }
+
+        Stats?[]? last = null;
+        int lastHorizon = -1;
+        string reason = "horizon";
+        for (int h = 0; h <= options.MaxHorizon && n > 0; h++)
+        {
+            if (options.UseEstimate && h > 0 && SizeEstimate.Log10(state, h) > Math.Log10(options.NodeBudget) + options.EstimateSlack)
+            {
+                reason = $"estimate: horizon {h} is about 10^{SizeEstimate.Log10(state, h):0.0} states";
+                break;
+            }
+
+            var at = new Stats?[n];
+            bool cut = false;
+            for (int i = 0; i < n && !cut; i++)
+            {
+                if (refused[i] is not null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    at[i] = solvers[i].At(state, rng, h);
+                }
+                catch (BudgetExceeded e)
+                {
+                    reason = $"subset {i} at horizon {h}: {e.Message}";
+                    cut = true;
+                }
+                catch (SolveRefused e)
+                {
+                    refused[i] = e.Reason;
+                }
+            }
+
+            if (cut)
+            {
+                break;
+            }
+
+            (last, lastHorizon) = (at, h);
+            if (at.All(x => x is not { } st || (st.V.Exact && st.V.Mass == Rational.One)))
+            {
+                break;
+            }
+        }
+
+        var entries = new List<CurveEntry>(n);
+        for (int i = 0; i < n; i++)
+        {
+            if (refused[i] is { } why)
+            {
+                entries.Add(solvers[i].Entry(i, SolveStatus.Refused, why, -1, null));
+            }
+            else if (last?[i] is not { } st)
+            {
+                entries.Add(solvers[i].Entry(i, SolveStatus.Refused, $"budget: no horizon finished by every subset ({reason})", -1, null));
+            }
+            else
+            {
+                bool exact = st.V.Exact && st.V.Mass == Rational.One;
+                entries.Add(solvers[i].Entry(i, exact ? SolveStatus.Exact : SolveStatus.Budget, exact ? null : reason, lastHorizon, st));
+            }
         }
 
         return entries;
@@ -88,15 +162,19 @@ public static class PotionCurve
         readonly int[] _ids = [.. held.Select(i => root.PotionSlots[i])];
         readonly Dictionary<(UInt128, int), Stats> _memo = [];
         readonly HashSet<UInt128> _path = [];
-        SolveCounters _c = new();
+        readonly SolveCounters _c = new();
 
         bool On(Pruning p) => (options.Prune & p) != 0;
 
-        public CurveEntry Run(CombatState state, CountingRandom rng, int subset)
+        readonly Stopwatch _sw = new();
+
+        /// <summary>
+        /// The subset's tree at horizon <paramref name="horizon" />. The budget counts across the horizons this subset has run
+        /// (the time budget its own solving time only); throws <see cref="BudgetExceeded" /> or <see cref="SolveRefused" />.
+        /// </summary>
+        public Stats At(CombatState state, CountingRandom rng, int horizon)
         {
-            var sw = Stopwatch.StartNew();
-            _c = new SolveCounters();
-            _c.Check = () =>
+            _c.Check ??= () =>
             {
                 if (_c.Nodes > options.NodeBudget)
                 {
@@ -108,49 +186,25 @@ public static class PotionCurve
                     throw new BudgetExceeded($"{options.StepBudget} steps");
                 }
 
-                if (options.TimeBudgetMs > 0 && sw.ElapsedMilliseconds > options.TimeBudgetMs)
+                if (options.TimeBudgetMs > 0 && _sw.ElapsedMilliseconds > options.TimeBudgetMs)
                 {
                     throw new BudgetExceeded($"{options.TimeBudgetMs} ms");
                 }
             };
-            (Stats S, int H)? last = null;
-            string reason = "horizon";
-            for (int h = 0; h <= options.MaxHorizon; h++)
+            _sw.Start();
+            try
             {
-                if (options.UseEstimate && h > 0 && SizeEstimate.Log10(state, h) > Math.Log10(options.NodeBudget) + options.EstimateSlack)
-                {
-                    reason = $"estimate: horizon {h} is about 10^{SizeEstimate.Log10(state, h):0.0} states";
-                    break;
-                }
-
-                try
-                {
-                    _memo.Clear();
-                    _path.Clear();
-                    last = (Node(state, rng, h, root: true), h);
-                }
-                catch (BudgetExceeded e)
-                {
-                    reason = e.Message;
-                    break;
-                }
-                catch (SolveRefused e)
-                {
-                    return Entry(subset, SolveStatus.Refused, e.Reason, -1, null);
-                }
-
-                if (last.Value.S.V.Exact && last.Value.S.V.Mass == Rational.One)
-                {
-                    return Entry(subset, SolveStatus.Exact, null, h, last.Value.S);
-                }
+                _memo.Clear();
+                _path.Clear();
+                return Node(state, rng, horizon, root: true);
             }
-
-            return last is { } l
-                ? Entry(subset, SolveStatus.Budget, reason, l.H, l.S)
-                : Entry(subset, SolveStatus.Refused, $"budget: no horizon completed ({reason})", -1, null);
+            finally
+            {
+                _sw.Stop();
+            }
         }
 
-        CurveEntry Entry(int subset, SolveStatus status, string? reason, int horizon, Stats? stats)
+        public CurveEntry Entry(int subset, SolveStatus status, string? reason, int horizon, Stats? stats)
         {
             var heldChance = new Dictionary<int, Rational>();
             for (int j = 0; j < held.Count; j++)

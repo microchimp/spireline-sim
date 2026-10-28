@@ -1,16 +1,20 @@
 """The hindsight bound stays away from the lab and the search (docs/rebuild/FIGHT_SOLVER.md section 4a, piece S4).
 
 Perfect play is best in expectation at decision time; the hindsight bound (native.solve_hindsight, Sts2_SolveHindsight,
-HindsightBound) is for lost-fight attribution only and never a label, a regret or a grade. Pinned three ways, in the
-manner of test_native_entry_pins.py: each lab and search entry point is run in a fresh interpreter in which sts2_gym.native
-is a stub recording every name read from it, and none may read a hindsight name; sts2_gym.native itself binds no hindsight
-export at import; and no lab, training or search module names one in its source.
+HindsightBound) is for lost-fight attribution only and never a label, a regret or a grade. The gate is the library's: the
+native search refuses unless the solver was made with the hindsight flag (allow_hindsight in Python, AllowHindsight in C,
+--allow-hindsight on EmuDump's command line). Pinned here, in the manner of test_native_entry_pins.py: each lab and search
+entry point is run in a fresh interpreter in which sts2_gym.native is a stub recording every name read from it, and none
+may read a hindsight name; the source of every module the entry point loads (the code its calls can reach) names none,
+nor the flag, nor EmuDump's hindsight command; and no module under rl/, referee/, src/sts2_gym/ or tools/ (but
+tools/emudump, the command itself) does either, in Python or in a shell script.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,7 +22,14 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-HINDSIGHT_NAMES = ("solve_hindsight", "Sts2_SolveHindsight", "HindsightBound", "_bind_hindsight", "_HindsightResultC")
+HINDSIGHT_NAMES = ("solve_hindsight", "Sts2_SolveHindsight", "HindsightBound", "_bind_hindsight", "_HindsightResultC",
+                   "allow_hindsight", "allow-hindsight", "AllowHindsight")
+# EmuDump's hindsight command as a command line names it: the command word as an argument, or --mode hindsight.
+HINDSIGHT_COMMAND = re.compile(r"""["']hindsight["']|--mode[\s=,'"]+hindsight""")
+
+
+def _hits(text: str) -> list[str]:
+    return [n for n in HINDSIGHT_NAMES if n in text] + [m.group(0) for m in HINDSIGHT_COMMAND.finditer(text)]
 
 
 def _pinned_commands() -> list[str]:
@@ -68,7 +79,10 @@ try:
         runpy.run_module(name, run_name="__main__", alter_sys=True)
 except SystemExit:
     pass
-print(json.dumps({"read": sorted(read), "loaded": "sts2_gym.native" in sys.modules}))
+files = sorted({str(Path(m.__file__).resolve()) for m in list(sys.modules.values())
+                if getattr(m, "__file__", None) and m.__name__ != "sts2_gym.native"
+                and Path(m.__file__).resolve().is_relative_to(root.resolve()) and Path(m.__file__).resolve().is_file()})
+print(json.dumps({"read": sorted(read), "loaded": "sts2_gym.native" in sys.modules, "files": files}))
 """
 
 
@@ -89,6 +103,10 @@ class HindsightPinTests(unittest.TestCase):
                 doc = self._probe(name)
                 self.assertTrue(doc["loaded"], f"{name} did not load sts2_gym.native: the probe would be vacuous")
                 self.assertFalse(set(doc["read"]) & set(HINDSIGHT_NAMES), f"{name} read {sorted(set(doc['read']) & set(HINDSIGHT_NAMES))}")
+                # The call path: every repo module the entry point loaded, whose functions its calls reach.
+                self.assertTrue(doc["files"], f"{name} loaded no module of the repo: the call-path scan would be vacuous")
+                hits = [f"{Path(f).name}: {h}" for f in doc["files"] for h in _hits(Path(f).read_text(encoding="utf-8", errors="replace"))]
+                self.assertEqual(hits, [], f"{name} loads code naming the hindsight bound")
 
     def test_the_probe_sees_a_hindsight_read(self):
         # The control: a module that reads native.solve_hindsight is caught, so the cases above are not vacuous.
@@ -100,7 +118,18 @@ class HindsightPinTests(unittest.TestCase):
             r = subprocess.run([sys.executable, "-I", str(script), str(ROOT), "hindsight_reader_probe"], capture_output=True, text=True,
                                timeout=120, check=False)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
-        self.assertIn("solve_hindsight", json.loads(r.stdout.strip().splitlines()[-1])["read"])
+        doc = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertIn("solve_hindsight", doc["read"])
+
+    def test_the_call_path_scan_sees_a_hindsight_call_inside_a_function(self):
+        # The control of the call-path scan: a call made only when a function runs, never at import, and a shell-out to
+        # EmuDump's hindsight command, are both caught in the loaded module's source.
+        text = ("def attribute(native, s, h):\n    return native.solve_hindsight(s, h)\n\n"
+                "def shell():\n    return ['dotnet', 'EmuDump.dll', 'hindsight', '10', '5', '--allow-hindsight']\n")
+        self.assertEqual(sorted(set(_hits(text))), sorted({"solve_hindsight", "allow-hindsight", "'hindsight'"}))
+        self.assertTrue(_hits("lab.solver(handle, allow_hindsight=True)"))
+        self.assertTrue(_hits('cmd = ["EmuDump", "solve", "--mode", "hindsight"]'))
+        self.assertFalse(_hits("the hindsight bound is for attribution only"))
 
     def test_native_binds_no_hindsight_export_at_import(self):
         spec = importlib.util.spec_from_file_location("solver_binding_for_pins", Path(__file__).with_name("test_solver_binding.py"))
@@ -113,15 +142,17 @@ class HindsightPinTests(unittest.TestCase):
     def test_no_lab_training_or_search_module_names_the_hindsight_bound(self):
         # Only lost-fight attribution may: no such tool is in these trees yet, so the allowed list is empty.
         allowed: set[str] = set()
-        roots = [ROOT / "rl", ROOT / "referee", ROOT / "src" / "sts2_gym", ROOT / "tools" / "lab"]
-        hits = []
+        roots = [ROOT / "rl", ROOT / "referee", ROOT / "src" / "sts2_gym", ROOT / "tools"]
+        hits, scanned = [], 0
         for top in roots:
-            for path in top.rglob("*.py") if top.is_dir() else []:
+            for path in (p for pattern in ("*.py", "*.sh", "*.ps1") for p in top.rglob(pattern)) if top.is_dir() else []:
                 rel = path.relative_to(ROOT).as_posix()
-                if rel == "src/sts2_gym/native.py" or rel in allowed or "/tests/" in f"/{rel}" or path.name.startswith("test_"):
+                if (rel == "src/sts2_gym/native.py" or rel.startswith("tools/emudump/") or rel in allowed or "/tests/" in f"/{rel}"
+                        or path.name.startswith("test_")):
                     continue
-                text = path.read_text(encoding="utf-8", errors="replace")
-                hits += [f"{rel}: {n}" for n in HINDSIGHT_NAMES if n in text]
+                scanned += 1
+                hits += [f"{rel}: {h}" for h in _hits(path.read_text(encoding="utf-8", errors="replace"))]
+        self.assertGreater(scanned, 50)
         self.assertEqual(hits, [])
 
 

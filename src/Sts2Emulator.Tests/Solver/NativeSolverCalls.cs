@@ -18,7 +18,7 @@ internal static unsafe class NativeSolverCalls
         MaxHorizon = o.MaxHorizon,
         Prune = (int)o.Prune,
         ChanceWidthCap = o.ChanceWidthCap,
-        AllowedPotions = o.AllowedPotions,
+        ForbiddenPotions = ~o.AllowedPotions,
         Utility = 0,
         AllowHindsight = allowHindsight ? 1 : 0,
         UseEstimate = o.UseEstimate ? 1 : 0,
@@ -47,6 +47,27 @@ internal static unsafe class NativeSolverCalls
     {
         delegate* unmanaged<int, void> f = &NativeExports.Sts2_Destroy;
         f(handle);
+    }
+
+    /// <summary>Sts2_Reset on a handle: a new fight of the handle's own.</summary>
+    public static void Reset(int handle)
+    {
+        delegate* unmanaged<int, int*, void> f = &NativeExports.Sts2_Reset;
+        var obs = new int[NativeExports.OBS_SIZE];
+        fixed (int* p = obs)
+        {
+            f(handle, p);
+        }
+    }
+
+    /// <summary>Sts2_LoadCombatSnapshot of a document: the handle, or a negative status.</summary>
+    public static int Load(byte[] doc, int seed)
+    {
+        delegate* unmanaged<byte*, int, int, int*, int> f = &NativeExports.LoadCombatSnapshot;
+        fixed (byte* d = doc)
+        {
+            return f(d, doc.Length, seed, null);
+        }
     }
 
     public static int Clone(int handle, bool resample, int seed)

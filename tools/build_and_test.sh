@@ -51,7 +51,8 @@ dotnet test tools/emudump.Tests/ --no-restore > "$LOG/3b-emudump-test.log" 2>&1;
 dotnet build tools/emudump/EmuDump.csproj -c Release --source "$CACHE" > "$LOG/3c-emudump-build.log" 2>&1; r3c=$?
 r4=skipped
 if [ -n "$sha" ]; then
-  "$PY" -m unittest discover -s tests/python > "$LOG/4-python-test.log" 2>&1; r4=$?
+  # STS2_REQUIRE_AOT=1: the solver's AOT-against-JIT test (tests/python/test_solver_aot_sites.py) fails here, never skips.
+  STS2_REQUIRE_AOT=1 "$PY" -m unittest discover -s tests/python > "$LOG/4-python-test.log" 2>&1; r4=$?
 fi
 cs=$(grep -Eo 'Failed:\s*[0-9]+, Passed:\s*[0-9]+, Skipped:\s*[0-9]+, Total:\s*[0-9]+' "$LOG/3-dotnet-test.log" | tail -1)
 emu=$(grep -Eo 'Failed:\s*[0-9]+, Passed:\s*[0-9]+, Skipped:\s*[0-9]+, Total:\s*[0-9]+' "$LOG/3b-emudump-test.log" | tail -1)

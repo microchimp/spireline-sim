@@ -8,7 +8,9 @@ using Sts2Emulator.Core;
 /// (<c>Interop/SolverExports.cs</c>) and EmuDump's <c>solve</c> and <c>hindsight</c> commands (<c>tools/emudump/Solve.cs</c>)
 /// both call these, so they answer alike on any position (<c>NativeSolverTests</c>, EmuDump's <c>SolveModeTests</c>).
 /// The expected solve and the hindsight bound are separate calls with separate result types, and the hindsight call
-/// refuses without its flag or without the record's own streams (section 4a).
+/// refuses without its flag, without the record's own streams, or with a stream unset (section 4a). A refused result
+/// carries no number across the boundary: NaN natively, null in EmuDump's JSON, None in Python (the C# Rational stays
+/// beside the status).
 /// </summary>
 public static class SolverService
 {
@@ -38,8 +40,8 @@ public static class SolverService
     /// from the step's stream, a reset leaves the energy-cost and orb streams to it), and the chance hook refuses an unset
     /// stream, since the engine's fallbacks would roll unseen. In expected mode every stream is chance and none is in the
     /// key, so a stream of its own changes no value: it only lets each call reach the hook on its own stream, as the game
-    /// draws it (the draw model steers the shuffle on the shuffle stream). The hindsight bound never does this: it plays
-    /// the handle's own streams, fallbacks included.
+    /// draws it (the draw model steers the shuffle on the shuffle stream). The hindsight bound never does this: it refuses
+    /// a handle with an unset stream (<see cref="UnsetStreams" />).
     /// </summary>
     public static CombatState ExpectedView(CombatState state)
     {
@@ -66,17 +68,27 @@ public static class SolverService
         return view;
     }
 
-    /// <summary>The hindsight bound: refused unless allowed and run on the record's own streams.</summary>
+    /// <summary>Why a hindsight search on a handle with an unset stream is refused.</summary>
+    public const string UnsetStreams =
+        "hindsight-unset-streams: a stream of the handle is unset, so the engine's fallback rolls it on the step's stream, which the line itself advances: the draws after a reshuffle would depend on the line, which is neither the game's world nor every stream fixed";
+
+    /// <summary>The streams of <paramref name="state" /> that are unset, by StateCloning's stream index.</summary>
+    public static List<int> UnsetStreamsOf(CombatState state) =>
+        [.. Enumerable.Range(0, StateCloning.StreamCount).Where(i => StateCloning.Stream(state, i) is null)];
+
+    /// <summary>
+    /// The hindsight bound: refused without the flag, on a handle whose streams are not the record's, and on one with an
+    /// unset stream (section 9 fixes every stream; an unset one falls back to the step's stream).
+    /// </summary>
     public static HindsightResult SolveHindsight(CombatState state, CountingRandom rng, HindsightOptions options, bool trueStreams)
     {
-        if (!options.AllowHindsight)
-        {
-            return new Hindsight(options).Solve(state, rng);
-        }
-
-        return trueStreams
+        string? refusal = !options.AllowHindsight ? Hindsight.NotAllowed
+            : !trueStreams ? NoTrueStreams
+            : UnsetStreamsOf(state) is { Count: > 0 } unset ? $"{UnsetStreams} (unset: {string.Join(", ", unset.Select(i => StateCloning.StreamNames[i]))})"
+            : null;
+        return refusal is null
             ? new Hindsight(options).Solve(state, rng)
-            : new HindsightResult(HindsightOutcome.Refused, NoTrueStreams, WinLine.Unknown, Utility.Loss, false, [], 0, 0, 0);
+            : new HindsightResult(HindsightOutcome.Refused, refusal, WinLine.Unknown, Utility.Loss, false, [], 0, 0, 0);
     }
 
     /// <summary>
@@ -182,8 +194,9 @@ public static class SolverService
     static JsonObject MoveJson(Move m) => new() { ["action"] = m.Action, ["target"] = m.Target };
 
     /// <summary>EmuDump's <c>expected</c> object: the result's every field, values as exact rationals and as doubles.</summary>
-    public static JsonObject ExpectedJson(CombatState s, ExpectedResult r)
+    public static JsonObject ExpectedJson(CombatState s, ExpectedResult r, int allowedPotions = -1)
     {
+        bool refused = r.Status == SolveStatus.Refused;
         var moves = new JsonArray();
         foreach (var m in r.Moves)
         {
@@ -204,11 +217,13 @@ public static class SolverService
             ["status"] = StatusName(r.Status),
             ["reason"] = r.Reason,
             ["horizon"] = r.Horizon,
-            ["value"] = r.Value.ToString(),
-            ["value_f"] = r.Value.ToDouble(),
+            // A refused solve has no value: null, never a 0 that reads as a certain loss.
+            ["value"] = refused ? null : r.Value.ToString(),
+            ["value_f"] = refused ? null : r.Value.ToDouble(),
             ["exact"] = r.Exact,
-            ["exact_mass"] = r.ExactMass.ToString(),
-            ["exact_mass_f"] = r.ExactMass.ToDouble(),
+            ["exact_mass"] = refused ? null : r.ExactMass.ToString(),
+            ["exact_mass_f"] = refused ? null : r.ExactMass.ToDouble(),
+            ["allowed_potions"] = allowedPotions,
             ["best"] = BestMove(r) is { } b ? MoveJson(b) : null,
             ["moves"] = moves,
             ["q"] = q,
@@ -241,8 +256,9 @@ public static class SolverService
             ["outcome"] = h.Outcome switch { HindsightOutcome.Searched => "searched", HindsightOutcome.Cut => "cut", _ => "refused" },
             ["refusal"] = h.Refusal,
             ["win_line_exists"] = h.WinLineExists switch { WinLine.Yes => "yes", WinLine.No => "no", _ => "unknown" },
-            ["best_utility"] = h.BestUtility.ToString(),
-            ["best_utility_f"] = h.BestUtility.ToDouble(),
+            // The bound only when every line was searched: a cut search's best line is not the bound, a refused one has none.
+            ["best_utility"] = h.Bound?.ToString(),
+            ["best_utility_f"] = h.Bound is { } b ? b.ToDouble() : null,
             ["complete"] = h.Complete,
             ["line"] = line,
         };
@@ -254,12 +270,13 @@ public static class SolverService
         var arr = new JsonArray();
         foreach (var e in curve)
         {
+            bool refused = e.Status == SolveStatus.Refused;
             var potions = new JsonArray();
             for (int j = 0; j < held.Count; j++)
             {
                 if ((e.Subset & (1 << j)) != 0)
                 {
-                    potions.Add((JsonNode)new JsonObject { ["slot"] = held[j], ["potion"] = root.PotionSlots[held[j]], ["held"] = e.Held[held[j]].ToDouble() });
+                    potions.Add((JsonNode)new JsonObject { ["slot"] = held[j], ["potion"] = root.PotionSlots[held[j]], ["held"] = refused ? null : e.Held[held[j]].ToDouble() });
                 }
             }
 
@@ -269,11 +286,12 @@ public static class SolverService
                 ["status"] = StatusName(e.Status),
                 ["reason"] = e.Reason,
                 ["horizon"] = e.Horizon,
-                ["expected_l0"] = e.ExpectedL0.ToString(),
-                ["expected_l0_f"] = e.ExpectedL0.ToDouble(),
+                ["allowed_potions"] = PotionCurve.MaskOf(held, e.Subset),
+                ["expected_l0"] = refused ? null : e.ExpectedL0.ToString(),
+                ["expected_l0_f"] = refused ? null : e.ExpectedL0.ToDouble(),
                 ["exact"] = e.Exact,
-                ["exact_mass_f"] = e.ExactMass.ToDouble(),
-                ["win_chance"] = e.WinChance.ToDouble(),
+                ["exact_mass_f"] = refused ? null : e.ExactMass.ToDouble(),
+                ["win_chance"] = refused ? null : e.WinChance.ToDouble(),
                 ["expected_win_hp"] = double.IsNaN(e.ExpectedWinHp) ? null : JsonValue.Create(e.ExpectedWinHp),
                 ["potions"] = potions,
             });

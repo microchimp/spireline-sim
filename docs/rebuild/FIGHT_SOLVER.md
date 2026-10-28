@@ -562,18 +562,48 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   Python. Only the L0 utility is built; `SearchHp`, `L0Priced` and the horizon leaf protocol come with S5. A native
   handle leaves some streams unset (`Sts2_Create` shuffles on the step stream); the expected solve reads a copy with a
   stream of its own in each unset slot (`SolverService.ExpectedView`: no value changes, and the shuffle reaches the draw
-  model on its own stream); hindsight plays the handle as it is.
+  model on its own stream); hindsight refuses such a handle (`hindsight-unset-streams`).
 - **Hindsight** (`Solver/Hindsight.cs`): depth first over every legal move (each hand index and target), lethal first,
   real steps on copies with the position's own streams, merged by the hindsight key plus the step stream; a line past the
   turn cap or the budget is unknown, never a loss. Refused unless `HindsightOptions.AllowHindsight` (natively: the solver
   made with `allowHindsight`) and unless the handle carries its own streams (`NativeCombat.TrueStreams`: false for a
-  resampled fork and for a loaded document). EmuDump refuses it on a re-anchored record, whose streams are the emulator's.
+  resampled fork and for a loaded document), and unless every stream is set (an unset one falls back to the step's
+  stream, which the line itself advances, so the draws after a reshuffle would depend on the line: neither the game's
+  world nor section 9's). EmuDump refuses it on a re-anchored record, whose streams are the emulator's, and on the seed
+  form's fight (unset streams); its one accepted form is `--run`, a run's fight forked as it stands. A cut search's best
+  line is a lower bound on the bound, so no export carries it as the bound: `best_utility` is NaN natively, null in
+  EmuDump and None in Python unless the outcome is searched. In C# the result's `UpperBound` is the bound when searched and
+  L0's maximum when cut (a line not finished may still win at full score), the bound any policy's outcome is held to.
 - **Potion curve** (`Solver/PotionCurve.cs`): one expectimax per subset with the other held potions masked out
   (`SolveOptions.AllowedPotions`, a slot empty at the root stays usable), carrying the policy's win chance, win HP and
-  per-potion held chance beside the value; the potions outside the subset stay in the copy (no table shared yet).
+  per-potion held chance beside the value; the potions outside the subset stay in the copy (no table shared yet). One
+  horizon per curve: every subset is solved at horizon 0, 1, ... in turn, and the curve is the deepest horizon every
+  subset finished within its budget, or, when none did, refused whole (`budget:`). Monotonicity (more potions never lower
+  the value) is a claim between entries of one curve, which share that horizon; across horizons it does not hold. The win
+  chance, win HP and held chances follow the first move of greatest value, so among moves of equal value they depend on
+  the tie-break (the move order of `Actions.Legal`); the value does not. Two bit conventions: an entry's `subset` is a bit
+  set over the held potions in slot order (bit j: the j-th held potion), while `allowed_potions` (in the options, the
+  expected result and each curve entry) is a slot mask (bit i: slot i usable; -1 all). The native options carry the
+  complement, `ForbiddenPotions`, so a zeroed struct masks no potion, and the result echoes the mask the solve used.
+  `CurveSolver` repeats `Expectimax`'s recursion with the statistics beside it: a change to the leaf protocol (S5) or to
+  the search (S8) must be made in both, and `PotionCurveTests` holds their values equal.
+- **Refusals carry no number**: a refused expected solve's value and mass, and a refused curve entry's value, chances and
+  held chances, are NaN natively, null in EmuDump's JSON and None in Python; the C# Rational stays beside the status.
 - **Python** (`sts2_gym/native.py`): `solver_create(..., allow_hindsight=False)`, `solve_expected` -> `ExpectedSolve`,
   `solve_potion_curve`, `solver_info`; `solve_hindsight` -> `HindsightBound` binds `Sts2_SolveHindsight` on its first
-  call only. `test_solver_hindsight_pins.py` runs every lab and search entry point and fails if one reads a hindsight name.
+  call (which adds nothing: ctypes resolves an export on attribute access; the gate is the library's flag), and
+  `open_solver` destroys its handle on exit. `test_solver_hindsight_pins.py` runs every lab and search entry point and
+  fails if one reads a hindsight name or loads code naming one, the flag, or EmuDump's hindsight command, and scans rl/,
+  referee/, src/sts2_gym/ and tools/ (but tools/emudump) for the same. Solver handles are claimed atomically; one handle
+  serves one thread at a time, and the last error is one buffer for the process.
 - **Gates**: `NativeSolverTests` (native equals EmuDump's path on the harness set), `SolverLeakTests`,
   `HindsightApartTests`, `HindsightBoundTests` (the bound is never below the expected-best policy played on the same draws,
   and its mean is at least the mean expected value), `PotionCurveTests`, EmuDump's `SolveModeTests`.
+  `HindsightBoundTests` runs on 48 small fights at low HP (none won at full score) with a cheap policy (the per-record
+  claim holds for any policy), and requires searched records with a bound above the outcome and a complete loss; the
+  mean claim takes the records whose expected solve is exact and whose search was complete. `SolverLeakTests` has a
+  positive control (the hindsight search tells the determinized worlds apart) and a floor on worlds whose draw order
+  differs. `test_solver_aot_sites.py` runs in every `tools/build_and_test.sh` (`STS2_REQUIRE_AOT=1`: it fails, never
+  skips, when the library or the Release EmuDump is missing) on the documents in `tests/fixtures/solver/aot_sites.jsonl`,
+  the reshuffle, the draw tie and a sample of the harness positions. `SolverSiteGoldenTests` pins the engine's bytes
+  under seeded play at df1db6a6, the commit before the site markers.

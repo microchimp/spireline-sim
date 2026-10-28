@@ -65,6 +65,15 @@ public class HindsightApartTests
         var noStreams = SolverService.SolveHindsight(s, rng, new HindsightOptions { AllowHindsight = true }, trueStreams: false);
         Assert.Equal(SolverService.NoTrueStreams, noStreams.Refusal);
 
+        // An unset stream: refused, whatever the flag says about the streams' origin.
+        var unset = s.Clone();
+        StateCloning.SetStream(unset, 0, null);
+        var refused = SolverService.SolveHindsight(unset, rng, new HindsightOptions { AllowHindsight = true }, trueStreams: true);
+        Assert.Equal(HindsightOutcome.Refused, refused.Outcome);
+        Assert.StartsWith(SolverService.UnsetStreams, refused.Refusal);
+        Assert.Null(refused.Bound);
+        Assert.Null(refused.UpperBound);
+
         var on = SolverService.SolveHindsight(s, rng, new HindsightOptions { AllowHindsight = true, SearchNodeBudget = 50_000 }, trueStreams: true);
         Assert.NotEqual(HindsightOutcome.Refused, on.Outcome);
         Assert.Equal(WinLine.Yes, on.WinLineExists);  // six HP each: a Strike line kills
@@ -115,18 +124,97 @@ public class HindsightApartTests
         }
     }
 
-    [Fact]
-    public void ADealtFightCarriesItsOwnStreamsAndAResetKeepsThem()
+    /// <summary>A run's first fight (the run form of EmuDump's solve): Sts2Run_Reset, then Sts2Run_StartCombat with the starting deck.</summary>
+    internal static unsafe int RunInFight(string seed, int ascension, int hp, int rooms)
     {
-        var (s, rng) = NativeExports.DealFight(5, Ascension.DefaultLevel, null, [], 0);
-        Assert.NotNull(s);
-        int handle = NativeSolverCalls.Adopt(s, rng, trueStreams: true);
-        Assert.True(NativeExports.TryGetCombat(handle, out _, out _, out bool own));
-        Assert.True(own);
-        int resampled = NativeSolverCalls.Clone(handle, resample: true, 3);
-        Assert.True(NativeExports.TryGetCombat(resampled, out _, out _, out bool forked));
-        Assert.False(forked);
-        NativeSolverCalls.DestroyCombat(resampled);
-        NativeSolverCalls.DestroyCombat(handle);
+        int run = RunNativeExports.Sts2Run_Create();
+        int[] deck = [.. Sts2Emulator.Core.Run.RunConstants.StarterDeckIds];
+        var obs = new int[Sts2Emulator.Core.Run.RunConstants.RunObsSize];
+        byte[] s = System.Text.Encoding.UTF8.GetBytes(seed);
+        fixed (byte* sp = s)
+        fixed (int* d = deck)
+        fixed (int* o = obs)
+        {
+            Assert.Equal(0, RunNativeExports.Sts2Run_Reset(run, sp, s.Length, ascension, o));
+            Assert.Equal(0, RunNativeExports.Sts2Run_StartCombat(run, d, deck.Length, Sts2Emulator.Core.Run.RunConstants.SlitheringStranglerEncounterId,
+                null, 0, hp, Sts2Emulator.Core.Run.RunConstants.StartingMaxHp, null, 0, 0, rooms, o));
+        }
+
+        return run;
+    }
+
+    internal static unsafe int Fork(int run, bool resample, int seed)
+    {
+        delegate* unmanaged<int, int, int, int*, int> fork = &NativeExports.Sts2Run_ForkCombat;
+        var obs = new int[NativeExports.OBS_SIZE];
+        fixed (int* o = obs)
+        {
+            return fork(run, resample ? 1 : 0, seed, o);
+        }
+    }
+
+    [Fact]
+    public unsafe void EachWayToMakeAHandleSetsItsStreamsFlagAndTheHindsightGateReadsIt()
+    {
+        (bool Own, int Status, string Error, double Bound) Probe(int handle)
+        {
+            Assert.True(NativeExports.TryGetCombat(handle, out _, out _, out bool own));
+            int solver = NativeSolverCalls.Create(handle, NativeSolverCalls.Options(new SolveOptions(), allowHindsight: true));
+            var (status, r) = NativeSolverCalls.Hindsight(solver, handle, 2_000);
+            string error = status == -3 ? NativeSolverCalls.LastError() : "";
+            NativeSolverCalls.Destroy(solver);
+            return (own, status, error, r.BestUtility);
+        }
+
+        // Sts2_Create: the handle's own fight, with streams it leaves unset: refused as such, and no number in the bound.
+        delegate* unmanaged<int, int> create = &NativeExports.Sts2_Create;
+        int created = create(5);
+        var c = Probe(created);
+        Assert.True(c.Own);
+        Assert.Equal(-3, c.Status);
+        Assert.StartsWith("hindsight-unset-streams", c.Error);
+        Assert.True(double.IsNaN(c.Bound));
+
+        // Sts2_LoadCombatSnapshot: the document's streams are invented.
+        int loaded = NativeSolverCalls.Load(CombatSnapshot.Write(NativeExports.StateOf(created)!), 5);
+        Assert.True(loaded >= 0, NativeSolverCalls.LastError());
+        var l = Probe(loaded);
+        Assert.False(l.Own);
+        Assert.Equal(SolverService.NoTrueStreams, l.Error);
+
+        // Sts2_Reset of the loaded handle deals a fight of the handle's own: the flag is true again (its streams unset as
+        // Sts2_Create's are, so the bound is still refused, now for that).
+        NativeSolverCalls.Reset(loaded);
+        var r = Probe(loaded);
+        Assert.True(r.Own);
+        Assert.StartsWith("hindsight-unset-streams", r.Error);
+
+        // Sts2_Clone: a faithful clone keeps the flag, a resampled one (a determinization) drops it.
+        int faithful = NativeSolverCalls.Clone(created, resample: false, 0);
+        int resampled = NativeSolverCalls.Clone(created, resample: true, 3);
+        Assert.True(Probe(faithful).Own);
+        Assert.False(Probe(resampled).Own);
+
+        // Sts2Run_ForkCombat: as it stands, every stream set and the fight's own, so the bound is searched or cut, not
+        // refused; with resampleHidden, a determinization.
+        int run = RunInFight("TRUESTREAMS", 0, 64, 99);
+        int asIs = Fork(run, resample: false, 0);
+        int forked = Fork(run, resample: true, 9);
+        Assert.True(asIs >= 0 && forked >= 0);
+        Assert.Empty(SolverService.UnsetStreamsOf(NativeExports.StateOf(asIs)!));
+        var f = Probe(asIs);
+        Assert.True(f.Own);
+        Assert.True(f.Status is 0 or 1, f.Error);
+        Assert.True(f.Status == 0 || double.IsNaN(f.Bound), "a cut search exports no bound");
+        var g = Probe(forked);
+        Assert.False(g.Own);
+        Assert.Equal(SolverService.NoTrueStreams, g.Error);
+
+        foreach (int h in new[] { created, loaded, faithful, resampled, asIs, forked })
+        {
+            NativeSolverCalls.DestroyCombat(h);
+        }
+
+        RunNativeExports.Sts2Run_Destroy(run);
     }
 }

@@ -13,9 +13,15 @@ namespace Sts2Emulator.Interop;
 // SolverService, the code path EmuDump's solve and hindsight commands print. The leaf protocol for the network at the
 // horizon (Sts2Solver_PendingLeaves / Sts2Solver_SetLeafValues) comes with S5: until then a horizon leaf is valued by L0.
 // sts2_gym/native.py mirrors each struct field for field; tests/python/test_solver_binding.py reads this file to hold the two
-// alike.
+// alike. A refused result carries no number: its value fields are NaN, never a 0 that reads as a certain loss. Solver handles
+// are claimed and freed atomically, but one solver handle serves one thread at a time (its tables are not shared-safe), and
+// Sts2_GetLastError is one buffer for the process.
 
-/// <summary>A solve's options. A budget of 0 or less takes the default; <c>Prune</c> is the <see cref="Pruning" /> bits.</summary>
+/// <summary>
+/// A solve's options. A budget of 0 or less takes the default; <c>Prune</c> is the <see cref="Pruning" /> bits.
+/// <c>ForbiddenPotions</c> is a slot mask (bit i: the potion in slot i may not be used), so a zeroed struct leaves every
+/// potion usable; the mask the solve used comes back as the result's <c>AllowedPotions</c> (bit i: slot i usable, -1 all).
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct SolveOptionsNative
 {
@@ -25,13 +31,16 @@ public struct SolveOptionsNative
     public int MaxHorizon;
     public int Prune;
     public int ChanceWidthCap;
-    public int AllowedPotions;
+    public int ForbiddenPotions;
     public int Utility;
     public int AllowHindsight;
     public int UseEstimate;
 }
 
-/// <summary>The expected solve's result. Values are doubles of the exact rationals; the q buffer holds every root move's.</summary>
+/// <summary>
+/// The expected solve's result. Values are doubles of the exact rationals (NaN when refused); the q buffer holds every root
+/// move's. <c>AllowedPotions</c> is the potion slot mask the solve used (bit i: slot i usable; -1 every slot).
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct ExpectedResultNative
 {
@@ -51,6 +60,7 @@ public struct ExpectedResultNative
     public long TableHits;
     public long Leaves;
     public long HorizonLeaves;
+    public int AllowedPotions;
 }
 
 /// <summary>A hindsight search's options. A budget of 0 or less takes the default.</summary>
@@ -63,7 +73,10 @@ public struct HindsightOptionsNative
     public int MaxTurns;
 }
 
-/// <summary>The hindsight bound. Shares no field with <see cref="ExpectedResultNative" />.</summary>
+/// <summary>
+/// The hindsight bound. Shares no field with <see cref="ExpectedResultNative" />. <c>BestUtility</c> is the bound only when
+/// <c>Outcome</c> is 0 (searched): NaN when the search was cut (its best line is a lower bound on the bound) or refused.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct HindsightResultNative
 {
@@ -82,7 +95,12 @@ public unsafe struct HindsightResultNative
     public fixed int Line[128];
 }
 
-/// <summary>One potion subset's entry of the curve (section 8). <c>Held</c> is per slot, NaN for a slot outside the subset.</summary>
+/// <summary>
+/// One potion subset's entry of the curve (section 8). <c>Subset</c> is a bit set over the held potions in slot order (bit j:
+/// the j-th held potion usable); <c>AllowedPotions</c> is the same subset as a slot mask (bit i: slot i usable), the
+/// convention of <see cref="ExpectedResultNative.AllowedPotions" />. <c>Held</c> is per slot, NaN for a slot outside the
+/// subset. Every entry of a curve has the same <c>CurveHorizon</c>. A refused entry's values and chances are NaN.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct CurveEntryNative
 {
@@ -95,6 +113,7 @@ public unsafe struct CurveEntryNative
     public double ExpectedWinHp;
     public double CurveExactMass;
     public fixed double Held[8];
+    public int AllowedPotions;
 }
 
 public static class SolverExports
@@ -138,12 +157,12 @@ public static class SolverExports
             MaxHorizon = o->MaxHorizon >= 0 ? o->MaxHorizon : d.MaxHorizon,
             Prune = (Pruning)o->Prune & Pruning.All,
             ChanceWidthCap = o->ChanceWidthCap > 0 ? o->ChanceWidthCap : d.ChanceWidthCap,
-            AllowedPotions = o->AllowedPotions,
+            AllowedPotions = ~o->ForbiddenPotions,
             UseEstimate = o->UseEstimate != 0,
         };
     }
 
-    internal static NativeSolver? SolverOf(int solver) => solver >= 0 && solver < _solvers.Length ? _solvers[solver] : null;
+    internal static NativeSolver? SolverOf(int solver) => solver >= 0 && solver < _solvers.Length ? Volatile.Read(ref _solvers[solver]) : null;
 
     static int Fail(string why, int code)
     {
@@ -152,7 +171,10 @@ public static class SolverExports
     }
 
     /// <summary>A solver for the fight of <paramref name="combatHandle" />. <c>allowHindsight</c> is read here and only here.</summary>
-    /// <returns>The solver handle; -1 for an unknown combat or a full pool; -3 for refused options (<c>Sts2_GetLastError</c>).</returns>
+    /// <returns>
+    /// The solver handle; -1 for an unknown combat, -2 for a full pool (as <c>Sts2Run_ForkCombat</c>), -3 for refused options
+    /// (<c>Sts2_GetLastError</c>). A slot is claimed atomically, so two threads never get the same handle.
+    /// </returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2Solver_Create")]
     public static unsafe int Sts2Solver_Create(int combatHandle, SolveOptionsNative* options)
     {
@@ -171,14 +193,13 @@ public static class SolverExports
             var solver = new NativeSolver(Options(options, new SolveOptions()), options is not null && options->AllowHindsight != 0);
             for (int i = 0; i < _solvers.Length; i++)
             {
-                if (_solvers[i] is null)
+                if (Interlocked.CompareExchange(ref _solvers[i], solver, null) is null)
                 {
-                    _solvers[i] = solver;
                     return i;
                 }
             }
 
-            return Fail("the solver pool is full", -1);
+            return Fail("the solver pool is full", -2);
         }
         catch (Exception e)
         {
@@ -191,17 +212,17 @@ public static class SolverExports
     {
         if (solver >= 0 && solver < _solvers.Length)
         {
-            _solvers[solver] = null;
+            Interlocked.Exchange(ref _solvers[solver], null);
         }
     }
 
-    /// <summary>Forgets the solver's tables (a new fight on the same solver).</summary>
+    /// <summary>Forgets the solver's tables (a new fight on the same solver): 0, or -1 for an unknown solver.</summary>
     [UnmanagedCallersOnly(EntryPoint = "Sts2Solver_Reset")]
     public static int Sts2Solver_Reset(int solver)
     {
         if (SolverOf(solver) is not { } s)
         {
-            return -1;
+            return Fail("unknown solver handle", -1);
         }
 
         s.Tables.Clear();
@@ -231,7 +252,7 @@ public static class SolverExports
 
             var opts = Options(options, sv.Options);
             var r = SolverService.SolveExpected(state, rng, opts, sv.TableFor(opts.AllowedPotions));
-            WriteExpected(state, r, result, qBuf, maxActions);
+            WriteExpected(state, r, result, qBuf, maxActions, opts.AllowedPotions);
             if (r.Status == SolveStatus.Refused)
             {
                 NativeExports.Refuse(r.Reason ?? "refused");
@@ -245,11 +266,12 @@ public static class SolverExports
         }
     }
 
-    internal static unsafe void WriteExpected(CombatState state, ExpectedResult r, ExpectedResultNative* result, float* qBuf, int maxActions)
+    internal static unsafe void WriteExpected(CombatState state, ExpectedResult r, ExpectedResultNative* result, float* qBuf, int maxActions, int allowedPotions = -1)
     {
         if (result is not null)
         {
             var best = SolverService.BestMove(r);
+            bool refused = r.Status == SolveStatus.Refused;
             *result = new ExpectedResultNative
             {
                 Status = (int)r.Status,
@@ -260,14 +282,15 @@ public static class SolverExports
                 BestTarget = best?.Target ?? -1,
                 QStride = SolverService.QStride,
                 UtilityKind = 0,
-                Value = r.Value.ToDouble(),
-                ExactMass = r.ExactMass.ToDouble(),
+                Value = refused ? double.NaN : r.Value.ToDouble(),
+                ExactMass = refused ? double.NaN : r.ExactMass.ToDouble(),
                 Seconds = r.Seconds,
                 Nodes = r.Counters.Nodes,
                 Steps = r.Counters.Steps,
                 TableHits = r.Counters.TableHits,
                 Leaves = r.Counters.Leaves,
                 HorizonLeaves = r.Counters.HorizonLeaves,
+                AllowedPotions = allowedPotions,
             };
         }
 
@@ -295,7 +318,8 @@ public static class SolverExports
     /// <summary>
     /// The hindsight bound (sections 4a and 9), for lost-fight attribution only: 0 searched, 1 cut (budget or turn cap),
     /// -1 error, -3 refused: the solver was not made with allowHindsight, or the handle does not carry the record's own
-    /// streams (a resampled fork, a loaded document), or the position was refused.
+    /// streams (a resampled fork, a loaded document), or a stream of the handle is unset (<c>hindsight-unset-streams</c>), or
+    /// the position was refused. The flag set at Sts2Solver_Create is the gate.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_SolveHindsight")]
     public static unsafe int Sts2_SolveHindsight(int solver, int combatHandle, HindsightOptionsNative* options, HindsightResultNative* result)
@@ -344,7 +368,7 @@ public static class SolverExports
             WinLineExists = (int)h.WinLineExists,
             Complete = h.Complete ? 1 : 0,
             LineLength = h.Line.Count,
-            BestUtility = h.BestUtility.ToDouble(),
+            BestUtility = h.BoundDouble,
             Elapsed = h.Elapsed,
             NodesSearched = h.NodesSearched,
             EngineSteps = h.EngineSteps,
@@ -360,7 +384,8 @@ public static class SolverExports
     /// <summary>
     /// The potion value curve (section 8): one entry per subset of the potions held, the empty one first, in bit order over
     /// the held slots. Returns the number of subsets (only the first <paramref name="maxSubsets" /> are solved and written),
-    /// -1 for an error, -3 for refused options.
+    /// -1 for an error, -3 for refused options. Every entry has the curve's one horizon; a refused entry's numbers are NaN and
+    /// the first refused entry's reason is in <c>Sts2_GetLastError</c>.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_SolvePotionCurve")]
     public static unsafe int Sts2_SolvePotionCurve(int solver, int combatHandle, SolveOptionsNative* options, CurveEntryNative* buf, int maxSubsets)
@@ -384,6 +409,11 @@ public static class SolverExports
                 WriteCurveEntry(curve[i], held, buf + i);
             }
 
+            if (curve.FirstOrDefault(e => e.Status == SolveStatus.Refused) is { } first)
+            {
+                NativeExports.Refuse($"subset {first.Subset}: {first.Reason}");
+            }
+
             return 1 << held.Count;
         }
         catch (Exception e)
@@ -394,20 +424,22 @@ public static class SolverExports
 
     internal static unsafe void WriteCurveEntry(CurveEntry e, List<int> held, CurveEntryNative* o)
     {
+        bool refused = e.Status == SolveStatus.Refused;
         *o = new CurveEntryNative
         {
             Subset = e.Subset,
             CurveStatus = (int)e.Status,
             CurveExact = e.Exact ? 1 : 0,
             CurveHorizon = e.Horizon,
-            ExpectedL0 = e.ExpectedL0.ToDouble(),
-            WinChance = e.WinChance.ToDouble(),
-            ExpectedWinHp = e.ExpectedWinHp,
-            CurveExactMass = e.ExactMass.ToDouble(),
+            ExpectedL0 = refused ? double.NaN : e.ExpectedL0.ToDouble(),
+            WinChance = refused ? double.NaN : e.WinChance.ToDouble(),
+            ExpectedWinHp = refused ? double.NaN : e.ExpectedWinHp,
+            CurveExactMass = refused ? double.NaN : e.ExactMass.ToDouble(),
+            AllowedPotions = PotionCurve.MaskOf(held, e.Subset),
         };
         for (int i = 0; i < 8; i++)
         {
-            o->Held[i] = e.Held.TryGetValue(i, out var p) ? p.ToDouble() : double.NaN;
+            o->Held[i] = !refused && e.Held.TryGetValue(i, out var p) ? p.ToDouble() : double.NaN;
         }
     }
 

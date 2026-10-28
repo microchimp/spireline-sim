@@ -56,8 +56,13 @@ public class SolverSiteTests
     [Fact]
     public void NoStackWalkIsLeftOnASolverDecisionPath()
     {
-        var dir = Path.Combine(KeyFieldCoverageTests.Repo(), "src", "Sts2Emulator", "Solver");
-        foreach (var file in Directory.GetFiles(dir, "*.cs"))
+        // The whole library, recursively: the solver steps the engine, so a walk anywhere in it is on a decision path.
+        var dir = Path.Combine(KeyFieldCoverageTests.Repo(), "src", "Sts2Emulator");
+        var files = Directory.GetFiles(dir, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
+            .ToList();
+        Assert.True(files.Count > 100, $"only {files.Count} files scanned");
+        foreach (var file in files)
         {
             string text = File.ReadAllText(file);
             int walks = System.Text.RegularExpressions.Regex.Matches(text, @"new StackTrace\(|\.GetMethod\(\)").Count;
@@ -94,9 +99,10 @@ public class SolverSiteTests
     }
 
     [Fact]
-    public void TheMarkersChangeNoStepOutsideTheSolver()
+    public void TheMarkersLeaveNothingMarkedAndTheStepIsDeterministic()
     {
-        // The plain engine on the same position twice: equal bytes, and nothing left marked.
+        // The plain engine on the same position twice: equal bytes, and nothing left marked. The before/after check of the
+        // markers is SolverSiteGoldenTests, pinned at the commit before them.
         var (a, ar) = Reshuffle();
         var (b, br) = Reshuffle();
         CombatEngine.Step(a, a.Hand.Count, ar);

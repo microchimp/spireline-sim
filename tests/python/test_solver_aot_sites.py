@@ -4,11 +4,11 @@ The xunit host runs the solver under the JIT, so it cannot see a defect of the N
 that found the discard reshuffle and the sorted pick returned nothing there, leaving reshuffles unsteered and draw ties
 unrefused. Here the AOT library (out/Sts2Emulator.dll, through sts2_gym.native) and `dotnet EmuDump.dll solve --snapshot`
 (the JIT) solve the same `sts2-emu-snapshot/1` documents and must agree: status, value, refusal, node and step counts.
-tests/fixtures/solver/aot_sites.jsonl holds a reshuffling position and a draw-tie position (AotSiteFixtureTests keeps it
-current); with STS2_SOLVER_DOCS naming the harness documents (written by AotSiteFixtureTests.ExportTheHarnessDocumentsWhenAsked)
-the whole harness set is compared too: S4's native-equals-EmuDump gate with EmuDump under the JIT.
+tests/fixtures/solver/aot_sites.jsonl holds a reshuffling position, a draw-tie position and a sample of the equal-value
+harness's positions (AotSiteFixtureTests keeps it current): S4's native-equals-EmuDump gate with EmuDump under the JIT.
 
-Skipped unless the library, EmuDump.dll (STS2_EMUDUMP_DLL, or its Release build) and dotnet are all present.
+Needs the library (out/), the Release EmuDump.dll that tools/build_and_test.sh builds (or STS2_EMUDUMP_DLL) and dotnet.
+Inside the gate (STS2_REQUIRE_AOT=1, which tools/build_and_test.sh sets) a missing one fails the test; outside it, it skips.
 """
 
 from __future__ import annotations
@@ -41,14 +41,16 @@ def _emudump() -> Path | None:
 
 
 _READY = _library() is not None and _emudump() is not None and shutil.which("dotnet") is not None
+_REQUIRED = os.environ.get("STS2_REQUIRE_AOT") == "1"
+HARNESS_NODES, HARNESS_STEPS = 20_000, 200_000  # the harness's own budgets (NativeSolverTests.HarnessOptions)
 
 
-def _jit(lines: list[dict], engine: str, horizon: int) -> list[dict]:
+def _jit(lines: list[dict], engine: str, horizon: int, nodes: int = NODE_BUDGET, steps: int = STEP_BUDGET) -> list[dict]:
     with tempfile.TemporaryDirectory() as d:
         f = Path(d) / "docs.jsonl"
         f.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
         cmd = ["dotnet", str(_emudump()), "solve", "--snapshot", str(f), "--load-seed", str(LOAD_SEED), "--horizon", str(horizon),
-               "--budget-nodes", str(NODE_BUDGET), "--budget-steps", str(STEP_BUDGET), "--no-estimate"]
+               "--budget-nodes", str(nodes), "--budget-steps", str(steps), "--no-estimate"]
         if engine != "old":
             cmd += ["--engine", engine]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=False)
@@ -57,18 +59,17 @@ def _jit(lines: list[dict], engine: str, horizon: int) -> list[dict]:
     return [json.loads(x) for x in r.stdout.splitlines() if x.strip()]
 
 
-def _aot(native, doc: dict, horizon: int):
-    opts = native.SolveOptions(node_budget=NODE_BUDGET, step_budget=STEP_BUDGET, max_horizon=horizon, use_estimate=False)
+def _aot(native, doc: dict, horizon: int, nodes: int = NODE_BUDGET, steps: int = STEP_BUDGET):
+    opts = native.SolveOptions(node_budget=nodes, step_budget=steps, max_horizon=horizon, use_estimate=False)
     h = native.load_combat_snapshot(doc, LOAD_SEED)
-    s = native.solver_create(h, opts)
     try:
-        return native.solve_expected(s, h, opts)
+        with native.open_solver(h, opts) as s:
+            return native.solve_expected(s, h, opts)
     finally:
-        native.solver_destroy(s)
         native.destroy(h)
 
 
-def _differences(native, lines: list[dict]) -> tuple[int, list[str]]:
+def _differences(native, lines: list[dict], nodes: int = NODE_BUDGET, steps: int = STEP_BUDGET) -> tuple[int, list[str]]:
     """AOT against JIT on every document, grouped by (engine, horizon) so that each JIT run is one process."""
     diffs, compared = [], 0
     groups: dict[tuple[str, int], list[dict]] = {}
@@ -76,14 +77,14 @@ def _differences(native, lines: list[dict]) -> tuple[int, list[str]]:
         groups.setdefault((x.get("engine", "old"), int(x["horizon"])), []).append(x)
     for (engine, horizon), group in sorted(groups.items()):
         native.set_engine(engine)
-        jit = _jit(group, engine, horizon)
+        jit = _jit(group, engine, horizon, nodes, steps)
         if len(jit) != len(group):
             diffs.append(f"{engine}/h{horizon}: {len(jit)} JIT lines for {len(group)} documents")
             continue
         for x, j in zip(group, jit):
             tag = x.get("name", x.get("id"))
             try:
-                e = _aot(native, x["doc"], horizon)
+                e = _aot(native, x["doc"], horizon, nodes, steps)
             except Exception as ex:  # noqa: BLE001  a document the loader refuses (SnapshotError: a stopped step under a kernel switch)
                 if "error" not in j:
                     diffs.append(f"{tag}: AOT refused the document ({ex}), the JIT solved it")
@@ -106,18 +107,26 @@ def _differences(native, lines: list[dict]) -> tuple[int, list[str]]:
     return compared, diffs
 
 
-@unittest.skipUnless(_READY, "needs the published library, EmuDump.dll and dotnet")
+def _fixture() -> list[dict]:
+    return [json.loads(x) for x in FIXTURE.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+
 class SolverAotSiteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not _READY:
+            missing = "the published library, the Release EmuDump.dll and dotnet"
+            if _REQUIRED:
+                raise AssertionError(f"STS2_REQUIRE_AOT=1 and one of {missing} is missing: the AOT gate cannot run")
+            raise unittest.SkipTest(f"needs {missing} (outside the gate)")
         sys.path.insert(0, str(ROOT / "src"))
         from sts2_gym import native  # noqa: PLC0415
 
         cls.native = native
 
     def test_the_reshuffle_and_the_draw_tie_solve_as_under_the_jit(self):
-        lines = [json.loads(x) for x in FIXTURE.read_text(encoding="utf-8").splitlines() if x.strip()]
-        self.assertEqual({x["name"] for x in lines}, {"reshuffle", "draw-tie"})
+        lines = [x for x in _fixture() if x["name"] in ("reshuffle", "draw-tie")]
+        self.assertEqual(len(lines), 2)
         compared, diffs = _differences(self.native, lines)
         self.assertEqual(compared, 2)
         self.assertEqual(diffs, [])
@@ -129,15 +138,12 @@ class SolverAotSiteTests(unittest.TestCase):
         self.assertIn(shuffled.status, (0, 1))
         self.assertLess(shuffled.steps, 50_000)  # steered; unsteered, each Fisher-Yates call of the reshuffle branches
 
-    @unittest.skipUnless(os.environ.get("STS2_SOLVER_DOCS"), "set STS2_SOLVER_DOCS to the harness documents")
-    def test_the_harness_set_solves_as_under_the_jit(self):
-        path = Path(os.environ["STS2_SOLVER_DOCS"])
-        lines = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
-        compared, diffs = _differences(self.native, lines)
-        print(f"AOT vs JIT on the harness set: {compared} documents, {len(diffs)} differences", file=sys.stderr)
-        self.assertGreaterEqual(compared, 300)
-        self.assertEqual(diffs[:20], [])
-
+    def test_the_fixtures_harness_sample_solves_as_under_the_jit(self):
+        lines = [x for x in _fixture() if x["name"].startswith("harness-")]
+        compared, diffs = _differences(self.native, lines, HARNESS_NODES, HARNESS_STEPS)
+        print(f"AOT vs JIT on the fixture's harness sample: {compared} of {len(lines)} documents, {len(diffs)} differences", file=sys.stderr)
+        self.assertGreaterEqual(compared, 6)
+        self.assertEqual(diffs, [])
 
 if __name__ == "__main__":
     unittest.main()
