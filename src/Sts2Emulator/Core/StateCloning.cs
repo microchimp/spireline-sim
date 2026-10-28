@@ -178,8 +178,11 @@ public static class StateCloning
     /// </remarks>
     public static CombatState Clone(this CombatState combat, int? rngSeed = null)
     {
+        // The solver's phase timers (off by default: one static read); the copy itself is unchanged.
+        int prof = Solver.SolverProf.Enter(Solver.Phase.Clone);
         var copy = new CombatState();
         combat.CopyTo(copy, rngSeed);
+        Solver.SolverProf.Exit(prof);
         return copy;
     }
 

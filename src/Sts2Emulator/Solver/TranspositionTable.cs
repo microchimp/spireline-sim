@@ -44,7 +44,10 @@ public sealed class TranspositionTable(long maxEntries = 4_000_000)
 
     internal bool TryGet(UInt128 key, int remaining, out Entry entry)
     {
-        if (_map.TryGetValue(key, out entry) && (entry.Exact ? remaining >= entry.Remaining : remaining == entry.Remaining))
+        int prof = SolverProf.Enter(Phase.Table);
+        bool hit = _map.TryGetValue(key, out entry) && (entry.Exact ? remaining >= entry.Remaining : remaining == entry.Remaining);
+        SolverProf.Exit(prof);
+        if (hit)
         {
             return true;
         }
@@ -54,6 +57,19 @@ public sealed class TranspositionTable(long maxEntries = 4_000_000)
     }
 
     internal void Put(UInt128 key, NodeValue node, int remaining)
+    {
+        int prof = SolverProf.Enter(Phase.Table);
+        try
+        {
+            PutCore(key, node, remaining);
+        }
+        finally
+        {
+            SolverProf.Exit(prof);
+        }
+    }
+
+    void PutCore(UInt128 key, NodeValue node, int remaining)
     {
         if (_map.Count >= MaxEntries && !_map.ContainsKey(key))
         {

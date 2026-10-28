@@ -24,7 +24,7 @@ public class ChanceModelTests(ITestOutputHelper output)
     public void ExpandMatchesAnIndependentCountOnTheHarnessPositions()
     {
         var corpus = SolverPositions.Corpus();
-        int positions = 0, moves = 0, refused = 0, branching = 0, screens = 0;
+        int positions = 0, moves = 0, refused = 0, branching = 0, screens = 0, wide = 0;
         var bad = new List<string>();
         foreach (var recipe in SolverPositions.Recipes())
         {
@@ -49,6 +49,12 @@ public class ChanceModelTests(ITestOutputHelper output)
                     refused++;
                     continue;
                 }
+                catch (WideRollMet)
+                {
+                    // A roll wider than the cap is a horizon leaf, not branched: there is no model past it to count against.
+                    wide++;
+                    continue;
+                }
 
                 moves++;
                 branching += byValue.Count > 1 ? 1 : 0;
@@ -63,7 +69,7 @@ public class ChanceModelTests(ITestOutputHelper output)
             }
         }
 
-        output.WriteLine($"positions {positions}, moves counted {moves} ({branching} with more than one outcome, {screens} on an open screen), {Samples} samples each; refused {refused}");
+        output.WriteLine($"positions {positions}, moves counted {moves} ({branching} with more than one outcome, {screens} on an open screen), {Samples} samples each; refused {refused}, with a wide-roll leaf {wide}");
         foreach (var d in bad.Take(30))
         {
             output.WriteLine(d);
@@ -166,11 +172,18 @@ public class ChanceModelTests(ITestOutputHelper output)
     }
 
     /// <summary>Expand's odds by label.</summary>
+    sealed class WideRollMet : Exception;
+
     static Dictionary<string, Rational> Model(CombatState s, CountingRandom rng, Move m, bool byCard)
     {
         var d = new Dictionary<string, Rational>();
         foreach (var o in Successors.Expand(s, rng, m, byCard, 32, new SolveCounters()))
         {
+            if (o.WideRoll)
+            {
+                throw new WideRollMet();
+            }
+
             var k = Label(o.State, o.Result);
             d[k] = d.GetValueOrDefault(k, Rational.Zero) + o.P;
         }

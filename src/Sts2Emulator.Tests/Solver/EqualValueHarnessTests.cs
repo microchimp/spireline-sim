@@ -42,7 +42,7 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
     public void EveryPruningEqualsTheReferenceToTheLastBit()
     {
         var corpus = SolverPositions.Corpus();
-        int built = 0, compared = 0, skipped = 0, refusedAlike = 0, screens = 0, screenTrees = 0, horizon1 = 0, exact = 0;
+        int built = 0, compared = 0, skipped = 0, refusedAlike = 0, screens = 0, screenTrees = 0, horizon1 = 0, exact = 0, wideRoll = 0;
         long refNodes = 0, prunedNodes = 0, prunedSteps = 0;
         double prunedSeconds = 0;
         var diffs = new List<string>();
@@ -81,6 +81,8 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
                 if (name == "all")
                 {
                     screenTrees += reference.Refused is null && got.Counters.Screens > 0 ? 1 : 0;
+                    // A roll wider than the width cap: a horizon leaf on both sides (it was a chance-width refusal before).
+                    wideRoll += reference.Refused is null && got.Status != SolveStatus.Refused && got.Counters.WideRollLeaves > 0 ? 1 : 0;
                     prunedNodes += got.Counters.Nodes;
                     prunedSteps += got.Counters.Steps;
                     prunedSeconds += got.Seconds;
@@ -160,7 +162,7 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
             Assert.Equal(before, CombatSnapshot.Write(pos.State));
         }
 
-        output.WriteLine($"positions built {built}, compared {compared} (open screen at the root {screens}, screens in the tree {screenTrees}, horizon 1 {horizon1}, exact {exact}), refused alike {refusedAlike} [{string.Join(", ", refusals.Select(kv => $"{kv.Key} {kv.Value}"))}], skipped over the reference cap {skipped}");
+        output.WriteLine($"positions built {built}, compared {compared} (open screen at the root {screens}, screens in the tree {screenTrees}, horizon 1 {horizon1}, exact {exact}), refused alike {refusedAlike} [{string.Join(", ", refusals.Select(kv => $"{kv.Key} {kv.Value}"))}], skipped over the reference cap {skipped}; compared with a wide-roll leaf {wideRoll}");
         output.WriteLine($"horizon 1 compared by engine and source: {string.Join(", ", horizon1By.Select(kv => $"{kv.Key} {kv.Value}"))}; skipped by class: {string.Join(", ", skippedBy.Select(kv => $"{kv.Key} {kv.Value}"))}");
         output.WriteLine($"open screens at the root by kind: {string.Join(", ", screenKinds.Select(kv => $"{kv.Key} {kv.Value}"))}");
         foreach (var n in named)

@@ -4,7 +4,8 @@
 //        EmuDump solve --snapshot <doc.json | docs.jsonl> [--load-seed S] [options]   (one line per document)
 //        EmuDump hindsight <ascension> <seed> --run [--at <step>] --allow-hindsight [--max-turns T] [options]
 // options: --engine old|core2, --budget-nodes N, --budget-steps N, --budget-ms M, --horizon H, --prune all|none|<names,...>
-//          (a name with a leading '-' switches that pruning off from all), --curve, --mode expected|hindsight.
+//          (a name with a leading '-' switches that pruning off from all), --curve, --mode expected|hindsight,
+//          --phase-timers (the per-phase split under "stats"), --merge-audit (the dead-field merge audit under "stats").
 //
 // One JSON object per decision: the expected result under "expected" (with the potion curve under "curve" when asked) or
 // the hindsight bound under "hindsight", never both in one object, plus counters. The seed form starts from the fight the
@@ -97,6 +98,8 @@ internal static class SolveMode
                 case "--prune": opts = opts with { Prune = Prune(Next()) }; break;
                 case "--no-estimate": opts = opts with { UseEstimate = false }; break;
                 case "--curve": curve = true; break;
+                case "--phase-timers": SolverDebug.PhaseTimers = true; break;
+                case "--merge-audit": SolverDebug.MergeAudit = true; break;
                 case "--allow-hindsight": allow = true; break;
                 case "--run": runForm = true; break;
                 case "--max-turns": maxTurns = int.Parse(Next()); break;
@@ -347,6 +350,7 @@ internal static class SolveMode
         var r = SolverService.SolveExpected(state, rng, a.Options);
         o["expected"] = SolverService.ExpectedJson(state, r, a.Options.AllowedPotions);
         o["counters"] = SolverService.CountersJson(r.Counters, r.Seconds);
+        o["stats"] = SolverService.StatsJson(r);
         if (a.Curve)
         {
             o["curve"] = SolverService.CurveJson(SolverService.SolvePotionCurve(state, rng, a.Options), state);

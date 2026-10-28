@@ -86,7 +86,7 @@ public static class Reference
         bool exact = true;
         foreach (var o in Successors.Expand(s, rng, m, byCard: true, widthCap, c))
         {
-            var v = o.Result.Terminal ? NodeValue.End(o.State, o.Result.PlayerWon) : Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn), c, widthCap);
+            var v = o.WideRoll ? NodeValue.Horizon(s) : o.Result.Terminal ? NodeValue.End(o.State, o.Result.PlayerWon) : Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn), c, widthCap);
             value += o.P * v.Value;
             mass += o.P * v.Mass;
             upper += o.P * v.Upper;

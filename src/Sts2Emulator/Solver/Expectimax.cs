@@ -32,7 +32,7 @@ public sealed record SolveOptions
 
     public Pruning Prune { get; init; } = Pruning.All;
 
-    /// <summary>A roll with more outcomes refuses (<c>chance-width</c>).</summary>
+    /// <summary>A roll with more outcomes is not branched: its branch is a horizon leaf (L0, never exact).</summary>
     public int ChanceWidthCap { get; init; } = 32;
 
     /// <summary>Skip a horizon whose size estimate is over the node budget by more than this many powers of ten.</summary>
@@ -89,6 +89,19 @@ internal readonly record struct NodeValue(Rational Value, bool Exact, Rational M
 
     /// <summary>The max node over its moves' values (in move order; the first of greatest value gives the mass).</summary>
     public static NodeValue Max(IEnumerable<NodeValue> moves, CombatState s)
+    {
+        int prof = SolverProf.Enter(Phase.Bound);
+        try
+        {
+            return MaxCore(moves, s);
+        }
+        finally
+        {
+            SolverProf.Exit(prof);
+        }
+    }
+
+    static NodeValue MaxCore(IEnumerable<NodeValue> moves, CombatState s)
     {
         NodeValue? best = null;
         Rational upper = Rational.Zero;
@@ -148,29 +161,63 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
     /// <summary>Iterative deepening over the turn horizon, within the budget.</summary>
     public ExpectedResult SolveExpected(CombatState state, CountingRandom rng)
     {
+        long[]? ticks0 = SolverProf.On ? SolverProf.Ticks() : null;
+        int prof = SolverProf.Enter(Phase.Remainder);
         var sw = Stopwatch.StartNew();
         var counters = Begin(sw);
+        ExpectedResult result;
+        try
+        {
+            result = Deepen(state, rng, counters, sw);
+        }
+        finally
+        {
+            SolverProf.Exit(prof);
+        }
+
+        result = result with { Seconds = sw.Elapsed.TotalSeconds };
+        if (ticks0 is not null)
+        {
+            var t = SolverProf.Ticks();
+            for (int i = 0; i < t.Length; i++)
+            {
+                t[i] -= ticks0[i];
+            }
+
+            counters.PhaseTicks = t;
+        }
+
+        return result;
+    }
+
+    ExpectedResult Deepen(CombatState state, CountingRandom rng, SolveCounters counters, Stopwatch sw)
+    {
         ExpectedResult? last = null;
         string reason = "horizon";
         for (int h = 0; h <= Options.MaxHorizon; h++)
         {
-            if (Options.UseEstimate && h > 0 && SizeEstimate.Log10(state, h) > Math.Log10(Options.NodeBudget) + Options.EstimateSlack)
+            double est = h > 0 && Options.UseEstimate ? SizeEstimate.Log10(state, h) : double.NaN;
+            if (Options.UseEstimate && h > 0 && est > Math.Log10(Options.NodeBudget) + Options.EstimateSlack)
             {
-                reason = $"estimate: horizon {h} is about 10^{SizeEstimate.Log10(state, h):0.0} states";
+                reason = $"estimate: horizon {h} is about 10^{est:0.0} states";
+                counters.Horizons.Add(new HorizonMark(h, "estimate", counters.Nodes, counters.Steps, sw.Elapsed.TotalSeconds, false, est));
                 break;
             }
 
             try
             {
                 last = Iterate(state, rng, h, counters, sw);
+                counters.Horizons.Add(new HorizonMark(h, "done", counters.Nodes, counters.Steps, sw.Elapsed.TotalSeconds, last.Exact, est));
             }
             catch (BudgetExceeded e)
             {
                 reason = e.Message;
+                counters.Horizons.Add(new HorizonMark(h, "budget", counters.Nodes, counters.Steps, sw.Elapsed.TotalSeconds, false, est));
                 break;
             }
             catch (SolveRefused e)
             {
+                counters.Horizons.Add(new HorizonMark(h, "refused", counters.Nodes, counters.Steps, sw.Elapsed.TotalSeconds, false, est));
                 return Refused(e.Reason, counters, sw);
             }
 
@@ -213,6 +260,8 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         var c = new SolveCounters();
         c.Check = () =>
         {
+            int prof = SolverProf.Enter(Phase.Bound);
+            SolverProf.Exit(prof);
             if (c.Nodes > Options.NodeBudget)
             {
                 throw new BudgetExceeded($"{Options.NodeBudget} nodes");
@@ -231,8 +280,12 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         return c;
     }
 
-    ExpectedResult Refused(string reason, SolveCounters c, Stopwatch sw) =>
-        new(SolveStatus.Refused, reason, -1, Rational.Zero, false, Rational.Zero, [], c, sw.Elapsed.TotalSeconds);
+    ExpectedResult Refused(string reason, SolveCounters c, Stopwatch sw)
+    {
+        string cls = reason.Split(':')[0];
+        c.Refusals[cls] = c.Refusals.GetValueOrDefault(cls) + 1;
+        return new(SolveStatus.Refused, reason, -1, Rational.Zero, false, Rational.Zero, [], c, sw.Elapsed.TotalSeconds);
+    }
 
     ExpectedResult Iterate(CombatState state, CountingRandom rng, int horizon, SolveCounters counters, Stopwatch sw)
     {
@@ -274,10 +327,24 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         _c.Nodes++;
         _c.Check?.Invoke();
         var key = Key(s);
-        if (On(Pruning.Transposition) && Table.TryGet(key, remaining, out var hit))
+        if (On(Pruning.Transposition))
         {
-            _c.TableHits++;
-            return hit.Node;
+            if (Table.TryGet(key, remaining, out var hit))
+            {
+                _c.TableHits++;
+                if (hit.Exact)
+                {
+                    _c.TableHitsExact++;
+                }
+                else
+                {
+                    _c.TableHitsSameTurns++;
+                }
+
+                return hit.Node;
+            }
+
+            _c.TableMisses++;
         }
 
         if (s.PendingSelection is not null)
@@ -314,6 +381,12 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
             return NodeValue.Horizon(s);
         }
 
+        if (SolverDebug.MergeAudit && Actions.EndsTurn(s, m))
+        {
+            _c.AuditExpansions++;
+            MergeAudit.Record(s, _c);
+        }
+
         var outcomes = Successors.Expand(s, rng, m, byCard: !On(Pruning.DrawByValue), Options.ChanceWidthCap, _c);
         var value = Rational.Zero;
         var mass = Rational.Zero;
@@ -326,6 +399,15 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
             var order = new List<UInt128>();
             foreach (var o in outcomes)
             {
+                if (o.WideRoll)
+                {
+                    // A roll wider than the cap: a horizon leaf at the move's position (L0, bound L0's maximum, no mass).
+                    value += o.P * Utility.L0(s);
+                    upper += o.P * Utility.Max;
+                    exact = false;
+                    continue;
+                }
+
                 if (o.Result.Terminal)
                 {
                     _c.Leaves++;
@@ -363,6 +445,15 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         {
             foreach (var o in outcomes)
             {
+                if (o.WideRoll)
+                {
+                    // A roll wider than the cap: a horizon leaf at the move's position (L0, bound L0's maximum, no mass).
+                    value += o.P * Utility.L0(s);
+                    upper += o.P * Utility.Max;
+                    exact = false;
+                    continue;
+                }
+
                 if (o.Result.Terminal)
                 {
                     _c.Leaves++;

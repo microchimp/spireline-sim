@@ -2298,6 +2298,34 @@ def solver_info() -> dict:
     return json.loads(bytes(buf[:n]).decode("utf-8"))
 
 
+def solver_stats(solver: int) -> dict:
+    """The last expected solve's stats on a solver (Sts2_SolverStats): nodes, engine steps, runs and moves by move kind, chance
+    levels, end-turn leaves, table hits (exact, same turns left) and misses, wide-roll leaves, refusals, wall time and the
+    deepening's horizons; the per-phase split and the merge audit when `solver_debug` switched them on. Bound on first use."""
+    f = _lib.Sts2_SolverStats
+    f.restype = ctypes.c_int
+    f.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_int]
+    n = int(f(solver, None, 0))
+    if n < 0:
+        raise RuntimeError(f"Sts2_SolverStats failed ({n}): see Sts2_GetLastError")
+    buf = (ctypes.c_ubyte * max(1, n))()
+    n = int(f(solver, buf, n))
+    return json.loads(bytes(buf[:n]).decode("utf-8"))
+
+
+SOLVER_DEBUG_PHASE_TIMERS = 1
+SOLVER_DEBUG_MERGE_AUDIT = 2
+
+
+def solver_debug(flags: int = -1) -> int:
+    """The solver's process-wide debug switches (Sts2_SolverDebug): bit 0 the phase timers, bit 1 the merge audit; a negative
+    value only reads them. Returns the flags before the call. Off by default; neither changes a value. Bound on first use."""
+    f = _lib.Sts2_SolverDebug
+    f.restype = ctypes.c_int
+    f.argtypes = [ctypes.c_int]
+    return int(f(int(flags)))
+
+
 _hindsight_export = None
 
 

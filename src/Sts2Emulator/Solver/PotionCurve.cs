@@ -332,6 +332,12 @@ public static class PotionCurve
                 var order = new List<UInt128>();
                 foreach (var o in outcomes)
                 {
+                    if (o.WideRoll)
+                    {
+                        acc.Add(o.P, Leaf(s));
+                        continue;
+                    }
+
                     if (o.Result.Terminal)
                     {
                         _c.Leaves++;
@@ -361,7 +367,7 @@ public static class PotionCurve
             {
                 foreach (var o in outcomes)
                 {
-                    acc.Add(o.P, o.Result.Terminal ? End(o.State, o.Result.PlayerWon) : Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn)));
+                    acc.Add(o.P, o.WideRoll ? Leaf(s) : o.Result.Terminal ? End(o.State, o.Result.PlayerWon) : Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn)));
                 }
             }
 

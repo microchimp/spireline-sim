@@ -125,6 +125,9 @@ public static class SolverExports
         public readonly bool AllowHindsight = allowHindsight;
         public readonly Dictionary<int, TranspositionTable> Tables = [];
 
+        /// <summary>The last expected solve's stats object (<see cref="SolverStatsJson" />), for <c>Sts2_SolverStats</c>.</summary>
+        public System.Text.Json.Nodes.JsonObject? LastStats;
+
         public TranspositionTable TableFor(int mask)
         {
             if (!Tables.TryGetValue(mask, out var t))
@@ -252,6 +255,7 @@ public static class SolverExports
 
             var opts = Options(options, sv.Options);
             var r = SolverService.SolveExpected(state, rng, opts, sv.TableFor(opts.AllowedPotions));
+            sv.LastStats = SolverStatsJson.Of(r);
             WriteExpected(state, r, result, qBuf, maxActions, opts.AllowedPotions);
             if (r.Status == SolveStatus.Refused)
             {
@@ -441,6 +445,49 @@ public static class SolverExports
         {
             o->Held[i] = !refused && e.Held.TryGetValue(i, out var p) ? p.ToDouble() : double.NaN;
         }
+    }
+
+    /// <summary>
+    /// The last expected solve's stats on <paramref name="solver" /> as UTF-8 JSON (size-and-retry): the counters, the deepening's
+    /// horizons, and the phase split and merge audit when their switches were on. Returns the length, or -1 for an unknown
+    /// solver and -2 for one that has not solved yet.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Sts2_SolverStats")]
+    public static unsafe int Sts2_SolverStats(int solver, byte* buf, int cap)
+    {
+        if (SolverOf(solver) is not { } s)
+        {
+            return Fail("unknown solver handle", -1);
+        }
+
+        if (s.LastStats is not { } stats)
+        {
+            return Fail("the solver has not solved yet", -2);
+        }
+
+        byte[] json = Encoding.UTF8.GetBytes(stats.ToJsonString());
+        if (buf is not null && cap >= json.Length)
+        {
+            json.CopyTo(new Span<byte>(buf, cap));
+        }
+
+        return json.Length;
+    }
+
+    /// <summary>
+    /// The solver's debug switches for the whole process (<see cref="SolverDebug.Flags" />: bit 0 the phase timers, bit 1 the
+    /// merge audit); a negative value only reads them. Returns the flags before the call. Off by default; neither changes a value.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Sts2_SolverDebug")]
+    public static int Sts2_SolverDebug(int flags)
+    {
+        int before = SolverDebug.Flags;
+        if (flags >= 0)
+        {
+            SolverDebug.Flags = flags;
+        }
+
+        return before;
     }
 
     /// <summary>The solver's version, its pruning names with their bits and its utility names, as UTF-8 JSON; size-and-retry.</summary>

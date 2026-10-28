@@ -230,6 +230,9 @@ public static class SolverService
         };
     }
 
+    /// <summary>EmuDump's <c>stats</c> object (the native <c>Sts2_SolverStats</c>): every counter of the baseline round.</summary>
+    public static JsonObject StatsJson(ExpectedResult r) => SolverStatsJson.Of(r);
+
     public static JsonObject CountersJson(SolveCounters c, double seconds) => new()
     {
         ["nodes"] = c.Nodes,

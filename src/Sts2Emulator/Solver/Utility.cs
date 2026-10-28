@@ -86,12 +86,29 @@ public readonly struct Rational : IComparable<Rational>, IEquatable<Rational>
         return new Rational(negative ? -num : num, den);
     }
 
-    public static Rational operator +(Rational a, Rational b) =>
-        a.Den == b.Den ? new Rational(a.Num + b.Num, a.Den) : new Rational(a.Num * b.Den + b.Num * a.Den, a.Den * b.Den);
+    public static Rational operator +(Rational a, Rational b)
+    {
+        int prof = SolverProf.Enter(Phase.Rational);
+        var r = a.Den == b.Den ? new Rational(a.Num + b.Num, a.Den) : new Rational(a.Num * b.Den + b.Num * a.Den, a.Den * b.Den);
+        SolverProf.Exit(prof);
+        return r;
+    }
 
-    public static Rational operator *(Rational a, Rational b) => new(a.Num * b.Num, a.Den * b.Den);
+    public static Rational operator *(Rational a, Rational b)
+    {
+        int prof = SolverProf.Enter(Phase.Rational);
+        var r = new Rational(a.Num * b.Num, a.Den * b.Den);
+        SolverProf.Exit(prof);
+        return r;
+    }
 
-    public static Rational operator /(Rational a, Rational b) => new(a.Num * b.Den, a.Den * b.Num);
+    public static Rational operator /(Rational a, Rational b)
+    {
+        int prof = SolverProf.Enter(Phase.Rational);
+        var r = new Rational(a.Num * b.Den, a.Den * b.Num);
+        SolverProf.Exit(prof);
+        return r;
+    }
 
     public static bool operator <(Rational a, Rational b) => a.CompareTo(b) < 0;
 
@@ -105,7 +122,13 @@ public readonly struct Rational : IComparable<Rational>, IEquatable<Rational>
 
     public static bool operator !=(Rational a, Rational b) => !a.Equals(b);
 
-    public int CompareTo(Rational other) => (Num * other.Den).CompareTo(other.Num * Den);
+    public int CompareTo(Rational other)
+    {
+        int prof = SolverProf.Enter(Phase.Rational);
+        int c = (Num * other.Den).CompareTo(other.Num * Den);
+        SolverProf.Exit(prof);
+        return c;
+    }
 
     public bool Equals(Rational other) => Num == other.Num && Den == other.Den;
 

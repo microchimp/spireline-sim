@@ -52,9 +52,17 @@ public static class StateKey
     /// <summary>The key's canonical bytes. Throws <see cref="StateKeyRefusedException" /> on a busy kernel queue.</summary>
     public static byte[] Encode(CombatState state, KeyMode mode = KeyMode.Expected)
     {
-        var w = new KeyWriter(mode);
-        w.Combat(state);
-        return w.ToArray();
+        int prof = SolverProf.Enter(Phase.KeyEncode);
+        try
+        {
+            var w = new KeyWriter(mode);
+            w.Combat(state);
+            return w.ToArray();
+        }
+        finally
+        {
+            SolverProf.Exit(prof);
+        }
     }
 
     /// <summary>As <see cref="Encode" />, returning the refusal's reason instead of throwing.</summary>
@@ -79,8 +87,10 @@ public static class StateKey
 
     public static UInt128 HashOf(ReadOnlySpan<byte> key)
     {
+        int prof = SolverProf.Enter(Phase.KeyHash);
         Span<byte> h = stackalloc byte[32];
         SHA256.HashData(key, h);
+        SolverProf.Exit(prof);
         return new UInt128(BitConverter.ToUInt64(h[..8]), BitConverter.ToUInt64(h[8..16]));
     }
 

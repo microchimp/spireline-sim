@@ -458,7 +458,7 @@ Units: a reviewed round costs 1.0 with Sonnet and 1.7 with Opus.
 | S3 | Expectimax, table, lossless prunings, reference, harness | `Solver/Expectimax.cs`, `TranspositionTable.cs`, `Actions.cs`, `Utility.cs`, `Budget.cs`, `Reference.cs`, `tools/solver/harness.py`, `tests/fixtures/solver/positions.jsonl` | 2 Opus, 3.4 | equal-value harness: every pruning equal to the reference on the full set, both engines; per-pruning counters | `EqualValueHarnessTests`, screen and pick-k cases, refusal reasons, budget and iterative deepening |
 | S4 | Native exports, EmuDump `solve`, Python binding, hindsight, potion curve | `Interop/SolverExports.cs`, `NativeExports.cs` (version 39), `tools/emudump/Engines/Old/Solve.cs`, `src/sts2_gym/native.py`, `Solver/Hindsight.cs`, `Solver/PotionCurve.cs` | 1 Opus, 1.7 | native equals EmuDump on the harness set; on every emulator record tried, the hindsight best utility is at least the outcome of the expected-best policy played on the same draws, and its mean over records at least the mean expected value | `SolverLeakTests`, `HindsightApartTests` (types, refusal without the flag), binding tests, the entry-pin test for hindsight |
 | S5 | Oracle in the search | `rl/solver_oracle.py`, `rl/live_search.py` (option), `rl/search_configs.py` (`a3-v1-oracle`), label writers | 1 Opus, 1.7 | on the A3 dev set, where the solve is exact the search plays its best action (or a tie); no decision over its time cap; labels refuse hindsight | `test_solver_oracle.py`, `test_solver_labels_refuse_hindsight.py`, `test_search_configs.py` (defaults unchanged) |
-| S6 | Coverage curve tool and run | `tools/solver/coverage.py` | 1 Sonnet, 1.0 | reproducible curve on a seeded sample; matches EmuDump single solves | `test_coverage_curve.py` |
+| S6 | Coverage curve tool and run (built in the baseline round, section 16) | `tools/solver/coverage.py` | 1 Sonnet, 1.0 | reproducible curve on a seeded sample; a direct solve at a budget gives the exactness read from the deepening run | `test_coverage_curve.py` |
 | S7 | The A/B run and report | orchestrator slot, no code beyond the config | 1 Sonnet, 1.0 | per section 12 | none (a measurement) |
 | R | Review fixes reserve | | 1 Opus, 1.7 | | |
 | S8 | Dominance and bounds (second version, optional) | `Solver/Dominance.cs`, `Solver/Bounds.cs` | 1 Opus, 1.7 | equal-value harness | harness cases with non-monotone readers |
@@ -525,7 +525,7 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   roll, so a draw branches before any roll that follows it. A discard shuffle inside a step is laid out the same way
   by answering its Fisher-Yates calls. A screen's answer lays out the screen copy's pile (a draw-pile choice keeps its
   chosen card at its index), which the replay puts back at the screen. Refused: a card that peeks at the pile's order
-  (I Am Invincible, Perfect Fit), a random placement into a known run (`hidden-branch`). The macro draw (`DrawModel.MacroDraw`) is not wired: draws are sequential, merged by value
+  (I Am Invincible, Perfect Fit), a random placement into a known run (`hidden-branch`). Refusals left: `draw-peek`, `draw-tie`, `hidden-branch`, `draw-order`, `card-uid`, `unlisted-roll`, `empty-range`, `cycle`, `table-engine`, `engine-error`, a busy kernel queue (the key's refusal) and `budget` (no horizon completed). A roll wider than the width cap (default 32) is not refused since the baseline round (section 16): its branch is a horizon leaf. The macro draw (`DrawModel.MacroDraw`) is not wired: draws are sequential, merged by value
   and, for their successors, by key.
 - **Exact means proved.** A node carries a sound upper bound (a horizon leaf's is L0's maximum, 1); a max node is exact
   when a move of greatest value is exact and no move's bound is above it, a chance node when every outcome is. An
@@ -607,3 +607,40 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   skips, when the library or the Release EmuDump is missing) on the documents in `tests/fixtures/solver/aot_sites.jsonl`,
   the reshuffle, the draw tie and a sample of the harness positions. `SolverSiteGoldenTests` pins the engine's bytes
   under seeded play at df1db6a6, the commit before the site markers.
+
+## 16. The baseline round as built (optimisation review changes 2 and 9, S6)
+
+- **Counters, always on** (`SolveCounters`, on `ExpectedResult`; EmuDump's `stats` object; natively
+  `Sts2_SolverStats(solver, buf, cap)`, the last expected solve's stats as JSON, size-and-retry, since the result struct
+  has no room): nodes, engine steps, moves expanded and engine runs (step calls) by move kind (play, end turn, screen,
+  potion), chance levels summed over runs (the answered rolls and drawn positions a run replays from) and the deepest,
+  outcomes of end-turn expansions before merging, table hits split into exact entries and cut entries at the same turns
+  left, misses, wide-roll leaves, refusals by reason class, wall time, and the deepening's horizons (for each: how it
+  ended, `done`, `budget`, `estimate` or `refused`, the cumulative nodes, steps and seconds there, exactness, the size
+  estimate). The native API version stays 39: two exports are added, none changed (`sts2_gym.native.solver_stats` and
+  `solver_debug` bind them on first use).
+- **Phase timers** (`Solver/SolverStats.cs`, `SolverProf`): a static switch, off by default (`SolverDebug.Flags` bit 0;
+  natively `Sts2_SolverDebug(flags)`; EmuDump `--phase-timers`), compiled into the native library and the JIT builds.
+  Exclusive time on a per-thread stack for the engine step (less its clones and the chance hook's calls), whole-state
+  clones (`StateCloning.Clone`: the solver's copy and the engine's pre-step record), key encode, key SHA-256, `Rational`
+  arithmetic and comparison wherever it runs, table lookups and inserts, chance expansion (`Successors.Expand`'s own work,
+  `DrawSteer`'s layout, the odds, the chance hook's site, tie and width checks) and bound checks (`NodeValue.Max` and the
+  budget check); the remainder is the solve's own frame (recursion, move lists, dictionaries), measured, not inferred,
+  so the phases' sum is checked against the solve's stopwatch. Off, each site costs one static read.
+- **Merge audit** (`MergeAudit`, a debug option: bit 1, EmuDump `--merge-audit`): at each expanded end-turn move, the
+  pre-step key, the key with every candidate dead field masked (block, energy, the per-turn counters, the per-combat
+  counters with no reader in any pile: Gold Axe, Murder, Voltaic, Banshee's Cry and Pull From Below, Supermassive), and the
+  same keeping block. Distinct masked against distinct full keys per solve is what review change 6 could merge (block
+  masked: the upper bound; block kept: the floor). A reader generated later in the fight is not seen.
+- **Wide rolls are horizon leaves** (review change 9): a roll wider than `ChanceWidthCap` stops its run, and the branch
+  (its probability as reached) is a horizon leaf at the move's position: L0, bound L0's maximum (1), no mass, never exact.
+  `Successors.Expand` returns it as an `Outcome` with `WideRoll` set, so the expectimax, the reference and the potion
+  curve value it alike and the equal-value harness compares those positions instead of counting them refused alike.
+- **The coverage tool** (`tools/solver/coverage.py`, `test_coverage_curve.py`): the real game's nightly block keeps no
+  fight positions (its rows and divergence records hold seeds, outcomes, and hand and energy at diverged decisions), so
+  the decisions are its emulator arm's, replayed exactly (`gen0.play_emu_run`, same agent seed and run index, CPU prior
+  path) on the night's seed block: the lockstep real arm plays those decisions to within its divergence rate. Whole fights
+  are sampled stratified by act x kind x won with a fixed seed; each decision is solved once (fresh table, all lossless
+  prunings, node cap and wall cap, engine steps uncapped) and the coverage at each node and time budget is read from the
+  horizons of that run, with the size estimate's skip rule applied at the budget read; `check` holds a direct solve at a
+  budget to the reading. Results go under the lab's results directory, never committed.

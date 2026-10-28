@@ -10,8 +10,18 @@ public sealed class SolveRefused(string reason) : Exception($"solve refused: {re
     public string Reason { get; } = reason;
 }
 
-/// <summary>One outcome of a move: the stepped copy, the step's stream after it, the step's result and the outcome's probability.</summary>
-public sealed record Outcome(CombatState State, CountingRandom Rng, StepResult Result, Rational P);
+/// <summary>
+/// One outcome of a move: the stepped copy, the step's stream after it, the step's result and the outcome's probability.
+/// A <see cref="WideRoll" /> outcome is a roll wider than the width cap met on the way: no step result, its probability
+/// valued as a horizon leaf at the move's position (L0, bound L0's maximum, never exact), never refused.
+/// </summary>
+public sealed record Outcome(CombatState State, CountingRandom Rng, StepResult Result, Rational P, bool WideRoll = false);
+
+/// <summary>A roll wider than the width cap: the run stops and its branch is a horizon leaf (optimisation review change 9).</summary>
+internal sealed class WideRollLeaf(ChanceCall call) : Exception("wide roll")
+{
+    public ChanceCall Call { get; } = call;
+}
 
 /// <summary>Counters shared by a solve: engine steps, decision nodes, table hits, outcomes merged.</summary>
 public sealed class SolveCounters
@@ -26,6 +36,51 @@ public sealed class SolveCounters
 
     /// <summary>Decision nodes on an open screen.</summary>
     public long Screens;
+
+    /// <summary>Moves expanded, by <see cref="MoveKind" />.</summary>
+    public readonly long[] MovesByKind = new long[4];
+
+    /// <summary>Engine runs (step calls) of the expansions, by <see cref="MoveKind" />.</summary>
+    public readonly long[] RunsByKind = new long[4];
+
+    /// <summary>Chance levels summed over runs (the answered rolls and the drawn positions a run starts with), and the deepest.</summary>
+    public long ChanceLevels;
+
+    public long ChanceLevelMax;
+
+    /// <summary>Outcomes (chance leaves) of the end-turn expansions, before merging.</summary>
+    public long EndTurnLeaves;
+
+    /// <summary>Table hits on an exact entry, hits on a cut entry at the same turns left, and lookups that missed.</summary>
+    public long TableHitsExact;
+
+    public long TableHitsSameTurns;
+
+    public long TableMisses;
+
+    /// <summary>Branches cut at a roll wider than the width cap (valued as horizon leaves).</summary>
+    public long WideRollLeaves;
+
+    /// <summary>Refusals by reason class (the reason up to its first colon).</summary>
+    public readonly Dictionary<string, long> Refusals = [];
+
+    /// <summary>The deepening's horizons in order: where each ended and at what cumulative cost.</summary>
+    public readonly List<HorizonMark> Horizons = [];
+
+    /// <summary>The phase timers' exclusive time per <see cref="Phase" /> in Stopwatch ticks, when they were on.</summary>
+    public long[]? PhaseTicks;
+
+    /// <summary>The merge audit's end-turn expansions and their distinct keys (full, all candidates masked, all but block).</summary>
+    public long AuditExpansions;
+
+    public readonly HashSet<UInt128> AuditFull = [];
+
+    public readonly HashSet<UInt128> AuditMasked = [];
+
+    public readonly HashSet<UInt128> AuditMaskedKeepBlock = [];
+
+    public static MoveKind KindOf(CombatState s, Move m) =>
+        s.PendingSelection is not null ? MoveKind.Screen : m.Action == s.Hand.Count ? MoveKind.EndTurn : m.Action > s.Hand.Count ? MoveKind.Potion : MoveKind.Play;
 
     /// <summary>Called at every engine step and every node: throws <see cref="BudgetExceeded" /> past the budget.</summary>
     public Action? Check;
@@ -206,6 +261,19 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
 
     public int? Answer(in ChanceCall call)
     {
+        int prof = SolverProf.Enter(Phase.Chance);
+        try
+        {
+            return AnswerCore(call);
+        }
+        finally
+        {
+            SolverProf.Exit(prof);
+        }
+    }
+
+    int? AnswerCore(in ChanceCall call)
+    {
         if (CombatEngine.Running is { Record: { } record } run && run.Used < record.Screens.Count)
         {
             // A screen's answer replays its step from the start: the way to the screen is the past, and its rolls are
@@ -250,7 +318,7 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
 
         if (call.Width > widthCap)
         {
-            throw new ChanceRefused("chance-width", call);
+            throw new WideRollLeaf(call);
         }
 
         throw new ChancePending(call);
@@ -351,6 +419,27 @@ public static class Successors
 
     public static List<Outcome> Expand(CombatState state, CountingRandom rng, Move move, bool byCard, int widthCap, SolveCounters counters)
     {
+        int prof = SolverProf.Enter(Phase.Chance);
+        try
+        {
+            var kind = SolveCounters.KindOf(state, move);
+            counters.MovesByKind[(int)kind]++;
+            var outcomes = ExpandCore(state, rng, move, byCard, widthCap, counters, kind);
+            if (kind == MoveKind.EndTurn)
+            {
+                counters.EndTurnLeaves += outcomes.Count;
+            }
+
+            return outcomes;
+        }
+        finally
+        {
+            SolverProf.Exit(prof);
+        }
+    }
+
+    static List<Outcome> ExpandCore(CombatState state, CountingRandom rng, Move move, bool byCard, int widthCap, SolveCounters counters, MoveKind kind)
+    {
         foreach (var c in StateKey.AllCards(state))
         {
             if (OrderPeekers.Contains(Math.Abs(c.DefId)))
@@ -366,6 +455,15 @@ public static class Successors
         {
             var (answers, drawn, p) = stack.Pop();
             counters.Steps++;
+            counters.RunsByKind[(int)kind]++;
+            long levels = answers.Length;
+            foreach (var d in drawn)
+            {
+                levels += d.Count;
+            }
+
+            counters.ChanceLevels += levels;
+            counters.ChanceLevelMax = Math.Max(counters.ChanceLevelMax, levels);
             counters.Check?.Invoke();
             var copy = state.Clone();
             var r = rng.Copy();
@@ -409,6 +507,7 @@ public static class Successors
             {
                 ChanceHook.Attach(copy, r, source);
                 StepResult result;
+                int stepProf = SolverProf.Enter(Phase.Step);
                 try
                 {
                     result = Step(copy, r, move);
@@ -416,6 +515,7 @@ public static class Successors
                 }
                 finally
                 {
+                    SolverProf.Exit(stepProf);
                     ChanceHook.Attach(copy, r, null);
                 }
 
@@ -443,6 +543,12 @@ public static class Successors
                     next[d.Epoch].Add(d.Branches[b].Uid);
                     stack.Push((answers, next, p * new Rational(d.Branches[b].Count, d.Size)));
                 }
+            }
+            catch (WideRollLeaf)
+            {
+                // A roll wider than the cap: this branch (probability p) is a horizon leaf at the move's position.
+                counters.WideRollLeaves++;
+                outcomes.Add(new Outcome(state, rng, default!, p, WideRoll: true));
             }
             catch (ChanceRefused e)
             {
