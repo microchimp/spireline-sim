@@ -1,6 +1,5 @@
 namespace Sts2Emulator.Solver;
 
-using System.Diagnostics;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Run;
 using Sts2Emulator.GeneratedData;
@@ -282,19 +281,8 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
         return j;
     }
 
-    static bool FromDiscardShuffle()
-    {
-        foreach (var f in new StackTrace(2, false).GetFrames())
-        {
-            var m = f.GetMethod();
-            if (m?.DeclaringType == typeof(Sts2Emulator.Core.Effects.CardEffects) && m.Name == nameof(Sts2Emulator.Core.Effects.CardEffects.ShuffleDiscardIntoDraw))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    /// <summary>Whether the call comes from inside the discard reshuffle (the engine's explicit site, not a stack walk).</summary>
+    static bool FromDiscardShuffle() => Sts2Emulator.Core.Effects.CardEffects.DiscardShuffleDepth > 0;
 
     /// <summary>
     /// A uniform pick over the draw pile (Uproar, Catastrophe, a draw-pile sample screen) goes through
@@ -317,19 +305,8 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
         throw new SolveRefused($"draw-tie: {Cards.Get(Math.Abs(tie.DefId)).Name} ties another draw-pile card of another value in a sorted pick");
     }
 
-    static bool FromStableShuffle()
-    {
-        foreach (var f in new StackTrace(2, false).GetFrames())
-        {
-            var m = f.GetMethod();
-            if (m?.DeclaringType == typeof(Sts2Emulator.Core.Effects.CardEffects) && m.Name == nameof(Sts2Emulator.Core.Effects.CardEffects.StableShuffle))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    /// <summary>Whether the call comes from inside a sorted pick (the engine's explicit site, not a stack walk).</summary>
+    static bool FromStableShuffle() => Sts2Emulator.Core.Effects.CardEffects.StableShuffleDepth > 0;
 
     /// <summary>
     /// Throws <see cref="DrawPending" /> when the rest's front card has left the draw pile: the next position of the

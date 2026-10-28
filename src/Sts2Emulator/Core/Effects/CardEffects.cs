@@ -3793,6 +3793,19 @@ public static class CardEffects
         }
     }
 
+    /// <summary>
+    /// How deep this thread is inside <see cref="ShuffleDiscardIntoDraw" /> and <see cref="StableShuffle" />: the fight
+    /// solver's chance source asks whether a random call comes from inside one (the discard reshuffle it lays out, the
+    /// sorted pick whose ties it refuses; docs/rebuild/FIGHT_SOLVER.md section 14). An explicit site, not a walk of the
+    /// stack: under NativeAOT a frame does not know its method (<c>StackFrame.GetMethod</c> is null), so a walk found
+    /// neither and the native library's solver left every reshuffle unsteered and every draw tie unrefused. Counters
+    /// only: they touch no state and no stream, and are balanced on every exit, a pending chance or screen included.
+    /// </summary>
+    [ThreadStatic] internal static int DiscardShuffleDepth;
+
+    /// <inheritdoc cref="DiscardShuffleDepth" />
+    [ThreadStatic] internal static int StableShuffleDepth;
+
     /// <remarks>
     /// `CardPileCmd.Shuffle` does nothing once the fight is over or ending: no
     /// `StableShuffle` on the run's Shuffle stream and no `AfterShuffle`. Every mid-combat
@@ -3806,78 +3819,86 @@ public static class CardEffects
     /// </remarks>
     public static void ShuffleDiscardIntoDraw(CombatState state, Random rng)
     {
-        if (CombatEngine.IsOverOrEnding(state))
+        DiscardShuffleDepth++;
+        try
         {
-            return;
-        }
-
-        int count = state.DiscardPile.Count + state.DrawPile.Count;
-        if (_shuffleCards is null || _shuffleCards.Length < count)
-        {
-            int size = Math.Max(64, count * 2);
-            _shuffleCards = new CardInstance[size];
-            _shuffleKeys = new long[size];
-        }
-
-        var cards = _shuffleCards;
-        var keys = _shuffleKeys!;
-
-        // Discard first and then draw, the order the game merges them in. The key is the
-        // card's sort key alone, with no position in it: `List<CardModel>.Sort()` is the
-        // runtime's introsort, which does not keep equal cards in order, and this is that
-        // same introsort. Which of two equal copies comes first decides which copy the
-        // Fisher-Yates puts where -- and the copies can differ in what the key does not see
-        // (an enchantment, a cost bump, Stone Cracker's upgrade landing on one of them).
-        int index = 0;
-        foreach (var card in state.DiscardPile)
-        {
-            cards[index] = card;
-            keys[index] = ShuffleSortKey(card);
-            index++;
-        }
-
-        foreach (var card in state.DrawPile)
-        {
-            cards[index] = card;
-            keys[index] = ShuffleSortKey(card);
-            index++;
-        }
-
-        Array.Sort(keys, cards, 0, count);
-
-        state.DrawPile.Clear();
-        for (int i = 0; i < count; i++)
-        {
-            state.DrawPile.Add(cards[i]);
-        }
-
-        ShufflePile(state.DrawPile, state.ShuffleRng ?? rng);
-
-        // `PerfectFit.ModifyShuffleOrder` runs AFTER the shuffle and moves its card to the
-        // front -- `!isInitialShuffle`, so the opening deal is exempt and this path, which
-        // only ever runs mid-combat, is not.
-        //
-        // One hook per enchanted card, each doing `Remove` then `Insert(0)`, so walking the
-        // pile in order REVERSES two of them: the second one found ends up in front of the
-        // first. That is the game's own sequence rather than a choice made here.
-        for (int i = 0; i < state.DrawPile.Count; i++)
-        {
-            if (state.DrawPile[i].Enchantment != Enchantment.PerfectFit)
+            if (CombatEngine.IsOverOrEnding(state))
             {
-                continue;
+                return;
             }
 
-            var fitted = state.DrawPile[i];
-            state.DrawPile.RemoveAt(i);
-            state.DrawPile.Insert(0, fitted);
+            int count = state.DiscardPile.Count + state.DrawPile.Count;
+            if (_shuffleCards is null || _shuffleCards.Length < count)
+            {
+                int size = Math.Max(64, count * 2);
+                _shuffleCards = new CardInstance[size];
+                _shuffleKeys = new long[size];
+            }
+
+            var cards = _shuffleCards;
+            var keys = _shuffleKeys!;
+
+            // Discard first and then draw, the order the game merges them in. The key is the
+            // card's sort key alone, with no position in it: `List<CardModel>.Sort()` is the
+            // runtime's introsort, which does not keep equal cards in order, and this is that
+            // same introsort. Which of two equal copies comes first decides which copy the
+            // Fisher-Yates puts where -- and the copies can differ in what the key does not see
+            // (an enchantment, a cost bump, Stone Cracker's upgrade landing on one of them).
+            int index = 0;
+            foreach (var card in state.DiscardPile)
+            {
+                cards[index] = card;
+                keys[index] = ShuffleSortKey(card);
+                index++;
+            }
+
+            foreach (var card in state.DrawPile)
+            {
+                cards[index] = card;
+                keys[index] = ShuffleSortKey(card);
+                index++;
+            }
+
+            Array.Sort(keys, cards, 0, count);
+
+            state.DrawPile.Clear();
+            for (int i = 0; i < count; i++)
+            {
+                state.DrawPile.Add(cards[i]);
+            }
+
+            ShufflePile(state.DrawPile, state.ShuffleRng ?? rng);
+
+            // `PerfectFit.ModifyShuffleOrder` runs AFTER the shuffle and moves its card to the
+            // front -- `!isInitialShuffle`, so the opening deal is exempt and this path, which
+            // only ever runs mid-combat, is not.
+            //
+            // One hook per enchanted card, each doing `Remove` then `Insert(0)`, so walking the
+            // pile in order REVERSES two of them: the second one found ends up in front of the
+            // first. That is the game's own sequence rather than a choice made here.
+            for (int i = 0; i < state.DrawPile.Count; i++)
+            {
+                if (state.DrawPile[i].Enchantment != Enchantment.PerfectFit)
+                {
+                    continue;
+                }
+
+                var fitted = state.DrawPile[i];
+                state.DrawPile.RemoveAt(i);
+                state.DrawPile.Insert(0, fitted);
+            }
+
+            state.ForgetDrawOrder();
+            state.DiscardPile.Clear();
+
+            if (!CombatEngine.IsOverOrEnding(state))
+            {
+                AfterShuffle(state, rng);
+            }
         }
-
-        state.ForgetDrawOrder();
-        state.DiscardPile.Clear();
-
-        if (!CombatEngine.IsOverOrEnding(state))
+        finally
         {
-            AfterShuffle(state, rng);
+            DiscardShuffleDepth--;
         }
     }
 
@@ -3917,16 +3938,24 @@ public static class CardEffects
     /// wrong copy auto-played. <paramref name="indices" /> must come in pile order, as the
     /// game's `pile.Cards.Where(...)` list does.
     /// </remarks>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] internal static List<int> StableShuffle( // kept a frame: the solver's draw-tie looks for it
+    internal static List<int> StableShuffle(
         List<CardInstance> pile,
         IEnumerable<int> indices,
         Random rng
     )
     {
-        var order = indices.ToList();
-        order.Sort((a, b) => ShuffleSortKey(pile[a]).CompareTo(ShuffleSortKey(pile[b])));
-        ShufflePile(order, rng);
-        return order;
+        StableShuffleDepth++;
+        try
+        {
+            var order = indices.ToList();
+            order.Sort((a, b) => ShuffleSortKey(pile[a]).CompareTo(ShuffleSortKey(pile[b])));
+            ShufflePile(order, rng);
+            return order;
+        }
+        finally
+        {
+            StableShuffleDepth--;
+        }
     }
 
     /// <summary>`CardModel.CompareTo` as one number: Entry's ordinal rank, then upgraded.</summary>

@@ -102,7 +102,7 @@ public class ChanceModelTests(ITestOutputHelper output)
         output.WriteLine($"tie counted {string.Join(", ", count.Values.Select(n => (n / 2000.0).ToString("0.000")))}; no tie: model {string.Join(", ", model.Values.Select(p => p.ToDouble().ToString("0.000")))}");
     }
 
-    static (CombatState State, CountingRandom Rng) UproarOver(CardInstance a, CardInstance b)
+    internal static (CombatState State, CountingRandom Rng) UproarOver(CardInstance a, CardInstance b)
     {
         var state = Fight
             .Hand(new CardInstance(Cards.FindId("Uproar")!.Value, false), new CardInstance(IC.DefendIronclad, false))

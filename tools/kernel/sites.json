@@ -222,7 +222,7 @@
     "F11"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10435
+   "line": 10464
   },
   "CardEffects.AddGeneratedStatusToDiscard": {
    "hooks": [
@@ -236,7 +236,7 @@
     "F11"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10131
+   "line": 10160
   },
   "CardEffects.AfterPlayerDamageReceived": {
    "hooks": [
@@ -250,7 +250,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 4182
+   "line": 4211
   },
   "CardEffects.AfterShuffle": {
    "hooks": [
@@ -264,7 +264,7 @@
     "F11"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 3894
+   "line": 3915
   },
   "CardEffects.ApplyTemporaryStrengthDownTo": {
    "hooks": [
@@ -278,7 +278,7 @@
     "F12"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11283
+   "line": 11312
   },
   "CardEffects.ApplyTurnEndInHand": {
    "hooks": [
@@ -326,7 +326,7 @@
     "F09"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 9816
+   "line": 9845
   },
   "CardEffects.ChannelOrb": {
    "hooks": [
@@ -340,7 +340,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 6216
+   "line": 6245
   },
   "CardEffects.ConfuseCostOnDraw": {
    "hooks": [
@@ -391,7 +391,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10270
+   "line": 10299
   },
   "CardEffects.DarkPassiveValue": {
    "hooks": [
@@ -405,7 +405,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11094
+   "line": 11123
   },
   "CardEffects.DealDamageToPlayer": {
    "hooks": [
@@ -435,7 +435,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 4040
+   "line": 4069
   },
   "CardEffects.DealOstyDamage": {
    "hooks": [
@@ -449,7 +449,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10386
+   "line": 10415
   },
   "CardEffects.DmgFrom": {
    "hooks": [
@@ -467,7 +467,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 9733
+   "line": 9762
   },
   "CardEffects.DrawCards": {
    "hooks": [
@@ -500,7 +500,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11007
+   "line": 11036
   },
   "CardEffects.ExhaustCard": {
    "hooks": [
@@ -514,7 +514,7 @@
     "F11"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 3962
+   "line": 3991
   },
   "CardEffects.FirstEnemy": {
    "hooks": [
@@ -528,7 +528,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 9837
+   "line": 9866
   },
   "CardEffects.Forge": {
    "hooks": [
@@ -556,7 +556,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11091
+   "line": 11120
   },
   "CardEffects.FrostPassiveValue": {
    "hooks": [
@@ -570,7 +570,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11088
+   "line": 11117
   },
   "CardEffects.GainBlock": {
    "hooks": [
@@ -589,7 +589,7 @@
     "F09"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 5864
+   "line": 5893
   },
   "CardEffects.GainEnergy": {
    "hooks": [
@@ -605,7 +605,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 6082
+   "line": 6111
   },
   "CardEffects.GainStars": {
    "hooks": [
@@ -619,7 +619,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 6007
+   "line": 6036
   },
   "CardEffects.GlassValue": {
    "hooks": [
@@ -633,7 +633,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11069
+   "line": 11098
   },
   "CardEffects.GrowKinglyCardOnDraw": {
    "hooks": [
@@ -661,7 +661,7 @@
     "F10"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10730
+   "line": 10759
   },
   "CardEffects.LandDamageOnEnemy": {
    "hooks": [
@@ -693,7 +693,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 5608
+   "line": 5637
   },
   "CardEffects.LightningEvokeValue": {
    "hooks": [
@@ -707,7 +707,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11080
+   "line": 11109
   },
   "CardEffects.LightningPassiveValue": {
    "hooks": [
@@ -721,7 +721,7 @@
     "F13"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11072
+   "line": 11101
   },
   "CardEffects.LoseHp": {
    "hooks": [
@@ -742,7 +742,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 6202
+   "line": 6231
   },
   "CardEffects.LosePlayerHp": {
    "hooks": [
@@ -767,7 +767,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 4106
+   "line": 4135
   },
   "CardEffects.ModifiedCardDamage": {
    "hooks": [
@@ -785,7 +785,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 9752
+   "line": 9781
   },
   "CardEffects.NoteDoomApplied": {
    "hooks": [
@@ -799,7 +799,7 @@
     "F12"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 11457
+   "line": 11486
   },
   "CardEffects.NoteGeneratedCard": {
    "hooks": [
@@ -833,7 +833,7 @@
     "F08"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 10348
+   "line": 10377
   },
   "CardEffects.PrimeRocketPunches": {
    "hooks": [
@@ -861,7 +861,7 @@
     "F10"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 5827
+   "line": 5856
   },
   "CardEffects.ShivDamage": {
    "hooks": [
@@ -895,7 +895,7 @@
     "F11"
    ],
    "file": "Core/Effects/CardEffects.cs",
-   "line": 3807
+   "line": 3820
   },
   "CombatEngine.AfterPlayerTurnStartPowers": {
    "hooks": [
