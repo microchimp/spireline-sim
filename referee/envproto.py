@@ -617,6 +617,7 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
         if stop_at and time.time() > stop_at:  # the block's time limit: no new run; a worker's seeds go in order, so the
             break  # runs done are a prefix of each worker's share and stay paired with the emulator's
         run_ix = run_ids[n_seed] if run_ids else n_seed
+        q.put({"ev": "start", "w": wid, "seed": seed, "t": time.time()})  # the main loop's run clock (RunDeadline) starts here
         if recycle and env is not None and runs_here >= recycle:  # a fresh game process every `recycle` runs
             q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
             env.close()
@@ -660,6 +661,57 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
         q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
         env.close()
     q.put({"ev": "done", "w": wid})
+
+
+RUN_DEADLINE_S = 1800.0  # --run-deadline-s default: a run that has not ended this long after its worker started it is given up
+
+
+class RunDeadline:
+    """The play loop's per-worker run clock (`--run-deadline-s`; 0: off).
+
+    A worker puts a `start` event when a run begins and an `end` or `crash` event when it is over; nothing the worker does between
+    the two is bounded from outside (a call into the native library that never returns, a hung `rr.connections`), and a worker that
+    never says `done` holds the block open for ever. `seen` keeps, per worker, the seed and start time of its current run and the
+    time of its last event; `overdue` names the workers whose current run is older than the deadline; `close` gives the crash row
+    of such a worker's seed and stops listening to the worker. A worker with no run in flight (past `stop_at`, or between runs) is
+    never overdue: it ends by itself."""
+
+    def __init__(self, deadline_s: float, agent_seed: int, run_index: dict[int, dict[str, int]]):
+        self.deadline_s = float(deadline_s or 0)
+        self.agent_seed = agent_seed
+        self.run_index = run_index  # worker -> {seed: its run index in the block}, for the agent seed of a deadline row
+        self.current: dict[int, tuple[str, float]] = {}  # worker -> (seed, start time) of the run in flight
+        self.last_event: dict[int, float] = {}
+        self.closed: set[int] = set()
+
+    def seen(self, e: dict, now: float) -> bool:
+        """Note one event of a worker. False for an event of a worker that was closed: its rows are not taken."""
+        w = e["w"]
+        if w in self.closed:
+            return False
+        self.last_event[w] = now
+        if e["ev"] == "start":
+            self.current[w] = (e["seed"], float(e.get("t", now)))
+        elif e["ev"] in ("end", "crash", "done"):
+            self.current.pop(w, None)
+        return True
+
+    def overdue(self, now: float) -> list[int]:
+        if self.deadline_s <= 0:
+            return []
+        return [w for w, (_seed, t) in self.current.items() if now - t > self.deadline_s]
+
+    def close(self, w: int, now: float) -> dict:
+        """The crash row of the overdue worker's seed; the worker is closed (its later events are ignored)."""
+        seed, t = self.current.pop(w)
+        self.closed.add(w)
+        n = int(round(now - t))
+        row = {"ev": "crash", "w": w, "seed": seed, "where": "deadline", "error": f"worker deadline: no result after {n} s",
+               "s": float(n), "t_end": round(now, 1), "divergences": []}
+        ix = self.run_index.get(w, {}).get(seed)
+        if ix is not None:
+            row["agent_seed"] = [self.agent_seed, ix]  # as the worker writes it (a resume checks it)
+        return row
 
 
 class _Timed:
@@ -857,9 +909,13 @@ def play(a) -> int:
     # the time limit counts the seconds the block has already run, so an interrupted block is not given its hours again
     stop_at = time.time() + a.stop_after_h * 3600 - wall_before if a.stop_after_h else 0.0
     live = open(out / "runs.jsonl", "a" if resume else "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
+    wids = [w for w in range(a.procs) if not resume or seeds[w::a.procs]]
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
                                        agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0)))
-             for w in range(a.procs) if not resume or seeds[w::a.procs]]
+             for w in wids]
+    proc_of = dict(zip(wids, procs))
+    watch = RunDeadline(getattr(a, "run_deadline_s", RUN_DEADLINE_S), agent_seed,
+                        {w: dict(zip(seeds[w::a.procs], run_ids[w::a.procs])) for w in wids})
     t0 = time.time()
     beat = t0
     for p in procs:
@@ -870,16 +926,30 @@ def play(a) -> int:
         if resume and time.time() - beat >= 30:  # the seconds run so far, so a stop leaves the block's wall behind
             beat = time.time()
             write_wall(out, wall_before + beat - t0)
+        for w in watch.overdue(time.time()):  # a run that outlived --run-deadline-s: its worker is stopped, its seed has a crash row
+            row = watch.close(w, time.time())
+            proc_of[w].terminate()  # through its own Process object, never by name or pid
+            proc_of[w].join(10)
+            events.append(row)
+            live.write(json.dumps(row) + chr(10))
+            live.flush()
+            print(f"worker {w}: {row['error']} (seed {row['seed']}); worker terminated, counted as done", flush=True)
+            done += 1
+        if done >= len(procs):
+            break
         try:
             e = q.get(timeout=5)
         except queue.Empty:
             if not any(p.is_alive() for p in procs):
                 break
             continue
-        if e["ev"] == "done":
-            done += 1
-        elif e["ev"] == "net":
+        fresh = watch.seen(e, time.time())
+        if e["ev"] == "net":
             nets |= set(e["conns"])
+        elif not fresh or e["ev"] == "start":
+            continue  # a closed worker's late row, or the run clock's own event
+        elif e["ev"] == "done":
+            done += 1
         else:
             events.append(e)
             live.write(json.dumps(e) + chr(10))
@@ -973,6 +1043,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--buff", type=int, default=0, help="record/replay: buff_max_hp, so random play reaches later floors")
     ap.add_argument("--agent", choices=["play"], default="play", help="play: lockstep PLAY agent (mode play)")
     ap.add_argument("--stop-after-h", type=float, default=0.0, help="play: start no new run after this many hours (0: no limit)")
+    ap.add_argument("--run-deadline-s", type=float, default=RUN_DEADLINE_S,
+                    help="play: a worker whose current run has no result this many seconds after it began is terminated and its seed gets a "
+                         "crash row (where: deadline); the block closes with the other workers' rows (0: off)")
     ap.add_argument("--seeds-file", default=None, help="play: JSON seed block (default: A1S0000...)")
     ap.add_argument("--only", default=None, help="play: only these seeds of --seeds-file (comma-separated), each keeping its place in the full file as its run index")
     ap.add_argument("--resume", action="store_true",

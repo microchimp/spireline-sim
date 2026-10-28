@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -430,6 +431,7 @@ class RunRowTest(unittest.TestCase):
         rows = []
         while not q.empty():
             rows.append(q.get())
+        self.all_events = rows
         return [r for r in rows if r["ev"] in ("end", "crash")]
 
     def test_an_end_row_carries_t_end_boot_s_restarts_and_the_longest_streak(self):
@@ -453,6 +455,16 @@ class RunRowTest(unittest.TestCase):
         self.assertEqual((1.5, 0, {"n": 7, "screen": "event", "action": 3}), (c["boot_s"], c["restarts"], c["streak"]))
         self.assertTrue(c["t_end"] > 0)
         self.assertEqual((2.5, 1, {"n": 2, "screen": "map", "action": 0}), (e["boot_s"], e["restarts"], e["streak"]))
+
+    def test_each_run_begins_with_a_start_event_the_main_loops_run_clock_reads(self):
+        """N5: the play loop's --run-deadline-s counts from the worker's start event of the run."""
+        self.play({"S1": ([("map", 0)], None), "S2": ([("map", 0)], RuntimeError("boom"))})
+        seq = [(r["ev"], r["seed"]) for r in self.all_events if r["ev"] in ("start", "end", "crash")]
+        self.assertEqual([("start", "S1"), ("end", "S1"), ("start", "S2"), ("crash", "S2")], seq)
+        for r in self.all_events:
+            if r["ev"] == "start":
+                self.assertEqual(0, r["w"])
+                self.assertTrue(self.t0 - 1 <= r["t"] <= self.t1 + 1)
 
     def test_a_boot_failure_row_has_the_time_and_the_restart_count(self):
         rows = self.play({"S1": ([], None)}, boots=(None,))
@@ -536,6 +548,173 @@ class SampleMachineFlagTest(unittest.TestCase):
                 h.play(resume=resume, sample_machine=30.0)
             self.assertEqual(kept, (h.out / "machine.jsonl").exists(), resume)
             __import__("shutil").rmtree(h.tmp, True)
+
+
+class RunDeadlineTest(unittest.TestCase):
+    """N5: the play loop gives up a worker whose current run has no result after --run-deadline-s: the worker is terminated through its
+    own Process object, its seed gets a crash row (where: deadline) with the agent seed the worker would have written, and the block
+    closes with every other worker's rows. The workers are threads that put the events a real worker puts (start, end, done); a hung
+    worker puts a start event that is older than the deadline and then waits until it is terminated."""
+
+    SEEDS = ["S0", "S1", "S2", "S3", "S4", "S5"]
+    AS = 77
+    AGENT = {"generation": 3, "dir": "gen3/c", "prior": True, "prior_sha256": "ab", "macro": "rules"}
+
+    def setUp(self):
+        import collections
+        import threading
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+        self.out = self.tmp / "block"
+        self.out.mkdir()
+        self.seeds_file = self.tmp / "block.json"
+        self.seeds_file.write_text(json.dumps({"name": "x", "seeds": self.SEEDS}), encoding="utf-8")
+        self.handed: list[tuple] = []
+        self.terminated: list[int] = []
+        self.release = collections.defaultdict(threading.Event)
+        self.live_at_join = ""
+
+    def row(self, seed, ix, w):
+        return {"ev": "end", "w": w, "seed": seed, "character": "IRONCLAD", "end": "death", "floor": 10 + ix, "asked": 5, "s": 2.0,
+                "stats": {"decisions": 100, "ranked": 40, "diverged": 0, "reanchors": 0, "reanchor_failed": 0, "first_loss": None},
+                "lost": None, "divergences": [], "agent_seed": [self.AS, ix], "assumed": 0}
+
+    def normal(self, wid, seeds, run_ids, q, start_age=0.0, pause=0.0, done=True):
+        """Play the seeds as a worker does: a start event, then the end row. start_age: how long ago the first run began."""
+        for k, (s, ix) in enumerate(zip(seeds, run_ids)):
+            q.put({"ev": "start", "w": wid, "seed": s, "t": time.time() - (start_age if k == 0 else 0.0)})
+            time.sleep(pause)
+            q.put(self.row(s, ix, wid))
+        if done:
+            q.put({"ev": "done", "w": wid})
+
+    def hang(self, after=0, age=5000.0):
+        """Worker 0 plays `after` seeds, then begins one `age` seconds ago and never ends it (until terminated); the others play."""
+        def behave(wid, seeds, run_ids, q):
+            if wid != 0:
+                return self.normal(wid, seeds, run_ids, q)
+            self.normal(wid, seeds[:after], run_ids[:after], q, done=False)
+            q.put({"ev": "start", "w": wid, "seed": seeds[after], "t": time.time() - age})
+            self.release[wid].wait(10)  # a block without the deadline fails here by its rows, not by hanging the suite
+        return behave
+
+    def play(self, behave=None, procs=2, resume=False, deadline=1800.0):
+        import contextlib
+        import io
+        import queue as queue_mod
+        import threading
+        from types import SimpleNamespace
+        from unittest import mock
+
+        test = self
+        behave = behave or (lambda wid, seeds, run_ids, q: test.normal(wid, seeds, run_ids, q))
+
+        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle):
+            test.handed.append((wid, list(seeds)))
+            behave(wid, list(seeds), list(run_ids), q)
+
+        class FakeProc:
+            def __init__(self, target=None, args=()):
+                self.target, self.args, self.thread = target, args, None
+
+            def start(self):
+                self.thread = threading.Thread(target=self.target, args=self.args, daemon=True)
+                self.thread.start()
+
+            def is_alive(self):
+                return self.thread.is_alive()
+
+            def terminate(self):
+                test.terminated.append(self.args[0])
+                test.release[self.args[0]].set()
+
+            def join(self, timeout=None):
+                self.thread.join(timeout)
+                test.live_at_join = (test.out / "runs.jsonl").read_text(encoding="utf-8")  # the live file, as the block closes
+
+        ctx = SimpleNamespace(Queue=queue_mod.Queue, Process=FakeProc)
+        a = SimpleNamespace(out=str(self.out), game="G", character="IRONCLAD", runs=6, seeds_file=str(self.seeds_file), agent_seed=self.AS,
+                            stop_after_h=0, procs=procs, sims="a3-v1", step_timeout=1, ascension=10, engine="core2", only=None, recycle=0,
+                            run_deadline_s=deadline)
+        if resume:
+            a.resume, a.agent_identity = True, json.dumps(self.AGENT)
+        stdout = io.StringIO()
+        with mock.patch.object(envproto.rr, "check_build", lambda g: None), mock.patch.object(envproto.rr, "install", lambda g, d: None), \
+                mock.patch.object(envproto.mp, "get_context", lambda _k: ctx), mock.patch.object(envproto, "play_worker", fake_worker), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            envproto.play(a)
+        self.stdout = stdout.getvalue()
+        return json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
+
+    def final_rows(self):
+        return [json.loads(x) for x in (self.out / "runs.jsonl").read_text(encoding="utf-8").split("\n") if x.strip()]
+
+    def test_a_worker_past_the_deadline_is_terminated_its_seed_gets_a_crash_row_and_the_block_closes(self):
+        summary = self.play(self.hang(after=1))  # worker 0: S0 ends, then S2 is begun 5000 s ago and never ends; worker 1: S1 S3 S5
+        self.assertEqual([0], self.terminated)  # through its own Process object, once
+        rows = {r["seed"]: r for r in self.final_rows()}
+        self.assertEqual({"S0", "S1", "S2", "S3", "S5"}, set(rows))  # S4 was never played: the worker was stopped
+        self.assertEqual(["end"] * 4, [rows[s]["ev"] for s in ("S0", "S1", "S3", "S5")])  # the other rows are intact
+        c = rows["S2"]
+        self.assertEqual(("crash", "deadline", 0), (c["ev"], c["where"], c["w"]))
+        self.assertEqual([self.AS, 2], c["agent_seed"])  # as the worker writes it: [agent seed, the seed's index in the block]
+        n = int(c["error"].removeprefix("worker deadline: no result after ").removesuffix(" s"))
+        self.assertTrue(5000 <= n <= 5030, c["error"])
+        self.assertEqual((4, 1), (summary["runs"], summary["crashes"]))
+        self.assertEqual("deadline", summary["errors"][0]["where"])
+        self.assertIn('"where": "deadline"', self.live_at_join)  # also in the live runs.jsonl, before the block's rewrite
+        self.assertEqual(1, sum(line.startswith("worker 0: worker deadline") for line in self.stdout.splitlines()))  # one line printed
+
+    def test_a_worker_within_the_deadline_is_left_alone(self):
+        def slow(wid, seeds, run_ids, q):
+            self.normal(wid, seeds, run_ids, q, start_age=10.0, pause=0.4 if wid == 0 else 0.0)
+
+        summary = self.play(slow, deadline=100.0)
+        self.assertEqual([], self.terminated)
+        self.assertEqual((6, 0), (summary["runs"], summary["crashes"]))
+        self.assertEqual({"end"}, {r["ev"] for r in self.final_rows()})  # no start event is a row
+
+    def test_deadline_zero_disables_it(self):
+        def old_but_slow(wid, seeds, run_ids, q):
+            self.normal(wid, seeds, run_ids, q, start_age=5000.0, pause=0.4 if wid == 0 else 0.0)
+
+        summary = self.play(old_but_slow, deadline=0)
+        self.assertEqual([], self.terminated)
+        self.assertEqual((6, 0), (summary["runs"], summary["crashes"]))
+        self.assertEqual({"end"}, {r["ev"] for r in self.final_rows()})  # no start event is a row
+
+    def test_a_resume_after_a_deadline_row_does_not_replay_that_seed(self):
+        self.play(self.hang(after=0), resume=True)  # S0 (worker 0's first) hits the deadline; S2 and S4 were not reached
+        self.assertEqual({"S0": "crash", "S1": "end", "S3": "end", "S5": "end"}, {r["seed"]: r["ev"] for r in self.final_rows()})
+        self.terminated.clear()
+        self.handed.clear()
+        summary = self.play(resume=True)
+        self.assertEqual(["S2", "S4"], sorted(x for _w, xs in self.handed for x in xs))  # the unreached seeds play, the deadline seed does not
+        rows = self.final_rows()
+        self.assertEqual(["S0", "S1", "S2", "S3", "S4", "S5"], sorted(r["seed"] for r in rows))
+        (s0,) = [r for r in rows if r["seed"] == "S0"]
+        self.assertEqual("deadline", s0["where"])
+        self.assertEqual([self.AS, 4], [r for r in rows if r["seed"] == "S4"][0]["agent_seed"])
+        self.assertEqual((4, 6, 1), (summary["resumed_rows"], summary["runs"] + summary["crashes"], summary["crashes"]))
+
+    def test_a_worker_with_no_run_in_flight_is_never_overdue_and_a_closed_workers_late_rows_are_ignored(self):
+        w = envproto.RunDeadline(1800.0, self.AS, {0: {"S0": 0, "S2": 2}})
+        self.assertTrue(w.seen({"ev": "start", "w": 0, "seed": "S0", "t": 100.0}, 100.0))
+        self.assertTrue(w.seen({"ev": "end", "w": 0, "seed": "S0"}, 150.0))  # past stop_at, between runs: nothing in flight
+        self.assertEqual([], w.overdue(10 ** 7))
+        self.assertTrue(w.seen({"ev": "start", "w": 0, "seed": "S2", "t": 200.0}, 200.0))
+        self.assertEqual([], w.overdue(2000.0))  # 1800 s exactly is not past it
+        self.assertEqual([0], w.overdue(2001.0))
+        row = w.close(0, 2001.0)
+        self.assertEqual(("S2", "deadline", [self.AS, 2]), (row["seed"], row["where"], row["agent_seed"]))
+        self.assertFalse(w.seen({"ev": "end", "w": 0, "seed": "S2"}, 2002.0))
+        self.assertEqual([], w.overdue(10 ** 7))
+
+    def test_the_parser_takes_the_deadline_with_the_default_of_1800(self):
+        base = ["play", "--game", "G", "--out", "O"]
+        self.assertEqual(1800.0, envproto.parser().parse_args(base).run_deadline_s)
+        self.assertEqual(0.0, envproto.parser().parse_args([*base, "--run-deadline-s", "0"]).run_deadline_s)
 
 
 if __name__ == "__main__":
