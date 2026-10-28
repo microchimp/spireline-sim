@@ -1741,10 +1741,14 @@ public static class RunNonCombatEffects
         int enchantAmount = 0,
         SelectionReturn returnTo = SelectionReturn.EventResult,
         CardType? cardType = null,
-        bool optional = false
+        bool optional = false,
+        int followUpGoldLoss = 0,
+        bool shopRemoval = false
     )
     {
         state.PendingSelectionEventEntry = eventEntry;
+        state.PendingSelectionFollowUpGoldLoss = followUpGoldLoss;
+        state.PendingSelectionShopRemoval = shopRemoval;
         state.PendingSelectionOptional = optional;
         state.PendingSelectionCardType = cardType;
         state.PendingSelectionKind = kind;
@@ -1775,6 +1779,8 @@ public static class RunNonCombatEffects
         state.PendingSelectionFollowUpCount = 0;
         state.PendingSelectionFollowUpHpLoss = 0;
         state.PendingSelectionFollowUpMaxHpGain = 0;
+        state.PendingSelectionFollowUpGoldLoss = 0;
+        state.PendingSelectionShopRemoval = false;
         state.PendingSelectionEnchantAmount = 0;
         state.PendingSelectionCardType = null;
         state.PendingSelectionReturn = SelectionReturn.EventResult;
@@ -1807,6 +1813,21 @@ public static class RunNonCombatEffects
                 state.PlayerMaxHp,
                 state.PlayerHp + state.PendingSelectionFollowUpMaxHpGain
             );
+        }
+
+        // The gold a removal costs is lost once the card is chosen, never at the click
+        // that opened the screen (`RemoveCardsAndProceed`, `DoMerchantCardRemoval`).
+        int goldLoss = state.PendingSelectionFollowUpGoldLoss;
+        state.Gold -= goldLoss;
+
+        // `DoMerchantCardRemoval` then counts the removal (`CardShopRemovalsUsed`, the
+        // price's multiplier), and the purchase that succeeded marks the entry used and
+        // runs `AfterItemPurchased` with the gold spent.
+        if (state.PendingSelectionShopRemoval)
+        {
+            state.ShopRemovalsUsed++;
+            state.ShopRemovalUsedThisVisit = true;
+            CloseMawBank(state, goldLoss);
         }
     }
 

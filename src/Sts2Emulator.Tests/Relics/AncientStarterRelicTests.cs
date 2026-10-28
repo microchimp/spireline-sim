@@ -1458,7 +1458,10 @@ public class RunShapingRelicTests
         RunRewardGenerator.EnterShop(engine.State);
 
         Assert.Equal(DeckSelection.Remove, engine.State.PendingSelectionKind);
-        Assert.True(engine.State.ShopRemovalUsedThisVisit);
+        // `DoMerchantCardRemoval` counts the removal, and the entry is used up, only once
+        // the card is chosen; the screen is still open here.
+        Assert.False(engine.State.ShopRemovalUsedThisVisit);
+        Assert.Equal(0, engine.State.ShopRemovalsUsed);
     }
 
     /// <summary>Without the parasol the shop is stocked and nothing is taken.</summary>

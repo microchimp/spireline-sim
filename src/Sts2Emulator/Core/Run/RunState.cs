@@ -849,6 +849,21 @@ public sealed class RunState
     public int PendingSelectionFollowUpMaxHpGain;
 
     /// <summary>
+    /// Gold the finished selection costs. Zen Weaver's removals (`RemoveCardsAndProceed`)
+    /// and the merchant's removal service (`OneOffSynchronizer.DoMerchantCardRemoval`) both
+    /// lose the gold after the card is picked, so the selector shows it still unspent.
+    /// </summary>
+    public int PendingSelectionFollowUpGoldLoss;
+
+    /// <summary>
+    /// The selection is the merchant's removal service, bought or given by Lord's Parasol.
+    /// Its pick is the purchase: `DoMerchantCardRemoval` counts the removal
+    /// (`CardShopRemovalsUsed`) after the card goes, and only a successful purchase marks the
+    /// entry used and runs `AfterItemPurchased` (the Maw Bank).
+    /// </summary>
+    public bool PendingSelectionShopRemoval;
+
+    /// <summary>
     /// The event that opened this selection is not finished by it. The Endless Conveyor's
     /// Jelly Liver transforms a card and then the belt turns and offers the next dish, so
     /// resolving the selection has to return to the event rather than end it.

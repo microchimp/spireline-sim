@@ -38,9 +38,9 @@ public class ShopRemovalServiceTests
         Assert.Equal(0, status);
         Assert.Equal(RunPhase.TransformSelect, engine.State.Phase);
         Assert.Equal(DeckSelection.Remove, engine.State.PendingSelectionKind);
-        // Nothing is gone yet -- the player has not picked.
+        // Nothing is gone yet -- the player has not picked, and has not paid either.
         Assert.Equal(deckSize, engine.State.Deck.Count);
-        Assert.Equal(100, engine.State.Gold);
+        Assert.Equal(200, engine.State.Gold);
     }
 
     [Fact]
@@ -144,5 +144,105 @@ public class ShopRemovalServiceTests
         Assert.Equal(-1, status);
         Assert.Equal(200, engine.State.Gold);
         Assert.Equal(0, engine.State.ShopRemovalsUsed);
+    }
+
+    /// <summary>
+    /// `OneOffSynchronizer.DoMerchantCardRemoval` opens the removal screen first; only once a
+    /// card is chosen does it lose the gold, remove the card and count the removal, and the
+    /// entry is marked used and `AfterItemPurchased` runs after that. Charging at the click
+    /// left the emulator a full price short of the game while the screen was up (a live
+    /// lockstep at a floor-14 shop: 106 against 6).
+    /// </summary>
+    [Fact]
+    public void TheGoldIsUnchangedWhileThePickIsPending_AndMovesAtThePick()
+    {
+        var engine = ShopWithGold(200);
+
+        Assert.Equal(0, engine.Step(RunConstants.ShopRemoveAction, -1, out _, out _, out _));
+
+        Assert.Equal(RunPhase.TransformSelect, engine.State.Phase);
+        Assert.Equal(200, engine.State.Gold);
+        Assert.Equal(0, engine.State.ShopRemovalsUsed);
+        Assert.False(engine.State.ShopRemovalUsedThisVisit);
+
+        Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
+
+        Assert.Equal(100, engine.State.Gold);
+        Assert.Equal(1, engine.State.ShopRemovalsUsed);
+        Assert.True(engine.State.ShopRemovalUsedThisVisit);
+    }
+
+    /// <summary>
+    /// The price is `BaseCost + PriceIncrease * CardShopRemovalsUsed`, and the count rises in
+    /// `DoMerchantCardRemoval` after the pick: once per removal bought, never at a pick that
+    /// is still open.
+    /// </summary>
+    [Fact]
+    public void ThePriceRisesOncePerRemovalBought_NotAtAnUnfinishedPick()
+    {
+        var engine = ShopWithGold(1000);
+        engine.Step(RunConstants.ShopRemoveAction, -1, out _, out _, out _);
+        engine.Step(0, -1, out _, out _, out _);
+
+        RunRewardGenerator.EnterShop(engine.State);
+        engine.State.Phase = RunPhase.Shop;
+        int second = engine.State.ShopCosts[RunConstants.ShopRemoveAction];
+        Assert.Equal(150, second);
+
+        Assert.Equal(0, engine.Step(RunConstants.ShopRemoveAction, -1, out _, out _, out _));
+        Assert.Equal(1, engine.State.ShopRemovalsUsed);
+        Assert.Equal(900, engine.State.Gold);
+
+        Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
+        Assert.Equal(2, engine.State.ShopRemovalsUsed);
+        Assert.Equal(900 - second, engine.State.Gold);
+
+        RunRewardGenerator.EnterShop(engine.State);
+        Assert.Equal(200, engine.State.ShopCosts[RunConstants.ShopRemoveAction]);
+    }
+
+    /// <summary>
+    /// `AfterItemPurchased` is what closes the Maw Bank, and it runs after the pick.
+    /// </summary>
+    [Fact]
+    public void TheMawBankClosesAtThePick_NotAtTheClick()
+    {
+        var engine = ShopWithGold(200);
+        var open = new RelicInstance(Sts2Emulator.Core.Effects.RelicEffects.MawBank);
+        engine.State.Relics.Add(open);
+
+        engine.Step(RunConstants.ShopRemoveAction, -1, out _, out _, out _);
+        Assert.Contains(open, engine.State.Relics);
+
+        engine.Step(0, -1, out _, out _, out _);
+        Assert.DoesNotContain(open, engine.State.Relics);
+    }
+
+    /// <summary>
+    /// Lord's Parasol buys the service for nothing through the same
+    /// `DoMerchantCardRemoval`, so its removal is counted (and the service used up) at the
+    /// pick too.
+    /// </summary>
+    [Fact]
+    public void TheParasolsFreeRemovalIsCountedAtThePick()
+    {
+        var engine = ShopWithGold(0);
+        System.Array.Clear(engine.State.ShopCards);
+        System.Array.Clear(engine.State.ShopRelics);
+        System.Array.Clear(engine.State.ShopPotions);
+        engine.State.ParasolSweepPending = true;
+
+        RunRewardGenerator.ContinueLordsParasolSweep(engine.State);
+
+        Assert.Equal(DeckSelection.Remove, engine.State.PendingSelectionKind);
+        Assert.Equal(0, engine.State.ShopRemovalsUsed);
+        Assert.False(engine.State.ShopRemovalUsedThisVisit);
+
+        Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
+
+        Assert.Equal(RunPhase.Shop, engine.State.Phase);
+        Assert.Equal(1, engine.State.ShopRemovalsUsed);
+        Assert.True(engine.State.ShopRemovalUsedThisVisit);
+        Assert.Equal(0, engine.State.Gold);
     }
 }

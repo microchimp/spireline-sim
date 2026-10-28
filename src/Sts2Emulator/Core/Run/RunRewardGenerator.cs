@@ -1753,12 +1753,13 @@ public static partial class RunRewardGenerator
                 DeckSelection.Remove,
                 0,
                 count: 1,
-                returnTo: SelectionReturn.Shop
+                returnTo: SelectionReturn.Shop,
+                shopRemoval: true
             )
         )
         {
-            state.ShopRemovalUsedThisVisit = true;
-            state.ShopRemovalsUsed++;
+            // Free (`ignoreCost`), but the same `DoMerchantCardRemoval`: the removal is
+            // counted and the service used up at the pick, by the selection's follow-up.
             state.Phase = RunPhase.TransformSelect;
         }
     }

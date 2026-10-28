@@ -2898,26 +2898,24 @@ public sealed class RunEngine : Core2.ICombatEndHost
             // RemoveLowestPriorityCard, an emulator-invented preference order that starts
             // with Ascender's Bane, a card the game will not even offer.
             //
-            // Open BEFORE charging: a deck with nothing the screen would take is not a
-            // sale, and taking the gold for a screen that never appears is worse than
-            // refusing the click.
+            // The click only opens the screen. `DoMerchantCardRemoval` loses the gold,
+            // counts the removal and (through the purchase wrapper) uses the entry up
+            // after the card is chosen, so all of that rides the selection's follow-up; a
+            // deck with nothing the screen would take is refused here, not sold.
             if (
                 !RunNonCombatEffects.BeginDeckSelection(
                     State,
                     DeckSelection.Remove,
                     0,
                     count: 1,
-                    returnTo: SelectionReturn.Shop
+                    returnTo: SelectionReturn.Shop,
+                    followUpGoldLoss: cost,
+                    shopRemoval: true
                 )
             )
             {
                 return -1;
             }
-
-            State.Gold -= cost;
-            RunNonCombatEffects.CloseMawBank(State, cost);
-            State.ShopRemovalsUsed++;
-            State.ShopRemovalUsedThisVisit = true;
         }
         else if (action != RunConstants.ShopSkipAction)
         {

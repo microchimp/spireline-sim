@@ -693,6 +693,8 @@ public static class StateCloning
             PendingSelectionFollowUpCount = state.PendingSelectionFollowUpCount,
             PendingSelectionFollowUpHpLoss = state.PendingSelectionFollowUpHpLoss,
             PendingSelectionFollowUpMaxHpGain = state.PendingSelectionFollowUpMaxHpGain,
+            PendingSelectionFollowUpGoldLoss = state.PendingSelectionFollowUpGoldLoss,
+            PendingSelectionShopRemoval = state.PendingSelectionShopRemoval,
             PendingSelectionEnchantAmount = state.PendingSelectionEnchantAmount,
             PendingSelectionCardType = state.PendingSelectionCardType,
             PendingSelectionReturnsToEvent = state.PendingSelectionReturnsToEvent,
