@@ -48,7 +48,7 @@ NODE_BUDGETS = (10**3, 10**4, 10**5, 10**6, 10**7)
 TIME_BUDGETS = (0.01, 0.1, 1.0, 10.0)
 ESTIMATE_SLACK = 1.0  # SolveOptions.EstimateSlack
 NODE_MONSTER, NODE_ELITE, NODE_BOSS = 1, 2, 6  # rl/run_train/vocab.py
-STEP_CAP = 4_000_000_000  # engine steps never cut a coverage solve: the budgets are nodes and time
+STEP_CAP = 100_000  # engine runs per solve: bounds the live clones (an expansion holds every outcome while its children are solved)
 MAX_HORIZON = 20
 PHASES = ("step", "clone", "key_encode", "key_hash", "rational", "table", "chance", "bound", "remainder")
 
@@ -189,8 +189,10 @@ def curve(decisions: list[dict], solves: list[dict], cap_nodes: int) -> dict:
         row = {"id": d["id"], "fight": d["fight"], "kind": d["kind"], "act": d["act"], "won": d["won"], "turn": d["turn"],
                "turns_left": d["turns_left"], "refused": refused, "reason": (s.get("reason") or "").split(":")[0] if refused else None,
                "censored": bool(s.get("censored"))}
+        cut_at = hz[-1]["nodes"] if row["censored"] and hz else None
         for b in NODE_BUDGETS:
             row[f"n{b}"] = (not refused) and b <= cap_nodes and exact_within_nodes(hz, b)
+            row[f"c{b}"] = cut_at is not None and cut_at < b and not row[f"n{b}"]
         for t in TIME_BUDGETS:
             row[f"t{t}"] = (not refused) and exact_within_seconds(hz, t, cap_nodes)
         rows.append(row)
@@ -203,6 +205,7 @@ def curve(decisions: list[dict], solves: list[dict], cap_nodes: int) -> dict:
         for g in sorted(groups):
             rs = groups[g]
             out[g] = {"n": len(rs), **{f"nodes_1e{int(math.log10(b))}": _share([r[f"n{b}"] for r in rs]) for b in NODE_BUDGETS if b <= cap_nodes},
+                      **{f"censored_1e{int(math.log10(b))}": sum(r[f"c{b}"] for r in rs) for b in NODE_BUDGETS if b <= cap_nodes},
                       **{f"time_{t:g}s": _share([r[f"t{t}"] for r in rs]) for t in TIME_BUDGETS}}
         return out
 
@@ -403,12 +406,17 @@ def _init_solver(engine: str, flags: int) -> None:
 
 
 def _solve(task: tuple) -> dict:
-    pid, doc, cap, wall_s = task
+    pid, doc, cap, wall_s, step_cap = task
     from sts2_gym import native  # noqa: PLC0415
 
-    h = native.load_combat_snapshot(doc, 0)
     try:
-        opts = native.SolveOptions(node_budget=int(cap), step_budget=STEP_CAP, time_budget_ms=int(wall_s * 1000), max_horizon=MAX_HORIZON)
+        h = native.load_combat_snapshot(doc, 0)
+    except Exception as e:  # noqa: BLE001 - a document the engine cannot load is a refusal of its own, counted
+        return {"id": pid, "cap": cap, "wall_cap_s": wall_s, "step_cap": step_cap, "status": -3,
+                "reason": f"snapshot-load: {type(e).__name__}: {str(e)[:160]}", "exact": False, "horizon": -1, "wall_s": 0.0,
+                "censored": False, "stats": {"horizons": []}}
+    try:
+        opts = native.SolveOptions(node_budget=int(cap), step_budget=int(step_cap), time_budget_ms=int(wall_s * 1000), max_horizon=MAX_HORIZON)
         solver = native.solver_create(h, opts)
         try:
             t0 = time.perf_counter()
@@ -421,7 +429,7 @@ def _solve(task: tuple) -> dict:
         native.destroy(h)
     hz = st.get("horizons") or []
     censored = bool(hz) and hz[-1]["end"] == "budget" and hz[-1]["nodes"] <= cap and not any(x["exact"] for x in hz)
-    return {"id": pid, "cap": cap, "wall_cap_s": wall_s, "status": r.status, "reason": r.reason, "exact": bool(r.exact),
+    return {"id": pid, "cap": cap, "wall_cap_s": wall_s, "step_cap": step_cap, "status": r.status, "reason": r.reason, "exact": bool(r.exact),
             "horizon": r.horizon, "wall_s": round(wall, 4), "censored": censored, "stats": st}
 
 
@@ -443,8 +451,8 @@ def cmd_solve(a) -> int:
         prev = {r["id"]: r for r in read_jsonl(out / a.prev_name)}
         ids = [i for i in ids if i in prev and needs_larger_cap(prev[i], a.cap)]
     if a.n:
-        ids = ids[: a.n]
-    tasks = [(i, pos[i], a.cap, a.wall_s) for i in ids if i not in done]
+        ids = sorted(random.Random(a.seed).sample(ids, min(a.n, len(ids))))  # a seeded subsample (the cut, reported)
+    tasks = [(i, pos[i], a.cap, a.wall_s, a.step_cap) for i in ids if i not in done]
     print(f"solving {len(tasks)} decisions (cap {a.cap} nodes, wall {a.wall_s} s, {a.procs} workers)", flush=True)
     ctx = mp.get_context("spawn")
     with ctx.Pool(processes=min(12, max(1, a.procs)), initializer=_init_solver, initargs=(_engine_of(out), a.debug_flags), maxtasksperchild=4) as pool, \
@@ -471,7 +479,7 @@ def cmd_check(a) -> int:
     for i in ids:
         hz = first[i]["stats"].get("horizons") or []
         for b in budgets:
-            r = _solve((i, pos[i], b, a.wall_s))
+            r = _solve((i, pos[i], b, a.wall_s, a.step_cap))
             read = exact_within_nodes(hz, b)
             same = read == r["exact"]
             agree += same
@@ -482,13 +490,15 @@ def cmd_check(a) -> int:
     return 0
 
 
-def _speed_rows(ids, pos, budget, flags) -> list[dict]:
+def _speed_rows(ids, pos, budget, flags, wall_s=60.0, step_cap=STEP_CAP) -> list[dict]:
     from sts2_gym import native  # noqa: PLC0415
 
     native.solver_debug(flags)
     rows = []
     for i in ids:
-        rows.append(_solve((i, pos[i], budget, 600.0)))
+        rows.append(_solve((i, pos[i], budget, wall_s, step_cap)))
+        st = rows[-1]["stats"]
+        print(f"  {flags} {i[-24:]} nodes {st.get('nodes')} steps {st.get('engine_steps')} {rows[-1]['wall_s']} s", flush=True)
     native.solver_debug(0)
     return rows
 
@@ -499,15 +509,18 @@ def cmd_speed(a) -> int:
     pos = {p["id"]: p["doc"] for p in read_jsonl(out / "positions.jsonl")}
     dec = {d["id"]: d for d in read_jsonl(out / "decisions.jsonl")}
     rnd = random.Random(a.seed)
-    ids = sorted(rnd.sample(sorted(pos), min(a.n, len(pos))))
+    pool = sorted(pos)
+    if (out / a.prev_name).is_file():  # the decisions the coverage run solved (not refused), when it has run
+        pool = sorted(r["id"] for r in read_jsonl(out / a.prev_name) if r["status"] != -3)
+    ids = sorted(rnd.sample(pool, min(a.n, len(pool))))
     _init_solver(_engine_of(out), 0)
     res = {}
     for name, flags in (("off", 0), ("timers", 1), ("off2", 0), ("timers2", 1)) if not a.audit_only else ():
         t0 = time.perf_counter()
-        rows = _speed_rows(ids, pos, a.budget, flags)
+        rows = _speed_rows(ids, pos, a.budget, flags, a.wall_s, a.step_cap)
         res[name] = {"wall_s": round(time.perf_counter() - t0, 3), "rows": rows}
     if a.audit:
-        rows = _speed_rows(ids, pos, a.budget, 2)
+        rows = _speed_rows(ids, pos, a.budget, 2, a.wall_s, a.step_cap)
         res["audit"] = {"rows": rows}
     for v in res.values():
         for r in v["rows"]:
@@ -532,6 +545,9 @@ def speed_report(res: dict) -> dict:
             rep[name] = rate([r for r in res[name]["rows"] if r["status"] != -3])
     if "off" in res:
         base = [r for r in res["off"]["rows"] if r["status"] != -3]
+        for r in base:  # the JIT rows carry no decision fields
+            r.setdefault("kind", "?")
+            r.setdefault("turns_left", 0)
         rep["off_by_kind"] = {k: rate([r for r in base if r["kind"] == k]) for k in sorted({r["kind"] for r in base})}
         rep["off_by_turns_left"] = {k: rate([r for r in base if turns_left_bucket(r["turns_left"]) == k])
                                     for k in sorted({turns_left_bucket(r["turns_left"]) for r in base})}
@@ -594,7 +610,7 @@ def cmd_speed_jit(a) -> int:
     docs = out / "speed_docs.jsonl"
     write_jsonl(docs, [{"id": i, "doc": pos[i]} for i in sp["ids"]])
     base = ["dotnet", a.emudump, "solve", "--snapshot", str(docs), "--engine", _engine_of(out), "--budget-nodes", str(sp["budget"]),
-            "--budget-steps", str(STEP_CAP), "--budget-ms", "600000", "--horizon", str(MAX_HORIZON)]
+            "--budget-steps", str(a.step_cap), "--budget-ms", str(int(a.wall_s * 1000)), "--horizon", str(MAX_HORIZON)]
     res = {}
     for name, extra in (("off", []), ("timers", ["--phase-timers"]), ("off2", []), ("timers2", ["--phase-timers"])):
         t0 = time.perf_counter()
@@ -653,6 +669,7 @@ def main(argv=None) -> int:
         p.add_argument("--n", type=int, default=0)
         p.add_argument("--budgets", default="10000,100000,1000000")
         p.add_argument("--budget", type=int, default=100000)
+        p.add_argument("--step-cap", type=int, default=STEP_CAP)
         p.add_argument("--debug-flags", type=int, default=0)
         p.add_argument("--audit", action="store_true")
         p.add_argument("--audit-only", action="store_true")
