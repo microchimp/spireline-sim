@@ -73,6 +73,11 @@ USE_POTION_ACTION = 242
 DISCARD_POTION_ACTION = 248
 POTION_SLOT_CAPACITY = 6  # RunConstants.PotionSlotCapacity
 EVENT_RESULT_PENDING = -1  # RunConstants.cs:269
+# Welcome to Wongos (`RunConstants.EventWelcomeToWongos`), the one event page whose action 3 is a real option (Leave,
+# the game's fourth `GenerateInitialOptions` entry) and not only the emulator's leave; shown to the policies from
+# mask version 4 (D34, owner ruling 2026-10-27).
+EVENT_WELCOME_TO_WONGOS = 41
+WONGOS_LEAVE_MASK_VERSION = 4
 # The treasure room's chest relic (erratum RF1): offered while it is still in the chest,
 # with the proceed (3) always beside it (`RunEngine.WriteActionMask`, `StepTreasure`).
 TREASURE_TAKE_RELIC_ACTION = rc.TREASURE_TAKE_RELIC_ACTION  # 0
@@ -709,19 +714,35 @@ def _event(ctx: _Context) -> _Screen:
     `event.option` per legal action but 3, identified by (event id = info[9], option,
     step). The finished page (`EventId == -1`, `RunEngine.cs:2478-2482`) is auto; the
     emulator-only leave (3) is taken only when nothing else is legal, and counted
-    (DESIGN.md 1.5.3). No act-1 event uses 3 as a real option.
+    (DESIGN.md 1.5.3). No act-1 event uses 3 as a real option. Welcome to Wongos does:
+    its fourth option, Leave, is action 3 (the native mask carries it at every version,
+    and every other page's 3 is the emulator-only leave, with no event at four options),
+    so a run on mask version 4 or later is shown it as `event.option` 3 when the page has
+    a purchase to weigh it against; under versions 1-3 it stays hidden, as it was.
     """
     event_id = int(native.run_info(ctx.handle)[9])
     if event_id == EVENT_RESULT_PENDING:
         return _Screen(None, auto=ctx.legal[0])
-    options = tuple(
+    options = [
         Option("event.option", action, event=(event_id, action, ctx.event_step))
         for action in ctx.legal
         if action != EVENT_SKIP_ACTION
-    )
+    ]
     if not options:
         return _Screen(None, auto=EVENT_SKIP_ACTION, auto_stat="forced_skip/event")
-    return _Screen(Decision("event", options))
+    if (
+        event_id == EVENT_WELCOME_TO_WONGOS
+        and ctx.env._mask_version >= WONGOS_LEAVE_MASK_VERSION
+        and EVENT_SKIP_ACTION in ctx.legal
+    ):
+        options.append(
+            Option(
+                "event.option",
+                EVENT_SKIP_ACTION,
+                event=(event_id, EVENT_SKIP_ACTION, ctx.event_step),
+            )
+        )
+    return _Screen(Decision("event", tuple(options)))
 
 
 def _card_select(ctx: _Context) -> _Screen:

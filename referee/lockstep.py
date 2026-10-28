@@ -591,7 +591,7 @@ def _event_names() -> dict[int, str]:
 # The run mask version of the emulator side (D32): version 2 lists the potion discard on the card reward, deck-select,
 # bundle-select and Crystal Sphere screens, so the referee's discard_potion there is stepped, not a gap. It is the
 # lockstep's own setting, whatever the agent's: the mask only carries the option, and `engine._legal` hides it from the rules.
-MASK_VERSION = 3
+MASK_VERSION = 4  # the same mask as 3 (D34); the Wongos Leave (action 3) is a listed option, paired by position
 # The emulator's event leave (run action 3) and the pairing sentinel for the referee label that takes it.
 EVENT_SKIP_ACTION = 3
 EVENT_LEAVE = -2

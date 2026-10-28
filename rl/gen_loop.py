@@ -98,10 +98,11 @@ def read_json(path: Path) -> Any:
 
 # The run mask version (native.RUN_MASK_VERSIONS) a candidate written by `train_generation` carries in its agent.json;
 # an agent.json without the key is version 1 (generations 0-3 and every candidate saved before the key existed).
-CANDIDATE_MASK_VERSION = 3
+CANDIDATE_MASK_VERSION = 4
 # The versions `load_agent` accepts (native.RUN_MASK_VERSIONS; not imported here, the library loads lazily): 1 is the mask
-# as it was, 2 adds the discard actions (D32), 3 the AnyTime potions' use actions (D34) on the closed-belt screens.
-AGENT_MASK_VERSIONS = (1, 2, 3)
+# as it was, 2 adds the discard actions (D32), 3 the AnyTime potions' use actions (D34) on the closed-belt screens, 4 the same mask with Welcome
+# to Wongos' Leave shown to the policies (D34; generations 0-7 and every candidate saved before keep the version they carry).
+AGENT_MASK_VERSIONS = (1, 2, 3, 4)
 
 
 @dataclass(frozen=True)

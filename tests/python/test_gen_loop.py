@@ -318,7 +318,7 @@ class TrainTests(unittest.TestCase):
         self.assertEqual(len(t["combat"]["curves"]), 2)
         self.assertGreater(t["combat"]["cpu_min"], 0)
         self.assertEqual(json.loads((c / "agent.json").read_text())["generation"], 2)
-        self.assertEqual(json.loads((c / "agent.json").read_text())["mask_version"], 3)  # D34: new candidates carry the versioned mask (2 under D32)
+        self.assertEqual(json.loads((c / "agent.json").read_text())["mask_version"], 4)  # D34: new candidates carry the versioned mask (3 until the Wongos Leave was shown, 2 under D32)
         switch = t["vrun_keep"]["macro_switch"]  # D33: on without the variable (no fit here: vrun=False, so nothing passed)
         self.assertEqual((switch["passed"], switch["enabled"]), (False, True))
         self.assertIn("D33", switch["note"])

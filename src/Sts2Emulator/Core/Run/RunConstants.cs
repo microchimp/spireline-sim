@@ -133,7 +133,9 @@ public static class RunConstants
     /// (<see cref="DiscardPotionAction" />) on the card reward, deck-select, bundle-select and Crystal Sphere screens
     /// (<see cref="RunPotionUse.DiscardBeltIsOpen" />) and changes nothing else. Version 3 (D34) also lists the use
     /// actions (<see cref="UsePotionAction" />) of the AnyTime potions held, on the same four screens
-    /// (<see cref="RunPotionUse.UseBeltIsOpen" />).
+    /// (<see cref="RunPotionUse.UseBeltIsOpen" />). Version 4 (D34) changes no mask: it is byte-identical to version 3 on every
+    /// screen. The Welcome to Wongos Leave (action 3) was always on the native mask; version 4 is the setting that tells
+    /// the policy-side readers to show it (rl/run_train/engine.py `_event`), so the versions 1-3 agents keep their screens.
     /// </summary>
     public const int MaskVersion1 = 1;
 
@@ -141,7 +143,9 @@ public static class RunConstants
 
     public const int MaskVersion3 = 3;
 
-    public const int MaxMaskVersion = MaskVersion3;
+    public const int MaskVersion4 = 4;
+
+    public const int MaxMaskVersion = MaskVersion4;
     public const int MapWidth = 7;
 
     /// <summary>

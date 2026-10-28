@@ -409,3 +409,23 @@ class WongosLeaveTest(unittest.TestCase):
     def test_without_the_leave_on_the_mask_the_page_stays_a_gap(self):
         e = self._emu(legal_leave=False)
         self.assertEqual(e._pair("event", ["WELCOME_TO_WONGOS.pages.INITIAL.options.BARGAIN_BIN", self.LEAVE]), [None, None])
+
+class WongosLeaveV4Test(unittest.TestCase):
+    """Welcome to Wongos under the lockstep's mask version 4: the engine's event reader now lists Leave (action 3) when a purchase
+    is also on the page, so the page has as many options as the referee has labels (bin ..., LEAVE) and pairs by position, Leave
+    included; applying the second label takes action 3."""
+
+    BIN = "WELCOME_TO_WONGOS.pages.INITIAL.options.BARGAIN_BIN"
+    LEAVE = "WELCOME_TO_WONGOS.pages.INITIAL.options.LEAVE"
+
+    def test_the_lockstep_runs_the_emulator_at_version_four(self):
+        self.assertEqual(lockstep.MASK_VERSION, 4)
+
+    def test_the_page_as_version_four_lists_it_pairs_by_position_and_leave_steps_action_three(self):
+        e = emu([opt("event.option", 0), opt("event.option", 3)])
+        labels = [self.BIN, self.LEAVE]
+        self.assertEqual(e._pair("event", labels), [0, 1])
+        self.assertIsNone(e.apply("event", labels, 0))
+        self.assertEqual(e.applied[-1].action, 0)
+        self.assertIsNone(e.apply("event", labels, 1))
+        self.assertEqual(e.applied[-1].action, 3)

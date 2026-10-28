@@ -13,7 +13,8 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// The version of the action mask this run writes and the potion actions it accepts: <see cref="RunConstants.MaskVersion1" />
     /// (the default; the mask as it was before the versions), <see cref="RunConstants.MaskVersion2" /> (adds the potion
     /// discard on the card reward, deck-select, bundle-select and Crystal Sphere screens) or
-    /// <see cref="RunConstants.MaskVersion3" /> (also the use of the AnyTime potions there). A setting of the handle, like
+    /// <see cref="RunConstants.MaskVersion3" /> (also the use of the AnyTime potions there) or
+    /// <see cref="RunConstants.MaskVersion4" /> (the same mask as 3; the policy-side readers also show the Welcome to Wongos Leave). A setting of the handle, like
     /// <see cref="Kernel" />: <see cref="Reset" /> keeps it and <see cref="Clone" /> copies it. It changes the mask and
     /// what a step accepts, never a run's state.
     /// </summary>

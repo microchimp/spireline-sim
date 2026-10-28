@@ -51,11 +51,11 @@ class DiscardOnTheCardRewardTests(unittest.TestCase):
         mask_screens.hold_belt(e.s, *BELT)
         return e
 
-    def test_the_emulator_side_runs_at_mask_version_three(self):
-        self.assertEqual(lockstep.MASK_VERSION, 3)
+    def test_the_emulator_side_runs_at_mask_version_four(self):
+        self.assertEqual(lockstep.MASK_VERSION, 4)
         e = lockstep.EmuLock("D32LOCK0", 0, sims=4)
         try:
-            self.assertEqual(e.s.mask_version, 3)
+            self.assertEqual(e.s.mask_version, 4)
         finally:
             e.s.close()
 

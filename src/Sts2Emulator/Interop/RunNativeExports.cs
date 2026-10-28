@@ -42,7 +42,9 @@ public static class RunNativeExports
     //      re-anchors bind the anchored fight (NATIVE_KERNEL.md pieces 2-3): neither is refused any more.
     // v30: mask version 3 (Sts2Run_SetMaskVersion accepts 1..3): also the use actions of the AnyTime potions (Blood Potion,
     //      Fruit Juice, Entropic Brew) on the card reward, deck-select, bundle-select and Crystal Sphere screens (D34).
-    public const int RUN_NATIVE_API_VERSION = 30;
+    // v31: mask version 4 (Sts2Run_SetMaskVersion accepts 1..4): the same mask as version 3 on every screen. It is the setting
+    //      under which the policy-side event reader shows the Welcome to Wongos Leave (action 3, always on the native mask) (D34).
+    public const int RUN_NATIVE_API_VERSION = 31;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
