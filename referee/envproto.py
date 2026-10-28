@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import faulthandler
 import json
 import multiprocessing as mp
 import os
 import queue
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -605,11 +607,18 @@ def _row_extra(env, restarts: int, timed: _Timed | None = None) -> dict:
 
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
                 agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD",
-                recycle: int = 0) -> None:
+                recycle: int = 0, run_deadline_s: float = 0.0) -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py). `recycle` > 0 restarts the game
-    after that many runs (a long block's game process otherwise grows; 0: never)."""
+    after that many runs (a long block's game process otherwise grows; 0: never). `run_deadline_s` > 0 (the main loop's
+    --run-deadline-s): every run arms faulthandler to write the stack of all threads to `out/scratch/worker-<wid>.stack` two minutes
+    (at least 60 s) before the main loop would terminate this worker, and disarms it when the run ends: a worker that hangs in a
+    native call or a loop leaves the frame it sat in there."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
+    stack = None
+    if run_deadline_s > 0:
+        (Path(out) / "scratch").mkdir(parents=True, exist_ok=True)
+        stack = open(Path(out) / "scratch" / f"worker-{wid}.stack", "a", encoding="utf-8")
     env = None
     restarts = 0
     runs_here = 0
@@ -617,6 +626,9 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
         if stop_at and time.time() > stop_at:  # the block's time limit: no new run; a worker's seeds go in order, so the
             break  # runs done are a prefix of each worker's share and stay paired with the emulator's
         run_ix = run_ids[n_seed] if run_ids else n_seed
+        q.put({"ev": "start", "w": wid, "seed": seed, "t": time.time()})  # the main loop's run clock (RunDeadline) starts here
+        if stack is not None:
+            faulthandler.dump_traceback_later(max(60, run_deadline_s - 120), repeat=False, file=stack)
         if recycle and env is not None and runs_here >= recycle:  # a fresh game process every `recycle` runs
             q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
             env.close()
@@ -628,6 +640,8 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
             except Exception as e:  # boot failure
                 q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(e)[:300], **_row_extra(None, restarts)})
                 restarts += 1
+                if stack is not None:
+                    faulthandler.cancel_dump_traceback_later()
                 continue
         runs_here += 1
         t0 = time.time()
@@ -639,6 +653,8 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
                   "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **_fields_row(ls), **_row_extra(env, restarts, timed)}
             if m.get("stale"):
+                if stack is not None:
+                    faulthandler.cancel_dump_traceback_later()
                 q.put(ev)
                 q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
                 env.close()
@@ -655,11 +671,106 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                   "divergences": getattr(getattr(e, "lockstep", None), "log", None) and e.lockstep.log.records or []}
             env.close()  # the game is mid-run; a fresh one for the next seed
             env, restarts = None, restarts + 1
+        if stack is not None:  # the run is over (end row, or either crash branch): nothing to dump any more
+            faulthandler.cancel_dump_traceback_later()
         q.put(ev)
     if env is not None:
         q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
         env.close()
     q.put({"ev": "done", "w": wid})
+    if stack is not None:
+        stack.close()
+
+
+RUN_DEADLINE_S = 1800.0  # --run-deadline-s default: a run that has not ended this long after its worker started it is given up
+
+
+class RunDeadline:
+    """The play loop's per-worker run clock (`--run-deadline-s`; 0: off).
+
+    A worker puts a `start` event when a run begins and an `end` or `crash` event when it is over; nothing the worker does between
+    the two is bounded from outside (a call into the native library that never returns, a hung `rr.connections`), and a worker that
+    never says `done` holds the block open for ever. `seen` keeps, per worker, the seed and start time of its current run and the
+    time of its last event; `overdue` names the workers whose current run is older than the deadline; `close` gives the crash row
+    of such a worker's seed and stops listening to the worker. A worker with no run in flight (past `stop_at`, or between runs) is
+    never overdue: it ends by itself."""
+
+    def __init__(self, deadline_s: float, agent_seed: int, run_index: dict[int, dict[str, int]]):
+        self.deadline_s = float(deadline_s or 0)
+        self.agent_seed = agent_seed
+        self.run_index = run_index  # worker -> {seed: its run index in the block}, for the agent seed of a deadline row
+        self.current: dict[int, tuple[str, float]] = {}  # worker -> (seed, start time) of the run in flight
+        self.last_event: dict[int, float] = {}
+        self.closed: set[int] = set()
+
+    def seen(self, e: dict, now: float) -> bool:
+        """Note one event of a worker. False for an event of a worker that was closed: its rows are not taken."""
+        w = e["w"]
+        if w in self.closed:
+            return False
+        self.last_event[w] = now
+        if e["ev"] == "start":
+            self.current[w] = (e["seed"], float(e.get("t", now)))
+        elif e["ev"] in ("end", "crash", "done"):
+            self.current.pop(w, None)
+        return True
+
+    def overdue(self, now: float) -> list[int]:
+        if self.deadline_s <= 0:
+            return []
+        return [w for w, (_seed, t) in self.current.items() if now - t > self.deadline_s]
+
+    def close(self, w: int, now: float) -> dict:
+        """The crash row of the overdue worker's seed; the worker is closed (its later events are ignored)."""
+        seed, t = self.current.pop(w)
+        self.closed.add(w)
+        n = int(round(now - t))
+        row = {"ev": "crash", "w": w, "seed": seed, "where": "deadline", "error": f"worker deadline: no result after {n} s",
+               "s": float(n), "t_end": round(now, 1), "divergences": []}
+        ix = self.run_index.get(w, {}).get(seed)
+        if ix is not None:
+            row["agent_seed"] = [self.agent_seed, ix]  # as the worker writes it (a resume checks it)
+        return row
+
+
+STACK_LINES = 80  # the most lines of a hung worker's stack a deadline row keeps
+_STACK_FRAME = re.compile(r'^\s*File "(?P<file>.*)", line (?P<line>\d+) in (?P<func>.*?)\s*$')
+_STACK_THREAD = re.compile(r"^\s*(?:Current thread|Thread)\s+(?P<id>0x[0-9a-fA-F]+)")
+
+
+def reduce_stack(text: str, limit: int = STACK_LINES) -> list[str]:
+    """The last faulthandler dump in `text` (after the last "Timeout (" marker; the whole text without one) as a list of lines that
+    hold no path: a thread header becomes `Thread <id>`, a frame `basename:line in function`; any other line is kept only if it names
+    no directory. Over `limit` lines, each thread keeps its innermost frames so that every thread still shows (the main thread's
+    frame is the one that matters and faulthandler lists it last)."""
+    _head, mark, tail = text.rpartition("Timeout (")
+    lines = tail.splitlines()[1:] if mark else text.splitlines()  # the rest of the marker line is no stack
+    threads: list[list[str]] = []
+    for raw in lines:
+        t = _STACK_THREAD.match(raw)
+        f = _STACK_FRAME.match(raw)
+        if t:
+            threads.append([f"Thread {t.group('id')}"])
+        elif f:
+            if not threads:
+                threads.append(["Thread ?"])
+            base = re.split(r'[\\/]', f.group('file'))[-1]
+            threads[-1].append(f"{base}:{f.group('line')} in {f.group('func')}")
+        elif raw.strip() and "/" not in raw and "\\" not in raw and threads:
+            threads[-1].append(raw.strip())
+    if sum(len(t) for t in threads) > limit:
+        keep = max(1, (limit - len(threads)) // max(1, len(threads)))
+        threads = [t[:1 + keep] for t in threads]
+    return [x for t in threads for x in t][:limit]
+
+
+def read_stack_dump(path: Path) -> list[str] | None:
+    """The reduced stack of the hung worker's last faulthandler dump in `path`; None when there is no file or no dump in it."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return reduce_stack(text) or None
 
 
 class _Timed:
@@ -857,9 +968,14 @@ def play(a) -> int:
     # the time limit counts the seconds the block has already run, so an interrupted block is not given its hours again
     stop_at = time.time() + a.stop_after_h * 3600 - wall_before if a.stop_after_h else 0.0
     live = open(out / "runs.jsonl", "a" if resume else "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
+    wids = [w for w in range(a.procs) if not resume or seeds[w::a.procs]]
+    deadline_s = getattr(a, "run_deadline_s", RUN_DEADLINE_S)
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0)))
-             for w in range(a.procs) if not resume or seeds[w::a.procs]]
+                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0), deadline_s))
+             for w in wids]
+    proc_of = dict(zip(wids, procs))
+    watch = RunDeadline(deadline_s, agent_seed,
+                        {w: dict(zip(seeds[w::a.procs], run_ids[w::a.procs])) for w in wids})
     t0 = time.time()
     beat = t0
     for p in procs:
@@ -870,16 +986,33 @@ def play(a) -> int:
         if resume and time.time() - beat >= 30:  # the seconds run so far, so a stop leaves the block's wall behind
             beat = time.time()
             write_wall(out, wall_before + beat - t0)
+        for w in watch.overdue(time.time()):  # a run that outlived --run-deadline-s: its worker is stopped, its seed has a crash row
+            row = watch.close(w, time.time())
+            proc_of[w].terminate()  # through its own Process object, never by name or pid
+            proc_of[w].join(10)
+            stack = read_stack_dump(out / "scratch" / f"worker-{w}.stack")  # the worker's own faulthandler dump (play_worker)
+            if stack:  # the scratch folder is removed after the block, so the frame goes into the row (no directory in it)
+                row["stack"] = stack
+            events.append(row)
+            live.write(json.dumps(row) + chr(10))
+            live.flush()
+            print(f"worker {w}: {row['error']} (seed {row['seed']}); worker terminated, counted as done", flush=True)
+            done += 1
+        if done >= len(procs):
+            break
         try:
             e = q.get(timeout=5)
         except queue.Empty:
             if not any(p.is_alive() for p in procs):
                 break
             continue
-        if e["ev"] == "done":
-            done += 1
-        elif e["ev"] == "net":
+        fresh = watch.seen(e, time.time())
+        if e["ev"] == "net":
             nets |= set(e["conns"])
+        elif not fresh or e["ev"] == "start":
+            continue  # a closed worker's late row, or the run clock's own event
+        elif e["ev"] == "done":
+            done += 1
         else:
             events.append(e)
             live.write(json.dumps(e) + chr(10))
@@ -973,6 +1106,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--buff", type=int, default=0, help="record/replay: buff_max_hp, so random play reaches later floors")
     ap.add_argument("--agent", choices=["play"], default="play", help="play: lockstep PLAY agent (mode play)")
     ap.add_argument("--stop-after-h", type=float, default=0.0, help="play: start no new run after this many hours (0: no limit)")
+    ap.add_argument("--run-deadline-s", type=float, default=RUN_DEADLINE_S,
+                    help="play: a worker whose current run has no result this many seconds after it began is terminated and its seed gets a "
+                         "crash row (where: deadline); the block closes with the other workers' rows (0: off)")
     ap.add_argument("--seeds-file", default=None, help="play: JSON seed block (default: A1S0000...)")
     ap.add_argument("--only", default=None, help="play: only these seeds of --seeds-file (comma-separated), each keeping its place in the full file as its run index")
     ap.add_argument("--resume", action="store_true",

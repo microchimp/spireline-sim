@@ -20,7 +20,8 @@ first unfinished step if main has not moved, else closed with done.rc 3.
 The runner makes no AI calls and no network use. It lowers its own priority to BelowNormal (children inherit
 it), lives in a Job Object with KILL_ON_JOB_CLOSE (children die with it, however it ends), and gives the machine
 back on user input, on sustained load from other processes, on LAB/PAUSE or backlog/main.lock, and when disk
-runs short (tools/lab/guards.py). Exit 0 when it stopped for any of those or finished a --trial / --once; 1 on
+runs short (tools/lab/guards.py). backlog/main.lock stops only a running presort (the one job that touches git
+state) and holds every new job; any other running job carries on under it. Exit 0 when it stopped for any of those or finished a --trial / --once; 1 on
 a crash; 2 on bad arguments.
 """
 
@@ -314,6 +315,8 @@ class Runner:
         self.code_digest0 = code_digest()  # the lab sources this process loaded; a later change on disk is not in this process
         self.code_stale_logged = ""
         self._mark = (0.0, 0.0)  # (cpu seconds, clock) at the last accounting of the running job
+        self.lock_stops = True  # main.lock stops what runs now: only a presort (set by execute); between jobs it holds every pick
+        self._lock_episode = False  # a "main.lock held: ... continues" line was written for the lock that is up now
 
     # ---- plumbing
 
@@ -339,6 +342,8 @@ class Runner:
         where = f"job={self.current[0]} step={self.current[1]}" if self.current else "job=-"
         main = (self.state.get("tree_sha") or "-")[:7]
         rd = self.guards.readings
+        if rd.get("lock_ignored"):
+            extra = (extra + " " if extra else "") + "main.lock=held(job continues)"
         if rd.get("load") is not None:
             extra = (extra + " " if extra else "") + f"other_cpu={rd['load'][0]}%/{rd['load'][1]}s"
         if self.current and self.current_strategy:
@@ -385,7 +390,16 @@ class Runner:
     def poll(self) -> guards.Verdict:
         if self.stop_signal:
             return guards.Verdict("signal", self.stop_signal, leave=True)
-        return self.guards.poll()
+        v = self.guards.poll(self.lock_stops)
+        if self.guards.readings.get("lock_ignored"):
+            if not self._lock_episode:  # once per lock episode, at the first poll that sees it
+                self._lock_episode = True
+                job = self.current[0] if self.current else "-"
+                self.log(f"main.lock held: {job} continues (only a presort stops for it)")
+                self.status("running", self.current[1] if self.current else "")
+        else:
+            self._lock_episode = False
+        return v
 
     # ---- choosing the next job
 
@@ -660,9 +674,11 @@ class Runner:
         """Run the job's steps in order; a verdict that makes the runner leave comes back (the job stays open)."""
         self.current_strategy = (run.data.get("params") or {}).get("strategy")
         self._mark = (self.cpu_secs(), self.clock())
+        self.lock_stops = run.job == "presort"  # the landing lock guards git state only the presort touches
         try:
             return self._execute(run)
         finally:
+            self.lock_stops = True
             self.release_nightly_consent(run.job)  # however the job stopped (finished, interrupted, an exception): its games are gone
             if not (run.dir / "done.rc").exists():  # stopped, not finished: what it used so far is kept for the next stretch
                 self.account(run)
