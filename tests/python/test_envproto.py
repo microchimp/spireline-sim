@@ -228,7 +228,7 @@ class PlayResumeTest(unittest.TestCase):
 
         test = self
 
-        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle):
+        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0):
             if not test.calls and (Path(out) / "divergences.jsonl").is_file():  # what the files hold while the first worker plays
                 runs = [json.loads(x) for x in (Path(out) / "runs.jsonl").read_text(encoding="utf-8").splitlines()]
                 divs = (Path(out) / "divergences.jsonl").read_text(encoding="utf-8").splitlines()
@@ -378,7 +378,7 @@ class RunRowTest(unittest.TestCase):
     """L3: the end and crash rows of a play worker say when the run ended, how long its game process took to boot, how often the worker
     has restarted its game, and the longest run of identical consecutive (screen kind, action) pairs (a stalled run-layer loop)."""
 
-    def play(self, scripts, boots=(1.5, 2.5), recycle=0):
+    def play(self, scripts, boots=(1.5, 2.5), recycle=0, deadline=0.0):
         """Run play_worker over the seeds of `scripts` ({seed: ([(screen kind, action)...], exception or None)}) with a fake game
         process and a fake lockstep; the end and crash rows it queues."""
         import queue as queue_mod
@@ -423,10 +423,24 @@ class RunRowTest(unittest.TestCase):
         q = queue_mod.Queue()
         lock = types.ModuleType("lockstep")
         lock.play_run = play_run
+        self.fh = []  # what the worker asked of faulthandler, in order
+
+        class FakeFaulthandler:
+            @staticmethod
+            def dump_traceback_later(timeout, repeat=False, file=None, exit=False):
+                self.fh.append(("arm", timeout, repeat, file))
+
+            @staticmethod
+            def cancel_dump_traceback_later():
+                self.fh.append(("cancel",))
+
+        self.out_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.out_dir, True)
         self.t0 = time.time()
         with mock.patch.dict(sys.modules, {"lockstep": lock}), mock.patch.object(envproto, "GameEnv", FakeEnv), \
+                mock.patch.object(envproto, "faulthandler", FakeFaulthandler), \
                 mock.patch.object(envproto, "below_normal_self", lambda: None), mock.patch.object(envproto.rr, "connections", lambda pid: []):
-            envproto.play_worker(0, "G", tempfile.mkdtemp(), list(scripts), 1, q, 1, 10, 7, None, 0.0, "IRONCLAD", recycle)
+            envproto.play_worker(0, "G", str(self.out_dir), list(scripts), 1, q, 1, 10, 7, None, 0.0, "IRONCLAD", recycle, deadline)
         self.t1 = time.time()
         rows = []
         while not q.empty():
@@ -465,6 +479,31 @@ class RunRowTest(unittest.TestCase):
             if r["ev"] == "start":
                 self.assertEqual(0, r["w"])
                 self.assertTrue(self.t0 - 1 <= r["t"] <= self.t1 + 1)
+
+    def test_a_run_arms_a_stack_dump_into_the_workers_stack_file_and_cancels_it_when_it_ends(self):
+        """N5: faulthandler writes all threads' stacks to out/scratch/worker-<wid>.stack two minutes before the deadline."""
+        self.play({"S1": ([("map", 0)], None)}, deadline=1800.0)
+        self.assertEqual(["arm", "cancel"], [c[0] for c in self.fh])  # once each
+        _kind, timeout, repeat, f = self.fh[0]
+        self.assertEqual((1680.0, False), (timeout, repeat))
+        self.assertEqual(self.out_dir / "scratch" / "worker-0.stack", Path(f.name))
+        self.assertEqual("a", f.mode)
+
+    def test_every_run_ends_with_a_cancel_the_normal_end_and_the_crash_branches_alike(self):
+        scripts = {"S1": ([("map", 0)], None), "S2": ([("map", 0)], RuntimeError("boom")), "S3": ([("map", 0)], envproto.GameDied("gone")),
+                   "S4": ([("map", 0)], None)}
+        self.play(scripts, boots=(1.5, 2.5, 3.5, 4.5), deadline=1800.0)
+        self.assertEqual(["arm", "cancel"] * 4, [c[0] for c in self.fh])
+        self.assertEqual({self.fh[0][3]}, {c[3] for c in self.fh if c[0] == "arm"})  # one file for the worker, opened once
+
+    def test_the_dump_comes_at_least_60_s_into_the_run(self):
+        self.play({"S1": ([("map", 0)], None)}, deadline=100.0)
+        self.assertEqual(60, self.fh[0][1])
+
+    def test_with_the_deadline_off_nothing_is_armed_and_no_stack_file_is_made(self):
+        self.play({"S1": ([("map", 0)], None)}, deadline=0.0)
+        self.assertEqual([], self.fh)
+        self.assertFalse((self.out_dir / "scratch" / "worker-0.stack").exists())
 
     def test_a_boot_failure_row_has_the_time_and_the_restart_count(self):
         rows = self.play({"S1": ([], None)}, boots=(None,))
@@ -574,6 +613,7 @@ class RunDeadlineTest(unittest.TestCase):
         self.terminated: list[int] = []
         self.release = collections.defaultdict(threading.Event)
         self.live_at_join = ""
+        self.deadline_seen: list[float] = []
 
     def row(self, seed, ix, w):
         return {"ev": "end", "w": w, "seed": seed, "character": "IRONCLAD", "end": "death", "floor": 10 + ix, "asked": 5, "s": 2.0,
@@ -610,8 +650,9 @@ class RunDeadlineTest(unittest.TestCase):
         test = self
         behave = behave or (lambda wid, seeds, run_ids, q: test.normal(wid, seeds, run_ids, q))
 
-        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle):
+        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0):
             test.handed.append((wid, list(seeds)))
+            test.deadline_seen.append(run_deadline_s)
             behave(wid, list(seeds), list(run_ids), q)
 
         class FakeProc:
@@ -671,6 +712,7 @@ class RunDeadlineTest(unittest.TestCase):
             self.normal(wid, seeds, run_ids, q, start_age=10.0, pause=0.4 if wid == 0 else 0.0)
 
         summary = self.play(slow, deadline=100.0)
+        self.assertEqual([100.0, 100.0], self.deadline_seen)  # each worker is handed the deadline (it arms its stack dump from it)
         self.assertEqual([], self.terminated)
         self.assertEqual((6, 0), (summary["runs"], summary["crashes"]))
         self.assertEqual({"end"}, {r["ev"] for r in self.final_rows()})  # no start event is a row

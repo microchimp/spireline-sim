@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import faulthandler
 import json
 import multiprocessing as mp
 import os
@@ -605,11 +606,18 @@ def _row_extra(env, restarts: int, timed: _Timed | None = None) -> dict:
 
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
                 agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD",
-                recycle: int = 0) -> None:
+                recycle: int = 0, run_deadline_s: float = 0.0) -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py). `recycle` > 0 restarts the game
-    after that many runs (a long block's game process otherwise grows; 0: never)."""
+    after that many runs (a long block's game process otherwise grows; 0: never). `run_deadline_s` > 0 (the main loop's
+    --run-deadline-s): every run arms faulthandler to write the stack of all threads to `out/scratch/worker-<wid>.stack` two minutes
+    (at least 60 s) before the main loop would terminate this worker, and disarms it when the run ends: a worker that hangs in a
+    native call or a loop leaves the frame it sat in there."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
+    stack = None
+    if run_deadline_s > 0:
+        (Path(out) / "scratch").mkdir(parents=True, exist_ok=True)
+        stack = open(Path(out) / "scratch" / f"worker-{wid}.stack", "a", encoding="utf-8")
     env = None
     restarts = 0
     runs_here = 0
@@ -618,6 +626,8 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
             break  # runs done are a prefix of each worker's share and stay paired with the emulator's
         run_ix = run_ids[n_seed] if run_ids else n_seed
         q.put({"ev": "start", "w": wid, "seed": seed, "t": time.time()})  # the main loop's run clock (RunDeadline) starts here
+        if stack is not None:
+            faulthandler.dump_traceback_later(max(60, run_deadline_s - 120), repeat=False, file=stack)
         if recycle and env is not None and runs_here >= recycle:  # a fresh game process every `recycle` runs
             q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
             env.close()
@@ -629,6 +639,8 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
             except Exception as e:  # boot failure
                 q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(e)[:300], **_row_extra(None, restarts)})
                 restarts += 1
+                if stack is not None:
+                    faulthandler.cancel_dump_traceback_later()
                 continue
         runs_here += 1
         t0 = time.time()
@@ -640,6 +652,8 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
                   "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **_fields_row(ls), **_row_extra(env, restarts, timed)}
             if m.get("stale"):
+                if stack is not None:
+                    faulthandler.cancel_dump_traceback_later()
                 q.put(ev)
                 q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
                 env.close()
@@ -656,11 +670,15 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                   "divergences": getattr(getattr(e, "lockstep", None), "log", None) and e.lockstep.log.records or []}
             env.close()  # the game is mid-run; a fresh one for the next seed
             env, restarts = None, restarts + 1
+        if stack is not None:  # the run is over (end row, or either crash branch): nothing to dump any more
+            faulthandler.cancel_dump_traceback_later()
         q.put(ev)
     if env is not None:
         q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
         env.close()
     q.put({"ev": "done", "w": wid})
+    if stack is not None:
+        stack.close()
 
 
 RUN_DEADLINE_S = 1800.0  # --run-deadline-s default: a run that has not ended this long after its worker started it is given up
@@ -910,11 +928,12 @@ def play(a) -> int:
     stop_at = time.time() + a.stop_after_h * 3600 - wall_before if a.stop_after_h else 0.0
     live = open(out / "runs.jsonl", "a" if resume else "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     wids = [w for w in range(a.procs) if not resume or seeds[w::a.procs]]
+    deadline_s = getattr(a, "run_deadline_s", RUN_DEADLINE_S)
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0)))
+                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0), deadline_s))
              for w in wids]
     proc_of = dict(zip(wids, procs))
-    watch = RunDeadline(getattr(a, "run_deadline_s", RUN_DEADLINE_S), agent_seed,
+    watch = RunDeadline(deadline_s, agent_seed,
                         {w: dict(zip(seeds[w::a.procs], run_ids[w::a.procs])) for w in wids})
     t0 = time.time()
     beat = t0
