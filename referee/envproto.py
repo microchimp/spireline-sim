@@ -607,18 +607,29 @@ def _row_extra(env, restarts: int, timed: _Timed | None = None) -> dict:
 
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
                 agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD",
-                recycle: int = 0, run_deadline_s: float = 0.0) -> None:
+                recycle: int = 0, run_deadline_s: float = 0.0, wrapup_deadline_s: float = 0.0) -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py). `recycle` > 0 restarts the game
     after that many runs (a long block's game process otherwise grows; 0: never). `run_deadline_s` > 0 (the main loop's
     --run-deadline-s): every run arms faulthandler to write the stack of all threads to `out/scratch/worker-<wid>.stack` two minutes
     (at least 60 s) before the main loop would terminate this worker, and disarms it when the run ends: a worker that hangs in a
-    native call or a loop leaves the frame it sat in there."""
+    native call or a loop leaves the frame it sat in there. `wrapup_deadline_s` > 0 (--wrapup-deadline-s): the same for the wrap-up
+    (a `wrapup` event starts the main loop's clock for it; the dump comes at `max(60, limit - 60)` s into it into the same file and
+    is cancelled once `done` is put): the stale path's cleanup after a run and everything after the last run, which no run clock
+    covers."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
     stack = None
-    if run_deadline_s > 0:
+    if run_deadline_s > 0 or wrapup_deadline_s > 0:
         (Path(out) / "scratch").mkdir(parents=True, exist_ok=True)
         stack = open(Path(out) / "scratch" / f"worker-{wid}.stack", "a", encoding="utf-8")
+    arm_run = stack is not None and run_deadline_s > 0
+    arm_wrap = stack is not None and wrapup_deadline_s > 0
+
+    def wrap_begin():  # the rest is cleanup (game close, connection listing): the main loop's wrap-up clock starts (RunDeadline)
+        q.put({"ev": "wrapup", "w": wid, "t": time.time()})
+        if arm_wrap:
+            faulthandler.dump_traceback_later(max(60, wrapup_deadline_s - 60), repeat=False, file=stack)
+
     env = None
     restarts = 0
     runs_here = 0
@@ -627,7 +638,7 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
             break  # runs done are a prefix of each worker's share and stay paired with the emulator's
         run_ix = run_ids[n_seed] if run_ids else n_seed
         q.put({"ev": "start", "w": wid, "seed": seed, "t": time.time()})  # the main loop's run clock (RunDeadline) starts here
-        if stack is not None:
+        if arm_run:
             faulthandler.dump_traceback_later(max(60, run_deadline_s - 120), repeat=False, file=stack)
         if recycle and env is not None and runs_here >= recycle:  # a fresh game process every `recycle` runs
             q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
@@ -640,7 +651,7 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
             except Exception as e:  # boot failure
                 q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(e)[:300], **_row_extra(None, restarts)})
                 restarts += 1
-                if stack is not None:
+                if arm_run:
                     faulthandler.cancel_dump_traceback_later()
                 continue
         runs_here += 1
@@ -653,12 +664,15 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
                   "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **_fields_row(ls), **_row_extra(env, restarts, timed)}
             if m.get("stale"):
-                if stack is not None:
+                if arm_run:
                     faulthandler.cancel_dump_traceback_later()
                 q.put(ev)
+                wrap_begin()  # its cleanup is unclocked otherwise (no run is in flight); the next run's start event ends this clock
                 q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
                 env.close()
                 env, restarts = None, restarts + 1
+                if arm_wrap:
+                    faulthandler.cancel_dump_traceback_later()
                 continue
         except (TimeoutError, GameDied, ValueError) as e:
             ev = {"ev": "crash", "w": wid, "seed": seed, "error": f"{type(e).__name__}: {e}"[:300], "s": round(time.time() - t0, 1), "agent_seed": [agent_seed, run_ix], **_row_extra(env, restarts, timed),
@@ -671,18 +685,22 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
                   "divergences": getattr(getattr(e, "lockstep", None), "log", None) and e.lockstep.log.records or []}
             env.close()  # the game is mid-run; a fresh one for the next seed
             env, restarts = None, restarts + 1
-        if stack is not None:  # the run is over (end row, or either crash branch): nothing to dump any more
+        if arm_run:  # the run is over (end row, or either crash branch): nothing to dump any more
             faulthandler.cancel_dump_traceback_later()
         q.put(ev)
+    wrap_begin()  # every result is put: what is left (the final connection listing, the game close, the done) is the wrap-up
     if env is not None:
         q.put({"ev": "net", "w": wid, "conns": sorted(rr.connections(env.pid))})
         env.close()
     q.put({"ev": "done", "w": wid})
+    if arm_wrap:
+        faulthandler.cancel_dump_traceback_later()
     if stack is not None:
         stack.close()
 
 
 RUN_DEADLINE_S = 1800.0  # --run-deadline-s default: a run that has not ended this long after its worker started it is given up
+WRAPUP_DEADLINE_S = 300.0  # --wrapup-deadline-s default: a worker that said `wrapup` and not `done` this long after is stopped
 
 
 class RunDeadline:
@@ -693,10 +711,17 @@ class RunDeadline:
     never says `done` holds the block open for ever. `seen` keeps, per worker, the seed and start time of its current run and the
     time of its last event; `overdue` names the workers whose current run is older than the deadline; `close` gives the crash row
     of such a worker's seed and stops listening to the worker. A worker with no run in flight (past `stop_at`, or between runs) is
-    never overdue: it ends by itself."""
+    never overdue: it ends by itself.
 
-    def __init__(self, deadline_s: float, agent_seed: int, run_index: dict[int, dict[str, int]]):
+    The wrap-up has its own clock (`wrapup_s`, `--wrapup-deadline-s`; 0: off): a worker puts `wrapup` when its last run's result is
+    put (and before the cleanup of a stale run), then `done`; `overdue_wrapup` names the workers whose `wrapup` is older than the
+    limit with no `done` (a new `start` ends the clock: the worker went on to another run). `close_wrapup` closes such a worker
+    without a crash row: its runs all have rows."""
+
+    def __init__(self, deadline_s: float, agent_seed: int, run_index: dict[int, dict[str, int]], wrapup_s: float = 0.0):
         self.deadline_s = float(deadline_s or 0)
+        self.wrapup_s = float(wrapup_s or 0)
+        self.wrapping: dict[int, float] = {}  # worker -> time of its `wrapup` event, until its next start or its done
         self.agent_seed = agent_seed
         self.run_index = run_index  # worker -> {seed: its run index in the block}, for the agent seed of a deadline row
         self.current: dict[int, tuple[str, float]] = {}  # worker -> (seed, start time) of the run in flight
@@ -711,14 +736,30 @@ class RunDeadline:
         self.last_event[w] = now
         if e["ev"] == "start":
             self.current[w] = (e["seed"], float(e.get("t", now)))
+            self.wrapping.pop(w, None)
+        elif e["ev"] == "wrapup":
+            self.wrapping[w] = float(e.get("t", now))
         elif e["ev"] in ("end", "crash", "done"):
             self.current.pop(w, None)
+            if e["ev"] == "done":
+                self.wrapping.pop(w, None)
         return True
 
     def overdue(self, now: float) -> list[int]:
         if self.deadline_s <= 0:
             return []
         return [w for w, (_seed, t) in self.current.items() if now - t > self.deadline_s]
+
+    def overdue_wrapup(self, now: float) -> list[int]:
+        if self.wrapup_s <= 0:
+            return []
+        return [w for w, t in self.wrapping.items() if now - t > self.wrapup_s]
+
+    def close_wrapup(self, w: int, now: float) -> int:
+        """Stop listening to a worker stuck in its wrap-up; the seconds it was in it (no row: every run of it has one)."""
+        t = self.wrapping.pop(w)
+        self.closed.add(w)
+        return int(round(now - t))
 
     def close(self, w: int, now: float) -> dict:
         """The crash row of the overdue worker's seed; the worker is closed (its later events are ignored)."""
@@ -970,17 +1011,24 @@ def play(a) -> int:
     live = open(out / "runs.jsonl", "a" if resume else "w", encoding="utf-8")  # one line per finished run as it ends; rewritten whole at the end
     wids = [w for w in range(a.procs) if not resume or seeds[w::a.procs]]
     deadline_s = getattr(a, "run_deadline_s", RUN_DEADLINE_S)
+    wrapup_s = getattr(a, "wrapup_deadline_s", WRAPUP_DEADLINE_S)
     procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0), deadline_s))
+                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0), deadline_s, wrapup_s))
              for w in wids]
     proc_of = dict(zip(wids, procs))
     watch = RunDeadline(deadline_s, agent_seed,
-                        {w: dict(zip(seeds[w::a.procs], run_ids[w::a.procs])) for w in wids})
+                        {w: dict(zip(seeds[w::a.procs], run_ids[w::a.procs])) for w in wids}, wrapup_s)
     t0 = time.time()
     beat = t0
     for p in procs:
         p.start()
     events, done, nets = list(held), 0, set()
+    wrapup_terminated = 0
+
+    def stop(w):  # the one way a stuck worker is stopped: through its own Process object, never by name or pid
+        proc_of[w].terminate()
+        proc_of[w].join(10)
+
     sampler = _start_sampler(a, out, events, resume)
     while done < len(procs):
         if resume and time.time() - beat >= 30:  # the seconds run so far, so a stop leaves the block's wall behind
@@ -988,8 +1036,7 @@ def play(a) -> int:
             write_wall(out, wall_before + beat - t0)
         for w in watch.overdue(time.time()):  # a run that outlived --run-deadline-s: its worker is stopped, its seed has a crash row
             row = watch.close(w, time.time())
-            proc_of[w].terminate()  # through its own Process object, never by name or pid
-            proc_of[w].join(10)
+            stop(w)
             stack = read_stack_dump(out / "scratch" / f"worker-{w}.stack")  # the worker's own faulthandler dump (play_worker)
             if stack:  # the scratch folder is removed after the block, so the frame goes into the row (no directory in it)
                 row["stack"] = stack
@@ -997,6 +1044,12 @@ def play(a) -> int:
             live.write(json.dumps(row) + chr(10))
             live.flush()
             print(f"worker {w}: {row['error']} (seed {row['seed']}); worker terminated, counted as done", flush=True)
+            done += 1
+        for w in watch.overdue_wrapup(time.time()):  # a worker in its wrap-up past --wrapup-deadline-s: stopped, no row (its runs have theirs)
+            n = watch.close_wrapup(w, time.time())
+            stop(w)
+            wrapup_terminated += 1
+            print(f"worker {w} wrap-up deadline after {n} s: terminated", file=sys.stderr, flush=True)
             done += 1
         if done >= len(procs):
             break
@@ -1009,8 +1062,8 @@ def play(a) -> int:
         fresh = watch.seen(e, time.time())
         if e["ev"] == "net":
             nets |= set(e["conns"])
-        elif not fresh or e["ev"] == "start":
-            continue  # a closed worker's late row, or the run clock's own event
+        elif not fresh or e["ev"] in ("start", "wrapup"):
+            continue  # a closed worker's late row, or the run and wrap-up clocks' own events
         elif e["ev"] == "done":
             done += 1
         else:
@@ -1033,7 +1086,7 @@ def play(a) -> int:
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
-    summary = {"agent_seed": agent_seed, "character": a.character, "engine": getattr(a, "engine", "old"), "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+    summary = {"agent_seed": agent_seed, "character": a.character, "engine": getattr(a, "engine", "old"), "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wrapup_terminated": wrapup_terminated, "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / max(wall, 1e-9), 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -1109,6 +1162,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--run-deadline-s", type=float, default=RUN_DEADLINE_S,
                     help="play: a worker whose current run has no result this many seconds after it began is terminated and its seed gets a "
                          "crash row (where: deadline); the block closes with the other workers' rows (0: off)")
+    ap.add_argument("--wrapup-deadline-s", type=float, default=WRAPUP_DEADLINE_S,
+                    help="play: a worker that has put its last result (event wrapup) and has not said done this many seconds later is "
+                         "terminated: no crash row (its runs have theirs), one stderr line, counted as wrapup_terminated in the summary (0: off)")
     ap.add_argument("--seeds-file", default=None, help="play: JSON seed block (default: A1S0000...)")
     ap.add_argument("--only", default=None, help="play: only these seeds of --seeds-file (comma-separated), each keeping its place in the full file as its run index")
     ap.add_argument("--resume", action="store_true",
