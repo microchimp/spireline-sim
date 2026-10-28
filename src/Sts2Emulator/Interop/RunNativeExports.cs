@@ -42,7 +42,11 @@ public static class RunNativeExports
     //      re-anchors bind the anchored fight (NATIVE_KERNEL.md pieces 2-3): neither is refused any more.
     // v30: mask version 3 (Sts2Run_SetMaskVersion accepts 1..3): also the use actions of the AnyTime potions (Blood Potion,
     //      Fruit Juice, Entropic Brew) on the card reward, deck-select, bundle-select and Crystal Sphere screens (D34).
-    public const int RUN_NATIVE_API_VERSION = 30;
+    // v31: taken by the Wongos leave change (w5/c7-wongos-leave), which lands in the same gate as v32.
+    // v32: Sts2Run_DebugSetPlayerEx, Sts2Run_DebugSetPlayer with two more lists: Mad Science's Tinker Time type and rider
+    //      per card, and (relic id, counter) pairs. The lockstep's re-anchor passes the game's per-card and per-relic state
+    //      (referee/lockstep.py, the driver's anchor_state). Sts2Run_DebugSetPlayer itself is unchanged.
+    public const int RUN_NATIVE_API_VERSION = 32;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -685,6 +689,50 @@ public static class RunNativeExports
         int potionLen,
         int maxPotionSlots,
         int* obsBuf
+    ) =>
+        Sts2Run_DebugSetPlayerEx(
+            handle,
+            hp,
+            maxHp,
+            gold,
+            cards,
+            cardInts,
+            relics,
+            relicLen,
+            potions,
+            potionLen,
+            maxPotionSlots,
+            null,
+            -1,
+            null,
+            -1,
+            obsBuf
+        );
+
+    /// <summary>
+    /// <see cref="Sts2Run_DebugSetPlayer" /> with the game's per-card and per-relic state the four numbers a card cannot
+    /// say: <paramref name="cardTinker" /> is two numbers a card (Mad Science's Tinker Time type and rider, the game's enum
+    /// values) in the order of <paramref name="cards" />, and <paramref name="relicCounters" /> is (relic id, counter) pairs
+    /// for held relics, put on the run's copy and the open fight's. A negative length leaves that part out
+    /// (<see cref="RunEngine.DebugSetPlayer" />).
+    /// </summary>
+    public static unsafe int Sts2Run_DebugSetPlayerEx(
+        int handle,
+        int hp,
+        int maxHp,
+        int gold,
+        int* cards,
+        int cardInts,
+        int* relics,
+        int relicLen,
+        int* potions,
+        int potionLen,
+        int maxPotionSlots,
+        int* cardTinker,
+        int cardTinkerLen,
+        int* relicCounters,
+        int relicCounterLen,
+        int* obsBuf
     )
     {
         if (!TryGet(handle, out var run))
@@ -699,7 +747,9 @@ public static class RunNativeExports
             cardInts < 0 ? null : new ReadOnlySpan<int>(cards, cardInts).ToArray(),
             relicLen < 0 ? null : new ReadOnlySpan<int>(relics, relicLen).ToArray(),
             potionLen < 0 ? null : new ReadOnlySpan<int>(potions, potionLen).ToArray(),
-            maxPotionSlots
+            maxPotionSlots,
+            cardTinkerLen < 0 ? null : new ReadOnlySpan<int>(cardTinker, cardTinkerLen).ToArray(),
+            relicCounterLen < 0 ? null : new ReadOnlySpan<int>(relicCounters, relicCounterLen).ToArray()
         );
         run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
         return 0;

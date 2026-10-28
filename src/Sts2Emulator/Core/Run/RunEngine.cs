@@ -1875,7 +1875,13 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// totals already include every one. A relic the run already holds keeps its
     /// <see cref="RelicInstance.Counter" />. A negative scalar or a null list leaves that
     /// holding as it is. <paramref name="cards" /> is four numbers a card: id, upgraded,
-    /// enchantment, enchantment amount.
+    /// enchantment, enchantment amount. <paramref name="cardTinker" /> is two numbers a card, in
+    /// the same order as <paramref name="cards" />: Mad Science's Tinker Time type and rider as the
+    /// GAME's enum values (see <see cref="GameCardType" />); without it (or past its end) a card
+    /// has none. <paramref name="relicCounters" /> is (relic id, counter) pairs: each names a held
+    /// relic and puts its <see cref="RelicInstance.Counter" /> on the run's copy and, while a
+    /// fight is open, on the fight's copy too (the game has one relic object for both); a relic
+    /// not held is skipped. It applies after the relic list, so it reaches a relic new to the run.
     /// </remarks>
     public void DebugSetPlayer(
         int hp,
@@ -1884,7 +1890,9 @@ public sealed class RunEngine : Core2.ICombatEndHost
         int[]? cards,
         int[]? relics,
         int[]? potions,
-        int maxPotionSlots = -1
+        int maxPotionSlots = -1,
+        int[]? cardTinker = null,
+        int[]? relicCounters = null
     )
     {
         if (maxHp >= 0)
@@ -1905,14 +1913,17 @@ public sealed class RunEngine : Core2.ICombatEndHost
         if (cards is not null)
         {
             State.Deck.Clear();
-            for (int i = 0; i + 3 < cards.Length; i += 4)
+            for (int i = 0, card = 0; i + 3 < cards.Length; i += 4, card++)
             {
+                bool tinkered = cardTinker is not null && 2 * card + 1 < cardTinker.Length;
                 State.Deck.Add(
                     new CardInstance(
                         cards[i],
                         cards[i + 1] != 0,
                         Enchantment: (Enchantment)cards[i + 2],
-                        EnchantAmount: cards[i + 3]
+                        EnchantAmount: cards[i + 3],
+                        TinkerType: tinkered ? GameCardType(cardTinker![2 * card]) : CardType.None,
+                        TinkerRider: tinkered ? GameTinkerRider(cardTinker![2 * card + 1]) : TinkerRider.None
                     )
                 );
             }
@@ -1937,6 +1948,25 @@ public sealed class RunEngine : Core2.ICombatEndHost
             }
         }
 
+        for (int i = 0; relicCounters is not null && i + 1 < relicCounters.Length; i += 2)
+        {
+            int relicId = relicCounters[i], counter = relicCounters[i + 1];
+            int held = State.Relics.FindIndex(relic => relic.DefId == relicId);
+            if (held >= 0)
+            {
+                State.Relics[held] = State.Relics[held] with { Counter = counter };
+            }
+
+            int inFight = State.ActiveCombat?.Relics.FindIndex(relic => relic.DefId == relicId) ?? -1;
+            if (inFight >= 0)
+            {
+                State.ActiveCombat!.Relics[inFight] = State.ActiveCombat.Relics[inFight] with
+                {
+                    Counter = counter,
+                };
+            }
+        }
+
         if (maxPotionSlots >= 0)
         {
             State.MaxPotionSlots = Math.Min(maxPotionSlots, State.PotionSlots.Length);
@@ -1951,6 +1981,28 @@ public sealed class RunEngine : Core2.ICombatEndHost
             }
         }
     }
+
+    private static readonly CardType[] GameCardTypes =
+    [
+        CardType.None,
+        CardType.Attack,
+        CardType.Skill,
+        CardType.Power,
+        CardType.Status,
+        CardType.Curse,
+        CardType.Quest,
+    ];
+
+    /// <summary>
+    /// The game's <c>CardType</c> enum value (None, Attack, Skill, Power, Status, Curse, Quest from 0) as the
+    /// emulator's: the two enums do not share ordinals. Mad Science's unchosen type (-1) and anything out of range is None.
+    /// </summary>
+    public static CardType GameCardType(int value) =>
+        value >= 0 && value < GameCardTypes.Length ? GameCardTypes[value] : CardType.None;
+
+    /// <summary>The game's Tinker Time rider value as the emulator's (the same order); out of range is None.</summary>
+    public static TinkerRider GameTinkerRider(int value) =>
+        Enum.IsDefined((TinkerRider)value) ? (TinkerRider)value : TinkerRider.None;
 
     public int ActiveEncounterId => State.ActiveCombat?.EncounterId ?? -1;
 

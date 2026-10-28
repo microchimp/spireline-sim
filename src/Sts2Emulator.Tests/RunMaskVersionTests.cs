@@ -345,7 +345,7 @@ public class RunMaskVersionTests
             var mask = new int[RunConstants.MaxActions];
             run.WriteActionMask(mask);
             Assert.NotEqual(0, mask[RunConstants.DiscardPotionAction]);
-            Assert.Equal(30, RunNativeExports.RUN_NATIVE_API_VERSION);
+            Assert.Equal(32, RunNativeExports.RUN_NATIVE_API_VERSION);
 
             // version 3: the reason for a use there follows the version too
             run.State.PotionSlots[1] = RunNonCombatEffects.NamedPotion("BloodPotion");

@@ -1657,6 +1657,44 @@ public static class NativeExports
             obsBuf
         );
 
+    [UnmanagedCallersOnly(EntryPoint = "Sts2Run_DebugSetPlayerEx")]
+    public static unsafe int Sts2Run_DebugSetPlayerEx(
+        int handle,
+        int hp,
+        int maxHp,
+        int gold,
+        int* cards,
+        int cardInts,
+        int* relics,
+        int relicLen,
+        int* potions,
+        int potionLen,
+        int maxPotionSlots,
+        int* cardTinker,
+        int cardTinkerLen,
+        int* relicCounters,
+        int relicCounterLen,
+        int* obsBuf
+    ) =>
+        RunNativeExports.Sts2Run_DebugSetPlayerEx(
+            handle,
+            hp,
+            maxHp,
+            gold,
+            cards,
+            cardInts,
+            relics,
+            relicLen,
+            potions,
+            potionLen,
+            maxPotionSlots,
+            cardTinker,
+            cardTinkerLen,
+            relicCounters,
+            relicCounterLen,
+            obsBuf
+        );
+
     [UnmanagedCallersOnly(EntryPoint = "Sts2Run_SetAnchorTables")]
     public static unsafe int Sts2Run_SetAnchorTables(byte* json, int len) =>
         RunNativeExports.Sts2Run_SetAnchorTables(json, len);
