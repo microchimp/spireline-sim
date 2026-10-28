@@ -425,7 +425,8 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
     /// </summary>
     void CheckTie(in ChanceCall call)
     {
-        if (call.Kind != ChanceKind.Next || call.Min != 0 || call.Max < 2 || DrawSteer.LayoutTie(state, Rest) is not { } tie || !FromStableShuffle())
+        // FromStableShuffle first: a thread-static read, false on every roll outside a sorted pick, before the layout's scan.
+        if (!FromStableShuffle() || call.Kind != ChanceKind.Next || call.Min != 0 || call.Max < 2 || DrawSteer.LayoutTie(state, Rest) is not { } tie)
         {
             return;
         }
@@ -634,6 +635,9 @@ public static class Successors
     /// <summary>Why the macro draw is off at the expansion's position (<see cref="DrawObservers.Off" />), asked once, at its first run of plain draws.</summary>
     sealed class ParentGate(CombatState state, string? preset)
     {
+        /// <summary>A run of this expansion reached a screen: the rest run with the engine's pre-step record on.</summary>
+        public bool Record;
+
         bool _done = preset is not null;
         string? _reason = preset;
 
@@ -718,6 +722,7 @@ public static class Successors
                 int stepProf = SolverProf.Enter(Phase.Step);
                 CombatEngine.TakeWatch = source.OnTake;
                 CombatEngine.DrawWatch = source.OnDraw;
+                CombatEngine.LazyRecord = !gate.Record;
                 try
                 {
                     result = Step(copy, r, move);
@@ -725,6 +730,7 @@ public static class Successors
                 }
                 finally
                 {
+                    CombatEngine.LazyRecord = false;
                     CombatEngine.TakeWatch = null;
                     CombatEngine.DrawWatch = null;
                     SolverProf.Exit(stepProf);
@@ -799,6 +805,12 @@ public static class Successors
                     next[d.Epoch].Add(d.Branches[b].Uid);
                     stack.Push((answers, next, blocks, p * new Rational(d.Branches[b].Count, d.Size)));
                 }
+            }
+            catch (RecordNeeded)
+            {
+                // The step reached a screen without its pre-step record: this copy is dropped and the run made again with it.
+                gate.Record = true;
+                stack.Push((answers, drawn, blocks, p));
             }
             catch (WideRollLeaf)
             {

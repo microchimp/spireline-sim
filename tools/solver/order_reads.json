@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_order_reads.py; do not edit. Every index or position read of a pile in the six engine files; order_readers.json classes those on multiset piles.",
- "sources_sha256": "7a359b763be152e738a552da8c3e2d7793ae68a4fd5107d64aebc99b51ffc2af",
+ "sources_sha256": "a4d51f068bd70cb9a6ff918aad0f68cf31844bf0f6a2cb1b034d71dc39a01461",
  "scope": {
   "src/Sts2Emulator/Core/CardUid.cs": 4,
   "src/Sts2Emulator/Core/CombatEngine.cs": 167,
@@ -19511,7 +19511,7 @@
    "pile": "PlayerBuffs",
    "kind": "walk",
    "read": "foreach PlayerBuffs",
-   "line": 3352,
+   "line": 3370,
    "holders": [
     "engine"
    ],
@@ -19523,7 +19523,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[at]",
-   "line": 3283,
+   "line": 3301,
    "holders": [
     "engine"
    ],
@@ -19535,7 +19535,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[at]",
-   "line": 3287,
+   "line": 3305,
    "holders": [
     "engine"
    ],
@@ -19547,7 +19547,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[at]",
-   "line": 3287,
+   "line": 3305,
    "holders": [
     "engine"
    ],
@@ -19559,7 +19559,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[at]",
-   "line": 3289,
+   "line": 3307,
    "holders": [
     "engine"
    ],
@@ -19571,7 +19571,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 5085,
+   "line": 5103,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -19823,7 +19823,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 5232,
+   "line": 5250,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19846,7 +19846,7 @@
    "pile": "Enemies",
    "kind": "stop",
    "read": "for Enemies",
-   "line": 6737,
+   "line": 6755,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19869,7 +19869,7 @@
    "pile": "StrangleBeforePlay",
    "kind": "stop",
    "read": "for StrangleBeforePlay",
-   "line": 6737,
+   "line": 6755,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19892,7 +19892,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 6709,
+   "line": 6727,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19915,7 +19915,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 6754,
+   "line": 6772,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19938,7 +19938,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 6821,
+   "line": 6839,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19961,7 +19961,7 @@
    "pile": "Enemies",
    "kind": "index",
    "read": "Enemies[index]",
-   "line": 7257,
+   "line": 7275,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -20278,7 +20278,7 @@
    "pile": "Hand",
    "kind": "screen",
    "read": "Range(Hand)",
-   "line": 6361,
+   "line": 6379,
    "holders": [
     "potion:GamblersBrew"
    ],
@@ -20290,7 +20290,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 6421,
+   "line": 6439,
    "holders": [
     "engine"
    ],
@@ -20302,7 +20302,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 6465,
+   "line": 6483,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -20325,7 +20325,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7661,
+   "line": 7679,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -20348,7 +20348,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7665,
+   "line": 7683,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -20371,7 +20371,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7671,
+   "line": 7689,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -20394,7 +20394,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7677,
+   "line": 7695,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -20417,7 +20417,7 @@
    "pile": "CopiesToHandBeforeDraw",
    "kind": "stop",
    "read": "foreach CopiesToHandBeforeDraw",
-   "line": 6323,
+   "line": 6341,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -20734,7 +20734,7 @@
    "pile": "AutoPlayQueue",
    "kind": "fixed",
    "read": "AutoPlayQueue[0]",
-   "line": 6991,
+   "line": 7009,
    "holders": [
     "engine"
    ],
@@ -20746,7 +20746,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7741,
+   "line": 7759,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -21063,7 +21063,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 1939,
+   "line": 1957,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -21380,7 +21380,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 2056,
+   "line": 2074,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -21697,7 +21697,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 2071,
+   "line": 2089,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -22014,7 +22014,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 2315,
+   "line": 2333,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -22331,7 +22331,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 2396,
+   "line": 2414,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -22648,7 +22648,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 2492,
+   "line": 2510,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -22965,7 +22965,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 2568,
+   "line": 2586,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -23282,7 +23282,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 1597,
+   "line": 1615,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -23599,7 +23599,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 1799,
+   "line": 1817,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -23916,7 +23916,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 1878,
+   "line": 1896,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -24233,7 +24233,7 @@
    "pile": "PlayerBuffs",
    "kind": "stop",
    "read": "foreach PlayerBuffs",
-   "line": 2585,
+   "line": 2603,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -24550,7 +24550,7 @@
    "pile": "Enemies",
    "kind": "index",
    "read": "Enemies[i]",
-   "line": 848,
+   "line": 866,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -24573,7 +24573,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 5611,
+   "line": 5629,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -24825,7 +24825,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[slot]",
-   "line": 3423,
+   "line": 3441,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -25142,7 +25142,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.FindIndex",
-   "line": 7191,
+   "line": 7209,
    "holders": [
     "engine"
    ],
@@ -25154,7 +25154,7 @@
    "pile": "Hand",
    "kind": "screen",
    "read": "Range(Hand)",
-   "line": 6389,
+   "line": 6407,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -25471,7 +25471,7 @@
    "pile": "Enemies",
    "kind": "stop",
    "read": "for Enemies",
-   "line": 4605,
+   "line": 4623,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -25494,7 +25494,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.IndexOf",
-   "line": 7280,
+   "line": 7298,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -25517,7 +25517,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 6642,
+   "line": 6660,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -25540,7 +25540,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7721,
+   "line": 7739,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -25563,7 +25563,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7721,
+   "line": 7739,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -25586,7 +25586,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7721,
+   "line": 7739,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -25609,7 +25609,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[index]",
-   "line": 255,
+   "line": 264,
    "holders": [
     "engine"
    ],
@@ -25621,7 +25621,7 @@
    "pile": "DiscardPile",
    "kind": "fixed",
    "read": "DiscardPile[^1]",
-   "line": 1399,
+   "line": 1417,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -25644,7 +25644,7 @@
    "pile": "ExhaustPile",
    "kind": "fixed",
    "read": "ExhaustPile[^1]",
-   "line": 1389,
+   "line": 1407,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -25667,7 +25667,7 @@
    "pile": "Hand",
    "kind": "fixed",
    "read": "Hand.FindIndex",
-   "line": 7108,
+   "line": 7126,
    "holders": [
     "engine"
    ],
@@ -25679,7 +25679,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 7116,
+   "line": 7134,
    "holders": [
     "engine"
    ],
@@ -25691,7 +25691,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 7121,
+   "line": 7139,
    "holders": [
     "engine"
    ],
@@ -25703,7 +25703,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[handIndex]",
-   "line": 597,
+   "line": 615,
    "holders": [
     "engine"
    ],
@@ -25715,7 +25715,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[handIndex]",
-   "line": 7149,
+   "line": 7167,
    "holders": [
     "engine"
    ],
@@ -25727,7 +25727,7 @@
    "pile": "PlayerBuffs",
    "kind": "walk",
    "read": "foreach PlayerBuffs",
-   "line": 5370,
+   "line": 5388,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -26044,7 +26044,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 4755,
+   "line": 4773,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -26296,7 +26296,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 5046,
+   "line": 5064,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -26613,7 +26613,7 @@
    "pile": "PlayerBuffs",
    "kind": "walk",
    "read": "for PlayerBuffs",
-   "line": 7689,
+   "line": 7707,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -26930,7 +26930,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[index]",
-   "line": 4031,
+   "line": 4049,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -27247,7 +27247,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[index]",
-   "line": 4182,
+   "line": 4200,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -27564,7 +27564,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[index]",
-   "line": 4212,
+   "line": 4230,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -27881,7 +27881,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[index]",
-   "line": 4121,
+   "line": 4139,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -28198,7 +28198,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[index]",
-   "line": 4442,
+   "line": 4460,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -28515,7 +28515,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4043,
+   "line": 4061,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -28832,7 +28832,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4255,
+   "line": 4273,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -29149,7 +29149,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4270,
+   "line": 4288,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -29466,7 +29466,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4291,
+   "line": 4309,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -29783,7 +29783,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4325,
+   "line": 4343,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -30100,7 +30100,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4335,
+   "line": 4353,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -30417,7 +30417,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4396,
+   "line": 4414,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -30734,7 +30734,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4405,
+   "line": 4423,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -31051,7 +31051,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4477,
+   "line": 4495,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -31368,7 +31368,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4487,
+   "line": 4505,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -31685,7 +31685,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4497,
+   "line": 4515,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -32002,7 +32002,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4084,
+   "line": 4102,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -32319,7 +32319,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4497,
+   "line": 4515,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -32636,7 +32636,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4084,
+   "line": 4102,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -32953,7 +32953,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4095,
+   "line": 4113,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -33270,7 +33270,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4107,
+   "line": 4125,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -33587,7 +33587,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4164,
+   "line": 4182,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -33904,7 +33904,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4247,
+   "line": 4265,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -34221,7 +34221,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4247,
+   "line": 4265,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -34538,7 +34538,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[index]",
-   "line": 4255,
+   "line": 4273,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -34855,7 +34855,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 4143,
+   "line": 4161,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -35172,7 +35172,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 4449,
+   "line": 4467,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -35489,7 +35489,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 4414,
+   "line": 4432,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -35806,7 +35806,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 4512,
+   "line": 4530,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -36123,7 +36123,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "for Enemies",
-   "line": 735,
+   "line": 753,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -36146,7 +36146,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "for Enemies",
-   "line": 994,
+   "line": 1012,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -36169,7 +36169,7 @@
    "pile": "Enemies",
    "kind": "stop",
    "read": "for Enemies",
-   "line": 1150,
+   "line": 1168,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -36192,7 +36192,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 5160,
+   "line": 5178,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -36509,7 +36509,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.IndexOf",
-   "line": 6561,
+   "line": 6579,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -36532,7 +36532,7 @@
    "pile": "PlayerBuffs",
    "kind": "stop",
    "read": "foreach PlayerBuffs",
-   "line": 2928,
+   "line": 2946,
    "holders": [
     "engine"
    ],
@@ -36544,7 +36544,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.IndexOf",
-   "line": 5964,
+   "line": 5982,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -36796,7 +36796,7 @@
    "pile": "Enemies",
    "kind": "stop",
    "read": "for Enemies",
-   "line": 5965,
+   "line": 5983,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -37060,7 +37060,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[action]",
-   "line": 443,
+   "line": 461,
    "holders": [
     "engine"
    ],
@@ -37072,7 +37072,7 @@
    "pile": "ReturnToHandBeforeDraw",
    "kind": "walk",
    "read": "foreach ReturnToHandBeforeDraw",
-   "line": 6262,
+   "line": 6280,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -37389,7 +37389,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 4564,
+   "line": 4582,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -37706,7 +37706,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7792,
+   "line": 7810,
    "holders": [
     "buff:TheBombPower"
    ],
@@ -37718,7 +37718,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7795,
+   "line": 7813,
    "holders": [
     "buff:TheBombPower"
    ],
@@ -37730,7 +37730,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[gained]",
-   "line": 7770,
+   "line": 7788,
    "holders": [
     "engine"
    ],
@@ -37742,7 +37742,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[gained]",
-   "line": 7772,
+   "line": 7790,
    "holders": [
     "engine"
    ],
@@ -37754,7 +37754,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[gained]",
-   "line": 7772,
+   "line": 7790,
    "holders": [
     "engine"
    ],
@@ -37766,7 +37766,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[gained]",
-   "line": 7772,
+   "line": 7790,
    "holders": [
     "engine"
    ],
@@ -37778,7 +37778,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[i]",
-   "line": 7761,
+   "line": 7779,
    "holders": [
     "engine"
    ],
@@ -37790,7 +37790,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 5652,
+   "line": 5670,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -38042,7 +38042,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies[0]",
-   "line": 5791,
+   "line": 5809,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -38294,7 +38294,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.FirstOrDefault",
-   "line": 5728,
+   "line": 5746,
    "holders": [
     "engine"
    ],
@@ -38306,7 +38306,7 @@
    "pile": "Enemies",
    "kind": "index",
    "read": "Enemies[index]",
-   "line": 5726,
+   "line": 5744,
    "holders": [
     "engine"
    ],
@@ -38318,7 +38318,7 @@
    "pile": "Enemies",
    "kind": "index",
    "read": "Enemies[index]",
-   "line": 5727,
+   "line": 5745,
    "holders": [
     "engine"
    ],
@@ -38330,7 +38330,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[slot]",
-   "line": 3377,
+   "line": 3395,
    "holders": [
     "engine"
    ],
@@ -38342,7 +38342,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[slot]",
-   "line": 3384,
+   "line": 3402,
    "holders": [
     "engine"
    ],
@@ -38354,7 +38354,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[slot]",
-   "line": 3393,
+   "line": 3411,
    "holders": [
     "engine"
    ],
@@ -38366,7 +38366,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[slot]",
-   "line": 3394,
+   "line": 3412,
    "holders": [
     "engine"
    ],
@@ -38378,7 +38378,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[s]",
-   "line": 3913,
+   "line": 3931,
    "holders": [
     "engine"
    ],
@@ -38390,7 +38390,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[s]",
-   "line": 3913,
+   "line": 3931,
    "holders": [
     "engine"
    ],
@@ -38402,7 +38402,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 3900,
+   "line": 3918,
    "holders": [
     "engine"
    ],

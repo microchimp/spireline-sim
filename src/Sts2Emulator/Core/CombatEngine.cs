@@ -91,13 +91,16 @@ public static class CombatEngine
             // A step can be replayed when every stream it rolls on can be put back. The real
             // entry points (RunEngine, the native combat, EmuDump) pass CountingRandoms
             // throughout; a step that cannot be replayed leaves its screens standing instead.
+            // In a fight solver's run (LazyRecord) the record keeps no copy of the start: a step that stops on a screen
+            // throws RecordNeeded instead, and the solver runs it again with the record on.
             run =
                 rng is CountingRandom counting && state.AiRng is null or CountingRandom
                     ? new StepInProgress
                     {
                         State = state,
-                        Before = state.Clone(),
-                        RngBefore = counting.Copy(),
+                        Before = LazyRecord ? null! : state.Clone(),
+                        RngBefore = LazyRecord ? null : counting.Copy(),
+                        Lazy = LazyRecord,
                         Rng = rng,
                         Action = action,
                         TargetEnemyIndex = targetEnemyIndex,
@@ -114,6 +117,12 @@ public static class CombatEngine
             var result = StepCore(state, action, rng, targetEnemyIndex);
             run?.Finished();
             return result;
+        }
+        catch (HookChoicePending) when (run is { Lazy: true })
+        {
+            // A solver's run without the copy of its start cannot stop: the solver drops this copy and runs it again
+            // with the record on.
+            throw RecordNeeded.Instance;
         }
         catch (HookChoicePending)
         {
@@ -256,6 +265,15 @@ public static class CombatEngine
 
     /// <summary>An answer a chance source gave inside the running step (CountingRandom): kept in the step's record.</summary>
     internal static void OnChanceAnswered(Sts2Emulator.Solver.ChanceAnswer answer) => _running?.Chance.Add(answer);
+
+    /// <summary>
+    /// The fight solver's lazy pre-step record (FIGHT_SOLVER.md section 18): true on this thread only around a solver run
+    /// (<c>Successors.Run</c>), where a step's record keeps no copy of the step's start (<c>Before</c>, <c>RngBefore</c>), the
+    /// copy a stopped step's replay starts from. A step that stops on a screen then throws <see cref="RecordNeeded" />, and
+    /// the solver drops that run's copy and runs it again with the record on. False everywhere else: a step is unchanged.
+    /// </summary>
+    [ThreadStatic]
+    internal static bool LazyRecord;
 
     /// <summary>The step running on this thread, if it can be replayed (see <see cref="Step" />).</summary>
     [ThreadStatic]

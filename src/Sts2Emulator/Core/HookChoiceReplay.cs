@@ -230,6 +230,9 @@ internal sealed class StepInProgress : Sts2Emulator.Core2.IKernelAnswers
     /// <inheritdoc cref="HookChoiceReplay.RngBefore" />
     public required CountingRandom? RngBefore { get; init; }
 
+    /// <summary>A solver's run without the copy of its start (<c>CombatEngine.LazyRecord</c>): it cannot <see cref="Stop" />.</summary>
+    public bool Lazy { get; init; }
+
     /// <summary>The step's stream, which a screen's answer resolves on.</summary>
     public required Random Rng { get; init; }
 
@@ -704,4 +707,11 @@ public sealed class ScreenHiddenState
 internal sealed class HookChoicePending : Exception
 {
     public static readonly HookChoicePending Instance = new();
+}
+
+/// <summary>A step run without its pre-step record (<c>CombatEngine.LazyRecord</c>) reached a screen: run it again with the
+/// record on.</summary>
+internal sealed class RecordNeeded : Exception
+{
+    public static readonly RecordNeeded Instance = new();
 }

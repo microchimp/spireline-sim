@@ -706,3 +706,28 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   the macro model equal to the sequential model and to the independent count on every harness move, and on draws past the
   reference (five of eight over six values at a turn start, five of seven over seven, a turn start across the
   reshuffle).
+
+## 18. The engine round as built (optimisation review change 4)
+
+Measured with the baseline's phase timers on the 24-decision speed subset at 2,000 nodes (the before at `01549ea4` in the
+same session); none of it changes `OnDrawPileTake`, the hook order or anything the corpus byte proof covers, and a step
+outside a solver run is unchanged (each change is behind a thread-static set only by the solver, or is solver code).
+
+- **The lazy pre-step record** (`CombatEngine.LazyRecord`, set by `Successors.Run` around its step). A step's record
+  keeps no copy of its start (`Before`, `RngBefore`); a step that reaches a screen throws `RecordNeeded`, and the run is
+  pushed back and made again with the record on, as is every later run of that expansion (`ParentGate.Record`). The
+  clone phase loses the engine's copy per run. Test: `SolverEngineRoundTests` (a screen's outcomes carry a replayable
+  record; one run more than outcomes; a step outside a solver run keeps its record).
+- **The tie check only inside a sorted pick.** `CheckTie` tests `FromStableShuffle()` (a thread-static read) before the
+  layout's scan, which ran on every `Next(0, n >= 2)` on any stream; the condition is unchanged.
+- **The key passed into `Node`.** An outcome's key, encoded to merge equal children, is handed to `Node`: one encode
+  and one hash per child, not two.
+- **`OrderedPiles` cached per thread** by what the categories read: the card ids held (generated candidates included),
+  the potions in the slots, which named relics are active, and the key mode. `SolverEngineRoundTests` holds the cache
+  to the computation on every harness position, both key modes.
+- **Not done.** The kernel's sequencing copies in solver copies: of the lists, only `_stops` and `_waits` have no reader
+  in the library (their readers are EmuDump's writer and the tests); the hook-action log is read by `RunHookAction`,
+  `RunAtWait` and `WaitAll`, the answer sequence by `NextKey`, the command log by the commands, the queue's history by
+  `WaitAll` and `OnHookPause`, so they are not provably unread; the provable part is a few short lists inside a clone
+  phase of 2-3% of a solve. The non-cryptographic hash: SHA-256 is 0.3-0.5% of a solve. `Rational`: 0.05-0.5% of a
+  solve, under a tenth of a node's time, so production values stay exact.

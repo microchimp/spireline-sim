@@ -323,11 +323,12 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         }
     }
 
-    NodeValue Node(CombatState s, CountingRandom rng, int remaining)
+    /// <summary>The node's value; <paramref name="known" /> is its key when the caller encoded it already (an outcome's).</summary>
+    NodeValue Node(CombatState s, CountingRandom rng, int remaining, UInt128? known = null)
     {
         _c.Nodes++;
         _c.Check?.Invoke();
-        var key = Key(s);
+        var key = known ?? Key(s);
         if (On(Pruning.Transposition))
         {
             if (Table.TryGet(key, remaining, out var hit))
@@ -428,7 +429,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 }
                 else
                 {
-                    v = Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn));
+                    v = Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn), k);
                     children[k] = v;
                 }
 

@@ -186,6 +186,48 @@ public static class StateKey
         /// their implications, plus every pile hindsight mode keeps ordered.</summary>
         internal static HashSet<string> OrderedPiles(CombatState s, KeyMode mode)
         {
+            // Cached per thread by what the categories read: the card ids held (generated candidates included), the potions
+            // in the slots and which named relics are active. The set returned is shared: callers only ask Contains.
+            var ids = t_ids ??= [];
+            ids.Clear();
+            foreach (var c in AllCards(s)) ids.Add(c.DefId);
+            if (s.PendingSelection is { } p) ids.AddRange(p.GeneratedCandidates);
+            ids.Sort();
+            var sb = (t_sb ??= new()).Clear().Append((int)mode).Append('|');
+            int last = int.MinValue;
+            foreach (int id in ids)
+            {
+                if (id != last) sb.Append(id).Append(',');
+                last = id;
+            }
+
+            sb.Append('|');
+            foreach (int pot in s.PotionSlots) sb.Append(pot).Append(',');
+            sb.Append('|');
+            foreach (var c in All)
+            {
+                foreach (var (id, name) in c.Relics)
+                {
+                    sb.Append(id >= 0 && s.Relics.Exists(r => r.DefId == id) && StateKeyCodec.RelicActive(name, s) ? '1' : '0');
+                }
+            }
+
+            var cache = t_ordered ??= [];
+            string key = sb.ToString();
+            if (cache.TryGetValue(key, out var hit)) return hit;
+            var piles = Compute(s, mode);
+            if (cache.Count > 4096) cache.Clear();
+            cache[key] = piles;
+            return piles;
+        }
+
+        [ThreadStatic] static Dictionary<string, HashSet<string>>? t_ordered;
+        [ThreadStatic] static List<int>? t_ids;
+        [ThreadStatic] static StringBuilder? t_sb;
+
+        /// <summary><see cref="OrderedPiles" /> uncached (the tests compare the two).</summary>
+        internal static HashSet<string> Compute(CombatState s, KeyMode mode)
+        {
             var on = All.Where(c => On(s, c)).Select(c => c.Name).ToHashSet();
             for (bool grew = true; grew;)
             {
