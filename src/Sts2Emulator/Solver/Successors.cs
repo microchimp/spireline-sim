@@ -473,7 +473,10 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
     /// <summary>
     /// How many of the rest's cards, from the front in layout order, one draw call's loop took in a row since the last
     /// check (1 when the front was not such a take). A front taken right after a macro block by the same loop between the
-    /// same checks means the replay drew more than the block's run did: the count drawn depended on the cards.
+    /// same checks means the replay drew more than the block's run did: the count drawn depended on the cards. A card of
+    /// the rest taken earlier in the run outside a draw loop (a <c>rest-take</c> of draw_observers.json: Thieving Hopper's
+    /// steal, a pick by place, a top-card play) read the layout, and a block laid out at the front would change what it
+    /// took: the draw is sequential then (<c>rest-taken</c>).
     /// </summary>
     int PlainRun()
     {
@@ -493,6 +496,15 @@ internal sealed class SolverChance(CombatState state, int[] answers, List<List<i
         while (j < RestOrder.Count && i + j < _takes.Count && _takes[i + j].Uid == RestOrder[j] && _takes[i + j].Action == action && _takes[i + j].Call == call)
         {
             j++;
+        }
+
+        for (int t = 0; j >= 2 && t < i; t++)
+        {
+            if (_takes[t].Action == 0 && RestOrder.Contains(_takes[t].Uid))
+            {
+                MacroOff = "rest-taken";
+                return 1;
+            }
         }
 
         return j;

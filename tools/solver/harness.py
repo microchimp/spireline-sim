@@ -74,7 +74,9 @@ ORDER = [
 ]
 ORDER_COUNT = 6  # recipes per fight: both engines, three seeds
 
-# The macro draw's positions: (macro, hand, draw pile, discard pile, buff, energy, horizon).
+# The macro draw's positions: (macro, hand, draw pile, discard pile, buff, energy, horizon[, encounter]).
+# off:rest-taken: Thieving Hopper's first move steals a card of the pile's best rarity tier (two Uncommons here) at the
+# enemy turn, by its place in the pile; the next turn's five-card draw is then sequential (g7-emu N8ST89LTSW k0106-k0112).
 MACRO_PILE = ["Anger", "Whirlwind", "Bash", "Uppercut", "Impervious", "Thunderclap"]
 TURN_PILE = ["Bash", "Bludgeon", "Impervious", "Uppercut", "Barricade", "DemonForm"]
 EXPERTISE = ["Expertise", "DefendIronclad"]
@@ -91,6 +93,8 @@ MACRO = [
     ("observer:Stratagem", EXPERTISE, MACRO_PILE, [], "StratagemPower:1", 1, 0),
     ("observer:Pillage", ["Pillage", "DefendIronclad"], MACRO_PILE, [], "", 1, 0),
     ("observer:Scrape", ["Scrape", "DefendIronclad"], MACRO_PILE, [], "", 1, 0),
+    ("off:rest-taken", ["DefendIronclad"], ["Bash", "Bludgeon", "Impervious", "Uppercut", "Whirlwind", "Barricade", "DemonForm"], [], "", 0, 1,
+     "ThievingHopper"),
 ]
 
 
@@ -167,7 +171,7 @@ def recipes() -> list[dict]:
                 )
             )
             i += 1
-    for macro, hand, draw, discard, buff, energy, h in MACRO:
+    for macro, hand, draw, discard, buff, energy, h, *enc in MACRO:
         for engine in ("old", "core2"):
             out.append(
                 base(
@@ -182,6 +186,7 @@ def recipes() -> list[dict]:
                     after=0,
                     horizon=h,
                     macro=macro,
+                    encounter=enc[0] if enc else "",
                     hand=hand,
                     draw_pile=draw,
                     discard_pile=discard,

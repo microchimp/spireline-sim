@@ -42,7 +42,8 @@ class HarnessPositionsTests(unittest.TestCase):
         assert {"SeekerStrike", "Cleanse", "Wish"} <= set(plays)
         fights = Counter(r["encounter"] for r in rs if r["encounter"])
         assert fights["HunterKiller"] >= 2 and fights["Toadpoles"] >= 2
-        assert all(r["until"] for r in rs if r["encounter"])
+        # The order-dependence recipes play until a named point; a macro recipe's encounter is only its fight.
+        assert all(r["until"] for r in rs if r["encounter"] and not r["macro"])
 
 
 if __name__ == "__main__":

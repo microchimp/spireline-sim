@@ -107,10 +107,14 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
                     macroNodes += got.Counters.MacroNodes;
                     if (recipe.Macro.Length > 0 && got.Status != SolveStatus.Refused)
                     {
-                        // The observers and the ordered hand switch it off at the root; the five-card draws take it.
+                        // The observers and the ordered hand switch it off at the root; the five-card draws take it; an "off:"
+                        // recipe has it on at the root and off in the runs where its reason holds (rest-taken: a card of the rest
+                        // taken before the draw), so its macro nodes are those of the other runs.
                         bool off = recipe.Macro.StartsWith("observer:", StringComparison.Ordinal) || recipe.Macro == "hand-ordered";
+                        string? offIn = recipe.Macro.StartsWith("off:", StringComparison.Ordinal) ? recipe.Macro[4..] : null;
                         string seen = $"{got.Counters.MacroRoot}, macro nodes {got.Counters.MacroNodes}, off {string.Join(" ", got.Counters.MacroOff.Select(kv => $"{kv.Key} {kv.Value}"))}";
-                        if (off ? got.Counters.MacroRoot != recipe.Macro || got.Counters.MacroNodes != 0 : got.Counters.MacroRoot != "on" || got.Counters.MacroNodes == 0)
+                        if (offIn is not null ? got.Counters.MacroRoot != "on" || !got.Counters.MacroOff.ContainsKey(offIn)
+                            : off ? got.Counters.MacroRoot != recipe.Macro || got.Counters.MacroNodes != 0 : got.Counters.MacroRoot != "on" || got.Counters.MacroNodes == 0)
                         {
                             diffs.Add($"#{recipe.Id} {recipe.Macro} {recipe.Engine}: macro draw {seen}");
                         }

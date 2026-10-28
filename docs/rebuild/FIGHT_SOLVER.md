@@ -677,7 +677,19 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   older than the sources, or an observer the C# table does not hold, and `DrawObserverTests` holds the table to the file.
 - **A replay that draws otherwise is refused** (`macro-draw-mismatch`): each macro block must be taken again by one draw
   call's loop, card for card, between the same two checks, and the loop must not take the next card of the rest right
-  after it there. It fires only if the registry misses an observer whose count drawn depends on the cards.
+  after it there. It fires only if the registry misses an observer whose count drawn depends on the cards, or a reader of
+  the layout before the draw (below).
+- **A take of the rest before the draw turns it off for the run** (`rest-taken`, `SolverChance.PlainRun`, the engine
+  round). A card of the unknown middle taken outside a draw loop earlier in the same run read the layout the run gave the
+  middle (a roll's index into the pile, the first card of a kind, the top), and a block laid out at the front would change
+  what it took. The case: Thieving Hopper's steal (`EnemyAI.StealDrawOrDiscardCard`, `NextItem` over the draw and discard
+  cards of the best rarity tier, in pile order) at the enemy turn, before the next turn's five-card draw. The run count
+  was matched against a layout still holding the stolen card, so the block stopped at its slot (three of the five), and
+  the replay with that block at the front drew past it in one loop (g7-emu N8ST89LTSW k0106 to k0112, six refusals).
+  The count drawn never depended on the cards' values. `scan_draw_observers.py` lists every take off the draw pile
+  (`take:` entries), classed `rest-take` (with the run rule's name, which `--check` finds in `Successors.cs`) or `safe`
+  with why; an unclassed take fails the check. Harness: `off:rest-taken` (the Hopper's fight at horizon 1, both engines:
+  macro on at the root, off in the run, equal to the reference).
 - **Counters** (`SolveCounters`, the stats JSON): `macro_nodes`, `macro_draws_avoided` (the cards each macro node took,
   less one, summed), `draw_nodes_single` (draw nodes with the macro draw on that took one card), `macro_off` (draw nodes
   taken one card at a time because it was off, by reason) and `macro_root` (`on`, `hand-ordered`, `observer:Name`, or

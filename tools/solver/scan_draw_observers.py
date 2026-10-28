@@ -11,10 +11,18 @@ the cards came in, and the count drawn does not depend on their values. This sca
 - ``draw-result``: every caller that reads a draw's result list (what it drew, in order), by its ``case`` label or method;
 - ``kernel-hook``: the kernel's own hook ids for a drawn card (any listener a switched-on family registers there);
 - ``hook``: every game hook ``X.AfterCardDrawn`` / ``X.AfterCardDrawnEarly`` the engine sources name (the old engine's
-  rules cite the game's listener they carry), and every Core2 model that registers a listener on either hook.
+  rules cite the game's listener they carry), and every Core2 model that registers a listener on either hook;
+- ``take``: every line that takes a card off the draw pile (``RemoveFromDrawPileAt``, ``DrawPile.RemoveAt`` / ``Remove`` /
+  ``RemoveAll`` / ``RemoveRange`` / ``Clear``), by its ``case`` label or method. A take outside the draw loop reads the
+  layout the solver gave the unknown middle (a roll's index into the pile, the first card of a kind, the top): a macro
+  block laid out at the front would change what it takes, so a draw after such a take in the same run is sequential
+  (``rest-taken``, ``SolverChance.PlainRun``). Thieving Hopper's steal before the next turn's draw was the case
+  (g7-emu N8ST89LTSW k0106-k0112, ``macro-draw-mismatch``).
 
 draw_observer_classes.json classes each entry: ``observer`` (with the name of the solver's test in
-``Solver/MacroDraw.cs`` ``DrawObservers.All`` that turns the macro draw off while it can act) or ``safe``, each with why.
+``Solver/MacroDraw.cs`` ``DrawObservers.All`` that turns the macro draw off while it can act), ``rest-take`` (a take of a
+card of the unknown middle outside the draw loop, with ``rule``: the run rule in ``Solver/Successors.cs`` that makes a
+later draw in the same run sequential) or ``safe``, each with why.
 ``--check`` fails on an entry with no class, a class with no entry, an observer name the C# table does not hold, and a scan
 older than the sources (their sha256 is in draw_observers.json). DrawObserverTests holds the C# table to the observers here.
 """
@@ -39,6 +47,9 @@ HOOK_ID = re.compile(r"^\s*(AfterCardDrawn(?:Early)?),\s*$")
 NEW = re.compile(r"\bnew\s+[\w.<>]+\s*\(")
 HOOK_NAME = re.compile(r"\b(\w+)\.(AfterCardDrawn(?:Early)?)\b")
 HOOK_ON = re.compile(r"\.On\(\s*HookId\.(AfterCardDrawn(?:Early)?)\b")
+TAKE = re.compile(r"\bRemoveFromDrawPileAt\(|\bDrawPile\.(?:RemoveAt|Remove|RemoveAll|RemoveRange|Clear)\(")
+SUCCESSORS_CS = SRC / "Solver" / "Successors.cs"
+RULES = ("rest-taken",)
 RESULT_CALL = re.compile(r"\bDrawCards\(\s*state\s*,[^;]*?,\s*rng\s*,\s*(?!drawn:\s*null)(\w+)\s*[,)]")
 CASE = re.compile(r"^\s*case\s+(?:\w+\.)?(\"?)(\w+)\1\s*(?:when[^:]*)?:")
 DECL = re.compile(
@@ -121,6 +132,10 @@ def scan() -> dict:
                 if m.group(2) not in e["hooks"]:
                     e["hooks"].append(m.group(2))
             code = strip_comment(line)
+            if TAKE.search(code) and not DECL.match(line):
+                h = holder(lines, n)
+                e = entries.setdefault(f"take:{h}", {"kind": "take", "holder": h, "file": rel(path), "lines": 0})
+                e["lines"] += 1
             if RESULT_CALL.search(code) and not DECL.match(line):
                 h = holder(lines, n)
                 entries[f"draw-result:{h}"] = {"kind": "draw-result", "holder": h, "file": rel(path)}
@@ -132,7 +147,7 @@ def scan() -> dict:
         if "hooks" in e:
             e["hooks"].sort()
     sha = hashlib.sha256()
-    for path in [*sources(), HOOK_IDS]:
+    for path in [*sources(), HOOK_IDS, SUCCESSORS_CS]:
         sha.update(rel(path).encode())
         sha.update(norm(path.read_bytes()))
     return {"entries": dict(sorted(entries.items())), "sources_sha256": sha.hexdigest()}
@@ -157,16 +172,22 @@ def build() -> tuple[dict, list[str]]:
     for key, e in s["entries"].items():
         c = classes.get(key)
         if c is None:
-            problems.append(f"unclassed: {key} ({e['file']}): class it in {CLASSES.name} as observer (with its test's name) or safe, with why")
+            problems.append(f"unclassed: {key} ({e['file']}): class it in {CLASSES.name} as observer (with its test's name), rest-take (with its rule) or safe, with why")
             continue
-        if c.get("class") not in ("observer", "safe") or not c.get("why"):
-            problems.append(f"bad class for {key}: needs class observer|safe and a why")
+        if c.get("class") not in ("observer", "rest-take", "safe") or not c.get("why"):
+            problems.append(f"bad class for {key}: needs class observer|rest-take|safe and a why")
+        if c.get("class") == "rest-take" and (e["kind"] != "take" or c.get("rule") not in RULES):
+            problems.append(f"rest-take {key}: only a take is a rest-take, and it names its rule ({', '.join(RULES)})")
         if c.get("class") == "observer" and not c.get("observer"):
             problems.append(f"observer {key} names no test (observer: <DrawObservers.All name>)")
         out[key] = {**e, **c}
     for key in classes:
         if key not in s["entries"]:
             problems.append(f"stale class: {key} is no longer found by the scan")
+    successors = norm(SUCCESSORS_CS.read_bytes()).decode("utf-8")
+    for rule in sorted({c["rule"] for c in out.values() if c.get("class") == "rest-take" and c.get("rule")}):
+        if f'"{rule}"' not in successors:
+            problems.append(f"rule {rule} is not in {rel(SUCCESSORS_CS)}")
     named = sorted({c["observer"] for c in out.values() if c.get("class") == "observer" and c.get("observer")})
     cs = csharp_observers()
     for n in named:
@@ -176,7 +197,7 @@ def build() -> tuple[dict, list[str]]:
         if n not in named:
             problems.append(f"DrawObservers.All holds {n}, which no entry here names")
     doc = {
-        "about": "Written by tools/solver/scan_draw_observers.py; do not edit. Everything that acts on drawn cards (the draw loop's per-card calls, the draw-result readers, the AfterCardDrawn listeners), each classed in draw_observer_classes.json: an observer turns the macro draw off while its test in DrawObservers.All holds (FIGHT_SOLVER.md section 17).",
+        "about": "Written by tools/solver/scan_draw_observers.py; do not edit. Everything that acts on drawn cards (the draw loop's per-card calls, the draw-result readers, the AfterCardDrawn listeners) and every take off the draw pile, each classed in draw_observer_classes.json: an observer turns the macro draw off while its test in DrawObservers.All holds (FIGHT_SOLVER.md section 17).",
         "sources_sha256": s["sources_sha256"],
         "observers": named,
         "entries": out,

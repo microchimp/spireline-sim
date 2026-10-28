@@ -23,8 +23,9 @@ public class DrawObserverTests
         foreach (var (key, e) in doc["entries"]!.AsObject())
         {
             string cls = (string)e!["class"]!;
-            Assert.True(cls is "observer" or "safe", key);
-            Assert.True(cls == "safe" || named.Contains((string)e["observer"]!), key);
+            Assert.True(cls is "observer" or "rest-take" or "safe", key);
+            Assert.True(cls != "observer" || named.Contains((string)e["observer"]!), key);
+            Assert.True(cls != "rest-take" || (string)e["rule"]! == "rest-taken", key);
         }
     }
 

@@ -1,6 +1,6 @@
 {
- "about": "Written by tools/solver/scan_draw_observers.py; do not edit. Everything that acts on drawn cards (the draw loop's per-card calls, the draw-result readers, the AfterCardDrawn listeners), each classed in draw_observer_classes.json: an observer turns the macro draw off while its test in DrawObservers.All holds (FIGHT_SOLVER.md section 17).",
- "sources_sha256": "0f113e218167d9a228486940d7178180af1fbb9c3c953dc285ea231fb96484d7",
+ "about": "Written by tools/solver/scan_draw_observers.py; do not edit. Everything that acts on drawn cards (the draw loop's per-card calls, the draw-result readers, the AfterCardDrawn listeners) and every take off the draw pile, each classed in draw_observer_classes.json: an observer turns the macro draw off while its test in DrawObservers.All holds (FIGHT_SOLVER.md section 17).",
+ "sources_sha256": "19d2b7d3f7a2555feac39c27c072b8d8db727a248318550f977c605378b32b8c",
  "observers": [
   "ChainsOfBinding",
   "Hellraiser",
@@ -289,6 +289,154 @@
    "class": "observer",
    "observer": "kernel-listener",
    "why": "as kernel-hook:AfterCardDrawn"
+  },
+  "take:AutoPlayCardRepeatedly": {
+   "kind": "take",
+   "holder": "AutoPlayCardRepeatedly",
+   "file": "src/Sts2Emulator/Core/CombatEngine.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "takes the replayed card back from wherever it rests, the draw pile included (found by place): a card of the unknown middle taken outside the draw loop reads the layout",
+   "rule": "rest-taken"
+  },
+  "take:AutoPlayFromDrawPile": {
+   "kind": "take",
+   "holder": "AutoPlayFromDrawPile",
+   "file": "src/Sts2Emulator/Core/CombatEngine.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "plays cards off the top of the draw pile (Havoc, Mayhem): the top of the unknown middle is the layout's front",
+   "rule": "rest-taken"
+  },
+  "take:AutoPlayFromPile": {
+   "kind": "take",
+   "holder": "AutoPlayFromPile",
+   "file": "src/Sts2Emulator/Core/CombatEngine.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "plays the card at an index of the pile its caller chose: a card of the unknown middle by its place",
+   "rule": "rest-taken"
+  },
+  "take:DrawCards": {
+   "kind": "take",
+   "holder": "DrawCards",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "lines": 1,
+   "class": "safe",
+   "why": "the draw loop's own take off the top, marked with its draw call (PlainTake): the macro draw itself"
+  },
+  "take:DrawPileToHand": {
+   "kind": "take",
+   "holder": "DrawPileToHand",
+   "file": "src/Sts2Emulator/Core/CombatEngine.cs",
+   "lines": 1,
+   "class": "safe",
+   "why": "a screen's choice from the draw pile: the screen's answer replays the step, where the macro draw is off (screen-answer)"
+  },
+  "take:DrawRareCards": {
+   "kind": "take",
+   "holder": "DrawRareCards",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "takes the pile's Rare cards picked on a stream, by index into the pile: which copies are taken follows the layout",
+   "rule": "rest-taken"
+  },
+  "take:ExhaustFirstDrawPileCard": {
+   "kind": "take",
+   "holder": "ExhaustFirstDrawPileCard",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "exhausts the top card of the draw pile: the layout's front",
+   "rule": "rest-taken"
+  },
+  "take:ExhaustFromDrawPile": {
+   "kind": "take",
+   "holder": "ExhaustFromDrawPile",
+   "file": "src/Sts2Emulator/Core/CombatEngine.cs",
+   "lines": 1,
+   "class": "safe",
+   "why": "a screen's choice from the draw pile: the screen's answer replays the step, where the macro draw is off (screen-answer)"
+  },
+  "take:ExhaustStatusesFromPile": {
+   "kind": "take",
+   "holder": "ExhaustStatusesFromPile",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "exhausts every Status in the pile: the multiset taken does not follow the layout, but the take is outside the draw loop and the run rule does not tell the kinds apart",
+   "rule": "rest-taken"
+  },
+  "take:JeweledMask": {
+   "kind": "take",
+   "holder": "JeweledMask",
+   "file": "src/Sts2Emulator/Core/Effects/RelicEffects.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "takes a Power picked on the card-selection stream by index among the pile's Powers in pile order: which copy is taken follows the layout",
+   "rule": "rest-taken"
+  },
+  "take:MoveFirstDrawPileCardOfTypeToHand": {
+   "kind": "take",
+   "holder": "MoveFirstDrawPileCardOfTypeToHand",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "takes the first card of a type in pile order: which card is taken follows the layout",
+   "rule": "rest-taken"
+  },
+  "take:MoveZeroCostDrawCardsToHandForPowerCell": {
+   "kind": "take",
+   "holder": "MoveZeroCostDrawCardsToHandForPowerCell",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "takes the pile's zero-cost cards in pile order: the set does not follow the layout, the order they reach the hand does",
+   "rule": "rest-taken"
+  },
+  "take:QueueCombatStartAutoPlays": {
+   "kind": "take",
+   "holder": "QueueCombatStartAutoPlays",
+   "file": "src/Sts2Emulator/Core/CombatFactory.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "takes the Imbued cards out of the draw pile at the combat's start, by index: the start of a fight, before any solve, classed with the rest",
+   "rule": "rest-taken"
+  },
+  "take:RemoveFromDrawPileAt": {
+   "kind": "take",
+   "holder": "RemoveFromDrawPileAt",
+   "file": "src/Sts2Emulator/Core/CombatState.cs",
+   "lines": 1,
+   "class": "safe",
+   "why": "the take itself (CombatState.RemoveFromDrawPileAt): every caller is an entry here"
+  },
+  "take:ShuffleDiscardIntoDraw": {
+   "kind": "take",
+   "holder": "ShuffleDiscardIntoDraw",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "lines": 2,
+   "class": "safe",
+   "why": "the reshuffle empties and refills the draw pile: the solver keeps the reshuffle epoch, and the new epoch's draws are a node of their own"
+  },
+  "take:StealDrawOrDiscardCard": {
+   "kind": "take",
+   "holder": "StealDrawOrDiscardCard",
+   "file": "src/Sts2Emulator/Core/EnemyAI.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "Thieving Hopper's steal: Rng.CombatCardGeneration.NextItem over the draw and discard cards of the best rarity tier, in pile order: the stolen card follows the layout. Before the next turn's draw it cut the macro block at the stolen card's slot and the replay drew past the block (g7-emu N8ST89LTSW k0106-k0112)",
+   "rule": "rest-taken"
+  },
+  "take:ToastyMittens": {
+   "kind": "take",
+   "holder": "ToastyMittens",
+   "file": "src/Sts2Emulator/Core/Effects/RelicEffects.cs",
+   "lines": 1,
+   "class": "rest-take",
+   "why": "exhausts the top card of the draw pile (the first non-Innate on turn one): the layout's front",
+   "rule": "rest-taken"
   }
  }
 }

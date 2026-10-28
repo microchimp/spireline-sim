@@ -1,5 +1,5 @@
 {
- "about": "Classes for tools/solver/scan_draw_observers.py's entries (FIGHT_SOLVER.md section 17). observer: the macro draw is off while the named test in Solver/MacroDraw.cs DrawObservers.All holds; safe: a run of plain draws over a fixed multiset ends in the same state whatever the cards' order, and the count drawn does not depend on their values. Each with why.",
+ "about": "Classes for tools/solver/scan_draw_observers.py's entries (FIGHT_SOLVER.md section 17). observer: the macro draw is off while the named test in Solver/MacroDraw.cs DrawObservers.All holds; safe: a run of plain draws over a fixed multiset ends in the same state whatever the cards' order, and the count drawn does not depend on their values. Each with why. rest-take: a take of a card of the unknown middle outside the draw loop; a draw after it in the same run is sequential (the named run rule in Solver/Successors.cs).",
  "classes": {
   "draw-loop:Add": {"class": "safe", "why": "the drawn card lands in hand and in the draw's result list in draw order; the hand's order is read only where the key keeps the hand in order, and the macro draw is off there (hand-ordered); result readers are classed as draw-result"},
   "draw-loop:AutoPlayDrawnCard": {"class": "observer", "observer": "Hellraiser", "why": "plays a drawn Strike inside the draw (HellraiserPower.AfterCardDrawnEarly): what is played, and whether the rest is drawn, follow the order"},
@@ -33,6 +33,23 @@
   "hook:SpeedsterPower": {"class": "observer", "observer": "Speedster", "why": "as draw-loop:DamageAllForSpeedster"},
   "hook:Void": {"class": "safe", "why": "as draw-loop:Max"},
   "kernel-hook:AfterCardDrawn": {"class": "observer", "observer": "kernel-listener", "why": "a listener a switched-on kernel family (F11) registers on a drawn card: the kernel's listeners are not classed one by one, so while any is registered the draws are sequential"},
-  "kernel-hook:AfterCardDrawnEarly": {"class": "observer", "observer": "kernel-listener", "why": "as kernel-hook:AfterCardDrawn"}
+  "kernel-hook:AfterCardDrawnEarly": {"class": "observer", "observer": "kernel-listener", "why": "as kernel-hook:AfterCardDrawn"},
+  "take:AutoPlayCardRepeatedly": {"class": "rest-take", "why": "takes the replayed card back from wherever it rests, the draw pile included (found by place): a card of the unknown middle taken outside the draw loop reads the layout", "rule": "rest-taken"},
+  "take:AutoPlayFromDrawPile": {"class": "rest-take", "why": "plays cards off the top of the draw pile (Havoc, Mayhem): the top of the unknown middle is the layout's front", "rule": "rest-taken"},
+  "take:AutoPlayFromPile": {"class": "rest-take", "why": "plays the card at an index of the pile its caller chose: a card of the unknown middle by its place", "rule": "rest-taken"},
+  "take:DrawCards": {"class": "safe", "why": "the draw loop's own take off the top, marked with its draw call (PlainTake): the macro draw itself"},
+  "take:DrawPileToHand": {"class": "safe", "why": "a screen's choice from the draw pile: the screen's answer replays the step, where the macro draw is off (screen-answer)"},
+  "take:DrawRareCards": {"class": "rest-take", "why": "takes the pile's Rare cards picked on a stream, by index into the pile: which copies are taken follows the layout", "rule": "rest-taken"},
+  "take:ExhaustFirstDrawPileCard": {"class": "rest-take", "why": "exhausts the top card of the draw pile: the layout's front", "rule": "rest-taken"},
+  "take:ExhaustFromDrawPile": {"class": "safe", "why": "a screen's choice from the draw pile: the screen's answer replays the step, where the macro draw is off (screen-answer)"},
+  "take:ExhaustStatusesFromPile": {"class": "rest-take", "why": "exhausts every Status in the pile: the multiset taken does not follow the layout, but the take is outside the draw loop and the run rule does not tell the kinds apart", "rule": "rest-taken"},
+  "take:JeweledMask": {"class": "rest-take", "why": "takes a Power picked on the card-selection stream by index among the pile's Powers in pile order: which copy is taken follows the layout", "rule": "rest-taken"},
+  "take:MoveFirstDrawPileCardOfTypeToHand": {"class": "rest-take", "why": "takes the first card of a type in pile order: which card is taken follows the layout", "rule": "rest-taken"},
+  "take:MoveZeroCostDrawCardsToHandForPowerCell": {"class": "rest-take", "why": "takes the pile's zero-cost cards in pile order: the set does not follow the layout, the order they reach the hand does", "rule": "rest-taken"},
+  "take:QueueCombatStartAutoPlays": {"class": "rest-take", "why": "takes the Imbued cards out of the draw pile at the combat's start, by index: the start of a fight, before any solve, classed with the rest", "rule": "rest-taken"},
+  "take:RemoveFromDrawPileAt": {"class": "safe", "why": "the take itself (CombatState.RemoveFromDrawPileAt): every caller is an entry here"},
+  "take:ShuffleDiscardIntoDraw": {"class": "safe", "why": "the reshuffle empties and refills the draw pile: the solver keeps the reshuffle epoch, and the new epoch's draws are a node of their own"},
+  "take:StealDrawOrDiscardCard": {"class": "rest-take", "why": "Thieving Hopper's steal: Rng.CombatCardGeneration.NextItem over the draw and discard cards of the best rarity tier, in pile order: the stolen card follows the layout. Before the next turn's draw it cut the macro block at the stolen card's slot and the replay drew past the block (g7-emu N8ST89LTSW k0106-k0112)", "rule": "rest-taken"},
+  "take:ToastyMittens": {"class": "rest-take", "why": "exhausts the top card of the draw pile (the first non-Innate on turn one): the layout's front", "rule": "rest-taken"}
  }
 }
