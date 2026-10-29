@@ -1,0 +1,754 @@
+{
+ "about": "Classes for tools/solver/scan_utility_gains.py's sites (FIGHT_SOLVER.md section 19), each with why. gain: raises the utility within a combat; its holders turn the tight bound off while present. generator: makes cards or potions from a pool not proved free of a gain holder. fixed: makes the named cards (makes), none a gain holder. copy-card: copies a card the combat holds. end: the combat's end, with the most it heals (constant) and whether the winning step applies it before the terminal is scored (applied). loss, primitive (a helper's own body), copy, setup, run, other (another creature) and safe. files: the files outside the scan that name a needle.",
+ "sites": {
+  "CardEffects:AddCardToDiscardPileRandomly:generate": {
+   "class": "fixed",
+   "makes": [
+    "FranticEscape"
+   ],
+   "why": "makes the callers' cards (EnemyAI's Frantic Escape)"
+  },
+  "CardEffects:AddCardToDrawPileRandomly:generate": {
+   "class": "fixed",
+   "makes": [
+    "Beckon",
+    "Dazed",
+    "FranticEscape",
+    "Soul",
+    "Soot"
+   ],
+   "why": "makes the callers' cards (enemies' statuses, relics' Dazed and Soot, Soul)"
+  },
+  "CardEffects:AddColorlessCardsToHand:generate": {
+   "class": "generator",
+   "holders": [
+    "card:BundleOfJoy",
+    "card:Largesse",
+    "card:ManifestAuthority",
+    "potion:CosmicConcoction",
+    "buff:SpectrumShift",
+    "relic:OrangeDough"
+   ],
+   "why": "random Colorless cards: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddDistinctCommonCardsToHand:generate": {
+   "class": "generator",
+   "holders": [
+    "buff:HelloWorld"
+   ],
+   "why": "random Common cards of the character's pool: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddDistinctEtherealCardsToHandFromPool:generate": {
+   "class": "generator",
+   "holders": [
+    "relic:BigHat"
+   ],
+   "why": "random cards made Ethereal: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddDistinctPoolCardToHand:generate": {
+   "class": "generator",
+   "why": "a random card of a pool: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddDistinctPoolCardsToDrawPile:generate": {
+   "class": "generator",
+   "why": "random cards of a pool into the draw pile: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddEtherealPoolCardToHand:generate": {
+   "class": "generator",
+   "holders": [
+    "buff:CallOfTheVoid"
+   ],
+   "why": "a random card of the pool, Ethereal: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddFreeAttackCardToHandFromPool:generate": {
+   "class": "generator",
+   "holders": [
+    "relic:Crossbow"
+   ],
+   "why": "a random Attack of the character's pool: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddGeneratedCardToHand:generate": {
+   "class": "fixed",
+   "makes": [
+    "Debris",
+    "SovereignBlade",
+    "SweepingGaze"
+   ],
+   "why": "makes the callers' cards"
+  },
+  "CardEffects:AddGeneratedCardsToHand:generate": {
+   "class": "fixed",
+   "makes": [
+    "Shiv",
+    "Soul",
+    "Luminesce"
+   ],
+   "why": "makes the callers' cards (a potion's picked card comes from its screen, classed as a generator)"
+  },
+  "CardEffects:AddGeneratedStatusToDiscard:generate": {
+   "class": "fixed",
+   "makes": [
+    "Void",
+    "Burn",
+    "Dazed",
+    "Slimed",
+    "Wound"
+   ],
+   "why": "makes the callers' statuses"
+  },
+  "CardEffects:AddRandomAttackCardsToHand:generate": {
+   "class": "generator",
+   "holders": [
+    "buff:CalamityPower"
+   ],
+   "why": "random Attacks of the pool: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddRandomClassCardToHand:generate": {
+   "class": "generator",
+   "why": "a random card of the character's pool: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddRandomInfernalBladeAttack:generate": {
+   "class": "generator",
+   "why": "a random Attack of the character's pool (Feed is one): the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddRandomPoolCardToHand:generate": {
+   "class": "generator",
+   "holders": [
+    "relic:VexingPuzzlebox"
+   ],
+   "why": "a random card of the pool: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddRandomPowerCardsToHand:generate": {
+   "class": "generator",
+   "why": "random Power cards: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:AddSoulToDiscard:generate": {
+   "class": "fixed",
+   "makes": [
+    "Soul"
+   ],
+   "why": "makes Soul"
+  },
+  "CardEffects:AddSoulToHand:generate": {
+   "class": "fixed",
+   "makes": [
+    "Soul"
+   ],
+   "why": "makes Soul"
+  },
+  "CardEffects:AddSoulsToDrawPile:generate": {
+   "class": "fixed",
+   "makes": [
+    "Soul"
+   ],
+   "why": "makes Soul"
+  },
+  "CardEffects:AddZeroCostCardsToHand:generate": {
+   "class": "generator",
+   "why": "random cards at cost 0: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:ApplyCore:generate": {
+   "class": "fixed",
+   "makes": [
+    "GiantRock"
+   ],
+   "why": "makes Primal Force's Giant Rocks"
+  },
+  "CardEffects:ApplyCore:generate#2": {
+   "class": "generator",
+   "why": "Stoke: random cards for the hand it exhausts: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:ApplyCore:generate#3": {
+   "class": "generator",
+   "why": "Jack of All Trades: random Colorless cards: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:ApplyCore:generate#4": {
+   "class": "fixed",
+   "makes": [
+    "Shiv"
+   ],
+   "why": "makes Storm of Steel's Shivs"
+  },
+  "CardEffects:ApplyCore:heal": {
+   "class": "gain",
+   "why": "Not Yet heals the player"
+  },
+  "CardEffects:ApplyCore:max-hp": {
+   "class": "gain",
+   "why": "Feed's kill raises max HP and heals by as much"
+  },
+  "CardEffects:ApplyDefectCard:generate": {
+   "class": "copy-card",
+   "why": "a copy of the card played: its card is already held"
+  },
+  "CardEffects:ApplyGeneratedCardApproximation:generate": {
+   "class": "fixed",
+   "makes": [
+    "Wound"
+   ],
+   "why": "makes Overclock's Wound"
+  },
+  "CardEffects:ApplyGeneratedCardApproximation:max-hp": {
+   "class": "gain",
+   "why": "Brightest Flame lowers max HP by 1: a lower max raises L0's ratio (HP + 10 potions) / max HP"
+  },
+  "CardEffects:ApplyNecrobinderCard:generate": {
+   "class": "copy-card",
+   "why": "a copy of the card played: its card is already held"
+  },
+  "CardEffects:ApplyNecrobinderCard:heal": {
+   "class": "other",
+   "why": "Spur heals Osty, not the player"
+  },
+  "CardEffects:GainMaxHp:heal": {
+   "class": "primitive",
+   "why": "the max-HP gain helper's own body; each call of GainMaxHp is a site of its own"
+  },
+  "CardEffects:GainMaxHp:max-hp": {
+   "class": "primitive",
+   "why": "the max-HP gain helper's own body; each call of GainMaxHp is a site of its own"
+  },
+  "CardEffects:GainMaxHp:max-hp#2": {
+   "class": "primitive",
+   "why": "the max-HP gain helper's own body; each call of GainMaxHp is a site of its own"
+  },
+  "CardEffects:HealPlayer:heal": {
+   "class": "primitive",
+   "why": "the heal helper's own body; each call of HealPlayer is a site of its own"
+  },
+  "CardEffects:HealPlayer:hp": {
+   "class": "primitive",
+   "why": "the heal helper's own body; each call of HealPlayer is a site of its own"
+  },
+  "CardEffects:LoseMaxHp:hp": {
+   "class": "primitive",
+   "why": "the max-HP loss helper's own body; each call of LoseMaxHp is a site of its own"
+  },
+  "CardEffects:LoseMaxHp:max-hp": {
+   "class": "primitive",
+   "why": "the max-HP loss helper's own body; each call of LoseMaxHp is a site of its own"
+  },
+  "CardEffects:LoseMaxHp:max-hp#2": {
+   "class": "primitive",
+   "why": "the max-HP loss helper's own body; each call of LoseMaxHp is a site of its own"
+  },
+  "CardEffects:LosePlayerHp:hp": {
+   "class": "loss",
+   "why": "HP lost, floored at 0"
+  },
+  "CardEffects:OpenChoicesParadoxOffer:generate": {
+   "class": "generator",
+   "holders": [
+    "relic:ChoicesParadox"
+   ],
+   "why": "a screen of random cards: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:OpenColorlessOffer:generate": {
+   "class": "generator",
+   "why": "a screen of random Colorless cards: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:OpenGeneratedCardSelection:generate": {
+   "class": "generator",
+   "why": "a screen of random cards: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:OpenSplashSelection:generate": {
+   "class": "generator",
+   "why": "a screen of random cards of another character: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:OpenToolboxSelection:generate": {
+   "class": "generator",
+   "holders": [
+    "relic:Toolbox"
+   ],
+   "why": "a screen of random Colorless cards: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:PlayMadScience:generate": {
+   "class": "generator",
+   "why": "Mad Science's made card: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:ProcureRandomPotion:potion": {
+   "class": "gain",
+   "why": "Alchemize procures a random potion into a slot"
+  },
+  "CardEffects:SummonOsty:hp": {
+   "class": "other",
+   "why": "Osty's HP and max HP, not the player's"
+  },
+  "CardEffects:SummonOsty:max-hp": {
+   "class": "other",
+   "why": "Osty's HP and max HP, not the player's"
+  },
+  "CardEffects:TransformRandomCardInHand:generate": {
+   "class": "generator",
+   "why": "a card transformed into a random one: the pool is not proved free of a gain holder"
+  },
+  "CardEffects:TransformStatusesInHandToFuel:generate": {
+   "class": "fixed",
+   "makes": [
+    "Fuel"
+   ],
+   "why": "makes Compact's Fuel"
+  },
+  "CardUid:Fresh:generate": {
+   "class": "copy-card",
+   "why": "a fresh uid for a card instance the caller holds"
+  },
+  "CombatEngine:?:hp": {
+   "class": "copy",
+   "why": "a field of the turn-end record (the HP at the turn's start for the reward), not the state"
+  },
+  "CombatEngine:ApplyAfterCardPlayedPowers:generate": {
+   "class": "fixed",
+   "makes": [
+    "Wither"
+   ],
+   "why": "makes Wither"
+  },
+  "CombatEngine:DoomThePlayerAtTurnEnd:hp": {
+   "class": "loss",
+   "why": "the player's HP set to 0: a death"
+  },
+  "CombatEngine:EndTurn:heal": {
+   "class": "gain",
+   "holders": [
+    "buff:Regen"
+   ],
+   "why": "RegenPower's turn-end heal (core2 and old paths); the buff's appliers are holders through applies:buff:Regen"
+  },
+  "CombatEngine:EndTurn:hp": {
+   "class": "gain",
+   "holders": [
+    "buff:Regen"
+   ],
+   "why": "RegenPower's turn-end heal (core2 and old paths); the buff's appliers are holders through applies:buff:Regen"
+  },
+  "CombatEngine:EndTurn:hp#2": {
+   "class": "other",
+   "why": "an enemy's Reattach HP"
+  },
+  "CombatEngine:EndTurn:hp#3": {
+   "class": "loss",
+   "why": "the player's HP set to 0: a death"
+  },
+  "CombatEngine:FairyInABottle_AfterPreventingDeath:heal": {
+   "class": "gain",
+   "holders": [
+    "potion:FairyInABottle"
+   ],
+   "why": "Fairy in a Bottle revives the player at 30% of max HP"
+  },
+  "CombatEngine:FairyInABottle_AfterPreventingDeath:hp": {
+   "class": "gain",
+   "holders": [
+    "potion:FairyInABottle"
+   ],
+   "why": "Fairy in a Bottle revives the player at 30% of max HP"
+  },
+  "CombatEngine:FairyInABottle_AfterPreventingDeath:potion": {
+   "class": "loss",
+   "why": "a potion slot emptied"
+  },
+  "CombatEngine:ResolveCardSelection:generate": {
+   "class": "fixed",
+   "makes": [
+    "Soul"
+   ],
+   "why": "makes Soul"
+  },
+  "CombatEngine:ResolveCardSelection:generate#2": {
+   "class": "fixed",
+   "makes": [
+    "MinionStrike"
+   ],
+   "why": "makes a minion card"
+  },
+  "CombatEngine:ResolveCardSelection:generate#3": {
+   "class": "fixed",
+   "makes": [
+    "MinionSacrifice"
+   ],
+   "why": "makes a minion card"
+  },
+  "CombatEngine:ResolveCardSelection:generate#4": {
+   "class": "fixed",
+   "makes": [
+    "MinionDiveBomb"
+   ],
+   "why": "makes a minion card"
+  },
+  "CombatEngine:ResolvePlayRepetition:generate": {
+   "class": "copy-card",
+   "why": "a copy of the card played: its card is already held"
+  },
+  "CombatEngine:RespawnTestSubject:hp": {
+   "class": "other",
+   "why": "an enemy's HP (respawn, phase change, Fur Coat's bite)"
+  },
+  "CombatEngine:RespawnTestSubject:hp#2": {
+   "class": "other",
+   "why": "an enemy's HP (respawn, phase change, Fur Coat's bite)"
+  },
+  "CombatEngine:TryRespawnAxebot:hp": {
+   "class": "other",
+   "why": "an enemy's HP (respawn, phase change, Fur Coat's bite)"
+  },
+  "CombatEngine:UsePotion:potion": {
+   "class": "loss",
+   "why": "a potion slot emptied"
+  },
+  "CombatFactory:NewCombat:hp": {
+   "class": "setup",
+   "why": "building a combat, before its first decision"
+  },
+  "CombatFactory:NewCombat:max-hp": {
+   "class": "setup",
+   "why": "building a combat, before its first decision"
+  },
+  "CombatFactory:Reset:hp": {
+   "class": "setup",
+   "why": "building a combat, before its first decision"
+  },
+  "CombatFactory:Reset:max-hp": {
+   "class": "setup",
+   "why": "building a combat, before its first decision"
+  },
+  "CombatFactory:Reset:potion": {
+   "class": "setup",
+   "why": "building a combat, before its first decision"
+  },
+  "CombatState:?:potion": {
+   "class": "setup",
+   "why": "building a combat, before its first decision"
+  },
+  "CreatureCmd.Hp:GainMaxHp:heal": {
+   "class": "primitive",
+   "why": "Core2's HP commands' own bodies; each call of CreatureCmd.Heal, SetCurrentHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp or SetMaxHp is a site of its own"
+  },
+  "CreatureCmd.Hp:GainMaxHp:max-hp": {
+   "class": "primitive",
+   "why": "Core2's HP commands' own bodies; each call of CreatureCmd.Heal, SetCurrentHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp or SetMaxHp is a site of its own"
+  },
+  "CreatureCmd.Hp:LoseMaxHp:max-hp": {
+   "class": "primitive",
+   "why": "Core2's HP commands' own bodies; each call of CreatureCmd.Heal, SetCurrentHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp or SetMaxHp is a site of its own"
+  },
+  "CreatureCmd.Hp:SetCurrentHpInternal:hp": {
+   "class": "primitive",
+   "why": "Core2's HP commands' own bodies; each call of CreatureCmd.Heal, SetCurrentHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp or SetMaxHp is a site of its own"
+  },
+  "CreatureCmd.Hp:SetMaxAndCurrentHp:hp": {
+   "class": "primitive",
+   "why": "Core2's HP commands' own bodies; each call of CreatureCmd.Heal, SetCurrentHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp or SetMaxHp is a site of its own"
+  },
+  "CreatureCmd.Hp:SetMaxAndCurrentHp:max-hp": {
+   "class": "primitive",
+   "why": "Core2's HP commands' own bodies; each call of CreatureCmd.Heal, SetCurrentHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp or SetMaxHp is a site of its own"
+  },
+  "CreatureCmd.Hp:SetMaxHpInternal:hp": {
+   "class": "primitive",
+   "why": "Core2's HP commands' own bodies; each call of CreatureCmd.Heal, SetCurrentHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp or SetMaxHp is a site of its own"
+  },
+  "CreatureCmd.Hp:SetMaxHpInternal:max-hp": {
+   "class": "primitive",
+   "why": "Core2's HP commands' own bodies; each call of CreatureCmd.Heal, SetCurrentHp, SetMaxAndCurrentHp, GainMaxHp, LoseMaxHp or SetMaxHp is a site of its own"
+  },
+  "CreatureCmd.Kill:KillWithoutCheckingWinCondition:hp": {
+   "class": "loss",
+   "why": "a kill sets HP to 0"
+  },
+  "CreatureCmd:LoseHpInternal:hp": {
+   "class": "loss",
+   "why": "HP lost, floored at 0"
+  },
+  "EnemyAI:AddStatus:generate": {
+   "class": "fixed",
+   "makes": [
+    "Beckon",
+    "Burn",
+    "Dazed",
+    "Infection",
+    "Slimed",
+    "Wither",
+    "Wound"
+   ],
+   "why": "makes the enemies' statuses"
+  },
+  "EnemyAI:AddStatusToHand:generate": {
+   "class": "fixed",
+   "makes": [
+    "Burn",
+    "Toxic"
+   ],
+   "why": "makes the enemies' statuses"
+  },
+  "EnemyAI:ApplyBuffIntent:heal": {
+   "class": "other",
+   "why": "an enemy heals itself"
+  },
+  "EnemyAI:AwaitCurseOfKnowledge:generate": {
+   "class": "safe",
+   "why": "the Knowledge Demon's choice of Disintegration or a curse (RunConstants.CurseOfKnowledgePairs): a status and curses, none with a heal, max-HP or potion effect"
+  },
+  "EnemyAI:ExecuteIntent:heal": {
+   "class": "other",
+   "why": "an enemy heals itself"
+  },
+  "EnemyAI:PaperCuts_AfterDamageGiven:hp": {
+   "class": "loss",
+   "why": "HP capped at the lowered max: never raised (the max's own change is the gain site)"
+  },
+  "EnemyAI:PaperCuts_AfterDamageGiven:max-hp": {
+   "class": "gain",
+   "holders": [
+    "buff:PaperCuts"
+   ],
+   "why": "Paper Cuts lowers the player's max HP on an unblocked hit: a lower max raises L0's ratio; the enemies applying it are holders through applies:buff:PaperCuts"
+  },
+  "EnemyAI:PaperCuts_AfterDamageGiven:max-hp#2": {
+   "class": "gain",
+   "holders": [
+    "buff:PaperCuts"
+   ],
+   "why": "Paper Cuts lowers the player's max HP on an unblocked hit: a lower max raises L0's ratio; the enemies applying it are holders through applies:buff:PaperCuts"
+  },
+  "EnemyAI:TheGambit_AfterDamageReceived:hp": {
+   "class": "loss",
+   "why": "the player's HP set to 0: a death"
+  },
+  "EnemyAI:TriggerAboutToBlow:hp": {
+   "class": "other",
+   "why": "an enemy's HP (respawn, phase change, Fur Coat's bite)"
+  },
+  "FightAnchor:Anchor:hp": {
+   "class": "copy",
+   "why": "the re-anchor to the real game's values, between steps, never inside a solved step"
+  },
+  "FightAnchor:Anchor:max-hp": {
+   "class": "copy",
+   "why": "the re-anchor to the real game's values, between steps, never inside a solved step"
+  },
+  "FightAnchor:PatchPotions:potion": {
+   "class": "copy",
+   "why": "the re-anchor to the real game's values, between steps, never inside a solved step"
+  },
+  "FightAnchor:PatchPotions:potion#2": {
+   "class": "copy",
+   "why": "the re-anchor to the real game's values, between steps, never inside a solved step"
+  },
+  "OldState:SetHp:hp": {
+   "class": "primitive",
+   "why": "the OldState adapter's HP and max-HP setters; their callers (Core2's commands) are sites of their own"
+  },
+  "OldState:SetMaxHp:max-hp": {
+   "class": "primitive",
+   "why": "the OldState adapter's HP and max-HP setters; their callers (Core2's commands) are sites of their own"
+  },
+  "PaperCutsPower:AfterDamageGiven:max-hp": {
+   "class": "gain",
+   "why": "Core2's Paper Cuts (LoseMaxHp): a lower max raises L0's ratio"
+  },
+  "PotionEffects:Apply:generate": {
+   "class": "generator",
+   "why": "a screen of random Attacks: the pool is not proved free of a gain holder"
+  },
+  "PotionEffects:Apply:generate#2": {
+   "class": "generator",
+   "why": "a screen of random Colorless cards: the pool is not proved free of a gain holder"
+  },
+  "PotionEffects:Apply:generate#3": {
+   "class": "generator",
+   "why": "a screen of random Powers: the pool is not proved free of a gain holder"
+  },
+  "PotionEffects:Apply:generate#4": {
+   "class": "generator",
+   "why": "a screen of random Skills: the pool is not proved free of a gain holder"
+  },
+  "PotionEffects:Apply:heal": {
+   "class": "gain",
+   "why": "Blood Potion heals 20% of max HP"
+  },
+  "PotionEffects:Apply:max-hp": {
+   "class": "gain",
+   "why": "Fruit Juice raises max HP by 5 and heals by as much"
+  },
+  "PotionEffects:Apply:potion": {
+   "class": "gain",
+   "why": "Entropic Brew fills the empty slots with random potions"
+  },
+  "PotionEffects:TryToProcure:potion": {
+   "class": "primitive",
+   "why": "the procure helper's own body; each call of TryToProcure is a site of its own"
+  },
+  "RelicEffects:ApplyAfterDiedToDoom:heal": {
+   "class": "gain",
+   "holders": [
+    "relic:BookRepairKnife"
+   ],
+   "why": "Book Repair Knife heals 3 per enemy killed by Doom"
+  },
+  "RelicEffects:ApplyAfterGoldGained:max-hp": {
+   "class": "run",
+   "why": "the RunState overloads: rest sites, room entry, the boss's room, gold between combats"
+  },
+  "RelicEffects:ApplyAfterGoldGained:max-hp#2": {
+   "class": "gain",
+   "holders": [
+    "relic:DragonFruit"
+   ],
+   "why": "Dragon Fruit raises max HP by 1 when gold is gained in the combat (Hand of Greed and the like)"
+  },
+  "RelicEffects:ApplyAfterPlayerTurnStartLate:heal": {
+   "class": "gain",
+   "holders": [
+    "relic:BloodVial"
+   ],
+   "why": "Blood Vial heals 2 at the first turn's start"
+  },
+  "RelicEffects:ApplyAfterPlayerTurnStartLate:heal#2": {
+   "class": "gain",
+   "holders": [
+    "relic:FakeBloodVial"
+   ],
+   "why": "Fake Blood Vial heals 1 at the first turn's start"
+  },
+  "RelicEffects:ApplyAfterRoomEntered:hp": {
+   "class": "run",
+   "why": "the RunState overloads: rest sites, room entry, the boss's room, gold between combats"
+  },
+  "RelicEffects:ApplyAfterRoomEntered:hp#2": {
+   "class": "run",
+   "why": "the RunState overloads: rest sites, room entry, the boss's room, gold between combats"
+  },
+  "RelicEffects:ApplyBeforeBossCombat:hp": {
+   "class": "run",
+   "why": "the RunState overloads: rest sites, room entry, the boss's room, gold between combats"
+  },
+  "RelicEffects:ApplyBeforeOpeningHand:potion": {
+   "class": "setup",
+   "why": "Petrified Toad's potion before the combat's opening hand (BeforeCombatStartLate), before any decision"
+  },
+  "RelicEffects:BiteForFurCoat:hp": {
+   "class": "other",
+   "why": "an enemy's HP (respawn, phase change, Fur Coat's bite)"
+  },
+  "RelicEffects:DemonTongue_AfterDamageReceived:heal": {
+   "class": "gain",
+   "holders": [
+    "relic:DemonTongue"
+   ],
+   "why": "Demon Tongue heals the first unblocked damage of each turn"
+  },
+  "RelicEffects:LizardTail_AfterPreventingDeath:heal": {
+   "class": "gain",
+   "holders": [
+    "relic:LizardTail"
+   ],
+   "why": "Lizard Tail revives the player at 50% of max HP"
+  },
+  "RelicEffects:LizardTail_AfterPreventingDeath:hp": {
+   "class": "gain",
+   "holders": [
+    "relic:LizardTail"
+   ],
+   "why": "Lizard Tail revives the player at 50% of max HP"
+  },
+  "RunRewardGenerator:AddPotion:potion": {
+   "class": "run",
+   "why": "a reward or shop potion, on the RunState between combats"
+  },
+  "RunRewardGenerator:AddPotionAt:potion": {
+   "class": "run",
+   "why": "a reward potion into a chosen slot, on the RunState between combats"
+  },
+  "RunRewardGenerator:EnterShop:hp": {
+   "class": "run",
+   "why": "Meal Ticket's heal on entering a shop, on the RunState"
+  },
+  "RunRewardGenerator:GenerateCombatRewards:hp": {
+   "class": "end",
+   "holder": "relic:BurningBlood",
+   "constant": 6,
+   "applied": "after-terminal",
+   "why": "Burning Blood heals 6 after a won combat. GenerateCombatRewards runs on the RunState after the combat: the solver steps a combat on its own and its end is the step's terminal result (KernelGate.BareHost.EndCombat), so the terminal is scored before this heal"
+  },
+  "RunRewardGenerator:GenerateCombatRewards:hp#2": {
+   "class": "end",
+   "holder": "relic:BlackBlood",
+   "constant": 12,
+   "applied": "after-terminal",
+   "why": "Black Blood heals 12 after a won combat. GenerateCombatRewards runs on the RunState after the combat: the solver steps a combat on its own and its end is the step's terminal result (KernelGate.BareHost.EndCombat), so the terminal is scored before this heal"
+  },
+  "RunRewardGenerator:GenerateCombatRewards:hp#3": {
+   "class": "end",
+   "holder": "relic:MeatOnTheBone",
+   "constant": 12,
+   "applied": "after-terminal",
+   "why": "Meat on the Bone heals 12 after a won combat at or below half HP. GenerateCombatRewards runs on the RunState after the combat: the solver steps a combat on its own and its end is the step's terminal result (KernelGate.BareHost.EndCombat), so the terminal is scored before this heal"
+  },
+  "RunRewardGenerator:GenerateCombatRewards:max-hp": {
+   "class": "end",
+   "holder": "relic:ChosenCheese",
+   "constant": 1,
+   "applied": "after-terminal",
+   "why": "Chosen Cheese: max HP +1 and a heal of 1 after the combat. GenerateCombatRewards runs on the RunState after the combat: the solver steps a combat on its own and its end is the step's terminal result (KernelGate.BareHost.EndCombat), so the terminal is scored before this heal"
+  },
+  "StateCloning:Clone:generate": {
+   "class": "copy",
+   "why": "a state copy: the same values"
+  },
+  "StateCloning:Clone:hp": {
+   "class": "copy",
+   "why": "a state copy: the same values"
+  },
+  "StateCloning:Clone:max-hp": {
+   "class": "copy",
+   "why": "a state copy: the same values"
+  },
+  "StateCloning:Clone:potion": {
+   "class": "copy",
+   "why": "a state copy: the same values"
+  },
+  "StateCloning:CopyTo:hp": {
+   "class": "copy",
+   "why": "a state copy: the same values"
+  },
+  "StateCloning:CopyTo:max-hp": {
+   "class": "copy",
+   "why": "a state copy: the same values"
+  },
+  "StateCloning:CopyTo:potion": {
+   "class": "copy",
+   "why": "a state copy: the same values"
+  }
+ },
+ "files": {
+  "src/Sts2Emulator/Core/Run/RunEngine.cs": {
+   "lines": 41,
+   "why": "the run's own code, between combats: a combat the solver steps runs on its own (KernelGate.BareHost.EndCombat ends it at the terminal), so no run code runs inside a solved step"
+  },
+  "src/Sts2Emulator/Core/Run/RunNonCombatEffects.cs": {
+   "lines": 33,
+   "why": "events, rest sites and rewards between combats"
+  },
+  "src/Sts2Emulator/Core/Run/RunPotionUse.cs": {
+   "lines": 4,
+   "why": "potions used outside a combat (the map)"
+  },
+  "src/Sts2Emulator/Core/Run/RunState.cs": {
+   "lines": 1,
+   "why": "the run's own state"
+  },
+  "src/Sts2Emulator/Interop/CombatSnapshot.cs": {
+   "lines": 5,
+   "why": "a snapshot's load and save, outside a step"
+  },
+  "src/Sts2Emulator/Interop/NativeExports.cs": {
+   "lines": 5,
+   "why": "the native API's setup and reads, outside a step"
+  },
+  "src/Sts2Emulator/Interop/RunNativeExports.cs": {
+   "lines": 3,
+   "why": "the run API, between combats"
+  }
+ }
+}
