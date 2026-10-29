@@ -51,7 +51,7 @@ def _placeholder(kind: str, entry: str) -> list[str]:
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "selfplay": {"enabled": False, "cmd": _placeholder("selfplay", "rl/run_train/cli.py"), "cwd": "{tree}", "timeout_min": 60,
-                 "share": 0.0, "needs": []},
+                 "share": 0.0, "share_days": 7.0, "needs": []},
     "train": {"enabled": True, "cmd": _placeholder("train", "rl/run_train/cli.py"), "cwd": "{tree}", "timeout_min": 60, "gpu": True,
               "needs": []},
     "score-real": {"enabled": True, "cmd": _placeholder("score-real", "rl/score_real.py"), "cwd": "{tree}", "timeout_min": 240,

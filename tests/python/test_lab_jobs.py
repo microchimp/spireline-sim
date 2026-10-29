@@ -215,6 +215,17 @@ class LadderTest(Base):
         self.window({"selfplay": 300.0}, days_ago=6.5)  # inside the window it counts again
         self.assertEqual("fights", r.choose("abc")[0])
 
+    def test_share_days_sets_the_window_so_one_burst_does_not_lock_the_loop_out_for_a_week(self):
+        r = self.fights_only()
+        self.config(selfplay={"share": 0.5, "share_days": 2.0})
+        self.window({"selfplay": 600.0, "train": 300.0}, days_ago=3.0)  # a burst three days back: outside a two-day window
+        self.window({"aimed-bugs": 90.0, "selfplay": 10.0}, days_ago=1.0)
+        self.assertEqual("selfplay", r.choose("abc")[0])  # 10 of 100 in the window
+        self.config(selfplay={"share": 0.5, "share_days": 7.0})
+        self.assertEqual("fights", r.choose("abc")[0])  # 910 of 1,000 over seven days: the burst counts
+        self.config(selfplay={"share": 0.5})
+        self.assertEqual("fights", r.choose("abc")[0])  # the default window is still seven days
+
     def test_no_cpu_in_the_window_means_selfplay_first_and_the_log_says_so(self):
         r = self.fights_only()
         self.window({"selfplay": 600.0, "aimed-bugs": 400.0}, days_ago=9.0)  # only old rows: an empty window

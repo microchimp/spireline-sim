@@ -549,8 +549,9 @@ class Runner:
 
     def ladder_top(self, sha: str) -> str:
         """The agent-era kinds that outrank the fights rotation (docs/PLAN.md section 7), highest priority first: score-real (2),
-        train (3), selfplay when the loop (selfplay + train + score-real) has not yet used its configured share of the last 7 days' CPU
-        (6, `share` in LAB/jobs.json; an empty window means self-play first; all-time `strategy_cpu` is a statistic only), the
+        train (3), selfplay when the loop (selfplay + train + score-real) has not yet used its configured share of the last `share_days`
+        days' CPU (6, `share` and `share_days` in LAB/jobs.json, default 7 days; a short window keeps the loop running daily instead
+        of in bursts; an empty window means self-play first; all-time `strategy_cpu` is a statistic only), the
         benches (7, nightly, the lab otherwise idle: a running job was resumed before this point and a ready score-real or
         train came first). Presort (1) is decided before, aimed fights (4), runs and rank (5) and the rest (7) by the rotation and the
         mix. A kind that is off or not ready is passed over quietly (its reason is only logged when it was due)."""
@@ -565,11 +566,12 @@ class Runner:
                 return kind
         share = float(cfg["selfplay"].get("share") or 0)
         if share > 0 and cfg["selfplay"].get("enabled"):
-            loop, total, by = mix.loop_cpu(self.lab.root)  # the loop's share of the last 7 days, not of all time
-            note = (f"self-play loop: {100 * loop / total:.1f}% of the last {mix.WINDOW_DAYS} days' CPU "
+            days = float(cfg["selfplay"].get("share_days") or mix.WINDOW_DAYS)  # the span the share is judged over, not all time
+            loop, total, by = mix.loop_cpu(self.lab.root, days=days)
+            note = (f"self-play loop: {100 * loop / total:.1f}% of the last {days:g} days' CPU "
                     f"({', '.join(f'{k} {by.get(k, 0.0):.0f}' for k in jobs.LOOP_KINDS)} of {total:.0f} min) against its share "
                     f"{100 * share:.0f}%" if total > 0 else
-                    f"self-play loop: no CPU in the last {mix.WINDOW_DAYS} days in LAB/yield.tsv: self-play first")
+                    f"self-play loop: no CPU in the last {days:g} days in LAB/yield.tsv: self-play first")
             if note != self.last_loop_note:
                 self.last_loop_note = note
                 self.log(note)
