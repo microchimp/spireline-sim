@@ -800,3 +800,42 @@ engine round's `All`; natively `PRUNE_ALL` is 1023, `PRUNE_NO_BOUNDS` 63).
   in the root value or any root move's value, 31 exact with the bounds on and none with them off (59 refused alike); at
   horizon 1, on every third of those, 120 completed on both, 0 differences, 26 exact against 16. A gain the registry
   missed would show here wherever it decides a closed node or a cut.
+
+## 20. The root checks and M1 as built (the shape review's question)
+
+M1 asks whether the night's player (search config a3-v1) loses value where the solver knows the answer, before more
+solver work. Regret and the checks read the expected solve (`ExpectedSolve`) only; the hindsight bound is never read.
+
+- **The check utilities** (`UtilityKind`, `SolveOptions.Utility`; natively `utility` 3 and 4, `native.UTILITY_LETHAL` and
+  `UTILITY_SURVIVAL`; 1 and 2 stay kept for SearchHp and L0Priced). A win scores 1 and a death 0. **Lethal**: a horizon
+  leaf scores 0, so at horizon 0 a move's value is its chance to win before the turn's end-turn move (a win in the end
+  turn's own step, such as damage at the turn's end, is past the leaf). **Survival**: a horizon leaf scores 1, and so does
+  a living player's decision with no screen pending on a turn past the horizon's last (ending the turn there is a leaf of
+  value 1, the utility's maximum); at horizon 1 a move's value is its chance to be alive, or to have won, at the first
+  decision after the enemy's coming turn. A check solves once at `MaxHorizon` (no deepening, no size estimate), on a fresh
+  table (one per potion mask and utility natively), without the tight utility bound (it bounds L0); it is exact unless a
+  roll wider than the cap was met, which is the only leaf of unknown value. The exactness rule of section 14 and the
+  table's kinds are unchanged: a horizon leaf's bound stays 1 and its value is a horizon value, reused at its turns left
+  only. L0 is untouched (`EqualValueHarnessTests`, both byte proofs). `CheckUtilityTests` holds the pruned solver under ten
+  pruning sets to the reference under each check utility on a fixed quarter of the harness's recipes (lethal at horizon 0)
+  and an eighth (survival at horizon 1), and the deepening's fixed-horizon solve to the same.
+- **coverage.py.** `solve` keeps the root (`q` as `[[action, target, value], ...]`, `best`, `value`, `exact_mass`) and takes
+  `--utility`, `--horizon` and `--ids-file`; `played` replays the collect's runs exactly and reads the agent's move as
+  applied at every sampled decision by wrapping `native.run_step` (the call unchanged), checking each decision's document
+  against the one solved; `regret` joins them (`regret.json`, `regret_rows.jsonl`). The played move maps onto the solver's
+  keys directly, as a move without a target, or as the earlier equal card, potion or enemy it was merged into.
+- **Measured** (2026-10-29, the 696 decisions of 40 fights of the coverage sample, 6 workers at BelowNormal, the bounds
+  round's solver). The replay reproduced 21 of the 23 runs' floor and end; the other two died two floors later than the
+  arm, past their sampled fights, and all 696 decisions' documents equal the ones solved. Every played move mapped
+  directly (the agent's targets follow the solver's convention: -1 for none, else the enemy's index).
+  - L0 at 25 s on the 113 decisions exact in the bounds or engine round (all exact again): mean regret 0.00009 L0 per
+    decision, 0.00026 L0 and 0.04 HP per fight over the 40 fights; one decision lost over 0.01 L0 (0.0104, 1.7 HP, a
+    hallway with one turn left); 73 of the 113 decisive.
+  - Lethal at horizon 0, 1 s: finished on 589 of the 696 (71 refused at the wall, 36 cut by a wide roll); a certain
+    lethal on 38; missed on 1 (a boss fight's last turn, 2.5 per 100 fights), with no L0 loss there: the fight was won the
+    same turn and L0 values the played move at the best.
+  - Survival at horizon 1, 10 s: finished on 505 (173 refused at the wall, 18 cut by a wide roll); certain survival on 465;
+    missed on 5 decisions in 5 fights (12.5 per 100 fights), each on the death turn of a lost fight, where the played
+    move's chance was 0, 1/3, 3/8, 1/2 and 3/4.
+  - By the shape review's rule (under 1 miss per 100 fights and under 0.2 HP of regret per fight, else S5 root-only) the
+    next solver work is the S5 root check: the exact lethal and forced-survival check at the root.
