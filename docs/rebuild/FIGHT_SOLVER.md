@@ -786,3 +786,17 @@ engine round's `All`; natively `PRUNE_ALL` is 1023, `PRUNE_NO_BOUNDS` 63).
   `no-closure`, `no-branch-bound`, `no-closer-first` and `closer-first-only`, each against the reference with the
   configuration's bound. `UtilityBoundTests`: the registry, the bound's arithmetic and holders, a bound entry never read as
   a value, and every root move valued as with the bounds off.
+- **Measured** (2026-10-29, single process for the speed, the same 696 decisions as the baseline, 25 s wall, 6 workers).
+  Exact within 0.01/0.1/1/10 s: 4.0/5.6/6.9/7.2% before (the engine round), 8.9/12.8/14.9/16.0% after; 0 turns left
+  43.6% to 72.3% at 10 s, 1 left 3.8% to 20.4%, 2 left 0% to 4.5%, 3 and more 0%; censored by the wall 468 to 434;
+  refusals 57 to 56 (all budget). The bound was on at the root of 493 of the 696 (70.8%); the holders that turned it off
+  there: Infernal Blade 57, Blood Vial 34, Distraction 30, Skill Potion 26, Attack Potion 21, Regen 14. Over the 696
+  solves 928,670 nodes closed and 139 moves cut (all after their step), 32 table bounds stored and 1 reused. On the
+  24-decision speed subset at 2,000 nodes the speed is unchanged (391 against 392 nodes/s, the engine step 91% of the
+  time; the registry's check sits in the remainder, 0.6% to 1.0%), and with the bounds off every decision's status,
+  nodes, steps and horizon equal the engine round's.
+- **Pruned against pruned on the real decisions** (EmuDump under the JIT, exact rationals, bounds on against `NoBounds`
+  at a fixed horizon, 300,000 nodes and 15 s each): at horizon 0, 637 of the 696 completed on both sides, 0 differences
+  in the root value or any root move's value, 31 exact with the bounds on and none with them off (59 refused alike); at
+  horizon 1, on every third of those, 120 completed on both, 0 differences, 26 exact against 16. A gain the registry
+  missed would show here wherever it decides a closed node or a cut.
