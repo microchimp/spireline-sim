@@ -21,7 +21,9 @@ public static class Reference
     /// <param name="tightBound">Horizon leaves and wide rolls carry the tight utility bound (<see cref="UtilityGains.Upper" />)
     /// where no gain is reachable, as the pruned solver's with <see cref="Pruning.UtilityBound" />: the same full tree, so
     /// the closure and the cuts are held to it.</param>
-    public static Result Solve(CombatState state, CountingRandom rng, int horizon, long nodeCap = 2_000_000, int widthCap = 32, bool tightBound = false)
+    /// <param name="utility">The utility (<see cref="UtilityKind" />): a check utility's leaves and ends, never with the tight bound.</param>
+    public static Result Solve(CombatState state, CountingRandom rng, int horizon, long nodeCap = 2_000_000, int widthCap = 32, bool tightBound = false,
+        UtilityKind utility = UtilityKind.L0)
     {
         var c = new SolveCounters();
         c.Check = () =>
@@ -38,13 +40,14 @@ public static class Reference
             var values = new List<NodeValue>();
             foreach (var m in Actions.Legal(state, Pruning.None))
             {
-                var v = MoveValueOf(state, rng, m, horizon, c, widthCap, tightBound);
+                var v = MoveValueOf(state, rng, m, horizon, c, widthCap, tightBound, utility);
                 moves.Add(new MoveValue(m, v.Value, v.Exact));
                 values.Add(v);
             }
 
-            var b = NodeValue.Max(values, state);
-            return new Result(b.Value, b.Exact && b.Mass == Rational.One, moves, c.Nodes, c.Steps, null);
+            var b = NodeValue.Max(values, state, utility);
+            bool exact = utility != UtilityKind.L0 ? c.WideRollLeaves == 0 : b.Exact && b.Mass == Rational.One;
+            return new Result(b.Value, exact, moves, c.Nodes, c.Steps, null);
         }
         catch (SolveRefused e)
         {
@@ -60,27 +63,33 @@ public static class Reference
         }
     }
 
-    static NodeValue Node(CombatState s, CountingRandom rng, int remaining, SolveCounters c, int widthCap, bool tight)
+    static NodeValue Node(CombatState s, CountingRandom rng, int remaining, SolveCounters c, int widthCap, bool tight, UtilityKind u)
     {
         c.Nodes++;
         c.Check?.Invoke();
 
         // The key is not used, but a position the key refuses (a busy kernel queue) is refused here too.
         StateKey.Encode(s, KeyMode.Expected);
+        if (Utility.SurvivalLeaf(u, s, remaining))
+        {
+            return NodeValue.Horizon(s, u);
+        }
+
         var values = new List<NodeValue>();
         foreach (var m in Actions.Legal(s, Pruning.None))
         {
-            values.Add(MoveValueOf(s, rng, m, remaining, c, widthCap, tight));
+            values.Add(MoveValueOf(s, rng, m, remaining, c, widthCap, tight, u));
         }
 
-        return NodeValue.Max(values, s);
+        return NodeValue.Max(values, s, u);
     }
 
-    static NodeValue MoveValueOf(CombatState s, CountingRandom rng, Move m, int remaining, SolveCounters c, int widthCap, bool tight)
+    static NodeValue MoveValueOf(CombatState s, CountingRandom rng, Move m, int remaining, SolveCounters c, int widthCap, bool tight, UtilityKind u)
     {
+        tight &= u == UtilityKind.L0;
         if (Actions.EndsTurn(s, m) && remaining <= 0)
         {
-            return tight ? NodeValue.Horizon(s, UtilityGains.Upper(s)) : NodeValue.Horizon(s);
+            return u != UtilityKind.L0 ? NodeValue.Horizon(s, u) : tight ? NodeValue.Horizon(s, UtilityGains.Upper(s)) : NodeValue.Horizon(s);
         }
 
         var value = Rational.Zero;
@@ -89,7 +98,8 @@ public static class Reference
         bool exact = true;
         foreach (var o in Successors.Expand(s, rng, m, byCard: true, widthCap, c))
         {
-            var v = o.WideRoll ? (tight ? NodeValue.Horizon(s, UtilityGains.Upper(s)) : NodeValue.Horizon(s)) : o.Result.Terminal ? NodeValue.End(o.State, o.Result.PlayerWon) : Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn), c, widthCap, tight);
+            var v = o.WideRoll ? (u != UtilityKind.L0 ? NodeValue.Horizon(s, u) : tight ? NodeValue.Horizon(s, UtilityGains.Upper(s)) : NodeValue.Horizon(s))
+                : o.Result.Terminal ? NodeValue.End(o.State, o.Result.PlayerWon, u) : Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn), c, widthCap, tight, u);
             value += o.P * v.Value;
             mass += o.P * v.Mass;
             upper += o.P * v.Upper;

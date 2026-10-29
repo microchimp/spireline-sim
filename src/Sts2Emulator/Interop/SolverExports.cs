@@ -118,21 +118,21 @@ public unsafe struct CurveEntryNative
 
 public static class SolverExports
 {
-    /// <summary>A solver handle: the options it was made with, its tables for the fight (one per potion mask) and the hindsight flag.</summary>
+    /// <summary>A solver handle: the options it was made with, its tables for the fight (one per potion mask and utility) and the hindsight flag.</summary>
     internal sealed class NativeSolver(SolveOptions options, bool allowHindsight)
     {
         public readonly SolveOptions Options = options;
         public readonly bool AllowHindsight = allowHindsight;
-        public readonly Dictionary<int, TranspositionTable> Tables = [];
+        public readonly Dictionary<(int Mask, UtilityKind Utility), TranspositionTable> Tables = [];
 
         /// <summary>The last expected solve's stats object (<see cref="SolverStatsJson" />), for <c>Sts2_SolverStats</c>.</summary>
         public System.Text.Json.Nodes.JsonObject? LastStats;
 
-        public TranspositionTable TableFor(int mask)
+        public TranspositionTable TableFor(int mask, UtilityKind utility = UtilityKind.L0)
         {
-            if (!Tables.TryGetValue(mask, out var t))
+            if (!Tables.TryGetValue((mask, utility), out var t))
             {
-                Tables[mask] = t = new TranspositionTable();
+                Tables[(mask, utility)] = t = new TranspositionTable();
             }
 
             return t;
@@ -141,7 +141,12 @@ public static class SolverExports
 
     static readonly NativeSolver?[] _solvers = new NativeSolver?[256];
 
-    internal const string OnlyL0 = "utility: only L0 (0) is built; SearchHp and L0Priced come with the oracle (S5)";
+    internal const string OnlyL0 = "utility: L0 (0), Lethal (3) and Survival (4) are built; SearchHp and L0Priced come with the oracle (S5)";
+
+    internal const string CurveOnlyL0 = "utility: the potion curve is L0's (0)";
+
+    /// <summary>Whether the options' utility is one the solver has: L0 (0), Lethal (3) or Survival (4).</summary>
+    static unsafe bool UtilityBuilt(SolveOptionsNative* o) => o is null || o->Utility is (int)UtilityKind.L0 or (int)UtilityKind.Lethal or (int)UtilityKind.Survival;
 
     /// <summary>The options a native struct gives over <paramref name="basis" /> (null: the basis).</summary>
     internal static unsafe SolveOptions Options(SolveOptionsNative* o, SolveOptions basis)
@@ -162,6 +167,7 @@ public static class SolverExports
             ChanceWidthCap = o->ChanceWidthCap > 0 ? o->ChanceWidthCap : d.ChanceWidthCap,
             AllowedPotions = ~o->ForbiddenPotions,
             UseEstimate = o->UseEstimate != 0,
+            Utility = (UtilityKind)o->Utility,
         };
     }
 
@@ -188,7 +194,7 @@ public static class SolverExports
                 return Fail("unknown combat handle", -1);
             }
 
-            if (options is not null && options->Utility != 0)
+            if (!UtilityBuilt(options))
             {
                 return Fail(OnlyL0, -3);
             }
@@ -248,15 +254,15 @@ public static class SolverExports
                 return Fail("unknown solver or combat handle", -1);
             }
 
-            if (options is not null && options->Utility != 0)
+            if (!UtilityBuilt(options))
             {
                 return Fail(OnlyL0, -3);
             }
 
             var opts = Options(options, sv.Options);
-            var r = SolverService.SolveExpected(state, rng, opts, sv.TableFor(opts.AllowedPotions));
+            var r = SolverService.SolveExpected(state, rng, opts, sv.TableFor(opts.AllowedPotions, opts.Utility));
             sv.LastStats = SolverStatsJson.Of(r);
-            WriteExpected(state, r, result, qBuf, maxActions, opts.AllowedPotions);
+            WriteExpected(state, r, result, qBuf, maxActions, opts.AllowedPotions, opts.Utility);
             if (r.Status == SolveStatus.Refused)
             {
                 NativeExports.Refuse(r.Reason ?? "refused");
@@ -270,7 +276,8 @@ public static class SolverExports
         }
     }
 
-    internal static unsafe void WriteExpected(CombatState state, ExpectedResult r, ExpectedResultNative* result, float* qBuf, int maxActions, int allowedPotions = -1)
+    internal static unsafe void WriteExpected(CombatState state, ExpectedResult r, ExpectedResultNative* result, float* qBuf, int maxActions, int allowedPotions = -1,
+        UtilityKind utility = UtilityKind.L0)
     {
         if (result is not null)
         {
@@ -285,7 +292,7 @@ public static class SolverExports
                 BestAction = best?.Action ?? -1,
                 BestTarget = best?.Target ?? -1,
                 QStride = SolverService.QStride,
-                UtilityKind = 0,
+                UtilityKind = (int)utility,
                 Value = refused ? double.NaN : r.Value.ToDouble(),
                 ExactMass = refused ? double.NaN : r.ExactMass.ToDouble(),
                 Seconds = r.Seconds,
@@ -401,13 +408,14 @@ public static class SolverExports
                 return Fail("unknown solver or combat handle", -1);
             }
 
-            if (options is not null && options->Utility != 0)
+            var curveOpts = Options(options, sv.Options);
+            if (!UtilityBuilt(options) || curveOpts.Utility != UtilityKind.L0)
             {
-                return Fail(OnlyL0, -3);
+                return Fail(UtilityBuilt(options) ? CurveOnlyL0 : OnlyL0, -3);
             }
 
             var held = PotionCurve.HeldSlots(state);
-            var curve = SolverService.SolvePotionCurve(state, rng, Options(options, sv.Options), buf is null ? 0 : maxSubsets);
+            var curve = SolverService.SolvePotionCurve(state, rng, curveOpts, buf is null ? 0 : maxSubsets);
             for (int i = 0; i < curve.Count; i++)
             {
                 WriteCurveEntry(curve[i], held, buf + i);
@@ -522,7 +530,7 @@ public static class SolverExports
             ["native_api_version"] = NativeExports.NATIVE_API_VERSION,
             ["prunings"] = prunings,
             ["prune_all"] = (int)Pruning.All,
-            ["utilities"] = new JsonObject { ["L0"] = 0 },
+            ["utilities"] = new JsonObject { ["L0"] = 0, ["Lethal"] = (int)UtilityKind.Lethal, ["Survival"] = (int)UtilityKind.Survival },
             ["q_stride"] = SolverService.QStride,
             ["hindsight_line_cap"] = HindsightResultNative.LineCap,
         };

@@ -2042,6 +2042,11 @@ PRUNE_CLOSER_FIRST = 512
 PRUNE_ALL = 1023
 PRUNE_NO_BOUNDS = 63  # every pruning but the bounds round's (the engine round's PRUNE_ALL)
 SOLVE_EXACT, SOLVE_BUDGET, SOLVE_ERROR, SOLVE_REFUSED = 0, 1, -1, -3
+# The solve's utility (Solver/Utility.cs UtilityKind; FIGHT_SOLVER.md section 20). L0 is the value scale of labels, regret
+# and grades. LETHAL and SURVIVAL are the root check's questions, solved once at max_horizon: a win 1, a death 0, a horizon
+# leaf 0 (lethal: the chance to win before the horizon's last end turn) or 1 (survival: alive, or won, at the first
+# decision past it). Their solve is exact unless a roll wider than the cap was met.
+UTILITY_L0, UTILITY_LETHAL, UTILITY_SURVIVAL = 0, 3, 4
 SOLVER_Q_STRIDE = 7  # 1 + the observation's enemy slots: an untargeted move, then one entry per target
 _HINDSIGHT_LINE_CAP = 64
 _SOLVER_MAX_ACTIONS = 64
@@ -2130,18 +2135,19 @@ class SolveOptions:
     """
 
     __slots__ = ("node_budget", "step_budget", "time_budget_ms", "max_horizon", "prune", "chance_width_cap", "allowed_potions",
-                 "use_estimate")
+                 "use_estimate", "utility")
 
     def __init__(self, node_budget: int = 200_000, step_budget: int = 2_000_000, time_budget_ms: int = 0, max_horizon: int = 8,
-                 prune: int = PRUNE_ALL, chance_width_cap: int = 32, allowed_potions: int = -1, use_estimate: bool = True):
+                 prune: int = PRUNE_ALL, chance_width_cap: int = 32, allowed_potions: int = -1, use_estimate: bool = True,
+                 utility: int = UTILITY_L0):
         self.node_budget, self.step_budget, self.time_budget_ms = node_budget, step_budget, time_budget_ms
         self.max_horizon, self.prune, self.chance_width_cap = max_horizon, prune, chance_width_cap
-        self.allowed_potions, self.use_estimate = allowed_potions, use_estimate
+        self.allowed_potions, self.use_estimate, self.utility = allowed_potions, use_estimate, utility
 
     def _c(self, allow_hindsight: bool = False) -> _SolveOptionsC:
         forbidden = ctypes.c_int32(~int(self.allowed_potions)).value
         return _SolveOptionsC(self.node_budget, self.step_budget, self.time_budget_ms, self.max_horizon, self.prune,
-                              self.chance_width_cap, forbidden, 0, 1 if allow_hindsight else 0, 1 if self.use_estimate else 0)
+                              self.chance_width_cap, forbidden, int(self.utility), 1 if allow_hindsight else 0, 1 if self.use_estimate else 0)
 
 
 class ExpectedSolve:

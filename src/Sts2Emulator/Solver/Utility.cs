@@ -142,6 +142,21 @@ public readonly struct Rational : IComparable<Rational>, IEquatable<Rational>
 }
 
 /// <summary>
+/// The solve's utility (FIGHT_SOLVER.md sections 10 and 20). <see cref="L0" /> is the value scale of labels, regret and
+/// grades. <see cref="Lethal" /> and <see cref="Survival" /> are the S5 root check's two questions, each a utility whose
+/// horizon leaf has a known value, so a solve at a fixed horizon is exact for it: a win scores 1, a death 0, and a horizon
+/// leaf 0 for <see cref="Lethal" /> (the chance to win before the horizon's last end turn) and 1 for
+/// <see cref="Survival" /> (the chance to be alive, or to have won, at the first decision past the horizon's last turn
+/// with no screen pending). 1 and 2 are kept for SearchHp and L0Priced (S5).
+/// </summary>
+public enum UtilityKind
+{
+    L0 = 0,
+    Lethal = 3,
+    Survival = 4,
+}
+
+/// <summary>
 /// The value scale (FIGHT_SOLVER.md section 10): D4's combat score L0, 0 if dead, else
 /// 0.5 + 0.5 * min(1, (HP + 10 * potions) / max HP), maximised in expectation. It scores a fight's end
 /// and, as the placeholder until the network comes in S5, a horizon leaf (the position as it stands).
@@ -184,4 +199,23 @@ public static class Utility
 
     /// <summary>A fight's end: the loss value, or L0 of the winner.</summary>
     public static Rational Terminal(CombatState s, bool won) => won ? L0(s) : Loss;
+
+    /// <summary>A fight's end under <paramref name="u" />: L0's terminal score, or 1 for a win and 0 for a death.</summary>
+    public static Rational Terminal(UtilityKind u, CombatState s, bool won) => u == UtilityKind.L0 ? Terminal(s, won) : won ? Rational.One : Loss;
+
+    /// <summary>A horizon leaf's value under <paramref name="u" />: L0 of the position, 0 (lethal) or 1 (survival).</summary>
+    public static Rational Leaf(UtilityKind u, CombatState s) => u switch
+    {
+        UtilityKind.Lethal => Rational.Zero,
+        UtilityKind.Survival => Rational.One,
+        _ => L0(s),
+    };
+
+    /// <summary>
+    /// Whether a decision node is the survival utility's horizon leaf: a living player's decision with no screen pending,
+    /// on a turn past the horizon's last (<paramref name="remaining" /> at or below 0). Ending the turn there is a horizon
+    /// leaf of value 1, the utility's maximum, so the node's value is 1 whatever its other moves.
+    /// </summary>
+    public static bool SurvivalLeaf(UtilityKind u, CombatState s, int remaining) =>
+        u == UtilityKind.Survival && remaining <= 0 && s.PendingSelection is null && s.PlayerHp > 0;
 }

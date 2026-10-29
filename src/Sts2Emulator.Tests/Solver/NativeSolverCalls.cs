@@ -19,7 +19,7 @@ internal static unsafe class NativeSolverCalls
         Prune = (int)o.Prune,
         ChanceWidthCap = o.ChanceWidthCap,
         ForbiddenPotions = ~o.AllowedPotions,
-        Utility = 0,
+        Utility = (int)o.Utility,
         AllowHindsight = allowHindsight ? 1 : 0,
         UseEstimate = o.UseEstimate ? 1 : 0,
     };

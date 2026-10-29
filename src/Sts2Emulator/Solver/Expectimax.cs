@@ -42,6 +42,13 @@ public sealed record SolveOptions
     public bool UseEstimate { get; init; } = true;
 
     /// <summary>
+    /// The utility (<see cref="UtilityKind" />). A check utility (<see cref="UtilityKind.Lethal" />, <see cref="UtilityKind.Survival" />)
+    /// solves once at <see cref="MaxHorizon" />, with no deepening and no size estimate, on a fresh table and without the
+    /// tight utility bound (it bounds L0); the solve is exact when no roll wider than the cap was met.
+    /// </summary>
+    public UtilityKind Utility { get; init; } = UtilityKind.L0;
+
+    /// <summary>
     /// The potion slots whose potion may be used (bit i: slot i; -1 every slot): the potion curve's subsets
     /// (FIGHT_SOLVER.md section 8). The table key holds it through the table: one table per mask.
     /// </summary>
@@ -91,13 +98,24 @@ internal readonly record struct NodeValue(Rational Value, bool Exact, Rational M
         return new(u, true, Rational.One, u);
     }
 
+    /// <summary>A horizon leaf under <paramref name="u" /> (L0's when <paramref name="u" /> is L0); its bound is the utility's maximum, 1.</summary>
+    public static NodeValue Horizon(CombatState s, UtilityKind u) =>
+        u == UtilityKind.L0 ? Horizon(s) : new(Utility.Leaf(u, s), false, Rational.Zero, Utility.Max);
+
+    /// <summary>A fight's end under <paramref name="u" />.</summary>
+    public static NodeValue End(CombatState s, bool won, UtilityKind u)
+    {
+        var v = Utility.Terminal(u, s, won);
+        return new(v, true, Rational.One, v);
+    }
+
     /// <summary>The max node over its moves' values (in move order; the first of greatest value gives the mass).</summary>
-    public static NodeValue Max(IEnumerable<NodeValue> moves, CombatState s)
+    public static NodeValue Max(IEnumerable<NodeValue> moves, CombatState s, UtilityKind u = UtilityKind.L0)
     {
         int prof = SolverProf.Enter(Phase.Bound);
         try
         {
-            return MaxCore(moves, s);
+            return MaxCore(moves, s, u);
         }
         finally
         {
@@ -105,7 +123,7 @@ internal readonly record struct NodeValue(Rational Value, bool Exact, Rational M
         }
     }
 
-    static NodeValue MaxCore(IEnumerable<NodeValue> moves, CombatState s)
+    static NodeValue MaxCore(IEnumerable<NodeValue> moves, CombatState s, UtilityKind u)
     {
         NodeValue? best = null;
         Rational upper = Rational.Zero;
@@ -124,7 +142,7 @@ internal readonly record struct NodeValue(Rational Value, bool Exact, Rational M
 
         if (best is not { } b)
         {
-            return Horizon(s);
+            return Horizon(s, u);
         }
 
         bool exact = upper == b.Value && list.Exists(v => v.Exact && v.Value == b.Value);
@@ -157,7 +175,15 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
     /// <summary>The table, the solver's own or one a native solver handle keeps for the fight (one per potion mask).</summary>
     public TranspositionTable Table { get; } = table ?? new();
 
-    bool On(Pruning p) => (Options.Prune & p) != 0;
+    UtilityKind U => Options.Utility;
+
+    bool Check => Options.Utility != UtilityKind.L0;
+
+    /// <summary>The prunings in force: the tight utility bound bounds L0, so a check utility runs without it.</summary>
+    bool On(Pruning p) => ((Check ? Options.Prune & ~Pruning.UtilityBound : Options.Prune) & p) != 0;
+
+    /// <summary>A horizon leaf's value, a wide roll's too: L0 of the position, or the check utility's leaf value.</summary>
+    Rational LeafValue(CombatState s) => Check ? Utility.Leaf(U, s) : Utility.L0(s);
 
     /// <summary>The bound a horizon leaf or a wide roll at <paramref name="s" /> carries: the tight one when on and no gain is reachable.</summary>
     Rational LeafUpper(CombatState s) => On(Pruning.UtilityBound) ? UtilityGains.Upper(s) : Utility.Max;
@@ -201,10 +227,10 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
     {
         ExpectedResult? last = null;
         string reason = "horizon";
-        for (int h = 0; h <= Options.MaxHorizon; h++)
+        for (int h = Check ? Options.MaxHorizon : 0; h <= Options.MaxHorizon; h++)
         {
-            double est = h > 0 && Options.UseEstimate ? SizeEstimate.Log10(state, h) : double.NaN;
-            if (Options.UseEstimate && h > 0 && est > Math.Log10(Options.NodeBudget) + Options.EstimateSlack)
+            double est = h > 0 && Options.UseEstimate && !Check ? SizeEstimate.Log10(state, h) : double.NaN;
+            if (Options.UseEstimate && !Check && h > 0 && est > Math.Log10(Options.NodeBudget) + Options.EstimateSlack)
             {
                 reason = $"estimate: horizon {h} is about 10^{est:0.0} states";
                 counters.Horizons.Add(new HorizonMark(h, "estimate", counters.Nodes, counters.Steps, sw.Elapsed.TotalSeconds, false, est));
@@ -258,8 +284,9 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
 
     SolveCounters Begin(Stopwatch sw)
     {
-        if (!On(Pruning.SubtreeReuse))
+        if (!On(Pruning.SubtreeReuse) || Check)
         {
+            // A check solve's exactness reads its own counters (wide rolls), so it reuses nothing from an earlier solve.
             Table.Clear();
         }
 
@@ -314,8 +341,9 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         }
 
         _path.Remove(key);
-        var b = NodeValue.Max(values, state);
-        bool exact = b.Exact && b.Mass == Rational.One;
+        var b = NodeValue.Max(values, state, U);
+        // A check utility's horizon leaves have known values: its solve is exact unless a roll wider than the cap was met.
+        bool exact = Check ? counters.WideRollLeaves == 0 : b.Exact && b.Mass == Rational.One;
         Table.Put(key, b, horizon);
         return new ExpectedResult(exact ? SolveStatus.Exact : SolveStatus.Budget, null, horizon, b.Value, exact, b.Mass, moves, counters, sw.Elapsed.TotalSeconds);
     }
@@ -367,6 +395,12 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
             _c.Screens++;
         }
 
+        if (Utility.SurvivalLeaf(U, s, remaining))
+        {
+            _c.HorizonLeaves++;
+            return NodeValue.Horizon(s, U);
+        }
+
         if (!_path.Add(key))
         {
             throw new SolveRefused("cycle: a position reached again below itself");
@@ -374,7 +408,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
 
         var values = MaxNodeMoves(s, rng, remaining);
         _path.Remove(key);
-        var result = NodeValue.Max(values, s);
+        var result = NodeValue.Max(values, s, U);
         if (On(Pruning.Transposition))
         {
             Table.Put(key, result, remaining);
@@ -508,7 +542,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         if (Actions.EndsTurn(s, m) && remaining <= 0)
         {
             _c.HorizonLeaves++;
-            return On(Pruning.UtilityBound) ? NodeValue.Horizon(s, LeafUpper(s)) : NodeValue.Horizon(s);
+            return Check ? NodeValue.Horizon(s, U) : On(Pruning.UtilityBound) ? NodeValue.Horizon(s, LeafUpper(s)) : NodeValue.Horizon(s);
         }
 
         if (SolverDebug.MergeAudit && Actions.EndsTurn(s, m))
@@ -534,7 +568,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 if (o.WideRoll)
                 {
                     // A roll wider than the cap: a horizon leaf at the move's position (L0, bound L0's maximum, no mass).
-                    value += o.P * Utility.L0(s);
+                    value += o.P * LeafValue(s);
                     upper += o.P * LeafUpper(s);
                     exact = false;
                     continue;
@@ -543,7 +577,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 if (o.Result.Terminal)
                 {
                     _c.Leaves++;
-                    var t = Utility.Terminal(o.State, o.Result.PlayerWon);
+                    var t = Utility.Terminal(U, o.State, o.Result.PlayerWon);
                     value += o.P * t;
                     upper += o.P * t;
                     mass += o.P;
@@ -600,7 +634,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 if (o.WideRoll)
                 {
                     // A roll wider than the cap: a horizon leaf at the move's position (L0, bound L0's maximum, no mass).
-                    value += o.P * Utility.L0(s);
+                    value += o.P * LeafValue(s);
                     upper += o.P * LeafUpper(s);
                     exact = false;
                     continue;
@@ -609,7 +643,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 if (o.Result.Terminal)
                 {
                     _c.Leaves++;
-                    var t = Utility.Terminal(o.State, o.Result.PlayerWon);
+                    var t = Utility.Terminal(U, o.State, o.Result.PlayerWon);
                     value += o.P * t;
                     upper += o.P * t;
                     mass += o.P;
