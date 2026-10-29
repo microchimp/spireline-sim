@@ -76,6 +76,30 @@ public sealed class SolveCounters
     /// <summary>Why the macro draw was off at the solve's root (<c>on</c> when it was on; <c>pruning-off</c> without the bit).</summary>
     public string MacroRoot = "";
 
+    /// <summary>The tight bound at the root: <c>on</c>, <c>off:kind:Name</c> (the gain holder that turned it off) or <c>pruning-off</c>.</summary>
+    public string BoundRoot = "";
+
+    /// <summary>Max nodes below the root where the tight bound was on (no gain reachable).</summary>
+    public long BoundOn;
+
+    /// <summary>Max nodes below the root where it was off, by the holder that turned it off.</summary>
+    public readonly Dictionary<string, long> BoundOff = [];
+
+    /// <summary>Max nodes closed by the bound (an exact move reached it; the rest not expanded).</summary>
+    public long BoundClosed;
+
+    /// <summary>Moves cut by the bound: before their step (a potion's use) and after it (a single outcome's bound).</summary>
+    public long BoundCutsPreStep;
+
+    public long BoundCutsPostStep;
+
+    /// <summary>Table entries stored as bounds (a cut move's child), read back as bounds, and value lookups that met a bound entry (never read as a value).</summary>
+    public long TableBoundsStored;
+
+    public long TableBoundsReused;
+
+    public long TableBoundsRefusedAsValue;
+
     /// <summary>Refusals by reason class (the reason up to its first colon).</summary>
     public readonly Dictionary<string, long> Refusals = [];
 

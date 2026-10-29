@@ -266,6 +266,23 @@ public static class SolverStatsJson
             });
         }
 
+        static JsonObject BoundJson(SolveCounters c)
+        {
+            var off = new JsonObject();
+            foreach (var (k, v) in c.BoundOff.OrderByDescending(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal))
+            {
+                off[k] = v;
+            }
+
+            return new JsonObject
+            {
+                ["root"] = c.BoundRoot, ["nodes_on"] = c.BoundOn, ["nodes_off"] = c.BoundOff.Values.Sum(), ["off_by_holder"] = off,
+                ["closed"] = c.BoundClosed, ["cuts_pre_step"] = c.BoundCutsPreStep, ["cuts_post_step"] = c.BoundCutsPostStep,
+                ["table_bounds_stored"] = c.TableBoundsStored, ["table_bounds_reused"] = c.TableBoundsReused,
+                ["table_bounds_refused_as_value"] = c.TableBoundsRefusedAsValue,
+            };
+        }
+
         static JsonObject MacroOffJson(SolveCounters c)
         {
             var o = new JsonObject();
@@ -305,6 +322,7 @@ public static class SolverStatsJson
             ["draw_nodes_single"] = c.DrawNodesSingle,
             ["macro_off"] = MacroOffJson(c),
             ["macro_root"] = c.MacroRoot,
+            ["bound"] = BoundJson(c),
             ["screens"] = c.Screens,
             ["refusals"] = refusals,
             ["wall_seconds"] = r.Seconds,

@@ -18,7 +18,10 @@ public static class Reference
 {
     public sealed record Result(Rational Value, bool Exact, IReadOnlyList<MoveValue> Moves, long Nodes, long Steps, string? Refused);
 
-    public static Result Solve(CombatState state, CountingRandom rng, int horizon, long nodeCap = 2_000_000, int widthCap = 32)
+    /// <param name="tightBound">Horizon leaves and wide rolls carry the tight utility bound (<see cref="UtilityGains.Upper" />)
+    /// where no gain is reachable, as the pruned solver's with <see cref="Pruning.UtilityBound" />: the same full tree, so
+    /// the closure and the cuts are held to it.</param>
+    public static Result Solve(CombatState state, CountingRandom rng, int horizon, long nodeCap = 2_000_000, int widthCap = 32, bool tightBound = false)
     {
         var c = new SolveCounters();
         c.Check = () =>
@@ -35,7 +38,7 @@ public static class Reference
             var values = new List<NodeValue>();
             foreach (var m in Actions.Legal(state, Pruning.None))
             {
-                var v = MoveValueOf(state, rng, m, horizon, c, widthCap);
+                var v = MoveValueOf(state, rng, m, horizon, c, widthCap, tightBound);
                 moves.Add(new MoveValue(m, v.Value, v.Exact));
                 values.Add(v);
             }
@@ -57,7 +60,7 @@ public static class Reference
         }
     }
 
-    static NodeValue Node(CombatState s, CountingRandom rng, int remaining, SolveCounters c, int widthCap)
+    static NodeValue Node(CombatState s, CountingRandom rng, int remaining, SolveCounters c, int widthCap, bool tight)
     {
         c.Nodes++;
         c.Check?.Invoke();
@@ -67,17 +70,17 @@ public static class Reference
         var values = new List<NodeValue>();
         foreach (var m in Actions.Legal(s, Pruning.None))
         {
-            values.Add(MoveValueOf(s, rng, m, remaining, c, widthCap));
+            values.Add(MoveValueOf(s, rng, m, remaining, c, widthCap, tight));
         }
 
         return NodeValue.Max(values, s);
     }
 
-    static NodeValue MoveValueOf(CombatState s, CountingRandom rng, Move m, int remaining, SolveCounters c, int widthCap)
+    static NodeValue MoveValueOf(CombatState s, CountingRandom rng, Move m, int remaining, SolveCounters c, int widthCap, bool tight)
     {
         if (Actions.EndsTurn(s, m) && remaining <= 0)
         {
-            return NodeValue.Horizon(s);
+            return tight ? NodeValue.Horizon(s, UtilityGains.Upper(s)) : NodeValue.Horizon(s);
         }
 
         var value = Rational.Zero;
@@ -86,7 +89,7 @@ public static class Reference
         bool exact = true;
         foreach (var o in Successors.Expand(s, rng, m, byCard: true, widthCap, c))
         {
-            var v = o.WideRoll ? NodeValue.Horizon(s) : o.Result.Terminal ? NodeValue.End(o.State, o.Result.PlayerWon) : Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn), c, widthCap);
+            var v = o.WideRoll ? (tight ? NodeValue.Horizon(s, UtilityGains.Upper(s)) : NodeValue.Horizon(s)) : o.Result.Terminal ? NodeValue.End(o.State, o.Result.PlayerWon) : Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn), c, widthCap, tight);
             value += o.P * v.Value;
             mass += o.P * v.Mass;
             upper += o.P * v.Upper;

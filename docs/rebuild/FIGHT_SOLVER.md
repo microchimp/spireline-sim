@@ -529,7 +529,7 @@ after S4. S7 after S5, S6 and the week-3 numbers. S8 after S6, only if the curve
   chosen card at its index), which the replay puts back at the screen. Refused: a card that peeks at the pile's order
   (I Am Invincible, Perfect Fit), a random placement into a known run (`hidden-branch`). Refusals left: `draw-peek`, `draw-tie`, `hidden-branch`, `draw-order`, `card-uid`, `unlisted-roll`, `empty-range`, `cycle`, `table-engine`, `engine-error`, `macro-draw-mismatch` (section 17), a queued hook action or an early resumption (`kernel-queue-busy: ...`, the key's refusal) and `budget` (no horizon completed). A roll wider than the width cap (default 32) is not refused since the baseline round (section 16): its branch is a horizon leaf. Since the macro-draw round (section 17) a run of plain draws is one node over the sub-multisets drawn where no draw observer is present; otherwise draws are sequential, merged by value
   and, for their successors, by key.
-- **Exact means proved.** A node carries a sound upper bound (a horizon leaf's is L0's maximum, 1); a max node is exact
+- **Exact means proved.** A node carries a sound upper bound (a horizon leaf's is L0's maximum, 1, or the tight bound of section 19); a max node is exact
   when a move of greatest value is exact and no move's bound is above it, a chance node when every outcome is. An
   exact max node carries its exact move's mass, and a solve is `Exact` only with the full mass. A cut
   solve is never exact; a budget cut returns the last completed horizon as `Budget`, or `Refused` when none completed.
@@ -731,3 +731,58 @@ outside a solver run is unchanged (each change is behind a thread-static set onl
   `WaitAll` and `OnHookPause`, so they are not provably unread; the provable part is a few short lists inside a clone
   phase of 2-3% of a solve. The non-cryptographic hash: SHA-256 is 0.3-0.5% of a solve. `Rational`: 0.05-0.5% of a
   solve, under a tenth of a node's time, so production values stay exact.
+
+## 19. The bounds round as built (optimisation review change 5)
+
+Bounds before dominance, both below the root. The root's moves are the policy label: each is valued in full, in legal
+order, as with the bounds off; closure and cuts act at depth 1 and below. Four pruning bits, in `All` (`NoBounds` is the
+engine round's `All`; natively `PRUNE_ALL` is 1023, `PRUNE_NO_BOUNDS` 63).
+
+- **The registry** (`tools/solver/scan_utility_gains.py`, `utility_gains.json`, classes in `utility_gain_classes.json`,
+  written into `Solver/UtilityGains.g.cs`). Every site that can raise L0 within a combat: `heal` (`HealPlayer`,
+  `CreatureCmd.Heal`), `hp` (every `PlayerHp` write, every HP setter), `max-hp` (every `PlayerMaxHp` write and max-HP
+  command, both ways: a lower max raises L0's ratio), `potion` (a slot written, a procure, the slot count) and `generate`
+  (every `NewCardUid`, every screen's generated candidates). Over every file under `Core` outside the run's own code
+  (KernelGate and the reward generator kept) and all of `Core2` (commands, the OldState adapters, every model); a
+  model's holder is the model, an old-engine site's its `case` label (string switches and the card-id classes `IC`, `CL`,
+  `SI`, ... included, and a case whose block opens on its own line), else its callers' through `scan_order_reads.py`'s
+  call graph (a Core2 model naming the method is that model). Classes, each with why: `gain` (its holders turn the bound
+  off), `generator` (a pool not proved free of a gain holder: its holders turn the bound off), `fixed` (the cards it makes,
+  none a holder: checked), `copy-card`, `end`, `loss`, `primitive`, `copy`, `setup`, `run`, `other` (another creature),
+  `safe`; files outside the scan that name a needle are classed per file with their count. A buff holder brings in every
+  holder whose code names it (`applies:buff:X`; Regen brings Regen Potion). `--check` fails on an unclassed site, a stale
+  class, a gain or generator without named holders, a holder that names nothing, a fixed card that is a holder, a changed
+  file, or stale outputs; `test_utility_gains.py` removes a class and expects the failure, and `UtilityBoundTests` holds
+  the C# table to the file.
+- **The combat's end.** Burning Blood (6), Black Blood (12), Meat on the Bone (12) and Chosen Cheese (1) heal in
+  `RunRewardGenerator.GenerateCombatRewards`, on the run's state after the combat. A combat the solver steps runs on its
+  own, and its end is the step's terminal result (`KernelGate.BareHost.EndCombat`), so the terminal is scored before those
+  heals: they are `end` entries with `applied: after-terminal`, and the constant added to the bound is 0.
+- **The tight bound** (`Pruning.UtilityBound`, `UtilityGains.Upper`). Reachable is present anywhere: a card in any pile,
+  hold or screen candidate, a relic, a potion in a slot, a buff on the player or any enemy, an enemy. With no holder
+  reachable a horizon leaf's and a wide roll's bound is L0(HP + end constant, potions), else 1. Values are unchanged;
+  exactness can only rise. The reference takes the same option (`tightBound`), so the harness holds the pruned solver
+  with the bound on to the same full tree.
+- **Closure** (`Pruning.LethalClosure`). At a max node below the root, once an exact move's value reaches the node's
+  bound (the tight one, else 1) the node is closed: its other moves are not expanded. The node is exact by the existing
+  rule and carries the closing move's mass.
+- **Branch and bound** (`Pruning.BranchBound`, tight nodes only). A move whose bound is at or below the best exact value
+  found at the node is cut: a potion's use before its step (its slot is emptied before its effect, so L0's potion term
+  falls by one), any move after its step when its one outcome (probability 1) has a bound at or below it (a card that
+  costs HP). A cut move's child is stored as a bound, never as a value.
+- **Closers first** (`Pruning.CloserFirst`). Below the root: likely kills (an Attack whose damage covers the target's HP
+  and block), other Attacks, other plays, end turn, potions; each class in legal order. A node's value, bound, exactness
+  and mass are those of its full move list in that order: a move left out can raise neither the value nor the bound above
+  the best exact value, and comes after the move that gives the node its mass.
+- **The table's kinds.** An entry is a value (exact, or a horizon value at its turns left) or a bound (a cut move's child:
+  its tight bound, true at every horizon). `TryGet` returns values only (`table_bounds_refused_as_value` counts a bound
+  met there), `TryGetBound` bounds only; a value replaces a bound, never the reverse.
+- **Counters** (the stats JSON's `bound`): the root's state (`on`, `off:kind:Name`, `pruning-off`), max nodes on and off
+  (by the holder that turned it off), nodes closed, moves cut before and after their step, table bounds stored, reused
+  and refused as values.
+- **Tests.** Harness recipes (`bound`, both engines, a one-enemy fight): a kill at no HP lost below the root at horizon 0
+  and 1 (`on:closed`), Burning Blood with the player wounded (`on`), a potion's use or keep and a card that costs HP
+  (`on:cut`), Feed, Blood Potion and Infernal Blade (`off:` each); configurations `bounds-off`, `no-utility-bound`,
+  `no-closure`, `no-branch-bound`, `no-closer-first` and `closer-first-only`, each against the reference with the
+  configuration's bound. `UtilityBoundTests`: the registry, the bound's arithmetic and holders, a bound entry never read as
+  a value, and every root move valued as with the bounds off.

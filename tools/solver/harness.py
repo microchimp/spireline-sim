@@ -29,7 +29,13 @@ follow the 400 mixed recipes:
 - macro draw (FIGHT_SOLVER.md section 17): a five-card draw over six distinct values (mid-turn through Expertise, and
   the turn start's draw at horizon 1 with cards too dear to play twice), one crossing a reshuffle, and one per draw
   observer and per reason the macro draw switches off (`macro` names it), each on both engines: the position is set
-  after the cut (`hand`, `draw_pile`, `discard_pile`, the player's `buff` as Name:amount, `energy`).
+  after the cut (`hand`, `draw_pile`, `discard_pile`, the player's `buff` as Name:amount, `energy`);
+- bounds (FIGHT_SOLVER.md section 19): the tight utility bound, the lethal closure and the cuts, each on both engines in a
+  one-enemy fight (Fuzzy Wurm Crawler): a kill at no HP lost below the root (closure, horizon 0 and 1), Burning Blood's
+  end heal (applied after the terminal, so the bound stays on and adds nothing), a potion's use or keep and a card that
+  costs HP (cuts), and a heal holder, a potion gain and a generator that can make a heal (the bound off). `bound` names
+  what the harness checks (`on:closed`, `on:cut`, `on`, `off:<holder>`); `relics`, `potions` and `player_hp` set the
+  fight.
 
     python tools/solver/harness.py          # write the list
     python tools/solver/harness.py --check  # fail if the list on disk differs
@@ -98,6 +104,19 @@ MACRO = [
 ]
 
 
+# The bounds round's positions: (bound, hand, potions, relics, player HP, energy, enemy HP, horizon).
+BOUND = [
+    ("on:closed", ["StrikeIronclad", "DefendIronclad", "DefendIronclad"], [], [], 60, 3, 5, 0),
+    ("on:closed", ["StrikeIronclad", "DefendIronclad", "DefendIronclad"], [], [], 60, 3, 5, 1),
+    ("on", ["StrikeIronclad", "DefendIronclad", "DefendIronclad"], [], ["BurningBlood"], 60, 3, 5, 0),
+    ("on:cut", ["Hemokinesis", "DefendIronclad"], ["FirePotion"], [], 60, 2, 9, 0),
+    ("on:cut", ["Hemokinesis", "Bloodletting", "DefendIronclad"], [], [], 60, 2, 9, 0),
+    ("off:card:Feed", ["Feed", "DefendIronclad"], [], [], 60, 2, 9, 0),
+    ("off:potion:BloodPotion", ["StrikeIronclad", "DefendIronclad"], ["BloodPotion"], [], 60, 2, 9, 0),
+    ("off:card:InfernalBlade", ["InfernalBlade", "DefendIronclad"], [], [], 60, 2, 9, 0),
+]
+
+
 def horizon(i: int) -> int:
     """1 for about one recipe in six, by a sha256 of the index alone."""
     return 1 if hashlib.sha256(f"horizon {i}".encode()).digest()[0] % 6 == 0 else 0
@@ -127,6 +146,10 @@ def base(i: int, **kw) -> dict:
         "discard_pile": [],
         "buff": "",
         "energy": -1,
+        "bound": "",
+        "relics": [],
+        "potions": [],
+        "player_hp": 0,
     }
     r.update(kw)
     return r
@@ -192,6 +215,30 @@ def recipes() -> list[dict]:
                     discard_pile=discard,
                     buff=buff,
                     energy=energy,
+                )
+            )
+            i += 1
+    for bound, hand, potions, relics, hp, energy, enemy_hp, h in BOUND:
+        for engine in ("old", "core2"):
+            out.append(
+                base(
+                    i,
+                    source="selfplay",
+                    engine=engine,
+                    steps=0,
+                    enemy_hp=enemy_hp,
+                    draw_keep=0,
+                    discard_keep=0,
+                    mix=[],
+                    after=0,
+                    horizon=h,
+                    encounter="FuzzyWurmCrawler",
+                    hand=hand,
+                    energy=energy,
+                    bound=bound,
+                    relics=relics,
+                    potions=potions,
+                    player_hp=hp,
                 )
             )
             i += 1

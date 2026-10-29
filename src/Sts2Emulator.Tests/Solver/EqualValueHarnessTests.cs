@@ -26,6 +26,12 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
         ("no-reuse", Pruning.All & ~Pruning.SubtreeReuse),
         ("no-draw-by-value", Pruning.All & ~Pruning.DrawByValue),
         ("no-macro-draw", Pruning.All & ~Pruning.MacroDraw),
+        ("bounds-off", Pruning.NoBounds),
+        ("no-utility-bound", Pruning.All & ~Pruning.UtilityBound),
+        ("no-closure", Pruning.All & ~Pruning.LethalClosure),
+        ("no-branch-bound", Pruning.All & ~Pruning.BranchBound),
+        ("no-closer-first", Pruning.All & ~Pruning.CloserFirst),
+        ("closer-first-only", Pruning.NoBounds | Pruning.CloserFirst),
     ];
 
     /// <summary>The macro draw's recipes: the reference gets more room there (a five-card draw by card is 720 runs).</summary>
@@ -60,6 +66,9 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
         int macroRecipes = SolverPositions.Recipes().Count(r => r.Macro.Length > 0);
         var macroSolved = new List<string>();
         long macroNodes = 0;
+        int boundRecipes = SolverPositions.Recipes().Count(r => r.Bound.Length > 0);
+        var boundSolved = new List<string>();
+        long boundClosed = 0, boundCuts = 0, boundOn = 0, boundOff = 0, boundStored = 0, boundReused = 0, tightExact = 0;
         foreach (var recipe in SolverPositions.Recipes())
         {
             var pos = SolverPositions.Build(recipe, corpus);
@@ -75,7 +84,8 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
 
             built++;
             var before = CombatSnapshot.Write(pos.State);
-            var reference = Reference.Solve(pos.State, pos.Rng, recipe.Horizon, recipe.Encounter.Length > 0 ? NamedReferenceCap : recipe.Macro.Length > 0 ? MacroReferenceCap : ReferenceCap);
+            long cap = recipe.Encounter.Length > 0 ? NamedReferenceCap : recipe.Macro.Length > 0 ? MacroReferenceCap : ReferenceCap;
+            var reference = Reference.Solve(pos.State, pos.Rng, recipe.Horizon, cap);
             if (reference.Refused is { } why && why.StartsWith("budget", StringComparison.Ordinal))
             {
                 skipped++;
@@ -91,10 +101,25 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
 
             long namedNodes = 0;
 
+            // The same full tree with the tight utility bound at its horizon leaves and wide rolls: the configurations with
+            // the bound on are held to it (values equal the plain reference's; only exactness may be more).
+            var tightReference = Reference.Solve(pos.State, pos.Rng, recipe.Horizon, cap, tightBound: true);
+            if (reference.Refused is null && tightReference.Refused is null)
+            {
+                if (tightReference.Value != reference.Value || tightReference.Moves.Count != reference.Moves.Count
+                    || tightReference.Moves.Zip(reference.Moves).Any(x => x.First.Value != x.Second.Value) || (reference.Exact && !tightReference.Exact))
+                {
+                    diffs.Add($"#{recipe.Id}: the tight reference's values differ from the plain reference's");
+                }
+
+                tightExact += tightReference.Exact && !reference.Exact ? 1 : 0;
+            }
+
             foreach (var (name, prune) in Configs)
             {
                 var solver = new Expectimax(new SolveOptions { Prune = prune, NodeBudget = 10_000_000, StepBudget = 100_000_000, UseEstimate = false });
                 var got = solver.SolveAt(pos.State, pos.Rng, recipe.Horizon);
+                var want = (prune & Pruning.UtilityBound) != 0 ? tightReference : reference;
                 if (name == "all")
                 {
                     screenTrees += reference.Refused is null && got.Counters.Screens > 0 ? 1 : 0;
@@ -105,6 +130,33 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
                     prunedSeconds += got.Seconds;
                     namedNodes = got.Counters.Nodes;
                     macroNodes += got.Counters.MacroNodes;
+                    boundClosed += got.Counters.BoundClosed;
+                    boundCuts += got.Counters.BoundCutsPreStep + got.Counters.BoundCutsPostStep;
+                    boundOn += got.Counters.BoundOn;
+                    boundOff += got.Counters.BoundOff.Values.Sum();
+                    boundStored += got.Counters.TableBoundsStored;
+                    boundReused += got.Counters.TableBoundsReused;
+                    if (recipe.Bound.Length > 0 && got.Status != SolveStatus.Refused)
+                    {
+                        // on: the bound on at the root (closed: a node closed below it; cut: a move cut below it); off:holder:
+                        // that holder turned it off at the root.
+                        var c = got.Counters;
+                        long cuts = c.BoundCutsPreStep + c.BoundCutsPostStep;
+                        string seen = $"root {c.BoundRoot}, closed {c.BoundClosed}, cuts {c.BoundCutsPreStep}+{c.BoundCutsPostStep}, exact {got.Exact}, nodes {c.Nodes}";
+                        bool ok = recipe.Bound switch
+                        {
+                            "on:closed" => c.BoundRoot == "on" && c.BoundClosed > 0,
+                            "on:cut" => c.BoundRoot == "on" && cuts > 0,
+                            "on" => c.BoundRoot == "on",
+                            _ => c.BoundRoot == recipe.Bound,
+                        };
+                        if (!ok)
+                        {
+                            diffs.Add($"#{recipe.Id} {recipe.Bound} {recipe.Engine}: bound {seen}");
+                        }
+
+                        boundSolved.Add($"#{recipe.Id} {recipe.Bound} {recipe.Engine} h{recipe.Horizon}: {seen}");
+                    }
                     if (recipe.Macro.Length > 0 && got.Status != SolveStatus.Refused)
                     {
                         // The observers and the ordered hand switch it off at the root; the five-card draws take it; an "off:"
@@ -123,31 +175,31 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
                     }
                 }
 
-                if (reference.Refused is not null || got.Status == SolveStatus.Refused)
+                if (want.Refused is not null || got.Status == SolveStatus.Refused)
                 {
-                    if (Tag(reference.Refused) != Tag(got.Reason))
+                    if (Tag(want.Refused) != Tag(got.Reason))
                     {
-                        diffs.Add($"#{recipe.Id} {name}: refusal reference '{reference.Refused}' vs solver '{got.Reason}'");
+                        diffs.Add($"#{recipe.Id} {name}: refusal reference '{want.Refused}' vs solver '{got.Reason}'");
                     }
 
                     continue;
                 }
 
-                if (got.Value != reference.Value || got.Exact != reference.Exact)
+                if (got.Value != want.Value || got.Exact != want.Exact)
                 {
-                    diffs.Add($"#{recipe.Id} {name}: value {got.Value} ({got.ValueDouble:R}, exact {got.Exact}) vs reference {reference.Value} ({reference.Value.ToDouble():R}, exact {reference.Exact})");
+                    diffs.Add($"#{recipe.Id} {name}: value {got.Value} ({got.ValueDouble:R}, exact {got.Exact}) vs reference {want.Value} ({want.Value.ToDouble():R}, exact {want.Exact})");
                 }
 
                 foreach (var mv in got.Moves)
                 {
-                    var r = reference.Moves.FirstOrDefault(x => x.Move == mv.Move);
+                    var r = want.Moves.FirstOrDefault(x => x.Move == mv.Move);
                     if (r is null || r.Value != mv.Value)
                     {
                         diffs.Add($"#{recipe.Id} {name}: move {mv.Move} {mv.Value} vs reference {r?.Value.ToString() ?? "missing"}");
                     }
                 }
 
-                foreach (var r in reference.Moves.Where(x => got.Moves.All(m => m.Move != x.Move)))
+                foreach (var r in want.Moves.Where(x => got.Moves.All(m => m.Move != x.Move)))
                 {
                     // A move the pruned solver merged into an equal one: some kept move has its value.
                     if (!got.Moves.Any(m => m.Value == r.Value))
@@ -156,7 +208,7 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
                     }
                 }
 
-                if (!got.Best.ToHashSet().SetEquals(BestOf(reference.Moves).Where(m => got.Moves.Any(g => g.Move == m))))
+                if (!got.Best.ToHashSet().SetEquals(BestOf(want.Moves).Where(m => got.Moves.Any(g => g.Move == m))))
                 {
                     diffs.Add($"#{recipe.Id} {name}: best moves differ");
                 }
@@ -205,6 +257,12 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
         }
 
         output.WriteLine($"macro draw nodes (all) {macroNodes}; macro recipes compared {macroSolved.Count} of {macroRecipes}");
+        foreach (var n in boundSolved)
+        {
+            output.WriteLine(n);
+        }
+
+        output.WriteLine($"bound (all): nodes on {boundOn}, off {boundOff}, closed {boundClosed}, cuts {boundCuts}, table bounds stored {boundStored}, reused {boundReused}; positions exact only with the tight bound {tightExact}; bound recipes compared {boundSolved.Count} of {boundRecipes}");
 
         output.WriteLine($"reference nodes {refNodes}; pruned (all) nodes {prunedNodes}, engine steps {prunedSteps}, {prunedSeconds:0.00} s, {prunedNodes / Math.Max(1e-9, prunedSeconds):0} nodes/s, {prunedSteps / Math.Max(1e-9, prunedSeconds):0} steps/s");
         foreach (var d in diffs.Take(30))
@@ -228,6 +286,8 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
 
         Assert.True(namedSolved.Count == namedRecipes && namedRecipes >= 2, $"order-dependence positions solved {namedSolved.Count} of {namedRecipes}");
         Assert.True(macroSolved.Count == macroRecipes && macroRecipes >= 24, $"macro-draw positions compared {macroSolved.Count} of {macroRecipes}");
+        Assert.True(boundSolved.Count == boundRecipes && boundRecipes >= 16, $"bound positions compared {boundSolved.Count} of {boundRecipes}");
+        Assert.True(boundClosed > 0 && boundCuts > 0, $"closed {boundClosed}, cuts {boundCuts}");
     }
 
     /// <summary>
@@ -278,7 +338,7 @@ public class EqualValueHarnessTests(ITestOutputHelper output)
                         continue;
                     }
 
-                    var reference = Reference.Solve(o.State, o.Rng, h, ReferenceCap);
+                    var reference = Reference.Solve(o.State, o.Rng, h, ReferenceCap, tightBound: true);
                     if (reference.Refused is not null)
                     {
                         continue;

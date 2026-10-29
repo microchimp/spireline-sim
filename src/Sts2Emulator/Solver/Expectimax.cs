@@ -2,6 +2,7 @@ namespace Sts2Emulator.Solver;
 
 using System.Diagnostics;
 using Sts2Emulator.Core;
+using Sts2Emulator.GeneratedData;
 
 /// <summary>How a solve ended (the native status codes of FIGHT_SOLVER.md section 1).</summary>
 public enum SolveStatus
@@ -81,6 +82,9 @@ internal readonly record struct NodeValue(Rational Value, bool Exact, Rational M
 {
     public static NodeValue Horizon(CombatState s) => new(Utility.L0(s), false, Rational.Zero, Utility.Max);
 
+    /// <summary>A horizon leaf with the bound <paramref name="upper" /> (the tight utility bound, FIGHT_SOLVER.md section 19).</summary>
+    public static NodeValue Horizon(CombatState s, Rational upper) => new(Utility.L0(s), false, Rational.Zero, upper);
+
     public static NodeValue End(CombatState s, bool won)
     {
         var u = Utility.Terminal(s, won);
@@ -154,6 +158,9 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
     public TranspositionTable Table { get; } = table ?? new();
 
     bool On(Pruning p) => (Options.Prune & p) != 0;
+
+    /// <summary>The bound a horizon leaf or a wide roll at <paramref name="s" /> carries: the tight one when on and no gain is reachable.</summary>
+    Rational LeafUpper(CombatState s) => On(Pruning.UtilityBound) ? UtilityGains.Upper(s) : Utility.Max;
 
     static string EngineOf(CombatState s) =>
         s.Kernel is { AnyOn: true } k ? "core2:" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(k.Shared) : "old";
@@ -291,6 +298,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
     {
         _c = counters;
         counters.MacroRoot = !On(Pruning.MacroDraw) || !On(Pruning.DrawByValue) ? "pruning-off" : DrawObservers.Off(state) ?? "on";
+        counters.BoundRoot = !On(Pruning.UtilityBound) ? "pruning-off" : UtilityGains.Off(state) is { } holder ? "off:" + holder : "on";
         _path.Clear();
         Table.Bind(EngineOf(state));
         var key = Key(state);
@@ -299,7 +307,8 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         var values = new List<NodeValue>();
         foreach (var m in Actions.Legal(state, Options.Prune, Options.AllowedPotions))
         {
-            var v = MoveValueOf(state, rng, m, horizon);
+            // The root's moves are the policy label: each valued in full, in legal order, no closure and no cut.
+            var v = MoveValueOf(state, rng, m, horizon)!.Value;
             moves.Add(new MoveValue(m, v.Value, v.Exact));
             values.Add(v);
         }
@@ -331,7 +340,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         var key = known ?? Key(s);
         if (On(Pruning.Transposition))
         {
-            if (Table.TryGet(key, remaining, out var hit))
+            if (Table.TryGet(key, remaining, out var hit, out bool sawBound))
             {
                 _c.TableHits++;
                 if (hit.Exact)
@@ -347,6 +356,10 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
             }
 
             _c.TableMisses++;
+            if (sawBound)
+            {
+                _c.TableBoundsRefusedAsValue++;
+            }
         }
 
         if (s.PendingSelection is not null)
@@ -359,12 +372,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
             throw new SolveRefused("cycle: a position reached again below itself");
         }
 
-        var values = new List<NodeValue>();
-        foreach (var m in Actions.Legal(s, Options.Prune, Options.AllowedPotions))
-        {
-            values.Add(MoveValueOf(s, rng, m, remaining));
-        }
-
+        var values = MaxNodeMoves(s, rng, remaining);
         _path.Remove(key);
         var result = NodeValue.Max(values, s);
         if (On(Pruning.Transposition))
@@ -375,12 +383,132 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
         return result;
     }
 
-    NodeValue MoveValueOf(CombatState s, CountingRandom rng, Move m, int remaining)
+    /// <summary>
+    /// A max node's moves below the root (FIGHT_SOLVER.md section 19), in order. With the bounds off, every legal move's
+    /// value, as before. With them on: the node's bound B (the tight one where no gain is reachable, else L0's maximum, 1);
+    /// likely closers first (<see cref="Pruning.CloserFirst" />); once an exact move's value reaches B the node is closed
+    /// (<see cref="Pruning.LethalClosure" />); a move whose bound is at or below the best exact value found so far is cut
+    /// (<see cref="Pruning.BranchBound" />). A move left out can neither raise the node's value nor its bound above that
+    /// exact value, nor come before the move giving the node its mass, so the node's value, bound, exactness and mass are
+    /// those of the full list in the same order.
+    /// </summary>
+    List<NodeValue> MaxNodeMoves(CombatState s, CountingRandom rng, int remaining)
+    {
+        var legal = Actions.Legal(s, Options.Prune, Options.AllowedPotions);
+        var values = new List<NodeValue>(legal.Count);
+        bool closure = On(Pruning.LethalClosure), cut = On(Pruning.BranchBound);
+        string? off = null;
+        if (On(Pruning.UtilityBound))
+        {
+            off = UtilityGains.Off(s);
+            if (off is null)
+            {
+                _c.BoundOn++;
+            }
+            else
+            {
+                _c.BoundOff[off] = _c.BoundOff.GetValueOrDefault(off) + 1;
+            }
+        }
+
+        bool tight = On(Pruning.UtilityBound) && off is null;
+        if (!closure && !cut && !On(Pruning.CloserFirst))
+        {
+            foreach (var m in legal)
+            {
+                values.Add(MoveValueOf(s, rng, m, remaining)!.Value);
+            }
+
+            return values;
+        }
+
+        if (On(Pruning.CloserFirst))
+        {
+            legal = CloserFirst(s, legal);
+        }
+
+        var bound = tight ? UtilityGains.Tight(s) : Utility.Max;
+        Rational? bestExact = null;
+        foreach (var m in legal)
+        {
+            if (closure && bestExact is { } be && be >= bound)
+            {
+                _c.BoundClosed++;
+                break;
+            }
+
+            if (cut && tight && bestExact is { } b2 && Actions.IsPotion(s, m) && UtilityGains.Tight(s, Actions.PotionsUsed(s, m)) <= b2)
+            {
+                // A potion's use empties its slot, and no potion gain is reachable: L0's potion term falls by one.
+                _c.BoundCutsPreStep++;
+                continue;
+            }
+
+            var v = MoveValueOf(s, rng, m, remaining, cut && tight ? bestExact : null);
+            if (v is not { } got)
+            {
+                _c.BoundCutsPostStep++;
+                continue;
+            }
+
+            values.Add(got);
+            if (got.Exact && (bestExact is null || got.Value > bestExact.Value))
+            {
+                bestExact = got.Value;
+            }
+        }
+
+        return values;
+    }
+
+    /// <summary>Likely closers first, each class in legal order: likely kills, other attacks, other plays, end turn, potions.</summary>
+    static List<Move> CloserFirst(CombatState s, List<Move> legal)
+    {
+        if (s.PendingSelection is not null)
+        {
+            return legal;
+        }
+
+        int Class(Move m)
+        {
+            if (Actions.IsPotion(s, m))
+            {
+                return 4;
+            }
+
+            if (Actions.EndsTurn(s, m))
+            {
+                return 3;
+            }
+
+            var card = s.Hand[m.Action];
+            var def = Cards.Get(Math.Abs(card.DefId));
+            if (def.Type != CardType.Attack)
+            {
+                return 2;
+            }
+
+            int damage = def.BaseDamage + (card.Upgraded ? def.UpgradeDamage : 0);
+            bool kills = m.Target >= 0 && m.Target < s.Enemies.Count
+                ? s.Enemies[m.Target].Hp + s.Enemies[m.Target].Block <= damage
+                : s.Enemies.Exists(e => e.Hp > 0 && e.Hp + e.Block <= damage);
+            return kills ? 0 : 1;
+        }
+
+        return [.. legal.Select((m, i) => (m, i, c: Class(m))).OrderBy(x => x.c).ThenBy(x => x.i).Select(x => x.m)];
+    }
+
+    /// <summary>
+    /// A move's value, or null when it is cut: with <paramref name="cutAt" /> (branch and bound), a move whose single outcome
+    /// (probability 1) is not a fight's end and whose bound is at or below it is not searched; its child is stored as a
+    /// bound, never as a value.
+    /// </summary>
+    NodeValue? MoveValueOf(CombatState s, CountingRandom rng, Move m, int remaining, Rational? cutAt = null)
     {
         if (Actions.EndsTurn(s, m) && remaining <= 0)
         {
             _c.HorizonLeaves++;
-            return NodeValue.Horizon(s);
+            return On(Pruning.UtilityBound) ? NodeValue.Horizon(s, LeafUpper(s)) : NodeValue.Horizon(s);
         }
 
         if (SolverDebug.MergeAudit && Actions.EndsTurn(s, m))
@@ -407,7 +535,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 {
                     // A roll wider than the cap: a horizon leaf at the move's position (L0, bound L0's maximum, no mass).
                     value += o.P * Utility.L0(s);
-                    upper += o.P * Utility.Max;
+                    upper += o.P * LeafUpper(s);
                     exact = false;
                     continue;
                 }
@@ -423,6 +551,32 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 }
 
                 var k = Key(o.State);
+                if (cutAt is { } at && o.P == Rational.One)
+                {
+                    // The move's one outcome: its bound is the move's. A stored bound is read as a bound; else the child's own.
+                    int childRemaining = remaining - (o.State.Turn - s.Turn);
+                    Rational childUpper;
+                    if (Table.TryGetBound(k, out var stored))
+                    {
+                        _c.TableBoundsReused++;
+                        childUpper = stored;
+                    }
+                    else
+                    {
+                        childUpper = UtilityGains.Upper(o.State);
+                    }
+
+                    if (childUpper <= at)
+                    {
+                        if (Table.PutBound(k, childUpper, childRemaining))
+                        {
+                            _c.TableBoundsStored++;
+                        }
+
+                        return null;
+                    }
+                }
+
                 if (children.TryGetValue(k, out var v))
                 {
                     _c.Merged++;
@@ -447,7 +601,7 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                 {
                     // A roll wider than the cap: a horizon leaf at the move's position (L0, bound L0's maximum, no mass).
                     value += o.P * Utility.L0(s);
-                    upper += o.P * Utility.Max;
+                    upper += o.P * LeafUpper(s);
                     exact = false;
                     continue;
                 }
@@ -460,6 +614,11 @@ public sealed class Expectimax(SolveOptions? options = null, TranspositionTable?
                     upper += o.P * t;
                     mass += o.P;
                     continue;
+                }
+
+                if (cutAt is { } at && o.P == Rational.One && UtilityGains.Upper(o.State) <= at)
+                {
+                    return null;
                 }
 
                 var v = Node(o.State, o.Rng, remaining - (o.State.Turn - s.Turn));

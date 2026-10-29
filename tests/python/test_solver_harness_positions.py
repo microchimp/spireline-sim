@@ -42,8 +42,16 @@ class HarnessPositionsTests(unittest.TestCase):
         assert {"SeekerStrike", "Cleanse", "Wish"} <= set(plays)
         fights = Counter(r["encounter"] for r in rs if r["encounter"])
         assert fights["HunterKiller"] >= 2 and fights["Toadpoles"] >= 2
-        # The order-dependence recipes play until a named point; a macro recipe's encounter is only its fight.
-        assert all(r["until"] for r in rs if r["encounter"] and not r["macro"])
+        # The order-dependence recipes play until a named point; a macro or bound recipe's encounter is only its fight.
+        assert all(r["until"] for r in rs if r["encounter"] and not r["macro"] and not r["bound"])
+
+    def test_bound_recipes(self):
+        rs = [r for r in rows() if r["bound"]]
+        assert len(rs) == 2 * len(harness.BOUND)
+        assert Counter(r["engine"] for r in rs) == {"old": len(harness.BOUND), "core2": len(harness.BOUND)}
+        kinds = {r["bound"] for r in rs}
+        assert {"on:closed", "on:cut", "on"} <= kinds and any(k.startswith("off:") for k in kinds)
+        assert any(r["horizon"] == 1 for r in rs if r["bound"] == "on:closed")
 
 
 if __name__ == "__main__":

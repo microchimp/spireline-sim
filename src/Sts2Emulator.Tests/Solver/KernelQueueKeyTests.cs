@@ -40,7 +40,7 @@ public class KernelQueueKeyTests
         var r = new Expectimax(new SolveOptions { MaxHorizon = 0, UseEstimate = false }).SolveExpected(s, rng);
         Assert.True(r.Status != SolveStatus.Refused, r.Reason);
         Assert.True(r.Counters.Screens > 0, "the Armaments screen was not reached");
-        var reference = Reference.Solve(s, rng, 0);
+        var reference = Reference.Solve(s, rng, 0, tightBound: true);
         Assert.Null(reference.Refused);
         Assert.Equal(reference.Value, r.Value);
         Assert.Equal(reference.Exact, r.Exact);

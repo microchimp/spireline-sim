@@ -19,7 +19,8 @@ internal static class SolverPositions
 {
     public sealed record Recipe(
         int Id, string Source, string Engine, int Seed, int Setup, int Steps, int EnemyHp, int DrawKeep, int DiscardKeep, string[] Mix, int After, int Horizon,
-        string Play, string Encounter, string Until, string Fixture, string Macro, string[] Hand, string[] DrawPile, string[] DiscardPile, string Buff, int Energy);
+        string Play, string Encounter, string Until, string Fixture, string Macro, string[] Hand, string[] DrawPile, string[] DiscardPile, string Buff, int Energy,
+        string Bound = "", string[]? Relics = null, string[]? Potions = null, int PlayerHp = 0);
 
     public sealed record Position(Recipe Recipe, CombatState State, CountingRandom Rng);
 
@@ -76,10 +77,20 @@ internal static class SolverPositions
             deck = TestDeck.StarterDeckIds.ToArray();
         }
 
+        if (r.Relics is { Length: > 0 })
+        {
+            relics = [.. r.Relics.Select(n => Relics.FindId(n) ?? throw new ArgumentException($"unknown relic {n}"))];
+        }
+
+        if (r.Potions is { Length: > 0 })
+        {
+            potions = [.. r.Potions.Select(n => Potions.FindId(n) ?? throw new ArgumentException($"unknown potion {n}"))];
+        }
+
         try
         {
             int? encounter = r.Encounter.Length > 0 ? (int)Enum.Parse<CombatFactory.ActOneEncounter>(r.Encounter) : null;
-            var (s, rng) = Fight(r.Engine, r.Seed, [.. deck, .. mix], relics, potions, encounter: encounter);
+            var (s, rng) = Fight(r.Engine, r.Seed, [.. deck, .. mix], relics, potions, r.PlayerHp > 0 ? r.PlayerHp : 80, encounter);
             var policy = new Random(r.Seed * 7919);
             for (int i = 0; i < r.Steps; i++)
             {

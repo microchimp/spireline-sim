@@ -36,7 +36,26 @@ public enum Pruning
     /// </summary>
     MacroDraw = 32,
 
-    All = Transposition | MultisetHand | InterchangeableEnemies | SubtreeReuse | DrawByValue | MacroDraw,
+    /// <summary>
+    /// The tight utility bound (FIGHT_SOLVER.md section 19): where no heal, max-HP change or potion gain is reachable in the
+    /// combat (the scanned registry, <see cref="UtilityGains" />), a horizon leaf's and a wide roll's bound is L0 of the
+    /// position's HP and potions, not L0's maximum, 1. Values are unchanged; bounds, and so exactness, are tighter.
+    /// </summary>
+    UtilityBound = 64,
+
+    /// <summary>At a max node below the root, an exact move whose value reaches the node's bound closes the node: its other moves are not expanded.</summary>
+    LethalClosure = 128,
+
+    /// <summary>At a max node below the root, a move whose bound is at or below the best exact value found there is cut (not searched).</summary>
+    BranchBound = 256,
+
+    /// <summary>At a max node below the root, likely closers first: kills, other attacks, other plays, end turn, potions last. Node counts only.</summary>
+    CloserFirst = 512,
+
+    All = Transposition | MultisetHand | InterchangeableEnemies | SubtreeReuse | DrawByValue | MacroDraw | UtilityBound | LethalClosure | BranchBound | CloserFirst,
+
+    /// <summary>Every pruning but the bounds round's (the engine round's <c>All</c>).</summary>
+    NoBounds = All & ~(UtilityBound | LethalClosure | BranchBound | CloserFirst),
 }
 
 /// <summary>
@@ -157,4 +176,14 @@ public static class Actions
 
     /// <summary>Whether the move ends the player's turn (end turn with no screen open).</summary>
     public static bool EndsTurn(CombatState s, Move m) => s.PendingSelection is null && m.Action == s.Hand.Count;
+
+    /// <summary>A potion's use (an action past end turn, no screen open).</summary>
+    public static bool IsPotion(CombatState s, Move m) => s.PendingSelection is null && m.Action > s.Hand.Count;
+
+    /// <summary>The change to L0's potion count a potion's use makes: its slot is emptied before its effect (<c>UsePotion</c>).</summary>
+    public static int PotionsUsed(CombatState s, Move m)
+    {
+        int slot = m.Action - s.Hand.Count - 1;
+        return slot >= 0 && slot < Math.Min(s.PotionSlots.Length, s.MaxPotionSlots) && s.PotionSlots[slot] != 0 ? -1 : 0;
+    }
 }

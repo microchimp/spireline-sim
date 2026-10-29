@@ -143,7 +143,9 @@ public class ExpectimaxTests(ITestOutputHelper output)
             e.Hp = 12;
         }
 
-        var solver = new Expectimax(new SolveOptions { UseEstimate = false });
+        // The table's own test: the bounds round's closure and cuts (on in All) leave too few nodes here for the commuting
+        // plays to meet, so they are off; the table's kinds and the bounds have UtilityBoundTests.
+        var solver = new Expectimax(new SolveOptions { UseEstimate = false, Prune = Pruning.NoBounds });
         var first = solver.SolveAt(s, rng, 0);
         Assert.True(first.Counters.TableHits > 0, "commuting plays did not meet in the table");
         var move = first.Moves.Where(m => !Actions.EndsTurn(s, m.Move)).MaxBy(m => m.Value)!.Move;
@@ -151,7 +153,7 @@ public class ExpectimaxTests(ITestOutputHelper output)
         var nrng = rng.Copy();
         Successors.Step(next, nrng, move);
         var again = solver.SolveAt(next, nrng, 0);
-        var fresh = new Expectimax(new SolveOptions { UseEstimate = false }).SolveAt(next, nrng, 0);
+        var fresh = new Expectimax(new SolveOptions { UseEstimate = false, Prune = Pruning.NoBounds }).SolveAt(next, nrng, 0);
         Assert.Equal(fresh.Value, again.Value);
         Assert.True(again.Counters.Nodes < fresh.Counters.Nodes, $"reuse {again.Counters.Nodes} nodes, fresh {fresh.Counters.Nodes}");
     }
