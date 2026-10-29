@@ -10,6 +10,9 @@
     python tools/solver/coverage.py curve   --out OUT [--second-name solves_1e7.jsonl]
     python tools/solver/coverage.py memory  --out OUT --ids-file IDS --step-cap N   (one solve per process: peak working set)
     python tools/solver/coverage.py macro-ab --out OUT --n 120                        (EmuDump, macro draw on against off)
+    python tools/solver/coverage.py played  --out OUT --source ARM [--source ...]      (the agent's move as applied, per decision)
+    python tools/solver/coverage.py solve   --out OUT --utility lethal --horizon 0 --wall-s 1 --out-name solves_lethal.jsonl
+    python tools/solver/coverage.py regret  --out OUT                                  (L0 regret and the two root checks)
 
 Where the decisions come from. The real game's nightly block (envproto play) keeps no fight positions: its `runs.jsonl` and
 `divergences.jsonl` hold seeds, outcomes and the diverged decisions' hand and energy only, so no real-game decision can be
@@ -249,6 +252,147 @@ def merged_horizons(first: dict, second: dict | None) -> dict:
     return second if second is not None else first
 
 
+# ----------------------------------------------------------------------------------------------- M1: regret and the root checks
+
+
+def q_map(row: dict) -> dict:
+    """A solve row's root move values {(action, target): value}, target -1 for none; {} for a row written before q was kept."""
+    return {(int(a), int(t)): float(v) for a, t, v in row.get("q") or []}
+
+
+def _enemy_same(a: dict, b: dict) -> bool:
+    return {k: v for k, v in a.items() if k != "slot"} == {k: v for k, v in b.items() if k != "slot"}
+
+
+def map_played(q: dict, action: int, target: int, doc: dict | None) -> tuple[tuple[int, int] | None, str]:
+    """The solver's move key for the agent's move as applied, and how it was found.
+
+    'direct': (action, target) is a key. 'untargeted': the agent named a target for a move without one, or none for a move
+    with a single target. 'merged': the solver lists only the earliest of equal moves (MultisetHand: a hand card equal to an
+    earlier one, a potion equal to an earlier slot's; InterchangeableEnemies: an enemy equal to an earlier one, slot aside),
+    so the move takes the value of the move it was merged into; equality is read from the decision's document. 'unmapped':
+    none of these (the decision is left out of regret and counted)."""
+    a, t = int(action), int(target)
+    if (a, t) in q:
+        return (a, t), "direct"
+
+    def aim(act: int, how: str):
+        ts = sorted(x for (y, x) in q if y == act)
+        if not ts:
+            return None
+        if (act, t) in q:
+            return (act, t), how
+        if ts == [-1]:
+            return (act, -1), "untargeted" if how == "direct" else how
+        if t == -1 and len(ts) == 1:
+            return (act, ts[0]), "untargeted" if how == "direct" else how
+        enemies = (doc or {}).get("enemies") or []
+        if 0 <= t < len(enemies):
+            for x in ts:
+                if 0 <= x < t and _enemy_same(enemies[x], enemies[t]):
+                    return (act, x), "merged"
+        return None
+
+    got = aim(a, "direct")
+    if got is not None:
+        return got
+    hand = ((doc or {}).get("piles") or {}).get("hand") or []
+    if (doc or {}).get("pending_selection") is None and 0 <= a < len(hand):
+        for j in range(a):
+            if hand[j] == hand[a] and (got := aim(j, "merged")) is not None:
+                return got
+    elif (doc or {}).get("pending_selection") is None and a > len(hand):
+        slots = ((doc or {}).get("potions") or {}).get("slots") or []
+        s = a - len(hand) - 1
+        if 0 <= s < len(slots):
+            for j in range(s):
+                if slots[j] == slots[s] and (got := aim(len(hand) + 1 + j, "merged")) is not None:
+                    return got
+    return None, "unmapped"
+
+
+def source_short(label: str) -> str:
+    """nightly/2026-10-27/g7-emu -> g7."""
+    return str(label).rstrip("/").split("/")[-1].split("-")[0]
+
+
+def check_reading(row: dict | None, action: int, target: int, doc: dict | None) -> dict:
+    """One root check (lethal or survival) at a decision: finished (the check's solve was exact), whether some move's
+    chance is exactly 1 (the root value, a double; a move's chance is a float32 of its exact value), the played move's
+    chance, and missed (some move's chance is 1 and the played move's below 1). Exact quantities only: an unfinished check
+    has no reading."""
+    if row is None or row.get("status") != 0 or not row.get("exact"):
+        return {"done": False}
+    q = q_map(row)
+    key, how = map_played(q, action, target, doc)
+    avail = row.get("value") == 1.0
+    p = q.get(key) if key is not None else None
+    return {"done": True, "avail": avail, "played": p, "how": how, "missed": bool(avail and p is not None and p < 1.0)}
+
+
+def regret_row(d: dict, solve: dict | None, played: dict | None, lethal: dict | None, survival: dict | None, doc: dict | None) -> dict:
+    """One decision's reading: L0 regret where the L0 solve is exact (full fight), and the two root checks."""
+    row = {"id": d["id"], "fight": d["fight"], "source": source_short(d["source"]), "kind": d["kind"], "won": d["won"],
+           "turns_left": d["turns_left"], "played": played is not None, "replay_same": bool(played and played.get("replay_same"))}
+    if played is None or not row["replay_same"]:
+        return row
+    a, t = int(played["action"]), int(played["target"])
+    max_hp = int(((doc or {}).get("player") or {}).get("max_hp") or 0)
+    if solve is not None and solve.get("status") == 0 and solve.get("exact") and solve.get("q"):
+        q = q_map(solve)
+        key, how = map_played(q, a, t, doc)
+        best, worst = max(q.values()), min(q.values())
+        row.update({"l0_exact": True, "how": how, "q_best": best, "q_worst": worst,
+                    "decisive": best - worst > 0.01 or (d["turns_left"] <= 1 and (d["won"] is False or d["kind"] == "boss"))})
+        if key is not None:
+            loss = max(0.0, best - q[key])
+            row.update({"regret": loss, "regret_hp": loss * 2 * max_hp})
+    else:
+        row["l0_exact"] = False
+    row["lethal"] = check_reading(lethal, a, t, doc)
+    row["survival"] = check_reading(survival, a, t, doc)
+    return row
+
+
+def regret_report(rows: list[dict], n_fights: int) -> dict:
+    """The regret tables: overall, by source, fight kind and turns left. Per fight figures divide by the fights given."""
+
+    def part(rs: list[dict], fights: int) -> dict:
+        ex = [r for r in rs if r.get("l0_exact")]
+        val = [r for r in ex if "regret" in r]
+        tot, tot_hp = sum(r["regret"] for r in val), sum(r["regret_hp"] for r in val)
+        dec = [r for r in val if r["decisive"]]
+        out = {"decisions": len(rs), "fights": fights, "l0_exact": len(ex), "l0_valued": len(val),
+               "l0_unmapped": len(ex) - len(val),
+               "mean_regret_l0": round(tot / len(val), 6) if val else None,
+               "regret_l0_per_fight": round(tot / fights, 6) if fights else None,
+               "regret_hp_per_fight": round(tot_hp / fights, 4) if fights else None,
+               "mean_regret_hp": round(tot_hp / len(val), 4) if val else None,
+               "loss_over_0.01": sum(r["regret"] > 0.01 for r in val),
+               "share_loss_over_0.01": _share([r["regret"] > 0.01 for r in val]),
+               "decisive": len(dec), "decisive_regret_l0": round(sum(r["regret"] for r in dec), 6),
+               "decisive_loss_over_0.01": sum(r["regret"] > 0.01 for r in dec)}
+        for c in ("lethal", "survival"):
+            done = [r for r in rs if (r.get(c) or {}).get("done")]
+            missed = [r for r in done if r[c]["missed"]]
+            mf = {r["fight"] for r in missed}
+            out[c] = {"checked": len(done), "available": sum(r[c]["avail"] for r in done),
+                      "unmapped": sum(r[c]["played"] is None for r in done), "missed_decisions": len(missed),
+                      "fights_with_miss": len(mf), "missed_per_100_fights": round(100 * len(mf) / fights, 2) if fights else None,
+                      "missed_ids": sorted(r["id"] for r in missed)}
+        return out
+
+    def by(key) -> dict:
+        g: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            g[key(r)].append(r)
+        return {k: part(v, len({r["fight"] for r in v})) for k, v in sorted(g.items())}
+
+    return {"overall": part(rows, n_fights), "by_source": by(lambda r: r["source"]), "by_kind": by(lambda r: r["kind"]),
+            "by_turns_left": by(lambda r: turns_left_bucket(r["turns_left"])),
+            "mapping": dict(Counter(r.get("how", "-") for r in rows if r.get("l0_exact")))}
+
+
 # ----------------------------------------------------------------------------------------------- the emulator parts
 
 
@@ -438,7 +582,11 @@ PRUNE = None  # the solve's prunings (native.PRUNE_ALL when None); set per worke
 
 
 def _solve(task: tuple) -> dict:
-    pid, doc, cap, wall_s, step_cap = task
+    """One decision's expected solve. The row keeps the root: q as [[action, target, value], ...] (target -1 for none),
+    the best move, the value and exact_mass. A sixth and seventh entry give a check utility (native.UTILITY_*) and its
+    fixed horizon."""
+    pid, doc, cap, wall_s, step_cap, *rest = task
+    utility, horizon = (int(rest[0]), int(rest[1])) if rest else (0, MAX_HORIZON)
     from sts2_gym import native  # noqa: PLC0415
 
     try:
@@ -448,8 +596,8 @@ def _solve(task: tuple) -> dict:
                 "reason": f"snapshot-load: {type(e).__name__}: {str(e)[:160]}", "exact": False, "horizon": -1, "wall_s": 0.0,
                 "censored": False, "stats": {"horizons": []}}
     try:
-        opts = native.SolveOptions(node_budget=int(cap), step_budget=int(step_cap), time_budget_ms=int(wall_s * 1000), max_horizon=MAX_HORIZON,
-                                   prune=native.PRUNE_ALL if PRUNE is None else PRUNE)
+        opts = native.SolveOptions(node_budget=int(cap), step_budget=int(step_cap), time_budget_ms=int(wall_s * 1000), max_horizon=horizon,
+                                   prune=native.PRUNE_ALL if PRUNE is None else PRUNE, utility=utility)
         solver = native.solver_create(h, opts)
         try:
             t0 = time.perf_counter()
@@ -462,8 +610,13 @@ def _solve(task: tuple) -> dict:
         native.destroy(h)
     hz = st.get("horizons") or []
     censored = bool(hz) and hz[-1]["end"] == "budget" and hz[-1]["nodes"] <= cap and not any(x["exact"] for x in hz)
-    return {"id": pid, "cap": cap, "wall_cap_s": wall_s, "step_cap": step_cap, "status": r.status, "reason": r.reason, "exact": bool(r.exact),
-            "horizon": r.horizon, "wall_s": round(wall, 4), "censored": censored, "stats": st, "peak_ws_mb": peak_working_set_mb()}
+    row = {"id": pid, "cap": cap, "wall_cap_s": wall_s, "step_cap": step_cap, "status": r.status, "reason": r.reason, "exact": bool(r.exact),
+           "horizon": r.horizon, "wall_s": round(wall, 4), "censored": censored, "stats": st, "peak_ws_mb": peak_working_set_mb(),
+           "value": r.value, "exact_mass": r.exact_mass, "best": [r.best_action, r.best_target],
+           "q": [[a, t, v] for (a, t), v in sorted(r.q.items())]}
+    if utility:
+        row["utility"] = utility
+    return row
 
 
 def _engine_of(out: Path) -> str:
@@ -483,10 +636,15 @@ def cmd_solve(a) -> int:
     if a.only_not_exact_at:
         prev = {r["id"]: r for r in read_jsonl(out / a.prev_name)}
         ids = [i for i in ids if i in prev and needs_larger_cap(prev[i], a.cap)]
+    if a.ids_file:  # one decision id per line (M1: the exact set)
+        keep = {x.strip() for x in Path(a.ids_file).read_text(encoding="utf-8").splitlines() if x.strip()}
+        ids = [i for i in ids if i in keep]
     if a.n:
         ids = sorted(random.Random(a.seed).sample(ids, min(a.n, len(ids))))  # a seeded subsample (the cut, reported)
-    tasks = [(i, pos[i], a.cap, a.wall_s, a.step_cap) for i in ids if i not in done]
-    print(f"solving {len(tasks)} decisions (cap {a.cap} nodes, wall {a.wall_s} s, {a.procs} workers)", flush=True)
+    utility = {"l0": 0, "lethal": 3, "survival": 4}[a.utility]
+    extra = (utility, MAX_HORIZON if a.horizon < 0 else a.horizon) if utility else ()
+    tasks = [(i, pos[i], a.cap, a.wall_s, a.step_cap, *extra) for i in ids if i not in done]
+    print(f"solving {len(tasks)} decisions (cap {a.cap} nodes, wall {a.wall_s} s, {a.procs} workers, utility {a.utility})", flush=True)
     ctx = mp.get_context("spawn")
     with ctx.Pool(processes=min(12, max(1, a.procs)), initializer=_init_solver, initargs=(_engine_of(out), a.debug_flags, a.prune), maxtasksperchild=4) as pool, \
             open(target, "a", encoding="utf-8") as fh:
@@ -746,10 +904,122 @@ def cmd_curve(a) -> int:
     return 0
 
 
+def _played(task: tuple) -> dict:
+    """Replays one run exactly, as _replay does, and reads the agent's combat move as applied at each wanted decision by
+    wrapping native.run_step (the call itself unchanged); hashes the wanted decisions' documents for the exactness check."""
+    import hashlib  # noqa: PLC0415
+
+    source, label, agent_root, seed, ix, config, engine, keep = task
+    _below_normal()
+    _setup_paths()
+    import gen0  # noqa: PLC0415
+
+    gen0.select_engine(engine)
+    import gen_loop  # noqa: PLC0415
+    from sts2_gym import native  # noqa: PLC0415
+
+    _, _, agent_dir, _ = _arm(source)
+    agent = gen_loop.load_agent(Path(agent_root) / agent_dir)
+    want = set(keep)
+    moves: dict[int, list[int]] = {}
+    hashes: dict[int, str] = {}
+    cur = {"k": None}
+    run_step = native.run_step
+
+    def step(h, a, t, *rest):
+        if cur["k"] is not None:
+            moves[cur["k"]] = [int(a), int(t)]
+            cur["k"] = None
+        return run_step(h, a, t, *rest)
+
+    def hook(k, root, s, pos):
+        if k in want:
+            cur["k"] = k
+            hashes[k] = hashlib.sha256(json.dumps(native.get_state_json(root.handle), sort_keys=True).encode()).hexdigest()
+        return False
+
+    native.run_step = step
+    t0 = time.perf_counter()
+    try:
+        r = gen0.play_emu_run(seed, ix, config, agent=agent, hook=hook)
+    finally:
+        native.run_step = run_step
+    return {"label": label, "seed": seed, "floor": int(r["floor"]), "end": r.get("end"), "moves": moves, "hashes": hashes,
+            "seconds": round(time.perf_counter() - t0, 1)}
+
+
+def cmd_played(a) -> int:
+    """played.jsonl: the agent's move as applied ({id, action, target}) at every decision of the sampled fights, from an
+    exact replay of each run; the replay must reproduce the arm (floor and end) and every decision's document."""
+    import hashlib  # noqa: PLC0415
+
+    out = Path(a.out)
+    meta = json.loads((out / "collect.json").read_text(encoding="utf-8"))
+    dec = read_jsonl(out / "decisions.jsonl")
+    docs = {p["id"]: hashlib.sha256(json.dumps(p["doc"], sort_keys=True).encode()).hexdigest() for p in read_jsonl(out / "positions.jsonl")}
+    want: dict[tuple, list[int]] = defaultdict(list)
+    ixs = {}
+    for d in dec:
+        want[(d["source"], d["seed"])].append(d["k"])
+        ixs[(d["source"], d["seed"])] = d["ix"]
+    srcs = {source_label(s): s for s in a.source}
+    tasks = []
+    for (label, seed), ks in sorted(want.items()):
+        m = next(x for x in meta["sources"] if x["label"] == label)
+        tasks.append((srcs[label], label, a.agent_root, seed, ixs[(label, seed)], m["config"] or "a3-v1", m["engine"], sorted(ks)))
+    rows, checks = [], []
+    with _pool(a.procs) as pool:
+        for res in pool.imap_unordered(_played, tasks):
+            src = srcs[res["label"]]
+            arm = next(r for r in read_jsonl(Path(src) / "runs.jsonl") if r["seed"] == res["seed"])
+            same = res["floor"] == arm["floor"] and res["end"] == arm.get("end")
+            ks = sorted(k for (lb, sd), v in want.items() if lb == res["label"] and sd == res["seed"] for k in v)
+            ids = {k: f"{res['label']}|{res['seed']}|k{k:04d}" for k in ks}
+            doc_same = sum(res["hashes"].get(str(k), res["hashes"].get(k)) == docs.get(ids[k]) for k in ks)
+            checks.append({"source": res["label"], "seed": res["seed"], "floor": res["floor"], "end": res["end"], "arm_floor": arm["floor"],
+                           "arm_end": arm.get("end"), "same": same, "decisions": len(ks), "docs_same": doc_same,
+                           "moves": len(res["moves"]), "seconds": res["seconds"]})
+            for k in ks:
+                mv = res["moves"].get(str(k), res["moves"].get(k))
+                if mv is not None:
+                    # replay_same: the decision's document equals the one solved (the move is a3-v1's at that position);
+                    # run_same: the whole run reproduced the arm's floor and end.
+                    rows.append({"id": ids[k], "action": mv[0], "target": mv[1], "replay_same": res["hashes"].get(str(k), res["hashes"].get(k)) == docs.get(ids[k]),
+                                 "run_same": same})
+    rows.sort(key=lambda r: r["id"])
+    write_jsonl(out / "played.jsonl", rows)
+    write_jsonl(out / "played_check.jsonl", sorted(checks, key=lambda r: (r["source"], r["seed"])))
+    rep = {"runs": len(checks), "runs_same": sum(c["same"] for c in checks), "decisions": len(dec), "played": len(rows),
+           "docs_same": sum(c["docs_same"] for c in checks), "replay_same_rows": sum(r["replay_same"] for r in rows),
+           "rows_in_runs_not_same": sum(not r["run_same"] for r in rows)}
+    print(json.dumps(rep, indent=1))
+    return 0
+
+
+def cmd_regret(a) -> int:
+    """regret.json: a3-v1's L0 regret where the L0 solve is exact, and its missed lethals and missed forced survivals where
+    each check finished (ExpectedSolve values only; the hindsight bound is never read)."""
+    out = Path(a.out)
+    dec = read_jsonl(out / "decisions.jsonl")
+    docs = {p["id"]: p["doc"] for p in read_jsonl(out / "positions.jsonl")}
+    solves = {r["id"]: r for r in read_jsonl(out / a.prev_name)}
+    played = {r["id"]: r for r in read_jsonl(out / "played.jsonl")}
+    lethal = {r["id"]: r for r in read_jsonl(out / "solves_lethal.jsonl")}
+    survival = {r["id"]: r for r in read_jsonl(out / "solves_survival.jsonl")}
+    rows = [regret_row(d, solves.get(d["id"]), played.get(d["id"]), lethal.get(d["id"]), survival.get(d["id"]), docs.get(d["id"])) for d in dec]
+    write_jsonl(out / "regret_rows.jsonl", rows)
+    rep = regret_report(rows, len({d["fight"] for d in dec}))
+    rep["inputs"] = {"decisions": len(dec), "l0_solves": len(solves), "played": len(played), "replay_same": sum(r["replay_same"] for r in rows),
+                     "lethal_solves": len(lethal), "survival_solves": len(survival)}
+    (out / "regret.json").write_text(json.dumps(rep, indent=1), encoding="utf-8")
+    print(json.dumps({k: rep[k] for k in ("overall", "mapping", "inputs")}, indent=1))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("collect", "sample", "dump", "solve", "check", "speed", "speed-jit", "curve", "memory", "macro-ab"):
+    for name in ("collect", "sample", "dump", "solve", "check", "speed", "speed-jit", "curve", "memory", "macro-ab", "played", "regret"):
         p = sub.add_parser(name)
         p.add_argument("--out", required=True)
         p.add_argument("--seed", type=int, default=20261028)
@@ -772,6 +1042,8 @@ def main(argv=None) -> int:
         p.add_argument("--ids-from", default="", help="speed: another run's speed.json, whose decisions and budget are taken")
         p.add_argument("--ids-file", default="", help="memory: one decision id per line")
         p.add_argument("--debug-flags", type=int, default=0)
+        p.add_argument("--utility", choices=("l0", "lethal", "survival"), default="l0", help="solve: a check utility, solved at --horizon")
+        p.add_argument("--horizon", type=int, default=-1, help="solve: a check utility's fixed horizon")
         p.add_argument("--audit", action="store_true")
         p.add_argument("--audit-only", action="store_true")
         p.add_argument("--emudump", default=str(ROOT / "tools" / "emudump" / "bin" / "Release" / "net9.0" / "EmuDump.dll"))
@@ -779,7 +1051,8 @@ def main(argv=None) -> int:
     if a.cmd == "speed" and a.out_name == "solves.jsonl":
         a.out_name = "speed.json"
     return {"collect": cmd_collect, "sample": cmd_sample, "dump": cmd_dump, "solve": cmd_solve, "check": cmd_check,
-            "speed": cmd_speed, "speed-jit": cmd_speed_jit, "curve": cmd_curve, "memory": cmd_memory, "macro-ab": cmd_macro_ab}[a.cmd](a)
+            "speed": cmd_speed, "speed-jit": cmd_speed_jit, "curve": cmd_curve, "memory": cmd_memory, "macro-ab": cmd_macro_ab,
+            "played": cmd_played, "regret": cmd_regret}[a.cmd](a)
 
 
 if __name__ == "__main__":

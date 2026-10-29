@@ -137,6 +137,89 @@ class CurveTests(unittest.TestCase):
         self.assertEqual(r["ratio_median"], 0.75)
 
 
+def card(def_id, upgraded=False):
+    return {"def_id": def_id, "upgraded": upgraded}
+
+
+def enemy(slot, def_id, hp):
+    return {"def_id": def_id, "slot": slot, "hp": hp}
+
+
+DOC = {"player": {"max_hp": 80}, "pending_selection": None, "piles": {"hand": [card(1), card(2), card(1), card(3)]},
+       "potions": {"slots": [7, 7, 0]}, "enemies": [enemy(0, 9, 10), enemy(1, 9, 10), enemy(2, 4, 30)]}
+# The solver's keys at DOC: card 0 (an attack: targets 0 and 2; enemy 1 equals enemy 0), card 1 (no target), card 2 merged
+# into card 0, card 3 (no target), end turn (4), the first potion (5, no target); the second potion (6) merged into it.
+Q = {(0, 0): 0.70, (0, 2): 0.75, (1, -1): 0.60, (3, -1): 0.65, (4, -1): 0.55, (5, -1): 0.72}
+
+
+class RegretTests(unittest.TestCase):
+    def test_q_rows_old_and_new(self):
+        self.assertEqual(cov.q_map({"id": "x", "status": 0}), {})
+        self.assertEqual(cov.q_map({"q": [[0, -1, 0.5], [1, 2, 0.25]]}), {(0, -1): 0.5, (1, 2): 0.25})
+
+    def test_the_curve_reads_rows_with_and_without_q(self):
+        dec = [{"id": f"d{i}", "fight": "f", "kind": "hallway", "act": 1, "won": True, "turn": 1, "turns_left": 0} for i in range(2)]
+        old = {"id": "d0", "status": 0, "cap": 10**6, "stats": {"horizons": hz((0, "done", 200, 0.005, True, None))}}
+        new = dict(old, id="d1", q=[[0, -1, 0.9]], value=0.9, exact=True, exact_mass=1.0, best=[0, -1])
+        c = cov.curve(dec, [old, new], 10**6)
+        self.assertEqual(c["overall"]["all"]["time_0.01s"], 1.0)
+
+    def test_the_played_move_maps_onto_the_solver_keys(self):
+        self.assertEqual(cov.map_played(Q, 0, 2, DOC), ((0, 2), "direct"))
+        self.assertEqual(cov.map_played(Q, 1, 0, DOC), ((1, -1), "untargeted"))  # a target given to a move without one
+        self.assertEqual(cov.map_played(Q, 0, 1, DOC), ((0, 0), "merged"))  # enemy 1 equals enemy 0
+        self.assertEqual(cov.map_played(Q, 2, 2, DOC), ((0, 2), "merged"))  # card 2 equals card 0
+        self.assertEqual(cov.map_played(Q, 2, 1, DOC), ((0, 0), "merged"))  # both merges
+        self.assertEqual(cov.map_played(Q, 6, -1, DOC), ((5, -1), "merged"))  # the second potion equals the first
+        self.assertEqual(cov.map_played(Q, 3, -1, DOC), ((3, -1), "direct"))
+        self.assertEqual(cov.map_played({(0, 1): 0.5}, 0, -1, None), ((0, 1), "untargeted"))  # one target, none named
+        self.assertEqual(cov.map_played(Q, 9, -1, DOC), (None, "unmapped"))
+        other = dict(DOC, piles={"hand": [card(1), card(2), card(1, True), card(3)]})
+        self.assertEqual(cov.map_played(Q, 2, 2, other), (None, "unmapped"))  # an upgraded copy is a different card
+
+    def test_regret_and_the_checks_read_exact_solves_only(self):
+        d = {"id": "s|1|k0001", "fight": "s|1|3", "source": "nightly/2026-10-27/g7-emu", "kind": "elite", "won": True, "turns_left": 2}
+        solve = {"status": 0, "exact": True, "q": [[a, t, v] for (a, t), v in Q.items()]}
+        played = {"action": 2, "target": 2, "replay_same": True}  # card 2 into enemy 2: card 0's value 0.75, the best
+        r = cov.regret_row(d, solve, played, None, None, DOC)
+        self.assertEqual((r["source"], r["how"], r["regret"]), ("g7", "merged", 0.0))
+        r = cov.regret_row(d, solve, dict(played, action=4, target=-1), None, None, DOC)  # end turn: 0.75 - 0.55
+        self.assertAlmostEqual(r["regret"], 0.20)
+        self.assertAlmostEqual(r["regret_hp"], 0.20 * 160)
+        self.assertTrue(r["decisive"])
+        cut = dict(solve, status=1, exact=False)
+        self.assertFalse(cov.regret_row(d, cut, played, None, None, DOC)["l0_exact"])
+        self.assertFalse(cov.regret_row(d, solve, dict(played, replay_same=False), None, None, DOC)["replay_same"])
+        # Lethal: a move with chance 1 exists and end turn's is 0: missed. A cut check has no reading.
+        lethal = {"status": 0, "exact": True, "value": 1.0, "q": [[0, 2, 1.0], [4, -1, 0.0]]}
+        r = cov.regret_row(d, solve, dict(played, action=4, target=-1), lethal, dict(lethal, exact=False), DOC)
+        self.assertEqual((r["lethal"]["done"], r["lethal"]["avail"], r["lethal"]["missed"]), (True, True, True))
+        self.assertEqual(r["survival"], {"done": False})
+        self.assertFalse(cov.regret_row(d, solve, played, lethal, None, DOC)["lethal"]["missed"])
+        near = dict(lethal, value=0.9999, q=[[0, 2, 0.9999], [4, -1, 0.0]])
+        self.assertFalse(cov.regret_row(d, solve, dict(played, action=4, target=-1), near, None, DOC)["lethal"]["missed"])
+
+    def test_the_report(self):
+        base = {"fight": "f1", "source": "g7", "kind": "boss", "won": False, "turns_left": 0, "played": True, "replay_same": True}
+        rows = [dict(base, id="a", l0_exact=True, how="direct", q_best=0.8, q_worst=0.8, decisive=True, regret=0.0, regret_hp=0.0,
+                     lethal={"done": True, "avail": True, "played": 0.5, "how": "direct", "missed": True}, survival={"done": False}),
+                dict(base, id="b", fight="f2", source="g5", kind="hallway", turns_left=3, l0_exact=True, how="direct", q_best=0.7,
+                     q_worst=0.6, decisive=True, regret=0.05, regret_hp=8.0, lethal={"done": False},
+                     survival={"done": True, "avail": True, "played": 1.0, "how": "direct", "missed": False}),
+                dict(base, id="c", fight="f2", source="g5", l0_exact=False, lethal={"done": False}, survival={"done": False})]
+        rep = cov.regret_report(rows, 4)
+        o = rep["overall"]
+        self.assertEqual((o["l0_exact"], o["l0_valued"], o["loss_over_0.01"], o["decisive"]), (2, 2, 1, 2))
+        self.assertAlmostEqual(o["mean_regret_l0"], 0.025)
+        self.assertAlmostEqual(o["regret_hp_per_fight"], 2.0)
+        self.assertEqual((o["lethal"]["checked"], o["lethal"]["missed_decisions"], o["lethal"]["missed_per_100_fights"]), (1, 1, 25.0))
+        self.assertEqual((o["survival"]["checked"], o["survival"]["missed_per_100_fights"]), (1, 0.0))
+        self.assertEqual(sorted(rep["by_source"]), ["g5", "g7"])
+        self.assertEqual(rep["by_turns_left"]["0"]["lethal"]["fights_with_miss"], 1)
+        self.assertEqual(rep["mapping"], {"direct": 2})
+        json.dumps(rep)
+
+
 class MemoryTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "GetProcessMemoryInfo is Windows only")
     def test_the_peak_working_set_is_read_and_never_falls(self):
@@ -150,7 +233,7 @@ class MemoryTests(unittest.TestCase):
         self.assertGreaterEqual(cov.peak_working_set_mb(), b)
 
     def test_the_new_subcommands_parse(self):
-        for cmd in ("memory", "macro-ab"):
+        for cmd in ("memory", "macro-ab", "played", "regret"):
             with self.assertRaises(SystemExit):
                 cov.main([cmd, "--help"])
 
