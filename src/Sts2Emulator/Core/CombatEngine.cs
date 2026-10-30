@@ -464,9 +464,6 @@ public static class CombatEngine
         else
         {
             int potionSlot = action - endTurnAction - 1;
-            // SurroundedPower.BeforePotionUsed, the same rule for a targeted potion. The
-            // potion's own target is not tracked, so this uses the aimed-at enemy.
-            TurnPlayerTowardTarget(state, card: null);
             result = UsePotion(state, potionSlot, rng);
         }
 
@@ -3414,6 +3411,9 @@ public static class CombatEngine
         // potion's own slot is already free while its effect runs -- Entropic Brew fills it.
         int potionId = state.PotionSlots[slot];
         state.PotionSlots[slot] = 0;
+        // `Hook.BeforePotionUsed`, between `RemoveBeforeUse` and `OnUse`: SurroundedPower turns the
+        // player toward the potion's target, which is an enemy only for an AnyEnemy potion.
+        TurnPlayerTowardPotionTarget(state, potionId);
         Effects.PotionEffects.Apply(potionId, state, rng);
         // The potion's kills -- Fire Potion, Explosive Ampoule, Potion-Shaped Rock, Foul
         // Potion, an orb Essence of Darkness evicts, a card Distilled Chaos plays -- are
@@ -5749,6 +5749,33 @@ public static class CombatEngine
         }
 
         FacePast(state, target, facing);
+    }
+
+    /// <summary>
+    /// <c>SurroundedPower.BeforePotionUsed</c>: a potion used in combat turns the player toward
+    /// its target. `UsePotionAction` hands `OnUseWrapper` the creature the potion is aimed at,
+    /// which is an enemy only for an AnyEnemy potion: a Self or AnyPlayer potion (Block,
+    /// Strength, Energy, Stable Serum, Skill, Colorless ...) is aimed at the player, who has no
+    /// Back Attack, and an AllEnemies one (Explosive Ampoule) at nobody. Neither turns anyone.
+    /// </summary>
+    /// <remarks>
+    /// This was the card rule with no card: every potion turned the player toward the
+    /// aimed-at enemy or, with none aimed, the first living one -- the Crusher. A Block
+    /// Potion drunk after a Strike at the Rocket left the copy facing the Crusher, and the
+    /// enemy turn after it hit the copy's player 5 less than the game's (the Rocket's 4 from
+    /// behind as 6, the Crusher's 14 from the front, against 21 and 4).
+    /// </remarks>
+    private static void TurnPlayerTowardPotionTarget(CombatState state, int potionId)
+    {
+        if (
+            BuffSystem.Get(state.PlayerBuffs, BuffId.Surrounded) == 0
+            || !Effects.PotionEffects.NeedsEnemyTarget(potionId)
+        )
+        {
+            return;
+        }
+
+        TurnPlayerTowardTarget(state, card: null);
     }
 
     /// <summary>

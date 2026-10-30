@@ -307,6 +307,10 @@ internal sealed class Fight
     public StepResult Potion(int slot) =>
         TestSwitches.Step(State, State.Hand.Count + 1 + slot, _rng);
 
+    /// <summary>Uses the potion in <paramref name="slot"/> aimed at the enemy at <paramref name="target"/>.</summary>
+    public StepResult Potion(int slot, int target) =>
+        TestSwitches.Step(State, State.Hand.Count + 1 + slot, _rng, target);
+
     public int PlayerBuffAmount(BuffId id) => BuffSystem.Get(State.PlayerBuffs, id);
 
     /// <summary>
