@@ -161,6 +161,7 @@ REPLY   (server -> client)
   logits  f32[32]      (the policy head at the MAX_ACTIONS slots; -inf where no action token)
 
 BYE     (client -> server) magic, kind=3  (optional; closing the pipe is enough)
+PRIORS  (client -> server) magic, kind=4: many rows in one request, one reply (the lockstep gym, docs/rl/LOCKSTEP_GYM.md 3)
 ```
 
 A request is ~24 x (1 + 4 + 1 + 72) + header ~ 1.9 KB, a reply 140 bytes. The `req_id` lets a client detect a
