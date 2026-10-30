@@ -28,6 +28,7 @@ from tools.lab import guards as gd  # noqa: E402
 from tools.lab import plans as pl  # noqa: E402
 from tools.lab import prune as pr  # noqa: E402
 from tools.lab import runner as rn  # noqa: E402
+from tools.lab import walk_reuse as wr  # noqa: E402
 from tools.lab import winsys  # noqa: E402
 
 WIN = os.name == "nt"
@@ -1092,6 +1093,187 @@ class RunnerCase(unittest.TestCase):
         r.pick_fights("abc")
         self.assertEqual(read().count("code on disk changed"), 1)  # said once per change
         self.assertIn("(mix.py)", read())
+
+
+class WalkReuseTest(unittest.TestCase):
+    """The presort reuses an earlier presort's codex walk when the EmuDump sources and the data cannot differ."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.fork = self.tmp / "fork"
+        self.tree = self.tmp / "tree"
+        self.runs = self.tmp / "lab" / "runs"
+        self.runs.mkdir(parents=True)
+        for rel in (*wr.WALK_TREES, "tools/lab", "docs"):
+            (self.fork / rel).mkdir(parents=True)
+            (self.fork / rel / "f.txt").write_text("1", encoding="utf-8")
+        self.git("init", "-q")
+        self.c1 = self.commit("start")
+        self.codex = self.tmp / "codex.gz"
+        self.codex.write_bytes(b"x")
+        self.dec = self.tmp / "dec"
+        self.dec.mkdir()
+        (self.dec / "a.cs").write_text("x", encoding="utf-8")
+        self.old = time.time() - 3600
+        for f in (self.codex, self.dec, self.dec / "a.cs"):
+            os.utime(f, (self.old - 100, self.old - 100))
+        self.sig = pl.walk_sig()
+        wr.trees.cache_clear()
+
+    def git(self, *a: str) -> str:
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        return subprocess.run(["git", "-C", str(self.fork), *a], capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+    def commit(self, msg: str, **files: str) -> str:
+        for rel, text in files.items():
+            (self.fork / rel).write_text(text, encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", msg, "--allow-empty")
+        return self.git("rev-parse", "HEAD")
+
+    def job(self, name: str, sha: str, *, shards=4, rc=0, mtime=None, reuse=False, argv=None, params=None) -> Path:
+        """A finished presort folder: the walk's four shard commands (or its reuse command) and the shard files."""
+        d = self.runs / name
+        (d / "codex").mkdir(parents=True)
+        mtime = self.old if mtime is None else mtime
+        for i in range(shards):
+            (d / "codex" / f"s{i}.jsonl").write_text('{"checks": 1}\n', encoding="utf-8")
+            os.utime(d / "codex" / f"s{i}.jsonl", (mtime, mtime))
+        if reuse:
+            cmds = {"codex-reuse": {"status": "done", "rc": rc}}
+        else:
+            argvs = argv or [c.symbolic() for c in pl.walk_cmds()]
+            cmds = {f"codex-s{i}": {"status": "done" if rc == 0 else "failed", "rc": rc, "argv": argvs[i]} for i in range(4)}
+        doc = {"main_sha": sha, "params": params or {}, "steps": [{"name": "checks", "cmds": cmds}]}
+        (d / "job.json").write_text(json.dumps(doc), encoding="utf-8")
+        return d
+
+    def find(self, sha: str) -> str | None:
+        wr.trees.cache_clear()
+        return wr.find_source(self.runs, self.fork, sha, self.sig, wr.data_floor(self.codex, self.dec))
+
+    def test_walk_trees_are_what_refset_score_builds_emudump_from(self):
+        from tools.fidelity import refset_score as rs
+        self.assertEqual(wr.WALK_TREES, tuple(sub for sub, _ in rs.EMU_SOURCES))
+
+    def test_a_main_move_that_leaves_the_emudump_sources_alone_reuses_the_walk(self):
+        self.job("20261001T0100-presort", self.c1)
+        c2 = self.commit("lab code", **{"tools/lab/f.txt": "2", "docs/f.txt": "2"})
+        self.assertEqual(self.find(c2), "20261001T0100-presort")
+        self.assertEqual(self.find(self.c1), "20261001T0100-presort")
+
+    def test_a_change_under_any_walk_tree_runs_the_walk(self):
+        self.job("20261001T0100-presort", self.c1)
+        for rel in wr.WALK_TREES:
+            c = self.commit("engine", **{f"{rel}/f.txt": "changed " + rel})
+            self.assertIsNone(self.find(c), rel)
+
+    def test_the_newest_matching_walk_is_taken_and_a_revert_matches_the_older_one(self):
+        self.job("20261001T0100-presort", self.c1)
+        c2 = self.commit("engine", **{"src/Sts2Emulator/f.txt": "2"})
+        self.job("20261001T0200-presort", c2)
+        c3 = self.commit("lab", **{"docs/f.txt": "3"})
+        self.assertEqual(self.find(c3), "20261001T0200-presort")
+        c4 = self.commit("engine back", **{"src/Sts2Emulator/f.txt": "1"})
+        self.assertEqual(self.find(c4), "20261001T0100-presort")  # the trees equal the first walk's again
+
+    def test_an_unfinished_short_or_failed_walk_is_not_reused(self):
+        c2 = self.commit("lab", **{"docs/f.txt": "2"})
+        self.job("20261001T0100-presort", self.c1, shards=3)
+        self.job("20261001T0200-presort", self.c1, rc=1)
+        self.assertIsNone(self.find(c2))
+        shutil.rmtree(self.runs / "20261001T0100-presort")
+        d = self.job("20261001T0300-presort", self.c1)
+        (d / "codex" / "s2.jsonl").write_text("", encoding="utf-8")  # an empty shard
+        self.assertIsNone(self.find(c2))
+
+    def test_a_walk_older_than_its_data_or_run_with_other_commands_is_not_reused(self):
+        c2 = self.commit("lab", **{"docs/f.txt": "2"})
+        self.job("20261001T0100-presort", self.c1, mtime=self.old - 500)  # the codex file is newer than the walk
+        self.assertIsNone(self.find(c2))
+        shutil.rmtree(self.runs / "20261001T0100-presort")
+        self.job("20261001T0200-presort", self.c1, argv=["dotnet other"] * 4)
+        self.assertIsNone(self.find(c2))
+        self.assertIsNone(wr.find_source(self.runs, self.fork, c2, self.sig, float("inf")))  # data that cannot be read
+        self.assertIsNone(wr.find_source(self.runs, self.fork, "0" * 40, self.sig, 0.0))  # a sha the fork does not have
+
+    def test_a_job_that_reused_a_walk_is_itself_a_source_and_pruning_the_first_changes_nothing(self):
+        self.job("20261001T0100-presort", self.c1)
+        c2 = self.commit("lab", **{"docs/f.txt": "2"})
+        self.job("20261001T0200-presort", c2, reuse=True, params={"walk_sig": self.sig})
+        c3 = self.commit("lab 2", **{"docs/f.txt": "3"})
+        self.assertEqual(self.find(c3), "20261001T0200-presort")
+        shutil.rmtree(self.runs / "20261001T0100-presort")
+        self.assertEqual(self.find(c3), "20261001T0200-presort")
+        self.job("20261001T0300-presort", c3, reuse=True)  # no walk_sig recorded: its commands are unknown
+        self.assertEqual(self.find(c3), "20261001T0200-presort")
+
+    def test_copy_shards_keeps_times_and_never_leaves_a_half_file(self):
+        src = self.job("20261001T0100-presort", self.c1)
+        (src / "codex" / "s1.err").write_text("e", encoding="utf-8")
+        dst = self.tmp / "out" / "codex"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(wr.copy_shards(src / "codex", dst), 0)
+        self.assertEqual(sorted(p.name for p in dst.iterdir()), ["s0.jsonl", "s1.err", "s1.jsonl", "s2.jsonl", "s3.jsonl"])
+        self.assertEqual(int((dst / "s2.jsonl").stat().st_mtime), int(self.old))
+        (src / "codex" / "s3.jsonl").unlink()
+        dst2 = self.tmp / "out2" / "codex"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(wr.copy_shards(src / "codex", dst2), 2)
+        self.assertFalse(any(p.name.endswith(".part") for p in dst2.iterdir()))
+
+    def test_the_plan_copies_the_walk_when_the_job_names_a_source_and_walks_otherwise(self):
+        c = PlansTest.ctx(self)
+        codex_cmds = lambda cx: [x.name for s in pl.plan_presort(cx) for x in s.cmds if x.name.startswith("codex")]  # noqa: E731
+        self.assertEqual(codex_cmds(c), ["codex-s0", "codex-s1", "codex-s2", "codex-s3"])
+        c.params["walk_from"] = "20261001T0100-presort"
+        self.assertEqual(codex_cmds(c), ["codex-reuse"])
+        reuse = [x for s in pl.plan_presort(c) for x in s.cmds if x.name == "codex-reuse"][0]
+        self.assertTrue(reuse.core)
+        self.assertEqual(reuse.argv[:2], ["{py}", "{labtools}/walk_reuse.py"])
+        self.assertIn("20261001T0100-presort/codex", reuse.argv[2])
+        from tools.fidelity import lab_groups as lg
+        for role in reuse.outputs:
+            if not role.endswith("_err"):
+                self.assertIn(role, lg.OUTPUT_KINDS)
+        self.assertEqual(reuse.outputs, pl.walk_cmds()[0].outputs)  # the roles the real walk's first shard names
+        c.skip = ("codex",)
+        self.assertIn("--skip codex", reuse.skip_reason(c))
+        c.params["walk_from"] = "..\\..\\elsewhere"  # a name that is not a presort folder is ignored
+        self.assertEqual(codex_cmds(c), ["codex-s0", "codex-s1", "codex-s2", "codex-s3"])
+
+    def test_a_new_presort_records_the_signature_and_the_source_and_the_job_copies_the_walk(self):
+        self.job("20261001T0100-presort", self.c1)
+        c2 = self.commit("lab", **{"docs/f.txt": "2"})
+        saved = dict(pl.PLANS)
+        self.addCleanup(lambda: (pl.PLANS.clear(), pl.PLANS.update(saved)))
+
+        def runner(lab: str, fork: Path) -> rn.Runner:
+            a = rn.parse_args(["--lab", str(self.tmp / lab), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
+                               "--fork", str(fork), "--backlog-dir", str(self.tmp / "bl"), "--codex", str(self.codex),
+                               "--decompiled", str(self.dec), "--poll", "0.05", "--no-guard", "user,load,disk"])
+            r = rn.Runner(a)
+            r.lab.runs.mkdir(parents=True, exist_ok=True)
+            return r
+        r = runner("lab", self.fork)
+        run = r.new_run("presort", c2)
+        self.assertEqual(run.data["params"]["walk_from"], "20261001T0100-presort")
+        self.assertEqual(run.data["params"]["walk_sig"], self.sig)
+        self.assertIn("20261001T0100-presort stands", r.lab.log_path.read_text(encoding="utf-8"))
+        # the walk step of the real plan, run by the real runner: the shards arrive in the job folder under their roles
+        pl.PLANS["presort"] = lambda c: [pl.Step("checks", [x for s in pl.plan_presort(c) for x in s.cmds if x.name.startswith("codex")])]
+        self.assertIsNone(r.execute(run))
+        self.assertEqual(sorted(p.name for p in (run.dir / "codex").glob("s*.jsonl")), [f"s{i}.jsonl" for i in range(4)])
+        d = json.loads((run.dir / "job.json").read_text(encoding="utf-8"))
+        self.assertEqual(d["steps"][0]["cmds"]["codex-reuse"]["status"], "done")
+        self.assertEqual(d["outputs"]["codex_walk"], ["codex/s0.jsonl"])
+        self.assertEqual((run.dir / "done.rc").read_text().strip(), "0")
+        # no source: the params carry the signature only, and a missing fork never stops a job being made
+        r2 = runner("lab2", self.tmp / "no-fork")
+        params = r2.new_run("presort", c2).data["params"]
+        self.assertEqual(params["walk_sig"], self.sig)
+        self.assertNotIn("walk_from", params)
 
 
 @unittest.skipUnless(WIN, "Job Objects are Windows only")

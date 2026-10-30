@@ -23,6 +23,7 @@ from typing import Any
 from tools.lab import hypotheses as hyp
 from tools.lab import jobs as jobkinds
 from tools.lab import retest
+from tools.lab import walk_reuse
 from tools.lab.winsys import NO_WINDOW
 
 TOKEN = re.compile(r"\{(\w+)\}")
@@ -67,7 +68,7 @@ class Ctx:
                 "sha7": self.sha[:7], "job": f(self.job_dir), "jobname": self.job_name,
                 "backlog": f(self.backlog) if self.backlog else "", "backlog_dir": f(self.backlog_dir),
                 "codex": f(self.codex), "decompiled": f(self.decompiled), "records": f(self.records),
-                "nuget": f(self.nuget), "python": self.py, "vs_installer": VS_INSTALLER,
+                "nuget": f(self.nuget), "python": self.py, "vs_installer": VS_INSTALLER, "labtools": f(Path(__file__).resolve().parent),
                 "hypotheses": f(self.backlog_dir.parent / "hypotheses")}
 
     def expand(self, s: str) -> str:
@@ -153,15 +154,48 @@ def source_has(path: Path, *needles: str) -> list[bool]:
 
 # ---------------------------------------------------------------- presort
 
-def plan_presort(c: Ctx) -> list[Step]:
-    p = c.params
-    restore = [Cmd(f"restore-{d.replace('/', '-')}", ["dotnet", "restore", d, "--source", "{nuget}", "-v", "q"], when=_assets_missing(d),
-                   needs=[f"{{tree}}/{d}"]) for d in ("tools/emudump", "referee/driver")]
-    walk = [Cmd(f"codex-s{i}", ["dotnet", "{tree}/" + EMUDUMP, "codex", "{codex}", f"{{job}}/codex/s{i}.jsonl", "--decompiled", "{decompiled}",
+def walk_cmds() -> list[Cmd]:
+    """The codex walk: four EmuDump shards at once (about 22 minutes each, 90 of a presort's 112 CPU minutes)."""
+    return [Cmd(f"codex-s{i}", ["dotnet", "{tree}/" + EMUDUMP, "codex", "{codex}", f"{{job}}/codex/s{i}.jsonl", "--decompiled", "{decompiled}",
                                 "--character", "IRONCLAD", "--ascension", "10", "--shard", f"{i}/4"],
                  stderr=f"{{job}}/codex/s{i}.err", needs=["{tree}/" + EMUDUMP, "{codex}", "{decompiled}"], mkdirs=["{job}/codex"],
                  cleanup=[f"{{job}}/codex/s{i}.*"], outputs={"codex_walk": f"codex/s{i}.jsonl", "codex_walk_err": f"codex/s{i}.err"},
                  core=True) for i in range(4)]
+
+
+def walk_sig() -> str:
+    """A signature of the walk's commands: an earlier walk stands in for this one only when it ran the same ones."""
+    return walk_reuse.argv_sig([cmd.symbolic() for cmd in walk_cmds()])
+
+
+def presort_params(lab_runs: Path, fork: Path, sha: str, codex: Path, decompiled: Path) -> dict[str, Any]:
+    """What a new presort records about its walk: its signature, and the earlier presort (a folder name) whose finished
+    walk it reuses because the EmuDump build and the data cannot differ (tools/lab/walk_reuse.py); no key when none."""
+    sig = walk_sig()
+    out: dict[str, Any] = {"walk_sig": sig}
+    try:
+        src = walk_reuse.find_source(lab_runs, fork, sha, sig, walk_reuse.data_floor(codex, decompiled))
+    except Exception:  # noqa: BLE001 - finding a source is an optimisation: whatever goes wrong, the walk runs
+        src = None
+    if src:
+        out["walk_from"] = src
+    return out
+
+
+def walk_reuse_cmd(src: str) -> Cmd:
+    """The reuse of an earlier presort's walk: its shard files copied into this job's folder, under the roles groups reads.
+    Named codex-... so that --skip codex skips it too."""
+    return Cmd("codex-reuse", ["{py}", "{labtools}/walk_reuse.py", f"{{lab}}/runs/{src}/codex", "{job}/codex"], cwd="{lab}",
+               mkdirs=["{job}/codex"], cleanup=["{job}/codex/s*.*"],
+               outputs={"codex_walk": "codex/s0.jsonl", "codex_walk_err": "codex/s0.err"}, core=True)
+
+
+def plan_presort(c: Ctx) -> list[Step]:
+    p = c.params
+    restore = [Cmd(f"restore-{d.replace('/', '-')}", ["dotnet", "restore", d, "--source", "{nuget}", "-v", "q"], when=_assets_missing(d),
+                   needs=[f"{{tree}}/{d}"]) for d in ("tools/emudump", "referee/driver")]
+    src = p.get("walk_from")
+    walk = [walk_reuse_cmd(src)] if isinstance(src, str) and walk_reuse.JOB_NAME.match(src) else walk_cmds()
     # Both keep their results outside the job (the refset's scores folder, the corpus's runs folder); a copy goes
     # into the job folder under the roles lab_groups reads, so their symptoms reach the groups.
     refset = Cmd("refset", ["{py}", "-m", "tools.fidelity.refset_score", "--emu", "{tree}", "--procs", str(p["procs_refset"]),

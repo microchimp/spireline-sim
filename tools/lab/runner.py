@@ -629,8 +629,19 @@ class Runner:
 
     # ---- running a job
 
+    def presort_params(self, sha: str) -> dict[str, Any]:
+        """The walk's signature and, when an earlier presort's finished walk stands for it (same EmuDump build and data), that
+        presort's folder: the new job copies its shard files instead of walking for 90 CPU minutes (tools/lab/walk_reuse.py)."""
+        a = self.a
+        got = plans.presort_params(self.lab.runs, self.fork, sha, Path(a.codex), Path(a.decompiled))
+        if got.get("walk_from"):
+            self.log(f"presort of {sha[:7]}: the codex walk of {got['walk_from']} stands (same EmuDump sources and data); copied, not rerun")
+        return got
+
     def new_run(self, job: str, sha: str) -> Run:
         params = self.default_params(job)
+        if job == "presort":
+            params.update(self.presort_params(sha))
         if job == "fights":
             self.state["next_start"] += params["batches"]
         elif job == "runs":
@@ -1183,6 +1194,8 @@ class Runner:
             return 0
         print(f"next job: {job} ({why})")
         params = run.data["params"] if run else self.default_params(job)
+        if job == "presort" and not run and sha:
+            params = {**params, **plans.presort_params(self.lab.runs, self.fork, sha, Path(a.codex), Path(a.decompiled))}
         at = self.defer_sha if job != "presort" and self.defer_sha else sha  # the tree sha while a presort is deferred
         c = self.ctx(run, job, at or "", params)
         try:

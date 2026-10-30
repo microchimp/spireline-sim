@@ -71,6 +71,16 @@ refset score, in parallel; the refset score and the corpus results are copied in
 `lab_groups` reads), `corpus` (`corpus.py check --no-scan`), `groups`, `kits`. A failed `tree` or `build` fails the job
 and blocks everything on that sha (retry after 30 min, doubling); the checks' own exit 1 (a regression) is a result, not a failure.
 
+The codex walk is 90 of a presort's 112 CPU minutes and depends only on the EmuDump build and the codex and decompile data
+(`tools/lab/walk_reuse.py`). A new presort looks for an earlier presort folder whose walk finished (four shard commands, or a
+reuse command, rc 0; four non-empty shard files, none older than the codex file or the decompile), that ran the same walk
+commands, and whose main has the same git trees under `WALK_TREES` (the same list `refset_score.EMU_SOURCES` builds EmuDump from:
+`src/Sts2Emulator`, the test invariants, `tools/emudump`). Then `params.walk_from` names that folder and `checks` runs `codex-reuse`
+(a copy of its shard files, times kept) instead of the four `codex-sN`: a lab-code, docs or C# test landing costs no walk, the new
+folder holds the walk's files as if it had run (groups reads them as before; pruning the older folder takes nothing away), and a
+reuse job is itself a source. The refset score (under a minute) and the corpus check (about a minute, incremental) always run: they
+read data that moves on its own. `--skip codex` skips the reuse too. `--dry-run` shows which form the next presort would take.
+
 After a presort, a rotation by value: `fights, fights, probes, fights, mutation, fights, invariants`. A job type that cannot
 run (tool or input missing, backing off after two failed jobs in a row) is skipped with a log line and the rotation moves on.
 
