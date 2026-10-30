@@ -26,8 +26,8 @@ from pathlib import Path
 
 from tools.fidelity.fight_compare import (
     EMU_RENAME,
-    NOT_POWERS,
     diff,
+    emu_powers,
     emu_view,
     game_powers,
     game_view,
@@ -43,7 +43,7 @@ COMBAT_STREAMS = {"Shuffle", "CombatTargets", "MonsterAi", "CombatCardSelection"
 # ---------------------------------------------------------------- normalised marks
 
 def _emu_powers(raw) -> list:
-    return sorted([EMU_RENAME.get(power(n), power(n)), a] for n, a in raw if power(n) not in NOT_POWERS)
+    return emu_powers(raw)
 
 
 def view(mini: dict, side: str) -> dict:

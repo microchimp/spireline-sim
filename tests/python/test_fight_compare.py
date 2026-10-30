@@ -18,11 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from tools.fidelity.fight_compare import (  # noqa: E402
-    EMU_RENAME, NOT_POWERS, diff, emu_intent, game_intent, game_powers, power, snake)
+    EMU_RENAME, diff, emu_intent, emu_powers, emu_view, game_intent, game_powers, power, snake)
 
-
-def emu_powers(bs):
-    return sorted([EMU_RENAME.get(power(n), power(n)), a] for n, a in bs if power(n) not in NOT_POWERS)
 
 
 class PowerListTest(unittest.TestCase):
@@ -121,6 +118,30 @@ def e_enemy(type_, mag=0, hits=1, carries=False, secondary=None, buffs=(), name=
     raw = {"intent": {"type": type_, "magnitude": mag, "hits": hits, "carries_damage": carries, "secondary": secondary},
            "buffs": [{"name": b} for b in buffs]}
     return {"name": name, "hp": 10, "block": 0, "powers": [], "intent": emu_intent(raw)}
+
+
+class SingleAmountTest(unittest.TestCase):
+    """SurroundedPower is a Single power (Amount 1) that keeps the player's facing in a field; the emulator's buff holds
+    the facing as its amount (1 right, 2 left). Both compare as the power held once."""
+
+    def test_a_player_facing_left_holds_surrounded_as_the_game_does(self):
+        game = game_powers([["SURROUNDED_POWER", 1], ["STRENGTH_POWER", 2]])
+        self.assertEqual(game, emu_powers([("SurroundedPower", 2), ("StrengthPower", 2)]))
+        self.assertEqual(game, emu_powers([("SurroundedPower", 1), ("StrengthPower", 2)]))
+
+    def test_other_amounts_still_compare(self):
+        self.assertNotEqual(game_powers([["STRENGTH_POWER", 1]]), emu_powers([("StrengthPower", 2)]))
+
+    def test_every_comparer_projects_through_it(self):
+        from tools.fidelity import netstate_diff, trace_diff  # noqa: PLC0415
+        raw = [("SurroundedPower", 2), ("InfernoSelfDamage", 3)]
+        self.assertEqual([["SURROUNDED", 1]], netstate_diff._powers(raw, "emu"))
+        self.assertEqual([["SURROUNDED", 1]], trace_diff._emu_powers(raw))
+        st = {"in_combat": True, "snapshot": {"player": {"hp": 1, "max_hp": 1, "block": 0, "energy": 0,
+                                                         "buffs": [{"name": "SurroundedPower", "amount": 2}]},
+                                              "piles": {"hand": [], "discard": [], "exhaust": []}, "enemies": []},
+              "draw_order": [], "rng": {}}
+        self.assertEqual([["SURROUNDED", 1]], emu_view(st, {"cards": {}, "enemies": {}})["player"]["powers"])
 
 
 class IntentTest(unittest.TestCase):

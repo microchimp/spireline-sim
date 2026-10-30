@@ -356,6 +356,7 @@ def test_source(cls: str, meta: dict, rec: dict, step: int, path: str) -> str:
     views = [json.dumps(fc.game_view(s["state"]), separators=(",", ":"), sort_keys=True) for s in rec["steps"][: step + 1]]
     renames = ", ".join(f'["{k}"] = "{v}"' for k, v in sorted(fc.EMU_RENAME.items()))
     not_powers = ", ".join(f'"{x}"' for x in sorted(fc.NOT_POWERS))
+    single_amount = ", ".join(f'"{x}"' for x in sorted(fc.SINGLE_AMOUNT))
     intents = ", ".join(f'[{k}] = "{v}"' for k, v in sorted(fc.EMU_INTENT.items()))
     streams = ", ".join(f'"{x}"' for x in fc.RNG_STREAMS)
     optional = ", ".join(f'"{x}"' for x in sorted(fc.OPTIONAL))
@@ -415,6 +416,7 @@ public class {cls}
     {{
         static readonly Dictionary<string, string> Rename = new() {{ {renames} }};
         static readonly HashSet<string> NotPowers = new() {{ {not_powers} }};
+        static readonly HashSet<string> SingleAmount = new() {{ {single_amount} }};
         static readonly Dictionary<int, string> Intents = new() {{ {intents} }};
         static readonly string[] Streams = {{ {streams} }};
         static readonly HashSet<string> Optional = new() {{ {optional} }};
@@ -455,7 +457,8 @@ public class {cls}
             {{
                 var p = Power((string)b!["name"]!);
                 if (NotPowers.Contains(p)) continue;
-                l.Add((Rename.TryGetValue(p, out var r) ? r : p, b["amount"]!.DeepClone()));
+                var amount = SingleAmount.Contains(p) && Num(b["amount"]) != 0 ? JsonValue.Create(1)! : b["amount"]!.DeepClone();
+                l.Add((Rename.TryGetValue(p, out var r) ? r : p, amount));
             }}
 
             return new JsonArray(l.OrderBy(x => x.Name, StringComparer.Ordinal).ThenBy(x => Num(x.Amount))
