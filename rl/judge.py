@@ -42,8 +42,8 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
         sys.path.insert(0, str(_p))
 
 from combat_net import CombatNet  # noqa: E402
-from combat_tokens import N_FEATURES, TYPE_PAD, VOCAB, Tokens, bucket_centres  # noqa: E402
-from judge_client import JUDGE_OUT, estimate, l0_of  # noqa: E402
+from combat_tokens import N_FEATURES, TYPE_PAD, VOCAB, bucket_centres  # noqa: E402
+from judge_client import JUDGE_OUT, l0_of  # noqa: E402
 
 KIND = "judge"
 VERSION = "judge-v0"
@@ -316,11 +316,18 @@ def cmd_train(a) -> int:
         missing, unexpected = model.load_state_dict(init_blob["model"], strict=False)
         assert all(k.startswith("judge.") for k in missing) and not unexpected, (missing, unexpected)
     model.to(device)
-    opt = torch.optim.AdamW([p for n, p in model.named_parameters() if not n.startswith(("head.", "policy."))], lr=a.lr, weight_decay=0.01)
+    # The judge head learns at lr; the trunk (the agent's, when warm-started) at lr x trunk_lr, or not at all (0): a few hundred
+    # starts' positions overfit a whole trunk within an epoch, while the agent's trunk already reads positions well.
+    head = [p for n, p in model.named_parameters() if n.startswith("judge.")]
+    trunk = [p for n, p in model.named_parameters() if not n.startswith(("judge.", "head.", "policy."))]
+    for p in trunk:
+        p.requires_grad_(a.trunk_lr > 0)
+    groups = [{"params": head, "lr": a.lr}] + ([{"params": trunk, "lr": a.lr * a.trunk_lr}] if a.trunk_lr > 0 else [])
+    opt = torch.optim.AdamW(groups, lr=a.lr, weight_decay=a.wd)
     train_idx = np.flatnonzero(data.split == 0)
     val_idx = np.flatnonzero(data.split == 1)
     steps = a.epochs * math.ceil(len(train_idx) / a.batch)
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.1)
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[g["lr"] for g in groups], total_steps=steps, pct_start=0.1)
     rng = np.random.default_rng(a.seed)
     best, best_state, log = math.inf, None, []
     for epoch in range(a.epochs):
@@ -355,7 +362,8 @@ def cmd_train(a) -> int:
     blob = {"kind": KIND, "version": VERSION, "model": best_state, **dims, "outputs": ["win_logit", "hp_frac_logit", "potions"],
             "trained": {"data_sha256": hashlib.sha256(Path(a.data).read_bytes()).hexdigest(), "positions": int(len(data.lens)),
                         "train": int(len(train_idx)), "val": int(len(val_idx)), "heldout": held["positions"],
-                        "init": Path(a.init).parent.name if a.init else None, "epochs": a.epochs, "lr": a.lr, "batch": a.batch,
+                        "init": Path(a.init).parent.name if a.init else None, "epochs": a.epochs, "lr": a.lr, "trunk_lr": a.trunk_lr, "wd": a.wd,
+                        "dropout": a.dropout, "batch": a.batch,
                         "best_val_loss": round(best, 5), "seed": a.seed}}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     torch.save(blob, a.out)
@@ -439,6 +447,8 @@ def main(argv=None) -> int:
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--trunk-lr", type=float, default=0.1, help="the trunk's learning rate as a share of --lr (0 freezes it)")
+    ap.add_argument("--wd", type=float, default=0.01)
     ap.add_argument("--d-model", type=int, default=128)
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
