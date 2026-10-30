@@ -165,7 +165,7 @@ def other_quiet(lines: list[str] | None = None, *, allow: tuple[str, ...] = ()) 
     """The tag of another live QUIET.lock line (not ours, not w3-blocks, not older than 2 h, not in `allow`), or None."""
     for x in _lines(fg.QUIET) if lines is None else lines:
         tag = x.split()[0]
-        if tag in MY_TAGS or tag.startswith(TAG + "-") or tag == "w3-blocks" or tag in allow:
+        if tag in MY_TAGS or tag == "w3-blocks" or tag in allow:  # our builds and gates (gym-loop-*) stop the daemon too
             continue
         if fg._age_h(x) < QUIET_STALE_H:  # noqa: SLF001
             return tag
@@ -1078,9 +1078,13 @@ class GpuWatch:
                 continue
             per[int(m.group(1))] = max(per[int(m.group(1))], x)
         names = _python_pids()
-        inf = per.get(self.daemon.server_pid or -1, 0.0)
-        tr = per.get(self.daemon.trainer_pid or -1, 0.0)
-        mine = {self.daemon.server_pid, self.daemon.trainer_pid}
+        parents = process_parents()
+        # a venv's python.exe is a launcher that starts the interpreter as its child: a process is ours with its descendants
+        srv = descendants(parents, self.daemon.server_pid)
+        trn = descendants(parents, self.daemon.trainer_pid)
+        inf = sum(per.get(p, 0.0) for p in srv)
+        tr = sum(per.get(p, 0.0) for p in trn)
+        mine = srv | trn
         lab = sum(x for p, x in per.items() if p in names and p not in mine)
         other = sum(x for p, x in per.items() if p not in names and p not in mine)
         return {"t": stamp(), "inference": round(inf, 1), "training": round(tr, 1), "lab_python": round(lab, 1),
@@ -1093,6 +1097,54 @@ class GpuWatch:
                 if s is not None:
                     with open(self.loop.root / "gpu.jsonl", "a", encoding="utf-8") as fh:
                         fh.write(json.dumps(s) + "\n")
+
+
+def process_parents() -> dict[int, int]:
+    """{pid: parent pid} of every process (a Toolhelp snapshot); {} off Windows."""
+    if os.name != "nt":
+        return {}
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    class PE(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_char * 260)]
+
+    k32 = ctypes.windll.kernel32
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    out: dict[int, int] = {}
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return out
+    try:
+        e = PE()
+        e.dwSize = ctypes.sizeof(PE)
+        ok = k32.Process32First(snap, ctypes.byref(e))
+        while ok:
+            out[int(e.th32ProcessID)] = int(e.th32ParentProcessID)
+            ok = k32.Process32Next(snap, ctypes.byref(e))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def descendants(parents: dict[int, int], root: int | None) -> set[int]:
+    """`root` and every process below it."""
+    if not root:
+        return set()
+    kids: dict[int, list[int]] = defaultdict(list)
+    for c, p in parents.items():
+        if c != p:
+            kids[p].append(c)
+    out, stack = set(), [int(root)]
+    while stack:
+        x = stack.pop()
+        if x not in out:
+            out.add(x)
+            stack.extend(kids.get(x, []))
+    return out
 
 
 def _python_pids() -> set[int]:

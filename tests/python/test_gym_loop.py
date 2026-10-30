@@ -81,6 +81,15 @@ class PureTests(unittest.TestCase):
         self.assertTrue(0.08 < share < 0.12, share)
         self.assertEqual([gl.is_val_seed(s) for s in seeds[:50]], [gl.is_val_seed(s) for s in seeds[:50]])
 
+    def test_a_launcher_and_the_interpreter_it_starts_count_as_one_of_ours(self):
+        parents = {10: 1, 11: 10, 12: 11, 20: 1, 21: 20, 30: 30}
+        self.assertEqual(gl.descendants(parents, 10), {10, 11, 12})
+        self.assertEqual(gl.descendants(parents, None), set())
+        self.assertEqual(gl.descendants(parents, 30), {30})
+        here = gl.process_parents()
+        if here:
+            self.assertIn(os.getpid(), gl.descendants(here, os.getppid()))
+
     def test_the_loop_reads_the_expected_solve_only(self):
         # The owner's solver rule: labels and grades never read the hindsight export (gym_lockstep.Grader, which the loop uses for
         # its exact grades, is under test_solver_hindsight_pins; this pins the loop's own sources with that test's names).
@@ -124,8 +133,12 @@ class LockTests(unittest.TestCase):
         self.assertIsNone(b(starting=False))  # a running step carries on through a landing
         (self.t / "backlog" / "main.lock").unlink()
         now = gl.stamp()
-        fg.QUIET.write_text(f"w3-blocks {now} pid=1\ngym-loop {now} pid=2\ngym-loop-build {now} pid=3\nold-gate 2026-01-01T00:00:00Z pid=4\n")
+        base = f"w3-blocks {now} pid=1\ngym-loop {now} pid=2\ngym-loop-train {now} pid=3\nold-gate 2026-01-01T00:00:00Z pid=4\n"
+        fg.QUIET.write_text(base)
         self.assertIsNone(b())  # w3-blocks, our own lines and a line over 2 h old do not block
+        fg.QUIET.write_text(base + f"gym-loop-gate {now} pid=6\n")
+        self.assertEqual(b(), "quiet:gym-loop-gate")  # the loop's own gate or build is another heavy step: it stops the daemon
+        fg.QUIET.write_text(base)
         fg.QUIET.write_text(fg.QUIET.read_text() + f"f16-gate {now} pid=5\n")
         self.assertEqual(b(), "quiet:f16-gate")
         self.assertEqual(b(starting=False), "quiet:f16-gate")  # another worker's heavy step stops ours at once
