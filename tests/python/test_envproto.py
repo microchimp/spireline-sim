@@ -277,7 +277,7 @@ class PlayResumeTest(unittest.TestCase):
         self.assertEqual("\n".join(json.dumps(e) for e in events), (self.out / "runs.jsonl").read_text(encoding="utf-8"))  # no trailing newline
         self.assertEqual("\n".join(json.dumps(dict(e["divergences"][0], seed=e["seed"])) for e in events),
                          (self.out / "divergences.jsonl").read_text(encoding="utf-8"))
-        self.assertEqual(["agent_seed", "character", "engine", "sims", "runs", "crashes", "wrapup_terminated", "wins", "ends", "mean_floor", "decisions",
+        self.assertEqual(["agent_seed", "character", "engine", "sims", "runs", "crashes", "wrapup_terminated", "deadline_respawns", "unplayed_after_cap", "wins", "ends", "mean_floor", "decisions",
                           "decisions_per_s", "wall_s", "ranked_share", "diverged_decisions", "divergence_rate", "reanchors", "reanchor_failed",
                           "first_loss_by_reason", "first_divergences_by_type", "gaps", "resumed", "losses_by_reason", "reanchor_fail_reasons",
                           "reanchor_by_plan", "anchored_with", "streams_named", "streams_moved", "streams_unmoved_names", "walk",
@@ -630,6 +630,22 @@ class SampleMachineFlagTest(unittest.TestCase):
             __import__("shutil").rmtree(h.tmp, True)
 
 
+class RemainingAfterTest(unittest.TestCase):
+    """The seeds (and run ids) a replacement worker plays after a worker was closed for its run deadline: its share after the hung seed."""
+
+    def test_the_seeds_and_run_ids_after_the_hung_one_in_the_workers_order(self):
+        self.assertEqual((["C", "E"], [3, 4]), envproto.remaining_after(["A", "B", "C", "E"], [0, 2, 3, 4], "B"))
+        self.assertEqual((["B", "C"], [1, 2]), envproto.remaining_after(["A", "B", "C"], [0, 1, 2], "A"))
+
+    def test_the_last_seed_and_a_missing_seed_leave_nothing(self):
+        self.assertEqual(([], []), envproto.remaining_after(["A", "B"], [0, 1], "B"))
+        self.assertEqual(([], []), envproto.remaining_after(["A", "B"], [0, 1], "Z"))
+        self.assertEqual(([], []), envproto.remaining_after([], [], "A"))
+
+    def test_it_keeps_the_run_ids_of_a_share_that_is_not_a_prefix_of_the_block(self):  # a resumed block's share: ids are the full list's places
+        self.assertEqual((["S9", "S12"], [30, 33]), envproto.remaining_after(["S3", "S6", "S9", "S12"], [6, 18, 30, 33], "S6"))
+
+
 class RunDeadlineTest(unittest.TestCase):
     """N5: the play loop gives up a worker whose current run has no result after --run-deadline-s: the worker is terminated through its
     own Process object, its seed gets a crash row (where: deadline) with the agent seed the worker would have written, and the block
@@ -654,6 +670,8 @@ class RunDeadlineTest(unittest.TestCase):
         self.terminated: list[int] = []
         self.release = collections.defaultdict(threading.Event)
         self.live_at_join = ""
+        self.live_procs: list = []
+        self.peak_live = 0
         self.deadline_seen: list[float] = []
         self.wrapup_seen: list[float] = []
 
@@ -696,7 +714,7 @@ class RunDeadlineTest(unittest.TestCase):
             self.release[wid].wait(10)
         return behave
 
-    def play(self, behave=None, procs=2, resume=False, deadline=1800.0, wrapup=300.0):
+    def play(self, behave=None, procs=2, resume=False, deadline=1800.0, wrapup=300.0, cap=3):
         import contextlib
         import io
         import queue as queue_mod
@@ -720,6 +738,8 @@ class RunDeadlineTest(unittest.TestCase):
             def start(self):
                 self.thread = threading.Thread(target=self.target, args=self.args, daemon=True)
                 self.thread.start()
+                test.live_procs.append(self)
+                test.peak_live = max(test.peak_live, sum(x.is_alive() for x in test.live_procs))  # the most workers alive at once
 
             def is_alive(self):
                 return self.thread.is_alive()
@@ -735,7 +755,7 @@ class RunDeadlineTest(unittest.TestCase):
         ctx = SimpleNamespace(Queue=queue_mod.Queue, Process=FakeProc)
         a = SimpleNamespace(out=str(self.out), game="G", character="IRONCLAD", runs=6, seeds_file=str(self.seeds_file), agent_seed=self.AS,
                             stop_after_h=0, procs=procs, sims="a3-v1", step_timeout=1, ascension=10, engine="core2", only=None, recycle=0,
-                            run_deadline_s=deadline, wrapup_deadline_s=wrapup)
+                            run_deadline_s=deadline, wrapup_deadline_s=wrapup, deadline_respawn_cap=cap)
         if resume:
             a.resume, a.agent_identity = True, json.dumps(self.AGENT)
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -752,7 +772,7 @@ class RunDeadlineTest(unittest.TestCase):
         return [json.loads(x) for x in (self.out / "runs.jsonl").read_text(encoding="utf-8").split("\n") if x.strip()]
 
     def test_a_worker_past_the_deadline_is_terminated_its_seed_gets_a_crash_row_and_the_block_closes(self):
-        summary = self.play(self.hang(after=1))  # worker 0: S0 ends, then S2 is begun 5000 s ago and never ends; worker 1: S1 S3 S5
+        summary = self.play(self.hang(after=1), cap=0)  # worker 0: S0 ends, then S2 is begun 5000 s ago and never ends; worker 1: S1 S3 S5
         self.assertEqual([0], self.terminated)  # through its own Process object, once
         rows = {r["seed"]: r for r in self.final_rows()}
         self.assertEqual({"S0", "S1", "S2", "S3", "S5"}, set(rows))  # S4 was never played: the worker was stopped
@@ -763,10 +783,76 @@ class RunDeadlineTest(unittest.TestCase):
         n = int(c["error"].removeprefix("worker deadline: no result after ").removesuffix(" s"))
         self.assertTrue(5000 <= n <= 5030, c["error"])
         self.assertEqual((4, 1), (summary["runs"], summary["crashes"]))
+        self.assertEqual((0, 1), (summary["deadline_respawns"], summary["unplayed_after_cap"]))  # cap 0: S4 stays unplayed and the block says so
         self.assertEqual("deadline", summary["errors"][0]["where"])
         self.assertNotIn("stack", c)  # the worker left no stack file
         self.assertIn('"where": "deadline"', self.live_at_join)  # also in the live runs.jsonl, before the block's rewrite
         self.assertEqual(1, sum(line.startswith("worker 0: worker deadline") for line in self.stdout.splitlines()))  # one line printed
+
+    def test_a_replacement_worker_plays_the_rest_of_the_closed_workers_share_with_the_same_run_ids(self):
+        summary = self.play(self.hang(after=1))  # worker 0: S0 ends, S2 hangs, S4 is behind it; worker 1: S1 S3 S5
+        self.assertEqual([0], self.terminated)  # the hung worker only, through its own Process object
+        handed = {wid: seeds for wid, seeds in self.handed}
+        self.assertEqual({0: ["S0", "S2", "S4"], 1: ["S1", "S3", "S5"], 2: ["S4"]}, handed)  # a new worker id (2), the seeds after the hung one
+        rows = {r["seed"]: r for r in self.final_rows()}
+        self.assertEqual(["S0", "S1", "S2", "S3", "S4", "S5"], sorted(rows))  # the seed list is played once: no seed twice, none missing
+        self.assertEqual(6, len(self.final_rows()))
+        self.assertEqual(("crash", "deadline", 0), (rows["S2"]["ev"], rows["S2"]["where"], rows["S2"]["w"]))  # the hung seed is not played again
+        self.assertEqual(("end", 2, [self.AS, 4]), (rows["S4"]["ev"], rows["S4"]["w"], rows["S4"]["agent_seed"]))  # the run id S4 has in the block
+        self.assertEqual((5, 1, 1, 0), (summary["runs"], summary["crashes"], summary["deadline_respawns"], summary["unplayed_after_cap"]))
+        self.assertLessEqual(self.peak_live, 2)  # never more than --procs workers at once: the closed one is gone before the new one starts
+        self.assertEqual(1, self.stdout.count("replacement worker 2"))
+        self.assertEqual([self.deadline_seen[0]] * 3, self.deadline_seen)  # the replacement is handed the same deadline settings
+        self.assertEqual([self.wrapup_seen[0]] * 3, self.wrapup_seen)
+
+    def test_a_replacement_that_hangs_too_is_replaced_again_up_to_the_cap_then_the_rest_stays_unplayed(self):
+        def behave(wid, seeds, run_ids, q):  # one slot: each worker (0, then its replacements 1, 2, 3) hangs on the first seed it is handed
+            q.put({"ev": "start", "w": wid, "seed": seeds[0], "t": time.time() - 5000.0})
+            self.release[wid].wait(10)
+
+        summary = self.play(behave, procs=1)
+        self.assertEqual([0, 1, 2, 3], self.terminated)  # each one through its own Process object
+        self.assertEqual([(0, ["S0", "S1", "S2", "S3", "S4", "S5"]), (1, ["S1", "S2", "S3", "S4", "S5"]), (2, ["S2", "S3", "S4", "S5"]),
+                          (3, ["S3", "S4", "S5"])], self.handed)  # three replacements and no fourth
+        rows = sorted(self.final_rows(), key=lambda r: r["seed"])
+        self.assertEqual(["S0", "S1", "S2", "S3"], [r["seed"] for r in rows])
+        self.assertEqual({"deadline"}, {r["where"] for r in rows})
+        self.assertEqual([[self.AS, i] for i in range(4)], [r["agent_seed"] for r in rows])  # a replacement's rows carry the run ids of the block
+        self.assertEqual((0, 4, 3, 2), (summary["runs"], summary["crashes"], summary["deadline_respawns"], summary["unplayed_after_cap"]))
+        self.assertLessEqual(self.peak_live, 1)
+
+    def test_the_cap_counts_per_original_worker_slot(self):
+        def behave(wid, seeds, run_ids, q):  # slot 0 (worker 0) hangs once, then its replacement plays; slot 1 (worker 1) plays
+            if wid == 0:
+                self.hang(after=0)(wid, seeds, run_ids, q)
+            else:
+                self.normal(wid, seeds, run_ids, q)
+
+        summary = self.play(behave, cap=1)
+        self.assertEqual((5, 1, 1, 0), (summary["runs"], summary["crashes"], summary["deadline_respawns"], summary["unplayed_after_cap"]))
+        self.assertEqual(["S0", "S1", "S2", "S3", "S4", "S5"], sorted(r["seed"] for r in self.final_rows()))
+
+    def test_a_worker_that_hung_on_its_last_seed_has_no_replacement_and_a_wrapup_deadline_never_has_one(self):
+        summary = self.play(self.hang(after=2))  # worker 0: S0 S2 end, S4 (its last) hangs
+        self.assertEqual([0], self.terminated)
+        self.assertEqual([0, 1], sorted(wid for wid, _s in self.handed))  # nobody to replace it with: S4 is the end of its share
+        self.assertEqual((0, 0), (summary["deadline_respawns"], summary["unplayed_after_cap"]))
+        self.handed.clear()
+        self.terminated.clear()
+        summary = self.play(self.stuck_wrapup())  # every run of worker 0 has its row: the wrap-up deadline stops it and starts nothing
+        self.assertEqual([0], self.terminated)
+        self.assertEqual([0, 1], sorted(wid for wid, _s in self.handed))
+        self.assertEqual((6, 1, 0, 0), (summary["runs"], summary["wrapup_terminated"], summary["deadline_respawns"], summary["unplayed_after_cap"]))
+
+    def test_a_resume_after_a_block_that_left_seeds_unplayed_plays_them_and_not_the_deadline_seed(self):
+        self.play(self.hang(after=0), resume=True, cap=0)  # worker 0 hangs on S0 and has no replacement: S2 and S4 have no row
+        self.handed.clear()
+        self.terminated.clear()
+        self.play(self.hang(after=0), procs=1, resume=True)  # worker 0 gets S2 S4 and hangs on S2: S4 goes to a replacement, S0 stays a crash row
+        self.assertEqual({0: ["S2", "S4"], 1: ["S4"]}, dict(self.handed))
+        rows = {r["seed"]: r for r in self.final_rows()}
+        self.assertEqual({"S0": "crash", "S1": "end", "S2": "crash", "S3": "end", "S4": "end", "S5": "end"}, {s: r["ev"] for s, r in rows.items()})
+        self.assertEqual([self.AS, 4], rows["S4"]["agent_seed"])
 
     def test_the_deadline_row_carries_the_last_stack_dump_of_the_workers_file_without_any_directory(self):
         lib = os.path.join(str(self.tmp), "lib")
@@ -816,7 +902,7 @@ class RunDeadlineTest(unittest.TestCase):
         self.assertEqual({"end"}, {r["ev"] for r in self.final_rows()})  # no start event is a row
 
     def test_a_resume_after_a_deadline_row_does_not_replay_that_seed(self):
-        self.play(self.hang(after=0), resume=True)  # S0 (worker 0's first) hits the deadline; S2 and S4 were not reached
+        self.play(self.hang(after=0), resume=True, cap=0)  # S0 (worker 0's first) hits the deadline; S2 and S4 were not reached (cap 0: no replacement)
         self.assertEqual({"S0": "crash", "S1": "end", "S3": "end", "S5": "end"}, {r["seed"]: r["ev"] for r in self.final_rows()})
         self.terminated.clear()
         self.handed.clear()
@@ -917,6 +1003,11 @@ class RunDeadlineTest(unittest.TestCase):
         base = ["play", "--game", "G", "--out", "O"]
         self.assertEqual(1800.0, envproto.parser().parse_args(base).run_deadline_s)
         self.assertEqual(0.0, envproto.parser().parse_args([*base, "--run-deadline-s", "0"]).run_deadline_s)
+
+    def test_the_parser_takes_the_deadline_respawn_cap_with_the_default_of_3(self):
+        base = ["play", "--game", "G", "--out", "O"]
+        self.assertEqual(3, envproto.parser().parse_args(base).deadline_respawn_cap)
+        self.assertEqual(0, envproto.parser().parse_args([*base, "--deadline-respawn-cap", "0"]).deadline_respawn_cap)
 
 
 if __name__ == "__main__":

@@ -701,6 +701,17 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
 
 RUN_DEADLINE_S = 1800.0  # --run-deadline-s default: a run that has not ended this long after its worker started it is given up
 WRAPUP_DEADLINE_S = 300.0  # --wrapup-deadline-s default: a worker that said `wrapup` and not `done` this long after is stopped
+DEADLINE_RESPAWN_CAP = 3  # --deadline-respawn-cap default: replacement workers one worker slot gets after run-deadline closes
+
+
+def remaining_after(seeds: list, run_ids: list, seed) -> tuple[list, list]:
+    """The seeds and run ids of a worker's share after `seed`, the one its run deadline closed it on: what a replacement worker plays.
+    The closed seed keeps its crash row and is not played again, and each later seed keeps the run id (so the agent seed) it has in the
+    block. `seed` last in the share, or not in it: nothing is left."""
+    if seed not in seeds:
+        return [], []
+    k = seeds.index(seed)
+    return list(seeds[k + 1:]), list(run_ids[k + 1:])
 
 
 class RunDeadline:
@@ -1012,12 +1023,21 @@ def play(a) -> int:
     wids = [w for w in range(a.procs) if not resume or seeds[w::a.procs]]
     deadline_s = getattr(a, "run_deadline_s", RUN_DEADLINE_S)
     wrapup_s = getattr(a, "wrapup_deadline_s", WRAPUP_DEADLINE_S)
-    procs = [ctx.Process(target=play_worker, args=(w, a.game, str(out), seeds[w::a.procs], a.sims, q, a.step_timeout, a.ascension,
-                                       agent_seed, run_ids[w::a.procs], stop_at, a.character, getattr(a, "recycle", 0), deadline_s, wrapup_s))
-             for w in wids]
+    def make_proc(w, w_seeds, w_ids):
+        return ctx.Process(target=play_worker, args=(w, a.game, str(out), w_seeds, a.sims, q, a.step_timeout, a.ascension,
+                                                     agent_seed, w_ids, stop_at, a.character, getattr(a, "recycle", 0), deadline_s, wrapup_s))
+
+    share = {w: (seeds[w::a.procs], run_ids[w::a.procs]) for w in wids}  # worker -> (seeds, run ids) it was handed
+    procs = [make_proc(w, *share[w]) for w in wids]
     proc_of = dict(zip(wids, procs))
-    watch = RunDeadline(deadline_s, agent_seed,
-                        {w: dict(zip(seeds[w::a.procs], run_ids[w::a.procs])) for w in wids}, wrapup_s)
+    # a worker closed for its run deadline gets a replacement for the rest of its share (a new worker id, so the closed one's late events
+    # stay ignored and its scratch folders p<NN>r<k> stay apart): slot_of names the original slot, respawns counts per slot
+    slot_of = {w: w for w in wids}
+    respawns: dict[int, int] = {}
+    respawn_cap = getattr(a, "deadline_respawn_cap", DEADLINE_RESPAWN_CAP)
+    next_wid = a.procs
+    unplayed_after_cap = 0
+    watch = RunDeadline(deadline_s, agent_seed, {w: dict(zip(*share[w])) for w in wids}, wrapup_s)
     t0 = time.time()
     beat = t0
     for p in procs:
@@ -1045,6 +1065,22 @@ def play(a) -> int:
             live.flush()
             print(f"worker {w}: {row['error']} (seed {row['seed']}); worker terminated, counted as done", flush=True)
             done += 1
+            rest_seeds, rest_ids = remaining_after(*share[w], row["seed"])
+            if not rest_seeds or (stop_at and time.time() > stop_at):  # its share is over, or the block's time limit: nothing to hand on
+                continue
+            slot = slot_of[w]
+            if respawns.get(slot, 0) >= respawn_cap:  # a bad seed must not loop: the rest of the slot stays unplayed and the summary says so
+                unplayed_after_cap += len(rest_seeds)
+                print(f"worker {w}: slot {slot} has had {respawn_cap} replacement workers; its {len(rest_seeds)} remaining seeds stay unplayed", flush=True)
+                continue
+            respawns[slot] = respawns.get(slot, 0) + 1
+            new_w, next_wid = next_wid, next_wid + 1  # the old process is gone (stop above), so at most --procs workers live
+            share[new_w], slot_of[new_w] = (rest_seeds, rest_ids), slot
+            watch.run_index[new_w] = dict(zip(rest_seeds, rest_ids))
+            proc_of[new_w] = make_proc(new_w, rest_seeds, rest_ids)
+            procs.append(proc_of[new_w])
+            proc_of[new_w].start()
+            print(f"replacement worker {new_w} for worker {w} (slot {slot}, {respawns[slot]} of {respawn_cap}): {len(rest_seeds)} remaining seeds", flush=True)
         for w in watch.overdue_wrapup(time.time()):  # a worker in its wrap-up past --wrapup-deadline-s: stopped, no row (its runs have theirs)
             n = watch.close_wrapup(w, time.time())
             stop(w)
@@ -1086,7 +1122,8 @@ def play(a) -> int:
     first = {}
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
-    summary = {"agent_seed": agent_seed, "character": a.character, "engine": getattr(a, "engine", "old"), "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wrapup_terminated": wrapup_terminated, "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+    summary = {"agent_seed": agent_seed, "character": a.character, "engine": getattr(a, "engine", "old"), "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wrapup_terminated": wrapup_terminated,
+               "deadline_respawns": sum(respawns.values()), "unplayed_after_cap": unplayed_after_cap, "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / max(wall, 1e-9), 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -1162,6 +1199,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--run-deadline-s", type=float, default=RUN_DEADLINE_S,
                     help="play: a worker whose current run has no result this many seconds after it began is terminated and its seed gets a "
                          "crash row (where: deadline); the block closes with the other workers' rows (0: off)")
+    ap.add_argument("--deadline-respawn-cap", type=int, default=DEADLINE_RESPAWN_CAP,
+                    help="play: a worker closed for its run deadline is replaced by a new worker (a new id) that plays the rest of its seeds; "
+                         "at most this many replacements per original worker slot, then the rest stays unplayed (summary: unplayed_after_cap; 0: none)")
     ap.add_argument("--wrapup-deadline-s", type=float, default=WRAPUP_DEADLINE_S,
                     help="play: a worker that has put its last result (event wrapup) and has not said done this many seconds later is "
                          "terminated: no crash row (its runs have theirs), one stderr line, counted as wrapup_terminated in the summary (0: off)")
