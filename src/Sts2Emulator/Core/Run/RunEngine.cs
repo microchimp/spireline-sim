@@ -5432,8 +5432,16 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// Neow -- as the game's `RewardsSet` does. Landing on Neow early let the next action
     /// choose a SECOND blessing and left the curse unadded.
     /// </summary>
-    private RunPhase NeowReturnPhase() =>
-        RunRewardGenerator.HasPendingRewards(State) ? RunPhase.RelicReward : RunPhase.Ancient;
+    /// <remarks>
+    /// A relic claimed there that opened a screen of its own left the rest of the offer (the
+    /// relic still owed, or Neow's Bones' curse once none is) for that screen's close, which is
+    /// here: the game's obtain returns to the rewards screen only once its screen is answered.
+    /// </remarks>
+    private RunPhase NeowReturnPhase()
+    {
+        RunRewardGenerator.OfferNextBonusRelic(State);
+        return RunRewardGenerator.HasPendingRewards(State) ? RunPhase.RelicReward : RunPhase.Ancient;
+    }
 
     /// <summary>Shuts the offer grid and runs whatever was waiting behind it.</summary>
     private int CloseOfferGrid()
@@ -5723,10 +5731,12 @@ public sealed class RunEngine : Core2.ICombatEndHost
         State.BundleOffer = [];
         State.SelectedBundle = -1;
 
-        // A screen Neow opened returns to Neow, which stays up for one more Proceed.
+        // A screen Neow opened returns to Neow, which stays up for one more Proceed -- or, for
+        // Scroll Boxes claimed off Neow's Bones' screen, to that screen while it still owes a
+        // relic, as a grid or a selection does.
         if (State.NeowAwaitingProceed)
         {
-            State.Phase = RunPhase.Ancient;
+            State.Phase = NeowReturnPhase();
             return 0;
         }
 

@@ -738,7 +738,7 @@ public static partial class RunRewardGenerator
                 // which runs its AfterObtained -- a live capture's Silken Tress zeroed the
                 // player's gold the moment it was taken. Adding it to the list and
                 // stopping there is what this used to do.
-                RunNonCombatEffects.ApplyRelicPickup(state, claimed);
+                var followUp = RunNonCombatEffects.ApplyRelicPickup(state, claimed);
                 // Lost Coffer's AfterObtained offers a card reward and a potion; claimed off
                 // Neow's Bones' screen it handed over nothing (run referee, seed FHTYPREMZ9:
                 // the game's rewards counter eleven ahead after the claim).
@@ -749,6 +749,28 @@ public static partial class RunRewardGenerator
                 else if (claimed == RunConstants.RelicKaleidoscope)
                 {
                     OfferKaleidoscopeRewards(state);
+                }
+
+                // A relic whose pickup opens a screen of its own (a deck selection, Scroll
+                // Boxes' bundles, a pre-rolled grid) is answered on that screen first: the
+                // game's obtain waits for it, and only then is the rewards screen back, with the
+                // relic still to claim and, once none is, Neow's Bones' curse. The copy dropped
+                // the selection and the bundle, and the run walked on without them (nightly
+                // 2026-10-29: Gbc74665482 and Gb64bb714fe, the game on a card selection or a
+                // bundle right after Neow's Bones, the copy on the map). What is still owed is
+                // offered when that screen closes (RunEngine.NeowReturnPhase).
+                if (followUp == RunFollowUp.TransformSelect)
+                {
+                    state.Phase = RunPhase.TransformSelect;
+                }
+                else if (followUp == RunFollowUp.BundleSelect)
+                {
+                    state.Phase = RunPhase.BundleSelect;
+                }
+
+                if (state.Phase is RunPhase.TransformSelect or RunPhase.BundleSelect)
+                {
+                    return true;
                 }
 
                 OfferNextBonusRelic(state);

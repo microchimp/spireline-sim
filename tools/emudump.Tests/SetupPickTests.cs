@@ -94,9 +94,10 @@ public class SetupPickTests
     }
 
     // ---- Screens that list other cards than the game's (records from lab batch dense-b) --------------------
-    // Both fights already differ at step 0 (an earlier item left the emulator's deck elsewhere), so the two
-    // lists differ; the game's pick is the first Strike, which the id names without doubt. The mirror counted
-    // these two items as supported before the list check, and must go on doing so.
+    // Royal Stamp's fight already differs at step 0 (an earlier item left the emulator's deck elsewhere), so the two
+    // lists differ; the game's pick is the first Strike, which the id names without doubt. The mirror counted the item
+    // as supported before the list check, and must go on doing so. Dolly's Mirror's record differed the same way until
+    // the Neow's Bones fix (below).
 
     [Fact]
     public void RoyalStampOnOtherCardsThanTheGamesStillTakesTheStrikeTheGamePickedByIdAndNotesTheDifference()
@@ -115,8 +116,14 @@ public class SetupPickTests
         Assert.Equal(OldIds.CardIdBySnake("STRIKE_IRONCLAD"), stamped[0].DefId);
     }
 
+    /// <summary>
+    /// This record's Neow pick is Neow's Bones, and the deck the emulator's screen listed differed from the game's because a
+    /// relic claimed off the Bones' screen never opened its own selection. Since the claim opens it (fix/f16-gold-screens),
+    /// the two screens list the same cards: the game's pick is followed by position and there is nothing to note. The
+    /// other-cards path stays covered by Royal Stamp's record above.
+    /// </summary>
     [Fact]
-    public void DollysMirrorOnOtherCardsThanTheGamesStillCopiesTheStrikeTheGamePickedByIdAndNotesTheDifference()
+    public void DollysMirrorAfterNeowsBonesListsTheGamesCardsAndCopiesTheStrikeTheGamePicked()
     {
         var record = Fixture("dollys_mirror_on_other_cards");
         var (e, log) = Replay(record);
@@ -124,7 +131,7 @@ public class SetupPickTests
         var item = LogOf(log, record, "DOLLYS_MIRROR");
         Assert.True((bool)item["ok"]!, item.ToJsonString());
         Assert.Null(item["unsupported"]);
-        Assert.StartsWith("note: the emulator's selection lists", (string)item["msg"]!);
+        Assert.DoesNotContain("selection lists", (string?)item["msg"] ?? "");
         AssertSupported(log);
         // The starter deck's five Strikes and the copy.
         var all = e.State.ActiveCombat!.Hand.Concat(e.State.ActiveCombat.DrawPile).Concat(e.State.ActiveCombat.DiscardPile).ToList();
