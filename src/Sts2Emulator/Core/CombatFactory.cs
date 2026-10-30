@@ -1455,12 +1455,18 @@ public static class CombatFactory
                 DecimillipedeIntent(moveIndex),
                 moveIndex
             );
-            MakeDecimillipedeHpEvenAndUnique(enemy, enemies);
+            enemies.Add(enemy);
+        }
+
+        // All three are in the combat with their rolled HP before the first one's AfterAddedToRoom runs.
+        var band = GeneratedData.Enemies.Get(KE.DecimillipedeSegment).HpBand(_currentAscension);
+        SettleDecimillipedeHps(enemies, band.Min, band.Max);
+        foreach (var enemy in enemies)
+        {
             // AfterAddedToRoom applies ReattachPower at 25 to every segment: a dead
             // segment spends a turn as DEAD_MOVE and then heals back, and the fight is
             // only won by emptying all three inside one window.
             BuffSystem.Apply(enemy.Buffs, BuffId.Reattach, RunConstants.DecimillipedeReattachHeal);
-            enemies.Add(enemy);
         }
         return enemies;
     }
@@ -1472,27 +1478,34 @@ public static class CombatFactory
     /// </summary>
     private static Intent DecimillipedeIntent(int moveIndex) => new(IntentType.Attack, moveIndex);
 
-    private static void MakeDecimillipedeHpEvenAndUnique(
-        EnemyState enemy,
-        List<EnemyState> existing
-    )
+    /// <summary>
+    /// The segments' AfterAddedToRoom, in roster order (the combat start walks its creatures in order once all are
+    /// in): each rounds its max HP up to even, then steps it by 2 while ANY other segment's current max equals it,
+    /// wrapping from above the band's top to its bottom, and sets max and current HP to it. "Any other" includes the
+    /// segments behind it, still at their raw rolls; settling each against the earlier ones only (the copy's old rule)
+    /// put the same three HPs on different segments.
+    /// </summary>
+    internal static void SettleDecimillipedeHps(List<EnemyState> segments, int min, int max)
     {
-        int hp = enemy.MaxHp;
-        if (hp % 2 == 1)
+        foreach (var segment in segments)
         {
-            hp++;
-        }
-
-        while (existing.Any(e => e.MaxHp == hp))
-        {
-            hp += 2;
-            if (hp > 52)
+            int hp = segment.MaxHp;
+            if (hp % 2 == 1)
             {
-                hp = 46;
+                hp++;
             }
+
+            while (segments.Any(other => !ReferenceEquals(other, segment) && other.MaxHp == hp))
+            {
+                hp += 2;
+                if (hp > max)
+                {
+                    hp = min;
+                }
+            }
+            segment.MaxHp = hp;
+            segment.Hp = hp;
         }
-        enemy.MaxHp = hp;
-        enemy.Hp = hp;
     }
 
     /// <summary>

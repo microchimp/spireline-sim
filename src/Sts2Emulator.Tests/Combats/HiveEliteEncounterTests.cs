@@ -81,6 +81,31 @@ public class DecimillipedeTests
     }
 
     /// <summary>
+    /// All three segments are in the combat with their rolled HP before any of them settles: the combat start runs
+    /// each segment's AfterAddedToRoom in roster order (front, middle, back), and each steps its even HP past every
+    /// OTHER segment's current max, so the front settles against the middle's and back's raw rolls and the middle
+    /// against the back's raw roll. Rolls 50, 49, 52: the front keeps 50; the middle evens to 50, steps to 52, which
+    /// the back's raw 52 holds, and wraps to 46; the back keeps 52. The copy settled each against the earlier
+    /// segments only and gave 50, 52, 46 (nights 2026-10-26 to 2026-10-29, group Gb25e996655: 64 opening records with
+    /// the same three HPs on different segments, every one this rule).
+    /// </summary>
+    [Theory]
+    [InlineData(new[] { 50, 49, 52 }, 46, 52, new[] { 50, 46, 52 })]
+    [InlineData(new[] { 49, 47, 51 }, 46, 52, new[] { 50, 48, 52 })]
+    [InlineData(new[] { 45, 43, 46 }, 40, 46, new[] { 40, 44, 46 })]
+    public void SegmentsSettleInRosterOrderAgainstEveryOtherSegment(int[] rolled, int min, int max, int[] settled)
+    {
+        var segments = rolled
+            .Select(hp => new EnemyState { DefId = KE.DecimillipedeSegment, Hp = hp, MaxHp = hp })
+            .ToList();
+
+        CombatFactory.SettleDecimillipedeHps(segments, min, max);
+
+        Assert.Equal(settled, segments.Select(e => e.MaxHp));
+        Assert.Equal(settled, segments.Select(e => e.Hp));
+    }
+
+    /// <summary>
     /// ReattachPower: a killed segment spends a turn dead and comes back healed by 25 --
     /// not to full, which is what separates it from the Fogmog eye. The emulator left it
     /// dead, so the elite could be taken apart one piece at a time.
