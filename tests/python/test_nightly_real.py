@@ -89,6 +89,12 @@ class AgentsTest(Tmp):
         self.assertEqual("N-2026-10-25", nr.seed_block_name("2026-10-25", got[0]))
         self.assertEqual("N-2026-10-25-g4", nr.seed_block_name("2026-10-25", got[1]))
 
+    def test_the_full_night_only_when_a_generation_was_promoted(self):
+        inc, prom = {"label": "g3", "role": "incumbent"}, {"label": "g4", "role": "promoted"}
+        self.assertEqual(500, nr.night_runs([inc], 500, 2000))
+        self.assertEqual(2000, nr.night_runs([inc, prom], 500, 2000))
+        self.assertEqual(500, nr.night_runs([inc, prom], 500, None))  # without --runs-promoted every night plays --runs
+
 
 class BlockTest(Tmp):
     def test_a_fresh_block_is_the_sha256_rule_written_under_lab_seeds(self):
@@ -211,6 +217,23 @@ class DriverTest(Tmp):
         self.assertEqual(["g3"], list(res["agents"]))
         self.assertEqual("2026-10-25", res["date"])
         self.assertFalse(lock.exists())  # taken and removed
+
+    def test_runs_promoted_is_not_used_without_a_promotion(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40")
+        self.assertEqual(0, rc)
+        self.assertEqual(["20"], [c[c.index("--runs") + 1] for c in seen])
+        self.assertEqual(20, json.loads((job / "result.json").read_text())["runs_per_agent"])
+
+    def test_runs_promoted_for_every_agent_on_a_promotion_night(self):
+        def promote(_folder):
+            agent = self.tmp / "agent"
+            (agent / "gen4" / "c").mkdir(parents=True)
+            (agent / "promotions.tsv").write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n"
+                                                 f"2026-10-25T01:00:00Z\t4\t3\tE\t2000\tpromoted\tsha\t{agent / 'gen4' / 'c'}\n")
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--since", "2026-10-24T00:00:00Z", prepare=promote)
+        self.assertEqual(0, rc)
+        self.assertEqual(["40", "40"], [c[c.index("--runs") + 1] for c in seen])  # the incumbent and the promoted generation alike
+        self.assertEqual(40, json.loads((job / "result.json").read_text())["runs_per_agent"])
 
     def test_a_half_finished_real_block_is_resumed_in_its_folder_not_replayed(self):
         row = json.dumps(end("A", 20))

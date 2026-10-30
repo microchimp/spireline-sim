@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The nightly real-game block (D33 addendum 2 item 1): the lab job `nightly-real` runs this driver.
 
-    python rl/nightly_real.py --lab LAB --agent-root AGENT --game GAME --lib DIR [--runs 2000] [--procs 12] [--recycle 60]
+    python rl/nightly_real.py --lab LAB --agent-root AGENT --game GAME --lib DIR [--runs 2000] [--runs-promoted N] [--procs 12] [--recycle 60]
 
 For the incumbent (agent-root/current.json) and each generation promoted since the last nightly (promotions.tsv rows written after
 LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen0.e_block rule, name N-<date> for the incumbent and
@@ -10,6 +10,9 @@ by `gen0.py score` in lockstep with the emulator arm on `--engine core2`. The bl
 real game's runs.jsonl, divergences.jsonl, summary.json, compare.json; the emulator arm is its sibling <agent>-emu/), ranked in
 place by tools/lab/rank.py (ranked.json, top20.md, by_family.*). A block a stopped job left unfinished is resumed in place (`gen0.py
 score --resume`): its folder is not cleared and only the seeds without a row are played; a block with the finished mark is skipped.
+
+Runs per agent (owner, 2026-10-30): `--runs-promoted` on a night that scores a generation promoted since the last nightly, else
+`--runs` (the lab's jobs.json: 2,000 on a promotion day, 500 otherwise). Without `--runs-promoted` every night plays `--runs`.
 
 GPU_OK: `gen0.py score --gpu-ok-tag lab-nightly` keeps the line `lab-nightly` first in the GPU_OK file while the real-game arm plays
 (the GPU lane may fit beside it), never during the emulator arm; every start of this driver first removes any such line.
@@ -151,6 +154,13 @@ def agents_to_score(agent_root: Path, since: float | None) -> list[dict[str, Any
     return out
 
 
+def night_runs(agents: list[dict[str, Any]], runs: int, runs_promoted: int | None) -> int:
+    """Runs per agent tonight: `runs_promoted` when `agents` holds a generation promoted since the last nightly, else `runs`."""
+    if runs_promoted and any(ag.get("role") == "promoted" for ag in agents):
+        return runs_promoted
+    return runs
+
+
 def seed_block_name(date: str, agent: dict[str, Any]) -> str:
     return f"N-{date}" if agent["role"] == "incumbent" else f"N-{date}-{agent['label']}"
 
@@ -280,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lib", required=True, help="directory of the native library")
     ap.add_argument("--out", help="the job folder: result.json goes here (the runner's {job})")
     ap.add_argument("--runs", type=int, default=2000)
+    ap.add_argument("--runs-promoted", type=int, default=None,
+                    help="runs per agent on a night that scores a generation promoted since the last nightly (default: --runs)")
     ap.add_argument("--procs", type=int, default=12)
     ap.add_argument("--recycle", type=int, default=60)
     ap.add_argument("--config", default="a3-v1")
@@ -326,7 +338,11 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.time()
         date_dir = lab / "nightly" / a.date
         agents: dict[str, Any] = {}
-        for ag in agents_to_score(Path(a.agent_root), since):
+        todo = agents_to_score(Path(a.agent_root), since)
+        a.runs = night_runs(todo, a.runs, a.runs_promoted)
+        promoted = [ag["label"] for ag in todo if ag.get("role") == "promoted"]
+        print(f"[{utc_now()}] {a.runs} runs per agent ({'promoted since the last nightly: ' + ', '.join(promoted) if promoted else 'no promotion since the last nightly'})", flush=True)
+        for ag in todo:
             try:
                 agents[ag["label"]] = play_agent(a, ag, a.date, date_dir)
             except (OSError, ValueError, KeyError) as e:  # one agent's problem (a shared seed, a missing directory) does not stop the others
